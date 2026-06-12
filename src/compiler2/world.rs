@@ -17,7 +17,7 @@ use crate::dispatch_matrix::pattern::{PatternDispatchPlan, PatternGuardDispatch}
 use crate::frontend::protocols::protocol_domain_tag;
 use crate::modules::identity::{Mfa, ModuleName};
 use crate::modules::runtime_library;
-use crate::telemetry::{Telemetry, opaque_debug};
+use crate::telemetry::{Telemetry, opaque, opaque_debug};
 use crate::{FunctionSurface, measurements, metadata};
 
 use super::CodeId;
@@ -298,7 +298,7 @@ impl<'a> World<'a> {
         let changed = dedupe_job_facts(changed);
         let step = self
             .work_graph
-            .complete(job.clone(), reads, waits, outputs, changed, effects.follow_up);
+            .complete(&job, reads, waits, outputs, changed, effects.follow_up);
         self.tel.event(
             &["fz", "compiler2", "work_graph", "applied"],
             metadata! {
@@ -406,7 +406,12 @@ impl<'a> World<'a> {
         for ty in analysis.value_types.values_mut() {
             *ty = self.types.alpha_normalize_vars(ty);
         }
-        let changed = self.activations.define_analysis(key, analysis.clone());
+        let changed = self.activations.define_analysis(key, analysis);
+        let analysis = self
+            .activations
+            .get(key)
+            .and_then(|slot| slot.analysis())
+            .expect("activation analysis should be readable right after it is defined");
         self.tel.execute(
             &["fz", "compiler2", "activation_analysis", "defined"],
             &measurements! {
@@ -418,7 +423,7 @@ impl<'a> World<'a> {
             },
             &metadata! {
                 activation: opaque_debug(key),
-                analysis: opaque_debug(&analysis),
+                analysis: opaque_debug(analysis),
             },
         );
         changed
@@ -487,7 +492,11 @@ impl<'a> World<'a> {
             target.return_ty = self.types.alpha_normalize_vars(&target.return_ty);
         }
         summary.return_ty = self.types.alpha_normalize_vars(&summary.return_ty);
-        let changed = self.callsites.define(key.clone(), summary.clone());
+        let changed = self.callsites.define(key.clone(), summary);
+        let summary = self
+            .callsites
+            .get(&key)
+            .expect("callsite summaries should be readable right after they are defined");
         self.tel.execute(
             &["fz", "compiler2", "callsite", "defined"],
             &measurements! {
@@ -500,7 +509,7 @@ impl<'a> World<'a> {
             },
             &metadata! {
                 callsite: opaque_debug(&key),
-                summary: opaque_debug(&summary),
+                summary: opaque_debug(summary),
             },
         );
         changed
@@ -511,14 +520,18 @@ impl<'a> World<'a> {
     }
 
     pub(crate) fn define_semantic_closure(&mut self, root: RootId, closure: SemanticClosure) -> bool {
-        let changed = self.semantic_closures.define(root, closure.clone());
+        let changed = self.semantic_closures.define(root, closure);
+        let closure = self
+            .semantic_closures
+            .get(root)
+            .expect("semantic closures should be readable right after they are defined");
         self.tel.execute(
             &["fz", "compiler2", "semantic_closed", "defined"],
             &measurements! {
                 root_id: root.as_u32(),
             },
             &metadata! {
-                closure: opaque_debug(&closure),
+                closure: opaque_debug(closure),
                 root_id: opaque_debug(&root),
             },
         );
@@ -533,7 +546,11 @@ impl<'a> World<'a> {
     }
 
     pub(crate) fn define_materialized_program(&mut self, root: RootId, program: MaterializedProgram) -> bool {
-        let changed = self.artifacts.define(root, program.clone());
+        let changed = self.artifacts.define(root, program);
+        let program = self
+            .artifacts
+            .get(root)
+            .expect("materialized programs should be readable right after they are defined");
         self.tel.execute(
             &["fz", "compiler2", "materialized_program", "defined"],
             &measurements! {
@@ -541,7 +558,7 @@ impl<'a> World<'a> {
                 executable_count: program.executables.len(),
             },
             &metadata! {
-                program: opaque_debug(&program),
+                program: opaque_debug(program),
                 root_id: opaque_debug(&root),
             },
         );
@@ -556,7 +573,11 @@ impl<'a> World<'a> {
     }
 
     pub(crate) fn define_abi_ready_program(&mut self, root: RootId, program: AbiReadyProgram) -> bool {
-        let changed = self.abi_ready.define(root, program.clone());
+        let changed = self.abi_ready.define(root, program);
+        let program = self
+            .abi_ready
+            .get(root)
+            .expect("ABI-ready programs should be readable right after they are defined");
         self.tel.execute(
             &["fz", "compiler2", "abi_ready_program", "defined"],
             &measurements! {
@@ -565,7 +586,7 @@ impl<'a> World<'a> {
                 callable_entry_count: program.callable_entries.len(),
             },
             &metadata! {
-                program: opaque_debug(&program),
+                program: opaque_debug(program),
                 root_id: opaque_debug(&root),
             },
         );
@@ -580,7 +601,11 @@ impl<'a> World<'a> {
     }
 
     pub(crate) fn define_emission_ready_program(&mut self, root: RootId, program: EmissionReadyProgram) -> bool {
-        let changed = self.emission_ready.define(root, program.clone());
+        let changed = self.emission_ready.define(root, program);
+        let program = self
+            .emission_ready
+            .get(root)
+            .expect("emission-ready programs should be readable right after they are defined");
         self.tel.execute(
             &["fz", "compiler2", "emission_ready_program", "defined"],
             &measurements! {
@@ -590,7 +615,7 @@ impl<'a> World<'a> {
                 changed: changed as u64,
             },
             &metadata! {
-                program: opaque_debug(&program),
+                program: opaque_debug(program),
                 root_id: opaque_debug(&root),
             },
         );
@@ -605,7 +630,11 @@ impl<'a> World<'a> {
     }
 
     pub(crate) fn define_backend_program(&mut self, root: RootId, program: BackendProgram) -> bool {
-        let changed = self.backend.define(root, program.clone());
+        let changed = self.backend.define(root, program);
+        let program = self
+            .backend
+            .get(root)
+            .expect("backend programs should be readable right after they are defined");
         self.tel.execute(
             &["fz", "compiler2", "backend_program", "defined"],
             &measurements! {
@@ -616,7 +645,7 @@ impl<'a> World<'a> {
                 changed: changed as u64,
             },
             &metadata! {
-                program: opaque_debug(&program),
+                program: opaque_debug(program),
                 root_id: opaque_debug(&root),
             },
         );
@@ -659,9 +688,14 @@ impl<'a> World<'a> {
             MacroExecutable {
                 root,
                 backend_revision,
-                program: program.clone(),
+                program,
             },
         );
+        let program = &self
+            .macro_executables
+            .get(function)
+            .expect("macro executables should be readable right after they are defined")
+            .program;
         self.tel.execute(
             &["fz", "compiler2", "macro_executable", "defined"],
             &measurements! {
@@ -672,7 +706,7 @@ impl<'a> World<'a> {
                 changed: changed as u64,
             },
             &metadata! {
-                program: opaque_debug(&program),
+                program: opaque_debug(program),
             },
         );
         changed
@@ -716,7 +750,11 @@ impl<'a> World<'a> {
     }
 
     pub(crate) fn define_native_program(&mut self, root: RootId, program: NativeProgram) -> bool {
-        let changed = self.native.define(root, program.clone());
+        let changed = self.native.define(root, program);
+        let program = self
+            .native
+            .get(root)
+            .expect("native programs should be readable right after they are defined");
         self.tel.execute(
             &["fz", "compiler2", "native_program", "defined"],
             &measurements! {
@@ -727,7 +765,7 @@ impl<'a> World<'a> {
                 changed: changed as u64,
             },
             &metadata! {
-                program: opaque_debug(&program),
+                program: opaque_debug(program),
                 root_id: opaque_debug(&root),
             },
         );
@@ -864,7 +902,11 @@ impl<'a> World<'a> {
     /// `DeriveTypeDef` to read. No resolution, no type-algebra. The event is
     /// the surface-tier signal that a type name became a referenceable identity.
     pub fn note_type_decl(&mut self, name: TypeName, decl: NotedTypeDecl) {
-        if self.type_decls.note(name.clone(), decl.clone()) {
+        if self.type_decls.note(name.clone(), decl) {
+            let decl = self
+                .type_decls
+                .get(&name)
+                .expect("type decls should be readable right after they are noted");
             self.tel.execute(
                 &["fz", "compiler2", "type", "noted"],
                 &measurements! {
@@ -873,8 +915,8 @@ impl<'a> World<'a> {
                     namespace: decl.namespace.as_u32(),
                 },
                 &metadata! {
-                    name: name.name.clone(),
-                    kind: format!("{:?}", decl.body.kind),
+                    name: &name.name,
+                    decl: opaque_debug(decl),
                 },
             );
         }
@@ -924,10 +966,10 @@ impl<'a> World<'a> {
     /// later `TypeDefined` wait-set (fz-rh2.12.4).
     pub(crate) fn record_function_type_refs(&mut self, function: FunctionId, mut refs: Vec<TypeName>) {
         dedup_type_names(&mut refs);
-        if self.type_refs.record_function(function, refs.clone()) {
-            let consumer = format!("fn:{}", self.functions.reference_for(function).name);
-            for referenced in &refs {
-                self.emit_type_referenced(&consumer, referenced);
+        if self.type_refs.record_function(function, refs) {
+            let consumer_name = &self.functions.reference_for(function).name;
+            for referenced in self.type_refs.function_refs(function) {
+                self.emit_type_referenced("fn", consumer_name, referenced);
             }
         }
     }
@@ -942,10 +984,9 @@ impl<'a> World<'a> {
     /// `DeriveTypeDef` resolves against before minting the symbol (fz-rh2.12.2).
     pub(crate) fn record_type_def_refs(&mut self, name: TypeName, mut refs: Vec<TypeName>) {
         dedup_type_names(&mut refs);
-        if self.type_refs.record_type(name.clone(), refs.clone()) {
-            let consumer = format!("type:{}", name.name);
-            for referenced in &refs {
-                self.emit_type_referenced(&consumer, referenced);
+        if self.type_refs.record_type(name.clone(), refs) {
+            for referenced in self.type_refs.type_refs(&name) {
+                self.emit_type_referenced("type", &name.name, referenced);
             }
         }
     }
@@ -956,25 +997,27 @@ impl<'a> World<'a> {
     }
 
     /// Publishes a resolved type definition under `name` and emits the
-    /// callee-tier `type defined` signal. The rendered type rides the event so
-    /// tests and tooling can read the resolved surface without the interner.
+    /// callee-tier `type defined` signal. The definition and the interner ride
+    /// the event as opaque refs, so handlers that want the resolved surface
+    /// render it themselves at event time.
     pub(crate) fn define_type_def(&mut self, name: TypeName, def: TypeDef) -> bool {
-        let rendered = self.types.display(&def.ty);
-        let has_vars = self.types.has_vars(&def.ty);
-        let params = def.params.len();
         let changed = self.type_defs.define(name.clone(), def);
+        let def = self
+            .type_defs
+            .get(&name)
+            .expect("type defs should be readable right after they are defined");
         self.tel.execute(
             &["fz", "compiler2", "type", "defined"],
             &measurements! {
                 module_id: name.module.as_u32(),
                 arity: name.arity,
-                params: params,
-                has_vars: has_vars,
+                params: def.params.len(),
                 changed: changed as u64,
             },
             &metadata! {
-                name: name.name.clone(),
-                ty: rendered,
+                name: &name.name,
+                def: opaque_debug(def),
+                types: opaque(&self.types),
             },
         );
         changed
@@ -985,7 +1028,11 @@ impl<'a> World<'a> {
     }
 
     pub(crate) fn define_protocol_dispatch(&mut self, protocol: ModuleId, dispatch: ProtocolDispatch) -> bool {
-        let changed = self.protocol_dispatches.define(protocol, dispatch.clone());
+        let changed = self.protocol_dispatches.define(protocol, dispatch);
+        let dispatch = self
+            .protocol_dispatches
+            .get(protocol)
+            .expect("protocol dispatches should be readable right after they are defined");
         self.tel.execute(
             &["fz", "compiler2", "protocol_dispatch", "defined"],
             &measurements! {
@@ -994,7 +1041,7 @@ impl<'a> World<'a> {
                 changed: changed as u64,
             },
             &metadata! {
-                dispatch: opaque_debug(&dispatch),
+                dispatch: opaque_debug(dispatch),
             },
         );
         changed
@@ -1050,7 +1097,7 @@ impl<'a> World<'a> {
         }
     }
 
-    fn emit_type_referenced(&self, consumer: &str, referenced: &TypeName) {
+    fn emit_type_referenced(&self, consumer_kind: &'static str, consumer_name: &str, referenced: &TypeName) {
         self.tel.execute(
             &["fz", "compiler2", "type", "referenced"],
             &measurements! {
@@ -1058,8 +1105,10 @@ impl<'a> World<'a> {
                 ref_arity: referenced.arity,
             },
             &metadata! {
-                ref_name: referenced.name.clone(),
-                consumer: consumer.to_string(),
+                ref_name: &referenced.name,
+                consumer_kind: consumer_kind,
+                consumer: consumer_name,
+                referenced: opaque_debug(referenced),
             },
         );
     }
@@ -1071,8 +1120,7 @@ impl<'a> World<'a> {
         expanded_source: FunctionSource,
         surface: FunctionSurface,
     ) -> bool {
-        let function_ref = self.functions.reference_for(id).clone();
-        let module = function_ref.module;
+        let module = self.functions.reference_for(id).module;
         let owner_module = source.owner_module;
         let code = source.code;
         let arity = surface.arity();
@@ -1080,6 +1128,7 @@ impl<'a> World<'a> {
         let changed = self.functions.define(id, source, expanded_source, surface);
         if changed {
             let function = self.functions.get(id);
+            let function_ref = self.functions.reference_for(id);
             self.tel.execute(
                 &["fz", "compiler2", "function", "defined"],
                 &measurements! {
@@ -1094,7 +1143,7 @@ impl<'a> World<'a> {
                 },
                 &metadata! {
                     function: opaque_debug(function),
-                    function_ref: opaque_debug(&function_ref),
+                    function_ref: opaque_debug(function_ref),
                     function_id: opaque_debug(&id),
                     module_id: opaque_debug(&module),
                     owner_module_id: opaque_debug(&owner_module),
@@ -1105,7 +1154,14 @@ impl<'a> World<'a> {
     }
 
     pub(crate) fn note_function_source(&mut self, function: FunctionId, source: FunctionSource) -> bool {
-        let changed = self.functions.note(function, source.clone());
+        let changed = self.functions.note(function, source);
+        let source = match self.functions.get(function) {
+            super::identity::FunctionState::Noted { source }
+            | super::identity::FunctionState::Defined { source, .. } => source.as_ref(),
+            super::identity::FunctionState::Placeholder => {
+                unreachable!("noting a function source always leaves the function noted or defined")
+            }
+        };
         let function_ref = self.functions.reference_for(function);
         let source_owner_module = source.owner_module;
         let source_module_id = function_ref.module;
@@ -1117,14 +1173,14 @@ impl<'a> World<'a> {
                 owner_module_id: source.owner_module.as_u32(),
                 function_id: function.as_u32(),
                 arity: function_ref.arity,
-                clauses: function_source_clause_count(&source),
+                clauses: function_source_clause_count(source),
                 source_heap_id: source.source.key().heap_id,
                 source_root_ref: source.source.root().raw_word(),
                 changed: changed as u64,
             },
             &metadata! {
                 function_ref: opaque_debug(function_ref),
-                source: opaque_debug(&source),
+                source: opaque_debug(source),
                 function_id: opaque_debug(&function),
                 module_id: opaque_debug(&source_module_id),
                 owner_module_id: opaque_debug(&source_owner_module),
@@ -1142,7 +1198,11 @@ impl<'a> World<'a> {
     }
 
     pub(crate) fn note_expanded_function_source(&mut self, function: FunctionId, source: FunctionSource) -> bool {
-        let changed = self.expanded_function_sources.define(function, source.clone());
+        let changed = self.expanded_function_sources.define(function, source);
+        let source = self
+            .expanded_function_sources
+            .get(function)
+            .expect("expanded function sources should be readable right after they are defined");
         let function_ref = self.functions.reference_for(function);
         self.tel.execute(
             &["fz", "compiler2", "function", "source", "expanded"],
@@ -1152,14 +1212,14 @@ impl<'a> World<'a> {
                 owner_module_id: source.owner_module.as_u32(),
                 function_id: function.as_u32(),
                 arity: function_ref.arity,
-                clauses: function_source_clause_count(&source),
+                clauses: function_source_clause_count(source),
                 source_heap_id: source.source.key().heap_id,
                 source_root_ref: source.source.root().raw_word(),
                 changed: changed as u64,
             },
             &metadata! {
                 function_ref: opaque_debug(function_ref),
-                source: opaque_debug(&source),
+                source: opaque_debug(source),
                 function_id: opaque_debug(&function),
             },
         );
@@ -1171,7 +1231,11 @@ impl<'a> World<'a> {
     }
 
     pub(crate) fn define_function_contract(&mut self, function: FunctionId, contract: FunctionContract) -> bool {
-        let changed = self.function_contracts.define(function, contract.clone());
+        let changed = self.function_contracts.define(function, contract);
+        let contract = self
+            .function_contracts
+            .get(function)
+            .expect("function contracts should be readable right after they are defined");
         let function_ref = self.functions.reference_for(function);
         self.tel.execute(
             &["fz", "compiler2", "function_contract", "defined"],
@@ -1182,7 +1246,7 @@ impl<'a> World<'a> {
             },
             &metadata! {
                 function_ref: opaque_debug(function_ref),
-                contract: opaque_debug(&contract),
+                contract: opaque_debug(contract),
             },
         );
         changed
@@ -1234,8 +1298,11 @@ impl<'a> World<'a> {
         callbacks: HashMap<(String, usize), ProtocolCallbackImpl>,
     ) {
         let key = ProtocolImplKey { protocol, target };
-        let protocol_impl = ProtocolImpl { callbacks };
-        self.protocol_impls.define(key, protocol_impl.clone());
+        self.protocol_impls.define(key, ProtocolImpl { callbacks });
+        let protocol_impl = self
+            .protocol_impls
+            .impl_for(&key)
+            .expect("protocol impls should be readable right after they are defined");
         self.tel.execute(
             &["fz", "compiler2", "protocol_impl", "defined"],
             &measurements! {
@@ -1245,7 +1312,7 @@ impl<'a> World<'a> {
             },
             &metadata! {
                 key: opaque_debug(&key),
-                protocol_impl: opaque_debug(&protocol_impl),
+                protocol_impl: opaque_debug(protocol_impl),
             },
         );
     }
@@ -1283,7 +1350,9 @@ impl<'a> World<'a> {
             variadic: surface.variadic,
             source: owner_source.source.clone(),
         };
-        let changed = self.functions.define(id, fn_source.clone(), fn_source, surface.clone());
+        let arity = surface.arity();
+        let clauses = surface.clauses.len();
+        let changed = self.functions.define(id, fn_source.clone(), fn_source, surface);
         if changed {
             let function = self.functions.get(id);
             let function_ref = self.functions.reference_for(id);
@@ -1294,8 +1363,8 @@ impl<'a> World<'a> {
                     module_id: owner_module.as_u32(),
                     owner_module_id: owner_source.owner_module.as_u32(),
                     function_id: id.as_u32(),
-                    arity: surface.arity(),
-                    clauses: surface.clauses.len(),
+                    arity: arity,
+                    clauses: clauses,
                     owner_function_id: owner.as_u32(),
                     source_heap_id: function.state_source_heap_id().unwrap_or_default(),
                     source_root_ref: function.state_source_root_word().unwrap_or_default(),
@@ -1314,7 +1383,11 @@ impl<'a> World<'a> {
     }
 
     pub(crate) fn define_lowered_body(&mut self, function: FunctionId, body: LoweredBody) -> bool {
-        let changed = self.bodies.define(function, body.clone());
+        let changed = self.bodies.define(function, body);
+        let body = match self.bodies.get(function) {
+            Some(super::body::BodyState::Lowered(body)) => body,
+            _ => unreachable!("defining a lowered body always leaves the body lowered"),
+        };
         let function_ref = self.functions.reference_for(function);
         let slot = self.functions.get(function);
         let (fn_source, fn_surface) = match slot {
@@ -1323,7 +1396,7 @@ impl<'a> World<'a> {
                 panic!("lowered bodies should only be defined for known functions")
             }
         };
-        let (clauses, generated, arity) = match &body {
+        let (clauses, generated, arity) = match body {
             LoweredBody::Extern { signature } => (0_usize, 0_usize, signature.params.len()),
             LoweredBody::Clauses { clauses, generated, .. } => (clauses.len(), generated.len(), fn_surface.arity()),
         };
@@ -1340,7 +1413,7 @@ impl<'a> World<'a> {
             },
             &metadata! {
                 function_ref: opaque_debug(function_ref),
-                body: opaque_debug(&body),
+                body: opaque_debug(body),
                 function_id: opaque_debug(&function),
             },
         );
@@ -1348,7 +1421,11 @@ impl<'a> World<'a> {
     }
 
     pub(crate) fn define_guard_dispatch(&mut self, function: FunctionId, dispatch: PatternGuardDispatch<Ty>) -> bool {
-        let changed = self.guard_dispatches.define(function, dispatch.clone());
+        let changed = self.guard_dispatches.define(function, dispatch);
+        let dispatch = self
+            .guard_dispatches
+            .get(function)
+            .expect("guard dispatches should be readable right after they are defined");
         let function_ref = self.functions.reference_for(function);
         let slot = self.functions.get(function);
         let (fn_source, fn_surface) = match slot {
@@ -1371,7 +1448,7 @@ impl<'a> World<'a> {
             },
             &metadata! {
                 function_ref: opaque_debug(function_ref),
-                dispatch: opaque_debug(&dispatch),
+                dispatch: opaque_debug(dispatch),
                 function_id: opaque_debug(&function),
             },
         );
@@ -1379,7 +1456,11 @@ impl<'a> World<'a> {
     }
 
     pub(crate) fn define_entry_dispatch(&mut self, function: FunctionId, plan: PatternDispatchPlan<Ty>) -> bool {
-        let changed = self.entry_dispatches.define(function, plan.clone());
+        let changed = self.entry_dispatches.define(function, plan);
+        let plan = self
+            .entry_dispatches
+            .get(function)
+            .expect("entry dispatches should be readable right after they are defined");
         let function_ref = self.functions.reference_for(function);
         let slot = self.functions.get(function);
         let (fn_source, fn_surface) = match slot {
@@ -1402,7 +1483,7 @@ impl<'a> World<'a> {
             },
             &metadata! {
                 function_ref: opaque_debug(function_ref),
-                plan: opaque_debug(&plan),
+                plan: opaque_debug(plan),
                 function_id: opaque_debug(&function),
             },
         );

@@ -200,12 +200,20 @@ fn compiler2_records_type_references_as_consumer_dependencies() {
         "third drive should materialize the function and publish its type references",
     );
 
+    // The event carries the consumer as raw state — a kind tag and the bare
+    // name — so the `kind:name` rendering happens here, in the observer.
     let consumers_of = |ref_name: &str| {
         let mut consumers = capture
             .find(&["fz", "compiler2", "type", "referenced"])
             .into_iter()
             .filter(|event| metadata_str(event, "ref_name") == ref_name)
-            .map(|event| metadata_str(&event, "consumer").to_string())
+            .map(|event| {
+                format!(
+                    "{}:{}",
+                    metadata_str(&event, "consumer_kind"),
+                    metadata_str(&event, "consumer")
+                )
+            })
             .collect::<Vec<_>>();
         consumers.sort();
         consumers
@@ -246,7 +254,8 @@ fn compiler2_records_type_references_as_consumer_dependencies() {
         1,
         "tkf_box is referenced at arity 1",
     );
-    assert_eq!(metadata_str(&box_refs[0], "consumer"), "type:tkf_wrapper");
+    assert_eq!(metadata_str(&box_refs[0], "consumer_kind"), "type");
+    assert_eq!(metadata_str(&box_refs[0], "consumer"), "tkf_wrapper");
     assert_eq!(
         consumers_of("tkf_box"),
         vec!["type:tkf_wrapper".to_string()],
@@ -254,11 +263,61 @@ fn compiler2_records_type_references_as_consumer_dependencies() {
     );
 }
 
+struct RenderedTypeDef {
+    name: String,
+    arity: u64,
+    changed: u64,
+    rendered: String,
+}
+
+/// Event-time projection of `type.defined`: the event carries the raw
+/// definition and the interner as opaque refs, so observers that want the
+/// resolved surface render it themselves while the event's borrows are alive.
+fn rendered_type_defs(tel: &ConfiguredTelemetry) -> Rc<RefCell<Vec<RenderedTypeDef>>> {
+    let rendered: Rc<RefCell<Vec<RenderedTypeDef>>> = Rc::new(RefCell::new(Vec::new()));
+    let sink = Rc::clone(&rendered);
+    tel.attach(
+        &["fz", "compiler2", "type", "defined"],
+        Box::new(move |event: &Event<'_, '_, '_>| {
+            let Some(Value::Str(name)) = event.metadata.get("name") else {
+                return;
+            };
+            let (Some(Value::U64(arity)), Some(Value::U64(changed))) =
+                (event.measurements.get("arity"), event.measurements.get("changed"))
+            else {
+                return;
+            };
+            let Some(types) = event
+                .metadata
+                .get("types")
+                .and_then(|value| value.downcast_ref::<Types>())
+            else {
+                return;
+            };
+            let Some(def) = event
+                .metadata
+                .get("def")
+                .and_then(|value| value.downcast_ref::<crate::compiler2::typedef::TypeDef>())
+            else {
+                return;
+            };
+            sink.borrow_mut().push(RenderedTypeDef {
+                name: name.to_string(),
+                arity: *arity,
+                changed: *changed,
+                rendered: types.display(&def.ty),
+            });
+        }),
+    );
+    rendered
+}
+
 #[test]
 fn compiler2_derive_type_def_pulls_a_referenced_type_and_its_wait_set_leaving_others_cold() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
     tel.attach(&[], capture.handler());
+    let rendered = rendered_type_defs(&tel);
 
     let mut compiler = Compiler2::new(&tel);
     let code_id = compiler.submit_code(CodeSubmission {
@@ -310,12 +369,12 @@ fn compiler2_derive_type_def_pulls_a_referenced_type_and_its_wait_set_leaving_ot
     );
 
     let resolved_ty = |name: &str| {
-        capture
-            .find(&["fz", "compiler2", "type", "defined"])
-            .into_iter()
-            .filter(|event| metadata_str(event, "name") == name)
-            .map(|event| metadata_str(&event, "ty").to_string())
-            .last()
+        rendered
+            .borrow()
+            .iter()
+            .rev()
+            .find(|def| def.name == name)
+            .map(|def| def.rendered.clone())
     };
 
     // Render the expected types through the same renderer (a scratch interner),
@@ -359,8 +418,7 @@ fn compiler2_derive_type_def_pulls_a_referenced_type_and_its_wait_set_leaving_ot
 #[test]
 fn compiler2_derive_type_def_mints_a_refines_brand_inner_in_symbol() {
     let tel = ConfiguredTelemetry::new();
-    let capture = Capture::new();
-    tel.attach(&[], capture.handler());
+    let rendered = rendered_type_defs(&tel);
 
     let mut compiler = Compiler2::new(&tel);
     let code_id = compiler.submit_code(CodeSubmission {
@@ -385,11 +443,11 @@ fn compiler2_derive_type_def_mints_a_refines_brand_inner_in_symbol() {
     );
     assert_resolved(compiler.drive(), "third drive should resolve the brand");
 
-    let resolved = capture
-        .find(&["fz", "compiler2", "type", "defined"])
-        .into_iter()
-        .filter(|event| metadata_str(event, "name") == "tkf_pos")
-        .map(|event| metadata_str(&event, "ty").to_string())
+    let resolved = rendered
+        .borrow()
+        .iter()
+        .filter(|def| def.name == "tkf_pos")
+        .map(|def| def.rendered.clone())
         .collect::<Vec<_>>();
     assert_eq!(resolved.len(), 1, "the brand resolves exactly once");
 
@@ -516,6 +574,7 @@ fn compiler2_protocol_domain_marker_stays_type_owned_while_dispatch_revises_when
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
     tel.attach(&[], capture.handler());
+    let rendered_defs = rendered_type_defs(&tel);
     let outputs = OutputCapture::new();
     tel.attach(&["fz", "compiler2", "job"], outputs.handler());
     let mut world = crate::compiler2::World::new(&tel);
@@ -627,17 +686,11 @@ fn compiler2_protocol_domain_marker_stays_type_owned_while_dispatch_revises_when
         "t/1 should publish exactly one marker type fact",
     );
 
-    let mut type_events = capture
-        .find(&["fz", "compiler2", "type", "defined"])
-        .into_iter()
-        .filter(|event| metadata_str(event, "name") == "t")
-        .map(|event| {
-            (
-                measurement_u64(&event, "arity"),
-                measurement_u64(&event, "changed"),
-                metadata_str(&event, "ty").to_string(),
-            )
-        })
+    let mut type_events = rendered_defs
+        .borrow()
+        .iter()
+        .filter(|def| def.name == "t")
+        .map(|def| (def.arity, def.changed, def.rendered.clone()))
         .collect::<Vec<_>>();
     type_events.sort();
     let t0_def = world

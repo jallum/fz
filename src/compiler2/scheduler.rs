@@ -81,7 +81,7 @@ where
 
     pub fn complete(
         &mut self,
-        job: J,
+        job: &J,
         reads: HashSet<FactUse<F>>,
         waits: HashSet<FactUse<F>>,
         outputs: Vec<F>,
@@ -92,10 +92,8 @@ where
         self.deps.replace_reads(job.clone(), reads);
         self.deps.replace_waits(job.clone(), waits);
 
-        let previous_output_keys = self.deps.output_keys(&job);
-        let replaced = self
-            .facts
-            .replace_outputs(&job, &previous_output_keys, outputs, changed);
+        let previous_output_keys = self.deps.output_keys(job);
+        let replaced = self.facts.replace_outputs(job, &previous_output_keys, outputs, changed);
         self.deps.replace_outputs(job.clone(), replaced.output_keys);
 
         let mut enqueued = Vec::new();

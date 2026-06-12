@@ -50,6 +50,17 @@ pub trait Handler {
     fn handle(&self, ev: &Event<'_, '_, '_>);
 }
 
+/// Any closure over a borrowed event is a handler. Emit sites carry raw
+/// internal state (borrowed strings, opaque refs), so observers that want
+/// derived views — rendered types, formatted names, projected fields —
+/// must compute them while the event's borrows are alive. A closure
+/// handler is the lightest way to do that.
+impl<F: Fn(&Event<'_, '_, '_>)> Handler for F {
+    fn handle(&self, ev: &Event<'_, '_, '_>) {
+        self(ev)
+    }
+}
+
 /// Opaque identifier for an attached handler. Used by `detach` to remove.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct HandlerId(pub(super) u64);

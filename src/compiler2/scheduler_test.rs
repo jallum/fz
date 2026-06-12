@@ -21,7 +21,7 @@ fn complete(
     changed: Vec<&'static str>,
     follow_up: Vec<u32>,
 ) -> AppliedStep<u32, &'static str> {
-    scheduler.complete(job, reads, waits, outputs, changed, follow_up)
+    scheduler.complete(&job, reads, waits, outputs, changed, follow_up)
 }
 
 #[test]
