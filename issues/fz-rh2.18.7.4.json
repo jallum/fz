@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-12T05:16:32Z",
+  "description": "Goal\nClose the any/none burn-down by removing or proving the remaining semantic top/bottom producers, including closure-call uncertainty, non-arithmetic operator typing, unary negation, and union identities.\n\nSignal\n- Remaining `any_ty(world)` calls are explicit dynamic/source top boundaries with tests; remaining `none_ty(world)` calls are true empty/no-return/impossible-input bottoms with tests.\n- Closure-call non-callable or ambiguous callable cases do not silently become top unless the source semantics are intentionally dynamic.\n- Non-arithmetic operators such as cons/list concat/range have either real function/spec-backed typing or explicitly documented dynamic semantics; arithmetic remains routed through functions/intrinsics, not binop special cases.\n- A final grep/deletion check is recorded before `fz-rh2.18.8` starts.\n\nTactics\n- Finish the audit categories from `.7.1` in dependency order instead of chasing local convenience.\n- Prefer deleting special cases by routing through ordinary functions/specs where that is the language model.\n- Tighten tests to source spelling when distinct spellings matter; otherwise keep one intent test with fixture comments.\n\nOutro\nNo unclassified `any_ty`/`none_ty` in compiler2 semantic flow, no revived `binop_ty` arithmetic special case, no closure-call top fallback for missing evidence, and no leftover broad top/bottom producer without a blocking ticket.",
+  "id": "fz-rh2.18.7.4",
+  "labels": [],
+  "parent": "fz-rh2.18.7",
+  "priority": 1,
+  "status": "open",
+  "title": "Compiler2 type convergence: close semantic any/none burn-down",
+  "type": "task",
+  "updated_at": "2026-06-12T05:16:32Z"
+}
