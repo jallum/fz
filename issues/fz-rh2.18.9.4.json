@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-rh2.18.9.5"
+  ],
   "created": "2026-06-12T02:13:24Z",
   "description": "Goal: route all activation-key construction through the derived partition policy while keeping ActivationInputs as the joined raw-evidence fact consumed by semantic analysis. Signal: world/semantic tests prove distinct raw caller contributions can share one activation key, ActivationInputs joins and retracts publisher-owned evidence correctly, key coarsening triggers reanalysis only when the joined evidence changes, and closure-call resolution still discovers every reachable callee from evidence rather than from key identity. Strategy: replace canonical_activation_key's recursive/list-only branch with policy-driven projection; keep the key/value split explicit in names and APIs; update seed-root, direct-call, closure-call, protocol-call, and latent callable activation paths to use the same keying rule. Outro: no code path reads ActivationKey input as body evidence; no path applies convergence only because a function is recursive; no caller-owned evidence is lost during key projection.",
   "id": "fz-rh2.18.9.4",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Compiler2 world: canonicalize activation keys through partition policy while preserving input evidence",
   "type": "task",
-  "updated_at": "2026-06-12T02:13:24Z"
+  "updated_at": "2026-06-12T02:14:01Z"
 }
