@@ -3,9 +3,7 @@
   "blocked_by": [
     "fz-rh2.18.9.5"
   ],
-  "blocks": [
-    "fz-rh2.18.9.8"
-  ],
+  "blocks": [],
   "closed_at": "2026-06-12T05:21:09Z",
   "close_reason": "Landed in 49167ae64",
   "created": "2026-06-12T04:43:33Z",

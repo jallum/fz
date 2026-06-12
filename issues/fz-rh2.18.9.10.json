@@ -1,8 +1,6 @@
 {
   "assignee": "Jason Allum",
-  "blocked_by": [
-    "fz-rh2.18.9.8"
-  ],
+  "blocked_by": [],
   "blocks": [
     "fz-rh2.18.9.11"
   ],
