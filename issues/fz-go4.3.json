@@ -1,7 +1,8 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-go4.1"
+    "fz-go4.1",
+    "fz-go4.2"
   ],
   "blocks": [],
   "created": "2026-06-12T18:42:56Z",
@@ -13,5 +14,5 @@
   "status": "open",
   "title": "Publish compiler2 state by defining once and re-borrowing",
   "type": "task",
-  "updated_at": "2026-06-12T18:42:56Z"
+  "updated_at": "2026-06-12T18:42:57Z"
 }
