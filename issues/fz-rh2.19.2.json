@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-rh2.19.1"
+  ],
   "blocks": [],
   "created": "2026-06-12T09:37:35Z",
   "description": "drive_until Ok branch clones job and effects every job solely for the span stop. Fix: stop job_span with borrowed \u0026effects BEFORE complete_job consumes them (currently the clone is taken before complete_job runs, so the observed payload is identical), pass job by value into complete_job, and drop the step entry from the job-stop metadata — step already rides work_graph.applied which is the event tests read it from (drive_test WorkGraphCaptureHandler). Verify no test reads step off the job span stop; compiler2_test effects assertions (event-time handler + durable-capture-drops-opaque test) must stay green.",

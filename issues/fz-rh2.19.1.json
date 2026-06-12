@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-rh2.19.2"
+  ],
   "created": "2026-06-12T09:37:35Z",
   "description": "Every world.rs define_*/note_* emit: (a) value clones die via define-then-re-borrow (getters exist: activations.get, callsites.get, semantic_closures.get, artifacts/abi_ready/emission_ready/backend/native/macro_executables .get, type_decls.get, type_defs.get, protocol_dispatches.get, protocol_impls.impl_for, bodies.get, dispatch maps .get, expanded_function_sources.get, function_contracts.get, type_refs.function_refs/type_refs); (b) define_function: drop function_ref.clone() — copy scalars before define, re-borrow after (note_function_source pattern); define_generated_function: copy arity/clauses scalars, drop surface.clone(); (c) note_type_decl: kill kind: format!(\"{:?}\") and name.name.clone() -\u003e name borrow + decl: opaque_debug; (d) define_type_def: kill rendered=types.display() and has_vars walk (no consumers) -\u003e name borrow, def opaque_debug, types: opaque(\u0026self.types) so handlers can render (RenderTypes::display takes \u0026self); (e) emit_type_referenced/record_function_type_refs/record_type_def_refs: kill format!(\"fn:/type:\")+to_string+refs.clone -\u003e record-then-re-borrow, consumer_kind \u0026'static str + consumer opaque + referenced opaque_debug; (f) complete_job: Scheduler::complete takes \u0026J (internal clones are scheduler bookkeeping, unchanged cost) so the work_graph.applied event borrows the caller's job without cloning. Tests: drive_test ty (317/392/638) and ref_name/consumer (207-249) assertions move to event-time handlers that downcast TypeDef+ConcreteTypes / TypeName and render in the handler.",
   "id": "fz-rh2.19.1",
