@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-06-12T18:40:18Z",
@@ -7,8 +7,8 @@
   "id": "fz-go4",
   "labels": [],
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "Ownership boundary audit: remove unnecessary cloning, copying, and conversions",
   "type": "epic",
-  "updated_at": "2026-06-12T18:40:18Z"
+  "updated_at": "2026-06-12T18:40:22Z"
 }
