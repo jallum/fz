@@ -14,8 +14,8 @@ use crate::dispatch_matrix::{
 };
 
 use super::super::body::{
-    CallSiteId, ControlDestination, DirectCallee, Literal, LoweredBody, LoweredClause, LoweredEntry, LoweredMapKey,
-    LoweredStep, LoweredTail, ValueId,
+    CallSiteId, ControlDestination, Literal, LoweredBody, LoweredClause, LoweredEntry, LoweredMapKey, LoweredStep,
+    LoweredTail, ValueId,
 };
 use super::super::contract::FunctionContract;
 use super::super::drive::{FactKey, Job, JobEffects, current_uses};
@@ -647,8 +647,9 @@ fn analyze_tail(
             else {
                 return Ok(None);
             };
-            let (emission, return_ty) =
-                resolve_direct_call(world, activation, *callsite, callee, arg_types, reads, waits, follow_up)?;
+            let (emission, return_ty) = resolve_direct_call(
+                world, activation, *callsite, *callee, arg_types, reads, waits, follow_up,
+            )?;
             if let Some(emission) = emission {
                 calls.push(emission);
             }
@@ -928,7 +929,7 @@ fn resolve_direct_call(
     world: &mut World<'_>,
     caller: &ActivationKey,
     callsite: CallSiteId,
-    callee: &DirectCallee,
+    function: FunctionId,
     arg_types: Vec<Ty>,
     reads: &mut Vec<FactKey>,
     waits: &mut HashSet<FactKey>,
@@ -941,9 +942,8 @@ fn resolve_direct_call(
         return Ok((None, Some(none_ty(world))));
     }
 
-    let DirectCallee::Function(function) = callee;
     let (summary, mut activations, return_ty) =
-        resolve_function_call(world, caller, *function, arg_types.clone(), reads, waits, follow_up)?;
+        resolve_function_call(world, caller, function, arg_types.clone(), reads, waits, follow_up)?;
     let mut latent_executables = Vec::new();
     if let Some(summary) = &summary {
         for target in &summary.targets {

@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 use crate::dispatch_matrix::SubjectSource;
 use crate::dispatch_matrix::pattern::{PatternDispatchPlan, PatternGuardExpr};
 
-use super::super::body::{DirectCallee, LoweredBody, LoweredStep, LoweredTail};
+use super::super::body::{LoweredBody, LoweredStep, LoweredTail};
 use super::super::drive::{FactKey, Job, JobEffects, current_uses};
 use super::super::identity::FunctionId;
 use super::super::scheduler::FatalError;
@@ -226,10 +226,7 @@ fn collect_step_edges(steps: &[LoweredStep], edges: &mut Vec<StaticEdge>) {
 
 fn collect_tail_edges(tail: &LoweredTail, edges: &mut Vec<StaticEdge>) {
     match tail {
-        LoweredTail::DirectCall {
-            callee: DirectCallee::Function(function),
-            ..
-        } => edges.push(StaticEdge::Direct(*function)),
+        LoweredTail::DirectCall { callee: function, .. } => edges.push(StaticEdge::Direct(*function)),
         LoweredTail::Value { .. }
         | LoweredTail::ClosureCall { .. }
         | LoweredTail::If { .. }

@@ -68,11 +68,6 @@ pub enum Literal {
     Nil,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DirectCallee {
-    Function(FunctionId),
-}
-
 #[derive(Debug, Clone, PartialEq)]
 pub struct LoweredExtern {
     pub abi: String,
@@ -203,7 +198,7 @@ pub enum LoweredTail {
     DirectCall {
         value: ValueId,
         callsite: CallSiteId,
-        callee: DirectCallee,
+        callee: FunctionId,
         args: Vec<CallArg>,
         dest: ControlDestination,
     },

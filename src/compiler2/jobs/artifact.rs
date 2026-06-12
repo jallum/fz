@@ -381,7 +381,7 @@ fn rewrite_protocol_dispatch_calls(
                 tail: LoweredTail::DirectCall {
                     value,
                     callsite: synthetic_callsite,
-                    callee: super::super::body::DirectCallee::Function(function),
+                    callee: function,
                     args: args.clone(),
                     dest: dest.clone(),
                 },
@@ -2003,11 +2003,18 @@ fn record_callable_value_entries(
             root_id,
             format!("{context} value {} is not a callable value", value.as_u32()),
         )),
-        CallableResolution::Opaque => Err(incomplete_semantic_plan(
-            world,
-            root_id,
-            format!("{context} value {} is an opaque callable value", value.as_u32()),
-        )),
+        CallableResolution::Opaque => {
+            eprintln!(
+                "PROBE opaque: ctx={context} value={} ty={}",
+                value.as_u32(),
+                world.types().display(&ty)
+            );
+            Err(incomplete_semantic_plan(
+                world,
+                root_id,
+                format!("{context} value {} is an opaque callable value", value.as_u32()),
+            ))
+        }
     }
 }
 

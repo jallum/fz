@@ -9113,7 +9113,7 @@ fn direct_call_in_entry(
         crate::compiler2::LoweredTail::DirectCall {
             value,
             callsite,
-            callee: crate::compiler2::DirectCallee::Function(function),
+            callee: function,
             ..
         } if *function == callee => Some((*callsite, *value)),
         crate::compiler2::LoweredTail::If {
@@ -9130,10 +9130,7 @@ fn direct_callee_in_entry(
 ) -> Option<FunctionId> {
     let entry = &entries[entry_id.as_u32() as usize];
     match &entry.tail {
-        crate::compiler2::LoweredTail::DirectCall {
-            callee: crate::compiler2::DirectCallee::Function(function),
-            ..
-        } => Some(*function),
+        crate::compiler2::LoweredTail::DirectCall { callee: function, .. } => Some(*function),
         crate::compiler2::LoweredTail::If {
             then_entry, else_entry, ..
         } => direct_callee_in_entry(entries, *then_entry).or_else(|| direct_callee_in_entry(entries, *else_entry)),

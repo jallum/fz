@@ -21,9 +21,9 @@ use crate::function_surface::FunctionSurface;
 use crate::ir_lower::{explicit_extern_wire_hint, extern_semantic_contract, extern_symbol_from_name, ty_to_extern_ty};
 
 use super::super::body::{
-    CallArg, CallSiteId, ControlDestination, ControlDispatch, ControlEntryId, ControlEntryOrigin, DirectCallee,
-    DispatchBindings, Literal, LoweredBitField, LoweredBitFieldSpec, LoweredBitSize, LoweredBody, LoweredClause,
-    LoweredEntry, LoweredExtern, LoweredMapKey, LoweredStep, LoweredTail, ReceiveAfter, ReceiveClause, ValueId,
+    CallArg, CallSiteId, ControlDestination, ControlDispatch, ControlEntryId, ControlEntryOrigin, DispatchBindings,
+    Literal, LoweredBitField, LoweredBitFieldSpec, LoweredBitSize, LoweredBody, LoweredClause, LoweredEntry,
+    LoweredExtern, LoweredMapKey, LoweredStep, LoweredTail, ReceiveAfter, ReceiveClause, ValueId,
 };
 use super::super::drive::{FactKey, Job, JobEffects, current_uses};
 use super::super::identity::{FunctionId, FunctionSource};
@@ -123,7 +123,7 @@ enum ExprStep {
     DirectCall {
         value: ValueId,
         callsite: CallSiteId,
-        callee: DirectCallee,
+        callee: FunctionId,
         args: Vec<CallArg>,
     },
     ClosureCall {
@@ -1349,9 +1349,9 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
         }
     }
 
-    fn resolve_direct_callee(&mut self, name: &str, arity: usize, span: Span) -> Result<DirectCallee, FatalError> {
+    fn resolve_direct_callee(&mut self, name: &str, arity: usize, span: Span) -> Result<FunctionId, FatalError> {
         let function = self.resolve_runtime_function(name, arity, span, "direct runtime callee")?;
-        Ok(DirectCallee::Function(function))
+        Ok(function)
     }
 
     fn resolve_runtime_function(
@@ -2229,7 +2229,7 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
                         LoweredTail::DirectCall {
                             value: *value,
                             callsite: *callsite,
-                            callee: callee.clone(),
+                            callee: *callee,
                             args: args.clone(),
                             dest: tail_dest,
                         },
