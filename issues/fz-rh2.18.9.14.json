@@ -11,9 +11,15 @@
   "id": "fz-rh2.18.9.14",
   "labels": [],
   "parent": "fz-rh2.18.9",
+  "comments": [
+    {
+      "text": "2026-06-12 wider-suite refresh: even with compiler2_interp_runs_selective_receive_with_make_ref_from_backend_artifacts and enum_tier0_fixture_exercises_basic_operations skipped, /opt/homebrew/bin/timeout 300s cargo test --lib compiler2:: -- --test-threads=1 ... timed out while quiet at compiler2::port_interp_test::selective_receive_pinned_ref_out_of_order_server_replies. Treat the receive ticket as covering both the drive/native selective receive hang and the port-interp selective receive hang until telemetry proves separate root causes.",
+      "timestamp": "2026-06-12T07:54:07Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "Compiler2 selective receive: stop semantic/native fixture timeout after return-readiness fixes",
   "type": "bug",
-  "updated_at": "2026-06-12T07:42:45Z"
+  "updated_at": "2026-06-12T07:54:07Z"
 }
