@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-rh2.18.6.1"
+  ],
   "blocks": [],
   "created": "2026-06-12T06:54:14Z",
   "description": "Goal\nReplace compiler2 semantic-analysis local pending types with explicit value evidence before call resolution is rebuilt on ReturnEvidence. A local value can be known, explicitly dynamic, known-empty/no-return, or unavailable because a required fact is absent; that state must be represented by a semantic evidence enum, not by `Option\u003cTy\u003e` fields or type sentinels.\n\nSignal\n- `SemanticValue { flow_ty: Option\u003cTy\u003e, observed_ty: Option\u003cTy\u003e }` is gone or reduced to a named evidence payload whose variants make impossible states unrepresentable.\n- Local expression typing, value projection, branch merging, tuple/list/map construction, direct calls, closure calls, and delivered control-flow values pattern-match on evidence variants rather than checking missing `Option\u003cTy\u003e`.\n- The focused readiness test proves a missing earlier call result still allows publication of later activation demands when the later work does not need the missing type.\n- A second test proves a type consumer waits or withholds its output when the value evidence is unavailable, instead of receiving `any`, `none`, or an empty `Option` projection.\n- No published fact uses a local pending value as a semantic result. Pending/unavailable evidence remains job-local and is eliminated by waiting or by producing less output.\n\nStrategy\n- Build on the ReturnEvidence payload introduced by `.6.1`; do not invent a parallel readiness model.\n- Data-model-up: make `Known` carry the exact flow/observed type pair, make explicit dynamic/no-return states named, and make unavailable evidence non-projectable by construction.\n- Update `apply_step`, `analyze_tail`, `deliver_tail_value`, `merge_value_types`, and call emission coalescing so the compiler says exactly what evidence it has and what evidence is missing.\n- Keep the scheduler boundary unchanged: facts are absent/current/settled; this ticket only makes semantic payloads honest inside the jobs that produce those facts.\n\nOutro\nNo `Option\u003cTy\u003e` as local readiness, no `SemanticValue::pending` that can be projected into a type by accident, no helper named like a compatibility shim, no missing value defaulting to `any`, and no bottom-as-unavailable path.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Compiler2 semantic evidence: make local value readiness explicit",
   "type": "task",
-  "updated_at": "2026-06-12T06:54:14Z"
+  "updated_at": "2026-06-12T06:54:40Z"
 }
