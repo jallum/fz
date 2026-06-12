@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-12T19:52:48Z",
+  "description": "Latest origin/fz-rh2 is red in fixture_matrix on clean HEAD. Reproduced with local fz-go4.1 changes stashed out. Failing cases observed: golden_outcomes (5 numbering drifts: ast_eval, closure_typed_captures, curried_add, fib_tailrec, multi_clause), matrix::case_tuple_pattern_sequential::fz2-interp (dlsym: fz_op_eq not found), matrix::concurrency_ping_pong::fz2-interp (dlsym: fz_op_eq not found), matrix::cross_module_macro::fz2-interp (dlsym: fz_op_eq not found), matrix::macro_inc::fz2-interp (dlsym: fz_op_eq not found), matrix::map_three_path_parity::fz2-interp (dlsym: fz_op_eq not found), matrix::opaque_fn_value_join::fz2-interp (dlsym: fz_op_eq not found), matrix::repr_seam_closure_predicate::fz2-interp (dlsym: fz_op_gt not found), matrix::utf8_smart_constructor::fz2-interp (dlsym: fz_op_eq not found), matrix::receive_selective_refs::fz2-build (stdout null vs expected 3), matrix::receive_selective_refs::fz2-run (stdout null vs expected 3). Validation commands on clean HEAD: cargo test -p fz --test fixture_matrix golden_outcomes -- --exact --nocapture; cargo test -p fz --test fixture_matrix matrix::case_tuple_pattern_sequential::fz2-interp -- --exact --nocapture; cargo test -p fz --test fixture_matrix matrix::receive_selective_refs::fz2-build -- --exact --nocapture.",
+  "id": "fz-go4.7",
+  "labels": [],
+  "parent": "fz-go4",
+  "priority": 1,
+  "status": "open",
+  "title": "Re-green fixture_matrix after rebasing onto latest fz-rh2",
+  "type": "bug",
+  "updated_at": "2026-06-12T19:52:48Z"
+}
