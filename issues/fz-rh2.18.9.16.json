@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-rh2.18.9.12"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-rh2.18.9.6"
+  ],
   "created": "2026-06-12T07:44:58Z",
   "description": "Goal\nMake `target/debug/fz2 --log-telemetry build fixtures2/00283_enum_reduce_while_shape.fz -o \u003cout\u003e` complete after semantic convergence. With fz-rh2.18.9.12 changes, the semantic drive test resolves, but AOT build now fails in native codegen: `native callable value for FnId(20) with 3 captures has no settled callable entry`.\n\nSignal\n- `/opt/homebrew/bin/timeout 60s target/debug/fz2 --log-telemetry \u003clog\u003e build fixtures2/00283_enum_reduce_while_shape.fz -o \u003cout\u003e` exits 0.\n- The closed semantic executable frontier contains the callable entry required by the shape-changing reducer continuation, or the artifact planner proves it is not needed.\n- The fix does not add backend shims, callable-entry adapters, retained-output workarounds, or fixture-specific Enum branches.\n\nStrategy\nStart from the logged failing frontier, identify whether semantic closure omitted a real latent executable or artifact lowering expects an executable that is not semantically live, and repair that boundary.\n\nOutro\nNo missing callable entry at native lowering, no ad hoc AOT-only callable generation, no fixture-specific reducer workaround, and no weakening of semantic closure honesty.",
   "id": "fz-rh2.18.9.16",
