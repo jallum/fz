@@ -9,9 +9,15 @@
   "id": "fz-go4.10.3",
   "labels": [],
   "parent": "fz-go4.10",
+  "comments": [
+    {
+      "text": "Pinned the selective-receive outcome-closure contract in docs and tests:\\n- updated scheduler-zero-arg-closures and dispatch-matrix docs to state that sender-side receive hits are outcome-closure delivery, not mailbox delivery\\n- added runtime proof send_probe_hit_projects_only_matched_payload_into_outcome_closure showing mailbox bypass plus projection-only copy on hit\\n- added an ignored compiler2 native regression pin for receive-\u003eresume-\u003earithmetic in drive_test\\n\\nValidation so far:\\n- cargo fmt --all\\n- cargo test send_probe_\\n- cargo test compiler2_interp_runs_selective_receive_with_make_ref_from_backend_artifacts\\n\\nOpen cleanup note: drive_test still has the pre-existing ignored native debug helper that belongs to fz-go4.10.4, so landing this ticket will need a partial commit or that follow-on to land first.",
+      "timestamp": "2026-06-12T22:25:48Z"
+    }
+  ],
   "priority": 2,
   "status": "in_progress",
   "title": "Define selective-receive outcome-closure contract in docs and tests",
   "type": "task",
-  "updated_at": "2026-06-12T22:20:34Z"
+  "updated_at": "2026-06-12T22:25:48Z"
 }
