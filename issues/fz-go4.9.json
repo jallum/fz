@@ -8,6 +8,12 @@
   "id": "fz-go4.9",
   "labels": [],
   "parent": "fz-go4",
+  "comments": [
+    {
+      "text": "Implemented interp-side operator dispatch for fz_op_eq/fz_op_neq/fz_op_lt/fz_op_lte/fz_op_gt/fz_op_gte in src/ir_interp/extern_call.rs by routing those extern names through the existing eval_binop semantics instead of dlsym. Re-enabled the corresponding fz2 CLI and fixture_matrix coverage. Validation: cargo fmt --all --check; cargo clippy --workspace --all-targets -- -D warnings; cargo test --test fz2_cli; cargo test -p fz --test fixture_matrix; cargo test --workspace.",
+      "timestamp": "2026-06-12T21:19:39Z"
+    }
+  ],
   "priority": 2,
   "status": "closed",
   "title": "Restore compiler2 interp comparison operator intrinsics after rebase",
