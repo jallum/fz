@@ -1,9 +1,7 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [
-    "fz-rh2.18.8"
-  ],
+  "blocks": [],
   "created": "2026-06-11T21:03:22Z",
   "description": "Goal\nDelete the remaining places where `any` or `none` encode uncertainty, missing evidence, stale broad evidence, or incomplete convergence instead of real source/spec/runtime semantics. After activation partitioning and ReturnEvidence, every remaining top/bottom type in semantic output must be justified by the language model.\n\nSignal\n- The work is executed through the child tickets in dependency order; this parent is a plan container, not a one-commit task.\n- Every `any_ty(world)` and `none_ty(world)` in compiler2 semantic/type flow is classified as domain-top/domain-bottom, dynamic-boundary erasure, impossible/no-return, or deleted.\n- Protocol, callable, map/field, receive, pinned comparison, function contract, provider-boundary, and closure-call paths no longer return `any` just because a producer module/function/fact was missing.\n- Empty value sets (`none`) are produced only by impossible input evidence or true no-return/divergence, not by absent return evidence.\n- Telemetry shows evidence movement and partition convergence, not broad top/bottom facts freezing the frontier.\n\nStrategy\n1. Audit and pin the remaining top/bottom producers with tests that state intent.\n2. Repair call/protocol/provider wait paths first, because ReturnEvidence makes missing-return readiness explicit.\n3. Repair value-projection and dispatch fallbacks at their source facts or obligations, not downstream display/backend code.\n4. Close by deleting or proving every survivor; if a survivor is a separate data-model problem, ticket it as a blocker rather than blessing it with a comment.\n\nOutro\nNo missing-return-as-`none`, no unresolved-as-`any`, no underconstrained-call-as-`any` without an explicit dynamic boundary, no local fallback shim around protocol/runtime loading, no test that blesses broad top/bottom because it was convenient, and no unclassified semantic `any_ty`/`none_ty` fallback in touched compiler2 paths.",
   "id": "fz-rh2.18.7",
