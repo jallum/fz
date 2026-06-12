@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-12T12:52:41Z",
+  "description": "Parent epic fz-rh2.21; eli5.html is the design doc (Arc B); requires fz-rh2.21.7 landed (numeric literal types are gone from the lattice). This ticket collapses the flow/observed split in semantic analysis — the largest single melt of the epic.\n\nWHY IT IS NOW A PURE DELETION: SemanticValue (src/compiler2/jobs/semantic.rs, ~line 35) carries two types per value — observed_ty (literal-precise, for dispatch reachability and map keys) and flow_ty (literal-widened, for everything that flows) — and the ONLY widening between them was widen_literal_flow on the numeric axes (SemanticValue::from_observed). With fz-rh2.21.7 landed, widen_literal_flow is deleted and the two planes are identical by induction at every construction site. Atoms never were widened (atom singletons are load-bearing and flow freely), so atom-precision dispatch keeps working through the single type.\n\nTHE COLLAPSE:\n- SemanticValue becomes a bare Ty (or delete the struct and use Ty directly — prefer deletion; type SemanticValues = HashMap\u003cValueId, Ty\u003e).\n- Every apply_step arm that computes flow_X and observed_X pairs (Tuple, List, Map, MapUpdate, Struct, Lambda, BinaryOp paths, MapIndex, FieldAccess, AssertLiteral, AssertStruct, RequireMapValue, AssertTuple, TupleField, AssertEmptyList, AssertSame, SplitList, Bitstring arms — the whole match in jobs/semantic.rs ~393-679) computes ONE value. Roughly half the arm bodies delete.\n- value_ty / observed_value_ty / value_fact unify into one accessor (the Option/expect behavior from fz-rh2.21.3 preserved).\n- merge_value_types, widen_semantic_summary_ty, entry_scope, deliver_tail_value signatures simplify accordingly.\n- reachable_clause_ids call sites that chose observed inputs (LoweredTail::Dispatch arm) just pass the values.\n- literal_ty (Const lowering) returns int()/float() for numerics directly (atom/bool/nil literals unchanged — they keep singleton types).\n\nGUARDRAILS (behavior must not drift):\n- Dispatch reachability on ATOM scrutinees must keep its precision: pin with a test driving a case over :ok | :error atoms asserting the dead arm is still pruned (reachable_clause_ids) — atoms ride the single plane now.\n- Map key typing must keep working through the Literal-carried keys from fz-rh2.21.6 (the observed-type fallback for keys deletes here; verify the 00292 map fixture type pins still hold).\n- The fz-rh2.21.4/.5 convergence pins must stay green (the ascent values are the same single plane now).\n- Sweep for any remaining caller of the deleted accessors with the compiler; no compatibility shims, fix every call site honestly.\n\nAcceptance: green per epic baseline, zero warnings, one commit, and a large negative diffstat in jobs/semantic.rs (report it in the commit message).",
+  "id": "fz-rh2.21.8",
+  "labels": [],
+  "parent": "fz-rh2.21",
+  "priority": 1,
+  "status": "open",
+  "title": "semantic analysis: collapse the flow/observed split",
+  "type": "task",
+  "updated_at": "2026-06-12T12:52:41Z"
+}
