@@ -1951,14 +1951,46 @@ fn entry_category(origin: &BackendEntryOrigin) -> FnCategory {
 }
 
 fn annotate_back_edges(module: &mut crate::fz_ir::Module) {
+    // The SCC graph must carry EVERY static control successor, not just
+    // TailCall edges: a recursion cycle threaded through a Call continuation
+    // (caller -Call-> kernel, whose return chains into a resume fn that
+    // TailCalls the entry) is invisible to a TailCall-only graph, and its
+    // closing tail call would never be marked — a frame-flat loop that spends
+    // no reductions. Closure callees have no static target at this level and
+    // are conservatively absent; their continuations still contribute.
     let mut graph: HashMap<FnId, HashSet<FnId>> = HashMap::new();
     for function in &module.fns {
         let entry = graph.entry(function.id).or_default();
         for block in &function.blocks {
-            if let Term::TailCall { callee, .. } = &block.terminator
-                && let Some(callee) = callee.local_fn_id()
-            {
-                entry.insert(callee);
+            match &block.terminator {
+                Term::TailCall { callee, .. } => {
+                    if let Some(callee) = callee.local_fn_id() {
+                        entry.insert(callee);
+                    }
+                }
+                Term::Call {
+                    callee, continuation, ..
+                } => {
+                    if let Some(callee) = callee.local_fn_id() {
+                        entry.insert(callee);
+                    }
+                    entry.insert(continuation.fn_id);
+                }
+                Term::CallClosure { continuation, .. } => {
+                    entry.insert(continuation.fn_id);
+                }
+                Term::ReceiveMatched { clauses, after, .. } => {
+                    for clause in clauses {
+                        entry.insert(clause.body);
+                        if let Some(guard) = clause.guard {
+                            entry.insert(guard);
+                        }
+                    }
+                    if let Some(after) = after {
+                        entry.insert(after.body);
+                    }
+                }
+                Term::TailCallClosure { .. } | Term::Goto(..) | Term::If { .. } | Term::Return(_) | Term::Halt(_) => {}
             }
         }
     }

@@ -4481,6 +4481,55 @@ fn compiler2_native_program_jit_keeps_tail_recursion_bounded() {
 }
 
 #[test]
+fn compiler2_cont_threaded_recursion_closes_with_a_back_edge() {
+    // fz-rh2.25: count's recursion cycle is threaded through Call
+    // continuations (count__clause_1 -Call-> kernel wrapper, whose cont
+    // chain ends in a resume fn that TailCalls count's entry). A back-edge
+    // graph built from TailCall edges alone cannot see that cycle, so the
+    // closing tail call carried is_back_edge=false and the loop never spent
+    // reductions — frame-flat starvation. The SCC graph must follow Call
+    // callee and continuation edges too.
+    let tel = ConfiguredTelemetry::new();
+    let native = NativeProgramCapture::new();
+    tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/tail_recursion/input.fz".to_string()),
+        text: include_str!("../../fixtures2/00018_tail_recursion.fz").to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    assert_resolved(compiler.drive(), "tail recursion lowers to a native program");
+
+    let program = native.last(root_id).program;
+    let count_entry = program
+        .module
+        .fns
+        .iter()
+        .find(|function| function.name.starts_with("count__e"))
+        .map(|function| function.id)
+        .expect("count's entry fn is in the native module");
+    let closing_back_edge = program.module.fns.iter().any(|function| {
+        function.blocks.iter().any(|block| {
+            matches!(
+                &block.terminator,
+                IrTerm::TailCall { callee, is_back_edge: true, .. }
+                    if callee.local_fn_id() == Some(count_entry)
+            )
+        })
+    });
+    assert!(
+        closing_back_edge,
+        "the tail call closing the cont-threaded recursion onto count's entry must be a back edge",
+    );
+}
+
+#[test]
 fn compiler2_interp_runs_quicksort_from_backend_artifacts() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
