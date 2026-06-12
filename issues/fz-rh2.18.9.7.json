@@ -6,14 +6,16 @@
   "blocks": [
     "fz-rh2.18.9.8"
   ],
+  "closed_at": "2026-06-12T05:21:09Z",
+  "close_reason": "Landed in 49167ae64",
   "created": "2026-06-12T04:43:33Z",
   "description": "Goal\nReplace `Recursive(function)` as the semantic convergence switch with root-scoped activation-cycle evidence derived from the actual activation dataflow. Static recursion is only one way to form a cycle; higher-order calls, protocol dispatch, and runtime helper chains can produce cyclic activation partitions even when every individual function is marked non-recursive.\n\nSignal\n- A focused red test demonstrates the current failure: a dynamic higher-order/protocol cycle such as `fixtures2/00276_enum_to_list_and_map.fz` repeatedly republishes/retracts semantic facts while hot functions have `Recursive(function) == false`.\n- Semantic fact ascent is keyed by participation in an activation dataflow cycle, not by the callee function's static recursive flag.\n- `define_activation_return`, `define_activation_analysis`, `define_callsite_summary`, and activation-input contribution replacement no longer ask whether a function is statically recursive to decide whether evidence ascends or replaces.\n- Acyclic activations still replace stale broad evidence with sharper current evidence; static self/mutual recursion still ascends.\n- Telemetry exposes the cycle classification with compact identifiers/counts, not giant debug payloads, so we can prove the frontier stopped oscillating.\n\nStrategy\n- Write tests first at two levels: a small semantic/world test for cycle-vs-acyclic publication behavior, and a drive-level fixture that currently times out because protocol/higher-order edges form a dynamic loop.\n- Build the activation graph from facts already produced by semantic analysis: stored `ActivationAnalysis`, stored `CallSiteSummary`, and the activation keys derived from target input evidence. Do not invent a separate pass over source syntax.\n- Classify root-scoped activation SCCs or an equivalent minimal cycle fact before using it to choose monotone ascent. The shape can be `ActivationCycle`, `ActivationConvergence`, or a tighter name discovered during implementation, but it must be activation-shaped, not function-shaped.\n- Keep scheduler readiness unchanged: semantic iteration reads current facts; `SealSemanticClosure` and artifact jobs wait for settled facts. This ticket changes the semantic evidence domain, not the engine's current/settled contract.\n- Delete or demote `Recursive(function)` from semantic convergence decisions. If the static recursive fact remains useful for another purpose, that purpose must be named and tested; otherwise remove it.\n\nOutro\nNo static-recursive-as-cycle proxy, no function-level convergence switch for activation facts, no treating protocol or closure-call loops as acyclic because source calls are indirect, no fixture/runtime-helper special case, and no broad \"make everything ascend\" rule that prevents acyclic precision recovery.",
   "id": "fz-rh2.18.9.7",
   "labels": [],
   "parent": "fz-rh2.18.9",
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Compiler2 semantic convergence: classify activation dataflow cycles dynamically",
   "type": "task",
-  "updated_at": "2026-06-12T05:06:17Z"
+  "updated_at": "2026-06-12T05:21:09Z"
 }
