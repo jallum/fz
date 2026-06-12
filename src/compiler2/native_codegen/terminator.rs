@@ -464,9 +464,7 @@ fn emit_return_term<M: cranelift_module::Module, T: Types<Ty = Ty> + ClosureType
                 sig.returns.push(AbiParam::new(types::I64));
                 let sigref = body.b.import_signature(sig);
                 cont_args.push(cont_val);
-                let call_inst = body.b.ins().call_indirect(sigref, code, &cont_args);
-                let result = body.b.inst_results(call_inst)[0];
-                body.b.ins().return_(&[result]);
+                body.b.ins().return_call_indirect(sigref, code, &cont_args);
                 return Ok(());
             }
             // Native Term::Return (see docs/cps-in-clif.md §2.1): read
@@ -499,9 +497,7 @@ fn emit_return_term<M: cranelift_module::Module, T: Types<Ty = Ty> + ClosureType
             let mut cont_args = Vec::with_capacity(2);
             body.push_binding_as_abi_arg(&mut cont_args, binding, my_return_repr);
             cont_args.push(cont_val);
-            let call_inst = body.b.ins().call_indirect(sigref, code, &cont_args);
-            let result = body.b.inst_results(call_inst)[0];
-            body.b.ins().return_(&[result]);
+            body.b.ins().return_call_indirect(sigref, code, &cont_args);
         } else if cont_ptr_known_null {
             let value = *var_env.get(&v.0).expect("unbound return val");
             // This fn is never a cont target; cont_ptr is statically
