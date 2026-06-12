@@ -7,9 +7,15 @@
   "id": "fz-rh2.17.5.5",
   "labels": [],
   "parent": "fz-rh2.17.5",
+  "comments": [
+    {
+      "text": "Superseded as an implementation path by fz-rh2.18.9 activation partitioning. Keep this ticket open only as a residual acceptance bucket for any Enum.reduce/Enum.take range/list cases that still fail after fz-rh2.18.9.5; do not solve it with local convergence shims.",
+      "timestamp": "2026-06-12T02:14:14Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "Compiler2 semantic sweep: recover unresolved Enum.reduce/Enum.take range/list fixpoint cases",
   "type": "bug",
-  "updated_at": "2026-06-11T14:00:56Z"
+  "updated_at": "2026-06-12T02:14:14Z"
 }
