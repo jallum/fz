@@ -3,9 +3,7 @@
   "blocked_by": [
     "fz-rh2.18.9.10"
   ],
-  "blocks": [
-    "fz-rh2.18.9.12"
-  ],
+  "blocks": [],
   "closed_at": "2026-06-12T06:22:26Z",
   "close_reason": "Implemented in b6b6f65a1: activation-cycle edges are derived from live CallSiteSummary fact changes, maintained incrementally per callsite, and classified with one SCC pass; remaining Enum.sort timeout is tracked by fz-rh2.18.9.12.",
   "created": "2026-06-12T05:49:42Z",
