@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-06-12T21:18:53Z",
@@ -8,8 +8,8 @@
   "labels": [],
   "parent": "fz-go4",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "Restore compiler2 interp comparison operator intrinsics after rebase",
   "type": "bug",
-  "updated_at": "2026-06-12T21:18:53Z"
+  "updated_at": "2026-06-12T21:18:59Z"
 }
