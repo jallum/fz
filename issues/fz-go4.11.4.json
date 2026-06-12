@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-12T23:26:33Z",
+  "description": "Goal\nPort the remaining outcome-golden fixtures onto the new fixtures2 contract harness and delete the old fixture_matrix golden_outcomes mechanism plus its sidecars.\n\nSignal\n- ast_eval, closure_typed_captures, curried_add, fib_tailrec, and multi_clause are covered by fixtures2 compiler contracts\n- fixture_matrix no longer owns golden_outcomes\n- no expected.outcomes sidecars remain under fixtures/\n\nStrategy\n1. Re-express each current expected.outcomes fixture in the new contract surface using semantic edges, metrics, and snapshots only where justified.\n2. Delete the ignored static trial and remove the temporary-disable plumbing around it.\n3. Remove legacy sidecars and update docs/examples to point at the new mechanism.\n\nValidation\n- the migrated fixtures pass under the new harness\n- cargo test --workspace passes without golden_outcomes ignore debt\n- the old sweep and sidecars are gone from the tree\n\nRemoval targets\n- tests/fixture_matrix.rs golden_outcomes trial\n- fixtures/*/expected.outcomes\n- temporary ignore ownership for this surface",
+  "id": "fz-go4.11.4",
+  "labels": [],
+  "parent": "fz-go4.11",
+  "priority": 2,
+  "status": "open",
+  "title": "Migrate outcome-golden fixtures and remove old-world sweep",
+  "type": "task",
+  "updated_at": "2026-06-12T23:26:33Z"
+}
