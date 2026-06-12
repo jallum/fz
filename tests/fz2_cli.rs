@@ -458,7 +458,6 @@ fn build_executes_case_and_with_fixtures() {
 }
 
 #[test]
-#[ignore = "temporary: fz-go4.7 compiler2 native receive_selective_refs regression on rebased base"]
 fn run_and_interp_execute_receive_fixtures() {
     for fixture in [
         "fixtures/concurrency_ping_pong/input.fz",

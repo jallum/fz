@@ -331,7 +331,6 @@ fn temporarily_disabled_static_trial_reason(name: &str) -> Option<&'static str> 
 // on clean HEAD after the rebase. Track removal in fz-go4.7.
 fn temporarily_disabled_matrix_trial_reason(fixture: &str, path: &str) -> Option<&'static str> {
     match (fixture, path) {
-        ("receive_selective_refs", _) => Some("fz-go4.7"),
         ("lambda_sugars", "aot")
         | ("lambda_sugars", "fz2-build")
         | ("macro_inc", "aot")
