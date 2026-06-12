@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-rh2.18.9.2"
   ],
@@ -12,8 +12,8 @@
   "labels": [],
   "parent": "fz-rh2.18.9",
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "Compiler2 semantics: derive activation partition policy from function use",
   "type": "task",
-  "updated_at": "2026-06-12T02:14:01Z"
+  "updated_at": "2026-06-12T02:32:45Z"
 }
