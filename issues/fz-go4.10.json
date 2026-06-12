@@ -7,9 +7,15 @@
   "id": "fz-go4.10",
   "labels": [],
   "parent": "fz-go4",
+  "comments": [
+    {
+      "text": "Lowered this bug into a contract-first selective-receive outcome-closure arc:\\n- fz-go4.10.3 Define selective-receive outcome-closure contract in docs and tests\\n- fz-go4.10.1 Generalize compiler2 native delivery contracts beyond callable-entry adapters\\n- fz-go4.10.2 Route compiler2 native return/resume/tailcall through one delivery planner\\n- fz-go4.10.4 Remove selective-receive debugging debt and re-enable deferred coverage\\n\\nExecution rule: prove the hit-path contract first, then centralize delivery planning, then consume it in terminators, then remove scaffolding.",
+      "timestamp": "2026-06-12T22:20:24Z"
+    }
+  ],
   "priority": 2,
   "status": "in_progress",
   "title": "Fix compiler2 native selective receive over make_ref identities",
   "type": "bug",
-  "updated_at": "2026-06-12T21:19:59Z"
+  "updated_at": "2026-06-12T22:20:24Z"
 }
