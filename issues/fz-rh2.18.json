@@ -3,7 +3,7 @@
   "blocked_by": [],
   "blocks": [],
   "created": "2026-06-11T21:01:43Z",
-  "description": "Goal: make the fact engine model current evidence, dirty evidence, and settled evidence directly so compiler2 can do the minimum demanded work without pass-shaped freshness checks. Signal: engine-only scheduler tests prove that stable recompute can settle a fact without a content revision bump, settled waiters block on dirty facts, current readers can iterate, and multi-publisher facts settle only when every active publisher is clean. Strategy: repair the engine first, then convert semantic typing to use ActivationInputs and ReturnEvidence, then delete the manual freshness and fake unknown-as-type concepts. Outro: grep-level deletion contract proves ActivationKey.input body evidence, missing-return-as-none, unresolved-as-any, ReturnType-as-ready-Ty, DependencySnapshot freshness, and semantic_closure_is_current are gone rather than renamed.",
+  "description": "Goal: make compiler2's fact engine behave like an efficient spreadsheet: jobs read the minimum current evidence needed to make progress, wait only for settled evidence where correctness requires it, and identify semantic work by intentional activation partitions rather than accidental raw type snapshots. Signal: engine tests prove current/settled readiness; semantic tests prove ActivationInputs is the body-evidence authority; quicksort/Enum.reduce compile through a small measured frontier; ReturnEvidence distinguishes missing, unknown, no-return, and known evidence; any/none appear only as real domain types. Strategy: repair the engine first, split activation identity from input evidence, install policy-driven activation partition keys, then replace ReturnType with ReturnEvidence and burn down remaining any/none poison from the earliest wrong fact. Outro: grep-level deletion contract proves ActivationKey-as-body-input, recursive-only key widening, list-only convergence_class, raw closure-capture key defaults, missing-return-as-none, unresolved-as-any, ReturnType-as-ready-Ty, DependencySnapshot freshness, semantic_closure_is_current, and debug-payload telemetry budgets are gone rather than renamed.",
   "id": "fz-rh2.18",
   "labels": [],
   "parent": "fz-rh2",
@@ -11,5 +11,5 @@
   "status": "open",
   "title": "Compiler2 fact readiness: current vs settled evidence",
   "type": "epic",
-  "updated_at": "2026-06-11T21:01:43Z"
+  "updated_at": "2026-06-12T02:14:27Z"
 }
