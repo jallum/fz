@@ -1,0 +1,6 @@
+fn fst(0), do: :zero
+fn fst(_), do: :other
+fn main() do
+  {a, b} = {1, 2}
+  fst(a + b)
+end

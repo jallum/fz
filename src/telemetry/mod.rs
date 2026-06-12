@@ -52,11 +52,11 @@ pub use diag_render::DiagRenderer;
 pub use event::{Measurements, Metadata};
 #[cfg(test)]
 pub use handler::EventKind;
-pub use handler::{Event, Handler};
+pub use handler::{Event, Handler, HandlerId};
 pub use jsonl::JsonlBackend;
 pub use sink::{Telemetry, TelemetryExt};
 pub use stats::StatsHandler;
-pub use value::Value;
+pub use value::{Value, opaque, opaque_debug};
 
 pub(crate) fn next_compile_nonce() -> u64 {
     NEXT_COMPILE_NONCE.fetch_add(1, Ordering::Relaxed)

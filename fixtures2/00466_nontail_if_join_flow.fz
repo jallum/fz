@@ -1,0 +1,8 @@
+fn map_every_list([], _nth, _index, _fun), do: []
+fn map_every_list([head | tail], nth, index, fun) do
+  next = if (index % nth) == 0, do: fun.(head), else: head
+  [next | map_every_list(tail, nth, index + 1, fun)]
+end
+fn main() do
+  dbg(map_every_list([1, 2, 3, 4], 2, 0, fn (x) -> x * 100 end))
+end

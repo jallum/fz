@@ -68,6 +68,25 @@ fn scheme_result_instantiates_list_element_witness() {
 }
 
 #[test]
+fn protocol_domain_like_union_ignores_non_matching_structural_arms() {
+    let mut t = crate::types::new();
+    let a = t.type_var(TypeVarId(0));
+    let range = t.opaque_of("impl-target::Range");
+    let enumerable = {
+        let list = t.list(a.clone());
+        t.union(range.clone(), list)
+    };
+    let constraints = HashMap::new();
+
+    let instantiated = instantiate_match(&mut t, &[enumerable], &a, &constraints, &[range]);
+
+    assert!(
+        matches!(instantiated, SchemeInstantiation::Underconstrained(_)),
+        "matching a unioned protocol-domain style param against a non-list implementor should stay underconstrained, not become invalid: {instantiated:?}"
+    );
+}
+
+#[test]
 fn scheme_result_instantiates_resource_payload_witness() {
     let mut t = crate::types::new();
     let a = t.type_var(TypeVarId(0));

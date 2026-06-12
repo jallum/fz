@@ -1,8 +1,9 @@
 //! Module-aware frontend and execution-graph preparation.
 
+use crate::compiler::source::{SourceMap, Span};
 use crate::diag::codes::{CODEGEN_SCHEMA_MISSING, LOWER_UNBOUND};
 use crate::diag::diagnostic::Severity;
-use crate::diag::{Diagnostic, Diagnostics, SourceMap, Span, emit_through};
+use crate::diag::{Diagnostic, Diagnostics, emit_through};
 use crate::frontend::{FrontendOk, FrontendResult, compile_source_with_interface_table};
 use crate::fz_ir::Module;
 use crate::ir_codegen::{CompiledUnit, ImageLinkError, link_ir_units};
@@ -65,6 +66,7 @@ pub(crate) struct PreparedExecutionGraph {
     pub(crate) module: Module,
     pub(crate) module_plan: ModulePlan,
     pub(crate) sm: SourceMap,
+    pub(crate) diagnostics: Diagnostics,
 }
 
 pub(crate) struct LinkedExecutionModule {
@@ -158,6 +160,8 @@ pub(crate) fn prepare_execution_graph(
 ) -> Result<PreparedExecutionGraph, PipelineError> {
     use crate::telemetry::TelemetryExt as _;
 
+    let diagnostics = prepared.diagnostics.clone();
+    let sm = prepared.sm.clone();
     let linked = link_execution_module(t, &mut prepared, tel)?;
     let LinkedExecutionModule { units, module } = linked;
     let _compile_span = tel.span(
@@ -190,14 +194,16 @@ pub(crate) fn prepare_execution_graph(
             units,
             module,
             module_plan,
-            sm: prepared.sm,
+            sm,
+            diagnostics,
         });
     }
     Ok(PreparedExecutionGraph {
         units,
         module,
         module_plan,
-        sm: prepared.sm,
+        sm,
+        diagnostics,
     })
 }
 

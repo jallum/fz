@@ -1,0 +1,6 @@
+
+fn main() do
+  me = self()
+  send(me, 42)
+  me
+end

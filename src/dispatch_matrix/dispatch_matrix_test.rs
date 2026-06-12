@@ -1,14 +1,13 @@
 use super::*;
 use crate::ast::{BitField, BitFieldSpec, BitSize, BitType, Endian, Expr, Pattern, Spanned};
-use crate::dispatch_matrix::pattern::{PatternBodyId, PatternRow, SourcePatternRows};
-use crate::fz_ir::Var;
+use crate::dispatch_matrix::pattern::{PatternBodyId, PatternRow, PatternSubjectRef, SourcePatternRows};
 use crate::types::{Ty, Types};
 use std::collections::BTreeMap;
 use std::path::Path;
 
 #[test]
 fn builder_mints_stable_subject_and_arm_ids() {
-    let mut builder = DispatchMatrixBuilder::new(Order::Source);
+    let mut builder = DispatchMatrixBuilder::<Ty>::typed(Order::Source);
     let first_subject = builder.add_input_subject();
     let projected_subject = builder
         .add_projected_subject(first_subject, ProjectionKind::ListTail)
@@ -51,7 +50,7 @@ fn builder_mints_stable_subject_and_arm_ids() {
 
 #[test]
 fn unique_outcome_cannot_be_routed_from_multiple_arms() {
-    let mut builder = DispatchMatrixBuilder::new(Order::Source);
+    let mut builder = DispatchMatrixBuilder::<Ty>::typed(Order::Source);
     let subject = builder.add_input_subject();
     let unique = builder.add_outcome(OutcomeMultiplicity::Unique);
 
@@ -82,7 +81,7 @@ fn unique_outcome_cannot_be_routed_from_multiple_arms() {
 
 #[test]
 fn edge_evidence_keeps_proofs_and_projections_branch_local() {
-    let mut builder = DispatchMatrixBuilder::new(Order::Source);
+    let mut builder = DispatchMatrixBuilder::<Ty>::typed(Order::Source);
     let list = builder.add_input_subject();
     let head = builder
         .add_projected_subject(list, ProjectionKind::ListHead)
@@ -122,7 +121,7 @@ fn map_key_presence_question_produces_value_or_absent_evidence() {
     let value = SubjectId(1);
     let key = DispatchConst::AtomName("id".to_string());
 
-    let question = RegionQuestion::map_key_present(map, key.clone(), value);
+    let question: RegionQuestion = RegionQuestion::map_key_present(map, key.clone(), value);
 
     assert_eq!(
         question.predicate,
@@ -153,8 +152,8 @@ fn map_key_presence_question_produces_value_or_absent_evidence() {
 fn present_nil_map_value_is_value_equality_after_presence() {
     let map = SubjectId(0);
     let value = SubjectId(1);
-    let presence = RegionQuestion::map_key_present(map, DispatchConst::Int(7), value);
-    let nil_value = RegionQuestion::equality(value, ComparisonValue::Const(DispatchConst::Nil));
+    let presence: RegionQuestion = RegionQuestion::map_key_present(map, DispatchConst::Int(7), value);
+    let nil_value: RegionQuestion = RegionQuestion::equality(value, ComparisonValue::Const(DispatchConst::Nil));
 
     assert!(matches!(
         presence.predicate.region,
@@ -202,8 +201,8 @@ fn list_shape_questions_preserve_empty_cons_and_non_list_distinctions() {
     let head = SubjectId(1);
     let tail = SubjectId(2);
 
-    let empty = RegionQuestion::list_empty(list);
-    let cons = RegionQuestion::list_cons(list, head, tail);
+    let empty: RegionQuestion = RegionQuestion::list_empty(list);
+    let cons: RegionQuestion = RegionQuestion::list_cons(list, head, tail);
 
     assert_eq!(
         empty.match_evidence,
@@ -342,7 +341,7 @@ fn test_graph_evaluator_covers_non_int_fixture_values() {
 }
 
 fn matrix_with_subject() -> (DispatchMatrixBuilder, SubjectId) {
-    let mut builder = DispatchMatrixBuilder::new(Order::Source);
+    let mut builder = DispatchMatrixBuilder::<Ty>::typed(Order::Source);
     let subject = builder.add_input_subject();
     (builder, subject)
 }
@@ -417,7 +416,7 @@ fn compile_orthogonal_arms_in_deterministic_source_order() {
 
 #[test]
 fn compile_shares_consecutive_common_prefix_tests() {
-    let mut builder = DispatchMatrixBuilder::new(Order::Source);
+    let mut builder = DispatchMatrixBuilder::<Ty>::typed(Order::Source);
     let list = builder.add_input_subject();
     let head = builder
         .add_projected_subject(list, ProjectionKind::ListHead)
@@ -491,7 +490,7 @@ fn compile_open_residual_uses_fallback_and_closed_residual_fails() {
 
 #[test]
 fn compile_places_projection_only_on_proven_edge() {
-    let mut builder = DispatchMatrixBuilder::new(Order::Source);
+    let mut builder = DispatchMatrixBuilder::<Ty>::typed(Order::Source);
     let map = builder.add_input_subject();
     let value = builder
         .add_projected_subject(
@@ -687,7 +686,7 @@ fn compile_specificity_order_uses_type_analysis() {
     let mut types = crate::types::new();
     let any = types.any();
     let int = types.int();
-    let mut builder = DispatchMatrixBuilder::new(Order::Specificity);
+    let mut builder = DispatchMatrixBuilder::<Ty>::typed(Order::Specificity);
     let subject = builder.add_input_subject();
     let broad = builder.add_outcome(OutcomeMultiplicity::Unique);
     let narrow = builder.add_outcome(OutcomeMultiplicity::Unique);
@@ -724,7 +723,7 @@ fn compile_specificity_order_uses_type_analysis() {
 
 #[test]
 fn graph_builder_preserves_node_identity_and_validates_edges() {
-    let mut builder = DispatchGraphBuilder::new();
+    let mut builder = DispatchGraphBuilder::<Ty>::typed();
     let fail = builder.add_node(DispatchNode::Fail);
     let out = builder.add_node(DispatchNode::Outcome {
         outcome: OutcomeId(0),
@@ -746,14 +745,14 @@ fn graph_builder_preserves_node_identity_and_validates_edges() {
 
 #[test]
 fn graph_builder_rejects_unknown_root_or_edge_node() {
-    let mut unknown_root = DispatchGraphBuilder::new();
+    let mut unknown_root = DispatchGraphBuilder::<Ty>::typed();
     unknown_root.add_node(DispatchNode::Fail);
     assert_eq!(
         unknown_root.build(GraphNodeId(9)).expect_err("root must exist"),
         DispatchGraphError::UnknownNode(GraphNodeId(9))
     );
 
-    let mut unknown_edge = DispatchGraphBuilder::new();
+    let mut unknown_edge = DispatchGraphBuilder::<Ty>::typed();
     let fail = unknown_edge.add_node(DispatchNode::Fail);
     let test = unknown_edge.add_node(DispatchNode::Test {
         predicate: RegionPredicate::new(SubjectId(0), Region::Any),
@@ -783,7 +782,7 @@ fn pattern_row_with_guard_preconditions(
     patterns: Vec<Pattern>,
     body_id: PatternBodyId,
     guard: Expr,
-    preconditions: Vec<(Var, Ty)>,
+    preconditions: Vec<(PatternSubjectRef, Ty)>,
 ) -> PatternRow {
     PatternRow {
         patterns: patterns.into_iter().map(sp).collect(),
@@ -832,7 +831,7 @@ fn has_region(plan: &pattern::PatternDispatchPlan, pred: impl Fn(&Region) -> boo
 #[test]
 fn pattern_dispatch_matrix_preserves_literal_outcomes_and_default() {
     let source_patterns = SourcePatternRows {
-        subjects: vec![Var(0)],
+        input_count: 1,
         rows: vec![
             pattern_row(vec![Pattern::Int(7)], 0),
             pattern_row(vec![Pattern::Atom("ok".to_string())], 1),
@@ -884,7 +883,7 @@ fn pattern_dispatch_matrix_preserves_tuple_list_projections_and_leaf_bindings() 
         Some(Box::new(sp(Pattern::Var("t".to_string())))),
     );
     let source_patterns = SourcePatternRows {
-        subjects: vec![Var(0)],
+        input_count: 1,
         rows: vec![
             pattern_row(
                 vec![Pattern::Tuple(vec![
@@ -959,7 +958,7 @@ fn pattern_dispatch_matrix_preserves_tuple_list_projections_and_leaf_bindings() 
 #[test]
 fn pattern_dispatch_matrix_preserves_map_presence_before_value_tests() {
     let source_patterns = SourcePatternRows {
-        subjects: vec![Var(0)],
+        input_count: 1,
         rows: vec![pattern_row(
             vec![Pattern::Map(vec![(
                 sp(Pattern::Atom("id".to_string())),
@@ -1004,7 +1003,7 @@ fn pattern_dispatch_matrix_preserves_map_presence_before_value_tests() {
 #[test]
 fn pattern_dispatch_matrix_preserves_bitstring_shape_and_dynamic_size_binding() {
     let source_patterns = SourcePatternRows {
-        subjects: vec![Var(0)],
+        input_count: 1,
         rows: vec![pattern_row(
             vec![Pattern::Bitstring(vec![
                 BitField {
@@ -1071,7 +1070,7 @@ fn pattern_dispatch_matrix_preserves_bitstring_shape_and_dynamic_size_binding() 
 #[test]
 fn pattern_dispatch_plan_carries_executable_payloads_directly() {
     let source_patterns = SourcePatternRows {
-        subjects: vec![Var(0)],
+        input_count: 1,
         rows: vec![
             pattern_row(
                 vec![Pattern::Bitstring(vec![
@@ -1153,13 +1152,13 @@ fn pattern_dispatch_matrix_preserves_pins_guards_and_preconditions_as_questions(
     let mut types = crate::types::new();
     let int = types.int();
     let source_patterns = SourcePatternRows {
-        subjects: vec![Var(0)],
+        input_count: 1,
         rows: vec![
             pattern_row_with_guard_preconditions(
                 vec![Pattern::Pinned("want".to_string())],
                 0,
                 Expr::Bool(true),
-                vec![(Var(0), int.clone())],
+                vec![(PatternSubjectRef::Input(0), int.clone())],
             ),
             pattern_row(vec![Pattern::Wildcard], 1),
         ],
@@ -1194,7 +1193,7 @@ fn pattern_dispatch_matrix_preserves_pins_guards_and_preconditions_as_questions(
 #[test]
 fn receive_policy_is_not_encoded_in_pattern_dispatch_matrix() {
     let source_patterns = SourcePatternRows {
-        subjects: vec![Var(0)],
+        input_count: 1,
         rows: vec![pattern_row(vec![Pattern::Wildcard], 0)],
     };
 

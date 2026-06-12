@@ -16,6 +16,7 @@ fn module(name: &[&str]) -> ModuleName {
     ModuleName::from_segments(name.iter().map(|s| (*s).to_string()).collect())
 }
 
+// DROP: module interface export collection, old-world pipeline infrastructure
 #[test]
 fn emits_exports_for_modules_and_nested_modules() {
     let interfaces = interfaces(
@@ -38,6 +39,7 @@ end
     assert_eq!(inner.exports[0].arity, 0);
 }
 
+// DROP: private fn excluded from module interface; old-world pipeline
 #[test]
 fn private_fns_are_not_interface_exports() {
     let interfaces = interfaces(
@@ -58,6 +60,7 @@ end
     assert_eq!(exports, vec!["public/1"]);
 }
 
+// DROP: interface collects @type/@spec/opaque/refines; old-world pipeline
 #[test]
 fn emits_specs_types_opaque_refines_and_docs() {
     let interfaces = interfaces(
@@ -93,6 +96,7 @@ end
     );
 }
 
+// DROP: protocol contract facts in module interface; old-world pipeline
 #[test]
 fn emits_protocol_contract_facts() {
     let interfaces = interfaces(
@@ -128,6 +132,7 @@ end
     assert!(rendered.contains("Contracts.Enumerable for Contracts.List"));
 }
 
+// DROP: multiple @spec arrows preserved in interface order; old-world pipeline
 #[test]
 fn interface_exports_preserve_multiple_specs_in_order() {
     let interfaces = interfaces(
@@ -160,6 +165,7 @@ end
     }));
 }
 
+// DROP: protocol callback @spec order in interface; old-world pipeline
 #[test]
 fn protocol_callbacks_preserve_multiple_specs_in_order() {
     let interfaces = interfaces(
@@ -188,6 +194,7 @@ end
     }));
 }
 
+// DROP: root-level protocol gets its own namespace in interface; old-world pipeline
 #[test]
 fn emits_root_protocol_as_own_public_namespace() {
     let interfaces = interfaces(
@@ -213,6 +220,7 @@ end
     );
 }
 
+// DROP: alias/import not added as exports; old-world interface pipeline
 #[test]
 fn aliases_and_imports_do_not_add_exports() {
     let interfaces = interfaces(
@@ -245,6 +253,7 @@ end
     );
 }
 
+// DROP: extern fn excluded from module public exports; old-world pipeline
 #[test]
 fn extern_declarations_are_implementation_contracts_not_public_exports() {
     let interfaces = interfaces(
@@ -268,6 +277,7 @@ end
     );
 }
 
+// DROP: interface rendering excludes fn bodies; old-world infrastructure
 #[test]
 fn render_interfaces_excludes_function_bodies() {
     let interfaces = interfaces(
@@ -279,11 +289,12 @@ end
 "#,
     );
     let rendered = render_interfaces(&interfaces);
-    assert!(rendered.contains("interface M abi=1"));
+    assert!(rendered.contains("interface M"));
     assert!(rendered.contains("f/1 :: (Ident(\"integer\")) -> Ident(\"integer\")"));
     assert!(!rendered.contains("100"), "body leaked into interface:\n{rendered}");
 }
 
+// DROP: strict interface validation requires @spec on public exports; old-world pipeline
 #[test]
 fn strict_validation_requires_specs_for_module_exports() {
     let interfaces = interfaces(
@@ -302,6 +313,7 @@ end
     assert_ne!(diags[0].primary.span, Span::DUMMY);
 }
 
+// DROP: strict validation skips private fns; old-world interface pipeline
 #[test]
 fn strict_validation_ignores_private_fns() {
     let interfaces = interfaces(
@@ -326,7 +338,6 @@ fn strict_validation_accepts_matching_specs_and_overloads() {
         name.clone(),
         ModuleInterface {
             name,
-            abi_version: FZ_INTERFACE_ABI_VERSION,
             imports: Vec::new(),
             exports: vec![
                 InterfaceFn {
@@ -358,6 +369,7 @@ fn strict_validation_accepts_matching_specs_and_overloads() {
     assert!(validate_public_export_specs(&interfaces).is_empty());
 }
 
+// DROP: interface fingerprint input ordering determinism; old-world pipeline
 #[test]
 fn fingerprint_inputs_are_deterministic() {
     let interfaces = interfaces(

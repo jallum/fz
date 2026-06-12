@@ -1,0 +1,12 @@
+defmacro pair(a, b) do
+  [
+{:fn, %{}, [{:first, %{}, []}, [{:do, a}]]},
+{:fn, %{}, [{:second, %{}, []}, [{:do, b}]]}
+  ]
+end
+
+pair(10, 20)
+
+fn main() do
+  first() + second()
+end

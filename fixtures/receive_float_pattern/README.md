@@ -1,6 +1,6 @@
 ---
 purpose: "receive with side-tagged float literals — locks SwitchKind::Float three-path parity"
-paths: [jit, interp, aot, repl]
+paths: [jit, interp, aot, repl, fz2-run, fz2-interp, fz2-build]
 budget.codegen.functions: 29
 budget.codegen.instructions: 558
 budget.specs.count: 26

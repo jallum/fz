@@ -108,6 +108,14 @@ impl Heap {
         self.owner = owner;
     }
 
+    pub fn clear_owner(&mut self) {
+        self.owner = null_mut();
+    }
+
+    pub fn has_owner(&self) -> bool {
+        !self.owner.is_null()
+    }
+
     pub fn should_gc(&self) -> bool {
         self.pressure.load(Ordering::Relaxed)
     }

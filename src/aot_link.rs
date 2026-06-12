@@ -9,9 +9,10 @@
 use std::env;
 use std::ffi::{OsStr, OsString};
 use std::fmt;
-use std::fs::read_dir;
+use std::fs::{read_dir, remove_file, write};
+use std::io;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, ExitStatus};
 
 const RUNTIME_ARCHIVE_OVERRIDE_ENV: &str = "FZ_AOT_RUNTIME_STATICLIB";
 const LLVM_COV_TARGET_COMPONENT: &str = "llvm-cov-target";
@@ -28,16 +29,6 @@ pub(crate) enum RuntimeArchiveSource {
     EnvOverride,
     Sibling,
     IsolatedCoverageBuild,
-}
-
-impl RuntimeArchiveSource {
-    pub(crate) fn as_str(self) -> &'static str {
-        match self {
-            RuntimeArchiveSource::EnvOverride => "env-override",
-            RuntimeArchiveSource::Sibling => "sibling",
-            RuntimeArchiveSource::IsolatedCoverageBuild => "isolated-coverage-build",
-        }
-    }
 }
 
 #[derive(Debug)]
@@ -95,6 +86,58 @@ pub(crate) fn resolve_runtime_archive() -> Result<RuntimeArchive, RuntimeArchive
     let exe = env::current_exe().map_err(|e| RuntimeArchiveError::new(format!("locating current executable: {e}")))?;
     let plan = runtime_archive_plan(&exe, override_path, coverage_env_present());
     resolve_runtime_archive_plan(plan)
+}
+
+#[derive(Debug)]
+pub(crate) enum LinkAotError {
+    WriteObject { path: PathBuf, error: io::Error },
+    RuntimeArchive(RuntimeArchiveError),
+    InvokeCc { error: io::Error },
+    CcExit { status: ExitStatus },
+}
+
+impl fmt::Display for LinkAotError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            LinkAotError::WriteObject { path, error } => {
+                write!(f, "write object {}: {error}", path.display())
+            }
+            LinkAotError::RuntimeArchive(error) => write!(f, "runtime archive: {error}"),
+            LinkAotError::InvokeCc { error } => write!(f, "failed to invoke cc: {error}"),
+            LinkAotError::CcExit { status } => write!(f, "cc exited {status}"),
+        }
+    }
+}
+
+impl std::error::Error for LinkAotError {}
+
+/// Link one AOT object into a native executable next to `output_path`.
+///
+/// The intermediate object is left behind on failure and removed on success.
+pub(crate) fn link_aot_artifact(
+    artifact: &crate::ir_codegen::AotArtifact,
+    output_path: &Path,
+) -> Result<(), LinkAotError> {
+    let obj_temp = PathBuf::from(format!("{}.o", output_path.display()));
+    write(&obj_temp, &artifact.object).map_err(|error| LinkAotError::WriteObject {
+        path: obj_temp.clone(),
+        error,
+    })?;
+
+    let runtime_archive = resolve_runtime_archive().map_err(LinkAotError::RuntimeArchive)?;
+    let mut cc = Command::new("cc");
+    cc.arg("-o").arg(output_path).arg(&obj_temp).arg(&runtime_archive.path);
+    if cfg!(target_os = "macos") {
+        cc.arg("-Wl,-undefined,dynamic_lookup");
+    }
+
+    let status = cc.status().map_err(|error| LinkAotError::InvokeCc { error })?;
+    if !status.success() {
+        return Err(LinkAotError::CcExit { status });
+    }
+
+    let _ = remove_file(&obj_temp);
+    Ok(())
 }
 
 fn resolve_runtime_archive_plan(plan: RuntimeArchivePlan) -> Result<RuntimeArchive, RuntimeArchiveError> {

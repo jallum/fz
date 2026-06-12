@@ -1,0 +1,4 @@
+
+fn positive(n), do: n > 0
+fn wanted({:ok, {n, _}}) when positive(n), do: n
+fn wanted(_), do: 0

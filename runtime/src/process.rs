@@ -311,6 +311,10 @@ impl Node {
         self.atoms.borrow().name(id).map(str::to_owned)
     }
 
+    pub fn atom_names(&self) -> Vec<String> {
+        self.atoms.borrow().by_id.clone()
+    }
+
     /// Replace the atom table (interpreter REPL code-image refresh).
     pub fn reset_atoms(&self, names: &[String]) {
         self.atoms.borrow_mut().reset_from(names);
@@ -428,6 +432,20 @@ impl Process {
             0,
             DEFAULT_REDUCTIONS_PER_QUANTUM,
         )
+    }
+
+    /// Install the ephemeral heap-owner backpointer used while a scheduler or
+    /// interpreter actively owns this process.
+    pub fn attach_heap_owner(&mut self) {
+        let owner: *mut Process = self;
+        self.heap.set_owner(owner);
+    }
+
+    /// Clear scheduler-owned backpointers before handing this process back to a
+    /// non-scheduler subsystem such as the quoted-source heap.
+    pub fn detach_runtime_state(&mut self) {
+        self.ctx = null_mut();
+        self.heap.clear_owner();
     }
 
     /// fz-cps.1.7 — populate the static closure singleton table. Each

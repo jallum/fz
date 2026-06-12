@@ -1,0 +1,4 @@
+
+fn apply(f, x), do: f.(x)
+
+fn main(), do: apply(&missing/1, 42)

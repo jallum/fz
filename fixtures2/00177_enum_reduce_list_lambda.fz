@@ -1,0 +1,15 @@
+# The real runtime graph, in miniature: a call to the library `Enum.reduce`,
+# which dispatches through the `Enumerable` protocol to `List.reduce` and its
+# `reduce_cont`/`reduce_step` recursion. The reducer is wrapped in a closure
+# that captures the user reducer (`fn (entry, inner) -> {:cont, reducer.(…)} end`),
+# so this is the fold_state_machine shape plus one protocol hop.
+#
+# Under the model the protocol call devirtualizes on the receiver type
+# (`list(int)` -> the `List` impl), and the fixpoint settles:
+#
+#   Enumerable.List.reduce : {:done, int} | {:halted, int}
+#   Enum.reduce([1,2,3], 0, +) : int ; settles (no 4096).
+
+fn main() do
+  dbg(Enum.reduce([1, 2, 3], 0, fn (x, a) -> x + a end))
+end

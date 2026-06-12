@@ -1,0 +1,6 @@
+fn pick(:left), do: :one
+fn pick(:right), do: :two
+
+fn main() do
+  {pick(:left), pick(:right)}
+end

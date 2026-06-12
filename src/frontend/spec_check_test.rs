@@ -4,20 +4,22 @@ use crate::ir_lower;
 use crate::ir_planner::plan_module_with_role;
 use crate::parser::Parser;
 use crate::parser::lexer::Lexer;
+use crate::telemetry::Telemetry;
 
-fn pipeline<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(t: &mut T, src: &str) -> (Program, Module, ModulePlan) {
-    let toks = Lexer::with_source_name(src, "<test>")
-        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
-        .expect("lex");
-    let prog = Parser::new(toks)
-        .parse_program(&crate::telemetry::ConfiguredTelemetry::new())
-        .expect("parse");
-    let prog = flatten_modules(t, prog, &crate::telemetry::ConfiguredTelemetry::new()).expect("flatten");
-    let ir = ir_lower::lower_program(t, &prog, &crate::telemetry::ConfiguredTelemetry::new()).expect("lower");
-    let mt = plan_module_with_role(t, &ir, &crate::telemetry::ConfiguredTelemetry::new(), "test");
+fn pipeline<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(
+    t: &mut T,
+    src: &str,
+    tel: &dyn Telemetry,
+) -> (Program, Module, ModulePlan) {
+    let toks = Lexer::with_source_name(src, "<test>").tokenize(tel).expect("lex");
+    let prog = Parser::new(toks).parse_program(tel).expect("parse");
+    let prog = flatten_modules(t, prog, tel).expect("flatten");
+    let ir = ir_lower::lower_program(t, &prog, tel).expect("lower");
+    let mt = plan_module_with_role(t, &ir, tel, "test");
     (prog, ir, mt)
 }
 
+// PICKED: @spec param type matching inferred callsite type passes validation
 #[test]
 fn spec_matching_inferred_passes() {
     let mut ct = crate::types::new();
@@ -30,11 +32,13 @@ defmodule M do
 end
 fn main(), do: dbg(M.add1(41))
 "#,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let diags = validate_specs(&mut ct, &prog, &ir, &mt);
     assert!(diags.is_empty(), "unexpected diags: {:?}", diags);
 }
 
+// PICKED: @spec wider than inferred callsite type still passes (success typing)
 #[test]
 fn spec_wider_than_inferred_passes_success_typing_style() {
     // Declared spec accepts `integer`; inferred is the narrower
@@ -49,6 +53,7 @@ defmodule M do
 end
 fn main(), do: dbg(M.add1(41))
 "#,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let diags = validate_specs(&mut ct, &prog, &ir, &mt);
     assert!(
@@ -58,6 +63,7 @@ fn main(), do: dbg(M.add1(41))
     );
 }
 
+// PICKED: @spec disjoint from inferred callsite type produces a subtype violation
 #[test]
 fn spec_disjoint_from_inferred_fails() {
     // Declared accepts `float`; inferred from callsite is int.
@@ -72,6 +78,7 @@ defmodule M do
 end
 fn main(), do: dbg(M.add1(41))
 "#,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let diags = validate_specs(&mut ct, &prog, &ir, &mt);
     assert!(!diags.is_empty(), "disjoint spec must fail");
@@ -83,6 +90,7 @@ fn main(), do: dbg(M.add1(41))
     );
 }
 
+// PICKED: multi-overload @spec each cover their respective inferred specialisation
 #[test]
 fn multi_spec_overload_arrows_cover_each_inferred_shape() {
     let mut ct = crate::types::new();
@@ -100,6 +108,7 @@ fn main() do
   dbg(M.echo(1.5))
 end
 "#,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let diags = validate_specs(&mut ct, &prog, &ir, &mt);
     assert!(
@@ -109,6 +118,7 @@ end
     );
 }
 
+// PICKED: spec overloads are checked per-arrow not by unioning all inputs and results
 #[test]
 fn multi_spec_validation_preserves_param_result_correlation() {
     let mut ct = crate::types::new();
@@ -126,6 +136,7 @@ fn main() do
   dbg(M.echo(1.5))
 end
 "#,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let diags = validate_specs(&mut ct, &prog, &ir, &mt);
     assert!(
@@ -135,6 +146,7 @@ end
     assert!(diags[0].message.contains("not a subtype"));
 }
 
+// PICKED: @spec using a local @type alias resolves and passes validation
 #[test]
 fn spec_resolves_against_module_type_env() {
     let mut ct = crate::types::new();
@@ -148,6 +160,7 @@ defmodule M do
 end
 fn main(), do: dbg(M.lookup(7))
 "#,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let diags = validate_specs(&mut ct, &prog, &ir, &mt);
     assert!(
@@ -157,6 +170,7 @@ fn main(), do: dbg(M.lookup(7))
     );
 }
 
+// PICKED: @spec with protocol domain type accepts a type with a known impl
 #[test]
 fn protocol_domain_spec_accepts_known_impl_target() {
     let mut ct = crate::types::new();
@@ -177,6 +191,7 @@ defmodule M do
 end
 fn main(), do: dbg(M.use([1]))
 "#,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let diags = validate_specs(&mut ct, &prog, &ir, &mt);
     assert!(
@@ -186,6 +201,7 @@ fn main(), do: dbg(M.use([1]))
     );
 }
 
+// PICKED: @spec with protocol domain type rejects a type with no protocol impl
 #[test]
 fn protocol_domain_spec_rejects_disjoint_target_without_impl() {
     let mut ct = crate::types::new();
@@ -206,12 +222,14 @@ defmodule M do
 end
 fn main(), do: dbg(M.use(1))
 "#,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let diags = validate_specs(&mut ct, &prog, &ir, &mt);
     assert!(!diags.is_empty(), "integer has no Enumerable impl");
     assert!(diags[0].message.contains("not a subtype"));
 }
 
+// PICKED: @spec with unknown type alias surfaces unknown-type error at validation
 #[test]
 fn spec_with_unknown_alias_fails_at_validation() {
     let mut ct = crate::types::new();
@@ -224,6 +242,7 @@ defmodule M do
 end
 fn main(), do: dbg(M.one(0))
 "#,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let diags = validate_specs(&mut ct, &prog, &ir, &mt);
     assert!(!diags.is_empty(), "unknown alias must surface a diag");
@@ -235,6 +254,7 @@ fn main(), do: dbg(M.one(0))
     );
 }
 
+// DROP: planner any-key spec internals, no compiler2 analogue
 #[test]
 fn spec_validation_skips_any_key_specs() {
     // Validation must skip any-key specs when they exist (they have
@@ -254,6 +274,7 @@ defmodule M do
 end
 fn main(), do: dbg(M.add1(41))
 "#,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     // Validation passes — either the any-key was dropped (.29.12.6)
     // or it was kept and validation correctly skipped it.
@@ -265,6 +286,7 @@ fn main(), do: dbg(M.add1(41))
     );
 }
 
+// PICKED: fn with no @spec annotation produces no type validation diagnostics
 #[test]
 fn fn_without_spec_is_not_validated() {
     let mut ct = crate::types::new();
@@ -276,6 +298,7 @@ defmodule M do
 end
 fn main(), do: dbg(M.double(7))
 "#,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let diags = validate_specs(&mut ct, &prog, &ir, &mt);
     assert!(
@@ -285,6 +308,7 @@ fn main(), do: dbg(M.double(7))
     );
 }
 
+// PICKED: @spec on a top-level fn with only builtin types passes without module env
 #[test]
 fn spec_on_top_level_fn_uses_empty_env() {
     let mut ct = crate::types::new();
@@ -295,6 +319,7 @@ fn spec_on_top_level_fn_uses_empty_env() {
 fn one(), do: 1
 fn main(), do: dbg(one())
 "#,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let diags = validate_specs(&mut ct, &prog, &ir, &mt);
     assert!(

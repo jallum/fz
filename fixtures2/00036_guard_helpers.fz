@@ -1,0 +1,3 @@
+
+fn positive(n), do: n > 0
+fn wanted(n), do: positive(n)

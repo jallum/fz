@@ -14,7 +14,7 @@
 //! consumer needs to (a) look up / rewrite the actual term and
 //! (b) compute its target spec key:
 //!
-//!   - `Direct` — callee `FnId`, arg `Var`s.
+//!   - `Direct` — direct target, arg `Var`s.
 //!   - `CallClosureKnown` — resolved target `FnId` (via callable capability),
 //!     the closure `Var`, and arg `Var`s.
 //!   - `ClosureLit(c, s)` — target `FnId` from the lit, captures,
@@ -30,7 +30,7 @@
 //! - Per-spec type keys — consumers build those from the structural
 //!   payload + their own env.
 
-use crate::fz_ir::{Cont, EmitSlot, FnId, Term, Var};
+use crate::fz_ir::{Cont, DirectCallTarget, EmitSlot, FnId, Term, Var};
 use crate::types::{ClosureLitInfo, ClosureTypes, Ty, Types};
 use std::collections::HashMap;
 
@@ -48,8 +48,11 @@ pub struct BlockCallsite<'a> {
 /// fz-9pr.17 — per-slot structural payload.
 #[derive(Clone)]
 pub enum CallsiteKind<'a> {
-    /// `Term::Call` / `Term::TailCall`. `callee` is the static FnId.
-    Direct { callee: FnId, args: &'a [Var] },
+    /// `Term::Call` / `Term::TailCall`. `callee` is the static target.
+    Direct {
+        callee: &'a DirectCallTarget,
+        args: &'a [Var],
+    },
     /// `Term::CallClosure` / `Term::TailCallClosure` whose `closure`
     /// Var resolved through callable capabilities to a static FnId. Carries
     /// the closure Var too so downstream consumers can recover capture-state
@@ -79,8 +82,11 @@ pub enum CallsiteKind<'a> {
 /// right `any` semantics.
 #[derive(Clone)]
 pub enum ContSource<'a> {
-    /// `Term::Call`: slot 0 = `effective_returns[(callee, arg_tys)]`.
-    Call { callee: FnId, args: &'a [Var] },
+    /// `Term::Call`: slot 0 = local effective return or provider-boundary any.
+    Call {
+        callee: &'a DirectCallTarget,
+        args: &'a [Var],
+    },
     /// `Term::CallClosure`: slot 0 = effective_return of the closure
     /// target (known capability path) OR resolved via closure-lit lattice.
     /// Both paths use `closure`/`args`.
@@ -116,20 +122,20 @@ pub fn block_callsites<'a, T: Types<Ty = Ty> + ClosureTypes>(
         } => {
             out.push(BlockCallsite {
                 slot: EmitSlot::Direct,
-                kind: CallsiteKind::Direct { callee: *callee, args },
+                kind: CallsiteKind::Direct { callee, args },
             });
             out.push(BlockCallsite {
                 slot: EmitSlot::Cont,
                 kind: CallsiteKind::Cont {
                     cont: continuation,
-                    source: ContSource::Call { callee: *callee, args },
+                    source: ContSource::Call { callee, args },
                 },
             });
         }
         Term::TailCall { callee, args, .. } => {
             out.push(BlockCallsite {
                 slot: EmitSlot::Direct,
-                kind: CallsiteKind::Direct { callee: *callee, args },
+                kind: CallsiteKind::Direct { callee, args },
             });
         }
         Term::CallClosure {

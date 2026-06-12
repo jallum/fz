@@ -1,64 +1,41 @@
 use super::*;
 use crate::dispatch_matrix::DispatchConst;
 use crate::dispatch_matrix::pattern::{PatternDispatchPlan, PatternGuardExpr};
+use crate::fz_ir::DirectCallTarget;
+use crate::telemetry::Telemetry;
 
-fn lower_src(src: &str) -> Module {
-    let toks = Lexer::with_source_name(src, "<test>")
-        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
-        .expect("lex");
-    let prog = Parser::new(toks)
-        .parse_program(&crate::telemetry::ConfiguredTelemetry::new())
-        .expect("parse");
-    lower_program(
-        &mut crate::types::new(),
-        &prog,
-        &crate::telemetry::ConfiguredTelemetry::new(),
-    )
-    .expect("lower failed")
+fn lower_src(src: &str, tel: &dyn Telemetry) -> Module {
+    let toks = Lexer::with_source_name(src, "<test>").tokenize(tel).expect("lex");
+    let prog = Parser::new(toks).parse_program(tel).expect("parse");
+    lower_program(&mut crate::types::new(), &prog, tel).expect("lower failed")
 }
 
-fn lower_flat_src(src: &str) -> (crate::types::DefaultTypes, Module) {
-    let toks = Lexer::with_source_name(src, "<test>")
-        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
-        .expect("lex");
-    let prog = Parser::new(toks)
-        .parse_program(&crate::telemetry::ConfiguredTelemetry::new())
-        .expect("parse");
+fn lower_flat_src(src: &str, tel: &dyn Telemetry) -> (crate::types::DefaultTypes, Module) {
+    let toks = Lexer::with_source_name(src, "<test>").tokenize(tel).expect("lex");
+    let prog = Parser::new(toks).parse_program(tel).expect("parse");
     let mut ct = crate::types::new();
-    let prog = flatten_modules(&mut ct, prog, &crate::telemetry::ConfiguredTelemetry::new()).expect("flatten");
-    let module = lower_program(&mut ct, &prog, &crate::telemetry::ConfiguredTelemetry::new()).expect("lower failed");
+    let prog = flatten_modules(&mut ct, prog, tel).expect("flatten");
+    let module = lower_program(&mut ct, &prog, tel).expect("lower failed");
     (ct, module)
 }
 
-fn lower_src_with_capture(src: &str) -> (Module, Capture) {
-    let tel = ConfiguredTelemetry::new();
+fn lower_src_with_capture(src: &str, tel: &dyn Telemetry) -> (Module, Capture) {
     let cap = Capture::new();
-    tel.attach(&[], cap.handler());
-    let toks = Lexer::with_source_name(src, "<test>")
-        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
-        .expect("lex");
-    let prog = Parser::new(toks)
-        .parse_program(&crate::telemetry::ConfiguredTelemetry::new())
-        .expect("parse");
-    let module = lower_program(&mut crate::types::new(), &prog, &tel).expect("lower failed");
+    let handler_id = tel.attach(&[], cap.handler());
+    let toks = Lexer::with_source_name(src, "<test>").tokenize(tel).expect("lex");
+    let prog = Parser::new(toks).parse_program(tel).expect("parse");
+    let module = lower_program(&mut crate::types::new(), &prog, tel).expect("lower failed");
+    assert!(tel.detach(handler_id), "temporary lower capture should detach");
     (module, cap)
 }
 
-fn lower_src_err(src: &str) -> LowerError {
-    let toks = Lexer::with_source_name(src, "<test>")
-        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
-        .expect("lex");
-    let prog = Parser::new(toks)
-        .parse_program(&crate::telemetry::ConfiguredTelemetry::new())
-        .expect("parse");
-    lower_program(
-        &mut crate::types::new(),
-        &prog,
-        &crate::telemetry::ConfiguredTelemetry::new(),
-    )
-    .expect_err("expected lower error")
+fn lower_src_err(src: &str, tel: &dyn Telemetry) -> LowerError {
+    let toks = Lexer::with_source_name(src, "<test>").tokenize(tel).expect("lex");
+    let prog = Parser::new(toks).parse_program(tel).expect("parse");
+    lower_program(&mut crate::types::new(), &prog, tel).expect_err("expected lower error")
 }
 
+// DROP: old-world IR opaque-tuple shape, no compiler2 analogue
 #[test]
 fn struct_record_type_registers_opaque_underlying_tuple_in_schema_order() {
     let (mut ct, m) = lower_flat_src(
@@ -69,6 +46,7 @@ defmodule Range do
   fn new(first, last, step), do: %Range{first: first, last: last, step: step}
 end
 "#,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let inner = m
         .opaque_inners
@@ -84,23 +62,17 @@ end
 /// captured stdout (joined by newline). Mirrors `ir_codegen::tests::
 /// capture_main`; lets ir_lower-level tests assert end-to-end runtime
 /// correctness rather than just IR shape.
-fn run_and_capture(src: &str) -> String {
-    let mut t = crate::types::new();
-    let graph = linked_runtime_graph(&mut t, src, &crate::telemetry::ConfiguredTelemetry::new());
-    let entry = graph.module.fn_by_name("main").expect("no main fn").id;
-    let compiled = compile_planned(
-        &mut t,
-        &graph.module,
-        &graph.module_plan,
-        &crate::telemetry::ConfiguredTelemetry::new(),
-    )
-    .expect("compile planned");
-    let tel = bus::ConfiguredTelemetry::new();
+fn run_and_capture(src: &str, tel: &dyn Telemetry) -> String {
+    let mut graph = linked_runtime_graph(src, tel);
+    let entry = graph.linked_module().fn_by_name("main").expect("no main fn").id;
+    let (module, module_plan) = graph.cloned_linked_module_plan();
+    let compiled = compile_planned(graph.types(), &module, &module_plan, tel).expect("compile planned");
     let dbg = DbgCapture::new();
-    tel.attach(&[], dbg.handler());
-    let mut rt = Runtime::new(&compiled, 1, &tel);
+    let handler_id = tel.attach(&[], dbg.handler());
+    let mut rt = Runtime::new(&compiled, 1, tel);
     let _ = rt.spawn(entry);
     rt.run_until_idle();
+    assert!(tel.detach(handler_id), "temporary debug capture should detach");
     dbg.lines().join("\n")
 }
 
@@ -157,46 +129,58 @@ fn first_make_fn_ref(f: &FnIr) -> FnId {
         .expect("expected fn ref construction")
 }
 
+// DROP: old-world IR node shape, no compiler2 analogue
 #[test]
 fn lower_const_int_returns_in_entry_block() {
-    let m = lower_src("fn f() do 42 end");
+    let m = lower_src("fn f() do 42 end", &crate::telemetry::ConfiguredTelemetry::new());
     let s = format!("{}", m);
     assert!(s.contains("const(42)"), "{}", s);
     assert!(s.contains("return v"), "{}", s);
 }
 
+// DROP: old-world IR node shape, no compiler2 analogue
 #[test]
 fn lower_var_lookup() {
-    let m = lower_src("fn id(x), do: x");
+    let m = lower_src("fn id(x), do: x", &crate::telemetry::ConfiguredTelemetry::new());
     let s = format!("{}", m);
     assert!(s.contains("return v0"), "got:\n{}", s);
 }
 
+// DROP: old-world IR node shape, no compiler2 analogue
 #[test]
 fn lower_binop_add() {
-    let m = lower_src("fn add1(x), do: x + 1");
+    let m = lower_src("fn add1(x), do: x + 1", &crate::telemetry::ConfiguredTelemetry::new());
     let s = format!("{}", m);
     assert!(s.contains("const(1)"), "{}", s);
     assert!(s.contains(" + "), "{}", s);
 }
 
+// DROP: old-world IR node shape, no compiler2 analogue
 #[test]
 fn lower_unop_neg() {
-    let m = lower_src("fn neg(x), do: -x");
+    let m = lower_src("fn neg(x), do: -x", &crate::telemetry::ConfiguredTelemetry::new());
     let s = format!("{}", m);
     assert!(s.contains("- v0"));
 }
 
+// DROP: old-world IR CPS shape, not language behaviour
 #[test]
 fn lower_tail_call_uses_tail_call() {
-    let m = lower_src("fn caller(x), do: callee(x)\nfn callee(y), do: y");
+    let m = lower_src(
+        "fn caller(x), do: callee(x)\nfn callee(y), do: y",
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    );
     let s = format!("{}", m);
     assert!(s.contains("tail_call"), "got:\n{}", s);
 }
 
+// DROP: old-world CPS continuation shape, no compiler2 analogue
 #[test]
 fn lower_nontail_call_splits_into_continuation() {
-    let m = lower_src("fn caller(x), do: callee(x) + 1\nfn callee(y), do: y");
+    let m = lower_src(
+        "fn caller(x), do: callee(x) + 1\nfn callee(y), do: y",
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    );
     let s = format!("{}", m);
     // "call fnN" where N is callee's FnId (shifts with runtime.fz prelude).
     assert!(s.contains("call fn"), "expected explicit call, got:\n{}", s);
@@ -209,9 +193,13 @@ fn lower_nontail_call_splits_into_continuation() {
     );
 }
 
+// DROP: old-world CPS capture-pruning telemetry, no compiler2 analogue
 #[test]
 fn lower_program_returns_normalized_call_continuation_captures() {
-    let (m, cap) = lower_src_with_capture("fn callee(x), do: x\nfn caller(x, y), do: callee(x) + x");
+    let (m, cap) = lower_src_with_capture(
+        "fn callee(x), do: x\nfn caller(x, y), do: callee(x) + x",
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    );
     let caller = m.fn_by_name("caller").expect("caller fn missing");
     let continuation = caller
         .blocks
@@ -256,23 +244,27 @@ fn lower_program_returns_normalized_call_continuation_captures() {
     );
 }
 
+// DROP: old-world IR declared_specs table, no compiler2 analogue
 #[test]
 fn lower_records_declared_spec_overload_set() {
     let m = lower_src(
         "@spec pick(integer) :: integer\n\
          @spec pick(float) :: float\n\
          fn pick(x), do: x",
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let pick = m.fn_by_name("pick").expect("pick fn missing");
     let specs = m.declared_specs.get(&pick.id).expect("declared specs missing");
     assert_eq!(specs.arrows.len(), 2);
 }
 
+// DROP: old-world structural correspondence table, no compiler2 analogue
 #[test]
 fn lower_records_source_function_correspondence() {
     let m = lower_src(
         "@spec drop(Enumerable.t(a), integer) :: [a]\n\
          fn drop(_enumerable, _count), do: []",
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let drop = m.fn_by_name("drop").expect("drop fn missing");
     let groups = m
@@ -296,6 +288,7 @@ fn lower_records_source_function_correspondence() {
     );
 }
 
+// DROP: old-world continuation correspondence table, no compiler2 analogue
 #[test]
 fn lower_synthesizes_direct_call_continuation_correspondence() {
     let m = lower_src(
@@ -306,6 +299,7 @@ fn lower_synthesizes_direct_call_continuation_correspondence() {
            y = id(x)\n\
            {x, y}\n\
          end",
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let pair_after_id = m.fn_by_name("pair_after_id").expect("pair_after_id fn missing");
     let continuation = m
@@ -341,6 +335,7 @@ fn lower_synthesizes_direct_call_continuation_correspondence() {
     );
 }
 
+// DROP: old-world CPS continuation provenance table, no compiler2 analogue
 #[test]
 fn lower_persists_direct_call_continuation_provenance() {
     let m = lower_src(
@@ -350,6 +345,7 @@ fn lower_persists_direct_call_continuation_provenance() {
            y = id(x)\n\
            {x, y}\n\
          end",
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let pair_after_id = m.fn_by_name("pair_after_id").expect("pair_after_id fn missing");
     let continuation = m
@@ -376,6 +372,7 @@ fn lower_persists_direct_call_continuation_provenance() {
     );
 }
 
+// DROP: old-world continuation correspondence table, no compiler2 analogue
 #[test]
 fn lower_synthesizes_closure_call_continuation_correspondence() {
     let m = lower_src(
@@ -384,6 +381,7 @@ fn lower_synthesizes_closure_call_continuation_correspondence() {
            y = f.(x)\n\
            {x, y}\n\
          end",
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let apply_pair = m.fn_by_name("apply_pair").expect("apply_pair fn missing");
     let continuation = m
@@ -426,6 +424,7 @@ fn lower_synthesizes_closure_call_continuation_correspondence() {
     );
 }
 
+// DROP: old-world matcher-body provenance table, no compiler2 analogue
 #[test]
 fn lower_persists_matcher_body_continuation_provenance() {
     let m = lower_src(
@@ -434,6 +433,7 @@ fn lower_persists_matcher_body_continuation_provenance() {
              [head | tail] -> {head, tail}\n\
            end\n\
          end",
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let continuation = m
         .fns
@@ -453,12 +453,16 @@ fn lower_persists_matcher_body_continuation_provenance() {
     }
 }
 
+// DROP: old-world CPS if-arm IR shape, not language behaviour
 #[test]
 fn lower_if_uses_continuation_fns() {
     // fz-duq.2 — `if` lowers to: outer fn with Term::If + per-arm
     // TailCalls into separate fns (if_then / if_else / optional
     // if_join). The old block-join shape is gone.
-    let m = lower_src("fn pos(x), do: if x > 0, do: 1, else: -1");
+    let m = lower_src(
+        "fn pos(x), do: if x > 0, do: 1, else: -1",
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    );
     let s = format!("{}", m);
     assert!(s.contains("if v"), "expected If terminator: {}", s);
     assert!(s.contains("if_then"), "expected if_then arm fn: {}", s);
@@ -472,6 +476,7 @@ fn lower_if_uses_continuation_fns() {
     );
 }
 
+// PICKED: if with constant condition routes to correct branch
 #[test]
 fn fz_84m_repro_a_prints_99() {
     // fz-84m repro A — constant cond + non-tail call in if-arm.
@@ -482,10 +487,12 @@ fn fz_84m_repro_a_prints_99() {
          fn main() do\n\
            if 1 == 0 do dbg(helper()) else dbg(99) end\n\
          end",
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     assert_eq!(out, "99");
 }
 
+// PICKED: if arm with tail call returns correct value at runtime
 #[test]
 fn fz_84m_repro_b_prints_7_then_99() {
     // fz-84m repro B — tail-call in if-arm + per-callsite narrowing.
@@ -496,10 +503,12 @@ fn fz_84m_repro_b_prints_7_then_99() {
         "fn helper(), do: 7\n\
          fn pick(n) do if n == 0 do helper() else 99 end end\n\
          fn main() do dbg(pick(0)); dbg(pick(1)) end",
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     assert_eq!(out, "7\n99");
 }
 
+// DROP: old-world CPS case-clause IR shape, not language behaviour
 #[test]
 fn lower_case_uses_per_clause_cont_fns() {
     // fz-duq.3 — `case` lowers each clause body into its own cont fn
@@ -512,6 +521,7 @@ fn lower_case_uses_per_clause_cont_fns() {
              _ -> 99\n\
            end\n\
          end",
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let s = format!("{}", m);
     assert!(s.contains("case_clause_0"), "expected clause cont: {}", s);
@@ -524,6 +534,7 @@ fn lower_case_uses_per_clause_cont_fns() {
     );
 }
 
+// DROP: old-world CPS cond-arm IR shape, not language behaviour
 #[test]
 fn lower_cond_uses_per_arm_cont_fns() {
     // fz-duq.4 — cond arms each lower into their own cont fn so that
@@ -536,6 +547,7 @@ fn lower_cond_uses_per_arm_cont_fns() {
              true -> 99\n\
            end\n\
          end",
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let s = format!("{}", m);
     assert!(s.contains("cond_arm_0"), "expected arm cont: {}", s);
@@ -543,6 +555,7 @@ fn lower_cond_uses_per_arm_cont_fns() {
     assert!(s.contains("cond_fail"), "expected fail cont: {}", s);
 }
 
+// DROP: old-world CPS with-else IR shape, not language behaviour
 #[test]
 fn lower_with_uses_continuation_fns() {
     // fz-duq.4 — `with`'s mismatch funnel becomes a continuation fn
@@ -555,12 +568,14 @@ fn lower_with_uses_continuation_fns() {
              :err -> 2\n\
            end\n\
          end",
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let s = format!("{}", m);
     assert!(s.contains("with_fail"), "expected with_fail cont: {}", s);
     assert!(s.contains("with_else_0"), "expected else clause cont: {}", s);
 }
 
+// PICKED: case clause with non-tail call compiles without error
 #[test]
 fn lower_case_with_call_in_clause_no_panic() {
     // case body with a call (was silently broken via Bug 2 — same
@@ -577,9 +592,11 @@ fn lower_case_with_call_in_clause_no_panic() {
            dbg(classify(0))\n\
            dbg(classify(5))\n\
          end",
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
 }
 
+// PICKED: with-else routes non-matching pattern to else clause at runtime
 #[test]
 fn fz_ben_tuple_pattern_typetest_routes_non_tuple_to_else() {
     // fz-ben — `{:ok, x}` pattern on `:err` (a non-tuple). Pre-fix,
@@ -595,10 +612,12 @@ fn fz_ben_tuple_pattern_typetest_routes_non_tuple_to_else() {
            with {:ok, x} <- v do x else :err -> 0 end\n\
          end\n\
          fn main() do dbg(f(:err)) end",
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     assert_eq!(out, "0");
 }
 
+// PICKED: if with comparison condition routes both arms correctly
 #[test]
 fn fz_84m_repro_c_prints_7_then_99_no_narrowing() {
     // fz-84m repro C — same bug shape as B but with `n > 0` rather
@@ -608,16 +627,19 @@ fn fz_84m_repro_c_prints_7_then_99_no_narrowing() {
         "fn helper(), do: 7\n\
          fn pick(n) do if n > 0 do helper() else 99 end end\n\
          fn main() do dbg(pick(5)); dbg(pick(0)) end",
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     assert_eq!(out, "7\n99");
 }
 
+// DROP: old-world CPS if-join IR shape, not language behaviour
 #[test]
 fn lower_if_nontail_uses_join_fn() {
     // Non-tail if (used as call argument): all three cont fns minted.
     let m = lower_src(
         "fn id(x), do: x\n\
          fn pick(x), do: id(if x > 0, do: 1, else: -1)",
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let s = format!("{}", m);
     assert!(s.contains("if_then"), "{}", s);
@@ -625,6 +647,7 @@ fn lower_if_nontail_uses_join_fn() {
     assert!(s.contains("if_join"), "expected join fn for non-tail: {}", s);
 }
 
+// PICKED: non-tail if with call arm; result flows into enclosing expression
 #[test]
 fn non_tail_if_call_arm_flows_through_join() {
     // The branch body is not final tail position when the if has a join.
@@ -639,10 +662,12 @@ fn non_tail_if_call_arm_flows_through_join() {
          fn main() do\n\
            dbg(map_every_list([1, 2, 3, 4], 2, 0, fn (x) -> x * 100 end))\n\
          end",
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     assert_eq!(out, "[100, 2, 300, 4]");
 }
 
+// PICKED: non-tail case with call arm; result flows into enclosing expression
 #[test]
 fn non_tail_case_call_arm_flows_through_join() {
     let out = run_and_capture(
@@ -654,10 +679,12 @@ fn non_tail_case_call_arm_flows_through_join() {
            [next]\n\
          end\n\
          fn main() do dbg(pick(0, fn (x) -> x + 1 end)) end",
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     assert_eq!(out, "[1]");
 }
 
+// PICKED: non-tail cond with call arm; result flows into enclosing expression
 #[test]
 fn non_tail_cond_call_arm_flows_through_join() {
     let out = run_and_capture(
@@ -669,13 +696,18 @@ fn non_tail_cond_call_arm_flows_through_join() {
            [next]\n\
          end\n\
          fn main() do dbg(pick(0, fn (x) -> x + 1 end)) end",
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     assert_eq!(out, "[1]");
 }
 
+// DROP: old-world IR node shape, no compiler2 analogue
 #[test]
 fn lower_block_evaluates_last_expr() {
-    let m = lower_src("fn b() do\n  1\n  2\n  3\nend");
+    let m = lower_src(
+        "fn b() do\n  1\n  2\n  3\nend",
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    );
     let s = format!("{}", m);
     assert!(s.contains("const(1)"), "{}", s);
     assert!(s.contains("const(2)"), "{}", s);
@@ -683,39 +715,47 @@ fn lower_block_evaluates_last_expr() {
     assert!(s.contains("return v"), "{}", s);
 }
 
+// DROP: old-world IR list primitive shape, no compiler2 analogue
 #[test]
 fn lower_list_makes_list_prim() {
-    let m = lower_src("fn l(), do: [1, 2]");
+    let m = lower_src("fn l(), do: [1, 2]", &crate::telemetry::ConfiguredTelemetry::new());
     let s = format!("{}", m);
     assert!(s.contains("list(["), "{}", s);
     assert!(!s.contains("list([] |"), "no-tail list shouldn't have | sep: {}", s);
 }
 
+// DROP: old-world IR list-with-tail primitive shape, no compiler2 analogue
 #[test]
 fn lower_list_with_tail() {
-    let m = lower_src("fn l(t), do: [1 | t]");
+    let m = lower_src("fn l(t), do: [1 | t]", &crate::telemetry::ConfiguredTelemetry::new());
     let s = format!("{}", m);
     assert!(s.contains("] | v0)"), "expected list with v0 (param t) tail: {}", s);
 }
 
+// DROP: old-world IR tuple primitive shape, no compiler2 analogue
 #[test]
 fn lower_tuple_makes_tuple_prim() {
-    let m = lower_src("fn t(), do: {1, :ok}");
+    let m = lower_src("fn t(), do: {1, :ok}", &crate::telemetry::ConfiguredTelemetry::new());
     let s = format!("{}", m);
     assert!(s.contains("tuple(["), "{}", s);
 }
 
+// DROP: old-world IR tuple_field projection shape, no compiler2 analogue
 #[test]
 fn lower_tuple_pattern_projects_fields() {
-    let m = lower_src("fn first({a, b}), do: a");
+    let m = lower_src("fn first({a, b}), do: a", &crate::telemetry::ConfiguredTelemetry::new());
     let s = format!("{}", m);
     assert!(s.contains("tuple_field(v0, 0)"), "got:\n{}", s);
     assert!(s.contains("tuple_field(v0, 1)"), "got:\n{}", s);
 }
 
+// DROP: old-world IR node shape, no compiler2 analogue
 #[test]
 fn lower_match_expr_binds_var() {
-    let m = lower_src("fn m(p) do\n  x = p\n  x\nend");
+    let m = lower_src(
+        "fn m(p) do\n  x = p\n  x\nend",
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    );
     let s = format!("{}", m);
     assert!(s.contains("return v0"), "got:\n{}", s);
 }
@@ -726,16 +766,20 @@ fn lower_match_expr_binds_var() {
 /// should warn. User-authored Ifs whose dead branch the planner can
 /// prove (here: `if true do A else B` where the else is structurally
 /// unreachable) still do.
+// PICKED: synthesized dispatch branches do not generate unreachable-arm warnings
 #[test]
 fn unreachable_arm_silenced_on_synthesized_ifs() {
-    let m = lower_src(concat!(
-        "fn fst(0), do: :zero\n",
-        "fn fst(_), do: :other\n",
-        "fn main() do\n",
-        "  {a, b} = {1, 2}\n",
-        "  fst(a + b)\n",
-        "end\n",
-    ));
+    let m = lower_src(
+        concat!(
+            "fn fst(0), do: :zero\n",
+            "fn fst(_), do: :other\n",
+            "fn main() do\n",
+            "  {a, b} = {1, 2}\n",
+            "  fst(a + b)\n",
+            "end\n",
+        ),
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    );
     let mut ct = crate::types::new();
     let mt = plan_module_with_role(&mut ct, &m, &crate::telemetry::ConfiguredTelemetry::new(), "test");
     let diags = collect_diagnostics(&mut ct, &m, &mt, &crate::telemetry::ConfiguredTelemetry::new());
@@ -747,16 +791,20 @@ fn unreachable_arm_silenced_on_synthesized_ifs() {
     assert!(
         unreachable.is_empty(),
         "synthesized dispatch Ifs must not warn; got {:?}",
-        unreachable,
+        unreachable
     );
 }
 
 /// fz-bsx.5 — the dead-binop ("always false") diagnostic is observed
 /// through the telemetry bus ([fz, diag, warning] carrying
 /// type/dead-binop), per the project's telemetry-over-stderr policy.
+// DROP: diagnostic telemetry infrastructure, not language behaviour
 #[test]
 fn dead_binop_diagnostic_observable_via_telemetry() {
-    let m = lower_src("fn main() do\n  dbg(1 == :ok)\nend\n");
+    let m = lower_src(
+        "fn main() do\n  dbg(1 == :ok)\nend\n",
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    );
     let mut ct = crate::types::new();
     let mt = plan_module_with_role(&mut ct, &m, &crate::telemetry::ConfiguredTelemetry::new(), "test");
     let diags = collect_diagnostics(&mut ct, &m, &mt, &crate::telemetry::ConfiguredTelemetry::new());
@@ -768,7 +816,7 @@ fn dead_binop_diagnostic_observable_via_telemetry() {
 
     assert!(
         cap.count(&["fz", "diag", "warning"]) >= 1,
-        "dead-binop warning must surface on the telemetry bus",
+        "dead-binop warning must surface on the telemetry bus"
     );
     assert!(
         diags.as_slice().iter().any(|d| d.code == codes::TYPE_DEAD_BINOP),
@@ -802,27 +850,34 @@ fn generated_dead_binop_diagnostic_is_not_rendered() {
 /// for shared-body mutation. Narrow recursive list-dispatch facts stay on
 /// the individual `SpecPlan`, because folding the canonical body with them
 /// would make the body invalid for wider keys.
+// DROP: old-world planner dead_branches table, no compiler2 analogue
 #[test]
 fn dead_branches_published_for_destructure_and_recursive_list_dispatch() {
     // Irrefutable destructure on a known-2-tuple — the planner proves
     // the synthesized fail edge dead under the one live spec.
-    let m = lower_src("fn main() do\n  {a, b} = {1, 2}\n  a + b\nend\n");
+    let m = lower_src(
+        "fn main() do\n  {a, b} = {1, 2}\n  a + b\nend\n",
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    );
     let mut ct = crate::types::new();
     let mt = plan_module_with_role(&mut ct, &m, &crate::telemetry::ConfiguredTelemetry::new(), "test");
     assert!(
         mt.dead_branches.values().any(|d| matches!(d, DeadBranch::Else)),
         "expected an Else dead branch for {{a,b}} = {{1,2}}; got {:?}",
-        mt.dead_branches,
+        mt.dead_branches
     );
 
     // Recursive sum — with `[]` and `[_ | _]` modeled as disjoint
     // shapes, clause-dispatch branches can be proven dead per
     // specialized dispatch block.
-    let m2 = lower_src(concat!(
-        "fn sum([]), do: 0\n",
-        "fn sum([h | t]), do: h + sum(t)\n",
-        "fn main(), do: sum([1, 2, 3])\n",
-    ));
+    let m2 = lower_src(
+        concat!(
+            "fn sum([]), do: 0\n",
+            "fn sum([h | t]), do: h + sum(t)\n",
+            "fn main(), do: sum([1, 2, 3])\n",
+        ),
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    );
     let mt2 = plan_module_with_role(&mut ct, &m2, &crate::telemetry::ConfiguredTelemetry::new(), "test");
     let sum_fid = m2.fn_by_name("sum").expect("sum exists").id;
     assert!(
@@ -834,29 +889,33 @@ fn dead_branches_published_for_destructure_and_recursive_list_dispatch() {
             .iter()
             .filter(|(key, _)| key.fn_id == sum_fid)
             .map(|(key, spec)| (key, &spec.dead_branches))
-            .collect::<Vec<_>>(),
+            .collect::<Vec<_>>()
     );
 }
 
 /// fz-fyq.1 — every lowering path that synthesizes a `Term::If` tags it
 /// with the right `BranchOrigin`. Cover one source program that exercises
 /// each origin and assert the right set appears in the lowered module.
+// DROP: old-world BranchOrigin IR tagging, no compiler2 analogue
 #[test]
 fn branch_origin_tagged_per_lowering_path() {
-    let m = lower_src(concat!(
-        // ParamGuard: typed param synthesizes a TypeTest If.
-        "fn f(x :: integer), do: x\n",
-        // ClauseDispatch (multi-clause): two clauses on a literal.
-        "fn g(0), do: :zero\n",
-        "fn g(_), do: :other\n",
-        // PatternBind: `{a, b} = ...` synthesizes Ifs that check tuple arity.
-        "fn h() do\n",
-        "  {a, b} = {1, 2}\n",
-        "  a + b\n",
-        "end\n",
-        // User: hand-written `if`.
-        "fn i(n), do: if n > 0, do: 1, else: 0\n",
-    ));
+    let m = lower_src(
+        concat!(
+            // ParamGuard: typed param synthesizes a TypeTest If.
+            "fn f(x :: integer), do: x\n",
+            // ClauseDispatch (multi-clause): two clauses on a literal.
+            "fn g(0), do: :zero\n",
+            "fn g(_), do: :other\n",
+            // PatternBind: `{a, b} = ...` synthesizes Ifs that check tuple arity.
+            "fn h() do\n",
+            "  {a, b} = {1, 2}\n",
+            "  a + b\n",
+            "end\n",
+            // User: hand-written `if`.
+            "fn i(n), do: if n > 0, do: 1, else: 0\n",
+        ),
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    );
     let mut seen: HashSet<BranchOrigin> = HashSet::new();
     for f in &m.fns {
         for b in &f.blocks {
@@ -869,7 +928,7 @@ fn branch_origin_tagged_per_lowering_path() {
     assert!(
         seen.contains(&BranchOrigin::PatternBind),
         "missing PatternBind: {:?}",
-        seen,
+        seen
     );
     assert!(
         seen.contains(&BranchOrigin::ClauseDispatch),
@@ -883,12 +942,16 @@ fn branch_origin_tagged_per_lowering_path() {
     );
 }
 
+// DROP: old-world inline dispatch IR shape, no compiler2 analogue
 #[test]
 fn multi_clause_dispatch_lowers_dispatch_graph_inline() {
     // fz-puj.52.7 — multi-clause fns lower the DispatchGraph inline
     // into the user fn again so dispatch does not become a separate
     // spec-producing matcher fn.
-    let m = lower_src("fn fact(0), do: 1\nfn fact(n), do: n * fact(n - 1)");
+    let m = lower_src(
+        "fn fact(0), do: 1\nfn fact(n), do: n * fact(n - 1)",
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    );
     let s = format!("{}", m);
     assert!(!s.contains("fact_matcher_"), "did not expect fact_matcher_N fn: {}", s);
     assert!(s.contains("if v"), "expected pattern test If: {}", s);
@@ -896,9 +959,13 @@ fn multi_clause_dispatch_lowers_dispatch_graph_inline() {
     assert!(s.contains(":atom_"), "expected interned atom in fail block:\n{}", s);
 }
 
+// DROP: old-world IR closure/lambda primitive shape, no compiler2 analogue
 #[test]
 fn lower_lambda_creates_separate_fn_and_closure() {
-    let m = lower_src("fn mk(x), do: fn(y) -> x + y end");
+    let m = lower_src(
+        "fn mk(x), do: fn(y) -> x + y end",
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    );
     let s = format!("{}", m);
     assert!(s.contains("closure(fn"), "expected closure prim, got:\n{}", s);
     assert!(s.contains("lambda_"), "expected lambda fn name: {}", s);
@@ -914,9 +981,13 @@ fn lower_lambda_creates_separate_fn_and_closure() {
     );
 }
 
+// DROP: old-world MakeFnRef vs MakeClosure IR distinction, no compiler2 analogue
 #[test]
 fn lower_named_fn_ref_emits_thin_fn_ref_prim() {
-    let m = lower_src("fn id(x), do: x\nfn main(), do: &id/1");
+    let m = lower_src(
+        "fn id(x), do: x\nfn main(), do: &id/1",
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    );
     let main = m.fn_by_name("main").expect("main fn missing");
     let fn_id = first_make_fn_ref(main);
 
@@ -924,9 +995,13 @@ fn lower_named_fn_ref_emits_thin_fn_ref_prim() {
     assert_eq!(count_prims_in_fn(main, |prim| matches!(prim, Prim::MakeClosure(..))), 0);
 }
 
+// DROP: old-world MakeFnRef vs MakeClosure IR distinction, no compiler2 analogue
 #[test]
 fn lower_bare_top_level_fn_value_emits_thin_fn_ref_prim() {
-    let m = lower_src("fn id(x), do: x\nfn main(), do: id");
+    let m = lower_src(
+        "fn id(x), do: x\nfn main(), do: id",
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    );
     let main = m.fn_by_name("main").expect("main fn missing");
     let fn_id = first_make_fn_ref(main);
 
@@ -934,9 +1009,13 @@ fn lower_bare_top_level_fn_value_emits_thin_fn_ref_prim() {
     assert_eq!(count_prims_in_fn(main, |prim| matches!(prim, Prim::MakeClosure(..))), 0);
 }
 
+// PICKED: closure captures only variables referenced in its body
 #[test]
 fn lower_lambda_captures_only_referenced_outer_names() {
-    let m = lower_src("fn mk(x, y), do: fn(z) -> x + z end");
+    let m = lower_src(
+        "fn mk(x, y), do: fn(z) -> x + z end",
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    );
     let mk = m.fn_by_name("mk").expect("mk fn missing");
     let (lambda_id, captured) = first_make_closure(mk);
 
@@ -954,9 +1033,13 @@ fn lower_lambda_captures_only_referenced_outer_names() {
     );
 }
 
+// PICKED: closure with no outer references has no captured variables
 #[test]
 fn lower_lambda_with_no_outer_reads_has_no_captures() {
-    let m = lower_src("fn mk(x), do: fn(y) -> y + 1 end");
+    let m = lower_src(
+        "fn mk(x), do: fn(y) -> y + 1 end",
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    );
     let mk = m.fn_by_name("mk").expect("mk fn missing");
     let lambda_id = first_make_fn_ref(mk);
 
@@ -978,9 +1061,10 @@ fn lower_lambda_with_no_outer_reads_has_no_captures() {
 /// `fz_dbg_value(any)` extern. It must not create a call edge to the
 /// polymorphic runtime-library wrapper, or the planner specializes the
 /// wrapper and its trivial continuations once per concrete argument type.
+// DROP: old-world IR extern intrinsic lowering shape, no compiler2 analogue
 #[test]
 fn dbg_call_lowers_to_identity_extern_intrinsic() {
-    let m = lower_src("fn p(), do: dbg(1)");
+    let m = lower_src("fn p(), do: dbg(1)", &crate::telemetry::ConfiguredTelemetry::new());
     let p = m.fn_by_name("p").expect("p fn missing");
     let entry = p.block(p.entry);
     let (extern_dest, eid, args) = entry
@@ -1012,9 +1096,10 @@ fn dbg_call_lowers_to_identity_extern_intrinsic() {
 /// Function references still target the runtime-library wrapper, because a
 /// named callable needs a stable `FnId`; only direct source calls are
 /// intrinsic-lowered.
+// DROP: old-world IR prelude wrapper routing, no compiler2 analogue
 #[test]
 fn dbg_function_reference_routes_through_runtime_fz_wrapper() {
-    let m = lower_src("fn p(), do: &dbg/1");
+    let m = lower_src("fn p(), do: &dbg/1", &crate::telemetry::ConfiguredTelemetry::new());
     let dbg = m
         .fns
         .iter()
@@ -1028,9 +1113,13 @@ fn dbg_function_reference_routes_through_runtime_fz_wrapper() {
 
 /// `spawn(x)` routes through the runtime.fz prelude import to
 /// `Kernel.spawn/1`, whose implementation owns the raw extern.
+// DROP: old-world IR spawn routing shape, no compiler2 analogue
 #[test]
 fn spawn_callsite_routes_through_runtime_fz_wrapper() {
-    let m = lower_src("fn child(), do: 0\nfn p() do spawn(child) end");
+    let m = lower_src(
+        "fn child(), do: 0\nfn p() do spawn(child) end",
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    );
     assert!(
         !m.fns.iter().any(|f| f.name == "fz_spawn_thunk"),
         "spawn must not synthesize fz_spawn_thunk; fns: {:?}",
@@ -1043,10 +1132,10 @@ fn spawn_callsite_routes_through_runtime_fz_wrapper() {
         .expect("Kernel.spawn/1 prelude fn missing");
     let p = m.fn_by_name("p").expect("p fn missing");
     let entry = p.block(p.entry);
-    let Term::TailCall { callee, .. } = entry.terminator else {
+    let Term::TailCall { callee, .. } = &entry.terminator else {
         panic!("expected p to tail-call spawn/1, got {:?}", entry.terminator);
     };
-    assert_eq!(callee, spawn.id);
+    assert_eq!(callee, &DirectCallTarget::Local(spawn.id));
     assert!(
         spawn.blocks.iter().any(|b| b.stmts.iter().any(|stmt| {
             let Stmt::Let(_, prim) = stmt;
@@ -1056,9 +1145,13 @@ fn spawn_callsite_routes_through_runtime_fz_wrapper() {
     );
 }
 
+// DROP: old-world IR extern boundary span metadata, no compiler2 analogue
 #[test]
 fn spawn_wrapper_extern_keeps_intrinsic_boundary_identity() {
-    let m = lower_src("fn child(), do: nil\nfn main() do spawn(child) end");
+    let m = lower_src(
+        "fn child(), do: nil\nfn main() do spawn(child) end",
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    );
     let spawn = m
         .fns
         .iter()
@@ -1082,9 +1175,13 @@ fn spawn_wrapper_extern_keeps_intrinsic_boundary_identity() {
     );
 }
 
+// PICKED: receive inside spawned lambda does not leak into enclosing function
 #[test]
 fn lambda_tail_receive_does_not_terminate_enclosing_spawn_call() {
-    let m = lower_src("fn p(parent) do\nspawn(fn () -> send(parent, receive do x -> x end) end)\nend");
+    let m = lower_src(
+        "fn p(parent) do\nspawn(fn () -> send(parent, receive do x -> x end) end)\nend",
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    );
     let p = m.fn_by_name("p").expect("p fn missing");
     let entry = p.block(p.entry);
     let spawn = m
@@ -1092,11 +1189,11 @@ fn lambda_tail_receive_does_not_terminate_enclosing_spawn_call() {
         .iter()
         .find(|f| f.name == "Kernel.spawn" && f.block(f.entry).params.len() == 1)
         .expect("Kernel.spawn/1 prelude fn missing");
-    let callee = match entry.terminator {
+    let callee = match &entry.terminator {
         Term::TailCall { callee, .. } => callee,
-        ref other => panic!("expected enclosing fn to tail-call spawn/1, got {:?}", other),
+        other => panic!("expected enclosing fn to tail-call spawn/1, got {:?}", other),
     };
-    assert_eq!(callee, spawn.id);
+    assert_eq!(callee, &DirectCallTarget::Local(spawn.id));
     assert!(
         !p.blocks
             .iter()
@@ -1106,9 +1203,13 @@ fn lambda_tail_receive_does_not_terminate_enclosing_spawn_call() {
 }
 
 /// `spawn/2` follows the same prelude-import path as `spawn/1`.
+// DROP: old-world IR spawn/2 routing shape, no compiler2 analogue
 #[test]
 fn spawn2_routes_through_runtime_fz_wrapper() {
-    let m = lower_src("fn child(), do: 0\nfn p() do spawn(child, 4096) end");
+    let m = lower_src(
+        "fn child(), do: 0\nfn p() do spawn(child, 4096) end",
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    );
     assert!(
         !m.fns.iter().any(|f| f.name == "fz_spawn_thunk"),
         "spawn/2 must not synthesize fz_spawn_thunk"
@@ -1120,10 +1221,10 @@ fn spawn2_routes_through_runtime_fz_wrapper() {
         .expect("Kernel.spawn/2 prelude fn missing");
     let p = m.fn_by_name("p").expect("p fn missing");
     let entry = p.block(p.entry);
-    let Term::TailCall { callee, .. } = entry.terminator else {
+    let Term::TailCall { callee, .. } = &entry.terminator else {
         panic!("expected p to tail-call spawn/2, got {:?}", entry.terminator);
     };
-    assert_eq!(callee, spawn.id);
+    assert_eq!(callee, &DirectCallTarget::Local(spawn.id));
     assert!(
         spawn.blocks.iter().any(|b| b.stmts.iter().any(|stmt| {
             let Stmt::Let(_, prim) = stmt;
@@ -1134,26 +1235,29 @@ fn spawn2_routes_through_runtime_fz_wrapper() {
 }
 
 /// The lowerer no longer synthesizes fz_spawn_thunk for any program.
+// DROP: old-world IR spawn thunk artifact, no compiler2 analogue
 #[test]
 fn spawn_free_program_has_no_compiler_spawn_thunk() {
-    let m = lower_src("fn p(), do: 0");
+    let m = lower_src("fn p(), do: 0", &crate::telemetry::ConfiguredTelemetry::new());
     assert!(
         !m.fns.iter().any(|f| f.name == "fz_spawn_thunk"),
         "expected no compiler-synthesized fz_spawn_thunk"
     );
 }
 
+// PICKED: unbound variable reference is a compile-time error
 #[test]
 fn unbound_var_returns_lower_error() {
-    let err = lower_src_err("fn f(), do: missing");
+    let err = lower_src_err("fn f(), do: missing", &crate::telemetry::ConfiguredTelemetry::new());
     assert!(matches!(err, LowerError::Unbound { .. }));
 }
 
 /// .21 step 3: lower errors carry a real Span of the offending node,
 /// not Span::DUMMY.
+// DROP: diagnostic span metadata infrastructure, not language behaviour
 #[test]
 fn unbound_var_diag_has_real_span() {
-    let err = lower_src_err("fn f(), do: missing");
+    let err = lower_src_err("fn f(), do: missing", &crate::telemetry::ConfiguredTelemetry::new());
     let d = err.to_diagnostic();
     assert_ne!(
         d.primary.span,
@@ -1163,46 +1267,59 @@ fn unbound_var_diag_has_real_span() {
     assert_eq!(d.code, codes::LOWER_UNBOUND);
 }
 
+// PICKED: call to undefined function is a compile-time error
 #[test]
 fn unbound_callee_returns_lower_error() {
-    let err = lower_src_err("fn f(), do: nonesuch(1)");
+    let err = lower_src_err("fn f(), do: nonesuch(1)", &crate::telemetry::ConfiguredTelemetry::new());
     assert!(matches!(err, LowerError::Unbound { .. }));
 }
 
+// PICKED: empty case expression is a compile-time error
 #[test]
 fn empty_case_returns_unsupported() {
-    let err = lower_src_err("fn f() do case 1 do end end");
+    let err = lower_src_err(
+        "fn f() do case 1 do end end",
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    );
     assert!(matches!(err, LowerError::Unsupported { .. }));
 }
 
+// DROP: old-world IR map primitive shape, no compiler2 analogue
 #[test]
 fn map_lowers_to_make_map() {
-    let m = lower_src("fn m(), do: %{k: 1}");
+    let m = lower_src("fn m(), do: %{k: 1}", &crate::telemetry::ConfiguredTelemetry::new());
     let s = format!("{}", m);
     assert!(s.contains("map({"), "got:\n{}", s);
 }
 
+// DROP: old-world IR map_update primitive shape, no compiler2 analogue
 #[test]
 fn map_update_lowers() {
-    let m = lower_src("fn u(m), do: %{m | k: 2}");
+    let m = lower_src(
+        "fn u(m), do: %{m | k: 2}",
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    );
     let s = format!("{}", m);
     assert!(s.contains("map_update("), "got:\n{}", s);
 }
 
+// DROP: old-world IR map_get primitive shape, no compiler2 analogue
 #[test]
 fn index_lowers_to_map_get() {
-    let m = lower_src("fn g(m), do: m[:k]");
+    let m = lower_src("fn g(m), do: m[:k]", &crate::telemetry::ConfiguredTelemetry::new());
     let s = format!("{}", m);
     assert!(s.contains("map_get("), "got:\n{}", s);
 }
 
+// DROP: old-world IR bitstring primitive shape, no compiler2 analogue
 #[test]
 fn bitstring_expr_lowers() {
-    let m = lower_src("fn b(), do: << 0xA5 >>");
+    let m = lower_src("fn b(), do: << 0xA5 >>", &crate::telemetry::ConfiguredTelemetry::new());
     let s = format!("{}", m);
     assert!(s.contains("bitstring(["), "got:\n{}", s);
 }
 
+// DROP: old-world inline dispatch IR shape, no compiler2 analogue
 #[test]
 fn case_lowers_dispatch_graph_inline() {
     // fz-puj.52.7 — case sites lower the DispatchGraph inline so the
@@ -1216,6 +1333,7 @@ _ -> :other
   end
 end
 "#,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let s = format!("{}", m);
     assert!(
@@ -1227,6 +1345,7 @@ end
     assert!(s.contains("tail_call"), "expected tail_call to clause cont fns: {}", s);
 }
 
+// DROP: old-world IR If terminator shape for cond, no compiler2 analogue
 #[test]
 fn cond_lowers() {
     // cond is parsed; lowering should emit If terminators.
@@ -1239,11 +1358,13 @@ true -> :nonpos
   end
 end
 "#,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let s = format!("{}", m);
     assert!(s.contains("if v"), "got:\n{}", s);
 }
 
+// DROP: old-world IR with/tuple_field projection shape, no compiler2 analogue
 #[test]
 fn with_simple_lowers() {
     let m = lower_src(
@@ -1252,18 +1373,24 @@ fn w() do
   with {:ok, a} <- {:ok, 1}, do: a
 end
 "#,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let s = format!("{}", m);
     assert!(s.contains("tuple_field"), "expected pattern projection: {}", s);
 }
 
+// DROP: old-world IR map_get pattern check shape, no compiler2 analogue
 #[test]
 fn map_pattern_uses_map_get_check() {
-    let m = lower_src("fn first(%{name: n}), do: n");
+    let m = lower_src(
+        "fn first(%{name: n}), do: n",
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    );
     let s = format!("{}", m);
     assert!(s.contains("map_get("), "got:\n{}", s);
 }
 
+// PICKED: guard and binding share a single tuple field projection, not two
 #[test]
 fn inline_dispatch_reuses_tuple_subject_across_test_guard_and_binding() {
     let m = lower_src(
@@ -1274,6 +1401,7 @@ fn inline_dispatch_reuses_tuple_subject_across_test_guard_and_binding() {
              _ -> 0
            end
          end",
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
 
     let classify = m.fn_by_name("classify").expect("classify fn");
@@ -1285,6 +1413,7 @@ fn inline_dispatch_reuses_tuple_subject_across_test_guard_and_binding() {
     );
 }
 
+// PICKED: guard and binding share a single list head extraction, not two
 #[test]
 fn inline_dispatch_reuses_list_head_across_guard_and_binding() {
     let m = lower_src(
@@ -1295,6 +1424,7 @@ fn inline_dispatch_reuses_list_head_across_guard_and_binding() {
              _ -> 0
            end
          end",
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
 
     let classify = m.fn_by_name("classify").expect("classify fn");
@@ -1306,6 +1436,7 @@ fn inline_dispatch_reuses_list_head_across_guard_and_binding() {
     );
 }
 
+// PICKED: guard and binding share a single map_get extraction, not two
 #[test]
 fn inline_dispatch_reuses_map_value_across_guard_and_binding() {
     let m = lower_src(
@@ -1316,6 +1447,7 @@ fn inline_dispatch_reuses_map_value_across_guard_and_binding() {
              _ -> 0
            end
          end",
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
 
     let map_get_count = count_prims(&m, |prim| matches!(prim, Prim::MatcherMapGet(_, _)));
@@ -1326,24 +1458,27 @@ fn inline_dispatch_reuses_map_value_across_guard_and_binding() {
     );
 }
 
+// DROP: old-world IR bit_reader_init/read_field/done shape, no compiler2 analogue
 #[test]
 fn bitstring_pattern_lowers_to_per_field_reads() {
-    let m = lower_src("fn p(<<x::8>>), do: x");
+    let m = lower_src("fn p(<<x::8>>), do: x", &crate::telemetry::ConfiguredTelemetry::new());
     let s = format!("{}", m);
     assert!(s.contains("bit_reader_init("), "got:\n{}", s);
     assert!(s.contains("bit_read_field("), "got:\n{}", s);
     assert!(s.contains("bit_reader_done("), "got:\n{}", s);
 }
 
+// PICKED: unexpanded quote node is a compile-time error
 #[test]
 fn quote_returns_post_expansion_node() {
     // Skip macro expansion to surface the leftover-quote error path.
-    let err = lower_src_err("fn f(), do: quote do: 1");
+    let err = lower_src_err("fn f(), do: quote do: 1", &crate::telemetry::ConfiguredTelemetry::new());
     assert!(matches!(err, LowerError::PostExpansionNode { .. }));
 }
 
 /// Span round-trip: AST nodes parsed by the parser carry non-DUMMY spans
 /// that slice back to their source lexemes.
+// DROP: parser span infrastructure, not language behaviour
 #[test]
 fn parser_attaches_real_spans_to_expressions() {
     let src = "fn ident(x), do: x + 1";
@@ -1369,6 +1504,7 @@ fn parser_attaches_real_spans_to_expressions() {
 }
 
 /// FnDef.name_span pinpoints the source name token (not the whole def).
+// DROP: parser fn-name span infrastructure, not language behaviour
 #[test]
 fn parser_records_fn_name_span() {
     let src = "fn foobar(), do: 0";
@@ -1390,6 +1526,7 @@ fn parser_records_fn_name_span() {
 /// Pattern-bound parameters record their name + binding span in
 /// `Module.source`. The ticket's canonical test: lower a `double(x)`
 /// function and verify the param's Var → "x", span → the `x` token.
+// DROP: source-info side-table infrastructure, not language behaviour
 #[test]
 fn pattern_var_records_source_name_and_span() {
     let src = "fn double(x), do: x * 2";
@@ -1416,6 +1553,7 @@ fn pattern_var_records_source_name_and_span() {
 
 /// Every top-level fn gets its source span recorded under
 /// `fn_span[fn_id.0]`.
+// DROP: source-info fn_span side-table infrastructure, not language behaviour
 #[test]
 fn fn_span_records_def_position() {
     let src = "fn alpha(), do: 1\nfn beta(), do: 2";
@@ -1441,6 +1579,7 @@ fn fn_span_records_def_position() {
 /// originating call expression's span as their `fn_span`, so a
 /// diagnostic on the continuation can point at where the work
 /// originated in source.
+// DROP: source-info continuation span metadata, not language behaviour
 #[test]
 fn continuation_fn_span_points_at_originating_call() {
     // `callee(x) + 1` forces a non-tail Call -> CPS split.
@@ -1489,6 +1628,7 @@ fn continuation_fn_span_points_at_originating_call() {
 /// keep their source-expression span on `var_span` and an empty
 /// name on `var_name`. .20.8's diagnostic renderer uses the empty-
 /// name signal to render "this value" instead of "`<name>`".
+// DROP: source-info temp-var span metadata, not language behaviour
 #[test]
 fn temp_var_records_span_and_empty_name() {
     // `x + 1` produces a Const(1) Var whose source position is the
@@ -1526,13 +1666,14 @@ fn temp_var_records_span_and_empty_name() {
     assert_eq!(txt, "1");
 }
 
+// DROP: old-world IR back-edge flag, no compiler2 analogue
 #[test]
 fn self_recursive_fn_has_back_edge() {
     // fz-qbg.2: with multi-clause body cont fns, prelude multi-clause
     // fns (`print`) contribute TailCalls to their per-clause
     // cont fns earlier in module order. Look up `loop` specifically
     // rather than the first TailCall anywhere.
-    let m = lower_src("fn loop(n), do: loop(n)");
+    let m = lower_src("fn loop(n), do: loop(n)", &crate::telemetry::ConfiguredTelemetry::new());
     let loop_fn = m.fn_by_name("loop").expect("loop fn missing");
     let (callee, is_back_edge) = loop_fn
         .blocks
@@ -1545,7 +1686,7 @@ fn self_recursive_fn_has_back_edge() {
                 ..
             } = &b.terminator
             {
-                Some((*callee, *is_back_edge))
+                Some((callee.clone(), *is_back_edge))
             } else {
                 None
             }
@@ -1554,9 +1695,13 @@ fn self_recursive_fn_has_back_edge() {
     assert!(is_back_edge, "self-recursion must be a back-edge; callee={:?}", callee);
 }
 
+// DROP: old-world IR back-edge flag, no compiler2 analogue
 #[test]
 fn non_recursive_call_is_not_back_edge() {
-    let m = lower_src("fn id(x), do: x\nfn main(), do: id(1)");
+    let m = lower_src(
+        "fn id(x), do: x\nfn main(), do: id(1)",
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    );
     // Find the TailCall from main to id.
     let mut found = false;
     for f in &m.fns {
@@ -1572,6 +1717,7 @@ fn non_recursive_call_is_not_back_edge() {
     assert!(found, "no TailCall from main");
 }
 
+// DROP: old-world module externs table layout, no compiler2 analogue
 #[test]
 fn extern_fn_registers_in_module_externs() {
     let toks = Lexer::with_source_name(
@@ -1609,6 +1755,7 @@ fn extern_fn_registers_in_module_externs() {
 
 /// fz-0cv — `binary` lowers to ExternTy::Binary; `cstring` lowers to
 /// ExternTy::CString. Both are distinct from ExternTy::Any.
+// DROP: old-world ExternTy encoding details, no compiler2 analogue
 #[test]
 fn binary_and_cstring_lower_to_distinct_extern_tys() {
     let src = "\
@@ -1644,12 +1791,45 @@ fn main() do fz_open(\"x\", 0) end
     assert_ne!(write.params[1], ExternTy::Any);
 }
 
+// DROP: old-world ExternTy resource encoding, no compiler2 analogue
+#[test]
+fn constrained_resource_extern_uses_raw_payload_and_boxed_return() {
+    let src = "\
+extern \"C\" fn fz_make_resource(t, (t) -> nil) :: resource(t) when t: integer | cpointer
+fn main() do fz_make_resource(42, fn (x) -> nil end) end
+";
+    let toks = Lexer::with_source_name(src, "<test>")
+        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
+        .expect("lex");
+    let prog = Parser::new(toks)
+        .parse_program(&crate::telemetry::ConfiguredTelemetry::new())
+        .expect("parse");
+    let module = lower_program(
+        &mut crate::types::new(),
+        &prog,
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    )
+    .expect("lower");
+    let make_resource = module
+        .externs
+        .iter()
+        .find(|e| e.fz_name == "fz_make_resource")
+        .expect("fz_make_resource missing");
+    assert_eq!(make_resource.params, vec![ExternTy::I64, ExternTy::Any]);
+    assert_eq!(
+        make_resource.ret,
+        ExternTy::Any,
+        "resource(t) must stay boxed at the extern boundary",
+    );
+}
+
 /// fz-eol — `&libc::close/1` resolves to a synthesized top-level
 /// wrapper fn whose body contains a single `Prim::Extern` call. This
 /// is the canonical shape `resolve_dtor_from_closure` walks at
 /// runtime so `make_resource(_, &libc::close/1)` resolves to
 /// libc::close. The wrapper has zero captures so the AOT static dtor
 /// table accepts it.
+// DROP: old-world IR extern wrapper synthesis, no compiler2 analogue
 #[test]
 fn fn_ref_to_extern_synthesizes_wrapper() {
     let src = "\
@@ -1688,6 +1868,7 @@ fn main() do &libc::close/1 end
 /// produces an extern whose fz_name carries the `libc::` prefix while
 /// the linker-visible symbol is the bare last segment. Named-typed
 /// params (`path :: cstring`) parse identically to positional ones.
+// DROP: old-world extern fz_name/symbol split metadata, no compiler2 analogue
 #[test]
 fn extern_with_library_prefix_splits_fz_name_from_symbol() {
     let src = "\
@@ -1718,13 +1899,14 @@ fn main() do libc::open(\"x\", 0) end
 /// fz-jex — calling an extern with the wrong arg count must produce a
 /// LowerError at compile time, not a silent codegen truncation that
 /// panics at runtime in fz_unbox_int with a tag mismatch.
+// PICKED: extern call with wrong argument count is a compile-time error
 #[test]
 fn extern_call_arity_mismatch_is_lower_error() {
     let src = "\
 extern \"C\" fn libc::open(path :: cstring, integer, integer) :: integer
 fn main() do libc::open(\"x\", \"x\", 0, 0) end
 ";
-    let err = lower_src_err(src);
+    let err = lower_src_err(src, &crate::telemetry::ConfiguredTelemetry::new());
     match err {
         LowerError::Unsupported { what, .. } => {
             assert!(
@@ -1737,13 +1919,14 @@ fn main() do libc::open(\"x\", \"x\", 0, 0) end
     }
 }
 
+// DROP: old-world ExternMarshal variadic call encoding, no compiler2 analogue
 #[test]
 fn variadic_extern_records_decl_and_call_marshal_specs() {
     let src = "\
 extern \"C\" fn libc::open(path :: cstring, flags :: integer, ...) :: integer
 fn main() do libc::open(\"x\", 0, 0o644 :: integer) end
 ";
-    let m = lower_src(src);
+    let m = lower_src(src, &crate::telemetry::ConfiguredTelemetry::new());
     let open = m
         .externs
         .iter()
@@ -1768,13 +1951,14 @@ fn main() do libc::open(\"x\", 0, 0o644 :: integer) end
     assert_eq!(extern_args[2].marshal, ExternMarshal::Ascribed(ExternTy::I64));
 }
 
+// DROP: old-world ExternMarshal::Auto variadic encoding, no compiler2 analogue
 #[test]
 fn variadic_extern_unascribed_extra_arg_stays_auto() {
     let src = "\
 extern \"C\" fn libc::printf(fmt :: cstring, ...) :: integer
 fn main() do libc::printf(\"%d\", 7) end
 ";
-    let m = lower_src(src);
+    let m = lower_src(src, &crate::telemetry::ConfiguredTelemetry::new());
     let main = m.fn_by_name("main").expect("main missing");
     let extern_args = main
         .blocks
@@ -1788,13 +1972,14 @@ fn main() do libc::printf(\"%d\", 7) end
     assert_eq!(extern_args[1].marshal, ExternMarshal::Auto);
 }
 
+// PICKED: variadic extern call with too few args is a compile-time error
 #[test]
 fn variadic_extern_too_few_args_is_lower_error() {
     let src = "\
 extern \"C\" fn libc::open(path :: cstring, flags :: integer, ...) :: integer
 fn main() do libc::open(\"x\") end
 ";
-    let err = lower_src_err(src);
+    let err = lower_src_err(src, &crate::telemetry::ConfiguredTelemetry::new());
     match err {
         LowerError::Unsupported { what, .. } => {
             assert!(
@@ -1807,6 +1992,7 @@ fn main() do libc::open(\"x\") end
     }
 }
 
+// DROP: old-world extern_idx internal consistency, no compiler2 analogue
 #[test]
 fn extern_id_is_stable_and_extern_idx_is_consistent() {
     let toks = Lexer::with_source_name(
@@ -1845,6 +2031,7 @@ fn extern_id_is_stable_and_extern_idx_is_consistent() {
 /// `User`, and the well-known synthesized cont families
 /// (fn_clause_, k_, lambda_, if_, case_) map to their respective
 /// variants based on name prefix.
+// DROP: old-world FnCategory tagging plumbing, no compiler2 analogue
 #[test]
 fn fn_category_tags_match_origin() {
     // Mix user fns covering: multi-clause dispatch (-> MultiClauseCont),
@@ -1913,13 +2100,9 @@ end
 
 // ----- fz-puj.36 (H7) — SourcePatternRows construction from receive clauses -----
 
-fn parse_receive_clauses(src: &str) -> Vec<MatchClause> {
-    let toks = Lexer::with_source_name(src, "<test>")
-        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
-        .expect("lex");
-    let prog = Parser::new(toks)
-        .parse_program(&crate::telemetry::ConfiguredTelemetry::new())
-        .expect("parse");
+fn parse_receive_clauses(src: &str, tel: &dyn Telemetry) -> Vec<MatchClause> {
+    let toks = Lexer::with_source_name(src, "<test>").tokenize(tel).expect("lex");
+    let prog = Parser::new(toks).parse_program(tel).expect("parse");
     fn find_receive(e: &Expr) -> Option<&Vec<MatchClause>> {
         match e {
             Expr::Receive { clauses, .. } => Some(clauses),
@@ -1939,11 +2122,15 @@ fn parse_receive_clauses(src: &str) -> Vec<MatchClause> {
     panic!("no receive clauses found in source");
 }
 
+// DROP: old-world receive pattern-rows builder internals, no compiler2 analogue
 #[test]
 fn build_receive_pattern_rows_one_clause_shape() {
-    let clauses = parse_receive_clauses("fn rx() do receive do {:ping, _} -> :pong end end");
-    let source_patterns = build_receive_pattern_rows(Var(0), &clauses);
-    assert_eq!(source_patterns.subjects, vec![Var(0)]);
+    let clauses = parse_receive_clauses(
+        "fn rx() do receive do {:ping, _} -> :pong end end",
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    );
+    let source_patterns = build_receive_pattern_rows(&clauses);
+    assert_eq!(source_patterns.input_count, 1);
     assert_eq!(source_patterns.rows.len(), 1);
     assert_eq!(source_patterns.rows[0].patterns.len(), 1);
     assert!(source_patterns.rows[0].preconditions.is_empty());
@@ -1951,6 +2138,7 @@ fn build_receive_pattern_rows_one_clause_shape() {
     assert_eq!(source_patterns.rows[0].body_id, 0);
 }
 
+// DROP: old-world receive pattern-rows builder internals, no compiler2 analogue
 #[test]
 fn build_receive_pattern_rows_multi_clause_preserves_order_and_ids() {
     let clauses = parse_receive_clauses(
@@ -1959,9 +2147,10 @@ fn build_receive_pattern_rows_multi_clause_preserves_order_and_ids() {
             {:msg, _} -> :ok
             _ -> :other
         end end",
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
-    let source_patterns = build_receive_pattern_rows(Var(7), &clauses);
-    assert_eq!(source_patterns.subjects, vec![Var(7)]);
+    let source_patterns = build_receive_pattern_rows(&clauses);
+    assert_eq!(source_patterns.input_count, 1);
     assert_eq!(source_patterns.rows.len(), 3);
     for (i, row) in source_patterns.rows.iter().enumerate() {
         assert_eq!(row.body_id, i as PatternBodyId);
@@ -1970,6 +2159,7 @@ fn build_receive_pattern_rows_multi_clause_preserves_order_and_ids() {
     }
 }
 
+// DROP: old-world receive pattern-rows builder internals, no compiler2 analogue
 #[test]
 fn build_receive_pattern_rows_carries_guard() {
     let clauses = parse_receive_clauses(
@@ -1977,8 +2167,9 @@ fn build_receive_pattern_rows_carries_guard() {
             n when n > 0 -> :positive
             _ -> :other
         end end",
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
-    let source_patterns = build_receive_pattern_rows(Var(0), &clauses);
+    let source_patterns = build_receive_pattern_rows(&clauses);
     assert_eq!(source_patterns.rows.len(), 2);
     assert!(
         source_patterns.rows[0].guard.is_some(),
@@ -1987,6 +2178,7 @@ fn build_receive_pattern_rows_carries_guard() {
     assert!(source_patterns.rows[1].guard.is_none());
 }
 
+// PICKED: case guard calling a user function compiles without error
 #[test]
 fn case_guard_with_pure_user_fn_inlines_and_lowers() {
     let src = "fn is_pos(n) do n > 0 end
@@ -1996,9 +2188,10 @@ fn case_guard_with_pure_user_fn_inlines_and_lowers() {
                    _ -> :neg
                  end
                end";
-    let _ = lower_src(src);
+    let _ = lower_src(src, &crate::telemetry::ConfiguredTelemetry::new());
 }
 
+// PICKED: case guard calling multi-clause function dispatches correctly at runtime
 #[test]
 fn case_guard_with_multi_clause_user_fn_lowers_dispatch() {
     let src = "fn is_pos(0) do false end
@@ -2009,20 +2202,28 @@ fn case_guard_with_multi_clause_user_fn_lowers_dispatch() {
                    _ -> dbg(0)
                  end
                end";
-    assert_eq!(run_and_capture(src).trim(), "1");
+    assert_eq!(
+        run_and_capture(src, &crate::telemetry::ConfiguredTelemetry::new()).trim(),
+        "1"
+    );
 }
 
+// PICKED: guarded list-cons pattern clause dispatches correctly at runtime
 #[test]
 fn guarded_list_cons_clause_survives_compiled_folding() {
     let src = "fn partition(_, [], lo, hi), do: {lo, hi}
                fn partition(p, [h | t], lo, hi) when h < p, do: partition(p, t, [h | lo], hi)
                fn partition(p, [h | t], lo, hi), do: partition(p, t, lo, [h | hi])
                fn main() do dbg(partition(3, [1, 4, 2], [], [])) end";
-    assert_eq!(run_and_capture(src).trim(), "{[2, 1], [4]}");
+    assert_eq!(
+        run_and_capture(src, &crate::telemetry::ConfiguredTelemetry::new()).trim(),
+        "{[2, 1], [4]}"
+    );
 }
 
 // ----- fz-yxs (E2) — selective receive lowering -----
 
+// DROP: old-world Term::ReceiveMatched IR shape, no compiler2 analogue
 #[test]
 fn lower_receive_one_clause_emits_receive_matched() {
     let src = "fn loop_one() do
@@ -2030,7 +2231,7 @@ fn lower_receive_one_clause_emits_receive_matched() {
             {:ping, sender} -> :pong
           end
         end";
-    let m = lower_src(src);
+    let m = lower_src(src, &crate::telemetry::ConfiguredTelemetry::new());
     let s = format!("{}", m);
     assert!(
         s.contains("receive_matched [1 clauses]"),
@@ -2044,6 +2245,7 @@ fn lower_receive_one_clause_emits_receive_matched() {
     );
 }
 
+// DROP: old-world receive-after IR shape, no compiler2 analogue
 #[test]
 fn lower_receive_after_clause_emits_after_body() {
     let src = "fn rx_timeout() do
@@ -2052,7 +2254,7 @@ fn lower_receive_after_clause_emits_after_body() {
           after 100 -> :timeout
           end
         end";
-    let m = lower_src(src);
+    let m = lower_src(src, &crate::telemetry::ConfiguredTelemetry::new());
     let s = format!("{}", m);
     assert!(s.contains("rx_after_body"), "expected after body fn, got:\n{}", s);
     assert!(
@@ -2062,6 +2264,7 @@ fn lower_receive_after_clause_emits_after_body() {
     );
 }
 
+// PICKED: pinned variable in receive pattern resolves from outer scope
 #[test]
 fn lower_receive_pinned_resolves_outer_scope() {
     let src = "fn rx_pinned(want) do
@@ -2069,7 +2272,7 @@ fn lower_receive_pinned_resolves_outer_scope() {
             {^want, payload} -> payload
           end
         end";
-    let m = lower_src(src);
+    let m = lower_src(src, &crate::telemetry::ConfiguredTelemetry::new());
     let s = format!("{}", m);
     assert!(
         s.contains("pinned=[^want="),
@@ -2078,6 +2281,7 @@ fn lower_receive_pinned_resolves_outer_scope() {
     );
 }
 
+// PICKED: pinned variable in receive pattern referencing unbound name is an error
 #[test]
 fn lower_receive_pinned_unbound_is_error() {
     let src = "fn rx() do
@@ -2085,7 +2289,7 @@ fn lower_receive_pinned_unbound_is_error() {
             {^nope, _} -> 0
           end
         end";
-    let err = lower_src_err(src);
+    let err = lower_src_err(src, &crate::telemetry::ConfiguredTelemetry::new());
     match err {
         LowerError::Unbound { name, .. } => {
             assert_eq!(name, "^nope");
@@ -2094,6 +2298,7 @@ fn lower_receive_pinned_unbound_is_error() {
     }
 }
 
+// PICKED: well-formed receive with multiple message patterns compiles cleanly
 #[test]
 fn lower_receive_planner_accepts_well_formed() {
     // Acceptance bullet: planner accepts well-formed selective receive.
@@ -2103,7 +2308,7 @@ fn lower_receive_planner_accepts_well_formed() {
             {:pong, _} -> 2
           end
         end";
-    let m = lower_src(src);
+    let m = lower_src(src, &crate::telemetry::ConfiguredTelemetry::new());
     // Typing must not panic and must produce a ModulePlan for the
     // module. We don't pin the return type — that depends on the
     // body return type which the bodies set to const ints.
@@ -2119,6 +2324,7 @@ fn lower_receive_planner_accepts_well_formed() {
     assert!(impure.is_empty(), "unexpected purity diags: {:?}", impure);
 }
 
+// PICKED: receive guard calling an extern-backed function is a compile-time error
 #[test]
 fn lower_receive_rejects_impure_guard() {
     // The helper body calls an extern-backed runtime fn, so it cannot
@@ -2129,7 +2335,7 @@ fn lower_receive_rejects_impure_guard() {
             {:foo, _} when helper() -> 0
           end
         end";
-    let err = lower_src_err(src);
+    let err = lower_src_err(src, &crate::telemetry::ConfiguredTelemetry::new());
     assert!(
         format!("{:?}", err).contains("UnsupportedGuardExpr"),
         "expected restricted guard-lowering error, got {:?}",
@@ -2137,7 +2343,9 @@ fn lower_receive_rejects_impure_guard() {
     );
 }
 
-fn first_receive_dispatch(m: &Module) -> Option<&PatternDispatchPlan> {
+fn first_receive_dispatch(
+    m: &Module,
+) -> Option<&PatternDispatchPlan<crate::runtime_type_predicate::RuntimeTypePredicate>> {
     for f in &m.fns {
         for b in &f.blocks {
             if let Term::ReceiveMatched { dispatch, .. } = &b.terminator {
@@ -2148,8 +2356,10 @@ fn first_receive_dispatch(m: &Module) -> Option<&PatternDispatchPlan> {
     None
 }
 
-fn dispatch_has_guard_dispatch(dispatch: &PatternDispatchPlan) -> bool {
-    fn expr_has_dispatch(expr: &PatternGuardExpr) -> bool {
+fn dispatch_has_guard_dispatch(
+    dispatch: &PatternDispatchPlan<crate::runtime_type_predicate::RuntimeTypePredicate>,
+) -> bool {
+    fn expr_has_dispatch(expr: &PatternGuardExpr<crate::runtime_type_predicate::RuntimeTypePredicate>) -> bool {
         match expr {
             PatternGuardExpr::Dispatch { .. } => true,
             PatternGuardExpr::Unary { expr, .. } => expr_has_dispatch(expr),
@@ -2160,6 +2370,7 @@ fn dispatch_has_guard_dispatch(dispatch: &PatternDispatchPlan) -> bool {
     dispatch.guards.iter().any(expr_has_dispatch)
 }
 
+// DROP: old-world receive PatternDispatchPlan internals, no compiler2 analogue
 #[test]
 fn receive_guard_with_single_clause_helper_lowers_into_dispatch() {
     let src = "fn positive(n), do: n > 0
@@ -2169,7 +2380,7 @@ fn receive_guard_with_single_clause_helper_lowers_into_dispatch() {
             _ -> 0
           end
         end";
-    let m = lower_src(src);
+    let m = lower_src(src, &crate::telemetry::ConfiguredTelemetry::new());
     let dispatch = first_receive_dispatch(&m).expect("receive dispatch");
     assert!(
         !dispatch.guards.is_empty(),
@@ -2178,6 +2389,7 @@ fn receive_guard_with_single_clause_helper_lowers_into_dispatch() {
     );
 }
 
+// DROP: old-world receive PatternDispatchPlan pinned-input internals, no compiler2 analogue
 #[test]
 fn receive_guard_capture_walks_helper_call_args() {
     let src = "fn positive(n), do: n > 0
@@ -2187,7 +2399,7 @@ fn receive_guard_capture_walks_helper_call_args() {
             _ -> 0
           end
         end";
-    let m = lower_src(src);
+    let m = lower_src(src, &crate::telemetry::ConfiguredTelemetry::new());
     let dispatch = first_receive_dispatch(&m).expect("receive dispatch");
     assert!(
         dispatch.pinned.iter().any(|pinned| pinned.name == "limit"),
@@ -2196,6 +2408,7 @@ fn receive_guard_capture_walks_helper_call_args() {
     );
 }
 
+// DROP: old-world receive PatternDispatchPlan internals, no compiler2 analogue
 #[test]
 fn receive_guard_with_transitive_helper_lowers_into_dispatch() {
     let src = "fn positive(n), do: n > 0
@@ -2206,7 +2419,7 @@ fn receive_guard_with_transitive_helper_lowers_into_dispatch() {
             _ -> 0
           end
         end";
-    let m = lower_src(src);
+    let m = lower_src(src, &crate::telemetry::ConfiguredTelemetry::new());
     let dispatch = first_receive_dispatch(&m).expect("receive dispatch");
     assert!(
         !dispatch.guards.is_empty(),
@@ -2215,6 +2428,7 @@ fn receive_guard_with_transitive_helper_lowers_into_dispatch() {
     );
 }
 
+// DROP: old-world receive PatternDispatchPlan internals, no compiler2 analogue
 #[test]
 fn receive_guard_with_multi_clause_helper_lowers_dispatch() {
     let src = "fn wanted({:ok, n}), do: n > 0
@@ -2225,7 +2439,7 @@ fn receive_guard_with_multi_clause_helper_lowers_dispatch() {
             _ -> 0
           end
         end";
-    let m = lower_src(src);
+    let m = lower_src(src, &crate::telemetry::ConfiguredTelemetry::new());
     let dispatch = first_receive_dispatch(&m).expect("receive dispatch");
     assert!(
         dispatch_has_guard_dispatch(dispatch),
@@ -2234,6 +2448,7 @@ fn receive_guard_with_multi_clause_helper_lowers_dispatch() {
     );
 }
 
+// DROP: old-world receive PatternDispatchPlan internals, no compiler2 analogue
 #[test]
 fn receive_guard_helper_dispatch_handles_destructuring() {
     let src = "fn wanted({:ok, {n, _}}), do: n > 0
@@ -2244,7 +2459,7 @@ fn receive_guard_helper_dispatch_handles_destructuring() {
             _ -> 0
           end
         end";
-    let m = lower_src(src);
+    let m = lower_src(src, &crate::telemetry::ConfiguredTelemetry::new());
     let dispatch = first_receive_dispatch(&m).expect("receive dispatch");
     assert!(
         dispatch_has_guard_dispatch(dispatch),
@@ -2253,6 +2468,7 @@ fn receive_guard_helper_dispatch_handles_destructuring() {
     );
 }
 
+// DROP: old-world receive PatternDispatchPlan prepared_keys internals, no compiler2 analogue
 #[test]
 fn receive_dispatch_prepares_heap_map_keys_outside_graph() {
     let src = "fn rx() do
@@ -2261,7 +2477,7 @@ fn receive_dispatch_prepares_heap_map_keys_outside_graph() {
             _ -> 0
           end
         end";
-    let m = lower_src(src);
+    let m = lower_src(src, &crate::telemetry::ConfiguredTelemetry::new());
     let dispatch = first_receive_dispatch(&m).expect("receive dispatch");
     assert_eq!(dispatch.prepared_keys, vec![DispatchConst::Utf8Binary(b"id".to_vec())]);
     let s = format!("{}", m);

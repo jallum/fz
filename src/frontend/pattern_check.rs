@@ -10,12 +10,12 @@
 //! driver's render-and-exit logic.
 
 use crate::ast::{Expr, FnClause, FnDef, Item, MatchClause, Pattern, Program, Spanned, WithBinding};
-use crate::diag::{Diagnostic, Span, codes};
+use crate::compiler::source::Span;
+use crate::diag::{Diagnostic, codes};
 use crate::dispatch_matrix::pattern::{
     KnownSubjectDomain, PatternBodyId, PatternRow, SourcePatternRows, find_unreachable_rows,
     is_inexhaustive_with_domains,
 };
-use crate::fz_ir::Var;
 use crate::types::Types;
 use std::collections::{HashMap, HashSet};
 
@@ -69,7 +69,6 @@ fn check_fn_def(fn_def: &FnDef, domains: Option<&[KnownSubjectDomain]>, diags: &
 /// early signal.
 fn check_fn_clauses(fn_def: &FnDef, domains: Option<&[KnownSubjectDomain]>, diags: &mut Vec<Diagnostic>) {
     let arity = fn_def.clauses[0].params.len();
-    let subjects: Vec<Var> = (0..arity as u32).map(Var).collect();
     let rows: Vec<PatternRow> = fn_def
         .clauses
         .iter()
@@ -81,7 +80,10 @@ fn check_fn_clauses(fn_def: &FnDef, domains: Option<&[KnownSubjectDomain]>, diag
             body_id: i as PatternBodyId,
         })
         .collect();
-    let source_patterns = SourcePatternRows { subjects, rows };
+    let source_patterns = SourcePatternRows {
+        input_count: arity,
+        rows,
+    };
 
     // Type-ascribed params (`x :: integer`) and clause guards add match
     // constraints the SourcePatternRows does not model — it sees an ascribed or
@@ -116,7 +118,6 @@ fn check_case_clauses(case_span: Span, clauses: &[MatchClause], diags: &mut Vec<
     if clauses.is_empty() {
         return;
     }
-    let subjects = vec![Var(0)];
     let rows: Vec<PatternRow> = clauses
         .iter()
         .enumerate()
@@ -127,7 +128,7 @@ fn check_case_clauses(case_span: Span, clauses: &[MatchClause], diags: &mut Vec<
             body_id: i as PatternBodyId,
         })
         .collect();
-    let source_patterns = SourcePatternRows { subjects, rows };
+    let source_patterns = SourcePatternRows { input_count: 1, rows };
 
     for dead_id in find_unreachable_rows(&source_patterns) {
         let dead = &clauses[dead_id as usize];
@@ -149,7 +150,6 @@ fn check_with_else(with_span: Span, else_clauses: &[MatchClause], diags: &mut Ve
     if else_clauses.is_empty() {
         return;
     }
-    let subjects = vec![Var(0)];
     let rows: Vec<PatternRow> = else_clauses
         .iter()
         .enumerate()
@@ -160,7 +160,7 @@ fn check_with_else(with_span: Span, else_clauses: &[MatchClause], diags: &mut Ve
             body_id: i as PatternBodyId,
         })
         .collect();
-    let source_patterns = SourcePatternRows { subjects, rows };
+    let source_patterns = SourcePatternRows { input_count: 1, rows };
     for dead_id in find_unreachable_rows(&source_patterns) {
         let dead = &else_clauses[dead_id as usize];
         diags.push(unreachable_clause_diag_match(

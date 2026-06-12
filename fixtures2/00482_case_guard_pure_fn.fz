@@ -1,0 +1,7 @@
+fn is_pos(n) do n > 0 end
+fn main() do
+  case 5 do
+    n when is_pos(n) -> :pos
+    _ -> :neg
+  end
+end

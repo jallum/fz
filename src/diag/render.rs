@@ -21,9 +21,9 @@ use std::cmp::{max, min};
 use std::io::{self, Write};
 use std::iter::repeat_n;
 
+use crate::compiler::source::{SourceMap, Span};
+
 use super::diagnostic::{Diagnostic, Severity, SpanLabel};
-use super::source_map::SourceMap;
-use super::span::Span;
 use super::style::{self, ColorMode};
 
 pub struct Renderer<'a> {
@@ -146,7 +146,7 @@ impl<'a> Renderer<'a> {
             return Ok(());
         }
         let loc = self.sm.locate(span);
-        let file = &self.sm.file(loc.file).name;
+        let file = self.sm.name(loc.code_id).unwrap_or("<unnamed>");
         writeln!(out, "  --> {}:{}:{}", file, loc.line, loc.col)
     }
 
@@ -160,7 +160,7 @@ impl<'a> Renderer<'a> {
             return Ok(());
         }
         let loc = self.sm.locate(sl.span);
-        let f = self.sm.file(loc.file);
+        let f = self.sm.code(loc.code_id);
         let source_line = &f.bytes.as_bytes()[loc.line_start as usize..loc.line_end as usize];
         let (expanded_line, byte_to_col) = expand_tabs(source_line, self.tab_width as usize);
 

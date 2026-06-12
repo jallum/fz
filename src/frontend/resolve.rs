@@ -22,12 +22,13 @@
 //! diagnostic source for "this call resolves to …".
 
 use crate::ast::*;
-use crate::diag::{Diagnostic, Span, codes};
+use crate::compiler::source::Span;
+use crate::diag::{Diagnostic, codes};
 use crate::frontend::protocols::{
     ImplTarget, PROTOCOL_ELEM_VAR, ProtocolCallbackFact, ProtocolDecl, ProtocolImplFact, ProtocolImplKey,
     ProtocolRegistry, impl_target_type, impl_target_type_with_element, protocol_domain_tag,
 };
-use crate::modules::identity::{ExportKey, ModuleName, QualifiedName};
+use crate::modules::identity::{Mfa, ModuleName, QualifiedName};
 use crate::modules::interface::{ModuleInterface, collect_from_program};
 use crate::modules::runtime_library::{interface, root_type_env};
 use crate::telemetry::Telemetry;
@@ -52,7 +53,7 @@ pub enum ResolveError {
         duplicate_span: Span,
     },
     DuplicateExport {
-        export: ExportKey,
+        export: Mfa,
         first_span: Span,
         duplicate_span: Span,
     },
@@ -61,7 +62,7 @@ pub enum ResolveError {
         span: Span,
     },
     UnknownImport {
-        export: ExportKey,
+        export: Mfa,
         span: Span,
     },
     ConflictingImport {
@@ -268,8 +269,9 @@ fn build_module_info_fn(m: &ModuleDef) -> Option<FnDef> {
         is_macro: false,
         is_private: false,
         extern_abi: None,
-        extern_params: vec![],
+        extern_param_tokens: vec![],
         extern_ret_tokens: TypeExprBody(vec![]),
+        extern_constraints: vec![],
         variadic: false,
         attrs: vec![],
         span: Span::DUMMY,
@@ -314,10 +316,18 @@ fn flatten_modules_with_options<T: Types<Ty = Ty>>(
     // keyword/0 and keyword/1.
     let mut module_type_envs: HashMap<String, ModuleTypeEnv> = HashMap::new();
     let root_types = root_type_env(t, tel);
-    let root_type_env = root_types.env.clone();
+    let (root_type_env, root_opaque_inners, root_brand_inners) =
+        build_module_type_env_for_with_base(t, &prog.attrs, "", &root_types.env).map_err(|e| {
+            ResolveError::TypeAliasError {
+                msg: format!("root: {}", e.msg),
+                span: e.span,
+            }
+        })?;
     module_type_envs.insert(String::new(), root_type_env.clone());
     let mut opaque_inners: HashMap<String, Ty> = root_types.opaque_inners;
+    opaque_inners.extend(root_opaque_inners);
     let mut brand_inners: HashMap<String, Ty> = root_types.brand_inners;
+    brand_inners.extend(root_brand_inners);
     collect_module_type_envs(
         t,
         &prog,
@@ -416,6 +426,7 @@ fn flatten_modules_with_options<T: Types<Ty = Ty>>(
     }
     let struct_field_types = collect_struct_field_types(&module_type_envs, &structs)?;
     Ok(Program {
+        attrs: prog.attrs,
         items: out,
         module_interfaces,
         external_module_interfaces,
@@ -998,10 +1009,7 @@ fn protocol_decl<T: Types<Ty = Ty>>(
     })
 }
 
-type ProtocolImplCallbacks = (
-    BTreeMap<(String, usize), ExportKey>,
-    BTreeMap<(String, usize), Vec<SpecDecl>>,
-);
+type ProtocolImplCallbacks = (BTreeMap<(String, usize), Mfa>, BTreeMap<(String, usize), Vec<SpecDecl>>);
 
 fn protocol_impl_callbacks(
     impl_module: &ModuleName,
@@ -1015,10 +1023,7 @@ fn protocol_impl_callbacks(
                 let arity = def.clauses.first().map(|c| c.params.len()).unwrap_or(0);
                 let key = (def.name.clone(), arity);
                 if callbacks
-                    .insert(
-                        key.clone(),
-                        ExportKey::new(impl_module.clone(), def.name.clone(), arity),
-                    )
+                    .insert(key.clone(), Mfa::new(impl_module.clone(), def.name.clone(), arity))
                     .is_some()
                 {
                     return Err(ResolveError::ProtocolError {
@@ -1462,7 +1467,7 @@ fn collect_module_fns_recursive(
         match &**item {
             Item::Fn(def) => {
                 let arity = def.clauses.first().map(|c| c.params.len()).unwrap_or(0);
-                let export = ExportKey::new(path.clone(), def.name.clone(), arity);
+                let export = Mfa::new(path.clone(), def.name.clone(), arity);
                 let fns = &mut out.get_mut(&path).expect("module fn map was inserted").fns;
                 let key = (def.name.clone(), arity);
                 if let Some(first_span) = fns.insert(key, def.name_span) {
@@ -1772,7 +1777,7 @@ fn validate_import_filter(
     for (name, arity) in filter {
         if !target_exports.contains(&(name.clone(), *arity)) {
             return Err(ResolveError::UnknownImport {
-                export: ExportKey::new(module.clone(), name.clone(), *arity),
+                export: Mfa::new(module.clone(), name.clone(), *arity),
                 span,
             });
         }

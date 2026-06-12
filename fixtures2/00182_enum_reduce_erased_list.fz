@@ -1,0 +1,11 @@
+# Broad declared surface type, concrete caller witness. `test/1` is declared as
+# `[any] -> integer`, but the reached activation from `main/0` still carries
+# the concrete `nonempty_list(int)` witness. `Enum.reduce/3` should therefore
+# settle through `Kernel.+/2` to `int`, not fall back to `unknown`/`any`.
+#
+# Expected: test([1,2,3]) : int ; main() : int
+
+@spec test([any]) :: integer
+fn test(list), do: Enum.reduce(list, 0, &Kernel.+/2)
+
+fn main(), do: test([1, 2, 3])

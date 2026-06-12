@@ -1,10 +1,10 @@
 use super::*;
 use crate::ast::{Expr, FnDef, Spanned};
-use crate::diag::Span;
-use crate::dispatch_matrix::pattern::{PatternBodyId, PatternRow, SourcePatternRows};
+use crate::compiler::source::Span;
+use crate::dispatch_matrix::pattern::{PatternBodyId, PatternRow, PatternSubjectRef, SourcePatternRows};
 use crate::fz_ir::{
-    BlockId, BranchOrigin, CallsiteIdent, Const, ContinuationProvenance, ContinuationProvenanceKind, FnCategory, Prim,
-    Term, Var,
+    BlockId, BranchOrigin, CallsiteIdent, Const, ContinuationProvenance, ContinuationProvenanceKind, DirectCallTarget,
+    FnCategory, Prim, Term, Var,
 };
 use crate::type_expr::parse_type_expr;
 use crate::types::{Ty, Types};
@@ -49,12 +49,12 @@ pub(crate) fn lower_multi_clause<T: Types<Ty = Ty>>(
 
     let mut rows: Vec<PatternRow> = Vec::with_capacity(fn_def.clauses.len());
     for (i, c) in fn_def.clauses.iter().enumerate() {
-        let mut preconditions: Vec<(Var, Ty)> = Vec::new();
-        for (pv, tok_opt) in param_vars.iter().zip(&c.param_annotations) {
+        let mut preconditions = Vec::new();
+        for (index, tok_opt) in c.param_annotations.iter().enumerate() {
             if let Some(toks) = tok_opt
                 && let Ok((ty, _)) = parse_type_expr(t, &toks.0, &ctx.combined_type_env)
             {
-                preconditions.push((*pv, ty));
+                preconditions.push((PatternSubjectRef::Input(index as u32), ty));
             }
         }
         rows.push(PatternRow {
@@ -65,7 +65,7 @@ pub(crate) fn lower_multi_clause<T: Types<Ty = Ty>>(
         });
     }
     let source_patterns = SourcePatternRows {
-        subjects: param_vars.to_vec(),
+        input_count: param_vars.len(),
         rows,
     };
 
@@ -77,12 +77,10 @@ pub(crate) fn lower_multi_clause<T: Types<Ty = Ty>>(
         let param_vars_ref = param_vars;
         let clause_conts_ref = &mut clause_conts;
         let mut cb = |ctx: &mut LowerCtx,
-                      t: &mut T,
+                      _t: &mut T,
                       body_id: PatternBodyId,
                       bindings: Vec<MatchedBinding>,
-                      preconditions: Vec<(Var, Ty)>,
-                      guard: Option<Spanned<Expr>>,
-                      fall_block: BlockId|
+                      _fall_block: BlockId|
          -> Result<(), LowerError> {
             let i = body_id as usize;
             let clause = &fn_def_ref.clauses[i];
@@ -93,20 +91,6 @@ pub(crate) fn lower_multi_clause<T: Types<Ty = Ty>>(
             }
             for binding in &bindings {
                 ctx.bind(&binding.name, binding.var);
-            }
-            for (pv, ty) in &preconditions {
-                let tt = ctx.let_(Prim::TypeTest(*pv, Box::new(ty.clone())));
-                let pass_b = ctx.cur_mut().block(vec![]);
-                ctx.set_if_term(tt, pass_b, fall_block);
-                ctx.cur_block = Some(pass_b);
-                ctx.terminated = false;
-            }
-            if let Some(g) = &guard {
-                let guard_var = lower_expr(ctx, t, g, false)?;
-                let body_b = ctx.cur_mut().block(vec![]);
-                ctx.set_if_term(guard_var, body_b, fall_block);
-                ctx.cur_block = Some(body_b);
-                ctx.terminated = false;
             }
             let cont = match &clause_conts_ref[i] {
                 Some(cont) => cont.clone(),
@@ -140,14 +124,15 @@ pub(crate) fn lower_multi_clause<T: Types<Ty = Ty>>(
             let capture_vars = cont_call_args(ctx, &cont);
             ctx.set_term(Term::TailCall {
                 ident: CallsiteIdent::from_source(clause.span),
-                callee: cont.id,
+                callee: DirectCallTarget::Local(cont.id),
                 args: capture_vars,
                 is_back_edge: false,
             });
             ctx.terminated = true;
             Ok(())
         };
-        let result = lower_source_patterns_to_current_fn(ctx, t, source_patterns, fail_block, &mut cb);
+        let result =
+            lower_source_patterns_to_current_fn(ctx, t, source_patterns, param_vars.to_vec(), fail_block, &mut cb);
         ctx.branch_origin = prev_origin;
         result?;
     }
@@ -243,14 +228,14 @@ pub(crate) fn lower_if<T: Types<Ty = Ty>>(
     ctx.cur_block = Some(then_b);
     ctx.set_term(Term::TailCall {
         ident: CallsiteIdent::from_source(Span::DUMMY),
-        callee: then_cont.id,
+        callee: DirectCallTarget::Local(then_cont.id),
         args: then_capture_vars,
         is_back_edge: false,
     });
     ctx.cur_block = Some(else_b);
     ctx.set_term(Term::TailCall {
         ident: CallsiteIdent::from_source(Span::DUMMY),
-        callee: else_cont.id,
+        callee: DirectCallTarget::Local(else_cont.id),
         args: else_capture_vars,
         is_back_edge: false,
     });

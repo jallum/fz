@@ -1,0 +1,7 @@
+
+extern "C" fn _resource_test_dtor(integer) :: nil
+
+fn main() do
+  make_resource(42, fn (x) -> _resource_test_dtor(x) end)
+  0
+end

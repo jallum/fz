@@ -1,0 +1,6 @@
+fn double_plus(x) do
+  y = x + 1
+  y * 2
+end
+
+fn main(), do: double_plus(20)

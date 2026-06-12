@@ -1,18 +1,19 @@
 use super::*;
 use crate::ast::{AfterClause, MatchClause};
-use crate::diag::Span;
+use crate::compiler::source::Span;
 use crate::dispatch_matrix::pattern::{PatternBodyId, PatternRow, SourcePatternRows, collect_guard_capture_names};
 use crate::dispatch_matrix::pattern::{
     PatternGuardExpr, pattern_dispatch_from_source_with_guard_resolver, prepared_key_name,
 };
 use crate::fz_ir::{CallsiteIdent, FnCategory, ReceiveAfter, ReceiveClause, Term, Var};
+use crate::runtime_type_predicate;
 use crate::types::{Ty, Types};
 use std::collections::{BTreeSet, HashSet};
 use std::sync::Arc;
 
 /// fz-puj.36 (H7) — build a degenerate (N=1) SourcePatternRows from receive clauses.
 ///
-/// The SourcePatternRows subject is a single Var representing the candidate message.
+/// The SourcePatternRows input set is the single candidate message column.
 /// Each clause produces one PatternRow with `patterns: vec![clause.pattern]`,
 /// `preconditions: []`, `guard: clause.guard`, and a caller-supplied
 /// `body_id`. Captures/pinned threading is unchanged from receive's
@@ -21,9 +22,9 @@ use std::sync::Arc;
 /// The SourcePatternRows itself accepts arbitrary patterns; lowering routes it
 /// through DispatchMatrix and caches the graph-derived AST-free dispatch plan
 /// before any receive probe executes.
-pub(crate) fn build_receive_pattern_rows(msg_var: Var, clauses: &[MatchClause]) -> SourcePatternRows {
+pub(crate) fn build_receive_pattern_rows(clauses: &[MatchClause]) -> SourcePatternRows {
     SourcePatternRows {
-        subjects: vec![msg_var],
+        input_count: 1,
         rows: clauses
             .iter()
             .enumerate()
@@ -161,7 +162,7 @@ pub(crate) fn lower_receive<T: Types<Ty = Ty>>(
         body: cont.id,
         span: a.span,
     });
-    let receive_source_patterns = build_receive_pattern_rows(Var(0), clauses);
+    let receive_source_patterns = build_receive_pattern_rows(clauses);
     let mut guard_stack = Vec::new();
     let mut guard_resolver = |name: &str, arity: usize, args: Vec<PatternGuardExpr>| {
         lower_guard_helper_call_to_dispatch(ctx, name, arity, args, &mut guard_stack)
@@ -172,6 +173,7 @@ pub(crate) fn lower_receive<T: Types<Ty = Ty>>(
                 span: rx_span,
                 what: format!("receive dispatch cannot be lowered: {:?}", err),
             })
+            .map(|plan| plan.map_type_handle(&mut runtime_type_predicate::from_legacy_ty))
             .map(Arc::new)?;
     for (index, key) in receive_dispatch.prepared_keys.iter().enumerate() {
         let name = prepared_key_name(index);

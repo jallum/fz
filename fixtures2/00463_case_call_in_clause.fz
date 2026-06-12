@@ -1,0 +1,11 @@
+fn helper(), do: 7
+fn classify(n) do
+  case n do
+    0 -> helper()
+    _ -> 99
+  end
+end
+fn main() do
+  dbg(classify(0))
+  dbg(classify(5))
+end

@@ -26,16 +26,14 @@
 //! error on failure; the runner catches the error.
 
 use crate::ast::Item;
-use crate::compiler::Compiler;
-use crate::diag::{SourceMap, render_one_to_string};
-use crate::frontend::macros::expand_program_with_types;
-use crate::frontend::resolve::flatten_modules;
+use crate::compiler::source::SourceMap;
+use crate::compiler::{Compiler, World};
+use crate::diag::render_one_to_string;
 use crate::fz_ir::FnId;
 use crate::ir_interp::run_test_fn;
-use crate::ir_lower::lower_program;
-use crate::ir_planner::plan_module_with_role;
 use crate::measurements;
 use crate::metadata;
+use crate::modules::pipeline::CompileMode;
 use crate::notify_fixture_execution_start;
 use crate::parser::Parser;
 use crate::parser::lexer::{Lexer, Tok, Token};
@@ -159,38 +157,50 @@ impl Handler for ConsoleTestHandler {
 
 fn run_named_through(tel: &dyn Telemetry, user_src: &str, user_name: &str) -> Result<(), TestRunError> {
     let mut compiler = Compiler::new();
-    // Lex prelude and user source separately into their own FileIds. Token
-    // spans then point at the *real* offsets in their respective files, so
-    // later stages render user-facing locations against the user's file
+    let mut world = World::new();
+    // Lex prelude and user source separately into their own code ids. Token
+    // spans then point at the *real* offsets in their respective source
+    // buffers, so later stages render user-facing locations against the
+    // user's file
     // (not against a synthetic prelude+user concat). Eofs are filtered
     // between streams so the parser sees one continuous list.
     let mut sm = SourceMap::new();
-    let prelude_id = sm.add_file("<prelude>", PRELUDE);
-    let user_id = sm.add_file(user_name, user_src);
+    let prelude_id = sm.add_code(Some("<prelude>"), PRELUDE);
+    let user_id = sm.add_code(Some(user_name), user_src);
     // Lex/parse errors render through the shared renderer using the
     // SourceMap built above. Downstream stages still bubble up as
     // TestRunError strings — wiring spans through resolve / macros for
     // test output is a future ticket.
-    let prelude_toks = Lexer::with_file_and_source_name(PRELUDE, prelude_id, "<test-prelude>")
+    let prelude_toks = Lexer::with_code_id_and_source_name(PRELUDE, prelude_id, "<test-prelude>")
         .tokenize(tel)
         .map_err(|e| TestRunError(render_one_to_string(&sm, &e.to_diagnostic())))?;
-    let user_toks = Lexer::with_file_and_source_name(user_src, user_id, user_name)
+    let user_toks = Lexer::with_code_id_and_source_name(user_src, user_id, user_name)
         .tokenize(tel)
         .map_err(|e| TestRunError(render_one_to_string(&sm, &e.to_diagnostic())))?;
     let toks = splice_token_streams(prelude_toks, user_toks);
     let prog = Parser::new(toks)
         .parse_program(tel)
         .map_err(|e| TestRunError(render_one_to_string(&sm, &e.to_diagnostic())))?;
-    let prog = flatten_modules(compiler.types(), prog, tel)
-        .map_err(|e| TestRunError(render_one_to_string(&sm, &e.to_diagnostic())))?;
-    let mut prog = prog;
-    expand_program_with_types(compiler.types(), &mut prog)
-        .map_err(|e| TestRunError(render_one_to_string(&sm, &e.to_diagnostic())))?;
+    let frontend = match compiler.compile_program(&mut world, prog, sm.clone(), tel) {
+        Ok(frontend) => frontend,
+        Err(err) => return Err(TestRunError(render_diagnostics(&err.sm, err.diagnostics.as_slice()))),
+    };
+    if frontend
+        .diagnostics
+        .as_slice()
+        .iter()
+        .any(|diagnostic| diagnostic.severity == crate::diag::diagnostic::Severity::Error)
+    {
+        return Err(TestRunError(render_diagnostics(
+            &frontend.sm,
+            frontend.diagnostics.as_slice(),
+        )));
+    }
 
     // Discover tests: post-expansion Item::Fn whose final segment starts
     // with "test_".
     let mut tests: Vec<String> = Vec::new();
-    for item in &prog.items {
+    for item in &frontend._prog.items {
         if let Item::Fn(def) = &**item {
             if def.is_macro {
                 continue;
@@ -208,19 +218,15 @@ fn run_named_through(tel: &dyn Telemetry, user_src: &str, user_name: &str) -> Re
         return Ok(());
     }
 
-    // Lower to fz-IR once; each test fn dispatches via ir_interp::run_fn.
-    // This is the fz-ul4.23.5.10 migration: runtime execution leaves the
-    // AST evaluator (eval::CompileTimeEvaluator, which stays only for macro
-    // expansion above) and runs on the same IR interpreter the fixture matrix
-    // uses.
-    let module = lower_program(compiler.types(), &prog, tel)
-        .map_err(|e| TestRunError(render_one_to_string(&sm, &e.to_diagnostic())))?;
-    let module_plan = plan_module_with_role(compiler.types(), &module, tel, "test_runner");
+    compiler
+        .prepare_execution_graph_from_frontend(&mut world, frontend, tel, CompileMode::Normal)
+        .map_err(|err| TestRunError(err.to_string()))?;
     // Map test name → FnId once.
     let test_ids: Vec<(String, FnId)> = tests
         .iter()
         .map(|name| {
-            module
+            world
+                .linked_module()
                 .fn_by_name(name)
                 .map(|f| (name.clone(), f.id))
                 .ok_or_else(|| TestRunError(format!("test fn `{}` not in lowered module", name)))
@@ -240,7 +246,9 @@ fn run_named_through(tel: &dyn Telemetry, user_src: &str, user_name: &str) -> Re
         // one test doesn't leak into the next. ir_interp::run_main isn't
         // quite right (it expects a `main` fn); we call the test fn
         // directly through the IR interp on a temporary task.
-        match run_test_fn(compiler.types(), tel, &module, &module_plan, *fn_id) {
+        let module = world.linked_module().clone();
+        let module_plan = world.linked_module_plan().clone();
+        match run_test_fn(world.types(), tel, &module, &module_plan, *fn_id) {
             Ok(()) => {
                 tel.event(&["fz", "test", "passed"], metadata! { name: name.clone() });
             }
@@ -263,6 +271,13 @@ fn run_named_through(tel: &dyn Telemetry, user_src: &str, user_name: &str) -> Re
         return Err(TestRunError(format!("{} failing test(s)", failed.len())));
     }
     Ok(())
+}
+
+fn render_diagnostics(sm: &SourceMap, diagnostics: &[crate::diag::Diagnostic]) -> String {
+    diagnostics
+        .iter()
+        .map(|diagnostic| render_one_to_string(sm, diagnostic))
+        .collect::<String>()
 }
 
 #[cfg(test)]

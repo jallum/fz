@@ -1,11 +1,16 @@
 use super::*;
 use crate::ast::{BinOp as AstBinOp, Expr as AstExpr, Pattern as AstPattern, Spanned};
-use crate::diag::Span;
+use crate::compiler::source::Span;
 use crate::dispatch_matrix::pattern::{PatternBodyId, PatternRow, SourcePatternRows};
 use crate::dispatch_matrix::pattern::{PatternDispatchPlan, pattern_dispatch_from_source};
+use crate::dispatch_matrix::{
+    DispatchArm, DispatchEdge, DispatchGraph, DispatchMatrix, DispatchNode, EdgeEvidence, GraphNodeId, Order, Outcome,
+    OutcomeId, OutcomeMultiplicity, Region, RegionPredicate, Subject, SubjectId, SubjectSource,
+};
 use crate::fz_ir::{CallsiteIdent, FnId, ReceiveClause, Var};
 use crate::ir_codegen::backend::register_runtime_symbols;
 use crate::ir_codegen::runtime_syms::declare_runtime_symbols;
+use crate::runtime_type_predicate::{self, ObservedSet, RuntimeTypePredicate};
 use cranelift_codegen::settings::{self, Configurable};
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::default_libcall_names;
@@ -75,9 +80,9 @@ fn clause_meta(bound_names: Vec<&str>) -> ReceiveClause {
     }
 }
 
-fn dispatch_from_rows(rows: Vec<(AstPattern, Option<Spanned<AstExpr>>)>) -> PatternDispatchPlan {
+fn dispatch_from_rows(rows: Vec<(AstPattern, Option<Spanned<AstExpr>>)>) -> PatternDispatchPlan<RuntimeTypePredicate> {
     let source_patterns = SourcePatternRows {
-        subjects: vec![Var(0)],
+        input_count: 1,
         rows: rows
             .into_iter()
             .enumerate()
@@ -89,7 +94,9 @@ fn dispatch_from_rows(rows: Vec<(AstPattern, Option<Spanned<AstExpr>>)>) -> Patt
             })
             .collect(),
     };
-    pattern_dispatch_from_source(source_patterns).expect("compile dispatch")
+    pattern_dispatch_from_source(source_patterns)
+        .expect("compile dispatch")
+        .map_type_handle(&mut runtime_type_predicate::from_legacy_ty)
 }
 
 fn finalize_and_get(mut jmod: JITModule, fid: FuncId) -> ReceiveDispatchAbi {
@@ -106,10 +113,28 @@ fn build_dispatch_fn(
     tuple_schemas: &HashMap<usize, u32>,
     pinned: &[(String, Var)],
     clauses: &[ReceiveClause],
-    dispatch: &PatternDispatchPlan,
+    dispatch: &PatternDispatchPlan<RuntimeTypePredicate>,
     name: &str,
 ) -> ReceiveDispatchAbi {
     let fid = declare_receive_dispatch(jmod, name).expect("declare receive dispatch");
+    let named_schema_ids = {
+        let mut reg = SchemaRegistry::new();
+        let mut arities = tuple_schemas.keys().copied().collect::<Vec<_>>();
+        arities.sort_unstable();
+        for arity in arities {
+            reg.register(Schema::tuple_of_arity(arity));
+        }
+        let mut ids = HashMap::new();
+        let mut named = fz_module.struct_schemas.iter().collect::<Vec<_>>();
+        named.sort_by_key(|(name, _)| *name);
+        for (name, fields) in named {
+            ids.insert(
+                name.clone(),
+                reg.register(Schema::named_struct(name.clone(), fields.clone())),
+            );
+        }
+        ids
+    };
     // Declare the runtime symbols from the production source so the dispatch
     // helper signatures can never drift from the real pipeline (tests use
     // production code). Mirrors the DispatchRuntimeHelpers wiring in driver.rs.
@@ -120,6 +145,7 @@ fn build_dispatch_fn(
         fid,
         fz_module,
         tuple_schemas,
+        &named_schema_ids,
         pinned,
         clauses,
         dispatch,
@@ -148,6 +174,57 @@ fn build_dispatch_fn(
     )
     .expect("emit receive dispatch");
     finalize_and_get(replace(jmod, make_jit().0), fid)
+}
+
+fn direct_runtime_type_predicate_dispatch(
+    predicate: RuntimeTypePredicate,
+) -> PatternDispatchPlan<RuntimeTypePredicate> {
+    PatternDispatchPlan {
+        matrix: DispatchMatrix {
+            subjects: vec![Subject {
+                id: SubjectId(0),
+                source: SubjectSource::Input { ordinal: 0 },
+            }],
+            outcomes: vec![Outcome {
+                id: OutcomeId(0),
+                multiplicity: OutcomeMultiplicity::Unique,
+            }],
+            arms: vec![DispatchArm {
+                id: crate::dispatch_matrix::ArmId(0),
+                questions: vec![],
+                evidence: EdgeEvidence::empty(),
+                outcome: OutcomeId(0),
+            }],
+            order: Order::Source,
+        },
+        graph: DispatchGraph {
+            nodes: vec![
+                DispatchNode::Test {
+                    predicate: RegionPredicate::new(SubjectId(0), Region::Type(predicate)),
+                    on_match: DispatchEdge::with_evidence(GraphNodeId(1), EdgeEvidence::empty()),
+                    on_miss: DispatchEdge::with_evidence(GraphNodeId(2), EdgeEvidence::empty()),
+                },
+                DispatchNode::Outcome {
+                    outcome: OutcomeId(0),
+                    evidence: EdgeEvidence::empty(),
+                },
+                DispatchNode::Fail,
+            ],
+            root: GraphNodeId(0),
+        },
+        input_count: 1,
+        subjects: vec![Some(crate::dispatch_matrix::pattern::PatternSubjectRef::Input(0))],
+        outcomes: vec![crate::dispatch_matrix::pattern::PatternDispatchOutcome {
+            outcome: OutcomeId(0),
+            body_id: 0,
+            bindings: vec![],
+            span: Span::DUMMY,
+        }],
+        guards: vec![],
+        pinned: vec![],
+        prepared_keys: vec![],
+        bitstring_direct_bindings: Default::default(),
+    }
 }
 
 #[test]
@@ -317,4 +394,33 @@ fn cached_matcher_tuple_with_atom_pinned_var_matches_arrived_message() {
     let pin_other = [int_ref(pp, 255)];
     let mut out2 = [AnyValueRef::null()];
     assert_eq!(f(pp, val.raw_word(), pin_other.as_ptr(), out2.as_mut_ptr()), 0);
+}
+
+#[test]
+fn cached_matcher_type_region_uses_runtime_type_predicate() {
+    let mut process = new_process();
+    let pp = process.as_mut() as *mut Process;
+    let (mut jmod, mut fbctx) = make_jit();
+    let m = empty_module();
+    let tuple_ids = HashMap::new();
+    let pinned = Vec::new();
+    let clauses = vec![clause_meta(vec![])];
+    let dispatch = direct_runtime_type_predicate_dispatch(RuntimeTypePredicate {
+        ints: ObservedSet::lit(42),
+        ..RuntimeTypePredicate::none()
+    });
+    let f = build_dispatch_fn(
+        &mut jmod,
+        &mut fbctx,
+        &m,
+        &tuple_ids,
+        &pinned,
+        &clauses,
+        &dispatch,
+        "cached_matcher_type_region_int_42",
+    );
+    let pin: [AnyValueRef; 0] = [];
+    let mut out: [AnyValueRef; 0] = [];
+    assert_eq!(f(pp, int_ref(pp, 42).raw_word(), pin.as_ptr(), out.as_mut_ptr()), 1);
+    assert_eq!(f(pp, int_ref(pp, 41).raw_word(), pin.as_ptr(), out.as_mut_ptr()), 0);
 }

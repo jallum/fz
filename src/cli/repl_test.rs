@@ -72,6 +72,7 @@ fn drive(lines: &[&str]) -> Vec<Result<String, String>> {
     out
 }
 
+// PICKED: integer arithmetic evaluation in interactive session
 #[test]
 fn evaluates_simple_expression() {
     let r = drive(&["1 + 2"]);
@@ -79,6 +80,7 @@ fn evaluates_simple_expression() {
     assert_eq!(r[0].as_deref(), Ok("3"));
 }
 
+// DROP: REPL session state and composer mechanics, no compiler2 surface
 #[test]
 fn drive_uses_composer_for_blank_docs_quit_and_parse_errors() {
     let r = drive(&["", "?missing", "1 2", "3", ":q", "4"]);
@@ -92,6 +94,7 @@ fn drive_uses_composer_for_blank_docs_quit_and_parse_errors() {
     assert_eq!(r[2].as_deref(), Ok("3"));
 }
 
+// PICKED: integer, float, and mixed-type list display round-trip
 #[test]
 fn repl_round_trip_int_float_and_mixed_list_display() {
     let r = drive(&["42", "3.14", "[1, 2.5, :a]"]);
@@ -100,6 +103,7 @@ fn repl_round_trip_int_float_and_mixed_list_display() {
     assert_eq!(r[2].as_deref(), Ok("[1, 2.5, :a]"));
 }
 
+// PICKED: Utf8.valid? and Utf8.from_bytes runtime semantics on binaries
 #[test]
 fn run_script_str_accepts_utf8_smart_constructors() {
     let src = r#"
@@ -115,6 +119,7 @@ end
     run_script_str(src).expect("Utf8 helpers should run through script REPL");
 }
 
+// PICKED: runtime import of Utf8 module; valid? callable in expression
 #[test]
 fn repl_session_accepts_top_level_runtime_import() {
     let mut session = ReplSession::new();
@@ -126,6 +131,7 @@ fn repl_session_accepts_top_level_runtime_import() {
     assert_eq!(eval_session_render(&mut session, "valid?(<<104, 105>>)"), "true");
 }
 
+// PICKED: module alias in scope; qualified call via alias resolves correctly
 #[test]
 fn repl_session_accepts_top_level_runtime_alias() {
     let mut session = ReplSession::new();
@@ -163,6 +169,7 @@ fn outcome_name(outcome: &ReplChunkOutcome) -> &'static str {
     }
 }
 
+// DROP: REPL line-editor trait infrastructure, no compiler2 surface
 #[test]
 fn repl_line_editor_trait_accepts_fake_editor() {
     let mut editor = FakeLineEditor::new([ReplLine::Line("1 + 2".to_string())]);
@@ -175,6 +182,7 @@ fn repl_line_editor_trait_accepts_fake_editor() {
     assert_eq!(editor.read_line("fz> ").expect("read eof"), ReplLine::Eof);
 }
 
+// DROP: REPL editor validation mechanics, no compiler2 surface
 #[test]
 fn line_editor_validator_continues_only_parser_incomplete_input() {
     let tel = ConfiguredTelemetry::new();
@@ -200,12 +208,14 @@ fn line_editor_validator_continues_only_parser_incomplete_input() {
     ));
 }
 
+// DROP: REPL composer input handling, no compiler2 surface
 #[test]
 fn composer_ignores_blank_input() {
     let mut composer = new_composer();
     assert_eq!(composer.submit_buffer("   "), ReplComposerEvent::Empty);
 }
 
+// DROP: REPL composer quit command, no compiler2 surface
 #[test]
 fn composer_recognizes_quit_command() {
     let mut composer = new_composer();
@@ -213,6 +223,7 @@ fn composer_recognizes_quit_command() {
     assert_eq!(composer.submit_buffer(":quit"), ReplComposerEvent::Quit);
 }
 
+// DROP: REPL composer docs query dispatch, no compiler2 surface
 #[test]
 fn composer_recognizes_docs_query() {
     let mut composer = new_composer();
@@ -222,6 +233,7 @@ fn composer_recognizes_docs_query() {
     );
 }
 
+// DROP: REPL composer multiline buffering mechanics, no compiler2 surface
 #[test]
 fn composer_accepts_complete_multiline_item_chunks_from_editor() {
     let mut composer = new_composer();
@@ -238,6 +250,7 @@ fn add1(n), do: n + 1"#
     );
 }
 
+// DROP: REPL composer multiline expression buffering, no compiler2 surface
 #[test]
 fn composer_accepts_complete_multiline_expression_chunks_from_editor() {
     let mut composer = new_composer();
@@ -247,6 +260,7 @@ fn composer_accepts_complete_multiline_expression_chunks_from_editor() {
     );
 }
 
+// DROP: REPL composer blank-line preservation, no compiler2 surface
 #[test]
 fn composer_keeps_blank_lines_inside_submitted_editor_buffer() {
     let mut composer = new_composer();
@@ -256,6 +270,7 @@ fn composer_keeps_blank_lines_inside_submitted_editor_buffer() {
     );
 }
 
+// DROP: REPL composer error state reset, no compiler2 surface
 #[test]
 fn composer_reports_invalid_input_without_retaining_state() {
     let mut composer = new_composer();
@@ -269,6 +284,7 @@ fn composer_reports_invalid_input_without_retaining_state() {
     );
 }
 
+// DROP: REPL composer whitespace trimming, no compiler2 surface
 #[test]
 fn composer_accepts_whitespace_heavy_chunks() {
     let mut composer = new_composer();
@@ -278,6 +294,7 @@ fn composer_accepts_whitespace_heavy_chunks() {
     );
 }
 
+// DROP: parser incomplete-input classification, pure infrastructure
 #[test]
 fn parser_classifies_incomplete_without_error_text() {
     let toks = Lexer::with_source_name("1 +", "<test>")
@@ -287,6 +304,7 @@ fn parser_classifies_incomplete_without_error_text() {
     assert!(err.is_incomplete(), "{err}");
 }
 
+// DROP: REPL world parse classification mechanics, no compiler2 surface
 #[test]
 fn repl_world_classifies_eof_shaped_item_input_as_incomplete() {
     let tel = ConfiguredTelemetry::new();
@@ -302,6 +320,7 @@ fn repl_world_classifies_eof_shaped_item_input_as_incomplete() {
     assert!(matches!(err, ReplWorldParse::Incomplete), "{err:?}");
 }
 
+// DROP: REPL session composition boundary enforcement, no compiler2 surface
 #[test]
 fn session_rejects_incomplete_execution_input() {
     let mut session = ReplSession::new();
@@ -316,6 +335,7 @@ fn session_rejects_incomplete_execution_input() {
     }
 }
 
+// DROP: REPL world parse error classification, no compiler2 surface
 #[test]
 fn repl_world_classifies_invalid_syntax_as_non_incomplete_error() {
     let tel = ConfiguredTelemetry::new();
@@ -329,6 +349,7 @@ fn repl_world_classifies_invalid_syntax_as_non_incomplete_error() {
     );
 }
 
+// PICKED: variable binding persists across sequential evaluation chunks
 #[test]
 fn repl_session_binds_variable_across_chunks() {
     let mut session = ReplSession::new();
@@ -336,6 +357,7 @@ fn repl_session_binds_variable_across_chunks() {
     assert_eq!(eval_session_i64(&mut session, "x + 1"), Some(42));
 }
 
+// PICKED: expression evaluation does not rebind existing variables in scope
 #[test]
 fn repl_session_expression_display_does_not_mutate_frame() {
     let mut session = ReplSession::new();
@@ -344,6 +366,7 @@ fn repl_session_expression_display_does_not_mutate_frame() {
     assert_eq!(eval_session_i64(&mut session, "x"), Some(10));
 }
 
+// PICKED: tuple destructuring binds multiple names across session chunks
 #[test]
 fn repl_session_destructuring_binding_persists_across_chunks() {
     let mut session = ReplSession::new();
@@ -351,6 +374,7 @@ fn repl_session_destructuring_binding_persists_across_chunks() {
     assert_eq!(eval_session_i64(&mut session, "a + b"), Some(3));
 }
 
+// DROP: REPL implementation guard against old wrapper source pattern
 #[test]
 fn repl_expression_chunks_do_not_depend_on_generated_wrapper_source() {
     let source = std::fs::read_to_string(file!()).expect("read repl source");
@@ -366,6 +390,7 @@ fn repl_expression_chunks_do_not_depend_on_generated_wrapper_source() {
     );
 }
 
+// DROP: REPL implementation guard against old frame-ABI pattern
 #[test]
 fn repl_frame_abi_is_not_inferred_by_host_pattern_walkers() {
     let source = std::fs::read_to_string(file!()).expect("read repl source");
@@ -381,6 +406,7 @@ fn repl_frame_abi_is_not_inferred_by_host_pattern_walkers() {
     );
 }
 
+// DROP: REPL diagnostic anchoring to user source vs wrapper text
 #[test]
 fn repl_diagnostics_are_anchored_to_user_source_not_wrapper_text() {
     let mut session = ReplSession::new();
@@ -402,6 +428,7 @@ fn repl_diagnostics_are_anchored_to_user_source_not_wrapper_text() {
     }
 }
 
+// PICKED: whitespace-heavy assignment expression parses and binds correctly
 #[test]
 fn repl_accepts_whitespace_heavy_multiline_expression_chunks() {
     let mut session = ReplSession::new();
@@ -410,6 +437,7 @@ fn repl_accepts_whitespace_heavy_multiline_expression_chunks() {
     assert_eq!(eval_session_i64(&mut session, "x + 1"), Some(42));
 }
 
+// PICKED: failed pattern match errors and does not corrupt prior bindings
 #[test]
 fn repl_session_match_failure_uses_lowered_runtime_semantics() {
     let mut session = ReplSession::new();
@@ -426,6 +454,7 @@ fn repl_session_match_failure_uses_lowered_runtime_semantics() {
     assert_eq!(eval_session_i64(&mut session, "x"), Some(1));
 }
 
+// PICKED: top-level fn definition is callable from subsequent expressions
 #[test]
 fn repl_session_top_level_definition_is_callable() {
     let mut session = ReplSession::new();
@@ -437,6 +466,7 @@ fn repl_session_top_level_definition_is_callable() {
     assert_eq!(eval_session_i64(&mut session, "add1(41)"), Some(42));
 }
 
+// DROP: extern declaration accepted in REPL; old-world extern plumbing
 #[test]
 fn repl_session_accepts_top_level_extern_declaration() {
     let mut session = ReplSession::new();
@@ -447,6 +477,7 @@ fn repl_session_accepts_top_level_extern_declaration() {
     ));
 }
 
+// PICKED: spawn/receive/send message passing across sequential session chunks
 #[test]
 fn repl_session_spawned_child_blocks_across_chunks_and_resumes() {
     let mut session = ReplSession::new();
@@ -459,6 +490,7 @@ fn repl_session_spawned_child_blocks_across_chunks_and_resumes() {
     assert_eq!(eval_session_i64(&mut session, "receive do x -> x end"), Some(42));
 }
 
+// PICKED: blocked child process survives new fn definition and later message
 #[test]
 fn repl_session_blocked_child_survives_later_code_generation() {
     let mut session = ReplSession::new();
@@ -477,12 +509,14 @@ fn repl_session_blocked_child_survives_later_code_generation() {
     assert_eq!(eval_session_i64(&mut session, "receive do x -> x end"), Some(7));
 }
 
+// PICKED: send to self and receive round-trips a mixed-type list value
 #[test]
 fn repl_round_trip_send_receive_self() {
     let r = drive(&["send(self(), [1, 2.5, :a])", "receive do x -> x end"]);
     assert_eq!(r[1].as_deref(), Ok("[1, 2.5, :a]"));
 }
 
+// PICKED: spawned closure sends; receive with pattern match and after clause
 #[test]
 fn repl_spawned_send_round_trips_through_receive_matcher() {
     let r = drive(&[
@@ -497,6 +531,7 @@ fn repl_spawned_send_round_trips_through_receive_matcher() {
     assert_eq!(r[2].as_deref(), Ok(":ok"));
 }
 
+// PICKED: spawn/2 with heap hint argument sends message correctly
 #[test]
 fn repl_spawn2_accepts_ignored_heap_hint() {
     let r = drive(&[
@@ -507,6 +542,7 @@ fn repl_spawn2_accepts_ignored_heap_hint() {
     assert_eq!(r[2].as_deref(), Ok("42"));
 }
 
+// PICKED: variable bound in one input chunk used in a later chunk
 #[test]
 fn binds_variable_across_inputs() {
     let r = drive(&["x = 7", "x + 35"]);
@@ -514,12 +550,14 @@ fn binds_variable_across_inputs() {
     assert_eq!(r[1].as_deref(), Ok("42"));
 }
 
+// PICKED: multi-clause recursive fn built incrementally across inputs
 #[test]
 fn appends_clauses_to_existing_fn() {
     let r = drive(&["fn fact(0), do: 1", "fn fact(n), do: n * fact(n - 1)", "fact(6)"]);
     assert!(r[2].as_deref() == Ok("720"), "expected 720, got {:?}", r[2]);
 }
 
+// PICKED: multiline do-end fn body with local binding evaluates correctly
 #[test]
 fn accepts_multiline_do_end_from_editor_buffer() {
     let r = drive(&["fn double_plus(x) do\n  y = x + 1\n  y * 2\nend", "double_plus(20)"]);
@@ -565,6 +603,7 @@ fn parse_world_expr(src: &str) -> (Spanned<Expr>, SourceMap) {
     }
 }
 
+// DROP: REPL world @doc/@moduledoc lookup mechanics, infrastructure
 #[test]
 fn repl_world_owns_docs_lookup() {
     let mut world = ReplWorld::new();
@@ -582,6 +621,7 @@ end
     assert_eq!(world.lookup_doc("M.add"), "@doc:  adds two");
 }
 
+// DROP: REPL world compilation of accumulated clauses, old-world pipeline
 #[test]
 fn repl_world_compiles_accumulated_item_clauses() {
     let mut world = ReplWorld::new();
@@ -595,6 +635,7 @@ fn repl_world_compiles_accumulated_item_clauses() {
     assert!(module.module.fn_by_name("__repl_eval_0").is_some());
 }
 
+// PICKED: defmacro defined in one chunk is expandable in a later expression
 #[test]
 fn repl_world_compiles_eval_chunks_with_accumulated_macros() {
     let mut world = ReplWorld::new();
@@ -614,6 +655,7 @@ end
     assert!(module.module.fn_by_name("__repl_eval_0").is_some());
 }
 
+// DROP: REPL @doc lookup for module fn, infrastructure not language behaviour
 #[test]
 fn doc_query_finds_module_fn_doc() {
     let interp = load(
@@ -627,6 +669,7 @@ end
     assert_eq!(lookup_doc(&interp, "M.add"), "@doc:  adds two");
 }
 
+// DROP: REPL @moduledoc lookup, infrastructure not language behaviour
 #[test]
 fn doc_query_finds_moduledoc() {
     let interp = load(
@@ -640,6 +683,7 @@ end
     assert_eq!(lookup_doc(&interp, "M"), "the M module");
 }
 
+// DROP: REPL @spec surface in doc lookup, infrastructure not language behaviour
 #[test]
 fn doc_query_surfaces_spec_when_declared() {
     // .31.6 — `?<name>` renders @spec alongside @doc when both are
@@ -664,6 +708,7 @@ end
     );
 }
 
+// DROP: REPL @spec-only doc query, infrastructure not language behaviour
 #[test]
 fn doc_query_surfaces_spec_without_doc() {
     // .31.6 — @spec alone still surfaces in `?<name>`.
@@ -684,6 +729,7 @@ end
     );
 }
 
+// DROP: REPL multiple @spec rendering in doc query, infrastructure
 #[test]
 fn doc_query_surfaces_all_declared_specs() {
     let interp = load(
@@ -706,18 +752,21 @@ end
     assert!(out.contains("(float) -> float"), "missing float spec: {out}");
 }
 
+// DROP: REPL missing-doc message, infrastructure not language behaviour
 #[test]
 fn doc_query_missing_doc_reports_so() {
     let interp = load("fn plain(x), do: x");
     assert_eq!(lookup_doc(&interp, "plain"), "plain: no documentation");
 }
 
+// DROP: REPL not-found doc message, infrastructure not language behaviour
 #[test]
 fn doc_query_unknown_name_reports_not_found() {
     let interp = load("fn plain(x), do: x");
     assert_eq!(lookup_doc(&interp, "nope"), "nope: not found");
 }
 
+// DROP: REPL empty doc query usage text, infrastructure not language behaviour
 #[test]
 fn doc_query_empty_shows_usage() {
     let interp = CompileTimeEvaluator::new();
@@ -726,6 +775,7 @@ fn doc_query_empty_shows_usage() {
 
 // ===== fz-i67.1 — run_script_str =====
 
+// PICKED: script with main/0 calling a helper fn completes successfully
 #[test]
 fn run_script_str_accepts_program_with_main() {
     // Defines main/0; run_script_str should call it. (We can't capture
@@ -736,12 +786,14 @@ fn run_script_str_accepts_program_with_main() {
     run_script_str(src).expect("script with main should succeed");
 }
 
+// PICKED: multi-process relay program runs through scheduler correctly
 #[test]
 fn run_script_str_uses_scheduler_backed_relay() {
     let src = std::fs::read_to_string("fixtures/relay/input.fz").expect("read relay fixture");
     run_script_str(&src).expect("relay should run through ir_interp-backed ReplSession");
 }
 
+// DROP: script with no main/0 is a no-op; no language behaviour exercised
 #[test]
 fn run_script_str_accepts_program_without_main() {
     // No main/0 defined → driver finishes without calling anything.
@@ -749,18 +801,21 @@ fn run_script_str_accepts_program_without_main() {
     run_script_str(src).expect("script without main should succeed");
 }
 
+// PICKED: multiline fn body with arithmetic evaluates and runs correctly
 #[test]
 fn run_script_str_accepts_multi_line_forms() {
     let src = "fn double(x) do\n  x * 2\nend\nfn main() do dbg(double(21)) end\n";
     run_script_str(src).expect("multi-line fn body should parse and run");
 }
 
+// PICKED: top-level @spec attaches to following fn and program runs
 #[test]
 fn run_script_str_accepts_top_level_spec_with_fn() {
     let src = "@spec add1(integer) :: integer\nfn add1(n), do: n + 1\nfn main() do dbg(add1(41)) end\n";
     run_script_str(src).expect("top-level @spec should attach to following fn");
 }
 
+// DROP: parse error surfaces as Err from script driver, infrastructure
 #[test]
 fn run_script_str_reports_parse_error() {
     // A syntactically broken input should surface as Err — the matrix
@@ -775,6 +830,7 @@ fn run_script_str_reports_parse_error() {
     );
 }
 
+// PICKED: fn redefinition at different arity replaces old; new arity resolves
 #[test]
 fn redefines_fn_with_different_arity() {
     let r = drive(&["fn f(x), do: x + 1", "fn f(x, y), do: x + y", "f(10, 20)"]);

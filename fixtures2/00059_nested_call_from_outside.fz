@@ -1,0 +1,6 @@
+defmodule A do
+  defmodule B do
+    fn f(x), do: x
+  end
+end
+fn main() do A.B.f(99) end

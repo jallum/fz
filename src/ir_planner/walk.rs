@@ -13,10 +13,10 @@ use super::worklist::{
 use crate::callsite_walk::{BlockCallsite, CallsiteKind, ContSource, block_callsites};
 use crate::frontend::protocols::impl_target_type;
 use crate::fz_ir::{
-    BlockId, CallsiteId, CallsiteIdent, Cont, EmitSlot, FnId, FnIr, Module, Prim, Stmt, Term, Var,
+    BlockId, CallsiteId, CallsiteIdent, Cont, DirectCallTarget, EmitSlot, FnId, FnIr, Module, Prim, Stmt, Term, Var,
     receive_outcome_spec_key,
 };
-use crate::modules::identity::ExportKey;
+use crate::modules::identity::Mfa;
 use crate::specs::unique_matching_params;
 use crate::types::{ClosureTypes, KeySlot, Ty, Types, key_slots_from_tys};
 use std::collections::{HashMap, HashSet};
@@ -65,7 +65,7 @@ impl WalkResult {
         caller: &SpecKey,
         ident: &CallsiteIdent,
         slot: EmitSlot,
-        target: ExportKey,
+        target: Mfa,
         input: Vec<KeySlot>,
         demand: ReturnDemand,
     ) -> CallsiteId {
@@ -73,7 +73,7 @@ impl WalkResult {
         self.call_edges.insert(
             cid.clone(),
             CallEdgePlan {
-                target: CallEdgeTarget::External { target, input, demand },
+                target: CallEdgeTarget::ProviderBoundary { target, input, demand },
                 return_contract: None,
             },
         );
@@ -137,8 +137,8 @@ struct ContinuationSlot0 {
 
 enum ProtocolDispatch {
     Local(SpecKey, usize),
-    External {
-        target: ExportKey,
+    ProviderBoundary {
+        target: Mfa,
         input: Vec<KeySlot>,
         demand: ReturnDemand,
     },
@@ -223,7 +223,8 @@ fn collect_prim_vars(prim: &Prim, used: &mut HashSet<Var>) {
         | Prim::IsMatcherMapMiss(a)
         | Prim::BitReaderInit(a)
         | Prim::BitReaderDone(a)
-        | Prim::TypeTest(a, _) => {
+        | Prim::TypeTest(a, _)
+        | Prim::RuntimeTypeTest(a, _) => {
             used.insert(*a);
         }
         Prim::Extern(_, _, args) => {
@@ -464,16 +465,19 @@ where
         term_ident: &CallsiteIdent,
         env: &HashMap<Var, Ty>,
         slot: EmitSlot,
-        callee: FnId,
+        callee: &DirectCallTarget,
         args: &[Var],
     ) {
-        if self.external_target(term_ident, slot).is_some() {
-            self.record_external_call(term, term_ident, env, slot, args);
-            return;
-        }
+        let callee = match callee {
+            DirectCallTarget::Local(callee) => *callee,
+            DirectCallTarget::ProviderBoundary(target) => {
+                self.record_provider_boundary_call(term, term_ident, env, slot, target.clone(), args);
+                return;
+            }
+        };
         if let Some(dispatch) = self.protocol_dispatch_key(callee, args, env) {
             let ProtocolDispatch::Local(mut entry_key, n_params) = dispatch else {
-                if let ProtocolDispatch::External { target, input, demand } = dispatch {
+                if let ProtocolDispatch::ProviderBoundary { target, input, demand } = dispatch {
                     self.out
                         .record_external_dispatch(self.caller_spec_key, term_ident, slot, target, input, demand);
                 }
@@ -521,7 +525,6 @@ where
             return;
         }
         let Some((mut entry_key, n_params)) = self.direct_call_key(callee, args, env) else {
-            self.record_external_call(term, term_ident, env, slot, args);
             return;
         };
         let cid = WalkResult::callsite_id(self.caller_spec_key, term_ident, slot);
@@ -559,17 +562,15 @@ where
         }
     }
 
-    fn record_external_call(
+    fn record_provider_boundary_call(
         &mut self,
         term: &Term,
         term_ident: &CallsiteIdent,
         env: &HashMap<Var, Ty>,
         slot: EmitSlot,
+        target: Mfa,
         args: &[Var],
     ) {
-        let Some(target) = self.external_target(term_ident, slot) else {
-            return;
-        };
         let input = self.external_call_input(callee_from_term(term), args, env, target.arity);
         let demand = match term {
             Term::TailCall { .. } => self.caller_spec_key.demand.clone(),
@@ -810,6 +811,12 @@ where
     ) -> Option<ContinuationSlot0> {
         Some(match *source {
             ContSource::Call { callee, args } => {
+                let DirectCallTarget::Local(callee) = callee else {
+                    return Some(ContinuationSlot0 {
+                        ty: self.any_ty.clone(),
+                        capability: None,
+                    });
+                };
                 let arg_tys = self.arg_tys(args, env);
                 let direct_cid = WalkResult::callsite_id(self.caller_spec_key, term_ident, EmitSlot::Direct);
                 let selected_edge = self.out.call_edges.get(&direct_cid);
@@ -819,7 +826,7 @@ where
                     self.recursive_fns,
                     self.caller_spec_key,
                     term_ident,
-                    callee,
+                    *callee,
                     &arg_tys,
                     self.activation_returns,
                     selected_edge,
@@ -857,15 +864,6 @@ where
             return key_slots_from_tys(params);
         }
         key_slots_from_tys(padded_direct_input_tys(self.t, arg_tys, arity))
-    }
-
-    fn external_target(&self, term_ident: &CallsiteIdent, slot: EmitSlot) -> Option<ExportKey> {
-        let cid = WalkResult::callsite_id(self.caller_spec_key, term_ident, slot);
-        self.m
-            .external_call_edges
-            .iter()
-            .find(|edge| edge.callsite == cid)
-            .map(|edge| edge.target.clone())
     }
 
     fn closure_return_slot0(
@@ -991,7 +989,7 @@ where
                 .map(|(key, n_params)| ProtocolDispatch::Local(key, n_params));
         }
         let input = key_slots_from_tys(padded_direct_input_tys(self.t, self.arg_tys(args, env), export.arity));
-        Some(ProtocolDispatch::External {
+        Some(ProtocolDispatch::ProviderBoundary {
             target: export,
             input,
             demand: ReturnDemand::value(),
@@ -1084,7 +1082,7 @@ fn pad_and_truncate<T: Clone>(items: &mut Vec<T>, n: usize, pad: &T) {
 
 fn callee_from_term(term: &Term) -> Option<FnId> {
     match term {
-        Term::Call { callee, .. } | Term::TailCall { callee, .. } => Some(*callee),
+        Term::Call { callee, .. } | Term::TailCall { callee, .. } => callee.local_fn_id(),
         _ => None,
     }
 }

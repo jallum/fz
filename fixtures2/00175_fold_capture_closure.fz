@@ -1,0 +1,24 @@
+# The threaded closure captures ANOTHER closure `g`, giving the nested capture
+# type `&w[&g[]:(α,α)->α]:(α,α)->α`.
+#
+# Under the model `g` has a body-inferred concrete type (number,number)->number, so
+# the capture is concrete — identical in kind to fold_capture_int's `5`. The
+# captured value's kind should not determine whether the fixpoint converges.
+#
+# Expected: myreduce([1,2,3], 0, +) : number ; settles (no 4096).
+
+fn go(list, acc, f) do
+  case list do
+    [] -> acc
+    [h | t] -> go(t, f.(h, acc), f)
+    _ -> acc
+  end
+end
+
+fn myreduce(list, acc, g) do
+  go(list, acc, fn (entry, inner) -> g.(entry, inner) end)
+end
+
+fn main() do
+  dbg(myreduce([1, 2, 3], 0, fn (x, a) -> x + a end))
+end

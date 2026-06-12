@@ -38,6 +38,7 @@ use fz_runtime::procbin::mso_drop_all_deferred;
 use fz_runtime::process::{CompiledModuleConsts, DEFAULT_REDUCTIONS_PER_QUANTUM, Node, Process, ProcessState};
 use fz_runtime::resource::{ResourceHandle, alloc_resource, fz_resource_destructor_noop};
 
+mod backend;
 mod binop;
 mod dispatch_exec;
 mod extern_call;
@@ -49,6 +50,7 @@ mod value;
 #[cfg(test)]
 mod ir_interp_test;
 
+pub(crate) use backend::{run_backend_entry_on_process, run_backend_main};
 use binop::*;
 use dispatch_exec::*;
 use extern_call::*;
@@ -74,9 +76,38 @@ pub(super) struct InterpContinuation {
 
 /// Per-task resume state: fn to call, args, selected spec, and after-chain.
 type ResumeEntry = (FnId, Vec<AnyValue>, Option<SpecKey>, Vec<InterpContinuation>);
+#[derive(Clone)]
+struct BackendContinuation {
+    executable: usize,
+    entry: crate::compiler2::ControlEntryId,
+    env: HashMap<crate::compiler2::ValueId, AnyValue>,
+}
+
+enum BackendResumeEntry {
+    Executable {
+        executable: usize,
+        args: Vec<AnyValue>,
+        continuations: Vec<BackendContinuation>,
+    },
+    Entry {
+        executable: usize,
+        entry: crate::compiler2::ControlEntryId,
+        env: HashMap<crate::compiler2::ValueId, AnyValue>,
+        continuations: Vec<BackendContinuation>,
+    },
+}
 
 /// fz-yxs/fz-2v3 — value type for selective-receive park records.
 type InterpParked = (ParkRecord, Vec<InterpContinuation>);
+
+struct BackendParkRecord {
+    executable: usize,
+    clauses: Vec<crate::compiler2::ReceiveClause>,
+    dispatch: crate::dispatch_matrix::pattern::PatternDispatchPlan<crate::compiler2::Ty>,
+    bindings: crate::compiler2::DispatchBindings,
+    env: HashMap<crate::compiler2::ValueId, AnyValue>,
+    continuations: Vec<BackendContinuation>,
+}
 
 /// Immutable IR interpreter code generation.
 ///
@@ -99,10 +130,9 @@ impl CodeImage {
     }
 
     #[cfg(test)]
-    fn from_module(module: &Module) -> Result<Self, String> {
+    fn from_module(module: &Module, tel: &dyn crate::telemetry::Telemetry) -> Result<Self, String> {
         let mut t = crate::types::new();
-        let tel = crate::telemetry::ConfiguredTelemetry::new();
-        let module_plan = plan_module_with_role(&mut t, module, &tel, "test");
+        let module_plan = plan_module_with_role(&mut t, module, tel, "test");
         Self::from_plan(&mut t, module, module_plan)
     }
 
@@ -142,7 +172,9 @@ pub(crate) struct IrInterpRuntime {
     tuple_schema_ids: HashMap<usize, u32>,
     run_queue: VecDeque<u32>,
     resume: HashMap<u32, ResumeEntry>,
+    backend_resume: HashMap<u32, BackendResumeEntry>,
     parked: HashMap<u32, InterpParked>,
+    backend_parked: HashMap<u32, BackendParkRecord>,
     /// Node-global state (the atom table) shared by every task in this
     /// interpreter instance, seeded from the program module's atoms.
     node: Rc<Node>,
@@ -164,26 +196,17 @@ impl IrInterpRuntime {
             tuple_schema_ids: HashMap::new(),
             run_queue: VecDeque::new(),
             resume: HashMap::new(),
+            backend_resume: HashMap::new(),
             parked: HashMap::new(),
+            backend_parked: HashMap::new(),
             node: Rc::new(Node::empty()),
             current_proc: std::ptr::null_mut(),
         }
     }
 
-    /// The process running in the current quantum. Call sites that allocate or
-    /// touch the running process read this instead of the global
-    /// `CURRENT_PROCESS` thread-local.
-    #[inline]
-    pub(crate) fn cur_proc(&self) -> *mut Process {
-        debug_assert!(!self.current_proc.is_null(), "cur_proc outside a quantum");
-        self.current_proc
-    }
-
-    pub(crate) fn fresh_with_root(module: &Module) -> Self {
+    pub(crate) fn fresh_with_atoms(atom_names: Vec<String>) -> Self {
         let mut runtime = Self::fresh();
-        // Seed the interpreter's shared node from the program module's atoms;
-        // every task clones this Rc.
-        runtime.node = Rc::new(Node::new(module.atom_names.clone(), Vec::new()));
+        runtime.node = Rc::new(Node::new(atom_names, Vec::new()));
         let user_schemas = runtime.schemas();
         let (bs_tuple_arity1_schema, bs_tuple_arity3_schema) = runtime.register_bitstring_tuple_schemas();
         let consts = CompiledModuleConsts {
@@ -200,6 +223,48 @@ impl IrInterpRuntime {
         ));
         runtime.insert_task(1, process);
         runtime
+    }
+
+    pub(crate) fn with_process(mut process: Process, atom_names: &[String]) -> Self {
+        for atom in atom_names {
+            process.node.intern_atom(atom);
+        }
+        let mut runtime = Self::fresh();
+        runtime.node = Rc::clone(&process.node);
+        runtime.schemas = process.heap.schemas_registry();
+        let (bs_tuple_arity1_schema, bs_tuple_arity3_schema) = runtime.register_bitstring_tuple_schemas();
+        process.bs_tuple_arity1_schema = Some(bs_tuple_arity1_schema);
+        process.bs_tuple_arity3_schema = Some(bs_tuple_arity3_schema);
+        process.pid = 1;
+        process.state = ProcessState::New;
+        process.detach_runtime_state();
+        runtime.insert_task(1, Box::new(process));
+        runtime
+    }
+
+    pub(crate) fn take_process(&mut self, pid: u32) -> Option<Process> {
+        self.tasks.remove(&pid).map(|process| {
+            let proc_ptr: *mut Process = (&*process) as *const Process as *mut Process;
+            if self.current_proc == proc_ptr {
+                self.current_proc = std::ptr::null_mut();
+            }
+            let mut process = *process;
+            process.detach_runtime_state();
+            process
+        })
+    }
+
+    /// The process running in the current quantum. Call sites that allocate or
+    /// touch the running process read this instead of the global
+    /// `CURRENT_PROCESS` thread-local.
+    #[inline]
+    pub(crate) fn cur_proc(&self) -> *mut Process {
+        debug_assert!(!self.current_proc.is_null(), "cur_proc outside a quantum");
+        self.current_proc
+    }
+
+    pub(crate) fn fresh_with_root(module: &Module) -> Self {
+        Self::fresh_with_atoms(module.atom_names.clone())
     }
 
     fn schemas(&self) -> Rc<RefCell<SchemaRegistry>> {
@@ -302,6 +367,7 @@ impl IrInterpRuntime {
     pub(crate) fn enqueue_entry(
         &mut self,
         module: &Module,
+        tel: &dyn crate::telemetry::Telemetry,
         pid: u32,
         fn_id: FnId,
         args: Vec<AnyValue>,
@@ -309,7 +375,7 @@ impl IrInterpRuntime {
         if !self.tasks.contains_key(&pid) {
             return Err(format!("enqueue_entry: unknown pid {}", pid));
         }
-        self.set_task_code_image(pid, Rc::new(CodeImage::from_module(module)?));
+        self.set_task_code_image(pid, Rc::new(CodeImage::from_module(module, tel)?));
         self.enqueue_entry_with_image(pid, fn_id, args)
     }
 
@@ -367,7 +433,7 @@ impl IrInterpRuntime {
                 (*proc_ptr).state = ProcessState::Running;
                 (*proc_ptr).reset_reduction_budget();
                 (*proc_ptr).ctx = &mut exec_ctx;
-                (*proc_ptr).heap.set_owner(proc_ptr);
+                (*proc_ptr).attach_heap_owner();
                 debug_assert!(!(*proc_ptr).ctx.is_null(), "interp ctx installed");
             };
             self.current_proc = proc_ptr;
@@ -638,7 +704,7 @@ where
     runtime.insert_task(1, task);
     let task_ptr = runtime.process_ptr(1).expect("run_test_fn installed pid 1");
     runtime.current_proc = task_ptr;
-    unsafe { (*task_ptr).heap.set_owner(task_ptr) };
+    unsafe { (*task_ptr).attach_heap_owner() };
     let mut module_plan = module_plan.clone();
     let diagnostics = resolve_module_types(t, module, &mut module_plan);
     if let Some(diagnostic) = diagnostics.into_iter().next() {

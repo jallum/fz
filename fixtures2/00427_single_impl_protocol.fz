@@ -1,0 +1,11 @@
+defprotocol Sizer do
+  fn size(value)
+end
+
+defimpl Sizer, for: List do
+  fn size(value), do: 2
+end
+
+fn describe(value), do: Sizer.size(value)
+
+fn main(), do: describe([1, 2, 3])

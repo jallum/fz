@@ -1,8 +1,8 @@
 use super::*;
-use crate::diag::Span;
+use crate::compiler::source::Span;
 use crate::frontend::protocols::{ImplTarget, InterfaceProtocolImpl};
-use crate::modules::identity::{ExportKey, ModuleName};
-use crate::modules::interface::{FZ_INTERFACE_ABI_VERSION, InterfaceFn, InterfaceImport, ModuleInterface};
+use crate::modules::identity::{Mfa, ModuleName};
+use crate::modules::interface::{InterfaceFn, InterfaceImport, ModuleInterface};
 
 fn module(name: &str) -> ModuleName {
     ModuleName::from_segments(vec![name.to_string()])
@@ -33,7 +33,6 @@ fn interface(name: &str, imports: Vec<&str>, exports: Vec<(&str, usize)>) -> Mod
         .collect();
     ModuleInterface {
         name: module_name,
-        abi_version: FZ_INTERFACE_ABI_VERSION,
         imports: import_facts,
         exports: export_facts,
         types: Vec::new(),
@@ -50,7 +49,7 @@ fn graph_loader_keeps_protocol_impl_callback_namespaces_inside_owner_module() {
     app.protocol_impls.push(InterfaceProtocolImpl {
         protocol: module("Enumerable"),
         target: ImplTarget::module(module("List")),
-        callbacks: vec![ExportKey::new(module("EnumerableList"), "reduce", 3)],
+        callbacks: vec![Mfa::new(module("EnumerableList"), "reduce", 3)],
     });
     let mut roots = InterfaceTable::new();
     roots.insert(app.name.clone(), app);

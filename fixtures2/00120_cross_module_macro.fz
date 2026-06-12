@@ -1,0 +1,11 @@
+defmodule M do
+  fn helper(x), do: x + 100
+  defmacro bump(x) do
+quote do: helper(unquote(x))
+  end
+end
+defmodule User do
+  require M
+  fn run(), do: M.bump(7)
+end
+fn main() do User.run() end

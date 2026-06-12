@@ -1,0 +1,13 @@
+defmodule Probe do
+  @spec reduce_cont([a], b, (a, b) -> {:cont, b} | {:halt, b} | {:suspend, b}) :: {:done, b} | {:halted, b} | {:suspended, b, () -> any}
+  fn reduce_cont([], acc, _reducer), do: {:done, acc}
+  fn reduce_cont([head | tail], acc, reducer) do
+    reduce_step(tail, reducer.(head, acc), reducer)
+  end
+  @spec reduce_step([a], {:cont, b} | {:halt, b} | {:suspend, b}, (a, b) -> {:cont, b} | {:halt, b} | {:suspend, b}) :: {:done, b} | {:halted, b} | {:suspended, b, () -> any}
+  fn reduce_step(list, {:cont, acc}, reducer), do: reduce_cont(list, acc, reducer)
+  fn reduce_step(_list, {:halt, acc}, _reducer), do: {:halted, acc}
+  fn reduce_step(list, {:suspend, acc}, reducer) do
+    {:suspended, acc, (fn () -> reduce_cont(list, acc, reducer) end)}
+  end
+end

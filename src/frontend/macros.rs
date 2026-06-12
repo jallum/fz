@@ -11,7 +11,8 @@
 //! a stack-overflow guard catches runaway expansion).
 
 use crate::ast::*;
-use crate::diag::{Diagnostic, Span, SpanOrigin, codes};
+use crate::compiler::source::{Span, SpanOrigin};
+use crate::diag::{Diagnostic, codes};
 use crate::exec::ast_value::{expr_to_value, value_to_expr};
 use crate::exec::eval::CompileTimeEvaluator;
 use crate::exec::value::Value;
@@ -327,8 +328,9 @@ pub fn value_to_items(v: &Value) -> Result<Vec<Item>, String> {
                         is_macro: false,
                         is_private: false,
                         extern_abi: None,
-                        extern_params: vec![],
+                        extern_param_tokens: vec![],
                         extern_ret_tokens: TypeExprBody(vec![]),
+                        extern_constraints: vec![],
                         variadic: false,
                         attrs: Vec::new(),
                         span,

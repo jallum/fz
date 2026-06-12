@@ -1,0 +1,4 @@
+fn double(x) do
+  x * 2
+end
+fn main() do dbg(double(21)) end

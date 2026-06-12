@@ -1,16 +1,16 @@
 use super::*;
+use crate::compiler::source::{Id as CodeId, SourceMap, Span};
 use crate::diag::diagnostic::{DiagCode, Diagnostic, Diagnostics};
 use crate::diag::render::Renderer;
-use crate::diag::span::{FileId, Span};
 use crate::metadata;
 use crate::telemetry::bus::ConfiguredTelemetry;
 use crate::telemetry::capture::vec_writer;
 use crate::telemetry::sink::Telemetry;
 use crate::telemetry::value::opaque;
 
-fn fixture() -> (Rc<RefCell<SourceMap>>, FileId) {
+fn fixture() -> (Rc<RefCell<SourceMap>>, CodeId) {
     let mut sm = SourceMap::new();
-    let fid = sm.add_file("test.fz", "fn main(), do: :ok\n");
+    let fid = sm.add_code(Some("test.fz"), "fn main(), do: :ok\n");
     (Rc::new(RefCell::new(sm)), fid)
 }
 

@@ -1,0 +1,5 @@
+defmodule A do
+  defmodule B do
+    fn f(x), do: x + 1
+  end
+end

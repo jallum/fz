@@ -1,4 +1,7 @@
+use crate::ast::{SpecDecl, TypeExprBody};
+use crate::function_surface::CallableSurface;
 use crate::fz_ir::{ExternId, ExternTy};
+use crate::parser::lexer::{Tok, Token};
 use std::collections::HashMap;
 
 /// Name → ExternId index, built during the zeroth lowering pass.
@@ -50,4 +53,53 @@ pub(crate) fn extern_ty_from_name(name: &str) -> Option<ExternTy> {
         "cstring" => Some(ExternTy::CString),
         _ => None,
     }
+}
+
+pub(crate) fn extern_semantic_contract(surface: &impl CallableSurface) -> Option<SpecDecl> {
+    let mut contract = surface.extern_contract_decl()?;
+    contract.param_body_tokens = contract
+        .param_body_tokens
+        .iter()
+        .map(normalize_extern_semantic_body)
+        .collect();
+    contract.result_body_tokens = normalize_extern_semantic_body(&contract.result_body_tokens);
+    contract.constraints = contract
+        .constraints
+        .iter()
+        .map(|(name, body)| (name.clone(), normalize_extern_semantic_body(body)))
+        .collect();
+    Some(contract)
+}
+
+pub(crate) fn explicit_extern_wire_hint(body: &TypeExprBody) -> Option<ExternTy> {
+    match body.0.as_slice() {
+        [
+            Token {
+                tok: Tok::Ident(name), ..
+            },
+        ] => match name.as_str() {
+            "binary" => Some(ExternTy::Binary),
+            "cstring" => Some(ExternTy::CString),
+            "unit" => Some(ExternTy::Unit),
+            _ => None,
+        },
+        [Token { tok: Tok::Nil, .. }] => Some(ExternTy::Unit),
+        _ => None,
+    }
+}
+
+fn normalize_extern_semantic_body(body: &TypeExprBody) -> TypeExprBody {
+    let mut normalized = body.clone();
+    if let [token] = normalized.0.as_mut_slice() {
+        match &token.tok {
+            Tok::Ident(name) if name == "cstring" => {
+                token.tok = Tok::Ident("binary".to_string());
+            }
+            Tok::Ident(name) if name == "unit" => {
+                token.tok = Tok::Nil;
+            }
+            _ => {}
+        }
+    }
+    normalized
 }

@@ -1,9 +1,9 @@
 //! CodegenEnv (immutable per-module ctx) and CodegenCache (per-fn caches).
 
 use super::*;
+use crate::compiler2::NativeBody;
 use crate::fz_ir::{BlockId, ExternId, FnId, Module, Var};
 use crate::ir_planner::SpecPlan;
-use crate::ir_planner::fn_types::SpecKey;
 use crate::telemetry::Telemetry;
 use cranelift_codegen::ir::{self};
 use cranelift_module::{DataId, FuncId};
@@ -14,12 +14,12 @@ use std::collections::{HashMap, HashSet};
 pub(crate) struct CodegenEnv<'a> {
     pub(super) telemetry: &'a dyn Telemetry,
     pub(super) runtime: &'a RuntimeRefs,
+    pub(super) surface: &'a NativeCodegenSurface<'a>,
     pub(super) module: &'a Module,
     pub(super) fn_types: &'a SpecPlan,
     pub(super) active_spec_id: u32,
     pub(super) active_body_fn_id: FnId,
     pub(super) active_body_name: &'a str,
-    pub(super) spec_registry: &'a SpecRegistry,
     pub(super) fn_ids: &'a HashMap<u32, FuncId>,
     pub(super) callable_entry_fn_ids: &'a HashMap<u32, FuncId>,
     pub(super) mid_flight_cont_tail_fn_ids: &'a HashMap<(u32, Vec<MidFlightArgShape>), FuncId>,
@@ -31,7 +31,6 @@ pub(crate) struct CodegenEnv<'a> {
     pub(super) bs_const_data: &'a RefCell<HashMap<Vec<u8>, BsConstSyms>>,
     pub(super) param_reprs: &'a [Vec<ArgRepr>],
     pub(super) return_reprs: &'a [ArgRepr],
-    pub(super) spec_keys: &'a [SpecKey],
     pub(super) native_abi_fns: &'a HashSet<FnId>,
     pub(super) cont_target_fns: &'a HashSet<FnId>,
     pub(super) cont_fns: &'a HashSet<FnId>,
@@ -46,6 +45,32 @@ pub(crate) struct CodegenEnv<'a> {
     /// and consumed by the Term::ReceiveMatched arm in
     /// `compile_block_terminator` (`fn_addr` -> call site arg).
     pub(super) receive_dispatch_fn_ids: &'a HashMap<(u32, u32), FuncId>,
+}
+
+impl<'a> CodegenEnv<'a> {
+    pub(super) fn body_key(&self, codegen_id: u32) -> &crate::ir_planner::fn_types::SpecKey {
+        self.surface.body_key(codegen_id)
+    }
+
+    pub(super) fn body_fn_id(&self, codegen_id: u32) -> FnId {
+        self.surface.body_fn_id(codegen_id)
+    }
+
+    pub(super) fn body_id_for_key<T: crate::types::Types<Ty = crate::types::Ty>>(
+        &self,
+        t: &T,
+        key: &crate::ir_planner::fn_types::SpecKey,
+    ) -> Option<u32> {
+        self.surface.body_id_for_key(t, key)
+    }
+
+    pub(super) fn body_id_for_fn(&self, fn_id: FnId) -> Option<u32> {
+        self.surface.body_id_for_fn(fn_id)
+    }
+
+    pub(super) fn active_native_body(&self) -> Option<&NativeBody> {
+        self.surface.body(self.active_spec_id).native_body
+    }
 }
 
 #[derive(Clone, Copy)]

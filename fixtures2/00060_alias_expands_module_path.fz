@@ -1,0 +1,9 @@
+defmodule Long do
+  defmodule Path do
+    fn f(x), do: x
+  end
+end
+defmodule User do
+  alias Long.Path
+  fn caller(), do: Path.f(7)
+end

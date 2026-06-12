@@ -70,7 +70,10 @@ pub(crate) fn continuation_return_demand(
     // producing direct call delivers them — the dual of `direct_call_return_plan`
     // on the same edge.
     match source {
-        ContSource::Call { callee, .. } => tuple_fields_demand(return_capabilities, *callee, cont.fn_id),
+        ContSource::Call { callee, .. } => callee
+            .local_fn_id()
+            .map(|callee| tuple_fields_demand(return_capabilities, callee, cont.fn_id))
+            .unwrap_or_else(ReturnDemand::value),
         ContSource::CallClosure { .. } => ReturnDemand::value(),
     }
 }

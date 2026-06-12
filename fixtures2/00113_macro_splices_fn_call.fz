@@ -1,0 +1,5 @@
+fn helper(x) do x * 3 end
+defmacro use_helper(x) do
+  quote do: helper(unquote(x))
+end
+fn main() do use_helper(7) end

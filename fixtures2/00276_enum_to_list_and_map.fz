@@ -1,0 +1,4 @@
+fn main() do
+  dbg(Enum.to_list([1, 2, 3]))
+  dbg(Enum.map([1, 2, 3, 4], fn x -> x * 2 end))
+end

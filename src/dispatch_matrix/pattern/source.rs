@@ -2,29 +2,28 @@ use std::collections::BTreeSet;
 
 use crate::ast::{Expr, Pattern, Spanned};
 use crate::dispatch_matrix::{DispatchNode, GraphNodeId, ListRegion, Region, SubjectId};
-use crate::fz_ir::Var;
-use crate::types::Ty;
+use crate::types::Ty as DefaultTy;
 
-use super::{PatternDispatchPlan, pattern_dispatch_from_source};
+use super::{PatternDispatchPlan, PatternSubjectRef, pattern_dispatch_from_source};
 
 /// Opaque handle into the caller's body table. Source-pattern dispatch never
 /// lowers bodies; it routes graph outcomes to caller-owned body lowering by id.
 pub(crate) type PatternBodyId = u32;
 
 #[derive(Debug, Clone)]
-pub(crate) struct PatternRow {
-    /// Column patterns. `patterns.len()` must equal `SourcePatternRows::subjects.len()`.
+pub(crate) struct PatternRow<TypeHandle = DefaultTy> {
+    /// Column patterns. `patterns.len()` must equal `SourcePatternRows::input_count`.
     pub(crate) patterns: Vec<Spanned<Pattern>>,
     /// `@spec` annotation tests evaluated at leaf-resolution time, before the guard.
-    pub(crate) preconditions: Vec<(Var, Ty)>,
+    pub(crate) preconditions: Vec<(PatternSubjectRef, TypeHandle)>,
     pub(crate) guard: Option<Spanned<Expr>>,
     pub(crate) body_id: PatternBodyId,
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct SourcePatternRows {
-    pub(crate) subjects: Vec<Var>,
-    pub(crate) rows: Vec<PatternRow>,
+pub(crate) struct SourcePatternRows<TypeHandle = DefaultTy> {
+    pub(crate) input_count: usize,
+    pub(crate) rows: Vec<PatternRow<TypeHandle>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -37,18 +36,23 @@ pub(crate) enum KnownSubjectDomain {
 pub(crate) enum SourcePatternError {
     UnsupportedGuardExpr,
     UnsupportedMapKey,
-    UnknownSubject(Var),
+    UnknownSubject(PatternSubjectRef),
     UnknownPinned(String),
     UnknownGuardVar(String),
     GuardCallCycle(String, usize),
     DispatchMatrix(String),
+    RowPatternArity {
+        expected: usize,
+        actual: usize,
+        body_id: PatternBodyId,
+    },
     NonMonotonicBodyId {
         previous: PatternBodyId,
         current: PatternBodyId,
     },
 }
 
-pub(crate) fn collect_pinned_names(patterns: &SourcePatternRows) -> Vec<String> {
+pub(crate) fn collect_pinned_names<TypeHandle>(patterns: &SourcePatternRows<TypeHandle>) -> Vec<String> {
     let mut out = Vec::new();
     for row in &patterns.rows {
         let mut bound = BTreeSet::new();
@@ -184,7 +188,9 @@ pub(crate) fn direct_bitfield_bindings(pattern: &Pattern) -> Vec<String> {
 /// Body ids that no path through the dispatch graph reaches. Guarded rows do
 /// not consume coverage: for diagnostics we replace concrete guards with
 /// `true`, compile one dispatch plan, and traverse both guard branches.
-pub(crate) fn find_unreachable_rows(patterns: &SourcePatternRows) -> Vec<PatternBodyId> {
+pub(crate) fn find_unreachable_rows<TypeHandle: Clone + PartialEq + Eq>(
+    patterns: &SourcePatternRows<TypeHandle>,
+) -> Vec<PatternBodyId> {
     let row_bodies: BTreeSet<PatternBodyId> = patterns.rows.iter().map(|r| r.body_id).collect();
     let plan = plan_for_analysis(normalize_guards_for_analysis(patterns.clone()));
     let mut reached = BTreeSet::new();
@@ -193,21 +199,28 @@ pub(crate) fn find_unreachable_rows(patterns: &SourcePatternRows) -> Vec<Pattern
 }
 
 #[cfg(test)]
-pub(crate) fn is_inexhaustive(patterns: &SourcePatternRows) -> bool {
+pub(crate) fn is_inexhaustive<TypeHandle: Clone + PartialEq + Eq>(patterns: &SourcePatternRows<TypeHandle>) -> bool {
     is_inexhaustive_with_domains(patterns, &[])
 }
 
-pub(crate) fn is_inexhaustive_with_domains(patterns: &SourcePatternRows, domains: &[KnownSubjectDomain]) -> bool {
+pub(crate) fn is_inexhaustive_with_domains<TypeHandle: Clone + PartialEq + Eq>(
+    patterns: &SourcePatternRows<TypeHandle>,
+    domains: &[KnownSubjectDomain],
+) -> bool {
     let normalized = normalize_guards_for_analysis(patterns.clone());
     let plan = plan_for_analysis(normalized);
     has_reachable_fail_in_graph(&plan, plan.graph.root) && !list_domain_is_covered(patterns, domains, &plan)
 }
 
-fn plan_for_analysis(patterns: SourcePatternRows) -> PatternDispatchPlan {
+fn plan_for_analysis<TypeHandle: Clone + PartialEq + Eq>(
+    patterns: SourcePatternRows<TypeHandle>,
+) -> PatternDispatchPlan<TypeHandle> {
     pattern_dispatch_from_source(patterns).expect("source-pattern dispatch analysis must compile")
 }
 
-fn normalize_guards_for_analysis(mut patterns: SourcePatternRows) -> SourcePatternRows {
+fn normalize_guards_for_analysis<TypeHandle>(
+    mut patterns: SourcePatternRows<TypeHandle>,
+) -> SourcePatternRows<TypeHandle> {
     for row in &mut patterns.rows {
         if row.guard.is_some() {
             row.guard = Some(Spanned::dummy(Expr::Bool(true)));
@@ -216,8 +229,8 @@ fn normalize_guards_for_analysis(mut patterns: SourcePatternRows) -> SourcePatte
     patterns
 }
 
-fn collect_reachable_bodies_from_graph(
-    plan: &PatternDispatchPlan,
+fn collect_reachable_bodies_from_graph<TypeHandle>(
+    plan: &PatternDispatchPlan<TypeHandle>,
     node: GraphNodeId,
     out: &mut BTreeSet<PatternBodyId>,
 ) {
@@ -238,7 +251,7 @@ fn collect_reachable_bodies_from_graph(
     }
 }
 
-fn has_reachable_fail_in_graph(plan: &PatternDispatchPlan, node: GraphNodeId) -> bool {
+fn has_reachable_fail_in_graph<TypeHandle>(plan: &PatternDispatchPlan<TypeHandle>, node: GraphNodeId) -> bool {
     let Some(node_ref) = plan.graph.node(node) else {
         return false;
     };
@@ -251,10 +264,10 @@ fn has_reachable_fail_in_graph(plan: &PatternDispatchPlan, node: GraphNodeId) ->
     }
 }
 
-fn list_domain_is_covered(
-    patterns: &SourcePatternRows,
+fn list_domain_is_covered<TypeHandle>(
+    patterns: &SourcePatternRows<TypeHandle>,
     domains: &[KnownSubjectDomain],
-    plan: &PatternDispatchPlan,
+    plan: &PatternDispatchPlan<TypeHandle>,
 ) -> bool {
     if domains.is_empty() {
         return false;

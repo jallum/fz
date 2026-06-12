@@ -17,12 +17,12 @@ use std::thread::sleep;
 use std::time::Duration;
 
 fn compile_src(src: &str) -> (CompiledModule, Module, FnId) {
-    let mut t = crate::types::new();
     let tel = ConfiguredTelemetry::new();
-    let graph = linked_runtime_graph(&mut t, src, &tel);
-    let entry = graph.module.fn_by_name("main").expect("main fn").id;
-    let compiled = compile_planned(&mut t, &graph.module, &graph.module_plan, &tel).expect("compile planned");
-    (compiled, graph.module, entry)
+    let mut graph = linked_runtime_graph(src, &tel);
+    let entry = graph.linked_module().fn_by_name("main").expect("main fn").id;
+    let (module, module_plan) = graph.cloned_linked_module_plan();
+    let compiled = compile_planned(graph.types(), &module, &module_plan, &tel).expect("compile planned");
+    (compiled, graph.linked_module().clone(), entry)
 }
 
 fn force_reduction_yield(task: &mut Process) {

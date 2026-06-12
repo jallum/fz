@@ -1,6 +1,6 @@
 ---
 purpose: "TailCallClosure with captured singleton closure-lit preserves narrow arg ABI through recursive HOF"
-paths: [jit, interp, aot, repl]
+paths: [jit, interp, aot, repl, fz2-run, fz2-interp, fz2-build]
 budget.codegen.functions: 8
 budget.codegen.instructions: 122
 budget.specs.count: 8

@@ -18,19 +18,20 @@
 //! If-else continuations in this IR.
 
 use crate::ast::{BitType, Endian};
-use crate::diag::Span;
+use crate::compiler::source::Span;
 use crate::dispatch_matrix::pattern::{PatternDispatchPlan, PatternSubjectRef};
 use crate::frontend::protocols::ProtocolRegistry;
-use crate::modules::identity::{ExportKey, ModuleName};
+use crate::modules::identity::{Mfa, ModuleName};
 use crate::modules::interface::ModuleInterface;
+use crate::runtime_type_predicate::RuntimeTypePredicate;
 use crate::specs::{ResolvedSpecSet, StructuralCorrespondenceGroup};
+use crate::type_expr::ResolvedSpecDecl;
 use crate::types::{KeySlot, Nominals, Ty, ty_display};
 use fz_runtime::heap::Schema;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::error::Error;
 use std::fmt;
 use std::hash::{Hash, Hasher};
-use std::mem::take;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -91,13 +92,13 @@ impl CallsiteIdent {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum BitSizeIr {
     Literal(u32),
     Var(Var),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct BitFieldIr {
     pub value: Var,
     pub ty: BitType,
@@ -176,7 +177,22 @@ pub struct CallsiteId {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ExternalCallEdge {
     pub callsite: CallsiteId,
-    pub target: ExportKey,
+    pub target: Mfa,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum DirectCallTarget {
+    Local(FnId),
+    ProviderBoundary(Mfa),
+}
+
+impl DirectCallTarget {
+    pub fn local_fn_id(&self) -> Option<FnId> {
+        match self {
+            Self::Local(fn_id) => Some(*fn_id),
+            Self::ProviderBoundary(_) => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -188,7 +204,7 @@ pub struct ProtocolCallTarget {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExternalLinkError {
-    MissingTarget(ExportKey),
+    MissingTarget(Mfa),
     MissingCallsite(CallsiteId),
 }
 
@@ -302,7 +318,7 @@ impl ExternArg {
 }
 
 /// One resolved `extern "C" fn` declaration stored in `Module.externs`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExternDecl {
     pub id: ExternId,
     pub fz_name: String,
@@ -315,6 +331,10 @@ pub struct ExternDecl {
     /// `Prim::Extern` calls their declared return type instead of `any`.
     /// Defaults to the `any` Ty when no return type is declared.
     pub ret_descr: Ty,
+    /// Full semantic extern contract so later phases can instantiate the
+    /// return from the actual arg types instead of falling back to a widened
+    /// bound.
+    pub semantic_contract: ResolvedSpecDecl<Ty>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -350,7 +370,7 @@ pub enum UnOp {
     Not,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Prim {
     Const(Const),
     BinOp(BinOp, Var, Var),
@@ -493,6 +513,12 @@ pub enum Prim {
     /// the planner (opaque types have no runtime tag) — the branch is then
     /// eliminated by DCE.
     TypeTest(Var, Box<Ty>),
+    /// Runtime-membership check over the first-class runtime-observable
+    /// predicate layer. Semantic dispatch/refinement stays in `Ty`; direct
+    /// runtime tests and cached receive dispatch lower through this explicit
+    /// predicate seam because the runtime sees tags/shapes, not full semantic
+    /// types.
+    RuntimeTypeTest(Var, Box<RuntimeTypePredicate>),
 
     /// fz-axu.4 (K3) — brand-mint. Tags the source value with the
     /// nominal brand `name` (resolved against `Module.brand_inners` to
@@ -621,21 +647,21 @@ impl Prim {
                     used.insert(*sv);
                 }
             }
-            Prim::TypeTest(v, _) | Prim::Brand(v, _) => {
+            Prim::TypeTest(v, _) | Prim::RuntimeTypeTest(v, _) | Prim::Brand(v, _) => {
                 used.insert(*v);
             }
         }
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Stmt {
     Let(Var, Prim),
 }
 
 /// First-class continuation: an IR fn to invoke with the given captured vars
 /// (plus the value(s) being returned to it, supplied by the caller at runtime).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Cont {
     pub fn_id: FnId,
     pub captured: Vec<Var>,
@@ -687,7 +713,7 @@ pub enum BranchOrigin {
     ParamGuard,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Term {
     Goto(BlockId, Vec<Var>),
     If {
@@ -698,13 +724,13 @@ pub enum Term {
     },
     Call {
         ident: CallsiteIdent,
-        callee: FnId,
+        callee: DirectCallTarget,
         args: Vec<Var>,
         continuation: Cont,
     },
     TailCall {
         ident: CallsiteIdent,
-        callee: FnId,
+        callee: DirectCallTarget,
         args: Vec<Var>,
         /// True when the callee is in the same SCC as the caller — i.e., this
         /// call is on a loop back-edge. Set by ir_lower via the SCC map from
@@ -742,7 +768,7 @@ pub enum Term {
         ident: CallsiteIdent,
         clauses: Vec<ReceiveClause>,
         /// Cached AST-free dispatch plan for interpreter and native receive probes.
-        dispatch: Arc<PatternDispatchPlan>,
+        dispatch: Arc<PatternDispatchPlan<RuntimeTypePredicate>>,
         after: Option<ReceiveAfter>,
         /// Outer-scope vars referenced by `^name` patterns across all
         /// clauses, paired with their source names so backends can
@@ -769,7 +795,7 @@ pub struct ContinuationProvenance {
 }
 
 /// fz-yxs — one arm of a `Term::ReceiveMatched`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ReceiveClause {
     /// Intrinsic identity for this clause outcome site. Planner discovery,
     /// reachability, and codegen use this instead of reconstructing a fresh
@@ -790,7 +816,7 @@ pub struct ReceiveClause {
 }
 
 /// fz-yxs — optional `after timeout -> body` tail clause.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ReceiveAfter {
     /// Intrinsic identity for this after-outcome site.
     pub ident: CallsiteIdent,
@@ -917,7 +943,8 @@ pub(crate) fn visit_prim_vars(prim: &Prim, mut visit: impl FnMut(Var)) {
         | Prim::BitReaderInit(v)
         | Prim::BitReaderDone(v)
         | Prim::Brand(v, _)
-        | Prim::TypeTest(v, _) => visit(*v),
+        | Prim::TypeTest(v, _)
+        | Prim::RuntimeTypeTest(v, _) => visit(*v),
         Prim::Extern(_, _, args) => {
             for arg in args {
                 visit(arg.var);
@@ -1035,7 +1062,7 @@ pub(crate) fn visit_term_vars(term: &Term, mut visit: impl FnMut(Var)) {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Block {
     pub id: BlockId,
     pub params: Vec<Var>,
@@ -1075,7 +1102,7 @@ pub enum FnCategory {
     ReplEntry,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct FnIr {
     pub id: FnId,
     pub name: String,
@@ -1301,10 +1328,6 @@ pub struct Module {
     pub externs: Vec<ExternDecl>,
     /// O(1) index from ExternId to position in `externs`. Mirrors fn_idx.
     pub extern_idx: HashMap<ExternId, usize>,
-    /// First-class imported module calls. The terminator still carries a
-    /// placeholder `FnId` until link/LTO resolution loads the provider
-    /// implementation and rewrites the edge to a direct local call.
-    pub external_call_edges: Vec<ExternalCallEdge>,
     pub protocol_call_targets: HashMap<FnId, ProtocolCallTarget>,
     pub protocol_registry: ProtocolRegistry,
     /// fz-jg5.12 (RED.9) — Fns marked as reduction boundaries. Populated
@@ -1332,11 +1355,11 @@ pub struct Module {
     pub struct_schemas: BTreeMap<String, Vec<String>>,
     /// Resolved declared `@spec` overload sets keyed by IR function id. Used by
     /// call typing for source-level polymorphic contracts.
-    pub declared_specs: HashMap<FnId, ResolvedSpecSet>,
+    pub(crate) declared_specs: HashMap<FnId, ResolvedSpecSet>,
     /// Function correspondence keyed by IR function id. Declared source
     /// functions contribute structural groups directly from `@spec`; CPS
     /// continuations contribute synthesized groups from lowering provenance.
-    pub function_correspondence: HashMap<FnId, Vec<StructuralCorrespondenceGroup>>,
+    pub(crate) function_correspondence: HashMap<FnId, Vec<StructuralCorrespondenceGroup>>,
     /// Continuation provenance keyed by synthesized continuation FnId. This is
     /// the durable IR-owned record of how lowering split a non-tail call or
     /// matcher body, from which planner-facing correspondence can be derived
@@ -1477,11 +1500,15 @@ impl Module {
                     Term::Call {
                         callee, continuation, ..
                     } => {
-                        edges.insert(*callee);
+                        if let Some(callee) = callee.local_fn_id() {
+                            edges.insert(callee);
+                        }
                         edges.insert(continuation.fn_id);
                     }
                     Term::TailCall { callee, .. } => {
-                        edges.insert(*callee);
+                        if let Some(callee) = callee.local_fn_id() {
+                            edges.insert(callee);
+                        }
                     }
                     Term::CallClosure { continuation, .. } => {
                         edges.insert(continuation.fn_id);
@@ -1508,19 +1535,42 @@ impl Module {
         graph
     }
 
+    pub fn external_call_edges(&self) -> Vec<ExternalCallEdge> {
+        let mut out = Vec::new();
+        for function in &self.fns {
+            for block in &function.blocks {
+                match &block.terminator {
+                    Term::Call {
+                        ident,
+                        callee: DirectCallTarget::ProviderBoundary(target),
+                        ..
+                    }
+                    | Term::TailCall {
+                        ident,
+                        callee: DirectCallTarget::ProviderBoundary(target),
+                        ..
+                    } => out.push(ExternalCallEdge {
+                        callsite: CallsiteId::new(function.id, ident, EmitSlot::Direct),
+                        target: target.clone(),
+                    }),
+                    _ => {}
+                }
+            }
+        }
+        out
+    }
+
     pub fn rewrite_external_calls_for_lto(
         &mut self,
-        exports: &BTreeMap<ExportKey, FnId>,
+        exports: &BTreeMap<Mfa, FnId>,
     ) -> Result<usize, ExternalLinkError> {
-        let edges = take(&mut self.external_call_edges);
+        let edges = self.external_call_edges();
         let mut rewritten = 0;
         for edge in edges {
             let Some(target) = exports.get(&edge.target).copied() else {
-                self.external_call_edges.push(edge.clone());
                 return Err(ExternalLinkError::MissingTarget(edge.target));
             };
             if !rewrite_external_callsite(self, &edge.callsite, target) {
-                self.external_call_edges.push(edge.clone());
                 return Err(ExternalLinkError::MissingCallsite(edge.callsite));
             }
             rewritten += 1;
@@ -1528,10 +1578,7 @@ impl Module {
         Ok(rewritten)
     }
 
-    pub fn interface_export_map(
-        &self,
-        interfaces: &BTreeMap<ModuleName, ModuleInterface>,
-    ) -> BTreeMap<ExportKey, FnId> {
+    pub fn interface_export_map(&self, interfaces: &BTreeMap<ModuleName, ModuleInterface>) -> BTreeMap<Mfa, FnId> {
         let mut out = BTreeMap::new();
         for (module, interface) in interfaces {
             for export in &interface.exports {
@@ -1541,7 +1588,7 @@ impl Module {
                     .iter()
                     .find(|f| f.name == name && f.block(f.entry).params.len() == export.arity)
                 {
-                    out.insert(ExportKey::new(module.clone(), export.name.clone(), export.arity), f.id);
+                    out.insert(Mfa::new(module.clone(), export.name.clone(), export.arity), f.id);
                 }
             }
             for protocol_impl in &interface.protocol_impls {
@@ -1574,19 +1621,19 @@ fn rewrite_external_callsite(m: &mut Module, callsite: &CallsiteId, target: FnId
             Term::Call {
                 ident, callee, args, ..
             } if callsite.slot == EmitSlot::Direct && *ident == callsite.ident && args.len() == target_arity => {
-                if *callee == target {
+                if *callee == DirectCallTarget::Local(target) {
                     return false;
                 }
-                *callee = target;
+                *callee = DirectCallTarget::Local(target);
                 return true;
             }
             Term::TailCall {
                 ident, callee, args, ..
             } if callsite.slot == EmitSlot::Direct && *ident == callsite.ident && args.len() == target_arity => {
-                if *callee == target {
+                if *callee == DirectCallTarget::Local(target) {
                     return false;
                 }
-                *callee = target;
+                *callee = DirectCallTarget::Local(target);
                 return true;
             }
             _ => {}
@@ -1771,7 +1818,6 @@ pub struct ModuleBuilder {
     fns: Vec<FnIr>,
     fn_idx: HashMap<FnId, usize>,
     schemas: Vec<Schema>,
-    pub external_call_edges: Vec<ExternalCallEdge>,
     pub protocol_call_targets: HashMap<FnId, ProtocolCallTarget>,
 }
 
@@ -1783,7 +1829,6 @@ impl ModuleBuilder {
             fns: Vec::new(),
             fn_idx: HashMap::new(),
             schemas: Vec::new(),
-            external_call_edges: Vec::new(),
             protocol_call_targets: HashMap::new(),
         }
     }
@@ -1828,7 +1873,6 @@ impl ModuleBuilder {
             atom_names: Vec::new(),
             externs: Vec::new(),
             extern_idx: HashMap::new(),
-            external_call_edges: self.external_call_edges,
             protocol_call_targets: self.protocol_call_targets,
             protocol_registry: ProtocolRegistry::default(),
             boundary_fns: HashSet::new(),
@@ -2044,6 +2088,9 @@ impl fmt::Display for Prim {
             Prim::TypeTest(v, d) => {
                 write!(f, "type_test({}, {})", v, ty_display(d))
             }
+            Prim::RuntimeTypeTest(v, d) => {
+                write!(f, "runtime_type_test({}, {})", v, d)
+            }
             Prim::Brand(v, name) => write!(f, "brand({}, {})", v, name),
         }
     }
@@ -2052,6 +2099,15 @@ impl fmt::Display for Prim {
 impl fmt::Display for Cont {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "cont({}, captured=[{}])", self.fn_id, fmt_var_list(&self.captured))
+    }
+}
+
+impl fmt::Display for DirectCallTarget {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Local(fn_id) => write!(f, "{}", fn_id),
+            Self::ProviderBoundary(target) => write!(f, "{}", target),
+        }
     }
 }
 

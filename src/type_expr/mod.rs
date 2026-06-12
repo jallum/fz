@@ -30,11 +30,11 @@
 use std::collections::HashMap;
 
 use crate::ast::{Attribute, SpecDecl, TypeExprBody};
-use crate::diag::Span;
+use crate::compiler::source::Span;
 use crate::modules::identity::ModuleName;
 use crate::parser::lexer::{Tok, Token};
 use crate::specs::{ResolvedSpec, ResolvedSpecSet, ResolvedStructFieldShape, ResolvedTypeShape};
-use crate::types::{Ty, Types};
+use crate::types::{Ty, TypeVarId, Types};
 
 /// Module-level type environment. Monomorphic aliases resolve directly to
 /// `Ty`; parameterized aliases keep their body tokens until an application
@@ -47,63 +47,79 @@ pub struct ParameterizedTypeAlias {
 }
 
 #[derive(Debug, Clone)]
-enum TypeAlias {
-    Resolved(Ty),
+enum TypeAlias<TypeHandle = Ty> {
+    Resolved(TypeHandle),
     Parameterized(ParameterizedTypeAlias),
     /// A protocol domain template carrying `PROTOCOL_ELEM_VAR` in its
     /// element-parametric positions. Applying `Protocol.t(arg)` instantiates
     /// that variable with `arg`, refining `list(_)` targets to `list(arg)`.
-    ProtocolDomain(Ty),
+    ProtocolDomain(TypeHandle),
 }
 
 #[derive(Debug, Clone)]
-pub struct StructFieldType {
+pub struct StructFieldType<TypeHandle = Ty> {
     pub name: String,
-    pub ty: Ty,
+    pub ty: TypeHandle,
 }
 
 #[derive(Debug, Clone)]
-pub struct StructRecordType {
+pub struct StructRecordType<TypeHandle = Ty> {
     pub module: ModuleName,
     pub span: Span,
-    pub fields: Vec<StructFieldType>,
+    pub fields: Vec<StructFieldType<TypeHandle>>,
 }
 
-#[derive(Debug, Clone, Default)]
-pub struct ModuleTypeEnv {
-    aliases: HashMap<(String, usize), TypeAlias>,
-    struct_records: HashMap<String, StructRecordType>,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedSpecDecl<TypeHandle = Ty> {
+    pub params: Vec<TypeHandle>,
+    pub result: TypeHandle,
+    pub constraints: HashMap<TypeVarId, TypeHandle>,
 }
 
-impl ModuleTypeEnv {
+#[derive(Debug, Clone)]
+pub struct ModuleTypeEnv<TypeHandle = Ty> {
+    aliases: HashMap<(String, usize), TypeAlias<TypeHandle>>,
+    struct_records: HashMap<String, StructRecordType<TypeHandle>>,
+}
+
+impl<TypeHandle> Default for ModuleTypeEnv<TypeHandle> {
+    fn default() -> Self {
+        Self {
+            aliases: HashMap::new(),
+            struct_records: HashMap::new(),
+        }
+    }
+}
+
+impl<TypeHandle> ModuleTypeEnv<TypeHandle> {
     pub fn new() -> Self {
         Self::default()
     }
 
-    pub fn get(&self, name: &str) -> Option<&Ty> {
+    pub fn get(&self, name: &str) -> Option<&TypeHandle> {
         match self.aliases.get(&(name.to_string(), 0)) {
             Some(TypeAlias::Resolved(ty)) => Some(ty),
             _ => None,
         }
     }
 
-    pub fn insert(&mut self, name: String, ty: Ty) -> Option<Ty> {
+    pub fn insert(&mut self, name: String, ty: TypeHandle) -> Option<TypeHandle> {
         match self.aliases.insert((name, 0), TypeAlias::Resolved(ty)) {
             Some(TypeAlias::Resolved(prev)) => Some(prev),
             _ => None,
         }
     }
 
-    pub fn insert_struct_record(&mut self, alias: String, record: StructRecordType) {
+    pub fn insert_struct_record(&mut self, alias: String, record: StructRecordType<TypeHandle>) {
         self.struct_records.insert(alias, record);
     }
 
     #[cfg(test)]
-    pub fn struct_record(&self, alias: &str) -> Option<&StructRecordType> {
+    pub fn struct_record(&self, alias: &str) -> Option<&StructRecordType<TypeHandle>> {
         self.struct_records.get(alias)
     }
 
-    pub fn struct_records(&self) -> impl Iterator<Item = (&String, &StructRecordType)> {
+    pub fn struct_records(&self) -> impl Iterator<Item = (&String, &StructRecordType<TypeHandle>)> {
         self.struct_records.iter()
     }
 
@@ -117,7 +133,7 @@ impl ModuleTypeEnv {
         self.aliases.is_empty()
     }
 
-    pub fn extend_env(&mut self, other: ModuleTypeEnv) {
+    pub fn extend_env(&mut self, other: ModuleTypeEnv<TypeHandle>) {
         self.aliases.extend(other.aliases);
     }
 
@@ -135,13 +151,13 @@ impl ModuleTypeEnv {
         }
     }
 
-    fn get_alias(&self, name: &str, arity: usize) -> Option<&TypeAlias> {
+    fn get_alias(&self, name: &str, arity: usize) -> Option<&TypeAlias<TypeHandle>> {
         self.aliases.get(&(name.to_string(), arity))
     }
 
     /// Register a protocol domain template under `name` at arity 1. Applying
     /// `name(arg)` instantiates `PROTOCOL_ELEM_VAR` in the template with `arg`.
-    pub fn insert_protocol_domain(&mut self, name: String, template: Ty) {
+    pub fn insert_protocol_domain(&mut self, name: String, template: TypeHandle) {
         self.aliases.insert((name, 1), TypeAlias::ProtocolDomain(template));
     }
 
@@ -176,7 +192,7 @@ impl std::fmt::Display for TypeExprError {
 /// map-lookup result. Visibility gating already lives in
 /// `crate::ir_planner::check_opaque_visibility`; the inner-type map is the
 /// payload the gate guards.
-pub type OpaqueInnerTypes = HashMap<String, Ty>;
+pub type OpaqueInnerTypes<TypeHandle = Ty> = HashMap<String, TypeHandle>;
 
 /// fz-axu.3 (K2) — Inner-type map for `refines` brand aliases
 /// declared in one module. Keyed by the qualified brand tag (matches
@@ -188,15 +204,21 @@ pub type OpaqueInnerTypes = HashMap<String, Ty>;
 /// treats brands as a proper subset of their inner, whereas opaques
 /// are nominally disjoint from theirs. K2 only collects the map;
 /// downstream tickets (K3 mint, K4 lattice rule, K5 erasure) read it.
-pub type BrandInnerTypes = HashMap<String, Ty>;
+pub type BrandInnerTypes<TypeHandle = Ty> = HashMap<String, TypeHandle>;
+pub type ModuleTypeBuild<TypeHandle = Ty> = (
+    ModuleTypeEnv<TypeHandle>,
+    OpaqueInnerTypes<TypeHandle>,
+    BrandInnerTypes<TypeHandle>,
+);
+pub type ParsedStructRecord<TypeHandle = Ty> = (StructRecordType<TypeHandle>, TypeHandle, usize);
 
 pub const BUILTIN_UTF8: &str = "utf8";
 pub const BUILTIN_PID: &str = "pid";
 pub const BUILTIN_REF: &str = "ref";
 
-pub fn builtin_type_env<T>(t: &mut T) -> ModuleTypeEnv
+pub fn builtin_type_env<T>(t: &mut T) -> ModuleTypeEnv<T::Ty>
 where
-    T: Types<Ty = Ty>,
+    T: Types,
 {
     let mut env = ModuleTypeEnv::new();
     env.insert(BUILTIN_UTF8.to_string(), t.brand_of(BUILTIN_UTF8));
@@ -205,9 +227,9 @@ where
     env
 }
 
-pub fn builtin_opaque_inners<T>(t: &mut T) -> OpaqueInnerTypes
+pub fn builtin_opaque_inners<T>(t: &mut T) -> OpaqueInnerTypes<T::Ty>
 where
-    T: Types<Ty = Ty>,
+    T: Types,
 {
     HashMap::from([
         (BUILTIN_PID.to_string(), t.int()),
@@ -215,9 +237,9 @@ where
     ])
 }
 
-pub fn builtin_brand_inners<T>(t: &mut T) -> BrandInnerTypes
+pub fn builtin_brand_inners<T>(t: &mut T) -> BrandInnerTypes<T::Ty>
 where
-    T: Types<Ty = Ty>,
+    T: Types,
 {
     HashMap::from([(BUILTIN_UTF8.to_string(), t.str_t())])
 }
@@ -234,6 +256,17 @@ where
     T: Types<Ty = Ty>,
 {
     self::env::resolve_spec_decl(t, decl, env)
+}
+
+pub fn resolve_spec_decl_generic<T>(
+    t: &mut T,
+    decl: &SpecDecl,
+    env: &ModuleTypeEnv<T::Ty>,
+) -> Result<ResolvedSpecDecl<T::Ty>, TypeExprError>
+where
+    T: Types,
+{
+    self::env::resolve_spec_decl_generic(t, decl, env)
 }
 
 pub fn resolve_spec_decls<'a, T>(
@@ -263,9 +296,9 @@ where
 }
 
 #[cfg(test)]
-pub fn build_module_type_env<T>(t: &mut T, attrs: &[Attribute]) -> Result<ModuleTypeEnv, TypeExprError>
+pub fn build_module_type_env<T>(t: &mut T, attrs: &[Attribute]) -> Result<ModuleTypeEnv<T::Ty>, TypeExprError>
 where
-    T: Types<Ty = Ty>,
+    T: Types,
 {
     self::env::build_module_type_env(t, attrs)
 }
@@ -274,10 +307,10 @@ pub fn build_module_type_env_for_with_base<T>(
     t: &mut T,
     attrs: &[Attribute],
     module_path: &str,
-    base_env: &ModuleTypeEnv,
-) -> Result<(ModuleTypeEnv, OpaqueInnerTypes, BrandInnerTypes), TypeExprError>
+    base_env: &ModuleTypeEnv<T::Ty>,
+) -> Result<ModuleTypeBuild<T::Ty>, TypeExprError>
 where
-    T: Types<Ty = Ty>,
+    T: Types,
 {
     self::env::build_module_type_env_for_with_base(t, attrs, module_path, base_env)
 }

@@ -1,0 +1,10 @@
+defprotocol P do
+  @spec pick(integer) :: integer
+  fn pick(value)
+end
+
+defimpl P, for: List do
+  @spec pick(integer) :: integer
+  @spec pick(float) :: float
+  fn pick(value), do: value
+end

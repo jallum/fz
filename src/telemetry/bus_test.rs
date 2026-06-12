@@ -160,6 +160,27 @@ fn span_stop_event_carries_elapsed_ns() {
 }
 
 #[test]
+fn span_stop_event_carries_close_payload() {
+    let t = ConfiguredTelemetry::new();
+    let cap = Capture::new();
+    t.attach(&[], cap.handler());
+    {
+        let mut span = t.span(&["fz", "x"], Metadata::new());
+        span.close_with(measurements! { jobs_ran: 3u64 }, metadata! { outcome: "ok" });
+    }
+    let events = cap.events();
+    let stop = events
+        .iter()
+        .find(|ev| ev.kind == EventKind::SpanStop)
+        .expect("expected SpanStop event");
+    assert!(matches!(stop.measurements.get("jobs_ran"), Some(Value::U64(3))));
+    assert!(matches!(
+        stop.metadata.get("outcome"),
+        Some(Value::Str(value)) if value.as_ref() == "ok"
+    ));
+}
+
+#[test]
 fn panic_inside_span_emits_exception_event() {
     let t = ConfiguredTelemetry::new();
     let cap = Capture::new();

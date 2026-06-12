@@ -1,9 +1,10 @@
 use super::*;
-use crate::diag::Span;
+use crate::compiler::source::Span;
 use crate::fz_ir::{
-    CallsiteIdent, Cont, ContinuationProvenance, ContinuationProvenanceKind, FnBuilder, FnCategory, FnId, Term, Var,
+    CallsiteIdent, Cont, ContinuationProvenance, ContinuationProvenanceKind, DirectCallTarget, FnBuilder, FnCategory,
+    FnId, Term, Var,
 };
-use crate::modules::identity::ExportKey;
+use crate::modules::identity::Mfa;
 
 // -----------------------------------------------------------------------------
 // fz-duq.1: branching-construct join helpers
@@ -275,7 +276,7 @@ pub(crate) fn finalize_arm(ctx: &mut LowerCtx, arm_value: Var, join: Option<&Con
         tail_args.extend(capture_call_args(&captured, &join.owned_cons_captures));
         ctx.set_term(Term::TailCall {
             ident: CallsiteIdent::from_source(Span::DUMMY),
-            callee: join.id,
+            callee: DirectCallTarget::Local(join.id),
             args: tail_args,
             is_back_edge: false,
         });
@@ -347,7 +348,7 @@ pub(crate) fn cps_split_call(
     ctx.set_term_at(
         Term::Call {
             ident: CallsiteIdent::from_source(Span::DUMMY),
-            callee,
+            callee: DirectCallTarget::Local(callee),
             args: arg_vars.clone(),
             continuation: Cont {
                 fn_id: cont_id,
@@ -381,8 +382,7 @@ pub(crate) fn cps_split_call(
 
 pub(crate) fn cps_split_external_call(
     ctx: &mut LowerCtx,
-    callee: FnId,
-    target: ExportKey,
+    target: Mfa,
     arg_vars: Vec<Var>,
     call_span: Span,
 ) -> Result<Var, LowerError> {
@@ -390,10 +390,10 @@ pub(crate) fn cps_split_external_call(
     let captured_vars: Vec<Var> = captured.iter().map(|(_, v)| *v).collect();
     let cont_id = ctx.mb.fresh_fn_id();
 
-    ctx.set_external_direct_term_at(
+    ctx.set_term_at(
         Term::Call {
             ident: CallsiteIdent::from_source(call_span),
-            callee,
+            callee: DirectCallTarget::ProviderBoundary(target),
             args: arg_vars,
             continuation: Cont {
                 fn_id: cont_id,
@@ -401,7 +401,6 @@ pub(crate) fn cps_split_external_call(
             },
         },
         call_span,
-        target,
     );
 
     let done = ctx.cur.take().unwrap().build();

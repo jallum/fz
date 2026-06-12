@@ -1,0 +1,4 @@
+defmacro loop_m(x) do
+  quote do: loop_m(unquote(x))
+end
+fn main() do loop_m(0) end

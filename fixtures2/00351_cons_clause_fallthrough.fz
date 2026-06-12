@@ -1,0 +1,6 @@
+fn f([head | _tail]), do: head
+fn f(_other), do: 99
+
+fn main() do
+  f([7]) + f([]) + f(%{a: 1}) + f(42)
+end

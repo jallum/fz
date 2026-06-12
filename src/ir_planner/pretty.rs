@@ -1,8 +1,8 @@
 use super::fn_types::{ModulePlan, SpecKey, SpecPlan, display_return_demand, display_return_strategy};
 use super::reachable::cont_input_key;
 use crate::fz_ir::{
-    Block, CallsiteId, CallsiteIdent, Cont, EmitSlot, FnId, FnIr, Module, PhysicalCapability, ReceiveAfter,
-    ReceiveClause, Term, Var,
+    Block, CallsiteId, CallsiteIdent, Cont, DirectCallTarget, EmitSlot, FnId, FnIr, Module, PhysicalCapability,
+    ReceiveAfter, ReceiveClause, Term, Var,
 };
 use crate::types::{ClosureTypes, RenderTypes, Ty, Types, display_key_slots};
 
@@ -192,7 +192,7 @@ fn render_terminator_exit<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(
         Term::TailCall {
             callee, args, ident, ..
         } => {
-            render_tail_call_exit(t, m, spec_key, ft, b, any_ty, *callee, args, ident, out);
+            render_tail_call_exit(t, m, spec_key, ft, b, any_ty, callee, args, ident, out);
         }
         Term::Call {
             ident,
@@ -208,7 +208,7 @@ fn render_terminator_exit<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(
                 ft,
                 b,
                 any_ty,
-                *callee,
+                callee,
                 args,
                 ident,
                 continuation,
@@ -263,22 +263,32 @@ fn render_tail_call_exit<T: Types<Ty = Ty> + RenderTypes>(
     ft: &SpecPlan,
     b: &Block,
     any_ty: &Ty,
-    callee: FnId,
+    callee: &DirectCallTarget,
     args: &[Var],
     ident: &CallsiteIdent,
     out: &mut String,
 ) {
     let arg_tys = arg_tys(ft, args, any_ty);
     let arg_vars = vars_str(args);
-    out.push_str(&format!(
-        ";     blk{} TailCall {}#{}({})\n",
-        b.id.0,
-        fn_name(m, callee),
-        callee.0,
-        arg_vars.join(", ")
-    ));
+    match callee {
+        DirectCallTarget::Local(callee) => out.push_str(&format!(
+            ";     blk{} TailCall {}#{}({})\n",
+            b.id.0,
+            fn_name(m, *callee),
+            callee.0,
+            arg_vars.join(", ")
+        )),
+        DirectCallTarget::ProviderBoundary(target) => out.push_str(&format!(
+            ";     blk{} TailCall {}({})\n",
+            b.id.0,
+            target,
+            arg_vars.join(", ")
+        )),
+    }
     out.push_str(&format!(";              callee_key={}\n", tys_str(t, &arg_tys)));
-    render_return_use(t, spec_key, ft, ident, EmitSlot::Direct, out);
+    if matches!(callee, DirectCallTarget::Local(_)) {
+        render_return_use(t, spec_key, ft, ident, EmitSlot::Direct, out);
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -290,7 +300,7 @@ fn render_call_exit<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(
     ft: &SpecPlan,
     b: &Block,
     any_ty: &Ty,
-    callee: FnId,
+    callee: &DirectCallTarget,
     args: &[Var],
     ident: &CallsiteIdent,
     continuation: &Cont,
@@ -300,15 +310,25 @@ fn render_call_exit<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(
     let arg_vars = vars_str(args);
     let cap_vars = vars_str(&continuation.captured);
     let ck = cont_input_key(t, b, continuation, ft, m, mt);
-    out.push_str(&format!(
-        ";     blk{} Call {}#{}({})\n",
-        b.id.0,
-        fn_name(m, callee),
-        callee.0,
-        arg_vars.join(", ")
-    ));
+    match callee {
+        DirectCallTarget::Local(callee) => out.push_str(&format!(
+            ";     blk{} Call {}#{}({})\n",
+            b.id.0,
+            fn_name(m, *callee),
+            callee.0,
+            arg_vars.join(", ")
+        )),
+        DirectCallTarget::ProviderBoundary(target) => out.push_str(&format!(
+            ";     blk{} Call {}({})\n",
+            b.id.0,
+            target,
+            arg_vars.join(", ")
+        )),
+    }
     out.push_str(&format!(";              callee_key={}\n", tys_str(&*t, &arg_tys)));
-    render_return_use(&*t, spec_key, ft, ident, EmitSlot::Direct, out);
+    if matches!(callee, DirectCallTarget::Local(_)) {
+        render_return_use(&*t, spec_key, ft, ident, EmitSlot::Direct, out);
+    }
     render_cont_lines(&*t, m, continuation, &cap_vars, &ck, out);
 }
 

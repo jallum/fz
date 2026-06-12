@@ -7,28 +7,28 @@
 use crate::ast::{
     Attribute, FnDef, Item, ModuleDef, Program, ProtocolDef, ProtocolImplDef, SpecDecl, TypeAliasDecl, TypeExprBody,
 };
-use crate::diag::{Diagnostic, Span, codes};
+use crate::compiler::source::Span;
+use crate::diag::{Diagnostic, codes};
 use crate::frontend::protocols::{ImplTarget, InterfaceProtocol, InterfaceProtocolCallback, InterfaceProtocolImpl};
-use crate::modules::identity::{ExportKey, ModuleName};
+use crate::modules::identity::{Mfa, ModuleName};
 use crate::parser::lexer::Tok;
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
-pub const FZ_INTERFACE_ABI_VERSION: u32 = 1;
+const INTERFACE_ABI_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModuleInterface {
     pub name: ModuleName,
-    pub abi_version: u32,
     pub imports: Vec<InterfaceImport>,
     pub exports: Vec<InterfaceFn>,
     pub types: Vec<InterfaceType>,
     pub protocols: Vec<InterfaceProtocol>,
     pub protocol_impls: Vec<InterfaceProtocolImpl>,
     pub docs: Option<String>,
-    /// Deterministic semantic inputs used for interface compatibility checks
-    /// and human-readable interface dumps. This is not a digest yet; keeping
-    /// the inputs visible makes interface tests easier to audit.
+    /// Deterministic semantic inputs used for human-readable interface dumps
+    /// and test assertions. This is not a digest yet; keeping the inputs
+    /// visible makes interface tests easier to audit.
     pub fingerprint_inputs: Vec<String>,
 }
 
@@ -93,7 +93,6 @@ fn collect_protocol_unit(protocol: &ProtocolDef, out: &mut BTreeMap<ModuleName, 
         name.clone(),
         ModuleInterface {
             name,
-            abi_version: FZ_INTERFACE_ABI_VERSION,
             imports: Vec::new(),
             exports: Vec::new(),
             types: Vec::new(),
@@ -188,7 +187,6 @@ fn collect_module(module: &ModuleDef, parent: Option<&ModuleName>, out: &mut BTr
         name.clone(),
         ModuleInterface {
             name: name.clone(),
-            abi_version: FZ_INTERFACE_ABI_VERSION,
             imports,
             exports,
             types,
@@ -273,7 +271,7 @@ fn interface_protocol_impl(
         .items
         .iter()
         .filter_map(|item| match &**item {
-            Item::Fn(def) => Some(ExportKey::new(
+            Item::Fn(def) => Some(Mfa::new(
                 impl_module.clone(),
                 def.name.clone(),
                 def.clauses.first().map(|c| c.params.len()).unwrap_or(0),
@@ -377,7 +375,7 @@ fn fingerprint_inputs(
     protocol_impls: &[InterfaceProtocolImpl],
     docs: Option<&str>,
 ) -> Vec<String> {
-    let mut inputs = vec![format!("abi={}", FZ_INTERFACE_ABI_VERSION), format!("module={}", name)];
+    let mut inputs = vec![format!("abi={}", INTERFACE_ABI_VERSION), format!("module={}", name)];
     if let Some(docs) = docs {
         inputs.push(format!("moduledoc={}", docs));
     }
@@ -468,7 +466,7 @@ fn render_import_filter(fns: &[InterfaceImportFn]) -> String {
 pub fn render_interfaces(interfaces: &BTreeMap<ModuleName, ModuleInterface>) -> String {
     let mut out = String::new();
     for interface in interfaces.values() {
-        out.push_str(&format!("interface {} abi={}\n", interface.name, interface.abi_version));
+        out.push_str(&format!("interface {} abi={}\n", interface.name, INTERFACE_ABI_VERSION));
         if let Some(docs) = &interface.docs {
             out.push_str(&format!("  moduledoc {:?}\n", docs));
         }

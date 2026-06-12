@@ -6,10 +6,10 @@
 //! names.
 
 use crate::ast::SpecDecl;
-use crate::diag::Span;
-use crate::modules::identity::{ExportKey, ModuleName};
+use crate::compiler::source::Span;
+use crate::modules::identity::{Mfa, ModuleName};
 use crate::modules::interface::{InterfaceSpec, ModuleInterface};
-use crate::types::{Ty, TypeVarId, Types};
+use crate::types::{TypeVarId, Types};
 use std::collections::BTreeMap;
 use std::fmt;
 
@@ -36,7 +36,7 @@ pub struct InterfaceProtocolCallback {
 pub struct InterfaceProtocolImpl {
     pub protocol: ModuleName,
     pub target: ImplTarget,
-    pub callbacks: Vec<ExportKey>,
+    pub callbacks: Vec<Mfa>,
 }
 
 #[derive(Debug, Clone)]
@@ -58,7 +58,7 @@ pub struct ProtocolCallbackFact {
 pub struct ProtocolImplFact {
     pub protocol: ModuleName,
     pub target: ImplTarget,
-    pub callbacks: BTreeMap<(String, usize), ExportKey>,
+    pub callbacks: BTreeMap<(String, usize), Mfa>,
     /// Declared `@spec` of each impl callback that carries one, keyed by
     /// `(name, arity)`. Empty for interface-sourced impls (the interface does
     /// not carry impl callback specs) and for callbacks declared without a
@@ -148,7 +148,7 @@ pub fn protocol_domain_tag(protocol: &ModuleName) -> String {
 /// variables minted for user-written type names.
 pub const PROTOCOL_ELEM_VAR: TypeVarId = TypeVarId(u32::MAX);
 
-pub fn impl_target_type<T: Types<Ty = Ty>>(t: &mut T, target: &ImplTarget) -> Ty {
+pub fn impl_target_type<T: Types>(t: &mut T, target: &ImplTarget) -> T::Ty {
     let any = t.any();
     impl_target_type_with_element(t, target, any)
 }
@@ -157,7 +157,7 @@ pub fn impl_target_type<T: Types<Ty = Ty>>(t: &mut T, target: &ImplTarget) -> Ty
 /// targets. `List` becomes `list(element)`; scalar and map targets are not
 /// parametric in a single element type, so `element` does not refine them.
 /// `impl_target_type` is the `element = any` case.
-pub fn impl_target_type_with_element<T: Types<Ty = Ty>>(t: &mut T, target: &ImplTarget, element: Ty) -> Ty {
+pub fn impl_target_type_with_element<T: Types>(t: &mut T, target: &ImplTarget, element: T::Ty) -> T::Ty {
     match target {
         ImplTarget::Module(module) => match module.last_segment() {
             "List" => t.list(element),
@@ -171,6 +171,6 @@ pub fn impl_target_type_with_element<T: Types<Ty = Ty>>(t: &mut T, target: &Impl
     }
 }
 
-pub fn struct_impl_target_type<T: Types<Ty = Ty>>(t: &mut T, module_last_segment: &str) -> Ty {
+pub fn struct_impl_target_type<T: Types>(t: &mut T, module_last_segment: &str) -> T::Ty {
     t.opaque_of(&format!("impl-target::{}", module_last_segment))
 }

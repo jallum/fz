@@ -4,7 +4,7 @@
 //! Format: `<stage>/<kind>`. New codes land with the diagnostic site
 //! that emits them.
 
-use super::diagnostic::DiagCode;
+pub use super::diagnostic::DiagCode;
 
 // ----- lexer -----
 
@@ -14,12 +14,14 @@ pub const LEX_UNEXPECTED_CHAR: DiagCode = DiagCode("lex/unexpected-char");
 
 pub const PARSE_EXPECTED_TOKEN: DiagCode = DiagCode("parse/expected-token");
 pub const PARSE_AMBIGUOUS_NO_PARENS_KEYWORD: DiagCode = DiagCode("parse/ambiguous-no-parens-keyword");
+pub const PARSE_DANGLING_FUNCTION_ATTR: DiagCode = DiagCode("parse/dangling-function-attr");
 
 // ----- resolver -----
 
 pub const RESOLVE_DUPLICATE_MODULE: DiagCode = DiagCode("resolve/duplicate-module");
 pub const RESOLVE_DUPLICATE_EXPORT: DiagCode = DiagCode("resolve/duplicate-export");
 pub const RESOLVE_UNKNOWN_MODULE: DiagCode = DiagCode("resolve/unknown-module");
+pub const RESOLVE_UNKNOWN_FUNCTION: DiagCode = DiagCode("resolve/unknown-function");
 pub const RESOLVE_UNKNOWN_IMPORT: DiagCode = DiagCode("resolve/unknown-import");
 pub const RESOLVE_CONFLICTING_IMPORT: DiagCode = DiagCode("resolve/conflicting-import");
 pub const RESOLVE_TYPE_ALIAS: DiagCode = DiagCode("resolve/type-alias");
@@ -30,6 +32,7 @@ pub const SPEC_VIOLATION: DiagCode = DiagCode("spec/violation");
 // ----- macro expansion -----
 
 pub const MACRO_NOT_A_DEFMACRO: DiagCode = DiagCode("macro/not-a-defmacro");
+pub const MACRO_NOT_REQUIRED: DiagCode = DiagCode("macro/not-required");
 pub const MACRO_EXPANSION_LOOP: DiagCode = DiagCode("macro/expansion-loop");
 pub const MACRO_ARG_REIFICATION_FAILED: DiagCode = DiagCode("macro/arg-reification-failed");
 pub const MACRO_BODY_FAILED: DiagCode = DiagCode("macro/body-failed");
@@ -75,9 +78,11 @@ pub const TYPE_EXTERN_MARSHAL: DiagCode = DiagCode("type/extern-marshal");
 // call would never resolve. Distinct from a generic spec violation: it names
 // the protocol, the receiver type, and the known implementors.
 pub const TYPE_PROTOCOL_NO_IMPL: DiagCode = DiagCode("type/protocol-no-impl");
+pub const TYPE_NUMERIC_LITERAL_WIDENED: DiagCode = DiagCode("type/numeric-literal-widened");
 
 // ----- codegen -----
 
+pub const ARTIFACT_INCOMPLETE_SEMANTIC_PLAN: DiagCode = DiagCode("artifact/incomplete-semantic-plan");
 pub const CODEGEN_SCHEMA_MISSING: DiagCode = DiagCode("codegen/schema-missing");
 
 // ----- internal (compiler invariants) -----

@@ -1,0 +1,11 @@
+defprotocol P do
+  @spec to_thing(t(a)) :: integer
+  fn to_thing(value)
+end
+
+defimpl P, for: List do
+  @spec to_thing(value) :: atom
+  fn to_thing(value), do: :ok
+end
+
+fn main(), do: P.to_thing([1])

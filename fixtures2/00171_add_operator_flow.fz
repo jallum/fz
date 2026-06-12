@@ -1,0 +1,12 @@
+# Operator constraint flow. `+ : (number, number) -> number` refines `a` and `b`
+# off `any`, so the body alone gives the principal type — no @spec needed.
+#
+# Expected: add : (number, number) -> number ; add(1, 2) : int
+
+fn add(a, b) do
+  a + b
+end
+
+fn main() do
+  dbg(add(1, 2))
+end

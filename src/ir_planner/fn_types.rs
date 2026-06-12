@@ -1,6 +1,6 @@
 use crate::frontend::spec_registry::{BestCoverCandidate, best_covering_candidate};
 use crate::fz_ir::{BlockId, CallsiteId, DeadBranch, ExternMarshalSite, ExternTy, FnCategory, FnId, FnIr, Module, Var};
-use crate::modules::identity::ExportKey;
+use crate::modules::identity::Mfa;
 use crate::types::{ClosureTypes, KeySlot, Nominals, RenderTypes, Ty, Types, key_slot_var_count, key_slots_to_tys};
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
@@ -121,7 +121,7 @@ impl SpecPlan {
                 return Some(&contract.target.demand);
             }
             match &edge.target {
-                CallEdgeTarget::External { demand, .. } => Some(demand),
+                CallEdgeTarget::ProviderBoundary { demand, .. } => Some(demand),
                 CallEdgeTarget::Local(_) => None,
             }
         })
@@ -146,7 +146,7 @@ impl CallEdgePlan {
     pub fn local_target(&self) -> Option<&SpecKey> {
         match &self.target {
             CallEdgeTarget::Local(target) => Some(target),
-            CallEdgeTarget::External { .. } => None,
+            CallEdgeTarget::ProviderBoundary { .. } => None,
         }
     }
 }
@@ -188,8 +188,8 @@ impl ReturnStrategy {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CallEdgeTarget {
     Local(SpecKey),
-    External {
-        target: ExportKey,
+    ProviderBoundary {
+        target: Mfa,
         input: Vec<KeySlot>,
         demand: ReturnDemand,
     },

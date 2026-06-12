@@ -1,12 +1,15 @@
 use super::*;
-use crate::fz_ir::FnId;
+use crate::fz_ir::{FnId, Module};
+use crate::runtime_type_predicate::RuntimeTypePredicate;
 use fz_runtime::any_value::debug::render_value;
 use fz_runtime::any_value::{
     AnyValue as RuntimeAnyValue, AnyValueRef, FALSE_ATOM_ID, NIL_ATOM_ID, TAG_BITSTRING, TAG_MASK, TAG_PROCBIN,
     TRUE_ATOM_ID, ValueKind, closure_addr_from_tagged,
 };
+use fz_runtime::heap::Schema;
 use fz_runtime::ir_runtime::{fz_box_atom_for_any, fz_box_float_for_any, fz_box_int_for_any, fz_struct_get_field_ref};
 use fz_runtime::process::Process;
+use std::collections::HashMap;
 
 #[derive(Clone, Copy, Debug)]
 /// Interpreter/REPL convenience view only. Keep runtime ABI, heap storage,
@@ -148,6 +151,27 @@ pub(super) fn bitstring_like_ptr(bits: u64) -> Option<*mut u8> {
 /// payload bytes, N RuntimeAnyValue fields at offsets 0, 8, 16, ...).
 pub(super) fn interp_tuple_schema_id(runtime: &mut IrInterpRuntime, arity: usize) -> u32 {
     runtime.tuple_schema_id(arity)
+}
+
+pub(super) fn interp_runtime_type_predicate_schema_ids(
+    runtime: &mut IrInterpRuntime,
+    module: &Module,
+    predicate: &RuntimeTypePredicate,
+) -> (HashMap<usize, u32>, HashMap<String, u32>) {
+    let tuple_schema_ids = predicate
+        .tuple_arities
+        .values
+        .iter()
+        .map(|arity| (*arity, interp_tuple_schema_id(runtime, *arity)))
+        .collect();
+    let mut named_schema_ids = HashMap::new();
+    for (name, fields) in &module.struct_schemas {
+        let schema_id = unsafe { &mut *runtime.cur_proc() }
+            .heap
+            .register_schema(Schema::named_struct(name.clone(), fields.clone()));
+        named_schema_ids.insert(name.clone(), schema_id);
+    }
+    (tuple_schema_ids, named_schema_ids)
 }
 
 pub(super) fn interp_list_ptr(value: RuntimeAnyValue) -> Option<*mut u8> {

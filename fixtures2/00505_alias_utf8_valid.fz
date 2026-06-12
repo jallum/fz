@@ -1,0 +1,3 @@
+alias Utf8, as: U
+
+fn main(), do: U.valid?(<<0xff, 0xff>>)

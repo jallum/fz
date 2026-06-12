@@ -30,7 +30,7 @@
 #[cfg(test)]
 use crate::ast::MatchClause;
 use crate::ast::{Attribute, Expr, FnDef, Item, Program, Spanned};
-use crate::diag::Span;
+use crate::compiler::source::Span;
 #[cfg(test)]
 use crate::diag::{codes, emit_through};
 #[cfg(test)]
@@ -55,19 +55,19 @@ use crate::ir_codegen::compile_planned;
 use crate::ir_planner::{collect_diagnostics, plan_module_with_role};
 use crate::modules::identity::ModuleName;
 use crate::modules::runtime_library::{
-    core_prelude_module_sources, interface, prelude_source, root_type_env_from_attrs,
+    core_prelude_module_sources, interface, legacy_prelude_source, root_type_env_from_attrs,
 };
 use crate::parser::Parser;
-use crate::parser::lexer::{Lexer, Tok};
+use crate::parser::lexer::Lexer;
 use crate::specs::{
     StructuralCorrespondenceGroup, StructuralOccurrence, StructuralPathStep, spec_set_correspondence_groups,
 };
 use crate::telemetry::Telemetry;
 #[cfg(test)]
-use crate::telemetry::{Capture, ConfiguredTelemetry, Value, bus};
+use crate::telemetry::{Capture, ConfiguredTelemetry, Value};
 #[cfg(test)]
 use crate::test_support::linked_runtime_graph;
-use crate::type_expr::{ModuleTypeEnv, parse_type_expr, resolve_spec_decls};
+use crate::type_expr::{ModuleTypeEnv, resolve_spec_decl_generic, resolve_spec_decls};
 use crate::types::{Ty, TypeVarId, Types, check_brand_mint_visibility};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::mem::take;
@@ -103,7 +103,10 @@ use cps::{
 };
 use ctx::LowerCtx;
 use expr::{bind_param_topname, lower_expr, lower_fn, lower_pattern_bind};
-use extern_table::{ExternTable, extern_symbol_from_name, extern_ty_from_name};
+use extern_table::ExternTable;
+pub(crate) use extern_table::{
+    explicit_extern_wire_hint, extern_semantic_contract, extern_symbol_from_name, extern_ty_from_name,
+};
 use lambda::{collect_pattern_bound_names, collect_pattern_pinned_names, lower_lambda};
 use param_guards::emit_param_type_guards;
 use pattern_dispatch::{
@@ -123,7 +126,7 @@ fn parse_runtime_prelude<T: Types<Ty = Ty>>(
     t: &mut T,
     tel: &dyn Telemetry,
 ) -> (Program, HashMap<(String, usize), String>) {
-    let runtime_fz = prelude_source();
+    let runtime_fz = legacy_prelude_source();
     let (items, attrs) = parse_runtime_source_items(runtime_fz, "runtime.fz", tel);
     let root_types = root_type_env_from_attrs(t, &attrs);
     let prelude_imports = collect_runtime_prelude_imports(&items, tel);
@@ -133,6 +136,7 @@ fn parse_runtime_prelude<T: Types<Ty = Ty>>(
         items.append(&mut module_items);
     }
     let staged = Program {
+        attrs: Vec::new(),
         items,
         module_interfaces: Default::default(),
         external_module_interfaces: Default::default(),
@@ -183,9 +187,7 @@ fn collect_runtime_prelude_imports(items: &[Rc<Item>], tel: &dyn Telemetry) -> H
                 except,
                 span,
             } => collect_runtime_prelude_import(&mut out, path, only.as_deref(), except.as_deref(), *span, tel),
-            Item::Alias { .. } => {
-                panic!("runtime.fz prelude aliases are not supported; use import")
-            }
+            Item::Alias { .. } => {}
             _ => {}
         }
     }
@@ -728,20 +730,16 @@ pub fn lower_program<T: Types<Ty = Ty>>(t: &mut T, prog: &Program, tel: &dyn Tel
             if fn_def.extern_abi.is_some() {
                 let eid = ExternId(ctx.next_extern);
                 ctx.next_extern += 1;
-                let params: Vec<ExternTy> = fn_def
-                    .extern_params
-                    .iter()
-                    .map(|name| extern_ty_from_name(name).unwrap_or(ExternTy::Any))
-                    .collect();
-                let (ret, ret_descr) = lower_extern_ret_ty(t, fn_def, &ctx.prelude_type_env)?;
+                let signature = lower_extern_signature(t, fn_def, &ctx.prelude_type_env)?;
                 ctx.extern_decls.push(ExternDecl {
                     id: eid,
                     fz_name: fn_def.name.clone(),
                     symbol: extern_symbol_from_name(&fn_def.name).to_string(),
-                    params,
+                    params: signature.params,
                     variadic: fn_def.variadic,
-                    ret,
-                    ret_descr,
+                    ret: signature.ret,
+                    ret_descr: signature.return_ty,
+                    semantic_contract: signature.semantic_contract,
                 });
                 ctx.externs.insert(fn_def.name.clone(), eid);
             } else {
@@ -773,20 +771,16 @@ pub fn lower_program<T: Types<Ty = Ty>>(t: &mut T, prog: &Program, tel: &dyn Tel
                 if fn_def.extern_abi.is_some() {
                     let eid = ExternId(ctx.next_extern);
                     ctx.next_extern += 1;
-                    let params: Vec<ExternTy> = fn_def
-                        .extern_params
-                        .iter()
-                        .map(|name| extern_ty_from_name(name).unwrap_or(ExternTy::Any))
-                        .collect();
-                    let (ret, ret_descr) = lower_extern_ret_ty(t, fn_def, &ctx.prelude_type_env)?;
+                    let signature = lower_extern_signature(t, fn_def, &ctx.prelude_type_env)?;
                     ctx.extern_decls.push(ExternDecl {
                         id: eid,
                         fz_name: fn_def.name.clone(),
                         symbol: extern_symbol_from_name(&fn_def.name).to_string(),
-                        params,
+                        params: signature.params,
                         variadic: fn_def.variadic,
-                        ret,
-                        ret_descr,
+                        ret: signature.ret,
+                        ret_descr: signature.return_ty,
+                        semantic_contract: signature.semantic_contract,
                     });
                     ctx.externs.insert(fn_def.name.clone(), eid);
                 } else {
@@ -1135,49 +1129,68 @@ fn debug_assert_unique_conts(module: &Module) {
     }
 }
 
-/// Parse `extern_ret_tokens` into an ExternTy (wire format) and semantic type
-/// (semantic type for the type system).
+pub(crate) struct LoweredExternSignature<Ty> {
+    pub params: Vec<ExternTy>,
+    pub ret: ExternTy,
+    pub return_ty: Ty,
+    pub semantic_contract: crate::type_expr::ResolvedSpecDecl<Ty>,
+}
+
+/// Resolve one extern declaration into semantic upper bounds plus ABI lanes.
 ///
-/// `type_env` is consulted for named type references (e.g. `pid`).
-pub(super) fn lower_extern_ret_ty<T: Types<Ty = Ty>>(
+/// Semantics come from the normalized extern contract surface:
+/// `cstring -> binary` and `unit -> nil`. Wire lanes keep the explicit extern
+/// marshal hints, then fall back to the resolved semantic upper bound with
+/// constrained vars instantiated to their declared bounds.
+pub(crate) fn lower_extern_signature<T: Types>(
     t: &mut T,
     fn_def: &FnDef,
-    type_env: &ModuleTypeEnv,
-) -> Result<(ExternTy, Ty), LowerError> {
-    let tokens = &fn_def.extern_ret_tokens.0;
-
-    // Try to resolve via parse_type_expr first (handles named types like `pid`).
-    if !tokens.is_empty()
-        && let Ok((ty, _)) = parse_type_expr(t, tokens, type_env)
-    {
-        let wire = ty_to_extern_ty(t, &ty);
-        return Ok((wire, ty));
-    }
-
-    // Fallback: first-meaningful-token heuristic for tokens that don't
-    // parse as a full type expression (e.g. bare `unit` which is not a
-    // built-in fz type name).
-    let ty = tokens.iter().find_map(|t| match &t.tok {
-        Tok::Nil => Some(ExternTy::Unit),
-        Tok::True | Tok::False => Some(ExternTy::Any),
-        Tok::Ident(n) | Tok::Upper(n) => extern_ty_from_name(n.as_str()),
-        _ => None,
-    });
-    ty.map(|wire| (wire, t.any())).ok_or_else(|| LowerError::Unsupported {
+    type_env: &ModuleTypeEnv<T::Ty>,
+) -> Result<LoweredExternSignature<T::Ty>, LowerError> {
+    let contract = extern_semantic_contract(fn_def).ok_or_else(|| LowerError::Unsupported {
         span: fn_def.name_span,
-        what: format!(
-            "unrecognised return type in `extern fn {}` (expected any/nil/never/float/pid/…)",
-            fn_def.name
-        ),
+        what: format!("`{}` is not an extern declaration", fn_def.name),
+    })?;
+    let resolved = resolve_spec_decl_generic(t, &contract, type_env).map_err(|error| LowerError::Unsupported {
+        span: error.span,
+        what: format!("could not resolve extern contract for `{}`: {}", fn_def.name, error.msg),
+    })?;
+    let crate::type_expr::ResolvedSpecDecl {
+        params: semantic_params,
+        result: semantic_result,
+        constraints,
+    } = resolved;
+    let params = fn_def
+        .extern_param_tokens
+        .iter()
+        .zip(semantic_params.iter())
+        .map(|(body, ty)| lower_extern_wire_ty(t, body, ty, &constraints))
+        .collect();
+    let return_upper_bound = if constraints.is_empty() {
+        semantic_result.clone()
+    } else {
+        t.instantiate(&semantic_result, &constraints)
+    };
+    let ret = lower_extern_wire_ty(t, &fn_def.extern_ret_tokens, &return_upper_bound, &constraints);
+    Ok(LoweredExternSignature {
+        params,
+        ret,
+        return_ty: semantic_result.clone(),
+        semantic_contract: crate::type_expr::ResolvedSpecDecl {
+            params: semantic_params,
+            result: semantic_result,
+            constraints,
+        },
     })
 }
 
 /// Derive a coarse C-ABI wire type from a semantic Ty.
 ///
-/// Opaque types erase to Any (they are fz tagged values at runtime).
-/// Float-only types get the F64 wire. Nil-only → Unit. Never → Never.
-/// Everything else → Any (opaque u64 fz value).
-pub(super) fn ty_to_extern_ty<T: Types>(t: &mut T, d: &T::Ty) -> ExternTy {
+/// Explicit marshal hints should already have been handled before this point.
+/// The fallback uses the semantic upper bound: raw integer lanes cover both
+/// `integer` and `cpointer`; float-only types get F64; nil-only → Unit;
+/// never → Never. Everything else stays as a tagged value.
+pub(crate) fn ty_to_extern_ty<T: Types>(t: &mut T, d: &T::Ty) -> ExternTy {
     if t.is_empty(d) {
         return ExternTy::Never;
     }
@@ -1187,10 +1200,30 @@ pub(super) fn ty_to_extern_ty<T: Types>(t: &mut T, d: &T::Ty) -> ExternTy {
     if t.is_floating(d) {
         return ExternTy::F64;
     }
-    if t.is_integer(d) {
+    let int = t.int();
+    let cpointer = t.cpointer();
+    let raw_word = t.union(int, cpointer);
+    if t.is_subtype(d, &raw_word) {
         return ExternTy::I64;
     }
     ExternTy::Any
+}
+
+fn lower_extern_wire_ty<T: Types>(
+    t: &mut T,
+    body: &crate::ast::TypeExprBody,
+    semantic_ty: &T::Ty,
+    constraints: &HashMap<TypeVarId, T::Ty>,
+) -> ExternTy {
+    if let Some(hint) = explicit_extern_wire_hint(body) {
+        return hint;
+    }
+    let upper_bound = if constraints.is_empty() {
+        semantic_ty.clone()
+    } else {
+        t.instantiate(semantic_ty, constraints)
+    };
+    ty_to_extern_ty(t, &upper_bound)
 }
 
 pub(super) fn concrete_any_tuple<T: Types<Ty = Ty>>(t: &mut T, arity: usize) -> Ty {
@@ -1211,8 +1244,10 @@ fn annotate_back_edges(module: &mut Module, _fn_spans: &HashMap<FnId, Span>) -> 
     for f in &module.fns {
         let entry = graph.entry(f.id).or_default();
         for block in &f.blocks {
-            if let Term::TailCall { callee, .. } = &block.terminator {
-                entry.insert(*callee);
+            if let Term::TailCall { callee, .. } = &block.terminator
+                && let Some(callee) = callee.local_fn_id()
+            {
+                entry.insert(callee);
             }
         }
     }
@@ -1318,7 +1353,10 @@ fn annotate_back_edges(module: &mut Module, _fn_spans: &HashMap<FnId, Span>) -> 
                 ..
             } = &mut block.terminator
             {
-                let callee_scc = scc_of.get(callee).copied().unwrap_or(usize::MAX);
+                let Some(callee) = callee.local_fn_id() else {
+                    continue;
+                };
+                let callee_scc = scc_of.get(&callee).copied().unwrap_or(usize::MAX);
                 if callee_scc == caller_scc {
                     *is_back_edge = true;
                 }

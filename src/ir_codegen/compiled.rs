@@ -3,14 +3,14 @@ use crate::diag::Diagnostics;
 #[cfg(test)]
 use crate::exec::runtime::{ProcessExitCapture, Runtime};
 use crate::fz_ir::{
-    CallsiteId, Const, Cont, ExternId, ExternalLinkError, FnId, FnIr, Module, Prim, ReceiveAfter, ReceiveClause, Stmt,
-    Term, rewrite_external_callsite_for_link,
+    CallsiteId, Const, Cont, DirectCallTarget, ExternId, ExternalLinkError, FnId, FnIr, Module, Prim, ReceiveAfter,
+    ReceiveClause, Stmt, Term, rewrite_external_callsite_for_link,
 };
 use crate::ir_planner::fn_types::{
     BodyKey, CallEdgePlan, CallEdgeTarget, CallableCapability, ReturnContract, ReturnStrategy, SpecKey,
 };
 use crate::ir_planner::{ModulePlan, SpecPlan};
-use crate::modules::identity::{ExportKey, ModuleName};
+use crate::modules::identity::{Mfa, ModuleName};
 use crate::modules::interface::{InterfaceFn, ModuleInterface};
 use crate::telemetry::Telemetry;
 use cranelift_jit::JITModule;
@@ -35,11 +35,10 @@ use std::slice::from_ref;
 /// contract facts the linker validates before a runnable image exists.
 #[derive(Debug, Clone)]
 pub struct CompiledUnit {
-    pub module: Option<ModuleName>,
+    pub name: Option<ModuleName>,
     pub code: Module,
     pub module_plan: Option<ModulePlan>,
     pub exports: Vec<InterfaceFn>,
-    pub interface_fingerprint: Vec<String>,
     pub interface: Option<ModuleInterface>,
 }
 
@@ -63,16 +62,11 @@ impl CompiledUnit {
             .as_ref()
             .map(|interface| interface.exports.clone())
             .unwrap_or_default();
-        let interface_fingerprint = interface
-            .as_ref()
-            .map(|interface| interface.fingerprint_inputs.clone())
-            .unwrap_or_default();
         Self {
-            module,
+            name: module,
             code,
             module_plan,
             exports,
-            interface_fingerprint,
             interface,
         }
     }
@@ -98,7 +92,7 @@ pub struct CompiledProgram {
 
 impl CompiledProgram {
     pub fn new(unit: CompiledUnit, executable: CompiledModule) -> Self {
-        let runtime = RuntimeUnitMetadata::from_compiled_module(unit.module.clone(), &unit, &executable);
+        let runtime = RuntimeUnitMetadata::from_compiled_module(unit.name.clone(), &unit, &executable);
         Self {
             executable,
             unit,
@@ -152,36 +146,18 @@ unsafe impl Send for CompiledImage {}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ImageLinkError {
-    InterfaceFingerprintMismatch {
-        module: Option<ModuleName>,
-    },
-    UnresolvedExternalCalls {
-        module: Option<ModuleName>,
-    },
-    MissingImport {
-        requester: Option<ModuleName>,
-        import: ExportKey,
-    },
-    DuplicateProvider {
-        import: ExportKey,
-    },
+    UnresolvedExternalCalls { module: Option<ModuleName> },
+    MissingImport { requester: Option<ModuleName>, import: Mfa },
+    DuplicateProvider { import: Mfa },
     RuntimeMetadata(RuntimeMetadataLinkError),
 }
 
 impl fmt::Display for ImageLinkError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::InterfaceFingerprintMismatch { module } => write!(
-                f,
-                "compiled unit `{}` does not implement its recorded interface fingerprint",
-                module
-                    .as_ref()
-                    .map(ToString::to_string)
-                    .unwrap_or_else(|| "<root>".to_string())
-            ),
             Self::UnresolvedExternalCalls { module } => write!(
                 f,
-                "compiled unit `{}` still has unresolved external module calls",
+                "compiled unit `{}` still has unresolved provider-boundary calls",
                 module
                     .as_ref()
                     .map(ToString::to_string)
@@ -218,7 +194,7 @@ pub fn link_ir_units(units: &[CompiledUnit]) -> Result<Module, ImageLinkError> {
 struct IrUnitLinker {
     linked: Module,
     linked_plan: Option<ModulePlan>,
-    export_map: BTreeMap<ExportKey, FnId>,
+    export_map: BTreeMap<Mfa, FnId>,
 }
 
 impl IrUnitLinker {
@@ -232,17 +208,8 @@ impl IrUnitLinker {
     }
 
     fn add_unit(&mut self, unit: &CompiledUnit) -> Result<(), ImageLinkError> {
-        if let Some(interface) = &unit.interface
-            && interface.fingerprint_inputs != unit.interface_fingerprint
-        {
-            return Err(ImageLinkError::InterfaceFingerprintMismatch {
-                module: unit.module.clone(),
-            });
-        }
-
         let fn_map = self.copy_fns(unit);
         self.copy_externs(unit, &fn_map);
-        self.copy_external_edges(unit, &fn_map);
         self.copy_protocol_facts(unit, &fn_map);
         self.copy_specs(unit, &fn_map);
         self.copy_planner_facts(unit, &fn_map);
@@ -251,8 +218,8 @@ impl IrUnitLinker {
         Ok(())
     }
 
-    /// Resolve external call edges (using the merged planner facts) and rewrite
-    /// stub callsites to their linked targets. Mutates `self.linked` in place;
+    /// Resolve provider-boundary call edges (using the merged planner facts) and rewrite
+    /// callsites to their linked targets. Mutates `self.linked` in place;
     /// both finish paths share it.
     fn resolve_links(&mut self) -> Result<(), ImageLinkError> {
         self.resolve_external_call_edges_in_plan();
@@ -261,7 +228,7 @@ impl IrUnitLinker {
             Err(ExternalLinkError::MissingTarget(import)) => {
                 let requester = self
                     .linked
-                    .external_call_edges
+                    .external_call_edges()
                     .iter()
                     .find(|edge| edge.target == import)
                     .and_then(|edge| module_for_linked_fn(&self.linked, edge.callsite.caller));
@@ -316,18 +283,6 @@ impl IrUnitLinker {
         }
     }
 
-    fn copy_external_edges(&mut self, unit: &CompiledUnit, fn_map: &BTreeMap<FnId, FnId>) {
-        self.linked
-            .external_call_edges
-            .extend(unit.code.external_call_edges.iter().map(|edge| {
-                let mut edge = edge.clone();
-                if let Some(caller) = fn_map.get(&edge.callsite.caller) {
-                    edge.callsite.caller = *caller;
-                }
-                edge
-            }));
-    }
-
     fn copy_protocol_facts(&mut self, unit: &CompiledUnit, fn_map: &BTreeMap<FnId, FnId>) {
         self.linked.protocol_call_targets.extend(
             unit.code
@@ -378,7 +333,7 @@ impl IrUnitLinker {
     fn resolve_external_call_edges_in_plan(&mut self) {
         let structural_edges: HashSet<_> = self
             .linked
-            .external_call_edges
+            .external_call_edges()
             .iter()
             .map(|edge| edge.callsite.clone())
             .collect();
@@ -388,7 +343,7 @@ impl IrUnitLinker {
         };
         for spec in plan.specs.values_mut() {
             for (callsite, edge_plan) in &mut spec.call_edges {
-                let CallEdgeTarget::External { target, input, demand } = &edge_plan.target else {
+                let CallEdgeTarget::ProviderBoundary { target, input, demand } = &edge_plan.target else {
                     continue;
                 };
                 if let Some(fn_id) = self.export_map.get(target).copied() {
@@ -412,11 +367,11 @@ impl IrUnitLinker {
     }
 
     fn copy_exports(&mut self, unit: &CompiledUnit, fn_map: &BTreeMap<FnId, FnId>) -> Result<(), ImageLinkError> {
-        let Some(module) = &unit.module else {
+        let Some(module) = &unit.name else {
             return Ok(());
         };
         for export in &unit.exports {
-            let key = ExportKey::new(module.clone(), export.name.clone(), export.arity);
+            let key = Mfa::new(module.clone(), export.name.clone(), export.arity);
             let qualified = format!("{}.{}", module, export.name);
             let target = unit
                 .code
@@ -598,7 +553,7 @@ fn remap_call_edge_plan(edge: &CallEdgePlan, fn_map: &BTreeMap<FnId, FnId>) -> C
     CallEdgePlan {
         target: match &edge.target {
             CallEdgeTarget::Local(key) => CallEdgeTarget::Local(remap_spec_key(key, fn_map)),
-            CallEdgeTarget::External { target, input, demand } => CallEdgeTarget::External {
+            CallEdgeTarget::ProviderBoundary { target, input, demand } => CallEdgeTarget::ProviderBoundary {
                 target: target.clone(),
                 input: input.clone(),
                 demand: demand.clone(),
@@ -694,10 +649,10 @@ fn remap_term(term: &mut Term, fn_map: &BTreeMap<FnId, FnId>) {
         Term::Call {
             callee, continuation, ..
         } => {
-            remap_fn_id(callee, fn_map);
+            remap_direct_call_target(callee, fn_map);
             remap_cont(continuation, fn_map);
         }
-        Term::TailCall { callee, .. } => remap_fn_id(callee, fn_map),
+        Term::TailCall { callee, .. } => remap_direct_call_target(callee, fn_map),
         Term::CallClosure { continuation, .. } => {
             remap_cont(continuation, fn_map);
         }
@@ -715,6 +670,12 @@ fn remap_term(term: &mut Term, fn_map: &BTreeMap<FnId, FnId>) {
 
 fn remap_cont(cont: &mut Cont, fn_map: &BTreeMap<FnId, FnId>) {
     remap_fn_id(&mut cont.fn_id, fn_map);
+}
+
+fn remap_direct_call_target(target: &mut DirectCallTarget, fn_map: &BTreeMap<FnId, FnId>) {
+    if let DirectCallTarget::Local(fn_id) = target {
+        remap_fn_id(fn_id, fn_map);
+    }
 }
 
 fn remap_receive_clause(clause: &mut ReceiveClause, fn_map: &BTreeMap<FnId, FnId>) {
@@ -766,7 +727,7 @@ pub struct RuntimeUnitMetadata {
     pub schemas: Vec<Schema>,
     pub frame_sizes: Vec<u32>,
     pub exported_symbols: BTreeMap<String, u32>,
-    pub imported_refs: Vec<ExportKey>,
+    pub imported_refs: Vec<Mfa>,
     pub static_closures: Vec<RuntimeStaticClosure>,
     pub halt_kinds: BTreeMap<u32, u32>,
     pub entrypoints: RuntimeEntrypoints,
@@ -781,7 +742,11 @@ impl RuntimeUnitMetadata {
             schemas: ir.schemas.clone(),
             frame_sizes: Vec::new(),
             exported_symbols: BTreeMap::new(),
-            imported_refs: ir.external_call_edges.iter().map(|edge| edge.target.clone()).collect(),
+            imported_refs: ir
+                .external_call_edges()
+                .iter()
+                .map(|edge| edge.target.clone())
+                .collect(),
             static_closures: Vec::new(),
             halt_kinds: BTreeMap::new(),
             entrypoints: RuntimeEntrypoints::default(),
@@ -794,7 +759,7 @@ impl RuntimeUnitMetadata {
             (0..registry.len()).map(|id| registry.get(id as u32).clone()).collect()
         };
         let exported_symbols = unit
-            .module
+            .name
             .as_ref()
             .map(|module| {
                 unit.exports
@@ -812,7 +777,7 @@ impl RuntimeUnitMetadata {
             exported_symbols,
             imported_refs: unit
                 .code
-                .external_call_edges
+                .external_call_edges()
                 .iter()
                 .map(|edge| edge.target.clone())
                 .collect(),
@@ -854,7 +819,7 @@ pub struct RuntimeImageMetadata {
     pub schemas: Vec<Schema>,
     pub frame_sizes: Vec<u32>,
     pub exported_symbols: BTreeMap<String, u32>,
-    pub imported_refs: Vec<ExportKey>,
+    pub imported_refs: Vec<Mfa>,
     pub static_closures: Vec<(usize, RuntimeStaticClosure)>,
     pub halt_kinds: BTreeMap<u32, u32>,
     pub entrypoints: RuntimeEntrypoints,
@@ -1287,13 +1252,12 @@ impl CompiledModule {
     /// return that root task's halt value, even if the program spawns
     /// additional tasks. Tests that need the full exit stream attach their own
     /// telemetry capture and read `fz.runtime.process_exited` directly.
-    pub fn run(&self, fn_id: FnId) -> i64 {
+    pub fn run(&self, tel: &dyn crate::telemetry::Telemetry, fn_id: FnId) -> i64 {
         // Observe the root task through the telemetry seam rather than reading
         // Runtime internals directly.
-        let tel = crate::telemetry::ConfiguredTelemetry::new();
         let exits = ProcessExitCapture::new();
         tel.attach(&[], exits.handler());
-        let mut rt = Runtime::new(self, 1, &tel);
+        let mut rt = Runtime::new(self, 1, tel);
         let root_pid = rt.spawn(fn_id);
         rt.run_until_idle();
         exits.by_pid(root_pid).expect("root process_exited captured").halt_value
@@ -1302,8 +1266,8 @@ impl CompiledModule {
 
 #[cfg(test)]
 impl CompiledImage {
-    pub fn run(&self, fn_id: FnId) -> i64 {
-        self.inner.run(fn_id)
+    pub fn run(&self, tel: &dyn crate::telemetry::Telemetry, fn_id: FnId) -> i64 {
+        self.inner.run(tel, fn_id)
     }
 }
 

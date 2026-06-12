@@ -11,6 +11,7 @@ use std::thread::panicking;
 use std::time::Instant;
 
 use super::event::{Measurements, Metadata};
+use super::handler::{Handler, HandlerId};
 
 /// The compiler's observability bus. Every observable thing the compiler
 /// does — diagnostics, stats, span boundaries, artifact dumps — flows
@@ -30,12 +31,38 @@ pub trait Telemetry {
     fn span_start(&self, name: &[&'static str], metadata: &Metadata) -> u64;
 
     /// Close a span normally. Impls typically emit a `[..name, "stop"]`
-    /// event carrying `elapsed_ns`.
-    fn span_stop(&self, name: &[&'static str], span_id: u64, elapsed_ns: u64);
+    /// event carrying `elapsed_ns` plus any caller-supplied stop payload.
+    fn span_stop(
+        &self,
+        name: &[&'static str],
+        span_id: u64,
+        elapsed_ns: u64,
+        measurements: &Measurements,
+        metadata: &Metadata,
+    );
 
     /// Close a span that was unwound by a panic. Impls typically emit a
-    /// `[..name, "exception"]` event carrying `elapsed_ns`.
-    fn span_exception(&self, name: &[&'static str], span_id: u64, elapsed_ns: u64);
+    /// `[..name, "exception"]` event carrying `elapsed_ns` plus any
+    /// caller-supplied stop payload.
+    fn span_exception(
+        &self,
+        name: &[&'static str],
+        span_id: u64,
+        elapsed_ns: u64,
+        measurements: &Measurements,
+        metadata: &Metadata,
+    );
+
+    /// Attach `handler` to events whose name starts with `prefix`.
+    /// Implementations that are not a configurable bus may reject this.
+    fn attach(&self, _prefix: &[&'static str], _handler: Box<dyn Handler>) -> HandlerId {
+        panic!("telemetry handler attachment is unsupported for this telemetry implementation")
+    }
+
+    /// Remove a previously attached handler. Returns true if removed.
+    fn detach(&self, _id: HandlerId) -> bool {
+        false
+    }
 
     /// Emit an event with no payload. Shorthand for
     /// `execute(name, &Measurements::new(), &Metadata::new())`.
@@ -64,6 +91,9 @@ pub struct Span<'a> {
     name: Box<[&'static str]>,
     span_id: u64,
     start: Instant,
+    stop_measurements: Measurements<'static>,
+    stop_metadata: Metadata<'static>,
+    closed: bool,
 }
 
 impl<'a> Span<'a> {
@@ -73,7 +103,27 @@ impl<'a> Span<'a> {
             name: Box::from(name),
             span_id,
             start: Instant::now(),
+            stop_measurements: Measurements::new(),
+            stop_metadata: Metadata::new(),
+            closed: false,
         }
+    }
+
+    /// Replace the payload that will be attached to the eventual stop or
+    /// exception event for this span.
+    pub fn close_with(&mut self, measurements: Measurements<'static>, metadata: Metadata<'static>) {
+        self.stop_measurements = measurements;
+        self.stop_metadata = metadata;
+    }
+
+    /// Close the span immediately with borrowed payload. Useful when the stop
+    /// data is only valid for the current scope and should not be copied into
+    /// the guard for drop-time emission.
+    pub fn stop_with<'meas, 'meta>(mut self, measurements: &Measurements<'meas>, metadata: &Metadata<'meta>) {
+        let elapsed_ns = self.start.elapsed().as_nanos().min(u64::MAX as u128) as u64;
+        self.tel
+            .span_stop(&self.name, self.span_id, elapsed_ns, measurements, metadata);
+        self.closed = true;
     }
 
     /// Opaque identifier for this span. The bus impl uses this to attach
@@ -92,11 +142,26 @@ impl<'a> Span<'a> {
 
 impl Drop for Span<'_> {
     fn drop(&mut self) {
+        if self.closed {
+            return;
+        }
         let elapsed_ns = self.start.elapsed().as_nanos().min(u64::MAX as u128) as u64;
         if panicking() {
-            self.tel.span_exception(&self.name, self.span_id, elapsed_ns);
+            self.tel.span_exception(
+                &self.name,
+                self.span_id,
+                elapsed_ns,
+                &self.stop_measurements,
+                &self.stop_metadata,
+            );
         } else {
-            self.tel.span_stop(&self.name, self.span_id, elapsed_ns);
+            self.tel.span_stop(
+                &self.name,
+                self.span_id,
+                elapsed_ns,
+                &self.stop_measurements,
+                &self.stop_metadata,
+            );
         }
     }
 }

@@ -1,0 +1,6 @@
+
+extern "C" fn libc::open(path :: cstring, flags :: integer, ...) :: integer
+
+fn main() do
+  libc::open("x")
+end

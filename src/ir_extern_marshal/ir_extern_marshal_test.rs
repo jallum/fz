@@ -37,6 +37,7 @@ fn main_extern_arg(ok: &FrontendOk, arg_idx: usize) -> ExternTy {
     }]
 }
 
+// DROP: extern C variadic integer auto-marshal; old-world IR extern internals
 #[test]
 fn auto_int_literal_resolves_to_i64() {
     let ok = compile(
@@ -49,6 +50,7 @@ fn main() do libc::printf("%d", 7) end
     assert_eq!(main_extern_arg(&ok, 1), ExternTy::I64);
 }
 
+// DROP: extern C variadic float auto-marshal; old-world IR extern internals
 #[test]
 fn auto_float_literal_resolves_to_f64() {
     let ok = compile(
@@ -61,6 +63,7 @@ fn main() do libc::printf("%f", 1.5) end
     assert_eq!(main_extern_arg(&ok, 1), ExternTy::F64);
 }
 
+// DROP: extern C binary auto-marshal requires ascription; old-world IR internals
 #[test]
 fn binary_auto_requires_explicit_ascription() {
     let ok = compile(
@@ -79,6 +82,7 @@ fn main() do libc::printf("%s", "hello") end
     assert!(d.helps.iter().any(|h| h.contains(":: cstring")));
 }
 
+// DROP: extern C binary with :: cstring ascription resolves; old-world IR internals
 #[test]
 fn binary_explicit_ascription_resolves() {
     let ok = compile(
@@ -91,6 +95,7 @@ fn main() do libc::printf("%s", "hello" :: cstring) end
     assert_eq!(main_extern_arg(&ok, 1), ExternTy::CString);
 }
 
+// DROP: extern C list arg has no auto C marshal; old-world IR internals
 #[test]
 fn list_auto_errors_cleanly() {
     let ok = compile(

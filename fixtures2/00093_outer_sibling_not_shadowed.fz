@@ -1,0 +1,7 @@
+defmodule A do
+  fn f(x), do: x
+  fn caller(x), do: f(x)
+  defmodule B do
+    fn f(x), do: x + 100
+  end
+end

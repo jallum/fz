@@ -18,8 +18,6 @@ use crate::modules::identity::ModuleName;
 use crate::modules::interface::{ModuleInterface, collect_from_program};
 use crate::parser::Parser;
 use crate::parser::lexer::Lexer;
-#[cfg(test)]
-use crate::telemetry::ConfiguredTelemetry;
 use crate::telemetry::Telemetry;
 use crate::type_expr::{
     BrandInnerTypes, ModuleTypeEnv, OpaqueInnerTypes, build_module_type_env_for_with_base, builtin_brand_inners,
@@ -30,10 +28,20 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
 const RUNTIME_PRELUDE_FZ: &str = include_str!("runtime_library/runtime.fz");
+/// Pre-fz-rh2.18.5 prelude for the OLD pipeline only — see
+/// `runtime_library/legacy/README.md`. Deleted with the old pipeline
+/// (fz-rh2.16.6.1).
+const LEGACY_RUNTIME_PRELUDE_FZ: &str = include_str!("runtime_library/legacy/runtime.fz");
 
 struct RuntimeModuleSource {
     name: &'static str,
+    /// Current surface — compiler2's pipeline.
     source: &'static str,
+    /// Old-pipeline surface. Identical to `source` for every module except
+    /// Kernel, whose ascribed operator clauses the old parser cannot read
+    /// (and the old pipeline never consumes). Deleted with the old pipeline
+    /// (fz-rh2.16.6.1).
+    legacy_source: &'static str,
     role: RuntimeModuleRole,
 }
 
@@ -47,57 +55,71 @@ const RUNTIME_MODULE_SOURCES: &[RuntimeModuleSource] = &[
     RuntimeModuleSource {
         name: "Kernel",
         source: include_str!("runtime_library/kernel.fz"),
+        legacy_source: include_str!("runtime_library/legacy/kernel.fz"),
         role: RuntimeModuleRole::CorePrelude,
     },
     RuntimeModuleSource {
         name: "Enumerable",
         source: include_str!("runtime_library/enumerable.fz"),
+        legacy_source: include_str!("runtime_library/enumerable.fz"),
         role: RuntimeModuleRole::CorePrelude,
     },
     RuntimeModuleSource {
         name: "Range",
         source: include_str!("runtime_library/range.fz"),
+        legacy_source: include_str!("runtime_library/range.fz"),
         role: RuntimeModuleRole::CorePrelude,
     },
     RuntimeModuleSource {
         name: "Process",
         source: include_str!("runtime_library/process.fz"),
+        legacy_source: include_str!("runtime_library/process.fz"),
         role: RuntimeModuleRole::Library,
     },
     RuntimeModuleSource {
         name: "List",
         source: include_str!("runtime_library/list.fz"),
+        legacy_source: include_str!("runtime_library/list.fz"),
         role: RuntimeModuleRole::CorePrelude,
     },
     RuntimeModuleSource {
         name: "Map",
         source: include_str!("runtime_library/map.fz"),
+        legacy_source: include_str!("runtime_library/map.fz"),
         role: RuntimeModuleRole::CorePrelude,
     },
     RuntimeModuleSource {
         name: "Enum",
         source: include_str!("runtime_library/enum.fz"),
+        legacy_source: include_str!("runtime_library/enum.fz"),
         role: RuntimeModuleRole::Library,
     },
     RuntimeModuleSource {
         name: "Utf8",
         source: include_str!("runtime_library/utf8.fz"),
+        legacy_source: include_str!("runtime_library/utf8.fz"),
         role: RuntimeModuleRole::Library,
     },
 ];
 
-pub struct RuntimeRootTypes {
-    pub env: ModuleTypeEnv,
-    pub opaque_inners: OpaqueInnerTypes,
-    pub brand_inners: BrandInnerTypes,
+pub struct RuntimeRootTypes<TypeHandle = Ty> {
+    pub env: ModuleTypeEnv<TypeHandle>,
+    pub opaque_inners: OpaqueInnerTypes<TypeHandle>,
+    pub brand_inners: BrandInnerTypes<TypeHandle>,
 }
 
 pub fn prelude_source() -> &'static str {
     RUNTIME_PRELUDE_FZ
 }
 
-pub fn root_type_env<T: Types<Ty = Ty>>(t: &mut T, tel: &dyn Telemetry) -> RuntimeRootTypes {
-    let toks = Lexer::with_source_name(prelude_source(), "runtime:runtime.fz")
+/// The OLD pipeline's prelude. Everything the old parser touches reads the
+/// legacy surface; compiler2 reads `prelude_source`.
+pub fn legacy_prelude_source() -> &'static str {
+    LEGACY_RUNTIME_PRELUDE_FZ
+}
+
+pub fn root_type_env<T: Types>(t: &mut T, tel: &dyn Telemetry) -> RuntimeRootTypes<T::Ty> {
+    let toks = Lexer::with_source_name(legacy_prelude_source(), "runtime:runtime.fz")
         .tokenize(tel)
         .expect("runtime.fz lex error (bug in built-in prelude)");
     let (_items, attrs) = Parser::new(toks)
@@ -106,7 +128,7 @@ pub fn root_type_env<T: Types<Ty = Ty>>(t: &mut T, tel: &dyn Telemetry) -> Runti
     root_type_env_from_attrs(t, &attrs)
 }
 
-pub fn root_type_env_from_attrs<T: Types<Ty = Ty>>(t: &mut T, attrs: &[Attribute]) -> RuntimeRootTypes {
+pub fn root_type_env_from_attrs<T: Types>(t: &mut T, attrs: &[Attribute]) -> RuntimeRootTypes<T::Ty> {
     let builtin_env = builtin_type_env(t);
     let (env, declared_opaque_inners, declared_brand_inners) =
         build_module_type_env_for_with_base(t, attrs, "", &builtin_env)
@@ -126,7 +148,11 @@ pub fn core_prelude_module_sources() -> impl Iterator<Item = (&'static str, &'st
     RUNTIME_MODULE_SOURCES
         .iter()
         .filter(|source| source.role == RuntimeModuleRole::CorePrelude)
-        .map(|source| (source.name, source.source))
+        .map(|source| (source.name, source.legacy_source))
+}
+
+pub(crate) fn module_sources() -> impl Iterator<Item = (&'static str, &'static str)> {
+    RUNTIME_MODULE_SOURCES.iter().map(|source| (source.name, source.source))
 }
 
 pub fn is_core_prelude_module(module: &ModuleName) -> bool {
@@ -155,7 +181,7 @@ pub fn parsed_program(tel: &dyn Telemetry) -> Program {
     let mut items = Vec::new();
     for module_source in RUNTIME_MODULE_SOURCES {
         let source_name = runtime_source_name(module_source.name);
-        let toks = Lexer::with_source_name(module_source.source, source_name.clone())
+        let toks = Lexer::with_source_name(module_source.legacy_source, source_name.clone())
             .tokenize(tel)
             .unwrap_or_else(|_| panic!("{}.fz lex error (bug in built-in runtime library)", module_source.name));
         let (mut parsed_items, _attrs) = Parser::new(toks).parse_prelude().unwrap_or_else(|err| {
@@ -167,6 +193,7 @@ pub fn parsed_program(tel: &dyn Telemetry) -> Program {
         items.append(&mut parsed_items);
     }
     Program {
+        attrs: Vec::new(),
         items,
         module_interfaces: BTreeMap::new(),
         external_module_interfaces: BTreeMap::new(),
@@ -181,9 +208,8 @@ pub fn parsed_program(tel: &dyn Telemetry) -> Program {
 }
 
 #[cfg(test)]
-pub fn interface_table() -> InterfaceTable {
-    let tel = ConfiguredTelemetry::new();
-    interfaces(&tel)
+pub fn interface_table(tel: &dyn Telemetry) -> InterfaceTable {
+    interfaces(tel)
 }
 
 pub fn interfaces(tel: &dyn Telemetry) -> BTreeMap<ModuleName, ModuleInterface> {
@@ -410,17 +436,18 @@ fn runtime_module_source(name: &ModuleName) -> Option<&'static str> {
     RUNTIME_MODULE_SOURCES
         .iter()
         .find(|source| source.name == name.dotted())
-        .map(|source| source.source)
+        .map(|source| source.legacy_source)
 }
 
 pub fn primitive_prelude_program(tel: &dyn Telemetry) -> Program {
-    let toks = Lexer::with_source_name(RUNTIME_PRELUDE_FZ, "runtime:runtime.fz")
+    let toks = Lexer::with_source_name(LEGACY_RUNTIME_PRELUDE_FZ, "runtime:runtime.fz")
         .tokenize(tel)
         .expect("runtime.fz lex error (bug in built-in prelude)");
-    let (items, _attrs) = Parser::new(toks)
+    let (items, attrs) = Parser::new(toks)
         .parse_prelude()
         .expect("runtime.fz parse error (bug in built-in prelude)");
     Program {
+        attrs,
         items,
         module_interfaces: BTreeMap::new(),
         external_module_interfaces: BTreeMap::new(),
@@ -444,11 +471,10 @@ fn runtime_source_name(name: impl AsRef<str>) -> String {
 }
 
 #[cfg(test)]
-pub fn primitive_contract_names() -> Vec<String> {
+pub fn primitive_contract_names(tel: &dyn Telemetry) -> Vec<String> {
     let mut names = Vec::new();
-    let tel = ConfiguredTelemetry::new();
-    collect_primitive_contract_names(&primitive_prelude_program(&tel).items, &mut names);
-    for module in parsed_program(&tel).items {
+    collect_primitive_contract_names(&primitive_prelude_program(tel).items, &mut names);
+    for module in parsed_program(tel).items {
         if let Item::Module(module) = &*module {
             collect_primitive_contract_names(&module.items, &mut names);
         }
@@ -463,7 +489,7 @@ fn collect_primitive_contract_names(items: &[Rc<Item>], names: &mut Vec<String>)
         if let Item::Fn(def) = &**item
             && def.extern_abi.is_some()
         {
-            let arity = def.extern_params.len();
+            let arity = def.extern_param_tokens.len();
             names.push(format!("{}/{}", def.name, arity));
         }
         if let Item::Module(module) = &**item {

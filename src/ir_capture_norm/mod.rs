@@ -336,10 +336,13 @@ fn tail_call_continuation_sites(module: &Module) -> Vec<TailCallContinuationSite
             else {
                 continue;
             };
-            if *is_back_edge || !is_tail_call_continuation(module, *callee) {
+            let Some(callee) = callee.local_fn_id() else {
+                continue;
+            };
+            if *is_back_edge || !is_tail_call_continuation(module, callee) {
                 continue;
             }
-            callers_by_callee.entry(*callee).or_default().push(TailCallCaller {
+            callers_by_callee.entry(callee).or_default().push(TailCallCaller {
                 caller_fn_idx: fi,
                 caller_block_idx: bi,
                 args: args.clone(),

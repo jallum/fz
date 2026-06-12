@@ -1,0 +1,2 @@
+fn mk(x), do: fn(y) -> x + y end
+fn main(), do: mk(1)

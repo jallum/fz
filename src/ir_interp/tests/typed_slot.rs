@@ -45,25 +45,27 @@ fn run_checked(src: &str) -> i64 {
 }
 
 fn run_runtime_graph(src: &str) -> i64 {
-    let mut t = crate::types::new();
-    let graph = linked_runtime_graph(&mut t, src, &crate::telemetry::ConfiguredTelemetry::new());
+    let mut graph = linked_runtime_graph(src, &crate::telemetry::ConfiguredTelemetry::new());
+    let module = graph.linked_module().clone();
+    let module_plan = graph.linked_module_plan().clone();
     let (halt, _) = run_main_with_plan(
-        &mut t,
+        graph.types(),
         &crate::telemetry::ConfiguredTelemetry::new(),
-        &graph.module,
-        graph.module_plan,
+        &module,
+        module_plan,
     )
     .expect("interp run");
     halt
 }
 
 fn capture_runtime_graph(src: &str) -> String {
-    let mut t = crate::types::new();
     let tel = ConfiguredTelemetry::new();
     let dbg = DbgCapture::new();
     tel.attach(&[], dbg.handler());
-    let graph = linked_runtime_graph(&mut t, src, &tel);
-    run_main_with_plan(&mut t, &tel, &graph.module, graph.module_plan).expect("interp run");
+    let mut graph = linked_runtime_graph(src, &tel);
+    let module = graph.linked_module().clone();
+    let module_plan = graph.linked_module_plan().clone();
+    run_main_with_plan(graph.types(), &tel, &module, module_plan).expect("interp run");
     dbg.lines().join("\n")
 }
 
@@ -85,20 +87,13 @@ fn checked_halt_and_closure_allocs(src: &str) -> (i64, u64) {
     (halt, closure_allocs)
 }
 
-fn checked_halt_and_capture(src: &str) -> (i64, String, Module) {
-    let frontend = compile_source(src.to_string(), "interp-test.fz".to_string());
-    let tel = ConfiguredTelemetry::new();
-    let dbg = DbgCapture::new();
-    tel.attach(&[], dbg.handler());
-    let (halt, _runtime) = run_main_with_runtime(&tel, &frontend.module).expect("interp run");
-    (halt, dbg.lines().join("\n"), frontend.module)
-}
-
+// PICKED: large integer arithmetic does not lose high-order bits
 #[test]
 fn interp_typed_int_arithmetic_full_i64() {
     assert_eq!(run("fn main(), do: 4611686018427387904 + 7"), 4611686018427387911);
 }
 
+// PICKED: protocol dispatch selects correct implementation for Integer
 #[test]
 fn interp_static_protocol_dispatch_uses_planned_impl() {
     assert_eq!(
@@ -119,16 +114,19 @@ fn main(), do: Integerish.id(41)
     );
 }
 
+// PICKED: float addition produces correct IEEE-754 result
 #[test]
 fn interp_typed_float_raw() {
     assert_eq!(f64::from_bits(run("fn main(), do: 1.5 + 2.5") as u64), 4.0);
 }
 
+// PICKED: float inside list renders correctly via dbg
 #[test]
 fn interp_render_raw_float_in_container() {
     assert_eq!(capture("fn main(), do: dbg([1.5])"), "[1.5]");
 }
 
+// PICKED: named function reference passed as value without heap allocation
 #[test]
 fn interp_named_fn_ref_does_not_allocate_closure_object() {
     let (halt, closure_allocs) = checked_halt_and_closure_allocs(
@@ -149,6 +147,7 @@ fn interp_named_fn_ref_does_not_allocate_closure_object() {
     );
 }
 
+// PICKED: zero-capture lambda passed as value without heap allocation
 #[test]
 fn interp_zero_capture_lambda_does_not_allocate_closure_object() {
     let (halt, closure_allocs) = checked_halt_and_closure_allocs(
@@ -168,6 +167,7 @@ fn interp_zero_capture_lambda_does_not_allocate_closure_object() {
     );
 }
 
+// PICKED: lambda capturing outer variable executes correctly with capture
 #[test]
 fn interp_captured_lambda_still_allocates_closure_object() {
     let (halt, closure_allocs) = checked_halt_and_closure_allocs(
@@ -185,6 +185,7 @@ fn interp_captured_lambda_still_allocates_closure_object() {
     assert_eq!(closure_allocs, 1, "captured lambdas remain heap closures in interp",);
 }
 
+// PICKED: case-joined function reference remains callable after branch
 #[test]
 fn interp_checked_joined_thin_fn_refs_remain_callable_locally() {
     assert_eq!(
@@ -206,6 +207,7 @@ end
     );
 }
 
+// PICKED: Enum.reduce over list with inline lambda accumulates correctly
 #[test]
 fn interp_runtime_graph_enum_reduce_wrapper_runs() {
     assert_eq!(
@@ -220,6 +222,7 @@ end
     );
 }
 
+// PICKED: Enum.take with list and range in chained non-tail call sequence
 #[test]
 fn interp_runtime_graph_preserves_planned_continuation_specs_after_non_tail_calls() {
     let got = capture_runtime_graph(
@@ -242,6 +245,7 @@ end
     );
 }
 
+// PICKED: case-joined function reference used as Enum.reduce reducer
 #[test]
 fn interp_runtime_graph_joined_thin_fn_refs_remain_callable_across_enum_reduce() {
     assert_eq!(
@@ -265,26 +269,31 @@ end
     );
 }
 
+// Provider-boundary calls must be linked before interpreter execution.
 #[test]
-fn frontend_only_checked_interp_surfaces_unlinked_process_heap_alloc_stats_halt() {
-    let (halt, got, module) = checked_halt_and_capture(
+fn frontend_only_checked_interp_rejects_unlinked_process_heap_alloc_stats() {
+    let frontend = compile_source(
         r#"
 fn main() do
   stats = Process.heap_alloc_stats()
   dbg(stats[:allocs])
   dbg(stats[:closure_allocs])
 end
-"#,
+"#
+        .to_string(),
+        "interp-test.fz".to_string(),
     );
-    let expected = module
-        .atom_names
-        .iter()
-        .position(|name| name == "external_module_unlinked")
-        .expect("frontend-only module interns external_module_unlinked") as i64;
-    assert_eq!(halt, expected);
-    assert_eq!(got, "");
+    let err = match run_main_with_runtime(&ConfiguredTelemetry::new(), &frontend.module) {
+        Ok(_) => panic!("expected unresolved provider-boundary interpreter error"),
+        Err(err) => err,
+    };
+    assert_eq!(
+        err,
+        "unresolved provider-boundary call `Process.heap_alloc_stats/0` reached interpreter"
+    );
 }
 
+// DROP: runtime heap allocation telemetry BIF, no compiler2 analogue
 #[test]
 fn interp_runtime_graph_heap_alloc_stats_exposes_closure_allocs_key() {
     let got = capture_runtime_graph(
@@ -309,6 +318,7 @@ end
     );
 }
 
+// DROP: runtime heap allocation telemetry BIF, no compiler2 analogue
 #[test]
 fn interp_runtime_graph_heap_alloc_stats_reports_captured_closure_allocs() {
     let got = capture_runtime_graph(
@@ -330,11 +340,13 @@ end
     );
 }
 
+// PICKED: float equality inside list compares by value
 #[test]
 fn interp_equality_float_in_container() {
     assert_eq!(run("fn main(), do: [1.5] == [1.5]"), 1);
 }
 
+// PICKED: receive pattern matches float inside a list
 #[test]
 fn interp_receive_matcher_float_in_container() {
     assert_eq!(
@@ -350,6 +362,7 @@ fn interp_receive_matcher_float_in_container() {
     );
 }
 
+// DROP: old-world runtime heap internals inspection, no compiler2 analogue
 #[test]
 fn interp_deep_copy_float_in_container_preserves_raw_slot() {
     let m = lower_src(
@@ -371,6 +384,7 @@ fn interp_deep_copy_float_in_container_preserves_raw_slot() {
     assert_eq!(f64::from_bits(head.raw()), 2.5);
 }
 
+// DROP: old-world IrInterpRuntime persistent-drive API, no compiler2 analogue
 #[test]
 fn persistent_runtime_drives_entries_without_resetting_mailbox() {
     let m = lower_src(
@@ -391,11 +405,12 @@ fn persistent_runtime_drives_entries_without_resetting_mailbox() {
     let second = m.fn_by_name("second").expect("second fn").id;
     let mut t = crate::types::new();
     let mut runtime = IrInterpRuntime::fresh_with_root(&m);
+    let tel = ConfiguredTelemetry::new();
 
-    runtime.enqueue_entry(&m, 1, first, vec![]).expect("enqueue first");
-    let first_done = runtime
-        .drive_until_idle(&mut t, &crate::telemetry::ConfiguredTelemetry::new(), Some(1))
-        .expect("drive first");
+    runtime
+        .enqueue_entry(&m, &tel, 1, first, vec![])
+        .expect("enqueue first");
+    let first_done = runtime.drive_until_idle(&mut t, &tel, Some(1)).expect("drive first");
     assert_eq!(first_done.len(), 1);
     assert_eq!(
         runtime.task(1).expect("root task").mailbox.len(),
@@ -403,10 +418,10 @@ fn persistent_runtime_drives_entries_without_resetting_mailbox() {
         "first drive leaves self-sent message in persistent mailbox",
     );
 
-    runtime.enqueue_entry(&m, 1, second, vec![]).expect("enqueue second");
-    let second_done = runtime
-        .drive_until_idle(&mut t, &crate::telemetry::ConfiguredTelemetry::new(), Some(1))
-        .expect("drive second");
+    runtime
+        .enqueue_entry(&m, &tel, 1, second, vec![])
+        .expect("enqueue second");
+    let second_done = runtime.drive_until_idle(&mut t, &tel, Some(1)).expect("drive second");
     assert_eq!(second_done.last().and_then(|(_, value)| value.as_i64()), Some(41),);
     assert_eq!(
         runtime.task(1).expect("root task").mailbox.len(),
@@ -415,6 +430,7 @@ fn persistent_runtime_drives_entries_without_resetting_mailbox() {
     );
 }
 
+// DROP: old-world scheduler reduction-yield accounting, no compiler2 analogue
 #[test]
 fn interp_reductions_yield_allocation_light_loops() {
     let m = lower_src(
@@ -457,6 +473,7 @@ fn interp_reductions_yield_allocation_light_loops() {
     assert_eq!(child.interpreter_yields, 0, "test should be allocation-light");
 }
 
+// DROP: old-world scheduler quiet-quanta accounting, no compiler2 analogue
 #[test]
 fn interp_quiet_quanta_moves_only_at_scheduler_boundaries() {
     let m = lower_src(
@@ -469,12 +486,11 @@ fn interp_quiet_quanta_moves_only_at_scheduler_boundaries() {
     let main = m.fn_by_name("main").expect("main").id;
     let mut t = crate::types::new();
     let mut runtime = IrInterpRuntime::fresh_with_root(&m);
-    runtime.enqueue_entry(&m, 1, main, vec![]).expect("enqueue main");
+    let tel = ConfiguredTelemetry::new();
+    runtime.enqueue_entry(&m, &tel, 1, main, vec![]).expect("enqueue main");
     runtime.task_mut(1).expect("main task").reductions_per_quantum = 100;
 
-    let completions = runtime
-        .drive_until_idle(&mut t, &crate::telemetry::ConfiguredTelemetry::new(), None)
-        .expect("drive interp");
+    let completions = runtime.drive_until_idle(&mut t, &tel, None).expect("drive interp");
     let halt = completions
         .iter()
         .rev()
@@ -491,6 +507,7 @@ fn interp_quiet_quanta_moves_only_at_scheduler_boundaries() {
     assert_eq!(task.interpreter_yields, 0);
 }
 
+// DROP: old-world heap allocation-pressure yield counters, no compiler2 analogue
 #[test]
 fn interp_allocation_pressure_yields_before_budget_exhaustion() {
     let m = lower_src(
@@ -503,16 +520,15 @@ fn interp_allocation_pressure_yields_before_budget_exhaustion() {
     let main = m.fn_by_name("main").expect("main").id;
     let mut t = crate::types::new();
     let mut runtime = IrInterpRuntime::fresh_with_root(&m);
-    runtime.enqueue_entry(&m, 1, main, vec![]).expect("enqueue main");
+    let tel = ConfiguredTelemetry::new();
+    runtime.enqueue_entry(&m, &tel, 1, main, vec![]).expect("enqueue main");
     {
         let task = runtime.task_mut(1).expect("main task");
         task.reductions_per_quantum = 1000;
         task.heap.allocation_watermark = null_mut();
     }
 
-    let completions = runtime
-        .drive_until_idle(&mut t, &crate::telemetry::ConfiguredTelemetry::new(), None)
-        .expect("drive interp");
+    let completions = runtime.drive_until_idle(&mut t, &tel, None).expect("drive interp");
     let halt = completions
         .iter()
         .rev()
@@ -549,6 +565,7 @@ fn interp_allocation_pressure_yields_before_budget_exhaustion() {
     );
 }
 
+// PICKED: large integer survives send/receive message boundary intact
 #[test]
 fn interp_typed_int_send_receive_boundary() {
     assert_eq!(
@@ -564,6 +581,7 @@ fn interp_typed_int_send_receive_boundary() {
     );
 }
 
+// PICKED: large integer extracted via list head pattern match
 #[test]
 fn interp_typed_int_list_head_boundary() {
     assert_eq!(
@@ -575,6 +593,7 @@ fn interp_typed_int_list_head_boundary() {
     );
 }
 
+// PICKED: large integer extracted via map field access
 #[test]
 fn interp_typed_int_map_get_boundary() {
     assert_eq!(
@@ -583,6 +602,7 @@ fn interp_typed_int_map_get_boundary() {
     );
 }
 
+// PICKED: scalars read from list head, map field, and tuple slot destructuring
 #[test]
 fn interp_ref_bifs_read_scalars_from_list_map_and_tuple() {
     assert_eq!(
@@ -599,6 +619,7 @@ fn interp_ref_bifs_read_scalars_from_list_map_and_tuple() {
     );
 }
 
+// PICKED: heap values (lists) extracted from list, map, and tuple containers
 #[test]
 fn interp_ref_bifs_read_heap_values_from_list_map_and_tuple() {
     assert_eq!(
@@ -615,6 +636,7 @@ fn interp_ref_bifs_read_heap_values_from_list_map_and_tuple() {
     );
 }
 
+// PICKED: typed integer clause guard dispatches to correct function body
 #[test]
 fn interp_typed_int_dispatch_and_return_flow() {
     assert_eq!(
@@ -627,6 +649,7 @@ fn interp_typed_int_dispatch_and_return_flow() {
     );
 }
 
+// PICKED: large integer delivered from spawned process to blocked receive
 #[test]
 fn interp_typed_int_sender_wakes_blocked_receiver() {
     assert_eq!(

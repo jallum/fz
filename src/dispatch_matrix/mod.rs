@@ -46,7 +46,7 @@
 //! `SourcePatternRows` are AST-facing input rows; they are not a second matcher
 //! model, and they do not own executable dispatch semantics.
 
-use crate::types::{Ty, Types};
+use crate::types::{Ty as DefaultTy, Types};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub(crate) mod pattern;
@@ -70,14 +70,14 @@ pub(crate) struct GuardId(pub(crate) u32);
 pub(crate) struct PinnedValueId(pub(crate) u32);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct DispatchMatrix {
+pub(crate) struct DispatchMatrix<TypeHandle = DefaultTy> {
     pub(crate) subjects: Vec<Subject>,
     pub(crate) outcomes: Vec<Outcome>,
-    pub(crate) arms: Vec<DispatchArm>,
+    pub(crate) arms: Vec<DispatchArm<TypeHandle>>,
     pub(crate) order: Order,
 }
 
-impl DispatchMatrix {
+impl<TypeHandle> DispatchMatrix<TypeHandle> {
     #[cfg(test)]
     pub(crate) fn subject(&self, id: SubjectId) -> Option<&Subject> {
         self.subjects.get(id.0 as usize)
@@ -87,8 +87,20 @@ impl DispatchMatrix {
         self.outcomes.get(id.0 as usize)
     }
 
-    pub(crate) fn arm(&self, id: ArmId) -> Option<&DispatchArm> {
+    pub(crate) fn arm(&self, id: ArmId) -> Option<&DispatchArm<TypeHandle>> {
         self.arms.get(id.0 as usize)
+    }
+
+    pub(crate) fn map_type_handle<MappedHandle>(
+        &self,
+        map: &mut impl FnMut(&TypeHandle) -> MappedHandle,
+    ) -> DispatchMatrix<MappedHandle> {
+        DispatchMatrix {
+            subjects: self.subjects.clone(),
+            outcomes: self.outcomes.clone(),
+            arms: self.arms.iter().map(|arm| arm.map_type_handle(map)).collect(),
+            order: self.order.clone(),
+        }
     }
 }
 
@@ -120,32 +132,60 @@ pub(crate) enum ProjectionKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct DispatchArm {
+pub(crate) struct DispatchArm<TypeHandle = DefaultTy> {
     pub(crate) id: ArmId,
-    pub(crate) questions: Vec<RegionQuestion>,
-    pub(crate) evidence: EdgeEvidence,
+    pub(crate) questions: Vec<RegionQuestion<TypeHandle>>,
+    pub(crate) evidence: EdgeEvidence<TypeHandle>,
     pub(crate) outcome: OutcomeId,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct RegionPredicate {
-    pub(crate) subject: SubjectId,
-    pub(crate) region: Region,
-}
-
-impl RegionPredicate {
-    pub(crate) fn new(subject: SubjectId, region: Region) -> Self {
-        Self { subject, region }
+impl<TypeHandle> DispatchArm<TypeHandle> {
+    pub(crate) fn map_type_handle<MappedHandle>(
+        &self,
+        map: &mut impl FnMut(&TypeHandle) -> MappedHandle,
+    ) -> DispatchArm<MappedHandle> {
+        DispatchArm {
+            id: self.id,
+            questions: self
+                .questions
+                .iter()
+                .map(|question| question.map_type_handle(map))
+                .collect(),
+            evidence: self.evidence.map_type_handle(map),
+            outcome: self.outcome,
+        }
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum Region {
+pub(crate) struct RegionPredicate<TypeHandle = DefaultTy> {
+    pub(crate) subject: SubjectId,
+    pub(crate) region: Region<TypeHandle>,
+}
+
+impl<TypeHandle> RegionPredicate<TypeHandle> {
+    pub(crate) fn new(subject: SubjectId, region: Region<TypeHandle>) -> Self {
+        Self { subject, region }
+    }
+
+    pub(crate) fn map_type_handle<MappedHandle>(
+        &self,
+        map: &mut impl FnMut(&TypeHandle) -> MappedHandle,
+    ) -> RegionPredicate<MappedHandle> {
+        RegionPredicate {
+            subject: self.subject,
+            region: self.region.map_type_handle(map),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Region<TypeHandle = DefaultTy> {
     #[allow(dead_code)] // Permanent top-region vocabulary; current producers emit concrete regions.
     Any,
     #[allow(dead_code)] // Permanent bottom-region vocabulary used by model tests and future residuals.
     Never,
-    Type(Ty),
+    Type(TypeHandle),
     Equal(ComparisonValue),
     TupleArity(u32),
     List(ListRegion),
@@ -155,6 +195,26 @@ pub(crate) enum Region {
     },
     Bitstring(BitstringShape),
     Guard(GuardId),
+}
+
+impl<TypeHandle> Region<TypeHandle> {
+    pub(crate) fn map_type_handle<MappedHandle>(
+        &self,
+        map: &mut impl FnMut(&TypeHandle) -> MappedHandle,
+    ) -> Region<MappedHandle> {
+        match self {
+            Region::Any => Region::Any,
+            Region::Never => Region::Never,
+            Region::Type(ty) => Region::Type(map(ty)),
+            Region::Equal(value) => Region::Equal(value.clone()),
+            Region::TupleArity(arity) => Region::TupleArity(*arity),
+            Region::List(region) => Region::List(*region),
+            Region::MapKind => Region::MapKind,
+            Region::MapKeyPresent { key } => Region::MapKeyPresent { key: key.clone() },
+            Region::Bitstring(shape) => Region::Bitstring(shape.clone()),
+            Region::Guard(guard) => Region::Guard(*guard),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -247,18 +307,27 @@ pub(crate) enum OutcomeMultiplicity {
     Shared,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub(crate) struct EdgeEvidence {
-    pub(crate) proofs: Vec<Proof>,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct EdgeEvidence<TypeHandle = DefaultTy> {
+    pub(crate) proofs: Vec<Proof<TypeHandle>>,
     pub(crate) projections: Vec<EdgeProjection>,
 }
 
-impl EdgeEvidence {
+impl<TypeHandle> Default for EdgeEvidence<TypeHandle> {
+    fn default() -> Self {
+        Self {
+            proofs: Vec::new(),
+            projections: Vec::new(),
+        }
+    }
+}
+
+impl<TypeHandle> EdgeEvidence<TypeHandle> {
     pub(crate) fn empty() -> Self {
         Self::default()
     }
 
-    pub(crate) fn from_proof(predicate: RegionPredicate, sense: ProofSense) -> Self {
+    pub(crate) fn from_proof(predicate: RegionPredicate<TypeHandle>, sense: ProofSense) -> Self {
         Self {
             proofs: vec![Proof { predicate, sense }],
             projections: Vec::new(),
@@ -269,12 +338,34 @@ impl EdgeEvidence {
         self.projections.push(projection);
         self
     }
+
+    pub(crate) fn map_type_handle<MappedHandle>(
+        &self,
+        map: &mut impl FnMut(&TypeHandle) -> MappedHandle,
+    ) -> EdgeEvidence<MappedHandle> {
+        EdgeEvidence {
+            proofs: self.proofs.iter().map(|proof| proof.map_type_handle(map)).collect(),
+            projections: self.projections.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Proof {
-    pub(crate) predicate: RegionPredicate,
+pub(crate) struct Proof<TypeHandle = DefaultTy> {
+    pub(crate) predicate: RegionPredicate<TypeHandle>,
     pub(crate) sense: ProofSense,
+}
+
+impl<TypeHandle> Proof<TypeHandle> {
+    pub(crate) fn map_type_handle<MappedHandle>(
+        &self,
+        map: &mut impl FnMut(&TypeHandle) -> MappedHandle,
+    ) -> Proof<MappedHandle> {
+        Proof {
+            predicate: self.predicate.map_type_handle(map),
+            sense: self.sense,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -297,14 +388,14 @@ pub(crate) struct EdgeProjection {
 /// primitives are lowering choices for these questions, not additional semantic
 /// variants in this model.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct RegionQuestion {
-    pub(crate) predicate: RegionPredicate,
-    pub(crate) match_evidence: EdgeEvidence,
-    pub(crate) miss_evidence: EdgeEvidence,
+pub(crate) struct RegionQuestion<TypeHandle = DefaultTy> {
+    pub(crate) predicate: RegionPredicate<TypeHandle>,
+    pub(crate) match_evidence: EdgeEvidence<TypeHandle>,
+    pub(crate) miss_evidence: EdgeEvidence<TypeHandle>,
 }
 
-impl RegionQuestion {
-    pub(crate) fn new(predicate: RegionPredicate) -> Self {
+impl<TypeHandle: Clone> RegionQuestion<TypeHandle> {
+    pub(crate) fn new(predicate: RegionPredicate<TypeHandle>) -> Self {
         Self {
             match_evidence: EdgeEvidence::from_proof(predicate.clone(), ProofSense::Holds),
             miss_evidence: EdgeEvidence::from_proof(predicate.clone(), ProofSense::DoesNotHold),
@@ -312,70 +403,11 @@ impl RegionQuestion {
         }
     }
 
-    pub(crate) fn type_region(subject: SubjectId, ty: Ty) -> Self {
+    pub(crate) fn type_region(subject: SubjectId, ty: TypeHandle) -> Self {
         Self::new(RegionPredicate::new(subject, Region::Type(ty)))
     }
 
-    pub(crate) fn equality(subject: SubjectId, value: ComparisonValue) -> Self {
-        Self::new(RegionPredicate::new(subject, Region::Equal(value)))
-    }
-
-    pub(crate) fn list_empty(subject: SubjectId) -> Self {
-        Self::new(RegionPredicate::new(subject, Region::List(ListRegion::Empty)))
-    }
-
-    pub(crate) fn tuple_arity(subject: SubjectId, arity: u32, fields: impl IntoIterator<Item = SubjectId>) -> Self {
-        let predicate = RegionPredicate::new(subject, Region::TupleArity(arity));
-        let mut match_evidence = EdgeEvidence::from_proof(predicate.clone(), ProofSense::Holds);
-        for (index, result) in fields.into_iter().enumerate() {
-            match_evidence = match_evidence.with_projection(EdgeProjection {
-                source: subject,
-                kind: ProjectionKind::TupleField(index as u32),
-                result,
-            });
-        }
-        Self {
-            match_evidence,
-            miss_evidence: EdgeEvidence::from_proof(predicate.clone(), ProofSense::DoesNotHold),
-            predicate,
-        }
-    }
-
-    pub(crate) fn list_cons(subject: SubjectId, head: SubjectId, tail: SubjectId) -> Self {
-        let predicate = RegionPredicate::new(subject, Region::List(ListRegion::Cons));
-        Self {
-            match_evidence: EdgeEvidence::from_proof(predicate.clone(), ProofSense::Holds)
-                .with_projection(EdgeProjection {
-                    source: subject,
-                    kind: ProjectionKind::ListHead,
-                    result: head,
-                })
-                .with_projection(EdgeProjection {
-                    source: subject,
-                    kind: ProjectionKind::ListTail,
-                    result: tail,
-                }),
-            miss_evidence: EdgeEvidence::from_proof(predicate.clone(), ProofSense::DoesNotHold),
-            predicate,
-        }
-    }
-
-    pub(crate) fn map_key_present(subject: SubjectId, key: DispatchConst, value: SubjectId) -> Self {
-        let predicate = RegionPredicate::new(subject, Region::MapKeyPresent { key: key.clone() });
-        Self {
-            match_evidence: EdgeEvidence::from_proof(predicate.clone(), ProofSense::Holds).with_projection(
-                EdgeProjection {
-                    source: subject,
-                    kind: ProjectionKind::MapValue { key },
-                    result: value,
-                },
-            ),
-            miss_evidence: EdgeEvidence::from_proof(predicate.clone(), ProofSense::DoesNotHold),
-            predicate,
-        }
-    }
-
-    pub(crate) fn into_test_node(self, on_match: GraphNodeId, on_miss: GraphNodeId) -> DispatchNode {
+    pub(crate) fn into_test_node(self, on_match: GraphNodeId, on_miss: GraphNodeId) -> DispatchNode<TypeHandle> {
         DispatchNode::Test {
             predicate: self.predicate,
             on_match: DispatchEdge::with_evidence(on_match, self.match_evidence),
@@ -384,39 +416,174 @@ impl RegionQuestion {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct DispatchGraph {
-    pub(crate) nodes: Vec<DispatchNode>,
-    pub(crate) root: GraphNodeId,
-}
+impl<TypeHandle> RegionQuestion<TypeHandle> {
+    pub(crate) fn equality(subject: SubjectId, value: ComparisonValue) -> Self {
+        let match_predicate = RegionPredicate::new(subject, Region::Equal(value.clone()));
+        let miss_predicate = RegionPredicate::new(subject, Region::Equal(value.clone()));
+        let predicate = RegionPredicate::new(subject, Region::Equal(value));
+        Self {
+            match_evidence: EdgeEvidence::from_proof(match_predicate, ProofSense::Holds),
+            miss_evidence: EdgeEvidence::from_proof(miss_predicate, ProofSense::DoesNotHold),
+            predicate,
+        }
+    }
 
-impl DispatchGraph {
-    pub(crate) fn node(&self, id: GraphNodeId) -> Option<&DispatchNode> {
-        self.nodes.get(id.0 as usize)
+    pub(crate) fn list_empty(subject: SubjectId) -> Self {
+        let match_predicate = RegionPredicate::new(subject, Region::List(ListRegion::Empty));
+        let miss_predicate = RegionPredicate::new(subject, Region::List(ListRegion::Empty));
+        let predicate = RegionPredicate::new(subject, Region::List(ListRegion::Empty));
+        Self {
+            match_evidence: EdgeEvidence::from_proof(match_predicate, ProofSense::Holds),
+            miss_evidence: EdgeEvidence::from_proof(miss_predicate, ProofSense::DoesNotHold),
+            predicate,
+        }
+    }
+
+    pub(crate) fn tuple_arity(subject: SubjectId, arity: u32, fields: impl IntoIterator<Item = SubjectId>) -> Self {
+        let mut match_evidence = EdgeEvidence::from_proof(
+            RegionPredicate::new(subject, Region::TupleArity(arity)),
+            ProofSense::Holds,
+        );
+        for (index, result) in fields.into_iter().enumerate() {
+            match_evidence = match_evidence.with_projection(EdgeProjection {
+                source: subject,
+                kind: ProjectionKind::TupleField(index as u32),
+                result,
+            });
+        }
+        let miss_predicate = RegionPredicate::new(subject, Region::TupleArity(arity));
+        let predicate = RegionPredicate::new(subject, Region::TupleArity(arity));
+        Self {
+            match_evidence,
+            miss_evidence: EdgeEvidence::from_proof(miss_predicate, ProofSense::DoesNotHold),
+            predicate,
+        }
+    }
+
+    pub(crate) fn list_cons(subject: SubjectId, head: SubjectId, tail: SubjectId) -> Self {
+        let predicate = RegionPredicate::new(subject, Region::List(ListRegion::Cons));
+        let miss_predicate = RegionPredicate::new(subject, Region::List(ListRegion::Cons));
+        Self {
+            match_evidence: EdgeEvidence::from_proof(
+                RegionPredicate::new(subject, Region::List(ListRegion::Cons)),
+                ProofSense::Holds,
+            )
+            .with_projection(EdgeProjection {
+                source: subject,
+                kind: ProjectionKind::ListHead,
+                result: head,
+            })
+            .with_projection(EdgeProjection {
+                source: subject,
+                kind: ProjectionKind::ListTail,
+                result: tail,
+            }),
+            miss_evidence: EdgeEvidence::from_proof(miss_predicate, ProofSense::DoesNotHold),
+            predicate,
+        }
+    }
+
+    pub(crate) fn map_key_present(subject: SubjectId, key: DispatchConst, value: SubjectId) -> Self {
+        let predicate = RegionPredicate::new(subject, Region::MapKeyPresent { key: key.clone() });
+        let match_key = key.clone();
+        let miss_key = key.clone();
+        Self {
+            match_evidence: EdgeEvidence::from_proof(
+                RegionPredicate::new(subject, Region::MapKeyPresent { key: match_key }),
+                ProofSense::Holds,
+            )
+            .with_projection(EdgeProjection {
+                source: subject,
+                kind: ProjectionKind::MapValue { key },
+                result: value,
+            }),
+            miss_evidence: EdgeEvidence::from_proof(
+                RegionPredicate::new(subject, Region::MapKeyPresent { key: miss_key }),
+                ProofSense::DoesNotHold,
+            ),
+            predicate,
+        }
+    }
+
+    pub(crate) fn map_type_handle<MappedHandle>(
+        &self,
+        map: &mut impl FnMut(&TypeHandle) -> MappedHandle,
+    ) -> RegionQuestion<MappedHandle> {
+        RegionQuestion {
+            predicate: self.predicate.map_type_handle(map),
+            match_evidence: self.match_evidence.map_type_handle(map),
+            miss_evidence: self.miss_evidence.map_type_handle(map),
+        }
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum DispatchNode {
-    Fail,
-    Outcome {
-        outcome: OutcomeId,
-        evidence: EdgeEvidence,
-    },
-    Test {
-        predicate: RegionPredicate,
-        on_match: DispatchEdge,
-        on_miss: DispatchEdge,
-    },
+pub(crate) struct DispatchGraph<TypeHandle = DefaultTy> {
+    pub(crate) nodes: Vec<DispatchNode<TypeHandle>>,
+    pub(crate) root: GraphNodeId,
+}
+
+impl<TypeHandle> DispatchGraph<TypeHandle> {
+    pub(crate) fn node(&self, id: GraphNodeId) -> Option<&DispatchNode<TypeHandle>> {
+        self.nodes.get(id.0 as usize)
+    }
+
+    pub(crate) fn map_type_handle<MappedHandle>(
+        &self,
+        map: &mut impl FnMut(&TypeHandle) -> MappedHandle,
+    ) -> DispatchGraph<MappedHandle> {
+        DispatchGraph {
+            nodes: self.nodes.iter().map(|node| node.map_type_handle(map)).collect(),
+            root: self.root,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct DispatchEdge {
-    pub(crate) target: GraphNodeId,
-    pub(crate) evidence: EdgeEvidence,
+pub(crate) enum DispatchNode<TypeHandle = DefaultTy> {
+    Fail,
+    Outcome {
+        outcome: OutcomeId,
+        evidence: EdgeEvidence<TypeHandle>,
+    },
+    Test {
+        predicate: RegionPredicate<TypeHandle>,
+        on_match: DispatchEdge<TypeHandle>,
+        on_miss: DispatchEdge<TypeHandle>,
+    },
 }
 
-impl DispatchEdge {
+impl<TypeHandle> DispatchNode<TypeHandle> {
+    pub(crate) fn map_type_handle<MappedHandle>(
+        &self,
+        map: &mut impl FnMut(&TypeHandle) -> MappedHandle,
+    ) -> DispatchNode<MappedHandle> {
+        match self {
+            DispatchNode::Fail => DispatchNode::Fail,
+            DispatchNode::Outcome { outcome, evidence } => DispatchNode::Outcome {
+                outcome: *outcome,
+                evidence: evidence.map_type_handle(map),
+            },
+            DispatchNode::Test {
+                predicate,
+                on_match,
+                on_miss,
+            } => DispatchNode::Test {
+                predicate: predicate.map_type_handle(map),
+                on_match: on_match.map_type_handle(map),
+                on_miss: on_miss.map_type_handle(map),
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DispatchEdge<TypeHandle = DefaultTy> {
+    pub(crate) target: GraphNodeId,
+    pub(crate) evidence: EdgeEvidence<TypeHandle>,
+}
+
+impl<TypeHandle> DispatchEdge<TypeHandle> {
     #[cfg(test)]
     pub(crate) fn new(target: GraphNodeId) -> Self {
         Self {
@@ -425,8 +592,18 @@ impl DispatchEdge {
         }
     }
 
-    pub(crate) fn with_evidence(target: GraphNodeId, evidence: EdgeEvidence) -> Self {
+    pub(crate) fn with_evidence(target: GraphNodeId, evidence: EdgeEvidence<TypeHandle>) -> Self {
         Self { target, evidence }
+    }
+
+    pub(crate) fn map_type_handle<MappedHandle>(
+        &self,
+        map: &mut impl FnMut(&TypeHandle) -> MappedHandle,
+    ) -> DispatchEdge<MappedHandle> {
+        DispatchEdge {
+            target: self.target,
+            evidence: self.evidence.map_type_handle(map),
+        }
     }
 }
 
@@ -487,45 +664,49 @@ pub(crate) struct DispatchCompileStats {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct CompiledDispatchGraph {
-    pub(crate) graph: DispatchGraph,
+pub(crate) struct CompiledDispatchGraph<TypeHandle = DefaultTy> {
+    pub(crate) graph: DispatchGraph<TypeHandle>,
     pub(crate) stats: DispatchCompileStats,
 }
 
 #[derive(Debug, Clone)]
-struct ArmCompileState<'a> {
-    arm: &'a DispatchArm,
-    questions: Vec<RegionQuestion>,
+struct ArmCompileState<'a, TypeHandle = DefaultTy> {
+    arm: &'a DispatchArm<TypeHandle>,
+    questions: Vec<RegionQuestion<TypeHandle>>,
 }
 
-pub(crate) fn compile_dispatch_matrix(
-    matrix: &DispatchMatrix,
+pub(crate) fn compile_dispatch_matrix<TypeHandle: Clone + Eq>(
+    matrix: &DispatchMatrix<TypeHandle>,
     options: DispatchCompileOptions,
-) -> Result<CompiledDispatchGraph, DispatchCompileError> {
+) -> Result<CompiledDispatchGraph<TypeHandle>, DispatchCompileError> {
     let ordered_arms = ordered_arms(matrix)?;
     compile_ordered_arms(matrix, ordered_arms, options)
 }
 
-pub(crate) fn compile_dispatch_matrix_with_type_order<T: Types<Ty = Ty>>(
+pub(crate) fn compile_dispatch_matrix_with_type_order<T, TypeHandle>(
     t: &mut T,
-    matrix: &DispatchMatrix,
+    matrix: &DispatchMatrix<TypeHandle>,
     options: DispatchCompileOptions,
     equal_policy: EqualTypeRegionPolicy,
-) -> Result<CompiledDispatchGraph, DispatchCompileError> {
+) -> Result<CompiledDispatchGraph<TypeHandle>, DispatchCompileError>
+where
+    T: Types<Ty = TypeHandle>,
+    TypeHandle: Clone + Eq,
+{
     let ordered_arms = ordered_arms_with_type_order(t, matrix, equal_policy)?;
     compile_ordered_arms(matrix, ordered_arms, options)
 }
 
-fn compile_ordered_arms(
-    matrix: &DispatchMatrix,
-    ordered_arms: Vec<&DispatchArm>,
+fn compile_ordered_arms<TypeHandle: Clone + Eq>(
+    matrix: &DispatchMatrix<TypeHandle>,
+    ordered_arms: Vec<&DispatchArm<TypeHandle>>,
     options: DispatchCompileOptions,
-) -> Result<CompiledDispatchGraph, DispatchCompileError> {
+) -> Result<CompiledDispatchGraph<TypeHandle>, DispatchCompileError> {
     let mut stats = DispatchCompileStats {
         arms: ordered_arms.len(),
         ..DispatchCompileStats::default()
     };
-    let mut builder = DispatchGraphBuilder::new();
+    let mut builder = DispatchGraphBuilder::typed();
     let fallback = fallback_node(matrix, options, &mut builder, &mut stats)?;
     let states = ordered_arms
         .into_iter()
@@ -539,10 +720,10 @@ fn compile_ordered_arms(
     Ok(CompiledDispatchGraph { graph, stats })
 }
 
-fn fallback_node(
-    matrix: &DispatchMatrix,
+fn fallback_node<TypeHandle: Clone + Eq>(
+    matrix: &DispatchMatrix<TypeHandle>,
     options: DispatchCompileOptions,
-    builder: &mut DispatchGraphBuilder,
+    builder: &mut DispatchGraphBuilder<TypeHandle>,
     stats: &mut DispatchCompileStats,
 ) -> Result<GraphNodeId, DispatchCompileError> {
     match options.residual {
@@ -564,7 +745,9 @@ fn fallback_node(
     }
 }
 
-fn ordered_arms(matrix: &DispatchMatrix) -> Result<Vec<&DispatchArm>, DispatchCompileError> {
+fn ordered_arms<TypeHandle>(
+    matrix: &DispatchMatrix<TypeHandle>,
+) -> Result<Vec<&DispatchArm<TypeHandle>>, DispatchCompileError> {
     match &matrix.order {
         Order::Source => Ok(matrix.arms.iter().collect()),
         Order::Explicit(order) => {
@@ -581,11 +764,15 @@ fn ordered_arms(matrix: &DispatchMatrix) -> Result<Vec<&DispatchArm>, DispatchCo
     }
 }
 
-fn ordered_arms_with_type_order<'a, T: Types<Ty = Ty>>(
+fn ordered_arms_with_type_order<'a, T, TypeHandle>(
     t: &mut T,
-    matrix: &'a DispatchMatrix,
+    matrix: &'a DispatchMatrix<TypeHandle>,
     equal_policy: EqualTypeRegionPolicy,
-) -> Result<Vec<&'a DispatchArm>, DispatchCompileError> {
+) -> Result<Vec<&'a DispatchArm<TypeHandle>>, DispatchCompileError>
+where
+    T: Types<Ty = TypeHandle>,
+    TypeHandle: Clone + Eq,
+{
     match &matrix.order {
         Order::Specificity => {
             let type_arms = type_region_arms_from_matrix(matrix)?;
@@ -652,10 +839,10 @@ pub(crate) struct TypeRegionPair {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct TypeRegionArm {
+pub(crate) struct TypeRegionArm<TypeHandle = DefaultTy> {
     pub(crate) arm: ArmId,
     pub(crate) subject: SubjectId,
-    pub(crate) ty: Ty,
+    pub(crate) ty: TypeHandle,
     pub(crate) outcome: OutcomeId,
 }
 
@@ -676,13 +863,16 @@ pub(crate) enum TypeCoverageStatus {
 #[allow(dead_code)] // See TypeCoverageStatus: retained as the typed result of coverage analysis.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TypeCoverage {
-    pub(crate) domain: Ty,
-    pub(crate) covered: Ty,
-    pub(crate) residual: Ty,
+    pub(crate) domain: DefaultTy,
+    pub(crate) covered: DefaultTy,
+    pub(crate) residual: DefaultTy,
     pub(crate) status: TypeCoverageStatus,
 }
 
-pub(crate) fn type_region_relation<T: Types<Ty = Ty>>(t: &T, left: &Ty, right: &Ty) -> TypeRegionRelation {
+pub(crate) fn type_region_relation<T, TypeHandle>(t: &T, left: &TypeHandle, right: &TypeHandle) -> TypeRegionRelation
+where
+    T: Types<Ty = TypeHandle>,
+{
     if t.is_equivalent(left, right) {
         TypeRegionRelation::Equal
     } else if t.is_disjoint(left, right) {
@@ -696,11 +886,15 @@ pub(crate) fn type_region_relation<T: Types<Ty = Ty>>(t: &T, left: &Ty, right: &
     }
 }
 
-pub(crate) fn analyze_type_region_arms<T: Types<Ty = Ty>>(
+pub(crate) fn analyze_type_region_arms<T, TypeHandle>(
     t: &mut T,
-    arms: &[TypeRegionArm],
+    arms: &[TypeRegionArm<TypeHandle>],
     equal_policy: EqualTypeRegionPolicy,
-) -> TypeRegionAnalysis {
+) -> TypeRegionAnalysis
+where
+    T: Types<Ty = TypeHandle>,
+    TypeHandle: Clone + Eq,
+{
     let mut pairs = Vec::new();
     let mut diagnostics = Vec::new();
     for i in 0..arms.len() {
@@ -748,7 +942,11 @@ pub(crate) fn analyze_type_region_arms<T: Types<Ty = Ty>>(
 }
 
 #[allow(dead_code)] // Coverage analysis is kept as tested model API even when producers consume simpler facts.
-pub(crate) fn analyze_type_coverage<T: Types<Ty = Ty>>(t: &mut T, domain: Ty, arms: &[TypeRegionArm]) -> TypeCoverage {
+pub(crate) fn analyze_type_coverage<T: Types<Ty = DefaultTy>>(
+    t: &mut T,
+    domain: DefaultTy,
+    arms: &[TypeRegionArm],
+) -> TypeCoverage {
     let mut covered = t.none();
     for arm in arms {
         let overlap = t.intersect(domain.clone(), arm.ty.clone());
@@ -768,7 +966,9 @@ pub(crate) fn analyze_type_coverage<T: Types<Ty = Ty>>(t: &mut T, domain: Ty, ar
     }
 }
 
-fn type_region_arms_from_matrix(matrix: &DispatchMatrix) -> Result<Vec<TypeRegionArm>, DispatchCompileError> {
+fn type_region_arms_from_matrix<TypeHandle: Clone>(
+    matrix: &DispatchMatrix<TypeHandle>,
+) -> Result<Vec<TypeRegionArm<TypeHandle>>, DispatchCompileError> {
     matrix
         .arms
         .iter()
@@ -793,10 +993,10 @@ fn type_region_arms_from_matrix(matrix: &DispatchMatrix) -> Result<Vec<TypeRegio
         .collect()
 }
 
-fn compile_arm_sequence(
-    arms: &[ArmCompileState<'_>],
+fn compile_arm_sequence<TypeHandle: Clone + Eq>(
+    arms: &[ArmCompileState<'_, TypeHandle>],
     fallback: GraphNodeId,
-    builder: &mut DispatchGraphBuilder,
+    builder: &mut DispatchGraphBuilder<TypeHandle>,
     stats: &mut DispatchCompileStats,
 ) -> GraphNodeId {
     let Some(first) = arms.first() else {
@@ -828,10 +1028,10 @@ fn compile_arm_sequence(
     compile_single_arm(first, on_miss, builder, stats)
 }
 
-fn compile_single_arm(
-    arm: &ArmCompileState<'_>,
+fn compile_single_arm<TypeHandle: Clone + Eq>(
+    arm: &ArmCompileState<'_, TypeHandle>,
     on_miss: GraphNodeId,
-    builder: &mut DispatchGraphBuilder,
+    builder: &mut DispatchGraphBuilder<TypeHandle>,
     stats: &mut DispatchCompileStats,
 ) -> GraphNodeId {
     let mut current = outcome_node(arm.arm, builder, stats);
@@ -841,9 +1041,9 @@ fn compile_single_arm(
     current
 }
 
-fn outcome_node(
-    arm: &DispatchArm,
-    builder: &mut DispatchGraphBuilder,
+fn outcome_node<TypeHandle: Clone + Eq>(
+    arm: &DispatchArm<TypeHandle>,
+    builder: &mut DispatchGraphBuilder<TypeHandle>,
     stats: &mut DispatchCompileStats,
 ) -> GraphNodeId {
     stats.outcome_nodes += 1;
@@ -853,28 +1053,28 @@ fn outcome_node(
     })
 }
 
-fn test_node(
-    question: RegionQuestion,
+fn test_node<TypeHandle: Clone + Eq>(
+    question: RegionQuestion<TypeHandle>,
     on_match: GraphNodeId,
     on_miss: GraphNodeId,
-    builder: &mut DispatchGraphBuilder,
+    builder: &mut DispatchGraphBuilder<TypeHandle>,
     stats: &mut DispatchCompileStats,
 ) -> GraphNodeId {
     stats.test_nodes += 1;
     builder.add_node(question.into_test_node(on_match, on_miss))
 }
 
-pub(crate) struct DispatchMatrixBuilder {
+pub(crate) struct DispatchMatrixBuilder<TypeHandle = DefaultTy> {
     order: Order,
     subjects: Vec<Subject>,
     input_count: u32,
     outcomes: Vec<Outcome>,
-    arms: Vec<DispatchArm>,
+    arms: Vec<DispatchArm<TypeHandle>>,
     outcome_uses: BTreeMap<OutcomeId, usize>,
 }
 
-impl DispatchMatrixBuilder {
-    pub(crate) fn new(order: Order) -> Self {
+impl<TypeHandle> DispatchMatrixBuilder<TypeHandle> {
+    fn empty(order: Order) -> Self {
         Self {
             order,
             subjects: Vec::new(),
@@ -883,6 +1083,12 @@ impl DispatchMatrixBuilder {
             arms: Vec::new(),
             outcome_uses: BTreeMap::new(),
         }
+    }
+}
+
+impl<TypeHandle: Clone + Eq> DispatchMatrixBuilder<TypeHandle> {
+    pub(crate) fn typed(order: Order) -> Self {
+        Self::empty(order)
     }
 
     pub(crate) fn add_input_subject(&mut self) -> SubjectId {
@@ -918,8 +1124,8 @@ impl DispatchMatrixBuilder {
 
     pub(crate) fn add_arm_questions(
         &mut self,
-        questions: Vec<RegionQuestion>,
-        evidence: EdgeEvidence,
+        questions: Vec<RegionQuestion<TypeHandle>>,
+        evidence: EdgeEvidence<TypeHandle>,
         outcome: OutcomeId,
     ) -> Result<ArmId, DispatchMatrixError> {
         for question in &questions {
@@ -945,7 +1151,7 @@ impl DispatchMatrixBuilder {
         Ok(id)
     }
 
-    pub(crate) fn build(self) -> Result<DispatchMatrix, DispatchMatrixError> {
+    pub(crate) fn build(self) -> Result<DispatchMatrix<TypeHandle>, DispatchMatrixError> {
         self.validate_order()?;
         Ok(DispatchMatrix {
             subjects: self.subjects,
@@ -991,7 +1197,7 @@ impl DispatchMatrixBuilder {
             .ok_or(DispatchMatrixError::UnknownOutcome(id))
     }
 
-    fn ensure_evidence_subjects(&self, evidence: &EdgeEvidence) -> Result<(), DispatchMatrixError> {
+    fn ensure_evidence_subjects(&self, evidence: &EdgeEvidence<TypeHandle>) -> Result<(), DispatchMatrixError> {
         for proof in &evidence.proofs {
             self.ensure_subject(proof.predicate.subject)?;
         }
@@ -1002,7 +1208,7 @@ impl DispatchMatrixBuilder {
         Ok(())
     }
 
-    fn ensure_question_subjects(&self, question: &RegionQuestion) -> Result<(), DispatchMatrixError> {
+    fn ensure_question_subjects(&self, question: &RegionQuestion<TypeHandle>) -> Result<(), DispatchMatrixError> {
         self.ensure_subject(question.predicate.subject)?;
         self.ensure_evidence_subjects(&question.match_evidence)?;
         self.ensure_evidence_subjects(&question.miss_evidence)
@@ -1014,22 +1220,28 @@ pub(crate) enum DispatchGraphError {
     UnknownNode(GraphNodeId),
 }
 
-pub(crate) struct DispatchGraphBuilder {
-    nodes: Vec<DispatchNode>,
+pub(crate) struct DispatchGraphBuilder<TypeHandle = DefaultTy> {
+    nodes: Vec<DispatchNode<TypeHandle>>,
 }
 
-impl DispatchGraphBuilder {
-    pub(crate) fn new() -> Self {
+impl<TypeHandle> DispatchGraphBuilder<TypeHandle> {
+    fn empty() -> Self {
         Self { nodes: Vec::new() }
     }
+}
 
-    pub(crate) fn add_node(&mut self, node: DispatchNode) -> GraphNodeId {
+impl<TypeHandle: Clone + Eq> DispatchGraphBuilder<TypeHandle> {
+    pub(crate) fn typed() -> Self {
+        Self::empty()
+    }
+
+    pub(crate) fn add_node(&mut self, node: DispatchNode<TypeHandle>) -> GraphNodeId {
         let id = GraphNodeId(self.nodes.len() as u32);
         self.nodes.push(node);
         id
     }
 
-    pub(crate) fn build(self, root: GraphNodeId) -> Result<DispatchGraph, DispatchGraphError> {
+    pub(crate) fn build(self, root: GraphNodeId) -> Result<DispatchGraph<TypeHandle>, DispatchGraphError> {
         self.ensure_node(root)?;
         for node in &self.nodes {
             if let DispatchNode::Test { on_match, on_miss, .. } = node {

@@ -1,12 +1,27 @@
 @type keyword() :: [{atom, any}]
 @type keyword(t) :: [{atom, t}]
 
+alias Enum
+alias Enumerable
+alias Kernel
+alias List
+alias Map
+alias Process
+alias Range
+alias Utf8
+
 import Kernel, only: [
   +: 2,
   -: 2,
   *: 2,
   /: 2,
   %: 2,
+  <: 2,
+  <=: 2,
+  >: 2,
+  >=: 2,
+  ==: 2,
+  !=: 2,
   assert: 1,
   assert: 2,
   dbg: 1,
@@ -21,3 +36,30 @@ import Kernel, only: [
   spawn: 1,
   spawn: 2
 ]
+
+defmacro fn(source) do
+  quote do: Fz.Compiler.define(unquote(source), unquote(__CALLER__))
+end
+
+defmacro fnp(source) do
+  quote do: Fz.Compiler.define(unquote(source), unquote(__CALLER__))
+end
+
+defmacro defmacro(source) do
+  quote do: Fz.Compiler.define(unquote(source), unquote(__CALLER__))
+end
+
+defmacro defmodule(name, kw) do
+  source = {:defmodule, %{}, [name, kw]}
+  quote do: Fz.Compiler.define(unquote(source), unquote(__CALLER__))
+end
+
+defmacro defprotocol(name, kw) do
+  source = {:defprotocol, %{}, [name, kw]}
+  quote do: Fz.Compiler.define(unquote(source), unquote(__CALLER__))
+end
+
+defmacro defimpl(protocol, kw) do
+  source = {:defimpl, %{}, [protocol, kw]}
+  quote do: Fz.Compiler.define(unquote(source), unquote(__CALLER__))
+end

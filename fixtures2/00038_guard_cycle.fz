@@ -1,0 +1,3 @@
+
+fn a(n), do: b(n)
+fn b(n), do: a(n)

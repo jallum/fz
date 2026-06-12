@@ -1,0 +1,3 @@
+fn loop_with(f, 0, acc), do: acc
+fn loop_with(f, n, acc), do: f.(f, n - 1, acc + 1)
+fn main(), do: loop_with(loop_with, 100000, 0)

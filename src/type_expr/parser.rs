@@ -9,19 +9,19 @@ use std::mem::discriminant;
 /// `env` resolves named references (e.g. `id` → declared alias).
 /// Names not in `env` and not one of the built-in scalars produce an
 /// unknown-name error.
-pub fn parse_type_expr<T: Types<Ty = Ty>>(
+pub fn parse_type_expr<T: Types>(
     t: &mut T,
     tokens: &[Token],
-    env: &ModuleTypeEnv,
+    env: &ModuleTypeEnv<T::Ty>,
 ) -> Result<(T::Ty, usize), TypeExprError> {
     parse_type_expr_with_stack(t, tokens, env, None, Vec::new())
 }
 
-pub fn parse_struct_record_type<T: Types<Ty = Ty>>(
+pub fn parse_struct_record_type<T: Types>(
     t: &mut T,
     tokens: &[Token],
-    env: &ModuleTypeEnv,
-) -> Result<(StructRecordType, Ty, usize), TypeExprError> {
+    env: &ModuleTypeEnv<T::Ty>,
+) -> Result<ParsedStructRecord<T::Ty>, TypeExprError> {
     let mut p = TypeExprParser {
         t,
         tokens,
@@ -33,10 +33,10 @@ pub fn parse_struct_record_type<T: Types<Ty = Ty>>(
     p.parse_struct_record()
 }
 
-pub(super) fn parse_type_expr_with_stack<T: Types<Ty = Ty>>(
+pub(super) fn parse_type_expr_with_stack<T: Types>(
     t: &mut T,
     tokens: &[Token],
-    env: &ModuleTypeEnv,
+    env: &ModuleTypeEnv<T::Ty>,
     vars: Option<&mut HashMap<String, TypeVarId>>,
     alias_stack: Vec<(String, usize)>,
 ) -> Result<(T::Ty, usize), TypeExprError> {
@@ -52,18 +52,18 @@ pub(super) fn parse_type_expr_with_stack<T: Types<Ty = Ty>>(
     Ok((ty, p.pos))
 }
 
-pub fn parse_type_expr_with_vars<T: Types<Ty = Ty>>(
+pub fn parse_type_expr_with_vars<T: Types>(
     t: &mut T,
     tokens: &[Token],
-    env: &ModuleTypeEnv,
+    env: &ModuleTypeEnv<T::Ty>,
     vars: &mut HashMap<String, TypeVarId>,
 ) -> Result<(T::Ty, usize), TypeExprError> {
     parse_type_expr_with_stack(t, tokens, env, Some(vars), Vec::new())
 }
 
-pub fn parse_type_shape_with_vars(
+pub fn parse_type_shape_with_vars<TypeHandle>(
     tokens: &[Token],
-    env: &ModuleTypeEnv,
+    env: &ModuleTypeEnv<TypeHandle>,
     vars: &mut HashMap<String, TypeVarId>,
 ) -> Result<(ResolvedTypeShape, usize), TypeExprError> {
     let mut p = TypeShapeParser {
@@ -76,27 +76,27 @@ pub fn parse_type_shape_with_vars(
     Ok((shape, p.pos))
 }
 
-pub fn struct_record_nominal_ty<T: Types<Ty = Ty>>(t: &mut T, module: &ModuleName) -> T::Ty {
+pub fn struct_record_nominal_ty<T: Types>(t: &mut T, module: &ModuleName) -> T::Ty {
     t.opaque_of(&format!("impl-target::{}", module.last_segment()))
 }
 
-struct TypeExprParser<'a, T: Types<Ty = Ty>> {
+struct TypeExprParser<'a, T: Types> {
     t: &'a mut T,
     tokens: &'a [Token],
     pos: usize,
-    env: &'a ModuleTypeEnv,
+    env: &'a ModuleTypeEnv<T::Ty>,
     vars: Option<&'a mut HashMap<String, TypeVarId>>,
     alias_stack: Vec<(String, usize)>,
 }
 
-struct TypeShapeParser<'a> {
+struct TypeShapeParser<'a, TypeHandle> {
     tokens: &'a [Token],
     pos: usize,
-    env: &'a ModuleTypeEnv,
+    env: &'a ModuleTypeEnv<TypeHandle>,
     vars: &'a mut HashMap<String, TypeVarId>,
 }
 
-impl<'a, T: Types<Ty = Ty>> TypeExprParser<'a, T> {
+impl<'a, T: Types> TypeExprParser<'a, T> {
     fn peek(&self) -> &Tok {
         self.tokens.get(self.pos).map(|t| &t.tok).unwrap_or(&Tok::Eof)
     }
@@ -201,7 +201,7 @@ impl<'a, T: Types<Ty = Ty>> TypeExprParser<'a, T> {
         }
     }
 
-    fn parse_struct_record(&mut self) -> Result<(StructRecordType, T::Ty, usize), TypeExprError> {
+    fn parse_struct_record(&mut self) -> Result<ParsedStructRecord<T::Ty>, TypeExprError> {
         let span = self.peek_span();
         self.expect(&Tok::Percent, "`%` before struct record type")?;
         let module = self.parse_module_name("struct record type module")?;
@@ -290,13 +290,8 @@ impl<'a, T: Types<Ty = Ty>> TypeExprParser<'a, T> {
             // A protocol domain `Protocol.t(elem)` refines its element-parametric
             // targets with `elem`. The element is the first argument; the domain
             // is single-parameter, so any extra arguments do not refine further.
-            // A `elem` that still mentions a free type variable (e.g. the `a` in
-            // a protocol's own `t(a)` callback declaration) carries no concrete
-            // refinement — `list(a)` for unconstrained `a` is `list(any)` — so
-            // the bare domain is used and dispatch is left unperturbed.
             if let (Some(TypeAlias::ProtocolDomain(template)), Some(elem)) =
                 (self.env.get_alias(&name, args.len()).cloned(), args.first())
-                && !self.t.has_vars(elem)
             {
                 let sigma = HashMap::from([(PROTOCOL_ELEM_VAR, elem.clone())]);
                 return Ok(self.t.instantiate(&template, &sigma));
@@ -348,10 +343,6 @@ impl<'a, T: Types<Ty = Ty>> TypeExprParser<'a, T> {
             TypeAlias::Resolved(ty) => return Ok(ty),
             TypeAlias::ProtocolDomain(template) => {
                 let elem = args.first().cloned().unwrap_or_else(|| self.t.any());
-                // A concrete element refines; an element mentioning a free
-                // variable carries no refinement, so `PROTOCOL_ELEM_VAR` falls
-                // back to `any` (the bare domain).
-                let elem = if self.t.has_vars(&elem) { self.t.any() } else { elem };
                 let sigma = HashMap::from([(PROTOCOL_ELEM_VAR, elem)]);
                 return Ok(self.t.instantiate(&template, &sigma));
             }
@@ -478,7 +469,7 @@ impl<'a, T: Types<Ty = Ty>> TypeExprParser<'a, T> {
     }
 }
 
-impl TypeShapeParser<'_> {
+impl<TypeHandle> TypeShapeParser<'_, TypeHandle> {
     fn peek(&self) -> &Tok {
         self.tokens.get(self.pos).map(|t| &t.tok).unwrap_or(&Tok::Eof)
     }

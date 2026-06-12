@@ -1,0 +1,3 @@
+defmodule App do
+  fn run(x), do: x
+end

@@ -1,0 +1,7 @@
+fn apply(f, x), do: f.(x)
+fn main() do
+  k = 7
+  f = fn (x) -> x + k end
+  r = apply(f, 1)
+  r
+end

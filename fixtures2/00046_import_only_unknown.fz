@@ -1,0 +1,9 @@
+
+defmodule User do
+  import Math, only: [missing: 1]
+  fn run(), do: missing(20)
+end
+
+defmodule Math do
+  fn add(a), do: a
+end

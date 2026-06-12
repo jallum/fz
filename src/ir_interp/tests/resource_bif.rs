@@ -11,6 +11,7 @@ use std::sync::atomic::Ordering;
 /// in `tests_support`, allocates an off-heap Resource, and returns a
 /// `TAG_RESOURCE` stub. The process heap is dropped at test
 /// scope exit; MSO sweep invokes the dtor on the payload exactly once.
+// PICKED: make_resource creates resource and dtor fires once on process exit
 #[test]
 fn make_resource_bif_round_trip() {
     let _g = tests_support_lock().lock().unwrap_or_else(|e| e.into_inner());
@@ -50,6 +51,7 @@ end
 /// off-heap Resource. The dtor must fire **exactly once** when the
 /// process heap drops — not zero times (we'd be leaking the
 /// payload), and not twice (we'd be double-freeing).
+// PICKED: aliased resource bindings fire destructor exactly once
 #[test]
 fn aliasing_in_one_process_fires_dtor_once() {
     let _g = tests_support_lock().lock().unwrap_or_else(|e| e.into_inner());
@@ -87,6 +89,7 @@ end
 /// fire their dtor exactly once. Confirms we're counting allocations,
 /// not bindings, and that the MSO sweep walks the chain correctly
 /// when it contains more than one Resource stub.
+// PICKED: two distinct resources each fire their destructor exactly once
 #[test]
 fn two_distinct_resources_each_fire_once() {
     let _g = tests_support_lock().lock().unwrap_or_else(|e| e.into_inner());
@@ -118,6 +121,7 @@ end
 /// `test_*` fn — also in `R` — to satisfy the opaque-visibility
 /// gate. The handle is constructed via `make_resource(99, ...)`;
 /// after `.value` the interp must read back the raw `99` payload.
+// PICKED: opaque resource .value accessor returns payload through module boundary
 #[test]
 fn value_accessor_round_trip_in_interp() {
     let _g = tests_support_lock().lock().unwrap_or_else(|e| e.into_inner());

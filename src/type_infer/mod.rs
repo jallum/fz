@@ -47,10 +47,11 @@
 //! production surface.
 use crate::frontend::protocols::{impl_target_type, struct_impl_target_type};
 use crate::fz_ir::{
-    BinOp, BlockId, CallsiteId, Const, DeadBranch, EmitSlot, FnId, Module, Prim, Stmt, Term, UnOp, Var,
+    BinOp, BlockId, CallsiteId, Const, DeadBranch, EmitSlot, ExternArg, ExternId, FnId, Module, Prim, Stmt, Term, UnOp,
+    Var,
 };
 use crate::metadata;
-use crate::specs::{SpecApplicationOutcome, apply_spec_set};
+use crate::specs::{SchemeInstantiation, SpecApplicationOutcome, apply_spec_set, instantiate_match};
 use crate::telemetry::{Telemetry, Value};
 use crate::types::{ClosureTarget, ClosureTypes, MapKey, Nominals, RenderTypes, Ty, Types};
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
@@ -1453,7 +1454,10 @@ impl<'m> Solver<'m> {
                 let arg_infos = arg_infos_of(args, env);
                 let ident = block.terminator.ident().expect("call terminator should carry ident");
                 let direct_callsite = CallsiteId::new(key.fn_id, ident, EmitSlot::Direct);
-                let r = self.call_target(t, key, direct_callsite, CallTarget::Direct(*callee), arg_infos);
+                let r = match callee.local_fn_id() {
+                    Some(callee) => self.call_target(t, key, direct_callsite, CallTarget::Direct(callee), arg_infos),
+                    None => Info::known(t.any()),
+                };
                 if matches!(r, Info::NoReturn) {
                     return Info::NoReturn;
                 }
@@ -1475,7 +1479,10 @@ impl<'m> Solver<'m> {
                     .ident()
                     .expect("tail-call terminator should carry ident");
                 let direct_callsite = CallsiteId::new(key.fn_id, ident, EmitSlot::Direct);
-                self.call_target(t, key, direct_callsite, CallTarget::Direct(*callee), arg_infos)
+                match callee.local_fn_id() {
+                    Some(callee) => self.call_target(t, key, direct_callsite, CallTarget::Direct(callee), arg_infos),
+                    None => Info::known(t.any()),
+                }
             }
             Term::CallClosure {
                 closure,
@@ -1673,7 +1680,9 @@ impl<'m> Solver<'m> {
                 UnOp::Neg => negate_info(t, info_of(*v, env)),
                 UnOp::Not => not_info(t, info_of(*v, env)),
             },
-            Prim::IsEmptyList(_) | Prim::IsListCons(_) | Prim::TypeTest(_, _) => Info::known(t.bool()),
+            Prim::IsEmptyList(_) | Prim::IsListCons(_) | Prim::TypeTest(_, _) | Prim::RuntimeTypeTest(_, _) => {
+                Info::known(t.bool())
+            }
             Prim::ListHead(v) => info_of(*v, env).map_known(|value| value.map_ty(|ty| t.list_element_type(&ty))),
             Prim::ListTail(v) => info_of(*v, env).map_known(|lt| {
                 let elem = t.list_element_type(&lt.ty);
@@ -1755,12 +1764,8 @@ impl<'m> Solver<'m> {
                 let n_args = entry_params.saturating_sub(cap_tys.len());
                 Info::known(t.closure_lit(ClosureTarget::from(*target), cap_tys, n_args))
             }
-            Prim::Extern(_, extern_id, _) => {
-                let ret = module
-                    .extern_idx
-                    .get(extern_id)
-                    .map(|&idx| module.externs[idx].ret_descr.clone())
-                    .unwrap_or_else(|| t.any());
+            Prim::Extern(_, extern_id, args) => {
+                let ret = extern_return_ty(t, module, *extern_id, args, env).unwrap_or_else(|| t.any());
                 Info::known(ret)
             }
             // Prims not yet modeled are `Unknown` — undetermined, not `any`.
@@ -1769,6 +1774,40 @@ impl<'m> Solver<'m> {
             // keeps the uncertainty visible.
             _ => Info::Unknown,
         }
+    }
+}
+
+fn extern_return_ty<T: Types<Ty = Ty> + ClosureTypes>(
+    t: &mut T,
+    module: &Module,
+    extern_id: ExternId,
+    args: &[ExternArg],
+    env: &Env,
+) -> Option<Ty> {
+    let decl = module.extern_idx.get(&extern_id).map(|&idx| &module.externs[idx])?;
+    let mut witnesses = Vec::with_capacity(args.len());
+    for arg in args {
+        let value = match value_info(arg.var, env) {
+            Ok(value) => value,
+            Err(Info::Known(value)) => value,
+            Err(Info::Pending) => return None,
+            Err(Info::NoReturn) => return Some(t.none()),
+            Err(Info::Unknown) => {
+                witnesses.push(t.any());
+                continue;
+            }
+        };
+        witnesses.push(value.ty);
+    }
+    match instantiate_match(
+        t,
+        &decl.semantic_contract.params,
+        &decl.semantic_contract.result,
+        &decl.semantic_contract.constraints,
+        &witnesses,
+    ) {
+        SchemeInstantiation::Known(matched) | SchemeInstantiation::Underconstrained(matched) => Some(matched.result),
+        SchemeInstantiation::Invalid => Some(decl.ret_descr.clone()),
     }
 }
 

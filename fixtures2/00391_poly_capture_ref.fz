@@ -1,0 +1,8 @@
+fn tagger(tag) do
+  fn (x) -> {tag, x} end
+end
+
+fn main() do
+  f = tagger(:ok)
+  {f.(1), f.(:right)}
+end

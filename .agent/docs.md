@@ -1,38 +1,34 @@
 # Agent Docs Index
 
-These docs are compact memory for subsystem mental models. Use them before
-touching an area where the shape of the system matters. They should explain the
-major parts, the big idea that makes them fit together, and the policy choices
-that keep future work aligned.
+These docs are compact memory for current subsystem mental models. Use them
+before touching an area where the shape of the system matters.
 
-Read the one whose trigger matches what you are about to touch:
+Read:
 
 - [agent-docs](docs/agent-docs.md) — writing or revising `.agent/docs` guidance.
-- [continuation-captures](docs/continuation-captures.md) — continuation ABI, closure captures, lambda captures, or capture pruning.
-- [control-flow-lowering](docs/control-flow-lowering.md) — `if` / `case` / `cond` / `with` / `receive` lowering, arm continuation functions, joins, or tailness across branch boundaries.
-- [pattern-matching](docs/pattern-matching.md) — the `SourcePatternRows` → `PatternDispatchPlan` → `DispatchMatrix` → `DispatchGraph` path, test-first/project-second ordering, where bindings land, or direct inline/receive dispatch lowering.
-- [destination-passing](docs/destination-passing.md) — destination planning/passing IR, erased init-token facts, tuple/list/map construction lowering, typed container field initialization, physical capabilities, or owned-cons reuse.
-- [dispatch-as-planner-output](docs/dispatch-as-planner-output.md) — planner-owned call-edge facts, `SpecPlan.call_edges`, `SpecKey` variants, callable capabilities, or ReturnDemand capability selection.
-- [dispatch-matrix](docs/dispatch-matrix.md) — the shared `Region` / `Order` / `Outcome` / `DispatchGraph` model for pattern, protocol, and dispatch-shaped compiler work.
-- [single-authoritative-plan](docs/single-authoritative-plan.md) — the one `plan_module_with_role` handoff codegen commits to, the `planner.planned` count, destination-lowering plan preservation, or why codegen must not run planner-owned analysis.
-- [externs](docs/externs.md) — `extern "C"` declarations, marshal classes, variadic calls, or extern codegen/interpreter behavior.
-- [fixtures](docs/fixtures.md) — authoring or changing a fixture, the four-path matrix, pass/fail rules, the four expressive media, or the dump-budget mechanism.
-- [guides](docs/guides.md) — writing or updating user-facing `guides/*.html`.
-- [ir-interp-runtime](docs/ir-interp-runtime.md) — IR interpreter runtime ownership, persistent drives, or REPL session execution.
-- [lazy-continuation-materialization](docs/lazy-continuation-materialization.md) — compiler-known native continuations, stack-backed continuation descriptors, closure materialization, or scheduler-boundary continuation roots.
-- [modules](docs/modules.md) — module identity, interfaces, `.fzi` / `.fzo` artifacts, compiled units/images, import resolution, link checks, runtime-library modules, or LTO boundary erasure.
-- [protocols](docs/protocols.md) — `defprotocol` / `defimpl`, protocol-domain types, implementation target identity, protocol dispatch, or plan-preserving protocol/link rules.
-- [pinned-process-register](docs/pinned-process-register.md) — Cranelift pinned register, compiled `Process*` base pointer, process ABI offsets, or the `CURRENT_PROCESS` dual invariant.
-- [repl-session](docs/repl-session.md) — REPL world/bindings/runtime layering, chunk synthesis, docs/help, or macro/runtime boundaries.
-- [reduction-yielding](docs/reduction-yielding.md) — reduction-driven scheduler yielding, the per-process budget, allocation-pressure expiration, the continuation reserve, or boundary maintenance.
-- [scheduler-zero-arg-closures](docs/scheduler-zero-arg-closures.md) — scheduler, receive, yield, spawn, timeout, or continuation re-entry.
-- [specs](docs/specs.md) — `@spec` parsing, the `src/specs/` model and engine, scheme matching, declared-call typing, overload sets, interface/export specs, or protocol callback specs.
-- [state-transitions](docs/state-transitions.md) — public `Enum.reduce` vs low-level `Enumerable.reduce` lowering, list reducer state machines, or known vs opaque reducers.
-- [any-value](docs/any-value.md) — `AnyValueRef`, `ValueRef`, raw scalar lanes, boxed scalars, pointer format, or GC-visible values.
-- [set-theoretic-types](docs/set-theoretic-types.md) — the type lattice (`Types` boundary, concrete and interned descriptor carriers, union/intersect/neg, emptiness/disjointness), brands & opaques as nominal refinements, brand erasure, and the two-model rule: runtime equality/matching is brand-blind (`is_value_disjoint`) while typing/dispatch/boundary is brand-aware (`is_disjoint`).
-- [type-specialization](docs/type-specialization.md) — activation-based type inference over CPS IR: activations are keyed by `FnId` plus input facts, parameters do not default to `any`, proof rides beside visible `Ty`, call targets resolve to arrow sets, operators apply strict signatures, details emit through telemetry, and returns converge by monotone worklist plus finite-height widening.
-- [parser-syntax](docs/parser-syntax.md) — surface syntax in `src/parser`: `fn` / `fnp` items, keyword lists, or `do`-block sugar.
-- [range](docs/range.md) — Range's schema-backed Struct representation, runtime constructor, equality policy, and renderer behavior.
-- [charlists](docs/charlists.md) — fz has no charlist type; how `dbg`/inspection renders integer lists, why it never emits `~c"..."`, and the consequence for Elixir-derived fixtures.
-- [telemetry](docs/telemetry.md) — adding compile-time telemetry, testing compiler decisions, or measuring performance work.
-- [runtime-telemetry](docs/runtime-telemetry.md) — runtime/scheduler telemetry events (`fz.runtime.process_exited`, `fz.runtime.dbg`), or observing a run in tests.
+- [guides](docs/guides.md) — writing user-facing `guides/*.html`: voice, shape, callouts, and the compact contract each leaves the reader.
+- [northstar](../northstar.html) — the current world model: lazy `runtime.fz` bootstrap, namespace savepoints, local interned `Types`/`Ty`, joined activation facts, exact semantic closure, artifact boundaries, and the worked quicksort / `Enum.reduce` examples.
+- [fact engine](docs/fact-engine.md) — the domain-free fixpoint spine: jobs as rules, reads/waits/owned outputs, the deduped agenda, value-based fact slots with revisions, and the drive loop.
+- [semantic fixpoint](docs/semantic-fixpoint.md) — the heart: activation inputs as joined facts, emergent discovery vs. the observe-only seal job, the key/value split, and the `Recursive`/`DispatchMask` keying facts.
+- [pipeline](docs/pipeline.md) — source→artifact across the job families: demand from a root, lazy runtime code, the one-way artifact boundary, and retraction by fact ownership.
+- [compiler2 migration](docs/compiler2-migration.md) — cutover status: compiler2 is ready below the artifact seam; old `fz` remains the oracle until the agreed fixture surface is represented by fz2 matrix paths.
+- [type world](docs/type-world.md) — the World-owned interned type kernel: `Ty` as an id, one threaded `Types`, and why cheap id-equality lets facts detect change without hashing.
+- [type naming](docs/type-naming.md) — source type names resolve through namespaces to `TypeName` identities, then to hard `Ty` through `TypeDefined` facts.
+- [quoted source](docs/quoted-source.md) — compiler2's Fz-shaped quoted-source substrate: `{heap, root}` keys, fast-fail `semantically_eq` comparison with `Horizon` depth, Elixir-shaped AST tuples, private metadata keys, and `ScopeSnapshot`-based `__MODULE__` / `__ENV__` projection.
+- [set-theoretic types](docs/set-theoretic-types.md) — types as sets of values: axes/DNF, the two `Types` implementations behind one trait, schemes, brands/opaques, and the typing-vs-runtime predicate split.
+- [type specialization](docs/type-specialization.md) — how compiler2 types one activation (value-flow over lowered steps, return as a union over reachable clauses) and why specialization stays finite.
+- [specs](docs/specs.md) — the `@spec` contract engine: overload sets, scheme matching, application with overlap witnesses, higher-order callback evidence, and the upper-bound coverage check.
+- [protocols](docs/protocols.md) — protocols as owned facts: callback surface + domain type, impl registration, and receiver-subtype dispatch (`resolve_protocol_call`) with lazy runtime-impl loading.
+- [modules](docs/modules.md) — modules and namespaces: identity-on-reference, the Placeholder→Indexed→Scoped→Defined lifecycle, the namespace savepoint chain, two-pass scoping, and lazy runtime-library/prelude loading.
+- [externs](docs/externs.md) — the `extern "C"` FFI door: the `ExternTy` wire alphabet, marshal classes + auto-resolution, borrow-only args, C-vs-fz return ABI, runtime variadic dispatchers + symbol resolution, and resource typing.
+- [telemetry](docs/telemetry.md) — compile-time telemetry internals plus the emission contract, trace harness, and test-observability guidance.
+- [runtime telemetry](docs/runtime-telemetry.md) — the runtime event contract (`process_exited`, `dbg`) and how tests observe a run without poking process internals.
+- [parser syntax](docs/parser-syntax.md) — `src/parser` tokens→AST: Elixir surface syntax, keyword lists, no-parens calls, captures, and the desugar boundary.
+- [dispatch matrix](docs/dispatch-matrix.md) — the shared `DispatchMatrix`/`DispatchGraph` model behind function heads, `case`, receive, guard helpers, and protocol dispatch.
+- [pattern matching](docs/pattern-matching.md) — one decision model (`SourcePatternRows`→`PatternDispatchPlan`): test-first/project-second, payloads, and guards.
+- [any value](docs/any-value.md) — the one-word runtime value model (`AnyValueRef`): tags, container storage, codegen value lanes, and GC.
+- [charlists](docs/charlists.md) — fz has no charlist type; integer lists stay lists, text is a binary, and where rendering differs from Elixir.
+- [pinned process register](docs/pinned-process-register.md) — how compiled code carries the current `Process*` and spends its reduction budget.
+- [scheduler zero-arg closures](docs/scheduler-zero-arg-closures.md) — scheduler re-entry is one verb (run a closure): receive, timeout, spawn, and halt continuations.
+- [reduction yielding](docs/reduction-yielding.md) — the per-process reduction budget that drives scheduler fairness and allocation-pressure GC.
+- [fixtures](docs/fixtures.md) — the four-path fixture matrix: frontmatter, goldens, the Elixir oracle, and dump budgets.

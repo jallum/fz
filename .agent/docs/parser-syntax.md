@@ -3,11 +3,18 @@
 `src/parser` turns tokens into the `ast::Expr` / `ast::Item` tree. Its job is to
 mirror Elixir's surface syntax while keeping the tree ordinary: keyword lists are
 plain lists of two-tuples, do-blocks are sugar for a trailing `do:` keyword entry,
-and the Elixir-flavored operators (`++`, `<>`, `..`, captures, multi-clause `fn`)
-are syntax the **frontend desugar pass** (`src/frontend/macros.rs`) rewrites into
-calls and lambdas before IR lowering. The parser introduces no keyword-list node
-and no runtime keyword type — that policy is what lets the rest of the compiler
-stay simple.
+and the parser introduces no keyword-list node and no runtime keyword type. That
+policy is what lets the rest of the compiler stay simple.
+
+There are now two source paths:
+
+- The legacy parser/frontend path rewrites the Elixir-flavored operators
+  (`++`, `<>`, `..`), captures, and multi-clause `fn` in the frontend desugar
+  pass (`src/frontend/macros.rs`) before old IR lowering.
+- The compiler2 quoted-source path quotes those forms as Fz-shaped source data
+  first, then normalizes them during staged demanded-function expansion
+  (`src/compiler2/source_sugar.rs`) after raw `FunctionSource` publication and
+  before `DefineFunction` decodes the body.
 
 Three files carry the work:
 
@@ -74,7 +81,13 @@ entries only where they can appear:
 - list literals: `[a: 1, b: 2]`
 - call arguments: `f(x, a: 1, b: 2)`
 - call-postfix block sugar: `f(x) do … end`
-- list patterns: `[do: body]`
+- list-pattern / keyword-list heads: `[do: body]`
+
+That means compiler2 accepts both source spellings Elixir uses for block-taking
+macro heads:
+
+- `defmacro m(arg, do: body)`
+- `defmacro m(arg, [do: body])`
 
 A keyword entry is ordinary data — a two-element tuple of the key atom and the
 value, collected into a plain list. `Expr::List` carries `(elements, tail)`, and
@@ -95,6 +108,9 @@ extends the collapsed keyword argument, or makes one), so
 `f(x, timeout: 10) do 42 end` has the call shape `f(x, [timeout: 10, do: 42])`.
 A bare `do … end` on a block-positional literal stays separate: `f [a: 1] do … end`
 keeps `[a: 1]` positional and adds a distinct `[do: …]`, matching Elixir.
+
+Quoted string keys participate in the same sugar: `["a.b": 1]` is a list whose
+element is the tuple `{"a.b", 1}` after lexing the quoted key as `Tok::KwKey`.
 
 This matches Elixir's user-facing model without adding a keyword-list AST node or
 runtime type.
@@ -199,9 +215,11 @@ body), so `parse_lambda` and `parse_case` stay in lockstep. The AST is
 `Expr::Lambda(Vec<LambdaClause>)`; each `LambdaClause` carries `params`, an
 optional `guard`, a `body`, and its span.
 
-`lambda_direct_clause` names the one shape the interpreter and IR lowering run
-directly: exactly one clause with no guard. Every other shape is desugared first
-(below), so both execution paths agree on what is runnable.
+`lambda_direct_clause` names the one shape the legacy interpreter and old IR
+lowering run directly: exactly one clause with no guard. Every other legacy
+shape is desugared first (below). Compiler2 quoted source keeps the raw lambda
+source until source publication, then rewrites multi/guarded anonymous functions
+into a single direct lambda whose body is a `case`.
 
 ## Captures
 
@@ -226,12 +244,22 @@ the operator name `/` plus a consumed slash.
 The unparenthesized capture-of-call form `&Mod.fun(&1, &2)` is not parsed: after
 `&name` the parser requires `/arity`.
 
-## Desugaring (frontend macros pass)
+Compiler2 frontdoor source quotes captures as ordinary `&` forms: adjacent
+`&N` is `{:&, meta, [N]}`, `&(...)` is `{:&, meta, [body]}`, and function refs
+remain `&name/arity` payloads. Source publication rewrites placeholders and
+capture bodies into direct lambdas before body lowering, while preserving
+function-reference captures as refs.
 
+## Source Sugar Rewrites
+
+The old frontend path and compiler2 source-publication path intentionally erase
+the same user-facing sugars before executable lowering. In the legacy path,
 `Expr::Capture` and `Expr::CaptureArg` have no runtime meaning on their own; the
 interpreter (`src/exec/eval.rs`) and IR lowering (`src/ir_lower/expr.rs`) reject
 them if they survive. `src/frontend/macros.rs` rewrites them, and the
-Elixir-flavored operators, before lowering:
+Elixir-flavored operators, before old lowering. In compiler2, the same rewrite
+policy lives in `src/compiler2/source_sugar.rs` and runs on quoted source before
+`FunctionSource` publication:
 
 - `&(… &N …)` becomes a `Lambda` whose params are `__fz_capture_arg_1..N` (N is
   the highest placeholder in the body) and whose body is the capture body with
@@ -264,8 +292,14 @@ Ordinary call keyword parsing runs inside those forms only after their special
 parsers have set `suppress_trailing_do`, so a call's trailing-do sugar never
 swallows a block the surrounding form expects.
 
-Keyword entries are trailing. Once a call or list literal starts parsing keyword
-entries, a following positional expression is a syntax error.
+Keyword entries are trailing. Once a call, list literal, or map entry sequence
+starts parsing keyword entries, a following positional expression is a syntax
+error (`unexpected expression after keyword list`).
+
+Tuples are slightly narrower: a tuple may end with a keyword-list element
+(`{x, a: b}`), but it may not begin as a bare keyword list (`{a: b}`), which is
+rejected as `unexpected keyword list inside tuple`. Bitstrings reject keyword
+lists entirely (`unexpected keyword list inside bitstring`).
 
 ## Where it's proven
 
@@ -277,4 +311,8 @@ named-vs-anonymous call rule and bare-call resolution are covered in
 `src/modules/interface_test.rs`. End-to-end behavior across the four execution
 paths runs through the fixture corpus (`fixtures/keyword_lists`,
 `no_parens_call`, `no_parens_do`, `no_parens_keyword`) under
-`tests/fixture_matrix.rs`.
+`tests/fixture_matrix.rs`. Compiler2 mirrors the same surface contract through
+`src/compiler2/elixir_surface_fixtures_test.rs` and `fixtures2/00532`-`00546`,
+which pin the Elixir parser/normalizer cases for no-parens calls, trailing
+`do`, keyword-list boundaries, quoted keyword keys, and keyword-spacing
+diagnostics.

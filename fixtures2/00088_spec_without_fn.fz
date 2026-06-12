@@ -1,0 +1,3 @@
+defmodule M do
+  @spec lonely(integer) :: integer
+end

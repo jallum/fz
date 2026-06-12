@@ -1,407 +1,153 @@
-# Modules, Interfaces, and Runtime Sources
+# Modules and Namespaces
 
-A module is a unit of separate compilation. The subsystem behind
-`src/modules/mod.rs` answers four questions: who exists, what may others depend
-on, how does a dependent compile against a provider without that provider's
-implementation, and how do separately compiled units fuse into one runnable
-image.
+A module is a unit of naming and definition. The module subsystem owns four
+things: stable identity, the lifecycle a module passes through from a bare
+reference to optional source plus optional callable interface, the namespace
+chain that resolves names inside a scope, and how runtime-library modules enter
+a compile. The end-to-end flow that drives these transitions is in
+[`pipeline`](pipeline.md); this doc is the data model behind the definition
+stratum.
 
-The shape of the answer is a layered boundary:
+## Identity is allocated on reference
 
-```text
-private implementation   inferred inside one module
-public module boundary    explicit interface facts (ModuleInterface)
-dependent compile         consumes interface facts only
-link                      copies provider IR in and resolves call edges
-LTO                       loads implementations and erases boundaries
-```
+Referencing a module or a function allocates a stable id immediately; defining it
+later fills the state behind that id.
 
-A dependent compile is correct knowing only interface facts. Whole-program
-analysis (link, LTO) is an optimization layer on top of that proof, not the
-proof itself.
+- `ModuleId` — `reference_named(name)` for a top-level/runtime module,
+  `reference_child_module(parent, local)` for a nested one. `ModuleId::GLOBAL`
+  (`0`) is the top-level scope.
+- `FunctionId` — `reference_function(module, name, arity)`; generated lambdas get
+  ids through `reference_generated`.
+- `FunctionRef { module, name, arity }` is the reverse identity — compiler2's
+  module/function/arity key. Names are display spellings; the id is the identity,
+  so resolution and facts key on the id.
 
-The pieces that matter:
+A function or module can be *referenced* without being *defined*: a placeholder
+id exists, callers can name it, and the surface fills in when its source is
+scoped. An uncalled definition stays a cold fact (see [`pipeline`](pipeline.md)).
 
-- `identity`: typed `ModuleName` / `ExportKey` — the link identity, separate
-  from any dotted display text.
-- `interface`: `ModuleInterface`, the public contract, and the strict-export
-  validator.
-- `graph`: `ModuleGraphLoader`, which walks from root interfaces to the
-  reachable runtime-library modules a runnable image needs.
-- `pipeline`: source-first frontend, execution-graph preparation, and LTO.
-- `runtime_library`: built-in standard-library modules as separate-compilation
-  inputs.
+## The module lifecycle
 
-Link-time fusion lives next door in `ir_codegen` (`link_ir_units`,
-`CompiledUnit`, `CompiledImage`).
-
-## Identity
-
-`modules::identity` holds the typed names. The frontend renders many names as
-dotted strings (`Math.add/2`) because the IR is string-shaped, but those
-strings are display spellings, not the identity.
-
-- `ModuleName` is a list of path segments (`segments: Vec<String>`). It is built
-  from parsed segments via `from_segments` / `child`; `dotted()` renders the
-  edge spelling.
-- `QualifiedName` is `{ module: Option<ModuleName>, name: String }` — a
-  possibly module-qualified function or type name that bridges flattened IR
-  spellings.
-- `ExportKey` is the link identity of a public function:
+`ModuleState` is the slot behind a `ModuleId`. Source/body state and interface
+state are separate concerns, so the slot may have either, both, or neither:
 
 ```text
-module: ModuleName
-name:   String
-arity:  usize
+Placeholder { interface? }             referenced, no source yet
+Indexed { source, interface? }         source discovered during code indexing
+Scoped { source, base, interface? }    a base namespace head has been chosen
+Defined { source, base, interface }    the module body is published
 ```
 
-`Math.add/2` is what `ExportKey::fmt` prints; the key itself is
-`ExportKey { module: Math, name: "add", arity: 2 }`. Link and interface code
-key on the typed value.
+`ModuleSource { code, parent, local_name, attrs, kind }` carries the source
+facts, where `kind` is `Body { items }` or `Protocol { callbacks }` (see
+[`protocols`](protocols.md)). `ModuleInterface` is the module-owned callable
+surface: exported callables are represented by `FunctionId`-backed entries plus
+callable kind (`PublicFunction` or `Macro`) and variadic metadata.
 
-## Interface Emission
-
-`modules::interface::collect_from_program` runs over the source-level AST while
-module and protocol declarations still exist. It returns one `ModuleInterface`
-per module, keyed by `ModuleName`, plus one for each root `defprotocol`
-namespace (a root protocol has no containing module but still publishes a
-first-class public namespace, so it gets a module-shaped interface keyed by the
-protocol name).
-
-`ModuleInterface` carries only contract data:
-
-- `name`: the `ModuleName`;
-- `abi_version`: `FZ_INTERFACE_ABI_VERSION`;
-- `imports`: declared imports with their `only` / `except` filters;
-- `exports`: `Vec<InterfaceFn>` — public functions by name, arity, and ordered
-  `@spec` overload set;
-- `types`: public `@type` aliases, opaques, and refines (`InterfaceTypeKind` is
-  `Alias` / `Opaque` / `Refines`);
-- `protocols`: protocol declarations and their callback surfaces;
-- `protocol_impls`: `(protocol, ImplTarget)` facts plus callback `ExportKey`s;
-- `docs`: optional `@moduledoc`;
-- `fingerprint_inputs`: deterministic semantic strings used for compatibility.
-
-A function reaches `exports` only when it is non-macro, non-private, has no
-`extern_abi`, and is not the implicit `__info__/1` reflection builtin. So a
-wrapper like `Utf8.valid?/1` is the export; the `extern "C"` primitive
-`fz_bitstring_valid_utf8/1` and any `fnp` helper are implementation contracts
-that stay out of the interface. Interface emission copies signatures, never
-bodies, which is why a dependent can typecheck `Protocol.t(...)` domain
-constraints and resolve imported calls without ever loading a provider body.
-
-`fingerprint_inputs` is a stable list of strings (`abi=...`, `module=...`,
-`import=...`, `type=...`, `fn=name/arity:specs=[...]`, `protocol=...`,
-`protocol-impl=...`). `interface::fingerprint_digest` folds that list with FNV
-into a 16-hex-digit string. Both the human-readable inputs and the digest are
-the compatibility currency between separate compiles.
-
-`validate_public_export_specs` enforces the library-boundary policy: every
-module export needs an explicit `@spec`, or it reports `INTERFACE_MISSING_SPEC`
-on the export's name span. Top-level non-module helpers are not interface
-exports and stay inferable; `fnp` helpers inside a module participate in
-same-module resolution and lowering but are omitted from `exports` and need no
-public spec.
-
-`render_interfaces` prints the human-readable contract dump used by
-`fz dump --emit interfaces`.
-
-## Import Resolution
-
-`resolve::flatten_modules_with_interface_table` takes an external
-`InterfaceTable`, injects the built-in runtime-library interfaces, and inserts
-the current program's own collected interfaces (which win for a module name
-they share). It uses interfaces to answer:
+Four jobs drive the transitions:
 
 ```text
-does module M exist?
-does M export f/N?
-which module owns the bare imported call f(args...)?
+index_code     parse a code contribution; discover_modules registers each nested
+               module/protocol as Indexed, then publishes CodeIndexed
+scope_code     pick the base namespace, run define_scope over GLOBAL, publish CodeScoped
+define_module_interface
+               publish an already-known interface for a module that may not have
+               source/body state in this compiler run
+define_module  scope the module body (or protocol surface) and publish ModuleDefined
 ```
 
-Resolution behavior:
+`define_module` waits for what it needs and asks for it: a child waits on its
+parent's `ModuleDefined` (or `CodeScoped` when the parent is global); a
+not-yet-pulled runtime module waits on its `CodeIndexed` after
+`ensure_runtime_module` submits its source. `define_module` also derives and
+publishes `FactKey::ModuleInterface(module)` for source-defined modules.
 
-- `alias Missing` / `import Missing` -> `RESOLVE_UNKNOWN_MODULE`.
-- `import M, only: [f: N]` checks `M`'s interface exports.
-- the same `name/arity` imported from two modules -> `RESOLVE_CONFLICTING_IMPORT`.
-- a local sibling function shadows an import.
-- a bare imported call rewrites to the qualified flattened spelling, e.g.
-  `add(x, y)` becomes `Math.add(x, y)`.
+The important split is:
 
-The flattened dotted spelling is the IR rendering; boundary code keys on the
-typed `ModuleName` / `ExportKey`.
+- `FactKey::ModuleDefined(module)` — local body/scoping readiness
+- `FactKey::ModuleInterface(module)` — cross-module callable visibility
 
-## Runtime Reachability
+## Namespaces are a savepoint chain
 
-`modules::graph::ModuleGraphLoader::load_reachable` starts from the root
-`InterfaceTable` plus explicit runtime-root `ModuleName`s and produces a
-`ModuleGraph { interfaces, runtime_modules }`.
-
-It walks a worklist by public contract:
-
-1. Queue each root's imports and the protocols of its `protocol_impls` (a
-   `defimpl` depends on the protocol namespace as a public fact).
-2. Pop a module. A runtime-library module is resolved through
-   `runtime_library::interface`; when found, its imports and protocol-impl
-   protocols are queued.
-3. For each loaded runtime interface, queue any extra implementation-only
-   runtime imports and any runtime modules that implement newly discovered
-   protocols.
-
-Two refinements:
-
-- A protocol declaration already present in a loaded interface is a local fact.
-  If `Contracts` owns nested protocol `Contracts.Collectable`, that protocol is
-  not reloaded as a sibling module. Protocol-impl callback namespaces are
-  export namespaces inside the defining module, not separate graph roots.
-- Runtime-library implementation bodies may call other runtime modules that the
-  interface does not advertise. `enqueue_runtime_implementation_imports` uses
-  `runtime_library::implementation_dependencies` to scan checked-in
-  runtime-library source for those references. This is consulted only for
-  runtime modules.
-- Runtime protocol implementation providers are discovered by comparing loaded
-  protocol namespaces against the built-in runtime interface table. That keeps
-  callback namespaces inside their owner modules while still loading reachable
-  implementations such as `Enumerable.List`.
-
-There is no user-module filesystem walk in this phase. User modules are present
-only when they were part of the explicit source world compiled by the frontend;
-an import of a missing user module fails in resolution instead of consulting a
-sidecar store.
-
-## Execution Graph and Linking
-
-`modules::pipeline` turns a frontend result into a single linked IR module.
-`CompileMode` is `Normal` or `Lto`.
-
-`checked_module_for_mode` runs the frontend, collects the program's own module
-interfaces (emitting `interfaces_collected`), and in `Lto` mode validates and
-erases boundaries before planning. It yields a `CheckedModule` carrying the
-module, its `ModulePlan`, its own interfaces, the external interfaces, the
-`SourceMap`, and diagnostics.
-
-`prepare_execution_graph` does source-first execution prep:
-
-- It computes runtime roots from `runtime_library::prelude_required_modules()`
-  plus any non-core runtime modules already named in the checked module's
-  `external_interfaces`.
-- `ModuleGraphLoader::load_reachable` returns the interface graph (emitting
-  `graph_loaded`).
-- The root `CheckedModule` becomes the first `CompiledUnit`.
-- Each reachable runtime module is recompiled from its registered source text
-  through `compile_source_with_interface_table(...)`, using the full graph
-  interface table so runtime modules resolve imports the same way user modules
-  do. Each of those units emits `unit_materialized` with
-  `kind: "runtime-source"`.
-
-With the units in hand, `link_execution_module` calls `link_ir_units` when there
-is more than one unit (otherwise it is the single unit's `code`). The pipeline
-then runs `plan_module_with_role(..., "linked_execution_graph")` over the linked
-module; that linked-execution-graph plan is what downstream engines consume, so
-passes that change dispatch or reachability must not run between link and that
-plan.
-
-### `link_ir_units` — the one correctness gate
-
-`ir_codegen::link_ir_units` fuses reachable `CompiledUnit` IR into one dense
-linked `Module`. `IrUnitLinker` copies each unit's fns, externs, external-call
-edges, protocol facts, specs, planner facts, and type facts, remapping `FnId`,
-`ExternId`, and atom ids as it goes; it builds an `ExportKey -> FnId` map from
-each unit's interface exports and protocol-impl callbacks; then it rewrites
-`ExternalCallEdge` placeholders to direct local `FnId`s.
-
-The checks, and the `ImageLinkError` each produces:
-
-1. A unit whose recorded `interface_fingerprint` disagrees with its interface ->
-   `InterfaceFingerprintMismatch`.
-2. Two providers for one `ExportKey` -> `DuplicateProvider`.
-3. A copied `ExternalCallEdge` with no provider -> `MissingImport`.
-4. A callsite that cannot be rewritten -> `UnresolvedExternalCalls`.
-
-(`ImageLinkError` also has a `RuntimeMetadata` variant for runtime-table link
-failures.)
-
-`copy_planner_facts` carries upstream plans forward on a best-effort basis: each
-unit's `module_plan` is remapped and merged into an internal `linked_plan` that
-only needs to cover the edges the linker rewrites. Because the pipeline plans
-the linked module again before codegen, a missing upstream planner fact is not a
-link error.
-
-The runtime-source units and the consumer link, plan as one module, and run
-with no unresolved edges. Codegen rejects any edge that survives to it:
-`unresolved external module call `Dep.run/0``.
-
-### Compiled unit, program, image
-
-`ir_codegen` names the link stages:
-
-- `CompiledUnit` — one pre-link module: `code` (module-local IR), optional
-  `module_plan`, `exports`, `interface`, and `interface_fingerprint`.
-- `CompiledModule` — the JIT machine-code module (a `JITModule` plus per-fn
-  pointer table and schemas). It is the executable payload, not the
-  driver-facing product.
-- `CompiledProgram` — one single-unit codegen result before image wrap, with
-  `executable: CompiledModule`, `unit: CompiledUnit`, and
-  `runtime: RuntimeUnitMetadata`.
-- `CompiledImage` — a linked runnable image wrapping a `CompiledModule` and an
-  optional `RuntimeImageMetadata`.
-
-`CompiledProgram::link_image` is the single-unit JIT run path: it validates the
-unit through `link_ir_units`, links that unit's runtime metadata, wraps the
-machine-code module, and emits `link.succeeded` / `link.failed`.
-Provider-backed runs link earlier through `prepare_execution_graph`, so
-`CompiledImage::from_linked` only wraps an already-linked module and emits
-`link.succeeded`.
-
-### Runtime metadata linking
-
-`RuntimeUnitMetadata` is one unit's runtime-global contribution: `module`,
-`atoms`, `schemas`, `frame_sizes`, `exported_symbols`, `imported_refs`,
-`static_closures`, `halt_kinds`, and `entrypoints`.
-`RuntimeImageMetadata::link_units` deterministically merges those tables for
-runtime and debug metadata. It is not the import-correctness gate; it enforces
-its own table invariants:
-
-- duplicate `module` identities are rejected (`DuplicateModule`);
-- atoms are de-duplicated and sorted via `BTreeSet`;
-- schemas are de-duplicated by `schema_key`;
-- units are processed in stable module/input order;
-- frame ids are relocated by per-unit frame bases;
-- a duplicate exported runtime symbol is rejected (`DuplicateExport`);
-- imported refs are de-duplicated and sorted;
-- static closures are tagged with their input index and sorted;
-- entrypoint requirements are OR'd together;
-- per-input relocations are recorded in `RuntimeUnitRelocations`.
-
-## LTO
-
-LTO is validated boundary erasure. It consumes the same interface facts normal
-mode does, but only after validation, and it is never the correctness path —
-normal-mode linking already resolves every external edge.
-
-The CLI LTO path:
-
-1. `checked_module_for_mode` collects interfaces from the frontend result.
-2. `LtoLinkedProgram::validate` runs `validate_public_export_specs` over the
-   interfaces and emits `lto.interfaces_validated`. A missing public spec stops
-   LTO here.
-3. `LtoLinkedProgram::erase_boundaries` builds `Module::interface_export_map`
-   (interface exports + protocol-impl callbacks -> loaded `FnId`s), calls
-   `Module::rewrite_external_calls_for_lto`, clears the module's `boundary_fns`
-   spec firewalls, and emits `lto.boundaries_erased`.
-4. The caller materializes and codegens the direct-call module through the
-   ordinary pipeline.
-
-`LtoLinkedProgram` is private to `modules::pipeline`, so boundary erasure can
-only follow validation — the ordering is enforced in the type shape, not by each
-caller remembering it. Because erasure rewrites cross-module tail calls to
-direct calls and lets inlining run, a call that exists before LTO can vanish
-from `fz dump --emit bodies --lto`, which reads the same materialized reachable
-body set.
-
-`ExternalCallEdge { callsite: CallsiteId, target: ExportKey }` in
-`fz_ir::Module` is how an imported call is represented; its terminator carries a
-placeholder `FnId` until link or LTO resolves the edge.
-
-## Runtime Library Modules
-
-`runtime_library` owns the built-in standard-library source set. The runtime has
-two layers: primitive `extern "C"` contracts implemented by Rust/C symbols, and
-ordinary FZ modules built on top of them.
-
-`RUNTIME_MODULE_SOURCES` in `src/modules/runtime_library.rs` registers each
-module with a `RuntimeModuleRole`:
-
-- `CorePrelude` modules (`Kernel`, `Enumerable`, `Range`, `List`, `Map`) are
-  prepended during lowering via `core_prelude_module_sources`, so their names
-  are in scope without an explicit import.
-- `Library` modules (`Process`, `Enum`, `Utf8`) are requested on demand.
-
-`src/modules/runtime_library/runtime.fz` is the always-loaded prelude root: it
-imports selected functions from core prelude modules (so raw extern declarations
-stay module-scoped while names like `dbg/1` are exposed) and declares ordinary
-global type aliases such as `keyword/0` and `keyword/1`. Runtime primitive
-types such as `pid`, `ref`, and `utf8` are compiler-known built-ins, not aliases
-in this file.
-
-Each module's body lives in its own file (`utf8.fz`, `process.fz`, `enum.fz`,
-...). `List`, `Map`, `Range`, `Enumerable`, and `Enum` carry the operator
-helpers, protocol facts, and public enumeration wrappers. `Enumerable` is a root
-`defprotocol`, so its public namespace is `Enumerable`; a nested `Foo.Enumerable`
-would publish under that qualified path. Implementation detail stays in private
-`fnp` helpers — `Enum.sort` is a merge sort over `sort_list` /
-`merge_sort_lists`, none of which appear in the interface.
-
-How a runtime module enters a compile:
-
-- `runtime_library::interface` answers interface requests from imports, aliases,
-  and qualified references — including the qualified runtime calls macros emit,
-  so operator sugar can depend on `List` without every program importing it.
-- `runtime_library::source` returns the checked-in source text for a reachable
-  runtime module; `prepare_execution_graph` recompiles that source into a
-  `CompiledUnit`.
-- A reachable non-core runtime module contributes its interface and source to
-  `ModuleGraphLoader`; the core prelude is already prepended during lowering.
-
-Built-in interfaces are requested defaults. A user source module with the same
-name is collected from the current program and wins for that compile.
-
-To add a runtime-library module: add `src/modules/runtime_library/<name>.fz`
-holding exactly one `defmodule Name do ... end` (or one root
-`defprotocol Name do ... end`); register the file in `RUNTIME_MODULE_SOURCES`;
-give it an `@moduledoc` and a narrowest-accurate `@spec` on every public export;
-keep primitive `extern "C"` declarations module-scoped, exposing selected core
-functions through `runtime.fz` imports. Standard-library growth prefers ordinary
-FZ modules over a larger primitive runtime surface.
-
-## Dumps and Telemetry
-
-The product dumps follow the interface/implementation split:
-
-- `fz dump --emit interfaces` renders public module contracts (with the
-  fingerprint digest and inputs); `--strict-interfaces` rejects unspecified
-  public exports.
-- `fz dump --emit specs` renders the internal inferred `ModulePlan` — planner
-  state, not a module ABI.
-- `fz dump --emit bodies` renders reachable materialized user bodies from the
-  codegen-facing `PlannedProgram`, after local rewrites and reachability
-  pruning. `--lto` reads the post-erasure body set.
-
-Interface dumps answer "what may other modules depend on?"; spec and body dumps
-answer "what did this run infer and plan internally?". Raw IR dumps (`clif`,
-`bodies`, `outcomes`, `specs`) are compiler-internal, not the
-separate-compilation oracle.
-
-Process facts stay out of product dumps and ride telemetry instead, inspectable
-via `fz dump --emit stats`:
+Name resolution is an append-only chain. A `Namespace` is a `BindingId` — a
+savepoint into `NamespaceStore.bindings`. Binding a name pushes a
+`{ name, symbol, prev }` and returns the new head; lookup walks from a head
+backward and the first matching symbol wins. A `NamespaceSymbol` is a `Module`,
+`Function`, `Callable`, `Macro`, or `Type`.
 
 ```text
-fz.module.interfaces_collected
-fz.module.unit_materialized   (kind = runtime-source)
-fz.module.graph_loaded
-fz.link.succeeded / fz.link.failed
-fz.lto.interfaces_validated / fz.lto.boundaries_erased
+bind(head, "add", Function(f))  -> head'      (a new savepoint over head)
+lookup(head', "add")            -> Function(f)
+bind(head, "t", Type(type_t))    -> head''     (type names use the same chain)
 ```
 
-## Command Surface
+This is what lets a scope extend its parent's visibility without copying: a child
+scope's base is its parent's head, and entering/leaving a scope is just choosing
+which head to bind onto. Type lookups filter for `NamespaceSymbol::Type`, while
+value/callable lookups filter for modules/functions/macros, so a type name and a
+value name can share spelling without becoming one binding kind.
 
-`fz dump --emit interfaces` is the public contract surface; add
-`--strict-interfaces` to require explicit specs on public exports. `fz run`,
-`fz build`, and `fz dump` always compile the root source directly and then load
-reachable built-in runtime modules from checked-in source when the execution
-graph needs them.
+## Scoping a body
 
-There are no `--emit-fzi`, `--emit-fzo`, `--interface`, `--provider`, or
-`--artifact-root` flags anymore. User-module separate compilation is source
-explicit: if a program needs another user module, that module must be part of
-the source world being compiled.
+`define_scope` walks a scope's items in two passes so bodies can reference names
+declared later in the same scope:
 
-`fz repl` is session-eager: it compiles against source already entered into the
-REPL world plus built-in runtime-library interfaces. `fz repl --script` has one
-whole-file root, so it takes the source-first execution-graph path and can
-materialize reachable built-in runtime modules. REPL commands load no user
-module store because there is none.
+1. **Reserve.** Bind every local function (as `Function`/`Macro`), every noted
+   `@type` name (as `Type`), and every child module / protocol name, so forward
+   references resolve in both value and type positions.
+2. **Apply, in source order.** Resolve `alias`, `import`, and `require`.
+   Exact `only:` imports/requires can mint `FunctionId`s lazily by recording
+   interface expectations and binding `Callable` placeholders immediately.
+   Set-valued `import M` / `import M, except: ...` and the corresponding
+   `require` forms wait on `FactKey::ModuleInterface(module)`, because they
+   need the provider's full exported callable set before they can bind names.
+   Later jobs wait only when they need more than that placeholder:
+   macro expansion waits for the provider interface when it must decide whether
+   a reserved callable is a macro, and module-interface publication validates
+   that each exact expectation was actually exported. Then define each reserved
+   function and scope each child module onto the current head.
 
-Tests follow the same split: assert public contracts with
-`fz dump --emit interfaces`; assert execution-graph and linking behavior with
-source-first `run` / `build` / `repl --script` fixtures.
+A non-private function or macro becomes a `ModuleInterfaceCallable`; private
+(`fnp`) functions stay callable in-module but out of the interface. Non-global
+modules that do not define `__info__/1` get a synthesized ordinary function
+source for their callable interface. The pass returns the finished namespace head
+plus the callable interface, which `define_module` freezes onto the module slot.
+
+## Runtime library and the prelude
+
+Runtime-library modules are not a special class. At construction the world
+`reference_named`s each runtime module so its name is a stable id, but it does
+**not** submit any source. The first real reference pulls the owning module's
+source through `ensure_runtime_module`, which `submit_code`s it as ordinary code;
+the same `index_code` / `scope_code` / `define_module` jobs handle it.
+
+The prelude (`runtime.fz`) is scoped first as ordinary code: when `scope_code`
+sees the prelude it scopes from an empty namespace and saves the resulting head
+as the prelude head; every other code contribution then scopes from that head
+(and waits on the prelude's `CodeScoped`). So default visibility is a saved
+namespace head, not a compiler phase.
+
+There is no `.fzi`/`.fzo` store and no separate-compilation sidecar: a program's
+module world is the source it submits plus the runtime-library source pulled on
+demand. A user module is present only when its source was submitted.
+
+## Where it lives
+
+```text
+identity.rs    ModuleId / FunctionId / FunctionRef, ModuleState, ModuleSource,
+               ModuleMap, FunctionMap
+module_interface.rs
+               ModuleInterface, callable entries, exact expectations, ready/pending queries
+namespace.rs   NamespaceStore, BindingId (Namespace), NamespaceSymbol
+runtime.rs     bootstrap — reference runtime module names; pull source lazily
+jobs/source.rs index_code / scope_code / define_module / define_scope / discover_modules
+```
+
+## Proof gates
+
+```text
+cargo test --lib compiler2::world_test
+cargo test --lib compiler2::namespace_test
+cargo test --lib compiler2::drive_test::compiler2_submit_root_pulls_scope_and_seeds_entry_semantics_without_warming_foo
+cargo test --lib compiler2::drive_test::compiler2_enum_reduce_selects_list_protocol_impl_and_callable_reducer
+```

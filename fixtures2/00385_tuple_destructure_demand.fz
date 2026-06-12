@@ -1,0 +1,5 @@
+fn pair(x), do: {x, x}
+fn main() do
+  {a, b} = pair(1)
+  dbg({a, b, pair(2)})
+end

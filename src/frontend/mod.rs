@@ -7,8 +7,9 @@ pub(crate) mod spec_registry;
 
 use self::resolve::InterfaceTable;
 use crate::ast::{Expr, FnClause, FnDef, Item, Pattern, Program, Spanned, TypeExprBody};
+use crate::compiler::source::{SourceMap, Span};
 use crate::diag::codes;
-use crate::diag::{Diagnostic, Diagnostics, SourceMap, Span};
+use crate::diag::{Diagnostic, Diagnostics};
 use crate::dispatch_matrix::pattern::KnownSubjectDomain;
 use crate::fz_ir::{CallsiteId, EmitSlot, FnId, Module, rewrite_external_callsite_for_link};
 use crate::ir_extern_marshal::resolve_module_types;
@@ -19,7 +20,7 @@ use crate::measurements;
 use crate::metadata;
 use crate::parser::Parser;
 use crate::parser::lexer::Lexer;
-use crate::telemetry::value::opaque;
+use crate::telemetry::opaque;
 use crate::telemetry::{Telemetry, next_compile_nonce};
 use crate::types::{ClosureTypes, LiteralTypes, RenderTypes, Ty, Types};
 use std::collections::{HashMap, HashSet};
@@ -168,8 +169,8 @@ where
     );
 
     let mut sm = SourceMap::new();
-    let file_id = sm.add_file(source_name.clone(), src.clone());
-    let toks = match Lexer::with_file_and_source_name(&src, file_id, source_name).tokenize(tel) {
+    let code_id = sm.add_code(Some(source_name.clone()), src.clone());
+    let toks = match Lexer::with_code_id_and_source_name(&src, code_id, source_name).tokenize(tel) {
         Ok(toks) => toks,
         Err(e) => return Err(fail(sm, e.to_diagnostic())),
     };
@@ -393,8 +394,9 @@ fn repl_entry_fn_def(entry_name: &str, input_frame: &[String], output_frame: &[S
         is_private: false,
         variadic: false,
         extern_abi: None,
-        extern_params: vec![],
+        extern_param_tokens: vec![],
         extern_ret_tokens: TypeExprBody(vec![]),
+        extern_constraints: vec![],
         attrs: vec![],
         span: Span::DUMMY,
     }

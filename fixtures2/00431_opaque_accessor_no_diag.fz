@@ -1,0 +1,5 @@
+defmodule A do
+  @type t :: opaque resource(integer)
+
+  fn get(h :: t), do: h.value
+end

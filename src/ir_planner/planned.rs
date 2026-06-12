@@ -1180,11 +1180,12 @@ where
                 }
                 let selected = select_callable_entry_target(
                     t,
-                    spec_registry,
                     spec_plan,
-                    |sid| {
-                        reachable_specs.contains(&sid.0)
-                            && body_index_by_spec_slot.get(sid.0 as usize).is_some_and(Option::is_some)
+                    |t, key| {
+                        let sid = spec_registry.resolve_spec_key(t, key)?.0;
+                        (reachable_specs.contains(&sid)
+                            && body_index_by_spec_slot.get(sid as usize).is_some_and(Option::is_some))
+                        .then_some(sid)
                     },
                     lam_fn_id,
                     captured,
@@ -1364,9 +1365,14 @@ where
             }
             let Some(selection) = select_callable_entry_target(
                 t,
-                spec_registry,
                 spec_plan,
-                |sid| body_index_by_spec_slot.get(sid.0 as usize).is_some_and(Option::is_some),
+                |t, key| {
+                    let sid = spec_registry.resolve_spec_key(t, key)?.0;
+                    body_index_by_spec_slot
+                        .get(sid as usize)
+                        .is_some_and(Option::is_some)
+                        .then_some(sid)
+                },
                 fn_id,
                 captured,
                 block_env,
@@ -1419,11 +1425,12 @@ where
                 }
                 let Some(selection) = select_callable_entry_target(
                     t,
-                    spec_registry,
                     spec_plan,
-                    |sid| {
-                        reachable_specs.contains(&sid.0)
-                            && body_index_by_spec_slot.get(sid.0 as usize).is_some_and(Option::is_some)
+                    |t, key| {
+                        let sid = spec_registry.resolve_spec_key(t, key)?.0;
+                        (reachable_specs.contains(&sid)
+                            && body_index_by_spec_slot.get(sid as usize).is_some_and(Option::is_some))
+                        .then_some(sid)
                     },
                     lam_fn_id,
                     captured,
@@ -1445,9 +1452,8 @@ where
 
 pub(crate) fn select_callable_entry_target<T>(
     t: &mut T,
-    spec_registry: &SpecRegistry,
     spec_plan: &SpecPlan,
-    mut has_callable_body: impl FnMut(SpecId) -> bool,
+    mut resolve_callable_body: impl FnMut(&T, &SpecKey) -> Option<u32>,
     fn_id: FnId,
     captured: &[crate::fz_ir::Var],
     block_env: Option<&HashMap<crate::fz_ir::Var, Ty>>,
@@ -1473,11 +1479,11 @@ where
         .iter()
         .filter(|target| target.fn_id == fn_id && target.input.len() >= capture_count)
     {
-        let Some(sid) = spec_registry.resolve_spec_key(&*t, target) else {
+        let Some(sid) = resolve_callable_body(&*t, target) else {
             continue;
         };
-        if has_callable_body(sid) && seen_candidates.insert(sid.0) {
-            candidates.push((sid, target));
+        if seen_candidates.insert(sid) {
+            candidates.push((SpecId(sid), target));
         }
     }
     let candidate_count = candidates.len();

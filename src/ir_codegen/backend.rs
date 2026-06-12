@@ -50,6 +50,10 @@ pub trait Backend {
     /// Finalize the backend into its Output. JIT finalizes the JITModule
     /// and resolves fn pointers. AOT emits the object-file bytes.
     fn finalize(self, meta: CompiledMetadata) -> Result<Self::Output, CodegenError>;
+
+    /// Short, stable tag for telemetry — distinguishes the backends whose
+    /// finalize costs diverge sharply (JIT mmap+reloc vs AOT object emit).
+    fn kind(&self) -> &'static str;
 }
 
 /// JIT backend: wraps a JITModule pre-finalize. compile() constructs one,
@@ -318,6 +322,10 @@ impl Backend for JitBackend {
     type Module = JITModule;
     type Output = CompiledModule;
 
+    fn kind(&self) -> &'static str {
+        "jit"
+    }
+
     fn module_mut(&mut self) -> &mut JITModule {
         &mut self.jmod
     }
@@ -413,6 +421,10 @@ impl AotBackend {
 impl Backend for AotBackend {
     type Module = ObjectModule;
     type Output = AotArtifact;
+
+    fn kind(&self) -> &'static str {
+        "aot"
+    }
 
     fn module_mut(&mut self) -> &mut ObjectModule {
         &mut self.omod
@@ -671,7 +683,7 @@ pub(crate) fn resolve_tcc_body<T: Types<Ty = Ty> + ClosureTypes>(
     args: &[Var],
     ft: &SpecPlan,
     module: &Module,
-    spec_registry: &SpecRegistry,
+    mut resolve_body_id: impl FnMut(&T, &SpecKey) -> Option<u32>,
 ) -> Option<(FnId, u32)> {
     let (fn_id, captures) = if let Some(ClosureLitInfo { target, captures, .. }) =
         ft.vars.get(closure).and_then(|ty| t.closure_lit_parts(ty))
@@ -696,5 +708,5 @@ pub(crate) fn resolve_tcc_body<T: Types<Ty = Ty> + ClosureTypes>(
     }
     key.truncate(np);
     let key = SpecKey::value(fn_id, key_slots_from_tys(key));
-    Some((fn_id, spec_registry.resolve_spec_key(t, &key)?.0))
+    Some((fn_id, resolve_body_id(&*t, &key)?))
 }

@@ -1,11 +1,9 @@
 use crate::fz_ir::{FnId, Module};
 use crate::ir_codegen::compile_planned;
 use crate::ir_planner::{ModulePlan, materialize_program, plan_module_with_role};
-use crate::modules::pipeline::{
-    CompileMode, PreparedExecutionGraph, checked_module_for_mode, link_execution_module, prepare_execution_graph,
-};
-use crate::telemetry::{Capture, ConfiguredTelemetry, Event, Handler, Telemetry};
-use crate::types::{ClosureTypes, DefaultTypes, RenderTypes, Ty, Types};
+use crate::modules::pipeline::{CompileMode, checked_module_for_mode, link_execution_module};
+use crate::telemetry::{Capture, Event, Handler, Telemetry};
+use crate::types::DefaultTypes;
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::panic::AssertUnwindSafe;
@@ -30,19 +28,18 @@ impl Handler for LoweredCapture {
 
 /// Run the production frontend and snapshot the lowered IR module from
 /// telemetry. This is the exact frontend output the planner consumes.
-pub(crate) fn lower_frontend_module(src: &str) -> Module {
+pub(crate) fn lower_frontend_module(src: &str, tel: &dyn Telemetry) -> Module {
     let captured = Rc::new(RefCell::new(None));
-    let tel = ConfiguredTelemetry::new();
-    tel.attach(&["fz"], Box::new(LoweredCapture(captured.clone())));
+    let handler_id = tel.attach(&["fz"], Box::new(LoweredCapture(captured.clone())));
 
     let prev_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(|_| {}));
     let _ = std::panic::catch_unwind(AssertUnwindSafe(|| {
         let mut t = crate::types::new();
-        let _ =
-            crate::frontend::compile_source_with_types(&mut t, src.to_string(), "test_fixture.fz".to_string(), &tel);
+        let _ = crate::frontend::compile_source_with_types(&mut t, src.to_string(), "test_fixture.fz".to_string(), tel);
     }));
     std::panic::set_hook(prev_hook);
+    assert!(tel.detach(handler_id), "temporary lowered-module handler should detach");
 
     captured
         .borrow_mut()
@@ -52,17 +49,25 @@ pub(crate) fn lower_frontend_module(src: &str) -> Module {
 
 /// Compile a program through the production pipeline to the linked runtime IR:
 /// protocol impls, runtime helpers, and execution-graph rewrites are local.
-pub(crate) fn linked_runtime_graph(t: &mut DefaultTypes, src: &str, tel: &dyn Telemetry) -> PreparedExecutionGraph {
-    let frontend = crate::frontend::compile_source_with_types(t, src.to_string(), "test_fixture.fz".to_string(), tel);
-    let checked =
-        checked_module_for_mode(t, frontend, tel, CompileMode::Normal).unwrap_or_else(|err| panic!("checked: {err}"));
-    prepare_execution_graph(t, checked, tel, CompileMode::Normal).unwrap_or_else(|err| panic!("execution graph: {err}"))
+pub(crate) fn linked_runtime_graph(src: &str, tel: &dyn Telemetry) -> crate::compiler::World {
+    let mut compiler = crate::compiler::Compiler::new();
+    let mut world = crate::compiler::World::new();
+    compiler
+        .prepare_execution_graph_from_source(
+            &mut world,
+            src.to_string(),
+            "test_fixture.fz".to_string(),
+            tel,
+            CompileMode::Normal,
+        )
+        .unwrap_or_else(|err| panic!("execution graph: {err}"));
+    world
 }
 
 /// Compile a program through the production pipeline to the linked runtime IR:
 /// protocol impls, runtime helpers, and execution-graph rewrites are local.
-pub(crate) fn linked_runtime_module(t: &mut DefaultTypes, src: &str, tel: &dyn Telemetry) -> Module {
-    linked_runtime_graph(t, src, tel).module
+pub(crate) fn linked_runtime_module(src: &str, tel: &dyn Telemetry) -> Module {
+    linked_runtime_graph(src, tel).linked_module().clone()
 }
 
 /// Compile through the production frontend/provider/link path and stop at the
@@ -159,36 +164,46 @@ fn activation_projection_signals(cap: &Capture) -> Vec<ActivationProjectionSigna
 }
 
 #[cfg(test)]
-pub(crate) fn runtime_graph_planner_activation_projection_signals(src: &str) -> Vec<ActivationProjectionSignal> {
-    let tel = ConfiguredTelemetry::new();
+pub(crate) fn runtime_graph_planner_activation_projection_signals(
+    src: &str,
+    tel: &dyn Telemetry,
+) -> Vec<ActivationProjectionSignal> {
     let cap = Capture::new();
-    tel.attach(&[], cap.handler());
+    let handler_id = tel.attach(&[], cap.handler());
 
-    let mut t = crate::types::new();
-    let graph = linked_runtime_graph(&mut t, src, &tel);
+    let mut graph = linked_runtime_graph(src, tel);
     cap.clear();
-    let _ = plan_module_with_role(&mut t, &graph.module, &tel, "test");
-    let _ = materialize_program(&mut t, &graph.module, &graph.module_plan, &tel);
+    let (module, module_plan) = graph.cloned_linked_module_plan();
+    let _ = plan_module_with_role(graph.types(), &module, tel, "test");
+    let _ = materialize_program(graph.types(), &module, &module_plan, tel);
     assert_authoritative_planner_consistent(&cap);
-    activation_projection_signals(&cap)
+    let signals = activation_projection_signals(&cap);
+    assert!(
+        tel.detach(handler_id),
+        "temporary activation-projection handler should detach"
+    );
+    signals
 }
 
 #[cfg(test)]
-pub(crate) fn runtime_graph_codegen_materialized_body_signals(src: &str) -> Vec<MaterializedBodySignal> {
+pub(crate) fn runtime_graph_codegen_materialized_body_signals(
+    src: &str,
+    tel: &dyn Telemetry,
+) -> Vec<MaterializedBodySignal> {
     use crate::telemetry::Value;
 
-    let tel = ConfiguredTelemetry::new();
     let cap = Capture::new();
-    tel.attach(&[], cap.handler());
+    let handler_id = tel.attach(&[], cap.handler());
 
-    let mut t = crate::types::new();
-    let graph = linked_runtime_graph(&mut t, src, &tel);
-    let _ = materialize_program(&mut t, &graph.module, &graph.module_plan, &tel);
+    let mut graph = linked_runtime_graph(src, tel);
+    let (module, module_plan) = graph.cloned_linked_module_plan();
+    let _ = materialize_program(graph.types(), &module, &module_plan, tel);
     assert_authoritative_planner_consistent(&cap);
     cap.clear();
-    compile_planned(&mut t, &graph.module, &graph.module_plan, &tel).expect("compile planned");
+    compile_planned(graph.types(), &module, &module_plan, tel).expect("compile planned");
 
-    cap.find(&["fz", "planner", "body_materialized"])
+    let signals = cap
+        .find(&["fz", "planner", "body_materialized"])
         .into_iter()
         .filter_map(|event| {
             let role = match event.metadata.get("role") {
@@ -214,7 +229,12 @@ pub(crate) fn runtime_graph_codegen_materialized_body_signals(src: &str) -> Vec<
                 spec_key,
             })
         })
-        .collect()
+        .collect();
+    assert!(
+        tel.detach(handler_id),
+        "temporary body-materialized handler should detach"
+    );
+    signals
 }
 
 #[cfg(test)]
@@ -222,7 +242,7 @@ fn reachable_materialized_body_signals_from_planned_compile(
     t: &mut DefaultTypes,
     module: &Module,
     module_plan: &ModulePlan,
-    tel: &ConfiguredTelemetry,
+    tel: &dyn Telemetry,
     cap: &Capture,
 ) -> Vec<ReachableMaterializedBodySignal> {
     use crate::telemetry::Value;
@@ -280,16 +300,21 @@ fn reachable_materialized_body_signals_from_planned_compile(
 }
 
 #[cfg(test)]
-pub(crate) fn runtime_graph_reachable_materialized_body_signals(src: &str) -> Vec<ReachableMaterializedBodySignal> {
-    let tel = ConfiguredTelemetry::new();
+pub(crate) fn runtime_graph_reachable_materialized_body_signals(
+    src: &str,
+    tel: &dyn Telemetry,
+) -> Vec<ReachableMaterializedBodySignal> {
     let cap = Capture::new();
-    tel.attach(&[], cap.handler());
+    let handler_id = tel.attach(&[], cap.handler());
 
-    let mut t = crate::types::new();
-    let graph = linked_runtime_graph(&mut t, src, &tel);
-    let _ = materialize_program(&mut t, &graph.module, &graph.module_plan, &tel);
+    let mut graph = linked_runtime_graph(src, tel);
+    let (module, module_plan) = graph.cloned_linked_module_plan();
+    let _ = materialize_program(graph.types(), &module, &module_plan, tel);
     assert_authoritative_planner_consistent(&cap);
-    reachable_materialized_body_signals_from_planned_compile(&mut t, &graph.module, &graph.module_plan, &tel, &cap)
+    let signals =
+        reachable_materialized_body_signals_from_planned_compile(graph.types(), &module, &module_plan, tel, &cap);
+    assert!(tel.detach(handler_id), "temporary reachable-body handler should detach");
+    signals
 }
 
 #[cfg(test)]
@@ -297,11 +322,16 @@ pub(crate) fn module_reachable_materialized_body_signals(
     t: &mut DefaultTypes,
     module: &Module,
     module_plan: &ModulePlan,
+    tel: &dyn Telemetry,
 ) -> Vec<ReachableMaterializedBodySignal> {
-    let tel = ConfiguredTelemetry::new();
     let cap = Capture::new();
-    tel.attach(&[], cap.handler());
-    reachable_materialized_body_signals_from_planned_compile(t, module, module_plan, &tel, &cap)
+    let handler_id = tel.attach(&[], cap.handler());
+    let signals = reachable_materialized_body_signals_from_planned_compile(t, module, module_plan, tel, &cap);
+    assert!(
+        tel.detach(handler_id),
+        "temporary module reachable-body handler should detach"
+    );
+    signals
 }
 
 #[cfg(test)]
@@ -442,23 +472,5 @@ pub(crate) fn assert_authoritative_planner_consistent(cap: &Capture) {
     assert!(
         gaps.is_empty(),
         "authoritative planner consistency check failed before tests inspected the model: {gaps:?}"
-    );
-}
-
-#[cfg(test)]
-pub(crate) fn assert_module_planner_consistent<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(
-    t: &mut T,
-    module: &Module,
-    context: &str,
-) {
-    let tel = ConfiguredTelemetry::new();
-    let cap = Capture::new();
-    tel.attach(&[], cap.handler());
-    let plan = plan_module_with_role(t, module, &tel, "test");
-    let _ = materialize_program(t, module, &plan, &tel);
-    let issues = authoritative_planner_consistency_issues(&cap);
-    assert!(
-        issues.is_empty(),
-        "authoritative planner consistency check failed after {context}: {issues:?}"
     );
 }

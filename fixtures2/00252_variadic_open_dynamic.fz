@@ -1,0 +1,7 @@
+extern "C" fn libc::open(path :: cstring, flags :: integer, ...) :: integer
+extern "C" fn libc::close(fd :: integer) :: integer
+fn main() do
+  fd = libc::open("/tmp/fz-variadic-open-test.tmp", 578, 500 :: integer)
+  libc::close(fd)
+  fd
+end

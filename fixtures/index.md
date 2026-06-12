@@ -18,14 +18,15 @@ Run with `BLESS=1` to rewrite after editing fixtures.
 | `bsx_guard_eq/` | fz-bsx.4 — a guard comparison (when s == \"hi\") on a utf8 binding is brand-blind on all paths | jit, interp, aot, repl |
 | `bsx_nested_eq/` | fz-bsx.3 — nested structural == of a heap binary vs a utf8 string agrees on all paths (jit/aot match interp/repl) | jit, interp, aot, repl |
 | `bsx_nested_match/` | fz-bsx.4 — case-match of {:ok, \"hi\"} over a heap binary nested in a tuple matches on all paths | jit, interp, aot, repl |
-| `case_tuple_pattern_sequential/` | sequential calls returning tuple-pattern results (fz-i82 regression) | interp, jit, aot, repl |
+| `case_tuple_pattern_sequential/` | sequential calls returning tuple-pattern results (fz-i82 regression) | interp, jit, aot, repl, fz2-run, fz2-interp, fz2-build |
+| `case_with_total/` | total case and with clauses share one stdout oracle across old paths and fz2 | jit, interp, aot, repl, fz2-run, fz2-interp, fz2-build |
 | `classify_two_clause/` | literal-vs-wildcard clause dispatch (`0` and `_`) | jit, interp, aot, repl |
 | `closure_typed_captures/` | fz-ul4.29.5 — closure dispatched via call_indirect through code pointer | jit, interp, aot, repl |
 | `cold_fn/` | minimal call site — one fn definition, one call, no scaffolding | jit, interp, aot, repl |
-| `concurrency_ping_pong/` | spawn + send + receive — parent blocks on receive, prints the message | jit, interp, aot, repl |
-| `cross_module_macro/` | defmacro in one module, called from another via `import Helpers, only: [twice: 1]` | jit, interp, aot, repl |
+| `concurrency_ping_pong/` | spawn + send + receive — parent blocks on receive, prints the message | jit, interp, aot, repl, fz2-run, fz2-interp, fz2-build |
+| `cross_module_macro/` | defmacro in one module, called from another via `import Helpers, only: [twice: 1]` | jit, interp, aot, repl, fz2-run, fz2-interp, fz2-build |
 | `curried_add/` | three-level currying — nested lambdas each capturing outer scope; exercises multi-depth closure allocation | jit, interp, aot, repl |
-| `defstruct_runtime/` | source defstruct construction and field access works for named structs | jit, interp, aot, repl |
+| `defstruct_runtime/` | source defstruct construction and field access works for named structs | jit, interp, aot, repl, fz2-run, fz2-interp, fz2-build |
 | `destructure_cons/` | refutable list-cons destructure on a statically-non-empty list — success-path parity for `[h | t] = xs` | jit, interp, aot, repl |
 | `destructure_mixed/` | nested destructure mixing tuple arity and list cons — `{[h | t], y} = make()` across all four legs | jit, interp, aot, repl |
 | `destructure_tuple/` | irrefutable tuple destructure in a let-style bind — first fixture to exercise `{a, b} = expr` across all four legs | jit, interp, aot, repl |
@@ -53,13 +54,14 @@ Run with `BLESS=1` to rewrite after editing fixtures.
 | `if_tail_call_in_arm_unnarrowed/` | fz-84m repro C — same shape as repro B but with `n > 0` instead of `n == 0`, proving the bug was structural in lowering and NOT driven by per-callsite type narrowing | jit, interp, aot, repl |
 | `import/` | selective import — `import Math, only: [add: 2]` | jit, interp, aot, repl |
 | `interp_only_main/` | tiny module with a single helper and a main — historical interp-tier-0 smoke test | jit, interp, aot, repl |
+| `item_macro_source/` | source-order item macro returns compiler-shaped quoted function source | fz2-run, fz2-interp, fz2-build |
 | `keyword_lists/` | Elixir-style keyword lists lower to ordinary lists of atom/value tuples | jit, interp, aot, repl |
-| `lambda_sugars/` | capture shorthand and multi-clause anonymous fn desugar to ordinary lambda dispatch | jit, interp, aot, repl |
+| `lambda_sugars/` | capture shorthand and multi-clause anonymous fn desugar to ordinary lambda dispatch | jit, interp, aot, repl, fz2-run, fz2-interp, fz2-build |
 | `list_primitives/` | list primitives from scratch — length / reverse / map / foldl exercising cons-pattern dispatch and first-class fns | jit, interp, aot, repl |
-| `macro_inc/` | defmacro + quote/unquote round-trip — two macros, one nested in the other | jit, interp, aot, repl |
+| `macro_inc/` | defmacro + quote/unquote round-trip — two macros, one nested in the other | jit, interp, aot, repl, fz2-run, fz2-interp, fz2-build |
 | `make_ref_distinct/` | fz-ht5 — make_ref() returns a distinct opaque ref on every call | jit, interp, aot, repl |
 | `map_enumerable/` | Map implements Enumerable reduce/count/member?/slice callbacks | jit, interp, aot, repl |
-| `map_three_path_parity/` | map layout three-path parity for lookup, update, floats, nil miss, and pointer values | jit, interp, aot, repl |
+| `map_three_path_parity/` | map layout three-path parity for lookup, update, floats, nil miss, and pointer values | jit, interp, aot, repl, fz2-run, fz2-interp, fz2-build |
 | `membership_operator/` | membership operators desugar to Enum.member?/2 and match Elixir over List, Range, and Map | jit, interp, aot, repl |
 | `module_info/` | __info__/1 reflection — a synthesized module fn reports functions, macros, and the module name on all four paths | jit, interp, aot, repl |
 | `modules/` | cross-module qualified calls — `M.double`, `M.quad`, `N.helper` | jit, interp, aot, repl |
@@ -73,9 +75,9 @@ Run with `BLESS=1` to rewrite after editing fixtures.
 | `no_parens_call/` | no-parens calls (double 21; sum3 1, 2, 3) parse and run; output matches Elixir | jit, interp, aot, repl |
 | `no_parens_do/` | A do/end block on a no-parens call becomes a trailing do: keyword arg. | jit, interp, aot, repl |
 | `no_parens_keyword/` | trailing/leading keyword lists in no-parens calls parse into one list arg; output matches Elixir | jit, interp, aot, repl |
-| `opaque_fn_value_join/` | opaque join of zero-capture function values remains callable through Enum.reduce/3 | jit, interp, aot, repl |
-| `operator_sugars/` | operator desugaring rewrites ++, --, <>, .., and ..// to runtime-library calls | jit, interp, aot, repl |
-| `pipe_headless_case/` | pipe macro rewrite for call RHS and headless case RHS | jit, interp, aot, repl |
+| `opaque_fn_value_join/` | opaque join of zero-capture function values remains callable through Enum.reduce/3 | jit, interp, aot, repl, fz2-run, fz2-interp, fz2-build |
+| `operator_sugars/` | operator desugaring rewrites ++, --, <>, .., and ..// to runtime-library calls | jit, interp, aot, repl, fz2-run, fz2-interp, fz2-build |
+| `pipe_headless_case/` | pipe macro rewrite for call RHS and headless case RHS | jit, interp, aot, repl, fz2-run, fz2-interp, fz2-build |
 | `polymorphic/` | parametric `id` exercised over int, atom, and bool | jit, interp, aot, repl |
 | `process_heap_stats/` | Process.heap_alloc_stats/0 exposes deterministic current-process heap allocation counters as ordinary runtime output | jit, interp, aot, repl |
 | `quicksort/` | closing fixture of the destructure-up-through-quicksort arc — `{lo, hi} = partition(...)` on the hot path of a recursive sort | jit, interp, aot, repl |
@@ -83,20 +85,20 @@ Run with `BLESS=1` to rewrite after editing fixtures.
 | `range_runtime/` | defstruct-backed Range values print Elixir-style range literals | jit, interp, aot, repl |
 | `receive_binary_pattern/` | receive with utf8 binary literals — locks SwitchKind::Binary three-path parity | jit, interp, aot, repl |
 | `receive_bitstring_matcher/` | receive matcher supports bitstring patterns without AST fallback | jit, interp, aot, repl |
-| `receive_float_pattern/` | receive with side-tagged float literals — locks SwitchKind::Float three-path parity | jit, interp, aot, repl |
+| `receive_float_pattern/` | receive with side-tagged float literals — locks SwitchKind::Float three-path parity | jit, interp, aot, repl, fz2-run, fz2-interp, fz2-build |
 | `receive_interleaved_tuple_arity/` | receive whose clauses interleave tuple-3 / atom / tuple-3 — matrix shares the tuple-arity test across the non-adjacent tuple clauses | jit, interp, aot, repl |
 | `receive_list_cons_pattern/` | receive with list cons / empty list / atom default — locks ListCons three-path parity | jit, interp, aot, repl |
 | `receive_map_heap_keys/` | receive matcher supports heap map keys without allocating inside matcher probes | jit, interp, aot, repl |
 | `receive_map_pattern/` | receive with map pattern (atom key) — locks PerRow Map three-path parity | jit, interp, aot, repl |
 | `receive_mixed_constructors/` | selective receive whose clauses mix top-level constructors (atom + tuple + wildcard) | jit, interp, aot, repl |
-| `receive_selective_refs/` | fz-recv epic acceptance — selective receive across two pinned refs with out-of-order replies + after timeout | interp, jit, aot, repl |
+| `receive_selective_refs/` | fz-recv epic acceptance — selective receive across two pinned refs with out-of-order replies + after timeout | interp, jit, aot, repl, fz2-run, fz2-interp, fz2-build |
 | `receive_shared_tuple_arity/` | selective receive with consecutive same-arity tuple clauses | jit, interp, aot, repl |
 | `refute_abort_message/` | a failed refute aborts with the caller's message on every path | jit, interp, aot, repl |
 | `relay/` | one-hop relay — spawned child blocks on receive before parent sends; exercises non-blocking spawn + receive-parks semantics | jit, interp, aot, repl |
-| `repr_seam_closure_predicate/` | Closure predicate results stay truth-preserving across native representation seams | jit, interp, aot, repl |
+| `repr_seam_closure_predicate/` | Closure predicate results stay truth-preserving across native representation seams | jit, interp, aot, repl, fz2-run, fz2-interp, fz2-build |
 | `repr_seam_enum_count_after_reduce2/` | Enum.count/2 remains correct after Enum.reduce/3 retains the same list | jit, interp, aot, repl |
 | `resource_aot_dtor/` | AOT-compiled binary fires user-supplied resource dtors at heap drop | aot, repl |
-| `resource_lifecycle/` | fz-swt.12 — resource lifecycle (make_resource + .value + dtor) is observably identical across interp, JIT, AOT | interp, jit, aot, repl |
+| `resource_lifecycle/` | fz-swt.12 — resource lifecycle (make_resource + .value + dtor) is observably identical across interp, JIT, AOT | interp, repl |
 | `reverse/` | source-level reverse allocation baseline for accumulator-style list traversal | jit, interp, aot, repl |
 | `sample_tests/` | `test()` macro from the prelude — assert / refute | jit |
 | `sample_tests_module/` | `test()` inside a defmodule body | jit |
@@ -107,14 +109,14 @@ Run with `BLESS=1` to rewrite after editing fixtures.
 | `spec_ok/` | fz-ul4.31.6 — declared @spec matches inferred behavior; | jit, interp, aot, repl |
 | `spec_violation/` | a wrong @spec is rejected with a spec/violation diagnostic on every path | interp, jit, aot, repl |
 | `tail_recursion/` | 100k-deep self-recursion must TCO — exits cleanly with the accumulated count | jit, interp, aot, repl |
-| `tailcall_closure_captures/` | TailCallClosure with captured singleton closure-lit preserves narrow arg ABI through recursive HOF | jit, interp, aot, repl |
+| `tailcall_closure_captures/` | TailCallClosure with captured singleton closure-lit preserves narrow arg ABI through recursive HOF | jit, interp, aot, repl, fz2-run, fz2-interp, fz2-build |
 | `three_process_chain/` | two-hop process relay — main → first_relay → second_relay → main; exercises multi-process message chaining | jit, interp, aot, repl |
 | `tree/` | source-level tuple-tree traversal allocation baseline | jit, interp, aot, repl |
 | `type_dispatch/` | multi-clause fn dispatches on parameter type at runtime (fz-ty1.8/1.9) | interp, jit, aot, repl |
 | `utf8_equality/` | fz-axu.18 (P3) — `==` between utf8 strings compares bytes | jit, interp, aot, repl |
 | `utf8_literal_print/` | fz-axu.16 (P1) — utf8 string literal prints as `\"text\"` | jit, interp, aot, repl |
 | `utf8_pattern_match/` | fz-axu.17 (P2) — pattern matching on utf8 string literals | jit, interp, aot, repl |
-| `utf8_smart_constructor/` | fz-axu.19 (P4) — Utf8 smart constructors over raw bytes | jit, interp, aot, repl |
+| `utf8_smart_constructor/` | fz-axu.19 (P4) — Utf8 smart constructors over raw bytes | jit, interp, aot, repl, fz2-run, fz2-interp, fz2-build |
 | `vr1_int_arith/` | VR.1 — int-literal arithmetic elides the tag-check fast/slow path | jit, interp, aot, repl |
 | `vr2_float_arith/` | VR.2 — float-literal arithmetic + comparisons emit native fadd/fcmp, no dispatch | jit, interp, aot, repl |
 | `vr3_4_typed_capture/` | VR.3.4 / VR.4.3 — typed captures survive cont handoffs via native chain | jit, interp, aot, repl |

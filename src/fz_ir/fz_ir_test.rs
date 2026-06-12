@@ -1,6 +1,6 @@
 use super::*;
 use crate::modules::identity::ModuleName;
-use crate::modules::interface::{FZ_INTERFACE_ABI_VERSION, InterfaceFn, InterfaceSpec, ModuleInterface};
+use crate::modules::interface::{InterfaceFn, InterfaceSpec, ModuleInterface};
 
 /// fn identity(x) = x
 fn build_identity() -> FnIr {
@@ -144,7 +144,11 @@ fn lto_rewrites_external_call_edge_to_direct_fn_id() {
         entry,
         Term::TailCall {
             ident: ident.clone(),
-            callee: FnId(999),
+            callee: DirectCallTarget::ProviderBoundary(Mfa::new(
+                ModuleName::from_segments(vec!["A".to_string()]),
+                "f",
+                0,
+            )),
             args: Vec::new(),
             is_back_edge: false,
         },
@@ -156,17 +160,13 @@ fn lto_rewrites_external_call_edge_to_direct_fn_id() {
     mb.add_fn(caller.build());
     mb.add_fn(target.build());
     let mut module = mb.build();
-    let export = ExportKey::new(ModuleName::from_segments(vec!["A".to_string()]), "f", 0);
-    module.external_call_edges.push(ExternalCallEdge {
-        callsite: CallsiteId::new(FnId(0), &ident, EmitSlot::Direct),
-        target: export.clone(),
-    });
+    let export = Mfa::new(ModuleName::from_segments(vec!["A".to_string()]), "f", 0);
     let exports = [(export, FnId(1))].into_iter().collect();
 
     assert_eq!(module.rewrite_external_calls_for_lto(&exports), Ok(1));
-    assert!(module.external_call_edges.is_empty());
+    assert!(module.external_call_edges().is_empty());
     match &module.fn_by_id(FnId(0)).block(BlockId(0)).terminator {
-        Term::TailCall { callee, .. } => assert_eq!(*callee, FnId(1)),
+        Term::TailCall { callee, .. } => assert_eq!(*callee, DirectCallTarget::Local(FnId(1))),
         other => panic!("expected TailCall, got {:?}", other),
     }
 }
@@ -176,11 +176,12 @@ fn lto_reports_missing_external_call_target() {
     let ident = CallsiteIdent::synthetic();
     let mut caller = FnBuilder::new(FnId(0), "caller");
     let entry = caller.block(vec![]);
+    let export = Mfa::new(ModuleName::from_segments(vec!["Missing".to_string()]), "f", 0);
     caller.set_terminator(
         entry,
         Term::TailCall {
             ident: ident.clone(),
-            callee: FnId(999),
+            callee: DirectCallTarget::ProviderBoundary(export.clone()),
             args: Vec::new(),
             is_back_edge: false,
         },
@@ -188,18 +189,13 @@ fn lto_reports_missing_external_call_target() {
     let mut mb = ModuleBuilder::new();
     mb.add_fn(caller.build());
     let mut module = mb.build();
-    let export = ExportKey::new(ModuleName::from_segments(vec!["Missing".to_string()]), "f", 0);
-    module.external_call_edges.push(ExternalCallEdge {
-        callsite: CallsiteId::new(FnId(0), &ident, EmitSlot::Direct),
-        target: export.clone(),
-    });
     let exports = BTreeMap::new();
 
     assert_eq!(
         module.rewrite_external_calls_for_lto(&exports),
         Err(ExternalLinkError::MissingTarget(export))
     );
-    assert!(!module.external_call_edges.is_empty());
+    assert!(!module.external_call_edges().is_empty());
 }
 
 #[test]
@@ -217,7 +213,6 @@ fn lto_export_map_comes_from_validated_interfaces() {
         math.clone(),
         ModuleInterface {
             name: math.clone(),
-            abi_version: FZ_INTERFACE_ABI_VERSION,
             imports: Vec::new(),
             exports: vec![InterfaceFn {
                 name: "add".to_string(),
@@ -236,7 +231,7 @@ fn lto_export_map_comes_from_validated_interfaces() {
         },
     );
 
-    let key = ExportKey::new(math, "add", 2);
+    let key = Mfa::new(math, "add", 2);
     assert_eq!(module.interface_export_map(&interfaces).get(&key), Some(&FnId(7)));
 }
 
@@ -307,7 +302,7 @@ fn term_call_with_continuation_round_trips() {
         entry,
         Term::Call {
             ident: CallsiteIdent::synthetic(),
-            callee: FnId(0),
+            callee: DirectCallTarget::Local(FnId(0)),
             args: vec![x],
             continuation: Cont {
                 fn_id: FnId(7),
@@ -329,7 +324,7 @@ fn term_tail_call() {
         entry,
         Term::TailCall {
             ident: CallsiteIdent::synthetic(),
-            callee: FnId(0),
+            callee: DirectCallTarget::Local(FnId(0)),
             args: vec![x],
             is_back_edge: false,
         },

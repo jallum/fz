@@ -1,0 +1,10 @@
+
+defmodule User do
+  import Math, only: [add: 1, add: 2]
+  fn run(), do: add(20, 22)
+end
+
+defmodule Math do
+  fn add(a), do: a
+  fn add(a, b), do: a + b
+end

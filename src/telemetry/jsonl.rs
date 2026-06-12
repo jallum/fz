@@ -18,8 +18,10 @@
 //! was constructed. All events in one session share the same epoch, making
 //! it trivial to profile relative ordering.
 //!
-//! Opaque metadata values are skipped. `Value::Bytes` is rendered as
-//! `"<N bytes>"`; `Value::StrSeq` is rendered as a JSON string array.
+//! Opaque metadata values are rendered as `{"opaque_type":"..."}` and gain a
+//! `"debug"` field when the emitter used `opaque_debug(...)`. `Value::Bytes`
+//! is rendered as `"<N bytes>"`; `Value::StrSeq` is rendered as a JSON string
+//! array.
 
 use std::cell::RefCell;
 use std::fs::File;
@@ -119,9 +121,6 @@ fn write_kv<'a, 'v: 'a>(out: &mut String, iter: impl Iterator<Item = &'a (&'stat
     out.push('{');
     let mut first = true;
     for (k, v) in iter {
-        if matches!(v, Value::Opaque(_)) {
-            continue;
-        }
         if !first {
             out.push(',');
         }
@@ -171,8 +170,22 @@ fn write_value(out: &mut String, v: &Value) {
             out.push_str(" bytes>");
             out.push('"');
         }
-        Value::Opaque(_) => {}
+        Value::Opaque(opaque) => write_opaque(out, *opaque),
     }
+}
+
+fn write_opaque(out: &mut String, opaque: super::value::OpaqueRef<'_>) {
+    out.push('{');
+    write_str_lit(out, "opaque_type");
+    out.push(':');
+    write_str_lit(out, opaque.type_name());
+    if let Some(debug) = opaque.debug_value() {
+        out.push(',');
+        write_str_lit(out, "debug");
+        out.push(':');
+        write_str_lit(out, &format!("{debug:?}"));
+    }
+    out.push('}');
 }
 
 fn write_str_lit(out: &mut String, s: &str) {

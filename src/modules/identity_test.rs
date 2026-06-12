@@ -17,7 +17,7 @@ fn module_name_parses_dotted_display_spelling_at_edges() {
 }
 
 #[test]
-fn export_key_names_module_function_and_arity() {
-    let key = ExportKey::new(ModuleName::from_segments(vec!["Math".into()]), "add", 2);
-    assert_eq!(key.to_string(), "Math.add/2");
+fn mfa_names_module_function_and_arity() {
+    let mfa = Mfa::new(ModuleName::from_segments(vec!["Math".into()]), "add", 2);
+    assert_eq!(mfa.to_string(), "Math.add/2");
 }

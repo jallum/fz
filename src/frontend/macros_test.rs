@@ -2,30 +2,27 @@ use super::*;
 use crate::frontend::resolve::flatten_modules;
 use crate::parser::Parser;
 use crate::parser::lexer::Lexer;
+use crate::telemetry::Telemetry;
 
-fn parse(src: &str) -> Program {
-    let toks = Lexer::with_source_name(src, "<test>")
-        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
-        .expect("lex");
-    Parser::new(toks)
-        .parse_program(&crate::telemetry::ConfiguredTelemetry::new())
-        .expect("parse")
+fn parse(src: &str, tel: &dyn Telemetry) -> Program {
+    let toks = Lexer::with_source_name(src, "<test>").tokenize(tel).expect("lex");
+    Parser::new(toks).parse_program(tel).expect("parse")
 }
 
 /// Run the full pipeline (parse → flatten → expand → eval main) and
 /// return main's return value.
-fn run(src: &str) -> Value {
-    let prog = parse(src);
+fn run(src: &str, tel: &dyn Telemetry) -> Value {
+    let prog = parse(src, tel);
     let mut ct = crate::types::new();
-    let mut prog = flatten_modules(&mut ct, prog, &crate::telemetry::ConfiguredTelemetry::new()).expect("flatten");
+    let mut prog = flatten_modules(&mut ct, prog, tel).expect("flatten");
     expand_program(&mut prog).expect("expand");
     let interp = CompileTimeEvaluator::new();
     interp.load_program(&prog).expect("load");
     interp.call_named("main", vec![]).expect("eval")
 }
 
-fn expanded_main_body(src: &str) -> Expr {
-    let mut prog = parse(src);
+fn expanded_main_body(src: &str, tel: &dyn Telemetry) -> Expr {
+    let mut prog = parse(src, tel);
     expand_program(&mut prog).expect("expand");
     let item = prog.items.first().expect("main item");
     let Item::Fn(def) = &**item else {
@@ -34,6 +31,7 @@ fn expanded_main_body(src: &str) -> Expr {
     def.clauses[0].body.node.clone()
 }
 
+// PICKED: macro quote+unquote expands arithmetic at compile time
 #[test]
 fn defmacro_increments_arg() {
     // Classic Elixir-shape macro: receives arg as quoted form, returns
@@ -46,9 +44,13 @@ fn main() do
   plus_one(41)
 end
 "#;
-    assert!(matches!(run(src), Value::Int(42)));
+    assert!(matches!(
+        run(src, &crate::telemetry::ConfiguredTelemetry::new()),
+        Value::Int(42)
+    ));
 }
 
+// PICKED: macro called multiple times inside a fn body
 #[test]
 fn macro_inside_fn_body() {
     let src = r#"
@@ -62,9 +64,13 @@ fn run() do
 end
 fn main() do run() end
 "#;
-    assert!(matches!(run(src), Value::Int(60)));
+    assert!(matches!(
+        run(src, &crate::telemetry::ConfiguredTelemetry::new()),
+        Value::Int(60)
+    ));
 }
 
+// PICKED: macro expansion splices a call to a regular function
 #[test]
 fn macro_returns_a_call() {
     // Macro that splices its arg into a call to a regular fn.
@@ -75,9 +81,13 @@ defmacro use_helper(x) do
 end
 fn main() do use_helper(7) end
 "#;
-    assert!(matches!(run(src), Value::Int(21)));
+    assert!(matches!(
+        run(src, &crate::telemetry::ConfiguredTelemetry::new()),
+        Value::Int(21)
+    ));
 }
 
+// PICKED: nested macro wraps inner macro and expander re-expands result
 #[test]
 fn nested_macro_expansion() {
     // Macro M2 wraps M1's output. Expander must re-expand the result.
@@ -86,9 +96,13 @@ defmacro m1(x) do quote do: unquote(x) + 1 end
 defmacro m2(x) do quote do: m1(unquote(x)) end
 fn main() do m2(40) end
 "#;
-    assert!(matches!(run(src), Value::Int(41)));
+    assert!(matches!(
+        run(src, &crate::telemetry::ConfiguredTelemetry::new()),
+        Value::Int(41)
+    ));
 }
 
+// PICKED: macro args are passed as quoted AST, not pre-evaluated
 #[test]
 fn macro_args_are_not_pre_expanded() {
     // If macro args were expanded first, m2(m1(0)) would call m1 first
@@ -101,9 +115,13 @@ defmacro m1(x) do quote do: unquote(x) + 1 end
 defmacro m2(x) do quote do: unquote(x) + 5 end
 fn main() do m2(m1(0)) end
 "#;
-    assert!(matches!(run(src), Value::Int(6)));
+    assert!(matches!(
+        run(src, &crate::telemetry::ConfiguredTelemetry::new()),
+        Value::Int(6)
+    ));
 }
 
+// PICKED: self-referencing macro hits depth limit without stack overflow
 #[test]
 fn runaway_macro_caught() {
     // A macro that expands to itself: m(x) -> m(x). Should bail at the
@@ -114,7 +132,7 @@ defmacro loop_m(x) do
 end
 fn main() do loop_m(0) end
 "#;
-    let mut prog = parse(src);
+    let mut prog = parse(src, &crate::telemetry::ConfiguredTelemetry::new());
     let res = expand_program(&mut prog);
     assert!(res.is_err(), "expected expansion error");
     assert!(
@@ -123,6 +141,7 @@ fn main() do loop_m(0) end
     );
 }
 
+// PICKED: macro-introduced binding does not capture caller's variable
 #[test]
 fn hygiene_macro_local_does_not_shadow_caller() {
     // Without hygiene, the macro's `t = 99` would clobber the
@@ -138,7 +157,7 @@ fn main() do
   t
 end
 "#;
-    let v = run(src);
+    let v = run(src, &crate::telemetry::ConfiguredTelemetry::new());
     assert!(
         matches!(v, Value::Int(1)),
         "expected caller's t (1) to survive, got {:?}",
@@ -146,6 +165,7 @@ end
     );
 }
 
+// PICKED: unquoted variable splices caller's value into macro expansion
 #[test]
 fn hygiene_unquoted_var_keeps_caller_name() {
     // Vars spliced via unquote come from the caller's evaluation
@@ -160,9 +180,13 @@ fn main() do
   emit(x)
 end
 "#;
-    assert!(matches!(run(src), Value::Int(8)));
+    assert!(matches!(
+        run(src, &crate::telemetry::ConfiguredTelemetry::new()),
+        Value::Int(8)
+    ));
 }
 
+// PICKED: same macro-introduced name maps to one gensym within an invocation
 #[test]
 fn hygiene_consistent_within_one_invocation() {
     // The same macro-introduced name used twice in the body must map
@@ -181,9 +205,13 @@ end
 "#;
     // Macro returns Block([t__hyg_N = 21, t__hyg_N + t__hyg_N]) → 42.
     // Caller's t stays at 100; macro's t__hyg_N is 21+21.
-    assert!(matches!(run(src), Value::Int(42)));
+    assert!(matches!(
+        run(src, &crate::telemetry::ConfiguredTelemetry::new()),
+        Value::Int(42)
+    ));
 }
 
+// PICKED: cross-module macro expansion qualifies bare names against home module
 #[test]
 fn cross_module_macro_resolves_quote_against_home_module() {
     // Macro M.bump's body refers to bare `helper`. Resolution
@@ -204,9 +232,14 @@ fn main() do User.run() end
 "#;
     // M.bump expands at compile time into M.helper(7) (a fully
     // qualified call), so the result is 107.
-    assert!(matches!(run(src), Value::Int(107)), "expected 107, got {:?}", run(src));
+    assert!(
+        matches!(run(src, &crate::telemetry::ConfiguredTelemetry::new()), Value::Int(107)),
+        "expected 107, got {:?}",
+        run(src, &crate::telemetry::ConfiguredTelemetry::new())
+    );
 }
 
+// PICKED: imported macro is callable unqualified in importing module
 #[test]
 fn imported_macro_works_unqualified() {
     let src = r#"
@@ -219,9 +252,13 @@ defmodule User do
 end
 fn main() do User.run() end
 "#;
-    assert!(matches!(run(src), Value::Int(42)));
+    assert!(matches!(
+        run(src, &crate::telemetry::ConfiguredTelemetry::new()),
+        Value::Int(42)
+    ));
 }
 
+// PICKED: item-level macro returns :fn_def tuple splicing a callable function
 #[test]
 fn item_macro_produces_fn_def() {
     // `make_const(name, value)` builds a zero-arg fn that returns the
@@ -241,9 +278,14 @@ fn main() do
   answer()
 end
 "#;
-    assert!(matches!(run(src), Value::Int(42)), "expected 42, got {:?}", run(src));
+    assert!(
+        matches!(run(src, &crate::telemetry::ConfiguredTelemetry::new()), Value::Int(42)),
+        "expected 42, got {:?}",
+        run(src, &crate::telemetry::ConfiguredTelemetry::new())
+    );
 }
 
+// PICKED: item macro returning a list of :fn_def tuples splices multiple fns
 #[test]
 fn item_macro_produces_list_of_fns() {
     // Returning a list of :fn_def tuples splices multiple items.
@@ -261,9 +303,13 @@ fn main() do
   first() + second()
 end
 "#;
-    assert!(matches!(run(src), Value::Int(30)));
+    assert!(matches!(
+        run(src, &crate::telemetry::ConfiguredTelemetry::new()),
+        Value::Int(30)
+    ));
 }
 
+// PICKED: item macro inside defmodule qualifies spliced fn names with module path
 #[test]
 fn item_macro_inside_defmodule_qualifies_names() {
     // .16.5: the resolver stamps the parent module path on the
@@ -281,14 +327,19 @@ fn main() do
   Constants.pi_ish()
 end
 "#;
-    assert!(matches!(run(src), Value::Int(314)), "expected 314, got {:?}", run(src));
+    assert!(
+        matches!(run(src, &crate::telemetry::ConfiguredTelemetry::new()), Value::Int(314)),
+        "expected 314, got {:?}",
+        run(src, &crate::telemetry::ConfiguredTelemetry::new())
+    );
 }
 
+// PICKED: expansion pipeline without macros evaluates plain arithmetic correctly
 #[test]
 fn no_macros_is_a_noop() {
     // Pipeline without macros must not regress.
     let src = "fn main() do 1 + 2 end";
-    let mut prog = parse(src);
+    let mut prog = parse(src, &crate::telemetry::ConfiguredTelemetry::new());
     expand_program(&mut prog).expect("expand");
     let interp = CompileTimeEvaluator::new();
     interp.load_program(&prog).expect("load");
@@ -296,12 +347,17 @@ fn no_macros_is_a_noop() {
     assert!(matches!(v, Value::Int(3)));
 }
 
+// PICKED: pipe operator |> rewrites to regular call at expansion time
 #[test]
 fn pipe_into_call_rewrites_during_expansion() {
     let src = "fn add2(x), do: x + 2\nfn main(), do: 1 |> add2()";
-    assert!(matches!(run(src), Value::Int(3)));
+    assert!(matches!(
+        run(src, &crate::telemetry::ConfiguredTelemetry::new()),
+        Value::Int(3)
+    ));
 }
 
+// PICKED: ++, --, <>, .. and //2 operators desugar to stdlib function calls
 #[test]
 fn operator_sugars_rewrite_to_runtime_calls() {
     let body = expanded_main_body(
@@ -314,6 +370,7 @@ fn operator_sugars_rewrite_to_runtime_calls() {
 1..3//2
   }
 end"#,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let Expr::Tuple(values) = &body else {
         panic!("expected tuple");
@@ -326,6 +383,7 @@ end"#,
     assert_call_name(&values[4], "Range.new", 3);
 }
 
+// PICKED: `in` and `not in` desugar to Enum.member? at expansion time
 #[test]
 fn membership_sugars_rewrite_to_enum_member() {
     let body = expanded_main_body(
@@ -335,6 +393,7 @@ fn membership_sugars_rewrite_to_enum_member() {
 4 not in [1, 2, 3]
   }
 end"#,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let Expr::Tuple(values) = &body else {
         panic!("expected tuple");
@@ -358,18 +417,27 @@ fn assert_call_name(expr: &Spanned<Expr>, expected: &str, arity: usize) {
     assert_eq!(args.len(), arity);
 }
 
+// PICKED: & capture shorthand desugars to a callable lambda
 #[test]
 fn capture_shorthand_desugars_to_runnable_lambda() {
     let src = "fn main() do\n  f = &(&1 + &2)\n  f.(20, 22)\nend";
-    assert!(matches!(run(src), Value::Int(42)));
+    assert!(matches!(
+        run(src, &crate::telemetry::ConfiguredTelemetry::new()),
+        Value::Int(42)
+    ));
 }
 
+// PICKED: bare &1 desugars to identity lambda returning its first argument
 #[test]
 fn bare_capture_arg_desugars_to_identity_lambda() {
     let src = "fn main() do\n  f = &1\n  f.(42)\nend";
-    assert!(matches!(run(src), Value::Int(42)));
+    assert!(matches!(
+        run(src, &crate::telemetry::ConfiguredTelemetry::new()),
+        Value::Int(42)
+    ));
 }
 
+// PICKED: multi-clause fn literal desugars to case expression with pattern dispatch
 #[test]
 fn multi_clause_lambda_desugars_to_case_dispatch() {
     let src = r#"
@@ -382,7 +450,7 @@ _ -> :other
   {f.(0), f.(2), f.(-1)}
 end
 "#;
-    let got = run(src);
+    let got = run(src, &crate::telemetry::ConfiguredTelemetry::new());
     assert_eq!(format!("{}", got), "{:zero, :pos, :other}");
 }
 
@@ -391,10 +459,11 @@ end
 /// Source-only fn bodies retain `SpanOrigin::Source` after expansion.
 /// (Sanity-checks the default — without this we couldn't trust any
 /// of the Expanded checks below.)
+// DROP: SpanOrigin AST infrastructure, no compiler2 analogue
 #[test]
 fn parser_nodes_have_source_origin() {
     let src = "fn main(), do: 1 + 2";
-    let mut prog = parse(src);
+    let mut prog = parse(src, &crate::telemetry::ConfiguredTelemetry::new());
     expand_program(&mut prog).expect("expand");
     let Item::Fn(def) = &*prog.items[0] else { panic!() };
     let body = &def.clauses[0].body;
@@ -405,6 +474,7 @@ fn parser_nodes_have_source_origin() {
 /// `SpanOrigin::Expanded { macro_call: <call-site span> }`. The
 /// `macro_call` span equals the body before expansion (the call
 /// expression at the post-resolution AST).
+// DROP: SpanOrigin lineage tracking on expanded AST nodes, no compiler2 analogue
 #[test]
 fn macro_expansion_stamps_expanded_origin() {
     let src = r#"
@@ -413,7 +483,7 @@ defmacro plus_one(x) do
 end
 fn main() do plus_one(41) end
 "#;
-    let mut prog = parse(src);
+    let mut prog = parse(src, &crate::telemetry::ConfiguredTelemetry::new());
 
     // Capture the macro call's span BEFORE expansion replaces it.
     let call_span_before = {
@@ -473,6 +543,7 @@ fn main() do plus_one(41) end
 
 /// Children of an expanded tree inherit the same macro_call lineage.
 /// (v1: every decoded node was DUMMY, so the walker stamps them all.)
+// DROP: SpanOrigin lineage propagation to child nodes, no compiler2 analogue
 #[test]
 fn macro_expansion_lineage_reaches_children() {
     let src = r#"
@@ -481,7 +552,7 @@ defmacro plus_one(x) do
 end
 fn main() do plus_one(41) end
 "#;
-    let mut prog = parse(src);
+    let mut prog = parse(src, &crate::telemetry::ConfiguredTelemetry::new());
     expand_program(&mut prog).expect("expand");
     let Item::Fn(def) = &*prog
         .items
@@ -518,6 +589,7 @@ fn main() do plus_one(41) end
 /// (Each re-expansion stamps with its own call_span, overwriting the
 /// previous Expanded marker. Since `expand_expr` recurses depth-first
 /// after the rewrite, the OUTER expansion runs last and wins.)
+// DROP: SpanOrigin lineage for nested macros points at outermost call, no compiler2 analogue
 #[test]
 fn nested_macro_lineage_keeps_outermost_call_site() {
     let src = r#"
@@ -525,7 +597,7 @@ defmacro m1(x) do quote do: unquote(x) + 1 end
 defmacro m2(x) do quote do: m1(unquote(x)) end
 fn main() do m2(40) end
 "#;
-    let mut prog = parse(src);
+    let mut prog = parse(src, &crate::telemetry::ConfiguredTelemetry::new());
     let outer_call_span = {
         let Item::Fn(def) = &*prog
             .items
@@ -569,6 +641,7 @@ fn main() do m2(40) end
 /// `Item::MacroCall` that produced it. `make_const(:answer, 42)`
 /// splices an `answer/0` fn whose body should point at the
 /// `make_const(...)` call site.
+// DROP: SpanOrigin lineage on item-macro spliced fn body, no compiler2 analogue
 #[test]
 fn item_macro_splice_body_carries_expanded_lineage() {
     let src = r#"
@@ -580,7 +653,7 @@ make_const(:answer, 42)
 
 fn main(), do: answer()
 "#;
-    let mut prog = parse(src);
+    let mut prog = parse(src, &crate::telemetry::ConfiguredTelemetry::new());
     // Find the original `make_const(...)` MacroCall's span before expansion.
     let macro_call_span = prog
         .items
@@ -627,6 +700,7 @@ fn main(), do: answer()
 /// A runaway macro produces an `ExpansionLoop` whose Span points at
 /// the offending expression (the recursive `loop_m(...)` node), not
 /// `Span::DUMMY`. The renderer relies on this to underline source.
+// DROP: diagnostic span infrastructure for expansion loop errors
 #[test]
 fn expansion_loop_diag_has_real_span() {
     let src = r#"
@@ -635,7 +709,7 @@ defmacro loop_m(x) do
 end
 fn main() do loop_m(0) end
 "#;
-    let mut prog = parse(src);
+    let mut prog = parse(src, &crate::telemetry::ConfiguredTelemetry::new());
     let err = expand_program(&mut prog).unwrap_err();
     let d = err.to_diagnostic();
     assert_ne!(d.primary.span, Span::DUMMY, "ExpansionLoop should carry a real span");
@@ -644,6 +718,7 @@ fn main() do loop_m(0) end
 
 /// A body-failure carries both the call-site span (primary) and the
 /// defmacro span (secondary), so the renderer can show both locations.
+// DROP: diagnostic span infrastructure for macro body failure, not language behaviour
 #[test]
 fn body_failed_diag_has_call_and_def_spans() {
     // Macro body that calls a non-existent function: the body errors at
@@ -654,7 +729,7 @@ defmacro bad() do
 end
 fn main() do bad() end
 "#;
-    let mut prog = parse(src);
+    let mut prog = parse(src, &crate::telemetry::ConfiguredTelemetry::new());
     let err = expand_program(&mut prog).unwrap_err();
     match *err {
         MacroError::BodyFailed {
@@ -679,12 +754,13 @@ fn main() do bad() end
 /// (This case is reachable from the REPL when a macro is referenced
 /// before its defining input has been processed; the planner/expander
 /// errors out earlier today, but the lineage path stays safe.)
+// DROP: SpanOrigin fallback infrastructure, no language behaviour
 #[test]
 fn missing_def_span_falls_back_to_none() {
-    use crate::diag::{FileId, Span};
+    use crate::compiler::source::{Id as CodeId, Span};
     // Build a tree manually and stamp with no definition.
     let mut e = Spanned::dummy(Expr::Int(42));
-    let call_span = Span::new(FileId(0), 10, 20);
+    let call_span = Span::new(CodeId(0), 10, 20);
     super::stamp_expanded(&mut e, call_span, None);
     match e.origin {
         SpanOrigin::Expanded { macro_call, definition } => {

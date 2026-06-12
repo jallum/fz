@@ -43,7 +43,7 @@ pub(crate) fn build_entry_harness<M: ClModule>(
     // the Option panics loudly at codegen if any future path violates
     // the invariant. `cont_param` is the trailing i64 in the native-tier
     // signature.
-    let demand_abi = DemandAbi::new(&env.spec_keys[this_spec_id as usize]);
+    let demand_abi = DemandAbi::new(env.body_key(this_spec_id));
     let (frame_ptr, host_ctx, cont_param): (Option<ir::Value>, Option<ir::Value>, Option<ir::Value>) = if is_native {
         let params: Vec<ir::Value> = body.b.block_params(entry_cl).to_vec();
         let my_param_reprs = &param_reprs[this_spec_id as usize];

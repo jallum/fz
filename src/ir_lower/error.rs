@@ -1,4 +1,5 @@
-use crate::diag::{Diagnostic, Span};
+use crate::compiler::source::Span;
+use crate::diag::Diagnostic;
 use std::error::Error;
 use std::fmt;
 

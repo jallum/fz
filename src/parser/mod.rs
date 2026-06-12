@@ -2,8 +2,9 @@ pub(crate) mod lexer;
 
 use self::lexer::{Tok, Token};
 use crate::ast::*;
-use crate::diag::{Diagnostic, Span, codes::PARSE_EXPECTED_TOKEN};
-use crate::telemetry::{Metadata, Telemetry, value::opaque};
+use crate::compiler::source::Span;
+use crate::diag::{Diagnostic, codes::PARSE_EXPECTED_TOKEN};
+use crate::telemetry::{Metadata, Telemetry, opaque};
 use std::collections::HashMap;
 use std::fmt::{self, Display, Formatter};
 use std::mem::discriminant;
@@ -287,13 +288,12 @@ impl Parser {
                 Attribute::ModuleDoc(_) => {
                     return self.err("@moduledoc only valid inside a defmodule body".to_string());
                 }
-                Attribute::TypeAlias(_) => {
-                    return self.err("@type only valid inside a defmodule body".to_string());
-                }
+                Attribute::TypeAlias(_) => {}
                 _ => {}
             }
         }
         Ok(Program {
+            attrs: top_attrs,
             items,
             module_interfaces: Default::default(),
             external_module_interfaces: Default::default(),

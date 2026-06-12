@@ -4,15 +4,16 @@ use crate::ast::{
     BinOp as AstBinOp, BitField as AstBitField, BitSize as AstBitSize, Expr, FnDef, MatchClause, Pattern, Spanned,
     TypeExprBody, UnOp as AstUnOp, WithBinding, lambda_direct_clause,
 };
-use crate::diag::Span;
+use crate::compiler::source::Span;
 use crate::dispatch_matrix::pattern::{PatternBodyId, PatternRow, SourcePatternRows};
 use crate::fz_ir::{
     BinOp, BitFieldIr, BitSizeIr, BlockId, BranchOrigin, CallsiteIdent, Const, ContinuationProvenance,
-    ContinuationProvenanceKind, ExternArg, ExternDecl, ExternId, ExternTy, FnBuilder, FnCategory, Prim, Term, UnOp,
-    Var,
+    ContinuationProvenanceKind, DirectCallTarget, ExternArg, ExternDecl, ExternId, ExternTy, FnBuilder, FnCategory,
+    Prim, Term, UnOp, Var,
 };
 use crate::modules::identity::ModuleName;
 use crate::parser::lexer::Tok;
+use crate::type_expr::ResolvedSpecDecl;
 use crate::types::{Ty, Types};
 use std::collections::HashMap;
 use std::mem::discriminant;
@@ -363,30 +364,32 @@ pub(crate) fn lower_expr<T: Types<Ty = Ty>>(
             } else {
                 None
             };
-            let callee = local_callee
-                .or_else(|| external_callee.as_ref().map(|(callee, _)| *callee))
-                .or(protocol_callee)
-                .ok_or_else(|| LowerError::Unbound {
-                    span: target.span,
-                    name: format!("fn {}/{}", callee_name, arity),
-                })?;
             if is_tail {
+                let callee = match external_callee {
+                    Some(target) => DirectCallTarget::ProviderBoundary(target),
+                    None => DirectCallTarget::Local(local_callee.or(protocol_callee).ok_or_else(|| {
+                        LowerError::Unbound {
+                            span: target.span,
+                            name: format!("fn {}/{}", callee_name, arity),
+                        }
+                    })?),
+                };
                 let term = Term::TailCall {
                     ident: CallsiteIdent::from_source(sp),
                     callee,
                     args: arg_vars,
                     is_back_edge: false, // annotate_back_edges fills this in post-lowering
                 };
-                if let Some((_, target)) = external_callee {
-                    ctx.set_external_direct_term_at(term, sp, target);
-                } else {
-                    ctx.set_term_at(term, sp);
-                }
+                ctx.set_term_at(term, sp);
                 ctx.terminated = true;
                 Ok(Var(0))
-            } else if let Some((_, target)) = external_callee {
-                cps_split_external_call(ctx, callee, target, arg_vars, sp)
+            } else if let Some(target) = external_callee {
+                cps_split_external_call(ctx, target, arg_vars, sp)
             } else {
+                let callee = local_callee.or(protocol_callee).ok_or_else(|| LowerError::Unbound {
+                    span: target.span,
+                    name: format!("fn {}/{}", callee_name, arity),
+                })?;
                 cps_split_call(ctx, callee, arg_vars, sp)
             }
         }
@@ -1000,6 +1003,11 @@ fn ensure_kernel_dbg_extern<T: Types<Ty = Ty>>(ctx: &mut LowerCtx, t: &mut T) ->
         variadic: false,
         ret: ExternTy::Any,
         ret_descr: t.any(),
+        semantic_contract: ResolvedSpecDecl {
+            params: vec![t.any()],
+            result: t.any(),
+            constraints: HashMap::new(),
+        },
     });
     ctx.externs.insert("fz_dbg_value".to_string(), eid);
     eid
@@ -1120,7 +1128,7 @@ pub(super) fn lower_case<T: Types<Ty = Ty>>(
     ctx.terminated = false;
 
     let source_patterns = SourcePatternRows {
-        subjects: vec![sv],
+        input_count: 1,
         rows: clauses
             .iter()
             .enumerate()
@@ -1145,12 +1153,10 @@ pub(super) fn lower_case<T: Types<Ty = Ty>>(
         let saved_env_ref = &saved_env;
         let saved_order_ref = &saved_order;
         let mut cb = |ctx: &mut LowerCtx,
-                      t: &mut T,
+                      _t: &mut T,
                       body_id: PatternBodyId,
                       bindings: Vec<MatchedBinding>,
-                      _preconds: Vec<(Var, Ty)>,
-                      guard: Option<Spanned<Expr>>,
-                      fall_block: BlockId|
+                      _fall_block: BlockId|
          -> Result<(), LowerError> {
             let i = body_id as usize;
             let clause = &clauses_ref[i];
@@ -1158,13 +1164,6 @@ pub(super) fn lower_case<T: Types<Ty = Ty>>(
             ctx.env_order = saved_order_ref.clone();
             for binding in &bindings {
                 ctx.bind(&binding.name, binding.var);
-            }
-            if let Some(g) = &guard {
-                let guard_var = lower_expr(ctx, t, g, false)?;
-                let body_b = ctx.cur_mut().block(vec![]);
-                ctx.set_if_term(guard_var, body_b, fall_block);
-                ctx.cur_block = Some(body_b);
-                ctx.terminated = false;
             }
             let clause_cont = match &clause_conts_ref[i] {
                 Some(cont) => cont.clone(),
@@ -1196,14 +1195,14 @@ pub(super) fn lower_case<T: Types<Ty = Ty>>(
             let capture_vars = cont_call_args(ctx, &clause_cont);
             ctx.set_term(Term::TailCall {
                 ident: CallsiteIdent::from_source(clause.span),
-                callee: clause_cont.id,
+                callee: DirectCallTarget::Local(clause_cont.id),
                 args: capture_vars,
                 is_back_edge: false,
             });
             ctx.terminated = true;
             Ok(())
         };
-        let result = lower_source_patterns_to_current_fn(ctx, t, source_patterns, fail_block, &mut cb);
+        let result = lower_source_patterns_to_current_fn(ctx, t, source_patterns, vec![sv], fail_block, &mut cb);
         ctx.branch_origin = prev_origin;
         result?;
     }
@@ -1275,7 +1274,7 @@ pub(super) fn lower_cond<T: Types<Ty = Ty>>(
     let capture_vars: Vec<Var> = captures.iter().map(|(_, v)| *v).collect();
     ctx.set_term(Term::TailCall {
         ident: CallsiteIdent::from_source(Span::DUMMY),
-        callee: arm_conts[0].id,
+        callee: DirectCallTarget::Local(arm_conts[0].id),
         args: capture_vars,
         is_back_edge: false,
     });
@@ -1303,7 +1302,7 @@ pub(super) fn lower_cond<T: Types<Ty = Ty>>(
         ctx.cur_block = Some(fall_b);
         ctx.set_term(Term::TailCall {
             ident: CallsiteIdent::from_source(Span::DUMMY),
-            callee: next_id,
+            callee: DirectCallTarget::Local(next_id),
             args: fall_capture_vars,
             is_back_edge: false,
         });
@@ -1398,7 +1397,7 @@ pub(super) fn lower_with<T: Types<Ty = Ty>>(
                 }
                 ctx.set_term(Term::TailCall {
                     ident: CallsiteIdent::from_source(Span::DUMMY),
-                    callee: with_fail_cont.id,
+                    callee: DirectCallTarget::Local(with_fail_cont.id),
                     args,
                     is_back_edge: false,
                 });
@@ -1443,7 +1442,7 @@ pub(super) fn lower_with<T: Types<Ty = Ty>>(
         ctx.terminated = false;
 
         let source_patterns = SourcePatternRows {
-            subjects: vec![unmatched_v],
+            input_count: 1,
             rows: else_clauses
                 .iter()
                 .enumerate()
@@ -1467,12 +1466,10 @@ pub(super) fn lower_with<T: Types<Ty = Ty>>(
             let saved_fail_env_ref = &saved_fail_env;
             let saved_fail_order_ref = &saved_fail_order;
             let mut cb = |ctx: &mut LowerCtx,
-                          t: &mut T,
+                          _t: &mut T,
                           body_id: PatternBodyId,
                           bindings: Vec<MatchedBinding>,
-                          _preconds: Vec<(Var, Ty)>,
-                          guard: Option<Spanned<Expr>>,
-                          fall_block: BlockId|
+                          _fall_block: BlockId|
              -> Result<(), LowerError> {
                 let i = body_id as usize;
                 let clause = &else_clauses[i];
@@ -1480,13 +1477,6 @@ pub(super) fn lower_with<T: Types<Ty = Ty>>(
                 ctx.env_order = saved_fail_order_ref.clone();
                 for binding in &bindings {
                     ctx.bind(&binding.name, binding.var);
-                }
-                if let Some(g) = &guard {
-                    let guard_var = lower_expr(ctx, t, g, false)?;
-                    let body_b = ctx.cur_mut().block(vec![]);
-                    ctx.set_if_term(guard_var, body_b, fall_block);
-                    ctx.cur_block = Some(body_b);
-                    ctx.terminated = false;
                 }
                 let cont = match &else_conts_ref[i] {
                     Some(cont) => cont.clone(),
@@ -1518,14 +1508,15 @@ pub(super) fn lower_with<T: Types<Ty = Ty>>(
                 let capture_vars = cont_call_args(ctx, &cont);
                 ctx.set_term(Term::TailCall {
                     ident: CallsiteIdent::from_source(clause.span),
-                    callee: cont.id,
+                    callee: DirectCallTarget::Local(cont.id),
                     args: capture_vars,
                     is_back_edge: false,
                 });
                 ctx.terminated = true;
                 Ok(())
             };
-            let result = lower_source_patterns_to_current_fn(ctx, t, source_patterns, fail_block, &mut cb);
+            let result =
+                lower_source_patterns_to_current_fn(ctx, t, source_patterns, vec![unmatched_v], fail_block, &mut cb);
             ctx.branch_origin = prev_origin;
             result?;
         }

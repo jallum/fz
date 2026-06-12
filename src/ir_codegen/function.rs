@@ -1,7 +1,7 @@
 //! Per-function Cranelift body emission.
 
 use super::*;
-use crate::diag::Span;
+use crate::compiler::source::Span;
 use crate::fz_ir::{Block, FnIr, PhysicalCapability, Prim, SourceInfo, Stmt, Term, Var};
 use crate::ir_dce::classify_var_uses;
 use crate::ir_planner::fn_types::SpecKey;
@@ -41,7 +41,7 @@ pub(crate) fn compile_fn<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
     } else {
         None
     };
-    let demand_abi = DemandAbi::new(&env.spec_keys[this_spec_id as usize]);
+    let demand_abi = DemandAbi::new(env.body_key(this_spec_id));
     // When this fn is never invoked from any fz IR site (not a direct
     // callee, not a continuation, not a closure target), it can only
     // enter via the trampoline entry, which writes null into the frame's
@@ -153,7 +153,7 @@ pub(crate) fn compile_fn<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
     {
         let (if_only, all_used) = classify_var_uses(f);
         let (tuple_return_fields, skipped_tuple_return_vars) =
-            tuple_return_delivery_plan(f, &env.spec_keys[this_spec_id as usize], is_cont_fn);
+            tuple_return_delivery_plan(f, env.body_key(this_spec_id), is_cont_fn);
         body.cache.if_only_conds = if_only.into_iter().map(|v| v.0).collect();
         body.cache.used_vars = all_used.into_iter().map(|v| v.0).collect();
         body.cache.tuple_field_params = tuple_field_params;

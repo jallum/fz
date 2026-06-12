@@ -1,0 +1,6 @@
+defmacro plus_one(x) do
+  quote do: unquote(x) + 1
+end
+fn main() do
+  plus_one(41)
+end

@@ -1,0 +1,4 @@
+fn main() do
+  dbg(nil)
+  dbg([])
+end

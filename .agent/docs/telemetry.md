@@ -34,11 +34,15 @@ interactive tooling.
 instantiates. It owns a handler registry (`Vec<Entry>`, each entry a `prefix` +
 boxed `Handler`), a `span_stack`, and monotonic `next_handler_id` /
 `next_span_id` counters. It is single-threaded by design — `RefCell` interior
-mutability, no `Send`/`Sync`. The CLI driver and each test own their own bus.
+mutability, no `Send`/`Sync`. The CLI driver and each test root own their own
+bus.
 
-**`Handler` trait** (`handler.rs`) — a subscriber: `handle(&Event)`. The bus
-routes an event to a handler when `name.starts_with(handler.prefix)`; the empty
-prefix `&[]` matches everything. Concrete handlers:
+**`Handler` trait** (`handler.rs`) — a subscriber: `handle(&Event)`. Any
+closure over a borrowed event is a handler too (`impl<F: Fn(&Event)> Handler
+for F`), which is how observers project opaque payloads — downcast, render,
+compute — while the event's borrows are still alive. The bus routes an event
+to a handler when `name.starts_with(handler.prefix)`; the empty prefix `&[]`
+matches everything. Concrete handlers:
 
 - `DiagRenderer` (`diag_render.rs`) — events under `[fz, diag]` carrying a
   `Diagnostic` in their metadata; it downcasts and hands them to
@@ -139,38 +143,222 @@ stderr; the driver calls it after a run.
 **Jsonl is dependency-free and lossy on purpose.** `JsonlBackend` hand-rolls the
 JSON and stamps each line with `time_ns`, a
 monotonic offset from when the backend was constructed, so relative ordering is
-trivial to profile. It drops `Opaque` values (no stable serialization), renders
-`Bytes` as `"<N bytes>"` to keep lines ASCII, and renders non-finite floats as
-`null`. A consumer needing binary round-trips uses a different channel.
+trivial to profile. It renders `Opaque` values as
+`{"opaque_type":"...","debug":"..."}` (the `debug` field only when the emit
+site used `opaque_debug`), renders `Bytes` as `"<N bytes>"` to keep lines
+ASCII, and renders non-finite floats as `null`. A consumer needing binary
+round-trips uses a different channel.
 
 **The bus is single-threaded.** No `Send`/`Sync`; the driver and each test hold
 their own `ConfiguredTelemetry`. This is why handlers can share state through
 plain `Rc<RefCell<…>>` (the pattern `Capture` and `StatsHandler` both use: keep
 the typed object, attach a `handler()` that shares its buffer).
 
+## Compiler2 Conventions
+
+Compiler2 uses telemetry as its only observability surface. `Compiler2::new`
+hands one caller-owned sink to `World`, and every job/event under
+`[fz, compiler2, ...]` flows through that single bus.
+
+**Emit points are cheap: raw borrowed state only.** An emit site performs no
+formatting, no processing, no allocation, no calculation, and no cloning. It
+passes O(1) reads of existing state — ids and stored counts in measurements;
+borrowed `&str`s and `opaque`/`opaque_debug` borrows of compiler-owned
+structures in metadata (`Job`, `JobEffects`, `AppliedStep<Job, FactKey>`,
+`FunctionRef`, `CallSiteSummary`, `SemanticClosure`, the program ladder,
+`TypeDef` with the `Types` interner beside it, `Vec<ArgRepr>`, …). Handlers do
+any rendering, counting, or projection at event time. If an emit site has to
+build a display string, a `Vec<String>`, or a derived value just for
+telemetry, that is the wrong side of the boundary. Plain `opaque(...)` values
+stay type-erased; `opaque_debug(...)` additionally carries a borrowed `Debug`
+formatter so rendering handlers (the JSONL backend) can print the value —
+choose it when the debug output is useful and bounded, plain `opaque` when it
+would explode a log line (a whole `fz_ir::Module`, the `Types` interner).
+
+Two recurring patterns keep emit sites clone-free:
+
+- **Define, then re-borrow.** A `World::define_*` moves the value into its
+  store first and borrows it back through the store's getter for the event
+  (`define_module` is the exemplar). A `store.define(k, v.clone())` written so
+  telemetry can borrow the local afterward is a telemetry-induced clone — the
+  pattern this rule exists to kill.
+- **Spans borrow.** Span-start metadata and `stop_with` payloads accept
+  borrowed lifetimes; only `close_with` (drop-time emission) demands
+  `'static`. Prefer `stop_with` so names and paths ride as borrows.
+
+**Slot revisions are the stable change signal.** Compiler2 state stores and fact
+slots bump revisions only when their aggregate value changes. Handlers and
+tests that care about "did this semantic thing actually change?" should key on
+the reported revision or the published fact/output, not on the mere existence
+of a repeated event. This matters most for joined facts like
+`FactValue::Inputs(Vec<Ty>)`, callsite summaries, semantic closure, and
+materialized programs.
+
+**Local type ids are world-owned facts.** Compiler2 `Ty` values are interned
+`u32` handles owned by `World.types`. They are valid only inside that one
+compiler world. Telemetry therefore treats them like `FunctionId` or `ModuleId`:
+cheap compiler-owned identity, never a printable semantic contract by itself.
+If a handler wants a rendered type, it must derive that rendering on its side.
+
+**Drive and job spans are the execution spine.** `World::drive()` opens one
+`[fz, compiler2, drive]` span. Each popped job opens one
+`[fz, compiler2, job]` span. Successful job spans close with the raw `effects`
+borrowed in place; the applied graph step rides the separate
+`[fz, compiler2, work_graph, applied]` event that `complete_job` emits with
+the job and `AppliedStep`. Unresolved drives close with the raw wait frontier;
+fatal drives close with the fatal job. Because the JSONL handler renders
+opaque metadata, the emitted log shows the actual precipitating `Job`,
+`JobEffects`, `AppliedStep`, and unresolved waits instead of hiding them
+behind the final outcome. There is no extra "job_fatal" event and no redundant
+"fact_published" stream.
+
+Artifact jobs lean on that raw `JobEffects` payload as a contract surface. The
+tests assert that:
+
+- `MaterializeRoot(root)` reads only `SemanticClosed(root)`
+- `DeriveAbiReady(root)` reads only `MaterializedProgram(root)`
+- `DeriveEmissionReady(root)` reads only `AbiReadyProgram(root)`
+- `LowerBackendProgram(root)` reads only `EmissionReadyProgram(root)`
+- `LowerNativeProgram(root)` reads only `BackendProgram(root)`
+- `BuildMacroExecutable(function)` waits on `BackendProgram(macro_root)` and
+  publishes `MacroExecutable(function)` without scheduling
+  `LowerNativeProgram(macro_root)`
+
+So a backend adapter that asks semantic, type, or reachability questions after
+the artifact boundary is visible as the wrong `reads`/`waits` shape on the job
+span, not just as a vague architectural complaint.
+
+Macro executable readiness also emits
+`[fz, compiler2, macro_executable, defined]` with raw `function_id`,
+`root_id`, backend revision, macro executable revision, and the backend program
+as opaque debug metadata. The event is observational only; tests that care
+about correctness should still assert the `JobEffects` facts and the absence of
+`NativeProgram(macro_root)` for macro roots.
+
+Macro expansion emits `[fz, compiler2, macro, expanded]` after a
+`MacroExecutable` runs over quoted source and before recursive expansion
+continues. Measurements carry `function_id`, `module_id`, expansion `depth`,
+`depth_budget`, `arg_count`, and the input/output quoted-source
+`heap_id`/`root_ref` pairs. This is the deterministic signal for runaway
+expansion and for proving that a returned root stayed in the same quoted-source
+transport world. The event is emitted by the shared quoted expander, so item
+macros and demanded function-body macros both report through the same path.
+
+Demand-time body staging emits `[fz, compiler2, function, source, expanded]`
+when `ExpandFunctionSource(function)` materializes `ExpandedFunctionSource`.
+Measurements carry the same raw function/code ids and quoted-source
+`heap_id`/`root_ref` pair as `function.source.noted`, but the event should only
+appear once a function is actually demanded. `ScopeCode` should not emit this
+event for ordinary undemanded function bodies; item-macro publication is still
+scope-order work, body-local macro expansion is not.
+
+Source-order compiler services emit `[fz, compiler2, compiler_service, define]`
+when `Fz.Compiler.define` publishes an expanded source root. Measurements carry
+raw compiler ids (`code_id`, `module_id`, `owner_module_id`, `function_id`),
+the publication `revision`, the captured `namespace`, the quoted-source
+`source_heap_id` / `source_root_ref`, and `env_root_ref` for the projected
+`__ENV__`. Literal functions, protocol callbacks, synthesized module-info
+functions, item-macro returned definitions, and explicit compiler-service forms
+all use this same event with `origin=fz_compiler`.
+
+**Compiler2 tests should observe telemetry, not world internals.** The common
+captures live in `src/compiler2/drive_test.rs` and assert on emitted
+definitions, work-graph steps, callsite summaries, semantic closure, and the
+full artifact ladder through `NativeProgram(root)`. The quicksort,
+`Enum.reduce`, and variadic-extern contracts are the fast summary probe; the
+compiler2-owned native JIT fixture tests prove the in-house backend can consume
+`NativeProgram(root)` directly, while the `Compiler2::compile_root_jit` /
+`run_root_jit` / `compile_root_aot` front-door tests prove that the public
+runtime setup now stays on that same compiler2-owned backend path without
+falling back to planner or type-preparation
+telemetry. `tests/fz2_cli.rs` extends that proof to the real `fz2` binary
+surface; its source-production macro/sugar fixture test asserts
+`FunctionSource` publication, `Fz.Compiler.define` publication, macro expansion
+when expected, and no legacy frontend/planner/type-infer events. Its
+`Enum.reduce` CLI probe also asserts that `lexer.pass` span-start events match
+the exact submitted source set one-for-one: user source plus the demanded
+runtime sources, with no duplicate pass and no fragment pseudo-source. The
+quicksort CLI probe carries the original perf question: on 2026-06-10,
+running `target/debug/fz2` with telemetry on `fixtures/quicksort/input.fz`
+emitted four lexer span-starts, exactly
+`fixtures/quicksort/input.fz`, `runtime:runtime.fz`, `runtime:Kernel.fz`, and
+`runtime:Process.fz`. The old source-fragment re-lex and its hidden per-call
+type-env rebuild are gone by construction on the compiler2 path. The same trace
+showed the native tail clearly: `fz.compiler2.drive` took 58.109 ms, then
+post-drive native backend compilation took 47.207 ms before runtime exit. That
+tail is now named by `fz.compiler2.native_backend.compile`, whose child
+`fz.codegen.compile` owns the backend-internal phase breakdown (`47.136 ms` in
+the same run). It is not a source-production re-lex problem. The ignored JSONL
+dump is the occasional deep trace.
+
+Useful reruns:
+
+- `cargo test --lib compiler2_ -- --nocapture`
+- `cargo test --lib compiler2::drive_test::compiler2_quicksort_root_closes_with_a_finite_recursive_frontier -- --exact --nocapture`
+- `cargo test --lib compiler2::drive_test::compiler2_materialization_projects_only_the_closed_quicksort_frontier -- --exact --nocapture`
+- `cargo test --lib compiler2::drive_test::compiler2_enum_reduce_selects_list_protocol_impl_and_callable_reducer -- --exact --nocapture`
+- `cargo test --lib compiler2::drive_test::compiler2_materialization_freezes_only_the_selected_enum_reduce_path -- --exact --nocapture`
+- `cargo test --lib compiler2::drive_test::compiler2_artifact_ladder_consumes_only_the_previous_rung -- --exact --nocapture`
+- `cargo test --lib compiler2::drive_test::compiler2_emission_ready_preserves_variadic_extern_inventory_and_marshals -- --exact --nocapture`
+- `cargo test --lib compiler2::drive_test::compiler2_native_program_jit_runs_quicksort_through_compiler2_codegen -- --exact --nocapture`
+- `cargo test --lib compiler2::drive_test::compiler2_native_program_jit_runs_enum_reduce_through_compiler2_codegen -- --exact --nocapture`
+- `cargo test --lib compiler2::drive_test::compiler2_native_program_jit_runs_variadic_extern_through_compiler2_codegen -- --exact --nocapture`
+- `cargo test --lib compiler2::compiler2_test::compiler2_compile_root_jit_consumes_native_program_without_legacy_prepare -- --exact --nocapture`
+- `cargo test --lib compiler2::compiler2_test::compiler2_run_root_jit_executes_resources_without_legacy_prepare -- --exact --nocapture`
+- `cargo test --lib compiler2::compiler2_test::compiler2_compile_root_aot_consumes_native_program_without_legacy_prepare -- --exact --nocapture`
+- `cargo test --test fz2_cli -- --nocapture`
+- `cargo test --lib compiler2::telemetry_dump_test::dump_quicksort_compiler2_telemetry_to_jsonl -- --ignored --exact --nocapture`
+
+The ignored harness writes its log to `/tmp/fz-compiler2-quicksort.jsonl`.
+
+For runtime-membership regressions below the native handoff, the fast probes are
+the explicit runtime-predicate projection tests and the cached receive-dispatch
+test:
+
+- `cargo test --lib runtime_type_predicate_ -- --nocapture`
+- `cargo test --lib cached_matcher_type_region_uses_runtime_type_predicate -- --exact --nocapture`
+
 ## Codegen Regression Events
 
-Three codegen events carry stable enough fields to assert on in tests, proving
-codegen consumed the ABI and callable-entry facts the planner handed it. They are
-emitted for reachable specs / lowered sites and pair with CLIF or runtime checks
-when the generated shape matters.
+Compiler2 emits `fz.compiler2.native_backend.compile` when a public native front
+door consumes a `NativeProgram(root)` through JIT or AOT. It is the artifact
+boundary span: metadata names the `root_id`, `backend_revision`, `entry_fn_id`,
+`body_count`, `callable_entry_count`, and backend kind. The raw
+`fz.codegen.compile` span nests under it, so a trace can account for both the
+fact drive and the post-drive native backend tail without treating codegen as an
+unattributed gap.
 
-- `fz.codegen.abi_contract` (`ir_codegen/driver.rs`) — one per reachable lowered
-  spec. Measurements: `spec_id`, `fn_id`, `param_count`, `capture_count`.
-  Metadata: `module_path`, `fn_name`, `spec_key`, `param_reprs`, `return_repr`,
-  and the `is_native` / `is_cont_fn` / `is_closure_target` flags.
-- `fz.codegen.callable_entry_selected` (`ir_codegen/prim.rs`) — the site-specific
-  callable entry chosen while lowering `MakeFnRef` / `MakeClosure`. Measurements
-  include the active `spec_id`/`fn_id`, `closure_fn_id`, `capture_count`,
-  `callable_entry_spec_id`, `block_id`, `stmt_idx`, source `span_start`/
-  `span_end`, and `candidate_count`. Metadata includes `body_name`,
-  `closure_fn_name`, `selection_kind`, and the planned vs selected spec keys.
-- `fz.codegen.closure_call_lowered` (`ir_codegen/terminator.rs`) — one per
-  `CallClosure` lowering. Measurements: active `spec_id`, `closure_var`,
-  `continuation_spec_id`. Metadata: `body_name`, `call_kind`,
-  `closure_binding_repr`, `dispatch_kind` (`direct` when the body literal
-  resolves, else `indirect`), and `continuation_storage` (`lazy_descriptor` or
-  `heap_closure`).
+Three codegen events carry stable enough fields to assert on in tests, proving
+codegen consumed the published ABI and callable-entry facts handed to it. They
+are emitted for reachable specs / lowered sites and pair with CLIF or runtime
+checks when the generated shape matters. Both backends emit them; the
+compiler2 copy (`compiler2/native_codegen/`) follows the cheap-emit
+discipline, while the old-pipeline twin (`ir_codegen/`) still preformats some
+fields and dies with that pipeline.
+
+- `fz.codegen.abi_contract` (`compiler2/native_codegen/driver.rs`) — one per
+  lowered body slot. Measurements: `spec_id`, `fn_id`, `param_count`,
+  `capture_count`. Metadata: borrowed `module_path`/`fn_name`, `body_origin`
+  and `entry_abi` as `opaque_debug` enum borrows, `param_reprs` as an
+  `opaque_debug` `Vec<ArgRepr>` borrow, `return_repr` (`ArgRepr::as_str`,
+  `&'static str`), and the `is_native` / `is_cont_fn` / `is_closure_target`
+  flags. (The ir_codegen twin additionally carries `spec_key` and renders
+  `param_reprs` as strings.)
+- `fz.codegen.callable_entry_selected` (`compiler2/native_codegen/prim.rs`) —
+  the site-specific callable entry chosen while lowering `MakeFnRef` /
+  `MakeClosure`. Measurements include the active `spec_id`/`fn_id`,
+  `closure_fn_id`, `capture_count`, `callable_entry_spec_id`, `block_id`,
+  `stmt_idx`, source `span_start`/`span_end`, and `candidate_count`. Metadata:
+  borrowed `module_path`/`body_name`, `selection_kind`,
+  `callable_entry_body_fn_id`, and the `fz_ir::Module` as a plain `opaque`
+  borrow — a handler wanting the closure's name resolves `closure_fn_id`
+  against it at event time.
+- `fz.codegen.closure_call_lowered` (`compiler2/native_codegen/terminator.rs`)
+  — one per `CallClosure` lowering. Measurements: active `spec_id`,
+  `closure_var`, `continuation_spec_id`. Metadata: `body_name`, `call_kind`,
+  `closure_binding_repr` (`ArgRepr::as_str`), `dispatch_kind` (`direct` when
+  the body literal resolves, else `indirect`), and `continuation_storage`
+  (`lazy_descriptor` or `heap_closure`).
 
 ## Telemetry In Tests
 
@@ -190,7 +378,19 @@ cap.count(&["fz", "ir", "dce", "block_pruned"])   // assert the pass fired
 `Capture` offers `count`, `find` (prefix), `last`, `contains`, and
 `count_by_kind`; events come back as `OwnedEvent` with their measurements and
 metadata cloned into `'static` form (`durable_owned`, which drops `Opaque`
-values it cannot own).
+values it cannot own). That drop is by design: a test that needs an opaque
+payload attaches an event-time closure handler that downcasts and projects
+while the borrows are alive — `rendered_type_defs` in
+`src/compiler2/drive_test.rs` is the exemplar (it downcasts the `TypeDef` and
+`Types` interner off `[fz, compiler2, type, defined]` and renders the type in
+the handler). Borrowed `Str` values survive durable capture (the handler
+clones them at event time), so emit sites lending `&str`s cost tests nothing.
+
+The ownership rule is strict: only the true root of a run creates the
+`ConfiguredTelemetry`. Shared helpers take caller-owned `&dyn Telemetry`; they
+do not quietly allocate a second bus, because that creates a shadow event
+stream the test cannot observe and can accidentally double-run planner/codegen
+work under a different sink.
 
 The decision and the artifact are two questions. Telemetry proves the compiler
 *chose* something — a pass ran, a path was selected, N items were pruned. It does

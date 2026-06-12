@@ -1,9 +1,9 @@
 use std::fmt;
 use std::str::from_utf8;
 
+use crate::compiler::source::{Id as CodeId, Span};
 use crate::diag::Diagnostic;
 use crate::diag::codes::LEX_UNEXPECTED_CHAR;
-use crate::diag::{FileId, Span};
 use crate::measurements;
 use crate::telemetry::{Metadata, Telemetry, Value};
 
@@ -34,6 +34,7 @@ pub enum Tok {
     Defimpl,
     Alias,
     Import,
+    Require,
     Do,
     End,
     If,
@@ -112,7 +113,7 @@ impl fmt::Display for Tok {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Token {
     pub tok: Tok,
     pub span: Span,
@@ -129,7 +130,7 @@ pub struct Token {
 pub struct Lexer<'a> {
     src: &'a [u8],
     pos: usize,
-    file: FileId,
+    code_id: CodeId,
     source_name: Option<String>,
 }
 
@@ -159,14 +160,14 @@ impl LexError {
 
 impl<'a> Lexer<'a> {
     pub fn with_source_name(src: &'a str, source_name: impl Into<String>) -> Self {
-        Self::with_file_and_source_name(src, FileId(0), source_name)
+        Self::with_code_id_and_source_name(src, CodeId(0), source_name)
     }
 
-    pub fn with_file_and_source_name(src: &'a str, file: FileId, source_name: impl Into<String>) -> Self {
+    pub fn with_code_id_and_source_name(src: &'a str, code_id: CodeId, source_name: impl Into<String>) -> Self {
         Self {
             src: src.as_bytes(),
             pos: 0,
-            file,
+            code_id,
             source_name: Some(source_name.into()),
         }
     }
@@ -182,7 +183,7 @@ impl<'a> Lexer<'a> {
     }
 
     fn span_from(&self, start: usize) -> Span {
-        Span::new(self.file, start as u32, self.pos as u32)
+        Span::new(self.code_id, start as u32, self.pos as u32)
     }
 
     fn eat_while(&mut self, mut pred: impl FnMut(u8) -> bool) {
@@ -339,8 +340,20 @@ impl<'a> Lexer<'a> {
         String::from_utf8(bytes).map_err(|e| self.err(format!("invalid UTF-8 in string: {}", e)))
     }
 
-    fn read_quoted_binary(&mut self) -> Result<Tok, LexError> {
-        Ok(Tok::Binary(self.read_quoted_binary_bytes()?))
+    fn keyword_value_starts_after_colon(&self) -> bool {
+        matches!(
+            self.peek(0),
+            None | Some(b' ')
+                | Some(b'\t')
+                | Some(b'\r')
+                | Some(b'\n')
+                | Some(b'#')
+                | Some(b')')
+                | Some(b']')
+                | Some(b'}')
+                | Some(b',')
+                | Some(b';')
+        )
     }
 
     fn err(&self, msg: String) -> LexError {
@@ -351,7 +364,7 @@ impl<'a> Lexer<'a> {
         let start = if self.pos == 0 { 0 } else { end.saturating_sub(1) };
         LexError {
             msg,
-            span: Span::new(self.file, start, end),
+            span: Span::new(self.code_id, start, end),
         }
     }
 
@@ -367,6 +380,7 @@ impl<'a> Lexer<'a> {
             "defimpl" => Tok::Defimpl,
             "alias" => Tok::Alias,
             "import" => Tok::Import,
+            "require" => Tok::Require,
             "do" => Tok::Do,
             "end" => Tok::End,
             "if" => Tok::If,
@@ -640,14 +654,33 @@ impl<'a> Lexer<'a> {
                 }
             },
 
-            b'"' => self.read_quoted_binary()?,
+            b'"' => {
+                let bytes = self.read_quoted_binary_bytes()?;
+                if self.peek(0) == Some(b':') && self.peek(1) != Some(b':') {
+                    self.bump();
+                    if self.keyword_value_starts_after_colon() {
+                        Tok::KwKey(
+                            String::from_utf8(bytes)
+                                .map_err(|e| self.err(format!("invalid UTF-8 in string: {}", e)))?,
+                        )
+                    } else {
+                        return Err(self.err("keyword argument must be followed by space after quoted key".into()));
+                    }
+                } else {
+                    Tok::Binary(bytes)
+                }
+            }
             c if c.is_ascii_digit() => self.read_number()?,
             c if Self::ident_start(c) => {
                 let name = self.read_ident();
                 // `name:` (but not `::`) is a keyword-list key like `do:`.
                 if self.peek(0) == Some(b':') && self.peek(1) != Some(b':') {
                     self.bump();
-                    Tok::KwKey(name)
+                    if self.keyword_value_starts_after_colon() {
+                        Tok::KwKey(name)
+                    } else {
+                        return Err(self.err(format!("keyword argument must be followed by space after: {}:", name)));
+                    }
                 } else {
                     Self::keyword_or_ident(name)
                 }
@@ -686,7 +719,7 @@ impl<'a> Lexer<'a> {
 
     fn telemetry_metadata(&self) -> Metadata<'static> {
         let mut metadata = Metadata::new();
-        metadata.0.push(("file_id", Value::from(self.file.0)));
+        metadata.0.push(("code_id", Value::from(self.code_id.0)));
         if let Some(source_name) = &self.source_name {
             metadata.0.push(("source_name", Value::from(source_name.clone())));
         }

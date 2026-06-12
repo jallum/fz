@@ -462,8 +462,7 @@ impl<'a> Runtime<'a> {
             task.state = ProcessState::Running;
             task.reset_reduction_budget();
             task.ctx = ctx_ptr;
-            let owner: *mut Process = &mut *task;
-            task.heap.set_owner(owner);
+            task.attach_heap_owner();
             debug_assert!(!task.ctx.is_null(), "task.ctx installed before dispatch");
             self.compiled.run_quantum(&mut task);
             // Possible post-quantum states (fz-ul4.19.3):
@@ -517,6 +516,14 @@ impl<'a> Runtime<'a> {
                 // the pinned register, like every other scheduler-facing entry.
                 let drain_addr = self.compiled.drain_dtor_entry_addr;
                 while let Some((closure, payload_ref)) = task.heap.pending_dtors.pop_front() {
+                    let payload_tag = AnyValueRef::from_raw_word(payload_ref)
+                        .expect("pending dtor payload should be a valid value ref")
+                        .tag();
+                    assert_eq!(
+                        payload_tag,
+                        fz_runtime::any_value::ValueKind::INT,
+                        "pending dtor payload should stay boxed as an integer ref",
+                    );
                     let _ = unsafe { call2(drain_addr, ptr, closure, payload_ref) };
                 }
                 ExitRecord::emit(self.tel, pid, &task);

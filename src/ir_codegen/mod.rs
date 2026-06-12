@@ -19,10 +19,11 @@
 pub(crate) use crate::frontend::spec_registry::SpecRegistry;
 use crate::fz_ir::Module;
 use crate::ir_planner::ModulePlan;
+use crate::ir_planner::planned::PlannedProgram;
 use crate::telemetry::Telemetry;
 use crate::types::{ClosureTypes, LiteralTypes, RenderTypes, Ty, Types, VisibilityTypes};
 
-mod abi_facts;
+pub(crate) mod abi_facts;
 pub(crate) mod aot_main;
 pub(crate) mod backend;
 mod call;
@@ -45,12 +46,14 @@ pub(crate) mod repr;
 pub(crate) mod runtime_syms;
 pub(crate) mod schema;
 mod support;
+pub(crate) mod surface;
 mod terminator;
 mod type_pred;
 mod value;
 
 // Glob re-exports keep cross-module references resolvable through
 // `use super::*;` in each submodule.
+pub(crate) use abi_facts::AbiFacts;
 pub(crate) use aot_main::*;
 pub(crate) use backend::*;
 pub(crate) use call::*;
@@ -68,6 +71,7 @@ pub(crate) use repr::*;
 pub(crate) use runtime_syms::*;
 pub(crate) use schema::*;
 pub(crate) use support::*;
+pub(crate) use surface::*;
 pub(crate) use terminator::*;
 pub(crate) use type_pred::*;
 pub(crate) use value::*;
@@ -79,6 +83,30 @@ pub use support::{asm_record_enable, asm_record_take, ir_text_record_enable, ir_
 
 pub use fz_runtime::process::{PidId, Process, ProcessState};
 
+pub(crate) fn compile_with_backend_prepared<
+    B: Backend,
+    T: Types<Ty = Ty> + ClosureTypes + LiteralTypes + RenderTypes + VisibilityTypes,
+>(
+    t: &mut T,
+    working: &Module,
+    working_module_plan: &ModulePlan,
+    planned_program: &PlannedProgram,
+    abi_facts: &AbiFacts,
+    backend: B,
+    tel: &dyn Telemetry,
+) -> Result<B::Output, CodegenError> {
+    driver::compile_with_backend_prepared(
+        t,
+        working,
+        working_module_plan,
+        planned_program,
+        abi_facts,
+        backend,
+        tel,
+    )
+}
+
+#[cfg(test)]
 pub(crate) fn compile_with_backend_planned<
     B: Backend,
     T: Types<Ty = Ty> + ClosureTypes + LiteralTypes + RenderTypes + VisibilityTypes,
@@ -92,6 +120,7 @@ pub(crate) fn compile_with_backend_planned<
     driver::compile_with_backend_preplanned(t, module, module_plan, backend, tel)
 }
 
+#[cfg(test)]
 pub(crate) fn compile_planned<T: Types<Ty = Ty> + ClosureTypes + LiteralTypes + RenderTypes + VisibilityTypes>(
     t: &mut T,
     module: &Module,
@@ -101,6 +130,7 @@ pub(crate) fn compile_planned<T: Types<Ty = Ty> + ClosureTypes + LiteralTypes + 
     compile_with_backend_planned(t, module, module_plan, JitBackend::new(), tel)
 }
 
+#[cfg(test)]
 pub(crate) fn compile_aot_planned<T: Types<Ty = Ty> + ClosureTypes + LiteralTypes + RenderTypes + VisibilityTypes>(
     t: &mut T,
     module: &Module,

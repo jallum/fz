@@ -1,0 +1,13 @@
+defmodule Contracts do
+  defprotocol Collectable do
+    fn id(value)
+  end
+
+  defimpl Collectable, for: List do
+    fn id(value), do: 42
+  end
+end
+defmodule User do
+  fn run(), do: Contracts.Collectable.id([1])
+end
+fn main(), do: User.run()

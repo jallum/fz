@@ -1,0 +1,5 @@
+fn tuple_second({_, x}), do: x
+fn list_head([h | _]), do: h
+fn main() do
+  dbg({list_head([[1]]), %{child: [2]}.child, tuple_second({:ok, [3]})})
+end

@@ -1,0 +1,7 @@
+fn id(x) do
+  x
+end
+
+fn main() do
+  {id(1), id(:ok)}
+end

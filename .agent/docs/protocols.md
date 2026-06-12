@@ -5,25 +5,20 @@ two things:
 
 - a **callback surface** — the function names and arities an implementation must
   provide;
-- a **domain type** — `Protocol.t(...)`, the set of values that are known to have
-  an implementation.
+- a **domain type marker** — `Protocol.t(...)`, the protocol-owned opaque type
+  name specs can refer to without depending on the current impl set.
 
-fz keeps Elixir's source shape (`defprotocol`/`defimpl`/a convenience module like
-`Enum`) but the semantic object is a registry fact that participates in planning,
-linking, diagnostics, and representation choices. The pieces to hold in your head:
+fz keeps Elixir's source shape (`defprotocol` / `defimpl`, plus a convenience
+module like `Enum`), but the semantic object is a registry fact. The pieces:
 
-- `ProtocolRegistry` (in `frontend/protocols.rs`) — the resolver-owned store of
-  protocol declarations and `(protocol, target)` implementation facts.
-- `ImplTarget` — the typed identity of what an impl is *for* (a `ModuleName`,
-  mapped to a concrete type shape when dispatch is checked).
-- the **domain type** — an opaque domain tag unioned with each implementing
-  target's type, built by `resolve::protocol_domain_template`.
-- the **protocol stub** — a `__protocol__.<callback>` fn the lowerer emits at each
-  protocol callsite; the planner rewrites the call edge to a real impl.
-- `protocol_dispatch_key` (in `ir_planner/walk.rs`) — the planner step that turns a
-  stub call into a local or provider-boundary call edge.
+- `ProtocolCallback` / `ProtocolImpl` (`src/compiler2/protocol.rs`) — the owned
+  facts: which protocol a callback belongs to, and a protocol's per-target impl.
+- `ImplTarget` — the module a `defimpl` is *for*, mapped to a concrete type when
+  dispatch is checked.
+- `resolve_protocol_call` (`jobs/semantic.rs`) — selects the impl at a callsite
+  from receiver type facts.
 
-## Source Contract
+## Source contract
 
 ```fz
 defprotocol Enumerable do
@@ -34,244 +29,127 @@ end
 defimpl Enumerable, for: List do
   fn reduce(list, acc, reducer), do: List.reduce(list, acc, reducer)
 end
-
-defmodule Enum do
-  @spec reduce(Enumerable.t(a), b, (a, b) -> b) :: b
-  fn reduce(enumerable, acc, reducer), do: ...
-end
 ```
 
-`defprotocol Enumerable` publishes a first-class protocol namespace at its lexical
-module path: a root declaration publishes `Enumerable`; the same declaration inside
-`defmodule Foo` publishes `Foo.Enumerable` (`resolve::qualify_protocol_name`). That
-namespace owns the required callback names and arities, the public callback specs,
-and the protocol-domain constructor `Protocol.t(...)`.
+`defprotocol Enumerable` publishes a first-class namespace at its lexical path
+(a root declaration publishes `Enumerable`, not `Enumerable.Enumerable`). It owns
+the required callback names/arities and their public specs. `defimpl` declares
+the protocol, the target, and the callback bodies; the callbacks lower into a
+**protocol-owned** module named `protocol.child(target)` — `defimpl Enumerable,
+for: List` produces `Enumerable.List.reduce/3` (`reference_protocol_impl_module`),
+not a function on `List`, so the body can delegate to ordinary target helpers
+like `List.reduce/3` without colliding.
 
-A protocol namespace is not a wrapper module: a root `defprotocol Enumerable`
-publishes `Enumerable`, not `Enumerable.Enumerable`. The interface layer
-represents the protocol with a module-shaped `ModuleInterface` because imports,
-linking, and qualified references already speak in public namespace
-identities. The source semantic object stays the protocol fact.
+The runtime library follows Elixir's split: `Enumerable` is the protocol; `Enum`
+is the convenience module users call. Low-level control tuples
+(`{:cont|:halt|:suspend, acc}`) stay on `Enumerable.reduce/3`; `Enum.reduce/2,3`
+returns plain accumulator values.
 
-`defimpl` declares the protocol it implements, the target, and the callback bodies.
-Callbacks lower into implementation modules owned by the protocol — `defimpl
-Enumerable, for: List` produces `Enumerable.List.reduce/3`
-(`resolve::protocol_impl_module` = `protocol.child(target_last_segment)`), not into
-the target module. The body can delegate to ordinary target helpers like
-`List.reduce/3` without colliding with them.
+## The owned facts
 
-The runtime library follows Elixir's public naming split: `Enumerable` is the
-protocol identity and domain type, while `Enum` is the convenience module users
-call. `Enum.sort/1` and `Enum.sort/2` are ordinary runtime-library FZ functions backed by
-a stable merge sort over lists (the private `sort_list`/`merge_sort_lists` helpers,
-which keep the left element on a tie). Low-level protocol-control tuples stay on
-`Enumerable.reduce/3`; the public `Enum.reduce/2,3` returns plain accumulator values
-(its `reduce_finish` unwraps `{:done, acc}` / `{:halted, acc}` / `{:suspended, acc,
-_}`).
+`World` carries two registries:
 
-## Callback Surface vs Domain Type
+- **`ProtocolCallbackMap`** — `function -> ProtocolCallback { protocol }`.
+  `define_protocol_callback` fills it while indexing a `defprotocol` surface, so
+  a callback function knows the protocol it answers to.
+- **`ProtocolImplMap`** — `ProtocolImplKey { protocol, target } -> ProtocolImpl`,
+  where a `ProtocolImpl` maps each `(name, arity)` to a
+  `ProtocolCallbackImpl { function, owner_module }`. `define_protocol_impl` fills
+  it while indexing a `defimpl`.
+- **`ProtocolDispatchMap`** — `protocol -> ProtocolDispatch { arms }`, derived
+  from the impl registry. Protocol definition publishes the empty dispatch fact;
+  each `defimpl` revises this dispatch fact and only this dispatch fact.
 
-The callback surface and the domain type are related but checked in different
-places.
+`protocol_callback(fn)` answers "is this function a protocol callback?". It reads
+the registry, and `derived_protocol_callback` covers two cases the registry does
+not hold explicitly: a runtime-library module whose interface declares the
+callback, and a function in a module indexed as `ModuleSourceKind::Protocol`.
+That is how runtime protocols such as `Enumerable` are recognized without a
+user `defprotocol` in the program.
 
-The **callback surface** is checked at implementation time
-(`resolve::validate_protocol_impls`). An implementation must define every required
-callback at the required arity and must not provide a callback the protocol never
-declared. Callback specs are ordered overload sets. When both the protocol callback
-and the impl callback carry `@spec`s, `validate_protocol_callback_specs` binds the
-domain variable `t` to the impl's concrete target type, then compares each impl
-arrow against the protocol arrow set per position. A position rejects only on proved
-set-theoretic disjointness (empty intersection), so free type variables and `any`
-never create a false positive.
+## Implementation targets
 
-The **domain type** is checked at use sites and function boundaries. A spec that
-requires `P.t(...)` requires proof that the argument type is inside `P`'s domain,
-which may come from a concrete impl target, a closed union whose arms all implement
-`P`, or an explicitly open boundary.
-
-Because the domain is a real union (not `any`), passing an `Integer` where
-`Enumerable.t(a)` is required fails the generic `spec_check::validate_specs` "not a
-subtype of any declared @spec arrow" check (`Integer` is disjoint from the
-`Enumerable` domain). The planner adds a protocol-specific message on top (see
-Dispatch Outcomes).
-
-`Protocol.t(...)` is not `any`. It is the union of `opaque_of(protocol_domain_tag)`
-with every known implementation target's type. The element parameter spelled in
-`Enumerable.t(a)` is a real refinement, not discarded: `type_expr` instantiates the
-domain template's `PROTOCOL_ELEM_VAR` with the argument, so a concrete element
-refines element-parametric targets (`List` from `list(any)` to `list(elem)`). An
-element that still mentions a free type variable carries no refinement, so it falls
-back to `any` (the bare domain) and dispatch is left unperturbed. Scalar and map
-targets are not parametric in a single element, so the element does not refine them.
-
-## Implementation Targets
-
-Implementation targets are typed identities, never display strings. The only
-variant is `ImplTarget::Module(ModuleName)`. `impl_target_type_with_element` maps a
-target's last segment to a concrete type shape: `List` → `list(element)`, `Integer`
-→ `int`, `Float` → `float`, `Atom` → `atom`, `Binary` → `str`, `Map` → `map_top`,
-and any other name → `opaque_of("impl-target::<name>")` (a named source struct such
-as `Range`). Display spellings (`ImplTarget::display_name`) are for diagnostics and
-source syntax; compiler facts use the `ImplTarget` identity, just as linking uses
-`ModuleName` and `ExportKey` instead of dotted strings.
-
-## Open And Closed Domains
-
-Library interfaces expose protocol declarations and implementation facts as public
-contract data, so dependents can check protocol-domain specs from module
-interfaces without loading provider bodies. Compilation sees two domain shapes:
-
-- an **open** library domain, where unloaded modules may add implementations;
-- a **closed** executable/link domain, where the linked implementation set is known.
-
-Open domains type-check calls and specs. Executable dispatch is emitted only when
-the planner selects a single static implementation callback; open or erased receiver
-domains get no runtime-lookup fallback. Closed domains let the planner pick a direct
-call to the selected implementation with no fallback path.
-
-Within one unit the direct-call rewrite runs to a fixed point
-(`frontend::apply_planner_rewrites_to_fixed_point`): applying one protocol edge can
-make a later continuation reachable, revealing more protocol calls, so the loop
-re-plans and re-applies until nothing changes.
-
-## Dispatch Outcomes
-
-Protocol dispatch is a call-edge capability the planner and linker select, recorded
-as an ordinary `CallEdgePlan`. It is not a separate string-lookup path in codegen.
-
-For a protocol callsite, `protocol_dispatch_key` reads the receiver (first argument)
-type, matches it by subtype against the registered `(protocol, ImplTarget)` impls,
-and returns one of:
-
-- `ProtocolDispatch::Local(SpecKey, n_params)` — a matching impl lives in this unit;
-  the edge becomes an ordinary direct call (`CallEdgeTarget::Local`) to that impl
-  callback.
-- `ProtocolDispatch::External { target: ExportKey, input, demand }` — the matching
-  callback is known by `ExportKey` but its body lives in another unit until module
-  linking; recorded as `CallEdgeTarget::External`.
-
-When no impl matches, `protocol_dispatch_key` returns `None` and the unplanned
-`__protocol__` stub is left in place. Two checks catch the failure with a clear
-message:
-
-- `spec_check::validate_specs` rejects a receiver disjoint from the domain union via
-  the generic "not a subtype" check;
-- `ir_planner::diagnostics::collect_protocol_no_impl_diagnostics` emits
-  `type/protocol-no-impl` (`codes::TYPE_PROTOCOL_NO_IMPL`) at any protocol callsite
-  whose receiver type is disjoint from the protocol's domain. The message names the
-  protocol and the rendered receiver type, notes that the callback dispatches on its
-  first argument, and lists the known implementors (or notes the protocol has none).
-  The disjointness trigger is sound: `any`, a free variable, or the domain type
-  itself overlaps the domain and never fires.
-
-A finite-union receiver — `integer | list(...)` where both `Integer` and `List`
-implement the protocol — has no single subtype match, so `protocol_dispatch_key`
-leaves the stub. The protocol dispatch producer then builds a DispatchMatrix over
-the receiver domain with one direct-call outcome per *local* implementing target
-the receiver overlaps. The frontend rewrite hook lowers that compiled graph into
-the current `TypeTest`/`If` IR shape:
+An `ImplTarget` is a module identity, never a display string. `impl_target_ty`
+maps a target's last segment to a concrete type:
 
 ```text
-  t0 = TypeTest(recv, integer)
-  if t0 -> arm_int  else -> arm_list
-arm_int:    Enumerable.Integer.cb(recv, …) -> K
-arm_list:   Enumerable.List.cb(recv, …)    -> K
+List -> list(any)   Integer -> int   Float -> float   Atom -> atom
+Binary -> str       Map -> map_top    <other> -> struct_impl_target_type(name)
 ```
 
-`narrow::narrow_for_cond` intersects `recv` with the arm's target in the `then` arm
-and differences it in the `else` arm, so when `plan_module` re-types the rewritten
-module each arm's receiver is its target type and the ordinary direct-call planner
-specs it to the right impl. The same path handles named source structs such as
-`Range` by testing their struct schema id, alongside kind tests for lists and maps.
+A named source struct (e.g. `Range`) maps to its nominal opaque tag
+`opaque(impl-target::Range)` (see [`set-theoretic-types`](set-theoretic-types.md)),
+which keeps it distinct from any structurally-similar value.
 
-A receiver fully covered by its arms (a closed union) tests every arm but the last,
-which is the final direct `else`; this is how the graph's closed residual `Fail`
-tail materializes in IR. An open or erased receiver tests every arm and routes
-the final `else` to a fallthrough block that preserves the original stub call, so
-a runtime value matching no arm halts with `protocol_dispatch_unplanned` — the
-same behavior as an unplanned stub. An overlapping target whose impl is external
-(a provider outside this unit) makes the receiver not fully covered: its overlap
-becomes residual handled by the fallthrough, the same local/external boundary
-`protocol_dispatch_key` draws. `TypeTest`, `If`, and `Call` already lower in the
-interpreter, JIT, and AOT, so the rewrite holds three-path parity with no new
-codegen.
+## Dispatch is receiver-subtype selection
 
-Static direct dispatch does not require heap boxing of scalar receivers. The
-selected callback ABI and the caller's argument shape cooperate the same way
-direct-call variants and planner-authored return contracts do, so a `List` receiver
-stays a list and an integer receiver stays a raw integer.
+A protocol callsite is an ordinary call whose callee is a protocol callback
+function. When `resolve_function_call` sees `protocol_callback(fn)`, it hands off
+to `resolve_protocol_call`, which selects an implementation from the receiver
+type — the first argument:
 
-## Why Linking Does Not Re-Plan
+```text
+receiver = input_types[0]
+for each registered (protocol, target) impl:
+    if is_subtype(receiver, impl_target_ty(target)) and it has this callback:
+        collect it
+exactly one match  -> activate that impl callback as an ordinary call
+                      (the protocol callsite becomes a direct call to the impl)
+no match           -> pull reachable runtime impl modules whose target the
+                      receiver is a subtype of, then stay unresolved (any) and retry
+many matches       -> unresolved (any): the receiver is open/ambiguous here
+```
 
-Planner facts are upstream facts. The link and load stages validate, remap, resolve,
-and strengthen them; they do not run a fresh planner pass to reconstruct facts that
-were already known before linking. Provider-backed execution therefore preserves the
-codegen-required planner facts across the unit boundary: call-edge dispatch facts,
-return contracts, function constant facts, extern marshal facts, and protocol
-implementation edge facts.
+Selection is lazy about runtime code: when no registered impl matches, the job
+asks `runtime_impl_target_modules(receiver)` for the runtime modules whose target
+the receiver fits and `wait_for_runtime_module`s each one, so the owning runtime
+source is pulled and indexed; the retry then finds the impl. A single match
+waits for the impl's `owner_module` to be defined, then activates
+`selected.function` through the ordinary call path — so a known list receiver at
+`Enumerable.reduce/3` resolves to `Enumerable.List.reduce/3` and the callsite
+summary names that concrete callee, no stub and no runtime lookup table.
 
-`ExternalCallEdge` (a `CallsiteId` plus an `ExportKey` target) is the
-provider-boundary call edge. A protocol callback that crosses a provider boundary
-uses the same model: the impl callback is known by typed export identity before its
-local `FnId` exists. `IrUnitLinker::resolve_external_call_edges_in_plan` rewrites
-each boundary callsite to its resolved local `FnId` *and* flips the preserved
-`CallEdgeTarget::External` to `CallEdgeTarget::Local` in the same transformation, so
-the linked module's call-edge plan needs no replan to be correct. The compile
-pipeline then runs one authoritative `plan_module` over the merged module before
-codegen; whole-program/LTO passes only *strengthen* facts and never substitute for
-ordinary linking.
+## The domain type
 
-## Where Protocol Facts Live
+`Protocol.t(...)` is a declaration-owned opaque marker:
+`opaque(protocol_domain_tag(protocol))`. Protocol publication notes `t/0` and
+`t/1` as normal type declarations; `DeriveTypeDef` resolves them only when a
+consumer demands their `TypeDefined` fact. `t/1` keeps its formal parameter, but
+the resolved hard type is the same interned marker as `t/0`; the impl set never
+widens or revises the type fact.
 
-Protocol facts extend existing compiler ownership rather than a parallel subsystem.
+This keeps the type layer separate from the dispatch layer. A protocol marker is
+not a dispatch matrix and is not the union of known implementations. Runtime
+dispatch still matches the receiver against implementation-target types directly
+inside `resolve_protocol_call`.
 
-- `frontend/protocols.rs` owns `ProtocolRegistry` — `protocols:
-  BTreeMap<ModuleName, ProtocolDecl>` and `impls: BTreeMap<ProtocolImplKey,
-  ProtocolImplFact>`. A `ProtocolImplFact` carries the protocol, the `ImplTarget`,
-  the callbacks keyed by `(name, arity)` → `ExportKey`, and each impl callback's
-  declared `@spec`s (`callback_specs`, empty for interface-sourced impls).
-- `resolve::flatten_modules` collects protocol facts while source-level protocol AST
-  is available: it validates duplicate impls and callback coverage
-  (`validate_protocol_impls`), checks callback-spec compatibility
-  (`validate_protocol_callback_specs`), and installs `Protocol.t` domain aliases
-  (the element-refining template) in module type envs.
-- `type_expr` parses dotted parametric domain spellings such as
-  `Enumerable.t(integer)`, looks `Enumerable.t` up as a `ProtocolDomain` alias, and
-  instantiates its `PROTOCOL_ELEM_VAR` with the (concrete) element.
-- `ModuleInterface` carries `protocols` and `protocol_impls` in interface
-  fingerprints so interface dumps and compatibility checks expose protocol
-  contracts without provider bodies. A top-level `defprotocol` contributes its own interface keyed by the
-  protocol namespace; a nested protocol contributes its facts to the containing
-  module interface under its fully qualified name. Callback specs travel as ordered
-  overload sets (`InterfaceProtocolCallback.specs`), preserving input/result
-  correlation through compatibility checking.
-- `ModuleGraphLoader` traverses module imports and runtime implementation providers,
-  not protocol callback namespaces. A `defimpl` callback path such as
-  `Enumerable.List.reduce/3` is an export namespace inside the defining module;
-  treating it as a separate module root would create false dependencies. A nested
-  protocol declared in the same module interface is already loaded, so a
-  `defimpl Contracts.Collectable` inside `Contracts` does not make the loader
-  request a separate `Contracts.Collectable` module.
-- `ir_lower` records each protocol callback call as a call to a `__protocol__.<name>`
-  stub fn that halts with the atom `protocol_dispatch_unplanned`, keyed in
-  `Module.protocol_call_targets: HashMap<FnId, ProtocolCallTarget>`. Prelude protocol
-  facts are carried into the lowered module so runtime-library implementations of
-  `Enumerable` for `List`, `Range`, and `Map` are visible to planner dispatch.
-- `ir_planner` replaces those stub call edges with local or provider-boundary
-  `CallEdgePlan`s from receiver type facts (`protocol_dispatch_key`), and
-  `SpecPlan.call_edges` (keyed by `CallsiteId`) stores the selected call-edge
-  capability and return contract.
-- `link_ir_units` copies and remaps protocol facts (`copy_protocol_facts` carries
-  `protocol_call_targets` and the registry; `copy_exports` registers impl callbacks
-  in the export map) and resolves provider impl callbacks to local call edges with no
-  post-link planning pass. A link-time callsite rewrite must match the
-  caller/identity and target arity; an arity mismatch means a different callsite.
-  Linked modules also carry `defstruct` schemas and intern struct field names so
-  provider-backed struct patterns share the same schema/atom facts as same-unit code.
+## Callback surface vs domain
 
-`ReturnDemand` is part of planner entry keys and call-edge contracts, but semantic
-returns and executable bodies are keyed by `BodyKey`. `Types` owns type
-construction, queries, and decisions; protocol-domain types are built there. Planner
-dispatch facts are detailed in [`dispatch-as-planner-output.md`].
+The two are checked in different places. The **callback surface** is validated at
+implementation time: an impl must define every required callback at the required
+arity and none the protocol never declared, and when both protocol and impl carry
+`@spec`s their arrows are compared per position, rejecting only on proved
+set-theoretic disjointness (so free variables and `any` never false-positive).
+The **domain type** is a normal `TypeDefined` dependency: consumers that mention
+`P.t(...)` demand `DeriveTypeDef(P.t)` and read the protocol-owned marker. It is
+not revised by `defimpl`.
 
-[`dispatch-as-planner-output.md`]: dispatch-as-planner-output.md
+## Where the facts live
+
+```text
+jobs/source.rs   indexes defprotocol (define_protocol_surface ->
+                 define_protocol_callback) and defimpl (define_protocol_impl);
+                 reference_protocol_impl_module names the protocol.child(target) module
+compiler2/protocol.rs  the ProtocolCallback / ProtocolImpl fact shapes + maps
+world.rs         define/read protocol facts; impl_target_ty; runtime_impl_target_modules;
+                 protocol-domain tags for normal TypeDefined derivation
+jobs/semantic.rs resolve_protocol_call — the receiver-subtype selection above
+```
+
+## Proof gates
+
+```text
+cargo test --lib compiler2::drive_test::compiler2_enum_reduce_selects_list_protocol_impl_and_callable_reducer
+cargo test --lib compiler2::drive_test::compiler2_materialization_freezes_only_the_selected_enum_reduce_path
+cargo test --test fixture_matrix enumerable_protocol_dispatch
+```

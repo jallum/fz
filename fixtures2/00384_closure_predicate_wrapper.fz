@@ -1,0 +1,32 @@
+fn count_matching([], acc, _predicate), do: acc
+fn count_matching([head | tail], acc, predicate) do
+  if predicate.(head) do
+    count_matching(tail, acc + 1, predicate)
+  else
+    count_matching(tail, acc, predicate)
+  end
+end
+
+fn reduce_plain([], acc, _reducer), do: acc
+fn reduce_plain([head | tail], acc, reducer), do: reduce_plain(tail, reducer.(head, acc), reducer)
+
+fn count_via_param(enumerable, fun) do
+  reduce_plain(enumerable, 0, fn (entry, acc) ->
+    if fun.(entry), do: acc + 1, else: acc
+  end)
+end
+
+fn main() do
+  predicate = fn x -> x > 2 end
+  reducer = fn (entry, acc) ->
+    if predicate.(entry), do: acc + 1, else: acc
+  end
+
+  dbg(predicate.(1))
+  dbg(predicate.(2))
+  dbg(predicate.(3))
+  dbg(if predicate.(2), do: :yes, else: :no)
+  dbg(count_matching([1, 2, 3, 4], 0, predicate))
+  dbg(reduce_plain([1, 2, 3, 4], 0, reducer))
+  dbg(count_via_param([1, 2, 3, 4], predicate))
+end

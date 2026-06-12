@@ -63,6 +63,7 @@ pub fn prim_is_pure(p: &Prim) -> Result<(), ImpureKind> {
         | BitReadField { .. }
         | BitReaderDone(_)
         | TypeTest(_, _)
+        | RuntimeTypeTest(_, _)
         | MakeFnRef(_, _)
         | Brand(_, _) => Ok(()),
 
@@ -113,11 +114,11 @@ pub fn check_pure_term(term: &Term) -> Result<(), ImpureError> {
 #[cfg(test)]
 mod purity_tests {
     use super::*;
-    use crate::diag::Span;
+    use crate::compiler::source::Span;
     use crate::diag::codes::TYPE_IMPURE_MATCHER;
     use crate::fz_ir::{
-        BinOp, BlockId, BranchOrigin, CallsiteIdent, Const, Cont, ExternId, FnBuilder, FnCategory, FnId, Module, Prim,
-        Stmt, Term, Var,
+        BinOp, BlockId, BranchOrigin, CallsiteIdent, Const, Cont, DirectCallTarget, ExternId, FnBuilder, FnCategory,
+        FnId, Module, Prim, Stmt, Term, Var,
     };
     use crate::ir_planner::diagnostics::check_matcher_purity;
     use crate::types::Types;
@@ -311,7 +312,7 @@ mod purity_tests {
             None,
             Term::Call {
                 ident: CallsiteIdent::from_source(Span::DUMMY),
-                callee: FnId(99),
+                callee: DirectCallTarget::Local(FnId(99)),
                 args: vec![v(0)],
                 continuation: Cont {
                     fn_id: FnId(98),
@@ -330,7 +331,7 @@ mod purity_tests {
             None,
             Term::TailCall {
                 ident: CallsiteIdent::from_source(Span::DUMMY),
-                callee: FnId(99),
+                callee: DirectCallTarget::Local(FnId(99)),
                 args: vec![v(0)],
                 is_back_edge: false,
             },

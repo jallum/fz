@@ -146,6 +146,7 @@ pub(crate) fn subst_prim(p: &Prim, subst: &HashMap<Var, Var>) -> Prim {
             is_last: *is_last,
         },
         Prim::TypeTest(a, d) => Prim::TypeTest(sv(*a), d.clone()),
+        Prim::RuntimeTypeTest(a, d) => Prim::RuntimeTypeTest(sv(*a), d.clone()),
         Prim::Brand(a, name) => Prim::Brand(sv(*a), name.clone()),
     }
 }
@@ -182,7 +183,7 @@ pub(crate) fn subst_term(t: &Term, subst: &HashMap<Var, Var>) -> Term {
             continuation,
         } => Term::Call {
             ident: ident.clone(),
-            callee: *callee,
+            callee: callee.clone(),
             args: args.iter().map(|x| sv(*x)).collect(),
             continuation: subst_cont(continuation, subst),
         },
@@ -193,7 +194,7 @@ pub(crate) fn subst_term(t: &Term, subst: &HashMap<Var, Var>) -> Term {
             is_back_edge,
         } => Term::TailCall {
             ident: ident.clone(),
-            callee: *callee,
+            callee: callee.clone(),
             args: args.iter().map(|x| sv(*x)).collect(),
             is_back_edge: *is_back_edge,
         },

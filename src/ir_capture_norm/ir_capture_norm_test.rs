@@ -1,13 +1,15 @@
 use super::*;
-use crate::diag::Span;
+use crate::compiler::source::Span;
 use crate::dispatch_matrix::pattern::PatternDispatchPlan;
 use crate::dispatch_matrix::{
     DispatchGraph, DispatchMatrix, DispatchNode, EdgeEvidence, GraphNodeId, Order, Outcome, OutcomeId,
     OutcomeMultiplicity,
 };
 use crate::fz_ir::{
-    BinOp, BlockId, CallsiteIdent, Const, FnBuilder, FnCategory, FnId, ModuleBuilder, Prim, ReceiveAfter, ReceiveClause,
+    BinOp, BlockId, CallsiteIdent, Const, DirectCallTarget, FnBuilder, FnCategory, FnId, ModuleBuilder, Prim,
+    ReceiveAfter, ReceiveClause,
 };
+use crate::runtime_type_predicate::RuntimeTypePredicate;
 use crate::telemetry::capture::OwnedEvent;
 use crate::telemetry::{Capture, ConfiguredTelemetry, Value};
 use std::sync::Arc;
@@ -23,7 +25,7 @@ fn build_module_with_call_cont(captured: Vec<Var>, captured_params: Vec<Var>, us
         entry,
         Term::Call {
             ident: CallsiteIdent::from_source(Span::DUMMY),
-            callee: FnId(99),
+            callee: DirectCallTarget::Local(FnId(99)),
             args: vec![callee_arg],
             continuation: Cont {
                 fn_id: cont_id,
@@ -93,7 +95,7 @@ fn build_module_with_shared_cont_site() -> Module {
             entry,
             Term::Call {
                 ident: CallsiteIdent::from_source(Span::DUMMY),
-                callee: FnId(99),
+                callee: DirectCallTarget::Local(FnId(99)),
                 args: vec![callee_arg],
                 continuation: Cont {
                     fn_id: cont_id,
@@ -123,7 +125,7 @@ fn build_module_with_tail_call_cont_site() -> Module {
             entry,
             Term::TailCall {
                 ident: CallsiteIdent::from_source(Span::DUMMY),
-                callee: cont_id,
+                callee: DirectCallTarget::Local(cont_id),
                 args: vec![live_arg, dead_arg],
                 is_back_edge: false,
             },
@@ -138,7 +140,7 @@ fn build_module_with_tail_call_cont_site() -> Module {
     mb.build()
 }
 
-fn empty_dispatch() -> Arc<PatternDispatchPlan> {
+fn empty_dispatch() -> Arc<PatternDispatchPlan<RuntimeTypePredicate>> {
     Arc::new(PatternDispatchPlan {
         matrix: DispatchMatrix {
             subjects: vec![],
@@ -156,7 +158,7 @@ fn empty_dispatch() -> Arc<PatternDispatchPlan> {
             }],
             root: GraphNodeId(0),
         },
-        inputs: vec![],
+        input_count: 0,
         subjects: vec![],
         outcomes: vec![],
         guards: vec![],

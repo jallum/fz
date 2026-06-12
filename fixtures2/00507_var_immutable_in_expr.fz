@@ -1,0 +1,7 @@
+fn check() do
+  x = 10
+  _ = x + 5
+  x
+end
+
+fn main(), do: check()

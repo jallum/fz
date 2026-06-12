@@ -14,7 +14,6 @@ use crate::ir_interp::IrInterpRuntime;
 use crate::ir_lower::lower_program;
 use crate::parser::Parser;
 use crate::parser::lexer::Lexer;
-use crate::telemetry::Telemetry;
 use crate::telemetry::bus::ConfiguredTelemetry;
 
 fn lower_src(src: &str) -> Module {
@@ -41,13 +40,14 @@ fn capture() -> (ConfiguredTelemetry, DbgCapture) {
     (tel, cap)
 }
 
-fn drive_main(runtime: &mut IrInterpRuntime, module: &Module, tel: &dyn Telemetry) {
+fn drive_main(runtime: &mut IrInterpRuntime, module: &Module, tel: &dyn crate::telemetry::Telemetry) {
     let main_id = module.fn_by_name("main").expect("main/0").id;
     let mut t = crate::types::new();
-    runtime.enqueue_entry(module, 1, main_id, vec![]).expect("enqueue");
+    runtime.enqueue_entry(module, tel, 1, main_id, vec![]).expect("enqueue");
     runtime.drive_until_idle(&mut t, tel, None).expect("drive");
 }
 
+// DROP: old-world IrInterpRuntime isolation plumbing, no compiler2 analogue
 #[test]
 fn two_interpreters_coexist_with_isolated_telemetry() {
     let mod_a = lower_src("fn main() do dbg(:from_a) end");
@@ -72,6 +72,7 @@ fn two_interpreters_coexist_with_isolated_telemetry() {
     assert_eq!(cap_b.lines(), vec![":from_b".to_string()]);
 }
 
+// DROP: old-world IrInterpRuntime interleaved-drive isolation, no compiler2 analogue
 #[test]
 fn interleaved_rounds_keep_each_runtimes_state_isolated() {
     // Two runtimes whose `main` emits a marker and whose heaps accumulate

@@ -1,0 +1,3 @@
+fn bump(x :: integer), do: x + 7
+fn bump(_), do: 0
+fn main(), do: bump(4611686018427387904)

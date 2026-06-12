@@ -1,12 +1,10 @@
 use super::*;
-use crate::ast::{BitType, Endian, Expr, Pattern, Spanned};
-use crate::diag::Span;
-use crate::dispatch_matrix::pattern::{
-    PatternBodyId, PatternRow, SourcePatternError, SourcePatternRows, collect_guard_capture_names,
-};
+use crate::ast::{BitType, Endian};
+use crate::compiler::source::Span;
+use crate::dispatch_matrix::pattern::{PatternBodyId, SourcePatternError, SourcePatternRows};
 use crate::dispatch_matrix::pattern::{
     PatternDispatchPlan, PatternGuardBinOp, PatternGuardDispatch, PatternGuardExpr, PatternGuardUnaryOp,
-    PatternSubjectRef, guard_expr_from_ast, pattern_dispatch_from_source_with_guard_resolver,
+    PatternSubjectRef, guard_dispatch_from_surface, pattern_dispatch_from_source_with_guard_resolver,
 };
 use crate::dispatch_matrix::{
     BitstringEndian, BitstringFieldKind, BitstringFieldSize, BitstringShape, ComparisonValue, DispatchConst,
@@ -14,18 +12,10 @@ use crate::dispatch_matrix::{
 };
 use crate::fz_ir::{BinOp, BitSizeIr, BlockId, Const, Prim, Term, UnOp, Var};
 use crate::types::{Ty, Types};
-use std::collections::hash_map::Entry;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::HashMap;
 
-pub(super) type BodyCb<'a, T> = &'a mut dyn FnMut(
-    &mut LowerCtx,
-    &mut T,
-    PatternBodyId,
-    Vec<MatchedBinding>,
-    Vec<(Var, Ty)>,
-    Option<Spanned<Expr>>,
-    BlockId,
-) -> Result<(), LowerError>;
+pub(super) type BodyCb<'a, T> =
+    &'a mut dyn FnMut(&mut LowerCtx, &mut T, PatternBodyId, Vec<MatchedBinding>, BlockId) -> Result<(), LowerError>;
 
 #[derive(Debug, Clone)]
 pub(crate) struct MatchedBinding {
@@ -46,6 +36,7 @@ pub(crate) fn lower_source_patterns_to_current_fn<T: Types<Ty = Ty>>(
     ctx: &mut LowerCtx,
     t: &mut T,
     source_patterns: SourcePatternRows,
+    inputs: Vec<Var>,
     fail_block: BlockId,
     body_cb: BodyCb<'_, T>,
 ) -> Result<(), LowerError> {
@@ -60,7 +51,10 @@ pub(crate) fn lower_source_patterns_to_current_fn<T: Types<Ty = Ty>>(
                 what: format!("source pattern dispatch cannot be represented: {:?}", err),
             }
         })?;
-    let mut state = PatternLowerState::default();
+    let mut state = PatternLowerState {
+        inputs,
+        ..PatternLowerState::default()
+    };
     lower_dispatch_node(ctx, t, &plan, plan.graph.root, fail_block, body_cb, &mut state)
 }
 
@@ -109,7 +103,7 @@ pub(super) fn lower_dispatch_node<T: Types<Ty = Ty>>(
                     })
                 })
                 .collect::<Result<Vec<_>, LowerError>>()?;
-            body_cb(ctx, t, outcome.body_id, bindings, Vec::new(), None, fail_block)
+            body_cb(ctx, t, outcome.body_id, bindings, fail_block)
         }
         DispatchNode::Test {
             predicate,
@@ -299,7 +293,6 @@ pub(super) fn materialize_dispatch_subject(
             .inputs
             .get(*ordinal as usize)
             .copied()
-            .or_else(|| plan.inputs.get(*ordinal as usize).and_then(|input| input.var))
             .ok_or_else(|| LowerError::Unsupported {
                 span: Span::DUMMY,
                 what: format!("dispatch input {} has no IR var", ordinal),
@@ -374,12 +367,11 @@ fn lower_pinned_var(
             span: Span::DUMMY,
             what: format!("pinned slot {:?} out of bounds", pinned),
         })?;
-    if let Some(input) = pinned.var {
+    if let Some(input) = pinned.input {
         return state
             .inputs
-            .get(input.0 as usize)
+            .get(input as usize)
             .copied()
-            .or(Some(input))
             .ok_or_else(|| LowerError::Unsupported {
                 span: pinned.span,
                 what: format!("pinned helper input {:?} out of bounds", input),
@@ -657,106 +649,25 @@ pub(crate) fn lower_guard_helper_call_to_dispatch(
     }
 
     stack.push(key);
-    let subjects: Vec<Var> = (0..arity).map(|i| Var(i as u32)).collect();
-    let source_patterns = SourcePatternRows {
-        subjects,
-        rows: fn_def
-            .clauses
-            .iter()
-            .enumerate()
-            .map(|(i, clause)| PatternRow {
-                patterns: clause.params.clone(),
-                preconditions: Vec::new(),
-                guard: clause.guard.clone(),
-                body_id: i as PatternBodyId,
-            })
-            .collect(),
-    };
     let mut resolver = |callee: &str, callee_arity: usize, callee_args: Vec<PatternGuardExpr>| {
         lower_guard_helper_call_to_dispatch(ctx, callee, callee_arity, callee_args, stack)
     };
-    let plan_result = pattern_dispatch_from_source_with_guard_resolver(source_patterns, &mut resolver);
+    let dispatch_result = guard_dispatch_from_surface(fn_def, &mut resolver);
     stack.pop();
-    let mut plan = plan_result.map_err(|err| SourcePatternError::DispatchMatrix(format!("{err:?}")))?;
-
-    let param_input_by_name: HashMap<String, Var> = fn_def.clauses[0]
-        .params
-        .iter()
-        .enumerate()
-        .filter_map(|(i, pattern)| match &pattern.node {
-            Pattern::Var(name) => Some((name.clone(), Var(i as u32))),
-            _ => None,
-        })
-        .collect();
-    for pinned in &mut plan.pinned {
-        if let Some(input) = param_input_by_name.get(&pinned.name) {
-            pinned.var = Some(*input);
-        }
-    }
-
-    let mut pinned_by_name: HashMap<String, PinnedValueId> = plan
-        .pinned
-        .iter()
-        .enumerate()
-        .map(|(i, pinned)| (pinned.name.clone(), PinnedValueId(i as u32)))
-        .collect();
-    for clause in &fn_def.clauses {
-        let mut bound = BTreeSet::new();
-        for pattern in &clause.params {
-            let mut names = Vec::new();
-            collect_pattern_bound_names(&pattern.node, &mut names);
-            bound.extend(names);
-        }
-        let mut captures = Vec::new();
-        collect_guard_capture_names(&clause.body.node, &bound, &mut captures);
-        for capture in captures {
-            if let Entry::Vacant(entry) = pinned_by_name.entry(capture) {
-                let id = PinnedValueId(plan.pinned.len() as u32);
-                plan.pinned.push(crate::dispatch_matrix::pattern::PatternPinnedInput {
-                    name: entry.key().clone(),
-                    var: None,
-                    span: clause.body.span,
-                });
-                entry.insert(id);
-            }
-        }
-    }
-
-    let mut bodies = Vec::with_capacity(fn_def.clauses.len());
-    for clause in &fn_def.clauses {
-        let outcome = plan
-            .outcomes
-            .iter()
-            .find(|outcome| outcome.body_id as usize == bodies.len())
-            .ok_or(SourcePatternError::UnsupportedGuardExpr)?;
-        let bindings = outcome
-            .bindings
-            .iter()
-            .map(|binding| (binding.name.clone(), binding.source))
-            .collect::<HashMap<_, _>>();
-        let mut resolver = |callee: &str, callee_arity: usize, callee_args: Vec<PatternGuardExpr>| {
-            lower_guard_helper_call_to_dispatch(ctx, callee, callee_arity, callee_args, stack)
-        };
-        bodies.push(guard_expr_from_ast(
-            &clause.body.node,
-            &bindings,
-            &pinned_by_name,
-            &mut resolver,
-        )?);
-    }
+    let dispatch = dispatch_result?;
 
     Ok(Some(PatternGuardExpr::Dispatch {
         inputs: args,
-        dispatch: Box::new(PatternGuardDispatch {
-            plan: Box::new(plan),
-            bodies,
-        }),
+        dispatch: Box::new(dispatch),
     }))
 }
 
-pub(crate) fn collect_dispatch_pinned_names_recursive(plan: &PatternDispatchPlan, out: &mut Vec<String>) {
+pub(crate) fn collect_dispatch_pinned_names_recursive<TypeHandle>(
+    plan: &PatternDispatchPlan<TypeHandle>,
+    out: &mut Vec<String>,
+) {
     for pinned in &plan.pinned {
-        if pinned.var.is_some() {
+        if pinned.input.is_some() {
             continue;
         }
         if !out.contains(&pinned.name) {
@@ -768,7 +679,10 @@ pub(crate) fn collect_dispatch_pinned_names_recursive(plan: &PatternDispatchPlan
     }
 }
 
-pub(crate) fn collect_guard_expr_dispatch_pinned(expr: &PatternGuardExpr, out: &mut Vec<String>) {
+pub(crate) fn collect_guard_expr_dispatch_pinned<TypeHandle>(
+    expr: &PatternGuardExpr<TypeHandle>,
+    out: &mut Vec<String>,
+) {
     match expr {
         PatternGuardExpr::Unary { expr, .. } => collect_guard_expr_dispatch_pinned(expr, out),
         PatternGuardExpr::Binary { lhs, rhs, .. } => {

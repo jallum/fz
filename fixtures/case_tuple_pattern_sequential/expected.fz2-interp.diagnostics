@@ -1,0 +1,2 @@
+warning[type/no-matching-clause]: `case` clauses don't cover every input
+warning[type/no-matching-clause]: `with else` clauses don't cover every input

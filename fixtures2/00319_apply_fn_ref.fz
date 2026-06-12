@@ -1,0 +1,3 @@
+fn double(x), do: x * 2
+fn apply_f(f, n), do: f.(n)
+fn main(), do: apply_f(double, 21)

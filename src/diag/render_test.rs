@@ -1,13 +1,14 @@
 use super::*;
+use crate::compiler::source::{Id as CodeId, SourceMap, Span};
 use crate::diag::codes::{LEX_UNEXPECTED_CHAR, TYPE_UNREACHABLE_ARM};
-use crate::diag::span::FileId;
 use crate::frontend::macros::expand_program;
 use crate::frontend::resolve::flatten_modules;
 use crate::ir_lower::lower_program;
+use crate::telemetry::Telemetry;
 
-fn rebuild(src: &str) -> (SourceMap, FileId) {
+fn rebuild(src: &str) -> (SourceMap, CodeId) {
     let mut sm = SourceMap::new();
-    let id = sm.add_file("input.fz", src);
+    let id = sm.add_code(Some("input.fz"), src);
     (sm, id)
 }
 
@@ -17,6 +18,7 @@ fn render(diag: &Diagnostic, sm: &SourceMap) -> String {
     String::from_utf8(buf).unwrap()
 }
 
+// DROP: diagnostic header/location rendering layout; pure infrastructure
 #[test]
 fn header_and_location_layout() {
     let src = "fn main() do\n  if x == 1, do: :ok\nend\n";
@@ -47,6 +49,7 @@ fn dummy_span_emits_generated_marker() {
     assert!(out.contains("note: background context"));
 }
 
+// DROP: diagnostic notes and help lines rendering; pure infrastructure
 #[test]
 fn notes_and_helps_render() {
     let src = "fn main() do 1 end\n";
@@ -61,6 +64,7 @@ fn notes_and_helps_render() {
     assert!(out.contains("= help: did you mean `fn`?"));
 }
 
+// DROP: secondary span rendered as own block; pure infrastructure
 #[test]
 fn secondary_span_gets_its_own_block() {
     let src = "fn main() do\n  x = 1\n  y = 2\nend\n";
@@ -79,6 +83,7 @@ fn secondary_span_gets_its_own_block() {
     assert!(out.contains("- second binding shadows"));
 }
 
+// DROP: tab expansion aligns caret in diagnostic output; pure infrastructure
 #[test]
 fn tab_expansion_aligns_caret() {
     // Source uses a tab before `let x`. The caret on `x` should land
@@ -99,6 +104,7 @@ fn tab_expansion_aligns_caret() {
     assert_eq!(pos - after_pipe, 8, "got line {:?}", underline_line);
 }
 
+// DROP: color-disabled mode emits no ANSI escapes; pure infrastructure
 #[test]
 fn color_off_produces_no_escapes() {
     let src = "fn main(), do: 1\n";
@@ -112,32 +118,26 @@ fn color_off_produces_no_escapes() {
 /// and return the rendered first-error diagnostic. Panics if the
 /// pipeline completes without an error (the fixture must exercise
 /// one of these stages).
-fn run_pipeline_for_fixture(src: &str, id: FileId, sm: &SourceMap, rel: &str) -> String {
+fn run_pipeline_for_fixture(src: &str, id: CodeId, sm: &SourceMap, rel: &str, tel: &dyn Telemetry) -> String {
     use crate::parser::Parser;
     use crate::parser::lexer::Lexer;
-    let toks = match Lexer::with_file_and_source_name(src, id, "<test>")
-        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
-    {
+    let toks = match Lexer::with_code_id_and_source_name(src, id, "<test>").tokenize(tel) {
         Err(e) => return render(&e.to_diagnostic(), sm),
         Ok(t) => t,
     };
-    let prog = match Parser::new(toks).parse_program(&crate::telemetry::ConfiguredTelemetry::new()) {
+    let prog = match Parser::new(toks).parse_program(tel) {
         Err(e) => return render(&e.to_diagnostic(), sm),
         Ok(p) => p,
     };
     let mut ct = crate::types::new();
-    let mut prog = match flatten_modules(&mut ct, prog, &crate::telemetry::ConfiguredTelemetry::new()) {
+    let mut prog = match flatten_modules(&mut ct, prog, tel) {
         Err(e) => return render(&e.to_diagnostic(), sm),
         Ok(p) => p,
     };
     if let Err(e) = expand_program(&mut prog) {
         return render(&e.to_diagnostic(), sm);
     }
-    if let Err(e) = lower_program(
-        &mut crate::types::new(),
-        &prog,
-        &crate::telemetry::ConfiguredTelemetry::new(),
-    ) {
+    if let Err(e) = lower_program(&mut crate::types::new(), &prog, tel) {
         return render(&e.to_diagnostic(), sm);
     }
     panic!("fixture {} completed pipeline successfully — expected an error", rel);
@@ -148,6 +148,7 @@ fn run_pipeline_for_fixture(src: &str, id: FileId, sm: &SourceMap, rel: &str) ->
 /// and compares the rendered diagnostic to the golden file. Fixtures
 /// with only `input.fz` (no expected) are reserved for later tickets
 /// and silently skipped.
+// DROP: diagnostic rendering golden-file comparison; pure infrastructure
 #[test]
 fn fixture_golden_outputs_match() {
     use std::fs;
@@ -181,14 +182,14 @@ fn fixture_golden_outputs_match() {
             .unwrap_or(name.clone());
 
         let mut sm = SourceMap::new();
-        let id = sm.add_file(rel.clone(), src.clone());
+        let id = sm.add_code(Some(rel.clone()), src.clone());
         // Drive the full pipeline (lex → parse → resolve → macros →
         // lower) and capture whichever stage's diagnostic the fixture
         // is exercising. Codegen errors aren't covered here because
         // most are backend-plumbing failures without a real source
         // span; the verify/define paths that DO have spans are
         // covered by integration tests, not goldens.
-        let actual = run_pipeline_for_fixture(&src, id, &sm, &rel);
+        let actual = run_pipeline_for_fixture(&src, id, &sm, &rel, &crate::telemetry::ConfiguredTelemetry::new());
         assert_eq!(
             actual.trim_end(),
             expected.trim_end(),

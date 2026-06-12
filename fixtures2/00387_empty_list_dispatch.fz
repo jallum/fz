@@ -1,0 +1,6 @@
+fn classify([]), do: :empty
+fn classify([_ | _]), do: :cons
+
+fn main() do
+  dbg(classify([]))
+end

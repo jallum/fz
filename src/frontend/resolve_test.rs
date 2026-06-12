@@ -1,22 +1,19 @@
 use super::*;
-use crate::modules::interface::{FZ_INTERFACE_ABI_VERSION, InterfaceFn};
+use crate::modules::interface::InterfaceFn;
 use crate::parser::Parser;
 use crate::parser::lexer::Lexer;
+use crate::telemetry::Telemetry;
 use crate::type_expr::{build_module_type_env, parse_type_expr, resolve_spec_decl};
 use crate::types::DefaultTypes;
 
-fn parse(src: &str) -> Program {
-    let toks = Lexer::with_source_name(src, "<test>")
-        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
-        .expect("lex");
-    Parser::new(toks)
-        .parse_program(&crate::telemetry::ConfiguredTelemetry::new())
-        .expect("parse")
+fn parse(src: &str, tel: &dyn Telemetry) -> Program {
+    let toks = Lexer::with_source_name(src, "<test>").tokenize(tel).expect("lex");
+    Parser::new(toks).parse_program(tel).expect("parse")
 }
 
-fn flatten(src: &str) -> Program {
+fn flatten(src: &str, tel: &dyn Telemetry) -> Program {
     let mut ct = crate::types::new();
-    flatten_modules(&mut ct, parse(src), &crate::telemetry::ConfiguredTelemetry::new()).expect("flatten")
+    flatten_modules(&mut ct, parse(src, tel), tel).expect("flatten")
 }
 
 fn fn_names(p: &Program) -> Vec<String> {
@@ -39,19 +36,25 @@ fn callee_name(body: &Spanned<Expr>) -> &str {
     }
 }
 
+// PICKED: defmodule qualifies all fn names with the module path
 #[test]
 fn module_qualifies_fn_names() {
-    let p = flatten("defmodule M do; fn f(x), do: x + 1 end");
+    let p = flatten(
+        "defmodule M do; fn f(x), do: x + 1 end",
+        &crate::telemetry::ConfiguredTelemetry::new(),
+    );
     // Every module gains a synthesized `__info__/1`.
     assert_eq!(fn_names(&p), vec!["M.f", "M.__info__"]);
 }
 
+// PICKED: top-level fns outside defmodule retain their bare names
 #[test]
 fn ungrouped_fns_keep_bare_names() {
-    let p = flatten("fn helper(x), do: x + 1");
+    let p = flatten("fn helper(x), do: x + 1", &crate::telemetry::ConfiguredTelemetry::new());
     assert_eq!(fn_names(&p), vec!["helper"]);
 }
 
+// PICKED: sibling function call inside module is qualified to full module path
 #[test]
 fn sibling_call_in_module_rewrites() {
     let p = flatten(
@@ -61,6 +64,7 @@ defmodule M do
   fn use_helper(x), do: helper(x)
 end
 "#,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let names = fn_names(&p);
     assert!(names.contains(&"M.helper".to_string()));
@@ -76,6 +80,7 @@ end
     assert_eq!(callee_name(&use_helper.clauses[0].body), "M.helper");
 }
 
+// PICKED: qualified cross-module call resolves to the target module's fn
 #[test]
 fn cross_module_call_rewrites() {
     let p = flatten(
@@ -87,6 +92,7 @@ defmodule B do
   fn caller(), do: A.ping()
 end
 "#,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let caller = p
         .items
@@ -99,6 +105,7 @@ end
     assert_eq!(callee_name(&caller.clauses[0].body), "A.ping");
 }
 
+// PICKED: parameter shadowing a fn name is not rewritten to module path
 #[test]
 fn local_param_does_not_qualify() {
     let p = flatten(
@@ -108,6 +115,7 @@ defmodule M do
   fn shadow(helper), do: helper
 end
 "#,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let shadow = p
         .items
@@ -123,6 +131,7 @@ end
     }
 }
 
+// PICKED: nested defmodule produces dotted module path for contained fns
 #[test]
 fn nested_module_qualifies_with_dotted_path() {
     let p = flatten(
@@ -133,12 +142,14 @@ fn f(x), do: x + 1
   end
 end
 "#,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     // Every module gains a synthesized `__info__/1` — including the
     // namespace-only outer module `A`.
     assert_eq!(fn_names(&p), vec!["A.B.f", "A.B.__info__", "A.__info__"]);
 }
 
+// PICKED: caller outside nested module resolves dotted path correctly
 #[test]
 fn nested_call_from_outside_rewrites() {
     let p = flatten(
@@ -150,6 +161,7 @@ fn f(x), do: x
 end
 fn main() do A.B.f(99) end
 "#,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let main_fn = p
         .items
@@ -162,6 +174,7 @@ fn main() do A.B.f(99) end
     assert_eq!(callee_name(&main_fn.clauses[0].body), "A.B.f");
 }
 
+// PICKED: alias expands short name to full module path at call sites
 #[test]
 fn alias_inside_module_resolves() {
     let p = flatten(
@@ -176,6 +189,7 @@ defmodule User do
   fn caller(), do: Path.f(7)
 end
 "#,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let caller = p
         .items
@@ -188,6 +202,7 @@ end
     assert_eq!(callee_name(&caller.clauses[0].body), "Long.Path.f");
 }
 
+// PICKED: alias with `as:` renames a module to a custom short name
 #[test]
 fn alias_with_as_renames() {
     let p = flatten(
@@ -202,6 +217,7 @@ defmodule User do
   fn caller(), do: P.f(9)
 end
 "#,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let caller = p
         .items
@@ -214,6 +230,7 @@ end
     assert_eq!(callee_name(&caller.clauses[0].body), "Long.Path.f");
 }
 
+// PICKED: unfiltered import brings all exported names into scope
 #[test]
 fn import_unfiltered_pulls_all_names() {
     let p = flatten(
@@ -227,6 +244,7 @@ defmodule User do
   fn run(x, y), do: add(x, y)
 end
 "#,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let run = p
         .items
@@ -239,6 +257,7 @@ end
     assert_eq!(callee_name(&run.clauses[0].body), "Math.add");
 }
 
+// PICKED: import only: [] brings exactly the named exports into scope
 #[test]
 fn import_only_filters_names() {
     let p = flatten(
@@ -253,6 +272,7 @@ defmodule User do
   fn r2(x, y), do: mul(x, y)
 end
 "#,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let r1 = p
         .items
@@ -274,6 +294,7 @@ end
     assert_eq!(callee_name(&r2.clauses[0].body), "mul");
 }
 
+// PICKED: local fn definition shadows an imported name of the same arity
 #[test]
 fn local_fn_shadows_import() {
     let p = flatten(
@@ -287,6 +308,7 @@ defmodule User do
   fn use_local(), do: add(10, 4)
 end
 "#,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let use_local = p
         .items
@@ -299,6 +321,7 @@ end
     assert_eq!(callee_name(&use_local.clauses[0].body), "User.add");
 }
 
+// PICKED: importing an undefined module is a compile-time error
 #[test]
 fn import_unknown_module_errors() {
     let mut ct = crate::types::new();
@@ -311,6 +334,7 @@ defmodule User do
   fn run(), do: nil
 end
 "#,
+            &crate::telemetry::ConfiguredTelemetry::new(),
         ),
         &crate::telemetry::ConfiguredTelemetry::new(),
     )
@@ -321,6 +345,7 @@ end
     assert_ne!(d.primary.span, Span::DUMMY);
 }
 
+// PICKED: aliasing an undefined module path is a compile-time error
 #[test]
 fn alias_unknown_module_errors() {
     let mut ct = crate::types::new();
@@ -333,6 +358,7 @@ defmodule User do
   fn run(), do: nil
 end
 "#,
+            &crate::telemetry::ConfiguredTelemetry::new(),
         ),
         &crate::telemetry::ConfiguredTelemetry::new(),
     )
@@ -342,6 +368,7 @@ end
     assert_eq!(d.message, "module `Missing.Path` is not defined");
 }
 
+// PICKED: importing a name at an arity not exported by the module errors
 #[test]
 fn import_unknown_arity_errors() {
     let mut ct = crate::types::new();
@@ -357,6 +384,7 @@ defmodule User do
   fn run(x), do: add(x)
 end
 "#,
+            &crate::telemetry::ConfiguredTelemetry::new(),
         ),
         &crate::telemetry::ConfiguredTelemetry::new(),
     )
@@ -366,6 +394,7 @@ end
     assert_eq!(d.message, "module `Math` does not export `add/1`");
 }
 
+// PICKED: import except: [] referencing a non-exported arity is an error
 #[test]
 fn import_except_unknown_arity_errors() {
     let mut ct = crate::types::new();
@@ -381,6 +410,7 @@ defmodule User do
   fn run(x, y), do: add(x, y)
 end
 "#,
+            &crate::telemetry::ConfiguredTelemetry::new(),
         ),
         &crate::telemetry::ConfiguredTelemetry::new(),
     )
@@ -390,6 +420,7 @@ end
     assert_eq!(d.message, "module `Math` does not export `add/1`");
 }
 
+// PICKED: import resolves against external module interface without source body
 #[test]
 fn import_resolves_from_external_interface_table() {
     let mut ct = crate::types::new();
@@ -399,7 +430,6 @@ fn import_resolves_from_external_interface_table() {
         math.clone(),
         ModuleInterface {
             name: math,
-            abi_version: FZ_INTERFACE_ABI_VERSION,
             imports: Vec::new(),
             exports: vec![InterfaceFn {
                 name: "add".to_string(),
@@ -423,6 +453,7 @@ defmodule User do
   fn run(x, y), do: add(x, y)
 end
 "#,
+            &crate::telemetry::ConfiguredTelemetry::new(),
         ),
         interfaces,
         &crate::telemetry::ConfiguredTelemetry::new(),
@@ -439,6 +470,7 @@ end
     assert_eq!(callee_name(&run.clauses[0].body), "Math.add");
 }
 
+// PICKED: import from runtime stdlib resolves without explicit interface table entry
 #[test]
 fn import_resolves_from_runtime_library_interfaces_by_default() {
     let mut ct = crate::types::new();
@@ -451,6 +483,7 @@ defmodule User do
   fn run(bytes), do: valid?(bytes)
 end
 "#,
+            &crate::telemetry::ConfiguredTelemetry::new(),
         ),
         &crate::telemetry::ConfiguredTelemetry::new(),
     )
@@ -467,10 +500,11 @@ end
     assert_eq!(callee_name(&run.clauses[0].body), "Utf8.valid?");
     assert!(
         !p.module_interfaces
-            .contains_key(&ModuleName::from_segments(vec!["Utf8".to_string()]))
+            .contains_key(&ModuleName::from_segments(vec!["Utf8".to_string()])),
     );
 }
 
+// PICKED: alias to runtime stdlib module resolves on demand at call sites
 #[test]
 fn alias_resolves_from_runtime_library_interfaces_on_demand() {
     let mut ct = crate::types::new();
@@ -483,6 +517,7 @@ defmodule User do
   fn run(bytes), do: U.valid?(bytes)
 end
 "#,
+            &crate::telemetry::ConfiguredTelemetry::new(),
         ),
         &crate::telemetry::ConfiguredTelemetry::new(),
     )
@@ -499,7 +534,7 @@ end
     assert_eq!(callee_name(&run.clauses[0].body), "Utf8.valid?");
     assert!(
         p.external_module_interfaces
-            .contains_key(&ModuleName::from_segments(vec!["Utf8".to_string()]))
+            .contains_key(&ModuleName::from_segments(vec!["Utf8".to_string()])),
     );
     assert!(
         !p.external_module_interfaces
@@ -507,6 +542,7 @@ end
     );
 }
 
+// PICKED: qualified call to runtime module namespace fetches that interface lazily
 #[test]
 fn qualified_runtime_namespace_reference_requests_interface() {
     let p = flatten(
@@ -515,6 +551,7 @@ defmodule User do
   fn run(bytes), do: Utf8.valid?(bytes)
 end
 "#,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let run = p
         .items
@@ -539,6 +576,7 @@ end
     );
 }
 
+// PICKED: runtime module with protocol impl pulls in both module and protocol interfaces
 #[test]
 fn runtime_protocol_impl_requests_protocol_interface() {
     let p = flatten(
@@ -547,6 +585,7 @@ defmodule User do
   fn run(), do: Range.new(1, 3, 1)
 end
 "#,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     assert!(
         p.external_module_interfaces
@@ -558,6 +597,7 @@ end
     );
 }
 
+// PICKED: importing a name not in a module's export list is an error
 #[test]
 fn import_non_exported_name_errors() {
     let mut ct = crate::types::new();
@@ -573,6 +613,7 @@ defmodule User do
   fn run(), do: hidden()
 end
 "#,
+            &crate::telemetry::ConfiguredTelemetry::new(),
         ),
         &crate::telemetry::ConfiguredTelemetry::new(),
     )
@@ -582,6 +623,7 @@ end
     assert_eq!(d.message, "module `Math` does not export `hidden/0`");
 }
 
+// PICKED: importing the same name from two modules is a conflict error
 #[test]
 fn conflicting_imports_error() {
     let mut ct = crate::types::new();
@@ -601,6 +643,7 @@ defmodule User do
   fn run(), do: f()
 end
 "#,
+            &crate::telemetry::ConfiguredTelemetry::new(),
         ),
         &crate::telemetry::ConfiguredTelemetry::new(),
     )
@@ -609,11 +652,12 @@ end
     assert_eq!(d.code, codes::RESOLVE_CONFLICTING_IMPORT);
     assert_eq!(
         d.message,
-        "import `f/0` from module `B` conflicts with existing import from module `A`"
+        "import `f/0` from module `B` conflicts with existing import from module `A`",
     );
     assert_eq!(d.secondaries.len(), 1);
 }
 
+// PICKED: importing the same name from the same module twice is idempotent
 #[test]
 fn duplicate_same_module_import_is_idempotent() {
     let p = flatten(
@@ -627,6 +671,7 @@ defmodule User do
   fn run(x, y), do: add(x, y)
 end
 "#,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let run = p
         .items
@@ -639,6 +684,7 @@ end
     assert_eq!(callee_name(&run.clauses[0].body), "Math.add");
 }
 
+// PICKED: top-level import brings module names into scope for top-level fns
 #[test]
 fn top_level_import_rewrites_top_level_functions() {
     let p = flatten(
@@ -649,6 +695,7 @@ end
 import Math, only: [add: 2]
 fn main(), do: add(20, 22)
 "#,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let main = p
         .items
@@ -661,6 +708,7 @@ fn main(), do: add(20, 22)
     assert_eq!(callee_name(&main.clauses[0].body), "Math.add");
 }
 
+// PICKED: top-level alias expands module shorthand in top-level fn calls
 #[test]
 fn top_level_alias_rewrites_top_level_functions() {
     let p = flatten(
@@ -673,6 +721,7 @@ end
 alias Outer.Inner, as: I
 fn main(), do: I.value()
 "#,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let main = p
         .items
@@ -685,6 +734,7 @@ fn main(), do: I.value()
     assert_eq!(callee_name(&main.clauses[0].body), "Outer.Inner.value");
 }
 
+// DROP: diagnostic span positions for duplicate module, infrastructure not language
 #[test]
 fn duplicate_module_diag_has_primary_and_first_definition_spans() {
     let mut ct = crate::types::new();
@@ -699,6 +749,7 @@ defmodule M do
   fn two(), do: 2
 end
 "#,
+            &crate::telemetry::ConfiguredTelemetry::new(),
         ),
         &crate::telemetry::ConfiguredTelemetry::new(),
     )
@@ -710,6 +761,7 @@ end
     assert_ne!(d.secondaries[0].span, Span::DUMMY);
 }
 
+// DROP: diagnostic message formatting for duplicate export, infrastructure not language
 #[test]
 fn duplicate_export_diag_names_module_function_and_arity() {
     let parsed = parse(
@@ -717,6 +769,7 @@ fn duplicate_export_diag_names_module_function_and_arity() {
 fn f(x), do: x
 fn g(y), do: y
 "#,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let mut defs: Vec<FnDef> = parsed
         .items
@@ -748,6 +801,7 @@ fn g(y), do: y
     assert_eq!(d.secondaries.len(), 1);
 }
 
+// DROP: @moduledoc and @doc documentation attribute parsing, infrastructure only
 #[test]
 fn moduledoc_and_doc_parse() {
     let prog = parse(
@@ -759,6 +813,7 @@ defmodule Greeter do
   fn hi(name), do: name
 end
 "#,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let m = prog
         .items
@@ -780,6 +835,7 @@ end
     assert_eq!(hi.doc(), Some("Says hi."));
 }
 
+// PICKED: @type aliases in defmodule are parsed, attached, and type-resolved
 #[test]
 fn type_alias_attribute_parses_with_module() {
     // .31.3 — `@type` inside a defmodule attaches a TypeAlias to
@@ -794,6 +850,7 @@ defmodule M do
   fn one(), do: 1
 end
 "#,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let m = prog
         .items
@@ -844,6 +901,7 @@ end
     assert!(ct.is_equivalent(&keyword_int, &expected_keyword));
 }
 
+// PICKED: @type alias can reference runtime stdlib type aliases like keyword/1
 #[test]
 fn module_type_aliases_can_use_runtime_root_aliases() {
     let prog = parse(
@@ -854,6 +912,7 @@ defmodule M do
   fn run(_), do: nil
 end
 "#,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let mut ct = crate::types::new();
     let flat = flatten_modules(&mut ct, prog, &crate::telemetry::ConfiguredTelemetry::new()).expect("flatten");
@@ -866,6 +925,7 @@ end
     assert!(ct.is_equivalent(opts, &expected));
 }
 
+// PICKED: defstruct with @type t populates typed field information for the struct
 #[test]
 fn struct_record_type_alias_populates_program_field_types() {
     let prog = parse(
@@ -875,6 +935,7 @@ defmodule Range do
   @type t :: %Range{first: integer, last: integer, step: integer}
 end
 "#,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let mut ct = crate::types::new();
     let flat = flatten_modules(&mut ct, prog, &crate::telemetry::ConfiguredTelemetry::new()).expect("flatten");
@@ -888,6 +949,7 @@ end
     assert!(fields.iter().all(|(_name, ty)| ct.is_equivalent(ty, &int)));
 }
 
+// PICKED: @type t for a struct must cover all defstruct fields or is an error
 #[test]
 fn struct_record_type_alias_must_match_defstruct_schema() {
     let prog = parse(
@@ -897,6 +959,7 @@ defmodule Range do
   @type t :: %Range{first: integer, last: integer}
 end
 "#,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let mut ct = crate::types::new();
     let err = flatten_modules(&mut ct, prog, &crate::telemetry::ConfiguredTelemetry::new())
@@ -910,6 +973,7 @@ end
     }
 }
 
+// PICKED: @spec can use stdlib type aliases without local @type definitions
 #[test]
 fn module_specs_can_use_runtime_root_aliases_without_local_types() {
     let prog = parse(
@@ -919,6 +983,7 @@ defmodule M do
   fn run(_), do: nil
 end
 "#,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let mut ct = crate::types::new();
     let flat = flatten_modules(&mut ct, prog, &crate::telemetry::ConfiguredTelemetry::new()).expect("flatten");
@@ -949,6 +1014,7 @@ end
 
 // ----- fz-ul4.31.4: @spec parser + AST attachment -----
 
+// PICKED: @spec attribute is parsed and attached to the following fn definition
 #[test]
 fn spec_attribute_parses_and_attaches_to_fn() {
     let prog = parse(
@@ -958,6 +1024,7 @@ defmodule M do
   fn add1(n), do: n + 1
 end
 "#,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let m = prog
         .items
@@ -994,6 +1061,7 @@ end
     assert!(ct.is_equivalent(&resolved.result, &int));
 }
 
+// PICKED: @spec with zero-parameter fn parses correctly
 #[test]
 fn spec_zero_arity_parses() {
     let prog = parse(
@@ -1003,6 +1071,7 @@ defmodule M do
   fn one(), do: 1
 end
 "#,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let m = prog
         .items
@@ -1031,6 +1100,7 @@ end
     assert_eq!(spec.param_body_tokens.len(), 0);
 }
 
+// PICKED: @spec arity not matching fn arity is a parse-time error
 #[test]
 fn spec_arity_mismatch_errors_at_parse_time() {
     let toks = Lexer::with_source_name(
@@ -1048,6 +1118,7 @@ fn spec_arity_mismatch_errors_at_parse_time() {
     assert!(msg.contains("arity"), "expected arity diag, got: {}", msg);
 }
 
+// PICKED: @spec name not matching the following fn name is a parse-time error
 #[test]
 fn spec_name_mismatch_errors_at_parse_time() {
     let toks = Lexer::with_source_name(
@@ -1069,6 +1140,7 @@ fn spec_name_mismatch_errors_at_parse_time() {
     );
 }
 
+// PICKED: @spec with no fn following it in the module is a parse-time error
 #[test]
 fn spec_without_following_fn_errors() {
     // @spec at the end of a module with no fn following it.
@@ -1084,6 +1156,7 @@ fn spec_without_following_fn_errors() {
     assert!(r.is_err(), "spec without fn must error");
 }
 
+// PICKED: multiple @spec overloads on one fn are all attached in declaration order
 #[test]
 fn multiple_specs_on_one_fn_attach_in_order() {
     let toks = Lexer::with_source_name(
@@ -1130,6 +1203,7 @@ fn multiple_specs_on_one_fn_attach_in_order() {
     assert_eq!(specs[1].param_body_tokens.len(), 1);
 }
 
+// PICKED: @spec referencing an unknown type name errors at resolve time
 #[test]
 fn spec_unknown_type_errors_at_resolve_time() {
     let prog = parse(
@@ -1139,6 +1213,7 @@ defmodule M do
   fn add1(n), do: n + 1
 end
 "#,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let m = prog
         .items
@@ -1176,6 +1251,7 @@ end
     );
 }
 
+// PICKED: @spec type names resolve against local @type aliases in the module
 #[test]
 fn spec_resolves_against_module_type_env() {
     let prog = parse(
@@ -1186,6 +1262,7 @@ defmodule M do
   fn lookup(x), do: x
 end
 "#,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let m = prog
         .items
@@ -1219,15 +1296,27 @@ end
     assert!(ct.is_equivalent(&resolved.result, &int));
 }
 
+// PICKED: top-level @type is attached as a program attribute alongside fns
 #[test]
-fn type_alias_at_top_level_errors() {
+fn type_alias_at_top_level_is_retained_on_program_attrs() {
     let toks = Lexer::with_source_name("@type id :: integer\nfn main(), do: nil", "<test>")
         .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
         .unwrap();
-    let r = Parser::new(toks).parse_program(&crate::telemetry::ConfiguredTelemetry::new());
-    assert!(r.is_err(), "@type at top level must error; got {:?}", r);
+    let program = Parser::new(toks)
+        .parse_program(&crate::telemetry::ConfiguredTelemetry::new())
+        .expect("top-level @type should parse");
+    let names = program
+        .attrs
+        .iter()
+        .filter_map(|attr| match attr {
+            Attribute::TypeAlias(alias) => Some(alias.name.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(names, vec!["id"], "top-level @type should be a root program attr");
 }
 
+// DROP: unknown @attribute at top level is a parse error, infrastructure only
 #[test]
 fn unknown_attribute_errors() {
     let toks = Lexer::with_source_name("@bogus \"x\"\nfn main(), do: nil", "<test>")
@@ -1237,6 +1326,7 @@ fn unknown_attribute_errors() {
     assert!(r.is_err());
 }
 
+// DROP: @moduledoc outside defmodule is a parse error, infrastructure only
 #[test]
 fn moduledoc_at_top_level_errors() {
     let toks = Lexer::with_source_name("@moduledoc \"x\"\nfn main(), do: nil", "<test>")
@@ -1246,6 +1336,7 @@ fn moduledoc_at_top_level_errors() {
     assert!(r.is_err());
 }
 
+// DROP: @doc string survives module flattening, documentation infrastructure only
 #[test]
 fn doc_survives_flatten() {
     let p = flatten(
@@ -1255,6 +1346,7 @@ defmodule M do
   fn d(x), do: x * 2
 end
 "#,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let d = p
         .items
@@ -1267,6 +1359,7 @@ end
     assert_eq!(d.doc(), Some("doubles"));
 }
 
+// PICKED: outer module's sibling call is not shadowed by inner module's same-named fn
 #[test]
 fn outer_sibling_not_shadowed_by_inner_same_name() {
     let p = flatten(
@@ -1279,6 +1372,7 @@ fn f(x), do: x + 100
   end
 end
 "#,
+        &crate::telemetry::ConfiguredTelemetry::new(),
     );
     let names = fn_names(&p);
     assert!(names.contains(&"A.f".to_string()));
@@ -1299,10 +1393,11 @@ end
 /// Sibling-fn rewriting (`f` → `M.f` inside module M) must NOT alter
 /// the source span on the rewritten Var. The renamed reference still
 /// occupies the same byte range in the user's source.
+// DROP: span preservation through module rewriting, AST infrastructure only
 #[test]
 fn sibling_rewrite_preserves_var_span() {
     let src = "defmodule M do\n  fn f(x), do: x\n  fn g(x), do: f(x)\nend";
-    let pre = parse(src);
+    let pre = parse(src, &crate::telemetry::ConfiguredTelemetry::new());
 
     // Find the `f` inside `g`'s body BEFORE flattening.
     let pre_span = {
@@ -1345,13 +1440,14 @@ fn sibling_rewrite_preserves_var_span() {
     }
     assert_eq!(
         callee.span, pre_span,
-        "callee span should be preserved through sibling rewrite"
+        "callee span should be preserved through sibling rewrite",
     );
 }
 
 /// Cross-module rewriting: `M.helper(x)` (parsed as `Index(Var(M),
 /// Atom("helper"))`) becomes `Var("M.helper")`. The resulting Var's
 /// span should still cover the original source `M.helper` region.
+// DROP: span preservation through cross-module rewriting, AST infrastructure only
 #[test]
 fn cross_module_rewrite_preserves_call_span() {
     let src = r#"
@@ -1362,7 +1458,7 @@ defmodule N do
   fn use_it(), do: M.helper(7)
 end
 "#;
-    let pre = parse(src);
+    let pre = parse(src, &crate::telemetry::ConfiguredTelemetry::new());
     let pre_call_span = {
         let n_mod = pre
             .items
@@ -1408,10 +1504,11 @@ end
     }
     assert_eq!(
         callee.span, pre_call_span,
-        "callee span should be preserved through cross-module rewrite"
+        "callee span should be preserved through cross-module rewrite",
     );
 }
 
+// PICKED: defprotocol and defimpl register protocol, impl, and domain type facts
 #[test]
 fn protocol_registry_records_declarations_impls_and_domain_types() {
     let mut ct = crate::types::new();
@@ -1433,6 +1530,7 @@ defmodule Consumer do
   fn use(xs), do: 1
 end
 "#,
+            &crate::telemetry::ConfiguredTelemetry::new(),
         ),
         &crate::telemetry::ConfiguredTelemetry::new(),
     )
@@ -1451,7 +1549,7 @@ end
         .expect("impl fact");
     assert_eq!(
         implementation.callbacks[&("reduce".to_string(), 3)],
-        ExportKey::new(enumerable.child("List".to_string()), "reduce", 3)
+        Mfa::new(enumerable.child("List".to_string()), "reduce", 3),
     );
     let protocol_ty = p.module_type_envs["Consumer"]
         .get("Enumerable.t")
@@ -1467,6 +1565,7 @@ end
     assert!(ct.is_disjoint(&int, protocol_ty));
 }
 
+// PICKED: protocol domain type Enumerable.t(integer) narrows to list(integer) subtype
 #[test]
 fn protocol_domain_refines_concrete_element_parameter() {
     let mut ct = crate::types::new();
@@ -1486,6 +1585,7 @@ defmodule Consumer do
   fn use(xs), do: 1
 end
 "#,
+            &crate::telemetry::ConfiguredTelemetry::new(),
         ),
         &crate::telemetry::ConfiguredTelemetry::new(),
     )
@@ -1511,13 +1611,14 @@ end
     assert!(ct.is_subtype(&list_int, &refined));
     assert!(
         !ct.is_subtype(&list_atom, &refined),
-        "a refined `Enumerable.t(integer)` must exclude `list(atom)`"
+        "a refined `Enumerable.t(integer)` must exclude `list(atom)`",
     );
     // The bare domain stays element-agnostic (`list(any)`), so it still
     // admits `list(atom)` — proving the refinement genuinely narrows.
     assert!(ct.is_subtype(&list_atom, &bare));
 }
 
+// PICKED: defimpl that omits a declared protocol callback is a compile-time error
 #[test]
 fn protocol_impl_must_cover_declared_callbacks() {
     let mut ct = crate::types::new();
@@ -1533,6 +1634,7 @@ defimpl P, for: List do
   fn other(x), do: x
 end
 "#,
+            &crate::telemetry::ConfiguredTelemetry::new(),
         ),
         &crate::telemetry::ConfiguredTelemetry::new(),
     )
@@ -1543,6 +1645,7 @@ end
     assert!(d.message.contains("missing callback `each/1`"));
 }
 
+// PICKED: two defimpl blocks for same protocol and type is a compile-time error
 #[test]
 fn duplicate_protocol_impls_are_rejected() {
     let mut ct = crate::types::new();
@@ -1562,6 +1665,7 @@ defimpl P, for: List do
   fn each(x), do: x
 end
 "#,
+            &crate::telemetry::ConfiguredTelemetry::new(),
         ),
         &crate::telemetry::ConfiguredTelemetry::new(),
     )
@@ -1575,6 +1679,7 @@ end
     assert!(d.secondaries[0].label.contains("first implementation"));
 }
 
+// PICKED: callback at wrong arity produces arity-mismatch error not missing-callback
 #[test]
 fn protocol_impl_wrong_arity_is_an_arity_mismatch_not_missing() {
     let mut ct = crate::types::new();
@@ -1590,6 +1695,7 @@ defimpl P, for: List do
   fn each(x, extra), do: x
 end
 "#,
+            &crate::telemetry::ConfiguredTelemetry::new(),
         ),
         &crate::telemetry::ConfiguredTelemetry::new(),
     )
@@ -1600,7 +1706,7 @@ end
     assert!(
         d.message.contains("at arity 2") && d.message.contains("`each/1`"),
         "expected arity-mismatch diagnostic naming both arities, got: {}",
-        d.message
+        d.message,
     );
     assert!(
         !d.message.contains("missing callback") && !d.message.contains("unknown callback"),
@@ -1609,6 +1715,7 @@ end
     );
 }
 
+// PICKED: protocol callback with multiple @spec overloads all survive validation
 #[test]
 fn protocol_callback_validation_preserves_overload_sets() {
     let mut ct = crate::types::new();
@@ -1628,6 +1735,7 @@ defimpl P, for: List do
   fn pick(value), do: value
 end
 "#,
+            &crate::telemetry::ConfiguredTelemetry::new(),
         ),
         &crate::telemetry::ConfiguredTelemetry::new(),
     )
@@ -1645,6 +1753,7 @@ end
     assert_eq!(implementation.callback_specs[&("pick".to_string(), 1)].len(), 2);
 }
 
+// PICKED: impl overload not matching any declared protocol spec is rejected
 #[test]
 fn protocol_callback_validation_rejects_uncovered_impl_overload() {
     let mut ct = crate::types::new();
@@ -1663,6 +1772,7 @@ defimpl P, for: List do
   fn pick(value), do: value
 end
 "#,
+            &crate::telemetry::ConfiguredTelemetry::new(),
         ),
         &crate::telemetry::ConfiguredTelemetry::new(),
     )
