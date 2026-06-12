@@ -12,6 +12,12 @@
   "id": "fz-rh2.21.2",
   "labels": [],
   "parent": "fz-rh2.21",
+  "comments": [
+    {
+      "text": "Deviation from ticket text, documented: the drive_test redefinition suite could not be run green here — those tests drive quicksort and are exposed to the pre-existing runaway (the very bug this epic fixes) until the monotone join lands in fz-rh2.21.4. Engine-level propagation semantics are fully pinned by six new scheduler tests; the redefinition suite is verified in fz-rh2.21.4/.5.",
+      "timestamp": "2026-06-12T13:51:35Z"
+    }
+  ],
   "priority": 1,
   "status": "closed",
   "title": "fact engine: claim shapes; ascents wake, ground shifts rebase",
