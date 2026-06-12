@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-12T09:48:13Z",
+  "description": "Pre-existing (confirmed on HEAD 2de4b1a87, 2026-06-12): running cargo test --lib compiler2::drive_test aborts with 'thread compiler2::drive_test::compiler2_native_program_jit_keeps_tail_recursion_bounded has overflowed its stack' (SIGABRT), killing the test binary before remaining tests run. The test intends to prove bounded tail recursion; it currently disproves it under worker-thread stack limits. Unrelated to telemetry work (fz-rh2.19).",
+  "id": "fz-rh2.20",
+  "labels": [],
+  "parent": "fz-rh2",
+  "priority": 2,
+  "status": "open",
+  "title": "drive_test: compiler2_native_program_jit_keeps_tail_recursion_bounded overflows its stack under cargo test",
+  "type": "bug",
+  "updated_at": "2026-06-12T09:48:13Z"
+}
