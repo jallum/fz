@@ -3,7 +3,7 @@
   "blocked_by": [],
   "blocks": [],
   "created": "2026-06-12T21:19:52Z",
-  "description": "",
+  "description": "Goal\nMake compiler-shape and dispatch-contract assertions first-class in fixtures2 so compiler-facing fixtures pin structured facts and telemetry budgets close to the source, instead of relying on old-world exact-text dump goldens that leak incidental internal ids.\n\nSignal\n- no remaining dependency on the ignored fixture_matrix golden_outcomes sweep\n- compiler2 fixtures can declare metric assertions, edge assertions, and optional canonical snapshots from a fixtures2-native contract surface\n- synthetic targets are labeled by stable provenance, not allocator-order FnId numbering\n- the current outcome-golden fixtures (ast_eval, closure_typed_captures, curried_add, fib_tailrec, multi_clause) pass through the new mechanism without exact-text id drift\n- docs explain when to use metrics, semantic edge assertions, or snapshots\n\nStrategy\n1. Define one authoritative compiler2 fixture-contract model for fixtures2: roots, metric assertions, semantic edge assertions, and optional snapshot assertions.\n2. Publish canonical compiler2 call-edge facts and stable synthetic target labels from existing provenance/semantic authority instead of rendering raw SpecKey/FnId text.\n3. Build a dedicated fixtures2 contract harness that reads the contract, runs compiler2, collects structured facts plus telemetry metrics, and supports blessable canonical snapshots only where dense pinning is justified.\n4. Migrate the remaining expected.outcomes fixtures into the new harness and remove the old fixture_matrix golden_outcomes mechanism and sidecars.\n\nWhy\nThe current failure is not semantic drift. It is representational debt: fixture_matrix::golden_outcomes is old-world-only, global instead of fixture-local, and exact-text pins allocator-order internal ids (Static(...#NNN ...) / Indirect(...#NNN ...)). The right fix is to replace that mechanism with a fixtures2-native contract surface grounded in structured compiler facts and telemetry.\n\nValidation\n- targeted compiler2 contract fixtures pass with stable results across reruns\n- cargo test -p fz --test fixture_matrix golden_outcomes is deleted or no longer needed\n- cargo test --workspace\n- cargo clippy --workspace --all-targets -- -D warnings\n- docs updated in .agent/docs/fixtures.md and any new compiler2 fixture-contract guide\n\nRemoval targets\n- fixture_matrix golden_outcomes static sweep\n- fixtures/*/expected.outcomes sidecars\n- render_dispatch_target dependence on raw FnId numbering for this assertion surface\n- ad hoc compiler2 outcome pinning that can move into the new harness",
   "id": "fz-go4.11",
   "labels": [],
   "parent": "fz-go4",
@@ -15,7 +15,7 @@
   ],
   "priority": 3,
   "status": "in_progress",
-  "title": "Stabilize golden_outcomes against incidental internal id drift",
+  "title": "Replace old-world outcome goldens with fixtures2 compiler contracts",
   "type": "bug",
-  "updated_at": "2026-06-12T23:10:07Z"
+  "updated_at": "2026-06-12T23:25:45Z"
 }
