@@ -4,6 +4,8 @@
   "blocks": [
     "fz-rh2.18.9.5"
   ],
+  "closed_at": "2026-06-12T04:48:01Z",
+  "close_reason": "Landed native CPS back-edge fix",
   "created": "2026-06-12T01:34:09Z",
   "description": "cargo test --lib compiler2:: -- --nocapture runs clean through the operator-wrapper/value-flow work until compiler2::drive_test::compiler2_native_program_jit_keeps_tail_recursion_bounded, which aborts with stack overflow. This looks outside the current operator/type arc, but it is a real compiler2 failure that should be burned down separately.",
   "id": "fz-hn8",
@@ -19,8 +21,8 @@
     }
   ],
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Compiler2 native JIT tail recursion overflows stack",
   "type": "bug",
-  "updated_at": "2026-06-12T04:47:38Z"
+  "updated_at": "2026-06-12T04:48:01Z"
 }
