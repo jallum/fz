@@ -4,14 +4,15 @@
   "blocks": [
     "fz-rh2.17.5.6"
   ],
+  "closed_at": "2026-06-12T18:40:07Z",
   "created": "2026-06-12T17:00:30Z",
   "description": "Epic fz-rh2.17's recorded complaint — 'remote visibility checks stop overusing ModuleDefined as a stand-in for interface readiness' — is unfixed in the semantic walk: jobs/semantic.rs reads ModuleDefined 5 times and ModuleInterface ZERO times. The boundary the epic defines: ModuleDefined = local body/scoping readiness; ModuleInterface = cross-module callable visibility. Audit each gate (resolve_protocol_call gates the protocol module and each impl owner_module on ModuleDefined; wait_for_protocol_module, wait_for_runtime_module likewise) and render a verdict per site: where the walk needs the module's BODY (activating a selected impl function), ModuleDefined is honest — say so in place; where it needs only the exported callable surface (selecting/validating callees), consume ModuleInterface and stop over-waiting. Over-waiting on ModuleDefined serializes the fixpoint behind whole-module scoping that interface readiness does not require. Verify: compiler2:: green; convergence pins hold (frontier canaries, schedule-independence band); document the settled boundary in .agent/docs/semantic-fixpoint.md.",
   "id": "fz-rh2.17.5.9",
   "labels": [],
   "parent": "fz-rh2.17.5",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "Compiler2 semantic walk: give each ModuleDefined gate a verdict — body readiness vs ModuleInterface visibility",
   "type": "task",
-  "updated_at": "2026-06-12T17:00:36Z"
+  "updated_at": "2026-06-12T18:40:07Z"
 }
