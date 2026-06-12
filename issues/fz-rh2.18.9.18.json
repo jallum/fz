@@ -1,7 +1,8 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-rh2.18.9.12"
+    "fz-rh2.18.9.12",
+    "fz-rh2.18.9.17"
   ],
   "blocks": [
     "fz-rh2.18.9.6"
@@ -21,5 +22,5 @@
   "status": "open",
   "title": "Compiler2 tests: isolate parallel quicksort backend artifact runs",
   "type": "bug",
-  "updated_at": "2026-06-12T09:48:40Z"
+  "updated_at": "2026-06-12T09:48:43Z"
 }

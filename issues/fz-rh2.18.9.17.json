@@ -4,6 +4,7 @@
     "fz-rh2.18.9.12"
   ],
   "blocks": [
+    "fz-rh2.18.9.18",
     "fz-rh2.18.9.9"
   ],
   "created": "2026-06-12T07:57:35Z",
@@ -21,5 +22,5 @@
   "status": "open",
   "title": "Compiler2 native-program quicksort: preserve root result after clean rebuild",
   "type": "bug",
-  "updated_at": "2026-06-12T09:47:56Z"
+  "updated_at": "2026-06-12T09:48:43Z"
 }
