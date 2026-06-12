@@ -1282,6 +1282,11 @@ fn resolve_protocol_call(
     waits: &mut HashSet<FactKey>,
     follow_up: &mut HashSet<Job>,
 ) -> Result<ResolvedCall, FatalError> {
+    // VERDICT (fz-rh2.17.5.9): body readiness, not interface visibility.
+    // Defining the protocol module is what registers its callbacks and
+    // publishes ProtocolDispatch — the precise fact read just below. This
+    // gate bootstraps that demand (including runtime code ensure/indexing);
+    // it is not a stand-in for ModuleInterface.
     let protocol_fact = FactKey::ModuleDefined(protocol);
     if world.module_defined_revision(protocol).is_none() {
         wait_for_protocol_module(world, protocol, waits, follow_up);
@@ -1328,13 +1333,15 @@ fn resolve_protocol_call(
     let mut activations = Vec::new();
     let mut return_ty = None;
     for (selected, overlap) in matches {
-        let owner_fact = FactKey::ModuleDefined(selected.owner_module);
-        if world.module_defined_revision(selected.owner_module).is_none() {
-            waits.insert(owner_fact);
-            follow_up.insert(Job::DefineModule(selected.owner_module));
+        // VERDICT (fz-rh2.17.5.9): the old ModuleDefined(owner_module) wait
+        // here was over-waiting — holding a ProtocolCallbackImpl proves the
+        // impl fragment already published its function, and re-serializing
+        // every protocol call behind whole-module scoping is readiness the
+        // call does not require. Gate per FUNCTION, exactly as the
+        // direct-call path does.
+        if wait_for_unresolved_function_module(world, selected.function, waits, follow_up) {
             return Ok((None, Vec::new(), None));
         }
-        reads.push(owner_fact);
 
         let refined_inputs = refine_protocol_target_inputs(world, &input_types, receiver_ty, overlap);
         let Some((refined_inputs, contract_return_ty)) =
@@ -1807,6 +1814,10 @@ fn prepare_function_call(
     Some((activation, already_present, return_evidence))
 }
 
+/// VERDICT (fz-rh2.17.5.9): body readiness. A runtime module's defimpls
+/// register during its definition, so a receiver type implying an unloaded
+/// runtime module genuinely needs DefineModule — this is demand
+/// bootstrapping, not a ModuleInterface stand-in.
 fn wait_for_runtime_module(
     world: &mut World<'_>,
     module: ModuleId,
@@ -1841,6 +1852,10 @@ fn wait_for_protocol_module(
     follow_up.insert(Job::DefineModule(protocol));
 }
 
+/// VERDICT (fz-rh2.17.5.9): body readiness. The caller holds a FunctionId
+/// and needs its DEFINITION, which module scope publication produces; the
+/// exported-callable surface (ModuleInterface) answers a different question
+/// and is consumed where names resolve — body lowering — not here.
 fn wait_for_unresolved_function_module(
     world: &mut World<'_>,
     function: FunctionId,

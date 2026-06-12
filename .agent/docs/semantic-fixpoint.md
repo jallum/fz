@@ -124,3 +124,20 @@ the basis for the remaining type-system tickets.
   `CallSiteSummary(...)`, and any callee demand facts it publishes.
 - `SealSemanticClosure(root)` owns only `SemanticClosed(root)`. It observes the
   settled semantic frontier; it does not manually prove freshness anymore.
+
+## Module facts at the walk's gates (fz-rh2.17.5.9)
+
+`ModuleDefined(m)` means m's body has been scoped and published;
+`ModuleInterface(m)` means m's exported callable surface is available. The
+semantic walk consumes NO `ModuleInterface` facts, and that is correct:
+names resolve during body lowering (which does consume the interface), so by
+the time the walk runs, every callee is already a `FunctionId`. The walk's
+remaining `ModuleDefined` gates are all body readiness or demand
+bootstrapping, each carrying its verdict in place: the protocol gate exists
+to make `DefineModule(protocol)` publish `ProtocolDispatch`; the
+runtime-module gate loads defimpls that registration alone implies; the
+unresolved-function gate produces a held `FunctionId`'s definition. Protocol
+call targets gate per FUNCTION (the same `wait_for_unresolved_function_module`
+the direct-call path uses) — the old `ModuleDefined(owner_module)` wait
+re-serialized every protocol call behind whole-module scoping and was
+removed as over-waiting.
