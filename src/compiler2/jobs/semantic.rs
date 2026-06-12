@@ -1297,7 +1297,6 @@ fn resolve_protocol_call(
     reads.push(dispatch_fact);
 
     let receiver_ty = input_types.first().cloned().unwrap_or_else(|| any_ty(world));
-    let function_ref = world.function_ref(callback_function).clone();
 
     let mut matches = Vec::new();
     let dispatch = world
@@ -1310,11 +1309,7 @@ fn resolve_protocol_call(
         if world.types().is_empty(&overlap) {
             continue;
         }
-        let callback = arm
-            .callbacks
-            .get(&(function_ref.name.clone(), function_ref.arity))
-            .copied();
-        if let Some(callback) = callback {
+        if let Some(callback) = arm.callbacks.get(&callback_function).copied() {
             matches.push((callback, overlap));
         }
     }

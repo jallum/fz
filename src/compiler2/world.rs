@@ -1354,7 +1354,7 @@ impl<'a> World<'a> {
         &mut self,
         protocol: ModuleId,
         target: ModuleId,
-        callbacks: HashMap<(String, usize), ProtocolCallbackImpl>,
+        callbacks: HashMap<FunctionId, ProtocolCallbackImpl>,
     ) {
         let key = ProtocolImplKey { protocol, target };
         self.protocol_impls.define(key, ProtocolImpl { callbacks });

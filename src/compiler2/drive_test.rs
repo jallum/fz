@@ -547,6 +547,7 @@ fn compiler2_nested_defimpl_resolves_protocol_and_target_through_namespace() {
     let protocol = world.reference_module("Contracts.Collectable");
     let list = world.reference_module("List");
     let contracts_list = world.reference_module("Contracts.List");
+    let id_callback = world.reference_function(protocol, "id", 1);
     let dispatch = world
         .protocol_dispatch(protocol)
         .expect("the nested protocol should publish a dispatch fact under Contracts.Collectable");
@@ -564,7 +565,7 @@ fn compiler2_nested_defimpl_resolves_protocol_and_target_through_namespace() {
         "nested defimpl target resolution must not invent a child module for bare runtime targets",
     );
     assert!(
-        dispatch.arms[0].callbacks.contains_key(&("id".to_string(), 1)),
+        dispatch.arms[0].callbacks.contains_key(&id_callback),
         "the nested defimpl should register the declared protocol callback under the protocol's real dispatch fact",
     );
 }
@@ -786,6 +787,7 @@ fn compiler2_protocol_domain_marker_stays_type_owned_while_dispatch_revises_when
         "the impl set should not mutate the stored t/1 definition",
     );
 
+    let pick_callback = world.reference_function(protocol, "pick", 2);
     let dispatch = world
         .protocol_dispatch(protocol)
         .expect("the revised protocol dispatch fact should be stored");
@@ -797,8 +799,8 @@ fn compiler2_protocol_domain_marker_stays_type_owned_while_dispatch_revises_when
         "the dispatch arm should target the List receiver domain",
     );
     assert!(
-        dispatch.arms[0].callbacks.contains_key(&("pick".to_string(), 2)),
-        "the dispatch arm should route the declared callback name and arity",
+        dispatch.arms[0].callbacks.contains_key(&pick_callback),
+        "the dispatch arm should route the declared callback identity",
     );
 }
 

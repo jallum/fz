@@ -1,8 +1,9 @@
 //! Compiler2 protocol callback and implementation facts.
 //!
 //! Protocol callbacks are function-like namespaced identities without lowered
-//! bodies. Protocol implementations map those callbacks onto ordinary
-//! functions owned by a source module. Compiler2 publishes both the raw impl
+//! bodies. Protocol implementations map those callbacks — keyed by the
+//! callback's interned `FunctionId`, the same identity callsites resolve to —
+//! onto ordinary functions owned by a source module. Compiler2 publishes both the raw impl
 //! registry and a co-defined protocol-dispatch artifact so type legality and
 //! impl selection stay separate in the fact graph.
 
@@ -29,13 +30,13 @@ pub(crate) struct ProtocolImplKey {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ProtocolImpl {
-    pub(crate) callbacks: HashMap<(String, usize), ProtocolCallbackImpl>,
+    pub(crate) callbacks: HashMap<FunctionId, ProtocolCallbackImpl>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ProtocolDispatchArm {
     pub(crate) target: ModuleId,
-    pub(crate) callbacks: HashMap<(String, usize), ProtocolCallbackImpl>,
+    pub(crate) callbacks: HashMap<FunctionId, ProtocolCallbackImpl>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

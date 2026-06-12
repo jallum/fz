@@ -1126,8 +1126,13 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
             if publication.changed {
                 changed.push(publication.output);
             }
+            // Key by the protocol's callback identity — the same interned
+            // FunctionId a callsite resolves to — not by (name, arity).
+            let callback = self
+                .world
+                .reference_function(protocol, function.name.clone(), function.arity);
             callbacks.insert(
-                (function.name.clone(), function.arity),
+                callback,
                 ProtocolCallbackImpl {
                     function: publication.function,
                     owner_module: self.current_module,
