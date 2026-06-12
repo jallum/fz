@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-go4.3"
+  ],
   "blocks": [],
   "created": "2026-06-12T18:42:56Z",
   "description": "Goal\nAudit lowering and planning provenance/state duplication and delete redundant stored vectors or copies where the same information can be derived from authoritative IR or world state.\n\nScope\n- `src/ir_lower/cps.rs` continuation provenance\n- planner/lowering paths with repeated cloned demand or capability update state\n- only structurally redundant duplication, not semantically necessary retention\n\nContract\n- provenance stores only irreducible information\n- data derivable from authoritative state is not duplicated\n- if a copy is necessary, the reason is explicit in the data model rather than accidental\n\nValidation\n- targeted lowering/planner tests\n- clippy sweep for redundant clone\n- full `cargo test --workspace` before close",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Delete redundant lowering and planning provenance copies",
   "type": "task",
-  "updated_at": "2026-06-12T18:42:56Z"
+  "updated_at": "2026-06-12T18:42:57Z"
 }
