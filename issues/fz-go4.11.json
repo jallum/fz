@@ -11,11 +11,15 @@
     {
       "text": "Reproduced the remaining drift by running cargo test -p fz --test fixture_matrix golden_outcomes -- --ignored --exact --nocapture. The failure surface is now narrow and semantic-free: ast_eval, closure_typed_captures, curried_add, fib_tailrec, and multi_clause differ only in incidental internal ids rendered inside outcomes (Static(...#NNN ...) / Indirect(...#NNN ...)); spans, demand vectors, and edge kinds all match. The right fix is to stabilize outcomes rendering at the source rather than refreshing goldens.",
       "timestamp": "2026-06-12T23:10:07Z"
+    },
+    {
+      "text": "Lowered this redesign into a data-model-first DAG:\n- fz-go4.11.1 Define fixtures2 compiler contract model and docs\n- fz-go4.11.2 Publish canonical compiler2 call-edge facts and stable synthetic labels\n- fz-go4.11.3 Build fixtures2 compiler contract harness\n- fz-go4.11.4 Migrate outcome-golden fixtures and remove old-world sweep\n\nExecution rule: define the contract first, publish stable facts second, build the harness on that authority third, then migrate fixtures and delete the old mechanism last.",
+      "timestamp": "2026-06-12T23:26:44Z"
     }
   ],
   "priority": 3,
   "status": "in_progress",
   "title": "Replace old-world outcome goldens with fixtures2 compiler contracts",
   "type": "bug",
-  "updated_at": "2026-06-12T23:26:04Z"
+  "updated_at": "2026-06-12T23:26:44Z"
 }
