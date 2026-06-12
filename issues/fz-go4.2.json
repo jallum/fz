@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-12T18:42:56Z",
+  "description": "Goal\nRedesign fact/job read APIs so reads and lookups accept borrowed `FactKey` values and only durable read/wait/output sets own keys.\n\nScope\n- compiler2 job helpers such as `read_fact`\n- work-graph / fact-query call sites that clone keys to read or test settledness\n- root and semantic jobs where clone-driven fact traffic is concentrated\n\nContract\n- read/check APIs take `\u0026FactKey`\n- ownership is introduced only when a key is stored durably in `reads`, `waits`, `outputs`, or follow-up structures\n- helper code that existed only to appease owned read APIs is removed\n\nValidation\n- targeted clippy sweep for redundant clone\n- compiler2 semantic/root tests\n- full `cargo test --workspace` before close",
+  "id": "fz-go4.2",
+  "labels": [],
+  "parent": "fz-go4",
+  "priority": 2,
+  "status": "open",
+  "title": "Make FactKey reads borrow-first",
+  "type": "task",
+  "updated_at": "2026-06-12T18:42:56Z"
+}
