@@ -11,11 +11,15 @@
     {
       "text": "Baseline accounting addition: ir_planner::quicksort_partition_accumulators_converge_to_one_spec and ir_planner::return_capabilities_classify_quicksort_fn_shapes fail at the fz-rh2.21.2 tip (old pipeline, untouched by this epic) — pre-existing alongside the known trio + fz-rh2.20 overflow. To be re-verified in the 21.9 closeout sweep.",
       "timestamp": "2026-06-12T14:40:44Z"
+    },
+    {
+      "text": "EPIC COMPLETE — all nine children landed as nine commits (26845f05d..HEAD). Final accounting:\n\nARC A (convergence): the quicksort runaway is dead by construction. 20 release-binary builds: stable megabyte logs (was 2.5MB-or-700MB by hash seed). 20 in-process drives: identical 23-activation frontiers every schedule, ~310 jobs (was 54,000+). Max return ascents on the corpus: 3-4 (widening delay 8, never engaged outside the deepening fixture). A settled world re-drives with zero jobs. The lib suite COMPLETES in ~10s where the baseline run hung.\n\nARC B (literals): IntSet/FloatSet/F64Bits/widen_literal_flow/widen_for_recursive_spec_key deleted; the flow/observed split deleted (-174 lines in the analyzer alone); numeric literals in type position widen with type/numeric-literal-widened; constants ride the lowering as values (LoweredMapKey, dispatch consts). Two real latent bugs found and fixed by the rewrite: string-constant dispatch silently deleted live wildcard clauses (miss-side subtype proof on a singleton-less kind), and the runtime predicate read any basic bit as binary.\n\nDELTA vs the fz-rh2.19.4 baseline: zero new failures, one baseline failure fixed (quicksort frontier canary), +5 passing; matrix delta exactly zero (48/517 both sides — that breakage and the ~525 lib failures pre-exist this epic, rooted at or before the fz-rh2.18.5 WIP state). Known out-of-scope: fz-rh2.20 (JIT stack overflow), the 4 known compiler2 failures, 2 pre-existing ir_planner quicksort failures (commented earlier).",
+      "timestamp": "2026-06-12T15:20:06Z"
     }
   ],
   "priority": 1,
   "status": "in_progress",
   "title": "compiler2 semantic fixpoint non-convergence: recursive activation return oscillates; schedule-order non-determinism decides settling",
   "type": "epic",
-  "updated_at": "2026-06-12T14:40:44Z"
+  "updated_at": "2026-06-12T15:20:06Z"
 }
