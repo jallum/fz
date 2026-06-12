@@ -1,8 +1,6 @@
 {
   "assignee": "",
-  "blocked_by": [
-    "fz-rh2.18.6"
-  ],
+  "blocked_by": [],
   "blocks": [
     "fz-rh2.18.8"
   ],
@@ -15,5 +13,5 @@
   "status": "open",
   "title": "Compiler2 type convergence: burn down any/none poison fallbacks",
   "type": "epic",
-  "updated_at": "2026-06-12T05:16:31Z"
+  "updated_at": "2026-06-12T05:16:32Z"
 }
