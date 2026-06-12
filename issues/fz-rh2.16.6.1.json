@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-12T19:18:34Z",
+  "description": "Price of the fz-rh2.16.x oracle-restoration scaffolding: src/modules/runtime_library/legacy/ (frozen pre-18.5 kernel.fz + runtime.fz), the legacy_source field on RuntimeModuleSource, legacy_prelude_source(), and the four #[ignore]d old-world stragglers all exist ONLY to keep the old pipeline runnable as the migration oracle. When fz-rh2.16.6 deletes the old compiler, delete all of it in the same arc — nothing in compiler2 may ever read a legacy source.",
+  "id": "fz-rh2.16.6.1",
+  "labels": [],
+  "parent": "fz-rh2.16.6",
+  "priority": 2,
+  "status": "open",
+  "title": "Delete the legacy runtime-library snapshot with the old pipeline",
+  "type": "task",
+  "updated_at": "2026-06-12T19:18:34Z"
+}
