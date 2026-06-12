@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-go4.10.1"
+  ],
   "created": "2026-06-12T22:20:09Z",
   "description": "Goal: make selective-receive hit semantics explicit and provable before changing compiler2 native codegen.\\n\\nOutput contract:\\n- sender-side selective-receive probe is the authoritative hit path\\n- a hit bypasses the mailbox entirely\\n- a hit copies only the winning arm's projected capture set into the receiver heap\\n- the receiver resumes from a receiver-owned outcome closure, not from a mailbox message\\n- a miss deep-copies the full message into the mailbox\\n\\nChanges:\\n- update scheduler/receive docs to describe outcome-closure delivery explicitly\\n- extend runtime selective-receive tests to prove mailbox bypass and projection-only hit behavior\\n- add one minimal compiler2 native regression that names the intended receive-\u003eresume-\u003earithmetic behavior\\n- use production paths and telemetry where possible\\n\\nValidation:\\n- focused runtime selective-receive tests\\n- focused compiler2 native selective-receive regression\\n- docs match code",
   "id": "fz-go4.10.3",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Define selective-receive outcome-closure contract in docs and tests",
   "type": "task",
-  "updated_at": "2026-06-12T22:20:09Z"
+  "updated_at": "2026-06-12T22:20:23Z"
 }
