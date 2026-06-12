@@ -31,11 +31,15 @@
     {
       "text": "Split the rebased-base red surface by root cause. fz-go4.9 now owns the missing fz2 interp comparison operator symbols (fz_op_eq/fz_op_gt and related wrappers) and the related temporary ignores removed from fixture_matrix/fz2_cli. fz-go4.7 remains for the unresolved receive_selective_refs native regression and golden_outcomes stability drift.",
       "timestamp": "2026-06-12T21:19:05Z"
+    },
+    {
+      "text": "The remaining red surface that originally lived here has been paid down elsewhere: fz-go4.9 restored the missing fz2 interp comparison intrinsics, fz-go4.10 restored receive_selective_refs across the matrix, and fz-go4.11 now owns the remaining golden_outcomes id-drift stabilization work. Closing this ticket as superseded by the narrower follow-ons.",
+      "timestamp": "2026-06-12T23:09:39Z"
     }
   ],
   "priority": 1,
   "status": "in_progress",
   "title": "Re-green fixture_matrix after rebasing onto latest fz-rh2",
   "type": "bug",
-  "updated_at": "2026-06-12T21:19:05Z"
+  "updated_at": "2026-06-12T23:09:39Z"
 }
