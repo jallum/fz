@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-12T23:26:33Z",
+  "description": "Goal\nPublish a stable compiler-facing fact surface for compiler2 call edges so fixtures can assert meaning without depending on allocator-order FnIds or synthetic function numbering.\n\nSignal\n- compiler2 can expose call-edge facts and synthetic target labels that remain stable across harmless internal id drift\n- generated clause/continuation/lambda targets are identified by provenance or owner-local canonical labels rather than raw numbering\n- optional snapshot rendering is derived from the same structured facts\n\nStrategy\n1. Identify the authoritative provenance already present for source functions, clauses, continuations, and lambdas.\n2. Build one canonical target-labeling function from that authority.\n3. Publish structured call-edge records plus a canonical renderer on top of those records instead of rendering raw SpecKeys directly.\n\nValidation\n- the five current outcome fixtures render semantically equivalent stable labels across reruns\n- no canonical fixture-facing output includes raw allocator-order ids as its identity source\n\nRemoval targets\n- render_dispatch_target dependence on raw FnId numbering for compiler contract assertions\n- exact-text identity churn caused by synthetic k_### / lambda_### numbering",
+  "id": "fz-go4.11.2",
+  "labels": [],
+  "parent": "fz-go4.11",
+  "priority": 2,
+  "status": "open",
+  "title": "Publish canonical compiler2 call-edge facts and stable synthetic labels",
+  "type": "task",
+  "updated_at": "2026-06-12T23:26:33Z"
+}
