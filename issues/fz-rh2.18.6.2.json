@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-rh2.18.6.5"
+  ],
   "blocks": [
     "fz-rh2.18.6.3"
   ],
@@ -13,5 +15,5 @@
   "status": "open",
   "title": "Compiler2 semantic calls: wait on absent return evidence",
   "type": "task",
-  "updated_at": "2026-06-12T06:54:47Z"
+  "updated_at": "2026-06-12T06:54:52Z"
 }
