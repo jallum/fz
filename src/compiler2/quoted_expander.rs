@@ -688,6 +688,20 @@ pub(crate) fn emit_job_diagnostic(world: &World<'_>, diagnostic: Diagnostic) -> 
     super::scheduler::FatalError
 }
 
+/// Route a failed surface read to the right diagnostic: a user-coded error
+/// (malformed source surface) carries its own code; everything else is an
+/// internal invariant failure.
+pub(crate) fn emit_surface_read_error(
+    world: &World<'_>,
+    context: &str,
+    error: &super::source::QuotedSourceError,
+) -> super::scheduler::FatalError {
+    match error.user_code() {
+        Some(code) => emit_job_diagnostic(world, Diagnostic::error(code, error.to_string(), Span::DUMMY)),
+        None => emit_internal_surface_error(world, format!("{context}: {error}")),
+    }
+}
+
 pub(crate) fn emit_internal_surface_error(world: &World<'_>, message: String) -> super::scheduler::FatalError {
     emit_job_diagnostic(
         world,

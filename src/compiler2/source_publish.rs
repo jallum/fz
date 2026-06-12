@@ -24,7 +24,7 @@ use super::namespace::{Namespace, NamespaceSymbol};
 use super::protocol::ProtocolCallbackImpl;
 use super::quoted_expander::{
     ExpandedScopeFragment, QuotedExpansionCtx, emit_internal_surface_error, emit_job_diagnostic,
-    expand_item_macro_fragment, read_compiler_fragment_root,
+    emit_surface_read_error, expand_item_macro_fragment, read_compiler_fragment_root,
 };
 use super::quoted_surface::{
     CompilerService, CompilerServiceForm, FunctionForm, MacroCallForm, ProtocolImplForm, ReservedSourceDefinition,
@@ -215,18 +215,15 @@ pub(crate) fn publish_protocol_surface(
             )
         })?
         .to_string();
-    let function = build_module_info_function(&callables, &module_name).map_err(|error| {
-        emit_internal_surface_error(world, format!("protocol module info synthesis failed: {error}"))
-    })?;
+    let function = build_module_info_function(&callables, &module_name)
+        .map_err(|error| emit_surface_read_error(world, "protocol module info synthesis failed", &error))?;
     let function_id = world.reference_function(module_id, function.name.clone(), function.arity);
     scope = world.bind_namespace(scope, function.name.clone(), NamespaceSymbol::Function(function_id));
     let function_scope = ScopeSnapshot::function(module_id, scope, function_id);
     let builder = function.source.builder();
     let env_root = world
         .project_env_value(&builder, function_scope, QuotedLexicalContextKind::Definition)
-        .map_err(|error| {
-            emit_internal_surface_error(world, format!("protocol __info__ env projection failed: {error}"))
-        })?;
+        .map_err(|error| emit_surface_read_error(world, "protocol __info__ env projection failed", &error))?;
     let env = function.source.subroot(env_root);
     let publication = publish_function_source(
         world,
@@ -274,9 +271,8 @@ pub(crate) fn discover_modules(
         match form {
             ScopeForm::Module(module) => {
                 let module_id = world.reference_child_module(parent_module, &module.name);
-                let nested = read_module_body_surface(module, ctx).map_err(|error| {
-                    emit_internal_surface_error(world, format!("nested module body read failed: {error}"))
-                })?;
+                let nested = read_module_body_surface(module, ctx)
+                    .map_err(|error| emit_surface_read_error(world, "nested module body read failed", &error))?;
                 let revision = world.index_module_body(
                     module_id,
                     code_id,
@@ -293,9 +289,8 @@ pub(crate) fn discover_modules(
             }
             ScopeForm::Protocol(protocol) => {
                 let module_id = reference_declared_protocol_module(world, parent_module, &protocol.name);
-                let protocol_surface = read_protocol_body_surface(protocol, ctx).map_err(|error| {
-                    emit_internal_surface_error(world, format!("quoted protocol body read failed: {error}"))
-                })?;
+                let protocol_surface = read_protocol_body_surface(protocol, ctx)
+                    .map_err(|error| emit_surface_read_error(world, "quoted protocol body read failed", &error))?;
                 let revision = world.index_protocol_module(
                     module_id,
                     code_id,
@@ -310,9 +305,8 @@ pub(crate) fn discover_modules(
                 }
             }
             ScopeForm::MacroCall(macro_call) => {
-                let Some(definition) = reserved_source_definition(&macro_call.source).map_err(|error| {
-                    emit_internal_surface_error(world, format!("raw discovery reservation failed: {error}"))
-                })?
+                let Some(definition) = reserved_source_definition(&macro_call.source)
+                    .map_err(|error| emit_surface_read_error(world, "raw discovery reservation failed", &error))?
                 else {
                     continue;
                 };
@@ -325,7 +319,7 @@ pub(crate) fn discover_modules(
                     (ReservedSourceDefinition::Module { .. }, ScopeForm::Module(module)) => {
                         let module_id = world.reference_child_module(parent_module, &module.name);
                         let nested = read_module_body_surface(module, ctx).map_err(|error| {
-                            emit_internal_surface_error(world, format!("nested module body read failed: {error}"))
+                            emit_surface_read_error(world, "nested module body read failed", &error)
                         })?;
                         let revision = world.index_module_body(
                             module_id,
@@ -344,7 +338,7 @@ pub(crate) fn discover_modules(
                     (ReservedSourceDefinition::Protocol { .. }, ScopeForm::Protocol(protocol)) => {
                         let module_id = reference_declared_protocol_module(world, parent_module, &protocol.name);
                         let protocol_surface = read_protocol_body_surface(protocol, ctx).map_err(|error| {
-                            emit_internal_surface_error(world, format!("quoted protocol body read failed: {error}"))
+                            emit_surface_read_error(world, "quoted protocol body read failed", &error)
                         })?;
                         let revision = world.index_protocol_module(
                             module_id,

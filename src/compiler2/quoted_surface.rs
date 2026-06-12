@@ -193,7 +193,7 @@ fn read_scope_surface_with_mode(
             Ok(head_name) => head_name,
             Err(_) => {
                 flush_function_groups(source, ctx, mode, &mut forms, &mut group_order, &mut groups)?;
-                pending_function_attrs.clear();
+                reject_dangling_function_attrs(source, &pending_function_attrs)?;
                 forms.push(build_form(source.subroot(quoted_item.root()), ctx, mode)?);
                 continue;
             }
@@ -236,13 +236,14 @@ fn read_scope_surface_with_mode(
             }
             _ => {
                 flush_function_groups(source, ctx, mode, &mut forms, &mut group_order, &mut groups)?;
-                pending_function_attrs.clear();
+                reject_dangling_function_attrs(source, &pending_function_attrs)?;
                 forms.push(build_form(source.subroot(quoted_item.root()), ctx, mode)?);
             }
         }
     }
 
     flush_function_groups(source, ctx, mode, &mut forms, &mut group_order, &mut groups)?;
+    reject_dangling_function_attrs(source, &pending_function_attrs)?;
     Ok(ScopeSurface { attrs, forms })
 }
 
@@ -281,6 +282,32 @@ fn read_do_body_surface_with_mode(
 ) -> Result<ScopeSurface, QuotedSourceError> {
     let body = extract_do_body_list_root(source)?;
     read_scope_surface_with_mode(&body, ctx, mode)
+}
+
+/// A pending `@doc`/`@spec` attaches to the NEXT function group (or extern).
+/// Reaching a non-function form or the end of scope with attrs still pending
+/// means they attach to nothing — a source-surface error reported here,
+/// where the dangling attribute is visible, instead of degrading into a
+/// confusing unknown-export diagnostic when the described function is rooted
+/// later.
+fn reject_dangling_function_attrs(source: &QuotedSourceRoot, pending: &[AnyValueRef]) -> Result<(), QuotedSourceError> {
+    let Some(root) = pending.first() else {
+        return Ok(());
+    };
+    let head = source
+        .subroot(*root)
+        .cursor()
+        .ast_node()
+        .ok()
+        .flatten()
+        .and_then(|node| node.head.atom_name().ok())
+        .unwrap_or_else(|| "@doc/@spec".to_string());
+    Err(QuotedSourceError::user(
+        crate::diag::codes::PARSE_DANGLING_FUNCTION_ATTR,
+        format!(
+            "`{head}` does not attach to any function definition: function attributes must be followed by their function's clauses",
+        ),
+    ))
 }
 
 fn flush_function_groups(

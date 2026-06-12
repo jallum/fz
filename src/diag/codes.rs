@@ -4,7 +4,7 @@
 //! Format: `<stage>/<kind>`. New codes land with the diagnostic site
 //! that emits them.
 
-use super::diagnostic::DiagCode;
+pub use super::diagnostic::DiagCode;
 
 // ----- lexer -----
 
@@ -14,6 +14,7 @@ pub const LEX_UNEXPECTED_CHAR: DiagCode = DiagCode("lex/unexpected-char");
 
 pub const PARSE_EXPECTED_TOKEN: DiagCode = DiagCode("parse/expected-token");
 pub const PARSE_AMBIGUOUS_NO_PARENS_KEYWORD: DiagCode = DiagCode("parse/ambiguous-no-parens-keyword");
+pub const PARSE_DANGLING_FUNCTION_ATTR: DiagCode = DiagCode("parse/dangling-function-attr");
 
 // ----- resolver -----
 

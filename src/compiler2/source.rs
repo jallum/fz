@@ -27,13 +27,29 @@ const META_SPAN_KEY: &str = "__fz_span__";
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QuotedSourceError {
     message: String,
+    /// `Some` when the error is the USER's (malformed source surface) and
+    /// carries its own diagnostic code; `None` means an internal invariant
+    /// failed and the job boundary classifies it as such.
+    code: Option<crate::diag::codes::DiagCode>,
 }
 
 impl QuotedSourceError {
     pub(crate) fn new(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
+            code: None,
         }
+    }
+
+    pub(crate) fn user(code: crate::diag::codes::DiagCode, message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            code: Some(code),
+        }
+    }
+
+    pub(crate) fn user_code(&self) -> Option<crate::diag::codes::DiagCode> {
+        self.code
     }
 }
 

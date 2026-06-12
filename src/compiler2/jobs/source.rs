@@ -6,6 +6,7 @@ use super::super::identity::{FunctionId, FunctionSource, ModuleId, ModuleSourceK
 use super::super::namespace::{Namespace, NamespaceSymbol};
 use super::super::quoted_expander::{
     ExpandedRoot, ExpandedValue, QuotedExpansionCtx, emit_internal_surface_error, emit_job_diagnostic,
+    emit_surface_read_error,
 };
 use super::super::quoted_surface::{SurfaceSourceContext, read_compiler_fragment_surface, read_scope_surface};
 use super::super::scheduler::FatalError;
@@ -35,7 +36,7 @@ pub(super) fn index_code(world: &mut World<'_>, code_id: CodeId) -> Result<JobEf
         read_scope_surface
     };
     let surface = read_surface(&quoted_root, &ctx)
-        .map_err(|error| emit_internal_surface_error(world, format!("quoted surface read failed: {error}")))?;
+        .map_err(|error| emit_surface_read_error(world, "quoted surface read failed", &error))?;
     let quoted = QuotedCodeSource {
         quoted: quoted_root.clone(),
         surface: surface.clone(),

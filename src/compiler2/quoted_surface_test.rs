@@ -312,3 +312,60 @@ fn compiler2_quoted_surface_reads_protocol_impl_callbacks_through_grouped_source
         other => panic!("expected compiler-fragment protocol impl form, got {other:?}"),
     }
 }
+
+#[test]
+fn compiler2_quoted_surface_rejects_a_trailing_dangling_spec() {
+    // A @spec that no function definition ever follows used to be silently
+    // dropped at end-of-scope; the missing function then surfaced much later
+    // as a confusing unknown-export diagnostic. It is a source-surface
+    // error, and it is reported here, where the dangling attr is visible.
+    let tel = ConfiguredTelemetry::new();
+    let source = "fn alpha(x), do: x\n@spec beta(integer) :: integer\n";
+    let mut code = CodeMap::new();
+    let code_id = code.define(Some("dangling_tail.fz".to_string()), source.to_string());
+    let root = parse_quoted_program("dangling_tail.fz", source, &tel).expect("quoted parse");
+    let ctx = SurfaceSourceContext::new(code_id, source);
+
+    let error = read_scope_surface(&root, &ctx).expect_err("a trailing @spec attaches to nothing");
+    assert!(
+        error.to_string().contains("@spec") && error.to_string().contains("does not attach"),
+        "the rejection names the dangling attribute: {error}",
+    );
+}
+
+#[test]
+fn compiler2_quoted_surface_rejects_a_spec_followed_by_a_non_function_form() {
+    let tel = ConfiguredTelemetry::new();
+    let source = "@spec alpha(integer) :: integer\nalias Utf8, as: U\nfn alpha(x), do: x\n";
+    let mut code = CodeMap::new();
+    let code_id = code.define(Some("dangling_mid.fz".to_string()), source.to_string());
+    let root = parse_quoted_program("dangling_mid.fz", source, &tel).expect("quoted parse");
+    let ctx = SurfaceSourceContext::new(code_id, source);
+
+    read_scope_surface(&root, &ctx).expect_err("an interposed non-function form orphans the pending @spec");
+}
+
+#[test]
+fn compiler2_quoted_surface_attaches_stacked_doc_and_spec_through_scope_attrs() {
+    // The happy paths stay happy: stacked @doc/@spec attach to the next
+    // function group, and intervening NON-function attrs (@moduledoc) do
+    // not orphan them.
+    let tel = ConfiguredTelemetry::new();
+    let source = concat!(
+        "@doc \"adds one\"\n",
+        "@moduledoc \"m\"\n",
+        "@spec alpha(integer) :: integer\n",
+        "fn alpha(x), do: x\n",
+    );
+    let mut code = CodeMap::new();
+    let code_id = code.define(Some("stacked.fz".to_string()), source.to_string());
+    let root = parse_quoted_program("stacked.fz", source, &tel).expect("quoted parse");
+    let ctx = SurfaceSourceContext::new(code_id, source);
+
+    let surface = read_scope_surface(&root, &ctx).expect("stacked attrs attach to the group");
+    assert_eq!(
+        surface.forms.len(),
+        1,
+        "one logical function form carries the attached attrs",
+    );
+}

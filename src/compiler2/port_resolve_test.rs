@@ -798,7 +798,7 @@ fn spec_name_mismatch_is_parse_error() {
 
 // Ported from src/frontend/resolve_test.rs: @spec with no fn following it in the module is a parse-time error
 #[test]
-fn spec_without_following_fn_is_not_yet_rejected_by_quoted_surface() {
+fn spec_without_following_fn_is_a_source_surface_error() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
     tel.attach(&[], capture.handler());
@@ -813,14 +813,17 @@ fn spec_without_following_fn_is_not_yet_rejected_by_quoted_surface() {
         arity: 1,
         need: ExecutableNeed::Value,
     });
+    // fz-rh2.17.5.6.4: the dangling @spec is rejected where it dangles,
+    // instead of silently dropping and resurfacing later as a baffling
+    // unknown-export diagnostic for the function it described.
     assert!(
-        matches!(compiler.drive(), DriveOutcome::Unresolved { .. }),
-        "dangling @spec is currently dropped, leaving the requested root unresolved; track source-surface repair under fz-rh2.17.5.6.4",
+        matches!(compiler.drive(), DriveOutcome::Fatal { .. }),
+        "a dangling @spec is a source-surface error",
     );
     assert_last_error(
         &capture,
-        codes::RESOLVE_UNKNOWN_IMPORT.0,
-        "module `M` does not export `lonely/1`",
+        codes::PARSE_DANGLING_FUNCTION_ATTR.0,
+        "`@spec` does not attach to any function definition: function attributes must be followed by their function's clauses",
     );
 }
 
