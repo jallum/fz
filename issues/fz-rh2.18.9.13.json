@@ -13,7 +13,7 @@
   "parent": "fz-rh2.18.9",
   "priority": 1,
   "status": "open",
-  "title": "[BUG] Compiler2 materialization: restore quicksort backend interpreter after return-readiness split",
+  "title": "Compiler2 materialization: restore quicksort backend interpreter after return-readiness split",
   "type": "bug",
-  "updated_at": "2026-06-12T06:54:35Z"
+  "updated_at": "2026-06-12T06:56:50Z"
 }
