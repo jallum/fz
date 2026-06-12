@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-12T02:13:32Z",
+  "description": "Goal: prove the activation partition model fixes the real observed runaway without local patches. Signal: cargo test --lib compiler2:: passes the quicksort frontier test and the Enum.reduce/range/list/fold-state-machine convergence tests; compiling quicksort under telemetry stays inside the agreed meaningful-event budget; hot helpers such as List.reduce_cont/3, Enum.reduce/3 bridge lambdas, and reducer closures have small intentional activation frontiers. Strategy: run the focused quicksort and compiler2 semantic/type sweeps under a hard timeout; inspect telemetry by function id/name; tighten tests around semantic meaning rather than type-id accidents; fix remaining overspecialization by improving partition policy only, not by naming fixtures or runtime helpers. Outro: no qsort-specific logic, no Enum.reduce-specific logic, no test-only budgets that ignore semantic event explosions, and no unchecked fz2 run that can consume unbounded memory.",
+  "id": "fz-rh2.18.9.5",
+  "labels": [],
+  "parent": "fz-rh2.18.9",
+  "priority": 1,
+  "status": "open",
+  "title": "Compiler2 convergence: burn down quicksort and Enum.reduce overspecialization",
+  "type": "task",
+  "updated_at": "2026-06-12T02:13:32Z"
+}
