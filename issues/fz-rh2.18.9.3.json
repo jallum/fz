@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-rh2.18.9.2"
+  ],
   "blocks": [],
   "created": "2026-06-12T02:13:17Z",
   "description": "Goal: derive the minimal activation-key sensitivity each function needs from its lowered body and dispatch plan, rather than keying every activation by raw input type identity except for recursive special cases. Signal: tests show dispatch-sensitive slots keep the precision needed for reachable_clause_ids; callable-called slots preserve callable target/surface enough to discover real callees; ordinary flow slots collapse to structural partition classes; non-recursive generated bridge lambdas such as Enum.reduce's wrapper no longer specialize by exact capture/state identity. Strategy: introduce a partition-policy fact or equivalent world-owned derived datum beside DispatchMask; compute it once from lowered body facts; keep ActivationInputs as the only body-evidence source; update AnalyzeActivation and call-preparation paths to request the policy instead of asking whether a function is recursive. Outro: recursive-only keying, function-name special cases, lambda special cases, and raw closure-capture identity as the default key are gone.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Compiler2 semantics: derive activation partition policy from function use",
   "type": "task",
-  "updated_at": "2026-06-12T02:13:17Z"
+  "updated_at": "2026-06-12T02:14:00Z"
 }
