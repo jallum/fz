@@ -7,9 +7,15 @@
   "id": "fz-go4.11",
   "labels": [],
   "parent": "fz-go4",
+  "comments": [
+    {
+      "text": "Reproduced the remaining drift by running cargo test -p fz --test fixture_matrix golden_outcomes -- --ignored --exact --nocapture. The failure surface is now narrow and semantic-free: ast_eval, closure_typed_captures, curried_add, fib_tailrec, and multi_clause differ only in incidental internal ids rendered inside outcomes (Static(...#NNN ...) / Indirect(...#NNN ...)); spans, demand vectors, and edge kinds all match. The right fix is to stabilize outcomes rendering at the source rather than refreshing goldens.",
+      "timestamp": "2026-06-12T23:10:07Z"
+    }
+  ],
   "priority": 3,
   "status": "in_progress",
   "title": "Stabilize golden_outcomes against incidental internal id drift",
   "type": "bug",
-  "updated_at": "2026-06-12T23:09:28Z"
+  "updated_at": "2026-06-12T23:10:07Z"
 }
