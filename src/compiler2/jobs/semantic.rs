@@ -980,11 +980,18 @@ fn resolve_direct_call(
     ))
 }
 
+/// Merge one path's observed value types into the activation's published
+/// summary. Paths join by clause-preserving UNION: the summary is what
+/// materialization reads to resolve escaped callables, so a case that yields
+/// `add_a` on one arm and `add_b` on the other must publish both closure
+/// identities — `refine_widen` merges the arrows into an anonymous clause
+/// and is reserved for the activation-key plane (`merge_call_input_vec`).
 fn merge_value_types(world: &mut World<'_>, merged: &mut ValueTypes, observed: &SemanticValues) {
     for (&value, &ty) in observed {
         match merged.get(&value).copied() {
             Some(current) if current != ty => {
-                merged.insert(value, widen_semantic_summary_ty(world, current, ty));
+                let joined = world.types_mut().union(current, ty);
+                merged.insert(value, joined);
             }
             Some(_) => {}
             None => {
@@ -1891,20 +1898,17 @@ fn merge_call_inputs(world: &mut World<'_>, merged: &mut Option<Vec<Ty>>, observ
     }
 }
 
+/// Call inputs feed activation KEYS, where coarsening is deliberate
+/// (`refine_widen` keeps accumulator fan-out from minting one specialization
+/// per shape) — unlike published value-type summaries, which union.
 fn merge_call_input_vec(world: &mut World<'_>, current: &mut Vec<Ty>, observed: &[Ty]) {
     if current.len() < observed.len() {
         current.resize_with(observed.len(), || any_ty(world));
     }
     for (slot, next_ty) in observed.iter().copied().enumerate() {
-        current[slot] = widen_semantic_summary_ty(world, current[slot], next_ty);
-    }
-}
-
-fn widen_semantic_summary_ty(world: &mut World<'_>, current: Ty, observed: Ty) -> Ty {
-    if current == observed {
-        current
-    } else {
-        world.types_mut().refine_widen(&current, &observed)
+        if current[slot] != next_ty {
+            current[slot] = world.types_mut().refine_widen(&current[slot], &next_ty);
+        }
     }
 }
 

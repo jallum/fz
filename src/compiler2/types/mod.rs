@@ -1537,35 +1537,44 @@ fn refine_widen(t: &mut Types, a: Ty, b: Ty) -> Descr {
     if let (Some(l), Some(r)) = (lhs.pure_arrow().cloned(), rhs.pure_arrow().cloned())
         && l.args.len() == r.args.len()
     {
-        let args: Vec<Ty> = l.args.iter().zip(r.args.iter()).map(|(l, r)| t.union(*l, *r)).collect();
-        let d = refine_widen(t, l.ret, r.ret);
-        let ret = t.intern(d);
-        let lit = match (l.lit, r.lit) {
+        // Pairwise arrow-merging is only a valid economy when both clauses
+        // describe the same callable value (or neither carries one).
+        // Mismatched identities fall through to the union so closure
+        // callsites downstream can still resolve every target.
+        let merged_lit = match (&l.lit, &r.lit) {
+            (None, None) => Some(None),
             (Some(lhs_lit), Some(rhs_lit))
                 if lhs_lit.kind == rhs_lit.kind
                     && lhs_lit.fn_id == rhs_lit.fn_id
                     && lhs_lit.captures.len() == rhs_lit.captures.len() =>
             {
-                Some(ClosureLit {
+                let captures = lhs_lit
+                    .captures
+                    .clone()
+                    .into_iter()
+                    .zip(rhs_lit.captures.clone())
+                    .map(|(lhs_capture, rhs_capture)| {
+                        let widened = refine_widen(t, lhs_capture, rhs_capture);
+                        t.intern(widened)
+                    })
+                    .collect();
+                Some(Some(ClosureLit {
                     kind: lhs_lit.kind,
                     fn_id: lhs_lit.fn_id,
-                    captures: lhs_lit
-                        .captures
-                        .into_iter()
-                        .zip(rhs_lit.captures)
-                        .map(|(lhs_capture, rhs_capture)| {
-                            let widened = refine_widen(t, lhs_capture, rhs_capture);
-                            t.intern(widened)
-                        })
-                        .collect(),
-                })
+                    captures,
+                }))
             }
             _ => None,
         };
-        return Descr {
-            funcs: vec![Conj::pos_of(ArrowSig { args, ret, lit })],
-            ..Descr::none()
-        };
+        if let Some(lit) = merged_lit {
+            let args: Vec<Ty> = l.args.iter().zip(r.args.iter()).map(|(l, r)| t.union(*l, *r)).collect();
+            let d = refine_widen(t, l.ret, r.ret);
+            let ret = t.intern(d);
+            return Descr {
+                funcs: vec![Conj::pos_of(ArrowSig { args, ret, lit })],
+                ..Descr::none()
+            };
+        }
     }
     if let (Some(l), Some(r)) = (lhs.pure_map().cloned(), rhs.pure_map().cloned()) {
         let mut fields = l.fields.clone();

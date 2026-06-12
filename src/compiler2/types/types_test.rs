@@ -608,6 +608,26 @@ macro_rules! semantic_helper_conformance_tests {
             }
 
             #[test]
+            fn refine_widen_keeps_mismatched_callable_identities_apart() {
+                // Pairwise arrow-merging is an economy, not a law: it is
+                // only valid when the two clauses describe the same callable
+                // value. Distinct fn refs flowing into one slot (a case that
+                // yields add_a on one arm and add_b on the other) must
+                // survive as two identity-bearing clauses, or downstream
+                // closure callsites become unresolvable opaque callables.
+                let mut t = $ctor;
+                let a = t.fn_ref_lit(ClosureTarget(11), 2);
+                let b = t.fn_ref_lit(ClosureTarget(12), 2);
+                let w = t.refine_widen(&a, &b);
+                let union = t.union(a, b);
+                assert!(
+                    t.is_equivalent(&w, &union),
+                    "mismatched closure lits widen to their union, got {}",
+                    t.display(&w)
+                );
+            }
+
+            #[test]
             fn refine_widen_collapses_float_literals_to_float() {
                 let mut t = $ctor;
                 let a = t.float_lit(1.0);
