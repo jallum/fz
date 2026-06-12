@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-rh2.18.9.3"
   ],
@@ -12,8 +12,8 @@
   "labels": [],
   "parent": "fz-rh2.18.9",
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "Compiler2 world: canonicalize activation keys through partition policy while preserving input evidence",
   "type": "task",
-  "updated_at": "2026-06-12T02:14:01Z"
+  "updated_at": "2026-06-12T02:38:47Z"
 }
