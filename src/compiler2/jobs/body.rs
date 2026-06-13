@@ -18,6 +18,7 @@ use crate::dispatch_matrix::pattern::{
     pattern_dispatch_from_source, pattern_dispatch_from_source_with_guard_resolver,
 };
 use crate::function_surface::FunctionSurface;
+use crate::fz_ir::ReceiveJoinMode;
 use crate::ir_lower::{explicit_extern_wire_hint, extern_semantic_contract, extern_symbol_from_name, ty_to_extern_ty};
 
 use super::super::body::{
@@ -2170,6 +2171,86 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
         (lowered, entries)
     }
 
+    fn planned_receive_join_mode(entries: &[LoweredEntry], entry_id: ControlEntryId) -> ReceiveJoinMode {
+        if Self::receive_graph_uses_explicit_continuation(entry_id, entries, &mut HashSet::new()) {
+            ReceiveJoinMode::ExplicitContinuation
+        } else {
+            ReceiveJoinMode::OuterCont
+        }
+    }
+
+    fn receive_graph_uses_explicit_continuation(
+        entry_id: ControlEntryId,
+        entries: &[LoweredEntry],
+        seen: &mut HashSet<ControlEntryId>,
+    ) -> bool {
+        if !seen.insert(entry_id) {
+            return false;
+        }
+        let tail = &entries[entry_id.as_u32() as usize].tail;
+        match tail {
+            LoweredTail::DirectCall {
+                dest: ControlDestination::Deliver(_),
+                ..
+            }
+            | LoweredTail::ClosureCall {
+                dest: ControlDestination::Deliver(_),
+                ..
+            } => true,
+            LoweredTail::Value {
+                dest: ControlDestination::Deliver(next),
+                ..
+            } => Self::receive_graph_deliver_target_uses_explicit_continuation(*next, entries, seen),
+            LoweredTail::If {
+                then_entry, else_entry, ..
+            } => {
+                Self::receive_graph_uses_explicit_continuation(*then_entry, entries, seen)
+                    || Self::receive_graph_uses_explicit_continuation(*else_entry, entries, seen)
+            }
+            LoweredTail::Dispatch { dispatch, .. } => dispatch
+                .arm_entries
+                .iter()
+                .copied()
+                .chain(std::iter::once(dispatch.miss_entry))
+                .any(|next| Self::receive_graph_uses_explicit_continuation(next, entries, seen)),
+            LoweredTail::Receive(receive) => match receive.dest {
+                ControlDestination::Return => false,
+                ControlDestination::Deliver(next) => {
+                    Self::receive_graph_deliver_target_uses_explicit_continuation(next, entries, seen)
+                }
+            },
+            LoweredTail::Value {
+                dest: ControlDestination::Return,
+                ..
+            }
+            | LoweredTail::DirectCall {
+                dest: ControlDestination::Return,
+                ..
+            }
+            | LoweredTail::ClosureCall {
+                dest: ControlDestination::Return,
+                ..
+            }
+            | LoweredTail::Halt { .. } => false,
+        }
+    }
+
+    fn receive_graph_deliver_target_uses_explicit_continuation(
+        entry_id: ControlEntryId,
+        entries: &[LoweredEntry],
+        seen: &mut HashSet<ControlEntryId>,
+    ) -> bool {
+        match entries[entry_id.as_u32() as usize].origin {
+            ControlEntryOrigin::LocalResume { .. } => {
+                Self::receive_graph_uses_explicit_continuation(entry_id, entries, seen)
+            }
+            ControlEntryOrigin::DeliveredResume { .. } => false,
+            ControlEntryOrigin::Branch | ControlEntryOrigin::ReceiveOutcome | ControlEntryOrigin::Clause => {
+                Self::receive_graph_uses_explicit_continuation(entry_id, entries, seen)
+            }
+        }
+    }
+
     fn plan_block(
         &mut self,
         block: ExprBlock,
@@ -2216,7 +2297,7 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
                                 steps: block.steps[index + 1..].to_vec(),
                                 result: block.result,
                             },
-                            ControlEntryOrigin::CallResume { value: *value },
+                            ControlEntryOrigin::DeliveredResume { value: *value },
                             dest,
                             Vec::new(),
                             Vec::new(),
@@ -2250,7 +2331,7 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
                                 steps: block.steps[index + 1..].to_vec(),
                                 result: block.result,
                             },
-                            ControlEntryOrigin::CallResume { value: *value },
+                            ControlEntryOrigin::DeliveredResume { value: *value },
                             dest,
                             Vec::new(),
                             Vec::new(),
@@ -2392,7 +2473,7 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
                                 steps: block.steps[index + 1..].to_vec(),
                                 result: block.result,
                             },
-                            ControlEntryOrigin::LocalResume { value },
+                            ControlEntryOrigin::DeliveredResume { value },
                             dest,
                             Vec::new(),
                             Vec::new(),
@@ -2400,32 +2481,41 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
                         );
                         ControlDestination::Deliver(resume)
                     };
+                    let receive_dest = branch_dest.clone();
                     let clauses = clauses
                         .iter()
-                        .map(|clause| ReceiveClause {
-                            span: clause.span,
-                            bound_names: clause.bound_names.clone(),
-                            entry: self.plan_block(
+                        .map(|clause| {
+                            let entry = self.plan_block(
                                 clause.body.clone(),
-                                ControlEntryOrigin::Receive,
+                                ControlEntryOrigin::ReceiveOutcome,
                                 branch_dest.clone(),
                                 clause.params.clone(),
                                 captures.clone(),
                                 entries,
-                            ),
+                            );
+                            ReceiveClause {
+                                span: clause.span,
+                                bound_names: clause.bound_names.clone(),
+                                entry,
+                                join_mode: Self::planned_receive_join_mode(entries, entry),
+                            }
                         })
                         .collect::<Vec<_>>();
-                    let after = after.as_ref().map(|after| ReceiveAfter {
-                        span: after.span,
-                        timeout: after.timeout,
-                        entry: self.plan_block(
+                    let after = after.as_ref().map(|after| {
+                        let entry = self.plan_block(
                             after.body.clone(),
-                            ControlEntryOrigin::Receive,
+                            ControlEntryOrigin::ReceiveOutcome,
                             branch_dest,
                             Vec::new(),
                             captures.clone(),
                             entries,
-                        ),
+                        );
+                        ReceiveAfter {
+                            span: after.span,
+                            timeout: after.timeout,
+                            entry,
+                            join_mode: Self::planned_receive_join_mode(entries, entry),
+                        }
                     });
                     return (
                         lowered,
@@ -2434,6 +2524,7 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
                             dispatch: dispatch.clone(),
                             clauses,
                             after,
+                            dest: receive_dest,
                         })),
                     );
                 }

@@ -3,7 +3,8 @@
 use super::surface::NativeCallableBoundarySurface;
 use super::*;
 use crate::fz_ir::{
-    self as fz_ir, BlockId, Cont, DirectCallTarget, EmitSlot, FnId, ReceiveAfter, ReceiveClause, Term, Var,
+    self as fz_ir, BlockId, Cont, DirectCallTarget, EmitSlot, FnId, ReceiveAfter, ReceiveClause, ReceiveJoinMode, Term,
+    Var,
 };
 use crate::types::{ClosureTypes, Types};
 use crate::{measurements, metadata};
@@ -142,6 +143,7 @@ struct ContinuationPayload {
     semantic_cap_bindings: Vec<ClosureCapture>,
     physical_ref_captures: Vec<ir::Value>,
     materialization_ref_captures: Vec<ir::Value>,
+    outer_cont_override: Option<ir::Value>,
 }
 
 impl ContinuationPayload {
@@ -159,7 +161,13 @@ impl ContinuationPayload {
             semantic_cap_bindings,
             physical_ref_captures,
             materialization_ref_captures,
+            outer_cont_override: None,
         }
+    }
+
+    fn with_outer_cont(mut self, outer_cont: ir::Value) -> Self {
+        self.outer_cont_override = Some(outer_cont);
+        self
     }
 
     fn from_capture_vars<M: cranelift_module::Module>(
@@ -235,6 +243,7 @@ impl ContinuationPlan {
                     payload.cont_fid,
                     &payload.semantic_cap_bindings,
                     &ref_captures,
+                    payload.outer_cont_override,
                 )
             }
             ContinuationPlan::HeapClosure(payload) => {
@@ -250,6 +259,7 @@ impl ContinuationPlan {
                     payload.cont_fid,
                     &payload.semantic_cap_bindings,
                     &ref_captures,
+                    payload.outer_cont_override,
                 )
             }
         }
@@ -417,6 +427,7 @@ pub(crate) fn emit_terminator<M: cranelift_module::Module, T: Types<Ty = Ty> + C
         Term::ReceiveMatched {
             clauses,
             after,
+            resume,
             pinned,
             captures,
             dispatch: _,
@@ -432,6 +443,7 @@ pub(crate) fn emit_terminator<M: cranelift_module::Module, T: Types<Ty = Ty> + C
             cont_param,
             clauses,
             after.as_ref(),
+            resume.as_ref(),
             pinned,
             captures,
         ),
@@ -1395,6 +1407,7 @@ fn emit_receive_matched<M: cranelift_module::Module>(
     cont_param: Option<ir::Value>,
     clauses: &[ReceiveClause],
     after: Option<&ReceiveAfter>,
+    resume: Option<&Cont>,
     pinned: &[(String, Var)],
     captures: &[Var],
 ) -> Result<(), CodegenError> {
@@ -1412,6 +1425,7 @@ fn emit_receive_matched<M: cranelift_module::Module>(
         cont_param,
         clauses,
         after,
+        resume,
         pinned,
         captures,
         dispatch_addr,
@@ -1436,6 +1450,7 @@ fn build_park_record<M: cranelift_module::Module>(
     cont_param: Option<ir::Value>,
     clauses: &[ReceiveClause],
     after: Option<&ReceiveAfter>,
+    resume: Option<&Cont>,
     pinned: &[(String, Var)],
     captures: &[Var],
     matcher_addr: ir::Value,
@@ -1470,6 +1485,27 @@ fn build_park_record<M: cranelift_module::Module>(
         .iter()
         .map(|cv| closure_capture_for_var(body, var_env, cv.0))
         .collect();
+    let needs_join_outer_cont = clauses
+        .iter()
+        .any(|clause| matches!(clause.join_mode, ReceiveJoinMode::OuterCont))
+        || after.is_some_and(|after| matches!(after.join_mode, ReceiveJoinMode::OuterCont));
+    let explicit_outer_cont = resume.filter(|_| needs_join_outer_cont).map(|resume| {
+        let resume_sid = env.body_id_for_fn(resume.fn_id).unwrap_or_else(|| {
+            panic!(
+                "native receive resume fn {} has no registered codegen body id",
+                resume.fn_id.0
+            )
+        });
+        let payload = ContinuationPayload::from_capture_vars(body, env, var_env, resume_sid, &resume.captured);
+        ContinuationPlan::heap_closure(payload).emit_value(
+            body,
+            runtime,
+            env.return_reprs,
+            is_cont_fn,
+            cont_param,
+            frame_ptr,
+        )
+    });
 
     // bound_arity: max bound-var count across clauses (matcher
     // ABI sizes the out buffer to this).
@@ -1501,7 +1537,12 @@ fn build_park_record<M: cranelift_module::Module>(
     };
     for (i, c) in clauses.iter().enumerate() {
         let cont_sid = resolve_body_sid(c.body);
-        let payload = ContinuationPayload::from_parts(env, cont_sid, cap_bindings.clone(), vec![], vec![]);
+        let mut payload = ContinuationPayload::from_parts(env, cont_sid, cap_bindings.clone(), vec![], vec![]);
+        if let Some(outer_cont) = explicit_outer_cont
+            && matches!(c.join_mode, ReceiveJoinMode::OuterCont)
+        {
+            payload = payload.with_outer_cont(outer_cont);
+        }
         let cl_ptr = ContinuationPlan::heap_closure(payload).emit_value(
             body,
             runtime,
@@ -1528,7 +1569,12 @@ fn build_park_record<M: cranelift_module::Module>(
     let (after_deadline_v, after_cont_v) = match after {
         Some(a) => {
             let cont_sid = resolve_body_sid(a.body);
-            let payload = ContinuationPayload::from_parts(env, cont_sid, cap_bindings, vec![], vec![]);
+            let mut payload = ContinuationPayload::from_parts(env, cont_sid, cap_bindings, vec![], vec![]);
+            if let Some(outer_cont) = explicit_outer_cont
+                && matches!(a.join_mode, ReceiveJoinMode::OuterCont)
+            {
+                payload = payload.with_outer_cont(outer_cont);
+            }
             let cl_ptr = ContinuationPlan::heap_closure(payload).emit_value(
                 body,
                 runtime,

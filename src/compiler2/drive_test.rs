@@ -15,7 +15,8 @@ use crate::dispatch_matrix::pattern::{PatternDispatchPlan, PatternGuardDispatch,
 use crate::exec::runtime::DbgCapture;
 use crate::fz_ir::{
     Block as IrBlock, CallsiteId as IrCallsiteId, CallsiteIdent, Cont as IrCont, ExternTy, ExternalCallEdge, FnId,
-    FnIr as IrFn, Module as IrModule, Prim as IrPrim, ReceiveAfter, ReceiveClause, Stmt as IrStmt, Term as IrTerm,
+    FnIr as IrFn, Module as IrModule, Prim as IrPrim, ReceiveAfter, ReceiveClause, ReceiveJoinMode, Stmt as IrStmt,
+    Term as IrTerm,
 };
 use crate::ir_interp::{
     tests_support_dtor_fired, tests_support_dtor_last_payload, tests_support_dtor_reset, tests_support_lock,
@@ -4891,6 +4892,215 @@ end
 }
 
 #[test]
+fn compiler2_native_program_routes_post_receive_resumes_through_delivered_continuations() {
+    let tel = ConfiguredTelemetry::new();
+    let native = NativeProgramCapture::new();
+    tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures2/behavior/receive_shared_tuple_arity.fz".to_string()),
+        text: include_str!("../../fixtures2/behavior/receive_shared_tuple_arity.fz").to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    assert_resolved(
+        compiler.drive(),
+        "receive_shared_tuple_arity should settle through native lowering before delivered-resume inspection",
+    );
+
+    let program = native.last(root_id).program;
+    let receive_body_resume_fns = program
+        .module
+        .fns
+        .iter()
+        .flat_map(|function| function.blocks.iter())
+        .flat_map(|block| match &block.terminator {
+            IrTerm::ReceiveMatched { clauses, .. } => clauses.iter().map(|clause| clause.body).collect::<Vec<_>>(),
+            _ => Vec::new(),
+        })
+        .filter_map(|clause_body_fn| {
+            let clause_body = program.module.fn_by_id(clause_body_fn);
+            let block = clause_body
+                .blocks
+                .first()
+                .expect("receive clause body should have one entry block");
+            match &block.terminator {
+                IrTerm::Call { continuation, .. } | IrTerm::CallClosure { continuation, .. } => {
+                    Some(continuation.fn_id)
+                }
+                _ => None,
+            }
+        })
+        .collect::<HashSet<_>>();
+
+    assert_eq!(
+        receive_body_resume_fns.len(),
+        2,
+        "the fixture should expose one delivered post-receive resume per receive site",
+    );
+    for resume_fn in receive_body_resume_fns {
+        let body = program
+            .bodies
+            .iter()
+            .find(|body| body.fn_id == resume_fn)
+            .unwrap_or_else(|| panic!("native body for receive resume {resume_fn:?}"));
+        assert!(
+            matches!(body.entry_abi, NativeEntryAbi::Continuation { .. }),
+            "code reached from a receive-arm call must be published as a delivered continuation, not a local direct entry: fn={resume_fn:?} origin={:?} abi={:?}",
+            body.origin,
+            body.entry_abi,
+        );
+    }
+}
+
+#[test]
+fn compiler2_native_receive_body_call_resumes_once() {
+    let tel = ConfiguredTelemetry::new();
+    let dbg = DbgCapture::new();
+    tel.attach(&[], dbg.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("receive_body_call_resume.fz".to_string()),
+        text: r#"
+fn main() do
+  me = self()
+  send(me, 20)
+  x = receive do
+    v -> v + 2
+  end
+  dbg(x)
+end
+"#
+        .to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    compiler.run_root_jit(root_id).unwrap_or_else(|error| {
+        panic!(
+            "compiler2 native receive-body call should resume once through the delivered continuation seam: {error}"
+        );
+    });
+
+    assert_eq!(
+        dbg.lines().as_slice(),
+        ["22"],
+        "a value produced by a receive-arm call should resume exactly once through the delivered continuation seam",
+    );
+}
+
+#[test]
+fn compiler2_native_receive_branch_call_resumes_once() {
+    let tel = ConfiguredTelemetry::new();
+    let dbg = DbgCapture::new();
+    tel.attach(&[], dbg.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("receive_branch_call_resume.fz".to_string()),
+        text: r#"
+fn add2(x) do
+  x + 2
+end
+
+fn main() do
+  me = self()
+  send(me, 20)
+  x = receive do
+    v ->
+      if true do
+        add2(v)
+      else
+        add2(v)
+      end
+  end
+  dbg(x)
+end
+"#
+        .to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    compiler.run_root_jit(root_id).unwrap_or_else(|error| {
+        panic!(
+            "compiler2 native receive-arm branches that call before returning should still resume exactly once: {error}"
+        );
+    });
+
+    assert_eq!(
+        dbg.lines().as_slice(),
+        ["22"],
+        "receive outcome join mode must follow the reachable control graph, not just the entry tail",
+    );
+}
+
+#[test]
+fn compiler2_native_receive_mixed_branch_resume_once() {
+    let tel = ConfiguredTelemetry::new();
+    let dbg = DbgCapture::new();
+    tel.attach(&[], dbg.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("receive_mixed_branch_resume.fz".to_string()),
+        text: r#"
+fn add2(x) do
+  x + 2
+end
+
+fn main() do
+  me = self()
+  send(me, 20)
+  x = receive do
+    v ->
+      if true do
+        add2(v)
+      else
+        v + 2
+      end
+  end
+  dbg(x)
+end
+"#
+        .to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    compiler.run_root_jit(root_id).unwrap_or_else(|error| {
+        panic!(
+            "compiler2 native receive-arm branches must resume exactly once even when one path returns directly and another resumes through an explicit continuation: {error}"
+        );
+    });
+
+    assert_eq!(
+        dbg.lines().as_slice(),
+        ["22"],
+        "receive outcome join mode must be stable across mixed direct-return and explicit-continuation paths",
+    );
+}
+
+#[test]
 fn compiler2_interp_runs_resource_dtors_from_backend_runtime_intrinsics() {
     let _lock = tests_support_lock().lock().unwrap();
     tests_support_dtor_reset();
@@ -6297,6 +6507,101 @@ fn compiler2_lowered_body_keeps_clause_projections_separate_from_entry_matching(
             .iter()
             .all(|step| matches!(step, LoweredStep::TupleField { .. } | LoweredStep::SplitList { .. })),
         "entry-clause lowering should keep only projection steps and not repeat matcher asserts",
+    );
+}
+
+#[test]
+fn compiler2_lowering_publishes_receive_join_mode_before_backend_lowering() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&[], capture.handler());
+    let outputs = OutputCapture::new();
+    tel.attach(&["fz", "compiler2", "job"], outputs.handler());
+    let functions = FunctionCapture::new();
+    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    let bodies = LoweredBodyCapture::new();
+    tel.attach(&["fz", "compiler2", "lowered_body", "defined"], bodies.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    let code_id = compiler.submit_code(CodeSubmission {
+        name: Some("receive_join_mode_lowering.fz".to_string()),
+        text: r#"
+fn add2(x) do
+  x + 2
+end
+
+fn direct() do
+  me = self()
+  send(me, 20)
+  receive do
+    v -> v + 2
+  end
+end
+
+fn branchy() do
+  me = self()
+  send(me, 20)
+  receive do
+    v ->
+      if true do
+        add2(v)
+      else
+        add2(v)
+      end
+  end
+end
+"#
+        .to_string(),
+    });
+
+    assert_resolved(
+        compiler.drive(),
+        "first drive should index the receive join-mode fixture",
+    );
+    assert!(
+        compiler.demand(Job::ScopeCode(code_id)),
+        "receive join-mode inspection still needs defined functions",
+    );
+    assert_resolved(
+        compiler.drive(),
+        "second drive should define the receive join-mode fixture",
+    );
+
+    let direct_id = function_id(&functions, "direct", 0);
+    assert!(
+        compiler.demand(Job::LowerFunction(direct_id)),
+        "direct/0 should be demandable for lowering",
+    );
+    let branchy_id = function_id(&functions, "branchy", 0);
+    assert!(
+        compiler.demand(Job::LowerFunction(branchy_id)),
+        "branchy/0 should be demandable for lowering",
+    );
+    assert_resolved(
+        compiler.drive(),
+        "lowering should publish receive outcome join modes before backend/native lowering",
+    );
+
+    let lowered_outputs = outputs
+        .take(Job::LowerFunction(direct_id))
+        .expect("LowerFunction job effects for direct/0");
+    assert!(
+        lowered_outputs.contains(&presence(FactKey::LoweredBody(direct_id), true)),
+        "lowering direct/0 should publish its lowered body fact",
+    );
+
+    let direct_body = lowered_body(&bodies, direct_id);
+    let branchy_body = lowered_body(&bodies, branchy_id);
+
+    assert_eq!(
+        lowered_receive_join_mode(&direct_body),
+        ReceiveJoinMode::OuterCont,
+        "receive outcomes that return directly should publish outer-cont join mode at lowering time",
+    );
+    assert_eq!(
+        lowered_receive_join_mode(&branchy_body),
+        ReceiveJoinMode::OuterCont,
+        "receive outcomes should publish graph-driven join mode during lowering instead of letting later stages guess from the outcome entry tail alone",
     );
 }
 
@@ -8792,6 +9097,24 @@ fn lowered_body(capture: &LoweredBodyCapture, function: FunctionId) -> LoweredBo
         .unwrap_or_else(|| panic!("lowered_body.defined for {function:?}"))
 }
 
+fn lowered_receive_join_mode(body: &LoweredBody) -> ReceiveJoinMode {
+    let LoweredBody::Clauses { entries, .. } = body else {
+        panic!("expected clause-based lowered body");
+    };
+    let receive = entries
+        .iter()
+        .find_map(|entry| match &entry.tail {
+            LoweredTail::Receive(receive) => Some(receive.as_ref()),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("expected lowered body to contain a receive tail"));
+    let outcome = receive
+        .clauses
+        .first()
+        .unwrap_or_else(|| panic!("expected receive to publish at least one outcome clause"));
+    outcome.join_mode
+}
+
 fn summary_has_callee(summary: &CallSiteSummary, callee: SelectedCallee) -> bool {
     summary.targets.iter().any(|target| target.callee == callee)
 }
@@ -9178,6 +9501,7 @@ fn native_terms_match(left: &IrTerm, right: &IrTerm) -> bool {
                 clauses: left_clauses,
                 dispatch: left_dispatch,
                 after: left_after,
+                resume: left_resume,
                 pinned: left_pinned,
                 captures: left_captures,
             },
@@ -9186,6 +9510,7 @@ fn native_terms_match(left: &IrTerm, right: &IrTerm) -> bool {
                 clauses: right_clauses,
                 dispatch: right_dispatch,
                 after: right_after,
+                resume: right_resume,
                 pinned: right_pinned,
                 captures: right_captures,
             },
@@ -9197,6 +9522,7 @@ fn native_terms_match(left: &IrTerm, right: &IrTerm) -> bool {
                     .zip(right_clauses.iter())
                     .all(|(left, right)| native_receive_clauses_match(left, right))
                 && left_dispatch == right_dispatch
+                && left_resume == right_resume
                 && native_receive_after_match(left_after.as_ref(), right_after.as_ref())
                 && left_pinned == right_pinned
                 && left_captures == right_captures
@@ -9214,6 +9540,7 @@ fn native_receive_clauses_match(left: &ReceiveClause, right: &ReceiveClause) -> 
         && left.bound_names == right.bound_names
         && left.guard == right.guard
         && left.body == right.body
+        && left.join_mode == right.join_mode
         && left.span == right.span
 }
 
@@ -9224,6 +9551,7 @@ fn native_receive_after_match(left: Option<&ReceiveAfter>, right: Option<&Receiv
             native_callsite_idents_match(&left.ident, &right.ident)
                 && left.timeout == right.timeout
                 && left.body == right.body
+                && left.join_mode == right.join_mode
                 && left.span == right.span
         }
         _ => false,

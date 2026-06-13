@@ -232,6 +232,7 @@ pub(crate) fn subst_term(t: &Term, subst: &HashMap<Var, Var>) -> Term {
             clauses,
             dispatch,
             after,
+            resume,
             pinned,
             captures,
         } => Term::ReceiveMatched {
@@ -242,7 +243,12 @@ pub(crate) fn subst_term(t: &Term, subst: &HashMap<Var, Var>) -> Term {
                 ident: a.ident.clone(),
                 timeout: sv(a.timeout),
                 body: a.body,
+                join_mode: a.join_mode,
                 span: a.span,
+            }),
+            resume: resume.as_ref().map(|cont| Cont {
+                fn_id: cont.fn_id,
+                captured: cont.captured.iter().map(|x| sv(*x)).collect(),
             }),
             pinned: pinned.iter().map(|(n, v)| (n.clone(), sv(*v))).collect(),
             captures: captures.iter().map(|x| sv(*x)).collect(),

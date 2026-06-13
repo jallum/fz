@@ -398,6 +398,7 @@ impl<'a, 'tel> BackendLowerer<'a, 'tel> {
                 dispatch: receive.dispatch.clone(),
                 clauses: receive.clauses.clone(),
                 after: receive.after.clone(),
+                dest: receive.dest.clone(),
             })),
             LoweredTail::Halt { atom } => BackendTail::Halt { atom: atom.clone() },
         })
@@ -422,8 +423,8 @@ fn lower_entry_origin(
     match entry.origin {
         ControlEntryOrigin::Clause => BackendEntryOrigin::Clause,
         ControlEntryOrigin::Branch => BackendEntryOrigin::Branch,
-        ControlEntryOrigin::Receive => BackendEntryOrigin::Receive,
-        ControlEntryOrigin::CallResume { value } => BackendEntryOrigin::CallResume {
+        ControlEntryOrigin::ReceiveOutcome => BackendEntryOrigin::ReceiveOutcome,
+        ControlEntryOrigin::DeliveredResume { value } => BackendEntryOrigin::DeliveredResume {
             value,
             return_abi: resume_abis[entry_index]
                 .clone()
@@ -454,7 +455,7 @@ fn entry_input_abis(
     }
     let mut out = vec![None; entries.len()];
     for (index, entry) in entries.iter().enumerate() {
-        if let ControlEntryOrigin::CallResume { value } = entry.origin
+        if let ControlEntryOrigin::DeliveredResume { value } = entry.origin
             && let Some(need) = needs[index]
         {
             out[index] = Some(return_abi_for_resume_input(world, executable, value, need));
@@ -464,7 +465,7 @@ fn entry_input_abis(
         publish_entry_input_abis(world, root_id, program, executable, entries, entry, &needs, &mut out)?;
     }
     for (index, entry) in entries.iter().enumerate() {
-        if let ControlEntryOrigin::CallResume { value } = entry.origin
+        if let ControlEntryOrigin::DeliveredResume { value } = entry.origin
             && out[index].is_none()
         {
             out[index] = Some(return_abi_for_resume_input(
@@ -598,7 +599,7 @@ fn collect_entry_input_need(
             .map(ExecutableNeed::TupleFields)
             .or_else(|| used_values.contains(&value).then_some(ExecutableNeed::Value))
     });
-    if matches!(entry.origin, ControlEntryOrigin::CallResume { .. }) {
+    if matches!(entry.origin, ControlEntryOrigin::DeliveredResume { .. }) {
         out[entry_id.as_u32() as usize] = input_need;
     }
     input_need.unwrap_or(ExecutableNeed::Value)
@@ -715,7 +716,7 @@ fn publish_entry_input_abis(
             if let ControlDestination::Deliver(target) = dest
                 && matches!(
                     entries[target.as_u32() as usize].origin,
-                    ControlEntryOrigin::CallResume { .. }
+                    ControlEntryOrigin::DeliveredResume { .. }
                 )
             {
                 let need = needs[target.as_u32() as usize].unwrap_or(ExecutableNeed::Value);
@@ -727,7 +728,7 @@ fn publish_entry_input_abis(
             if let ControlDestination::Deliver(target) = dest
                 && matches!(
                     entries[target.as_u32() as usize].origin,
-                    ControlEntryOrigin::CallResume { .. }
+                    ControlEntryOrigin::DeliveredResume { .. }
                 )
             {
                 let edge = call_edge(executable, *callsite).ok_or_else(|| {
@@ -751,7 +752,7 @@ fn publish_entry_input_abis(
             if let ControlDestination::Deliver(target) = dest
                 && matches!(
                     entries[target.as_u32() as usize].origin,
-                    ControlEntryOrigin::CallResume { .. }
+                    ControlEntryOrigin::DeliveredResume { .. }
                 )
             {
                 let abi = call_edge(executable, *callsite)

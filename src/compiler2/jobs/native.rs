@@ -1008,6 +1008,12 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                 let dispatch = &receive.dispatch;
                 let clauses = &receive.clauses;
                 let after = receive.after.as_ref();
+                let resume = match &receive.dest {
+                    ControlDestination::Return => None,
+                    ControlDestination::Deliver(entry_id) => {
+                        Some(self.entry_continuation(entries, entry_fns, *entry_id, env)?)
+                    }
+                };
                 let captures = self.receive_capture_vars(entries, clauses, after, env)?;
                 let clauses = clauses
                     .iter()
@@ -1019,6 +1025,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                             body: *entry_fns
                                 .get(&clause.entry)
                                 .expect("receive clause entry should have a helper fn"),
+                            join_mode: clause.join_mode,
                             span: clause.span,
                         })
                     })
@@ -1037,6 +1044,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                             body: *entry_fns
                                 .get(&after.entry)
                                 .expect("receive after entry should have a helper fn"),
+                            join_mode: after.join_mode,
                             span: after.span,
                         })
                     })
@@ -1051,6 +1059,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                     clauses,
                     dispatch: Arc::new(dispatch),
                     after,
+                    resume,
                     pinned,
                     captures,
                 });
@@ -1119,7 +1128,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                     .collect::<Vec<_>>();
                 (capture_tys, param_reprs, NativeEntryAbi::Direct)
             }
-            BackendEntryOrigin::Receive => {
+            BackendEntryOrigin::ReceiveOutcome => {
                 let param_reprs = capture_tys
                     .iter()
                     .copied()
@@ -1131,7 +1140,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                     NativeEntryAbi::Continuation { extra_params: 0 },
                 )
             }
-            BackendEntryOrigin::CallResume { value, return_abi } => {
+            BackendEntryOrigin::DeliveredResume { value, return_abi } => {
                 let result_ty = executable
                     .value_types
                     .get(&value)
@@ -1174,13 +1183,13 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                 }
                 Ok(entry.params.len())
             }
-            BackendEntryOrigin::Receive => {
+            BackendEntryOrigin::ReceiveOutcome => {
                 for (value, var) in entry.params.iter().copied().zip(entry_vars.iter().copied()) {
                     bind_backend_value(ctx, executable, env, value, var);
                 }
                 Ok(entry.params.len())
             }
-            BackendEntryOrigin::CallResume { value, return_abi } => match return_abi {
+            BackendEntryOrigin::DeliveredResume { value, return_abi } => match return_abi {
                 ReturnAbi::Value(_) => {
                     let var = *entry_vars
                         .first()
@@ -1218,8 +1227,11 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                 self.world,
                 self.root_id,
                 format!(
-                    "native call continuation targeted entry {} without an input value",
-                    entry_id.as_u32()
+                    "native call continuation targeted entry {} without an input value: origin={:?} params={} captures={}",
+                    entry_id.as_u32(),
+                    entry.origin,
+                    entry.params.len(),
+                    entry.captures.len(),
                 ),
             ));
         }
@@ -1333,8 +1345,8 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
     ) -> Result<Vec<Var>, FatalError> {
         let entry = &entries[entry_id.as_u32() as usize];
         let mut args = match &entry.origin {
-            BackendEntryOrigin::Clause | BackendEntryOrigin::Branch | BackendEntryOrigin::Receive => Vec::new(),
-            BackendEntryOrigin::CallResume { return_abi, .. } => {
+            BackendEntryOrigin::Clause | BackendEntryOrigin::Branch | BackendEntryOrigin::ReceiveOutcome => Vec::new(),
+            BackendEntryOrigin::DeliveredResume { return_abi, .. } => {
                 self.delivered_args_for_abi(ctx, executable, value_id, value_var, return_abi)?
             }
             BackendEntryOrigin::LocalResume { .. } => vec![value_var],
@@ -2060,8 +2072,8 @@ fn entry_name(base: &str, entry_id: ControlEntryId, origin: &BackendEntryOrigin)
     match origin {
         BackendEntryOrigin::Clause => panic!("clause entries are named by their owning clause"),
         BackendEntryOrigin::Branch => format!("{base}__branch_{}", entry_id.as_u32()),
-        BackendEntryOrigin::Receive => format!("{base}__receive_{}", entry_id.as_u32()),
-        BackendEntryOrigin::CallResume { .. } | BackendEntryOrigin::LocalResume { .. } => {
+        BackendEntryOrigin::ReceiveOutcome => format!("{base}__receive_{}", entry_id.as_u32()),
+        BackendEntryOrigin::DeliveredResume { .. } | BackendEntryOrigin::LocalResume { .. } => {
             format!("{base}__resume_{}", entry_id.as_u32())
         }
     }
@@ -2071,8 +2083,8 @@ fn entry_category(origin: &BackendEntryOrigin) -> FnCategory {
     match origin {
         BackendEntryOrigin::Clause => panic!("clause entries are named by their owning clause"),
         BackendEntryOrigin::Branch => FnCategory::ControlFlowCont,
-        BackendEntryOrigin::Receive => FnCategory::CpsCont,
-        BackendEntryOrigin::CallResume { .. } => FnCategory::CpsCont,
+        BackendEntryOrigin::ReceiveOutcome => FnCategory::CpsCont,
+        BackendEntryOrigin::DeliveredResume { .. } => FnCategory::CpsCont,
         BackendEntryOrigin::LocalResume { .. } => FnCategory::ControlFlowCont,
     }
 }

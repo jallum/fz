@@ -5,7 +5,7 @@ use crate::dispatch_matrix::pattern::{PatternBodyId, PatternRow, SourcePatternRo
 use crate::dispatch_matrix::pattern::{
     PatternGuardExpr, pattern_dispatch_from_source_with_guard_resolver, prepared_key_name,
 };
-use crate::fz_ir::{CallsiteIdent, FnCategory, ReceiveAfter, ReceiveClause, Term, Var};
+use crate::fz_ir::{CallsiteIdent, FnCategory, ReceiveAfter, ReceiveClause, ReceiveJoinMode, Term, Var};
 use crate::runtime_type_predicate;
 use crate::types::{Ty, Types};
 use std::collections::{BTreeSet, HashSet};
@@ -152,6 +152,7 @@ pub(crate) fn lower_receive<T: Types<Ty = Ty>>(
             bound_names: slot.bound_names.clone(),
             guard: slot.guard.as_ref().map(|g| g.id),
             body: slot.body.id,
+            join_mode: ReceiveJoinMode::OuterCont,
             span: c.span,
         })
         .collect();
@@ -160,6 +161,7 @@ pub(crate) fn lower_receive<T: Types<Ty = Ty>>(
         ident: CallsiteIdent::from_source(a.span),
         timeout: timeout_var.expect("timeout lowered when after is Some"),
         body: cont.id,
+        join_mode: ReceiveJoinMode::OuterCont,
         span: a.span,
     });
     let receive_source_patterns = build_receive_pattern_rows(clauses);
@@ -203,6 +205,7 @@ pub(crate) fn lower_receive<T: Types<Ty = Ty>>(
             clauses: ir_clauses,
             dispatch: receive_dispatch,
             after: ir_after,
+            resume: None,
             pinned,
             captures: captures_vars,
         },

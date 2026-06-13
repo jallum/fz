@@ -826,6 +826,9 @@ fn collect_reachable_entries(
             collect_reachable_entries(entries, dispatch.miss_entry, reachable_entries, order, out);
         }
         LoweredTail::Receive(receive) => {
+            if let super::super::body::ControlDestination::Deliver(target) = &receive.dest {
+                collect_reachable_entries(entries, *target, reachable_entries, order, out);
+            }
             for clause in &receive.clauses {
                 collect_reachable_entries(entries, clause.entry, reachable_entries, order, out);
             }
@@ -878,6 +881,9 @@ fn reindex_entries(
                 dispatch.miss_entry = ids[&dispatch.miss_entry];
             }
             LoweredTail::Receive(receive) => {
+                if let super::super::body::ControlDestination::Deliver(target) = &mut receive.dest {
+                    *target = ids[target];
+                }
                 for clause in &mut receive.clauses {
                     clause.entry = ids[&clause.entry];
                 }
@@ -1769,7 +1775,7 @@ fn resume_values(body: &LoweredBody) -> HashMap<ControlEntryId, ValueId> {
     let mut values = HashMap::new();
     if let LoweredBody::Clauses { entries, .. } = body {
         for (index, entry) in entries.iter().enumerate() {
-            if let super::super::body::ControlEntryOrigin::CallResume { value }
+            if let super::super::body::ControlEntryOrigin::DeliveredResume { value }
             | super::super::body::ControlEntryOrigin::LocalResume { value } = entry.origin
             {
                 values.insert(ControlEntryId::from_u32(index as u32), value);

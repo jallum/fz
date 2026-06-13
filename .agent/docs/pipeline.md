@@ -184,10 +184,12 @@ That makes local control explicit instead of positional.
 
 - `ControlEntryOrigin::Clause` is a clause body entry.
 - `ControlEntryOrigin::Branch` is a compiler-made join/arm entry.
-- `ControlEntryOrigin::CallResume { value }` is where a non-tail call delivers
-  its result before more work continues.
+- `ControlEntryOrigin::DeliveredResume { value }` is where a continuation-owned
+  delivery seam resumes local work. Non-tail calls use it, and so does
+  post-`receive` work once an outcome closure hands a value back into the entry
+  graph.
 - `ControlEntryOrigin::LocalResume { value }` is where local control like
-  `receive`, `if`, or `dispatch` delivers a value without creating a callable
+  `if` or `dispatch` delivers a value without creating a callable
   continuation boundary.
 
 So a non-tail direct call is not "call, then keep walking the remaining steps."
@@ -199,7 +201,7 @@ entry N:
   tail = DirectCall { ..., dest: Deliver(resume_k) }
 
 entry resume_k:
-  origin = CallResume { value: v }
+  origin = DeliveredResume { value: v }
   captures = [...]
   steps...
   tail = ...
@@ -211,6 +213,14 @@ graph instead of rebuilding hidden CPS structure from "tail position" guesses.
 The backend interpreter preserves the same distinction: tail calls can park on
 `receive`, and blocked tasks keep an explicit backend continuation stack so a
 woken callee can still deliver into the caller's resume entry later.
+
+Selective receive reuses the same delivered-resume model. A parked outcome
+closure publishes whether the resumed body reaches the post-`receive` join
+through its `outer_cont` or through an explicit continuation handoff, and
+native codegen consumes that contract directly when it builds the parked clause
+templates. That choice is derived from the reachable receive-outcome entry
+graph, not from the first tail in the clause body, so branches and local
+resumes cannot silently reclassify the join seam.
 
 ## The artifact boundary is one-way
 
