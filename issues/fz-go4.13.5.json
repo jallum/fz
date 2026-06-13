@@ -6,14 +6,15 @@
   "blocks": [
     "fz-go4.13.6"
   ],
+  "closed_at": "2026-06-13T17:54:10Z",
   "created": "2026-06-13T16:28:49Z",
   "description": "Goal\nMake the reuse model observable and pin the intended allocation/closure behavior with focused tests and fixture contracts.\n\nWhy\nThe dump pipeline exposed the current over-allocation, but brittle source/CLIF comparisons are not enough. We need event-based signal: how many reusable facts were born, transported, consumed, and how many runtime attempts fell back to allocation.\n\nTelemetry changes\nAdd production-path telemetry, preferably under the existing compiler2/native/codegen event structure rather than a test-only dump path:\n\n- reusable cons facts born at native lowering (`SplitList` birth count);\n- physical facts transported through hidden continuation/helper captures;\n- reusable cons facts consumed at codegen list-construction sites;\n- runtime reuse attempts, successful rewrites, and alias fallback allocations if runtime telemetry has a suitable channel.\n\nTests / fixture contracts\n- Runtime unit tests from the primitive ticket must remain green.\n- Compiler2 native lowering/codegen tests should assert telemetry or IR facts rather than only string matching when possible.\n- Fixture contracts to update/pin:\n  - `fixtures2/behavior/enum_sort.fz`: fewer internal cons allocations; constant sorter/threading artifacts should not force extra closure/heap work;\n  - `fixtures2/behavior/enum_list_allocations.fz`: consuming Enum operations should not allocate unnecessary list cons cells;\n  - `fixtures2/behavior/enum_map_family.fz`: changed-head map-like reconstruction should prove generalized head+tail reuse, not just tail relink;\n  - `fixtures2/behavior/enum_reduce_suspend.fz`: preserve the semantic suspend closure while eliminating compiler-internal continuation heap closures where direct delivery suffices.\n- Use `./target/debug/fz2 --log-telemetry \u003cpath\u003e run \u003cfixture\u003e` during development to inspect the event stream.\n\nAcceptance criteria\n- Telemetry can distinguish:\n  - no capability born;\n  - capability born but not transported;\n  - capability transported but not consumed;\n  - capability consumed but runtime fallback allocated due to aliasing.\n- Tests fail loudly for the specific regression class instead of relying on broad allocation totals alone.\n- Fixture expected files/sidecars reflect the new compiler2 contract and do not preserve old-world-only differences without distinction.\n\nDeletion target\nRemove temporary dump-only assertions or old-world-only fixture sidecars that were useful during diagnosis but are no longer the canonical signal.",
   "id": "fz-go4.13.5",
   "labels": [],
   "parent": "fz-go4.13",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Telemetry and fixtures: pin reusable-cons birth transport consumption and fallback",
   "type": "task",
-  "updated_at": "2026-06-13T17:26:34Z"
+  "updated_at": "2026-06-13T17:54:10Z"
 }
