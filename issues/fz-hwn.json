@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-13T16:41:12Z",
+  "description": "Discovered while verifying fz-go4.13.1 with cargo test --workspace. src/compiler2/drive_test.rs:2781 currently fails: compiler2::drive_test::compiler2_abi_ready_does_not_publish_unused_callable_constructors. The failing invariant is pre-codegen: ABI-ready programs should not materialize callable_entries for closure bodies unless a call or escape site demands them. This is structurally unrelated to fz-go4.13.1 because the assertion inspects abi_ready.last(root_id).program before native codegen/runtime helpers run. Capture and fix the demand/publication leak in compiler2 artifact planning.",
+  "id": "fz-hwn",
+  "labels": [],
+  "priority": 2,
+  "status": "open",
+  "title": "Compiler2 ABI-ready artifact publishes unused callable-entry inventory",
+  "type": "bug",
+  "updated_at": "2026-06-13T16:41:12Z"
+}
