@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-9i4.4.1"
   ],
@@ -12,8 +12,8 @@
   "labels": [],
   "parent": "fz-9i4.4",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "Preserve callable boundary facts through compiler2 backend and native lowering",
   "type": "task",
-  "updated_at": "2026-06-13T02:08:00Z"
+  "updated_at": "2026-06-13T02:25:28Z"
 }
