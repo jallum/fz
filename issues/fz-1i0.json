@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-13T16:41:12Z",
+  "description": "Discovered while verifying fz-go4.13.1 with cargo test --workspace. compiler2::compiler2_test::compiler2_compile_root_aot_consumes_native_program_without_legacy_prepare aborts with stack overflow under cargo test -p fz --lib. This happens after the unrelated ABI-ready callable-entry failure in the workspace run. Determine whether the overflow is a preexisting native/AOT recursion issue or a branch regression, then fix it so workspace verification can complete cleanly.",
+  "id": "fz-1i0",
+  "labels": [],
+  "priority": 2,
+  "status": "open",
+  "title": "Compiler2 AOT root compile stack-overflows without legacy prepare",
+  "type": "bug",
+  "updated_at": "2026-06-13T16:41:12Z"
+}
