@@ -1480,7 +1480,7 @@ pub(crate) fn compile_with_backend_surface<
                     spec_id: sid as u64,
                 },
             );
-            compile_fn(
+            let stats = compile_fn(
                 backend.module_mut(),
                 t,
                 &mut ctx,
@@ -1501,6 +1501,9 @@ pub(crate) fn compile_with_backend_surface<
                     block_count: block_count as u64,
                     instruction_count: instruction_count as u64,
                     fz_block_count: f.blocks.len() as u64,
+                    reusable_cons_candidate_count: stats.reusable_cons_candidate_count,
+                    reusable_cons_capability_count: stats.reusable_cons_capability_count,
+                    reusable_cons_consumed_count: stats.reusable_cons_consumed_count,
                 },
                 &crate::metadata! {
                     body_kind: "fz_spec",

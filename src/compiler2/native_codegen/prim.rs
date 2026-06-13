@@ -377,6 +377,7 @@ pub(crate) fn lower_collection_prim<M: cranelift_module::Module, T: Types<Ty = T
             if elems.len() == 1
                 && let Some(tail_var) = tail
             {
+                body.cache.reusable_cons_candidate_count += 1;
                 let tail_bits = body.any_ref_for_var(var_env, tail_var.0);
                 let tail = list_tail_bits_for_var(t, value_types, block_env, *tail_var, tail_bits);
                 let reused = emit_reusable_cons_or_alloc(body, var_env, elems[0], tail);
@@ -514,6 +515,7 @@ pub(crate) fn lower_collection_prim<M: cranelift_module::Module, T: Types<Ty = T
         Prim::DestListBegin { .. } => LowerOut::DeadUnit,
         Prim::DestListCons { head, tail, .. } => {
             if let Some(tail_var) = tail {
+                body.cache.reusable_cons_candidate_count += 1;
                 let tail_bits = body.any_ref_for_var(var_env, tail_var.0);
                 let tail = list_tail_bits_for_var(t, value_types, block_env, *tail_var, tail_bits);
                 let reused = emit_reusable_cons_or_alloc(body, var_env, *head, tail);

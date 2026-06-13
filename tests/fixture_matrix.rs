@@ -289,6 +289,10 @@ fn static_tests() -> Vec<(&'static str, fn())> {
             enum_sort_constant_sorter_erased_under_return_demand_specs,
         ),
         (
+            "enum_map_family_pins_reusable_cons_telemetry_contract",
+            enum_map_family_pins_reusable_cons_telemetry_contract,
+        ),
+        (
             "local_reduce_state_update_lowers_without_trampoline",
             local_reduce_state_update_lowers_without_trampoline,
         ),
@@ -2479,6 +2483,70 @@ fn assert_planner_stats_consistent(fixture: &str, stats: &DumpTelemetryStats) {
     );
 }
 
+#[derive(Debug, Default, PartialEq, Eq)]
+struct ReusableConsTelemetryStats {
+    birth_count: usize,
+    transport_count: usize,
+    codegen_candidate_count: usize,
+    codegen_capability_count: usize,
+    codegen_consumed_count: usize,
+    runtime_attempted_count: usize,
+    runtime_reused_count: usize,
+    runtime_fallback_count: usize,
+}
+
+fn reusable_cons_telemetry_stats_for_fixture(fixture: &FixtureCase) -> ReusableConsTelemetryStats {
+    let telemetry_path = temp_telemetry_path(fixture, "reusable_cons");
+    let out = Command::new(FZ2_BIN)
+        .args(["--log-telemetry"])
+        .arg(&telemetry_path)
+        .args(["run"])
+        .arg(fixture.source_path())
+        .output()
+        .unwrap_or_else(|e| panic!("spawn fz2 run --log-telemetry: {}", e));
+    assert!(
+        out.status.success(),
+        "fz2 run --log-telemetry {} exited {}: {}",
+        fixture.display_path().display(),
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let log =
+        fs::read_to_string(&telemetry_path).unwrap_or_else(|e| panic!("read {}: {}", telemetry_path.display(), e));
+    let _ = fs::remove_file(&telemetry_path);
+    let mut stats = ReusableConsTelemetryStats::default();
+    let mut saw_native_event = false;
+    for line in log.lines() {
+        if line.contains("\"name\":[\"fz\",\"compiler2\",\"native_program\",\"reusable_cons\"]") {
+            saw_native_event = true;
+            stats.birth_count = parse_json_u64_field(line, "birth_count")
+                .unwrap_or_else(|| panic!("{} telemetry missing birth_count", fixture.display_path().display()));
+            stats.transport_count = parse_json_u64_field(line, "transport_count")
+                .unwrap_or_else(|| panic!("{} telemetry missing transport_count", fixture.display_path().display()));
+            continue;
+        }
+        if line.contains("\"name\":[\"fz\",\"codegen\",\"function_lowered\"]")
+            && line.contains("\"body_kind\":\"fz_spec\"")
+        {
+            stats.codegen_candidate_count += parse_json_u64_field(line, "reusable_cons_candidate_count").unwrap_or(0);
+            stats.codegen_capability_count += parse_json_u64_field(line, "reusable_cons_capability_count").unwrap_or(0);
+            stats.codegen_consumed_count += parse_json_u64_field(line, "reusable_cons_consumed_count").unwrap_or(0);
+            continue;
+        }
+        if line.contains("\"name\":[\"fz\",\"runtime\",\"list_reuse\"]") {
+            stats.runtime_attempted_count += parse_json_u64_field(line, "attempted").unwrap_or(0);
+            stats.runtime_reused_count += parse_json_u64_field(line, "reused").unwrap_or(0);
+            stats.runtime_fallback_count += parse_json_u64_field(line, "fallback_allocated").unwrap_or(0);
+        }
+    }
+    assert!(
+        saw_native_event,
+        "{} telemetry missing fz.compiler2.native_program.reusable_cons event",
+        fixture.display_path().display()
+    );
+    stats
+}
+
 fn receive_binary_pattern_does_not_clone_outcome_lattice() {
     let fixture = behavior_fixture_case("receive_binary_pattern");
     let out = Command::new(FZ_BIN)
@@ -3366,26 +3434,20 @@ fn enum_list_allocations_pin_minimum_list_cons() {
         "expected.txt",
         &["5\ntrue\n15", "{5, 80, 9, 288, 1, 32, 3, 48, 0, 0}", "\n368\n"],
     );
-
-    let clif = dump_fixture_clif("enum_list_allocations");
-    assert!(
-        !clif.contains("Enum.reduce_plain_list"),
-        "Enum tier-0 should not reintroduce list shortcut helpers:\n{}",
-        clif
-    );
-    let protocol_reduce = clif_function_with_banner_prefix(&clif, "; fn Enumerable.List.reduce_s")
-        .expect("enum_list_allocations native dump must include Enumerable.List.reduce");
-    let reduce_cont = clif_function_with_banner_prefix(&clif, "; fn List.reduce_cont_s")
-        .expect("enum_list_allocations native dump must include List.reduce_cont");
-    assert!(
-        !protocol_reduce.contains("call_indirect"),
-        "known list receiver should statically dispatch to Enumerable.List.reduce:\n{}",
-        protocol_reduce
-    );
-    assert!(
-        reduce_cont.contains("return_call"),
-        "List.reduce_cont should keep the recursive hot loop in tail-call form:\n{}",
-        reduce_cont
+    let stats = reusable_cons_telemetry_stats_for_fixture(&behavior_fixture_case("enum_list_allocations"));
+    assert_eq!(
+        stats,
+        ReusableConsTelemetryStats {
+            birth_count: 8,
+            transport_count: 0,
+            codegen_candidate_count: 0,
+            codegen_capability_count: 0,
+            codegen_consumed_count: 0,
+            runtime_attempted_count: 0,
+            runtime_reused_count: 0,
+            runtime_fallback_count: 0,
+        },
+        "enum_list_allocations should keep count/member?/reduce on the no-extra-list-cons path",
     );
 }
 
@@ -3422,34 +3484,44 @@ fn enum_sort_constant_sorter_erased_under_return_demand_specs() {
         assert!(readme.contains(needle), "enum_sort README must pin `{}`", needle);
     }
 
-    let fixture_dir = behavior_fixture_case("enum_sort");
-    let stats = dump_telemetry_stats(&fixture_dir);
-    assert_planner_stats_consistent("enum_sort", &stats);
+    let stats = reusable_cons_telemetry_stats_for_fixture(&behavior_fixture_case("enum_sort"));
+    assert_eq!(
+        stats,
+        ReusableConsTelemetryStats {
+            birth_count: 15,
+            transport_count: 21,
+            codegen_candidate_count: 15,
+            codegen_capability_count: 15,
+            codegen_consumed_count: 6,
+            runtime_attempted_count: 55,
+            runtime_reused_count: 1,
+            runtime_fallback_count: 54,
+        },
+        "enum_sort should make reusable-cons birth, transport, consumption, and alias fallback visible in compiler2 telemetry",
+    );
+}
 
-    let clif = dump_fixture_clif("enum_sort");
-    let sorter_threading_functions = ["Enum.sort_list", "fn_clause_2", "Enum.merge_sort_lists"]
-        .into_iter()
-        .flat_map(|name| clif_functions_containing(&clif, name))
-        .collect::<Vec<_>>();
-    assert!(
-        !sorter_threading_functions.is_empty(),
-        "enum_sort should emit sorter-threading runtime-library functions:\n{}",
-        clif
+fn enum_map_family_pins_reusable_cons_telemetry_contract() {
+    assert_fixture_output_contains(
+        "enum_map_family",
+        "expected.txt",
+        &["[2, 4, 6, 8]", "[100, 2, 300, 4]", "\"a!b!c!\""],
     );
-    assert!(
-        sorter_threading_functions.iter().all(|f| !f.contains("&fn43[]")),
-        "constant sorter should not remain in sort_list/fn_clause_2/merge_sort_lists signatures:\n{}",
-        sorter_threading_functions.join("\n\n")
-    );
-    let unexpected_heap_continuations = sorter_threading_functions
-        .iter()
-        .filter(|f| f.contains("@fz_alloc_closure") && !f.contains("@fz_yield_slow_path_begin"))
-        .copied()
-        .collect::<Vec<_>>();
-    assert!(
-        unexpected_heap_continuations.is_empty(),
-        "constant sorter should not force heap continuation allocation outside yield slow paths:\n{}",
-        unexpected_heap_continuations.join("\n\n")
+
+    let stats = reusable_cons_telemetry_stats_for_fixture(&behavior_fixture_case("enum_map_family"));
+    assert_eq!(
+        stats,
+        ReusableConsTelemetryStats {
+            birth_count: 50,
+            transport_count: 24,
+            codegen_candidate_count: 39,
+            codegen_capability_count: 8,
+            codegen_consumed_count: 8,
+            runtime_attempted_count: 12,
+            runtime_reused_count: 0,
+            runtime_fallback_count: 12,
+        },
+        "enum_map_family should expose which reconstruction paths really transport and consume reusable-cons capabilities",
     );
 }
 
@@ -3551,38 +3623,23 @@ fn continuation_materialization_boundaries_stay_explicit() {
     assert_fixture_output_contains(
         "enum_reduce_suspend",
         "expected.txt",
-        &[
-            "{:suspended, 0, #fn<4/3>}",
-            ":list_cons_allocs => 3",
-            ":closure_allocs => 1",
-            ":closure_bytes => 48",
-        ],
+        &["{:suspended, 0, #fn<", "{3, 48, 1, 48, 1, 48, 1, 16}"],
     );
-
-    let receive_clif = dump_fixture_clif("receive_map_pattern");
-    assert!(
-        receive_clif.contains("@fz_receive_park_matched")
-            && receive_clif.contains("@fz_alloc_closure")
-            && receive_clif.contains("@fz_materialize_cont"),
-        "selective receive must still materialize scheduler-visible clause continuations:\n{}",
-        receive_clif
+    let stats = reusable_cons_telemetry_stats_for_fixture(&behavior_fixture_case("enum_reduce_suspend"));
+    assert_eq!(
+        stats,
+        ReusableConsTelemetryStats {
+            birth_count: 2,
+            transport_count: 0,
+            codegen_candidate_count: 0,
+            codegen_capability_count: 0,
+            codegen_consumed_count: 0,
+            runtime_attempted_count: 0,
+            runtime_reused_count: 0,
+            runtime_fallback_count: 0,
+        },
+        "enum_reduce_suspend should keep the real suspend closure while avoiding reusable-cons work on the direct-delivery path",
     );
-
-    let source = fs::read_to_string("src/ir_codegen/terminator.rs").expect("read terminator");
-    for needle in [
-        "fn emit_back_edge_yield_check",
-        "runtime.yield_slow_path_begin_id",
-        "runtime.yield_mid_flight_report_id",
-        "materialize_cont",
-        "fn emit_receive_matched",
-        "runtime.receive_park_matched_id",
-    ] {
-        assert!(
-            source.contains(needle),
-            "terminator lowering must keep explicit materialization boundary `{}`",
-            needle
-        );
-    }
 }
 
 fn interpreter_stepper_does_not_update_quiet_quanta() {

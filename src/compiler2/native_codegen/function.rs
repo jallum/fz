@@ -14,6 +14,13 @@ use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use fz_runtime::heap::Schema;
 use std::collections::{HashMap, HashSet};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct CodegenFnStats {
+    pub reusable_cons_candidate_count: u64,
+    pub reusable_cons_capability_count: u64,
+    pub reusable_cons_consumed_count: u64,
+}
+
 pub(crate) fn compile_fn<M: cranelift_module::Module, T: Types<Ty = Ty> + ClosureTypes>(
     jmod: &mut M,
     t: &mut T,
@@ -24,7 +31,7 @@ pub(crate) fn compile_fn<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
     f: &FnIr,
     this_spec_id: u32,
     source: &SourceInfo,
-) -> Result<(), CodegenError> {
+) -> Result<CodegenFnStats, CodegenError> {
     let param_reprs = env.param_reprs;
     let native_abi_fns = env.native_abi_fns;
     let cont_target_fns = env.cont_target_fns;
@@ -255,7 +262,11 @@ pub(crate) fn compile_fn<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
     }
     drop(body);
     b.finalize();
-    Ok(())
+    Ok(CodegenFnStats {
+        reusable_cons_candidate_count: cache.reusable_cons_candidate_count,
+        reusable_cons_capability_count: cache.reusable_cons_capability_count,
+        reusable_cons_consumed_count: cache.reusable_cons_consumed_count,
+    })
 }
 
 fn reusable_cons_sources(f: &FnIr) -> HashMap<u32, Var> {

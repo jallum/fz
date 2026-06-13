@@ -59,11 +59,13 @@ pub(crate) fn emit_reusable_cons_or_alloc<M: Module>(
     tail: ListTailBits,
 ) -> Option<ir::Value> {
     let source_cons = body.reusable_cons_source(head)?;
+    body.cache.reusable_cons_capability_count += 1;
     let source_ref = body.any_ref_for_var(var_env, source_cons.0);
     let head_value = binding_for_var(var_env, head.0);
     let (head_raw, head_kind) = value_raw_kind_parts(body, head_value)?;
     let head_kind = body.b.ins().iconst(types::I64, head_kind.tag() as i64);
     let tail_ref = body.list_tail_ref_word(tail);
+    body.cache.reusable_cons_consumed_count += 1;
     Some(body.list_reuse_or_cons_parts(source_ref, head_raw, head_kind, tail_ref))
 }
 

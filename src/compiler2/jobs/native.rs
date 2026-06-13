@@ -85,14 +85,57 @@ pub(super) fn lower_native_program(world: &mut World<'_>, root_id: RootId) -> Re
     }
 
     let backend = world.backend_program(root_id);
+    let stats = reusable_cons_telemetry_counts(&backend);
     let program = NativeLowerer::new(world, root_id, &backend)?.lower()?;
     let changed = world.define_native_program(root_id, program);
+    world.tel().execute(
+        &["fz", "compiler2", "native_program", "reusable_cons"],
+        &crate::measurements! {
+            root_id: root_id.as_u32() as u64,
+            birth_count: stats.birth_count,
+            transport_count: stats.transport_count,
+        },
+        &crate::metadata! {},
+    );
     Ok(JobEffects {
         reads: settled_uses([backend_fact]),
         outputs: vec![FactKey::NativeProgram(root_id)],
         changed: changed.then_some(FactKey::NativeProgram(root_id)).into_iter().collect(),
         ..JobEffects::default()
     })
+}
+
+struct ReusableConsTelemetryCounts {
+    birth_count: u64,
+    transport_count: u64,
+}
+
+fn reusable_cons_telemetry_counts(program: &BackendProgram) -> ReusableConsTelemetryCounts {
+    let mut birth_count = 0_u64;
+    let mut transport_count = 0_u64;
+    for executable in &program.executables {
+        let BackendBody::Clauses { clauses, entries, .. } = &executable.body else {
+            continue;
+        };
+        for clause in clauses {
+            birth_count += count_reusable_cons_births(&clause.projections);
+        }
+        for entry in entries {
+            birth_count += count_reusable_cons_births(&entry.steps);
+            transport_count += entry.reusable_cons_captures.len() as u64;
+        }
+    }
+    ReusableConsTelemetryCounts {
+        birth_count,
+        transport_count,
+    }
+}
+
+fn count_reusable_cons_births(steps: &[BackendStep]) -> u64 {
+    steps
+        .iter()
+        .filter(|step| matches!(step, BackendStep::SplitList { .. }))
+        .count() as u64
 }
 
 struct NativeLowerer<'a, 'tel> {

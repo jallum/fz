@@ -38,8 +38,8 @@ use crate::bitstr::{
 use crate::emit_print_line;
 use crate::exec_ctx::{ExecCtx, timer_schedule};
 use crate::heap::{
-    AllocStat, FieldKind, HeapAllocKind, SHARED_BIN_THRESHOLD_BYTES, closure_capture_ref, list_head_ref, list_tail_ref,
-    map_entry_refs,
+    AllocStat, FieldKind, HeapAllocKind, ListReuseResult, SHARED_BIN_THRESHOLD_BYTES, closure_capture_ref,
+    list_head_ref, list_tail_ref, map_entry_refs,
 };
 use crate::park::{MatcherFn, ParkRecord};
 use crate::procbin::{
@@ -1587,11 +1587,23 @@ pub extern "C" fn fz_list_reuse_or_cons_parts(
     let list = any_value_ref_from_word(list_ref_word, "fz_list_reuse_or_cons_parts list");
     let head_kind = ValueKind::new(head_kind_tag as u8).expect("fz_list_reuse_or_cons_parts head kind");
     let tail = any_value_ref_from_word(tail_ref_word, "fz_list_reuse_or_cons_parts tail");
-    (unsafe { &mut *process })
+    let result = (unsafe { &mut *process })
         .heap
         .reuse_or_alloc_list_cons_raw_kind(list, head_raw, head_kind, tail)
-        .expect("fz_list_reuse_or_cons_parts")
-        .raw_word()
+        .expect("fz_list_reuse_or_cons_parts");
+    emit_list_reuse_outcome(process, result);
+    result.value.raw_word()
+}
+
+fn emit_list_reuse_outcome(process: *mut Process, result: ListReuseResult) {
+    let ctx = unsafe { (*process).ctx };
+    if ctx.is_null() {
+        return;
+    }
+    let ctx = unsafe { &*ctx };
+    if let Some(hook) = ctx.list_reuse {
+        hook(ctx.tel, result.outcome.tag(), result.outcome.fallback_reason_tag());
+    }
 }
 
 /// Allocate a heap-typed Struct. `schema_id` must already be registered in

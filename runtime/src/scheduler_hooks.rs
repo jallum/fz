@@ -49,6 +49,10 @@ pub type SendHook = extern "C" fn(sender: *mut Process, scheduler: *mut (), rece
 /// the additional observation channel.
 pub type OutputHook = extern "C" fn(tel: *const (), line_ptr: *const u8, line_len: usize);
 
+/// Runtime reusable-cons observation hook. The binary rehydrates the erased
+/// telemetry sink and turns these compact tags into structured events.
+pub type ListReuseHook = extern "C" fn(tel: *const (), outcome: u8, reason: u8);
+
 /// fz-swt.10 — `fz_make_resource(payload, dtor_closure)` FFI signature on
 /// the binary side. The runtime crate forwards the raw integer payload and an
 /// opaque `AnyValueRef` closure word through this hook so the binary can

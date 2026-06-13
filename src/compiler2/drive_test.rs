@@ -7290,6 +7290,197 @@ end
 }
 
 #[test]
+fn compiler2_reusable_cons_telemetry_reports_birth_transport_and_consumption() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&[], capture.handler());
+    let mut compiler = Compiler2::new(&tel);
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    compiler.submit_code(CodeSubmission {
+        name: Some("reusable_cons_continuation.fz".to_string()),
+        text: r#"
+fn ping(x), do: x
+
+fn rebuild(xs) do
+  [h | t] = xs
+  ping(0)
+  [h | t]
+end
+
+fn main(), do: rebuild([1, 2])
+"#
+        .to_string(),
+    });
+
+    compiler.run_root_jit(root_id).unwrap_or_else(|error| {
+        panic!("reusable-cons telemetry fixture should run end-to-end: {error}");
+    });
+
+    let native = capture
+        .last(&["fz", "compiler2", "native_program", "reusable_cons"])
+        .expect("native reusable-cons telemetry event");
+    assert_eq!(measurement_u64(&native, "root_id"), root_id.as_u32() as u64);
+    assert_eq!(measurement_u64(&native, "birth_count"), 1);
+    assert_eq!(measurement_u64(&native, "transport_count"), 1);
+
+    let consumed = capture
+        .find(&["fz", "codegen", "function_lowered"])
+        .into_iter()
+        .filter(|event| event.kind == EventKind::Event && metadata_str(event, "body_kind") == "fz_spec")
+        .map(|event| measurement_u64(&event, "reusable_cons_consumed_count"))
+        .max()
+        .expect("fz_spec function_lowered event with reusable-cons counters");
+    assert_eq!(
+        consumed, 1,
+        "one list construction site should consume the transported capability"
+    );
+}
+
+#[test]
+fn compiler2_reusable_cons_telemetry_reports_born_but_not_transported() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&[], capture.handler());
+    let mut compiler = Compiler2::new(&tel);
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    compiler.submit_code(CodeSubmission {
+        name: Some("reusable_cons_no_transport.fz".to_string()),
+        text: r#"
+fn ping(x), do: x
+
+fn ignore(xs) do
+  [h | t] = xs
+  ping(0)
+  {h, t}
+end
+
+fn main(), do: ignore([1, 2])
+"#
+        .to_string(),
+    });
+
+    compiler.run_root_jit(root_id).unwrap_or_else(|error| {
+        panic!("born-without-transport fixture should run end-to-end: {error}");
+    });
+
+    let native = capture
+        .last(&["fz", "compiler2", "native_program", "reusable_cons"])
+        .expect("native reusable-cons telemetry event");
+    assert_eq!(measurement_u64(&native, "root_id"), root_id.as_u32() as u64);
+    assert_eq!(measurement_u64(&native, "birth_count"), 1);
+    assert_eq!(measurement_u64(&native, "transport_count"), 0);
+
+    let consumed = capture
+        .find(&["fz", "codegen", "function_lowered"])
+        .into_iter()
+        .filter(|event| event.kind == EventKind::Event && metadata_str(event, "body_kind") == "fz_spec")
+        .map(|event| measurement_u64(&event, "reusable_cons_consumed_count"))
+        .max()
+        .expect("fz_spec function_lowered event with reusable-cons counters");
+    assert_eq!(
+        consumed, 0,
+        "no list reconstruction site should consume a reusable capability"
+    );
+}
+
+#[test]
+fn compiler2_reusable_cons_runtime_telemetry_reports_in_place_reuse() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&[], capture.handler());
+    let mut compiler = Compiler2::new(&tel);
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    compiler.submit_code(CodeSubmission {
+        name: Some("reusable_cons_runtime_reuse.fz".to_string()),
+        text: r#"
+fn rebuild(xs) do
+  [h | t] = xs
+  [h | t]
+end
+
+fn main(), do: rebuild([1, 2])
+"#
+        .to_string(),
+    });
+
+    compiler.run_root_jit(root_id).unwrap_or_else(|error| {
+        panic!("direct reusable-cons fixture should run end-to-end: {error}");
+    });
+
+    let native = capture
+        .last(&["fz", "compiler2", "native_program", "reusable_cons"])
+        .expect("native reusable-cons telemetry event");
+    assert_eq!(measurement_u64(&native, "root_id"), root_id.as_u32() as u64);
+    assert_eq!(measurement_u64(&native, "birth_count"), 1);
+    assert_eq!(measurement_u64(&native, "transport_count"), 0);
+
+    let runtime = capture
+        .last(&["fz", "runtime", "list_reuse"])
+        .expect("runtime reusable-cons telemetry event");
+    assert_eq!(measurement_u64(&runtime, "attempted"), 1);
+    assert_eq!(measurement_u64(&runtime, "reused"), 1);
+    assert_eq!(measurement_u64(&runtime, "fallback_allocated"), 0);
+    assert_eq!(metadata_str(&runtime, "outcome"), "reused");
+}
+
+#[test]
+fn compiler2_reusable_cons_runtime_telemetry_reports_alias_fallback() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&[], capture.handler());
+    let mut compiler = Compiler2::new(&tel);
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    compiler.submit_code(CodeSubmission {
+        name: Some("reusable_cons_alias_fallback.fz".to_string()),
+        text: r#"
+fn ping(x), do: x
+
+fn rebuild(xs) do
+  [h | t] = xs
+  ping(xs)
+  {xs, [h | t]}
+end
+
+fn main(), do: rebuild([1, 2])
+"#
+        .to_string(),
+    });
+
+    compiler.run_root_jit(root_id).unwrap_or_else(|error| {
+        panic!("alias-fallback reusable-cons fixture should run end-to-end: {error}");
+    });
+
+    let runtime = capture
+        .last(&["fz", "runtime", "list_reuse"])
+        .expect("runtime reusable-cons telemetry event");
+    assert_eq!(measurement_u64(&runtime, "attempted"), 1);
+    assert_eq!(measurement_u64(&runtime, "reused"), 0);
+    assert_eq!(measurement_u64(&runtime, "fallback_allocated"), 1);
+    assert_eq!(metadata_str(&runtime, "outcome"), "fallback_allocated");
+    assert_eq!(metadata_str(&runtime, "reason"), "aliasing");
+}
+
+#[test]
 fn compiler2_native_program_jit_runs_nontail_if_join_flow_through_compiler2_codegen() {
     let tel = ConfiguredTelemetry::new();
     let dbg = DbgCapture::new();

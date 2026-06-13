@@ -21,7 +21,7 @@
 
 use crate::process::Process;
 use crate::scheduler_hooks::{
-    MakeResourceHook, OutputHook, SendHook, SpawnHook, SpawnOptHook, TimerCancelHook, TimerScheduleHook,
+    ListReuseHook, MakeResourceHook, OutputHook, SendHook, SpawnHook, SpawnOptHook, TimerCancelHook, TimerScheduleHook,
 };
 use std::ptr::{null, null_mut};
 
@@ -45,6 +45,7 @@ pub struct ExecCtx {
     pub spawn_opt: Option<SpawnOptHook>,
     pub send: Option<SendHook>,
     pub output: Option<OutputHook>,
+    pub list_reuse: Option<ListReuseHook>,
     pub make_resource: Option<MakeResourceHook>,
     pub timer_schedule: Option<TimerScheduleHook>,
     pub timer_cancel: Option<TimerCancelHook>,
@@ -62,6 +63,7 @@ impl ExecCtx {
             spawn_opt: None,
             send: None,
             output: None,
+            list_reuse: None,
             make_resource: None,
             timer_schedule: None,
             timer_cancel: None,

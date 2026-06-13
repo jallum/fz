@@ -36,7 +36,7 @@ use crate::telemetry::handler::{Event, Handler};
 use crate::telemetry::value::opaque;
 use fz_runtime::any_value::{AnyValue, AnyValueRef};
 use fz_runtime::exec_ctx::{ExecCtx, timer_cancel};
-use fz_runtime::heap::{Heap, deep_copy_any_value_ref};
+use fz_runtime::heap::{Heap, ListReuseFallbackReason, ListReuseOutcome, deep_copy_any_value_ref};
 use fz_runtime::park::materialize_outcome_closure;
 use fz_runtime::pinned_abi::call2;
 use fz_runtime::procbin::mso_drop_all_deferred;
@@ -161,6 +161,35 @@ pub(crate) extern "C" fn output_hook_thunk(tel: *const (), line_ptr: *const u8, 
     let bytes = unsafe { from_raw_parts(line_ptr, line_len) };
     let line = from_utf8(bytes).unwrap_or("<non-utf8 dbg line>");
     tel.event(&["fz", "runtime", "dbg"], crate::metadata! { line: line });
+}
+
+pub(crate) extern "C" fn list_reuse_hook_thunk(tel: *const (), outcome: u8, reason: u8) {
+    if tel.is_null() {
+        return;
+    }
+    let tel: &dyn Telemetry = unsafe { *(tel as *const &dyn Telemetry) };
+    let (outcome_name, reused, fallback_allocated) = match outcome {
+        ListReuseOutcome::REUSED_TAG => ("reused", 1_u64, 0_u64),
+        ListReuseOutcome::FALLBACK_ALLOCATED_TAG => ("fallback_allocated", 0_u64, 1_u64),
+        _ => ("unknown", 0_u64, 0_u64),
+    };
+    let reason_name = match reason {
+        ListReuseFallbackReason::NONE_TAG => "none",
+        ListReuseFallbackReason::ALIASED_TAG => "aliasing",
+        _ => "unknown",
+    };
+    tel.execute(
+        &["fz", "runtime", "list_reuse"],
+        &crate::measurements! {
+            attempted: 1_u64,
+            reused: reused,
+            fallback_allocated: fallback_allocated,
+        },
+        &crate::metadata! {
+            outcome: outcome_name,
+            reason: reason_name,
+        },
+    );
 }
 
 // fz-swt.10 — `MakeResourceHook` installed by the binary so the runtime
@@ -444,6 +473,7 @@ impl<'a> Runtime<'a> {
             spawn_opt: Some(spawn_opt_hook_thunk),
             send: Some(send_hook_thunk),
             output: Some(output_hook_thunk),
+            list_reuse: Some(list_reuse_hook_thunk),
             make_resource: self.module.is_some().then_some(make_resource_hook_thunk),
             timer_schedule: Some(timer_schedule_hook_thunk),
             timer_cancel: Some(timer_cancel_hook_thunk),

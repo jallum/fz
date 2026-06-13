@@ -1,6 +1,7 @@
 use super::*;
 use crate::any_value::{AnyValue, AnyValueRef, EMPTY_LIST_BITS, ValueKind, closure_size_for_count};
-use crate::heap::{Schema, SchemaRegistry};
+use crate::exec_ctx::ExecCtx;
+use crate::heap::{ListReuseFallbackReason, ListReuseOutcome, Schema, SchemaRegistry};
 use crate::procbin::{bitstring_bit_len, bitstring_byte_ptr};
 use crate::process::{DEFAULT_REDUCTIONS_PER_QUANTUM, Process, YIELD_REASON_REDUCTIONS};
 use std::cell::RefCell;
@@ -370,5 +371,80 @@ fn alloc_bitstring_const_large_payload_is_procbin() {
             let bp = bitstring_byte_ptr(bits as *const u8);
             assert_eq!(from_raw_parts(bp, payload.len()), payload.as_slice());
         }
+    });
+}
+
+fn list_ref_from_bits(bits: u64) -> AnyValueRef {
+    let addr = list_addr_from_tagged(bits).expect("list addr");
+    AnyValueRef::from_heap_object(ValueKind::LIST, addr).expect("list ref")
+}
+
+extern "C" fn capture_list_reuse_hook(tel: *const (), outcome: u8, reason: u8) {
+    let captured = unsafe { &*(tel as *const RefCell<Vec<(u8, u8)>>) };
+    captured.borrow_mut().push((outcome, reason));
+}
+
+#[test]
+fn list_reuse_or_cons_parts_reports_runtime_outcomes_through_exec_ctx() {
+    with_process(|process| {
+        let reused = RefCell::new(Vec::new());
+        let mut reused_ctx = ExecCtx {
+            tel: (&reused) as *const RefCell<Vec<(u8, u8)>> as *const (),
+            list_reuse: Some(capture_list_reuse_hook),
+            ..ExecCtx::empty()
+        };
+        process.ctx = &mut reused_ctx;
+
+        let old_tail = process.heap.alloc_list_cons_slot(AnyValue::int(1), EMPTY_LIST_BITS);
+        let new_tail = process.heap.alloc_list_cons_slot(AnyValue::int(2), EMPTY_LIST_BITS);
+        let source = process.heap.alloc_list_cons_slot(AnyValue::int(0), old_tail);
+        let reused_word = fz_list_reuse_or_cons_parts(
+            process as *mut Process,
+            list_ref_from_bits(source).raw_word(),
+            7,
+            ValueKind::ATOM.tag() as u64,
+            list_ref_from_bits(new_tail).raw_word(),
+        );
+
+        assert_eq!(reused_word, list_ref_from_bits(source).raw_word());
+        assert_eq!(
+            reused.borrow().as_slice(),
+            &[(ListReuseOutcome::REUSED_TAG, ListReuseFallbackReason::NONE_TAG)],
+            "runtime hook should report an in-place reusable-cons rewrite",
+        );
+
+        let fallback = RefCell::new(Vec::new());
+        let mut fallback_ctx = ExecCtx {
+            tel: (&fallback) as *const RefCell<Vec<(u8, u8)>> as *const (),
+            list_reuse: Some(capture_list_reuse_hook),
+            ..ExecCtx::empty()
+        };
+        process.ctx = &mut fallback_ctx;
+
+        let old_tail = process.heap.alloc_list_cons_slot(AnyValue::int(3), EMPTY_LIST_BITS);
+        let new_tail = process.heap.alloc_list_cons_slot(AnyValue::int(4), EMPTY_LIST_BITS);
+        let source = process.heap.alloc_list_cons_slot(AnyValue::int(9), old_tail);
+        let source_ref = list_ref_from_bits(source);
+        process
+            .heap
+            .mark_published_ref_aliased(source_ref)
+            .expect("publish source");
+        let fallback_word = fz_list_reuse_or_cons_parts(
+            process as *mut Process,
+            source_ref.raw_word(),
+            11,
+            ValueKind::INT.tag() as u64,
+            list_ref_from_bits(new_tail).raw_word(),
+        );
+
+        assert_ne!(fallback_word, source_ref.raw_word());
+        assert_eq!(
+            fallback.borrow().as_slice(),
+            &[(
+                ListReuseOutcome::FALLBACK_ALLOCATED_TAG,
+                ListReuseFallbackReason::ALIASED_TAG,
+            )],
+            "runtime hook should report alias fallback when the source cons was published",
+        );
     });
 }
