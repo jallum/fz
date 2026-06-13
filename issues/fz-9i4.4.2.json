@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-9i4.4.1"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-9i4.4.3"
+  ],
   "created": "2026-06-13T02:06:47Z",
   "description": "Goal: collapse the old model fully once the new contract is live. Delete obsolete callable-constructor tests, side-table helpers, and comments that describe captures as prepended call arguments. Re-baseline the focused fixture set and verify the full workspace. Acceptance: no compiler2/native test still asserts callable constructor body-id vectors; docs describe callable boundaries, separate arg/capture ABI, and direct-vs-opaque closure calls; cargo clippy --workspace --all-targets -- -D warnings and cargo test --workspace pass.",
   "id": "fz-9i4.4.2",
