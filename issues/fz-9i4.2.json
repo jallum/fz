@@ -6,14 +6,15 @@
   "blocks": [
     "fz-9i4.3"
   ],
+  "closed_at": "2026-06-13T00:49:17Z",
   "created": "2026-06-13T00:30:33Z",
   "description": "",
   "id": "fz-9i4.2",
   "labels": [],
   "parent": "fz-9i4",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Teach fixture_matrix to run single-file fixtures2 behavioural fixtures",
   "type": "task",
-  "updated_at": "2026-06-13T00:35:33Z"
+  "updated_at": "2026-06-13T00:49:17Z"
 }
