@@ -2481,7 +2481,7 @@ fn compiler2_abi_ready_boxes_heap_projection_returns_at_function_boundaries() {
 }
 
 #[test]
-fn compiler2_abi_ready_derives_only_the_closed_enum_reduce_callable_entries() {
+fn compiler2_abi_ready_keeps_direct_only_enum_reduce_out_of_callable_inventory() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
     tel.attach(&[], capture.handler());
@@ -2513,7 +2513,7 @@ fn compiler2_abi_ready_derives_only_the_closed_enum_reduce_callable_entries() {
             .map(|event| metadata_str(&event, "message").to_string())
             .unwrap_or_else(|| "<missing diagnostic>".to_string());
         panic!(
-            "ABI-ready projection should publish only the reducer callable entries that survive the settled Enum.reduce path: {outcome:?}; diagnostic={message}"
+            "ABI-ready projection should keep direct-only Enum.reduce reducers out of first-class callable inventory: {outcome:?}; diagnostic={message}"
         );
     }
 
@@ -2531,83 +2531,18 @@ fn compiler2_abi_ready_derives_only_the_closed_enum_reduce_callable_entries() {
         .function_id;
 
     let program = abi_ready.last(root_id).program;
-    let callable_functions = program
-        .callable_entries
-        .iter()
-        .map(|entry| entry.target.activation.function)
+    assert!(
+        program.callable_entries.is_empty(),
+        "resolved reducer calls should transport direct callable evidence without publishing first-class callable entries",
+    );
+    let executable_functions = program
+        .executables
+        .keys()
+        .map(|key| key.activation.function)
         .collect::<HashSet<_>>();
-    assert_eq!(
-        callable_functions,
-        HashSet::from([user_reducer_id, bridge_reducer_id]),
-        "the settled Enum.reduce path should need one callable entry for the bridge reducer and one for the user reducer",
-    );
-
-    let user_entries = abi_ready_callable_entries(&program, user_reducer_id);
     assert!(
-        !user_entries.is_empty(),
-        "the user reducer should surface at least one closed callable entry",
-    );
-    assert!(
-        user_entries.iter().all(|entry| entry.capture_count == 0),
-        "the user reducer should stay a thin zero-capture callable value across every settled callable entry",
-    );
-    assert!(
-        user_entries
-            .iter()
-            .all(|entry| entry.target.need == ExecutableNeed::Value),
-        "callable entries should always target value-return executables",
-    );
-    assert!(
-        user_entries
-            .iter()
-            .all(|entry| entry.target.activation.input.len() == 2),
-        "user reducer callable entries should specialize over two runtime call arguments",
-    );
-    assert!(
-        user_entries
-            .iter()
-            .any(|entry| entry.return_abi == ReturnAbi::Value(AbiValueRepr::RawInt)),
-        "the closed user reducer callable inventory should preserve a raw integer accumulator return lane",
-    );
-    assert!(
-        user_entries
-            .iter()
-            .all(|entry| program.executables.contains_key(&entry.target)),
-        "callable-entry targets must already exist in the closed executable frontier",
-    );
-
-    let bridge_entries = abi_ready_callable_entries(&program, bridge_reducer_id);
-    assert!(
-        !bridge_entries.is_empty(),
-        "the bridge reducer should surface at least one closed callable entry",
-    );
-    assert!(
-        bridge_entries.iter().all(|entry| entry.capture_count == 1),
-        "the bridge reducer should keep the captured user reducer in every callable-entry contract",
-    );
-    assert!(
-        bridge_entries
-            .iter()
-            .all(|entry| entry.target.need == ExecutableNeed::Value),
-        "bridge reducer callable entries should still target value-return executables",
-    );
-    assert!(
-        bridge_entries
-            .iter()
-            .all(|entry| entry.target.activation.input.len() == 3),
-        "bridge reducer callable entries should include one capture plus two runtime args",
-    );
-    assert!(
-        bridge_entries
-            .iter()
-            .all(|entry| entry.return_abi == ReturnAbi::Value(AbiValueRepr::ValueRef)),
-        "the bridge reducer should return the tagged reduce-step tuple as an ordinary value reference",
-    );
-    assert!(
-        bridge_entries
-            .iter()
-            .all(|entry| program.executables.contains_key(&entry.target)),
-        "bridge callable-entry targets must already exist in the closed executable frontier",
+        executable_functions.is_superset(&HashSet::from([user_reducer_id, bridge_reducer_id])),
+        "the user reducer and bridge reducer should still exist in the closed executable frontier",
     );
 }
 
@@ -2674,7 +2609,7 @@ end
 }
 
 #[test]
-fn compiler2_abi_ready_matches_callable_entries_by_canonical_activation_key() {
+fn compiler2_abi_ready_matches_direct_callable_captures_by_canonical_activation_key() {
     let tel = ConfiguredTelemetry::new();
     let functions = FunctionCapture::new();
     tel.attach(&["fz", "compiler2", "function"], functions.handler());
@@ -2711,10 +2646,11 @@ end
 
     assert_resolved(
         compiler.drive(),
-        "callable entries should resolve through canonical activation keys, not raw capture Ty ids",
+        "direct callable capture layouts should resolve through canonical activation keys, not raw capture Ty ids",
     );
 
     let main_id = function_id(&functions, "main", 0);
+    let reduce_plain_id = functions.id("reduce_plain", 3);
     let reducer_id = generated_functions_owned_by(&functions, main_id)
         .into_iter()
         .find(|record| record.arity == 2)
@@ -2722,16 +2658,51 @@ end
         .function_id;
 
     let program = abi_ready.last(root_id).program;
-    let reducer_entries = abi_ready_callable_entries(&program, reducer_id);
+    let (_, reduce_plain_executable) = abi_ready_executable(&program, reduce_plain_id);
     assert!(
-        reducer_entries.iter().all(|entry| entry.capture_count == 1),
-        "the reducer callable captures the predicate closure"
+        reduce_plain_executable.param_reprs == vec![AbiValueRepr::ValueRef, AbiValueRepr::ValueRef],
+        "reduce_plain/3 should lower the reducer input to its captured predicate lane only",
     );
+    assert_eq!(reduce_plain_executable.runtime_params.inputs.len(), 3);
+    match &reduce_plain_executable.runtime_params.inputs[2] {
+        RuntimeInputLayout::DirectCallableCaptures {
+            semantic_index,
+            function,
+            capture_tys,
+            capture_reprs,
+        } => {
+            assert_eq!(
+                *semantic_index, 2,
+                "the reducer layout should still refer to the original semantic reducer input",
+            );
+            assert_eq!(
+                *function, reducer_id,
+                "the direct callable layout should preserve the exact generated reducer body",
+            );
+            assert_eq!(
+                capture_tys.len(),
+                1,
+                "the reducer callable should transport exactly one captured predicate value",
+            );
+            assert_eq!(
+                capture_reprs,
+                &vec![AbiValueRepr::ValueRef],
+                "the reducer callable should carry the captured predicate through one boxed runtime lane",
+            );
+            assert!(
+                program.executables.keys().any(|key| {
+                    key.activation.function == reducer_id
+                        && key.activation.input.len() == capture_tys.len() + 2
+                        && &key.activation.input[..capture_tys.len()] == capture_tys.as_slice()
+                }),
+                "direct callable capture layout should still resolve to a canonical closed executable key for the reducer body",
+            );
+        }
+        other => panic!("expected direct callable capture layout for reducer input, found {other:?}"),
+    }
     assert!(
-        reducer_entries
-            .iter()
-            .all(|entry| program.executables.contains_key(&entry.target)),
-        "captured callable-entry targets must resolve to canonical executable keys in the closed frontier",
+        program.callable_entries.is_empty(),
+        "a direct-only captured reducer should not publish first-class callable-entry inventory",
     );
 }
 
@@ -3158,7 +3129,7 @@ fn compiler2_emission_ready_projects_only_the_closed_quicksort_inventory() {
 }
 
 #[test]
-fn compiler2_emission_ready_includes_the_required_enum_reduce_callable_entries() {
+fn compiler2_emission_ready_keeps_direct_only_enum_reduce_out_of_callable_inventory() {
     let tel = ConfiguredTelemetry::new();
     let functions = FunctionCapture::new();
     tel.attach(&["fz", "compiler2", "function"], functions.handler());
@@ -3184,7 +3155,7 @@ fn compiler2_emission_ready_includes_the_required_enum_reduce_callable_entries()
 
     assert_resolved(
         compiler.drive(),
-        "emission-ready projection should inventory the surviving Enum.reduce callable entries",
+        "emission-ready projection should keep direct-only Enum.reduce reducers out of first-class callable inventory",
     );
 
     let main_id = function_id(&functions, "main", 0);
@@ -3201,59 +3172,18 @@ fn compiler2_emission_ready_includes_the_required_enum_reduce_callable_entries()
         .function_id;
 
     let program = emission_ready.last(root_id).program;
-    let callable_functions = program
-        .callable_entries
+    assert!(
+        program.callable_entries.is_empty(),
+        "direct-only reducer transport should not survive as emission-ready callable-entry inventory",
+    );
+    let executable_functions = program
+        .executables
         .iter()
-        .map(|entry| program.executables[entry.target].key.activation.function)
+        .map(|executable| executable.key.activation.function)
         .collect::<HashSet<_>>();
-    assert_eq!(
-        callable_functions,
-        HashSet::from([user_reducer_id, bridge_reducer_id]),
-        "the emission-ready callable inventory should contain exactly the user reducer and bridge reducer entries",
-    );
-
-    let user_entries = emission_ready_callable_entries(&program, user_reducer_id);
     assert!(
-        !user_entries.is_empty(),
-        "the user reducer should keep at least one emission-ready callable entry",
-    );
-    assert!(
-        user_entries.iter().all(|(_, entry)| entry.capture_count == 0),
-        "the user reducer should stay a zero-capture callable entry",
-    );
-    assert!(
-        user_entries
-            .iter()
-            .all(|(_, entry)| program.executables[entry.target].key.activation.input.len() == 2),
-        "user reducer executable inventory slots should specialize over two runtime call arguments",
-    );
-    assert!(
-        user_entries.iter().any(|(_, entry)| {
-            program.executables[entry.target].return_abi == ReturnAbi::Value(AbiValueRepr::RawInt)
-        }),
-        "the emission-ready user reducer inventory should preserve a raw integer return lane",
-    );
-
-    let bridge_entries = emission_ready_callable_entries(&program, bridge_reducer_id);
-    assert!(
-        !bridge_entries.is_empty(),
-        "the bridge reducer should keep at least one emission-ready callable entry",
-    );
-    assert!(
-        bridge_entries.iter().all(|(_, entry)| entry.capture_count == 1),
-        "the bridge reducer should keep its captured reducer in the callable-entry inventory",
-    );
-    assert!(
-        bridge_entries
-            .iter()
-            .all(|(_, entry)| program.executables[entry.target].key.activation.input.len() == 3),
-        "bridge reducer executable inventory slots should include one capture plus two runtime args",
-    );
-    assert!(
-        bridge_entries.iter().all(|(_, entry)| {
-            program.executables[entry.target].return_abi == ReturnAbi::Value(AbiValueRepr::ValueRef)
-        }),
-        "the bridge reducer executable inventory should return the tagged reduce-step tuple as a value reference",
+        executable_functions.is_superset(&HashSet::from([user_reducer_id, bridge_reducer_id])),
+        "the user reducer and bridge reducer should still survive in the executable inventory",
     );
 }
 
@@ -3565,7 +3495,7 @@ fn compiler2_backend_program_keeps_only_the_closed_quicksort_inventory() {
 }
 
 #[test]
-fn compiler2_backend_program_attaches_the_closed_enum_reduce_callable_boundaries() {
+fn compiler2_backend_program_keeps_direct_only_enum_reduce_out_of_callable_inventory() {
     let tel = ConfiguredTelemetry::new();
     let functions = FunctionCapture::new();
     tel.attach(&["fz", "compiler2", "function"], functions.handler());
@@ -3588,7 +3518,7 @@ fn compiler2_backend_program_attaches_the_closed_enum_reduce_callable_boundaries
 
     assert_resolved(
         compiler.drive(),
-        "backend lowering should carry only the callable entries that survive the closed Enum.reduce path",
+        "backend lowering should keep direct-only Enum.reduce reducers out of first-class callable inventory",
     );
 
     let main_id = function_id(&functions, "main", 0);
@@ -3605,23 +3535,18 @@ fn compiler2_backend_program_attaches_the_closed_enum_reduce_callable_boundaries
         .function_id;
 
     let program = backend.last(root_id).program;
-    let callable_functions = program
-        .callable_entries
-        .iter()
-        .map(|entry| program.executables[entry.target].key.activation.function)
-        .collect::<HashSet<_>>();
-    assert_eq!(
-        callable_functions,
-        HashSet::from([user_reducer_id, bridge_reducer_id]),
-        "the backend callable-entry inventory should keep exactly the user reducer and bridge reducer entries",
-    );
-
     assert!(
-        program.callable_entries.iter().all(|entry| {
-            let function = program.executables[entry.target].key.activation.function;
-            function == user_reducer_id || function == bridge_reducer_id
-        }),
-        "backend callable-entry inventory should be the single source of callable dispatch obligations",
+        program.callable_entries.is_empty(),
+        "backend callable-entry inventory should stay empty for direct-only reducer transport",
+    );
+    let executable_functions = program
+        .executables
+        .iter()
+        .map(|executable| executable.key.activation.function)
+        .collect::<HashSet<_>>();
+    assert!(
+        executable_functions.is_superset(&HashSet::from([user_reducer_id, bridge_reducer_id])),
+        "the user reducer and bridge reducer should still survive in the backend executable inventory",
     );
 }
 
@@ -3851,7 +3776,7 @@ fn compiler2_native_program_matches_tuple_field_call_continuations_to_the_callee
 }
 
 #[test]
-fn compiler2_native_program_keeps_the_closed_enum_reduce_callable_entries() {
+fn compiler2_native_program_keeps_direct_only_enum_reduce_out_of_callable_inventory() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
     tel.attach(&[], capture.handler());
@@ -3881,7 +3806,7 @@ fn compiler2_native_program_keeps_the_closed_enum_reduce_callable_entries() {
             .map(|event| metadata_str(&event, "message").to_string())
             .unwrap_or_else(|| "<missing diagnostic>".to_string());
         panic!(
-            "native lowering should carry only the callable entries that survive the closed Enum.reduce path: {outcome:?}; diagnostic={message}"
+            "native lowering should keep direct-only Enum.reduce reducers out of first-class callable inventory: {outcome:?}; diagnostic={message}"
         );
     }
 
@@ -3899,32 +3824,22 @@ fn compiler2_native_program_keeps_the_closed_enum_reduce_callable_entries() {
         .function_id;
 
     let program = native.last(root_id).program;
-    let callable_functions = program
-        .callable_boundaries
-        .iter()
-        .map(|entry| entry.target.activation.function)
-        .collect::<HashSet<_>>();
     assert_eq!(
-        callable_functions,
-        HashSet::from([user_reducer_id, bridge_reducer_id]),
-        "the native callable-boundary inventory should keep exactly the user reducer and bridge reducer entries",
+        program.callable_boundaries,
+        Vec::new(),
+        "native callable-boundary inventory should stay empty for direct-only reducer transport",
     );
-
-    let used_entries = native_callable_boundary_uses(&program);
-    let expected_entries = program
-        .callable_boundaries
+    let executable_functions = program
+        .bodies
         .iter()
-        .filter_map(|entry| {
-            matches!(
-                entry.target.activation.function,
-                id if id == user_reducer_id || id == bridge_reducer_id
-            )
-            .then_some(entry.id())
+        .filter_map(|body| match &body.origin {
+            crate::compiler2::artifact::NativeBodyOrigin::Executable(key) => Some(key.activation.function),
+            _ => None,
         })
         .collect::<HashSet<_>>();
-    assert_eq!(
-        used_entries, expected_entries,
-        "native closure values should point at exactly the callable-boundary obligations that survive the closed Enum.reduce path",
+    assert!(
+        executable_functions.is_superset(&HashSet::from([user_reducer_id, bridge_reducer_id])),
+        "the user reducer and bridge reducer should still survive as native executable bodies",
     );
 }
 
@@ -10128,20 +10043,6 @@ fn emission_ready_executable(
         .enumerate()
         .find(|(_, executable)| executable.key.activation.function == function)
         .unwrap_or_else(|| panic!("emission-ready executable for {function:?}"))
-}
-
-fn emission_ready_callable_entries(
-    program: &EmissionReadyProgram,
-    function: FunctionId,
-) -> Vec<(usize, &crate::compiler2::EmissionReadyCallableEntry)> {
-    let entries = program
-        .callable_entries
-        .iter()
-        .enumerate()
-        .filter(|(_, entry)| program.executables[entry.target].key.activation.function == function)
-        .collect::<Vec<_>>();
-    assert!(!entries.is_empty(), "emission-ready callable entries for {function:?}");
-    entries
 }
 
 fn backend_executable(program: &BackendProgram, function: FunctionId) -> (usize, &crate::compiler2::BackendExecutable) {

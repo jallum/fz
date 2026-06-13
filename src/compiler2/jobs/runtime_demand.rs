@@ -555,12 +555,14 @@ fn propagate_steps_reverse(
                     RuntimeDemand::Ignore => {}
                     RuntimeDemand::TupleFields(fields) if fields.len() == items.len() => {
                         for (item, demand) in items.iter().zip(fields) {
+                            let demand = boundary_value_demand(world, facts, *item, demand);
                             note_live_demand(world, out, live, *item, demand);
                         }
                     }
                     _ => {
                         for item in items {
-                            note_live_demand(world, out, live, *item, RuntimeDemand::Value);
+                            let demand = boundary_value_demand(world, facts, *item, RuntimeDemand::Value);
+                            note_live_demand(world, out, live, *item, demand);
                         }
                     }
                 }
@@ -568,34 +570,42 @@ fn propagate_steps_reverse(
             LoweredStep::List { value, items, tail } => {
                 if !take_live_demand(live, *value).is_ignore() {
                     for item in items {
-                        note_live_demand(world, out, live, *item, RuntimeDemand::Value);
+                        let demand = boundary_value_demand(world, facts, *item, RuntimeDemand::Value);
+                        note_live_demand(world, out, live, *item, demand);
                     }
                     if let Some(tail) = tail {
-                        note_live_demand(world, out, live, *tail, RuntimeDemand::Value);
+                        let demand = boundary_value_demand(world, facts, *tail, RuntimeDemand::Value);
+                        note_live_demand(world, out, live, *tail, demand);
                     }
                 }
             }
             LoweredStep::Map { value, entries } => {
                 if !take_live_demand(live, *value).is_ignore() {
                     for (key, field) in entries {
-                        note_live_demand(world, out, live, key.value, RuntimeDemand::Value);
-                        note_live_demand(world, out, live, *field, RuntimeDemand::Value);
+                        let key_demand = boundary_value_demand(world, facts, key.value, RuntimeDemand::Value);
+                        let field_demand = boundary_value_demand(world, facts, *field, RuntimeDemand::Value);
+                        note_live_demand(world, out, live, key.value, key_demand);
+                        note_live_demand(world, out, live, *field, field_demand);
                     }
                 }
             }
             LoweredStep::MapUpdate { value, base, entries } => {
                 if !take_live_demand(live, *value).is_ignore() {
-                    note_live_demand(world, out, live, *base, RuntimeDemand::Value);
+                    let base_demand = boundary_value_demand(world, facts, *base, RuntimeDemand::Value);
+                    note_live_demand(world, out, live, *base, base_demand);
                     for (key, field) in entries {
-                        note_live_demand(world, out, live, key.value, RuntimeDemand::Value);
-                        note_live_demand(world, out, live, *field, RuntimeDemand::Value);
+                        let key_demand = boundary_value_demand(world, facts, key.value, RuntimeDemand::Value);
+                        let field_demand = boundary_value_demand(world, facts, *field, RuntimeDemand::Value);
+                        note_live_demand(world, out, live, key.value, key_demand);
+                        note_live_demand(world, out, live, *field, field_demand);
                     }
                 }
             }
             LoweredStep::Struct { value, fields, .. } => {
                 if !take_live_demand(live, *value).is_ignore() {
                     for (_, field) in fields {
-                        note_live_demand(world, out, live, *field, RuntimeDemand::Value);
+                        let demand = boundary_value_demand(world, facts, *field, RuntimeDemand::Value);
+                        note_live_demand(world, out, live, *field, demand);
                     }
                 }
             }
