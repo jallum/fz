@@ -4,14 +4,15 @@
     "fz-go4.13.5"
   ],
   "blocks": [],
+  "closed_at": "2026-06-13T18:27:45Z",
   "created": "2026-06-13T16:28:50Z",
   "description": "Goal\nClose the arc by deleting obsolete names/paths/docs and documenting the final ownership-boundary invariant.\n\nWhy\nThis work is only complete if the codebase no longer contains the old model as a parallel vocabulary. Keeping tail-only names, old-world pins, or temporary fixture sidecars will mislead the next agent and invite patchy fixes.\n\nCleanup scope\n- Delete or rewrite docs that describe reusable cons as \"owned cons reuse\" if that phrase now implies the wrong tail-only model.\n- Update agent-facing docs in `.agent/docs/*` that explain compiler2 pipeline, native lowering, telemetry, scheduler/closure behavior, and ownership boundaries.\n- Update user-facing guides only when they describe fixture contracts, compiler2 telemetry, or native allocation behavior.\n- Remove obsolete tests that pin implementation strings such as old `owned_cons_reuse`, `tuple_fields_list_tail`, or old-world dump names, replacing them with intent-level assertions around the new capability.\n- Remove temporary fixture sidecars or engine-specific differences that no longer express a real semantic/runtime distinction.\n- Ensure `rg \"OwnedConsReuse|record_owned_cons_reuse|owned_cons_reuse|reuse_or_cons_tail|fz_list_reuse_or_cons_tail_ref\"` returns no production-code hits except historical docs explicitly marked as old-world reference, if any.\n\nValidation\n- `cargo fmt --check`\n- `cargo clippy --workspace --all-targets -- -D warnings`\n- `cargo test --workspace` unless an open ticket documents unrelated timeout-sensitive fixture legs; if so, run the maximal focused set and cite the blocking ticket.\n- `bw ready` should show no hidden cleanup ticket created by this arc unless there is a deliberate follow-up with a clear reason.\n\nAcceptance\nThe final code/docs expose one model: reusable cons cells are physical capabilities, born from list splitting, transported through hidden physical params, consumed by generalized list construction, and erased from semantics. No shim, adapter, or old tail-only path remains.",
   "id": "fz-go4.13.6",
   "labels": [],
   "parent": "fz-go4.13",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Closeout: delete obsolete owned-cons/tail-only debt and document the invariant",
   "type": "task",
-  "updated_at": "2026-06-13T18:19:16Z"
+  "updated_at": "2026-06-13T18:27:45Z"
 }
