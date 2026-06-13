@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-go4.13.4"
+  ],
   "created": "2026-06-13T16:28:49Z",
   "description": "Goal\nAdd the runtime and heap primitive that makes the correct compiler model possible: one operation that tries to reuse an existing cons cell for `[new_head | new_tail]`, falling back to allocation when reuse is unsafe.\n\nWhy this must be first\nCurrent runtime support is tail-only: `fz_list_reuse_or_cons_tail_ref(process, list_ref, tail_ref)` preserves the old head and only relinks the tail. That is insufficient for map-like reconstruction and forces compiler/codegen special cases. The right abstraction is a single generalized operation that can rewrite both head and tail when the source cons is unaliased.\n\nData/API changes\n- In `runtime/src/any_value.rs`, add a `ListCons` mutation method that can update head raw bits, head `ValueKind`, and tail bits together while preserving the alias/publication metadata correctly.\n- In `runtime/src/heap/imp.rs`, add something equivalent to `reuse_or_alloc_list_cons(source_cons, new_head_raw, new_head_kind, new_tail)`.\n- The heap method must:\n  - reject non-list source refs;\n  - convert/validate the tail with the same list-tail rules used by allocation;\n  - if the source cons is unaliased, rewrite the existing cell head+tail and return the same list ref;\n  - if aliased/published, allocate a fresh cons with the supplied head+tail and leave the original cons unchanged.\n- In `runtime/src/ir_runtime.rs`, expose one extern symbol for native codegen. Prefer one primitive taking raw head bits plus a compact kind value over a family of per-kind symbols, because `ListCons::new(head_raw, head_kind, tail_bits)` already has that shape.\n- In compiler2 native runtime bindings, add the symbol id and a helper call method, but do not yet route list construction through it unless this ticket also updates all callers cleanly.\n\nDeletion target\nOnce downstream codegen is converted, delete `fz_list_reuse_or_cons_tail_ref` and heap/codegen helpers that only support tail relink. If this ticket cannot delete them because callers still exist, the follow-up codegen ticket must delete them; do not leave them as an adapter layer.\n\nTests\n- Add/extend runtime heap tests:\n  - unaliased source cons: returned ref is the same physical cons and both head and tail change;\n  - aliased/published source cons: returned ref is fresh, original head/tail remain unchanged;\n  - changed head kind works for at least a scalar/value-ref contrast if the runtime representation supports it.\n- Run targeted runtime tests for heap/list cons reuse.\n- Run `cargo test --workspace` before close unless an existing open ticket documents an unrelated timeout/ignore.\n\nAcceptance\nA standalone runtime primitive exists that can safely implement FP2-style cons reuse for both same-head and changed-head reconstruction. It is not wired by a shim; the API shape is the final shape native codegen should call.",
   "id": "fz-go4.13.1",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Runtime: generalize cons reuse to rewrite head and tail with alias fallback",
   "type": "task",
-  "updated_at": "2026-06-13T16:28:49Z"
+  "updated_at": "2026-06-13T16:28:50Z"
 }

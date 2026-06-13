@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-go4.13.1"
+  ],
   "blocks": [],
   "created": "2026-06-13T16:28:49Z",
   "description": "Goal\nRoute all compiler2 native list construction through the generalized reusable-cons capability and delete the current tail-only codegen path.\n\nWhy\n`src/compiler2/native_codegen/prim.rs` currently tries `emit_owned_cons_reuse_or_alloc` for one-element `MakeList` and `DestListCons`, but that helper only calls the tail-relink primitive. After the IR/runtime model is generalized, codegen should have exactly one reuse consumption path: if the head being consed has a reusable source, call the generalized runtime primitive with source cons, new head, head kind, and new tail; otherwise allocate normally.\n\nAlgorithm\n- In codegen cache construction (`src/compiler2/native_codegen/function.rs` / `env.rs`), index reusable-cons facts by rebuilt head var using the new IR capability names.\n- Replace `emit_owned_cons_reuse_or_alloc` with a generalized helper such as `emit_reusable_cons_or_alloc`.\n- The helper must:\n  - find the physical source cons for the consed head var;\n  - compute the runtime representation of the new head exactly as ordinary `emit_list_cons_bif` would;\n  - compute/pass the head kind expected by runtime;\n  - compute list tail bits exactly as ordinary allocation does;\n  - call the generalized runtime primitive;\n  - return `None` when no reusable source exists so ordinary allocation remains the only fallback.\n- Apply this helper to both:\n  - `Prim::MakeList(elems, Some(tail))` when `elems.len() == 1`;\n  - `Prim::DestListCons { head, tail, .. }`.\n- Multi-element literals should continue to build from the tail backward; only the individual cons operation with a reusable head/source uses the primitive.\n\nDeletion target\n- Delete `emit_owned_cons_reuse_or_alloc`.\n- Delete `CodegenFn::list_reuse_or_cons_tail_ref` and runtime binding ids once no caller remains.\n- Delete `fz_list_reuse_or_cons_tail_ref` and heap tail-only helpers if no non-duplicative runtime test/user remains.\n- Remove old `owned_cons_reuse_sources` naming from codegen caches.\n\nTests\n- Add/update native codegen tests for same-head rebuild and changed-head rebuild. The changed-head case is essential; otherwise the implementation may still be tail-only in disguise.\n- Use `--log-telemetry` while debugging `fixtures2/behavior/enum_sort.fz` and `enum_map_family.fz` to ensure reuse consumption events appear.\n- Run focused fixture tests for `enum_sort`, `enum_list_allocations`, `enum_map_family`, and any existing quicksort owned-cons reuse test.\n\nAcceptance\nCompiler2 native codegen has one generalized list-cons reuse consumption path. The tail-only primitive and old helper names are gone from production code.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Native codegen: consume reusable-cons facts for MakeList and DestListCons",
   "type": "task",
-  "updated_at": "2026-06-13T16:28:49Z"
+  "updated_at": "2026-06-13T16:28:50Z"
 }
