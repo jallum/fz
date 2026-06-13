@@ -2,14 +2,15 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-06-13T19:11:51Z",
   "created": "2026-06-13T00:01:01Z",
   "description": "",
   "id": "fz-go4.12",
   "labels": [],
   "parent": "fz-go4",
   "priority": 3,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Add fixtures2 filename routing for execution-system discovery",
   "type": "task",
-  "updated_at": "2026-06-13T18:54:47Z"
+  "updated_at": "2026-06-13T19:11:51Z"
 }
