@@ -3,13 +3,13 @@
   "blocked_by": [],
   "blocks": [],
   "created": "2026-06-13T02:06:47Z",
-  "description": "Goal: collapse the old model fully once the new contract is live. Delete obsolete callable-constructor tests, side-table helpers, and comments that describe captures as prepended call arguments. Re-baseline the focused fixture set and verify the full workspace. Acceptance: no compiler2/native test still asserts callable constructor body-id vectors; docs describe callable boundaries, separate arg/capture ABI, and direct-vs-opaque closure calls; cargo clippy --workspace --all-targets -- -D warnings and cargo test --workspace pass.",
+  "description": "Goal: remove lossy compression between artifact truth and native handoff. Replace closure-constructor candidate body vectors and block-local closure-call target side tables with first-class callable boundary references and explicit exact-target closure-call facts. Lowering should preserve direct singleton closure-call resolution separately from opaque higher-order closure values. Acceptance: compiler2 backend/native lowering tests show closure-producing values reference callable boundaries, closure-call sites carry direct-vs-opaque facts explicitly, and NativeBody no longer publishes constructor candidate body ids or ambient closure-call target lookup tables.",
   "id": "fz-9i4.4.2",
   "labels": [],
   "parent": "fz-9i4.4",
   "priority": 2,
   "status": "open",
-  "title": "Remove legacy callable-constructor reconstruction and retire closure regression debt",
+  "title": "Preserve callable boundary facts through compiler2 backend and native lowering",
   "type": "task",
-  "updated_at": "2026-06-13T02:07:25Z"
+  "updated_at": "2026-06-13T02:07:40Z"
 }
