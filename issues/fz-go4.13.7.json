@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-06-13T18:49:33Z",
@@ -8,8 +8,8 @@
   "labels": [],
   "parent": "fz-go4.13",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "Backend interpreter: honor reusable-cons captures and strict exit telemetry",
   "type": "task",
-  "updated_at": "2026-06-13T18:49:33Z"
+  "updated_at": "2026-06-13T18:49:36Z"
 }
