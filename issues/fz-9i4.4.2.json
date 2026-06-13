@@ -1,8 +1,6 @@
 {
   "assignee": "",
-  "blocked_by": [
-    "fz-9i4.4.1"
-  ],
+  "blocked_by": [],
   "blocks": [
     "fz-9i4.4.3"
   ],
@@ -15,5 +13,5 @@
   "status": "open",
   "title": "Remove legacy callable-constructor reconstruction and retire closure regression debt",
   "type": "task",
-  "updated_at": "2026-06-13T02:07:02Z"
+  "updated_at": "2026-06-13T02:07:25Z"
 }
