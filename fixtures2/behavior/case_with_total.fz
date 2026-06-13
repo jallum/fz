@@ -1,0 +1,34 @@
+#---
+# purpose: "total case and with clauses return tuple-bound values and explicit fallbacks"
+# paths: [fz2-run, fz2-interp, fz2-build]
+#---
+#
+# # case_with_total
+#
+# Exercises `case` tuple-pattern dispatch and `with` tuple-pattern binding with
+# explicit fallback clauses. The older `case_tuple_pattern_sequential` fixture
+# keeps the partial-clause warning oracle; this fixture is the total-control
+# surface used for direct assertion-based parity.
+fn f(v) do
+  case v do
+    {:ok, x} -> x
+    :err -> 0
+    _ -> -1
+  end
+end
+
+fn g(v) do
+  with {:ok, x} <- v do
+    x
+  else
+    :err -> 0
+    _ -> -1
+  end
+end
+
+fn main() do
+  assert(
+    {f({:ok, 7}), f(:err), f(:other), g({:ok, 8}), g(:err), g(:other)} == {7, 0, -1, 8, 0, -1},
+    "total case/with clauses return their tuple-bound values and explicit fallbacks"
+  )
+end

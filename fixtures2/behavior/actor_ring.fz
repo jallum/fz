@@ -1,0 +1,28 @@
+#---
+# purpose: "N-hop actor ring with self()-capture + spawn-with-captures + multi-clause CPS-split-in-body; closes fz-g8v by exercising the fz-qbg.2 multi-clause body cont-fn path end-to-end"
+# paths: [fz2-run, fz2-interp, fz2-build]
+#---
+fn relay(0, home) do
+  value = receive do
+    x -> x
+  end
+  send(home, value + 1)
+end
+
+fn relay(n, home) do
+  next = spawn(fn() -> relay(n - 1, home) end)
+  value = receive do
+    x -> x
+  end
+  send(next, value + 1)
+end
+
+fn main() do
+  home = self()
+  head = spawn(fn() -> relay(4, home) end)
+  send(head, 0)
+  got = receive do
+    x -> x
+  end
+  assert(got == 5, "5-hop actor ring increments 0 once per hop")
+end

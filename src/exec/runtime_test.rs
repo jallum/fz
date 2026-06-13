@@ -1111,7 +1111,7 @@ fn drain_expired_timers_wakes_after_cont() {
 // fz-70q.5.5 — the per-arity dispatch test
 // (run_quantum_dispatches_runnable_closure_via_shim) was
 // retired with the nine-shim family. End-to-end dispatch is now
-// covered by `fixtures/receive_selective_refs/input.fz` exercising
+// covered by `fixtures2/behavior/receive_selective_refs.fz` exercising
 // the single fz_resume seam — see the test runner's matrix suite.
 // The smoke check below ensures the singular shim exists.
 

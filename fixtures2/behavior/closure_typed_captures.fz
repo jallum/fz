@@ -1,0 +1,62 @@
+#---
+# purpose: "fz-ul4.29.5 — closure dispatched via call_indirect through code pointer"
+# paths: [fz2-run, fz2-interp, fz2-build]
+# budget.codegen.functions: 7
+# budget.codegen.instructions: 85
+# budget.specs.count: 7
+# budget.planner.worklist_pops: 7
+# budget.planner.walk_calls: 7
+# budget.planner.type_fn_calls: 7
+# budget.planner.matcher_specs: 0
+# budget.planner.vars: 26
+# budget.planner.blocks: 7
+# budget.planner.stmts: 9
+# budget.planner.dispatches: 5
+#---
+#
+# # closure_typed_captures
+#
+# fz-ul4.29.5 — closure dispatched via call_indirect through code pointer
+#
+# ## Notes
+#
+# fz-ul4.27.22.11 — apply1's `f.(z)` resolves via closure_lit to lambda_3's
+# narrow body spec; the cl+8 indirect dispatch is replaced by a direct
+# return_call.
+# fz-ul4.27.22.5 — typed closure capture seam: ishl/bor pairs dropped at the
+# MakeClosure producer (add_to_s6) and sshr_imm dropped at the body's typed
+# capture loads (lambda_3_s8 captures v3/v4 are RawInt, no untag needed).
+# fz-ul4.27.22.12 — closure_lit-driven per-callsite specialization splits
+# lambda_3 into a narrow `[10, 20, 12]` spec and a wide `[10, 20, any]`
+# fallback. The narrow spec used at runtime gets full RawInt ABI; the wide
+# is unused by main's flow but emitted for the any-key fallback.
+# fz-cps.1.12: closure stubs deleted. The lambda body is invoked
+# directly via Tail-CC `return_call_indirect` through cl+8 — no stub
+# fn exists to assert about. Tracked by §8.3 acceptance test.
+#
+# fz-wgo.1.6: the source closure allocation still happens in `add_to`,
+# but `main` now shows the caller continuation as a lazy stack descriptor
+# instead of a heap-allocated closure. The acceptance test must assert
+# that split directly rather than treating the caller continuation seam as
+# the user closure allocation site.
+#
+# A closure capturing two ints + invoked. Under .29.5, the closure heap
+# object stores code pointer at payload offset 8; MakeClosure computes its
+# address via func_addr; CallClosure loads code pointer and call_indirect-s
+# through it. The fz_closure_invoke / fz_closure_arg runtime helpers no
+# longer exist.
+#
+# fz-ul4.29.8 — the lambda's body is leaf (Return only, no parking),
+# so post-.29.8 it becomes natively-callable. The stub for
+# `lambda_3` (the inner closure target, 2 captures) no longer
+# allocates a frame; it loads captures from the closure heap object
+# and directly calls the native body (no `fz_alloc_frame` for the stub).
+fn add_to(x, y), do: fn (z) -> x + y + z end
+fn apply1(f, x), do: f.(x)
+
+fn main() do
+  assert(
+    apply1(add_to(10, 20), 12) == 42,
+    "captured ints survive the closure boundary and feed the applied body"
+  )
+end

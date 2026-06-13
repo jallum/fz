@@ -1,0 +1,41 @@
+#---
+# purpose: "source-level append allocation baseline proves ordinary list append needs no append BIF"
+# paths: [fz2-run, fz2-interp, fz2-build]
+#---
+#
+# # append
+#
+# Pins source-level `append/2` as an ordinary recursive function:
+#
+# ```fz
+# fn append([], ys), do: ys
+# fn append([h | t], ys), do: [h | append(t, ys)]
+# ```
+#
+# The program appends `[1, 2, 3]` to `[4, 5]`, prints the result, snapshots
+# current-process heap allocation counters, and prints the list/struct/map heap
+# headline.
+#
+# Target for native JIT/AOT:
+#
+# - the two list literals allocate five cons cells;
+# - owned-cons reuse removes the append prefix copy, so no extra cons cells are
+#   allocated;
+# - no tuple/struct or map objects are needed for the value path;
+# - `heap_bytes = 80`.
+#
+# This fixture is deliberately not an append BIF test. The accompanying dump
+# assertion proves that `append` remains a source function in the typed specs and
+# native CLIF.
+fn append([], ys), do: ys
+fn append([h | t], ys), do: [h | append(t, ys)]
+
+fn main() do
+  out = append([1, 2, 3], [4, 5])
+  dbg(out)
+
+  stats = Process.heap_alloc_stats()
+  dbg(stats)
+  heap_bytes = stats[:list_cons_bytes] + stats[:struct_bytes] + stats[:map_bytes]
+  dbg(heap_bytes)
+end

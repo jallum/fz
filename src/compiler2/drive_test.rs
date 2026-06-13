@@ -3823,8 +3823,8 @@ fn compiler2_native_program_joins_callable_resume_before_materializing_closure_c
 
     let mut compiler = Compiler2::new(&tel);
     compiler.submit_code(CodeSubmission {
-        name: Some("fixtures/opaque_fn_value_join/input.fz".to_string()),
-        text: include_str!("../../fixtures/opaque_fn_value_join/input.fz").to_string(),
+        name: Some("fixtures2/behavior/opaque_fn_value_join.fz".to_string()),
+        text: include_str!("../../fixtures2/behavior/opaque_fn_value_join.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -4314,8 +4314,8 @@ fn compiler2_native_program_jit_runs_source_lambda_sugars_through_compiler2_code
 
     let mut compiler = Compiler2::new(&tel);
     compiler.submit_code(CodeSubmission {
-        name: Some("fixtures/lambda_sugars/input.fz".to_string()),
-        text: include_str!("../../fixtures/lambda_sugars/input.fz").to_string(),
+        name: Some("fixtures2/behavior/lambda_sugars.fz".to_string()),
+        text: include_str!("../../fixtures2/behavior/lambda_sugars.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -4412,8 +4412,8 @@ fn compiler2_native_program_jit_runs_map_fixture_through_compiler2_codegen() {
 
     let mut compiler = Compiler2::new(&tel);
     compiler.submit_code(CodeSubmission {
-        name: Some("fixtures/map_three_path_parity/input.fz".to_string()),
-        text: include_str!("../../fixtures/map_three_path_parity/input.fz").to_string(),
+        name: Some("fixtures2/behavior/map_three_path_parity.fz".to_string()),
+        text: include_str!("../../fixtures2/behavior/map_three_path_parity.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -4447,7 +4447,7 @@ fn compiler2_native_program_jit_keeps_tail_recursion_bounded() {
 
     let mut compiler = Compiler2::new(&tel);
     compiler.submit_code(CodeSubmission {
-        name: Some("fixtures/tail_recursion/input.fz".to_string()),
+        name: Some("fixtures2/behavior/tail_recursion.fz".to_string()),
         text: include_str!("../../fixtures2/00018_tail_recursion.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
@@ -4496,7 +4496,7 @@ fn compiler2_cont_threaded_recursion_closes_with_a_back_edge() {
 
     let mut compiler = Compiler2::new(&tel);
     compiler.submit_code(CodeSubmission {
-        name: Some("fixtures/tail_recursion/input.fz".to_string()),
+        name: Some("fixtures2/behavior/tail_recursion.fz".to_string()),
         text: include_str!("../../fixtures2/00018_tail_recursion.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
@@ -4782,8 +4782,8 @@ fn compiler2_interp_runs_selective_receive_with_make_ref_from_backend_artifacts(
 
     let mut compiler = Compiler2::new(&tel);
     compiler.submit_code(CodeSubmission {
-        name: Some("fixtures/receive_selective_refs/input.fz".to_string()),
-        text: include_str!("../../fixtures/receive_selective_refs/input.fz").to_string(),
+        name: Some("fixtures2/behavior/receive_selective_refs.fz".to_string()),
+        text: include_str!("../../fixtures2/behavior/receive_selective_refs.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -9698,7 +9698,7 @@ fn compiler2_quicksort_cli_builds_are_stable_smoke() {
         binary.exists(),
         "build the release binary first: cargo build --release --bin fz2",
     );
-    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/quicksort/input.fz");
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures2/behavior/quicksort.fz");
     let mut line_counts = Vec::new();
     for run in 0..20 {
         let dir = std::env::temp_dir().join(format!("fz2-smoke-{run}"));
@@ -9877,8 +9877,8 @@ fn compiler2_native_program_jit_adapts_callable_raw_returns_back_to_value_refs()
 
     let mut compiler = Compiler2::new(&tel);
     compiler.submit_code(CodeSubmission {
-        name: Some("fixtures/repr_seam_closure_predicate/input.fz".to_string()),
-        text: include_str!("../../fixtures/repr_seam_closure_predicate/input.fz").to_string(),
+        name: Some("fixtures2/behavior/repr_seam_closure_predicate.fz".to_string()),
+        text: include_str!("../../fixtures2/behavior/repr_seam_closure_predicate.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,

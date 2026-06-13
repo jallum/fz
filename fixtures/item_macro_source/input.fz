@@ -1,7 +1,0 @@
-defmacro make_answer() do
-  {:fn, %{}, [{:answer, %{}, []}, [{:do, 42}]]}
-end
-
-make_answer()
-
-fn main(), do: dbg(answer())

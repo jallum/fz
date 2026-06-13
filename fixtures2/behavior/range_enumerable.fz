@@ -1,0 +1,33 @@
+#---
+# purpose: "Range implements Enumerable reduce/count/member?/slice callbacks"
+# paths: [fz2-run, fz2-interp, fz2-build]
+# oracle: oracle.exs
+#---
+#
+# Exercises the source `defimpl Enumerable, for: Range` callback surface through
+# direct protocol calls. The oracle uses Elixir range literals and
+# `Enumerable.Range`, so the checked output pins callback semantics rather than
+# Range rendering alone.
+fn main() do
+  r = Range.new(1, 10, 2)
+  descending = Range.new(10, 1, -3)
+  empty = Range.new(1, 10, -1)
+
+  dbg(Enumerable.reduce(r, {:cont, 0}, fn (x, acc) -> {:cont, acc + x} end))
+  dbg(Enumerable.reduce(descending, {:cont, 0}, fn (x, acc) -> {:cont, acc + x} end))
+  dbg(Enumerable.reduce(r, {:halt, 99}, fn (x, acc) -> {:cont, acc + x} end))
+
+  dbg(Enumerable.count(r))
+  dbg(Enumerable.count(descending))
+  dbg(Enumerable.count(empty))
+
+  dbg(Enumerable.member?(r, 5))
+  dbg(Enumerable.member?(r, 6))
+  dbg(Enumerable.member?(descending, 4))
+  dbg(Enumerable.member?(empty, 1))
+
+  {:ok, n, slicer} = Enumerable.slice(r)
+  dbg(n)
+  dbg(slicer.(1, 2, 1))
+  dbg(slicer.(1, 2, 2))
+end

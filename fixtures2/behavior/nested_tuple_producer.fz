@@ -1,0 +1,16 @@
+#---
+# purpose: "nested tuple producer call inside an outer tuple literal; keeps tuple DP live across continuations"
+# paths: [fz2-run, fz2-interp, fz2-build]
+#---
+fn pair(x) do
+  send(self(), x)
+  y = receive do
+    z -> z
+  end
+  {x, y}
+end
+
+fn main() do
+  result = {1, pair(2)}
+  assert(result == {1, {2, 2}}, "nested tuple producer keeps tuple DP live across the receive continuation")
+end

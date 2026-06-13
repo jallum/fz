@@ -1,0 +1,20 @@
+#---
+# purpose: "a wrong @spec is rejected with a spec/violation diagnostic on every path"
+# paths: [fz2-run, fz2-interp, fz2-build]
+# expect: diagnostic
+# diagnostic.code: spec/violation
+#---
+#
+# # spec_violation
+#
+# `M.add1` declares `@spec add1(float) :: float` but its body adds `1` to an int
+# argument. The shared spec-validation pass rejects this at compile time with a
+# `spec/violation` diagnostic. The same pass runs in every driver, so the verdict
+# is invariant across the four paths; the fixture pins the diagnostic through the
+# `[fz, diag, error]` telemetry event.
+defmodule M do
+  @spec add1(float) :: float
+  fn add1(n), do: n + 1
+end
+
+fn main(), do: dbg(M.add1(41))

@@ -1,9 +1,0 @@
-fn eval({:num, n}), do: n
-fn eval({:add, a, b}), do: eval(a) + eval(b)
-fn eval({:mul, a, b}), do: eval(a) * eval(b)
-
-fn main() do
-  dbg(eval({:num, 42}))
-  dbg(eval({:add, {:num, 2}, {:mul, {:num, 3}, {:num, 4}}}))
-  dbg(eval({:mul, {:add, {:num, 1}, {:num, 2}}, {:add, {:num, 3}, {:num, 4}}}))
-end

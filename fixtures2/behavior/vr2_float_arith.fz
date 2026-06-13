@@ -1,0 +1,36 @@
+#---
+# purpose: "VR.2 — float-literal arithmetic + comparisons emit native fadd/fcmp, no dispatch"
+# paths: [fz2-run, fz2-interp, fz2-build]
+# budget.codegen.functions: 1
+# budget.codegen.instructions: 23
+# budget.specs.count: 1
+# budget.planner.worklist_pops: 1
+# budget.planner.walk_calls: 1
+# budget.planner.type_fn_calls: 1
+# budget.planner.matcher_specs: 0
+# budget.planner.vars: 17
+# budget.planner.blocks: 1
+# budget.planner.stmts: 16
+# budget.planner.dispatches: 0
+# defer.fz2-build: compiler2 native build parity still red
+#---
+#
+# # vr2_float_arith
+#
+# VR.2 — float-literal arithmetic + comparisons emit native fadd/fcmp, no dispatch
+#
+# ## Notes
+#
+# fz-ul4.27.15.2: float literals consumed by float-monomorphic vars lower
+# straight to `f64const` without a heap allocation round-trip.
+#
+# Both operands of each op are Float literals → ir_planner narrows to float
+# → lower_prim's descr_is_float branch fires → native fadd/fsub/fmul +
+# fcmp. Post-.27.15.2, Const::Float emits raw f64 directly when the
+# consumer is float-monomorphic; the previous heap allocation path is gone.
+fn main() do
+  dbg(1.5 + 2.5)
+  dbg(10.0 - 3.0)
+  dbg(2.5 * 4.0)
+  dbg(1.0 < 2.0)
+end

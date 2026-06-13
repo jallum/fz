@@ -344,13 +344,13 @@ fn receive_map_pattern_matches_present_nil_value() {
     assert_eq!(out, "nil", "present nil map value must match, got: {}", out);
 }
 
-/// fixtures/receive_selective_refs/input.fz — the design proof point
+/// fixtures2/behavior/receive_selective_refs.fz — the design proof point
 /// for fz-recv: sender-side miss, sender-side hit, and receiver-side
 /// scan hit in a single trace. See docs/receive-matched-stress-test.html.
 // PICKED: pinned-ref selective receive with out-of-order server replies
 #[test]
 fn fixture_receive_selective_refs() {
-    let src = read_to_string("fixtures/receive_selective_refs/input.fz").expect("read fixture");
+    let src = read_to_string("fixtures2/behavior/receive_selective_refs.fz").expect("read fixture");
     let out = run_and_capture(&src).expect("interp run");
     assert!(out.contains("3"), "expected 3, got: {}", out);
 }

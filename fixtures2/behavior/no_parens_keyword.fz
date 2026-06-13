@@ -1,0 +1,34 @@
+#---
+# purpose: "trailing/leading keyword lists in no-parens calls parse into one list arg; output matches Elixir"
+# paths: [fz2-run, fz2-interp, fz2-build]
+# oracle: oracle.exs
+#---
+#
+# # no_parens_keyword
+#
+# Exercises Elixir-style keyword-list arguments to no-parens calls. `run 1, b: 2,
+# c: 3` parses as `run(1, [b: 2, c: 3])` — the trailing `key: value` pairs collapse
+# into a single keyword-list argument — and `only_opts x: 9` parses as
+# `only_opts([x: 9])`, a lone leading keyword list. Each body destructures the
+# list to show the runtime shape (a list of `{key, value}` tuples). `oracle.exs`
+# is the Elixir twin; both print the same atoms and integers, so `expected.txt`
+# is owned by the oracle.
+fn run(a, opts) do
+  dbg(a)
+  [{k1, v1}, {k2, v2}] = opts
+  dbg(k1)
+  dbg(v1)
+  dbg(k2)
+  dbg(v2)
+end
+
+fn only_opts(opts) do
+  [{k, v}] = opts
+  dbg(k)
+  dbg(v)
+end
+
+fn main() do
+  run 1, b: 2, c: 3
+  only_opts x: 9
+end

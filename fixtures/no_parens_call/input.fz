@@ -1,9 +1,0 @@
-fn double(x), do: x * 2
-fn sum3(a, b, c), do: a + b + c
-
-fn main() do
-  x = double 21
-  dbg(x)
-  y = sum3 1, 2, 3
-  dbg(y)
-end

@@ -1,0 +1,11 @@
+#---
+# purpose: "parametric `id` exercised over int, atom, and bool"
+# paths: [fz2-run, fz2-interp, fz2-build]
+#---
+fn id(x), do: x
+
+fn main() do
+  assert(id(42) == 42, "id on int")
+  assert(id(:hello) == :hello, "id on atom")
+  assert(id(true), "id on bool")
+end

@@ -1,0 +1,21 @@
+#---
+# purpose: "membership operators desugar to Enum.member?/2 and match Elixir over List, Range, and Map"
+# paths: [fz2-run, fz2-interp, fz2-build]
+# oracle: oracle.exs
+#---
+#
+# Pins the Elixir-facing `in` / `not in` surface. The parser keeps these as
+# operators long enough to preserve precedence; compiler2 source production
+# normalizes them to `Enum.member?/2` before function-source lowering.
+fn main() do
+  xs = [1, 2, 3]
+  range = 1..7//2
+  map = %{2 => :two, 1 => :one}
+
+  dbg(2 in xs)
+  dbg(4 in xs)
+  dbg(5 in range)
+  dbg(6 not in range)
+  dbg({1, :one} in map)
+  dbg({3, :three} not in map)
+end

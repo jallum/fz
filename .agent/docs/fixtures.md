@@ -1,41 +1,40 @@
 # Fixtures
 
-A fixture is a small `.fz` program under `fixtures/<name>/` that proves one
+A fixture is a small `.fz` program under `fixtures2/behavior/` that proves one
 thing about the language and proves it on every execution path that applies.
-`tests/fixture_matrix.rs` is the harness: it discovers every fixture directory,
-reads each `README.md` frontmatter, and runs `input.fz` through the paths the
-fixture declares, scoring each run against goldens. The same file also holds a
-set of static trials (the Elixir oracle, the index check, dump budgets,
-CLIF-shape proofs) that don't fit the per-path mould.
+`tests/fixture_matrix.rs` is the harness: it discovers every behavioural source
+file, reads the source-frontmatter block at the top, and runs the file through
+the paths it declares, scoring each run against sibling sidecars. The same file
+also holds a set of static trials (the Elixir oracle, dump budgets, CLIF-shape
+proofs) that don't fit the per-path mould.
 
 ## Anatomy
 
 ```text
-fixtures/<name>/
-  input.fz                     the program
-  README.md                    frontmatter + optional prose
-  expected.txt                 stdout golden (optional)
-  expected.<path>.txt          per-path stdout golden (optional, overrides expected.txt)
-  expected.diagnostics         stderr/diagnostic golden (optional)
-  expected.<path>.diagnostics  per-path diagnostic golden (optional)
-  expected.stderr              stderr substring golden for `expect: abort`
-  expected.<path>.stderr       per-path stderr substring golden (optional)
-  oracle.exs                   Elixir twin whose stdout owns expected.txt (optional)
+fixtures2/behavior/<name>.fz
+fixtures2/behavior/<name>.expected.txt
+fixtures2/behavior/<name>.expected.<path>.txt
+fixtures2/behavior/<name>.expected.diagnostics
+fixtures2/behavior/<name>.expected.<path>.diagnostics
+fixtures2/behavior/<name>.expected.stderr
+fixtures2/behavior/<name>.expected.<path>.stderr
+fixtures2/behavior/<name>.oracle.exs
 ```
 
-`discover()` returns every directory under `fixtures/` that contains an
-`input.fz`. The matrix derives every other sidecar path from the directory.
+`discover()` returns every `.fz` under `fixtures2/behavior/`. The matrix derives
+every sidecar path from the file stem.
 
 ### Frontmatter
 
-The README opens with a `---`-delimited block parsed by `parse_header_from_dir`.
-It is a tiny YAML subset, only the keys below:
+The source file opens with a `#---`-delimited comment block parsed by
+`parse_fixture_metadata` and the matrix harness. It is a tiny keyed grammar,
+only the keys below:
 
 - `purpose:` — the one-line description (required). Single source of truth for
-  the fixture's headline; `fixtures/index.md` is regenerated from it.
+  the fixture's headline.
 - `paths:` — flow sequence of the paths to run, e.g. `[jit, interp, aot, repl]`
   (required). Empty `[]` is allowed only with a `defer:` rationale.
-- `kind:` — `run` or `test`. Defaults to `run` when `input.fz` defines a `main`,
+- `kind:` — `run` or `test`. Defaults to `run` when the source defines a `main`,
   otherwise `test`. Decides which jit subcommand runs (see the matrix).
 - `expect:` — `success` (default), `abort`, or `diagnostic` (the pass/fail
   contract; see below).
@@ -43,13 +42,13 @@ It is a tiny YAML subset, only the keys below:
   assert (e.g. `spec/violation`).
 - `defer:` — a rationale, required when `paths:` is empty. The fixture then runs
   nowhere and surfaces as an ignored trial carrying the rationale.
-- `oracle:` — relative path to an Elixir twin whose stdout owns `expected.txt`.
+- `oracle:` — relative path to a sibling Elixir twin whose stdout owns
+  `expected.txt`.
 - `timeout.<path>_secs:` — per-path wall-clock timeout override.
 - `budget.<namespace>.<metric>:` — a compiler-shape target counter (see Dump
   budgets).
 
-Fixtures under `fixtures2/` may also open with a comment-frontmatter block in
-the source file itself:
+Fixtures already live in that comment-frontmatter form:
 
 ```text
 #---
@@ -64,12 +63,12 @@ the source file itself:
 
 This is raw source metadata, not language syntax. The parser sees ordinary
 comments; fixtures2 metadata readers parse the leading block directly from the
-fixture text so one file owns the program, its behavioural matrix metadata, and
-its compiler-shape claims.
+fixture text so one file owns the program, its behavioural matrix metadata, its
+compiler-shape claims, and any explanatory prose that follows.
 
-The prose body after the frontmatter is a plain statement of present-tense facts
-about what the fixture proves. It is optional and carries no code: the code is
-`input.fz`. Most fixtures are frontmatter-only.
+Optional prose lives immediately below the frontmatter as ordinary `#` comments.
+It is a plain statement of present-tense facts about what the fixture proves.
+Most fixtures are frontmatter-only.
 
 ## The four-path matrix
 
@@ -80,10 +79,10 @@ each path:
 
 | path     | driver                                                            |
 |----------|-------------------------------------------------------------------|
-| `jit`    | `fz run <input.fz>` (or `fz test` when `kind: test`)              |
-| `interp` | `fz interp <input.fz>`                                            |
-| `aot`    | `fz build <input.fz> -o <tmp>` then run the binary                |
-| `repl`   | `fz repl --script <input.fz>`                                     |
+| `jit`    | `fz run <fixture.fz>` (or `fz test` when `kind: test`)            |
+| `interp` | `fz interp <fixture.fz>`                                          |
+| `aot`    | `fz build <fixture.fz> -o <tmp>` then run the binary              |
+| `repl`   | `fz repl --script <fixture.fz>`                                   |
 
 The `aot` and `repl` legs only run `kind: run` fixtures; a `kind: test` fixture
 is surfaced as `Deferred` on those legs because `fz test` is jit-only.
@@ -128,11 +127,11 @@ one path while keeping it in correctness coverage.
 ### BLESS
 
 `BLESS=1 cargo test fixture_matrix` rewrites `expected.txt` /
-`expected.<path>.txt` and `.diagnostics` from current output, and seeds a missing
-`expected.stderr` with full captured stderr (the author then trims it to the
-stable line). On a non-bless failure the actual output is dropped at
-`<dir>/actual.txt`, `actual.diagnostics`, or `actual.stderr` for diffing. These
-`actual.*` files are gitignored.
+`expected.<path>.txt` and `.diagnostics` from current output, and seeds a
+missing `expected.stderr` with full captured stderr (the author then trims it to
+the stable line). On a non-bless failure the actual output is dropped at
+`<name>.actual.txt`, `.actual.diagnostics`, or `.actual.stderr` for diffing.
+These `actual.*` files are gitignored.
 
 ### The Elixir oracle
 
@@ -149,7 +148,7 @@ oracle is a hard prerequisite, not an optional skip — a missing or failing
 ## The media
 
 A fixture pins its claim in the most direct medium for what it tests.
-`fixtures/GOLDEN.md` holds the choosing rule and the per-fixture map.
+`fixtures2/GOLDEN.md` holds the choosing rule and the per-fixture map.
 
 1. **In-language assertion** — `assert(expr == expected, "why")` / `refute`.
    The program checks itself and aborts on failure, so the claim is verified on
@@ -165,7 +164,9 @@ A fixture pins its claim in the most direct medium for what it tests.
    parity is expected (`enum_sort`, `process_heap_stats`, `quicksort`) jit and aot
    each ship their own `expected.jit.txt` / `expected.aot.txt`; the two are kept
    byte-identical so jit == aot, but that equality is a property of the maintained
-   files, not something the harness enforces.
+   files, not something the harness enforces. When only a handful of counters
+   matter, print or assert those scalars directly rather than goldening the
+   whole stats map.
 4. **Compiler-shape budget** — `budget.*` frontmatter (see Dump budgets).
 5. **Expect-failure** — `expect: abort` / `expect: diagnostic`. The only medium
    that pins what the language must *refuse*: the program must abort (run-time)
@@ -181,17 +182,17 @@ A fixture pins its claim in the most direct medium for what it tests.
 `budget.codegen.*` (lowered function and instruction counts), `budget.specs.count`,
 and `budget.planner.*` (planner work counters — worklist pops, walk/type-fn
 calls, matcher specs, spec var/block/stmt counts, dispatches). The static
-`dump_budgets` trial runs `fz dump --emit stats <input.fz>` with telemetry on,
+`dump_budgets` trial runs `fz dump --emit stats <fixture>.fz` with telemetry on,
 reads the counters from the `fz.codegen.function_lowered` and authoritative
 `fz.planner.planned` events, and checks each declared target.
 
 `check_budget_metric` allows a symmetric band of ±`DUMP_BUDGET_TOLERANCE_PERCENT`
 (20%) around each target. A budget measures a runnable program, so it lives on a
 fixture with a `main`; a `main`-less runtime-library module is budgeted through a
-fixture that exercises it. A failing budget writes `fixtures/<name>/actual.clif`
-and `actual.specs` as local debugging artifacts (gitignored). Budgets have no
-BLESS step — the frontmatter target is hand-updated in the same commit as the
-change that moves it.
+fixture that exercises it. A failing budget writes sibling `actual.clif` and
+`actual.specs` artifacts (gitignored). Budgets have no BLESS step — the
+frontmatter target is hand-updated in the same commit as the change that moves
+it.
 
 ## Fixtures2 Frontmatter
 

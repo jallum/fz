@@ -1,0 +1,34 @@
+#---
+# purpose: "selective receive whose clauses mix top-level constructors (atom + tuple + wildcard)"
+# paths: [fz2-run, fz2-interp, fz2-build]
+# budget.codegen.functions: 11
+# budget.codegen.instructions: 149
+# budget.specs.count: 10
+# budget.planner.worklist_pops: 10
+# budget.planner.walk_calls: 10
+# budget.planner.type_fn_calls: 10
+# budget.planner.matcher_specs: 0
+# budget.planner.vars: 21
+# budget.planner.blocks: 10
+# budget.planner.stmts: 9
+# budget.planner.dispatches: 10
+#---
+#
+# # receive_mixed_constructors
+#
+# fz-puj.37 (H8) — parity oracle for the receive shape where clauses dispatch
+# over different top-level constructors. The matrix builds a `Switch` whose
+# specialized cases cover the atom and tuple clauses, with the wildcard clause
+# forming a reachable default Leaf (not a Fail). Locks the AOT
+# `compile_pattern` shape that H9's compiled matcher fn must reproduce.
+fn main() do
+  send(self(), {:msg, 42})
+
+  v = receive do
+    :ping -> 1
+    {:msg, n} -> n
+    _ -> 0
+  end
+
+  dbg(v)
+end

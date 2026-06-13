@@ -2,14 +2,6 @@
 build/
 target/
 
-# Dump-budget scratch written by fixture_matrix when a dump shape is inspected
-# or a budget fails. Diff against the checked-in expected.* files instead.
-fixtures/*/actual.clif
-fixtures/*/actual.specs
-fixtures/*/actual.diagnostics
-fixtures/*/actual.txt
-fixtures/*/actual.oracle.txt
-fixtures/*/actual.stderr
-fixtures2/*.actual.call_edges
-fixtures2/*.actual.contract_edges
-fixtures2/*.actual.contract_metrics
+# Fixture scratch written by behavioural and compiler-contract harnesses.
+# Diff against the checked-in sibling goldens instead.
+fixtures2/**/*.actual*

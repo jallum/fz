@@ -1,0 +1,20 @@
+#---
+# purpose: "selective import — `import Math, only: [add: 2]`"
+# paths: [fz2-run, fz2-interp, fz2-build]
+#---
+defmodule Math do
+  fn add(x, y), do: x + y
+  fn mul(x, y), do: x * y
+end
+
+defmodule User do
+  import Math, only: [add: 2]
+
+  fn calc(x, y), do: add(x, y)
+end
+
+fn main() do
+  assert(User.calc(10, 32) == 42, "imported add/2 used inside calc")
+  assert(Math.__info__(:functions) == [{:add, 2}, {:mul, 2}], "Math exports add/2 and mul/2")
+  assert(User.__info__(:functions) == [{:calc, 2}], "import does not re-export: User exports only calc/2")
+end

@@ -92,7 +92,7 @@ fn linked_runtime_graph_keeps_cont_dispatches_for_enum_take_drop_split() {
 
     let mut t = crate::types::new();
     let tel = crate::telemetry::ConfiguredTelemetry::new();
-    let source = include_str!("../../fixtures/enum_take_drop_split/input.fz");
+    let source = include_str!("../../fixtures2/behavior/enum_take_drop_split.fz");
 
     let frontend = compile_source_with_types(
         &mut t,
@@ -138,7 +138,7 @@ fn linked_runtime_graph_keeps_cont_dispatches_for_spawn_with_captures() {
 
     let mut t = crate::types::new();
     let tel = crate::telemetry::ConfiguredTelemetry::new();
-    let source = include_str!("../../fixtures/spawn_with_captures/input.fz");
+    let source = include_str!("../../fixtures2/behavior/spawn_with_captures.fz");
 
     let frontend = compile_source_with_types(
         &mut t,

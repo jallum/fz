@@ -1,0 +1,13 @@
+#---
+# purpose: "fz-axu.17 (P2) — pattern matching on utf8 string literals"
+# paths: [fz2-run, fz2-interp, fz2-build]
+#---
+fn greet("hi"), do: :hello
+fn greet("bye"), do: :goodbye
+fn greet(_), do: :unknown
+
+fn main() do
+  assert(greet("hi") == :hello, "utf8 literal clause matches")
+  assert(greet("bye") == :goodbye, "second utf8 literal clause matches")
+  assert(greet("other") == :unknown, "wildcard clause for non-matching strings")
+end

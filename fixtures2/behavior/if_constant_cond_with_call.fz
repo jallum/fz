@@ -1,0 +1,46 @@
+#---
+# purpose: "fz-84m repro A — constant cond + non-tail call in if-arm; formerly panicked at fz_ir.rs:453 ('unknown block') because then-arm's CPS-split finalized the outer fn while else_b was still empty"
+# paths: [fz2-run, fz2-interp, fz2-build]
+# budget.codegen.functions: 2
+# budget.codegen.instructions: 12
+# budget.specs.count: 2
+# budget.planner.worklist_pops: 2
+# budget.planner.walk_calls: 2
+# budget.planner.type_fn_calls: 2
+# budget.planner.matcher_specs: 0
+# budget.planner.vars: 6
+# budget.planner.blocks: 3
+# budget.planner.stmts: 5
+# budget.planner.dispatches: 1
+#---
+#
+# # if_constant_cond_with_call
+#
+# fz-84m repro A — constant cond + non-tail call in if-arm.
+#
+# ## History
+#
+# Before **fz-duq.2**, this program panicked during IR construction at
+# `block_mut` (src/fz_ir/mod.rs:453, "unknown block"). The then-arm's
+# `dbg(helper())` lowered as a non-tail Call inside print's args,
+# triggering `cps_split_call` which finalized the outer fn. The
+# subsequent switch to else_b (a BlockId in the now-built fn) corrupted
+# the lowering.
+#
+# After fz-duq.2, each if-arm body lives in its own continuation fn
+# (`if_then` / `if_else`); CPS-splits in arm bodies are confined to
+# that arm's lineage. The outer fn is fully populated (just `Term::If`
+# + two arm TailCalls) before any arm body lowers.
+#
+# The semantic claim is just that the program returns the else-arm result
+# without the lowering panic.
+fn helper(), do: 7
+
+fn main() do
+  result = if 1 == 0 do
+    helper() + 0
+  else
+    99
+  end
+  assert(result == 99, "constant false cond still lowers an arm body with a non-tail call without panicking")
+end

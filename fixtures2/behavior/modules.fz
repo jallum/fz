@@ -1,0 +1,20 @@
+#---
+# purpose: "cross-module qualified calls — `M.double`, `M.quad`, `N.helper`"
+# paths: [fz2-run, fz2-interp, fz2-build]
+#---
+defmodule M do
+  fn double(x), do: x * 2
+  fn quad(x), do: double(double(x))
+end
+
+defmodule N do
+  fn helper(x), do: x + 100
+end
+
+fn main() do
+  assert(M.double(21) == 42, "qualified call M.double")
+  assert(M.quad(5) == 20, "M.quad calls sibling M.double")
+  assert(N.helper(7) == 107, "qualified call N.helper")
+  assert(M.__info__(:functions) == [{:double, 1}, {:quad, 1}], "M exports double/1 and quad/1")
+  assert(N.__info__(:functions) == [{:helper, 1}], "N exports helper/1")
+end

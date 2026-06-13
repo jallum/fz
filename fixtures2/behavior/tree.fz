@@ -1,0 +1,33 @@
+#---
+# purpose: "source-level tuple-tree traversal allocation baseline"
+# paths: [fz2-run, fz2-interp, fz2-build]
+#---
+#
+# # tree
+#
+# Pins a tuple-shaped tree traversal using ordinary source functions and tuple
+# patterns:
+#
+# ```fz
+# fn inc_tree(:empty), do: :empty
+# fn inc_tree({:node, left, value, right}), do: {:node, inc_tree(left), value + 1, inc_tree(right)}
+# ```
+#
+# The input tree has three `{:node, left, value, right}` tuples. Native JIT/AOT
+# currently fold the literal input tree into the traversal and allocate only the
+# three rebuilt output nodes. The interpreter/REPL direct IR path allocates both
+# the three input nodes and the three output nodes. No list or map allocations are
+# needed in either path.
+fn inc_tree(:empty), do: :empty
+fn inc_tree({:node, left, value, right}), do: {:node, inc_tree(left), value + 1, inc_tree(right)}
+
+fn main() do
+  tree = {:node, {:node, :empty, 1, :empty}, 2, {:node, :empty, 3, :empty}}
+  out = inc_tree(tree)
+  dbg(out)
+
+  stats = Process.heap_alloc_stats()
+  dbg(stats)
+  heap_bytes = stats[:list_cons_bytes] + stats[:struct_bytes] + stats[:map_bytes]
+  dbg(heap_bytes)
+end

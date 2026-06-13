@@ -1,7 +1,0 @@
-fn main() do
-  r = Range.new(1, 10, 2)
-  dbg(r.first)
-  dbg(range(1, 10, 1))
-  dbg(r)
-  dbg(range(10, 1, -1))
-end

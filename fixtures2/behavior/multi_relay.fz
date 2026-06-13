@@ -1,0 +1,16 @@
+#---
+# purpose: "two workers both block on receive simultaneously; exercises scheduler managing multiple Blocked processes"
+# paths: [fz2-run, fz2-interp, fz2-build]
+#---
+fn worker(), do: send(1, receive do x -> x * 2 end)
+
+fn main() do
+  spawn(worker)
+  spawn(worker)
+  send(2, 10)
+  send(3, 11)
+  a = receive do x -> x end
+  b = receive do x -> x end
+  assert(a == 20, "first worker doubled 10")
+  assert(b == 22, "second worker doubled 11")
+end

@@ -33,6 +33,7 @@ impl FixtureMetadata {
             || self.matrix.expect.is_some()
             || self.matrix.diagnostic_code.is_some()
             || self.matrix.defer.is_some()
+            || !self.matrix.path_deferrals.is_empty()
             || self.matrix.oracle.is_some()
             || !self.matrix.budget_assertions.is_empty()
             || !self.matrix.path_timeouts.is_empty()
@@ -53,6 +54,7 @@ pub struct FixtureMatrixMetadata {
     pub expect: Option<FixtureExpect>,
     pub diagnostic_code: Option<String>,
     pub defer: Option<String>,
+    pub path_deferrals: Vec<PathDeferral>,
     pub oracle: Option<String>,
     pub budget_assertions: Vec<BudgetAssertion>,
     pub path_timeouts: Vec<PathTimeout>,
@@ -81,6 +83,12 @@ pub struct BudgetAssertion {
 pub struct PathTimeout {
     pub path: String,
     pub seconds: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PathDeferral {
+    pub path: String,
+    pub rationale: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -227,6 +235,12 @@ pub fn parse_fixture_metadata(source: &str) -> Result<Option<FixtureMetadata>, F
                 name: key.to_string(),
                 expected: parse_u64(value, line_no, key)?,
             }),
+            _ if key.starts_with("defer.") => {
+                metadata
+                    .matrix
+                    .path_deferrals
+                    .push(parse_path_deferral(unquote(value), line_no, key)?)
+            }
             _ if key.starts_with("timeout.") => metadata.matrix.path_timeouts.push(parse_timeout(value, line_no, key)?),
             _ => {
                 return Err(FixtureMetadataError::new(
@@ -335,6 +349,22 @@ fn parse_timeout(value: &str, line_no: usize, key: &str) -> Result<PathTimeout, 
     Ok(PathTimeout {
         path: path.to_string(),
         seconds: parse_u64(value, line_no, key)?,
+    })
+}
+
+fn parse_path_deferral(value: &str, line_no: usize, key: &str) -> Result<PathDeferral, FixtureMetadataError> {
+    let path = key.strip_prefix("defer.").ok_or_else(|| {
+        FixtureMetadataError::new(line_no, format!("defer key must look like `defer.<path>`, got `{key}`"))
+    })?;
+    if path.is_empty() {
+        return Err(FixtureMetadataError::new(
+            line_no,
+            "defer key must name a path after `defer.`",
+        ));
+    }
+    Ok(PathDeferral {
+        path: path.to_string(),
+        rationale: value.to_string(),
     })
 }
 

@@ -290,9 +290,9 @@ when expected, and no legacy frontend/planner/type-infer events. Its
 the exact submitted source set one-for-one: user source plus the demanded
 runtime sources, with no duplicate pass and no fragment pseudo-source. The
 quicksort CLI probe carries the original perf question: on 2026-06-10,
-running `target/debug/fz2` with telemetry on `fixtures/quicksort/input.fz`
+running `target/debug/fz2` with telemetry on `fixtures2/behavior/quicksort.fz`
 emitted four lexer span-starts, exactly
-`fixtures/quicksort/input.fz`, `runtime:runtime.fz`, `runtime:Kernel.fz`, and
+`fixtures2/behavior/quicksort.fz`, `runtime:runtime.fz`, `runtime:Kernel.fz`, and
 `runtime:Process.fz`. The old source-fragment re-lex and its hidden per-call
 type-env rebuild are gone by construction on the compiler2 path. The same trace
 showed the native tail clearly: `fz.compiler2.drive` took 58.109 ms, then

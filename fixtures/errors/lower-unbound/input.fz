@@ -1,3 +1,0 @@
-fn main() do
-  missing_var
-end

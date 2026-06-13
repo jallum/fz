@@ -1312,7 +1312,7 @@ fn known_closure_call_with_branch_continuation_materializes_without_erased_callc
 #[test]
 fn direct_call_materialization_fuses_cloned_return_continuation_block() {
     let tel = ConfiguredTelemetry::new();
-    let m = lower_src_for_plan(include_str!("../../fixtures/add1/input.fz"), &tel);
+    let m = lower_src_for_plan(include_str!("../../fixtures2/behavior/add1.fz"), &tel);
     let cap = Capture::new();
     tel.attach(&["fz", "planner"], cap.handler());
     let mut t = crate::types::new();
@@ -1505,7 +1505,7 @@ fn planned_program_materialization_reports_executable_body_folds() {
 #[test]
 #[ignore = "broken in the old pipeline since before fz-rh2.18.5; the old world dies with fz-rh2.16.6 — do not fix"]
 fn repr_seam_closure_predicate_registers_captured_wrapper_callable_entry() {
-    let src = include_str!("../../fixtures/repr_seam_closure_predicate/input.fz");
+    let src = include_str!("../../fixtures2/behavior/repr_seam_closure_predicate.fz");
     let tel = ConfiguredTelemetry::new();
     let cap = Capture::new();
     tel.attach(&["fz", "planner"], cap.handler());
@@ -1670,7 +1670,7 @@ fn pipeline(src: &str, tel: &dyn Telemetry) -> (DefaultTypes, Module, ModulePlan
 fn quicksort_partition_accumulators_converge_to_one_spec() {
     let tel = ConfiguredTelemetry::new();
     let mut t = crate::types::new();
-    let module = linked_runtime_module(include_str!("../../fixtures/quicksort/input.fz"), &tel);
+    let module = linked_runtime_module(include_str!("../../fixtures2/behavior/quicksort.fz"), &tel);
     let mt = plan_module_with_role(&mut t, &module, &tel, "test");
     let partition_id = module.fn_by_name("partition").expect("quicksort defines partition").id;
     let partition_specs: Vec<&SpecKey> = mt.specs.keys().filter(|k| k.fn_id == partition_id).collect();
@@ -1710,7 +1710,7 @@ fn quicksort_partition_accumulators_converge_to_one_spec() {
 fn return_capabilities_classify_quicksort_fn_shapes() {
     let tel = ConfiguredTelemetry::new();
     let mut t = crate::types::new();
-    let module = linked_runtime_module(include_str!("../../fixtures/quicksort/input.fz"), &tel);
+    let module = linked_runtime_module(include_str!("../../fixtures2/behavior/quicksort.fz"), &tel);
     let mt = plan_module_with_role(&mut t, &module, &tel, "test");
     let cap = |name: &str| {
         let id = module
@@ -3345,7 +3345,7 @@ fn planner_projects_enum_reduce_range_runtime_graph_from_activation_facts() {
 #[test]
 fn runtime_graph_enum_helpers_erase_closure_identity_from_public_spec_keys() {
     let signals = runtime_graph_reachable_materialized_body_signals(
-        include_str!("../../fixtures/enum_take_drop_split/input.fz"),
+        include_str!("../../fixtures2/behavior/enum_take_drop_split.fz"),
         &ConfiguredTelemetry::new(),
     );
 
@@ -3543,7 +3543,7 @@ fn planner_does_not_emit_return_fixpoint_step_telemetry() {
 // DROP: planner worklist work-count regression bounds, no compiler2 analogue
 #[test]
 fn planner_work_bounds_ast_eval() {
-    let src = read_to_string("fixtures/ast_eval/input.fz").expect("read ast_eval fixture");
+    let src = read_to_string("fixtures2/behavior/ast_eval.fz").expect("read ast_eval fixture");
     let (pops, walks, typefns, specs) = observe_planner_work(&src);
     // Bounds are ~2× current observed (Nov 2026). Tighten on
     // intentional improvements; investigate any regression that
@@ -3557,7 +3557,7 @@ fn planner_work_bounds_ast_eval() {
 // DROP: planner worklist work-count regression bounds, no compiler2 analogue
 #[test]
 fn planner_work_bounds_fib_tailrec() {
-    let src = read_to_string("fixtures/fib_tailrec/input.fz").expect("read fib_tailrec fixture");
+    let src = read_to_string("fixtures2/behavior/fib_tailrec.fz").expect("read fib_tailrec fixture");
     let (pops, walks, typefns, specs) = observe_planner_work(&src);
     assert!(pops < 200, "fib_tailrec worklist pops regressed: {}", pops);
     assert!(walks < 200, "fib_tailrec walks regressed: {}", walks);
@@ -3790,7 +3790,7 @@ fn main(), do: dbg(42)
 #[test]
 fn spawn_wrapper_receives_known_closure_capability() {
     let (_t, m, mt) = frontend_plan(
-        include_str!("../../fixtures/spawn_with_captures/input.fz"),
+        include_str!("../../fixtures2/behavior/spawn_with_captures.fz"),
         &crate::telemetry::ConfiguredTelemetry::new(),
     );
     assert!(
@@ -4657,7 +4657,7 @@ fn main(), do: User.run()
 // DROP: planner cont-dispatch call-edge completeness, old-world CallEdge internals
 #[test]
 fn planner_publishes_cont_dispatches_for_non_tail_calls_in_enum_take_drop_split() {
-    let src = include_str!("../../fixtures/enum_take_drop_split/input.fz");
+    let src = include_str!("../../fixtures2/behavior/enum_take_drop_split.fz");
     let mut t = crate::types::new();
     let compiled = compile_source_with_types(
         &mut t,
@@ -4694,7 +4694,7 @@ fn planner_publishes_cont_dispatches_for_non_tail_calls_in_enum_take_drop_split(
 // PICKED: Enum.count/1 on Range enumerator returns integer per declared spec
 #[test]
 fn declared_return_fact_handles_enum_count_on_range_in_runtime_graph() {
-    let src = include_str!("../../fixtures/enum_take_drop_split/input.fz");
+    let src = include_str!("../../fixtures2/behavior/enum_take_drop_split.fz");
     let mut t = crate::types::new();
     let tel = crate::telemetry::ConfiguredTelemetry::new();
     let frontend = compile_source_with_types(
@@ -4779,7 +4779,7 @@ end
 // PICKED: Enum.reduce with runtime-graph reducer returns non-empty type
 #[test]
 fn declared_return_fact_handles_enum_reduce_with_runtime_graph_reducer() {
-    let src = include_str!("../../fixtures/enum_take_drop_split/input.fz");
+    let src = include_str!("../../fixtures2/behavior/enum_take_drop_split.fz");
     let mut t = crate::types::new();
     let tel = crate::telemetry::ConfiguredTelemetry::new();
     let frontend = compile_source_with_types(
@@ -4834,7 +4834,7 @@ fn declared_return_fact_handles_enum_reduce_with_runtime_graph_reducer() {
 // PICKED: Enum.take_positive uses reduce_while with typed callback return
 #[test]
 fn declared_return_fact_handles_take_positive_reduce_while_in_runtime_graph() {
-    let src = include_str!("../../fixtures/enum_take_drop_split/input.fz");
+    let src = include_str!("../../fixtures2/behavior/enum_take_drop_split.fz");
     let mut t = crate::types::new();
     let tel = crate::telemetry::ConfiguredTelemetry::new();
     let frontend = compile_source_with_types(

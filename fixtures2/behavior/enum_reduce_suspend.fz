@@ -1,0 +1,42 @@
+#---
+# purpose: "Enumerable.reduce/3 suspend returns a real resumable closure at the runtime-value boundary"
+# paths: [fz2-run, fz2-interp, fz2-build]
+#---
+#
+# # enum_reduce_suspend
+#
+# Pins the materialization boundary for `Enumerable.reduce_list/3` suspend:
+#
+# ```fz
+# Enumerable.reduce(xs, {:suspend, 0}, fn (x, acc) -> {:cont, acc + x})
+# ```
+#
+# The suspend clause returns `{:suspended, acc, fn () -> ... end}`. That closure
+# is a source value, not an internal native continuation edge, so it must remain a
+# real heap closure even as native call continuations become direct or lazy.
+#
+# Target for native JIT/AOT:
+#
+# - the three-element input list allocates three cons cells;
+# - the returned suspend function allocates one closure;
+# - the current native path also boxes one scalar before the suspend boundary;
+# - `closure_allocs = 1`;
+# - `closure_bytes = 48`;
+# - `scalar_box_allocs = 1`;
+# - `scalar_box_bytes = 16`.
+#
+# Interpreter / REPL note:
+#
+# - the suspended continuation still remains a real heap closure with the same
+#   allocation profile as before;
+# - the rendered function identity is currently `#fn<3/3>` rather than
+#   `#fn<4/3>`, which is numbering drift in the printer rather than a semantic
+#   change in the suspend boundary.
+fn main() do
+  xs = [1, 2, 3]
+  out = Enumerable.reduce(xs, {:suspend, 0}, fn (x, acc) -> {:cont, acc + x} end)
+
+  dbg(out)
+  stats = Process.heap_alloc_stats()
+  dbg(stats)
+end

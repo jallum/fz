@@ -1,6 +1,6 @@
 use super::fixture_metadata::{
     BudgetAssertion, EdgeAssertion, FixtureCompilerMetadata, FixtureExpect, FixtureKind, FixtureMatrixMetadata,
-    FixtureMetadata, FixtureRoot, MetricAssertion, PathTimeout, parse_fixture_metadata,
+    FixtureMetadata, FixtureRoot, MetricAssertion, PathDeferral, PathTimeout, parse_fixture_metadata,
 };
 
 #[test]
@@ -17,13 +17,14 @@ fn fixture_metadata_parser_reads_matrix_and_compiler_keys_together() {
     let parsed = parse_fixture_metadata(
         r#"#---
 # purpose: closure call stays indirect
-# paths: [jit, interp, aot, repl]
+# paths: [fz2-run, fz2-interp, fz2-build]
 # kind: test
 # expect: diagnostic
 # diagnostic.code: spec/violation
 # defer: waiting on compiler2
+# defer.fz2-build: native tail delivery still red
 # oracle: closure.oracle.exs
-# timeout.interp_secs: 15
+# timeout.fz2-interp_secs: 15
 # budget.codegen.instructions: 17
 # root: main/0
 # assert.metric.semantic.callsites: 2
@@ -41,22 +42,25 @@ fn main(), do: 42
             purpose: Some("closure call stays indirect".to_string()),
             matrix: FixtureMatrixMetadata {
                 paths: Some(vec![
-                    "jit".to_string(),
-                    "interp".to_string(),
-                    "aot".to_string(),
-                    "repl".to_string(),
+                    "fz2-run".to_string(),
+                    "fz2-interp".to_string(),
+                    "fz2-build".to_string(),
                 ]),
                 kind: Some(FixtureKind::Test),
                 expect: Some(FixtureExpect::Diagnostic),
                 diagnostic_code: Some("spec/violation".to_string()),
                 defer: Some("waiting on compiler2".to_string()),
+                path_deferrals: vec![PathDeferral {
+                    path: "fz2-build".to_string(),
+                    rationale: "native tail delivery still red".to_string(),
+                }],
                 oracle: Some("closure.oracle.exs".to_string()),
                 budget_assertions: vec![BudgetAssertion {
                     name: "budget.codegen.instructions".to_string(),
                     expected: 17,
                 }],
                 path_timeouts: vec![PathTimeout {
-                    path: "interp".to_string(),
+                    path: "fz2-interp".to_string(),
                     seconds: 15,
                 }],
             },
@@ -87,7 +91,7 @@ fn fixture_metadata_participation_rules_are_explicit() {
     let matrix_only = parse_fixture_metadata(
         r#"#---
 # purpose: runtime behaviour
-# paths: [jit, interp]
+# paths: [fz2-run, fz2-interp]
 #---
 fn main(), do: 42
 "#,

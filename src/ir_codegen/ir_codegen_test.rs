@@ -617,8 +617,8 @@ end
 // PICKED: Enum tier-0 fixture exercises basic Enum operations end-to-end
 #[test]
 fn runtime_enum_tier0_fixture_runs_native() {
-    let got = capture_main_with_runtime_graph(include_str!("../../fixtures/enum_tier0/input.fz"));
-    let expected = include_str!("../../fixtures/enum_tier0/expected.txt")
+    let got = capture_main_with_runtime_graph(include_str!("../../fixtures2/behavior/enum_tier0.fz"));
+    let expected = include_str!("../../fixtures2/behavior/enum_tier0.expected.txt")
         .lines()
         .map(str::to_string)
         .collect::<Vec<_>>();
@@ -683,7 +683,7 @@ end
 // DROP: old-world callable-entry selection telemetry, planner internals
 #[test]
 fn enum_find_closure_allocation_selects_site_specific_callable_entry() {
-    let src = include_str!("../../fixtures/enum_predicate_search/input.fz");
+    let src = include_str!("../../fixtures2/behavior/enum_predicate_search.fz");
     let mut t = crate::types::new();
     let graph = runtime_graph(&mut t, src);
     let tel = ConfiguredTelemetry::new();
@@ -876,7 +876,7 @@ end
 // PICKED: opaque reducer closure call chains with indirect continuation
 #[test]
 fn opaque_reducer_join_uses_lazy_continuation_for_indirect_closure_call() {
-    let src = include_str!("../../fixtures/opaque_fn_value_join/input.fz");
+    let src = include_str!("../../fixtures2/behavior/opaque_fn_value_join.fz");
     let mut t = crate::types::new();
     let graph = runtime_graph(&mut t, src);
     let entry = graph.module.fn_by_name("main").unwrap().id;
@@ -1410,7 +1410,7 @@ fn reserved_atom_ids_are_stable() {
 #[test]
 fn runtime_graph_spawn_with_captures_runs_via_planned_codegen_path() {
     assert_eq!(
-        run_runtime_graph_main_planned(include_str!("../../fixtures/spawn_with_captures/input.fz")),
+        run_runtime_graph_main_planned(include_str!("../../fixtures2/behavior/spawn_with_captures.fz")),
         NIL_ATOM_ID as i64
     );
 }
@@ -3288,7 +3288,7 @@ fn frontend_to_codegen_pipeline_reports_planner_phase_events() {
 // DROP: old-world planner activation projection telemetry, planner internals
 #[test]
 fn enum_take_drop_split_codegen_plan_reports_activation_projection_telemetry() {
-    let src = include_str!("../../fixtures/enum_take_drop_split/input.fz");
+    let src = include_str!("../../fixtures2/behavior/enum_take_drop_split.fz");
     let tel = ConfiguredTelemetry::new();
     let cap = Capture::new();
     tel.attach(&["fz", "planner", "planned"], cap.handler());
@@ -3314,7 +3314,7 @@ fn enum_take_drop_split_codegen_plan_reports_activation_projection_telemetry() {
 // DROP: old-world planner spec-pair inventory continuation edge telemetry
 #[test]
 fn enum_take_drop_split_planner_telemetry_reports_continuation_edges() {
-    let src = include_str!("../../fixtures/enum_take_drop_split/input.fz");
+    let src = include_str!("../../fixtures2/behavior/enum_take_drop_split.fz");
     let tel = ConfiguredTelemetry::new();
     let cap = Capture::new();
     tel.attach(&["fz", "planner", "spec_pair_inventory"], cap.handler());

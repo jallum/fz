@@ -1,0 +1,52 @@
+#---
+# purpose: "runtime Enum list functions preserve protocol-first native list-cons and continuation allocation floors"
+# paths: [fz2-run, fz2-interp, fz2-build]
+#---
+#
+# # enum_list_allocations
+#
+# Pins the protocol-first runtime-library list path for the non-building Enum
+# functions:
+#
+# ```fz
+# Enum.count(xs)
+# Enum.member?(xs, 3)
+# Enum.reduce(xs, 0, fn (x, acc) -> acc + x)
+# ```
+#
+# The program builds one five-element input list, runs those functions through
+# the public runtime `Enum` surface, snapshots current-process heap allocation
+# counters, and prints the list/struct/map heap headline.
+#
+# Target for native JIT/AOT:
+#
+# - the input list literal allocates five cons cells;
+# - `Enum.count/1`, `Enum.member?/2`, and `Enum.reduce/3` allocate no additional
+#   cons cells while walking that list;
+# - public `Enum.reduce/3` stays a small wrapper over `Enumerable.reduce/3`;
+# - static protocol dispatch routes the known list receiver to
+#   `Enumerable.List.reduce/3`, which delegates to local `List.reduce_cont/3`;
+# - native `Enum.reduce/3` allocates one wrapper closure for the public reducer
+#   bridge and uses protocol-control tuple state honestly;
+# - no map objects are needed before the stats snapshot;
+# - `list_cons_allocs = 5`;
+# - `list_cons_bytes = 80`;
+# - `closure_allocs = 1`;
+# - `closure_bytes = 32`;
+# - final list/struct/map heap headline is `368`.
+#
+# This fixture deliberately excludes `Enum.sort/1`. The current runtime sort is
+# a source-level merge sort that builds split/reverse/merge work lists, so it has
+# a different allocation contract from the list-consuming functions pinned here.
+fn main() do
+  xs = [1, 2, 3, 4, 5]
+
+  dbg(Enum.count(xs))
+  dbg(Enum.member?(xs, 3))
+  dbg(Enum.reduce(xs, 0, fn (x, acc) -> acc + x end))
+
+  stats = Process.heap_alloc_stats()
+  dbg(stats)
+  heap_bytes = stats[:list_cons_bytes] + stats[:struct_bytes] + stats[:map_bytes]
+  dbg(heap_bytes)
+end

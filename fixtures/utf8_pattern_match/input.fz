@@ -1,9 +1,0 @@
-fn greet("hi"), do: :hello
-fn greet("bye"), do: :goodbye
-fn greet(_), do: :unknown
-
-fn main() do
-  assert(greet("hi") == :hello, "utf8 literal clause matches")
-  assert(greet("bye") == :goodbye, "second utf8 literal clause matches")
-  assert(greet("other") == :unknown, "wildcard clause for non-matching strings")
-end

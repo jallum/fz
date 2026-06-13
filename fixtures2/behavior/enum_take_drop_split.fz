@@ -1,0 +1,88 @@
+#---
+# purpose: "Enum take/drop/split functions match Elixir, including negative counts and predicate stop points"
+# paths: [fz2-run, fz2-interp, fz2-build]
+# oracle: oracle.exs
+# timeout.interp_secs: 15
+# timeout.repl_secs: 15
+#---
+#
+# Exercises the `fz-g58.26` Enum take/drop/split layer:
+# `take/2`, `take_while/2`, `take_every/2`, `drop/2`, `drop_while/2`,
+# `drop_every/2`, `split/2`, `split_while/2`, and `split_with/2`.
+#
+# The negative-count cases pin Elixir's two-pass semantics for `take/2`,
+# `drop/2`, and `split/2`. The final `*_while` cases would panic if the
+# predicate kept running after the first falsy answer, so the fixture also
+# proves the protocol path stops exactly where it should.
+fn main() do
+  xs = [1, 2, 3, 4, 5]
+  range = 1..5
+
+  dbg(Enum.take(xs, 3))
+  dbg(Enum.take(xs, 0))
+  dbg(Enum.take(xs, 9))
+  dbg(Enum.take(xs, -2))
+  dbg(Enum.take(range, -2))
+
+  dbg(Enum.take_while(xs, fn (x) -> x < 4 end))
+  dbg(Enum.take_while(xs, fn (x) -> x < 0 end))
+  dbg(Enum.take_while(xs, fn (x) -> x > 0 end))
+
+  dbg(Enum.take_every(xs, 0))
+  dbg(Enum.take_every(xs, 1))
+  dbg(Enum.take_every(xs, 2))
+  dbg(Enum.take_every(range, 2))
+
+  dbg(Enum.drop(xs, 3))
+  dbg(Enum.drop(xs, 0))
+  dbg(Enum.drop(xs, 9))
+  dbg(Enum.drop(xs, -2))
+  dbg(Enum.drop(range, -2))
+
+  dbg(Enum.drop_while([1, 2, 3, 2, 1], fn (x) -> x < 3 end))
+  dbg(Enum.drop_while(xs, fn (x) -> x < 0 end))
+  dbg(Enum.drop_while(xs, fn (x) -> x > 0 end))
+
+  dbg(Enum.drop_every(xs, 0))
+  dbg(Enum.drop_every(xs, 1))
+  dbg(Enum.drop_every(xs, 2))
+  dbg(Enum.drop_every(range, 2))
+
+  dbg(Enum.split(xs, 3))
+  dbg(Enum.split(xs, 0))
+  dbg(Enum.split(xs, 9))
+  dbg(Enum.split(xs, -2))
+  dbg(Enum.split(range, -2))
+
+  dbg(Enum.split_while(xs, fn (x) -> x < 4 end))
+  dbg(Enum.split_while(xs, fn (x) -> x < 0 end))
+  dbg(Enum.split_while(xs, fn (x) -> x > 0 end))
+
+  dbg(Enum.split_with(xs, fn (x) -> (x % 2) == 0 end))
+  dbg(Enum.split_with(xs, fn (x) -> x < 0 end))
+  dbg(Enum.split_with(xs, fn (x) -> x > 0 end))
+
+  dbg(Enum.take_while([1, 2, 3], fn (x) ->
+    if x == 1 do
+      true
+    else
+      if x == 2, do: false, else: panic("late take_while")
+    end
+  end))
+
+  dbg(Enum.drop_while([1, 2, 3], fn (x) ->
+    if x == 1 do
+      true
+    else
+      if x == 2, do: false, else: panic("late drop_while")
+    end
+  end))
+
+  dbg(Enum.split_while([1, 2, 3], fn (x) ->
+    if x == 1 do
+      true
+    else
+      if x == 2, do: false, else: panic("late split_while")
+    end
+  end))
+end
