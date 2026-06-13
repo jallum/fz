@@ -6,14 +6,15 @@
   "blocks": [
     "fz-9i4.4.3"
   ],
+  "closed_at": "2026-06-13T02:33:24Z",
   "created": "2026-06-13T02:06:47Z",
   "description": "Goal: remove lossy compression between artifact truth and native handoff. Replace closure-constructor candidate body vectors and block-local closure-call target side tables with first-class callable boundary references and explicit exact-target closure-call facts. Lowering should preserve direct singleton closure-call resolution separately from opaque higher-order closure values. Acceptance: compiler2 backend/native lowering tests show closure-producing values reference callable boundaries, closure-call sites carry direct-vs-opaque facts explicitly, and NativeBody no longer publishes constructor candidate body ids or ambient closure-call target lookup tables.",
   "id": "fz-9i4.4.2",
   "labels": [],
   "parent": "fz-9i4.4",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Preserve callable boundary facts through compiler2 backend and native lowering",
   "type": "task",
-  "updated_at": "2026-06-13T02:25:28Z"
+  "updated_at": "2026-06-13T02:33:24Z"
 }
