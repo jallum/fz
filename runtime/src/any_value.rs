@@ -1056,6 +1056,11 @@ impl ListLink {
         let metadata = self.0 & LIST_LINK_METADATA_MASK;
         Self(metadata | list_tail_addr_from_bits(tail_bits))
     }
+
+    pub fn with_head_kind(self, head_kind: ValueKind) -> Self {
+        let metadata = self.0 & !LIST_LINK_KIND_MASK;
+        Self(metadata | ((head_kind.tag() as u64) << LIST_LINK_KIND_SHIFT))
+    }
 }
 
 impl ListCons {
@@ -1100,11 +1105,16 @@ impl ListCons {
         self.link = self.link().with_tail(tail_bits).raw();
     }
 
-    pub fn relink_tail_if_unaliased(&mut self, tail_bits: u64) -> bool {
+    pub fn set_head_raw_kind_tail(&mut self, head_raw: u64, head_kind: ValueKind, tail_bits: u64) {
+        self.head = head_raw;
+        self.link = self.link().with_head_kind(head_kind).with_tail(tail_bits).raw();
+    }
+
+    pub fn rewrite_if_unaliased(&mut self, head_raw: u64, head_kind: ValueKind, tail_bits: u64) -> bool {
         if self.aliased() {
             return false;
         }
-        self.set_tail_bits(tail_bits);
+        self.set_head_raw_kind_tail(head_raw, head_kind, tail_bits);
         true
     }
 

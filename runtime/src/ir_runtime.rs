@@ -1577,13 +1577,20 @@ pub extern "C" fn fz_mark_published_ref_aliased(process: *mut Process, value_ref
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_list_reuse_or_cons_tail_ref(process: *mut Process, list_ref_word: u64, tail_ref_word: u64) -> u64 {
-    let list = any_value_ref_from_word(list_ref_word, "fz_list_reuse_or_cons_tail_ref list");
-    let tail = any_value_ref_from_word(tail_ref_word, "fz_list_reuse_or_cons_tail_ref tail");
+pub extern "C" fn fz_list_reuse_or_cons_parts(
+    process: *mut Process,
+    list_ref_word: u64,
+    head_raw: u64,
+    head_kind_tag: u64,
+    tail_ref_word: u64,
+) -> u64 {
+    let list = any_value_ref_from_word(list_ref_word, "fz_list_reuse_or_cons_parts list");
+    let head_kind = ValueKind::new(head_kind_tag as u8).expect("fz_list_reuse_or_cons_parts head kind");
+    let tail = any_value_ref_from_word(tail_ref_word, "fz_list_reuse_or_cons_parts tail");
     (unsafe { &mut *process })
         .heap
-        .reuse_or_alloc_list_cons_tail(list, tail)
-        .expect("fz_list_reuse_or_cons_tail_ref")
+        .reuse_or_alloc_list_cons_raw_kind(list, head_raw, head_kind, tail)
+        .expect("fz_list_reuse_or_cons_parts")
         .raw_word()
 }
 

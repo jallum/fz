@@ -66,34 +66,6 @@ pub(crate) fn emit_map_get_value_ref_for_key<M: cranelift_module::Module, T: Typ
     }
 }
 
-fn value_raw_kind_parts<M: cranelift_module::Module>(
-    body: &mut CodegenFn<'_, '_, '_, M>,
-    value: CodegenValue,
-) -> Option<(ir::Value, ValueKind)> {
-    match value {
-        CodegenValue::RawInt(raw)
-        | CodegenValue::Known {
-            payload: raw,
-            kind: ValueKind::INT,
-        } => Some((raw, ValueKind::INT)),
-        CodegenValue::RawAtom(raw)
-        | CodegenValue::Known {
-            payload: raw,
-            kind: ValueKind::ATOM,
-        } => Some((raw, ValueKind::ATOM)),
-        CodegenValue::RawF64(raw) => {
-            let bits = body.b.ins().bitcast(types::I64, MemFlags::new(), raw);
-            Some((bits, ValueKind::FLOAT))
-        }
-        CodegenValue::Known {
-            payload,
-            kind: ValueKind::FLOAT,
-        } => Some((payload, ValueKind::FLOAT)),
-        CodegenValue::Known { payload, kind } if kind.is_heap() || kind == ValueKind::LIST => Some((payload, kind)),
-        _ => None,
-    }
-}
-
 fn emit_map_destination_put<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, '_, M>,
     runtime: &RuntimeRefs,
