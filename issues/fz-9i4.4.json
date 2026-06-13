@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-13T01:22:23Z",
+  "description": "Fixtures like closure_typed_captures, curried_add, fn_ref_ampersand, higher_order, and multi_caller_spec_divergent now fail under fz2-run with fz_ref_load_int ExpectedTag panics. These are real compiler2 runtime/codegen bugs exposed once semantic fixtures stop relying on dbg goldens.",
+  "id": "fz-9i4.4",
+  "labels": [],
+  "parent": "fz-9i4",
+  "priority": 2,
+  "status": "open",
+  "title": "Fix compiler2 JIT closure-call scalar lane corruption",
+  "type": "bug",
+  "updated_at": "2026-06-13T01:22:23Z"
+}
