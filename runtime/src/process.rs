@@ -153,6 +153,10 @@ pub struct Process {
     /// Cumulative yields caused by allocation pressure expiring the current
     /// reduction budget.
     pub allocation_pressure_yields: u64,
+    /// Cumulative reusable-cons attempts performed by runtime list rebuilds.
+    pub reusable_cons_attempts: u64,
+    /// Cumulative reusable-cons attempts that rewrote the source cons in place.
+    pub reusable_cons_reused: u64,
     /// Compact reason bits pending for the next scheduler boundary. Allocation
     /// pressure (`expire_current_budget`) and the yielding back edge both set
     /// bits here; the boundary consumes them via `finish_yield_report` (which
@@ -399,6 +403,8 @@ impl Process {
             reductions_executed: 0,
             reduction_yields: 0,
             allocation_pressure_yields: 0,
+            reusable_cons_attempts: 0,
+            reusable_cons_reused: 0,
             yield_reasons: 0,
             pending_yield_continuation_margin_before_bytes: 0,
             max_yield_continuation_bytes: 0,

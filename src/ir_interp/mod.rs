@@ -23,7 +23,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use crate::exec::runtime::{ExitRecord, list_reuse_hook_thunk, output_hook_thunk};
+use crate::exec::runtime::{ExitRecord, output_hook_thunk};
 use crate::fz_ir::{FnId, Module};
 use crate::ir_extern_marshal::resolve_module_types;
 #[cfg(test)]
@@ -416,7 +416,6 @@ impl IrInterpRuntime {
             // dbg/print routes to telemetry through the same thunk the compiled
             // engine uses; the rest of the BIF callbacks are interpreter-internal.
             output: Some(output_hook_thunk),
-            list_reuse: Some(list_reuse_hook_thunk),
             ..ExecCtx::empty()
         };
 

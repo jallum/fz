@@ -1502,7 +1502,6 @@ pub(crate) fn compile_with_backend_surface<
                     instruction_count: instruction_count as u64,
                     fz_block_count: f.blocks.len() as u64,
                     reusable_cons_candidate_count: stats.reusable_cons_candidate_count,
-                    reusable_cons_capability_count: stats.reusable_cons_capability_count,
                     reusable_cons_consumed_count: stats.reusable_cons_consumed_count,
                 },
                 &crate::metadata! {

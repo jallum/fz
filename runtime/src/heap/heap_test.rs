@@ -666,8 +666,7 @@ fn unaliased_reuse_or_alloc_rewrites_cons_in_place() {
         )
         .expect("reuse");
 
-    assert_eq!(out.value, list_ref_from_bits(head));
-    assert_eq!(out.outcome, ListReuseOutcome::Reused);
+    assert_eq!(out, list_ref_from_bits(head));
     assert_eq!(h.alloc_stats_snapshot().list_cons.allocs, before);
     let cons = unsafe { &*(list_addr_from_tagged(head).unwrap() as *const ListCons) };
     assert_eq!(cons.head as i64, 7);
@@ -690,20 +689,14 @@ fn aliased_reuse_or_alloc_allocates_fresh_cons_without_mutating_original() {
         .reuse_or_alloc_list_cons_raw_kind(head_ref, 9, ValueKind::FLOAT, list_ref_from_bits(new_tail))
         .expect("fallback allocation");
 
-    assert_ne!(out.value, head_ref);
-    assert_eq!(
-        out.outcome,
-        ListReuseOutcome::FallbackAllocated {
-            reason: ListReuseFallbackReason::Aliased,
-        }
-    );
+    assert_ne!(out, head_ref);
     assert_eq!(h.alloc_stats_snapshot().list_cons.allocs, 1);
     let original = unsafe { &*(list_addr_from_tagged(head).unwrap() as *const ListCons) };
     assert_eq!(original.head as i64, 0);
     assert_eq!(original.head_kind(), ValueKind::INT);
     assert_eq!(original.tail_bits(), old_tail);
     assert!(original.aliased());
-    let fresh = unsafe { &*(out.value.list_addr().expect("fresh list addr") as *const ListCons) };
+    let fresh = unsafe { &*(out.list_addr().expect("fresh list addr") as *const ListCons) };
     assert_eq!(fresh.head as i64, 9);
     assert_eq!(fresh.head_kind(), ValueKind::FLOAT);
     assert_eq!(fresh.tail_bits(), new_tail);
@@ -724,19 +717,13 @@ fn published_reuse_or_alloc_allocates_fresh_cons_without_mutating_original() {
         .reuse_or_alloc_list_cons_raw_kind(head_ref, 42, ValueKind::INT, list_ref_from_bits(new_tail))
         .expect("fallback allocation");
 
-    assert_ne!(out.value, head_ref);
-    assert_eq!(
-        out.outcome,
-        ListReuseOutcome::FallbackAllocated {
-            reason: ListReuseFallbackReason::Aliased,
-        }
-    );
+    assert_ne!(out, head_ref);
     assert_eq!(h.alloc_stats_snapshot().list_cons.allocs, 1);
     let original = unsafe { &*(list_addr_from_tagged(head).unwrap() as *const ListCons) };
     assert_eq!(original.head as i64, 0);
     assert_eq!(original.tail_bits(), old_tail);
     assert!(original.aliased());
-    let fresh = unsafe { &*(out.value.list_addr().expect("fresh list addr") as *const ListCons) };
+    let fresh = unsafe { &*(out.list_addr().expect("fresh list addr") as *const ListCons) };
     assert_eq!(fresh.head as i64, 42);
     assert_eq!(fresh.head_kind(), ValueKind::INT);
     assert_eq!(fresh.tail_bits(), new_tail);

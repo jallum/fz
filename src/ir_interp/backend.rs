@@ -15,7 +15,7 @@ use crate::compiler2::{
     ControlDestination, ExecutableDispatch, ValueId,
 };
 use crate::compiler2::{ExecutableNeed, FunctionId};
-use crate::exec::runtime::{list_reuse_hook_thunk, output_hook_thunk};
+use crate::exec::runtime::output_hook_thunk;
 use crate::fz_ir::{BinOp as IrBinOp, FnId, Module, UnOp as IrUnOp};
 use crate::runtime_type_predicate::matches_runtime_type_predicate;
 use crate::telemetry::Telemetry;
@@ -267,7 +267,6 @@ fn drive_backend_until_idle(
         scheduler: runtime as *mut IrInterpRuntime as *mut (),
         tel: (&tel) as *const &dyn Telemetry as *const (),
         output: Some(output_hook_thunk),
-        list_reuse: Some(list_reuse_hook_thunk),
         module: module as *const Module as *const (),
         ..ExecCtx::empty()
     };

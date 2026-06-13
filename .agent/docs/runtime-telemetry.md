@@ -15,7 +15,7 @@ across interpreter, JIT, and AOT.
 Two events matter:
 
 - `fz.runtime.process_exited` — one per task exit, carrying its halt value and
-  heap stats.
+  heap stats plus cumulative runtime counters such as reusable-cons attempts.
 - `fz.runtime.dbg` — one per `dbg`/print line.
 
 ## `fz.runtime.process_exited`
@@ -27,15 +27,17 @@ projection and the live `&Process`:
 
 ```text
 event:        fz.runtime.process_exited       (an `execute`: measurements + metadata)
-measurements: halt_value, live_count, bytes_used
+measurements: halt_value, live_count, bytes_used, reusable_cons_attempts, reusable_cons_reused
 metadata:     pid, process = opaque(&Process)
 ```
 
 `ExitRecord` is the projection: `{ pid, halt_value: i64, live_count: usize,
-bytes_used: usize }`. `ExitRecord::project` builds it by reading `process.halt_value`,
-`process.heap.live_count()`, and `process.heap.bytes_used()` — the single place that
-reads `Process` internals for this event. `emit` projects, then publishes the
-scalars as measurements and the live `&Process` as opaque metadata beside `pid`.
+bytes_used: usize, reusable_cons_attempts: u64, reusable_cons_reused: u64 }`.
+`ExitRecord::project` builds it by reading `process.halt_value`,
+`process.heap.live_count()`, `process.heap.bytes_used()`, and the cumulative
+reusable-cons counters on the `Process` — the single place that reads `Process`
+internals for this event. `emit` projects, then publishes the scalars as
+measurements and the live `&Process` as opaque metadata beside `pid`.
 
 The split is deliberate, and it decides what a handler may read:
 
@@ -73,9 +75,9 @@ There is one run path — the production scheduler — and tests watch it throug
 two events instead of poking task internals. They never construct a caller-owned
 `Process` or read a print buffer; they attach handlers and read what was emitted:
 
-- `ProcessExitCapture` reconstructs a typed `ExitRecord` (result + heap stats)
-  from each `process_exited` event's measurements, queryable by `last()` or
-  `by_pid(pid)`.
+- `ProcessExitCapture` reconstructs a typed `ExitRecord` (result + heap stats +
+  cumulative reusable-cons counters) from each `process_exited` event's
+  measurements, queryable by `last()` or `by_pid(pid)`.
 - `DbgCapture` records the `fz.runtime.dbg` line stream, read back with `lines()`.
 
 `observe(compiled, entry)` (codegen tests) attaches both, spawns `entry`, drains

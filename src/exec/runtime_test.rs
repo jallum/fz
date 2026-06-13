@@ -84,6 +84,8 @@ fn process_exit_capture_yields_exit_record() {
     assert_eq!(rec.pid, pid);
     assert_eq!(rec.halt_value, 20);
     assert!(rec.live_count > 0, "map build leaves live heap objects");
+    assert_eq!(rec.reusable_cons_attempts, 0);
+    assert_eq!(rec.reusable_cons_reused, 0);
 }
 
 /// The event also carries the live `&Process` as opaque metadata, so a
@@ -211,6 +213,14 @@ fn both_engines_emit_equivalent_process_exited_and_dbg() {
     assert_eq!(c.halt_value, 9);
     assert_eq!(c.halt_value, i.halt_value, "halt value parity");
     assert!(c.live_count > 0 && i.live_count > 0, "both leave live heap");
+    assert_eq!(
+        c.reusable_cons_attempts, i.reusable_cons_attempts,
+        "reusable-cons attempts parity"
+    );
+    assert_eq!(
+        c.reusable_cons_reused, i.reusable_cons_reused,
+        "reusable-cons reuse parity"
+    );
     assert_eq!(out_c.count(&["fz", "runtime", "dbg"]), 1);
     assert_eq!(
         out_i.count(&["fz", "runtime", "dbg"]),

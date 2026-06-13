@@ -17,7 +17,6 @@ use std::collections::{HashMap, HashSet};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct CodegenFnStats {
     pub reusable_cons_candidate_count: u64,
-    pub reusable_cons_capability_count: u64,
     pub reusable_cons_consumed_count: u64,
 }
 
@@ -264,7 +263,6 @@ pub(crate) fn compile_fn<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
     b.finalize();
     Ok(CodegenFnStats {
         reusable_cons_candidate_count: cache.reusable_cons_candidate_count,
-        reusable_cons_capability_count: cache.reusable_cons_capability_count,
         reusable_cons_consumed_count: cache.reusable_cons_consumed_count,
     })
 }

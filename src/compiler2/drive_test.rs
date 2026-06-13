@@ -7339,6 +7339,12 @@ fn main(), do: rebuild([1, 2])
         consumed, 1,
         "one list construction site should consume the transported capability"
     );
+
+    let exit = capture
+        .last(&["fz", "runtime", "process_exited"])
+        .expect("runtime process exit telemetry");
+    assert_eq!(measurement_u64(&exit, "reusable_cons_attempts"), 1);
+    assert_eq!(measurement_u64(&exit, "reusable_cons_reused"), 0);
 }
 
 #[test]
@@ -7429,13 +7435,11 @@ fn main(), do: rebuild([1, 2])
     assert_eq!(measurement_u64(&native, "birth_count"), 1);
     assert_eq!(measurement_u64(&native, "transport_count"), 0);
 
-    let runtime = capture
-        .last(&["fz", "runtime", "list_reuse"])
-        .expect("runtime reusable-cons telemetry event");
-    assert_eq!(measurement_u64(&runtime, "attempted"), 1);
-    assert_eq!(measurement_u64(&runtime, "reused"), 1);
-    assert_eq!(measurement_u64(&runtime, "fallback_allocated"), 0);
-    assert_eq!(metadata_str(&runtime, "outcome"), "reused");
+    let exit = capture
+        .last(&["fz", "runtime", "process_exited"])
+        .expect("runtime process exit telemetry");
+    assert_eq!(measurement_u64(&exit, "reusable_cons_attempts"), 1);
+    assert_eq!(measurement_u64(&exit, "reusable_cons_reused"), 1);
 }
 
 #[test]
@@ -7470,14 +7474,11 @@ fn main(), do: rebuild([1, 2])
         panic!("alias-fallback reusable-cons fixture should run end-to-end: {error}");
     });
 
-    let runtime = capture
-        .last(&["fz", "runtime", "list_reuse"])
-        .expect("runtime reusable-cons telemetry event");
-    assert_eq!(measurement_u64(&runtime, "attempted"), 1);
-    assert_eq!(measurement_u64(&runtime, "reused"), 0);
-    assert_eq!(measurement_u64(&runtime, "fallback_allocated"), 1);
-    assert_eq!(metadata_str(&runtime, "outcome"), "fallback_allocated");
-    assert_eq!(metadata_str(&runtime, "reason"), "aliasing");
+    let exit = capture
+        .last(&["fz", "runtime", "process_exited"])
+        .expect("runtime process exit telemetry");
+    assert_eq!(measurement_u64(&exit, "reusable_cons_attempts"), 1);
+    assert_eq!(measurement_u64(&exit, "reusable_cons_reused"), 0);
 }
 
 #[test]

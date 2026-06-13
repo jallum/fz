@@ -33,53 +33,6 @@ use std::ptr::{copy_nonoverlapping, null_mut, read, write, write_bytes};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ListReuseFallbackReason {
-    Aliased,
-}
-
-impl ListReuseFallbackReason {
-    pub const NONE_TAG: u8 = 0;
-    pub const ALIASED_TAG: u8 = 1;
-
-    pub fn tag(self) -> u8 {
-        match self {
-            Self::Aliased => Self::ALIASED_TAG,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ListReuseOutcome {
-    Reused,
-    FallbackAllocated { reason: ListReuseFallbackReason },
-}
-
-impl ListReuseOutcome {
-    pub const REUSED_TAG: u8 = 1;
-    pub const FALLBACK_ALLOCATED_TAG: u8 = 2;
-
-    pub fn tag(self) -> u8 {
-        match self {
-            Self::Reused => Self::REUSED_TAG,
-            Self::FallbackAllocated { .. } => Self::FALLBACK_ALLOCATED_TAG,
-        }
-    }
-
-    pub fn fallback_reason_tag(self) -> u8 {
-        match self {
-            Self::Reused => ListReuseFallbackReason::NONE_TAG,
-            Self::FallbackAllocated { reason } => reason.tag(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ListReuseResult {
-    pub value: AnyValueRef,
-    pub outcome: ListReuseOutcome,
-}
-
 // fz-vdt.16 — pure reads that need no heap state. Reading a list head/tail or a
 // closure capture is a dereference of the self-describing value pointer, so these
 // are free functions (the `Heap::read_*` methods below delegate). BIFs call them
@@ -839,24 +792,16 @@ impl Heap {
         head_raw: u64,
         head_kind: ValueKind,
         tail: AnyValueRef,
-    ) -> Result<ListReuseResult, AnyValueRefError> {
+    ) -> Result<AnyValueRef, AnyValueRefError> {
         let addr = nonempty_list_addr(list)?;
         let tail_bits = list_tail_bits_from_ref(tail)?;
         let cons = unsafe { &mut *(addr as *mut ListCons) };
         if cons.rewrite_if_unaliased(head_raw, head_kind, tail_bits) {
-            return Ok(ListReuseResult {
-                value: list,
-                outcome: ListReuseOutcome::Reused,
-            });
+            return Ok(list);
         }
         let fresh = self.alloc_list_cons_raw_kind(head_raw, head_kind, tail_bits);
         let addr = list_addr_from_tagged(fresh).expect("fresh list cons");
-        Ok(ListReuseResult {
-            value: AnyValueRef::from_heap_object(ValueKind::LIST, addr)?,
-            outcome: ListReuseOutcome::FallbackAllocated {
-                reason: ListReuseFallbackReason::Aliased,
-            },
-        })
+        AnyValueRef::from_heap_object(ValueKind::LIST, addr)
     }
 
     pub fn read_map_value_ref(

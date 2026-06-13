@@ -2488,11 +2488,15 @@ struct ReusableConsTelemetryStats {
     birth_count: usize,
     transport_count: usize,
     codegen_candidate_count: usize,
-    codegen_capability_count: usize,
     codegen_consumed_count: usize,
     runtime_attempted_count: usize,
     runtime_reused_count: usize,
-    runtime_fallback_count: usize,
+}
+
+impl ReusableConsTelemetryStats {
+    fn runtime_fallback_count(&self) -> usize {
+        self.runtime_attempted_count.saturating_sub(self.runtime_reused_count)
+    }
 }
 
 fn reusable_cons_telemetry_stats_for_fixture(fixture: &FixtureCase) -> ReusableConsTelemetryStats {
@@ -2529,14 +2533,12 @@ fn reusable_cons_telemetry_stats_for_fixture(fixture: &FixtureCase) -> ReusableC
             && line.contains("\"body_kind\":\"fz_spec\"")
         {
             stats.codegen_candidate_count += parse_json_u64_field(line, "reusable_cons_candidate_count").unwrap_or(0);
-            stats.codegen_capability_count += parse_json_u64_field(line, "reusable_cons_capability_count").unwrap_or(0);
             stats.codegen_consumed_count += parse_json_u64_field(line, "reusable_cons_consumed_count").unwrap_or(0);
             continue;
         }
-        if line.contains("\"name\":[\"fz\",\"runtime\",\"list_reuse\"]") {
-            stats.runtime_attempted_count += parse_json_u64_field(line, "attempted").unwrap_or(0);
-            stats.runtime_reused_count += parse_json_u64_field(line, "reused").unwrap_or(0);
-            stats.runtime_fallback_count += parse_json_u64_field(line, "fallback_allocated").unwrap_or(0);
+        if line.contains("\"name\":[\"fz\",\"runtime\",\"process_exited\"]") {
+            stats.runtime_attempted_count += parse_json_u64_field(line, "reusable_cons_attempts").unwrap_or(0);
+            stats.runtime_reused_count += parse_json_u64_field(line, "reusable_cons_reused").unwrap_or(0);
         }
     }
     assert!(
@@ -3441,14 +3443,13 @@ fn enum_list_allocations_pin_minimum_list_cons() {
             birth_count: 8,
             transport_count: 0,
             codegen_candidate_count: 0,
-            codegen_capability_count: 0,
             codegen_consumed_count: 0,
             runtime_attempted_count: 0,
             runtime_reused_count: 0,
-            runtime_fallback_count: 0,
         },
         "enum_list_allocations should keep count/member?/reduce on the no-extra-list-cons path",
     );
+    assert_eq!(stats.runtime_fallback_count(), 0);
 }
 
 fn local_reduce_state_update_lowers_without_trampoline() {
@@ -3491,14 +3492,13 @@ fn enum_sort_constant_sorter_erased_under_return_demand_specs() {
             birth_count: 15,
             transport_count: 21,
             codegen_candidate_count: 15,
-            codegen_capability_count: 15,
             codegen_consumed_count: 6,
             runtime_attempted_count: 55,
             runtime_reused_count: 1,
-            runtime_fallback_count: 54,
         },
-        "enum_sort should make reusable-cons birth, transport, consumption, and alias fallback visible in compiler2 telemetry",
+        "enum_sort should make reusable-cons birth, transport, and consumption visible in compiler2 telemetry",
     );
+    assert_eq!(stats.runtime_fallback_count(), 54);
 }
 
 fn enum_map_family_pins_reusable_cons_telemetry_contract() {
@@ -3515,14 +3515,13 @@ fn enum_map_family_pins_reusable_cons_telemetry_contract() {
             birth_count: 50,
             transport_count: 24,
             codegen_candidate_count: 39,
-            codegen_capability_count: 8,
             codegen_consumed_count: 8,
             runtime_attempted_count: 12,
             runtime_reused_count: 0,
-            runtime_fallback_count: 12,
         },
         "enum_map_family should expose which reconstruction paths really transport and consume reusable-cons capabilities",
     );
+    assert_eq!(stats.runtime_fallback_count(), 12);
 }
 
 fn opaque_reduce_join_preserves_closure_values_and_lazy_state_machine() {
@@ -3632,14 +3631,13 @@ fn continuation_materialization_boundaries_stay_explicit() {
             birth_count: 2,
             transport_count: 0,
             codegen_candidate_count: 0,
-            codegen_capability_count: 0,
             codegen_consumed_count: 0,
             runtime_attempted_count: 0,
             runtime_reused_count: 0,
-            runtime_fallback_count: 0,
         },
         "enum_reduce_suspend should keep the real suspend closure while avoiding reusable-cons work on the direct-delivery path",
     );
+    assert_eq!(stats.runtime_fallback_count(), 0);
 }
 
 fn interpreter_stepper_does_not_update_quiet_quanta() {

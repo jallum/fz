@@ -142,8 +142,6 @@ pub(crate) struct CodegenCache {
     /// Potential head+tail list construction sites that could consume a
     /// reusable-cons capability.
     pub(super) reusable_cons_candidate_count: u64,
-    /// Candidate sites whose rebuilt head carried a reusable-cons capability.
-    pub(super) reusable_cons_capability_count: u64,
     /// Candidate sites that lowered to the runtime reusable-cons helper.
     pub(super) reusable_cons_consumed_count: u64,
 }
