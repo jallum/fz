@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-06-12T20:13:36Z",
@@ -14,8 +14,8 @@
     }
   ],
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "Re-enable timeout-sensitive fixture_matrix AOT legs after investigating workspace-load timeouts",
   "type": "bug",
-  "updated_at": "2026-06-12T20:14:05Z"
+  "updated_at": "2026-06-13T18:50:16Z"
 }
