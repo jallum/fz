@@ -12,7 +12,6 @@
 # budget.planner.blocks: 12
 # budget.planner.stmts: 19
 # budget.planner.dispatches: 12
-# defer.fz2-build: compiler2 native build parity still red
 #---
 #
 # # utf8_smart_constructor

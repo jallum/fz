@@ -12,7 +12,6 @@
 # budget.planner.blocks: 4
 # budget.planner.stmts: 5
 # budget.planner.dispatches: 3
-# defer.fz2-build: compiler2 native build parity still red
 #---
 #
 # # vr3_4_typed_capture

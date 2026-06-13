@@ -1,7 +1,6 @@
 #---
 # purpose: "first-match-wins for wildcard-then-specific patterns (multi-clause fn and case)"
 # paths: [fz2-run, fz2-interp, fz2-build]
-# defer.fz2-build: compiler2 native build parity still red
 #---
 fn catch(_), do: :anything
 fn catch(0), do: :zero
