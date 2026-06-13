@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-hwn.3"
+  ],
   "blocks": [],
   "created": "2026-06-13T21:24:40Z",
   "description": "Goal\nPublish callable entries only when the runtime demand plan requires first-class callable materialization.\n\nProblem being fixed\nsrc/compiler2/jobs/artifact.rs derive_callable_entries currently walks callable-looking types from runtime_callable_values and publishes entries even when no runtime call/escape boundary needs them. This is the original fz-hwn symptom.\n\nCode seams\n- src/compiler2/jobs/artifact.rs: derive_callable_entries, resolve_callable_entries_for_type, MaterializedExecutable.runtime_callable_values, AbiReadyExecutable.runtime_callable_values.\n- src/compiler2/jobs/semantic.rs: resolve_materialized_runtime_callable_boundary_activations and resolve_escaping_callable_activations_from_type should no longer decide representation by type recovery.\n\nAlgorithm\n1. Read ExecutableRuntimeDemand.callable_materializations.\n2. DirectOnly { surfaces } means the callable is invoked directly with known surfaces; do not publish callable_entries and do not allocate a first-class callable object.\n3. FirstClass { surfaces } means escape or opaque demand requires a runtime callable value. Publish callable_entries for the exact resolved surfaces plus the required opaque/escape boundary contract.\n4. If a callable value has no demand, publish nothing even if its type mentions executable surfaces.\n5. If demand is opaque and no exact surface exists, publish the minimal boundary required by the runtime opaque callable protocol, not every type-advertised surface.\n\nRemoval target\nDelete type-driven callable-entry derivation for arbitrary materialized values. Delete runtime_callable_values from MaterializedExecutable and AbiReadyExecutable. The only callable-entry source should be the demand plan.\n\nChecks\n- compiler2_abi_ready_does_not_publish_unused_callable_constructors passes because demand is empty.\n- A direct call through a lambda does not add callable_entries.\n- Escaping a lambda does add exactly the required callable_entries.\n- Enum/reducer fixtures do not publish unused callable constructors while still publishing entries demanded by actual first-class use.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Compiler2 callable entries: publish first-class boundaries from demand only",
   "type": "task",
-  "updated_at": "2026-06-13T21:24:40Z"
+  "updated_at": "2026-06-13T21:24:41Z"
 }
