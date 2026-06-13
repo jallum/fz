@@ -1,12 +1,14 @@
-//! fz-ul4.23.1 — fixture matrix (per-dir layout, fz-e97).
+//! fz-ul4.23.1 — fixture matrix.
 //!
-//! Walks `fixtures/<name>/`, reads each fixture's `README.md`
-//! frontmatter, and runs `input.fz` through each declared path. stdout
-//! is compared against `expected.txt`; diagnostics/stderr are compared
-//! against `expected.<path>.diagnostics` or `expected.diagnostics`.
-//! Both default to empty when absent. Exit code must be 0.
+//! Walks behavioural fixtures and runs each source program through its declared
+//! paths. A fixture may be an old `fixtures/<name>/input.fz` directory fixture
+//! or a single-file `fixtures2/behavior/<name>.fz` fixture whose source opens
+//! with comment frontmatter. stdout is compared against `expected.txt`;
+//! diagnostics/stderr are compared against `expected.<path>.diagnostics` or
+//! `expected.diagnostics`. Both default to empty when absent. Exit code must be
+//! 0 unless the fixture declares a negative `expect:` contract.
 //!
-//! Per-fixture layout:
+//! Legacy directory layout:
 //!
 //!     fixtures/<name>/
 //!         README.md         YAML frontmatter + narrative body
@@ -17,6 +19,16 @@
 //!         expected.jit.diagnostics path-specific diagnostic golden (optional)
 //!         expected.stderr   stderr substring golden for `expect: abort|diagnostic`
 //!         oracle.exs        Elixir twin whose stdout owns `expected.txt` (optional)
+//!
+//! Single-file fixtures2 layout:
+//!
+//!     fixtures2/behavior/<name>.fz
+//!     fixtures2/behavior/<name>.expected.txt
+//!     fixtures2/behavior/<name>.expected.jit.txt
+//!     fixtures2/behavior/<name>.expected.diagnostics
+//!     fixtures2/behavior/<name>.expected.jit.diagnostics
+//!     fixtures2/behavior/<name>.expected.stderr
+//!     fixtures2/behavior/<name>.oracle.exs
 //!
 //! Frontmatter grammar:
 //!
@@ -52,6 +64,9 @@
 //! telemetry from `fz dump --emit stats`; only failures write
 //! `<dir>/actual.clif` and `<dir>/actual.specs`.
 
+use fz::compiler2::{
+    FixtureExpect as Fixture2Expect, FixtureKind as Fixture2Kind, FixtureMetadata, parse_fixture_metadata,
+};
 use libtest_mimic::{Arguments, Failed, Trial};
 use std::env::{temp_dir, var};
 use std::fs::{self, remove_file};
@@ -95,8 +110,8 @@ fn main() {
     // Dynamic matrix trials: one per (fixture, path).
     let bless = var("BLESS").ok().as_deref() == Some("1");
     for fixture in discover() {
-        let name = fixture.file_name().unwrap().to_string_lossy().into_owned();
-        let header = match parse_header_from_dir(&fixture) {
+        let name = fixture.name();
+        let header = match parse_header(&fixture) {
             Ok(h) => h,
             Err(e) => {
                 let msg = e.clone();
@@ -206,6 +221,7 @@ fn static_tests() -> Vec<(&'static str, fn())> {
             "generated_value_paths_have_no_removed_format_terms",
             generated_value_paths_have_no_removed_format_terms,
         ),
+        ("fixtures2_single_file_matrix_smoke", fixtures2_single_file_matrix_smoke),
         (
             "scheduler_receive_buffers_are_any_value_refs",
             scheduler_receive_buffers_are_any_value_refs,
@@ -456,7 +472,9 @@ fn source_pattern_oracle_goldens() {
 fn matcher_perf_internal_matcher_repair_baseline() {
     let representative = [("hello", 1, 0)];
     for (fixture, expected_specs, expected_matchers) in representative {
-        let fixture_dir = Path::new("fixtures").join(fixture);
+        let fixture_dir = FixtureCase::LegacyDir {
+            dir: Path::new("fixtures").join(fixture),
+        };
         let stats = dump_telemetry_stats(&fixture_dir);
         assert_planner_stats_consistent(fixture, &stats);
         assert_eq!(
@@ -470,6 +488,39 @@ fn matcher_perf_internal_matcher_repair_baseline() {
             fixture
         );
     }
+}
+
+fn fixtures2_single_file_matrix_smoke() {
+    let nonce = AOT_TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let dir = temp_dir().join(format!("fz_fixtures2_matrix_smoke_{}_{}", id(), nonce));
+    fs::create_dir_all(&dir).expect("create smoke fixture dir");
+    let path = dir.join("matrix_smoke.fz");
+    fs::write(
+        &path,
+        "\
+#---\n\
+# purpose: single-file fixtures2 behavioural matrix smoke\n\
+# paths: [jit, interp]\n\
+#---\n\
+fn main() do\n\
+  dbg(1 + 1)\n\
+end\n",
+    )
+    .expect("write smoke fixture");
+    fs::write(dir.join("matrix_smoke.expected.txt"), "2\n").expect("write smoke golden");
+
+    let fixture = FixtureCase::SingleFile { path: path.clone() };
+    let header = parse_header(&fixture).expect("parse smoke fixture header");
+    for path in ["jit", "interp"] {
+        match check(&fixture, &header, path, false) {
+            CheckOutcome::Pass => {}
+            other => panic!("fixtures2 single-file smoke via {path} failed: {other:?}"),
+        }
+    }
+
+    let _ = fs::remove_file(dir.join("matrix_smoke.expected.txt"));
+    let _ = fs::remove_file(&path);
+    let _ = fs::remove_dir(&dir);
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -521,6 +572,56 @@ impl Header {
             .iter()
             .find_map(|(timeout_path, timeout)| (timeout_path == path).then_some(*timeout))
             .unwrap_or(FIXTURE_COMMAND_TIMEOUT)
+    }
+}
+
+#[derive(Debug, Clone)]
+enum FixtureCase {
+    LegacyDir { dir: PathBuf },
+    SingleFile { path: PathBuf },
+}
+
+impl FixtureCase {
+    fn name(&self) -> String {
+        match self {
+            FixtureCase::LegacyDir { dir } => dir.file_name().unwrap().to_string_lossy().into_owned(),
+            FixtureCase::SingleFile { path } => path.file_stem().unwrap().to_string_lossy().into_owned(),
+        }
+    }
+
+    fn display_path(&self) -> &Path {
+        match self {
+            FixtureCase::LegacyDir { dir } => dir.as_path(),
+            FixtureCase::SingleFile { path } => path.as_path(),
+        }
+    }
+
+    fn source_path(&self) -> PathBuf {
+        match self {
+            FixtureCase::LegacyDir { dir } => dir.join("input.fz"),
+            FixtureCase::SingleFile { path } => path.clone(),
+        }
+    }
+
+    fn source_dir(&self) -> PathBuf {
+        match self {
+            FixtureCase::LegacyDir { dir } => dir.clone(),
+            FixtureCase::SingleFile { path } => path.parent().expect("fixture parent").to_path_buf(),
+        }
+    }
+
+    fn sidecar_path(&self, suffix: &str) -> PathBuf {
+        match self {
+            FixtureCase::LegacyDir { dir } => dir.join(suffix),
+            FixtureCase::SingleFile { path } => {
+                let stem = path.file_stem().expect("fixture stem").to_string_lossy();
+                path.with_file_name(format!("{stem}.{suffix}"))
+            }
+        }
+    }
+
+    fn actual_path(&self, artifact: &str) -> PathBuf {
+        self.sidecar_path(&format!("actual.{artifact}"))
     }
 }
 
@@ -666,17 +767,114 @@ fn has_main(src: &str) -> bool {
     src.lines().any(|l| l.contains("fn main(") || l.contains("fn main "))
 }
 
-/// Discover fixture directories. Returns each fixture's directory path
-/// (e.g. `fixtures/add1`). The matrix and goldens derive concrete file
-/// paths from this via `<dir>/input.fz`, `<dir>/expected.txt`, etc.
-fn discover() -> Vec<PathBuf> {
-    let mut out: Vec<PathBuf> = fs::read_dir("fixtures")
-        .expect("fixtures/ should exist")
-        .filter_map(|e| e.ok())
-        .map(|e| e.path())
-        .filter(|p| p.is_dir() && p.join("input.fz").is_file())
+fn parse_header(fixture: &FixtureCase) -> Result<Header, String> {
+    match fixture {
+        FixtureCase::LegacyDir { dir } => parse_header_from_dir(dir),
+        FixtureCase::SingleFile { path } => parse_header_from_single_file(path),
+    }
+}
+
+fn parse_header_from_single_file(path: &Path) -> Result<Header, String> {
+    let source = fs::read_to_string(path).map_err(|e| format!("read {}: {}", path.display(), e))?;
+    let metadata = parse_fixture_metadata(&source)
+        .map_err(|e| format!("{}: {}", path.display(), e))?
+        .ok_or_else(|| format!("{}: missing fixtures2 `#---` frontmatter block", path.display()))?;
+    header_from_fixture_metadata(path, &source, &metadata)
+}
+
+fn header_from_fixture_metadata(path: &Path, source: &str, metadata: &FixtureMetadata) -> Result<Header, String> {
+    if !metadata.participates_in_matrix() {
+        return Err(format!(
+            "{}: does not declare behavioural matrix metadata (`paths:` or `defer:`)",
+            path.display()
+        ));
+    }
+    let purpose = metadata
+        .purpose
+        .clone()
+        .ok_or_else(|| format!("{}: missing `purpose:`", path.display()))?;
+    let paths = metadata
+        .matrix
+        .paths
+        .clone()
+        .ok_or_else(|| format!("{}: missing `paths:`", path.display()))?;
+    let kind = match metadata.matrix.kind {
+        Some(Fixture2Kind::Run) => Kind::Run,
+        Some(Fixture2Kind::Test) => Kind::Test,
+        None => {
+            if has_main(source) {
+                Kind::Run
+            } else {
+                Kind::Test
+            }
+        }
+    };
+    let expect = match metadata.matrix.expect {
+        Some(Fixture2Expect::Success) | None => Expect::Success,
+        Some(Fixture2Expect::Abort) => Expect::Abort,
+        Some(Fixture2Expect::Diagnostic) => Expect::Diagnostic,
+    };
+    if paths.is_empty() && metadata.matrix.defer.is_none() {
+        return Err(format!(
+            "{}: empty `paths:` without a `defer:` rationale",
+            path.display()
+        ));
+    }
+    let mut dump_budget = DumpBudget::default();
+    for assertion in &metadata.matrix.budget_assertions {
+        parse_dump_budget_field(
+            &mut dump_budget,
+            &assertion.name,
+            &assertion.expected.to_string(),
+            path,
+            0,
+        )?;
+    }
+    let path_timeouts = metadata
+        .matrix
+        .path_timeouts
+        .iter()
+        .map(|timeout| (timeout.path.clone(), Duration::from_secs(timeout.seconds)))
         .collect();
-    out.sort();
+    Ok(Header {
+        purpose,
+        paths,
+        kind,
+        expect,
+        diagnostic_code: metadata.matrix.diagnostic_code.clone(),
+        defer: metadata.matrix.defer.clone(),
+        oracle: metadata.matrix.oracle.clone(),
+        dump_budget,
+        path_timeouts,
+    })
+}
+
+/// Discover behavioural fixtures. Legacy directory fixtures still live under
+/// `fixtures/`; single-file fixtures live under `fixtures2/behavior/`.
+fn discover() -> Vec<FixtureCase> {
+    let mut out: Vec<FixtureCase> = Vec::new();
+    if Path::new("fixtures").is_dir() {
+        out.extend(
+            fs::read_dir("fixtures")
+                .expect("fixtures/ should exist")
+                .filter_map(|e| e.ok())
+                .map(|e| e.path())
+                .filter(|p| p.is_dir() && p.join("input.fz").is_file())
+                .map(|dir| FixtureCase::LegacyDir { dir }),
+        );
+    }
+    let behavior_dir = Path::new("fixtures2/behavior");
+    if behavior_dir.is_dir() {
+        out.extend(
+            fs::read_dir(behavior_dir)
+                .expect("fixtures2/behavior should be readable")
+                .filter_map(|e| e.ok())
+                .map(|e| e.path())
+                .filter(|path| path.extension().is_some_and(|ext| ext == "fz"))
+                .map(|path| FixtureCase::SingleFile { path }),
+        );
+    }
+    out.sort_by_key(|fixture| fixture.name());
     out
 }
 
@@ -835,7 +1033,7 @@ fn fixture_command_output(
     }
 }
 
-fn run_path(fixture: &Path, header: &Header, path: &str) -> RunOutcome {
+fn run_path(fixture: &FixtureCase, header: &Header, path: &str) -> RunOutcome {
     if let Some(path) = path.strip_prefix("fz2-") {
         return run_fz2_path(fixture, header, path);
     }
@@ -853,7 +1051,7 @@ fn run_path(fixture: &Path, header: &Header, path: &str) -> RunOutcome {
             return RunOutcome::Failed(format!("unknown path `{}`", path));
         }
     };
-    let input = fixture.join("input.fz");
+    let input = fixture.source_path();
     let out = match fixture_command_output(
         Command::new(FZ_BIN).arg(subcmd).arg(&input),
         "fz",
@@ -874,7 +1072,7 @@ fn run_path(fixture: &Path, header: &Header, path: &str) -> RunOutcome {
     })
 }
 
-fn run_fz2_path(fixture: &Path, header: &Header, path: &str) -> RunOutcome {
+fn run_fz2_path(fixture: &FixtureCase, header: &Header, path: &str) -> RunOutcome {
     match path {
         "run" | "interp" => run_fz2_command_path(fixture, header, path),
         "build" => run_fz2_build_path(fixture, header),
@@ -882,11 +1080,11 @@ fn run_fz2_path(fixture: &Path, header: &Header, path: &str) -> RunOutcome {
     }
 }
 
-fn run_fz2_command_path(fixture: &Path, header: &Header, path: &str) -> RunOutcome {
+fn run_fz2_command_path(fixture: &FixtureCase, header: &Header, path: &str) -> RunOutcome {
     if header.kind == Kind::Test {
         return RunOutcome::Deferred(format!("kind: test fixtures don't yet run via fz2-{}", path));
     }
-    let input = fixture.join("input.fz");
+    let input = fixture.source_path();
     let out = match fixture_command_output(
         Command::new(FZ2_BIN).arg(path).arg(&input),
         &format!("fz2 {}", path),
@@ -904,14 +1102,14 @@ fn run_fz2_command_path(fixture: &Path, header: &Header, path: &str) -> RunOutco
     })
 }
 
-fn run_fz2_build_path(fixture: &Path, header: &Header) -> RunOutcome {
+fn run_fz2_build_path(fixture: &FixtureCase, header: &Header) -> RunOutcome {
     if header.kind == Kind::Test {
         return RunOutcome::Deferred("kind: test fixtures don't yet run via fz2-build".into());
     }
-    let stem = fixture.file_name().and_then(|s| s.to_str()).unwrap_or("fz2_fixture");
+    let stem = fixture.name();
     let nonce = AOT_TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
     let out_path = temp_dir().join(format!("fz2_matrix_{}_{}_{}", stem, id(), nonce));
-    let input = fixture.join("input.fz");
+    let input = fixture.source_path();
     let build = match Command::new(FZ2_BIN)
         .args(["build"])
         .arg(&input)
@@ -965,14 +1163,14 @@ fn remove_fz2_build_outputs(out_path: &Path) {
 /// Drive the AOT path: `fz build` the fixture to a temp executable, run
 /// it, capture stdout. `# kind: test` fixtures aren't supported in AOT
 /// yet — they go through `fz test` which doesn't have an AOT equivalent.
-fn run_aot_path(fixture: &Path, header: &Header) -> RunOutcome {
+fn run_aot_path(fixture: &FixtureCase, header: &Header) -> RunOutcome {
     if header.kind == Kind::Test {
         return RunOutcome::Deferred("kind: test fixtures don't yet run via aot (`fz test` is jit-only)".into());
     }
-    let stem = fixture.file_name().and_then(|s| s.to_str()).unwrap_or("fz_fixture");
+    let stem = fixture.name();
     let nonce = AOT_TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
     let out_path = temp_dir().join(format!("fz_matrix_{}_{}_{}", stem, id(), nonce));
-    let input = fixture.join("input.fz");
+    let input = fixture.source_path();
     // Build. Compilation time is not fixture execution time, so the
     // per-fixture execution timeout starts when the compiled artifact runs.
     let build = match Command::new(FZ_BIN)
@@ -1032,11 +1230,11 @@ fn run_aot_path(fixture: &Path, header: &Header) -> RunOutcome {
 /// fz-i67.2 — drive the REPL parity leg: spawn `fz repl --script <input.fz>`,
 /// capture stdout. Same comparison plumbing as the other legs. `kind: test`
 /// fixtures don't go through here (the REPL has no `assert_eq` runner).
-fn run_repl_path(fixture: &Path, header: &Header) -> RunOutcome {
+fn run_repl_path(fixture: &FixtureCase, header: &Header) -> RunOutcome {
     if header.kind == Kind::Test {
         return RunOutcome::Deferred("kind: test fixtures don't yet run via repl (`fz test` is jit-only)".into());
     }
-    let input = fixture.join("input.fz");
+    let input = fixture.source_path();
     let out = match fixture_command_output(
         Command::new(FZ_BIN).args(["repl", "--script"]).arg(&input),
         "fz repl",
@@ -1062,6 +1260,7 @@ fn normalize(s: &str) -> String {
     }
 }
 
+#[derive(Debug)]
 enum CheckOutcome {
     /// Real pass against the .expected sidecar.
     Pass,
@@ -1072,7 +1271,7 @@ enum CheckOutcome {
     Fail(String),
 }
 
-fn check(fixture: &Path, header: &Header, path: &str, bless: bool) -> CheckOutcome {
+fn check(fixture: &FixtureCase, header: &Header, path: &str, bless: bool) -> CheckOutcome {
     let ran = match run_path(fixture, header, path) {
         RunOutcome::Ran(ran) => ran,
         RunOutcome::Deferred(msg) => return CheckOutcome::Deferred(msg),
@@ -1087,35 +1286,35 @@ fn check(fixture: &Path, header: &Header, path: &str, bless: bool) -> CheckOutco
 
 /// `expect: success` (the default): the program must exit 0, and its stdout and
 /// diagnostics must match their goldens (absent golden ⇒ expected empty).
-fn check_success(fixture: &Path, path: &str, bless: bool, ran: &Ran, oracle_owned: bool) -> CheckOutcome {
+fn check_success(fixture: &FixtureCase, path: &str, bless: bool, ran: &Ran, oracle_owned: bool) -> CheckOutcome {
     if !ran.success {
         return CheckOutcome::Fail(format!(
             "{} via {}: expected success but the program exited nonzero\n--- stderr\n{}",
-            fixture.display(),
+            fixture.display_path().display(),
             path,
             ran.diagnostics.trim_end()
         ));
     }
     let actual = normalize(&ran.stdout);
     let actual_diagnostics = normalize(&ran.diagnostics);
-    let path_expected_path = fixture.join(format!("expected.{}.txt", path));
+    let path_expected_path = fixture.sidecar_path(&format!("expected.{}.txt", path));
     let expected_path = if path_expected_path.exists() {
         path_expected_path
     } else {
-        fixture.join("expected.txt")
+        fixture.sidecar_path("expected.txt")
     };
     let expected = fs::read_to_string(&expected_path).unwrap_or_default();
     let expected = normalize(&expected);
-    let path_diagnostics_path = fixture.join(format!("expected.{}.diagnostics", path));
+    let path_diagnostics_path = fixture.sidecar_path(&format!("expected.{}.diagnostics", path));
     let expected_diagnostics_path = if path_diagnostics_path.exists() {
         path_diagnostics_path
     } else {
-        fixture.join("expected.diagnostics")
+        fixture.sidecar_path("expected.diagnostics")
     };
     let expected_diagnostics = normalize(&fs::read_to_string(&expected_diagnostics_path).unwrap_or_default());
     if actual == expected && actual_diagnostics == expected_diagnostics {
-        let _ = fs::remove_file(fixture.join("actual.txt"));
-        let _ = fs::remove_file(fixture.join("actual.diagnostics"));
+        let _ = fs::remove_file(fixture.actual_path("txt"));
+        let _ = fs::remove_file(fixture.actual_path("diagnostics"));
         return CheckOutcome::Pass;
     }
     if bless {
@@ -1135,13 +1334,13 @@ fn check_success(fixture: &Path, path: &str, bless: bool, ran: &Ran, oracle_owne
         }
         return CheckOutcome::Pass;
     }
-    let output_path = fixture.join("actual.txt");
-    let diagnostics_output_path = fixture.join("actual.diagnostics");
+    let output_path = fixture.actual_path("txt");
+    let diagnostics_output_path = fixture.actual_path("diagnostics");
     let _ = fs::write(&output_path, &actual);
     let _ = fs::write(&diagnostics_output_path, &actual_diagnostics);
     CheckOutcome::Fail(format!(
         "fixture mismatch for {} via {}; wrote {} and {}\n--- expected stdout ({})\n{}--- actual stdout\n{}--- expected diagnostics\n{}--- actual diagnostics\n{}",
-        fixture.display(),
+        fixture.display_path().display(),
         path,
         output_path.display(),
         diagnostics_output_path.display(),
@@ -1168,12 +1367,19 @@ fn check_success(fixture: &Path, path: &str, bless: bool, ran: &Ran, oracle_owne
 /// author can trim it to the stable line; it never overwrites a curated golden.
 ///
 /// `kind` is `"abort"` or `"diagnostic"` — the failure mode named in messages.
-fn check_failure(fixture: &Path, header: &Header, kind: &str, path: &str, bless: bool, ran: &Ran) -> CheckOutcome {
+fn check_failure(
+    fixture: &FixtureCase,
+    header: &Header,
+    kind: &str,
+    path: &str,
+    bless: bool,
+    ran: &Ran,
+) -> CheckOutcome {
     let diagnostics = ran.diagnostics.as_str();
     if ran.success {
         return CheckOutcome::Fail(format!(
             "{} via {}: expected {} (nonzero exit) but the program exited 0",
-            fixture.display(),
+            fixture.display_path().display(),
             path,
             kind
         ));
@@ -1183,11 +1389,11 @@ fn check_failure(fixture: &Path, header: &Header, kind: &str, path: &str, bless:
     {
         return check_diagnostic_telemetry(fixture, header, path, code);
     }
-    let path_golden = fixture.join(format!("expected.{}.stderr", path));
+    let path_golden = fixture.sidecar_path(&format!("expected.{}.stderr", path));
     let golden_path = if path_golden.exists() {
         path_golden
     } else {
-        fixture.join("expected.stderr")
+        fixture.sidecar_path("expected.stderr")
     };
     let golden = fs::read_to_string(&golden_path).unwrap_or_default();
     let needle = golden.trim();
@@ -1201,7 +1407,7 @@ fn check_failure(fixture: &Path, header: &Header, kind: &str, path: &str, bless:
         }
         return CheckOutcome::Fail(format!(
             "{} via {}: expect {} but no {} golden; run BLESS=1 to seed it, then trim to the stable line\n--- stderr\n{}",
-            fixture.display(),
+            fixture.display_path().display(),
             path,
             kind,
             golden_path.display(),
@@ -1209,14 +1415,14 @@ fn check_failure(fixture: &Path, header: &Header, kind: &str, path: &str, bless:
         ));
     }
     if diagnostics.contains(needle) {
-        let _ = fs::remove_file(fixture.join("actual.stderr"));
+        let _ = fs::remove_file(fixture.actual_path("stderr"));
         return CheckOutcome::Pass;
     }
-    let actual_path = fixture.join("actual.stderr");
+    let actual_path = fixture.actual_path("stderr");
     let _ = fs::write(&actual_path, diagnostics);
     CheckOutcome::Fail(format!(
         "{} via {}: stderr does not contain the {} golden; wrote {}\n--- expected substring ({})\n{}\n--- actual stderr\n{}",
-        fixture.display(),
+        fixture.display_path().display(),
         path,
         kind,
         actual_path.display(),
@@ -1226,7 +1432,7 @@ fn check_failure(fixture: &Path, header: &Header, kind: &str, path: &str, bless:
     ))
 }
 
-fn check_diagnostic_telemetry(fixture: &Path, header: &Header, path: &str, expected_code: &str) -> CheckOutcome {
+fn check_diagnostic_telemetry(fixture: &FixtureCase, header: &Header, path: &str, expected_code: &str) -> CheckOutcome {
     let telemetry_path = temp_telemetry_path(fixture, "diagnostic");
     let out = match run_path_logged(fixture, header, path, &telemetry_path) {
         Ok(out) => out,
@@ -1240,15 +1446,15 @@ fn check_diagnostic_telemetry(fixture: &Path, header: &Header, path: &str, expec
         .lines()
         .any(|line| line.contains("\"name\":[\"fz\",\"diag\",\"error\"]") && line.contains(&code_needle));
     if found {
-        let _ = fs::remove_file(fixture.join("actual.telemetry"));
-        let _ = fs::remove_file(fixture.join("actual.stderr"));
+        let _ = fs::remove_file(fixture.actual_path("telemetry"));
+        let _ = fs::remove_file(fixture.actual_path("stderr"));
         return CheckOutcome::Pass;
     }
-    let actual_path = fixture.join("actual.telemetry");
+    let actual_path = fixture.actual_path("telemetry");
     let _ = fs::write(&actual_path, &log);
     CheckOutcome::Fail(format!(
         "{} via {}: diagnostic telemetry did not contain code `{}`; wrote {}\n--- stderr\n{}",
-        fixture.display(),
+        fixture.display_path().display(),
         path,
         expected_code,
         actual_path.display(),
@@ -1256,12 +1462,17 @@ fn check_diagnostic_telemetry(fixture: &Path, header: &Header, path: &str, expec
     ))
 }
 
-fn run_path_logged(fixture: &Path, header: &Header, path: &str, telemetry_path: &Path) -> Result<Output, String> {
+fn run_path_logged(
+    fixture: &FixtureCase,
+    header: &Header,
+    path: &str,
+    telemetry_path: &Path,
+) -> Result<Output, String> {
     if let Some(path) = path.strip_prefix("fz2-") {
         return run_fz2_path_logged(fixture, header, path, telemetry_path);
     }
     if path == "aot" {
-        let stem = fixture.file_name().and_then(|s| s.to_str()).unwrap_or("fz_fixture");
+        let stem = fixture.name();
         let nonce = AOT_TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
         let out_path = temp_dir().join(format!("fz_matrix_diag_{}_{}_{}", stem, id(), nonce));
         let out = fixture_command_output(
@@ -1269,7 +1480,7 @@ fn run_path_logged(fixture: &Path, header: &Header, path: &str, telemetry_path: 
                 .args(["--log-telemetry"])
                 .arg(telemetry_path)
                 .args(["build"])
-                .arg(fixture.join("input.fz"))
+                .arg(fixture.source_path())
                 .args(["-o"])
                 .arg(&out_path),
             "fz build --log-telemetry",
@@ -1280,7 +1491,7 @@ fn run_path_logged(fixture: &Path, header: &Header, path: &str, telemetry_path: 
         let _ = fs::remove_file(out_path.with_extension("o"));
         return out;
     }
-    let input = fixture.join("input.fz");
+    let input = fixture.source_path();
     let mut cmd = Command::new(FZ_BIN);
     cmd.args(["--log-telemetry"]).arg(telemetry_path);
     match (path, header.kind) {
@@ -1306,9 +1517,14 @@ fn run_path_logged(fixture: &Path, header: &Header, path: &str, telemetry_path: 
     )
 }
 
-fn run_fz2_path_logged(fixture: &Path, header: &Header, path: &str, telemetry_path: &Path) -> Result<Output, String> {
+fn run_fz2_path_logged(
+    fixture: &FixtureCase,
+    header: &Header,
+    path: &str,
+    telemetry_path: &Path,
+) -> Result<Output, String> {
     if path == "build" {
-        let stem = fixture.file_name().and_then(|s| s.to_str()).unwrap_or("fz2_fixture");
+        let stem = fixture.name();
         let nonce = AOT_TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
         let out_path = temp_dir().join(format!("fz2_matrix_diag_{}_{}_{}", stem, id(), nonce));
         let out = fixture_command_output(
@@ -1316,7 +1532,7 @@ fn run_fz2_path_logged(fixture: &Path, header: &Header, path: &str, telemetry_pa
                 .args(["--log-telemetry"])
                 .arg(telemetry_path)
                 .args(["build"])
-                .arg(fixture.join("input.fz"))
+                .arg(fixture.source_path())
                 .args(["-o"])
                 .arg(&out_path),
             "fz2 build --log-telemetry",
@@ -1326,7 +1542,7 @@ fn run_fz2_path_logged(fixture: &Path, header: &Header, path: &str, telemetry_pa
         remove_fz2_build_outputs(&out_path);
         return out;
     }
-    let input = fixture.join("input.fz");
+    let input = fixture.source_path();
     let mut cmd = Command::new(FZ2_BIN);
     cmd.args(["--log-telemetry"]).arg(telemetry_path);
     match path {
@@ -1358,19 +1574,19 @@ fn run_fz2_path_logged(fixture: &Path, header: &Header, path: &str, telemetry_pa
 fn oracle_goldens_match_elixir() {
     let bless = var("BLESS").ok().as_deref() == Some("1");
     let mut failures: Vec<String> = Vec::new();
-    for dir in discover() {
-        let header = match parse_header_from_dir(&dir) {
+    for fixture in discover() {
+        let header = match parse_header(&fixture) {
             Ok(h) => h,
             Err(_) => continue,
         };
         let Some(oracle_rel) = header.oracle.as_deref() else {
             continue;
         };
-        let oracle_path = dir.join(oracle_rel);
+        let oracle_path = fixture.source_dir().join(oracle_rel);
         if !oracle_path.is_file() {
             failures.push(format!(
                 "{}: oracle `{}` not found",
-                dir.display(),
+                fixture.display_path().display(),
                 oracle_path.display()
             ));
             continue;
@@ -1380,7 +1596,7 @@ fn oracle_goldens_match_elixir() {
             Err(e) => {
                 failures.push(format!(
                     "{}: spawn `elixir {}`: {} (is Elixir installed and on PATH?)",
-                    dir.display(),
+                    fixture.display_path().display(),
                     oracle_path.display(),
                     e
                 ));
@@ -1390,7 +1606,7 @@ fn oracle_goldens_match_elixir() {
         if !out.status.success() {
             failures.push(format!(
                 "{}: `elixir {}` exited {}:\n{}",
-                dir.display(),
+                fixture.display_path().display(),
                 oracle_path.display(),
                 out.status,
                 String::from_utf8_lossy(&out.stderr).trim_end()
@@ -1398,24 +1614,24 @@ fn oracle_goldens_match_elixir() {
             continue;
         }
         let actual = normalize(&String::from_utf8_lossy(&out.stdout));
-        let expected_path = dir.join("expected.txt");
+        let expected_path = fixture.sidecar_path("expected.txt");
         if bless {
             if actual.is_empty() {
                 let _ = fs::remove_file(&expected_path);
             } else if let Err(e) = fs::write(&expected_path, &actual) {
-                failures.push(format!("{}: bless write: {}", dir.display(), e));
+                failures.push(format!("{}: bless write: {}", fixture.display_path().display(), e));
             }
             continue;
         }
         let expected = normalize(&fs::read_to_string(&expected_path).unwrap_or_default());
         if actual == expected {
-            let _ = fs::remove_file(dir.join("actual.oracle.txt"));
+            let _ = fs::remove_file(fixture.actual_path("oracle.txt"));
         } else {
-            let actual_path = dir.join("actual.oracle.txt");
+            let actual_path = fixture.actual_path("oracle.txt");
             let _ = fs::write(&actual_path, &actual);
             failures.push(format!(
                 "{}: oracle mismatch; wrote {}\n--- expected.txt (Elixir-owned golden)\n{}--- elixir actual\n{}",
-                dir.display(),
+                fixture.display_path().display(),
                 actual_path.display(),
                 expected,
                 actual
@@ -1435,12 +1651,12 @@ fn oracle_goldens_match_elixir() {
 fn fixture_index_up_to_date() {
     let bless = var("BLESS").ok().as_deref() == Some("1");
     let mut rows: Vec<(String, String, String)> = Vec::new();
-    for dir in discover() {
-        let header = match parse_header_from_dir(&dir) {
+    for fixture in discover() {
+        let header = match parse_header(&fixture) {
             Ok(h) => h,
             Err(_) => continue,
         };
-        let name = dir.file_name().unwrap().to_string_lossy().into_owned();
+        let name = fixture.name();
         let paths = if header.paths.is_empty() {
             match header.defer.as_deref() {
                 Some(d) => format!("_(deferred: {})_", d),
@@ -2100,13 +2316,13 @@ fn parse_timeout_field(
 }
 
 #[allow(dead_code)]
-fn write_budget_failure_dumps(fixture: &Path) -> String {
+fn write_budget_failure_dumps(fixture: &FixtureCase) -> String {
     let mut out = String::new();
     for emit in ["clif", "specs"] {
-        let actual_path = fixture.join(format!("actual.{}", emit));
+        let actual_path = fixture.actual_path(emit);
         let dump = Command::new(FZ_BIN)
             .args(["dump", "--emit", emit])
-            .arg(fixture.join("input.fz"))
+            .arg(fixture.source_path())
             .output()
             .unwrap_or_else(|e| panic!("spawn fz dump --emit {}: {}", emit, e));
         if dump.status.success() {
@@ -2125,7 +2341,13 @@ fn write_budget_failure_dumps(fixture: &Path) -> String {
 }
 
 #[allow(dead_code)]
-fn check_budget_metric(fixture: &Path, failures: &mut Vec<String>, label: &str, actual: usize, target: Option<usize>) {
+fn check_budget_metric(
+    fixture: &FixtureCase,
+    failures: &mut Vec<String>,
+    label: &str,
+    actual: usize,
+    target: Option<usize>,
+) {
     let Some(target) = target else {
         return;
     };
@@ -2135,7 +2357,7 @@ fn check_budget_metric(fixture: &Path, failures: &mut Vec<String>, label: &str, 
     if actual < min || actual > max {
         failures.push(format!(
             "{} {} = {}, outside {}% budget around target {} (allowed {}..={})",
-            fixture.display(),
+            fixture.display_path().display(),
             label,
             actual,
             DUMP_BUDGET_TOLERANCE_PERCENT,
@@ -2146,8 +2368,8 @@ fn check_budget_metric(fixture: &Path, failures: &mut Vec<String>, label: &str, 
     }
 }
 
-fn temp_telemetry_path(fixture: &Path, emit: &str) -> PathBuf {
-    let name = fixture.file_name().and_then(|s| s.to_str()).unwrap_or("fixture");
+fn temp_telemetry_path(fixture: &FixtureCase, emit: &str) -> PathBuf {
+    let name = fixture.name();
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("system clock before unix epoch")
@@ -2200,19 +2422,19 @@ struct DumpTelemetryStats {
     planner: PlannerStats,
 }
 
-fn dump_telemetry_stats(fixture: &Path) -> DumpTelemetryStats {
+fn dump_telemetry_stats(fixture: &FixtureCase) -> DumpTelemetryStats {
     let telemetry_path = temp_telemetry_path(fixture, "stats");
     let out = Command::new(FZ_BIN)
         .args(["--log-telemetry"])
         .arg(&telemetry_path)
         .args(["dump", "--emit", "stats"])
-        .arg(fixture.join("input.fz"))
+        .arg(fixture.source_path())
         .output()
         .unwrap_or_else(|e| panic!("spawn fz dump --emit stats: {}", e));
     assert!(
         out.status.success(),
         "fz dump --emit stats {} exited {}: {}",
-        fixture.display(),
+        fixture.display_path().display(),
         out.status,
         String::from_utf8_lossy(&out.stderr)
     );
@@ -2226,7 +2448,7 @@ fn dump_telemetry_stats(fixture: &Path) -> DumpTelemetryStats {
             stats.codegen.instruction_count += parse_json_u64_field(line, "instruction_count").unwrap_or_else(|| {
                 panic!(
                     "{} codegen function_lowered missing instruction_count",
-                    fixture.display()
+                    fixture.display_path().display()
                 )
             });
         }
@@ -2239,28 +2461,36 @@ fn dump_telemetry_stats(fixture: &Path) -> DumpTelemetryStats {
                 continue;
             }
             stats.planner.spec_count = parse_json_u64_field(line, "spec_count")
-                .unwrap_or_else(|| panic!("{} telemetry missing spec_count", fixture.display()));
+                .unwrap_or_else(|| panic!("{} telemetry missing spec_count", fixture.display_path().display()));
             stats.planner.worklist_pops = parse_json_u64_field(line, "worklist_pops")
-                .unwrap_or_else(|| panic!("{} telemetry missing worklist_pops", fixture.display()));
+                .unwrap_or_else(|| panic!("{} telemetry missing worklist_pops", fixture.display_path().display()));
             stats.planner.walk_calls = parse_json_u64_field(line, "walk_calls")
-                .unwrap_or_else(|| panic!("{} telemetry missing walk_calls", fixture.display()));
+                .unwrap_or_else(|| panic!("{} telemetry missing walk_calls", fixture.display_path().display()));
             stats.planner.type_fn_calls = parse_json_u64_field(line, "type_fn_calls")
-                .unwrap_or_else(|| panic!("{} telemetry missing type_fn_calls", fixture.display()));
-            stats.planner.matcher_spec_count = parse_json_u64_field(line, "matcher_spec_count")
-                .unwrap_or_else(|| panic!("{} telemetry missing matcher_spec_count", fixture.display()));
+                .unwrap_or_else(|| panic!("{} telemetry missing type_fn_calls", fixture.display_path().display()));
+            stats.planner.matcher_spec_count = parse_json_u64_field(line, "matcher_spec_count").unwrap_or_else(|| {
+                panic!(
+                    "{} telemetry missing matcher_spec_count",
+                    fixture.display_path().display()
+                )
+            });
             stats.planner.spec_var_count = parse_json_u64_field(line, "spec_var_count")
-                .unwrap_or_else(|| panic!("{} telemetry missing spec_var_count", fixture.display()));
-            stats.planner.spec_block_count = parse_json_u64_field(line, "spec_block_count")
-                .unwrap_or_else(|| panic!("{} telemetry missing spec_block_count", fixture.display()));
+                .unwrap_or_else(|| panic!("{} telemetry missing spec_var_count", fixture.display_path().display()));
+            stats.planner.spec_block_count = parse_json_u64_field(line, "spec_block_count").unwrap_or_else(|| {
+                panic!(
+                    "{} telemetry missing spec_block_count",
+                    fixture.display_path().display()
+                )
+            });
             stats.planner.spec_stmt_count = parse_json_u64_field(line, "spec_stmt_count")
-                .unwrap_or_else(|| panic!("{} telemetry missing spec_stmt_count", fixture.display()));
+                .unwrap_or_else(|| panic!("{} telemetry missing spec_stmt_count", fixture.display_path().display()));
             stats.planner.dispatch_count = parse_json_u64_field(line, "dispatch_count")
-                .unwrap_or_else(|| panic!("{} telemetry missing dispatch_count", fixture.display()));
+                .unwrap_or_else(|| panic!("{} telemetry missing dispatch_count", fixture.display_path().display()));
             stats.planner.activation_return_projection_gap_count =
                 parse_json_u64_field(line, "activation_return_projection_gap_count").unwrap_or_else(|| {
                     panic!(
                         "{} telemetry missing activation_return_projection_gap_count",
-                        fixture.display()
+                        fixture.display_path().display()
                     )
                 });
         }
@@ -2273,21 +2503,21 @@ fn dump_telemetry_stats(fixture: &Path) -> DumpTelemetryStats {
                 parse_json_u64_field(line, "post_plan_reachability_growth_count").unwrap_or_else(|| {
                     panic!(
                         "{} telemetry missing post_plan_reachability_growth_count",
-                        fixture.display()
+                        fixture.display_path().display()
                     )
                 });
             stats.planner.materialized_reachability_missing_body_count =
                 parse_json_u64_field(line, "materialized_reachability_missing_body_count").unwrap_or_else(|| {
                     panic!(
                         "{} telemetry missing materialized_reachability_missing_body_count",
-                        fixture.display()
+                        fixture.display_path().display()
                     )
                 });
             stats.planner.make_closure_callable_gap_count =
                 parse_json_u64_field(line, "make_closure_callable_gap_count").unwrap_or_else(|| {
                     panic!(
                         "{} telemetry missing make_closure_callable_gap_count",
-                        fixture.display()
+                        fixture.display_path().display()
                     )
                 });
         }
@@ -2295,22 +2525,22 @@ fn dump_telemetry_stats(fixture: &Path) -> DumpTelemetryStats {
     assert!(
         stats.codegen.function_count > 0,
         "{} telemetry missing fz.codegen.function_lowered events",
-        fixture.display()
+        fixture.display_path().display()
     );
     assert!(
         stats.planner.spec_count > 0,
         "{} telemetry missing committed fz.planner.planned event",
-        fixture.display()
+        fixture.display_path().display()
     );
     assert!(
         stats.planner.event_count >= 2,
         "{} dump --emit stats should plan at least root frontend and final linked module",
-        fixture.display()
+        fixture.display_path().display()
     );
     assert!(
         stats.planner.materialized_event_count > 0,
         "{} telemetry missing fz.planner.materialized event",
-        fixture.display()
+        fixture.display_path().display()
     );
     stats
 }
@@ -2369,8 +2599,8 @@ fn dump_budgets() {
     let mut checked = 0usize;
     let mut failures = Vec::new();
     for fixture in discover() {
-        let header =
-            parse_header_from_dir(&fixture).unwrap_or_else(|e| panic!("parse {} README.md: {}", fixture.display(), e));
+        let header = parse_header(&fixture)
+            .unwrap_or_else(|e| panic!("parse {} fixture metadata: {}", fixture.display_path().display(), e));
         let budget = header.dump_budget;
         if budget.is_empty() {
             continue;
@@ -3300,7 +3530,9 @@ fn enum_sort_constant_sorter_erased_under_return_demand_specs() {
         assert!(readme.contains(needle), "enum_sort README must pin `{}`", needle);
     }
 
-    let fixture_dir = Path::new("fixtures").join("enum_sort");
+    let fixture_dir = FixtureCase::LegacyDir {
+        dir: Path::new("fixtures").join("enum_sort"),
+    };
     let stats = dump_telemetry_stats(&fixture_dir);
     assert_planner_stats_consistent("enum_sort", &stats);
 
@@ -3347,19 +3579,21 @@ fn opaque_reduce_join_preserves_closure_values_and_lazy_state_machine() {
 
     assert_fixture_output_contains("opaque_fn_value_join", "expected.txt", &["6"]);
 
-    let fixture = PathBuf::from("fixtures/opaque_fn_value_join");
+    let fixture = FixtureCase::LegacyDir {
+        dir: PathBuf::from("fixtures/opaque_fn_value_join"),
+    };
     let telemetry_path = temp_telemetry_path(&fixture, "closure_call");
     let out = Command::new(FZ_BIN)
         .args(["--log-telemetry"])
         .arg(&telemetry_path)
         .arg("run")
-        .arg(fixture.join("input.fz"))
+        .arg(fixture.source_path())
         .output()
         .unwrap_or_else(|e| panic!("spawn fz run: {}", e));
     assert!(
         out.status.success(),
         "fz run {} exited {}: {}",
-        fixture.display(),
+        fixture.display_path().display(),
         out.status,
         String::from_utf8_lossy(&out.stderr)
     );

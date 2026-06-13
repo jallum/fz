@@ -52,10 +52,20 @@ fn assert_resolved(outcome: DriveOutcome<Job, FactKey>, message: &str) {
 
 fn discover_contract_fixtures() -> Vec<ContractFixture> {
     let filter = std::env::var("FIXTURE2_CONTRACT_FILTER").ok();
-    let mut fixtures = fs::read_dir("fixtures2")
-        .expect("fixtures2 dir")
-        .map(|entry| entry.expect("fixtures2 entry").path())
-        .filter(|path| path.extension().is_some_and(|ext| ext == "fz"))
+    let mut pending = vec![PathBuf::from("fixtures2")];
+    let mut paths = Vec::new();
+    while let Some(dir) = pending.pop() {
+        for entry in fs::read_dir(&dir).unwrap_or_else(|e| panic!("read {}: {}", dir.display(), e)) {
+            let path = entry.expect("fixtures2 entry").path();
+            if path.is_dir() {
+                pending.push(path);
+            } else if path.extension().is_some_and(|ext| ext == "fz") {
+                paths.push(path);
+            }
+        }
+    }
+    let mut fixtures = paths
+        .into_iter()
         .filter_map(|path| {
             let source = fs::read_to_string(&path).expect("fixture source");
             let contract = parse_fixture_metadata(&source).expect("fixture frontmatter parse")?;
