@@ -1008,12 +1008,6 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                 let dispatch = &receive.dispatch;
                 let clauses = &receive.clauses;
                 let after = receive.after.as_ref();
-                let resume = match &receive.dest {
-                    ControlDestination::Return => None,
-                    ControlDestination::Deliver(entry_id) => {
-                        Some(self.entry_continuation(entries, entry_fns, *entry_id, env)?)
-                    }
-                };
                 let captures = self.receive_capture_vars(entries, clauses, after, env)?;
                 let clauses = clauses
                     .iter()
@@ -1025,7 +1019,6 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                             body: *entry_fns
                                 .get(&clause.entry)
                                 .expect("receive clause entry should have a helper fn"),
-                            join_mode: clause.join_mode,
                             span: clause.span,
                         })
                     })
@@ -1044,7 +1037,6 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                             body: *entry_fns
                                 .get(&after.entry)
                                 .expect("receive after entry should have a helper fn"),
-                            join_mode: after.join_mode,
                             span: after.span,
                         })
                     })
@@ -1059,7 +1051,6 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                     clauses,
                     dispatch: Arc::new(dispatch),
                     after,
-                    resume,
                     pinned,
                     captures,
                 });
@@ -1986,8 +1977,7 @@ fn select_settled_callable_boundary(
 ) -> Result<Option<NativeCallableBoundaryId>, String> {
     let mut query = Vec::with_capacity(capture_tys.len());
     for ty in capture_tys {
-        let erased = types.erase_closure_identity(ty);
-        query.push(types.alpha_normalize_vars(&erased));
+        query.push(types.alpha_normalize_vars(ty));
     }
 
     let mut covers = boundaries
@@ -2003,10 +1993,7 @@ fn select_settled_callable_boundary(
                 .iter()
                 .copied()
                 .take(boundary.capture_count)
-                .map(|ty| {
-                    let erased = types.erase_closure_identity(&ty);
-                    types.alpha_normalize_vars(&erased)
-                })
+                .map(|ty| types.alpha_normalize_vars(&ty))
                 .collect::<Vec<_>>();
             let capture_key = crate::types::key_slots_from_tys(capture_inputs);
             let mut sigma = HashMap::new();
@@ -2017,7 +2004,20 @@ fn select_settled_callable_boundary(
                     None => true,
                     Some(key_ty) => types.key_subsumes_with(query_ty, key_ty, &mut sigma),
                 })
-                .then_some((boundary.id(), capture_key, &boundary.arg_reprs, &boundary.return_abi))
+                .then_some((
+                    boundary.id(),
+                    capture_key,
+                    boundary
+                        .target
+                        .activation
+                        .input
+                        .iter()
+                        .copied()
+                        .map(|ty| types.alpha_normalize_vars(&ty))
+                        .collect::<Vec<_>>(),
+                    &boundary.arg_reprs,
+                    &boundary.return_abi,
+                ))
         })
         .collect::<Vec<_>>();
     if covers.is_empty() {
@@ -2026,32 +2026,52 @@ fn select_settled_callable_boundary(
 
     let min_var_count = covers
         .iter()
-        .map(|(_, capture_key, _, _)| crate::types::key_slot_var_count(types, capture_key))
+        .map(|(_, capture_key, _, _, _)| crate::types::key_slot_var_count(types, capture_key))
         .min()
         .unwrap_or(0);
-    covers.retain(|(_, capture_key, _, _)| crate::types::key_slot_var_count(types, capture_key) == min_var_count);
-    covers.sort_by_key(|(boundary_id, _, _, _)| boundary_id.as_u32());
+    covers.retain(|(_, capture_key, _, _, _)| crate::types::key_slot_var_count(types, capture_key) == min_var_count);
+    covers.sort_by_key(|(boundary_id, _, _, _, _)| boundary_id.as_u32());
 
-    let maximal = covers
+    let widest = covers
         .iter()
-        .filter(|&(candidate_id, _, candidate_args, candidate_return)| {
-            !covers.iter().any(|(other_id, _, other_args, other_return)| {
+        .filter(|&(candidate_id, _, _, candidate_args, candidate_return)| {
+            !covers.iter().any(|(other_id, _, _, other_args, other_return)| {
                 other_id != candidate_id
                     && callable_abi_strictly_more_specific(candidate_args, candidate_return, other_args, other_return)
             })
         })
         .cloned()
         .collect::<Vec<_>>();
-    match maximal.as_slice() {
+    let max_full_var_count = widest
+        .iter()
+        .map(|(_, _, full_key, _, _)| {
+            crate::types::key_slot_var_count(types, &crate::types::key_slots_from_tys(full_key.clone()))
+        })
+        .max()
+        .unwrap_or(0);
+    let widened = widest
+        .into_iter()
+        .filter(|(_, _, full_key, _, _)| {
+            crate::types::key_slot_var_count(types, &crate::types::key_slots_from_tys(full_key.clone()))
+                == max_full_var_count
+        })
+        .collect::<Vec<_>>();
+    match widened.as_slice() {
         [] => Ok(None),
-        [(boundary_id, _, _, _)] => Ok(Some(*boundary_id)),
+        [(boundary_id, _, _, _, _)] => Ok(Some(*boundary_id)),
         _ => Err(format!(
             "ambiguous callable boundaries for {:?}/{} captures: candidates {:?}",
             function,
             capture_tys.len(),
-            maximal
+            widened
                 .iter()
-                .map(|(boundary_id, _, _, _)| boundary_id.as_u32())
+                .map(|(boundary_id, _, full_key, arg_reprs, return_abi)| format!(
+                    "{}:{:?}:{:?}->{:?}",
+                    boundary_id.as_u32(),
+                    full_key,
+                    arg_reprs,
+                    return_abi
+                ))
                 .collect::<Vec<_>>()
         )),
     }

@@ -7,7 +7,7 @@ use crate::dispatch_matrix::{
 };
 use crate::fz_ir::{
     BinOp, BlockId, CallsiteIdent, Const, DirectCallTarget, FnBuilder, FnCategory, FnId, ModuleBuilder, Prim,
-    ReceiveAfter, ReceiveClause, ReceiveJoinMode,
+    ReceiveAfter, ReceiveClause,
 };
 use crate::runtime_type_predicate::RuntimeTypePredicate;
 use crate::telemetry::capture::OwnedEvent;
@@ -181,7 +181,6 @@ fn build_module_with_receive_matched(captures: Vec<Var>) -> Module {
                 bound_names: vec!["msg".to_string()],
                 guard: None,
                 body: FnId(1),
-                join_mode: ReceiveJoinMode::OuterCont,
                 span: Span::DUMMY,
             }],
             dispatch: empty_dispatch(),
@@ -189,10 +188,8 @@ fn build_module_with_receive_matched(captures: Vec<Var>) -> Module {
                 ident: CallsiteIdent::synthetic(),
                 timeout: Var(99),
                 body: FnId(2),
-                join_mode: ReceiveJoinMode::OuterCont,
                 span: Span::DUMMY,
             }),
-            resume: None,
             pinned: vec![],
             captures,
         },

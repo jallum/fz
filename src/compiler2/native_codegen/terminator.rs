@@ -2,9 +2,9 @@
 
 use super::surface::NativeCallableBoundarySurface;
 use super::*;
+use crate::compiler2::NativeEntryAbi;
 use crate::fz_ir::{
-    self as fz_ir, BlockId, Cont, DirectCallTarget, EmitSlot, FnId, ReceiveAfter, ReceiveClause, ReceiveJoinMode, Term,
-    Var,
+    self as fz_ir, BlockId, Cont, DirectCallTarget, EmitSlot, FnId, ReceiveAfter, ReceiveClause, Term, Var,
 };
 use crate::types::{ClosureTypes, Types};
 use crate::{measurements, metadata};
@@ -110,6 +110,94 @@ fn push_direct_closure_args<M: cranelift_module::Module>(
     direct_args
 }
 
+#[allow(clippy::too_many_arguments)]
+fn emit_native_continuation_tail_delivery<M: cranelift_module::Module>(
+    body: &mut CodegenFn<'_, '_, '_, M>,
+    env: &CodegenEnv<'_>,
+    var_env: &HashMap<u32, CodegenValue>,
+    is_native: bool,
+    is_cont_fn: bool,
+    frame_ptr: Option<ir::Value>,
+    cont_param: Option<ir::Value>,
+    args: &[Var],
+    is_back_edge: bool,
+    callee_sid: u32,
+    extra_params: usize,
+) {
+    let runtime = env.runtime;
+    let callee_param_reprs = &env.param_reprs[callee_sid as usize];
+    assert!(
+        args.len() >= extra_params,
+        "continuation callee {} expected at least {} logical arg(s), got {}",
+        callee_sid,
+        extra_params,
+        args.len()
+    );
+    assert_eq!(
+        args.len(),
+        callee_param_reprs.len(),
+        "continuation callee {} logical arg count must match published param reprs",
+        callee_sid
+    );
+
+    let mut delivered_args = Vec::with_capacity(
+        callee_param_reprs
+            .iter()
+            .take(extra_params)
+            .map(ArgRepr::abi_arity)
+            .sum::<usize>()
+            + 1,
+    );
+    let mut mid_flight_arg_shapes = Vec::with_capacity(extra_params + 1);
+    for (i, arg) in args.iter().take(extra_params).enumerate() {
+        let binding = *var_env
+            .get(&arg.0)
+            .unwrap_or_else(|| panic!("unbound continuation delivery arg {} for callee_sid={}", i, callee_sid));
+        let repr = callee_param_reprs[i];
+        body.push_binding_as_abi_arg(&mut delivered_args, binding, repr);
+        mid_flight_arg_shapes.push(MidFlightArgShape::Value(repr));
+    }
+
+    let semantic_cap_bindings = args
+        .iter()
+        .skip(extra_params)
+        .enumerate()
+        .map(|(i, arg)| closure_capture_for_var_as(body, var_env, arg.0, callee_param_reprs[extra_params + i]))
+        .collect::<Vec<_>>();
+    let payload = ContinuationPayload::from_parts(env, callee_sid, semantic_cap_bindings, vec![], vec![]);
+    let self_arg = ContinuationPlan::heap_closure(payload).emit_value(
+        body,
+        runtime,
+        env.return_reprs,
+        is_cont_fn,
+        cont_param,
+        frame_ptr,
+    );
+    delivered_args.push(self_arg);
+    mid_flight_arg_shapes.push(MidFlightArgShape::HeapRef);
+
+    let code = body.closure_code_ref(self_arg);
+    let mut sig = Signature::new(CallConv::Tail);
+    for repr in callee_param_reprs.iter().take(extra_params).copied() {
+        push_repr_param(&mut sig, repr);
+    }
+    sig.params.push(AbiParam::new(types::I64));
+    sig.returns.push(AbiParam::new(types::I64));
+    let sig_ref = body.b.import_signature(sig);
+    if is_native {
+        if is_back_edge {
+            emit_back_edge_yield_check(body, env, callee_sid, &mid_flight_arg_shapes, &delivered_args);
+        }
+        let call_inst = body.b.ins().call_indirect(sig_ref, code, &delivered_args);
+        let result = body.b.inst_results(call_inst)[0];
+        body.b.ins().return_(&[result]);
+    } else {
+        let call_inst = body.b.ins().call_indirect(sig_ref, code, &delivered_args);
+        let result = body.b.inst_results(call_inst)[0];
+        body.b.ins().return_(&[result]);
+    }
+}
+
 fn adapt_direct_closure_cont<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, '_, M>,
     env: &CodegenEnv<'_>,
@@ -143,7 +231,6 @@ struct ContinuationPayload {
     semantic_cap_bindings: Vec<ClosureCapture>,
     physical_ref_captures: Vec<ir::Value>,
     materialization_ref_captures: Vec<ir::Value>,
-    outer_cont_override: Option<ir::Value>,
 }
 
 impl ContinuationPayload {
@@ -161,13 +248,7 @@ impl ContinuationPayload {
             semantic_cap_bindings,
             physical_ref_captures,
             materialization_ref_captures,
-            outer_cont_override: None,
         }
-    }
-
-    fn with_outer_cont(mut self, outer_cont: ir::Value) -> Self {
-        self.outer_cont_override = Some(outer_cont);
-        self
     }
 
     fn from_capture_vars<M: cranelift_module::Module>(
@@ -243,7 +324,7 @@ impl ContinuationPlan {
                     payload.cont_fid,
                     &payload.semantic_cap_bindings,
                     &ref_captures,
-                    payload.outer_cont_override,
+                    None,
                 )
             }
             ContinuationPlan::HeapClosure(payload) => {
@@ -259,7 +340,7 @@ impl ContinuationPlan {
                     payload.cont_fid,
                     &payload.semantic_cap_bindings,
                     &ref_captures,
-                    payload.outer_cont_override,
+                    None,
                 )
             }
         }
@@ -427,7 +508,6 @@ pub(crate) fn emit_terminator<M: cranelift_module::Module, T: Types<Ty = Ty> + C
         Term::ReceiveMatched {
             clauses,
             after,
-            resume,
             pinned,
             captures,
             dispatch: _,
@@ -443,7 +523,6 @@ pub(crate) fn emit_terminator<M: cranelift_module::Module, T: Types<Ty = Ty> + C
             cont_param,
             clauses,
             after.as_ref(),
-            resume.as_ref(),
             pinned,
             captures,
         ),
@@ -900,6 +979,22 @@ fn emit_native_tail_call<M: cranelift_module::Module>(
     let fn_ids = env.fn_ids;
     let param_reprs = env.param_reprs;
     let callee_fn_id = spec_fn_id(env, callee_sid);
+    if let NativeEntryAbi::Continuation { extra_params } = env.body_native(callee_sid).entry_abi {
+        emit_native_continuation_tail_delivery(
+            body,
+            env,
+            var_env,
+            is_native,
+            is_cont_fn,
+            frame_ptr,
+            cont_param,
+            args,
+            is_back_edge,
+            callee_sid,
+            extra_params,
+        );
+        return;
+    }
     let callee_param_reprs = &param_reprs[callee_sid as usize];
     let callee_fid = *fn_ids.get(&callee_sid).expect("callee fn_id missing");
     let callee_fref = body.jmod.declare_func_in_func(callee_fid, body.b.func);
@@ -1407,7 +1502,6 @@ fn emit_receive_matched<M: cranelift_module::Module>(
     cont_param: Option<ir::Value>,
     clauses: &[ReceiveClause],
     after: Option<&ReceiveAfter>,
-    resume: Option<&Cont>,
     pinned: &[(String, Var)],
     captures: &[Var],
 ) -> Result<(), CodegenError> {
@@ -1425,7 +1519,6 @@ fn emit_receive_matched<M: cranelift_module::Module>(
         cont_param,
         clauses,
         after,
-        resume,
         pinned,
         captures,
         dispatch_addr,
@@ -1450,7 +1543,6 @@ fn build_park_record<M: cranelift_module::Module>(
     cont_param: Option<ir::Value>,
     clauses: &[ReceiveClause],
     after: Option<&ReceiveAfter>,
-    resume: Option<&Cont>,
     pinned: &[(String, Var)],
     captures: &[Var],
     matcher_addr: ir::Value,
@@ -1485,28 +1577,6 @@ fn build_park_record<M: cranelift_module::Module>(
         .iter()
         .map(|cv| closure_capture_for_var(body, var_env, cv.0))
         .collect();
-    let needs_join_outer_cont = clauses
-        .iter()
-        .any(|clause| matches!(clause.join_mode, ReceiveJoinMode::OuterCont))
-        || after.is_some_and(|after| matches!(after.join_mode, ReceiveJoinMode::OuterCont));
-    let explicit_outer_cont = resume.filter(|_| needs_join_outer_cont).map(|resume| {
-        let resume_sid = env.body_id_for_fn(resume.fn_id).unwrap_or_else(|| {
-            panic!(
-                "native receive resume fn {} has no registered codegen body id",
-                resume.fn_id.0
-            )
-        });
-        let payload = ContinuationPayload::from_capture_vars(body, env, var_env, resume_sid, &resume.captured);
-        ContinuationPlan::heap_closure(payload).emit_value(
-            body,
-            runtime,
-            env.return_reprs,
-            is_cont_fn,
-            cont_param,
-            frame_ptr,
-        )
-    });
-
     // bound_arity: max bound-var count across clauses (matcher
     // ABI sizes the out buffer to this).
     let bound_arity = clauses.iter().map(|c| c.bound_names.len()).max().unwrap_or(0);
@@ -1537,12 +1607,7 @@ fn build_park_record<M: cranelift_module::Module>(
     };
     for (i, c) in clauses.iter().enumerate() {
         let cont_sid = resolve_body_sid(c.body);
-        let mut payload = ContinuationPayload::from_parts(env, cont_sid, cap_bindings.clone(), vec![], vec![]);
-        if let Some(outer_cont) = explicit_outer_cont
-            && matches!(c.join_mode, ReceiveJoinMode::OuterCont)
-        {
-            payload = payload.with_outer_cont(outer_cont);
-        }
+        let payload = ContinuationPayload::from_parts(env, cont_sid, cap_bindings.clone(), vec![], vec![]);
         let cl_ptr = ContinuationPlan::heap_closure(payload).emit_value(
             body,
             runtime,
@@ -1569,12 +1634,7 @@ fn build_park_record<M: cranelift_module::Module>(
     let (after_deadline_v, after_cont_v) = match after {
         Some(a) => {
             let cont_sid = resolve_body_sid(a.body);
-            let mut payload = ContinuationPayload::from_parts(env, cont_sid, cap_bindings, vec![], vec![]);
-            if let Some(outer_cont) = explicit_outer_cont
-                && matches!(a.join_mode, ReceiveJoinMode::OuterCont)
-            {
-                payload = payload.with_outer_cont(outer_cont);
-            }
+            let payload = ContinuationPayload::from_parts(env, cont_sid, cap_bindings, vec![], vec![]);
             let cl_ptr = ContinuationPlan::heap_closure(payload).emit_value(
                 body,
                 runtime,

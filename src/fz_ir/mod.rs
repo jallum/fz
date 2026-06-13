@@ -766,10 +766,7 @@ pub enum Term {
     Halt(Var),
     /// fz-yxs — selective `receive do … after … end`. The cached dispatch
     /// plan is the executable route. Clause bodies receive bound pattern vars
-    /// (source order)
-    /// followed by `captures`. `resume` carries the explicit join
-    /// continuation for code that runs after the receive site; `None` means
-    /// the winning arm returns straight to the ambient outer continuation.
+    /// (source order) followed by `captures`.
     ///
     /// `pinned` carries the outer-scope vars referenced via `^name`
     /// inside any clause's pattern (snapshotted at the receive site);
@@ -781,7 +778,6 @@ pub enum Term {
         /// Cached AST-free dispatch plan for interpreter and native receive probes.
         dispatch: Arc<PatternDispatchPlan<RuntimeTypePredicate>>,
         after: Option<ReceiveAfter>,
-        resume: Option<Cont>,
         /// Outer-scope vars referenced by `^name` patterns across all
         /// clauses, paired with their source names so backends can
         /// resolve `^name` lookups when materialising the matcher.
@@ -806,20 +802,6 @@ pub struct ContinuationProvenance {
 }
 
 /// fz-yxs — one arm of a `Term::ReceiveMatched`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ReceiveJoinMode {
-    /// The parked outcome closure should install the receive-site join as its
-    /// `outer_cont`. The resumed body will eventually return through that
-    /// outer continuation.
-    OuterCont,
-    /// The resumed body's first handoff already carries the receive-site join
-    /// as an explicit continuation. The parked outcome closure must keep the
-    /// ambient outer continuation so that explicit continuation can return out
-    /// of the receive body exactly once.
-    ExplicitContinuation,
-}
-
-/// fz-yxs — one arm of a `Term::ReceiveMatched`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ReceiveClause {
     /// Intrinsic identity for this clause outcome site. Planner discovery,
@@ -834,11 +816,8 @@ pub struct ReceiveClause {
     /// bool. Pure-codegen restricted (verified by ir_planner via F3).
     pub guard: Option<FnId>,
     /// Clause body fn. Params = bound vars ++ captures. The body reaches the
-    /// enclosing receive join according to `join_mode`.
+    /// enclosing receive join via explicit continuation handoff.
     pub body: FnId,
-    /// How this outcome reaches the enclosing receive join once it starts
-    /// executing.
-    pub join_mode: ReceiveJoinMode,
     /// Span of the whole `pattern when guard -> body` clause.
     pub span: Span,
 }
@@ -853,10 +832,8 @@ pub struct ReceiveAfter {
     /// `:infinity` for "no timer".
     pub timeout: Var,
     /// After body fn. Params = captures only (no message). The body reaches
-    /// the enclosing receive join according to `join_mode`.
+    /// the enclosing receive join via explicit continuation handoff.
     pub body: FnId,
-    /// How this timeout outcome reaches the enclosing receive join.
-    pub join_mode: ReceiveJoinMode,
     /// Span of the `after … -> …` clause.
     pub span: Span,
 }

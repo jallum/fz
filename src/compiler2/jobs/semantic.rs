@@ -35,6 +35,12 @@ type RefinedCallSurface = (Vec<Ty>, Option<Ty>);
 /// activation demand it contributes, and its return evidence.
 type ResolvedCall = (Option<CallSiteSummary>, Vec<ActivationContribution>, Option<Ty>);
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum ClosureBoundaryUse {
+    Opaque,
+    Resolved(Vec<Ty>),
+}
+
 #[derive(Debug, Clone)]
 struct CallEmission {
     key: CallSiteKey,
@@ -119,10 +125,14 @@ pub(super) fn analyze_activation(world: &mut World<'_>, activation: &ActivationK
     // them, and the settled gate keeps everyone else out.
     let mut return_evidence: Option<Ty> = None;
     match lowered_body {
-        LoweredBody::Extern { signature } => {
+        LoweredBody::Extern { ref signature } => {
             return_evidence = Some(signature.return_ty);
         }
-        LoweredBody::Clauses { clauses, entries, .. } => {
+        LoweredBody::Clauses {
+            ref clauses,
+            ref entries,
+            ..
+        } => {
             for clause_id in &reachable_clauses {
                 let clause = &clauses[*clause_id as usize];
                 // Input evidence that has not caught up to the clause's
@@ -184,7 +194,7 @@ pub(super) fn analyze_activation(world: &mut World<'_>, activation: &ActivationK
     )?;
 
     let covered_callable_activations = covered_callable_activations(&analysis_calls);
-    let latent_callable_activations = match return_evidence {
+    let mut latent_callable_activations = match return_evidence {
         Some(return_ty) => resolve_escaping_callable_activations_from_type(
             world,
             activation,
@@ -196,6 +206,18 @@ pub(super) fn analyze_activation(world: &mut World<'_>, activation: &ActivationK
         ),
         None => Vec::new(),
     };
+    latent_callable_activations.extend(resolve_polymorphic_closure_boundary_activations(
+        world,
+        activation,
+        &lowered_body,
+        &reachable_clauses,
+        &reachable_entries,
+        &value_types,
+        &analysis_calls,
+        &mut reads,
+        &mut waits,
+        &mut follow_up,
+    ));
 
     let mut emitted_activations = HashSet::new();
     let mut emitted_executables = HashSet::new();
@@ -1564,6 +1586,83 @@ fn resolve_escaping_callable_activations_from_type(
         }
     }
     activations
+}
+
+fn resolve_polymorphic_closure_boundary_activations(
+    world: &mut World<'_>,
+    caller: &ActivationKey,
+    lowered_body: &LoweredBody,
+    reachable_clauses: &[u32],
+    reachable_entries: &HashSet<super::super::body::ControlEntryId>,
+    value_types: &ValueTypes,
+    calls: &[CallEmission],
+    reads: &mut Vec<FactKey>,
+    waits: &mut HashSet<FactKey>,
+    follow_up: &mut HashSet<Job>,
+) -> Vec<ActivationContribution> {
+    let LoweredBody::Clauses { clauses, entries, .. } = lowered_body else {
+        return Vec::new();
+    };
+
+    let mut callsite_uses = HashMap::<CallSiteId, ClosureBoundaryUse>::new();
+    for call in calls {
+        let usage = match call.summary.as_ref().and_then(CallSiteSummary::single_target) {
+            Some(target) => ClosureBoundaryUse::Resolved(target.input_types.clone()),
+            None => ClosureBoundaryUse::Opaque,
+        };
+        callsite_uses.insert(call.key.callsite, usage);
+    }
+
+    let mut value_uses = HashMap::<ValueId, HashSet<ClosureBoundaryUse>>::new();
+    let mut note_tail = |tail: &LoweredTail| {
+        let LoweredTail::ClosureCall { callee, callsite, .. } = tail else {
+            return;
+        };
+        let Some(usage) = callsite_uses.get(callsite).cloned() else {
+            return;
+        };
+        value_uses.entry(*callee).or_default().insert(usage);
+    };
+
+    for clause_id in reachable_clauses {
+        let Some(clause) = clauses.get(*clause_id as usize) else {
+            continue;
+        };
+        let Some(entry) = entries.get(clause.entry.as_u32() as usize) else {
+            continue;
+        };
+        note_tail(&entry.tail);
+    }
+    for entry_id in reachable_entries {
+        let Some(entry) = entries.get(entry_id.as_u32() as usize) else {
+            continue;
+        };
+        note_tail(&entry.tail);
+    }
+
+    let mut seen = HashSet::new();
+    let mut activations = Vec::new();
+    for (value, uses) in value_uses {
+        if !closure_value_needs_runtime_boundary(&uses) {
+            continue;
+        }
+        let Some(&ty) = value_types.get(&value) else {
+            continue;
+        };
+        for activation in resolve_callable_activations_from_type(world, caller, ty, reads, waits, follow_up) {
+            if seen.insert(activation.key.clone()) {
+                activations.push(activation);
+            }
+        }
+    }
+    activations
+}
+
+fn closure_value_needs_runtime_boundary(uses: &HashSet<ClosureBoundaryUse>) -> bool {
+    if uses.iter().any(|usage| matches!(usage, ClosureBoundaryUse::Opaque)) {
+        return true;
+    }
+    uses.len() > 1
 }
 
 fn collect_escaping_callable_types(world: &mut World<'_>, ty: Ty, seen: &mut HashSet<Ty>, out: &mut Vec<Ty>) {

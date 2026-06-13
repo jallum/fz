@@ -15,8 +15,7 @@ use crate::dispatch_matrix::pattern::{PatternDispatchPlan, PatternGuardDispatch,
 use crate::exec::runtime::DbgCapture;
 use crate::fz_ir::{
     Block as IrBlock, CallsiteId as IrCallsiteId, CallsiteIdent, Cont as IrCont, ExternTy, ExternalCallEdge, FnId,
-    FnIr as IrFn, Module as IrModule, Prim as IrPrim, ReceiveAfter, ReceiveClause, ReceiveJoinMode, Stmt as IrStmt,
-    Term as IrTerm,
+    FnIr as IrFn, Module as IrModule, Prim as IrPrim, ReceiveAfter, ReceiveClause, Stmt as IrStmt, Term as IrTerm,
 };
 use crate::ir_interp::{
     tests_support_dtor_fired, tests_support_dtor_last_payload, tests_support_dtor_reset, tests_support_lock,
@@ -3813,6 +3812,125 @@ fn compiler2_native_program_keeps_the_closed_enum_reduce_callable_entries() {
 }
 
 #[test]
+fn compiler2_native_program_keeps_distinct_callable_boundaries_for_same_surface_when_capture_identity_differs() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&[], capture.handler());
+    let functions = FunctionCapture::new();
+    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    let native = NativeProgramCapture::new();
+    tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/callable_boundary_capture_identity.fz".to_string()),
+        text: r#"
+fn reduce_plain([], acc, _reducer), do: acc
+fn reduce_plain([head | tail], acc, reducer), do: reduce_plain(tail, reducer.(head, acc), reducer)
+
+fn gt2(x), do: x > 2
+fn even(x), do: (x % 2) == 0
+
+fn make_reducer(predicate) do
+  fn (entry, acc) ->
+    if predicate.(entry), do: acc + 1, else: acc
+  end
+end
+
+fn main() do
+  xs = [1, 2, 3, 4]
+  reduce_plain(xs, 0, make_reducer(gt2)) + reduce_plain(xs, 0, make_reducer(even))
+end
+"#
+        .to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    let outcome = compiler.drive();
+    if !matches!(outcome, DriveOutcome::Resolved) {
+        let message = capture
+            .last(&["fz", "diag", "error"])
+            .map(|event| metadata_str(&event, "message").to_string())
+            .unwrap_or_else(|| "<missing diagnostic>".to_string());
+        panic!(
+            "native lowering should preserve distinct callable-boundary identities when the same reducer surface captures different predicates: {outcome:?}; diagnostic={message}"
+        );
+    }
+
+    let make_reducer_id = function_id(&functions, "make_reducer", 1);
+    let reducer_id = generated_functions_owned_by(&functions, make_reducer_id)
+        .into_iter()
+        .find(|record| record.arity == 2)
+        .expect("make_reducer/1 should generate the reducer lambda")
+        .function_id;
+
+    let program = native.last(root_id).program;
+    let reducer_boundaries = program
+        .callable_boundaries
+        .iter()
+        .filter(|entry| entry.target.activation.function == reducer_id)
+        .collect::<Vec<_>>();
+    assert!(
+        reducer_boundaries.iter().all(|entry| entry.capture_count == 1),
+        "the reducer callable should capture exactly one predicate closure",
+    );
+
+    let capture_identities = reducer_boundaries
+        .iter()
+        .map(|entry| entry.target.activation.input[..entry.capture_count].to_vec())
+        .collect::<HashSet<_>>();
+    assert_eq!(
+        capture_identities.len(),
+        2,
+        "the reducer lambda should keep two distinct captured predicate identities in the native callable-boundary inventory",
+    );
+
+    let mut outward_surface_groups: Vec<Vec<&crate::compiler2::artifact::NativeCallableBoundary>> = Vec::new();
+    for boundary in &reducer_boundaries {
+        if let Some(group) = outward_surface_groups.iter_mut().find(|group| {
+            let representative = group[0];
+            representative.arg_reprs == boundary.arg_reprs && representative.return_abi == boundary.return_abi
+        }) {
+            group.push(*boundary);
+        } else {
+            outward_surface_groups.push(vec![*boundary]);
+        }
+    }
+    assert!(
+        outward_surface_groups.iter().any(|group| {
+            group
+                .iter()
+                .map(|entry| entry.target.activation.input[..entry.capture_count].to_vec())
+                .collect::<HashSet<_>>()
+                .len()
+                == 2
+        }),
+        "at least one shared outward callable surface should keep both predicate capture identities distinct instead of collapsing them to one surface-only boundary",
+    );
+
+    let used_boundaries = native_callable_boundary_uses(&program);
+    let used_reducer_boundaries = reducer_boundaries
+        .iter()
+        .copied()
+        .filter(|entry| used_boundaries.contains(&entry.id()))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        used_reducer_boundaries
+            .iter()
+            .map(|entry| entry.target.activation.input[..entry.capture_count].to_vec())
+            .collect::<HashSet<_>>()
+            .len(),
+        2,
+        "native callable values should keep both captured predicate identities alive instead of collapsing them to one surface-only boundary",
+    );
+}
+
+#[test]
 fn compiler2_native_program_joins_callable_resume_before_materializing_closure_call() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
@@ -3856,18 +3974,6 @@ fn compiler2_native_program_joins_callable_resume_before_materializing_closure_c
         "native callable inventory should include both concrete functions flowing through the case join",
     );
 
-    let branch_entry_targets = program
-        .callable_boundaries
-        .iter()
-        .filter_map(|entry| {
-            matches!(entry.target.activation.function, id if id == add_a_id || id == add_b_id).then_some(entry.id())
-        })
-        .collect::<HashSet<_>>();
-    let constructor_targets = native_callable_boundary_uses(&program);
-    assert!(
-        branch_entry_targets.is_subset(&constructor_targets),
-        "native closure values for both case branches should resolve to callable-boundary candidates",
-    );
     assert!(
         native_closure_call_targets(&program)
             .into_iter()
@@ -5098,6 +5204,46 @@ end
         ["22"],
         "receive outcome join mode must be stable across mixed direct-return and explicit-continuation paths",
     );
+}
+
+#[test]
+fn compiler2_native_multi_relay_delivers_resume_values_through_continuation_abi() {
+    let tel = ConfiguredTelemetry::new();
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures2/behavior/multi_relay.fz".to_string()),
+        text: include_str!("../../fixtures2/behavior/multi_relay.fz").to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    compiler.run_root_jit(root_id).unwrap_or_else(|error| {
+        panic!("compiler2 native multi_relay should deliver receive results through continuation ABI: {error}");
+    });
+}
+
+#[test]
+fn compiler2_native_actor_ring_delivers_resume_values_through_continuation_abi() {
+    let tel = ConfiguredTelemetry::new();
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures2/behavior/actor_ring.fz".to_string()),
+        text: include_str!("../../fixtures2/behavior/actor_ring.fz").to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    compiler.run_root_jit(root_id).unwrap_or_else(|error| {
+        panic!("compiler2 native actor_ring should deliver receive results through continuation ABI: {error}");
+    });
 }
 
 #[test]
@@ -6507,101 +6653,6 @@ fn compiler2_lowered_body_keeps_clause_projections_separate_from_entry_matching(
             .iter()
             .all(|step| matches!(step, LoweredStep::TupleField { .. } | LoweredStep::SplitList { .. })),
         "entry-clause lowering should keep only projection steps and not repeat matcher asserts",
-    );
-}
-
-#[test]
-fn compiler2_lowering_publishes_receive_join_mode_before_backend_lowering() {
-    let tel = ConfiguredTelemetry::new();
-    let capture = Capture::new();
-    tel.attach(&[], capture.handler());
-    let outputs = OutputCapture::new();
-    tel.attach(&["fz", "compiler2", "job"], outputs.handler());
-    let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function"], functions.handler());
-    let bodies = LoweredBodyCapture::new();
-    tel.attach(&["fz", "compiler2", "lowered_body", "defined"], bodies.handler());
-
-    let mut compiler = Compiler2::new(&tel);
-    let code_id = compiler.submit_code(CodeSubmission {
-        name: Some("receive_join_mode_lowering.fz".to_string()),
-        text: r#"
-fn add2(x) do
-  x + 2
-end
-
-fn direct() do
-  me = self()
-  send(me, 20)
-  receive do
-    v -> v + 2
-  end
-end
-
-fn branchy() do
-  me = self()
-  send(me, 20)
-  receive do
-    v ->
-      if true do
-        add2(v)
-      else
-        add2(v)
-      end
-  end
-end
-"#
-        .to_string(),
-    });
-
-    assert_resolved(
-        compiler.drive(),
-        "first drive should index the receive join-mode fixture",
-    );
-    assert!(
-        compiler.demand(Job::ScopeCode(code_id)),
-        "receive join-mode inspection still needs defined functions",
-    );
-    assert_resolved(
-        compiler.drive(),
-        "second drive should define the receive join-mode fixture",
-    );
-
-    let direct_id = function_id(&functions, "direct", 0);
-    assert!(
-        compiler.demand(Job::LowerFunction(direct_id)),
-        "direct/0 should be demandable for lowering",
-    );
-    let branchy_id = function_id(&functions, "branchy", 0);
-    assert!(
-        compiler.demand(Job::LowerFunction(branchy_id)),
-        "branchy/0 should be demandable for lowering",
-    );
-    assert_resolved(
-        compiler.drive(),
-        "lowering should publish receive outcome join modes before backend/native lowering",
-    );
-
-    let lowered_outputs = outputs
-        .take(Job::LowerFunction(direct_id))
-        .expect("LowerFunction job effects for direct/0");
-    assert!(
-        lowered_outputs.contains(&presence(FactKey::LoweredBody(direct_id), true)),
-        "lowering direct/0 should publish its lowered body fact",
-    );
-
-    let direct_body = lowered_body(&bodies, direct_id);
-    let branchy_body = lowered_body(&bodies, branchy_id);
-
-    assert_eq!(
-        lowered_receive_join_mode(&direct_body),
-        ReceiveJoinMode::OuterCont,
-        "receive outcomes that return directly should publish outer-cont join mode at lowering time",
-    );
-    assert_eq!(
-        lowered_receive_join_mode(&branchy_body),
-        ReceiveJoinMode::OuterCont,
-        "receive outcomes should publish graph-driven join mode during lowering instead of letting later stages guess from the outcome entry tail alone",
     );
 }
 
@@ -9097,24 +9148,6 @@ fn lowered_body(capture: &LoweredBodyCapture, function: FunctionId) -> LoweredBo
         .unwrap_or_else(|| panic!("lowered_body.defined for {function:?}"))
 }
 
-fn lowered_receive_join_mode(body: &LoweredBody) -> ReceiveJoinMode {
-    let LoweredBody::Clauses { entries, .. } = body else {
-        panic!("expected clause-based lowered body");
-    };
-    let receive = entries
-        .iter()
-        .find_map(|entry| match &entry.tail {
-            LoweredTail::Receive(receive) => Some(receive.as_ref()),
-            _ => None,
-        })
-        .unwrap_or_else(|| panic!("expected lowered body to contain a receive tail"));
-    let outcome = receive
-        .clauses
-        .first()
-        .unwrap_or_else(|| panic!("expected receive to publish at least one outcome clause"));
-    outcome.join_mode
-}
-
 fn summary_has_callee(summary: &CallSiteSummary, callee: SelectedCallee) -> bool {
     summary.targets.iter().any(|target| target.callee == callee)
 }
@@ -9501,7 +9534,6 @@ fn native_terms_match(left: &IrTerm, right: &IrTerm) -> bool {
                 clauses: left_clauses,
                 dispatch: left_dispatch,
                 after: left_after,
-                resume: left_resume,
                 pinned: left_pinned,
                 captures: left_captures,
             },
@@ -9510,7 +9542,6 @@ fn native_terms_match(left: &IrTerm, right: &IrTerm) -> bool {
                 clauses: right_clauses,
                 dispatch: right_dispatch,
                 after: right_after,
-                resume: right_resume,
                 pinned: right_pinned,
                 captures: right_captures,
             },
@@ -9522,7 +9553,6 @@ fn native_terms_match(left: &IrTerm, right: &IrTerm) -> bool {
                     .zip(right_clauses.iter())
                     .all(|(left, right)| native_receive_clauses_match(left, right))
                 && left_dispatch == right_dispatch
-                && left_resume == right_resume
                 && native_receive_after_match(left_after.as_ref(), right_after.as_ref())
                 && left_pinned == right_pinned
                 && left_captures == right_captures
@@ -9540,7 +9570,6 @@ fn native_receive_clauses_match(left: &ReceiveClause, right: &ReceiveClause) -> 
         && left.bound_names == right.bound_names
         && left.guard == right.guard
         && left.body == right.body
-        && left.join_mode == right.join_mode
         && left.span == right.span
 }
 
@@ -9551,7 +9580,6 @@ fn native_receive_after_match(left: Option<&ReceiveAfter>, right: Option<&Receiv
             native_callsite_idents_match(&left.ident, &right.ident)
                 && left.timeout == right.timeout
                 && left.body == right.body
-                && left.join_mode == right.join_mode
                 && left.span == right.span
         }
         _ => false,

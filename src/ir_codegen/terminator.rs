@@ -431,7 +431,6 @@ pub(crate) fn emit_terminator<M: cranelift_module::Module, T: Types<Ty = Ty> + C
         Term::ReceiveMatched {
             clauses,
             after,
-            resume: _,
             pinned,
             captures,
             dispatch: _,

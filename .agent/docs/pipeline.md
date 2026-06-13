@@ -293,6 +293,11 @@ Opaque closure construction materializes the settled callable boundary published
 by native lowering; singleton-known closure calls bypass that boundary only
 through an explicit `direct_target`, and direct paths still adapt the return
 lane through the same return-shape machinery as any other native seam.
+That constructor obligation is use-driven: a callable value earns a runtime
+callable boundary when it crosses an explicit callable-boundary argument seam,
+escapes as a value, or is reused opaquely / at multiple visible closure-call
+surfaces. A singleton-known direct closure call does not, by itself, create a
+new constructor obligation.
 Machine closure-target entry stays `(args..., self, cont)`; plain native bodies
 stay `(args..., cont)`.
 

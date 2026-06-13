@@ -974,7 +974,6 @@ fn native_terms_equal(left: &IrTerm, right: &IrTerm) -> bool {
                 clauses: left_clauses,
                 dispatch: left_dispatch,
                 after: left_after,
-                resume: left_resume,
                 pinned: left_pinned,
                 captures: left_captures,
             },
@@ -983,7 +982,6 @@ fn native_terms_equal(left: &IrTerm, right: &IrTerm) -> bool {
                 clauses: right_clauses,
                 dispatch: right_dispatch,
                 after: right_after,
-                resume: right_resume,
                 pinned: right_pinned,
                 captures: right_captures,
             },
@@ -995,7 +993,6 @@ fn native_terms_equal(left: &IrTerm, right: &IrTerm) -> bool {
                     .zip(right_clauses.iter())
                     .all(|(left, right)| native_receive_clauses_equal(left, right))
                 && left_dispatch == right_dispatch
-                && left_resume == right_resume
                 && native_receive_after_equal(left_after.as_ref(), right_after.as_ref())
                 && left_pinned == right_pinned
                 && left_captures == right_captures
@@ -1013,7 +1010,6 @@ fn native_receive_clauses_equal(left: &IrReceiveClause, right: &IrReceiveClause)
         && left.bound_names == right.bound_names
         && left.guard == right.guard
         && left.body == right.body
-        && left.join_mode == right.join_mode
         && left.span == right.span
 }
 
@@ -1024,7 +1020,6 @@ fn native_receive_after_equal(left: Option<&IrReceiveAfter>, right: Option<&IrRe
             native_callsite_idents_equal(&left.ident, &right.ident)
                 && left.timeout == right.timeout
                 && left.body == right.body
-                && left.join_mode == right.join_mode
                 && left.span == right.span
         }
         _ => false,

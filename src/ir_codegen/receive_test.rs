@@ -7,7 +7,7 @@ use crate::dispatch_matrix::{
     DispatchArm, DispatchEdge, DispatchGraph, DispatchMatrix, DispatchNode, EdgeEvidence, GraphNodeId, Order, Outcome,
     OutcomeId, OutcomeMultiplicity, Region, RegionPredicate, Subject, SubjectId, SubjectSource,
 };
-use crate::fz_ir::{CallsiteIdent, FnId, ReceiveClause, ReceiveJoinMode, Var};
+use crate::fz_ir::{CallsiteIdent, FnId, ReceiveClause, Var};
 use crate::ir_codegen::backend::register_runtime_symbols;
 use crate::ir_codegen::runtime_syms::declare_runtime_symbols;
 use crate::runtime_type_predicate::{self, ObservedSet, RuntimeTypePredicate};
@@ -76,7 +76,6 @@ fn clause_meta(bound_names: Vec<&str>) -> ReceiveClause {
         bound_names: bound_names.into_iter().map(str::to_string).collect(),
         guard: None,
         body: FnId(0),
-        join_mode: ReceiveJoinMode::OuterCont,
         span: Span::DUMMY,
     }
 }

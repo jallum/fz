@@ -8,7 +8,6 @@ use crate::ast::{BinOp, BitType, Endian, TypeExprBody, UnOp};
 use crate::compiler::source::Span;
 use crate::dispatch_matrix::pattern::PatternDispatchPlan;
 use crate::fz_ir::ExternTy;
-use crate::fz_ir::ReceiveJoinMode;
 use crate::type_expr::ResolvedSpecDecl;
 
 use super::identity::{FunctionId, ModuleId};
@@ -184,7 +183,6 @@ pub struct ReceiveClause {
     pub span: Span,
     pub entry: ControlEntryId,
     pub bound_names: Vec<String>,
-    pub join_mode: ReceiveJoinMode,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -192,7 +190,6 @@ pub struct ReceiveAfter {
     pub span: Span,
     pub timeout: ValueId,
     pub entry: ControlEntryId,
-    pub join_mode: ReceiveJoinMode,
 }
 
 #[derive(Debug, Clone, PartialEq)]

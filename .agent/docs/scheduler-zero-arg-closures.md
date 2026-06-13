@@ -98,13 +98,10 @@ the callee's continuation. Passing the receiver's outer continuation straight
 through would let the callee deliver on the wrong ABI lane and corrupt the
 resumed receive path.
 
-The parked template also publishes how the resumed body reaches the
-post-`receive` join:
-- `OuterCont`: install the join as the template's `outer_cont`.
-- `ExplicitContinuation`: the resumed body already hands the join off via an
-  explicit continuation, so the template keeps the ambient outer continuation.
-This is a property of the reachable receive-outcome graph, not just the first
-operation in the clause body.
+The parked template always resumes clause/after bodies through an explicit
+continuation closure for the post-`receive` join. There is one receive-join
+contract now: outcome code hands the joined value off explicitly instead of
+relying on an alternate `outer_cont` mode.
 
 ```text
 message matches clause k:
