@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-go4.13.3"
+  ],
   "created": "2026-06-13T16:28:49Z",
   "description": "Goal\nReplace the narrow `OwnedConsReuse` physical capability with a correct generalized reusable-cons-cell data model in shared IR.\n\nWhy\nThe existing names and helpers encode the old tail-only idea: `OwnedConsReuse { head }`, `record_owned_cons_reuse_capability`, and `owned_cons_reuse_source_for_head`. After the runtime primitive can rewrite head+tail, this model is misleading. The fact is not \"the old head can be reused\"; it is \"this semantic value is associated with a physical source cons cell that may be reused when constructing a cons.\" Naming must reflect the invariant, or downstream agents will reintroduce tail-only logic.\n\nData model changes\n- In `src/fz_ir/mod.rs`, replace `PhysicalCapability::OwnedConsReuse { head: Var }` with a generalized name such as `ReusableConsCell { rebuilt_head: Var }` or `ConsReuseSource { rebuilt_head: Var }`.\n- Keep `PhysicalCapabilityFact { source, capability }`, where `source` is the physical source cons var and the capability identifies the semantic/rebuilt-head var that carries the reuse credit.\n- Rename builder/query methods to match the new model, e.g.:\n  - `record_reusable_cons_cell(rebuilt_head, source_cons)`\n  - `reusable_cons_source_for_head(rebuilt_head)`\n- Preserve these invariants:\n  - physical source entry params are recorded in `FnIr.physical_entry_params`;\n  - physical params are ignored by `FnIr::semantic_key` and `semantic_entry_params`;\n  - physical capabilities dedup deterministically;\n  - variable remapping maps both `source` and capability target.\n\nFact-model boundary\nDo not add this to compiler2 semantic facts, `ActivationKey`, `ReturnType`, or `CallSiteSummary`. Reuse is a physical lowering capability. If a future failure proves true cross-executable destination demand is required, extend `ExecutableNeed` deliberately as a separate delivery/physical-need struct in a future ticket; do not do it speculatively here.\n\nReferences\n- `src/fz_ir/mod.rs`: `FnIr.physical_entry_params`, `FnIr.physical_capabilities`, `PhysicalCapability`, builder record/query methods, display output.\n- `src/compiler2/native_codegen/function.rs` and `env.rs`: codegen cache currently indexes owned-cons sources by head var.\n- Existing tests in `tests/fixture_matrix.rs` mention `owned_cons_reuse`, `physical_entry_params`, and old-world strings; update intent, not just text.\n\nDeletion target\nDelete the old `OwnedConsReuse` enum variant and old method names. Do not keep aliases or compatibility helpers.\n\nTests\n- Update/add unit tests around `FnIr::semantic_key`, physical entry params, capability dedup/remap/display.\n- Update existing tests to assert the new model name and invariant.\n- Run the targeted IR/native-codegen tests that compile after this rename.\n\nAcceptance\nThe shared IR has one generalized physical capability vocabulary for reusable cons cells, and the old tail-only/owned-cons naming is gone from production code except in historical docs/comments that are explicitly marked as old-world reference.",
   "id": "fz-go4.13.2",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "IR model: replace tail-only OwnedConsReuse with reusable cons-cell capabilities",
   "type": "task",
-  "updated_at": "2026-06-13T16:28:49Z"
+  "updated_at": "2026-06-13T16:28:50Z"
 }
