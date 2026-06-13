@@ -2,6 +2,7 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-06-13T18:54:34Z",
   "created": "2026-06-12T20:13:36Z",
   "description": "Full cargo test --workspace on 2026-06-12 still times out a narrow set of fixture_matrix legs even after fz-go4.7 disables the rebased-base semantic/runtime failures. Observed failures are exact 3s timeout expirations with empty stderr: lambda_sugars::aot, lambda_sugars::fz2-build, macro_inc::aot, macro_inc::fz2-build, make_ref_distinct::aot, utf8_smart_constructor::aot, vr1_int_arith::aot, vr2_float_arith::aot, vr3_4_typed_capture::aot, vr3_float_args::aot, vr3_int_args::aot, vr4_2_native_call::aot, vr5a_cross_kind_eq::aot, vr5a_typed_eq::aot, vr5b_typed_print::aot, wildcard_then_specific::aot. These passed in narrower runs and failed only in the full workspace run, so the issue is likely timeout sensitivity or cross-test load rather than semantic correctness. Temporary ignores in tests/fixture_matrix.rs must be removed once the timeout model is fixed or the affected fixtures are made robust.",
   "id": "fz-go4.8",
@@ -14,8 +15,8 @@
     }
   ],
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Re-enable timeout-sensitive fixture_matrix AOT legs after investigating workspace-load timeouts",
   "type": "bug",
-  "updated_at": "2026-06-13T18:50:16Z"
+  "updated_at": "2026-06-13T18:54:34Z"
 }
