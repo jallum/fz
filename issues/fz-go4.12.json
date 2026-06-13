@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-13T00:01:01Z",
+  "description": "",
+  "id": "fz-go4.12",
+  "labels": [],
+  "parent": "fz-go4",
+  "priority": 3,
+  "status": "open",
+  "title": "Add fixtures2 filename routing for execution-system discovery",
+  "type": "task",
+  "updated_at": "2026-06-13T00:01:01Z"
+}
