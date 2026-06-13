@@ -112,20 +112,21 @@ pub(super) fn materialize_root(world: &mut World<'_>, root_id: RootId) -> Result
                     .get(executable)
                     .cloned()
                     .expect("settled semantic closure should have runtime demand for every executable"),
-                runtime_params: derive_runtime_param_layout(
-                    world,
-                    executable,
-                    closure
-                        .runtime_demands
-                        .get(executable)
-                        .expect("settled semantic closure should have runtime demand for every executable"),
-                ),
+                runtime_params: RuntimeParamLayout::from_inputs(Vec::new()),
                 value_types: analysis.value_types,
                 effects,
                 body,
                 call_edges,
             },
         );
+    }
+
+    let runtime_params = derive_runtime_param_layouts(world, &executables);
+    for (key, layout) in runtime_params {
+        executables
+            .get_mut(&key)
+            .expect("runtime param layouts should resolve for every materialized executable")
+            .runtime_params = layout;
     }
 
     settle_effects(world, root_id, &mut executables)?;
@@ -1200,72 +1201,475 @@ fn settle_effects(
     }
 }
 
-fn derive_runtime_param_layout(
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DirectCallableWitness {
+    function: FunctionId,
+    capture_tys: Vec<Ty>,
+    capture_reprs: Vec<AbiValueRepr>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CallableWitnessState {
+    Unknown,
+    Exact(DirectCallableWitness),
+    NonDirect,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ExecutableCallableWitnesses {
+    inputs: Vec<CallableWitnessState>,
+    result: CallableWitnessState,
+}
+
+struct ExecutableCallableFacts {
+    callsite_args: HashMap<CallSiteId, Vec<CallArg>>,
+    local_values: HashMap<ValueId, DirectCallableWitness>,
+    params: HashMap<ValueId, usize>,
+    resume_entries: HashMap<ValueId, ControlEntryId>,
+    deliveries: HashMap<ControlEntryId, Vec<DeliverySource>>,
+}
+
+fn derive_runtime_param_layouts(
     world: &mut World<'_>,
-    key: &ExecutableKey,
-    demand: &super::super::semantic::ExecutableRuntimeDemand,
-) -> RuntimeParamLayout {
-    let inputs = key
-        .activation
-        .input
+    executables: &HashMap<ExecutableKey, MaterializedExecutable>,
+) -> HashMap<ExecutableKey, RuntimeParamLayout> {
+    let facts = executable_callable_facts(world, executables);
+    let witnesses = settle_callable_witnesses(executables, &facts);
+    executables
         .iter()
-        .copied()
-        .enumerate()
-        .map(|(semantic_index, ty)| {
-            let demand = demand.input_demands.get(semantic_index).cloned().unwrap_or_default();
-            match demand {
-                super::super::semantic::RuntimeDemand::Ignore => RuntimeInputLayout::Omitted { semantic_index },
-                super::super::semantic::RuntimeDemand::Value => RuntimeInputLayout::Value {
-                    semantic_index,
-                    repr: abi_value_repr(world, ty),
-                },
-                super::super::semantic::RuntimeDemand::TupleFields(fields) => RuntimeInputLayout::TupleFields {
-                    semantic_index,
-                    field_reprs: fields.into_iter().map(|_| AbiValueRepr::ValueRef).collect(),
-                },
-                super::super::semantic::RuntimeDemand::Callable(callable) => {
-                    if callable.opaque || callable.escape {
-                        return RuntimeInputLayout::Value {
+        .map(|(key, executable)| {
+            let inputs = key
+                .activation
+                .input
+                .iter()
+                .copied()
+                .enumerate()
+                .map(|(semantic_index, ty)| {
+                    let demand = executable
+                        .runtime_demand
+                        .input_demands
+                        .get(semantic_index)
+                        .cloned()
+                        .unwrap_or_default();
+                    match demand {
+                        super::super::semantic::RuntimeDemand::Ignore => RuntimeInputLayout::Omitted { semantic_index },
+                        super::super::semantic::RuntimeDemand::Value => RuntimeInputLayout::Value {
                             semantic_index,
-                            repr: AbiValueRepr::ValueRef,
-                        };
+                            repr: abi_value_repr(world, ty),
+                        },
+                        super::super::semantic::RuntimeDemand::TupleFields(fields) => RuntimeInputLayout::TupleFields {
+                            semantic_index,
+                            field_reprs: fields.into_iter().map(|_| AbiValueRepr::ValueRef).collect(),
+                        },
+                        super::super::semantic::RuntimeDemand::Callable(callable) => {
+                            if callable.opaque || callable.escape {
+                                return RuntimeInputLayout::Value {
+                                    semantic_index,
+                                    repr: AbiValueRepr::ValueRef,
+                                };
+                            }
+                            match witnesses.get(key).and_then(|states| states.inputs.get(semantic_index)) {
+                                Some(CallableWitnessState::Exact(witness)) => {
+                                    RuntimeInputLayout::DirectCallableCaptures {
+                                        semantic_index,
+                                        function: witness.function,
+                                        capture_tys: witness.capture_tys.clone(),
+                                        capture_reprs: witness.capture_reprs.clone(),
+                                    }
+                                }
+                                _ => RuntimeInputLayout::Value {
+                                    semantic_index,
+                                    repr: AbiValueRepr::ValueRef,
+                                },
+                            }
+                        }
                     }
-                    let Some(clauses) = world.types_mut().callable_value_clauses(&ty) else {
-                        return RuntimeInputLayout::Value {
-                            semantic_index,
-                            repr: AbiValueRepr::ValueRef,
-                        };
-                    };
-                    let [clause] = clauses.as_slice() else {
-                        return RuntimeInputLayout::Value {
-                            semantic_index,
-                            repr: AbiValueRepr::ValueRef,
-                        };
-                    };
-                    let Some(closure) = &clause.closure else {
-                        return RuntimeInputLayout::Value {
-                            semantic_index,
-                            repr: AbiValueRepr::ValueRef,
-                        };
-                    };
-                    let function = function_id_of_closure_target(closure.target);
-                    let capture_tys = closure.captures.clone();
-                    let capture_reprs = capture_tys
-                        .iter()
-                        .copied()
-                        .map(|capture_ty| abi_value_repr(world, capture_ty))
-                        .collect::<Vec<_>>();
-                    RuntimeInputLayout::DirectCallableCaptures {
-                        semantic_index,
-                        function,
-                        capture_tys,
-                        capture_reprs,
+                })
+                .collect::<Vec<_>>();
+            (key.clone(), RuntimeParamLayout::from_inputs(inputs))
+        })
+        .collect()
+}
+
+fn executable_callable_facts(
+    world: &mut World<'_>,
+    executables: &HashMap<ExecutableKey, MaterializedExecutable>,
+) -> HashMap<ExecutableKey, ExecutableCallableFacts> {
+    executables
+        .iter()
+        .map(|(key, executable)| {
+            let mut local_values = HashMap::new();
+            let mut params = HashMap::new();
+            if let LoweredBody::Clauses { clauses, entries, .. } = &executable.body {
+                for clause in clauses {
+                    for (semantic_index, value) in clause.params.iter().copied().enumerate() {
+                        params.insert(value, semantic_index);
                     }
+                    collect_local_callable_values(world, executable, &clause.projections, &mut local_values);
+                }
+                for entry in entries {
+                    collect_local_callable_values(world, executable, &entry.steps, &mut local_values);
                 }
             }
+            let resume_entries = resume_values(&executable.body)
+                .into_iter()
+                .map(|(entry, value)| (value, entry))
+                .collect::<HashMap<_, _>>();
+            (
+                key.clone(),
+                ExecutableCallableFacts {
+                    callsite_args: collect_callsite_args(&executable.body),
+                    local_values,
+                    params,
+                    resume_entries,
+                    deliveries: deliveries(&executable.body),
+                },
+            )
         })
-        .collect::<Vec<_>>();
-    RuntimeParamLayout::from_inputs(inputs)
+        .collect()
+}
+
+fn collect_local_callable_values(
+    world: &mut World<'_>,
+    executable: &MaterializedExecutable,
+    steps: &[LoweredStep],
+    out: &mut HashMap<ValueId, DirectCallableWitness>,
+) {
+    for step in steps {
+        let witness = match step {
+            LoweredStep::FunctionRef { value, function } => Some((
+                *value,
+                DirectCallableWitness {
+                    function: *function,
+                    capture_tys: Vec::new(),
+                    capture_reprs: Vec::new(),
+                },
+            )),
+            LoweredStep::Lambda {
+                value,
+                function,
+                captures,
+            } => {
+                let capture_tys = captures
+                    .iter()
+                    .map(|capture| {
+                        executable
+                            .value_types
+                            .get(capture)
+                            .copied()
+                            .unwrap_or_else(|| world.types_mut().any())
+                    })
+                    .collect::<Vec<_>>();
+                let capture_reprs = capture_tys
+                    .iter()
+                    .copied()
+                    .map(|ty| abi_value_repr(world, ty))
+                    .collect::<Vec<_>>();
+                Some((
+                    *value,
+                    DirectCallableWitness {
+                        function: *function,
+                        capture_tys,
+                        capture_reprs,
+                    },
+                ))
+            }
+            _ => None,
+        };
+        if let Some((value, witness)) = witness {
+            out.insert(value, witness);
+        }
+    }
+}
+
+fn settle_callable_witnesses(
+    executables: &HashMap<ExecutableKey, MaterializedExecutable>,
+    facts: &HashMap<ExecutableKey, ExecutableCallableFacts>,
+) -> HashMap<ExecutableKey, ExecutableCallableWitnesses> {
+    let mut states = executables
+        .keys()
+        .map(|key| {
+            (
+                key.clone(),
+                ExecutableCallableWitnesses {
+                    inputs: vec![CallableWitnessState::Unknown; key.activation.input.len()],
+                    result: CallableWitnessState::Unknown,
+                },
+            )
+        })
+        .collect::<HashMap<_, _>>();
+
+    loop {
+        let next = executables
+            .iter()
+            .map(|(key, executable)| {
+                (
+                    key.clone(),
+                    ExecutableCallableWitnesses {
+                        inputs: derive_input_callable_witnesses(key, executable, executables, facts, &states),
+                        result: derive_result_callable_witness(key, executable, facts, &states),
+                    },
+                )
+            })
+            .collect::<HashMap<_, _>>();
+        if next == states {
+            return next;
+        }
+        states = next;
+    }
+}
+
+fn derive_input_callable_witnesses(
+    key: &ExecutableKey,
+    executable: &MaterializedExecutable,
+    executables: &HashMap<ExecutableKey, MaterializedExecutable>,
+    facts: &HashMap<ExecutableKey, ExecutableCallableFacts>,
+    states: &HashMap<ExecutableKey, ExecutableCallableWitnesses>,
+) -> Vec<CallableWitnessState> {
+    executable
+        .runtime_demand
+        .input_demands
+        .iter()
+        .enumerate()
+        .map(|(semantic_index, demand)| {
+            let super::super::semantic::RuntimeDemand::Callable(callable) = demand else {
+                return CallableWitnessState::NonDirect;
+            };
+            if callable.opaque || callable.escape || callable.resolved.is_empty() {
+                return CallableWitnessState::NonDirect;
+            }
+            let mut joined = CallableWitnessState::Unknown;
+            for (caller_key, caller) in executables {
+                let Some(caller_facts) = facts.get(caller_key) else {
+                    continue;
+                };
+                for (callsite, edge) in &caller.call_edges {
+                    let CallTarget::Local(target) = &edge.callee else {
+                        continue;
+                    };
+                    if target != key {
+                        continue;
+                    }
+                    let Some(args) = caller_facts.callsite_args.get(callsite) else {
+                        continue;
+                    };
+                    let capture_prefix = key.activation.input.len().saturating_sub(args.len());
+                    if semantic_index < capture_prefix {
+                        continue;
+                    }
+                    let arg_index = semantic_index - capture_prefix;
+                    let Some(arg) = args.get(arg_index) else {
+                        continue;
+                    };
+                    let observed = resolve_value_callable_witness(
+                        caller_key,
+                        caller,
+                        facts,
+                        states,
+                        arg.value,
+                        &mut HashSet::new(),
+                    );
+                    joined = join_callable_witness(joined, observed);
+                }
+            }
+            joined
+        })
+        .collect()
+}
+
+fn derive_result_callable_witness(
+    key: &ExecutableKey,
+    executable: &MaterializedExecutable,
+    facts: &HashMap<ExecutableKey, ExecutableCallableFacts>,
+    states: &HashMap<ExecutableKey, ExecutableCallableWitnesses>,
+) -> CallableWitnessState {
+    let super::super::semantic::RuntimeDemand::Callable(callable) = &executable.runtime_demand.return_demand else {
+        return CallableWitnessState::NonDirect;
+    };
+    if callable.opaque || callable.escape || callable.resolved.is_empty() {
+        return CallableWitnessState::NonDirect;
+    }
+    let LoweredBody::Clauses { clauses, entries, .. } = &executable.body else {
+        return CallableWitnessState::NonDirect;
+    };
+    let mut joined = CallableWitnessState::Unknown;
+    for clause in clauses {
+        let observed = resolve_entry_return_callable_witness(
+            key,
+            executable,
+            entries,
+            clause.entry,
+            facts,
+            states,
+            &mut HashSet::new(),
+        );
+        joined = join_callable_witness(joined, observed);
+    }
+    joined
+}
+
+fn resolve_entry_return_callable_witness(
+    key: &ExecutableKey,
+    executable: &MaterializedExecutable,
+    entries: &[LoweredEntry],
+    entry_id: ControlEntryId,
+    facts: &HashMap<ExecutableKey, ExecutableCallableFacts>,
+    states: &HashMap<ExecutableKey, ExecutableCallableWitnesses>,
+    seen: &mut HashSet<ControlEntryId>,
+) -> CallableWitnessState {
+    if !seen.insert(entry_id) {
+        return CallableWitnessState::Unknown;
+    }
+    let entry = &entries[entry_id.as_u32() as usize];
+    let resolved = match &entry.tail {
+        LoweredTail::Value { value, dest } => match dest {
+            ControlDestination::Return => {
+                resolve_value_callable_witness(key, executable, facts, states, *value, &mut HashSet::new())
+            }
+            ControlDestination::Deliver(target) => {
+                resolve_entry_return_callable_witness(key, executable, entries, *target, facts, states, seen)
+            }
+        },
+        LoweredTail::DirectCall { callsite, dest, .. } | LoweredTail::ClosureCall { callsite, dest, .. } => {
+            match dest {
+                ControlDestination::Return => callsite_return_callable_witness(executable, *callsite, states),
+                ControlDestination::Deliver(target) => {
+                    resolve_entry_return_callable_witness(key, executable, entries, *target, facts, states, seen)
+                }
+            }
+        }
+        LoweredTail::If {
+            then_entry, else_entry, ..
+        } => join_callable_witness(
+            resolve_entry_return_callable_witness(key, executable, entries, *then_entry, facts, states, seen),
+            resolve_entry_return_callable_witness(key, executable, entries, *else_entry, facts, states, seen),
+        ),
+        LoweredTail::Dispatch { dispatch, .. } => {
+            let mut joined = resolve_entry_return_callable_witness(
+                key,
+                executable,
+                entries,
+                dispatch.miss_entry,
+                facts,
+                states,
+                seen,
+            );
+            for arm_entry in &dispatch.arm_entries {
+                joined = join_callable_witness(
+                    joined,
+                    resolve_entry_return_callable_witness(key, executable, entries, *arm_entry, facts, states, seen),
+                );
+            }
+            joined
+        }
+        LoweredTail::Receive(receive) => {
+            let mut joined = CallableWitnessState::Unknown;
+            for clause in &receive.clauses {
+                joined = join_callable_witness(
+                    joined,
+                    resolve_entry_return_callable_witness(key, executable, entries, clause.entry, facts, states, seen),
+                );
+            }
+            if let Some(after) = &receive.after {
+                joined = join_callable_witness(
+                    joined,
+                    resolve_entry_return_callable_witness(key, executable, entries, after.entry, facts, states, seen),
+                );
+            }
+            joined
+        }
+        LoweredTail::Halt { .. } => CallableWitnessState::NonDirect,
+    };
+    seen.remove(&entry_id);
+    resolved
+}
+
+fn resolve_value_callable_witness(
+    key: &ExecutableKey,
+    executable: &MaterializedExecutable,
+    facts: &HashMap<ExecutableKey, ExecutableCallableFacts>,
+    states: &HashMap<ExecutableKey, ExecutableCallableWitnesses>,
+    value: ValueId,
+    seen_entries: &mut HashSet<ControlEntryId>,
+) -> CallableWitnessState {
+    let Some(fact) = facts.get(key) else {
+        return CallableWitnessState::NonDirect;
+    };
+    if let Some(witness) = fact.local_values.get(&value) {
+        return CallableWitnessState::Exact(witness.clone());
+    }
+    if let Some(&semantic_index) = fact.params.get(&value) {
+        return states
+            .get(key)
+            .and_then(|state| state.inputs.get(semantic_index))
+            .cloned()
+            .unwrap_or(CallableWitnessState::Unknown);
+    }
+    if let Some(&entry_id) = fact.resume_entries.get(&value) {
+        return resolve_resume_callable_witness(key, executable, entry_id, facts, states, seen_entries);
+    }
+    CallableWitnessState::NonDirect
+}
+
+fn resolve_resume_callable_witness(
+    key: &ExecutableKey,
+    executable: &MaterializedExecutable,
+    entry_id: ControlEntryId,
+    facts: &HashMap<ExecutableKey, ExecutableCallableFacts>,
+    states: &HashMap<ExecutableKey, ExecutableCallableWitnesses>,
+    seen_entries: &mut HashSet<ControlEntryId>,
+) -> CallableWitnessState {
+    if !seen_entries.insert(entry_id) {
+        return CallableWitnessState::Unknown;
+    }
+    let Some(fact) = facts.get(key) else {
+        return CallableWitnessState::NonDirect;
+    };
+    let mut joined = CallableWitnessState::Unknown;
+    for delivery in fact.deliveries.get(&entry_id).into_iter().flatten() {
+        let observed = match delivery {
+            DeliverySource::Value(value) => {
+                resolve_value_callable_witness(key, executable, facts, states, *value, seen_entries)
+            }
+            DeliverySource::DirectCall(callsite) | DeliverySource::ClosureCall(callsite) => {
+                callsite_return_callable_witness(executable, *callsite, states)
+            }
+        };
+        joined = join_callable_witness(joined, observed);
+    }
+    seen_entries.remove(&entry_id);
+    joined
+}
+
+fn callsite_return_callable_witness(
+    executable: &MaterializedExecutable,
+    callsite: CallSiteId,
+    states: &HashMap<ExecutableKey, ExecutableCallableWitnesses>,
+) -> CallableWitnessState {
+    let Some(edge) = executable.call_edges.get(&callsite) else {
+        return CallableWitnessState::NonDirect;
+    };
+    match &edge.callee {
+        CallTarget::Local(callee) => states
+            .get(callee)
+            .map(|state| state.result.clone())
+            .unwrap_or(CallableWitnessState::Unknown),
+        CallTarget::ProviderBoundary(_) => CallableWitnessState::NonDirect,
+    }
+}
+
+fn join_callable_witness(left: CallableWitnessState, right: CallableWitnessState) -> CallableWitnessState {
+    match (left, right) {
+        (CallableWitnessState::NonDirect, _) | (_, CallableWitnessState::NonDirect) => CallableWitnessState::NonDirect,
+        (CallableWitnessState::Unknown, other) | (other, CallableWitnessState::Unknown) => other,
+        (CallableWitnessState::Exact(left), CallableWitnessState::Exact(right)) => {
+            if left == right {
+                CallableWitnessState::Exact(left)
+            } else {
+                CallableWitnessState::NonDirect
+            }
+        }
+    }
 }
 
 fn build_executable_abi_plan(
@@ -2120,11 +2524,22 @@ fn resolve_callable_entries_for_type(
                 continue;
             }
             matched = true;
+            let capture_reprs = closure
+                .captures
+                .iter()
+                .copied()
+                .map(|capture_ty| abi_value_repr(world, capture_ty))
+                .collect::<Vec<_>>();
+            let arg_reprs = target.activation.input[capture_count..]
+                .iter()
+                .copied()
+                .map(|arg_ty| abi_value_repr(world, arg_ty))
+                .collect::<Vec<_>>();
             entries.push(CallableEntry {
                 target: target.clone(),
                 capture_count,
-                capture_reprs: target_executable.param_reprs[..capture_count].to_vec(),
-                arg_reprs: target_executable.param_reprs[capture_count..].to_vec(),
+                capture_reprs,
+                arg_reprs,
                 return_ty: target_executable.return_ty,
                 return_abi: target_executable.return_abi.clone(),
             });

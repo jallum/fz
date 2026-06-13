@@ -28,21 +28,28 @@ pub(super) struct RuntimeDemandClosure {
     pub latent_executables: HashSet<ExecutableKey>,
 }
 
+struct DerivedExecutableDemand {
+    demand: ExecutableRuntimeDemand,
+    call_return_demands: HashMap<CallSiteId, RuntimeDemand>,
+}
+
 pub(super) fn settle_runtime_demands(
     world: &mut World<'_>,
+    entry: &ExecutableKey,
     executables: &HashSet<ExecutableKey>,
     reads: &mut Vec<FactKey>,
     waits: &mut HashSet<FactKey>,
     follow_up: &mut HashSet<Job>,
 ) -> Result<Option<RuntimeDemandClosure>, FatalError> {
     let facts = collect_executable_facts(world, executables);
+    let locally_called = locally_called_executables(&facts);
     let mut demands = executables
         .iter()
         .map(|executable| {
             (
                 executable.clone(),
                 ExecutableRuntimeDemand {
-                    return_demand: runtime_demand_for_executable_need(executable.need),
+                    return_demand: base_return_demand(executable, entry, &locally_called),
                     input_demands: vec![RuntimeDemand::Ignore; executable.activation.input.len()],
                     ..ExecutableRuntimeDemand::default()
                 },
@@ -51,16 +58,20 @@ pub(super) fn settle_runtime_demands(
         .collect::<HashMap<_, _>>();
 
     loop {
-        let mut changed = false;
         let mut next = HashMap::new();
+        let mut observed_call_returns = HashMap::new();
         for executable in executables {
             let facts = facts
                 .get(executable)
                 .expect("runtime demand closure should have facts for every executable");
-            let demand = derive_executable_runtime_demand(world, executable, facts, &demands);
-            changed |= demands.get(executable) != Some(&demand);
-            next.insert(executable.clone(), demand);
+            let derived = derive_executable_runtime_demand(world, executable, facts, &demands);
+            next.insert(executable.clone(), derived.demand);
+            observed_call_returns.insert(executable.clone(), derived.call_return_demands);
         }
+        propagate_call_return_demands(&facts, &observed_call_returns, &mut next);
+        let changed = executables
+            .iter()
+            .any(|executable| demands.get(executable) != next.get(executable));
         demands = next;
         if !changed {
             break;
@@ -118,17 +129,91 @@ fn collect_executable_facts(
         .collect()
 }
 
+fn locally_called_executables(facts: &HashMap<ExecutableKey, ExecutableFacts>) -> HashSet<ExecutableKey> {
+    let mut called = HashSet::new();
+    for caller in facts.values() {
+        for (callsite, summary) in &caller.callsites {
+            let need = caller
+                .callsite_needs
+                .get(callsite)
+                .copied()
+                .unwrap_or(ExecutableNeed::Value);
+            called.extend(local_call_targets(summary, need));
+        }
+    }
+    called
+}
+
+fn base_return_demand(
+    executable: &ExecutableKey,
+    entry: &ExecutableKey,
+    locally_called: &HashSet<ExecutableKey>,
+) -> RuntimeDemand {
+    if executable == entry || !locally_called.contains(executable) {
+        runtime_demand_for_executable_need(executable.need)
+    } else {
+        RuntimeDemand::Ignore
+    }
+}
+
+fn local_call_targets(summary: &CallSiteSummary, need: ExecutableNeed) -> Vec<ExecutableKey> {
+    summary
+        .targets
+        .iter()
+        .filter_map(|target| {
+            target
+                .activation
+                .clone()
+                .map(|activation| ExecutableKey { activation, need })
+        })
+        .collect()
+}
+
+fn propagate_call_return_demands(
+    facts: &HashMap<ExecutableKey, ExecutableFacts>,
+    observed_call_returns: &HashMap<ExecutableKey, HashMap<CallSiteId, RuntimeDemand>>,
+    demands: &mut HashMap<ExecutableKey, ExecutableRuntimeDemand>,
+) {
+    for (caller_key, caller) in facts {
+        let Some(observed_returns) = observed_call_returns.get(caller_key) else {
+            continue;
+        };
+        for (callsite, observed) in observed_returns {
+            if observed.is_ignore() {
+                continue;
+            }
+            let need = caller
+                .callsite_needs
+                .get(callsite)
+                .copied()
+                .unwrap_or(ExecutableNeed::Value);
+            let Some(summary) = caller.callsites.get(callsite) else {
+                continue;
+            };
+            for target in local_call_targets(summary, need) {
+                if let Some(callee) = demands.get_mut(&target) {
+                    callee.return_demand.join_assign(observed);
+                }
+            }
+        }
+    }
+}
+
 fn derive_executable_runtime_demand(
     world: &mut World<'_>,
     executable: &ExecutableKey,
     facts: &ExecutableFacts,
     demands: &HashMap<ExecutableKey, ExecutableRuntimeDemand>,
-) -> ExecutableRuntimeDemand {
+) -> DerivedExecutableDemand {
     let mut out = ExecutableRuntimeDemand {
-        return_demand: runtime_demand_for_executable_need(executable.need),
+        return_demand: demands
+            .get(executable)
+            .map(|demand| demand.return_demand.clone())
+            .unwrap_or_default(),
         input_demands: vec![RuntimeDemand::Ignore; executable.activation.input.len()],
         ..ExecutableRuntimeDemand::default()
     };
+    let mut call_return_demands = HashMap::new();
 
     let LoweredBody::Clauses { clauses, entries, .. } = &facts.body else {
         out.input_demands = executable
@@ -138,7 +223,10 @@ fn derive_executable_runtime_demand(
             .copied()
             .map(|ty| boundary_runtime_demand(world, ty))
             .collect();
-        return out;
+        return DerivedExecutableDemand {
+            demand: out,
+            call_return_demands,
+        };
     };
 
     for clause_id in &facts.analysis.reachable_clauses {
@@ -152,6 +240,7 @@ fn derive_executable_runtime_demand(
             facts,
             demands,
             &mut out,
+            &mut call_return_demands,
         );
         propagate_steps_reverse(
             world,
@@ -170,7 +259,10 @@ fn derive_executable_runtime_demand(
     }
 
     derive_callable_materializations(world, facts, &mut out);
-    out
+    DerivedExecutableDemand {
+        demand: out,
+        call_return_demands,
+    }
 }
 
 fn collect_entry_external_demands(
@@ -182,13 +274,23 @@ fn collect_entry_external_demands(
     facts: &ExecutableFacts,
     demands: &HashMap<ExecutableKey, ExecutableRuntimeDemand>,
     out: &mut ExecutableRuntimeDemand,
+    call_return_demands: &mut HashMap<CallSiteId, RuntimeDemand>,
 ) -> HashMap<ValueId, RuntimeDemand> {
     let entry = &entries[entry_id.as_u32() as usize];
     let mut live = HashMap::new();
     match &entry.tail {
         LoweredTail::Value { value, dest } => {
-            let boundary_demand =
-                demand_for_destination(world, executable, entries, dest, outgoing_demand, facts, demands, out);
+            let boundary_demand = demand_for_destination(
+                world,
+                executable,
+                entries,
+                dest,
+                outgoing_demand,
+                facts,
+                demands,
+                out,
+                call_return_demands,
+            );
             let demand = boundary_value_demand(world, facts, *value, boundary_demand);
             note_live_demand(world, out, &mut live, *value, demand);
         }
@@ -199,10 +301,20 @@ fn collect_entry_external_demands(
             dest,
             ..
         } => {
-            let boundary_demand =
-                demand_for_destination(world, executable, entries, dest, outgoing_demand, facts, demands, out);
+            let boundary_demand = demand_for_destination(
+                world,
+                executable,
+                entries,
+                dest,
+                outgoing_demand,
+                facts,
+                demands,
+                out,
+                call_return_demands,
+            );
             let demand = boundary_value_demand(world, facts, *value, boundary_demand);
-            note_live_demand(world, out, &mut live, *value, demand);
+            note_live_demand(world, out, &mut live, *value, demand.clone());
+            record_call_return_demand(call_return_demands, *callsite, demand);
             let arg_demands = direct_call_arg_demands(world, executable, *callsite, args.as_slice(), facts, demands);
             record_call_arg_demands(out, *callsite, arg_demands.as_slice());
             for (arg, demand) in args.iter().zip(arg_demands) {
@@ -217,10 +329,20 @@ fn collect_entry_external_demands(
             dest,
             ..
         } => {
-            let boundary_demand =
-                demand_for_destination(world, executable, entries, dest, outgoing_demand, facts, demands, out);
+            let boundary_demand = demand_for_destination(
+                world,
+                executable,
+                entries,
+                dest,
+                outgoing_demand,
+                facts,
+                demands,
+                out,
+                call_return_demands,
+            );
             let demand = boundary_value_demand(world, facts, *value, boundary_demand);
-            note_live_demand(world, out, &mut live, *value, demand);
+            note_live_demand(world, out, &mut live, *value, demand.clone());
+            record_call_return_demand(call_return_demands, *callsite, demand);
             note_live_demand(
                 world,
                 out,
@@ -251,6 +373,7 @@ fn collect_entry_external_demands(
                     facts,
                     demands,
                     out,
+                    call_return_demands,
                 ),
             );
             merge_live_demands(
@@ -264,6 +387,7 @@ fn collect_entry_external_demands(
                     facts,
                     demands,
                     out,
+                    call_return_demands,
                 ),
             );
         }
@@ -290,6 +414,7 @@ fn collect_entry_external_demands(
                         facts,
                         demands,
                         out,
+                        call_return_demands,
                     ),
                 );
             }
@@ -304,6 +429,7 @@ fn collect_entry_external_demands(
                     facts,
                     demands,
                     out,
+                    call_return_demands,
                 ),
             );
         }
@@ -323,6 +449,7 @@ fn collect_entry_external_demands(
                         facts,
                         demands,
                         out,
+                        call_return_demands,
                     ),
                 );
             }
@@ -339,6 +466,7 @@ fn collect_entry_external_demands(
                         facts,
                         demands,
                         out,
+                        call_return_demands,
                     ),
                 );
             }
@@ -383,6 +511,7 @@ fn demand_for_destination(
     facts: &ExecutableFacts,
     demands: &HashMap<ExecutableKey, ExecutableRuntimeDemand>,
     out: &mut ExecutableRuntimeDemand,
+    call_return_demands: &mut HashMap<CallSiteId, RuntimeDemand>,
 ) -> RuntimeDemand {
     match dest {
         ControlDestination::Return => outgoing_demand,
@@ -400,6 +529,7 @@ fn demand_for_destination(
                 facts,
                 demands,
                 out,
+                call_return_demands,
             )
             .remove(&delivered)
             .unwrap_or(RuntimeDemand::Ignore)
@@ -963,6 +1093,20 @@ fn record_call_arg_demands(out: &mut ExecutableRuntimeDemand, callsite: CallSite
     for (existing, observed) in slot.iter_mut().zip(observed.iter()) {
         existing.join_assign(observed);
     }
+}
+
+fn record_call_return_demand(
+    call_return_demands: &mut HashMap<CallSiteId, RuntimeDemand>,
+    callsite: CallSiteId,
+    observed: RuntimeDemand,
+) {
+    if observed.is_ignore() {
+        return;
+    }
+    call_return_demands
+        .entry(callsite)
+        .and_modify(|existing| existing.join_assign(&observed))
+        .or_insert(observed);
 }
 
 fn take_live_demand(live: &mut HashMap<ValueId, RuntimeDemand>, value: ValueId) -> RuntimeDemand {

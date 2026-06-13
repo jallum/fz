@@ -746,12 +746,25 @@ impl<'a> World<'a> {
             .abi_ready
             .get(root)
             .expect("ABI-ready programs should be readable right after they are defined");
+        let omitted_inputs = program
+            .executables
+            .values()
+            .map(|executable| {
+                executable
+                    .runtime_params
+                    .inputs
+                    .iter()
+                    .filter(|input| matches!(input, super::artifact::RuntimeInputLayout::Omitted { .. }))
+                    .count() as u64
+            })
+            .sum::<u64>();
         self.tel.execute(
             &["fz", "compiler2", "abi_ready_program", "defined"],
             &measurements! {
                 root_id: root.as_u32(),
                 executable_count: program.executables.len(),
                 callable_entry_count: program.callable_entries.len(),
+                omitted_inputs: omitted_inputs,
             },
             &metadata! {
                 program: opaque_debug(program),

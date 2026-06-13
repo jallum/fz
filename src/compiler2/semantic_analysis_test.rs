@@ -462,6 +462,59 @@ fn main(), do: make()
 }
 
 #[test]
+fn compiler2_runtime_demand_keeps_a_returned_direct_callable_out_of_first_class_inventory() {
+    let tel = crate::telemetry::ConfiguredTelemetry::new();
+    let functions = FunctionCapture::new();
+    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    let runtime_demands = RuntimeDemandCapture::new();
+    tel.attach(
+        &["fz", "compiler2", "runtime_demand", "defined"],
+        runtime_demands.handler(),
+    );
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.set_drive_timeout(Duration::from_millis(100));
+    compiler.submit_code(CodeSubmission {
+        name: Some("returned_direct_callable_transport.fz".to_string()),
+        text: r#"
+fn apply(fun), do: fun.(41)
+
+fn make_adder(a), do: fn x -> x + a end
+
+fn main(), do: apply(make_adder(1))
+"#
+        .to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    assert_resolved(
+        compiler.drive(),
+        "a returned callable that is only ever called directly should stay out of first-class runtime inventory",
+    );
+
+    let make_adder = functions.id("make_adder", 1);
+    let record = runtime_demands.last(root_id);
+    let (_, demand) = runtime_demand_for_function(&record, make_adder);
+    assert!(
+        has_callable_materialization(demand, |materialization| {
+            matches!(materialization, CallableMaterialization::DirectOnly { .. })
+        }),
+        "make_adder/1 should still materialize its returned closure for direct transport",
+    );
+    assert!(
+        !has_callable_materialization(demand, |materialization| {
+            matches!(materialization, CallableMaterialization::FirstClass { .. })
+        }),
+        "direct-only returned callable transport should not require a first-class callable object",
+    );
+}
+
+#[test]
 fn compiler2_runtime_demand_makes_opaque_callable_use_explicit() {
     let tel = crate::telemetry::ConfiguredTelemetry::new();
     let functions = FunctionCapture::new();

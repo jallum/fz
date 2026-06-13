@@ -27,7 +27,7 @@ use super::body::{
     CallSiteId, ControlDestination, ControlDispatch, ControlEntryId, DispatchBindings, Literal, LoweredBitField,
     LoweredBitFieldSpec, LoweredBody, LoweredExtern, ReceiveAfter, ReceiveClause, ValueId,
 };
-use super::identity::{ExecutableKey, FunctionId, RootId, function_id_of_closure_target};
+use super::identity::{ExecutableKey, FunctionId, RootId};
 use super::semantic::ExecutableRuntimeDemand;
 use super::types::Ty;
 
@@ -340,44 +340,6 @@ impl RuntimeParamLayout {
         self.inputs
             .iter()
             .find(|input| input.semantic_index() == semantic_index)
-    }
-
-    pub fn direct_callable_from_type(
-        world: &mut crate::compiler2::World<'_>,
-        semantic_index: usize,
-        ty: Ty,
-    ) -> Option<Self> {
-        let clauses = world.types_mut().callable_value_clauses(&ty)?;
-        let [clause] = clauses.as_slice() else {
-            return None;
-        };
-        let closure = clause.closure.as_ref()?;
-        let function = function_id_of_closure_target(closure.target);
-        let capture_tys = closure.captures.clone();
-        let capture_reprs = capture_tys
-            .iter()
-            .copied()
-            .map(|capture_ty| {
-                if world.types().is_floating(&capture_ty) {
-                    AbiValueRepr::RawF64
-                } else if world.types().is_integer(&capture_ty) {
-                    AbiValueRepr::RawInt
-                } else {
-                    let atom = world.types_mut().atom();
-                    if world.types().is_subtype(&capture_ty, &atom) {
-                        AbiValueRepr::RawAtom
-                    } else {
-                        AbiValueRepr::ValueRef
-                    }
-                }
-            })
-            .collect::<Vec<_>>();
-        Some(Self::from_inputs(vec![RuntimeInputLayout::DirectCallableCaptures {
-            semantic_index,
-            function,
-            capture_tys,
-            capture_reprs,
-        }]))
     }
 }
 

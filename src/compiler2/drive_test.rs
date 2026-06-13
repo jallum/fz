@@ -6,8 +6,8 @@ use crate::compiler2::{
     AbiReadyProgram, AbiValueRepr, ActivationKey, BackendProgram, CallSiteId, CallSiteKey, CallSiteSummary, CallTarget,
     CallableEntry, ControlEntryOrigin, EmissionReadyProgram, ExecutableKey, FactKey, FactUse, FunctionId, FunctionRef,
     LoweredBody, LoweredStep, LoweredTail, MaterializedProgram, ModuleId, ModuleState, QuotedSourceHeap,
-    QuotedSourceMetadata, ReturnAbi, SelectedCallee, SemanticClosure, Ty, TypeName, TypeVarId, Types, ValueId,
-    parse_quoted_program,
+    QuotedSourceMetadata, ReturnAbi, RuntimeInputLayout, SelectedCallee, SemanticClosure, Ty, TypeName, TypeVarId,
+    Types, ValueId, parse_quoted_program,
 };
 use crate::diag::codes;
 use crate::dispatch_matrix::Region;
@@ -2738,6 +2738,8 @@ end
 #[test]
 fn compiler2_abi_ready_does_not_publish_unused_callable_constructors() {
     let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&[], capture.handler());
     let functions = FunctionCapture::new();
     tel.attach(&["fz", "compiler2", "function"], functions.handler());
     let abi_ready = AbiReadyProgramCapture::new();
@@ -2779,6 +2781,17 @@ end
         .function_id;
 
     let program = abi_ready.last(root_id).program;
+    let (_, ignore_executable) = abi_ready_executable(&program, functions.id("ignore", 1));
+    assert_eq!(
+        ignore_executable.param_reprs,
+        Vec::<AbiValueRepr>::new(),
+        "an unused callable semantic input should not allocate a runtime ABI lane",
+    );
+    assert_eq!(
+        ignore_executable.runtime_params.inputs,
+        vec![RuntimeInputLayout::Omitted { semantic_index: 0 }],
+        "ABI-ready layout should record the omitted callable input explicitly",
+    );
     assert!(
         program
             .callable_entries
@@ -2792,6 +2805,99 @@ end
             .keys()
             .all(|key| key.activation.function != lambda_id),
         "the unused closure body should stay outside the closed executable frontier",
+    );
+
+    let abi_event = capture
+        .last(&["fz", "compiler2", "abi_ready_program", "defined"])
+        .expect("ABI-ready telemetry for unused callable constructor");
+    assert!(
+        measurement_u64(&abi_event, "omitted_inputs") >= 1,
+        "ABI-ready telemetry should report omitted runtime inputs",
+    );
+}
+
+#[test]
+fn compiler2_abi_ready_passes_direct_callable_captures_without_a_heap_closure_lane() {
+    let tel = ConfiguredTelemetry::new();
+    let functions = FunctionCapture::new();
+    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    let abi_ready = AbiReadyProgramCapture::new();
+    tel.attach(
+        &["fz", "compiler2", "abi_ready_program", "defined"],
+        abi_ready.handler(),
+    );
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/direct_callable_capture_abi.fz".to_string()),
+        text: r#"
+fn apply(fun), do: fun.(41)
+
+fn make_adder(a), do: fn x -> x + a end
+
+fn main(), do: apply(make_adder(1))
+"#
+        .to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    assert_resolved(
+        compiler.drive(),
+        "ABI-ready projection should transport direct callable captures instead of a heap closure lane",
+    );
+
+    let apply_id = functions.id("apply", 1);
+    let make_adder_id = functions.id("make_adder", 1);
+    let adder_lambda_id = generated_functions_owned_by(&functions, make_adder_id)
+        .into_iter()
+        .next()
+        .expect("make_adder/1 should generate one captured lambda body")
+        .function_id;
+
+    let program = abi_ready.last(root_id).program;
+    let (_, apply_executable) = abi_ready_executable(&program, apply_id);
+    assert_eq!(
+        apply_executable.param_reprs,
+        vec![AbiValueRepr::RawInt],
+        "the direct callable input should lower to its demanded capture lane only",
+    );
+    assert_eq!(apply_executable.runtime_params.inputs.len(), 1);
+    match &apply_executable.runtime_params.inputs[0] {
+        RuntimeInputLayout::DirectCallableCaptures {
+            semantic_index,
+            function,
+            capture_tys,
+            capture_reprs,
+        } => {
+            assert_eq!(
+                *semantic_index, 0,
+                "the direct callable layout should still refer to the original semantic input",
+            );
+            assert_eq!(
+                *function, adder_lambda_id,
+                "the layout should preserve the exact captured lambda body being transported",
+            );
+            assert_eq!(
+                capture_tys.len(),
+                1,
+                "make_adder/1 should contribute exactly one captured value",
+            );
+            assert_eq!(
+                capture_reprs,
+                &vec![AbiValueRepr::RawInt],
+                "the runtime ABI should transport only the captured integer lane",
+            );
+        }
+        other => panic!("expected direct callable capture layout, found {other:?}"),
+    }
+    assert!(
+        program.callable_entries.is_empty(),
+        "a direct-only callable path should not publish first-class callable-entry inventory",
     );
 }
 

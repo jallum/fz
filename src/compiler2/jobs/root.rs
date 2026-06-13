@@ -266,7 +266,7 @@ pub(super) fn seal_semantic_closure(world: &mut World<'_>, root_id: RootId) -> R
         }
 
         let Some(runtime_closure) =
-            settle_runtime_demands(world, &executables, &mut reads, &mut waits, &mut follow_up)?
+            settle_runtime_demands(world, &entry, &executables, &mut reads, &mut waits, &mut follow_up)?
         else {
             break;
         };
