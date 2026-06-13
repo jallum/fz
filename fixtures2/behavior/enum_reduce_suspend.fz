@@ -38,5 +38,14 @@ fn main() do
 
   dbg(out)
   stats = Process.heap_alloc_stats()
-  dbg(stats)
+  dbg({
+    stats[:list_cons_allocs],
+    stats[:list_cons_bytes],
+    stats[:struct_allocs],
+    stats[:struct_bytes],
+    stats[:closure_allocs],
+    stats[:closure_bytes],
+    stats[:scalar_box_allocs],
+    stats[:scalar_box_bytes]
+  })
 end

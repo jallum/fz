@@ -47,6 +47,12 @@ keeps re-entry as a `ResumeEntry` tuple (`FnId`, args, `SpecKey`,
 never touches `Process.runnable` or `fz_resume`. The runnable/`fz_resume` model
 below is the compiled-path model.
 
+Compiler2's backend interpreter mirrors that idea with its own
+`BackendResumeEntry` plus `Vec<BackendContinuation>` state. One quantum runs by
+looping over explicit executable/entry transitions for that backend seam,
+rather than re-entering through nested helper calls for each delivered resume
+or local join.
+
 ## fz_resume: the one verb
 
 `fz_resume(cont) -> i64` is a SystemV shim. It reads the closure's code pointer

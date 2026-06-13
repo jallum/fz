@@ -62,6 +62,7 @@ pub struct MaterializedProgram {
 pub struct MaterializedExecutable {
     pub entry_dispatch: Option<ExecutableDispatch>,
     pub return_ty: Ty,
+    pub runtime_callable_values: Vec<ValueId>,
     pub value_types: HashMap<ValueId, Ty>,
     pub effects: EffectSummary,
     pub body: LoweredBody,
@@ -204,6 +205,7 @@ pub struct AbiReadyExecutable {
     pub return_ty: Ty,
     pub return_abi: ReturnAbi,
     pub param_reprs: Vec<AbiValueRepr>,
+    pub runtime_callable_values: Vec<ValueId>,
     pub value_types: HashMap<ValueId, Ty>,
     pub value_reprs: HashMap<ValueId, AbiValueRepr>,
     pub effects: EffectSummary,
@@ -348,14 +350,13 @@ pub enum BackendEntryOrigin {
     Branch,
     ReceiveOutcome,
     DeliveredResume { value: ValueId, return_abi: ReturnAbi },
-    LocalResume { value: ValueId },
 }
 
 impl BackendEntryOrigin {
     pub fn input_value(&self) -> Option<ValueId> {
         match self {
             Self::Clause | Self::Branch | Self::ReceiveOutcome => None,
-            Self::DeliveredResume { value, .. } | Self::LocalResume { value } => Some(*value),
+            Self::DeliveredResume { value, .. } => Some(*value),
         }
     }
 }

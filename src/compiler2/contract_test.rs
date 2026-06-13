@@ -126,6 +126,59 @@ fn function_contract_application_refines_reduce_style_callable_from_list_and_acc
 }
 
 #[test]
+fn function_contract_application_treats_empty_list_witness_as_underconstrained() {
+    let mut types = Types::new();
+    let elem = types.type_var(TypeVarId(0));
+    let acc = types.type_var(TypeVarId(1));
+    let contract = FunctionContract {
+        arrows: vec![ContractArrow {
+            params: vec![types.list(elem), acc, types.arrow(&[elem, acc], acc)],
+            result: acc,
+            constraints: HashMap::new(),
+        }],
+    };
+
+    let int = types.int();
+    let actual_list = types.non_empty_list(int);
+    let actual_acc = types.empty_list();
+    let actual_callable = types.fn_ref_lit(ClosureTarget(23), 2);
+
+    let applied = contract.apply(&mut types, &[actual_list, actual_acc, actual_callable]);
+
+    assert_eq!(
+        applied.matched_arrows.len(),
+        1,
+        "the reduce-style contract should still match"
+    );
+    assert!(
+        applied.result.is_none(),
+        "an empty-list accumulator witness should keep the generic result underconstrained",
+    );
+
+    let matched_callable = types
+        .callable_clauses(&applied.matched_arrows[0].params[2])
+        .expect("matched reduce callable surface")
+        .into_iter()
+        .next()
+        .expect("matched reduce callable clause");
+    assert!(
+        types.is_integer(&matched_callable.args[0]),
+        "the reducer element input should still inherit the enumerable element binding: {}",
+        types.display(&matched_callable.args[0]),
+    );
+    assert!(
+        types.has_vars(&matched_callable.args[1]),
+        "an empty-list witness should keep the reducer accumulator input generic instead of collapsing it to []: {}",
+        types.display(&matched_callable.args[1]),
+    );
+    assert!(
+        types.has_vars(&matched_callable.ret),
+        "an empty-list witness should keep the reducer return generic instead of collapsing it to []: {}",
+        types.display(&matched_callable.ret),
+    );
+}
+
+#[test]
 fn function_contract_application_does_not_publish_underconstrained_result_evidence() {
     let mut types = Types::new();
     let t = types.type_var(TypeVarId(0));

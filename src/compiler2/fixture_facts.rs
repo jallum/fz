@@ -107,7 +107,7 @@ fn canonical_call_edge_fact(
             .map(|target| CanonicalCallTargetFact {
                 target: target_label(world, target.callee.clone(), labels),
                 input_types: target
-                    .input_types
+                    .surface_inputs
                     .iter()
                     .map(|ty| stable_type_text(world.types().display(ty)))
                     .collect(),

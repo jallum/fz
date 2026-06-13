@@ -1,6 +1,6 @@
 //! Terminator emission for fz IR blocks.
 
-use super::surface::NativeCallableBoundarySurface;
+use super::surface::NativeClosureTargetSurface;
 use super::*;
 use crate::compiler2::NativeEntryAbi;
 use crate::fz_ir::{
@@ -61,6 +61,30 @@ fn resolve_native_closure_sid(env: &CodegenEnv<'_>, blk: &fz_ir::Block) -> Optio
     env.body_id_for_fn(target_fn)
 }
 
+fn resolve_direct_closure_surface<'a>(
+    env: &'a CodegenEnv<'a>,
+    direct_target_sid: u32,
+    closure: Var,
+) -> Option<(FnId, &'a NativeClosureTargetSurface)> {
+    let target_fn = env.body_fn_id(direct_target_sid);
+    if let Some(boundary_id) = env
+        .active_native_body()
+        .callable_value_boundaries
+        .get(&closure)
+        .copied()
+    {
+        let boundary = env
+            .surface
+            .callable_boundary(boundary_id.as_u32())
+            .expect("materialized callable boundary must exist in the codegen surface");
+        assert_eq!(
+            boundary.target_fn, target_fn,
+            "direct closure target should agree with the closure value's settled callable boundary",
+        );
+    }
+    env.surface.closure_target(target_fn).map(|target| (target_fn, target))
+}
+
 fn callee_is_native(env: &CodegenEnv<'_>, id: u32) -> bool {
     env.native_abi_fns.contains(&FnId(id))
 }
@@ -75,7 +99,7 @@ fn spec_is_native(env: &CodegenEnv<'_>, sid: u32) -> bool {
 
 fn continuation_input_shape(env: &CodegenEnv<'_>, cont_sid: u32) -> DeliveredShape {
     let demand_abi = NativeDemandAbi::new(env.body_native(cont_sid));
-    let extras = demand_abi.continuation_extras();
+    let extras = demand_abi.continuation_entry_extras();
     let reprs = &env.param_reprs[cont_sid as usize];
     if extras == 1 {
         DeliveredShape::Value(reprs.first().copied().unwrap_or(ArgRepr::ValueRef))
@@ -95,7 +119,7 @@ fn push_direct_closure_args<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, '_, M>,
     var_env: &HashMap<u32, CodegenValue>,
     args: &[Var],
-    target: &NativeCallableBoundarySurface,
+    target: &NativeClosureTargetSurface,
     cl_val: ir::Value,
 ) -> Vec<ir::Value> {
     let mut direct_args = Vec::with_capacity(args.len() + 2);
@@ -259,7 +283,7 @@ impl ContinuationPayload {
         captures: &[Var],
     ) -> Self {
         let demand_abi = NativeDemandAbi::new(env.body_native(cont_sid));
-        let extras_count = demand_abi.continuation_extras();
+        let extras_count = demand_abi.continuation_entry_extras();
         let cap_bindings = captures
             .iter()
             .enumerate()
@@ -390,8 +414,8 @@ fn build_boundary_return_adapter_cont<M: cranelift_module::Module>(
     adapter_cont
 }
 
-fn returned_shape(env: &CodegenEnv<'_>, body_sid: u32, is_cont_fn: bool) -> DeliveredShape {
-    NativeDemandAbi::new(env.body_native(body_sid)).returned_shape(is_cont_fn)
+fn returned_shape(env: &CodegenEnv<'_>, body_sid: u32) -> DeliveredShape {
+    NativeDemandAbi::new(env.body_native(body_sid)).returned_shape()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -631,7 +655,7 @@ fn emit_return_term<M: cranelift_module::Module, T: Types<Ty = Ty> + ClosureType
     {
         if is_native {
             let return_abi = NativeDemandAbi::new(env.body_native(this_spec_id));
-            if let Some(arity) = return_abi.returned_tuple_field_arity(is_cont_fn)
+            if let Some(arity) = return_abi.returned_tuple_field_arity()
                 && let Some(fields) = body.cache.tuple_return_fields.get(&v.0)
             {
                 let fields = fields.clone();
@@ -671,7 +695,7 @@ fn emit_return_term<M: cranelift_module::Module, T: Types<Ty = Ty> + ClosureType
             // the wire representation for the single delivered lane.
             let _ = caller_fn_id;
             assert!(
-                return_abi.returned_delivers_value_lane(is_cont_fn),
+                return_abi.returned_delivers_value_lane(),
                 "native return must deliver one value lane outside tuple-field fast path"
             );
             let my_return_repr = env.return_reprs[this_spec_id as usize];
@@ -805,7 +829,7 @@ fn emit_native_call_with_cont<M: cranelift_module::Module>(
     // The zero-cap invariant (asserted at closure_target_fns
     // build) means the body ignores self at runtime, so a
     // singleton with no captures is valid for any direct-call site.
-    if env.surface.closure_target_boundary(callee_fn_id).is_some() {
+    if env.surface.closure_target(callee_fn_id).is_some() {
         native_args.push(fetch_static_closure(body.jmod, body.b, runtime, callee_sid));
     }
     let cont_is_native = spec_is_native(env, cont_sid);
@@ -841,7 +865,7 @@ fn emit_native_call_with_cont<M: cranelift_module::Module>(
             None => {
                 synth_halt_cont = true;
                 let callee_ret_repr = NativeDemandAbi::new(env.body_native(callee_sid))
-                    .returned_delivers_value_lane(env.cont_fns.contains(&callee_fn_id))
+                    .returned_delivers_value_lane()
                     .then_some(env.return_reprs[callee_sid as usize])
                     .expect("synthesized halt continuation requires one delivered value lane");
                 synthesize_halt_cont(body, runtime, callee_ret_repr)
@@ -897,7 +921,7 @@ fn emit_native_call_with_cont<M: cranelift_module::Module>(
         // typed entry slots. Native result already has an
         // ABI repr; captured vars come from var_env.
         let callee_ret_repr = NativeDemandAbi::new(env.body_native(callee_sid))
-            .returned_delivers_value_lane(env.cont_fns.contains(&callee_fn_id))
+            .returned_delivers_value_lane()
             .then_some(env.return_reprs[callee_sid as usize])
             .expect("uniform continuation write-back requires one delivered value lane");
         let mut payload: Vec<(ir::Value, ArgRepr)> = Vec::with_capacity(continuation.captured.len() + 1);
@@ -998,8 +1022,8 @@ fn emit_native_tail_call<M: cranelift_module::Module>(
     let callee_param_reprs = &param_reprs[callee_sid as usize];
     let callee_fid = *fn_ids.get(&callee_sid).expect("callee fn_id missing");
     let callee_fref = body.jmod.declare_func_in_func(callee_fid, body.b.func);
-    let callee_shape = returned_shape(env, callee_sid, env.cont_fns.contains(&callee_fn_id));
-    let caller_shape = returned_shape(env, this_spec_id, is_cont_fn);
+    let callee_shape = returned_shape(env, callee_sid);
+    let caller_shape = returned_shape(env, this_spec_id);
     let mut native_args = Vec::with_capacity(callee_param_reprs.iter().map(ArgRepr::abi_arity).sum());
     let mut mid_flight_arg_shapes: Vec<MidFlightArgShape> = Vec::with_capacity(callee_param_reprs.len() + 2);
     for (i, av) in args.iter().enumerate() {
@@ -1019,7 +1043,7 @@ fn emit_native_tail_call<M: cranelift_module::Module>(
     // TailCall to a closure-target fn: insert static
     // singleton as `self` before cont (mirror of Term::Call;
     // zero-cap invariant lets any singleton serve as self).
-    if env.surface.closure_target_boundary(callee_fn_id).is_some() {
+    if env.surface.closure_target(callee_fn_id).is_some() {
         let static_closure = fetch_static_closure(body.jmod, body.b, runtime, callee_sid);
         native_args.push(static_closure);
         mid_flight_arg_shapes.push(MidFlightArgShape::HeapRef);
@@ -1065,10 +1089,7 @@ fn emit_native_tail_call<M: cranelift_module::Module>(
     mid_flight_arg_shapes.push(MidFlightArgShape::HeapRef);
     assert_eq!(
         native_args.len(),
-        expected_native_tail_arg_count(
-            callee_param_reprs,
-            env.surface.closure_target_boundary(callee_fn_id).is_some(),
-        ),
+        expected_native_tail_arg_count(callee_param_reprs, env.surface.closure_target(callee_fn_id).is_some(),),
         "native tail-call arg lanes must match the published callee ABI contract"
     );
     if is_native {
@@ -1254,9 +1275,7 @@ fn emit_call_closure<M: cranelift_module::Module>(
         let lit_resolved = resolve_native_closure_sid(env, blk).map(|body_sid| {
             let target_fn = env.body_fn_id(body_sid);
             let body_fid = *fn_ids.get(&body_sid).expect("native closure target fn_id missing");
-            let target = env
-                .surface
-                .closure_target_boundary(target_fn)
+            let (_, target) = resolve_direct_closure_surface(env, body_sid, *closure)
                 .expect("direct closure target should publish an exact closure-target surface");
             (body_sid, body_fid, target_fn, target)
         });
@@ -1284,13 +1303,13 @@ fn emit_call_closure<M: cranelift_module::Module>(
                 continuation_storage: continuation_storage,
             },
         );
-        if let Some((body_sid, body_fid, target_fn, target)) = lit_resolved {
+        if let Some((body_sid, body_fid, _target_fn, target)) = lit_resolved {
             let body_fref = body.jmod.declare_func_in_func(body_fid, body.b.func);
             let mut direct_args = push_direct_closure_args(body, var_env, args, target, cl_val);
             let direct_cont = adapt_direct_closure_cont(
                 body,
                 env,
-                returned_shape(env, body_sid, env.cont_fns.contains(&target_fn)),
+                returned_shape(env, body_sid),
                 cf,
                 continuation_input_shape(env, cont_sid),
                 "direct closure call",
@@ -1398,9 +1417,7 @@ fn emit_tail_call_closure<M: cranelift_module::Module>(
         let lit_resolved = resolve_native_closure_sid(env, blk).map(|body_sid| {
             let target_fn = env.body_fn_id(body_sid);
             let body_fid = *fn_ids.get(&body_sid).expect("native closure target fn_id missing");
-            let target = env
-                .surface
-                .closure_target_boundary(target_fn)
+            let (_, target) = resolve_direct_closure_surface(env, body_sid, *closure)
                 .expect("direct closure target should publish an exact closure-target surface");
             (body_sid, body_fid, target_fn, target)
         });
@@ -1418,15 +1435,15 @@ fn emit_tail_call_closure<M: cranelift_module::Module>(
             },
         );
 
-        if let Some((body_sid, body_fid, target_fn, target)) = lit_resolved {
+        if let Some((body_sid, body_fid, _target_fn, target)) = lit_resolved {
             let body_fref = body.jmod.declare_func_in_func(body_fid, body.b.func);
             let mut direct_args = push_direct_closure_args(body, var_env, args, target, cl_val);
             let direct_cont = adapt_direct_closure_cont(
                 body,
                 env,
-                returned_shape(env, body_sid, env.cont_fns.contains(&target_fn)),
+                returned_shape(env, body_sid),
                 my_cont,
-                returned_shape(env, env.active_spec_id, is_cont_fn),
+                returned_shape(env, env.active_spec_id),
                 "direct tail closure call",
             );
             direct_args.push(direct_cont);

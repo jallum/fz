@@ -212,7 +212,10 @@ for resume entries, clause-entry helpers, and continuations from the same entry
 graph instead of rebuilding hidden CPS structure from "tail position" guesses.
 The backend interpreter preserves the same distinction: tail calls can park on
 `receive`, and blocked tasks keep an explicit backend continuation stack so a
-woken callee can still deliver into the caller's resume entry later.
+woken callee can still deliver into the caller's resume entry later. For the
+compiler2 backend executable/entry seam, it now drives transitions from that
+explicit resume state in a loop instead of re-entering through nested helper
+calls.
 
 Selective receive reuses the same delivered-resume model. A parked outcome
 closure publishes whether the resumed body reaches the post-`receive` join

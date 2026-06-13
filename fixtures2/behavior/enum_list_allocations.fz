@@ -15,8 +15,9 @@
 # ```
 #
 # The program builds one five-element input list, runs those functions through
-# the public runtime `Enum` surface, snapshots current-process heap allocation
-# counters, and prints the list/struct/map heap headline.
+# the public runtime `Enum` surface, snapshots the specific heap allocation
+# counters that express the contract, and prints the list/struct/map heap
+# headline.
 #
 # Target for native JIT/AOT:
 #
@@ -46,7 +47,18 @@ fn main() do
   dbg(Enum.reduce(xs, 0, fn (x, acc) -> acc + x end))
 
   stats = Process.heap_alloc_stats()
-  dbg(stats)
+  dbg({
+    stats[:list_cons_allocs],
+    stats[:list_cons_bytes],
+    stats[:struct_allocs],
+    stats[:struct_bytes],
+    stats[:closure_allocs],
+    stats[:closure_bytes],
+    stats[:scalar_box_allocs],
+    stats[:scalar_box_bytes],
+    stats[:map_allocs],
+    stats[:map_bytes]
+  })
   heap_bytes = stats[:list_cons_bytes] + stats[:struct_bytes] + stats[:map_bytes]
   dbg(heap_bytes)
 end

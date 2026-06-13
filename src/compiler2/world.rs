@@ -542,12 +542,20 @@ impl<'a> World<'a> {
 
     pub fn define_callsite_summary(&mut self, key: CallSiteKey, mut summary: CallSiteSummary) -> bool {
         for target in &mut summary.targets {
-            target.input_types = target
-                .input_types
+            target.surface_inputs = target
+                .surface_inputs
                 .iter()
                 .copied()
                 .map(|input| self.types.alpha_normalize_vars(&input))
                 .collect();
+            if let Some(activation) = &mut target.activation {
+                activation.input = activation
+                    .input
+                    .iter()
+                    .copied()
+                    .map(|input| self.types.alpha_normalize_vars(&input))
+                    .collect();
+            }
             target.return_ty = target.return_ty.map(|ty| self.types.alpha_normalize_vars(&ty));
         }
         summary.return_ty = summary.return_ty.map(|ty| self.types.alpha_normalize_vars(&ty));

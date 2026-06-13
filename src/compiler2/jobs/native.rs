@@ -1143,18 +1143,6 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                 param_reprs.extend(capture_tys.iter().copied().map(|ty| abi_value_repr(self.world, ty)));
                 (entry_tys, param_reprs, NativeEntryAbi::Continuation { extra_params })
             }
-            BackendEntryOrigin::LocalResume { value } => {
-                let result_ty = executable
-                    .value_types
-                    .get(&value)
-                    .copied()
-                    .unwrap_or_else(|| self.world.types_mut().any());
-                let mut entry_tys = vec![result_ty];
-                let mut param_reprs = vec![abi_value_repr(self.world, result_ty)];
-                entry_tys.extend(capture_tys.iter().copied());
-                param_reprs.extend(capture_tys.iter().copied().map(|ty| abi_value_repr(self.world, ty)));
-                (entry_tys, param_reprs, NativeEntryAbi::Direct)
-            }
         }
     }
 
@@ -1195,13 +1183,6 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                     Ok(reprs.len())
                 }
             },
-            BackendEntryOrigin::LocalResume { value } => {
-                let var = *entry_vars
-                    .first()
-                    .expect("local resume should receive its delivered value as the first entry param");
-                bind_backend_value(ctx, executable, env, *value, var);
-                Ok(1)
-            }
         }
     }
 
@@ -1340,7 +1321,6 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
             BackendEntryOrigin::DeliveredResume { return_abi, .. } => {
                 self.delivered_args_for_abi(ctx, executable, value_id, value_var, return_abi)?
             }
-            BackendEntryOrigin::LocalResume { .. } => vec![value_var],
         };
         args.extend(self.entry_capture_args(entries, entry_id, env)?);
         Ok(args)
@@ -2093,7 +2073,7 @@ fn entry_name(base: &str, entry_id: ControlEntryId, origin: &BackendEntryOrigin)
         BackendEntryOrigin::Clause => panic!("clause entries are named by their owning clause"),
         BackendEntryOrigin::Branch => format!("{base}__branch_{}", entry_id.as_u32()),
         BackendEntryOrigin::ReceiveOutcome => format!("{base}__receive_{}", entry_id.as_u32()),
-        BackendEntryOrigin::DeliveredResume { .. } | BackendEntryOrigin::LocalResume { .. } => {
+        BackendEntryOrigin::DeliveredResume { .. } => {
             format!("{base}__resume_{}", entry_id.as_u32())
         }
     }
@@ -2105,7 +2085,6 @@ fn entry_category(origin: &BackendEntryOrigin) -> FnCategory {
         BackendEntryOrigin::Branch => FnCategory::ControlFlowCont,
         BackendEntryOrigin::ReceiveOutcome => FnCategory::CpsCont,
         BackendEntryOrigin::DeliveredResume { .. } => FnCategory::CpsCont,
-        BackendEntryOrigin::LocalResume { .. } => FnCategory::ControlFlowCont,
     }
 }
 

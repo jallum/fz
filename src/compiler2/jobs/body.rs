@@ -2284,7 +2284,7 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
                                 steps: block.steps[index + 1..].to_vec(),
                                 result: block.result,
                             },
-                            ControlEntryOrigin::LocalResume { value: *value },
+                            ControlEntryOrigin::DeliveredResume { value: *value },
                             dest,
                             Vec::new(),
                             Vec::new(),
@@ -2332,7 +2332,7 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
                                 steps: block.steps[index + 1..].to_vec(),
                                 result: block.result,
                             },
-                            ControlEntryOrigin::LocalResume { value: *value },
+                            ControlEntryOrigin::DeliveredResume { value: *value },
                             dest,
                             Vec::new(),
                             Vec::new(),
@@ -2706,7 +2706,12 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
                 continue;
             };
             let value = self.fresh_value();
-            steps.push(ExprStep::TupleField { value, source, index });
+            let _ = index;
+            steps.push(ExprStep::FieldAccess {
+                value,
+                base: source,
+                field: field.clone(),
+            });
             if with_asserts {
                 self.apply_pattern(&pattern.node, pattern.span, value, env, steps)?;
             } else {

@@ -4,7 +4,7 @@
 //! resolution applies it to observed arguments before minting callee
 //! activations or deriving callable-boundary demand.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::type_expr::ResolvedSpecDecl;
 
@@ -191,15 +191,22 @@ fn instantiate_match(
     }
 
     let mut sigma: Sigma<Ty> = Sigma::new();
+    let mut ambiguous_vars = HashSet::new();
     for (pattern, witness) in params.iter().zip(witnesses.iter()) {
         if collect_contract_subst(types, pattern, witness, &mut sigma) == Witness::Invalid {
             return SchemeInstantiation::Invalid;
         }
+        collect_ambiguous_empty_list_vars(types, pattern, witness, &mut ambiguous_vars);
     }
 
     for (var, bound) in constraints {
         let Some(actual) = sigma.get(var) else {
-            return SchemeInstantiation::Underconstrained(instantiated_match(types, params, result, &sigma));
+            return SchemeInstantiation::Underconstrained(instantiated_match(
+                types,
+                params,
+                result,
+                &surface_sigma(&sigma, &ambiguous_vars),
+            ));
         };
         if !types.is_subtype(actual, bound) {
             return SchemeInstantiation::Invalid;
@@ -213,7 +220,7 @@ fn instantiate_match(
         }
     }
 
-    let matched = instantiated_match(types, params, result, &sigma);
+    let matched = instantiated_match(types, params, result, &surface_sigma(&sigma, &ambiguous_vars));
     if matched.params.iter().any(|param| types.has_vars(param)) || types.has_vars(&matched.result) {
         SchemeInstantiation::Underconstrained(matched)
     } else {
@@ -226,6 +233,14 @@ fn instantiated_match(types: &mut Types, params: &[Ty], result: &Ty, sigma: &Sig
         params: params.iter().map(|param| types.instantiate(param, sigma)).collect(),
         result: types.instantiate(result, sigma),
     }
+}
+
+fn surface_sigma(sigma: &Sigma<Ty>, ambiguous_vars: &HashSet<TypeVarId>) -> Sigma<Ty> {
+    sigma
+        .iter()
+        .filter(|(var, _)| !ambiguous_vars.contains(var))
+        .map(|(var, ty)| (*var, *ty))
+        .collect()
 }
 
 fn collect_contract_subst(types: &mut Types, pattern: &Ty, witness: &Ty, sigma: &mut Sigma<Ty>) -> Witness {
@@ -292,6 +307,81 @@ fn collect_list_subst(types: &mut Types, pattern: &Ty, witness: &Ty, sigma: &mut
     }
     let witness_elem = types.list_element_type(witness);
     collect_contract_subst(types, &pattern_elem, &witness_elem, sigma)
+}
+
+fn is_exact_empty_list(types: &mut Types, witness: &Ty) -> bool {
+    if !types.has_list_shape(witness) {
+        return false;
+    }
+    let empty = types.empty_list();
+    types.is_equivalent(witness, &empty)
+}
+
+fn collect_ambiguous_empty_list_vars(
+    types: &mut Types,
+    pattern: &Ty,
+    witness: &Ty,
+    ambiguous_vars: &mut HashSet<TypeVarId>,
+) {
+    if is_exact_empty_list(types, witness) {
+        let mut direct = Sigma::new();
+        types.collect_instantiation_subst(pattern, witness, &mut direct);
+        ambiguous_vars.extend(direct.into_keys());
+        return;
+    }
+
+    let arity = types.max_tuple_arity(pattern);
+    if arity != 0 && types.max_tuple_arity(witness) >= arity {
+        let pattern_fields = types.tuple_projections(pattern, arity);
+        let witness_fields = types.tuple_projections(witness, arity);
+        for (pattern_field, witness_field) in pattern_fields.iter().zip(witness_fields.iter()) {
+            collect_ambiguous_empty_list_vars(types, pattern_field, witness_field, ambiguous_vars);
+        }
+    }
+
+    if types.has_list_shape(pattern) && types.has_list_shape(witness) {
+        let pattern_elem = types.list_element_type(pattern);
+        let witness_elem = types.list_element_type(witness);
+        collect_ambiguous_empty_list_vars(types, &pattern_elem, &witness_elem, ambiguous_vars);
+    }
+
+    if let (Some(pattern_payload), Some(witness_payload)) = (
+        types.resource_payload_type(pattern),
+        types.resource_payload_type(witness),
+    ) {
+        collect_ambiguous_empty_list_vars(types, &pattern_payload, &witness_payload, ambiguous_vars);
+    }
+
+    let witness_keys = types.map_known_keys(witness);
+    for key in types.map_known_keys(pattern) {
+        let Some(pattern_field) = types.map_field_lookup(pattern, &key) else {
+            continue;
+        };
+        if !witness_keys.contains(&key) {
+            continue;
+        }
+        if let Some(witness_field) = types.map_field_lookup(witness, &key) {
+            collect_ambiguous_empty_list_vars(types, &pattern_field, &witness_field, ambiguous_vars);
+        }
+    }
+
+    let Some(pattern_clauses) = types.callable_clauses(pattern) else {
+        return;
+    };
+    let Some(witness_clauses) = types.callable_clauses(witness) else {
+        return;
+    };
+    for pattern_clause in &pattern_clauses {
+        for witness_clause in &witness_clauses {
+            if pattern_clause.args.len() != witness_clause.args.len() {
+                continue;
+            }
+            for (pattern_arg, witness_arg) in pattern_clause.args.iter().zip(witness_clause.args.iter()) {
+                collect_ambiguous_empty_list_vars(types, pattern_arg, witness_arg, ambiguous_vars);
+            }
+            collect_ambiguous_empty_list_vars(types, &pattern_clause.ret, &witness_clause.ret, ambiguous_vars);
+        }
+    }
 }
 
 fn collect_resource_subst(types: &mut Types, pattern: &Ty, witness: &Ty, sigma: &mut Sigma<Ty>) -> Witness {

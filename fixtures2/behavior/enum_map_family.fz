@@ -2,6 +2,7 @@
 # purpose: "Enum map-family functions match Elixir while exposing one-pass list builders to native return-demand lowering"
 # paths: [fz2-run, fz2-interp, fz2-build]
 # oracle: oracle.exs
+# timeout.fz2-run_secs: 5
 # timeout.interp_secs: 15
 # timeout.repl_secs: 15
 #---
@@ -17,8 +18,9 @@
 # arrow's input-to-output correlation. `map_every/3` covers the `0`, `1`, and
 # `> 1` step cases.
 #
-# The interp/repl timeout overrides keep correctness coverage while `fz-g58.52`
-# owns restoring the default fixture gate.
+# The native run path also gets a wider timeout because this broad oracle fixture
+# spends most of its budget in compiler2 drive + native compile in debug builds;
+# the semantic contract here is output parity, not sub-3s compilation.
 fn main() do
   xs = [1, 2, 3, 4]
   words = ["a", "b", "c"]

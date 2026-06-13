@@ -420,7 +420,6 @@ fn lower_entry_origin(
                 .clone()
                 .unwrap_or_else(|| panic!("resume entry {entry_index} should have a settled input ABI: {entry:?}")),
         },
-        ControlEntryOrigin::LocalResume { value } => BackendEntryOrigin::LocalResume { value },
     }
 }
 
@@ -443,14 +442,14 @@ fn entry_input_abis(
     }
     let mut out = vec![None; entries.len()];
     for (index, entry) in entries.iter().enumerate() {
-        if let ControlEntryOrigin::DeliveredResume { value } = entry.origin
+        if let Some(value) = entry.origin.input_value()
             && let Some(need) = needs[index]
         {
             out[index] = Some(return_abi_for_resume_input(world, executable, value, need));
         }
     }
     for (index, entry) in entries.iter().enumerate() {
-        if let ControlEntryOrigin::DeliveredResume { value } = entry.origin
+        if let Some(value) = entry.origin.input_value()
             && out[index].is_none()
         {
             out[index] = Some(return_abi_for_resume_input(
@@ -584,7 +583,7 @@ fn collect_entry_input_need(
             .map(ExecutableNeed::TupleFields)
             .or_else(|| used_values.contains(&value).then_some(ExecutableNeed::Value))
     });
-    if matches!(entry.origin, ControlEntryOrigin::DeliveredResume { .. }) {
+    if entry.origin.input_value().is_some() {
         out[entry_id.as_u32() as usize] = input_need;
     }
     input_need.unwrap_or(ExecutableNeed::Value)

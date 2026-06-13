@@ -147,14 +147,13 @@ pub enum ControlEntryOrigin {
     Branch,
     ReceiveOutcome,
     DeliveredResume { value: ValueId },
-    LocalResume { value: ValueId },
 }
 
 impl ControlEntryOrigin {
     pub fn input_value(&self) -> Option<ValueId> {
         match self {
             Self::Clause | Self::Branch | Self::ReceiveOutcome => None,
-            Self::DeliveredResume { value } | Self::LocalResume { value } => Some(*value),
+            Self::DeliveredResume { value } => Some(*value),
         }
     }
 }

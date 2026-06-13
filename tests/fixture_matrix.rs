@@ -2901,13 +2901,9 @@ fn physical_capability_model_and_signals_are_pinned() {
     assert_fixture_output_contains(
         "enum_list_allocations",
         "expected.txt",
-        &[":list_cons_allocs => 5", ":closure_allocs => 1", ":closure_bytes => 32"],
+        &["{5, 80, 9, 288, 1, 32, 3, 48, 0, 0}"],
     );
-    assert_fixture_output_contains(
-        "enum_reduce_suspend",
-        "expected.txt",
-        &[":closure_allocs => 1", ":closure_bytes => 48"],
-    );
+    assert_fixture_output_contains("enum_reduce_suspend", "expected.txt", &["{3, 48, 1, 48, 1, 48, 1, 16}"]);
 }
 
 fn owned_cons_reuse_negative_barriers_do_not_advertise_capabilities() {
@@ -3366,15 +3362,7 @@ fn enum_list_allocations_pin_minimum_list_cons() {
     assert_fixture_output_contains(
         "enum_list_allocations",
         "expected.txt",
-        &[
-            "5\ntrue\n15",
-            ":list_cons_allocs => 5",
-            ":list_cons_bytes => 80",
-            ":closure_allocs => 1",
-            ":closure_bytes => 32",
-            ":map_allocs => 0",
-            "\n368\n",
-        ],
+        &["5\ntrue\n15", "{5, 80, 9, 288, 1, 32, 3, 48, 0, 0}", "\n368\n"],
     );
 
     let clif = dump_fixture_clif("enum_list_allocations");
@@ -3421,16 +3409,7 @@ fn local_reduce_state_update_lowers_without_trampoline() {
 }
 
 fn enum_sort_constant_sorter_erased_under_return_demand_specs() {
-    assert_fixture_output_contains(
-        "enum_sort",
-        "expected.jit.txt",
-        &[
-            ":list_cons_allocs => 22",
-            ":closure_allocs => 0",
-            ":scalar_box_allocs => 0",
-            ":allocation_pressure_yields => 0",
-        ],
-    );
+    assert_fixture_output_contains("enum_sort", "expected.txt", &["{22, 352, 0, 0, 0, 0, 0, 0, 0}"]);
 
     let readme = fs::read_to_string("fixtures2/behavior/enum_sort.fz").expect("read enum_sort README");
     for needle in [

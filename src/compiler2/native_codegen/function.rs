@@ -34,7 +34,7 @@ pub(crate) fn compile_fn<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
     let is_native = native_abi_fns.contains(&f.id);
     let is_cont_fn = cont_fns.contains(&f.id);
     let closure_target = (is_native && !is_cont_fn)
-        .then(|| env.surface.closure_target_boundary(f.id))
+        .then(|| env.surface.closure_target(f.id))
         .flatten();
     let demand_abi = NativeDemandAbi::new(native_body);
     // When this fn is never invoked from any fz IR site (not a direct
@@ -68,7 +68,7 @@ pub(crate) fn compile_fn<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
             // one-result input shape via their settled continuation ABI: their bound
             // values and captures are loaded from the closure env, leaving
             // only `self` in the Tail-CC signature.
-            let extras_count = demand_abi.continuation_extras();
+            let extras_count = demand_abi.continuation_entry_extras();
             for (i, r) in my_param_reprs[..extras_count].iter().enumerate() {
                 let _ = i;
                 append_block_param_for_repr(&mut b, entry_cl, *r);
@@ -131,7 +131,7 @@ pub(crate) fn compile_fn<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
 
     {
         let (if_only, all_used) = classify_var_uses(f);
-        let (tuple_return_fields, skipped_tuple_return_vars) = tuple_return_delivery_plan(f, native_body, is_cont_fn);
+        let (tuple_return_fields, skipped_tuple_return_vars) = tuple_return_delivery_plan(f, native_body);
         body.cache.if_only_conds = if_only.into_iter().map(|v| v.0).collect();
         body.cache.used_vars = all_used.into_iter().map(|v| v.0).collect();
         body.cache.tuple_field_params = tuple_field_params;
@@ -267,14 +267,7 @@ fn owned_cons_reuse_sources(f: &FnIr) -> HashMap<u32, Var> {
         .collect()
 }
 
-fn tuple_return_delivery_plan(
-    f: &FnIr,
-    native_body: &NativeBody,
-    is_cont_fn: bool,
-) -> (HashMap<u32, Vec<Var>>, HashSet<u32>) {
-    if is_cont_fn && NativeDemandAbi::new(native_body).tuple_field_arity().is_some() {
-        return (HashMap::new(), HashSet::new());
-    }
+fn tuple_return_delivery_plan(f: &FnIr, native_body: &NativeBody) -> (HashMap<u32, Vec<Var>>, HashSet<u32>) {
     let arity = match NativeDemandAbi::new(native_body).tuple_field_arity() {
         Some(arity) => arity,
         None => return (HashMap::new(), HashSet::new()),

@@ -1,4 +1,5 @@
 use super::receive::{DispatchRuntimeHelpers, declare_receive_dispatch, emit_receive_dispatch_body};
+use super::surface::NativeClosureTargetSurface;
 use super::*;
 use crate::diag::Diagnostics;
 use crate::fz_ir::{BlockId, DirectCallTarget, FnId, Module, Prim, Stmt, Term};
@@ -138,13 +139,11 @@ fn build_fn_sigs(module: &Module, surface: &NativeCodegenSurface<'_>) -> Vec<Sig
                     is_native,
                     surface.cont_fns.contains(&f.id),
                     if is_native {
-                        surface
-                            .closure_target_boundary(f.id)
-                            .map(|boundary| boundary.arg_reprs.as_slice())
+                        surface.closure_target(f.id).map(|target| target.arg_reprs.as_slice())
                     } else {
                         None
                     },
-                    Some(demand_abi.continuation_extras()),
+                    Some(demand_abi.continuation_entry_extras()),
                 )
             }
             None => {
@@ -197,8 +196,8 @@ fn collect_static_closure_targets(
         };
         let sid = body_slot.codegen_id;
         if surface
-            .closure_target_boundary(body_slot.fn_id)
-            .is_none_or(|boundary| boundary.capture_count != 0)
+            .closure_target(body_slot.fn_id)
+            .is_none_or(|target| target.capture_count != 0)
         {
             continue;
         }
@@ -280,9 +279,9 @@ fn build_boundary_return_adapter_signature(source: ArgRepr) -> Signature {
     sig
 }
 
-fn delivered_shape(surface: &NativeCodegenSurface<'_>, body_sid: u32, is_cont_fn: bool) -> DeliveredShape {
+fn delivered_shape(surface: &NativeCodegenSurface<'_>, body_sid: u32, _is_cont_fn: bool) -> DeliveredShape {
     let body = surface.body(body_sid).native_body;
-    NativeDemandAbi::new(body).returned_shape(is_cont_fn)
+    NativeDemandAbi::new(body).returned_shape()
 }
 
 fn collect_boundary_return_adapter_pairs(surface: &NativeCodegenSurface<'_>) -> BTreeSet<(ArgRepr, ArgRepr)> {
@@ -495,8 +494,8 @@ fn emit_codegen_abi_contracts(surface: &NativeCodegenSurface<'_>, tel: &dyn Tele
                 fn_id: f.id.0 as u64,
                 param_count: surface.param_reprs[sid].len() as u64,
                 capture_count: surface
-                    .closure_target_boundary(f.id)
-                    .map(|boundary| boundary.capture_count)
+                    .closure_target(f.id)
+                    .map(|target| target.capture_count)
                     .unwrap_or(0) as u64,
             },
             &crate::metadata! {
@@ -508,7 +507,7 @@ fn emit_codegen_abi_contracts(surface: &NativeCodegenSurface<'_>, tel: &dyn Tele
                 return_repr: surface.return_reprs[sid].as_str(),
                 is_native: surface.native_abi_fns.contains(&f.id),
                 is_cont_fn: surface.cont_fns.contains(&f.id),
-                is_closure_target: surface.closure_target_boundaries.contains_key(&f.id),
+                is_closure_target: surface.closure_targets.contains_key(&f.id),
             },
         );
     }
@@ -1122,30 +1121,119 @@ fn build_codegen_callable_boundaries<T: Types<Ty = Ty> + ClosureTypes>(
     boundaries
 }
 
-fn build_codegen_closure_target_boundaries(program: &crate::compiler2::NativeProgram) -> HashMap<FnId, u32> {
+fn build_codegen_closure_targets(
+    program: &crate::compiler2::NativeProgram,
+    param_reprs: &[Vec<ArgRepr>],
+    return_reprs: &[ArgRepr],
+) -> HashMap<FnId, NativeClosureTargetSurface> {
     let mut targets = HashMap::new();
     for boundary in &program.callable_boundaries {
-        if let Some(previous) = targets.get(&boundary.target_fn).copied() {
-            let prior = program
-                .callable_boundaries
-                .iter()
-                .find(|candidate| candidate.id().as_u32() == previous)
-                .expect("existing closure-target boundary id should resolve");
-            debug_assert_eq!(prior.capture_count, boundary.capture_count);
-            debug_assert_eq!(prior.capture_reprs, boundary.capture_reprs);
-            debug_assert_eq!(prior.arg_reprs, boundary.arg_reprs);
-            continue;
+        let next = closure_target_surface_from_body(
+            program,
+            param_reprs,
+            return_reprs,
+            boundary.target_fn,
+            boundary.capture_count,
+        );
+        if let Some(previous) = targets.insert(boundary.target_fn, next.clone()) {
+            debug_assert_eq!(previous, next);
         }
-        targets.insert(boundary.target_fn, boundary.id().as_u32());
     }
+
+    for function in &program.module.fns {
+        for block in &function.blocks {
+            let (target_fn, arg_count) = match &block.terminator {
+                Term::CallClosure {
+                    direct_target: Some(target_fn),
+                    args,
+                    ..
+                }
+                | Term::TailCallClosure {
+                    direct_target: Some(target_fn),
+                    args,
+                    ..
+                } => (*target_fn, args.len()),
+                _ => continue,
+            };
+            let target_ir = program.module.fn_by_id(target_fn);
+            let logical_param_count = target_ir.block(target_ir.entry).params.len();
+            assert!(
+                arg_count <= logical_param_count,
+                "direct closure target fn {} cannot receive {} call args through only {} logical params",
+                target_fn.0,
+                arg_count,
+                logical_param_count,
+            );
+            let capture_count = logical_param_count - arg_count;
+            let next = closure_target_surface_from_body(program, param_reprs, return_reprs, target_fn, capture_count);
+            match targets.get(&target_fn) {
+                Some(previous) => debug_assert_eq!(previous, &next),
+                None => {
+                    targets.insert(target_fn, next);
+                }
+            }
+        }
+    }
+
     targets
+}
+
+fn closure_target_surface_from_body(
+    program: &crate::compiler2::NativeProgram,
+    param_reprs: &[Vec<ArgRepr>],
+    return_reprs: &[ArgRepr],
+    target_fn: FnId,
+    capture_count: usize,
+) -> NativeClosureTargetSurface {
+    let target_sid = target_fn.0 as usize;
+    let target_body = program
+        .bodies
+        .iter()
+        .find(|body| body.fn_id == target_fn)
+        .unwrap_or_else(|| panic!("closure target fn {} must have a native body", target_fn.0));
+    let target_param_reprs = &param_reprs[target_sid];
+    let logical_param_count = target_body.param_reprs.len();
+    assert_eq!(
+        target_param_reprs.len(),
+        logical_param_count,
+        "closure target fn {} should publish one ABI repr per logical param",
+        target_fn.0,
+    );
+    assert!(
+        capture_count <= logical_param_count,
+        "closure target fn {} cannot dedicate {} capture lane(s) through only {} logical params",
+        target_fn.0,
+        capture_count,
+        logical_param_count,
+    );
+    NativeClosureTargetSurface {
+        capture_count,
+        capture_reprs: target_param_reprs[..capture_count].to_vec(),
+        arg_reprs: target_param_reprs[capture_count..].to_vec(),
+        return_shape: match &target_body.return_abi {
+            crate::compiler2::ReturnAbi::Value(_) => DeliveredShape::Value(return_reprs[target_sid]),
+            crate::compiler2::ReturnAbi::TupleFields(fields) => DeliveredShape::TupleFields(
+                fields
+                    .iter()
+                    .copied()
+                    .map(arg_repr_from_compiler2)
+                    .collect::<Vec<_>>()
+                    .into_boxed_slice(),
+            ),
+        },
+    }
 }
 
 fn collect_codegen_mid_flight_cont_keys(
     program: &crate::compiler2::NativeProgram,
     param_reprs: &[Vec<ArgRepr>],
-    closure_target_boundaries: &HashMap<FnId, u32>,
+    closure_targets: &HashMap<FnId, NativeClosureTargetSurface>,
 ) -> Vec<(u32, Vec<MidFlightArgShape>)> {
+    let entry_abis = program
+        .bodies
+        .iter()
+        .map(|body| (body.fn_id, body.entry_abi.clone()))
+        .collect::<HashMap<_, _>>();
     let mut keys = HashSet::new();
     for function in &program.module.fns {
         for block in &function.blocks {
@@ -1165,16 +1253,28 @@ fn collect_codegen_mid_flight_cont_keys(
             let Some(callee_reprs) = param_reprs.get(callee_sid as usize) else {
                 continue;
             };
-            let mut arg_shapes = callee_reprs
-                .iter()
-                .take(args.len())
-                .copied()
-                .map(MidFlightArgShape::Value)
-                .collect::<Vec<_>>();
-            if closure_target_boundaries.contains_key(&callee) {
-                arg_shapes.push(MidFlightArgShape::HeapRef);
-            }
-            arg_shapes.push(MidFlightArgShape::HeapRef);
+            let arg_shapes = match entry_abis.get(&callee) {
+                Some(crate::compiler2::NativeEntryAbi::Continuation { extra_params }) => callee_reprs
+                    .iter()
+                    .take(*extra_params)
+                    .copied()
+                    .map(MidFlightArgShape::Value)
+                    .chain(std::iter::once(MidFlightArgShape::HeapRef))
+                    .collect::<Vec<_>>(),
+                _ => {
+                    let mut shapes = callee_reprs
+                        .iter()
+                        .take(args.len())
+                        .copied()
+                        .map(MidFlightArgShape::Value)
+                        .collect::<Vec<_>>();
+                    if closure_targets.contains_key(&callee) {
+                        shapes.push(MidFlightArgShape::HeapRef);
+                    }
+                    shapes.push(MidFlightArgShape::HeapRef);
+                    shapes
+                }
+            };
             keys.insert((callee_sid, arg_shapes));
         }
     }
@@ -1221,7 +1321,7 @@ fn prepare_native_codegen_surface_from_native_program<'a>(
     }
 
     let callable_boundaries = build_codegen_callable_boundaries(t, program);
-    let closure_target_boundaries = build_codegen_closure_target_boundaries(program);
+    let closure_targets = build_codegen_closure_targets(program, &param_reprs, &return_reprs);
     let native_abi_fns = program
         .module
         .fns
@@ -1250,8 +1350,8 @@ fn prepare_native_codegen_surface_from_native_program<'a>(
         spec_count: program.bodies.len(),
         body_slots,
         callable_boundaries,
-        closure_target_boundaries: closure_target_boundaries.clone(),
-        mid_flight_cont_keys: collect_codegen_mid_flight_cont_keys(program, &param_reprs, &closure_target_boundaries),
+        closure_targets: closure_targets.clone(),
+        mid_flight_cont_keys: collect_codegen_mid_flight_cont_keys(program, &param_reprs, &closure_targets),
         param_reprs,
         return_reprs,
         native_abi_fns,
@@ -1424,6 +1524,15 @@ pub(crate) fn compile_with_backend_surface<
                 spec_id: sid as u64,
             },
         );
+        #[cfg(test)]
+        if matches!(body_slot.fn_id.0, 1 | 6 | 39 | 41 | 56 | 57 | 58 | 59) {
+            eprintln!(
+                "clif fn {} {}:\n{}",
+                body_slot.fn_id.0,
+                display_name,
+                ctx.func.display()
+            );
+        }
         cranelift_codegen::verifier::verify_function(&ctx.func, verifier_isa.as_ref()).map_err(|e| {
             CodegenError::new(format!(
                 "verify {}:\n{}\n--- IR ---\n{}",

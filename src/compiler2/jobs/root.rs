@@ -228,11 +228,13 @@ pub(super) fn seal_semantic_closure(world: &mut World<'_>, root_id: RootId) -> R
                 if !world.require_activation_key_facts(function, &mut reads, &mut waits, &mut follow_up) {
                     continue;
                 }
+                let Some(callee_activation) = target.activation.clone() else {
+                    return Err(FatalError);
+                };
                 let need = callsite_needs
                     .get(&callsite)
                     .copied()
                     .unwrap_or(super::super::identity::ExecutableNeed::Value);
-                let callee_activation = world.activation_key(root_id, function, &target.input_types);
                 let callee_executable = ExecutableKey {
                     activation: callee_activation.clone(),
                     need,

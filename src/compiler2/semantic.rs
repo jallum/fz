@@ -26,7 +26,15 @@ pub enum SelectedCallee {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CallTargetSummary {
     pub callee: SelectedCallee,
-    pub input_types: Vec<Ty>,
+    /// The semantic call surface this callsite can send to the callee.
+    ///
+    /// This is not the same thing as the bounded recursive activation key.
+    /// Materialization follows `activation`; diagnostics, fixture contracts,
+    /// and semantic closure reasoning describe the externally visible surface.
+    pub surface_inputs: Vec<Ty>,
+    /// The exact bounded activation this target demanded, when the callee is
+    /// compiler-owned. Provider boundaries do not name a compiler2 activation.
+    pub activation: Option<ActivationKey>,
     /// `None` means the callee has produced no return evidence yet — an
     /// honest snapshot mid-ascent. Settledness guarantees resolution before
     /// consumers read; at the fixpoint a still-`None` return *is* the empty
@@ -62,6 +70,7 @@ pub struct ActivationAnalysis {
     pub reachable_entries: Vec<ControlEntryId>,
     pub callsites: Vec<CallSiteId>,
     pub latent_executables: Vec<ExecutableKey>,
+    pub runtime_callable_values: Vec<ValueId>,
     pub value_types: HashMap<ValueId, Ty>,
 }
 
@@ -382,7 +391,10 @@ impl CallSiteMap {
 
 impl CallSiteSummary {
     pub fn arity(&self) -> usize {
-        self.targets.first().map(|target| target.input_types.len()).unwrap_or(0)
+        self.targets
+            .first()
+            .map(|target| target.surface_inputs.len())
+            .unwrap_or(0)
     }
 
     pub fn single_target(&self) -> Option<&CallTargetSummary> {

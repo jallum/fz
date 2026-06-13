@@ -16,9 +16,10 @@
 # sorted = Enum.sort([3, 1, 4, 1, 5, 9, 2, 6, 5, 3, 5])
 # ```
 #
-# After printing the sorted list, the fixture prints `Process.heap_alloc_stats/0`
-# and a `heap_bytes` headline (`:list_cons_bytes + :struct_bytes + :map_bytes`),
-# exactly as `quicksort` does.
+# After printing the sorted list, the fixture prints the specific allocation
+# counters that express the sort contract plus the `heap_bytes` headline
+# (`:list_cons_bytes + :struct_bytes + :map_bytes`), exactly as `quicksort`
+# does.
 #
 # ## What it pins
 #
@@ -60,7 +61,17 @@ fn main() do
   dbg(sorted)
 
   stats = Process.heap_alloc_stats()
-  dbg(stats)
+  dbg({
+    stats[:list_cons_allocs],
+    stats[:list_cons_bytes],
+    stats[:struct_allocs],
+    stats[:struct_bytes],
+    stats[:closure_allocs],
+    stats[:closure_bytes],
+    stats[:scalar_box_allocs],
+    stats[:scalar_box_bytes],
+    stats[:allocation_pressure_yields]
+  })
   heap_bytes = stats[:list_cons_bytes] + stats[:struct_bytes] + stats[:map_bytes]
   dbg(heap_bytes)
 end

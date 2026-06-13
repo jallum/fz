@@ -26,6 +26,14 @@ pub(crate) struct NativeCallableBoundarySurface {
     pub return_shape: DeliveredShape,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NativeClosureTargetSurface {
+    pub capture_count: usize,
+    pub capture_reprs: Vec<ArgRepr>,
+    pub arg_reprs: Vec<ArgRepr>,
+    pub return_shape: DeliveredShape,
+}
+
 pub(crate) struct NativeCodegenSurface<'a> {
     pub module: &'a Module,
     pub diagnostics: Diagnostics,
@@ -35,7 +43,7 @@ pub(crate) struct NativeCodegenSurface<'a> {
     pub spec_count: usize,
     pub body_slots: Vec<Option<NativeCodegenBody<'a>>>,
     pub callable_boundaries: BTreeMap<u32, NativeCallableBoundarySurface>,
-    pub closure_target_boundaries: HashMap<FnId, u32>,
+    pub closure_targets: HashMap<FnId, NativeClosureTargetSurface>,
     pub mid_flight_cont_keys: Vec<(u32, Vec<MidFlightArgShape>)>,
     pub param_reprs: Vec<Vec<ArgRepr>>,
     pub return_reprs: Vec<ArgRepr>,
@@ -77,9 +85,7 @@ impl<'a> NativeCodegenSurface<'a> {
         self.callable_boundaries.get(&boundary_id)
     }
 
-    pub(crate) fn closure_target_boundary(&self, target_fn: FnId) -> Option<&NativeCallableBoundarySurface> {
-        self.closure_target_boundaries
-            .get(&target_fn)
-            .and_then(|boundary_id| self.callable_boundary(*boundary_id))
+    pub(crate) fn closure_target(&self, target_fn: FnId) -> Option<&NativeClosureTargetSurface> {
+        self.closure_targets.get(&target_fn)
     }
 }
