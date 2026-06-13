@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-13T18:52:58Z",
+  "description": "Direct probe on 2026-06-13 shows 13 of the 14 fixtures still marked `defer.fz2-build: compiler2 native build parity still red` now build and run successfully through `./target/debug/fz2 build ... \u0026\u0026 \u003cbinary\u003e`. The only remaining red fixture in that cohort is `fixtures2/behavior/lambda_sugars.fz`, which fails AOT/native build with:\n\n`fz2 build: compiler2 root 0 AOT compile failed: codegen: native callable value Var(0) has no settled callable boundary`\n\nThis is no longer a timeout/load issue. It is a real compiler2 native-build bug around callable-boundary settlement for lambda sugar / capture shorthand.",
+  "id": "fz-c3b",
+  "labels": [],
+  "priority": 2,
+  "status": "open",
+  "title": "Compiler2 AOT lambda_sugars lacks settled callable boundary",
+  "type": "bug",
+  "updated_at": "2026-06-13T18:52:58Z"
+}
