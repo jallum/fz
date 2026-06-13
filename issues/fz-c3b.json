@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-06-13T18:52:58Z",
@@ -7,8 +7,8 @@
   "id": "fz-c3b",
   "labels": [],
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "Compiler2 AOT lambda_sugars lacks settled callable boundary",
   "type": "bug",
-  "updated_at": "2026-06-13T18:52:58Z"
+  "updated_at": "2026-06-13T19:12:13Z"
 }
