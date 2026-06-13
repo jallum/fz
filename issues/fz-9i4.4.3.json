@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-9i4.4.2"
   ],
@@ -12,8 +12,8 @@
   "labels": [],
   "parent": "fz-9i4.4",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "Rewrite compiler2 native codegen around callable boundaries and split arg/capture ABI",
   "type": "task",
-  "updated_at": "2026-06-13T02:08:00Z"
+  "updated_at": "2026-06-13T02:33:29Z"
 }
