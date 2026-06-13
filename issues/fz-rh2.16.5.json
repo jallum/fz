@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-hwn.7"
+  ],
   "blocks": [
     "fz-rh2.16.6"
   ],
@@ -13,5 +15,5 @@
   "status": "open",
   "title": "Fix fz2 runtime/interpreter parity gaps",
   "type": "task",
-  "updated_at": "2026-06-13T21:25:22Z"
+  "updated_at": "2026-06-13T21:25:23Z"
 }
