@@ -6,14 +6,15 @@
   "blocks": [
     "fz-hwn.4"
   ],
+  "closed_at": "2026-06-13T23:04:43Z",
   "created": "2026-06-13T21:24:40Z",
   "description": "Goal\nDerive ABI-ready parameter and return layouts from the settled runtime demand plan instead of from semantic activation inputs.\n\nProblem being fixed\nsrc/compiler2/jobs/artifact.rs currently builds ABI params with key.activation.input.map(abi_value_repr). That treats every semantic input as a runtime ABI lane and forces unused values, including unused callable values, into later representation work.\n\nCode seams\n- src/compiler2/jobs/artifact.rs: MaterializedExecutable, AbiReadyExecutable, build_executable_abi_plan, settle_return_abis, propagate_resume_value_reprs, resolve_entry_return_abi.\n- src/compiler2/jobs/backend.rs: entry_input_abis and collect_entry_input_need already contain a smaller backward demand engine for delivered resume values; keep the useful idea but move the authority to the shared runtime demand plan.\n\nData model to derive\nRuntimeInputLayout = Omitted { semantic_index } | Value { semantic_index, repr } | TupleFields { semantic_index, fields } | DirectCallableCaptures { semantic_index, captures }.\nABI-ready programs should carry runtime input layouts and value reprs derived from RuntimeDemand, not a one-to-one semantic input list.\n\nAlgorithm\n1. For each executable, read ExecutableRuntimeDemand.input_demands.\n2. Convert Ignore into Omitted lanes.\n3. Convert Value into normal AbiValueRepr lanes.\n4. Convert TupleFields into field lanes using the same return/resume delivery semantics that make quicksort efficient.\n5. Convert direct-only callable demand into capture lanes when the callable producer is known and non-escaping.\n6. Leave opaque/escaping callable demand as first-class Value/Callable lanes because a runtime callable object is required.\n\nInvariant\nCallable-entry ABI is a boundary contract for first-class callable values. It is not the executable-internal return or resume ABI.\n\nRemoval target\nRemove the assumption that every semantic ActivationKey.input element becomes an ABI parameter. Collapse or delete backend-local resume demand recomputation once artifact planning owns the layout.\n\nChecks\n- Existing quicksort tuple-field tests remain green and still show field delivery instead of ListTail-style whole-value over-allocation.\n- A fixture with an unused callable semantic input has no runtime parameter lane for that input.\n- A fixture with a direct captured lambda passes only demanded captures, not a heap closure.\n- ABI-ready telemetry reports omitted_inputs \u003e 0 for the unused-callable case.",
   "id": "fz-hwn.3",
   "labels": [],
   "parent": "fz-hwn",
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Compiler2 ABI planning: derive runtime parameter layouts from demand",
   "type": "task",
-  "updated_at": "2026-06-13T22:33:37Z"
+  "updated_at": "2026-06-13T23:04:43Z"
 }
