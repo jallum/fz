@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-hwn.2"
+  ],
   "created": "2026-06-13T21:24:39Z",
   "description": "Goal\nMake runtime value demand a first-class compiler2 data model, separate from semantic callable evidence and from backend representation.\n\nProblem being fixed\nActivationAnalysis.runtime_callable_values and ClosureBoundaryUse::CallableArg collapse two different facts: exact callable use and first-class runtime callable materialization. After that collapse, later phases recover callable obligations from types, which is too broad.\n\nCode seams\n- src/compiler2/semantic.rs: ActivationAnalysis currently stores runtime_callable_values; SemanticClosure is the stored value for the SemanticClosed FactKey.\n- src/compiler2/jobs/semantic.rs: ClosureBoundaryUse, runtime_callable_boundary_values, note_callable_arg_uses, closure_value_needs_runtime_boundary, resolve_materialized_runtime_callable_boundary_activations.\n- Existing exact callable evidence remains in CallSiteSummary.targets[*].surface_inputs, not directly on CallSiteSummary.\n\nData model to add\nRuntimeDemand = Ignore | Value | TupleFields(Vec\u003cRuntimeDemand\u003e) | Callable(CallableDemand).\nCallableDemand = { resolved: BTreeSet\u003cCallableSurface\u003e, opaque: bool, escape: bool }.\nCallableSurface = normalized/canonical surface_inputs Vec\u003cTy\u003e.\nExecutableRuntimeDemand = { return_demand, input_demands, value_demands, call_arg_demands, callable_materializations }.\nCallableMaterialization = DirectOnly { surfaces } | FirstClass { surfaces }.\n\nNormalization rules\nIgnore is bottom. Value means whole runtime value is required. TupleFields joins fieldwise and collapses to Value when a whole-value consumer appears. CallableDemand joins by unioning resolved surfaces and OR-ing opaque/escape. When type information proves a whole-value demand applies to a callable, preserve callable-specific information by representing that as CallableDemand with escape=true rather than losing resolved surfaces.\n\nWhat must not happen in this ticket\nDo not make backend/native behavior more clever locally. This ticket only introduces the model and local normalization tests so later phases can consume one shared plan.\n\nRemoval target\nThis ticket should either remove ActivationAnalysis.runtime_callable_values outright or mark it as a short-lived compile error to be removed by the next ticket. Do not add compatibility shims that keep the old meaning alive.\n\nChecks\nAdd focused unit tests for demand joins and normalization, especially:\n- Ignore + resolved callable demand preserves only the resolved surface.\n- resolved callable + escape preserves the resolved surface and marks first-class demand.\n- tuple field demand + whole-value demand collapses to Value.\n- whole-value demand on callable type does not erase known resolved surfaces.",
   "id": "fz-hwn.1",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Compiler2 runtime demand: model semantic use separately from representation demand",
   "type": "task",
-  "updated_at": "2026-06-13T21:24:39Z"
+  "updated_at": "2026-06-13T21:24:40Z"
 }
