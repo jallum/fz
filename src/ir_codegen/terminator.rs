@@ -1140,13 +1140,13 @@ fn capture_forces_heap_continuation<T: Types<Ty = Ty> + ClosureTypes>(
         return false;
     }
     if let Some(native_body) = env.active_native_body() {
-        let Some(candidates) = native_body.callable_constructors.get(cv) else {
+        let Some(candidates) = native_body.callable_value_boundaries.get(cv) else {
             return true;
         };
         return candidates.iter().any(|candidate| {
             env.surface
                 .callable_entries
-                .get(&(*candidate as u32))
+                .get(&candidate.as_u32())
                 .is_none_or(|entry| entry.capture_count > 0)
         });
     }

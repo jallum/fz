@@ -1,6 +1,6 @@
 use super::{AppliedStep, CodeSubmission, Compiler2, DriveOutcome, ExecutableNeed, Job, RootSubmission};
 use crate::compiler2::artifact::{BackendEntry, BackendTail};
-use crate::compiler2::artifact::{NativeBodyOrigin, NativeEntryAbi, NativeProgram};
+use crate::compiler2::artifact::{NativeBodyOrigin, NativeCallableBoundaryId, NativeEntryAbi, NativeProgram};
 use crate::compiler2::drive::JobEffects;
 use crate::compiler2::{
     AbiReadyProgram, AbiValueRepr, ActivationKey, BackendProgram, CallSiteId, CallSiteKey, CallSiteSummary, CallTarget,
@@ -14,7 +14,7 @@ use crate::dispatch_matrix::Region;
 use crate::dispatch_matrix::pattern::{PatternDispatchPlan, PatternGuardDispatch, PatternGuardExpr};
 use crate::exec::runtime::DbgCapture;
 use crate::fz_ir::{
-    Block as IrBlock, CallsiteId as IrCallsiteId, CallsiteIdent, Cont as IrCont, ExternTy, ExternalCallEdge,
+    Block as IrBlock, CallsiteId as IrCallsiteId, CallsiteIdent, Cont as IrCont, ExternTy, ExternalCallEdge, FnId,
     FnIr as IrFn, Module as IrModule, Prim as IrPrim, ReceiveAfter, ReceiveClause, Stmt as IrStmt, Term as IrTerm,
 };
 use crate::ir_interp::{
@@ -3793,7 +3793,7 @@ fn compiler2_native_program_keeps_the_closed_enum_reduce_callable_entries() {
         "the native callable-boundary inventory should keep exactly the user reducer and bridge reducer entries",
     );
 
-    let used_entries = native_callable_constructor_uses(&program);
+    let used_entries = native_callable_boundary_uses(&program);
     let expected_entries = program
         .callable_boundaries
         .iter()
@@ -3802,12 +3802,12 @@ fn compiler2_native_program_keeps_the_closed_enum_reduce_callable_entries() {
                 entry.target.activation.function,
                 id if id == user_reducer_id || id == bridge_reducer_id
             )
-            .then_some(entry.target_fn.0 as usize)
+            .then_some(entry.id())
         })
         .collect::<HashSet<_>>();
     assert_eq!(
         used_entries, expected_entries,
-        "native callable constructors should point at exactly the callable-entry obligations that survive the closed Enum.reduce path",
+        "native closure values should point at exactly the callable-boundary obligations that survive the closed Enum.reduce path",
     );
 }
 
@@ -3859,14 +3859,59 @@ fn compiler2_native_program_joins_callable_resume_before_materializing_closure_c
         .callable_boundaries
         .iter()
         .filter_map(|entry| {
-            matches!(entry.target.activation.function, id if id == add_a_id || id == add_b_id)
-                .then_some(entry.target_fn.0 as usize)
+            matches!(entry.target.activation.function, id if id == add_a_id || id == add_b_id).then_some(entry.id())
         })
         .collect::<HashSet<_>>();
-    let constructor_targets = native_callable_constructor_uses(&program);
+    let constructor_targets = native_callable_boundary_uses(&program);
     assert!(
         branch_entry_targets.is_subset(&constructor_targets),
-        "native constructors for both case branches should resolve to callable-entry candidates",
+        "native closure values for both case branches should resolve to callable-boundary candidates",
+    );
+    assert!(
+        native_closure_call_targets(&program)
+            .into_iter()
+            .any(|target| target.is_none()),
+        "opaque joined function values should stay explicit closure-call seams with no exact direct target",
+    );
+}
+
+#[test]
+fn compiler2_native_program_marks_settled_singleton_closure_calls_with_exact_targets() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&[], capture.handler());
+    let native = NativeProgramCapture::new();
+    tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures2/behavior/closure_typed_captures.fz".to_string()),
+        text: include_str!("../../fixtures2/behavior/closure_typed_captures.fz").to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    let outcome = compiler.drive();
+    if !matches!(outcome, DriveOutcome::Resolved) {
+        let message = capture
+            .last(&["fz", "diag", "error"])
+            .map(|event| metadata_str(&event, "message").to_string())
+            .unwrap_or_else(|| "<missing diagnostic>".to_string());
+        panic!(
+            "settled singleton closure values should lower with an explicit exact direct target: {outcome:?}; diagnostic={message}"
+        );
+    }
+
+    let program = native.last(root_id).program;
+    assert!(
+        native_closure_call_targets(&program)
+            .into_iter()
+            .any(|target| target.is_some()),
+        "singleton closure-lits should carry their exact direct target through native lowering",
     );
 }
 
@@ -4181,15 +4226,18 @@ fn compiler2_native_program_jit_runs_spawn_then_receive_through_compiler2_codege
         vec![AbiValueRepr::ValueRef],
         "fz_spawn/1 should preserve the boxed closure-ref lane at the extern seam",
     );
-    let callable_targets = native_callable_constructor_uses(&program)
+    let callable_targets = native_callable_boundary_uses(&program)
         .into_iter()
-        .map(|target_fn| {
+        .map(|boundary_id| {
             program
                 .callable_boundaries
                 .iter()
-                .find(|entry| entry.target_fn.0 as usize == target_fn)
+                .find(|entry| entry.id() == boundary_id)
                 .unwrap_or_else(|| {
-                    panic!("native callable constructor target fn {target_fn} missing from callable boundaries")
+                    panic!(
+                        "native callable boundary {:?} missing from callable inventory",
+                        boundary_id
+                    )
                 })
                 .target
                 .activation
@@ -4199,7 +4247,7 @@ fn compiler2_native_program_jit_runs_spawn_then_receive_through_compiler2_codege
     assert_eq!(
         callable_targets,
         HashSet::from([child_id]),
-        "native callable constructors should resolve to the one closed callable-entry target for child/0",
+        "native closure values should resolve to the one closed callable boundary for child/0",
     );
 
     let compiled = jit_compile_native_program(&mut compiler, &program);
@@ -4337,7 +4385,7 @@ fn compiler2_native_program_jit_runs_source_lambda_sugars_through_compiler2_code
 
     let program = native.last(root_id).program;
     assert!(
-        !program.callable_boundaries.is_empty() && !native_callable_constructor_uses(&program).is_empty(),
+        !program.callable_boundaries.is_empty() && !native_callable_boundary_uses(&program).is_empty(),
         "zero-capture lambda constructors should publish callable-boundary inventory for native materialization",
     );
     let compiled = jit_compile_native_program(&mut compiler, &program);
@@ -8849,10 +8897,25 @@ fn native_executable_body(program: &NativeProgram, function: FunctionId) -> &cra
         .unwrap_or_else(|| panic!("native executable body for {function:?}"))
 }
 
-fn native_callable_constructor_uses(program: &NativeProgram) -> HashSet<usize> {
+fn native_closure_call_targets(program: &NativeProgram) -> Vec<Option<FnId>> {
+    let mut out = Vec::new();
+    for function in &program.module.fns {
+        for block in &function.blocks {
+            match &block.terminator {
+                IrTerm::CallClosure { direct_target, .. } | IrTerm::TailCallClosure { direct_target, .. } => {
+                    out.push(*direct_target);
+                }
+                _ => {}
+            }
+        }
+    }
+    out
+}
+
+fn native_callable_boundary_uses(program: &NativeProgram) -> HashSet<NativeCallableBoundaryId> {
     let mut out = HashSet::new();
     for body in &program.bodies {
-        for entries in body.callable_constructors.values() {
+        for entries in body.callable_value_boundaries.values() {
             out.extend(entries.iter().copied());
         }
     }

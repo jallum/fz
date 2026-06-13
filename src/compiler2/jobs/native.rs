@@ -29,7 +29,7 @@ use crate::types::Types as LegacyTypes;
 use super::super::artifact::{
     AbiValueRepr, BackendBody, BackendClause, BackendEntry, BackendEntryOrigin, BackendExecutable, BackendProgram,
     BackendStep, BackendTail, CallTarget, EffectSummary, NativeBody, NativeBodyOrigin, NativeCallableBoundary,
-    NativeEntryAbi, NativeProgram, ReturnAbi,
+    NativeCallableBoundaryId, NativeEntryAbi, NativeProgram, ReturnAbi,
 };
 use super::super::body::{ControlDestination, ControlEntryId, Literal, LoweredExtern, ValueId};
 use super::super::drive::{FactKey, Job, JobEffects, settled_uses};
@@ -656,10 +656,10 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                 }
                 BackendStep::FunctionRef { value, function } => {
                     let identity = self.callable_identity(*function, 0);
-                    let candidates = self.callable_entry_candidates(*function, 0);
+                    let candidates = self.callable_boundary_candidates(*function, 0);
                     let (var, _) = ctx.emit_let(Prim::MakeFnRef(ctx.fresh_callsite(), identity));
                     if !candidates.is_empty() {
-                        ctx.callable_constructors.insert(var, candidates);
+                        ctx.callable_value_boundaries.insert(var, candidates);
                     }
                     bind_backend_value(ctx, executable, env, *value, var);
                 }
@@ -677,7 +677,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                     })?;
                     let capture_count = captures.len();
                     let identity = self.callable_identity(*function, capture_count);
-                    let candidates = self.callable_entry_candidates(*function, capture_count);
+                    let candidates = self.callable_boundary_candidates(*function, capture_count);
                     let prim = if capture_vars.is_empty() {
                         Prim::MakeFnRef(ctx.fresh_callsite(), identity)
                     } else {
@@ -685,7 +685,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                     };
                     let (var, _) = ctx.emit_let(prim);
                     if !candidates.is_empty() {
-                        ctx.callable_constructors.insert(var, candidates);
+                        ctx.callable_value_boundaries.insert(var, candidates);
                     }
                     bind_backend_value(ctx, executable, env, *value, var);
                 }
@@ -1904,14 +1904,19 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
             .unwrap_or_else(|| panic!("callable identity for {function:?}/{capture_count}"))
     }
 
-    fn callable_entry_candidates(&self, function: FunctionId, capture_count: usize) -> Vec<usize> {
+    fn callable_boundary_candidates(
+        &self,
+        function: FunctionId,
+        capture_count: usize,
+    ) -> Vec<NativeCallableBoundaryId> {
         self.program
             .callable_entries
             .iter()
-            .filter_map(|entry| {
+            .enumerate()
+            .filter_map(|(index, entry)| {
                 let target = &self.program.executables[entry.target];
                 (target.key.activation.function == function && entry.capture_count == capture_count)
-                    .then_some(self.executable_fns[entry.target].0 as usize)
+                    .then_some(self.callable_boundaries[index].id())
             })
             .collect()
     }
@@ -2152,7 +2157,7 @@ struct NativeFnCtx {
     current_block: BlockId,
     stmt_counts: HashMap<BlockId, usize>,
     value_types: HashMap<Var, Ty>,
-    callable_constructors: HashMap<Var, Vec<usize>>,
+    callable_value_boundaries: HashMap<Var, Vec<NativeCallableBoundaryId>>,
     extern_marshals: HashMap<ExternMarshalSite, ExternTy>,
     failure_blocks: HashMap<u32, BlockId>,
     origin: NativeBodyOrigin,
@@ -2183,7 +2188,7 @@ impl NativeFnCtx {
             current_block: BlockId(0),
             stmt_counts: HashMap::new(),
             value_types: HashMap::new(),
-            callable_constructors: HashMap::new(),
+            callable_value_boundaries: HashMap::new(),
             extern_marshals: HashMap::new(),
             failure_blocks: HashMap::new(),
             origin,
@@ -2265,7 +2270,7 @@ impl NativeFnCtx {
             return_ty: self.return_ty,
             return_abi: self.return_abi,
             value_types: self.value_types,
-            callable_constructors: self.callable_constructors,
+            callable_value_boundaries: self.callable_value_boundaries,
             extern_marshals: self.extern_marshals,
             effects: self.effects,
         };

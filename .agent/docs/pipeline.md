@@ -253,16 +253,18 @@ The next two rungs narrow the contract:
   handoff.
 - `NativeProgram` is the native-specific handoff above `BackendProgram`: a
   Compiler2-owned CPS/codegen-ready projection carrying direct executable
-  bodies, clause helpers, continuations, callable-constructor metadata, and
+  bodies, clause helpers, continuations, callable-boundary refs on closure
+  values, and
   extern-marshal facts instead of rebuilt `ModulePlan`, `PlannedProgram`, or
   `AbiFacts`.
 
 Callable entry inventory is an artifact fact, not a native-codegen guess.
 `LowerBackendProgram` records callable-entry candidates from settled value types
-for callable constructor values, returned callable values, and explicit
+for callable-construction values, returned callable values, and explicit
 callable-boundary arguments. A closure-call callee is a consumer of an already
-materialized callable value, not a constructor obligation. Native codegen
-consumes callable-entry inventory for `MakeFnRef` / `MakeClosure`. Direct
+materialized callable value, not a constructor obligation. Native lowering
+preserves those obligations as callable-boundary refs on `MakeFnRef` /
+`MakeClosure` results. Direct
 closure-call ABI shape is selected from `NativeProgram.closure_capture_counts`:
 entries with a capture count use the closure-target ABI `(args..., self, cont)`,
 while plain native executable bodies use `(args..., cont)`.
@@ -321,7 +323,7 @@ questions at that rung:
 | `ModulePlan.effective_returns` and `fn_effects` | `NativeBody.return_ty`, `return_abi`, and `effects` |
 | `SpecPlan.vars` type queries | `NativeBody.value_types` |
 | `PlannedProgram.callable_entries` | `NativeProgram.callable_boundaries` |
-| callable-constructor lookup through planner state | `NativeBody.callable_constructors` |
+| callable-boundary lookup through planner state | `NativeBody.callable_value_boundaries` |
 | extern decls plus wire classes | `NativeProgram.module.externs` plus `NativeBody.extern_marshals` |
 | continuation / entry ABI classification | `NativeBody.entry_abi` and `NativeBodyOrigin::Continuation` |
 | runtime type-membership questions | explicit `RuntimeTypePredicate` facts |

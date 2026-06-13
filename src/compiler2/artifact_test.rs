@@ -3,7 +3,8 @@ use std::collections::HashMap;
 use super::identity::{FunctionMap, ModuleId, RootEntry, RootKind, RootMap};
 use super::{AbiValueRepr, ActivationKey, ExecutableKey, ExecutableNeed, FunctionId, ReturnAbi, RootId, Types};
 use crate::compiler2::artifact::{
-    EffectSummary, NativeBody, NativeBodyOrigin, NativeCallableBoundary, NativeEntryAbi, NativeProgram,
+    EffectSummary, NativeBody, NativeBodyOrigin, NativeCallableBoundary, NativeCallableBoundaryId, NativeEntryAbi,
+    NativeProgram,
 };
 use crate::fz_ir::{
     Block, BlockId, ExternDecl, ExternId, ExternMarshalSite, ExternTy, FnCategory, FnId, FnIr, Module, Term, Var,
@@ -77,7 +78,7 @@ fn compiler2_native_program_contract_keeps_codegen_facts_on_body_records() {
             return_ty: int,
             return_abi: ReturnAbi::Value(AbiValueRepr::RawInt),
             value_types: HashMap::from([(Var(0), int)]),
-            callable_constructors: HashMap::from([(Var(0), vec![0])]),
+            callable_value_boundaries: HashMap::from([(Var(0), vec![NativeCallableBoundaryId(entry_fn)])]),
             extern_marshals: marshals.clone(),
             effects: EffectSummary::default(),
         }],
@@ -107,9 +108,9 @@ fn compiler2_native_program_contract_keeps_codegen_facts_on_body_records() {
         "the body contract should say whether a body is a direct entry or a continuation entry",
     );
     assert_eq!(
-        program.bodies[0].callable_constructors.get(&Var(0)),
-        Some(&vec![0]),
-        "callable-constructor vars should point at the closed callable-entry inventory instead of hiding that resolution in codegen",
+        program.bodies[0].callable_value_boundaries.get(&Var(0)),
+        Some(&vec![NativeCallableBoundaryId(entry_fn)]),
+        "closure-producing vars should point at the closed callable-boundary inventory instead of hiding that resolution in codegen",
     );
     assert_eq!(
         program.bodies[0].extern_marshals, marshals,
@@ -210,7 +211,7 @@ fn compiler2_native_program_contract_maps_old_native_inputs_to_local_facts() {
                 return_ty: int,
                 return_abi: ReturnAbi::Value(AbiValueRepr::RawInt),
                 value_types: HashMap::from([(Var(0), int)]),
-                callable_constructors: HashMap::from([(Var(0), vec![0])]),
+                callable_value_boundaries: HashMap::from([(Var(0), vec![NativeCallableBoundaryId(entry_fn)])]),
                 extern_marshals: HashMap::from([(extern_site, ExternTy::CString)]),
                 effects: EffectSummary::default(),
             },
@@ -225,7 +226,7 @@ fn compiler2_native_program_contract_maps_old_native_inputs_to_local_facts() {
                 return_ty: int,
                 return_abi: ReturnAbi::Value(AbiValueRepr::ValueRef),
                 value_types: HashMap::from([(Var(1), int)]),
-                callable_constructors: HashMap::new(),
+                callable_value_boundaries: HashMap::new(),
                 extern_marshals: HashMap::new(),
                 effects: EffectSummary::default(),
             },
@@ -265,9 +266,9 @@ fn compiler2_native_program_contract_maps_old_native_inputs_to_local_facts() {
         "native codegen should read per-value type answers from NativeBody.value_types instead of SpecPlan.vars",
     );
     assert_eq!(
-        program.bodies[0].callable_constructors.get(&Var(0)),
-        Some(&vec![0]),
-        "native codegen should read callable-constructor obligations from NativeBody.callable_constructors instead of planner-side callable lookup",
+        program.bodies[0].callable_value_boundaries.get(&Var(0)),
+        Some(&vec![NativeCallableBoundaryId(entry_fn)]),
+        "native codegen should read callable-boundary obligations from NativeBody.callable_value_boundaries instead of planner-side callable lookup",
     );
     assert_eq!(
         program.callable_boundaries[0].target, executable,
@@ -360,7 +361,7 @@ fn compiler2_native_program_contract_treats_old_extern_semantics_as_cleanup_not_
             return_ty: int,
             return_abi: ReturnAbi::Value(AbiValueRepr::RawInt),
             value_types: HashMap::from([(Var(0), int)]),
-            callable_constructors: HashMap::new(),
+            callable_value_boundaries: HashMap::new(),
             extern_marshals: HashMap::from([(marshal_site, ExternTy::CString)]),
             effects: EffectSummary::default(),
         }],

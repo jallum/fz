@@ -2496,17 +2496,17 @@ fn resolve_callable_entry_sid<T: Types<Ty = Ty> + ClosureTypes>(
     }
     let candidates = env
         .active_native_body()
-        .callable_constructors
+        .callable_value_boundaries
         .get(&dest_var)
         .ok_or_else(|| {
             CodegenError::new(format!(
-                "native callable constructor Var({}) has no settled callable-entry candidates",
+                "native callable value Var({}) has no settled callable-boundary candidates",
                 dest_var.0
             ))
         })?
         .iter()
         .copied()
-        .map(|sid| sid as u32)
+        .map(|boundary_id| boundary_id.as_u32())
         .filter(|sid| env.callable_entry_fn_ids.contains_key(sid))
         .filter_map(|sid| {
             env.surface
@@ -2518,7 +2518,7 @@ fn resolve_callable_entry_sid<T: Types<Ty = Ty> + ClosureTypes>(
     let selection = NativeCallableEntrySelection {
         spec_id: select_native_callable_entry(&*t, &capture_tys, &candidates).ok_or_else(|| {
             CodegenError::new(format!(
-                "native callable value for FnId({}) with {} captures has no settled callable entry",
+                "native callable value for FnId({}) with {} captures has no settled callable boundary",
                 fn_id.0,
                 captured.len()
             ))

@@ -140,6 +140,15 @@ pub(crate) enum NativeBodyOrigin {
     Continuation { owner: FnId, index: u32 },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) struct NativeCallableBoundaryId(pub FnId);
+
+impl NativeCallableBoundaryId {
+    pub(crate) fn as_u32(self) -> u32 {
+        self.0.0
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct NativeBody {
     /// Body identity inside `module`.
@@ -154,9 +163,10 @@ pub(crate) struct NativeBody {
     pub return_abi: ReturnAbi,
     /// Final per-value types after Compiler2 lowering into CPS/native form.
     pub value_types: HashMap<Var, Ty>,
-    /// Callable-constructor vars mapped to the closed callable-boundary
-    /// inventory they may materialize.
-    pub callable_constructors: HashMap<Var, Vec<usize>>,
+    /// Closure-producing vars mapped to the callable boundaries they may
+    /// materialize. These refs stay in callable-boundary space; they do not
+    /// collapse to executable-body ids.
+    pub callable_value_boundaries: HashMap<Var, Vec<NativeCallableBoundaryId>>,
     /// Concrete extern marshal classes keyed by CPS/native extern site.
     pub extern_marshals: HashMap<ExternMarshalSite, ExternTy>,
     pub effects: EffectSummary,
@@ -174,6 +184,12 @@ pub(crate) struct NativeCallableBoundary {
     pub arg_reprs: Vec<AbiValueRepr>,
     pub return_ty: Ty,
     pub return_abi: ReturnAbi,
+}
+
+impl NativeCallableBoundary {
+    pub(crate) fn id(&self) -> NativeCallableBoundaryId {
+        NativeCallableBoundaryId(self.target_fn)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
