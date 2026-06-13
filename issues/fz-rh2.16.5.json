@@ -5,7 +5,7 @@
     "fz-rh2.16.6"
   ],
   "created": "2026-06-10T08:05:46Z",
-  "description": "Resolve fz2 runtime/interpreter failures from the fz-rh2.9 sweep: resource_lifecycle, tail_recursion on fz2 interp, utf8_pattern_match on fz2 interp, and enum_predicate_search on fz2 interp.\n\nKeep runtime-vs-typing layers separate. If a failure is interpreter-only, do not patch native codegen; fix the backend interpreter or mark the fixture path correctly.\n\nSignal: affected fixtures either pass fz2 matrix paths or have path-specific out-of-scope documentation.",
+  "description": "Resolve fz2 runtime/interpreter failures from the fz-rh2.9 sweep: resource_lifecycle, tail_recursion on fz2 interp, utf8_pattern_match on fz2 interp, and enum_predicate_search on fz2 interp.\n\nKeep runtime-vs-typing layers separate. If a failure is interpreter-only, do not patch native codegen; fix the backend interpreter or mark the fixture path correctly.\n\nRuntime-demand blocker\nfz-hwn.7 must land before this parity ticket can be trusted as a migration signal. The runtime-demand epic fixes the modeling bug where compiler2 recovers representation obligations from types instead of deriving them from exact semantic demand. Until that is resolved, parity failures around callable entries, closure materialization, ABI lanes, and interpreter/native behavior may be symptoms of the same demand leak.\n\nSignal: affected fixtures either pass fz2 matrix paths or have path-specific out-of-scope documentation. Runtime-demand fixture/telemetry checks from fz-hwn.7 are green.",
   "id": "fz-rh2.16.5",
   "labels": [],
   "parent": "fz-rh2.16",
@@ -13,5 +13,5 @@
   "status": "open",
   "title": "Fix fz2 runtime/interpreter parity gaps",
   "type": "task",
-  "updated_at": "2026-06-10T08:05:55Z"
+  "updated_at": "2026-06-13T21:25:22Z"
 }
