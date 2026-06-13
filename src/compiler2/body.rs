@@ -137,8 +137,15 @@ pub struct LoweredEntry {
     pub origin: ControlEntryOrigin,
     pub params: Vec<ValueId>,
     pub captures: Vec<ValueId>,
+    pub reusable_cons_captures: Vec<ReusableConsCapture>,
     pub steps: Vec<LoweredStep>,
     pub tail: LoweredTail,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ReusableConsCapture {
+    pub head: ValueId,
+    pub source: ValueId,
 }
 
 #[derive(Debug, Clone, PartialEq)]

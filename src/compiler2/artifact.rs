@@ -331,8 +331,15 @@ pub struct BackendEntry {
     pub origin: BackendEntryOrigin,
     pub params: Vec<ValueId>,
     pub captures: Vec<ValueId>,
+    pub reusable_cons_captures: Vec<ReusableConsCapture>,
     pub steps: Vec<BackendStep>,
     pub tail: BackendTail,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ReusableConsCapture {
+    pub head: ValueId,
+    pub source: ValueId,
 }
 
 #[derive(Debug, Clone, PartialEq)]

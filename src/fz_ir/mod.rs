@@ -1725,10 +1725,6 @@ impl FnBuilder {
     }
 
     pub fn record_reusable_cons_cell(&mut self, rebuilt_head: Var, source_cons: Var) {
-        debug_assert!(
-            self.is_entry_param(source_cons),
-            "reusable-cons sources must be physical entry params"
-        );
         if self.is_entry_param(source_cons) {
             self.record_physical_entry_param(source_cons);
         }

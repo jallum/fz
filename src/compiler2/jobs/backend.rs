@@ -172,6 +172,14 @@ impl<'a, 'tel> BackendLowerer<'a, 'tel> {
             origin: lower_entry_origin(entry_index, entry, resume_abis),
             params: entry.params.clone(),
             captures: entry.captures.clone(),
+            reusable_cons_captures: entry
+                .reusable_cons_captures
+                .iter()
+                .map(|capture| super::super::artifact::ReusableConsCapture {
+                    head: capture.head,
+                    source: capture.source,
+                })
+                .collect(),
             steps: entry
                 .steps
                 .iter()

@@ -7212,6 +7212,84 @@ fn main(), do: rebuild([1, 2])
 }
 
 #[test]
+fn compiler2_lowered_body_records_reusable_cons_capture_requirements_on_delivered_entries() {
+    let tel = ConfiguredTelemetry::new();
+    let functions = FunctionCapture::new();
+    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    let bodies = LoweredBodyCapture::new();
+    tel.attach(&["fz", "compiler2", "lowered_body", "defined"], bodies.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    let code_id = compiler.submit_code(CodeSubmission {
+        name: Some("reusable_cons_continuation.fz".to_string()),
+        text: r#"
+fn ping(x), do: x
+
+fn rebuild(xs) do
+  [h | t] = xs
+  ping(0)
+  [h | t]
+end
+"#
+        .to_string(),
+    });
+
+    assert_resolved(compiler.drive(), "reusable-cons fixture should index cleanly");
+    assert!(
+        compiler.demand(Job::ScopeCode(code_id)),
+        "reusable-cons fixture still needs function definition before lowered-body inspection",
+    );
+    assert_resolved(
+        compiler.drive(),
+        "reusable-cons fixture should define its functions cleanly",
+    );
+
+    let rebuild_id = function_id(&functions, "rebuild", 1);
+    assert!(
+        compiler.demand(Job::LowerFunction(rebuild_id)),
+        "rebuild/1 should be demandable for lowered-body inspection",
+    );
+    assert_resolved(
+        compiler.drive(),
+        "lowering rebuild/1 should publish reusable-cons capture metadata on its entries",
+    );
+
+    let body = lowered_body(&bodies, rebuild_id);
+    let LoweredBody::Clauses { clauses, entries, .. } = body else {
+        panic!("rebuild/1 should lower as clauses");
+    };
+    let continuation = entries
+        .iter()
+        .find(|entry| matches!(entry.origin, ControlEntryOrigin::DeliveredResume { .. }))
+        .expect("the non-tail call should lower through a delivered-resume entry");
+    assert_eq!(
+        continuation.reusable_cons_captures.len(),
+        1,
+        "the delivered entry should declare exactly the one reusable list cell it must receive",
+    );
+
+    let capture = continuation.reusable_cons_captures[0];
+    assert!(
+        continuation.captures.contains(&capture.head),
+        "the hidden physical capture should be paired with a semantic capture for the rebuilt head",
+    );
+
+    let source = clauses
+        .iter()
+        .flat_map(|clause| clause.projections.iter())
+        .chain(entries.iter().flat_map(|entry| entry.steps.iter()))
+        .find_map(|step| match step {
+            LoweredStep::SplitList { source, head, .. } if *head == capture.head => Some(*source),
+            _ => None,
+        });
+    assert_eq!(
+        source,
+        Some(capture.source),
+        "the delivered entry should capture the exact source cons paired with its rebuilt head",
+    );
+}
+
+#[test]
 fn compiler2_native_program_jit_runs_nontail_if_join_flow_through_compiler2_codegen() {
     let tel = ConfiguredTelemetry::new();
     let dbg = DbgCapture::new();

@@ -399,6 +399,7 @@ fn rewrite_protocol_dispatch_calls(
                 origin: ControlEntryOrigin::Branch,
                 params: Vec::new(),
                 captures: protocol_dispatch_entry_captures(entries, &args, &dest),
+                reusable_cons_captures: Vec::new(),
                 steps: Vec::new(),
                 tail: LoweredTail::DirectCall {
                     value,
@@ -417,6 +418,7 @@ fn rewrite_protocol_dispatch_calls(
             origin: ControlEntryOrigin::Branch,
             params: Vec::new(),
             captures: Vec::new(),
+            reusable_cons_captures: Vec::new(),
             steps: Vec::new(),
             tail: LoweredTail::Halt {
                 atom: PROTOCOL_DISPATCH_UNPLANNED_ATOM.to_string(),

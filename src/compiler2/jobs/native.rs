@@ -30,6 +30,7 @@ use super::super::artifact::{
     AbiValueRepr, BackendBody, BackendClause, BackendEntry, BackendEntryOrigin, BackendExecutable, BackendProgram,
     BackendStep, BackendTail, CallTarget, EffectSummary, NativeBody, NativeBodyOrigin, NativeCallableBoundary,
     NativeCallableBoundaryId, NativeEntryAbi, NativeProgram, ReturnAbi,
+    ReusableConsCapture as BackendReusableConsCapture,
 };
 use super::super::body::{ControlDestination, ControlEntryId, Literal, LoweredExtern, ValueId};
 use super::super::drive::{FactKey, Job, JobEffects, settled_uses};
@@ -484,9 +485,8 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
             self.world.function_ref(executable.key.activation.function).name,
             executable_index
         );
-        let reusable_cons_captures = self.entry_reusable_cons_captures(executable, entry);
         let (entry_tys, param_reprs, entry_abi) =
-            self.entry_signature(executable, entry, reusable_cons_captures.as_slice());
+            self.entry_signature(executable, entry, entry.reusable_cons_captures.as_slice());
         let mut ctx = NativeFnCtx::new(
             fn_id,
             &entry_name(&base_name, entry_id, &entry.origin),
@@ -520,13 +520,15 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
             env.insert(value, var);
             capture_bindings.insert(value, var);
         }
-        for ((captured_value, _), physical_var) in reusable_cons_captures
+        for (capture, physical_var) in entry
+            .reusable_cons_captures
             .iter()
             .copied()
             .zip(entry_vars.iter().copied().skip(capture_offset + entry.captures.len()))
         {
+            bind_backend_value(&mut ctx, executable, &mut env, capture.source, physical_var);
             let semantic_var = *capture_bindings
-                .get(&captured_value)
+                .get(&capture.head)
                 .expect("reusable-cons capture should have a semantic capture var");
             ctx.builder.record_reusable_cons_cell(semantic_var, physical_var);
         }
@@ -1120,7 +1122,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
         &mut self,
         executable: &BackendExecutable,
         entry: &BackendEntry,
-        reusable_cons_captures: &[(ValueId, ValueId)],
+        reusable_cons_captures: &[BackendReusableConsCapture],
     ) -> (Vec<Ty>, Vec<AbiValueRepr>, NativeEntryAbi) {
         let mut capture_tys = Vec::with_capacity(entry.params.len() + entry.captures.len());
         for value in entry.params.iter().chain(entry.captures.iter()) {
@@ -1133,10 +1135,10 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
         }
         let physical_capture_tys = reusable_cons_captures
             .iter()
-            .map(|(_, source)| {
+            .map(|capture| {
                 executable
                     .value_types
-                    .get(source)
+                    .get(&capture.source)
                     .copied()
                     .unwrap_or_else(|| self.world.types_mut().any())
             })
@@ -1263,7 +1265,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
 
     fn entry_capture_args(
         &mut self,
-        executable: &BackendExecutable,
+        _executable: &BackendExecutable,
         entries: &[BackendEntry],
         entry_id: ControlEntryId,
         env: &ValueEnv,
@@ -1279,39 +1281,20 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                 ),
             )
         })?;
-        for (_, source_value) in self.entry_reusable_cons_captures(executable, entry) {
-            args.push(env.var(source_value).ok_or_else(|| {
+        for capture in &entry.reusable_cons_captures {
+            args.push(env.var(capture.source).ok_or_else(|| {
                 incomplete_native_program(
                     self.world,
                     self.root_id,
                     format!(
                         "native lowering could not resolve reusable-cons source capture {:?} for entry {}",
-                        source_value,
+                        capture.source,
                         entry_id.as_u32()
                     ),
                 )
             })?);
         }
         Ok(args)
-    }
-
-    fn entry_reusable_cons_captures(
-        &mut self,
-        executable: &BackendExecutable,
-        entry: &BackendEntry,
-    ) -> Vec<(ValueId, ValueId)> {
-        if matches!(
-            entry.origin,
-            BackendEntryOrigin::ReceiveOutcome | BackendEntryOrigin::Clause
-        ) {
-            return Vec::new();
-        }
-        let sources = reusable_cons_sources_for_executable(executable);
-        entry
-            .captures
-            .iter()
-            .filter_map(|captured| sources.get(captured).copied().map(|source| (*captured, source)))
-            .collect()
     }
 
     fn receive_pinned_vars(
@@ -2551,27 +2534,6 @@ fn collect_callable_identity_needs_in_steps(
                 }
             }
             _ => {}
-        }
-    }
-}
-
-fn reusable_cons_sources_for_executable(executable: &BackendExecutable) -> HashMap<ValueId, ValueId> {
-    let mut out = HashMap::new();
-    if let BackendBody::Clauses { clauses, entries, .. } = &executable.body {
-        for clause in clauses {
-            collect_reusable_cons_sources(&clause.projections, &mut out);
-        }
-        for entry in entries {
-            collect_reusable_cons_sources(&entry.steps, &mut out);
-        }
-    }
-    out
-}
-
-fn collect_reusable_cons_sources(steps: &[BackendStep], out: &mut HashMap<ValueId, ValueId>) {
-    for step in steps {
-        if let BackendStep::SplitList { source, head, .. } = step {
-            out.insert(*head, *source);
         }
     }
 }
