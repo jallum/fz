@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-9i4.2"
+  ],
   "blocks": [],
   "created": "2026-06-13T00:30:34Z",
   "description": "",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Migrate legacy fixtures into fixtures2 and retire fixtures/ discovery",
   "type": "task",
-  "updated_at": "2026-06-13T00:30:34Z"
+  "updated_at": "2026-06-13T00:30:43Z"
 }
