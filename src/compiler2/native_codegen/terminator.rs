@@ -51,8 +51,11 @@ fn resolve_callee_sid(env: &CodegenEnv<'_>, blk: &fz_ir::Block, slot: EmitSlot) 
         .unwrap_or_else(|| panic!("native callee fn {} has no registered codegen body id", callee_fn_id.0))
 }
 
-fn resolve_native_closure_sid(env: &CodegenEnv<'_>, block_id: BlockId) -> Option<u32> {
-    let target_fn = env.active_native_body().closure_call_targets.get(&block_id).copied()?;
+fn resolve_native_closure_sid(env: &CodegenEnv<'_>, blk: &fz_ir::Block) -> Option<u32> {
+    let target_fn = match &blk.terminator {
+        Term::CallClosure { direct_target, .. } | Term::TailCallClosure { direct_target, .. } => *direct_target,
+        _ => None,
+    }?;
     env.body_id_for_fn(target_fn)
 }
 
@@ -326,6 +329,7 @@ pub(crate) fn emit_terminator<M: cranelift_module::Module, T: Types<Ty = Ty> + C
         Term::CallClosure {
             ident: _,
             closure,
+            direct_target: _,
             args,
             continuation,
         } => emit_call_closure(
@@ -344,6 +348,7 @@ pub(crate) fn emit_terminator<M: cranelift_module::Module, T: Types<Ty = Ty> + C
         ),
         Term::TailCallClosure {
             closure,
+            direct_target: _,
             args,
             ident: _,
         } => emit_tail_call_closure(
@@ -1081,13 +1086,12 @@ fn emit_call_closure<M: cranelift_module::Module>(
         // at [K..., arg_descrs...] and call it directly with the body's
         // narrow ABI. Opaque / polymorphic closures fall through to the
         // all-ValueRef indirect seam below.
-        let lit_resolved: Option<(u32, FuncId, Option<usize>)> =
-            resolve_native_closure_sid(env, blk.id).map(|body_sid| {
-                let body_fn_id = spec_fn_id(env, body_sid);
-                let body_fid = *fn_ids.get(&body_sid).expect("native closure target fn_id missing");
-                let n_caps = closure_capture_counts.get(&body_fn_id).copied();
-                (body_sid, body_fid, n_caps)
-            });
+        let lit_resolved: Option<(u32, FuncId, Option<usize>)> = resolve_native_closure_sid(env, blk).map(|body_sid| {
+            let body_fn_id = spec_fn_id(env, body_sid);
+            let body_fid = *fn_ids.get(&body_sid).expect("native closure target fn_id missing");
+            let n_caps = closure_capture_counts.get(&body_fn_id).copied();
+            (body_sid, body_fid, n_caps)
+        });
         let cont_payload = ContinuationPayload::from_capture_vars(body, env, var_env, cont_sid, &continuation.captured);
         let can_use_lazy_cont = false;
         let continuation_plan = plan_closure_shaped_continuation(cont_payload, can_use_lazy_cont);
@@ -1228,13 +1232,12 @@ fn emit_tail_call_closure<M: cranelift_module::Module>(
             }
         };
 
-        let lit_resolved: Option<(u32, FuncId, Option<usize>)> =
-            resolve_native_closure_sid(env, blk.id).map(|body_sid| {
-                let body_fn_id = spec_fn_id(env, body_sid);
-                let body_fid = *fn_ids.get(&body_sid).expect("native closure target fn_id missing");
-                let n_caps = closure_capture_counts.get(&body_fn_id).copied();
-                (body_sid, body_fid, n_caps)
-            });
+        let lit_resolved: Option<(u32, FuncId, Option<usize>)> = resolve_native_closure_sid(env, blk).map(|body_sid| {
+            let body_fn_id = spec_fn_id(env, body_sid);
+            let body_fid = *fn_ids.get(&body_sid).expect("native closure target fn_id missing");
+            let n_caps = closure_capture_counts.get(&body_fn_id).copied();
+            (body_sid, body_fid, n_caps)
+        });
         env.telemetry.execute(
             &["fz", "codegen", "closure_call_lowered"],
             &measurements! {

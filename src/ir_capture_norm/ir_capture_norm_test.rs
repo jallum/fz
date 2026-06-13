@@ -65,6 +65,7 @@ fn build_module_with_callclosure_dead_transitive_capture() -> Module {
                 fn_id: cont_id,
                 captured: vec![Var(10), Var(11)],
             },
+            direct_target: None,
         },
     );
 

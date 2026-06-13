@@ -320,7 +320,7 @@ questions at that rung:
 | executable / helper inventory | `NativeProgram.entry` plus `NativeProgram.bodies[*].fn_id` and `origin` |
 | `ModulePlan.effective_returns` and `fn_effects` | `NativeBody.return_ty`, `return_abi`, and `effects` |
 | `SpecPlan.vars` type queries | `NativeBody.value_types` |
-| `PlannedProgram.callable_entries` | `NativeProgram.callable_entries` |
+| `PlannedProgram.callable_entries` | `NativeProgram.callable_boundaries` |
 | callable-constructor lookup through planner state | `NativeBody.callable_constructors` |
 | extern decls plus wire classes | `NativeProgram.module.externs` plus `NativeBody.extern_marshals` |
 | continuation / entry ABI classification | `NativeBody.entry_abi` and `NativeBodyOrigin::Continuation` |

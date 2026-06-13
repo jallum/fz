@@ -301,6 +301,7 @@ pub(crate) fn cps_split_call_closure(
         Term::CallClosure {
             ident: CallsiteIdent::from_source(Span::DUMMY),
             closure: closure_var,
+            direct_target: None,
             args: arg_vars,
             continuation: Cont {
                 fn_id: cont_id,

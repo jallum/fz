@@ -18,7 +18,7 @@ use crate::ast::{BinOp, UnOp};
 use crate::compiler::source::Span;
 use crate::dispatch_matrix::pattern::PatternDispatchPlan;
 use crate::fz_ir::{
-    Block as IrBlock, BlockId, CallsiteId as IrCallsiteId, CallsiteIdent, Cont as IrCont, ExternMarshalSite, ExternTy,
+    Block as IrBlock, CallsiteId as IrCallsiteId, CallsiteIdent, Cont as IrCont, ExternMarshalSite, ExternTy,
     ExternalCallEdge, FnId, FnIr as IrFn, Module as IrModule, Prim as IrPrim, ReceiveAfter as IrReceiveAfter,
     ReceiveClause as IrReceiveClause, Stmt as IrStmt, Term as IrTerm, Var,
 };
@@ -122,9 +122,9 @@ pub(crate) struct NativeProgram {
     /// as `ModulePlan.effective_returns`, `SpecPlan.vars`, and continuation
     /// classification.
     pub bodies: Vec<NativeBody>,
-    /// Closed callable-entry inventory plus callable identity bodies. This
+    /// Closed callable-boundary inventory plus callable identity bodies. This
     /// replaces the old planner-side callable-entry lookup surface.
-    pub callable_entries: Vec<NativeCallableEntry>,
+    pub callable_boundaries: Vec<NativeCallableBoundary>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -154,29 +154,24 @@ pub(crate) struct NativeBody {
     pub return_abi: ReturnAbi,
     /// Final per-value types after Compiler2 lowering into CPS/native form.
     pub value_types: HashMap<Var, Ty>,
-    /// Callable-constructor vars mapped to the closed callable-entry
+    /// Callable-constructor vars mapped to the closed callable-boundary
     /// inventory they may materialize.
     pub callable_constructors: HashMap<Var, Vec<usize>>,
-    /// Direct closure-call targets keyed by the owning CPS/native block.
-    ///
-    /// Compiler2-native lowering already knows the executable frontier, so a
-    /// `CallClosure` / `TailCallClosure` does not need shared codegen to
-    /// rediscover its body through planner facts.
-    pub closure_call_targets: HashMap<BlockId, FnId>,
     /// Concrete extern marshal classes keyed by CPS/native extern site.
     pub extern_marshals: HashMap<ExternMarshalSite, ExternTy>,
     pub effects: EffectSummary,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct NativeCallableEntry {
+pub(crate) struct NativeCallableBoundary {
     /// Synthetic callable identity used at `MakeFnRef` / `MakeClosure` sites.
     pub identity_fn: FnId,
-    /// Direct executable-entry body the callable entry ultimately reaches.
+    /// Direct executable-entry body the callable boundary ultimately reaches
+    /// when an opaque closure value dispatches through its identity entry.
     pub target_fn: FnId,
     pub target: ExecutableKey,
     pub capture_count: usize,
-    pub param_reprs: Vec<AbiValueRepr>,
+    pub arg_reprs: Vec<AbiValueRepr>,
     pub return_ty: Ty,
     pub return_abi: ReturnAbi,
 }
@@ -206,7 +201,7 @@ pub struct AbiReadyCallEdge {
 pub struct CallableEntry {
     pub target: ExecutableKey,
     pub capture_count: usize,
-    pub param_reprs: Vec<AbiValueRepr>,
+    pub arg_reprs: Vec<AbiValueRepr>,
     pub return_ty: Ty,
     pub return_abi: ReturnAbi,
 }
@@ -236,7 +231,7 @@ pub struct EmissionReadyCallEdge {
 pub struct EmissionReadyCallableEntry {
     pub target: usize,
     pub capture_count: usize,
-    pub param_reprs: Vec<AbiValueRepr>,
+    pub arg_reprs: Vec<AbiValueRepr>,
     pub return_ty: Ty,
     pub return_abi: ReturnAbi,
 }
@@ -258,7 +253,7 @@ pub struct BackendExecutable {
 pub struct BackendCallableEntry {
     pub target: usize,
     pub capture_count: usize,
-    pub param_reprs: Vec<AbiValueRepr>,
+    pub arg_reprs: Vec<AbiValueRepr>,
     pub return_ty: Ty,
     pub return_abi: ReturnAbi,
 }
@@ -759,7 +754,7 @@ fn native_programs_equal(left: &NativeProgram, right: &NativeProgram) -> bool {
     left.backend_revision == right.backend_revision
         && left.entry == right.entry
         && left.bodies == right.bodies
-        && left.callable_entries == right.callable_entries
+        && left.callable_boundaries == right.callable_boundaries
         && native_modules_equal(&left.module, &right.module)
 }
 
@@ -907,18 +902,21 @@ fn native_terms_equal(left: &IrTerm, right: &IrTerm) -> bool {
             IrTerm::CallClosure {
                 ident: left_ident,
                 closure: left_closure,
+                direct_target: left_direct_target,
                 args: left_args,
                 continuation: left_cont,
             },
             IrTerm::CallClosure {
                 ident: right_ident,
                 closure: right_closure,
+                direct_target: right_direct_target,
                 args: right_args,
                 continuation: right_cont,
             },
         ) => {
             native_callsite_idents_equal(left_ident, right_ident)
                 && left_closure == right_closure
+                && left_direct_target == right_direct_target
                 && left_args == right_args
                 && native_conts_equal(left_cont, right_cont)
         }
@@ -926,16 +924,19 @@ fn native_terms_equal(left: &IrTerm, right: &IrTerm) -> bool {
             IrTerm::TailCallClosure {
                 ident: left_ident,
                 closure: left_closure,
+                direct_target: left_direct_target,
                 args: left_args,
             },
             IrTerm::TailCallClosure {
                 ident: right_ident,
                 closure: right_closure,
+                direct_target: right_direct_target,
                 args: right_args,
             },
         ) => {
             native_callsite_idents_equal(left_ident, right_ident)
                 && left_closure == right_closure
+                && left_direct_target == right_direct_target
                 && left_args == right_args
         }
         (IrTerm::Return(left_var), IrTerm::Return(right_var)) | (IrTerm::Halt(left_var), IrTerm::Halt(right_var)) => {

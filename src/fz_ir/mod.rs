@@ -739,17 +739,27 @@ pub enum Term {
         /// the yield-check inline check in JIT/AOT codegen and in the interp.
         is_back_edge: bool,
     },
-    /// Invoke a closure value (Var holding a Value::IrClosure). The closure's
-    /// captured slots are spliced ahead of `args` when entering the lambda's fn.
+    /// Invoke a closure value (Var holding a Value::IrClosure).
+    ///
+    /// Logical call arguments stay in `args` order. The closure environment is
+    /// carried separately by the closure value itself and is loaded from `self`
+    /// by the callee's entry harness; captures are not prepended to the
+    /// user-visible argument list.
+    ///
+    /// `direct_target` carries the exact closure body when the caller has a
+    /// singleton closure-lit target. `None` means the call stays opaque and
+    /// dispatches through the closure's published callable boundary.
     CallClosure {
         ident: CallsiteIdent,
         closure: Var,
+        direct_target: Option<FnId>,
         args: Vec<Var>,
         continuation: Cont,
     },
     TailCallClosure {
         ident: CallsiteIdent,
         closure: Var,
+        direct_target: Option<FnId>,
         args: Vec<Var>,
     },
     Return(Var),

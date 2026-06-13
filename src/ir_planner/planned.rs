@@ -427,8 +427,11 @@ where
             closure,
             args,
             continuation,
+            ..
         } => (ident, args, Some(continuation), Some(*closure), EmitSlot::ClosureCall),
-        Term::TailCallClosure { ident, closure, args } => (ident, args, None, Some(*closure), EmitSlot::ClosureCall),
+        Term::TailCallClosure {
+            ident, closure, args, ..
+        } => (ident, args, None, Some(*closure), EmitSlot::ClosureCall),
         _ => return None,
     };
     let direct_callsite = CallsiteId::new(caller_fn_id, ident, producer_slot);

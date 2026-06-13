@@ -28,7 +28,7 @@ use crate::types::Types as LegacyTypes;
 
 use super::super::artifact::{
     AbiValueRepr, BackendBody, BackendClause, BackendEntry, BackendEntryOrigin, BackendExecutable, BackendProgram,
-    BackendStep, BackendTail, CallTarget, EffectSummary, NativeBody, NativeBodyOrigin, NativeCallableEntry,
+    BackendStep, BackendTail, CallTarget, EffectSummary, NativeBody, NativeBodyOrigin, NativeCallableBoundary,
     NativeEntryAbi, NativeProgram, ReturnAbi,
 };
 use super::super::body::{ControlDestination, ControlEntryId, Literal, LoweredExtern, ValueId};
@@ -102,7 +102,7 @@ struct NativeLowerer<'a, 'tel> {
     atom_ids: HashMap<String, u32>,
     executable_fns: Vec<FnId>,
     callable_identity_fns: HashMap<(FunctionId, usize), FnId>,
-    callable_entries: Vec<NativeCallableEntry>,
+    callable_boundaries: Vec<NativeCallableBoundary>,
     extern_ids: HashMap<usize, ExternId>,
     extern_marshals: HashMap<usize, Vec<ExternTy>>,
     extern_decls: Vec<ExternDecl>,
@@ -165,7 +165,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
             });
         }
 
-        let callable_entries = program
+        let callable_boundaries = program
             .callable_entries
             .iter()
             .map(|entry| {
@@ -174,12 +174,12 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                 let identity_fn = *callable_identity_fns
                     .get(&(function, entry.capture_count))
                     .expect("callable identity should be predeclared");
-                NativeCallableEntry {
+                NativeCallableBoundary {
                     identity_fn,
                     target_fn: executable_fns[entry.target],
                     target: executable.key.clone(),
                     capture_count: entry.capture_count,
-                    param_reprs: entry.param_reprs.clone(),
+                    arg_reprs: entry.arg_reprs.clone(),
                     return_ty: entry.return_ty,
                     return_abi: entry.return_abi.clone(),
                 }
@@ -194,7 +194,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
             atom_ids,
             executable_fns,
             callable_identity_fns,
-            callable_entries,
+            callable_boundaries,
             extern_ids,
             extern_marshals,
             extern_decls,
@@ -262,7 +262,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
             entry,
             module,
             bodies: self.native_bodies,
-            callable_entries: self.callable_entries,
+            callable_boundaries: self.callable_boundaries,
         })
     }
 
@@ -906,15 +906,13 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                         "native closure call referenced an unbound argument",
                     )
                 })?;
-                if let Some(target) = target {
-                    let target_fn = self.executable_fns[*target];
-                    ctx.closure_call_targets.insert(ctx.current_block, target_fn);
-                }
+                let direct_target = target.map(|target| self.executable_fns[target]);
                 match dest {
                     ControlDestination::Return => {
                         ctx.set_term(Term::TailCallClosure {
                             ident: CallsiteIdent::from_source(Span::DUMMY),
                             closure,
+                            direct_target,
                             args: call_args,
                         });
                         Ok(())
@@ -924,6 +922,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                         ctx.set_term(Term::CallClosure {
                             ident: CallsiteIdent::from_source(Span::DUMMY),
                             closure,
+                            direct_target,
                             args: call_args,
                             continuation,
                         });
@@ -2154,7 +2153,6 @@ struct NativeFnCtx {
     stmt_counts: HashMap<BlockId, usize>,
     value_types: HashMap<Var, Ty>,
     callable_constructors: HashMap<Var, Vec<usize>>,
-    closure_call_targets: HashMap<BlockId, FnId>,
     extern_marshals: HashMap<ExternMarshalSite, ExternTy>,
     failure_blocks: HashMap<u32, BlockId>,
     origin: NativeBodyOrigin,
@@ -2186,7 +2184,6 @@ impl NativeFnCtx {
             stmt_counts: HashMap::new(),
             value_types: HashMap::new(),
             callable_constructors: HashMap::new(),
-            closure_call_targets: HashMap::new(),
             extern_marshals: HashMap::new(),
             failure_blocks: HashMap::new(),
             origin,
@@ -2269,7 +2266,6 @@ impl NativeFnCtx {
             return_abi: self.return_abi,
             value_types: self.value_types,
             callable_constructors: self.callable_constructors,
-            closure_call_targets: self.closure_call_targets,
             extern_marshals: self.extern_marshals,
             effects: self.effects,
         };

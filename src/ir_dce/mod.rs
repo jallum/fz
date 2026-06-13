@@ -171,6 +171,7 @@ fn collect_term_vars(t: &Term, used: &mut HashSet<Var>) {
             closure,
             args,
             continuation,
+            ..
         } => {
             used.insert(*closure);
             for v in args {
@@ -184,6 +185,7 @@ fn collect_term_vars(t: &Term, used: &mut HashSet<Var>) {
             closure,
             args,
             ident: _,
+            ..
         } => {
             used.insert(*closure);
             for v in args {

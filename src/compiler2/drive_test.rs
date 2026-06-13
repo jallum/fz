@@ -3652,8 +3652,8 @@ fn compiler2_native_program_keeps_only_the_closed_quicksort_inventory() {
         "native lowering should keep cold foo/0 out of the native handoff",
     );
     assert!(
-        program.callable_entries.is_empty(),
-        "quicksort should not manufacture callable-entry inventory in the native handoff",
+        program.callable_boundaries.is_empty(),
+        "quicksort should not manufacture callable-boundary inventory in the native handoff",
     );
 }
 
@@ -3783,19 +3783,19 @@ fn compiler2_native_program_keeps_the_closed_enum_reduce_callable_entries() {
 
     let program = native.last(root_id).program;
     let callable_functions = program
-        .callable_entries
+        .callable_boundaries
         .iter()
         .map(|entry| entry.target.activation.function)
         .collect::<HashSet<_>>();
     assert_eq!(
         callable_functions,
         HashSet::from([user_reducer_id, bridge_reducer_id]),
-        "the native callable-entry inventory should keep exactly the user reducer and bridge reducer entries",
+        "the native callable-boundary inventory should keep exactly the user reducer and bridge reducer entries",
     );
 
     let used_entries = native_callable_constructor_uses(&program);
     let expected_entries = program
-        .callable_entries
+        .callable_boundaries
         .iter()
         .filter_map(|entry| {
             matches!(
@@ -3846,7 +3846,7 @@ fn compiler2_native_program_joins_callable_resume_before_materializing_closure_c
     let add_b_id = function_id(&functions, "add_b", 2);
     let program = native.last(root_id).program;
     let callable_functions = program
-        .callable_entries
+        .callable_boundaries
         .iter()
         .map(|entry| entry.target.activation.function)
         .collect::<HashSet<_>>();
@@ -3856,7 +3856,7 @@ fn compiler2_native_program_joins_callable_resume_before_materializing_closure_c
     );
 
     let branch_entry_targets = program
-        .callable_entries
+        .callable_boundaries
         .iter()
         .filter_map(|entry| {
             matches!(entry.target.activation.function, id if id == add_a_id || id == add_b_id)
@@ -4185,11 +4185,11 @@ fn compiler2_native_program_jit_runs_spawn_then_receive_through_compiler2_codege
         .into_iter()
         .map(|target_fn| {
             program
-                .callable_entries
+                .callable_boundaries
                 .iter()
                 .find(|entry| entry.target_fn.0 as usize == target_fn)
                 .unwrap_or_else(|| {
-                    panic!("native callable constructor target fn {target_fn} missing from callable entries")
+                    panic!("native callable constructor target fn {target_fn} missing from callable boundaries")
                 })
                 .target
                 .activation
@@ -4337,8 +4337,8 @@ fn compiler2_native_program_jit_runs_source_lambda_sugars_through_compiler2_code
 
     let program = native.last(root_id).program;
     assert!(
-        !program.callable_entries.is_empty() && !native_callable_constructor_uses(&program).is_empty(),
-        "zero-capture lambda constructors should publish callable-entry inventory for native materialization",
+        !program.callable_boundaries.is_empty() && !native_callable_constructor_uses(&program).is_empty(),
+        "zero-capture lambda constructors should publish callable-boundary inventory for native materialization",
     );
     let compiled = jit_compile_native_program(&mut compiler, &program);
     let _ = compiled.run(&tel, program.entry);
@@ -4929,10 +4929,10 @@ fn compiler2_native_program_resource_fixture_shapes_callable_entries_explicitly(
         .expect("generated dtor lambda")
         .function_id;
     let callable_entries = program
-        .callable_entries
+        .callable_boundaries
         .iter()
         .filter(|entry| entry.target.activation.function == lambda_id)
-        .map(|entry| (entry.capture_count, entry.param_reprs.clone(), entry.return_abi.clone()))
+        .map(|entry| (entry.capture_count, entry.arg_reprs.clone(), entry.return_abi.clone()))
         .collect::<Vec<_>>();
     assert_eq!(
         callable_entries,
@@ -4952,10 +4952,10 @@ fn compiler2_native_program_resource_fixture_shapes_callable_entries_explicitly(
     );
 
     let native_callable_entry = program
-        .callable_entries
+        .callable_boundaries
         .iter()
         .find(|entry| entry.target.activation.function == lambda_id)
-        .expect("native program should publish the dtor lambda callable entry");
+        .expect("native program should publish the dtor lambda callable boundary");
     let compiled = jit_compile_native_program(&mut compiler, &program);
     let static_target = compiled
         .static_closure_targets()
@@ -8873,7 +8873,7 @@ fn native_programs_match(left: &NativeProgram, right: &NativeProgram) -> bool {
     left.backend_revision == right.backend_revision
         && left.entry == right.entry
         && left.bodies == right.bodies
-        && left.callable_entries == right.callable_entries
+        && left.callable_boundaries == right.callable_boundaries
         && native_modules_match(&left.module, &right.module)
 }
 
@@ -9023,34 +9023,40 @@ fn native_terms_match(left: &IrTerm, right: &IrTerm) -> bool {
                 closure: left_closure,
                 args: left_args,
                 continuation: left_cont,
+                direct_target: left_direct_target,
             },
             IrTerm::CallClosure {
                 ident: right_ident,
                 closure: right_closure,
                 args: right_args,
                 continuation: right_cont,
+                direct_target: right_direct_target,
             },
         ) => {
             native_callsite_idents_match(left_ident, right_ident)
                 && left_closure == right_closure
                 && left_args == right_args
                 && native_conts_match(left_cont, right_cont)
+                && left_direct_target == right_direct_target
         }
         (
             IrTerm::TailCallClosure {
                 ident: left_ident,
                 closure: left_closure,
                 args: left_args,
+                direct_target: left_direct_target,
             },
             IrTerm::TailCallClosure {
                 ident: right_ident,
                 closure: right_closure,
                 args: right_args,
+                direct_target: right_direct_target,
             },
         ) => {
             native_callsite_idents_match(left_ident, right_ident)
                 && left_closure == right_closure
                 && left_args == right_args
+                && left_direct_target == right_direct_target
         }
         (IrTerm::Return(left_var), IrTerm::Return(right_var)) | (IrTerm::Halt(left_var), IrTerm::Halt(right_var)) => {
             left_var == right_var

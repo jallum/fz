@@ -296,6 +296,7 @@ pub(super) fn run_fn_typed<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(
                 Term::CallClosure {
                     ident,
                     closure,
+                    direct_target: _,
                     args: call_args,
                     continuation,
                 } => {
@@ -371,6 +372,7 @@ pub(super) fn run_fn_typed<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(
                 Term::TailCallClosure {
                     ident,
                     closure,
+                    direct_target: _,
                     args: call_args,
                 } => {
                     let cl = env_get(&env, *closure)?;

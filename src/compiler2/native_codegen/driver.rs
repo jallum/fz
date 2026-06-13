@@ -1051,7 +1051,7 @@ fn build_codegen_callable_entries<T: Types<Ty = Ty> + ClosureTypes>(
     program: &crate::compiler2::NativeProgram,
 ) -> BTreeMap<u32, NativeCallableEntrySurface> {
     let mut entries = BTreeMap::new();
-    for entry in &program.callable_entries {
+    for entry in &program.callable_boundaries {
         let codegen_id = entry.target_fn.0;
         let capture_tys = entry
             .target
@@ -1080,7 +1080,7 @@ fn build_codegen_callable_entries<T: Types<Ty = Ty> + ClosureTypes>(
 
 fn build_codegen_closure_capture_counts(program: &crate::compiler2::NativeProgram) -> HashMap<FnId, usize> {
     let mut counts = HashMap::new();
-    for entry in &program.callable_entries {
+    for entry in &program.callable_boundaries {
         counts.insert(entry.target_fn, entry.capture_count);
     }
     counts

@@ -405,6 +405,7 @@ pub(crate) fn lower_expr<T: Types<Ty = Ty>>(
                     Term::TailCallClosure {
                         ident: CallsiteIdent::from_source(sp),
                         closure: closure_var,
+                        direct_target: None,
                         args: arg_vars,
                     },
                     sp,
