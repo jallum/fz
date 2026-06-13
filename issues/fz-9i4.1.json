@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-9i4.2"
+  ],
   "created": "2026-06-13T00:30:33Z",
   "description": "",
   "id": "fz-9i4.1",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Define unified fixtures2 metadata and participation rules",
   "type": "task",
-  "updated_at": "2026-06-13T00:30:33Z"
+  "updated_at": "2026-06-13T00:30:43Z"
 }

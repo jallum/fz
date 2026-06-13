@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-9i4.1"
+  ],
   "blocks": [],
   "created": "2026-06-13T00:30:33Z",
   "description": "",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Teach fixture_matrix to run single-file fixtures2 behavioural fixtures",
   "type": "task",
-  "updated_at": "2026-06-13T00:30:33Z"
+  "updated_at": "2026-06-13T00:30:43Z"
 }
