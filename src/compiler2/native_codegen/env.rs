@@ -20,7 +20,7 @@ pub(crate) struct CodegenEnv<'a> {
     pub(super) active_body_fn_id: FnId,
     pub(super) active_body_name: &'a str,
     pub(super) fn_ids: &'a HashMap<u32, FuncId>,
-    pub(super) callable_entry_fn_ids: &'a HashMap<u32, FuncId>,
+    pub(super) callable_boundary_fn_ids: &'a HashMap<u32, FuncId>,
     pub(super) boundary_return_adapters: &'a BoundaryReturnAdapters,
     pub(super) mid_flight_cont_tail_fn_ids: &'a HashMap<(u32, Vec<MidFlightArgShape>), FuncId>,
     pub(super) tuple_schema_ids: &'a HashMap<usize, u32>,
@@ -34,7 +34,6 @@ pub(crate) struct CodegenEnv<'a> {
     pub(super) native_abi_fns: &'a HashSet<FnId>,
     pub(super) cont_target_fns: &'a HashSet<FnId>,
     pub(super) cont_fns: &'a HashSet<FnId>,
-    pub(super) closure_capture_counts: &'a HashMap<FnId, usize>,
     /// Receive-dispatch FuncId per ReceiveMatched site, keyed by `(parent_fn_id.0,
     /// block_id.0)`. Populated by the planned codegen declaration pass
     /// and consumed by the Term::ReceiveMatched arm in

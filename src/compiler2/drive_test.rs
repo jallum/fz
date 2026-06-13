@@ -4942,7 +4942,7 @@ fn compiler2_interp_runs_resource_dtors_from_backend_runtime_intrinsics() {
 }
 
 #[test]
-fn compiler2_native_program_resource_fixture_shapes_callable_entries_explicitly() {
+fn compiler2_native_program_resource_fixture_shapes_callable_boundaries_explicitly() {
     let _lock = tests_support_lock().lock().unwrap();
     tests_support_dtor_reset();
 
@@ -4976,16 +4976,16 @@ fn compiler2_native_program_resource_fixture_shapes_callable_entries_explicitly(
         .next()
         .expect("generated dtor lambda")
         .function_id;
-    let callable_entries = program
+    let callable_boundaries = program
         .callable_boundaries
         .iter()
         .filter(|entry| entry.target.activation.function == lambda_id)
         .map(|entry| (entry.capture_count, entry.arg_reprs.clone(), entry.return_abi.clone()))
         .collect::<Vec<_>>();
     assert_eq!(
-        callable_entries,
+        callable_boundaries,
         vec![(0, vec![AbiValueRepr::RawInt], ReturnAbi::Value(AbiValueRepr::ValueRef))],
-        "resource destructor lambdas should surface one zero-capture callable entry that takes the raw payload lane and returns through the boxed nil seam",
+        "resource destructor lambdas should surface one zero-capture callable boundary that takes the raw payload lane and returns through the boxed nil seam",
     );
     assert_eq!(
         native_executable_body(&program, lambda_id).param_reprs,
@@ -4999,7 +4999,7 @@ fn compiler2_native_program_resource_fixture_shapes_callable_entries_explicitly(
         "fz_make_resource/2 must return a boxed resource ref through the native ABI",
     );
 
-    let native_callable_entry = program
+    let native_callable_boundary = program
         .callable_boundaries
         .iter()
         .find(|entry| entry.target.activation.function == lambda_id)
@@ -5008,14 +5008,64 @@ fn compiler2_native_program_resource_fixture_shapes_callable_entries_explicitly(
     let static_target = compiled
         .static_closure_targets()
         .iter()
-        .find(|(_, fn_id, _, _)| *fn_id == native_callable_entry.target_fn.0)
+        .find(|(_, fn_id, _, _)| *fn_id == native_callable_boundary.target_fn.0)
         .expect("compiled JIT module should publish one static closure target for the dtor entry target");
     let body_ptr = compiled
-        .fn_ptr(native_callable_entry.target_fn)
+        .fn_ptr(native_callable_boundary.target_fn)
         .expect("compiled JIT module should publish the dtor entry target body address");
     assert_ne!(
         static_target.2, body_ptr,
-        "static closure singletons should point at callable-entry wrappers, not straight at the lambda body",
+        "static closure singletons should point at callable-boundary wrappers, not straight at the lambda body",
+    );
+}
+
+#[test]
+fn compiler2_native_codegen_materializes_the_settled_callable_boundary_for_opaque_closures() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    let native = NativeProgramCapture::new();
+    tel.attach(&["fz", "codegen", "callable_boundary_materialized"], capture.handler());
+    tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures2/behavior/closure_typed_captures.fz".to_string()),
+        text: include_str!("../../fixtures2/behavior/closure_typed_captures.fz").to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    assert_resolved(
+        compiler.drive(),
+        "closure_typed_captures should settle through native lowering before JIT consumes it",
+    );
+
+    let program = native.last(root_id).program;
+    let expected_boundary = program
+        .callable_boundaries
+        .iter()
+        .find(|boundary| {
+            boundary.capture_count == 2
+                && boundary.arg_reprs == vec![AbiValueRepr::ValueRef]
+                && boundary.return_abi == ReturnAbi::Value(AbiValueRepr::ValueRef)
+        })
+        .expect("native program should publish the widened ValueRef callable boundary for the captured lambda");
+
+    let _compiled = jit_compile_native_program(&mut compiler, &program);
+
+    let materialization = capture
+        .find(&["fz", "codegen", "callable_boundary_materialized"])
+        .into_iter()
+        .find(|event| metadata_str(event, "materialization_kind") == "make_closure")
+        .expect("JIT codegen should record one opaque closure boundary materialization for the captured lambda");
+    assert_eq!(
+        measurement_u64(&materialization, "callable_boundary_id"),
+        expected_boundary.id().as_u32() as u64,
+        "opaque closure construction should materialize the settled callable boundary instead of re-selecting a narrower executable body",
     );
 }
 
@@ -8915,9 +8965,7 @@ fn native_closure_call_targets(program: &NativeProgram) -> Vec<Option<FnId>> {
 fn native_callable_boundary_uses(program: &NativeProgram) -> HashSet<NativeCallableBoundaryId> {
     let mut out = HashSet::new();
     for body in &program.bodies {
-        for entries in body.callable_value_boundaries.values() {
-            out.extend(entries.iter().copied());
-        }
+        out.extend(body.callable_value_boundaries.values().copied());
     }
     out
 }

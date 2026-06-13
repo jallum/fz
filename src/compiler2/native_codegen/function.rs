@@ -29,19 +29,13 @@ pub(crate) fn compile_fn<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
     let native_abi_fns = env.native_abi_fns;
     let cont_target_fns = env.cont_target_fns;
     let cont_fns = env.cont_fns;
-    let closure_capture_counts = env.closure_capture_counts;
     let native_body = env.body_native(this_spec_id);
     let value_types = &native_body.value_types;
     let is_native = native_abi_fns.contains(&f.id);
     let is_cont_fn = cont_fns.contains(&f.id);
-    // Closure-target fn shape: `(args..., self, cont) tail`. Only takes
-    // effect for native fns; uniform fns still go through the
-    // closure-stub adapter.
-    let closure_target_n_caps: Option<usize> = if is_native && !is_cont_fn {
-        closure_capture_counts.get(&f.id).copied()
-    } else {
-        None
-    };
+    let closure_target = (is_native && !is_cont_fn)
+        .then(|| env.surface.closure_target_boundary(f.id))
+        .flatten();
     let demand_abi = NativeDemandAbi::new(native_body);
     // When this fn is never invoked from any fz IR site (not a direct
     // callee, not a continuation, not a closure target), it can only
@@ -80,11 +74,9 @@ pub(crate) fn compile_fn<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
                 append_block_param_for_repr(&mut b, entry_cl, *r);
             }
             b.append_block_param(entry_cl, types::I64); // self
-        } else if let Some(n_caps) = closure_target_n_caps {
+        } else if let Some(boundary) = closure_target {
             // Closure-target fn entry: `(args..., self:i64, cont:i64) tail`.
-            // n_args = total - n_caps.
-            let n_args = my_param_reprs.len().saturating_sub(n_caps);
-            for r in &my_param_reprs[..n_args] {
+            for r in &boundary.arg_reprs {
                 append_block_param_for_repr(&mut b, entry_cl, *r);
             }
             b.append_block_param(entry_cl, types::I64); // self
@@ -133,7 +125,7 @@ pub(crate) fn compile_fn<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
         this_spec_id,
         is_native,
         is_cont_fn,
-        closure_target_n_caps,
+        closure_target,
         entry_cl,
     );
 

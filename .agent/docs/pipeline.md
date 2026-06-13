@@ -259,15 +259,32 @@ The next two rungs narrow the contract:
   `AbiFacts`.
 
 Callable entry inventory is an artifact fact, not a native-codegen guess.
-`LowerBackendProgram` records callable-entry candidates from settled value types
-for callable-construction values, returned callable values, and explicit
-callable-boundary arguments. A closure-call callee is a consumer of an already
-materialized callable value, not a constructor obligation. Native lowering
-preserves those obligations as callable-boundary refs on `MakeFnRef` /
-`MakeClosure` results. Direct
-closure-call ABI shape is selected from `NativeProgram.closure_capture_counts`:
-entries with a capture count use the closure-target ABI `(args..., self, cont)`,
-while plain native executable bodies use `(args..., cont)`.
+`LowerBackendProgram` settles callable-boundary obligations from the closed
+artifact inventory for callable-construction values, returned callable values,
+and explicit callable-boundary arguments. A closure-call callee is a consumer
+of an already materialized callable value, not a constructor obligation.
+Native lowering preserves two distinct facts:
+
+- opaque callable-boundary refs on `MakeFnRef` / `MakeClosure` results
+- exact closure-target body facts for singleton-known direct closure calls
+
+Direct closure-call lowering no longer reconstructs its ABI from capture-count
+side tables or mixed capture+arg vectors. Compiler2 native codegen reads two
+published surfaces:
+
+- callable-boundary surface:
+  `arg_reprs` describe the outward callable ABI lanes in source call order
+  `return_shape` preserves the delivered result shape
+- closure-target surface:
+  `capture_reprs` describe the environment lanes loaded from `self`
+  `arg_reprs` describe the exact executable-body entry lanes
+
+Opaque closure construction materializes the settled callable boundary published
+by native lowering; singleton-known closure calls bypass that boundary only
+through an explicit `direct_target`, and direct paths still adapt the return
+lane through the same return-shape machinery as any other native seam.
+Machine closure-target entry stays `(args..., self, cont)`; plain native bodies
+stay `(args..., cont)`.
 
 Things that belong in Compiler2 artifact facts:
 

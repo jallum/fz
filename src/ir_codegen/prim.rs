@@ -2586,9 +2586,8 @@ fn resolve_callable_entry_sid<T: Types<Ty = Ty> + ClosureTypes>(
                     dest_var.0
                 ))
             })?
-            .iter()
-            .copied()
-            .map(|boundary_id| boundary_id.as_u32())
+            .as_u32();
+        let candidates = std::iter::once(candidates)
             .filter(|sid| env.callable_entry_fn_ids.contains_key(sid))
             .collect::<Vec<_>>();
         let candidate_count = candidates.len();

@@ -6,7 +6,6 @@ use crate::fz_ir::{
     FnId, Module, Prim, UnOp, Var,
 };
 use crate::runtime_type_predicate::{ListShape, ObservedSet, RuntimeTypePredicate};
-use crate::types::key_slot_var_count;
 use cranelift_codegen::ir::{
     self, BlockArg, InstBuilder, MemFlags,
     condcodes::{FloatCC, IntCC},
@@ -1318,10 +1317,10 @@ pub(crate) fn lower_prim<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
             lower_collection_prim(body, t, env, var_env, prim, dest_var, block_id, block_env)
         }
         Prim::MakeFnRef(mk_ident, fn_id) => {
-            lower_make_fn_ref(body, t, env, dest_var, mk_ident, *fn_id, block_id, stmt_idx, block_env)
+            lower_make_fn_ref(body, env, dest_var, mk_ident, *fn_id, block_id, stmt_idx)
         }
         Prim::MakeClosure(mk_ident, fn_id, captured) => lower_make_closure(
-            body, t, env, var_env, dest_var, mk_ident, *fn_id, captured, block_id, stmt_idx, block_env,
+            body, env, var_env, dest_var, mk_ident, *fn_id, captured, block_id, stmt_idx,
         ),
         // lower_program erases all Prim::Brand before returning.
         // Reaching codegen with one means brand erasure didn't run (or
@@ -2368,112 +2367,46 @@ fn lower_extern_generic<M: cranelift_module::Module>(
     Ok(LowerOut::DeadUnit)
 }
 
-struct NativeCallableEntrySelection {
-    spec_id: u32,
-    candidate_count: usize,
-}
-
-fn key_slots_strictly_more_specific<T: Types<Ty = Ty>>(
-    t: &T,
-    lhs: &[crate::types::KeySlot<Ty>],
-    rhs: &[crate::types::KeySlot<Ty>],
-) -> bool {
-    if lhs.len() != rhs.len() {
-        return false;
-    }
-    let mut left = Vec::new();
-    let mut right = Vec::new();
-    for (lhs_slot, rhs_slot) in lhs.iter().zip(rhs.iter()) {
-        match (lhs_slot, rhs_slot) {
-            (None, None) => {}
-            (Some(lhs_ty), Some(rhs_ty)) => {
-                left.push(*lhs_ty);
-                right.push(*rhs_ty);
-            }
-            _ => return false,
-        }
-    }
-    t.key_is_strictly_more_specific(&left, &right)
-}
-
-fn select_native_callable_entry<T: Types<Ty = Ty>>(
-    t: &T,
-    query: &[Ty],
-    candidates: &[(u32, &[crate::types::KeySlot<Ty>])],
-) -> Option<u32> {
-    let arity = query.len();
-    let mut covers = candidates
-        .iter()
-        .copied()
-        .filter(|(_, key)| {
-            if key.len() != arity {
-                return false;
-            }
-            let mut sigma = HashMap::new();
-            query.iter().zip(key.iter()).all(|(query_ty, key_slot)| match key_slot {
-                None => true,
-                Some(key_ty) => t.key_subsumes_with(query_ty, key_ty, &mut sigma),
-            })
-        })
-        .collect::<Vec<_>>();
-    if covers.is_empty() {
-        return None;
-    }
-    let min_var_count = covers
-        .iter()
-        .map(|(_, key)| key_slot_var_count(t, key))
-        .min()
-        .unwrap_or(0);
-    covers.retain(|(_, key)| key_slot_var_count(t, key) == min_var_count);
-    covers.sort_by_key(|(id, _)| *id);
-    for (candidate_id, candidate_key) in &covers {
-        let strictly_subsumed = covers.iter().any(|(other_id, other_key)| {
-            other_id != candidate_id && key_slots_strictly_more_specific(t, other_key, candidate_key)
-        });
-        if !strictly_subsumed {
-            return Some(*candidate_id);
-        }
-    }
-    covers.first().map(|(id, _)| *id)
-}
-
-fn emit_callable_entry_selected(
+fn emit_callable_boundary_materialized(
     env: &CodegenEnv<'_>,
     mk_ident: &CallsiteIdent,
     fn_id: FnId,
     capture_count: usize,
     block_id: BlockId,
     stmt_idx: usize,
-    selection_kind: &'static str,
-    selection: &NativeCallableEntrySelection,
+    materialization_kind: &'static str,
+    boundary_id: u32,
 ) {
     let span = mk_ident.span();
     env.telemetry.execute(
-        &["fz", "codegen", "callable_entry_selected"],
+        &["fz", "codegen", "callable_boundary_materialized"],
         &crate::measurements! {
             spec_id: env.active_spec_id as u64,
             fn_id: env.active_body_fn_id.0 as u64,
             closure_fn_id: fn_id.0 as u64,
             capture_count: capture_count as u64,
-            callable_entry_spec_id: selection.spec_id as u64,
+            callable_boundary_id: boundary_id as u64,
             block_id: block_id.0 as u64,
             stmt_idx: stmt_idx as u64,
             span_start: span.start as u64,
             span_end: span.end as u64,
-            candidate_count: selection.candidate_count as u64,
         },
         &crate::metadata! {
             module_path: env.module.module_path(),
             body_name: env.active_body_name,
             module: crate::telemetry::opaque(env.module),
-            selection_kind: selection_kind,
-            callable_entry_body_fn_id: env.body_fn_id(selection.spec_id).0 as u64,
+            materialization_kind: materialization_kind,
+            callable_boundary_target_fn_id: env
+                .surface
+                .callable_boundary(boundary_id)
+                .expect("materialized callable boundary must exist in the codegen surface")
+                .target_fn
+                .0 as u64,
         },
     );
 }
 
-fn resolve_callable_entry_sid<T: Types<Ty = Ty> + ClosureTypes>(
-    t: &mut T,
+fn settled_callable_boundary_id(
     env: &CodegenEnv<'_>,
     dest_var: Var,
     mk_ident: &CallsiteIdent,
@@ -2481,89 +2414,52 @@ fn resolve_callable_entry_sid<T: Types<Ty = Ty> + ClosureTypes>(
     captured: &[Var],
     block_id: BlockId,
     stmt_idx: usize,
-    block_env: Option<&HashMap<Var, Ty>>,
-    selection_kind: &'static str,
+    materialization_kind: &'static str,
 ) -> Result<u32, CodegenError> {
-    let mut capture_tys = Vec::with_capacity(captured.len());
-    for var in captured {
-        let ty = block_env
-            .and_then(|env| env.get(var))
-            .or_else(|| env.active_value_types().get(var))
-            .cloned()
-            .unwrap_or_else(|| t.any());
-        let erased = t.erase_closure_identity(&ty);
-        capture_tys.push(t.alpha_normalize_vars(&erased));
-    }
-    let candidates = env
+    let boundary_id = env
         .active_native_body()
         .callable_value_boundaries
         .get(&dest_var)
+        .copied()
         .ok_or_else(|| {
             CodegenError::new(format!(
-                "native callable value Var({}) has no settled callable-boundary candidates",
+                "native callable value Var({}) has no settled callable boundary",
                 dest_var.0
             ))
         })?
-        .iter()
-        .copied()
-        .map(|boundary_id| boundary_id.as_u32())
-        .filter(|sid| env.callable_entry_fn_ids.contains_key(sid))
-        .filter_map(|sid| {
-            env.surface
-                .callable_entries
-                .get(&sid)
-                .map(|entry| (sid, entry.capture_key.as_slice()))
-        })
-        .collect::<Vec<_>>();
-    let selection = NativeCallableEntrySelection {
-        spec_id: select_native_callable_entry(&*t, &capture_tys, &candidates).ok_or_else(|| {
-            CodegenError::new(format!(
-                "native callable value for FnId({}) with {} captures has no settled callable boundary",
-                fn_id.0,
-                captured.len()
-            ))
-        })?,
-        candidate_count: candidates.len(),
-    };
-    emit_callable_entry_selected(
+        .as_u32();
+    if !env.callable_boundary_fn_ids.contains_key(&boundary_id) {
+        return Err(CodegenError::new(format!(
+            "native callable value for FnId({}) references unpublished callable boundary {}",
+            fn_id.0, boundary_id
+        )));
+    }
+    emit_callable_boundary_materialized(
         env,
         mk_ident,
         fn_id,
         captured.len(),
         block_id,
         stmt_idx,
-        selection_kind,
-        &selection,
+        materialization_kind,
+        boundary_id,
     );
-    Ok(selection.spec_id)
+    Ok(boundary_id)
 }
 
 /// Lower a `Prim::MakeFnRef`. Thin callable values carry no env, so codegen
-/// materializes the planned callable-entry singleton directly instead of
+/// materializes the planned callable-boundary singleton directly instead of
 /// routing through closure allocation.
-pub(crate) fn lower_make_fn_ref<M: cranelift_module::Module, T: Types<Ty = Ty> + ClosureTypes>(
+pub(crate) fn lower_make_fn_ref<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, '_, M>,
-    t: &mut T,
     env: &CodegenEnv<'_>,
     dest_var: Var,
     mk_ident: &CallsiteIdent,
     fn_id: FnId,
     block_id: BlockId,
     stmt_idx: usize,
-    block_env: Option<&HashMap<Var, Ty>>,
 ) -> Result<LowerOut, CodegenError> {
-    let cl_sid = resolve_callable_entry_sid(
-        t,
-        env,
-        dest_var,
-        mk_ident,
-        fn_id,
-        &[],
-        block_id,
-        stmt_idx,
-        block_env,
-        "make_fn_ref",
-    )?;
+    let cl_sid = settled_callable_boundary_id(env, dest_var, mk_ident, fn_id, &[], block_id, stmt_idx, "make_fn_ref")?;
     Ok(LowerOut::ValueRef(fetch_static_closure(
         body.jmod,
         body.b,
@@ -2573,11 +2469,10 @@ pub(crate) fn lower_make_fn_ref<M: cranelift_module::Module, T: Types<Ty = Ty> +
 }
 
 /// Lower a `Prim::MakeClosure`. Env-carrying closures allocate a closure
-/// object, store the callable-entry code pointer, then write captures through
+/// object, store the callable-boundary code pointer, then write captures through
 /// the runtime's schema-backed accessor.
-pub(crate) fn lower_make_closure<M: cranelift_module::Module, T: Types<Ty = Ty> + ClosureTypes>(
+pub(crate) fn lower_make_closure<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, '_, M>,
-    t: &mut T,
     env: &CodegenEnv<'_>,
     var_env: &HashMap<u32, CodegenValue>,
     dest_var: Var,
@@ -2586,7 +2481,6 @@ pub(crate) fn lower_make_closure<M: cranelift_module::Module, T: Types<Ty = Ty> 
     captured: &[Var],
     block_id: BlockId,
     stmt_idx: usize,
-    block_env: Option<&HashMap<Var, Ty>>,
 ) -> Result<LowerOut, CodegenError> {
     if captured.is_empty() {
         return Err(CodegenError::new(format!(
@@ -2594,8 +2488,7 @@ pub(crate) fn lower_make_closure<M: cranelift_module::Module, T: Types<Ty = Ty> 
             fn_id.0
         )));
     }
-    let cl_sid = resolve_callable_entry_sid(
-        t,
+    let cl_sid = settled_callable_boundary_id(
         env,
         dest_var,
         mk_ident,
@@ -2603,15 +2496,13 @@ pub(crate) fn lower_make_closure<M: cranelift_module::Module, T: Types<Ty = Ty> 
         captured,
         block_id,
         stmt_idx,
-        block_env,
         "make_closure",
     )?;
     Ok(LowerOut::ValueRef(emit_capturing_closure(
         body,
         var_env,
-        env.callable_entry_fn_ids,
-        env.param_reprs,
-        env.return_reprs,
+        env.surface,
+        env.callable_boundary_fn_ids,
         fn_id,
         cl_sid,
         captured,
@@ -2625,34 +2516,40 @@ pub(crate) fn lower_make_closure<M: cranelift_module::Module, T: Types<Ty = Ty> 
 fn emit_capturing_closure<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, '_, M>,
     var_env: &HashMap<u32, CodegenValue>,
-    callable_entry_fn_ids: &HashMap<u32, FuncId>,
-    param_reprs: &[Vec<ArgRepr>],
-    return_reprs: &[ArgRepr],
+    surface: &NativeCodegenSurface<'_>,
+    callable_boundary_fn_ids: &HashMap<u32, FuncId>,
     fn_id: FnId,
     cl_sid: u32,
     captured: &[Var],
 ) -> Result<ir::Value, CodegenError> {
     let n_caps = captured.len();
-    let body_func_id = *callable_entry_fn_ids.get(&cl_sid).ok_or_else(|| {
+    let body_func_id = *callable_boundary_fn_ids.get(&cl_sid).ok_or_else(|| {
         CodegenError::new(format!(
-            "no callable-entry FuncId for closure SpecId({}) \
+            "no callable-boundary FuncId for closure SpecId({}) \
              (FnId({}), {} captures)",
+            cl_sid, fn_id.0, n_caps
+        ))
+    })?;
+    let boundary = surface.callable_boundary(cl_sid).ok_or_else(|| {
+        CodegenError::new(format!(
+            "no callable-boundary surface for closure SpecId({}) (FnId({}), {} captures)",
             cl_sid, fn_id.0, n_caps
         ))
     })?;
     let fid_v = body.b.ins().iconst(types::I32, fn_id.0 as i64);
     let nc_v = body.b.ins().iconst(types::I32, n_caps as i64);
-    // halt_kind from body's return repr so fz_spawn_entry can
-    // pick the matching halt-cont singleton.
-    let body_return_repr = return_reprs[cl_sid as usize];
-    let hk_v = body.b.ins().iconst(types::I32, body_return_repr.halt_kind() as i64);
+    let halt_repr = match &boundary.return_shape {
+        DeliveredShape::Value(repr) => *repr,
+        DeliveredShape::TupleFields(_) => ArgRepr::ValueRef,
+    };
+    let hk_v = body.b.ins().iconst(types::I32, halt_repr.halt_kind() as i64);
     let body_addr = fn_addr(body.jmod, body_func_id, body.b);
     let cl_ptr = body.alloc_closure(fid_v, nc_v, hk_v, body_addr);
     // The closure env stores captures as opaque refs. The body's
     // entry harness coerces each capture to its narrow repr.
     for (i, cv) in captured.iter().enumerate() {
         let vb = var_env.get(&cv.0).expect("MakeClosure: captured var unbound");
-        if param_reprs[cl_sid as usize][i] == ArgRepr::ValueRef {
+        if boundary.capture_reprs[i] == ArgRepr::ValueRef {
             let capture = body.value_as_any_ref(*vb);
             body.store_closure_capture_ref_word(cl_ptr, i, capture);
         } else {

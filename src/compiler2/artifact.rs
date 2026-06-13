@@ -141,11 +141,11 @@ pub(crate) enum NativeBodyOrigin {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) struct NativeCallableBoundaryId(pub FnId);
+pub(crate) struct NativeCallableBoundaryId(pub u32);
 
 impl NativeCallableBoundaryId {
     pub(crate) fn as_u32(self) -> u32 {
-        self.0.0
+        self.0
     }
 }
 
@@ -163,10 +163,11 @@ pub(crate) struct NativeBody {
     pub return_abi: ReturnAbi,
     /// Final per-value types after Compiler2 lowering into CPS/native form.
     pub value_types: HashMap<Var, Ty>,
-    /// Closure-producing vars mapped to the callable boundaries they may
+    /// Closure-producing vars mapped to the settled callable boundary they
     /// materialize. These refs stay in callable-boundary space; they do not
-    /// collapse to executable-body ids.
-    pub callable_value_boundaries: HashMap<Var, Vec<NativeCallableBoundaryId>>,
+    /// collapse to executable-body ids or force codegen to re-select a
+    /// boundary from local type evidence.
+    pub callable_value_boundaries: HashMap<Var, NativeCallableBoundaryId>,
     /// Concrete extern marshal classes keyed by CPS/native extern site.
     pub extern_marshals: HashMap<ExternMarshalSite, ExternTy>,
     pub effects: EffectSummary,
@@ -174,6 +175,7 @@ pub(crate) struct NativeBody {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct NativeCallableBoundary {
+    pub id: NativeCallableBoundaryId,
     /// Synthetic callable identity used at `MakeFnRef` / `MakeClosure` sites.
     pub identity_fn: FnId,
     /// Direct executable-entry body the callable boundary ultimately reaches
@@ -181,6 +183,10 @@ pub(crate) struct NativeCallableBoundary {
     pub target_fn: FnId,
     pub target: ExecutableKey,
     pub capture_count: usize,
+    /// Executable closure-entry capture lanes, loaded from `self` by the
+    /// target body's entry harness.
+    pub capture_reprs: Vec<AbiValueRepr>,
+    /// Executable closure-entry argument lanes in source call order.
     pub arg_reprs: Vec<AbiValueRepr>,
     pub return_ty: Ty,
     pub return_abi: ReturnAbi,
@@ -188,7 +194,7 @@ pub(crate) struct NativeCallableBoundary {
 
 impl NativeCallableBoundary {
     pub(crate) fn id(&self) -> NativeCallableBoundaryId {
-        NativeCallableBoundaryId(self.target_fn)
+        self.id
     }
 }
 
@@ -217,6 +223,7 @@ pub struct AbiReadyCallEdge {
 pub struct CallableEntry {
     pub target: ExecutableKey,
     pub capture_count: usize,
+    pub capture_reprs: Vec<AbiValueRepr>,
     pub arg_reprs: Vec<AbiValueRepr>,
     pub return_ty: Ty,
     pub return_abi: ReturnAbi,
@@ -247,6 +254,7 @@ pub struct EmissionReadyCallEdge {
 pub struct EmissionReadyCallableEntry {
     pub target: usize,
     pub capture_count: usize,
+    pub capture_reprs: Vec<AbiValueRepr>,
     pub arg_reprs: Vec<AbiValueRepr>,
     pub return_ty: Ty,
     pub return_abi: ReturnAbi,
@@ -269,6 +277,7 @@ pub struct BackendExecutable {
 pub struct BackendCallableEntry {
     pub target: usize,
     pub capture_count: usize,
+    pub capture_reprs: Vec<AbiValueRepr>,
     pub arg_reprs: Vec<AbiValueRepr>,
     pub return_ty: Ty,
     pub return_abi: ReturnAbi,

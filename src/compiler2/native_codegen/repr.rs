@@ -202,7 +202,7 @@ pub(crate) fn build_fn_signature(
     param_reprs: &[ArgRepr],
     is_native: bool,
     is_cont_fn: bool,
-    closure_target_n_caps: Option<usize>,
+    closure_target_arg_reprs: Option<&[ArgRepr]>,
     // When the cont fn is a ReceiveMatched clause body / guard, override
     // the default 1-input shape with bound_arity. After-bodies set this
     // to 0. `None` falls back to `(result, self)` for Call / CallClosure
@@ -215,8 +215,8 @@ pub(crate) fn build_fn_signature(
     if is_cont_fn {
         return build_cont_sig(param_reprs, cont_extras_override);
     }
-    if let Some(n_caps) = closure_target_n_caps {
-        return build_closure_target_sig(param_reprs, n_caps);
+    if let Some(arg_reprs) = closure_target_arg_reprs {
+        return build_closure_target_sig(arg_reprs);
     }
     build_plain_native_sig(param_reprs)
 }
@@ -265,8 +265,8 @@ fn build_cont_sig(param_reprs: &[ArgRepr], cont_extras_override: Option<usize>) 
 
 /// Closure-target fn signature: `(args..., self:i64, cont:i64) tail`.
 ///
-/// Captures (param_reprs[0..n_caps]) are NOT Cranelift params; the body
-/// projects them from `self`. Args are param_reprs[n_caps..].
+/// Captures are NOT Cranelift params; the body projects them from `self`.
+/// Only logical call arguments occupy machine parameter lanes.
 ///
 /// Uses the `Tail` calling convention so that recursive tail calls can
 /// lower to `return_call`.
@@ -274,9 +274,9 @@ fn build_cont_sig(param_reprs: &[ArgRepr], cont_extras_override: Option<usize>) 
 /// Closure-target ABI is structurally uniform ValueRef. The
 /// indirect-dispatch seam can't carry typed return info to its caller;
 /// the body coerces its narrow return to ValueRef at Term::Return.
-fn build_closure_target_sig(param_reprs: &[ArgRepr], n_caps: usize) -> Signature {
+fn build_closure_target_sig(arg_reprs: &[ArgRepr]) -> Signature {
     let mut sig = Signature::new(CallConv::Tail);
-    for r in &param_reprs[n_caps..] {
+    for r in arg_reprs {
         push_repr_param(&mut sig, *r);
     }
     sig.params.push(AbiParam::new(types::I64)); // self

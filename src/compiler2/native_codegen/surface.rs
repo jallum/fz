@@ -3,21 +3,27 @@
 //! The old native driver starts from planner-owned artifacts, but compiler2's
 //! in-house backend only needs a narrower set of codegen facts: the prepared
 //! fz-IR bodies, their per-body typing/dispatch facts, ABI lanes,
-//! callable-entry inventory, and a few module-wide metadata tables.
+//! callable-boundary inventory, and a few module-wide metadata tables.
 //! `NativeCodegenSurface` owns that handoff so planner-owned wrappers stay
 //! outside compiler2 native codegen.
 
-use super::{ArgRepr, MidFlightArgShape};
+use super::{ArgRepr, DeliveredShape, MidFlightArgShape};
 use crate::compiler2::NativeBody;
+use crate::compiler2::artifact::NativeCallableBoundaryId;
 use crate::diag::Diagnostics;
 use crate::fz_ir::{FnId, FnIr, Module};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct NativeCallableEntrySurface {
+pub(crate) struct NativeCallableBoundarySurface {
+    pub boundary_id: NativeCallableBoundaryId,
+    pub identity_fn: FnId,
     pub target_fn: FnId,
     pub capture_count: usize,
     pub capture_key: Vec<crate::types::KeySlot<crate::compiler2::Ty>>,
+    pub capture_reprs: Vec<ArgRepr>,
+    pub arg_reprs: Vec<ArgRepr>,
+    pub return_shape: DeliveredShape,
 }
 
 pub(crate) struct NativeCodegenSurface<'a> {
@@ -28,14 +34,14 @@ pub(crate) struct NativeCodegenSurface<'a> {
     /// reads stored state instead of re-counting at emit points.
     pub spec_count: usize,
     pub body_slots: Vec<Option<NativeCodegenBody<'a>>>,
-    pub callable_entries: BTreeMap<u32, NativeCallableEntrySurface>,
+    pub callable_boundaries: BTreeMap<u32, NativeCallableBoundarySurface>,
+    pub closure_target_boundaries: HashMap<FnId, u32>,
     pub mid_flight_cont_keys: Vec<(u32, Vec<MidFlightArgShape>)>,
     pub param_reprs: Vec<Vec<ArgRepr>>,
     pub return_reprs: Vec<ArgRepr>,
     pub native_abi_fns: HashSet<FnId>,
     pub cont_target_fns: HashSet<FnId>,
     pub cont_fns: HashSet<FnId>,
-    pub closure_capture_counts: HashMap<FnId, usize>,
     pub fn_halt_kinds: HashMap<u32, u32>,
 }
 
@@ -65,5 +71,15 @@ impl<'a> NativeCodegenSurface<'a> {
             .get(fn_id.0 as usize)
             .and_then(Option::as_ref)
             .map(|body| body.codegen_id)
+    }
+
+    pub(crate) fn callable_boundary(&self, boundary_id: u32) -> Option<&NativeCallableBoundarySurface> {
+        self.callable_boundaries.get(&boundary_id)
+    }
+
+    pub(crate) fn closure_target_boundary(&self, target_fn: FnId) -> Option<&NativeCallableBoundarySurface> {
+        self.closure_target_boundaries
+            .get(&target_fn)
+            .and_then(|boundary_id| self.callable_boundary(*boundary_id))
     }
 }

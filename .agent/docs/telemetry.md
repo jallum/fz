@@ -334,13 +334,13 @@ test:
 Compiler2 emits `fz.compiler2.native_backend.compile` when a public native front
 door consumes a `NativeProgram(root)` through JIT or AOT. It is the artifact
 boundary span: metadata names the `root_id`, `backend_revision`, `entry_fn_id`,
-`body_count`, `callable_entry_count`, and backend kind. The raw
+`body_count`, `callable_boundary_count`, and backend kind. The raw
 `fz.codegen.compile` span nests under it, so a trace can account for both the
 fact drive and the post-drive native backend tail without treating codegen as an
 unattributed gap.
 
 Three codegen events carry stable enough fields to assert on in tests, proving
-codegen consumed the published ABI and callable-entry facts handed to it. They
+codegen consumed the published ABI and callable-boundary facts handed to it. They
 are emitted for reachable specs / lowered sites and pair with CLIF or runtime
 checks when the generated shape matters. Both backends emit them; the
 compiler2 copy (`compiler2/native_codegen/`) follows the cheap-emit
@@ -355,21 +355,26 @@ fields and dies with that pipeline.
   `&'static str`), and the `is_native` / `is_cont_fn` / `is_closure_target`
   flags. (The ir_codegen twin additionally carries `spec_key` and renders
   `param_reprs` as strings.)
-- `fz.codegen.callable_entry_selected` (`compiler2/native_codegen/prim.rs`) —
-  the site-specific callable entry chosen while lowering `MakeFnRef` /
-  `MakeClosure`. Measurements include the active `spec_id`/`fn_id`,
-  `closure_fn_id`, `capture_count`, `callable_entry_spec_id`, `block_id`,
-  `stmt_idx`, source `span_start`/`span_end`, and `candidate_count`. Metadata:
-  borrowed `module_path`/`body_name`, `selection_kind`,
-  `callable_entry_body_fn_id`, and the `fz_ir::Module` as a plain `opaque`
-  borrow — a handler wanting the closure's name resolves `closure_fn_id`
-  against it at event time.
+- `fz.codegen.callable_boundary_materialized` (`compiler2/native_codegen/prim.rs`)
+  — one per `MakeFnRef` / `MakeClosure` lowered through compiler2-native
+  codegen. Measurements include the active `spec_id`/`fn_id`,
+  `closure_fn_id`, `capture_count`, `callable_boundary_id`, `block_id`,
+  `stmt_idx`, and source `span_start`/`span_end`. Metadata: borrowed
+  `module_path`/`body_name`, `materialization_kind`,
+  `callable_boundary_target_fn_id`, and the `fz_ir::Module` as a plain
+  `opaque` borrow — a handler wanting the closure's name resolves
+  `closure_fn_id` against it at event time. For compiler2-native, this event
+  means "codegen materialized the settled callable boundary already published
+  by native lowering"; codegen no longer re-selects among candidate
+  boundaries from local type evidence.
 - `fz.codegen.closure_call_lowered` (`compiler2/native_codegen/terminator.rs`)
   — one per `CallClosure` lowering. Measurements: active `spec_id`,
   `closure_var`, `continuation_spec_id`. Metadata: `body_name`, `call_kind`,
   `closure_binding_repr` (`ArgRepr::as_str`), `dispatch_kind` (`direct` when
   the body literal resolves, else `indirect`), and `continuation_storage`
-  (`lazy_descriptor` or `heap_closure`).
+  (`lazy_descriptor` or `heap_closure`). Direct closure fast paths still use
+  boundary-return adapters when the exact body's delivered lane is narrower
+  than the caller or continuation seam.
 
 ## Telemetry In Tests
 

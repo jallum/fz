@@ -322,7 +322,7 @@ fn assert_native_backend_compile_span(capture: &Capture, backend: &str, context:
         "backend_revision",
         "entry_fn_id",
         "body_count",
-        "callable_entry_count",
+        "callable_boundary_count",
     ] {
         assert!(
             matches!(boundary.metadata.get(key), Some(Value::U64(_))),

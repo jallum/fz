@@ -101,7 +101,7 @@ impl<'a> Compiler2<'a> {
                 backend_revision: program.backend_revision,
                 entry_fn_id: program.entry.0 as u64,
                 body_count: program.bodies.len() as u64,
-                callable_entry_count: program.callable_boundaries.len() as u64,
+                callable_boundary_count: program.callable_boundaries.len() as u64,
                 backend: backend_kind,
             },
         );

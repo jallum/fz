@@ -78,15 +78,17 @@ fn compiler2_native_program_contract_keeps_codegen_facts_on_body_records() {
             return_ty: int,
             return_abi: ReturnAbi::Value(AbiValueRepr::RawInt),
             value_types: HashMap::from([(Var(0), int)]),
-            callable_value_boundaries: HashMap::from([(Var(0), vec![NativeCallableBoundaryId(entry_fn)])]),
+            callable_value_boundaries: HashMap::from([(Var(0), NativeCallableBoundaryId(0))]),
             extern_marshals: marshals.clone(),
             effects: EffectSummary::default(),
         }],
         callable_boundaries: vec![NativeCallableBoundary {
+            id: NativeCallableBoundaryId(0),
             identity_fn,
             target_fn: entry_fn,
             target: executable.clone(),
             capture_count: 0,
+            capture_reprs: Vec::new(),
             arg_reprs: vec![AbiValueRepr::RawInt],
             return_ty: int,
             return_abi: ReturnAbi::Value(AbiValueRepr::RawInt),
@@ -109,7 +111,7 @@ fn compiler2_native_program_contract_keeps_codegen_facts_on_body_records() {
     );
     assert_eq!(
         program.bodies[0].callable_value_boundaries.get(&Var(0)),
-        Some(&vec![NativeCallableBoundaryId(entry_fn)]),
+        Some(&NativeCallableBoundaryId(0)),
         "closure-producing vars should point at the closed callable-boundary inventory instead of hiding that resolution in codegen",
     );
     assert_eq!(
@@ -211,7 +213,7 @@ fn compiler2_native_program_contract_maps_old_native_inputs_to_local_facts() {
                 return_ty: int,
                 return_abi: ReturnAbi::Value(AbiValueRepr::RawInt),
                 value_types: HashMap::from([(Var(0), int)]),
-                callable_value_boundaries: HashMap::from([(Var(0), vec![NativeCallableBoundaryId(entry_fn)])]),
+                callable_value_boundaries: HashMap::from([(Var(0), NativeCallableBoundaryId(0))]),
                 extern_marshals: HashMap::from([(extern_site, ExternTy::CString)]),
                 effects: EffectSummary::default(),
             },
@@ -232,10 +234,12 @@ fn compiler2_native_program_contract_maps_old_native_inputs_to_local_facts() {
             },
         ],
         callable_boundaries: vec![NativeCallableBoundary {
+            id: NativeCallableBoundaryId(0),
             identity_fn,
             target_fn: entry_fn,
             target: executable.clone(),
             capture_count: 0,
+            capture_reprs: Vec::new(),
             arg_reprs: vec![AbiValueRepr::RawInt],
             return_ty: int,
             return_abi: ReturnAbi::Value(AbiValueRepr::RawInt),
@@ -267,7 +271,7 @@ fn compiler2_native_program_contract_maps_old_native_inputs_to_local_facts() {
     );
     assert_eq!(
         program.bodies[0].callable_value_boundaries.get(&Var(0)),
-        Some(&vec![NativeCallableBoundaryId(entry_fn)]),
+        Some(&NativeCallableBoundaryId(0)),
         "native codegen should read callable-boundary obligations from NativeBody.callable_value_boundaries instead of planner-side callable lookup",
     );
     assert_eq!(

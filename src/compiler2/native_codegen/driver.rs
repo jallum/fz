@@ -138,7 +138,9 @@ fn build_fn_sigs(module: &Module, surface: &NativeCodegenSurface<'_>) -> Vec<Sig
                     is_native,
                     surface.cont_fns.contains(&f.id),
                     if is_native {
-                        surface.closure_capture_counts.get(&f.id).copied()
+                        surface
+                            .closure_target_boundary(f.id)
+                            .map(|boundary| boundary.arg_reprs.as_slice())
                     } else {
                         None
                     },
@@ -168,20 +170,25 @@ fn build_fn_sigs(module: &Module, surface: &NativeCodegenSurface<'_>) -> Vec<Sig
 fn collect_static_closure_targets(
     surface: &NativeCodegenSurface<'_>,
     fn_ids: &HashMap<u32, FuncId>,
-    callable_entry_fn_ids: &HashMap<u32, FuncId>,
+    callable_boundary_fn_ids: &HashMap<u32, FuncId>,
 ) -> Vec<(u32, u32, FuncId, u32)> {
     let mut targets = BTreeMap::new();
-    for (&cl_sid, _) in surface
-        .callable_entries
+    for (&boundary_id, boundary) in surface
+        .callable_boundaries
         .iter()
-        .filter(|(_, entry)| entry.capture_count == 0)
+        .filter(|(_, boundary)| boundary.capture_count == 0)
     {
-        let fn_id = surface.body_fn_id(cl_sid);
-        let body_fid = *callable_entry_fn_ids
-            .get(&cl_sid)
-            .expect("zero-cap closure spec must have a callable-entry FuncId");
-        let halt_kind = surface.return_reprs[cl_sid as usize].halt_kind();
-        targets.insert(cl_sid, (fn_id.0, body_fid, halt_kind));
+        let _body_sid = surface
+            .body_id_for_fn(boundary.target_fn)
+            .expect("callable boundary target body must have a registered codegen id");
+        let body_fid = *callable_boundary_fn_ids
+            .get(&boundary_id)
+            .expect("zero-cap closure boundary must have a callable-boundary FuncId");
+        let halt_kind = match &boundary.return_shape {
+            DeliveredShape::Value(repr) => repr.halt_kind(),
+            DeliveredShape::TupleFields(_) => ArgRepr::ValueRef.halt_kind(),
+        };
+        targets.insert(boundary_id, (boundary.target_fn.0, body_fid, halt_kind));
     }
 
     for body_slot in &surface.body_slots {
@@ -189,7 +196,10 @@ fn collect_static_closure_targets(
             continue;
         };
         let sid = body_slot.codegen_id;
-        if surface.closure_capture_counts.get(&body_slot.fn_id) != Some(&0) {
+        if surface
+            .closure_target_boundary(body_slot.fn_id)
+            .is_none_or(|boundary| boundary.capture_count != 0)
+        {
             continue;
         }
         targets.entry(sid).or_insert_with(|| {
@@ -207,7 +217,7 @@ fn collect_static_closure_targets(
         .collect()
 }
 
-fn build_callable_entry_signature(arg_count: usize) -> Signature {
+fn build_callable_boundary_signature(arg_count: usize) -> Signature {
     let mut sig = Signature::new(CallConv::Tail);
     for _ in 0..arg_count {
         sig.params.push(AbiParam::new(types::I64));
@@ -218,23 +228,21 @@ fn build_callable_entry_signature(arg_count: usize) -> Signature {
     sig
 }
 
-fn declare_callable_entry_fns<M: cranelift_module::Module>(
+fn declare_callable_boundary_fns<M: cranelift_module::Module>(
     m: &mut M,
     surface: &NativeCodegenSurface<'_>,
 ) -> Result<HashMap<u32, FuncId>, CodegenError> {
-    let mut callable_entry_fn_ids = HashMap::new();
-    for (&body_sid, entry) in &surface.callable_entries {
-        let arg_count = surface.param_reprs[body_sid as usize]
-            .len()
-            .saturating_sub(entry.capture_count);
-        let sig = build_callable_entry_signature(arg_count);
-        let name = format!("fz_callable_entry_{}_s{}", surface.body_fn_id(body_sid).0, body_sid);
+    let mut callable_boundary_fn_ids = HashMap::new();
+    for (&boundary_id, boundary) in &surface.callable_boundaries {
+        let arg_count = boundary.arg_reprs.len();
+        let sig = build_callable_boundary_signature(arg_count);
+        let name = format!("fz_callable_boundary_{}_b{}", boundary.target_fn.0, boundary_id);
         let func_id = m
             .declare_function(&name, Linkage::Local, &sig)
             .map_err(|e| CodegenError::new(format!("declare {name}: {e}")))?;
-        callable_entry_fn_ids.insert(body_sid, func_id);
+        callable_boundary_fn_ids.insert(boundary_id, func_id);
     }
-    Ok(callable_entry_fn_ids)
+    Ok(callable_boundary_fn_ids)
 }
 
 #[derive(Default)]
@@ -279,9 +287,10 @@ fn delivered_shape(surface: &NativeCodegenSurface<'_>, body_sid: u32, is_cont_fn
 
 fn collect_boundary_return_adapter_pairs(surface: &NativeCodegenSurface<'_>) -> BTreeSet<(ArgRepr, ArgRepr)> {
     let mut pairs = BTreeSet::new();
-    for &body_sid in surface.callable_entries.keys() {
-        let source = surface.return_reprs[body_sid as usize];
-        if source != ArgRepr::ValueRef {
+    for boundary in surface.callable_boundaries.values() {
+        if let DeliveredShape::Value(source) = boundary.return_shape
+            && source != ArgRepr::ValueRef
+        {
             pairs.insert((source, ArgRepr::ValueRef));
         }
     }
@@ -385,53 +394,57 @@ fn emit_boundary_return_adapter_bodies<M: cranelift_module::Module>(
     Ok(())
 }
 
-fn emit_callable_entry_bodies<M: cranelift_module::Module>(
+fn emit_callable_boundary_bodies<M: cranelift_module::Module>(
     m: &mut M,
     fbctx: &mut FunctionBuilderContext,
     runtime: &RuntimeRefs,
     fn_ids: &HashMap<u32, FuncId>,
-    callable_entry_fn_ids: &HashMap<u32, FuncId>,
+    callable_boundary_fn_ids: &HashMap<u32, FuncId>,
     return_adapters: &BoundaryReturnAdapters,
     surface: &NativeCodegenSurface<'_>,
     tel: &dyn Telemetry,
     module_path: &str,
 ) -> Result<(), CodegenError> {
-    for (&body_sid, entry) in &surface.callable_entries {
+    for (&boundary_id, boundary) in &surface.callable_boundaries {
+        let body_sid = surface.body_id_for_fn(boundary.target_fn).ok_or_else(|| {
+            CodegenError::new(format!("missing direct body id for callable boundary {}", boundary_id))
+        })?;
         let body_func_id = *fn_ids
             .get(&body_sid)
             .ok_or_else(|| CodegenError::new(format!("missing direct body FuncId for spec {body_sid}")))?;
-        let callable_entry_id = *callable_entry_fn_ids
-            .get(&body_sid)
-            .ok_or_else(|| CodegenError::new(format!("missing callable-entry FuncId for spec {body_sid}")))?;
-        let reprs = &surface.param_reprs[body_sid as usize];
-        let arg_reprs = &reprs[entry.capture_count..];
-        let return_repr = surface.return_reprs[body_sid as usize];
-        let return_adapter_id = if return_repr == ArgRepr::ValueRef {
-            None
-        } else {
-            Some(return_adapters.id_for(return_repr, ArgRepr::ValueRef).ok_or_else(|| {
-                CodegenError::new(format!(
-                    "missing callable return adapter for spec {body_sid} return {}",
-                    return_repr.as_str()
-                ))
-            })?)
+        let callable_boundary_id = *callable_boundary_fn_ids
+            .get(&boundary_id)
+            .ok_or_else(|| CodegenError::new(format!("missing callable-boundary FuncId for boundary {boundary_id}")))?;
+        let arg_reprs = boundary.arg_reprs.as_slice();
+        let return_adapter_id = match &boundary.return_shape {
+            DeliveredShape::Value(ArgRepr::ValueRef) | DeliveredShape::TupleFields(_) => None,
+            DeliveredShape::Value(return_repr) => {
+                Some(return_adapters.id_for(*return_repr, ArgRepr::ValueRef).ok_or_else(|| {
+                    CodegenError::new(format!(
+                        "missing callable return adapter for boundary {boundary_id} return {}",
+                        return_repr.as_str()
+                    ))
+                })?)
+            }
         };
-        let sig = build_callable_entry_signature(arg_reprs.len());
-        let entry_name = format!("callable_entry_s{body_sid}");
+        let sig = build_callable_boundary_signature(arg_reprs.len());
+        let boundary_name = format!("callable_boundary_b{boundary_id}");
         tel.execute(
-            &["fz", "codegen", "callable_entry_lowered"],
+            &["fz", "codegen", "callable_boundary_lowered"],
             &crate::measurements! {
                 spec_id: body_sid as u64,
                 arg_count: arg_reprs.len() as u64,
-                capture_count: entry.capture_count as u64,
+                capture_count: boundary.capture_count as u64,
+                callable_boundary_id: boundary_id as u64,
             },
             &crate::metadata! {
                 module_path: module_path,
-                fn_name: entry_name.as_str(),
-                body_fn_id: surface.body_fn_id(body_sid).0 as u64,
+                fn_name: boundary_name.as_str(),
+                boundary_target_fn_id: boundary.target_fn.0 as u64,
+                boundary_identity_fn_id: boundary.identity_fn.0 as u64,
             },
         );
-        emit_fn_body(m, fbctx, sig, callable_entry_id, |m, b| {
+        emit_fn_body(m, fbctx, sig, callable_boundary_id, |m, b| {
             let entry_block = b.create_block();
             b.append_block_params_for_function_params(entry_block);
             b.switch_to_block(entry_block);
@@ -463,7 +476,7 @@ fn emit_callable_entry_bodies<M: cranelift_module::Module>(
             direct_args.push(target_cont);
             cg.b.ins().return_call(body_fref, &direct_args);
         })
-        .map_err(|e| CodegenError::new(format!("define {entry_name}: {e}")))?;
+        .map_err(|e| CodegenError::new(format!("define {boundary_name}: {e}")))?;
     }
     Ok(())
 }
@@ -481,7 +494,10 @@ fn emit_codegen_abi_contracts(surface: &NativeCodegenSurface<'_>, tel: &dyn Tele
                 spec_id: sid as u64,
                 fn_id: f.id.0 as u64,
                 param_count: surface.param_reprs[sid].len() as u64,
-                capture_count: surface.closure_capture_counts.get(&f.id).copied().unwrap_or(0) as u64,
+                capture_count: surface
+                    .closure_target_boundary(f.id)
+                    .map(|boundary| boundary.capture_count)
+                    .unwrap_or(0) as u64,
             },
             &crate::metadata! {
                 module_path: surface.module.module_path(),
@@ -492,7 +508,7 @@ fn emit_codegen_abi_contracts(surface: &NativeCodegenSurface<'_>, tel: &dyn Tele
                 return_repr: surface.return_reprs[sid].as_str(),
                 is_native: surface.native_abi_fns.contains(&f.id),
                 is_cont_fn: surface.cont_fns.contains(&f.id),
-                is_closure_target: surface.closure_capture_counts.contains_key(&f.id),
+                is_closure_target: surface.closure_target_boundaries.contains_key(&f.id),
             },
         );
     }
@@ -1046,50 +1062,89 @@ fn build_codegen_return_repr(body: &crate::compiler2::NativeBody) -> ArgRepr {
     }
 }
 
-fn build_codegen_callable_entries<T: Types<Ty = Ty> + ClosureTypes>(
+fn build_codegen_delivered_shape(return_abi: &crate::compiler2::ReturnAbi) -> DeliveredShape {
+    match return_abi {
+        crate::compiler2::ReturnAbi::Value(repr) => DeliveredShape::Value(arg_repr_from_compiler2(*repr)),
+        crate::compiler2::ReturnAbi::TupleFields(fields) => DeliveredShape::TupleFields(
+            fields
+                .iter()
+                .copied()
+                .map(arg_repr_from_compiler2)
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
+        ),
+    }
+}
+
+fn build_codegen_callable_boundaries<T: Types<Ty = Ty> + ClosureTypes>(
     t: &mut T,
     program: &crate::compiler2::NativeProgram,
-) -> BTreeMap<u32, NativeCallableEntrySurface> {
-    let mut entries = BTreeMap::new();
-    for entry in &program.callable_boundaries {
-        let codegen_id = entry.target_fn.0;
-        let capture_tys = entry
+) -> BTreeMap<u32, NativeCallableBoundarySurface> {
+    let mut boundaries = BTreeMap::new();
+    for boundary in &program.callable_boundaries {
+        let boundary_id = boundary.id().as_u32();
+        let full_tys = boundary
             .target
             .activation
             .input
             .iter()
             .copied()
-            .take(entry.capture_count)
             .map(|ty| {
                 let erased = t.erase_closure_identity(&ty);
                 t.alpha_normalize_vars(&erased)
             })
             .collect::<Vec<_>>();
-        let capture_key = crate::types::key_slots_from_tys(capture_tys);
-        let next = NativeCallableEntrySurface {
-            target_fn: entry.target_fn,
-            capture_count: entry.capture_count,
+        let capture_key = crate::types::key_slots_from_tys(full_tys.iter().copied().take(boundary.capture_count));
+        let next = NativeCallableBoundarySurface {
+            boundary_id: boundary.id(),
+            identity_fn: boundary.identity_fn,
+            target_fn: boundary.target_fn,
+            capture_count: boundary.capture_count,
             capture_key,
+            capture_reprs: boundary
+                .capture_reprs
+                .iter()
+                .copied()
+                .map(arg_repr_from_compiler2)
+                .collect(),
+            arg_reprs: boundary
+                .arg_reprs
+                .iter()
+                .copied()
+                .map(arg_repr_from_compiler2)
+                .collect(),
+            return_shape: build_codegen_delivered_shape(&boundary.return_abi),
         };
-        if let Some(previous) = entries.insert(codegen_id, next.clone()) {
+        if let Some(previous) = boundaries.insert(boundary_id, next.clone()) {
             debug_assert_eq!(previous, next);
         }
     }
-    entries
+    boundaries
 }
 
-fn build_codegen_closure_capture_counts(program: &crate::compiler2::NativeProgram) -> HashMap<FnId, usize> {
-    let mut counts = HashMap::new();
-    for entry in &program.callable_boundaries {
-        counts.insert(entry.target_fn, entry.capture_count);
+fn build_codegen_closure_target_boundaries(program: &crate::compiler2::NativeProgram) -> HashMap<FnId, u32> {
+    let mut targets = HashMap::new();
+    for boundary in &program.callable_boundaries {
+        if let Some(previous) = targets.get(&boundary.target_fn).copied() {
+            let prior = program
+                .callable_boundaries
+                .iter()
+                .find(|candidate| candidate.id().as_u32() == previous)
+                .expect("existing closure-target boundary id should resolve");
+            debug_assert_eq!(prior.capture_count, boundary.capture_count);
+            debug_assert_eq!(prior.capture_reprs, boundary.capture_reprs);
+            debug_assert_eq!(prior.arg_reprs, boundary.arg_reprs);
+            continue;
+        }
+        targets.insert(boundary.target_fn, boundary.id().as_u32());
     }
-    counts
+    targets
 }
 
 fn collect_codegen_mid_flight_cont_keys(
     program: &crate::compiler2::NativeProgram,
     param_reprs: &[Vec<ArgRepr>],
-    closure_capture_counts: &HashMap<FnId, usize>,
+    closure_target_boundaries: &HashMap<FnId, u32>,
 ) -> Vec<(u32, Vec<MidFlightArgShape>)> {
     let mut keys = HashSet::new();
     for function in &program.module.fns {
@@ -1116,7 +1171,7 @@ fn collect_codegen_mid_flight_cont_keys(
                 .copied()
                 .map(MidFlightArgShape::Value)
                 .collect::<Vec<_>>();
-            if closure_capture_counts.contains_key(&callee) {
+            if closure_target_boundaries.contains_key(&callee) {
                 arg_shapes.push(MidFlightArgShape::HeapRef);
             }
             arg_shapes.push(MidFlightArgShape::HeapRef);
@@ -1165,7 +1220,8 @@ fn prepare_native_codegen_surface_from_native_program<'a>(
         return_reprs[codegen_id] = build_codegen_return_repr(body);
     }
 
-    let closure_capture_counts = build_codegen_closure_capture_counts(program);
+    let callable_boundaries = build_codegen_callable_boundaries(t, program);
+    let closure_target_boundaries = build_codegen_closure_target_boundaries(program);
     let native_abi_fns = program
         .module
         .fns
@@ -1193,14 +1249,14 @@ fn prepare_native_codegen_surface_from_native_program<'a>(
         main_fn_id: Some(program.entry),
         spec_count: program.bodies.len(),
         body_slots,
-        callable_entries: build_codegen_callable_entries(t, program),
-        mid_flight_cont_keys: collect_codegen_mid_flight_cont_keys(program, &param_reprs, &closure_capture_counts),
+        callable_boundaries,
+        closure_target_boundaries: closure_target_boundaries.clone(),
+        mid_flight_cont_keys: collect_codegen_mid_flight_cont_keys(program, &param_reprs, &closure_target_boundaries),
         param_reprs,
         return_reprs,
         native_abi_fns,
         cont_target_fns,
         cont_fns,
-        closure_capture_counts,
         fn_halt_kinds,
     }
 }
@@ -1265,7 +1321,7 @@ pub(crate) fn compile_with_backend_surface<
 
     let linkage = backend.fn_linkage();
     let fn_ids = declare_spec_fns(backend.module_mut(), linkage, body_slots, &fn_sigs)?;
-    let callable_entry_fn_ids = declare_callable_entry_fns(backend.module_mut(), surface)?;
+    let callable_boundary_fn_ids = declare_callable_boundary_fns(backend.module_mut(), surface)?;
     let boundary_return_adapters = declare_boundary_return_adapters(backend.module_mut(), surface)?;
 
     let (mid_flight_cont_fn_ids, mid_flight_cont_tail_fn_ids) =
@@ -1299,7 +1355,7 @@ pub(crate) fn compile_with_backend_surface<
             active_body_fn_id: body_slot.fn_id,
             active_body_name: display_name,
             fn_ids: &fn_ids,
-            callable_entry_fn_ids: &callable_entry_fn_ids,
+            callable_boundary_fn_ids: &callable_boundary_fn_ids,
             boundary_return_adapters: &boundary_return_adapters,
             mid_flight_cont_tail_fn_ids: &mid_flight_cont_tail_fn_ids,
             tuple_schema_ids: &tuple_schema_ids,
@@ -1310,7 +1366,6 @@ pub(crate) fn compile_with_backend_surface<
             native_abi_fns: &surface.native_abi_fns,
             cont_target_fns: &surface.cont_target_fns,
             cont_fns: &surface.cont_fns,
-            closure_capture_counts: &surface.closure_capture_counts,
             receive_dispatch_fn_ids: &receive_dispatch_fn_ids,
         };
         let cranelift_instruction_count;
@@ -1415,7 +1470,7 @@ pub(crate) fn compile_with_backend_surface<
         tel,
     )?;
 
-    let static_closure_targets = collect_static_closure_targets(surface, &fn_ids, &callable_entry_fn_ids);
+    let static_closure_targets = collect_static_closure_targets(surface, &fn_ids, &callable_boundary_fn_ids);
 
     emit_mid_flight_cont_bodies(
         backend.module_mut(),
@@ -1426,12 +1481,12 @@ pub(crate) fn compile_with_backend_surface<
         &mid_flight_cont_tail_fn_ids,
     )?;
     emit_boundary_return_adapter_bodies(backend.module_mut(), &mut fbctx, &runtime, &boundary_return_adapters)?;
-    emit_callable_entry_bodies(
+    emit_callable_boundary_bodies(
         backend.module_mut(),
         &mut fbctx,
         &runtime,
         &fn_ids,
-        &callable_entry_fn_ids,
+        &callable_boundary_fn_ids,
         &boundary_return_adapters,
         surface,
         tel,

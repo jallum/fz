@@ -1,5 +1,6 @@
 //! Entry-block harness: bind entry params and load closure captures.
 
+use super::surface::NativeCallableBoundarySurface;
 use super::*;
 use crate::fz_ir::FnIr;
 use cranelift_codegen::ir::{self, InstBuilder, MemFlags, types};
@@ -27,7 +28,7 @@ pub(crate) fn build_entry_harness<M: ClModule>(
     this_spec_id: u32,
     is_native: bool,
     is_cont_fn: bool,
-    closure_target_n_caps: Option<usize>,
+    closure_target: Option<&NativeCallableBoundarySurface>,
     entry_cl: ir::Block,
 ) -> EntryHarnessOut {
     let param_reprs = env.param_reprs;
@@ -57,8 +58,8 @@ pub(crate) fn build_entry_harness<M: ClModule>(
                 &mut var_env,
                 &mut tuple_field_params,
             )
-        } else if let Some(n_caps) = closure_target_n_caps {
-            harness_closure_target(body, entry_blk, &params, my_param_reprs, n_caps, &mut var_env)
+        } else if let Some(boundary) = closure_target {
+            harness_closure_target(body, entry_blk, &params, boundary, &mut var_env)
         } else {
             harness_plain_native(body.b, entry_blk, &params, my_param_reprs, &mut var_env)
         }
@@ -175,25 +176,28 @@ fn harness_closure_target<M: ClModule>(
     body: &mut CodegenFn<'_, '_, '_, M>,
     entry_blk: &crate::fz_ir::Block,
     params: &[ir::Value],
-    my_param_reprs: &[ArgRepr],
-    n_caps: usize,
+    boundary: &NativeCallableBoundarySurface,
     var_env: &mut HashMap<u32, CodegenValue>,
 ) -> (Option<ir::Value>, Option<ir::Value>, Option<ir::Value>) {
-    let _n_args = entry_blk.params.len().saturating_sub(n_caps);
+    let n_caps = boundary.capture_count;
     let mut param_cursor = 0;
-    for (j, p) in entry_blk.params.iter().enumerate().skip(n_caps) {
-        let repr = my_param_reprs[j];
+    for (p, repr) in entry_blk
+        .params
+        .iter()
+        .skip(n_caps)
+        .zip(boundary.arg_reprs.iter().copied())
+    {
         var_env.insert(p.0, take_param_binding(body.b, params, &mut param_cursor, repr));
     }
     let self_val = params[param_cursor];
     let cont_val = params[param_cursor + 1];
     for (k, p) in entry_blk.params.iter().enumerate().take(n_caps) {
-        let binding = body.closure_capture_as_binding(self_val, k, my_param_reprs[k]);
+        let binding = body.closure_capture_as_binding(self_val, k, boundary.capture_reprs[k]);
         var_env.insert(p.0, binding);
     }
     debug_assert_eq!(
         param_cursor,
-        my_param_reprs[n_caps..].iter().map(ArgRepr::abi_arity).sum::<usize>()
+        boundary.arg_reprs.iter().map(ArgRepr::abi_arity).sum::<usize>()
     );
     let _ = self_val;
     (None, None, Some(cont_val))

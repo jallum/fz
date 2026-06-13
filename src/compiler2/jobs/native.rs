@@ -2,7 +2,7 @@
 //!
 //! This job turns one closed `BackendProgram(root)` into one CPS/native
 //! handoff. The result is still Compiler2-owned: direct executable entries,
-//! clause helpers, continuations, callable-constructor metadata, and extern
+//! clause helpers, continuations, settled callable-boundary facts, and extern
 //! marshal facts are all derived once here instead of being rediscovered by
 //! shared codegen.
 
@@ -168,17 +168,20 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
         let callable_boundaries = program
             .callable_entries
             .iter()
-            .map(|entry| {
+            .enumerate()
+            .map(|(index, entry)| {
                 let executable = &program.executables[entry.target];
                 let function = executable.key.activation.function;
                 let identity_fn = *callable_identity_fns
                     .get(&(function, entry.capture_count))
                     .expect("callable identity should be predeclared");
                 NativeCallableBoundary {
+                    id: NativeCallableBoundaryId(index as u32),
                     identity_fn,
                     target_fn: executable_fns[entry.target],
                     target: executable.key.clone(),
                     capture_count: entry.capture_count,
+                    capture_reprs: entry.capture_reprs.clone(),
                     arg_reprs: entry.arg_reprs.clone(),
                     return_ty: entry.return_ty,
                     return_abi: entry.return_abi.clone(),
@@ -656,10 +659,9 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                 }
                 BackendStep::FunctionRef { value, function } => {
                     let identity = self.callable_identity(*function, 0);
-                    let candidates = self.callable_boundary_candidates(*function, 0);
                     let (var, _) = ctx.emit_let(Prim::MakeFnRef(ctx.fresh_callsite(), identity));
-                    if !candidates.is_empty() {
-                        ctx.callable_value_boundaries.insert(var, candidates);
+                    if let Some(boundary) = self.settled_callable_boundary(ctx, *function, &[])? {
+                        ctx.callable_value_boundaries.insert(var, boundary);
                     }
                     bind_backend_value(ctx, executable, env, *value, var);
                 }
@@ -677,15 +679,15 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                     })?;
                     let capture_count = captures.len();
                     let identity = self.callable_identity(*function, capture_count);
-                    let candidates = self.callable_boundary_candidates(*function, capture_count);
+                    let boundary = self.settled_callable_boundary(ctx, *function, &capture_vars)?;
                     let prim = if capture_vars.is_empty() {
                         Prim::MakeFnRef(ctx.fresh_callsite(), identity)
                     } else {
                         Prim::MakeClosure(ctx.fresh_callsite(), identity, capture_vars)
                     };
                     let (var, _) = ctx.emit_let(prim);
-                    if !candidates.is_empty() {
-                        ctx.callable_value_boundaries.insert(var, candidates);
+                    if let Some(boundary) = boundary {
+                        ctx.callable_value_boundaries.insert(var, boundary);
                     }
                     bind_backend_value(ctx, executable, env, *value, var);
                 }
@@ -1904,21 +1906,142 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
             .unwrap_or_else(|| panic!("callable identity for {function:?}/{capture_count}"))
     }
 
-    fn callable_boundary_candidates(
-        &self,
+    fn settled_callable_boundary(
+        &mut self,
+        ctx: &NativeFnCtx,
         function: FunctionId,
-        capture_count: usize,
-    ) -> Vec<NativeCallableBoundaryId> {
-        self.program
-            .callable_entries
+        captures: &[Var],
+    ) -> Result<Option<NativeCallableBoundaryId>, FatalError> {
+        let capture_tys = captures
             .iter()
-            .enumerate()
-            .filter_map(|(index, entry)| {
-                let target = &self.program.executables[entry.target];
-                (target.key.activation.function == function && entry.capture_count == capture_count)
-                    .then_some(self.callable_boundaries[index].id())
+            .map(|capture| {
+                ctx.value_types.get(capture).copied().ok_or_else(|| {
+                    incomplete_native_program(
+                        self.world,
+                        self.root_id,
+                        format!(
+                            "native closure build referenced capture {:?} without a settled type",
+                            capture
+                        ),
+                    )
+                })
             })
-            .collect()
+            .collect::<Result<Vec<_>, _>>()?;
+        select_settled_callable_boundary(
+            self.world.types_mut(),
+            &self.callable_boundaries,
+            function,
+            &capture_tys,
+        )
+        .map_err(|message| incomplete_native_program(self.world, self.root_id, message))
+    }
+}
+
+fn callable_abi_strictly_more_specific(
+    lhs_args: &[AbiValueRepr],
+    lhs_return: &ReturnAbi,
+    rhs_args: &[AbiValueRepr],
+    rhs_return: &ReturnAbi,
+) -> bool {
+    if lhs_args.len() != rhs_args.len() {
+        return false;
+    }
+    let mut saw_stricter_lane = false;
+    for (lhs, rhs) in lhs_args.iter().copied().zip(rhs_args.iter().copied()) {
+        match (lhs, rhs) {
+            (AbiValueRepr::ValueRef, AbiValueRepr::ValueRef) => {}
+            (AbiValueRepr::ValueRef, _) => return false,
+            (_, AbiValueRepr::ValueRef) => saw_stricter_lane = true,
+            _ if lhs == rhs => {}
+            _ => return false,
+        }
+    }
+    match (lhs_return, rhs_return) {
+        (ReturnAbi::Value(AbiValueRepr::ValueRef), ReturnAbi::Value(AbiValueRepr::ValueRef)) => saw_stricter_lane,
+        (ReturnAbi::Value(AbiValueRepr::ValueRef), ReturnAbi::Value(_)) => false,
+        (ReturnAbi::Value(_), ReturnAbi::Value(AbiValueRepr::ValueRef)) => true,
+        (ReturnAbi::Value(lhs), ReturnAbi::Value(rhs)) => lhs == rhs && saw_stricter_lane,
+        (ReturnAbi::TupleFields(lhs), ReturnAbi::TupleFields(rhs)) => lhs == rhs && saw_stricter_lane,
+        (ReturnAbi::Value(_), ReturnAbi::TupleFields(_)) | (ReturnAbi::TupleFields(_), ReturnAbi::Value(_)) => false,
+    }
+}
+
+fn select_settled_callable_boundary(
+    types: &mut crate::compiler2::types::Types,
+    boundaries: &[NativeCallableBoundary],
+    function: FunctionId,
+    capture_tys: &[Ty],
+) -> Result<Option<NativeCallableBoundaryId>, String> {
+    let mut query = Vec::with_capacity(capture_tys.len());
+    for ty in capture_tys {
+        let erased = types.erase_closure_identity(ty);
+        query.push(types.alpha_normalize_vars(&erased));
+    }
+
+    let mut covers = boundaries
+        .iter()
+        .filter(|boundary| {
+            boundary.target.activation.function == function && boundary.capture_count == capture_tys.len()
+        })
+        .filter_map(|boundary| {
+            let capture_inputs = boundary
+                .target
+                .activation
+                .input
+                .iter()
+                .copied()
+                .take(boundary.capture_count)
+                .map(|ty| {
+                    let erased = types.erase_closure_identity(&ty);
+                    types.alpha_normalize_vars(&erased)
+                })
+                .collect::<Vec<_>>();
+            let capture_key = crate::types::key_slots_from_tys(capture_inputs);
+            let mut sigma = HashMap::new();
+            query
+                .iter()
+                .zip(capture_key.iter())
+                .all(|(query_ty, key_slot)| match key_slot {
+                    None => true,
+                    Some(key_ty) => types.key_subsumes_with(query_ty, key_ty, &mut sigma),
+                })
+                .then_some((boundary.id(), capture_key, &boundary.arg_reprs, &boundary.return_abi))
+        })
+        .collect::<Vec<_>>();
+    if covers.is_empty() {
+        return Ok(None);
+    }
+
+    let min_var_count = covers
+        .iter()
+        .map(|(_, capture_key, _, _)| crate::types::key_slot_var_count(types, capture_key))
+        .min()
+        .unwrap_or(0);
+    covers.retain(|(_, capture_key, _, _)| crate::types::key_slot_var_count(types, capture_key) == min_var_count);
+    covers.sort_by_key(|(boundary_id, _, _, _)| boundary_id.as_u32());
+
+    let maximal = covers
+        .iter()
+        .filter(|&(candidate_id, _, candidate_args, candidate_return)| {
+            !covers.iter().any(|(other_id, _, other_args, other_return)| {
+                other_id != candidate_id
+                    && callable_abi_strictly_more_specific(candidate_args, candidate_return, other_args, other_return)
+            })
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    match maximal.as_slice() {
+        [] => Ok(None),
+        [(boundary_id, _, _, _)] => Ok(Some(*boundary_id)),
+        _ => Err(format!(
+            "ambiguous callable boundaries for {:?}/{} captures: candidates {:?}",
+            function,
+            capture_tys.len(),
+            maximal
+                .iter()
+                .map(|(boundary_id, _, _, _)| boundary_id.as_u32())
+                .collect::<Vec<_>>()
+        )),
     }
 }
 
@@ -2157,7 +2280,7 @@ struct NativeFnCtx {
     current_block: BlockId,
     stmt_counts: HashMap<BlockId, usize>,
     value_types: HashMap<Var, Ty>,
-    callable_value_boundaries: HashMap<Var, Vec<NativeCallableBoundaryId>>,
+    callable_value_boundaries: HashMap<Var, NativeCallableBoundaryId>,
     extern_marshals: HashMap<ExternMarshalSite, ExternTy>,
     failure_blocks: HashMap<u32, BlockId>,
     origin: NativeBodyOrigin,

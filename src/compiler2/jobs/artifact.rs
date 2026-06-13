@@ -252,6 +252,7 @@ pub(super) fn derive_emission_ready(world: &mut World<'_>, root_id: RootId) -> R
                     )
                 })?,
                 capture_count: entry.capture_count,
+                capture_reprs: entry.capture_reprs.clone(),
                 arg_reprs: entry.arg_reprs.clone(),
                 return_ty: entry.return_ty,
                 return_abi: entry.return_abi.clone(),
@@ -2211,6 +2212,7 @@ fn resolve_callable_entries_for_type(
             entries.push(CallableEntry {
                 target: target.clone(),
                 capture_count,
+                capture_reprs: target_executable.param_reprs[..capture_count].to_vec(),
                 arg_reprs: target_executable.param_reprs[capture_count..].to_vec(),
                 return_ty: target_executable.return_ty,
                 return_abi: target_executable.return_abi.clone(),

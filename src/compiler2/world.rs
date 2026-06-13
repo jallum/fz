@@ -819,7 +819,7 @@ impl<'a> World<'a> {
             &measurements! {
                 root_id: root.as_u32(),
                 body_count: program.bodies.len(),
-                callable_entry_count: program.callable_boundaries.len(),
+                callable_boundary_count: program.callable_boundaries.len(),
                 fn_count: program.module.fns.len(),
                 changed: changed as u64,
             },

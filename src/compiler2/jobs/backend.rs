@@ -57,6 +57,7 @@ pub(super) fn lower_backend_program(world: &mut World<'_>, root_id: RootId) -> R
         .map(|entry| BackendCallableEntry {
             target: entry.target,
             capture_count: entry.capture_count,
+            capture_reprs: entry.capture_reprs.clone(),
             arg_reprs: entry.arg_reprs.clone(),
             return_ty: entry.return_ty,
             return_abi: entry.return_abi.clone(),
