@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-9i4.4.4"
+  ],
   "created": "2026-06-13T02:06:47Z",
   "description": "Goal: make JIT/AOT closure invocation consume the new callable contract directly. Rewrite closure construction, closure entry harnesses, and direct/opaque closure-call lowering so argument ABI lanes and capture ABI lanes are handled separately, with the machine closure-body signature lowered uniformly as (args..., self, cont). Delete callable-entry selection from capture-type candidate sets and delete native codegen’s mixed capture-prefix ABI slicing. Acceptance: closure_typed_captures, curried_add, and multi_caller_spec_divergent pass on the relevant fz2 paths; telemetry reports boundary id plus direct-vs-opaque dispatch and exact target when known.",
   "id": "fz-9i4.4.3",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Rewrite compiler2 native codegen around callable boundaries and split arg/capture ABI",
   "type": "task",
-  "updated_at": "2026-06-13T02:06:47Z"
+  "updated_at": "2026-06-13T02:07:02Z"
 }
