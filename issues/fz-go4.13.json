@@ -7,9 +7,15 @@
   "id": "fz-go4.13",
   "labels": [],
   "parent": "fz-go4",
+  "comments": [
+    {
+      "text": "Research / handoff anchors for this arc:\n\n- FP2 paper: https://www.microsoft.com/en-us/research/wp-content/uploads/2023/05/fbip.pdf. Use it for the core principle: represent reuse/ownership credits explicitly and lower allocation into in-place update only when the dataflow proves the credit exists.\n- Old-world inspiration, not implementation source of truth: src/ir_lower/cps.rs transports hidden owned-cons captures through continuations; src/ir_lower/cond.rs births captures from pattern/list-head extraction; src/ir_planner/return_context.rs and fn_types.rs show tuple-field return-demand specialization. Import the idea of physical-capability transport, not the planner/CPS sprawl or tail-only assumptions.\n- Compiler2 seams to preserve: src/compiler2/identity.rs keeps ActivationKey semantic; src/fz_ir/mod.rs already erases physical_entry_params from semantic keys; src/compiler2/jobs/native.rs BackendStep::SplitList is capability birth; src/compiler2/native_codegen/prim.rs MakeList/DestListCons are capability consumption.\n- Current observed failure mode: fz2 can run enum_sort semantically, but telemetry/allocation stats show internal over-allocation and heap-closure materialization. Use --log-telemetry with fixtures2/behavior/enum_sort.fz, enum_list_allocations.fz, enum_map_family.fz, and enum_reduce_suspend.fz while developing.\n- Key design constraint: do not put reusable cons cells in semantic facts or ActivationKey. They are process-local physical capabilities. Runtime alias checks remain authoritative, so compiler facts are candidates, not uniqueness proofs.",
+      "timestamp": "2026-06-13T16:29:15Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "Compiler2 physical reuse capabilities: reusable cons cells as ownership facts",
   "type": "epic",
-  "updated_at": "2026-06-13T16:28:49Z"
+  "updated_at": "2026-06-13T16:29:15Z"
 }
