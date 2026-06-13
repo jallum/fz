@@ -4,9 +4,10 @@ A fixture is a small `.fz` program under `fixtures2/behavior/` that proves one
 thing about the language and proves it on every execution path that applies.
 `tests/fixture_matrix.rs` is the harness: it discovers every behavioural source
 file, reads the source-frontmatter block at the top, and runs the file through
-the paths it declares, scoring each run against sibling sidecars. The same file
-also holds a set of static trials (the Elixir oracle, dump budgets, CLIF-shape
-proofs) that don't fit the per-path mould.
+the compiler2 matrix (`run`, `interp`, `build`) unless the filename narrows
+that set. It scores each run against sibling sidecars. The same file also holds
+a set of static trials (the Elixir oracle, dump budgets, CLIF-shape proofs)
+that don't fit the per-path mould.
 
 ## Anatomy
 
@@ -32,16 +33,17 @@ only the keys below:
 
 - `purpose:` — the one-line description (required). Single source of truth for
   the fixture's headline.
-- `paths:` — flow sequence of the paths to run, e.g. `[jit, interp, aot, repl]`
-  (required). Empty `[]` is allowed only with a `defer:` rationale.
 - `kind:` — `run` or `test`. Defaults to `run` when the source defines a `main`,
-  otherwise `test`. Decides which jit subcommand runs (see the matrix).
+  otherwise `test`. Decides which compiler2 front-door subcommand runs (see the
+  matrix).
 - `expect:` — `success` (default), `abort`, or `diagnostic` (the pass/fail
   contract; see below).
 - `diagnostic.code:` — for `expect: diagnostic` fixtures, the telemetry code to
   assert (e.g. `spec/violation`).
-- `defer:` — a rationale, required when `paths:` is empty. The fixture then runs
+- `defer:` — a rationale for whole-fixture deferral. The fixture then runs
   nowhere and surfaces as an ignored trial carrying the rationale.
+- `defer.<path>:` — optional per-path deferral, where `<path>` is `run`,
+  `interp`, or `build`.
 - `oracle:` — relative path to a sibling Elixir twin whose stdout owns
   `expected.txt`.
 - `timeout.<path>_secs:` — per-path wall-clock timeout override.
@@ -53,13 +55,20 @@ Fixtures already live in that comment-frontmatter form:
 ```text
 #---
 # purpose: closure call stays indirect
-# paths: [jit, interp, aot, repl]
 # root: main/0
 # assert.metric.semantic.callsites: 2
 # assert.edge: main/0[] | @66-71 | closure | main/0::lambda[@14-33]/1
 # snapshot.call_edges: call_edges
 #---
 ```
+
+Behavioural routing lives in the filename when a fixture is path-specific.
+Ordinary fixtures run on all three compiler2 paths by default. A prefix before
+the first `-` narrows that set: `j` means `run`, `i` means `interp`, and `a`
+means `build`. Examples:
+
+- `a-resource_dtor.fz` runs only on `build`.
+- `00001_ja-some_fixture.fz` runs on `run` and `build`.
 
 This is raw source metadata, not language syntax. The parser sees ordinary
 comments; fixtures2 metadata readers parse the leading block directly from the
@@ -70,22 +79,22 @@ Optional prose lives immediately below the frontmatter as ordinary `#` comments.
 It is a plain statement of present-tense facts about what the fixture proves.
 Most fixtures are frontmatter-only.
 
-## The four-path matrix
+## The compiler2 matrix
 
-Each declared path becomes its own `cargo test` trial named
+Each applicable path becomes its own `cargo test` trial named
 `matrix::<fixture>::<path>`. `cargo test add1` filters to one fixture;
-`cargo test ::repl` filters to one leg across all fixtures. `run_path` drives
+`cargo test ::build` filters to one leg across all fixtures. `run_path` drives
 each path:
 
 | path     | driver                                                            |
 |----------|-------------------------------------------------------------------|
-| `jit`    | `fz run <fixture.fz>` (or `fz test` when `kind: test`)            |
-| `interp` | `fz interp <fixture.fz>`                                          |
-| `aot`    | `fz build <fixture.fz> -o <tmp>` then run the binary              |
-| `repl`   | `fz repl --script <fixture.fz>`                                   |
+| `run`    | `fz2 run <fixture.fz>` (or `fz2 test` when `kind: test`)          |
+| `interp` | `fz2 interp <fixture.fz>`                                         |
+| `build`  | `fz2 build <fixture.fz> -o <tmp>` then run the binary             |
 
-The `aot` and `repl` legs only run `kind: run` fixtures; a `kind: test` fixture
-is surfaced as `Deferred` on those legs because `fz test` is jit-only.
+The `build` leg only runs `kind: run` fixtures; a `kind: test` fixture is
+surfaced as `Deferred` on that leg because compiler2 does not yet run `test`
+fixtures there.
 
 Each runner captures a `Ran { success, stdout, diagnostics }` with *no* verdict
 applied. `check()` then applies the fixture's `expect:` policy in one place, so
@@ -103,15 +112,15 @@ A fixture flips that contract to pin a *negative* claim:
 
 - `expect: abort` — a run-time abort. The path passes when the process exits
   *nonzero* and its stderr **contains** the `expected.stderr` golden as a
-  substring. A substring (not exact match) keeps per-path prefixes
-  (`fz interp:`, `repl:`) and absolute source paths out of the pin.
+  substring. A substring (not exact match) keeps per-path prefixes and absolute
+  source paths out of the pin.
 - `expect: diagnostic` — a compile-time rejection. Same nonzero-exit
   requirement, but when the fixture declares `diagnostic.code`, the matrix
   reruns the path with telemetry and asserts a `["fz","diag","error"]` event
   carrying that code; rendered stderr is free to change. Without
   `diagnostic.code` it falls back to the `expected.stderr` substring check.
 
-For `aot`, build and run are distinct steps. `expect: success`/`abort` require
+For `build`, compile and run are distinct steps. `expect: success`/`abort` require
 the build to succeed first, then judge the binary's exit. `expect: diagnostic`
 expects the *build itself* to fail, so the build outcome is what `check()` judges
 — there is no binary to run.
@@ -119,10 +128,10 @@ expects the *build itself* to fail, so the build outcome is what `check()` judge
 Exit code 75 (EX_TEMPFAIL) from a declared path marks it not-yet-wired
 (`RunOutcome::Deferred`): the trial reports the reason on stderr and passes. The
 default per-fixture execution timeout is `FIXTURE_COMMAND_TIMEOUT` = 3s and
-covers execution only: jit/interp/repl start the clock when the program signals
-it is ready to run, and the `aot` build is an untimed step before the binary's
-run is timed. A `timeout.<path>_secs` override raises that wall-clock limit for
-one path while keeping it in correctness coverage.
+covers execution only: `run`/`interp` start the clock when the program signals
+it is ready to run, and the `build` compile is an untimed step before the
+binary's run is timed. A `timeout.<path>_secs` override raises that wall-clock
+limit for one path while keeping it in correctness coverage.
 
 ### BLESS
 
@@ -157,16 +166,16 @@ A fixture pins its claim in the most direct medium for what it tests.
    itself is the artifact (how a value prints).
 3. **Memory-floor stats** — `Process.heap_alloc_stats()` + a per-path golden.
    Allocation counts are cross-run and path-variant: native reuses cons cells,
-   interp/repl are direct-IR baselines, and jit equals aot. No single in-program
+   `interp` is the direct-IR baseline, and `run` equals `build`. No single in-program
    assertion expresses a cross-run relationship, so these stay golden. The
    matrix has no cross-leg check — each leg resolves its own golden per-path-first
    (`expected.<path>.txt` else `expected.txt`) and matches that. So where native
-   parity is expected (`enum_sort`, `process_heap_stats`, `quicksort`) jit and aot
-   each ship their own `expected.jit.txt` / `expected.aot.txt`; the two are kept
-   byte-identical so jit == aot, but that equality is a property of the maintained
-   files, not something the harness enforces. When only a handful of counters
-   matter, print or assert those scalars directly rather than goldening the
-   whole stats map.
+   parity is expected (`enum_sort`, `process_heap_stats`, `quicksort`) `run` and
+   `build` each ship their own path-specific golden when needed; equality between
+   those two files is a property of the maintained artifacts, not something the
+   harness enforces.
+   When only a handful of counters matter, print or assert those scalars directly
+   rather than goldening the whole stats map.
 4. **Compiler-shape budget** — `budget.*` frontmatter (see Dump budgets).
 5. **Expect-failure** — `expect: abort` / `expect: diagnostic`. The only medium
    that pins what the language must *refuse*: the program must abort (run-time)
@@ -205,8 +214,6 @@ two independent kinds of intent:
 The shared grammar is intentionally small:
 
 - `purpose:` — one-line reason the contract exists.
-- `paths:` — behavioural matrix paths when the fixture participates in runtime
-  execution checks.
 - `kind:` / `expect:` / `diagnostic.code:` / `defer:` / `oracle:` —
   behavioural matrix policy knobs, using the same meanings as the old
   directory-shaped fixtures.
@@ -224,8 +231,10 @@ The shared grammar is intentionally small:
 The source block is the authority. Optional sidecars exist only for dense
 snapshots that would be noisy inline.
 
-A fixtures2 file participates in the behavioural matrix when it declares matrix
-keys such as `paths:` or `defer:`. It participates in the compiler-contract
+A fixtures2 file participates in the behavioural matrix when it lives under
+`fixtures2/behavior/`; frontmatter then contributes policy (`defer:`,
+`expect:`, budgets, timeouts, etc.) and the filename may narrow the default
+route set. It participates in the compiler-contract
 harness when it declares compiler keys such as `root:` or `assert.metric.*`.
 One file may do either or both.
 

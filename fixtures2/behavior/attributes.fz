@@ -1,6 +1,5 @@
 #---
 # purpose: "@moduledoc / @doc attributes parse and the module still executes"
-# paths: [fz2-run, fz2-interp, fz2-build]
 #---
 defmodule Greeter do
   @moduledoc "Hand-rolled greeter for the v1 demo."

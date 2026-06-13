@@ -1,6 +1,5 @@
 #---
 # purpose: "fz-ul4.29.5 — spawn-with-captures lift (was forbidden v1)"
-# paths: [fz2-run, fz2-interp, fz2-build]
 #---
 fn parent(tag) do
   spawn(fn () -> send(1, tag) end)

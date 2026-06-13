@@ -1,6 +1,5 @@
 #---
 # purpose: "no-parens calls (double 21; sum3 1, 2, 3) parse and run; output matches Elixir"
-# paths: [fz2-run, fz2-interp, fz2-build]
 # oracle: oracle.exs
 #---
 #

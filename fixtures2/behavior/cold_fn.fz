@@ -1,6 +1,5 @@
 #---
 # purpose: "minimal call site — one fn definition, one call, no scaffolding"
-# paths: [fz2-run, fz2-interp, fz2-build]
 # budget.codegen.functions: 1
 # budget.codegen.instructions: 7
 # budget.specs.count: 3

@@ -1,6 +1,5 @@
 #---
 # purpose: "Map implements Enumerable reduce/count/member?/slice callbacks"
-# paths: [fz2-run, fz2-interp, fz2-build]
 # oracle: oracle.exs
 #---
 #

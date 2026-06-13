@@ -1,6 +1,5 @@
 #---
 # purpose: "receive matcher supports bitstring patterns without AST fallback"
-# paths: [fz2-run, fz2-interp, fz2-build]
 # budget.codegen.functions: 11
 # budget.codegen.instructions: 229
 # budget.specs.count: 10

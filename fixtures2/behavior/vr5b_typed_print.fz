@@ -1,6 +1,5 @@
 #---
 # purpose: VR.5b — dbg boxes across the any extern ABI and narrows by spec on return
-# paths: [fz2-run, fz2-interp, fz2-build]
 # budget.codegen.functions: 4
 # budget.codegen.instructions: 31
 # budget.specs.count: 4

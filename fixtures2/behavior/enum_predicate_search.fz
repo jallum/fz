@@ -1,8 +1,6 @@
 #---
 # purpose: "Enum predicate and search functions match Elixir and halt as soon as the answer is known"
-# paths: [fz2-run, fz2-interp, fz2-build]
 # timeout.interp_secs: 15
-# timeout.repl_secs: 15
 # oracle: oracle.exs
 #---
 #

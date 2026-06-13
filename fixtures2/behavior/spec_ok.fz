@@ -1,6 +1,5 @@
 #---
 # purpose: "fz-ul4.31.6 — declared @spec matches inferred behavior;"
-# paths: [fz2-run, fz2-interp, fz2-build]
 # budget.codegen.functions: 3
 # budget.codegen.instructions: 25
 # budget.specs.count: 3
@@ -20,7 +19,7 @@
 #
 # ## Notes
 #
-#          runs identically on interp, jit, aot
+#          runs identically on run, interp, build
 defmodule M do
   @spec add1(integer) :: integer
   fn add1(n), do: n + 1

@@ -1,6 +1,5 @@
 #---
 # purpose: "three-level currying — nested lambdas each capturing outer scope; exercises multi-depth closure allocation"
-# paths: [fz2-run, fz2-interp, fz2-build]
 # budget.codegen.functions: 11
 # budget.codegen.instructions: 166
 # budget.specs.count: 11

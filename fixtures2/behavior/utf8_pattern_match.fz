@@ -1,6 +1,5 @@
 #---
 # purpose: "fz-axu.17 (P2) — pattern matching on utf8 string literals"
-# paths: [fz2-run, fz2-interp, fz2-build]
 #---
 fn greet("hi"), do: :hello
 fn greet("bye"), do: :goodbye

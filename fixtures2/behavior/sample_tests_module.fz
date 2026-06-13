@@ -1,10 +1,9 @@
 #---
 # purpose: "`test()` inside a defmodule body"
-# paths: [fz2-run, fz2-interp, fz2-build]
 # kind: test
-# defer.fz2-run: compiler2 does not implement `test` fixtures yet
-# defer.fz2-interp: compiler2 does not implement `test` fixtures yet
-# defer.fz2-build: compiler2 does not implement `test` fixtures yet
+# defer.run: compiler2 does not implement `test` fixtures yet
+# defer.interp: compiler2 does not implement `test` fixtures yet
+# defer.build: compiler2 does not implement `test` fixtures yet
 #---
 defmodule MathTest do
   fn helper(x), do: x * 2

@@ -1,6 +1,5 @@
 #---
 # purpose: "multi-clause dispatch with a guard clause (`when n > 0`), plus recursive `fact`"
-# paths: [fz2-run, fz2-interp, fz2-build]
 # budget.codegen.functions: 9
 # budget.codegen.instructions: 126
 # budget.specs.count: 13

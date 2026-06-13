@@ -1,6 +1,5 @@
 #---
 # purpose: "receive with utf8 binary literals — locks SwitchKind::Binary three-path parity"
-# paths: [fz2-run, fz2-interp, fz2-build]
 # budget.codegen.functions: 29
 # budget.codegen.instructions: 547
 # budget.specs.count: 26

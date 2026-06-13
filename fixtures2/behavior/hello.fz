@@ -1,6 +1,5 @@
 #---
 # purpose: "dbg each scalar shape — int, atom, bool, nil"
-# paths: [fz2-run, fz2-interp, fz2-build]
 # budget.codegen.functions: 1
 # budget.codegen.instructions: 18
 # budget.specs.count: 1

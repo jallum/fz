@@ -1,6 +1,5 @@
 #---
 # purpose: "mutual recursion — is_even/is_odd call each other; exercises cross-function recursive dispatch"
-# paths: [fz2-run, fz2-interp, fz2-build]
 #---
 fn is_even(0), do: true
 fn is_even(n), do: is_odd(n - 1)

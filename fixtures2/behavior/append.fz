@@ -1,6 +1,5 @@
 #---
 # purpose: "source-level append allocation baseline proves ordinary list append needs no append BIF"
-# paths: [fz2-run, fz2-interp, fz2-build]
 #---
 #
 # # append

@@ -1,9 +1,7 @@
 #---
 # purpose: "Enum take/drop/split functions match Elixir, including negative counts and predicate stop points"
-# paths: [fz2-run, fz2-interp, fz2-build]
 # oracle: oracle.exs
 # timeout.interp_secs: 15
-# timeout.repl_secs: 15
 #---
 #
 # Exercises the `fz-g58.26` Enum take/drop/split layer:

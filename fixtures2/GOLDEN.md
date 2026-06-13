@@ -23,9 +23,9 @@ A fixture proves its claim through one (occasionally two) of these:
 
 3. **Memory-floor stats** — `Process.heap_alloc_stats()` + (per-path) golden.
    Pins allocation counts/bytes. These are intrinsically cross-run and
-   path-variant (native reuses cons cells; interp/repl are direct-IR baselines;
-   JIT must equal AOT), so they stay harness-level — no single in-program
-   assertion can express "JIT equals AOT". Do not dump the whole map by
+   path-variant (`build` reuses cons cells; `interp` is the direct-IR baseline;
+   `run` must equal `build`), so they stay harness-level — no single
+   in-program assertion can express "run equals build". Do not dump the whole map by
    default: if only a few counters matter, print or assert those scalars and
    keep the sidecar as small as the actual claim.
 
@@ -132,7 +132,7 @@ the `:error` tag are visible in one golden).
 (`quicksort` keeps its budget).
 
 **Keep golden — observed side-effect ordering:** `resource_lifecycle`,
-`file_resource_lifecycle`, `file_handle`, `resource_aot_dtor` (the dtor firing is
+`file_resource_lifecycle`, `file_handle`, `a-resource_aot_dtor` (the dtor firing is
 observed through printed output order).
 
 

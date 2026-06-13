@@ -1,6 +1,5 @@
 #---
 # purpose: "trailing/leading keyword lists in no-parens calls parse into one list arg; output matches Elixir"
-# paths: [fz2-run, fz2-interp, fz2-build]
 # oracle: oracle.exs
 #---
 #

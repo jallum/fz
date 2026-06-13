@@ -1,6 +1,5 @@
 #---
 # purpose: VR.3.4 / VR.4.3 — typed captures survive cont handoffs via native chain
-# paths: [fz2-run, fz2-interp, fz2-build]
 # budget.codegen.functions: 2
 # budget.codegen.instructions: 10
 # budget.specs.count: 4

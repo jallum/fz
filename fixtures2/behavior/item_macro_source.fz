@@ -1,6 +1,5 @@
 #---
 # purpose: "source-order item macro returns compiler-shaped quoted function source"
-# paths: [fz2-run, fz2-interp, fz2-build]
 # kind: run
 #---
 #

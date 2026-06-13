@@ -1,6 +1,5 @@
 #---
 # purpose: "Process.heap_alloc_stats/0 exposes deterministic current-process heap allocation counters as ordinary runtime output"
-# paths: [fz2-run, fz2-interp, fz2-build]
 #---
 #
 # # process_heap_stats

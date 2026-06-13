@@ -1,6 +1,5 @@
 #---
 # purpose: "VR.5a — int-int / atom-atom equality lowers to a single icmp, no fz_value_eq dispatch"
-# paths: [fz2-run, fz2-interp, fz2-build]
 # budget.codegen.functions: 1
 # budget.codegen.instructions: 26
 # budget.specs.count: 1

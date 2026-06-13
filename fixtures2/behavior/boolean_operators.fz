@@ -1,6 +1,5 @@
 #---
 # purpose: "boolean operators are Elixir's `and` / `or` / `not` (no C-style `&&` / `||` / `!`) — truth table, precedence, and guard use"
-# paths: [fz2-run, fz2-interp, fz2-build]
 #---
 #
 # `and` binds tighter than `or`; `not` is the tightest unary prefix. The same

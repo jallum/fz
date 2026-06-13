@@ -1,6 +1,5 @@
 #---
 # purpose: "fz-uwq.4 regression — divergent dispatch across two caller specs of the same higher-order fn"
-# paths: [fz2-run, fz2-interp, fz2-build]
 # budget.codegen.functions: 6
 # budget.codegen.instructions: 67
 # budget.specs.count: 6

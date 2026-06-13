@@ -1,6 +1,5 @@
 #---
-# purpose: "fz-bsx.3 — nested structural == of a heap binary vs a utf8 string agrees on all paths (jit/aot match interp/repl)"
-# paths: [fz2-run, fz2-interp, fz2-build]
+# purpose: "fz-bsx.3 — nested structural == of a heap binary vs a utf8 string agrees on all paths (run/build match interp)"
 # budget.codegen.functions: 7
 # budget.codegen.instructions: 154
 # budget.specs.count: 7
@@ -19,7 +18,7 @@
 # Regression guard for fz-bsx: `Utf8.from_bytes(<<104,105>>) == {:ok, "hi"}`
 # compares a heap binary nested in a tuple against a utf8 string literal. The
 # brand is type-system metadata; runtime equality is bytewise, so every path
-# must agree (`true`). Before fz-bsx, native (jit/aot) folded this to `false`.
+# must agree (`true`). Before fz-bsx, native `run`/`build` folded this to `false`.
 import Utf8
 
 fn main() do

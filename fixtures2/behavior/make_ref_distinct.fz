@@ -1,6 +1,5 @@
 #---
 # purpose: "fz-ht5 — make_ref() returns a distinct opaque ref on every call"
-# paths: [fz2-run, fz2-interp, fz2-build]
 # budget.codegen.functions: 8
 # budget.codegen.instructions: 71
 # budget.specs.count: 8

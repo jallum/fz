@@ -1,6 +1,5 @@
 #---
 # purpose: "source-level tuple-tree traversal allocation baseline"
-# paths: [fz2-run, fz2-interp, fz2-build]
 #---
 #
 # # tree

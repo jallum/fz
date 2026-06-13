@@ -1,6 +1,5 @@
 #---
 # purpose: "VR.4.2 — leaf-bodied helper goes through the native ABI"
-# paths: [fz2-run, fz2-interp, fz2-build]
 # budget.codegen.functions: 1
 # budget.codegen.instructions: 7
 # budget.specs.count: 3
@@ -39,7 +38,7 @@
 # allocate the continuation frame (cont still rides uniform ABI in
 # .6.2.x; native cont invocation is .6.3) and then writes the tagged
 # native return into cont slot 1 before handing the cont frame ptr to
-# the trampoline. The matrix runs jit / interp / aot to prove the
+# the trampoline. The matrix runs run / interp / build to prove the
 # behavior matches across the three paths.
 fn square(x) do
   x * x

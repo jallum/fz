@@ -1,6 +1,5 @@
 #---
 # purpose: "selective receive with consecutive same-arity tuple clauses"
-# paths: [fz2-run, fz2-interp, fz2-build]
 # budget.codegen.functions: 18
 # budget.codegen.instructions: 403
 # budget.specs.count: 16

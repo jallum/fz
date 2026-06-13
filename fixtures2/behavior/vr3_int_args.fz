@@ -1,6 +1,5 @@
 #---
 # purpose: VR.3.3 / VR.4.2.3 — typed int args flow through native ABI
-# paths: [fz2-run, fz2-interp, fz2-build]
 # budget.codegen.functions: 1
 # budget.codegen.instructions: 7
 # budget.specs.count: 3

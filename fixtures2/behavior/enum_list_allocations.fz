@@ -1,6 +1,5 @@
 #---
 # purpose: "runtime Enum list functions preserve protocol-first native list-cons and continuation allocation floors"
-# paths: [fz2-run, fz2-interp, fz2-build]
 #---
 #
 # # enum_list_allocations

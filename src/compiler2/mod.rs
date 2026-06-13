@@ -63,7 +63,8 @@ pub use facts::{FactChange, FactReadiness, FactReplace, FactTable, FactUse};
 pub use fixture_metadata::fixture_frontmatter_prefix_bytes;
 pub use fixture_metadata::{
     BudgetAssertion, EdgeAssertion, FixtureCompilerMetadata, FixtureExpect, FixtureKind, FixtureMatrixMetadata,
-    FixtureMetadata, FixtureMetadataError, FixtureRoot, MetricAssertion, PathTimeout, parse_fixture_metadata,
+    FixtureMatrixPath, FixtureMetadata, FixtureMetadataError, FixtureRoot, MetricAssertion, PathTimeout,
+    fixture_matrix_paths_from_filename, parse_fixture_metadata,
 };
 pub use frontdoor::{FrontDoorError, parse_quoted_program};
 pub use identity::{

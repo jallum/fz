@@ -1,6 +1,5 @@
 #---
 # purpose: "a wrong @spec is rejected with a spec/violation diagnostic on every path"
-# paths: [fz2-run, fz2-interp, fz2-build]
 # expect: diagnostic
 # diagnostic.code: spec/violation
 #---

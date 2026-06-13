@@ -1,6 +1,5 @@
 #---
 # purpose: "Enumerable protocol dispatch covers List, Range, and Map receivers"
-# paths: [fz2-run, fz2-interp, fz2-build]
 # oracle: oracle.exs
 #---
 #

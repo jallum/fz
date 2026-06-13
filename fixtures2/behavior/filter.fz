@@ -1,6 +1,5 @@
 #---
 # purpose: "source-level filter allocation baseline for guarded recursive list traversal"
-# paths: [fz2-run, fz2-interp, fz2-build]
 #---
 #
 # # filter

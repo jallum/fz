@@ -1,6 +1,5 @@
 #---
 # purpose: "selective import — `import Math, only: [add: 2]`"
-# paths: [fz2-run, fz2-interp, fz2-build]
 #---
 defmodule Math do
   fn add(x, y), do: x + y

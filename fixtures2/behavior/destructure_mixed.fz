@@ -1,6 +1,5 @@
 #---
 # purpose: "nested destructure mixing tuple arity and list cons — `{[h | t], y} = make()` across all four legs"
-# paths: [fz2-run, fz2-interp, fz2-build]
 #---
 fn make(), do: {[1, 2, 3], 99}
 

@@ -1,6 +1,5 @@
 #---
 # purpose: "a failed assert aborts with the caller's message on every path (expect-failure medium)"
-# paths: [fz2-run, fz2-interp, fz2-build]
 # expect: abort
 #---
 #

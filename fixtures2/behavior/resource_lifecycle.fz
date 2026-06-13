@@ -1,6 +1,5 @@
 #---
 # purpose: "fz-swt.12 — resource lifecycle (make_resource + .value + dtor) is observably identical across interp, JIT, AOT"
-# paths: [fz2-run, fz2-interp, fz2-build]
 # budget.codegen.functions: 9
 # budget.codegen.instructions: 129
 # budget.specs.count: 11
@@ -48,7 +47,7 @@
 #   dtor:10
 #
 # The `before`/`dtor:*` ordering is the same observable contract pinned
-# by the per-leg fixtures (`resource_aot_dtor`, the interp lifecycle
+# by the per-leg fixtures (`a-resource_aot_dtor`, the interp lifecycle
 # tests in `ir_interp.rs::resource_bif_tests`, and the JIT lifecycle
 # tests in `ir_codegen::tests::resource_jit_tests`). This fixture
 # proves all three paths converge on identical output for the same

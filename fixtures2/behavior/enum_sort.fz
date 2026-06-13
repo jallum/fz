@@ -1,6 +1,5 @@
 #---
 # purpose: "runtime-library Enum.sort (merge sort) allocation contract across four paths; pins JIT/AOT parity and default-sorter closure erasure"
-# paths: [fz2-run, fz2-interp, fz2-build]
 #---
 #
 # # enum_sort

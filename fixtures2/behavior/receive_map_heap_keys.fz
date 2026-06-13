@@ -1,6 +1,5 @@
 #---
 # purpose: "receive matcher supports heap map keys without allocating inside matcher probes"
-# paths: [fz2-run, fz2-interp, fz2-build]
 # budget.codegen.functions: 26
 # budget.codegen.instructions: 574
 # budget.specs.count: 23

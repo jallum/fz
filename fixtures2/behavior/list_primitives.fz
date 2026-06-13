@@ -1,6 +1,5 @@
 #---
 # purpose: "list primitives from scratch — length / reverse / map / foldl exercising cons-pattern dispatch and first-class fns"
-# paths: [fz2-run, fz2-interp, fz2-build]
 #---
 fn length([]), do: 0
 fn length([_ | t]), do: 1 + length(t)

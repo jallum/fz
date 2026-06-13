@@ -1,6 +1,5 @@
 #---
 # purpose: "spawn + send + receive — parent blocks on receive, prints the message"
-# paths: [fz2-run, fz2-interp, fz2-build]
 #---
 fn child(), do: send(1, 42)
 

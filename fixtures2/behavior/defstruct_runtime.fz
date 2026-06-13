@@ -1,6 +1,5 @@
 #---
 # purpose: "source defstruct construction and field access works for named structs"
-# paths: [fz2-run, fz2-interp, fz2-build]
 #---
 #
 # # defstruct runtime

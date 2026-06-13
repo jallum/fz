@@ -1,6 +1,5 @@
 #---
 # purpose: "fz-jg5.12 (RED.9) — @spec is a reduction boundary; fact has 1 body, not 0"
-# paths: [fz2-run, fz2-interp, fz2-build]
 # budget.codegen.functions: 4
 # budget.codegen.instructions: 45
 # budget.specs.count: 4
@@ -27,7 +26,7 @@
 #
 # ## Notes
 #
-#          runs identically on interp, jit, aot
+#          runs identically on run, interp, build
 @spec twice(integer) :: integer
 fn twice(n) do
   x = n + n

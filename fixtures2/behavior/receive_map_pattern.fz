@@ -1,6 +1,5 @@
 #---
 # purpose: "receive with map pattern (atom key) — locks PerRow Map three-path parity"
-# paths: [fz2-run, fz2-interp, fz2-build]
 # budget.codegen.functions: 26
 # budget.codegen.instructions: 502
 # budget.specs.count: 23

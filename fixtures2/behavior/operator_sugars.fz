@@ -1,6 +1,5 @@
 #---
 # purpose: "operator desugaring rewrites ++, --, <>, .., and ..// to runtime-library calls"
-# paths: [fz2-run, fz2-interp, fz2-build]
 # oracle: oracle.exs
 #---
 #

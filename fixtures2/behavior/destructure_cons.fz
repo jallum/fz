@@ -1,6 +1,5 @@
 #---
 # purpose: "refutable list-cons destructure on a statically-non-empty list — success-path parity for `[h | t] = xs`"
-# paths: [fz2-run, fz2-interp, fz2-build]
 #---
 fn main() do
   [h | t] = [10, 20, 30]

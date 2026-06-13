@@ -1,6 +1,5 @@
 #---
 # purpose: "fz-swt.13 / fz-4mk — File module wraps an fd in a resource; the dtor closes the fd at task-exit drain (interp/JIT/AOT parity)."
-# paths: [fz2-run, fz2-interp, fz2-build]
 # budget.codegen.functions: 6
 # budget.codegen.instructions: 65
 # budget.specs.count: 6
@@ -55,7 +54,7 @@
 #      The first two lines come from `main`. The `:dtor_closed` line
 #      comes from the scheduler's pending-dtor drain at task exit, after
 #      `main` returns — matching the ordering contract pinned by
-#      `fixtures/resource_aot_dtor` and `fixtures/resource_lifecycle`.
+#      `fixtures/a-resource_aot_dtor` and `fixtures/resource_lifecycle`.
 #
 # ## Verification mechanics
 #

@@ -1,6 +1,5 @@
 #---
 # purpose: "total case and with clauses return tuple-bound values and explicit fallbacks"
-# paths: [fz2-run, fz2-interp, fz2-build]
 #---
 #
 # # case_with_total

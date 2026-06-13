@@ -1,6 +1,5 @@
 #---
 # purpose: "irrefutable tuple destructure in a let-style bind — first fixture to exercise `{a, b} = expr` across all four legs"
-# paths: [fz2-run, fz2-interp, fz2-build]
 #---
 fn pair(), do: {1, 2}
 

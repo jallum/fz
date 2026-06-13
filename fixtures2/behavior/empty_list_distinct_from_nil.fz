@@ -1,6 +1,5 @@
 #---
 # purpose: "pin fz-s9y semantics — `nil` and `[]` print as distinct strings"
-# paths: [fz2-run, fz2-interp, fz2-build]
 # budget.codegen.functions: 1
 # budget.codegen.instructions: 15
 # budget.specs.count: 1

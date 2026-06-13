@@ -1,6 +1,5 @@
 #---
 # purpose: "VR.2 — float-literal arithmetic + comparisons emit native fadd/fcmp, no dispatch"
-# paths: [fz2-run, fz2-interp, fz2-build]
 # budget.codegen.functions: 1
 # budget.codegen.instructions: 23
 # budget.specs.count: 1

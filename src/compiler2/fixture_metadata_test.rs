@@ -1,7 +1,9 @@
 use super::fixture_metadata::{
     BudgetAssertion, EdgeAssertion, FixtureCompilerMetadata, FixtureExpect, FixtureKind, FixtureMatrixMetadata,
-    FixtureMetadata, FixtureRoot, MetricAssertion, PathDeferral, PathTimeout, parse_fixture_metadata,
+    FixtureMatrixPath, FixtureMetadata, FixtureRoot, MetricAssertion, PathDeferral, PathTimeout,
+    fixture_matrix_paths_from_filename, parse_fixture_metadata,
 };
+use std::path::Path;
 
 #[test]
 fn fixture_metadata_parser_ignores_sources_without_frontmatter() {
@@ -17,14 +19,13 @@ fn fixture_metadata_parser_reads_matrix_and_compiler_keys_together() {
     let parsed = parse_fixture_metadata(
         r#"#---
 # purpose: closure call stays indirect
-# paths: [fz2-run, fz2-interp, fz2-build]
 # kind: test
 # expect: diagnostic
 # diagnostic.code: spec/violation
 # defer: waiting on compiler2
-# defer.fz2-build: native tail delivery still red
+# defer.build: native tail delivery still red
 # oracle: closure.oracle.exs
-# timeout.fz2-interp_secs: 15
+# timeout.interp_secs: 15
 # budget.codegen.instructions: 17
 # root: main/0
 # assert.metric.semantic.callsites: 2
@@ -41,17 +42,12 @@ fn main(), do: 42
         Some(FixtureMetadata {
             purpose: Some("closure call stays indirect".to_string()),
             matrix: FixtureMatrixMetadata {
-                paths: Some(vec![
-                    "fz2-run".to_string(),
-                    "fz2-interp".to_string(),
-                    "fz2-build".to_string(),
-                ]),
                 kind: Some(FixtureKind::Test),
                 expect: Some(FixtureExpect::Diagnostic),
                 diagnostic_code: Some("spec/violation".to_string()),
                 defer: Some("waiting on compiler2".to_string()),
                 path_deferrals: vec![PathDeferral {
-                    path: "fz2-build".to_string(),
+                    path: FixtureMatrixPath::Build,
                     rationale: "native tail delivery still red".to_string(),
                 }],
                 oracle: Some("closure.oracle.exs".to_string()),
@@ -60,7 +56,7 @@ fn main(), do: 42
                     expected: 17,
                 }],
                 path_timeouts: vec![PathTimeout {
-                    path: "fz2-interp".to_string(),
+                    path: FixtureMatrixPath::Interp,
                     seconds: 15,
                 }],
             },
@@ -91,7 +87,7 @@ fn fixture_metadata_participation_rules_are_explicit() {
     let matrix_only = parse_fixture_metadata(
         r#"#---
 # purpose: runtime behaviour
-# paths: [fz2-run, fz2-interp]
+# expect: success
 #---
 fn main(), do: 42
 "#,
@@ -100,7 +96,7 @@ fn main(), do: 42
     .expect("metadata should exist");
     assert!(
         matrix_only.participates_in_matrix(),
-        "paths make the fixture a behavioural matrix participant"
+        "matrix policy keys make the fixture a behavioural matrix participant"
     );
     assert!(
         !matrix_only.participates_in_compiler_contracts(),
@@ -160,18 +156,6 @@ fn fixture_metadata_parser_rejects_unknown_and_duplicate_keys() {
 fn fixture_metadata_parser_requires_well_formed_values() {
     let err = parse_fixture_metadata(
         r#"#---
-# paths: jit, interp
-#---
-"#,
-    )
-    .expect_err("paths must be flow syntax");
-    assert!(
-        err.to_string().contains("[...]"),
-        "paths shape should be explicit: {err}"
-    );
-
-    let err = parse_fixture_metadata(
-        r#"#---
 # timeout.interp: 15
 #---
 "#,
@@ -184,6 +168,18 @@ fn fixture_metadata_parser_requires_well_formed_values() {
 
     let err = parse_fixture_metadata(
         r#"#---
+# timeout.repl_secs: 15
+#---
+"#,
+    )
+    .expect_err("unsupported matrix paths should fail");
+    assert!(
+        err.to_string().contains("run`, `interp`, or `build"),
+        "matrix path ids should stay compiler2-only: {err}",
+    );
+
+    let err = parse_fixture_metadata(
+        r#"#---
 # root: main
 #---
 "#,
@@ -192,5 +188,49 @@ fn fixture_metadata_parser_requires_well_formed_values() {
     assert!(
         err.to_string().contains("name/arity"),
         "root parsing should point authors at the exact required shape: {err}",
+    );
+}
+
+#[test]
+fn fixture_metadata_filename_routes_are_optional_and_normalized() {
+    let parsed = fixture_matrix_paths_from_filename(Path::new("fixtures2/behavior/matrix_smoke.fz"))
+        .expect("plain fixture stem should parse");
+    assert_eq!(parsed, None, "ordinary stems use the behavioural matrix default");
+
+    let parsed = fixture_matrix_paths_from_filename(Path::new("fixtures2/behavior/ija-matrix_smoke.fz"))
+        .expect("route-prefixed stem should parse");
+    assert_eq!(
+        parsed,
+        Some(vec![
+            FixtureMatrixPath::Run,
+            FixtureMatrixPath::Interp,
+            FixtureMatrixPath::Build,
+        ]),
+        "filename route codes normalize to run/interp/build order",
+    );
+
+    let parsed = fixture_matrix_paths_from_filename(Path::new("fixtures2/00001_ja-some_fixture.fz"))
+        .expect("numbered fixtures may carry route prefixes after the ordinal");
+    assert_eq!(
+        parsed,
+        Some(vec![FixtureMatrixPath::Run, FixtureMatrixPath::Build]),
+        "numbered fixture stems should discover the same route set",
+    );
+}
+
+#[test]
+fn fixture_metadata_filename_routes_reject_duplicate_or_unknown_codes() {
+    let err = fixture_matrix_paths_from_filename(Path::new("fixtures2/behavior/iia-bad.fz"))
+        .expect_err("duplicate route codes should fail");
+    assert!(
+        err.to_string().contains("repeats route code"),
+        "duplicate filename routes should fail loudly: {err}",
+    );
+
+    let err = fixture_matrix_paths_from_filename(Path::new("fixtures2/behavior/ix-bad.fz"))
+        .expect_err("unknown route codes should fail");
+    assert!(
+        err.to_string().contains("unknown route code"),
+        "filename route grammar should stay explicit: {err}",
     );
 }

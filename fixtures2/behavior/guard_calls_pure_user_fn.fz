@@ -1,6 +1,5 @@
 #---
 # purpose: "case guards call pure user fns — locks X1A β-reduction three-path parity"
-# paths: [fz2-run, fz2-interp, fz2-build]
 #---
 fn is_pos(n) do n > 0 end
 fn double(x) do x * 2 end

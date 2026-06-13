@@ -1,6 +1,5 @@
 #---
 # purpose: "__info__/1 reflection — a synthesized module fn reports functions, macros, and the module name on all four paths"
-# paths: [fz2-run, fz2-interp, fz2-build]
 #---
 defmodule Shapes do
   fn area(r), do: r * r

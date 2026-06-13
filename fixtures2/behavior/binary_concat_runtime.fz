@@ -1,6 +1,5 @@
 #---
 # purpose: "runtime fz_binary_concat joins byte-aligned binaries across inline and ProcBin storage"
-# paths: [fz2-run, fz2-interp, fz2-build]
 # oracle: oracle.exs
 #---
 #

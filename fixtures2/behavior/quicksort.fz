@@ -1,6 +1,5 @@
 #---
 # purpose: "closing fixture of the destructure-up-through-quicksort arc — `{lo, hi} = partition(...)` on the hot path of a recursive sort"
-# paths: [fz2-run, fz2-interp, fz2-build]
 # budget.codegen.functions: 19
 # budget.codegen.instructions: 475
 # budget.specs.count: 19

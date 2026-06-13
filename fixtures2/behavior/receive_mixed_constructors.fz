@@ -1,6 +1,5 @@
 #---
 # purpose: "selective receive whose clauses mix top-level constructors (atom + tuple + wildcard)"
-# paths: [fz2-run, fz2-interp, fz2-build]
 # budget.codegen.functions: 11
 # budget.codegen.instructions: 149
 # budget.specs.count: 10

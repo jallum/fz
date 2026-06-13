@@ -1,6 +1,5 @@
 #---
 # purpose: "VR.1 — int-literal arithmetic elides the tag-check fast/slow path"
-# paths: [fz2-run, fz2-interp, fz2-build]
 # budget.codegen.functions: 1
 # budget.codegen.instructions: 20
 # budget.specs.count: 1

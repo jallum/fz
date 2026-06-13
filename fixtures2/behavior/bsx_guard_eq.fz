@@ -1,6 +1,5 @@
 #---
 # purpose: "fz-bsx.4 — a guard comparison (when s == \"hi\") on a utf8 binding is brand-blind on all paths"
-# paths: [fz2-run, fz2-interp, fz2-build]
 # budget.codegen.functions: 11
 # budget.codegen.instructions: 137
 # budget.specs.count: 11

@@ -1,6 +1,5 @@
 #---
 # purpose: "defstruct-backed Range values print Elixir-style range literals"
-# paths: [fz2-run, fz2-interp, fz2-build]
 # oracle: oracle.exs
 #---
 #

@@ -1,6 +1,5 @@
 #---
 # purpose: "tiny module with a single helper and a main — historical interp-tier-0 smoke test"
-# paths: [fz2-run, fz2-interp, fz2-build]
 # budget.codegen.functions: 1
 # budget.codegen.instructions: 7
 # budget.specs.count: 3

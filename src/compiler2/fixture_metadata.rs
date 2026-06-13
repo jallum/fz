@@ -5,7 +5,6 @@
 //! ```text
 //! #---
 //! # purpose: closure call stays indirect
-//! # paths: [jit, interp, aot, repl]
 //! # root: main/0
 //! # assert.metric.semantic.callsites: 2
 //! # assert.edge: main/0[] | @66-71 | closure | main/0::lambda[@14-33]/1
@@ -18,6 +17,7 @@
 //! for behavioural matrix metadata and compiler-shape contracts.
 
 use std::fmt;
+use std::path::Path;
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct FixtureMetadata {
@@ -28,8 +28,7 @@ pub struct FixtureMetadata {
 
 impl FixtureMetadata {
     pub fn participates_in_matrix(&self) -> bool {
-        self.matrix.paths.is_some()
-            || self.matrix.kind.is_some()
+        self.matrix.kind.is_some()
             || self.matrix.expect.is_some()
             || self.matrix.diagnostic_code.is_some()
             || self.matrix.defer.is_some()
@@ -49,7 +48,6 @@ impl FixtureMetadata {
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct FixtureMatrixMetadata {
-    pub paths: Option<Vec<String>>,
     pub kind: Option<FixtureKind>,
     pub expect: Option<FixtureExpect>,
     pub diagnostic_code: Option<String>,
@@ -79,15 +77,64 @@ pub struct BudgetAssertion {
     pub expected: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum FixtureMatrixPath {
+    Run,
+    Interp,
+    Build,
+}
+
+impl FixtureMatrixPath {
+    pub const ALL: [Self; 3] = [Self::Run, Self::Interp, Self::Build];
+
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Run => "run",
+            Self::Interp => "interp",
+            Self::Build => "build",
+        }
+    }
+
+    fn from_frontmatter_id(value: &str, line_no: usize, key: &str) -> Result<Self, FixtureMetadataError> {
+        match value {
+            "run" => Ok(Self::Run),
+            "interp" => Ok(Self::Interp),
+            "build" => Ok(Self::Build),
+            _ => Err(FixtureMetadataError::new(
+                line_no,
+                format!("`{key}` must name `run`, `interp`, or `build`, got `{value}`"),
+            )),
+        }
+    }
+
+    fn from_filename_char(value: char, line_no: usize, stem: &str) -> Result<Self, FixtureMetadataError> {
+        match value {
+            'j' => Ok(Self::Run),
+            'i' => Ok(Self::Interp),
+            'a' => Ok(Self::Build),
+            _ => Err(FixtureMetadataError::new(
+                line_no,
+                format!("fixture filename `{stem}` uses unknown route code `{value}`; expected only `i`, `j`, or `a`"),
+            )),
+        }
+    }
+}
+
+impl fmt::Display for FixtureMatrixPath {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.id())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PathTimeout {
-    pub path: String,
+    pub path: FixtureMatrixPath,
     pub seconds: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PathDeferral {
-    pub path: String,
+    pub path: FixtureMatrixPath,
     pub rationale: String,
 }
 
@@ -180,14 +227,6 @@ pub fn parse_fixture_metadata(source: &str) -> Result<Option<FixtureMetadata>, F
         }
         match key {
             "purpose" => set_singleton(&mut metadata.purpose, unquote(value).to_string(), line_no, key)?,
-            "paths" => {
-                set_singleton(
-                    &mut metadata.matrix.paths,
-                    parse_flow_seq(value, line_no)?,
-                    line_no,
-                    key,
-                )?;
-            }
             "kind" => {
                 set_singleton(
                     &mut metadata.matrix.kind,
@@ -290,20 +329,6 @@ fn set_singleton<T>(slot: &mut Option<T>, value: T, line_no: usize, key: &str) -
     Ok(())
 }
 
-fn parse_flow_seq(value: &str, line_no: usize) -> Result<Vec<String>, FixtureMetadataError> {
-    let inner = value
-        .trim()
-        .strip_prefix('[')
-        .and_then(|rest| rest.strip_suffix(']'))
-        .ok_or_else(|| FixtureMetadataError::new(line_no, format!("`paths` expects `[...]`, got `{value}`")))?;
-    Ok(inner
-        .split(',')
-        .map(str::trim)
-        .filter(|part| !part.is_empty())
-        .map(|part| unquote(part).to_string())
-        .collect())
-}
-
 fn unquote(value: &str) -> &str {
     let value = value.trim();
     if value.len() >= 2 && value.starts_with('"') && value.ends_with('"') {
@@ -347,7 +372,7 @@ fn parse_timeout(value: &str, line_no: usize, key: &str) -> Result<PathTimeout, 
             )
         })?;
     Ok(PathTimeout {
-        path: path.to_string(),
+        path: FixtureMatrixPath::from_frontmatter_id(path, line_no, key)?,
         seconds: parse_u64(value, line_no, key)?,
     })
 }
@@ -363,9 +388,49 @@ fn parse_path_deferral(value: &str, line_no: usize, key: &str) -> Result<PathDef
         ));
     }
     Ok(PathDeferral {
-        path: path.to_string(),
+        path: FixtureMatrixPath::from_frontmatter_id(path, line_no, key)?,
         rationale: value.to_string(),
     })
+}
+
+pub fn fixture_matrix_paths_from_filename(path: &Path) -> Result<Option<Vec<FixtureMatrixPath>>, FixtureMetadataError> {
+    let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) else {
+        return Ok(None);
+    };
+    let route_stem = stem
+        .split_once('_')
+        .filter(|(prefix, _)| !prefix.is_empty() && prefix.chars().all(|ch| ch.is_ascii_digit()))
+        .map(|(_, tail)| tail)
+        .unwrap_or(stem);
+    let route_token = route_stem
+        .split_once('-')
+        .map(|(token, _)| token)
+        .filter(|token| !token.is_empty() && token.len() <= FixtureMatrixPath::ALL.len());
+    let Some(route_token) = route_token else {
+        return Ok(None);
+    };
+
+    let mut seen = Vec::new();
+    for code in route_token.chars() {
+        let path = FixtureMatrixPath::from_filename_char(code, 1, stem)?;
+        if seen.contains(&path) {
+            return Err(FixtureMetadataError::new(
+                1,
+                format!("fixture filename `{stem}` repeats route code `{code}`"),
+            ));
+        }
+        seen.push(path);
+    }
+    if seen.is_empty() {
+        return Ok(None);
+    }
+
+    Ok(Some(
+        FixtureMatrixPath::ALL
+            .into_iter()
+            .filter(|candidate| seen.contains(candidate))
+            .collect(),
+    ))
 }
 
 fn parse_root(value: &str, line_no: usize) -> Result<FixtureRoot, FixtureMetadataError> {

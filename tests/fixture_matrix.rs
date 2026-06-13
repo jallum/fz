@@ -1,7 +1,7 @@
 //! fz-ul4.23.1 — fixture matrix.
 //!
-//! Walks `fixtures2/behavior/*.fz` and runs each source program through its
-//! declared paths. Behavioural metadata and optional prose live in a
+//! Walks `fixtures2/behavior/*.fz` and runs each source program through the
+//! compiler2 behavioural matrix. Behavioural metadata and optional prose live in a
 //! comment-frontmatter block at the top of the source file, and sibling
 //! sidecars carry the few artifacts that really need to stay out of the
 //! program itself. stdout is compared against `expected.txt`;
@@ -13,9 +13,9 @@
 //!
 //!     fixtures2/behavior/<name>.fz
 //!     fixtures2/behavior/<name>.expected.txt
-//!     fixtures2/behavior/<name>.expected.jit.txt
+//!     fixtures2/behavior/<name>.expected.run.txt
 //!     fixtures2/behavior/<name>.expected.diagnostics
-//!     fixtures2/behavior/<name>.expected.jit.diagnostics
+//!     fixtures2/behavior/<name>.expected.run.diagnostics
 //!     fixtures2/behavior/<name>.expected.stderr
 //!     fixtures2/behavior/<name>.oracle.exs
 //!
@@ -23,17 +23,21 @@
 //!
 //!     #---
 //!     purpose: one-line statement of what this fixture proves
-//!     paths: [jit, interp, aot]  # or fz2-run, fz2-interp, fz2-build
 //!     kind: run            # or `test`; defaults to run if `fn main` present
 //!     expect: success      # or `abort` (run-time) / `diagnostic` (compile-time)
 //!     diagnostic.code: spec/violation  # for telemetry-backed diagnostic fixtures
-//!     defer: rationale     # required iff `paths:` is empty
-//!     defer.fz2-build: rationale  # optional per-path deferral
+//!     defer: rationale     # optional whole-fixture deferral
+//!     defer.build: rationale  # optional per-path deferral
 //!     oracle: oracle.exs   # Elixir twin: its stdout owns expected.txt
 //!     timeout.interp_secs: 15  # path-specific timeout override
 //!     budget.codegen.instructions: 123
 //!     budget.planner.matcher_specs: 0
 //!     #---
+//!
+//! Behavioural routes default to `run`, `interp`, and `build`. A fixture may
+//! narrow that set with a filename prefix such as `a-resource_dtor.fz` or
+//! `00001_ja-some_fixture.fz`; `j` means `run`, `i` means `interp`, and `a`
+//! means `build`.
 //!
 //! When `oracle:` is set, the `oracle_goldens_match_elixir` static test runs the
 //! named Elixir program under the real `elixir` binary and asserts its stdout
@@ -55,7 +59,8 @@
 //! write sibling `actual.clif` and `actual.specs`.
 
 use fz::compiler2::{
-    FixtureExpect as Fixture2Expect, FixtureKind as Fixture2Kind, FixtureMetadata, parse_fixture_metadata,
+    FixtureExpect as Fixture2Expect, FixtureKind as Fixture2Kind, FixtureMatrixPath, FixtureMetadata,
+    fixture_matrix_paths_from_filename, parse_fixture_metadata,
 };
 use libtest_mimic::{Arguments, Failed, Trial};
 use std::env::{temp_dir, var};
@@ -76,7 +81,7 @@ static AOT_TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 // fz-fkv — custom main: each (fixture, path) pair becomes its own
 // `cargo test` trial, named `matrix::<fixture>::<path>`. `cargo test add1`
-// filters to one fixture; `cargo test ::repl` filters to one leg. Static
+// filters to one fixture; `cargo test ::build` filters to one leg. Static
 // invariant tests (CLIF shape, golden dumps, etc.) become trials too so
 // the harness is uniform.
 fn main() {
@@ -125,18 +130,18 @@ fn main() {
             continue;
         }
         for path in &header.paths {
-            let trial_name = format!("matrix::{}::{}", name, path);
+            let trial_name = format!("matrix::{}::{}", name, path.id());
             let fixture = fixture.clone();
             let header = header.clone();
-            let path = path.clone();
-            let deferred_reason = header.defer_for_path(&path).map(str::to_string);
+            let path = *path;
+            let deferred_reason = header.defer_for_path(path).map(str::to_string);
             let is_deferred = deferred_reason.is_some();
             let mut trial = Trial::test(trial_name, move || {
                 if let Some(reason) = &deferred_reason {
                     eprintln!("deferred: {}", reason);
                     return Ok(());
                 }
-                match check(&fixture, &header, &path, bless) {
+                match check(&fixture, &header, path, bless) {
                     CheckOutcome::Pass => Ok(()),
                     CheckOutcome::Deferred(msg) => {
                         // Path declared but not yet wired (exit 75). Don't
@@ -218,6 +223,10 @@ fn static_tests() -> Vec<(&'static str, fn())> {
             generated_value_paths_have_no_removed_format_terms,
         ),
         ("fixtures2_single_file_matrix_smoke", fixtures2_single_file_matrix_smoke),
+        (
+            "behavior_fixtures_route_via_filename_not_paths_frontmatter",
+            behavior_fixtures_route_via_filename_not_paths_frontmatter,
+        ),
         (
             "scheduler_receive_buffers_are_any_value_refs",
             scheduler_receive_buffers_are_any_value_refs,
@@ -474,7 +483,6 @@ fn fixtures2_single_file_matrix_smoke() {
         "\
 #---\n\
 # purpose: single-file fixtures2 behavioural matrix smoke\n\
-# paths: [jit, interp]\n\
 #---\n\
 fn main() do\n\
   dbg(1 + 1)\n\
@@ -485,16 +493,40 @@ end\n",
 
     let fixture = FixtureCase::new(path.clone());
     let header = parse_header(&fixture).expect("parse smoke fixture header");
-    for path in ["jit", "interp"] {
+    for path in [
+        FixtureMatrixPath::Run,
+        FixtureMatrixPath::Interp,
+        FixtureMatrixPath::Build,
+    ] {
         match check(&fixture, &header, path, false) {
             CheckOutcome::Pass => {}
-            other => panic!("fixtures2 single-file smoke via {path} failed: {other:?}"),
+            other => panic!("fixtures2 single-file smoke via {} failed: {other:?}", path.id()),
         }
     }
 
     let _ = fs::remove_file(dir.join("matrix_smoke.expected.txt"));
     let _ = fs::remove_file(&path);
     let _ = fs::remove_dir(&dir);
+}
+
+fn behavior_fixtures_route_via_filename_not_paths_frontmatter() {
+    for entry in fs::read_dir("fixtures2/behavior").expect("read behaviour fixtures") {
+        let path = entry.expect("fixture dir entry").path();
+        if path.extension().is_none_or(|ext| ext != "fz") {
+            continue;
+        }
+        let source = fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {}", path.display(), e));
+        assert!(
+            !source.contains("# paths:"),
+            "{} should derive behavioural routing from the filename/default matrix, not `paths:` frontmatter",
+            path.display()
+        );
+        assert!(
+            !source.contains("timeout.repl_secs"),
+            "{} should not carry dead `repl` timeout cruft in the compiler2 matrix",
+            path.display()
+        );
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -526,32 +558,32 @@ enum Expect {
 
 #[derive(Debug, Clone)]
 struct Header {
-    paths: Vec<String>,
+    paths: Vec<FixtureMatrixPath>,
     kind: Kind,
     expect: Expect,
     diagnostic_code: Option<String>,
     defer: Option<String>,
-    path_deferrals: Vec<(String, String)>,
+    path_deferrals: Vec<(FixtureMatrixPath, String)>,
     /// Relative path (within the fixture dir) to an Elixir twin whose stdout
     /// owns `expected.txt`. See `oracle_goldens_match_elixir`.
     oracle: Option<String>,
     #[allow(dead_code)]
     dump_budget: DumpBudget,
-    path_timeouts: Vec<(String, Duration)>,
+    path_timeouts: Vec<(FixtureMatrixPath, Duration)>,
 }
 
 impl Header {
-    fn timeout_for_path(&self, path: &str) -> Duration {
+    fn timeout_for_path(&self, path: FixtureMatrixPath) -> Duration {
         self.path_timeouts
             .iter()
-            .find_map(|(timeout_path, timeout)| (timeout_path == path).then_some(*timeout))
+            .find_map(|(timeout_path, timeout)| (*timeout_path == path).then_some(*timeout))
             .unwrap_or(FIXTURE_COMMAND_TIMEOUT)
     }
 
-    fn defer_for_path(&self, path: &str) -> Option<&str> {
+    fn defer_for_path(&self, path: FixtureMatrixPath) -> Option<&str> {
         self.path_deferrals
             .iter()
-            .find_map(|(deferred_path, rationale)| (deferred_path == path).then_some(rationale.as_str()))
+            .find_map(|(deferred_path, rationale)| (*deferred_path == path).then_some(rationale.as_str()))
     }
 }
 
@@ -775,21 +807,17 @@ fn parse_header_from_single_file(path: &Path) -> Result<Header, String> {
 }
 
 fn header_from_fixture_metadata(path: &Path, source: &str, metadata: &FixtureMetadata) -> Result<Header, String> {
-    if !metadata.participates_in_matrix() {
-        return Err(format!(
-            "{}: does not declare behavioural matrix metadata (`paths:` or `defer:`)",
-            path.display()
-        ));
-    }
     let _purpose = metadata
         .purpose
         .clone()
         .ok_or_else(|| format!("{}: missing `purpose:`", path.display()))?;
-    let paths = metadata
-        .matrix
-        .paths
-        .clone()
-        .ok_or_else(|| format!("{}: missing `paths:`", path.display()))?;
+    let paths = if metadata.matrix.defer.is_some() {
+        Vec::new()
+    } else {
+        fixture_matrix_paths_from_filename(path)
+            .map_err(|e| format!("{}: {}", path.display(), e))?
+            .unwrap_or_else(|| FixtureMatrixPath::ALL.to_vec())
+    };
     let kind = match metadata.matrix.kind {
         Some(Fixture2Kind::Run) => Kind::Run,
         Some(Fixture2Kind::Test) => Kind::Test,
@@ -806,14 +834,8 @@ fn header_from_fixture_metadata(path: &Path, source: &str, metadata: &FixtureMet
         Some(Fixture2Expect::Abort) => Expect::Abort,
         Some(Fixture2Expect::Diagnostic) => Expect::Diagnostic,
     };
-    if paths.is_empty() && metadata.matrix.defer.is_none() {
-        return Err(format!(
-            "{}: empty `paths:` without a `defer:` rationale",
-            path.display()
-        ));
-    }
     for deferral in &metadata.matrix.path_deferrals {
-        if !paths.iter().any(|declared| declared == &deferral.path) {
+        if !paths.contains(&deferral.path) {
             return Err(format!(
                 "{}: `defer.{}` names an undeclared path",
                 path.display(),
@@ -835,7 +857,7 @@ fn header_from_fixture_metadata(path: &Path, source: &str, metadata: &FixtureMet
         .matrix
         .path_timeouts
         .iter()
-        .map(|timeout| (timeout.path.clone(), Duration::from_secs(timeout.seconds)))
+        .map(|timeout| (timeout.path, Duration::from_secs(timeout.seconds)))
         .collect();
     Ok(Header {
         paths,
@@ -847,7 +869,7 @@ fn header_from_fixture_metadata(path: &Path, source: &str, metadata: &FixtureMet
             .matrix
             .path_deferrals
             .iter()
-            .map(|deferral| (deferral.path.clone(), deferral.rationale.clone()))
+            .map(|deferral| (deferral.path, deferral.rationale.clone()))
             .collect(),
         oracle: metadata.matrix.oracle.clone(),
         dump_budget,
@@ -1024,63 +1046,19 @@ fn fixture_command_output(
     }
 }
 
-fn run_path(fixture: &FixtureCase, header: &Header, path: &str) -> RunOutcome {
-    if let Some(path) = path.strip_prefix("fz2-") {
-        return run_fz2_path(fixture, header, path);
-    }
-    if path == "aot" {
-        return run_aot_path(fixture, header);
-    }
-    if path == "repl" {
-        return run_repl_path(fixture, header);
-    }
+fn run_path(fixture: &FixtureCase, header: &Header, path: FixtureMatrixPath) -> RunOutcome {
     let subcmd = match (path, header.kind) {
-        ("jit", Kind::Run) => "run",
-        ("jit", Kind::Test) => "test",
-        ("interp", _) => "interp",
-        _ => {
-            return RunOutcome::Failed(format!("unknown path `{}`", path));
-        }
+        (FixtureMatrixPath::Run, Kind::Run) => "run",
+        (FixtureMatrixPath::Run, Kind::Test) => "test",
+        (FixtureMatrixPath::Interp, _) => "interp",
+        (FixtureMatrixPath::Build, _) => return run_fz2_build_path(fixture, header),
     };
     let input = fixture.source_path();
     let out = match fixture_command_output(
-        Command::new(FZ_BIN).arg(subcmd).arg(&input),
-        "fz",
+        Command::new(FZ2_BIN).arg(subcmd).arg(&input),
+        "fz2",
         TimeoutStart::OnExecutionReady,
         header.timeout_for_path(path),
-    ) {
-        Ok(o) => o,
-        Err(e) => return RunOutcome::Failed(e),
-    };
-    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
-    if let Some(75) = out.status.code() {
-        return RunOutcome::Deferred(stderr.trim_end().to_string());
-    }
-    RunOutcome::Ran(Ran {
-        success: out.status.success(),
-        stdout: String::from_utf8_lossy(&out.stdout).to_string(),
-        diagnostics: stderr,
-    })
-}
-
-fn run_fz2_path(fixture: &FixtureCase, header: &Header, path: &str) -> RunOutcome {
-    match path {
-        "run" | "interp" => run_fz2_command_path(fixture, header, path),
-        "build" => run_fz2_build_path(fixture, header),
-        _ => RunOutcome::Failed(format!("unknown fz2 path `fz2-{}`", path)),
-    }
-}
-
-fn run_fz2_command_path(fixture: &FixtureCase, header: &Header, path: &str) -> RunOutcome {
-    if header.kind == Kind::Test {
-        return RunOutcome::Deferred(format!("kind: test fixtures don't yet run via fz2-{}", path));
-    }
-    let input = fixture.source_path();
-    let out = match fixture_command_output(
-        Command::new(FZ2_BIN).arg(path).arg(&input),
-        &format!("fz2 {}", path),
-        TimeoutStart::OnExecutionReady,
-        header.timeout_for_path(&format!("fz2-{}", path)),
     ) {
         Ok(o) => o,
         Err(e) => return RunOutcome::Failed(e),
@@ -1095,7 +1073,7 @@ fn run_fz2_command_path(fixture: &FixtureCase, header: &Header, path: &str) -> R
 
 fn run_fz2_build_path(fixture: &FixtureCase, header: &Header) -> RunOutcome {
     if header.kind == Kind::Test {
-        return RunOutcome::Deferred("kind: test fixtures don't yet run via fz2-build".into());
+        return RunOutcome::Deferred("kind: test fixtures don't yet run via build".into());
     }
     let stem = fixture.name();
     let nonce = AOT_TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -1127,7 +1105,7 @@ fn run_fz2_build_path(fixture: &FixtureCase, header: &Header) -> RunOutcome {
         &mut Command::new(&out_path),
         "fz2-built binary",
         TimeoutStart::OnSpawn,
-        header.timeout_for_path("fz2-build"),
+        header.timeout_for_path(FixtureMatrixPath::Build),
     ) {
         Ok(o) => o,
         Err(e) => {
@@ -1151,98 +1129,6 @@ fn remove_fz2_build_outputs(out_path: &Path) {
     let _ = remove_file(out_path.with_extension("bin.o"));
 }
 
-/// Drive the AOT path: `fz build` the fixture to a temp executable, run
-/// it, capture stdout. `# kind: test` fixtures aren't supported in AOT
-/// yet — they go through `fz test` which doesn't have an AOT equivalent.
-fn run_aot_path(fixture: &FixtureCase, header: &Header) -> RunOutcome {
-    if header.kind == Kind::Test {
-        return RunOutcome::Deferred("kind: test fixtures don't yet run via aot (`fz test` is jit-only)".into());
-    }
-    let stem = fixture.name();
-    let nonce = AOT_TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let out_path = temp_dir().join(format!("fz_matrix_{}_{}_{}", stem, id(), nonce));
-    let input = fixture.source_path();
-    // Build. Compilation time is not fixture execution time, so the
-    // per-fixture execution timeout starts when the compiled artifact runs.
-    let build = match Command::new(FZ_BIN)
-        .args(["build"])
-        .arg(&input)
-        .args(["-o"])
-        .arg(&out_path)
-        .output()
-    {
-        Ok(o) => o,
-        Err(e) => return RunOutcome::Failed(format!("spawn fz build: {}", e)),
-    };
-    let build_stderr = String::from_utf8_lossy(&build.stderr).to_string();
-    // A `diagnostic` fixture is rejected at compile time, so the *build* is the
-    // step that's expected to fail — there is no binary to run. Hand the build
-    // outcome straight to `check()`'s failure policy.
-    if header.expect == Expect::Diagnostic {
-        return RunOutcome::Ran(Ran {
-            success: build.status.success(),
-            stdout: String::from_utf8_lossy(&build.stdout).to_string(),
-            diagnostics: build_stderr,
-        });
-    }
-    if !build.status.success() {
-        // Common failure today: closure-using fixtures abort at runtime
-        // for frame_sizes (fz-ul4.23.11). Surface as Deferred so the
-        // matrix doesn't fail until the follow-up lands.
-        if build_stderr.contains("frame_sizes") || build_stderr.contains("not yet supported") {
-            return RunOutcome::Deferred(build_stderr.trim_end().to_string());
-        }
-        return RunOutcome::Failed(format!("fz build exit {}: {}", build.status, build_stderr.trim_end()));
-    }
-    // Run.
-    let run = match fixture_command_output(
-        &mut Command::new(&out_path),
-        "aot binary",
-        TimeoutStart::OnSpawn,
-        header.timeout_for_path("aot"),
-    ) {
-        Ok(o) => o,
-        Err(e) => return RunOutcome::Failed(e),
-    };
-    let _ = remove_file(&out_path);
-    let _ = remove_file(out_path.with_extension("o"));
-    let run_stderr = String::from_utf8_lossy(&run.stderr).to_string();
-    if run_stderr.contains("frame_sizes") {
-        return RunOutcome::Deferred(run_stderr.trim_end().to_string());
-    }
-    let diagnostics = format!("{}{}", build_stderr, run_stderr);
-    RunOutcome::Ran(Ran {
-        success: run.status.success(),
-        stdout: String::from_utf8_lossy(&run.stdout).to_string(),
-        diagnostics,
-    })
-}
-
-/// fz-i67.2 — drive the REPL parity leg: spawn `fz repl --script <input.fz>`,
-/// capture stdout. Same comparison plumbing as the other legs. `kind: test`
-/// fixtures don't go through here (the REPL has no `assert_eq` runner).
-fn run_repl_path(fixture: &FixtureCase, header: &Header) -> RunOutcome {
-    if header.kind == Kind::Test {
-        return RunOutcome::Deferred("kind: test fixtures don't yet run via repl (`fz test` is jit-only)".into());
-    }
-    let input = fixture.source_path();
-    let out = match fixture_command_output(
-        Command::new(FZ_BIN).args(["repl", "--script"]).arg(&input),
-        "fz repl",
-        TimeoutStart::OnExecutionReady,
-        header.timeout_for_path("repl"),
-    ) {
-        Ok(o) => o,
-        Err(e) => return RunOutcome::Failed(e),
-    };
-    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
-    RunOutcome::Ran(Ran {
-        success: out.status.success(),
-        stdout: String::from_utf8_lossy(&out.stdout).to_string(),
-        diagnostics: stderr,
-    })
-}
-
 fn normalize(s: &str) -> String {
     if s.is_empty() || s.ends_with('\n') {
         s.to_string()
@@ -1262,7 +1148,7 @@ enum CheckOutcome {
     Fail(String),
 }
 
-fn check(fixture: &FixtureCase, header: &Header, path: &str, bless: bool) -> CheckOutcome {
+fn check(fixture: &FixtureCase, header: &Header, path: FixtureMatrixPath, bless: bool) -> CheckOutcome {
     let ran = match run_path(fixture, header, path) {
         RunOutcome::Ran(ran) => ran,
         RunOutcome::Deferred(msg) => return CheckOutcome::Deferred(msg),
@@ -1277,18 +1163,25 @@ fn check(fixture: &FixtureCase, header: &Header, path: &str, bless: bool) -> Che
 
 /// `expect: success` (the default): the program must exit 0, and its stdout and
 /// diagnostics must match their goldens (absent golden ⇒ expected empty).
-fn check_success(fixture: &FixtureCase, path: &str, bless: bool, ran: &Ran, oracle_owned: bool) -> CheckOutcome {
+fn check_success(
+    fixture: &FixtureCase,
+    path: FixtureMatrixPath,
+    bless: bool,
+    ran: &Ran,
+    oracle_owned: bool,
+) -> CheckOutcome {
+    let path_id = path.id();
     if !ran.success {
         return CheckOutcome::Fail(format!(
             "{} via {}: expected success but the program exited nonzero\n--- stderr\n{}",
             fixture.display_path().display(),
-            path,
+            path_id,
             fixture.normalize_actual_diagnostics(&ran.diagnostics).trim_end()
         ));
     }
     let actual = normalize(&ran.stdout);
     let actual_diagnostics = normalize(&fixture.normalize_actual_diagnostics(&ran.diagnostics));
-    let path_expected_path = fixture.sidecar_path(&format!("expected.{}.txt", path));
+    let path_expected_path = fixture.sidecar_path(&format!("expected.{}.txt", path_id));
     let expected_path = if path_expected_path.exists() {
         path_expected_path
     } else {
@@ -1296,7 +1189,7 @@ fn check_success(fixture: &FixtureCase, path: &str, bless: bool, ran: &Ran, orac
     };
     let expected = fs::read_to_string(&expected_path).unwrap_or_default();
     let expected = normalize(&expected);
-    let path_diagnostics_path = fixture.sidecar_path(&format!("expected.{}.diagnostics", path));
+    let path_diagnostics_path = fixture.sidecar_path(&format!("expected.{}.diagnostics", path_id));
     let expected_diagnostics_path = if path_diagnostics_path.exists() {
         path_diagnostics_path
     } else {
@@ -1334,7 +1227,7 @@ fn check_success(fixture: &FixtureCase, path: &str, bless: bool, ran: &Ran, orac
     CheckOutcome::Fail(format!(
         "fixture mismatch for {} via {}; wrote {} and {}\n--- expected stdout ({})\n{}--- actual stdout\n{}--- expected diagnostics\n{}--- actual diagnostics\n{}",
         fixture.display_path().display(),
-        path,
+        path_id,
         output_path.display(),
         diagnostics_output_path.display(),
         expected_path.display(),
@@ -1349,8 +1242,8 @@ fn check_success(fixture: &FixtureCase, path: &str, bless: bool, ran: &Ran, orac
 /// *contain* the `expected.stderr` golden as a substring. A
 /// substring (not an exact match) is the right pin for a negative claim: the
 /// stable fact is "this message appears", while the surrounding text carries
-/// per-path prefixes (`fz interp:`, `repl:`) and absolute source paths that
-/// would make an exact golden brittle across the four paths.
+/// per-path prefixes and absolute source paths that would make an exact golden
+/// brittle across the compiler2 matrix.
 ///
 /// `expect: diagnostic` uses the same nonzero contract but, when the fixture
 /// declares `diagnostic.code`, asserts the `[fz, diag, error]` telemetry event
@@ -1364,16 +1257,17 @@ fn check_failure(
     fixture: &FixtureCase,
     header: &Header,
     kind: &str,
-    path: &str,
+    path: FixtureMatrixPath,
     bless: bool,
     ran: &Ran,
 ) -> CheckOutcome {
+    let path_id = path.id();
     let diagnostics = fixture.normalize_actual_diagnostics(&ran.diagnostics);
     if ran.success {
         return CheckOutcome::Fail(format!(
             "{} via {}: expected {} (nonzero exit) but the program exited 0",
             fixture.display_path().display(),
-            path,
+            path_id,
             kind
         ));
     }
@@ -1382,7 +1276,7 @@ fn check_failure(
     {
         return check_diagnostic_telemetry(fixture, header, path, code);
     }
-    let path_golden = fixture.sidecar_path(&format!("expected.{}.stderr", path));
+    let path_golden = fixture.sidecar_path(&format!("expected.{}.stderr", path_id));
     let golden_path = if path_golden.exists() {
         path_golden
     } else {
@@ -1401,7 +1295,7 @@ fn check_failure(
         return CheckOutcome::Fail(format!(
             "{} via {}: expect {} but no {} golden; run BLESS=1 to seed it, then trim to the stable line\n--- stderr\n{}",
             fixture.display_path().display(),
-            path,
+            path_id,
             kind,
             golden_path.display(),
             diagnostics.trim_end()
@@ -1416,7 +1310,7 @@ fn check_failure(
     CheckOutcome::Fail(format!(
         "{} via {}: stderr does not contain the {} golden; wrote {}\n--- expected substring ({})\n{}\n--- actual stderr\n{}",
         fixture.display_path().display(),
-        path,
+        path_id,
         kind,
         actual_path.display(),
         golden_path.display(),
@@ -1425,7 +1319,12 @@ fn check_failure(
     ))
 }
 
-fn check_diagnostic_telemetry(fixture: &FixtureCase, header: &Header, path: &str, expected_code: &str) -> CheckOutcome {
+fn check_diagnostic_telemetry(
+    fixture: &FixtureCase,
+    header: &Header,
+    path: FixtureMatrixPath,
+    expected_code: &str,
+) -> CheckOutcome {
     let telemetry_path = temp_telemetry_path(fixture, "diagnostic");
     let out = match run_path_logged(fixture, header, path, &telemetry_path) {
         Ok(out) => out,
@@ -1448,7 +1347,7 @@ fn check_diagnostic_telemetry(fixture: &FixtureCase, header: &Header, path: &str
     CheckOutcome::Fail(format!(
         "{} via {}: diagnostic telemetry did not contain code `{}`; wrote {}\n--- stderr\n{}",
         fixture.display_path().display(),
-        path,
+        path.id(),
         expected_code,
         actual_path.display(),
         String::from_utf8_lossy(&out.stderr).trim_end()
@@ -1458,65 +1357,10 @@ fn check_diagnostic_telemetry(fixture: &FixtureCase, header: &Header, path: &str
 fn run_path_logged(
     fixture: &FixtureCase,
     header: &Header,
-    path: &str,
+    path: FixtureMatrixPath,
     telemetry_path: &Path,
 ) -> Result<Output, String> {
-    if let Some(path) = path.strip_prefix("fz2-") {
-        return run_fz2_path_logged(fixture, header, path, telemetry_path);
-    }
-    if path == "aot" {
-        let stem = fixture.name();
-        let nonce = AOT_TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let out_path = temp_dir().join(format!("fz_matrix_diag_{}_{}_{}", stem, id(), nonce));
-        let out = fixture_command_output(
-            Command::new(FZ_BIN)
-                .args(["--log-telemetry"])
-                .arg(telemetry_path)
-                .args(["build"])
-                .arg(fixture.source_path())
-                .args(["-o"])
-                .arg(&out_path),
-            "fz build --log-telemetry",
-            TimeoutStart::OnSpawn,
-            header.timeout_for_path(path),
-        );
-        let _ = fs::remove_file(&out_path);
-        let _ = fs::remove_file(out_path.with_extension("o"));
-        return out;
-    }
-    let input = fixture.source_path();
-    let mut cmd = Command::new(FZ_BIN);
-    cmd.args(["--log-telemetry"]).arg(telemetry_path);
-    match (path, header.kind) {
-        ("jit", Kind::Run) => {
-            cmd.arg("run").arg(input);
-        }
-        ("jit", Kind::Test) => {
-            cmd.arg("test").arg(input);
-        }
-        ("interp", _) => {
-            cmd.arg("interp").arg(input);
-        }
-        ("repl", _) => {
-            cmd.args(["repl", "--script"]).arg(input);
-        }
-        _ => return Err(format!("unknown path `{}`", path)),
-    }
-    fixture_command_output(
-        &mut cmd,
-        "fz --log-telemetry",
-        TimeoutStart::OnExecutionReady,
-        header.timeout_for_path(path),
-    )
-}
-
-fn run_fz2_path_logged(
-    fixture: &FixtureCase,
-    header: &Header,
-    path: &str,
-    telemetry_path: &Path,
-) -> Result<Output, String> {
-    if path == "build" {
+    if path == FixtureMatrixPath::Build {
         let stem = fixture.name();
         let nonce = AOT_TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
         let out_path = temp_dir().join(format!("fz2_matrix_diag_{}_{}_{}", stem, id(), nonce));
@@ -1530,7 +1374,7 @@ fn run_fz2_path_logged(
                 .arg(&out_path),
             "fz2 build --log-telemetry",
             TimeoutStart::OnSpawn,
-            header.timeout_for_path("fz2-build"),
+            header.timeout_for_path(path),
         );
         remove_fz2_build_outputs(&out_path);
         return out;
@@ -1538,17 +1382,23 @@ fn run_fz2_path_logged(
     let input = fixture.source_path();
     let mut cmd = Command::new(FZ2_BIN);
     cmd.args(["--log-telemetry"]).arg(telemetry_path);
-    match path {
-        "run" | "interp" => {
-            cmd.arg(path).arg(input);
+    match (path, header.kind) {
+        (FixtureMatrixPath::Run, Kind::Run) => {
+            cmd.arg("run").arg(input);
         }
-        _ => return Err(format!("unknown fz2 path `fz2-{}`", path)),
+        (FixtureMatrixPath::Run, Kind::Test) => {
+            cmd.arg("test").arg(input);
+        }
+        (FixtureMatrixPath::Interp, _) => {
+            cmd.arg("interp").arg(input);
+        }
+        (FixtureMatrixPath::Build, _) => unreachable!("build returns above"),
     }
     fixture_command_output(
         &mut cmd,
-        &format!("fz2 {} --log-telemetry", path),
+        "fz2 --log-telemetry",
         TimeoutStart::OnExecutionReady,
-        header.timeout_for_path(&format!("fz2-{}", path)),
+        header.timeout_for_path(path),
     )
 }
 
@@ -1556,9 +1406,8 @@ fn run_fz2_path_logged(
 /// the canonical `expected.txt` golden must equal the stdout of running that
 /// Elixir twin under the real `elixir` binary. This makes "matches Elixir" a
 /// mechanical diff rather than a hand-authored claim: Elixir owns the golden,
-/// and the per-path matrix trials independently assert each fz path
-/// (interp/jit/aot/repl) reproduces the same `expected.txt` — so `fz == Elixir`
-/// holds transitively.
+/// and the per-path matrix trials independently assert each compiler2 path
+/// reproduces the same `expected.txt` — so `fz == Elixir` holds transitively.
 ///
 /// `BLESS=1` regenerates `expected.txt` from the Elixir output. Requires the
 /// `elixir` binary on PATH (Elixir 1.19+); a spawn failure fails loudly by

@@ -1,6 +1,5 @@
 #---
 # purpose: "receive whose clauses interleave tuple-3 / atom / tuple-3 — matrix shares the tuple-arity test across the non-adjacent tuple clauses"
-# paths: [fz2-run, fz2-interp, fz2-build]
 # budget.codegen.functions: 29
 # budget.codegen.instructions: 801
 # budget.specs.count: 26

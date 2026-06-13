@@ -1,6 +1,5 @@
 #---
 # purpose: "fz-bsx.4 — case-match of {:ok, \"hi\"} over a heap binary nested in a tuple matches on all paths"
-# paths: [fz2-run, fz2-interp, fz2-build]
 # budget.codegen.functions: 11
 # budget.codegen.instructions: 137
 # budget.specs.count: 11
@@ -19,7 +18,7 @@
 # Regression guard for fz-bsx: matching `{:ok, "hi"}` against
 # `Utf8.from_bytes(<<104,105>>)` must succeed (`:matched`) on every path. The
 # literal-binary pattern lowers to the same brand-blind equality fold as `==`;
-# before fz-bsx, native (jit/aot) pruned the arm and returned `:no_match`.
+# before fz-bsx, native `run`/`build` pruned the arm and returned `:no_match`.
 import Utf8
 
 fn main() do

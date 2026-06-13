@@ -1,6 +1,5 @@
 #---
 # purpose: "cross-module qualified calls — `M.double`, `M.quad`, `N.helper`"
-# paths: [fz2-run, fz2-interp, fz2-build]
 #---
 defmodule M do
   fn double(x), do: x * 2

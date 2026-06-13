@@ -1,6 +1,5 @@
 #---
 # purpose: "receive with list cons / empty list / atom default — locks ListCons three-path parity"
-# paths: [fz2-run, fz2-interp, fz2-build]
 # budget.codegen.functions: 29
 # budget.codegen.instructions: 565
 # budget.specs.count: 26

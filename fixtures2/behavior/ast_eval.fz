@@ -1,6 +1,5 @@
 #---
 # purpose: "tagged-tuple AST evaluator — first fixture to exercise multi-clause tuple-pattern dispatch end-to-end"
-# paths: [fz2-run, fz2-interp, fz2-build]
 # budget.codegen.functions: 20
 # budget.codegen.instructions: 371
 # budget.specs.count: 20

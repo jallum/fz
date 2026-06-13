@@ -1,6 +1,5 @@
 #---
 # purpose: "a failed refute aborts with the caller's message on every path"
-# paths: [fz2-run, fz2-interp, fz2-build]
 # expect: abort
 #---
 #

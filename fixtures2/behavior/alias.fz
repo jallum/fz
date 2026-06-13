@@ -1,6 +1,5 @@
 #---
 # purpose: "nested-module path aliasing — `alias Long.Path` and `alias Long.Path, as: LP`"
-# paths: [fz2-run, fz2-interp, fz2-build]
 #---
 defmodule Long do
   defmodule Path do

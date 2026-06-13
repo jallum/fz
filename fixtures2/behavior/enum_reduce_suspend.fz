@@ -1,6 +1,5 @@
 #---
 # purpose: "Enumerable.reduce/3 suspend returns a real resumable closure at the runtime-value boundary"
-# paths: [fz2-run, fz2-interp, fz2-build]
 #---
 #
 # # enum_reduce_suspend

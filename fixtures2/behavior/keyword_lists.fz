@@ -1,6 +1,5 @@
 #---
 # purpose: "Elixir-style keyword lists lower to ordinary lists of atom/value tuples"
-# paths: [fz2-run, fz2-interp, fz2-build]
 #---
 fn echo(opts), do: opts
 

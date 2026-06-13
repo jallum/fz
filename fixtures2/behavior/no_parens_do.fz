@@ -1,6 +1,5 @@
 #---
 # purpose: A do/end block on a no-parens call becomes a trailing do: keyword arg.
-# paths: [fz2-run, fz2-interp, fz2-build]
 # oracle: oracle.exs
 #---
 #

@@ -1,6 +1,5 @@
 #---
 # purpose: "N-hop actor ring with self()-capture + spawn-with-captures + multi-clause CPS-split-in-body; closes fz-g8v by exercising the fz-qbg.2 multi-clause body cont-fn path end-to-end"
-# paths: [fz2-run, fz2-interp, fz2-build]
 #---
 fn relay(0, home) do
   value = receive do

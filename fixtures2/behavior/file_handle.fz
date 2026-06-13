@@ -1,6 +1,5 @@
 #---
 # purpose: "FileHandle = fd + dtor, exercising cstring/binary/integer marshal classes against real libc with an observable resource lifecycle"
-# paths: [fz2-run, fz2-interp, fz2-build]
 # budget.codegen.functions: 6
 # budget.codegen.instructions: 74
 # budget.specs.count: 6
