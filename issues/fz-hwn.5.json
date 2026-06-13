@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-hwn.4"
+  ],
   "blocks": [],
   "created": "2026-06-13T21:24:40Z",
   "description": "Goal\nMake BackendProgram consume demand-shaped operands instead of reinterpreting value IDs and rematerializing callable values locally.\n\nProblem being fixed\nThe backend layer currently receives value IDs and reconstructs representation obligations. BackendCallArg is only { value: ValueId }, and backend interpreter/native lowering eagerly materialize ProgramStep::FunctionRef and ProgramStep::Lambda even when the shared demand plan says direct-only use is enough.\n\nCode seams\n- src/compiler2/jobs/backend.rs: BackendProgram, BackendCallArg, BackendStep::FunctionRef, BackendStep::Lambda, BackendTail::ClosureCall, entry_input_abis, collect_entry_input_need.\n- src/ir_interp/backend.rs: ProgramStep::FunctionRef and ProgramStep::Lambda materialization, BackendTail::ClosureCall runtime path.\n\nData shape\nBackend operands should reflect settled runtime demand. Use the smallest coherent representation, for example RuntimeOperand = Value(ValueId) | TupleFields { value, fields } | DirectCallable { value, surfaces, captures } | FirstClassCallable { value }. The exact names can differ, but the invariant is mandatory: the backend IR must distinguish direct callable use from first-class callable data.\n\nAlgorithm\n1. Thread ExecutableRuntimeDemand or derived RuntimeInputLayout into backend lowering.\n2. Lower call arguments and closure-call operands according to demand, not according to source value type.\n3. For DirectCallable, carry target executable identity and demanded captures needed by the resolved surface.\n4. For FirstClassCallable, preserve existing runtime callable value semantics.\n5. Update the interpreter backend in the same commit if the IR shape changes; do not leave adapters or duplicate old/new operand paths.\n\nRemoval target\nRemove backend-local demand recomputation that duplicates artifact planning. Stop treating every FunctionRef/Lambda step as a value that must be materialized.\n\nChecks\n- Interpreter tests pass for direct lambda call, escaped lambda, opaque callable, and quicksort.\n- Telemetry shows direct callable materializations do not become first_class_callable_materializations.\n- No backend code path recovers callable obligations by walking callable types.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Compiler2 backend IR: carry demand-shaped operands through interpreter lowering",
   "type": "task",
-  "updated_at": "2026-06-13T21:24:40Z"
+  "updated_at": "2026-06-13T21:24:41Z"
 }
