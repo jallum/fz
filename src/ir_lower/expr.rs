@@ -405,6 +405,7 @@ pub(crate) fn lower_expr<T: Types<Ty = Ty>>(
                     Term::TailCallClosure {
                         ident: CallsiteIdent::from_source(sp),
                         closure: closure_var,
+                        direct_target: None,
                         args: arg_vars,
                     },
                     sp,
@@ -1178,7 +1179,7 @@ pub(super) fn lower_case<T: Types<Ty = Ty>>(
                         cont.id,
                         ContinuationProvenance {
                             caller: ctx.cur_fn_id.expect("lower_case: missing current fn id"),
-                            captured: cont.outer_captured.iter().map(|(_, var)| *var).collect(),
+                            semantic_capture_count: cont.outer_captured.len(),
                             capture_param_offset: 0,
                             kind: ContinuationProvenanceKind::DispatchBody {
                                 bindings: bindings
@@ -1491,7 +1492,7 @@ pub(super) fn lower_with<T: Types<Ty = Ty>>(
                             cont.id,
                             ContinuationProvenance {
                                 caller: ctx.cur_fn_id.expect("lower_with else: missing current fn id"),
-                                captured: cont.outer_captured.iter().map(|(_, var)| *var).collect(),
+                                semantic_capture_count: cont.outer_captured.len(),
                                 capture_param_offset: 0,
                                 kind: ContinuationProvenanceKind::DispatchBody {
                                     bindings: bindings

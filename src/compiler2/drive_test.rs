@@ -1,6 +1,6 @@
 use super::{AppliedStep, CodeSubmission, Compiler2, DriveOutcome, ExecutableNeed, Job, RootSubmission};
 use crate::compiler2::artifact::{BackendEntry, BackendTail};
-use crate::compiler2::artifact::{NativeBodyOrigin, NativeEntryAbi, NativeProgram};
+use crate::compiler2::artifact::{NativeBodyOrigin, NativeCallableBoundaryId, NativeEntryAbi, NativeProgram};
 use crate::compiler2::drive::JobEffects;
 use crate::compiler2::{
     AbiReadyProgram, AbiValueRepr, ActivationKey, BackendProgram, CallSiteId, CallSiteKey, CallSiteSummary, CallTarget,
@@ -14,8 +14,9 @@ use crate::dispatch_matrix::Region;
 use crate::dispatch_matrix::pattern::{PatternDispatchPlan, PatternGuardDispatch, PatternGuardExpr};
 use crate::exec::runtime::DbgCapture;
 use crate::fz_ir::{
-    Block as IrBlock, CallsiteId as IrCallsiteId, CallsiteIdent, Cont as IrCont, ExternTy, ExternalCallEdge,
-    FnIr as IrFn, Module as IrModule, Prim as IrPrim, ReceiveAfter, ReceiveClause, Stmt as IrStmt, Term as IrTerm,
+    Block as IrBlock, CallsiteId as IrCallsiteId, CallsiteIdent, Cont as IrCont, ExternTy, ExternalCallEdge, FnId,
+    FnIr as IrFn, Module as IrModule, PhysicalCapability, Prim as IrPrim, ReceiveAfter, ReceiveClause, Stmt as IrStmt,
+    Term as IrTerm,
 };
 use crate::ir_interp::{
     tests_support_dtor_fired, tests_support_dtor_last_payload, tests_support_dtor_reset, tests_support_lock,
@@ -648,12 +649,12 @@ fn compiler2_protocol_domain_marker_stays_type_owned_while_dispatch_revises_when
         "protocol definition should note t/0 and t/1 but leave TypeDefined facts to DeriveTypeDef",
     );
     assert_eq!(
-        world.fact_revision(FactKey::TypeDefined(t0.clone())),
+        world.fact_revision(&FactKey::TypeDefined(t0.clone())),
         None,
         "t/0 should stay unresolved until a type consumer demands it",
     );
     assert_eq!(
-        world.fact_revision(FactKey::TypeDefined(t1.clone())),
+        world.fact_revision(&FactKey::TypeDefined(t1.clone())),
         None,
         "t/1 should stay unresolved until a type consumer demands it",
     );
@@ -712,12 +713,13 @@ fn compiler2_protocol_domain_marker_stays_type_owned_while_dispatch_revises_when
     let marker = expect.opaque_of(&crate::frontend::protocols::protocol_domain_tag(
         &crate::modules::identity::ModuleName::parse_dotted("Proof").expect("protocol name should parse"),
     ));
-    let rendered = expect.display(&marker).to_string();
-    assert_eq!(
-        type_events,
-        vec![(0, 1, rendered.clone()), (1, 1, rendered.clone())],
-        "both protocol-domain arities should resolve to the same protocol marker",
-    );
+    let rendered = expect.display(&marker);
+    assert_eq!(type_events[0].0, 0);
+    assert_eq!(type_events[0].1, 1);
+    assert_eq!(type_events[0].2, *rendered);
+    assert_eq!(type_events[1].0, 1);
+    assert_eq!(type_events[1].1, 1);
+    assert_eq!(type_events[1].2, *rendered);
     assert_eq!(t0_def.params, Vec::new(), "t/0 should remain monomorphic");
     assert_eq!(
         t1_def.params,
@@ -761,12 +763,12 @@ fn compiler2_protocol_domain_marker_stays_type_owned_while_dispatch_revises_when
         "adding an impl should not revise protocol-domain type facts",
     );
     assert_eq!(
-        world.fact_revision(FactKey::TypeDefined(t0.clone())),
+        world.fact_revision(&FactKey::TypeDefined(t0.clone())),
         Some(1),
         "t/0 should keep its original type fact revision after the impl lands",
     );
     assert_eq!(
-        world.fact_revision(FactKey::TypeDefined(t1.clone())),
+        world.fact_revision(&FactKey::TypeDefined(t1.clone())),
         Some(1),
         "t/1 should keep its original type fact revision after the impl lands",
     );
@@ -1875,8 +1877,7 @@ fn compiler2_enum_reduce_selects_list_protocol_impl_and_callable_reducer() {
     let activation_ids = semantic
         .last(root_id)
         .activations
-        .clone()
-        .into_iter()
+        .iter()
         .map(|activation| activation.function)
         .collect::<HashSet<_>>();
     assert!(
@@ -2000,8 +2001,7 @@ fn compiler2_enum_reduce_operator_ref_activates_kernel_plus() {
     let closed = semantic.last(root_id);
     let activation_ids = closed
         .activations
-        .clone()
-        .into_iter()
+        .iter()
         .map(|activation| activation.function)
         .collect::<HashSet<_>>();
     assert!(
@@ -3653,8 +3653,8 @@ fn compiler2_native_program_keeps_only_the_closed_quicksort_inventory() {
         "native lowering should keep cold foo/0 out of the native handoff",
     );
     assert!(
-        program.callable_entries.is_empty(),
-        "quicksort should not manufacture callable-entry inventory in the native handoff",
+        program.callable_boundaries.is_empty(),
+        "quicksort should not manufacture callable-boundary inventory in the native handoff",
     );
 }
 
@@ -3716,6 +3716,11 @@ fn compiler2_native_program_matches_tuple_field_call_continuations_to_the_callee
         "the rooted quicksort frontier reaches two qsort executables, and each should own one tuple-field continuation from partition/4",
     );
     for tuple_field_cont in tuple_field_conts {
+        let function = program.module.fn_by_id(tuple_field_cont.fn_id);
+        let entry_block = function
+            .blocks
+            .first()
+            .expect("tuple-field continuation should have an entry block");
         assert_eq!(
             tuple_field_cont.entry_abi,
             NativeEntryAbi::Continuation { extra_params: 2 },
@@ -3730,6 +3735,11 @@ fn compiler2_native_program_matches_tuple_field_call_continuations_to_the_callee
             tuple_field_cont.param_reprs.len(),
             3,
             "the tuple-field continuation should still carry exactly one captured pivot lane after the returned fields",
+        );
+        assert_eq!(
+            entry_block.params.len(),
+            tuple_field_cont.param_reprs.len(),
+            "tuple-field continuations should publish one entry param per delivered field plus one per capture; they should not smuggle a synthetic tuple slot into the fz IR entry block",
         );
     }
 }
@@ -3784,31 +3794,150 @@ fn compiler2_native_program_keeps_the_closed_enum_reduce_callable_entries() {
 
     let program = native.last(root_id).program;
     let callable_functions = program
-        .callable_entries
+        .callable_boundaries
         .iter()
         .map(|entry| entry.target.activation.function)
         .collect::<HashSet<_>>();
     assert_eq!(
         callable_functions,
         HashSet::from([user_reducer_id, bridge_reducer_id]),
-        "the native callable-entry inventory should keep exactly the user reducer and bridge reducer entries",
+        "the native callable-boundary inventory should keep exactly the user reducer and bridge reducer entries",
     );
 
-    let used_entries = native_callable_constructor_uses(&program);
+    let used_entries = native_callable_boundary_uses(&program);
     let expected_entries = program
-        .callable_entries
+        .callable_boundaries
         .iter()
         .filter_map(|entry| {
             matches!(
                 entry.target.activation.function,
                 id if id == user_reducer_id || id == bridge_reducer_id
             )
-            .then_some(entry.target_fn.0 as usize)
+            .then_some(entry.id())
         })
         .collect::<HashSet<_>>();
     assert_eq!(
         used_entries, expected_entries,
-        "native callable constructors should point at exactly the callable-entry obligations that survive the closed Enum.reduce path",
+        "native closure values should point at exactly the callable-boundary obligations that survive the closed Enum.reduce path",
+    );
+}
+
+#[test]
+fn compiler2_native_program_keeps_distinct_callable_boundaries_for_same_surface_when_capture_identity_differs() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&[], capture.handler());
+    let functions = FunctionCapture::new();
+    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    let native = NativeProgramCapture::new();
+    tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/callable_boundary_capture_identity.fz".to_string()),
+        text: r#"
+fn reduce_plain([], acc, _reducer), do: acc
+fn reduce_plain([head | tail], acc, reducer), do: reduce_plain(tail, reducer.(head, acc), reducer)
+
+fn gt2(x), do: x > 2
+fn even(x), do: (x % 2) == 0
+
+fn make_reducer(predicate) do
+  fn (entry, acc) ->
+    if predicate.(entry), do: acc + 1, else: acc
+  end
+end
+
+fn main() do
+  xs = [1, 2, 3, 4]
+  reduce_plain(xs, 0, make_reducer(gt2)) + reduce_plain(xs, 0, make_reducer(even))
+end
+"#
+        .to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    let outcome = compiler.drive();
+    if !matches!(outcome, DriveOutcome::Resolved) {
+        let message = capture
+            .last(&["fz", "diag", "error"])
+            .map(|event| metadata_str(&event, "message").to_string())
+            .unwrap_or_else(|| "<missing diagnostic>".to_string());
+        panic!(
+            "native lowering should preserve distinct callable-boundary identities when the same reducer surface captures different predicates: {outcome:?}; diagnostic={message}"
+        );
+    }
+
+    let make_reducer_id = function_id(&functions, "make_reducer", 1);
+    let reducer_id = generated_functions_owned_by(&functions, make_reducer_id)
+        .into_iter()
+        .find(|record| record.arity == 2)
+        .expect("make_reducer/1 should generate the reducer lambda")
+        .function_id;
+
+    let program = native.last(root_id).program;
+    let reducer_boundaries = program
+        .callable_boundaries
+        .iter()
+        .filter(|entry| entry.target.activation.function == reducer_id)
+        .collect::<Vec<_>>();
+    assert!(
+        reducer_boundaries.iter().all(|entry| entry.capture_count == 1),
+        "the reducer callable should capture exactly one predicate closure",
+    );
+
+    let capture_identities = reducer_boundaries
+        .iter()
+        .map(|entry| entry.target.activation.input[..entry.capture_count].to_vec())
+        .collect::<HashSet<_>>();
+    assert_eq!(
+        capture_identities.len(),
+        2,
+        "the reducer lambda should keep two distinct captured predicate identities in the native callable-boundary inventory",
+    );
+
+    let mut outward_surface_groups: Vec<Vec<&crate::compiler2::artifact::NativeCallableBoundary>> = Vec::new();
+    for boundary in &reducer_boundaries {
+        if let Some(group) = outward_surface_groups.iter_mut().find(|group| {
+            let representative = group[0];
+            representative.arg_reprs == boundary.arg_reprs && representative.return_abi == boundary.return_abi
+        }) {
+            group.push(*boundary);
+        } else {
+            outward_surface_groups.push(vec![*boundary]);
+        }
+    }
+    assert!(
+        outward_surface_groups.iter().any(|group| {
+            group
+                .iter()
+                .map(|entry| entry.target.activation.input[..entry.capture_count].to_vec())
+                .collect::<HashSet<_>>()
+                .len()
+                == 2
+        }),
+        "at least one shared outward callable surface should keep both predicate capture identities distinct instead of collapsing them to one surface-only boundary",
+    );
+
+    let used_boundaries = native_callable_boundary_uses(&program);
+    let used_reducer_boundaries = reducer_boundaries
+        .iter()
+        .copied()
+        .filter(|entry| used_boundaries.contains(&entry.id()))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        used_reducer_boundaries
+            .iter()
+            .map(|entry| entry.target.activation.input[..entry.capture_count].to_vec())
+            .collect::<HashSet<_>>()
+            .len(),
+        2,
+        "native callable values should keep both captured predicate identities alive instead of collapsing them to one surface-only boundary",
     );
 }
 
@@ -3824,8 +3953,8 @@ fn compiler2_native_program_joins_callable_resume_before_materializing_closure_c
 
     let mut compiler = Compiler2::new(&tel);
     compiler.submit_code(CodeSubmission {
-        name: Some("fixtures/opaque_fn_value_join/input.fz".to_string()),
-        text: include_str!("../../fixtures/opaque_fn_value_join/input.fz").to_string(),
+        name: Some("fixtures2/behavior/opaque_fn_value_join.fz".to_string()),
+        text: include_str!("../../fixtures2/behavior/opaque_fn_value_join.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -3847,7 +3976,7 @@ fn compiler2_native_program_joins_callable_resume_before_materializing_closure_c
     let add_b_id = function_id(&functions, "add_b", 2);
     let program = native.last(root_id).program;
     let callable_functions = program
-        .callable_entries
+        .callable_boundaries
         .iter()
         .map(|entry| entry.target.activation.function)
         .collect::<HashSet<_>>();
@@ -3856,18 +3985,51 @@ fn compiler2_native_program_joins_callable_resume_before_materializing_closure_c
         "native callable inventory should include both concrete functions flowing through the case join",
     );
 
-    let branch_entry_targets = program
-        .callable_entries
-        .iter()
-        .filter_map(|entry| {
-            matches!(entry.target.activation.function, id if id == add_a_id || id == add_b_id)
-                .then_some(entry.target_fn.0 as usize)
-        })
-        .collect::<HashSet<_>>();
-    let constructor_targets = native_callable_constructor_uses(&program);
     assert!(
-        branch_entry_targets.is_subset(&constructor_targets),
-        "native constructors for both case branches should resolve to callable-entry candidates",
+        native_closure_call_targets(&program)
+            .into_iter()
+            .any(|target| target.is_none()),
+        "opaque joined function values should stay explicit closure-call seams with no exact direct target",
+    );
+}
+
+#[test]
+fn compiler2_native_program_marks_settled_singleton_closure_calls_with_exact_targets() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&[], capture.handler());
+    let native = NativeProgramCapture::new();
+    tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures2/behavior/closure_typed_captures.fz".to_string()),
+        text: include_str!("../../fixtures2/behavior/closure_typed_captures.fz").to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    let outcome = compiler.drive();
+    if !matches!(outcome, DriveOutcome::Resolved) {
+        let message = capture
+            .last(&["fz", "diag", "error"])
+            .map(|event| metadata_str(&event, "message").to_string())
+            .unwrap_or_else(|| "<missing diagnostic>".to_string());
+        panic!(
+            "settled singleton closure values should lower with an explicit exact direct target: {outcome:?}; diagnostic={message}"
+        );
+    }
+
+    let program = native.last(root_id).program;
+    assert!(
+        native_closure_call_targets(&program)
+            .into_iter()
+            .any(|target| target.is_some()),
+        "singleton closure-lits should carry their exact direct target through native lowering",
     );
 }
 
@@ -4182,15 +4344,18 @@ fn compiler2_native_program_jit_runs_spawn_then_receive_through_compiler2_codege
         vec![AbiValueRepr::ValueRef],
         "fz_spawn/1 should preserve the boxed closure-ref lane at the extern seam",
     );
-    let callable_targets = native_callable_constructor_uses(&program)
+    let callable_targets = native_callable_boundary_uses(&program)
         .into_iter()
-        .map(|target_fn| {
+        .map(|boundary_id| {
             program
-                .callable_entries
+                .callable_boundaries
                 .iter()
-                .find(|entry| entry.target_fn.0 as usize == target_fn)
+                .find(|entry| entry.id() == boundary_id)
                 .unwrap_or_else(|| {
-                    panic!("native callable constructor target fn {target_fn} missing from callable entries")
+                    panic!(
+                        "native callable boundary {:?} missing from callable inventory",
+                        boundary_id
+                    )
                 })
                 .target
                 .activation
@@ -4200,7 +4365,7 @@ fn compiler2_native_program_jit_runs_spawn_then_receive_through_compiler2_codege
     assert_eq!(
         callable_targets,
         HashSet::from([child_id]),
-        "native callable constructors should resolve to the one closed callable-entry target for child/0",
+        "native closure values should resolve to the one closed callable boundary for child/0",
     );
 
     let compiled = jit_compile_native_program(&mut compiler, &program);
@@ -4304,6 +4469,171 @@ fn compiler2_native_program_jit_runs_enum_reduce_through_compiler2_codegen() {
 }
 
 #[test]
+fn compiler2_native_program_jit_runs_enum_map_reduce_with_direct_closure_targets() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&[], capture.handler());
+    let dbg = DbgCapture::new();
+    tel.attach(&["fz", "runtime", "dbg"], dbg.handler());
+    let functions = FunctionCapture::new();
+    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    let modules = ModuleCapture::new();
+    tel.attach(&["fz", "compiler2", "module", "defined"], modules.handler());
+    let native = NativeProgramCapture::new();
+    tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures2/behavior/enum_map_reduce_exact.fz".to_string()),
+        text: "fn main() do\n  xs = [1, 2, 3, 4]\n  dbg(Enum.map_reduce(xs, 0, fn (x, acc) -> {x + acc, acc + x} end))\nend\n".to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    let outcome = compiler.drive();
+    if !matches!(outcome, DriveOutcome::Resolved) {
+        let message = capture
+            .last(&["fz", "diag", "error"])
+            .map(|event| metadata_str(&event, "message").to_string())
+            .unwrap_or_else(|| "<missing diagnostic>".to_string());
+        panic!(
+            "Compiler2 native lowering should settle Enum.map_reduce before compiler2-owned codegen consumes direct reducer targets: {outcome:?}; diagnostic={message}"
+        );
+    }
+
+    let program = native.last(root_id).program;
+    let main_id = function_id(&functions, "main", 0);
+    let enum_map_reduce_id = function_id_in_module(&functions, &modules, "Enum", "map_reduce", 3);
+    let enum_map_reduce_list_id = function_id_in_module(&functions, &modules, "Enum", "map_reduce_list", 3);
+    let reducer_id = generated_functions_owned_by(&functions, main_id)
+        .into_iter()
+        .next()
+        .expect("generated reducer")
+        .function_id;
+    eprintln!("main generated reducer fn_id={}", reducer_id.as_u32());
+    eprintln!(
+        "enum_map_reduce fn_id={} map_reduce_list fn_id={}",
+        enum_map_reduce_id.as_u32(),
+        enum_map_reduce_list_id.as_u32()
+    );
+    let reducer_executable_fn = native_executable_fn(&program, reducer_id);
+    let map_reduce_executable_fn = native_executable_fn(&program, enum_map_reduce_id);
+    let map_reduce_list_executable_fn = native_executable_fn(&program, enum_map_reduce_list_id);
+    let mut extra_fns = vec![
+        reducer_executable_fn.0,
+        map_reduce_executable_fn.0,
+        map_reduce_list_executable_fn.0,
+        7,
+        56,
+        57,
+        58,
+        59,
+    ];
+    if let Some(reducer_body) = program
+        .module
+        .fns
+        .iter()
+        .find(|function| function.id == reducer_executable_fn)
+        && let Some(crate::fz_ir::Term::TailCall {
+            callee: crate::fz_ir::DirectCallTarget::Local(next),
+            ..
+        }) = reducer_body.blocks.first().map(|block| &block.terminator)
+    {
+        extra_fns.push(next.0);
+        if let Some(clause_body) = program.module.fns.iter().find(|function| function.id == *next) {
+            for block in &clause_body.blocks {
+                if let crate::fz_ir::Term::Call {
+                    callee: crate::fz_ir::DirectCallTarget::Local(inner),
+                    continuation,
+                    ..
+                } = &block.terminator
+                {
+                    extra_fns.push(inner.0);
+                    extra_fns.push(continuation.fn_id.0);
+                    if let Some(resume_body) = program
+                        .module
+                        .fns
+                        .iter()
+                        .find(|function| function.id == continuation.fn_id)
+                    {
+                        for resume_block in &resume_body.blocks {
+                            if let crate::fz_ir::Term::Call {
+                                callee: crate::fz_ir::DirectCallTarget::Local(resume_inner),
+                                continuation: resume_cont,
+                                ..
+                            } = &resume_block.terminator
+                            {
+                                extra_fns.push(resume_inner.0);
+                                extra_fns.push(resume_cont.fn_id.0);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    eprintln!(
+        "native executable fns reducer={} map_reduce={} map_reduce_list={}",
+        reducer_executable_fn.0, map_reduce_executable_fn.0, map_reduce_list_executable_fn.0
+    );
+    for body in &program.bodies {
+        if extra_fns.contains(&body.fn_id.0)
+            || body.fn_id == reducer_executable_fn
+            || body.fn_id == map_reduce_executable_fn
+            || body.fn_id == map_reduce_list_executable_fn
+            || matches!(body.origin, NativeBodyOrigin::Continuation { owner, .. } if owner == map_reduce_list_executable_fn)
+        {
+            eprintln!(
+                "body fn={} origin={:?} entry_abi={:?} param_reprs={:?} return_abi={:?}",
+                body.fn_id.0, body.origin, body.entry_abi, body.param_reprs, body.return_abi
+            );
+        }
+    }
+    for function in &program.module.fns {
+        if extra_fns.contains(&function.id.0) {
+            eprintln!("ir fn {} {}:", function.id.0, function.name);
+            for block in &function.blocks {
+                eprintln!("  block {:?} params={:?}", block.id, block.params);
+                eprintln!("    term={:?}", block.terminator);
+            }
+        }
+    }
+    for boundary in &program.callable_boundaries {
+        if boundary.target.activation.function == reducer_id
+            || boundary.target.activation.function == enum_map_reduce_list_id
+        {
+            eprintln!(
+                "boundary id={} identity={} target_fn={} function={} capture_count={} capture_reprs={:?} arg_reprs={:?} return_abi={:?} activation_input={:?}",
+                boundary.id().as_u32(),
+                boundary.identity_fn.0,
+                boundary.target_fn.0,
+                boundary.target.activation.function.as_u32(),
+                boundary.capture_count,
+                boundary.capture_reprs,
+                boundary.arg_reprs,
+                boundary.return_abi,
+                boundary.target.activation.input
+            );
+        }
+    }
+    let compiled = jit_compile_native_program(&mut compiler, &program);
+    let _ = compiled.run(&tel, program.entry);
+    assert_eq!(
+        dbg.lines(),
+        vec!["{[1, 3, 6, 10], 10}".to_string()],
+        "compiler2-owned native codegen should preserve Enum.map_reduce when direct closure targets capture scalar lanes exactly",
+    );
+    assert_no_legacy_planner_or_type_infer(
+        &capture,
+        "Compiler2-native Enum.map_reduce JIT should not reopen legacy planning or type inference",
+    );
+}
+
+#[test]
 fn compiler2_native_program_jit_runs_source_lambda_sugars_through_compiler2_codegen() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
@@ -4315,8 +4645,8 @@ fn compiler2_native_program_jit_runs_source_lambda_sugars_through_compiler2_code
 
     let mut compiler = Compiler2::new(&tel);
     compiler.submit_code(CodeSubmission {
-        name: Some("fixtures/lambda_sugars/input.fz".to_string()),
-        text: include_str!("../../fixtures/lambda_sugars/input.fz").to_string(),
+        name: Some("fixtures2/behavior/lambda_sugars.fz".to_string()),
+        text: include_str!("../../fixtures2/behavior/lambda_sugars.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -4338,8 +4668,8 @@ fn compiler2_native_program_jit_runs_source_lambda_sugars_through_compiler2_code
 
     let program = native.last(root_id).program;
     assert!(
-        !program.callable_entries.is_empty() && !native_callable_constructor_uses(&program).is_empty(),
-        "zero-capture lambda constructors should publish callable-entry inventory for native materialization",
+        !program.callable_boundaries.is_empty() && !native_callable_boundary_uses(&program).is_empty(),
+        "zero-capture lambda constructors should publish callable-boundary inventory for native materialization",
     );
     let compiled = jit_compile_native_program(&mut compiler, &program);
     let _ = compiled.run(&tel, program.entry);
@@ -4413,8 +4743,8 @@ fn compiler2_native_program_jit_runs_map_fixture_through_compiler2_codegen() {
 
     let mut compiler = Compiler2::new(&tel);
     compiler.submit_code(CodeSubmission {
-        name: Some("fixtures/map_three_path_parity/input.fz".to_string()),
-        text: include_str!("../../fixtures/map_three_path_parity/input.fz").to_string(),
+        name: Some("fixtures2/behavior/map_three_path_parity.fz".to_string()),
+        text: include_str!("../../fixtures2/behavior/map_three_path_parity.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -4448,7 +4778,7 @@ fn compiler2_native_program_jit_keeps_tail_recursion_bounded() {
 
     let mut compiler = Compiler2::new(&tel);
     compiler.submit_code(CodeSubmission {
-        name: Some("fixtures/tail_recursion/input.fz".to_string()),
+        name: Some("fixtures2/behavior/tail_recursion.fz".to_string()),
         text: include_str!("../../fixtures2/00018_tail_recursion.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
@@ -4497,7 +4827,7 @@ fn compiler2_cont_threaded_recursion_closes_with_a_back_edge() {
 
     let mut compiler = Compiler2::new(&tel);
     compiler.submit_code(CodeSubmission {
-        name: Some("fixtures/tail_recursion/input.fz".to_string()),
+        name: Some("fixtures2/behavior/tail_recursion.fz".to_string()),
         text: include_str!("../../fixtures2/00018_tail_recursion.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
@@ -4601,6 +4931,39 @@ fn compiler2_interp_runs_enum_reduce_from_backend_artifacts() {
             && capture.find(&["fz", "planner"]).is_empty()
             && capture.find(&["fz", "codegen"]).is_empty(),
         "Compiler2 interpreter runs should not reopen legacy type inference, planning, or codegen",
+    );
+}
+
+#[test]
+fn compiler2_interp_runs_enum_with_index_mapper_from_backend_artifacts() {
+    let tel = ConfiguredTelemetry::new();
+    let dbg = DbgCapture::new();
+    tel.attach(&[], dbg.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/enum_with_index_mapper_backend_interp.fz".to_string()),
+        text: r#"
+fn main() do
+  dbg(Enum.with_index(["a", "b"], fn (x, _index) -> x <> "!" end))
+end
+"#
+        .to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    compiler.run_root_interp(root_id).unwrap_or_else(|error| {
+        panic!("Compiler2 backend interpreter should run Enum.with_index/2 with a mapper closure: {error}");
+    });
+
+    assert_eq!(
+        dbg.lines().as_slice(),
+        ["[\"a!\", \"b!\"]"],
+        "Enum.with_index/2 with a mapper should preserve the callback result for each element",
     );
 }
 
@@ -4783,8 +5146,8 @@ fn compiler2_interp_runs_selective_receive_with_make_ref_from_backend_artifacts(
 
     let mut compiler = Compiler2::new(&tel);
     compiler.submit_code(CodeSubmission {
-        name: Some("fixtures/receive_selective_refs/input.fz".to_string()),
-        text: include_str!("../../fixtures/receive_selective_refs/input.fz").to_string(),
+        name: Some("fixtures2/behavior/receive_selective_refs.fz".to_string()),
+        text: include_str!("../../fixtures2/behavior/receive_selective_refs.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -4802,6 +5165,294 @@ fn compiler2_interp_runs_selective_receive_with_make_ref_from_backend_artifacts(
         ["3"],
         "selective receive should keep sender-side misses/hits and receiver scan order intact",
     );
+}
+
+#[test]
+fn compiler2_native_receive_value_resumes_as_arithmetic_input() {
+    let tel = ConfiguredTelemetry::new();
+    let dbg = DbgCapture::new();
+    tel.attach(&[], dbg.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("receive_resume_arith.fz".to_string()),
+        text: r#"
+fn main() do
+  me = self()
+  send(me, 1)
+  value = receive do
+    x -> x
+  end
+  dbg(value + 2)
+end
+"#
+        .to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    compiler.run_root_jit(root_id).unwrap_or_else(|error| {
+        panic!("compiler2 native selective receive should resume with an arithmetic-ready value: {error}");
+    });
+
+    assert_eq!(
+        dbg.lines().as_slice(),
+        ["3"],
+        "a receive hit should resume through the outcome closure with the projected value ready for downstream arithmetic",
+    );
+}
+
+#[test]
+fn compiler2_native_program_routes_post_receive_resumes_through_delivered_continuations() {
+    let tel = ConfiguredTelemetry::new();
+    let native = NativeProgramCapture::new();
+    tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures2/behavior/receive_shared_tuple_arity.fz".to_string()),
+        text: include_str!("../../fixtures2/behavior/receive_shared_tuple_arity.fz").to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    assert_resolved(
+        compiler.drive(),
+        "receive_shared_tuple_arity should settle through native lowering before delivered-resume inspection",
+    );
+
+    let program = native.last(root_id).program;
+    let receive_body_resume_fns = program
+        .module
+        .fns
+        .iter()
+        .flat_map(|function| function.blocks.iter())
+        .flat_map(|block| match &block.terminator {
+            IrTerm::ReceiveMatched { clauses, .. } => clauses.iter().map(|clause| clause.body).collect::<Vec<_>>(),
+            _ => Vec::new(),
+        })
+        .filter_map(|clause_body_fn| {
+            let clause_body = program.module.fn_by_id(clause_body_fn);
+            let block = clause_body
+                .blocks
+                .first()
+                .expect("receive clause body should have one entry block");
+            match &block.terminator {
+                IrTerm::Call { continuation, .. } | IrTerm::CallClosure { continuation, .. } => {
+                    Some(continuation.fn_id)
+                }
+                _ => None,
+            }
+        })
+        .collect::<HashSet<_>>();
+
+    assert_eq!(
+        receive_body_resume_fns.len(),
+        2,
+        "the fixture should expose one delivered post-receive resume per receive site",
+    );
+    for resume_fn in receive_body_resume_fns {
+        let body = program
+            .bodies
+            .iter()
+            .find(|body| body.fn_id == resume_fn)
+            .unwrap_or_else(|| panic!("native body for receive resume {resume_fn:?}"));
+        assert!(
+            matches!(body.entry_abi, NativeEntryAbi::Continuation { .. }),
+            "code reached from a receive-arm call must be published as a delivered continuation, not a local direct entry: fn={resume_fn:?} origin={:?} abi={:?}",
+            body.origin,
+            body.entry_abi,
+        );
+    }
+}
+
+#[test]
+fn compiler2_native_receive_body_call_resumes_once() {
+    let tel = ConfiguredTelemetry::new();
+    let dbg = DbgCapture::new();
+    tel.attach(&[], dbg.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("receive_body_call_resume.fz".to_string()),
+        text: r#"
+fn main() do
+  me = self()
+  send(me, 20)
+  x = receive do
+    v -> v + 2
+  end
+  dbg(x)
+end
+"#
+        .to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    compiler.run_root_jit(root_id).unwrap_or_else(|error| {
+        panic!(
+            "compiler2 native receive-body call should resume once through the delivered continuation seam: {error}"
+        );
+    });
+
+    assert_eq!(
+        dbg.lines().as_slice(),
+        ["22"],
+        "a value produced by a receive-arm call should resume exactly once through the delivered continuation seam",
+    );
+}
+
+#[test]
+fn compiler2_native_receive_branch_call_resumes_once() {
+    let tel = ConfiguredTelemetry::new();
+    let dbg = DbgCapture::new();
+    tel.attach(&[], dbg.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("receive_branch_call_resume.fz".to_string()),
+        text: r#"
+fn add2(x) do
+  x + 2
+end
+
+fn main() do
+  me = self()
+  send(me, 20)
+  x = receive do
+    v ->
+      if true do
+        add2(v)
+      else
+        add2(v)
+      end
+  end
+  dbg(x)
+end
+"#
+        .to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    compiler.run_root_jit(root_id).unwrap_or_else(|error| {
+        panic!(
+            "compiler2 native receive-arm branches that call before returning should still resume exactly once: {error}"
+        );
+    });
+
+    assert_eq!(
+        dbg.lines().as_slice(),
+        ["22"],
+        "receive outcome join mode must follow the reachable control graph, not just the entry tail",
+    );
+}
+
+#[test]
+fn compiler2_native_receive_mixed_branch_resume_once() {
+    let tel = ConfiguredTelemetry::new();
+    let dbg = DbgCapture::new();
+    tel.attach(&[], dbg.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("receive_mixed_branch_resume.fz".to_string()),
+        text: r#"
+fn add2(x) do
+  x + 2
+end
+
+fn main() do
+  me = self()
+  send(me, 20)
+  x = receive do
+    v ->
+      if true do
+        add2(v)
+      else
+        v + 2
+      end
+  end
+  dbg(x)
+end
+"#
+        .to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    compiler.run_root_jit(root_id).unwrap_or_else(|error| {
+        panic!(
+            "compiler2 native receive-arm branches must resume exactly once even when one path returns directly and another resumes through an explicit continuation: {error}"
+        );
+    });
+
+    assert_eq!(
+        dbg.lines().as_slice(),
+        ["22"],
+        "receive outcome join mode must be stable across mixed direct-return and explicit-continuation paths",
+    );
+}
+
+#[test]
+fn compiler2_native_multi_relay_delivers_resume_values_through_continuation_abi() {
+    let tel = ConfiguredTelemetry::new();
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures2/behavior/multi_relay.fz".to_string()),
+        text: include_str!("../../fixtures2/behavior/multi_relay.fz").to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    compiler.run_root_jit(root_id).unwrap_or_else(|error| {
+        panic!("compiler2 native multi_relay should deliver receive results through continuation ABI: {error}");
+    });
+}
+
+#[test]
+fn compiler2_native_actor_ring_delivers_resume_values_through_continuation_abi() {
+    let tel = ConfiguredTelemetry::new();
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures2/behavior/actor_ring.fz".to_string()),
+        text: include_str!("../../fixtures2/behavior/actor_ring.fz").to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    compiler.run_root_jit(root_id).unwrap_or_else(|error| {
+        panic!("compiler2 native actor_ring should deliver receive results through continuation ABI: {error}");
+    });
 }
 
 #[test]
@@ -4856,7 +5507,7 @@ fn compiler2_interp_runs_resource_dtors_from_backend_runtime_intrinsics() {
 }
 
 #[test]
-fn compiler2_native_program_resource_fixture_shapes_callable_entries_explicitly() {
+fn compiler2_native_program_resource_fixture_shapes_callable_boundaries_explicitly() {
     let _lock = tests_support_lock().lock().unwrap();
     tests_support_dtor_reset();
 
@@ -4890,16 +5541,16 @@ fn compiler2_native_program_resource_fixture_shapes_callable_entries_explicitly(
         .next()
         .expect("generated dtor lambda")
         .function_id;
-    let callable_entries = program
-        .callable_entries
+    let callable_boundaries = program
+        .callable_boundaries
         .iter()
         .filter(|entry| entry.target.activation.function == lambda_id)
-        .map(|entry| (entry.capture_count, entry.param_reprs.clone(), entry.return_abi.clone()))
+        .map(|entry| (entry.capture_count, entry.arg_reprs.clone(), entry.return_abi.clone()))
         .collect::<Vec<_>>();
     assert_eq!(
-        callable_entries,
+        callable_boundaries,
         vec![(0, vec![AbiValueRepr::RawInt], ReturnAbi::Value(AbiValueRepr::ValueRef))],
-        "resource destructor lambdas should surface one zero-capture callable entry that takes the raw payload lane and returns through the boxed nil seam",
+        "resource destructor lambdas should surface one zero-capture callable boundary that takes the raw payload lane and returns through the boxed nil seam",
     );
     assert_eq!(
         native_executable_body(&program, lambda_id).param_reprs,
@@ -4913,23 +5564,73 @@ fn compiler2_native_program_resource_fixture_shapes_callable_entries_explicitly(
         "fz_make_resource/2 must return a boxed resource ref through the native ABI",
     );
 
-    let native_callable_entry = program
-        .callable_entries
+    let native_callable_boundary = program
+        .callable_boundaries
         .iter()
         .find(|entry| entry.target.activation.function == lambda_id)
-        .expect("native program should publish the dtor lambda callable entry");
+        .expect("native program should publish the dtor lambda callable boundary");
     let compiled = jit_compile_native_program(&mut compiler, &program);
     let static_target = compiled
         .static_closure_targets()
         .iter()
-        .find(|(_, fn_id, _, _)| *fn_id == native_callable_entry.target_fn.0)
+        .find(|(_, fn_id, _, _)| *fn_id == native_callable_boundary.target_fn.0)
         .expect("compiled JIT module should publish one static closure target for the dtor entry target");
     let body_ptr = compiled
-        .fn_ptr(native_callable_entry.target_fn)
+        .fn_ptr(native_callable_boundary.target_fn)
         .expect("compiled JIT module should publish the dtor entry target body address");
     assert_ne!(
         static_target.2, body_ptr,
-        "static closure singletons should point at callable-entry wrappers, not straight at the lambda body",
+        "static closure singletons should point at callable-boundary wrappers, not straight at the lambda body",
+    );
+}
+
+#[test]
+fn compiler2_native_codegen_materializes_the_settled_callable_boundary_for_opaque_closures() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    let native = NativeProgramCapture::new();
+    tel.attach(&["fz", "codegen", "callable_boundary_materialized"], capture.handler());
+    tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures2/behavior/closure_typed_captures.fz".to_string()),
+        text: include_str!("../../fixtures2/behavior/closure_typed_captures.fz").to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    assert_resolved(
+        compiler.drive(),
+        "closure_typed_captures should settle through native lowering before JIT consumes it",
+    );
+
+    let program = native.last(root_id).program;
+    let expected_boundary = program
+        .callable_boundaries
+        .iter()
+        .find(|boundary| {
+            boundary.capture_count == 2
+                && boundary.arg_reprs == vec![AbiValueRepr::ValueRef]
+                && boundary.return_abi == ReturnAbi::Value(AbiValueRepr::ValueRef)
+        })
+        .expect("native program should publish the widened ValueRef callable boundary for the captured lambda");
+
+    let _compiled = jit_compile_native_program(&mut compiler, &program);
+
+    let materialization = capture
+        .find(&["fz", "codegen", "callable_boundary_materialized"])
+        .into_iter()
+        .find(|event| metadata_str(event, "materialization_kind") == "make_closure")
+        .expect("JIT codegen should record one opaque closure boundary materialization for the captured lambda");
+    assert_eq!(
+        measurement_u64(&materialization, "callable_boundary_id"),
+        expected_boundary.id().as_u32() as u64,
+        "opaque closure construction should materialize the settled callable boundary instead of re-selecting a narrower executable body",
     );
 }
 
@@ -6156,10 +6857,12 @@ fn compiler2_lowered_body_keeps_clause_projections_separate_from_entry_matching(
         "destructuring heads should retain projection steps after dispatch picks the clause",
     );
     assert!(
-        clauses[0]
-            .projections
-            .iter()
-            .all(|step| matches!(step, LoweredStep::TupleField { .. } | LoweredStep::SplitList { .. })),
+        clauses[0].projections.iter().all(|step| {
+            matches!(
+                step,
+                LoweredStep::TupleField { .. } | LoweredStep::FieldAccess { .. } | LoweredStep::SplitList { .. }
+            )
+        }),
         "entry-clause lowering should keep only projection steps and not repeat matcher asserts",
     );
 }
@@ -6291,6 +6994,326 @@ fn compiler2_lowered_body_keeps_local_match_asserts_inside_the_body() {
             )
         }),
         "local match expressions should still lower their own assert steps inside the body",
+    );
+}
+
+#[test]
+fn compiler2_lowering_routes_nontail_if_join_flow_through_delivered_resume() {
+    let tel = ConfiguredTelemetry::new();
+    let outputs = OutputCapture::new();
+    tel.attach(&["fz", "compiler2", "job"], outputs.handler());
+    let functions = FunctionCapture::new();
+    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    let bodies = LoweredBodyCapture::new();
+    tel.attach(&["fz", "compiler2", "lowered_body", "defined"], bodies.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures2/00466_nontail_if_join_flow.fz".to_string()),
+        text: include_str!("../../fixtures2/00466_nontail_if_join_flow.fz").to_string(),
+    });
+    compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    assert_resolved(compiler.drive(), "first drive should index the non-tail join fixture");
+
+    let map_every_list_id = function_id(&functions, "map_every_list", 4);
+    assert!(
+        compiler.demand(Job::LowerFunction(map_every_list_id)),
+        "map_every_list/4 should be demandable for lowering",
+    );
+    assert_resolved(
+        compiler.drive(),
+        "lowering map_every_list/4 should publish the non-tail branch join shape",
+    );
+
+    let lowered_outputs = outputs
+        .take(Job::LowerFunction(map_every_list_id))
+        .expect("LowerFunction job effects for map_every_list/4");
+    assert!(
+        lowered_outputs
+            .iter()
+            .any(|(fact, _)| *fact == FactKey::LoweredBody(map_every_list_id)),
+        "lowering map_every_list/4 should surface its lowered body fact",
+    );
+
+    let body = lowered_body(&bodies, map_every_list_id);
+    let LoweredBody::Clauses { entries, .. } = body else {
+        panic!("map_every_list/4 should lower as clauses");
+    };
+
+    let closure_join = entries.iter().find_map(|entry| match &entry.tail {
+        LoweredTail::ClosureCall {
+            dest: crate::compiler2::ControlDestination::Deliver(entry_id),
+            ..
+        } => Some(*entry_id),
+        _ => None,
+    });
+    let value_join = entries.iter().find_map(|entry| match &entry.tail {
+        LoweredTail::Value {
+            dest: crate::compiler2::ControlDestination::Deliver(entry_id),
+            ..
+        } => Some(*entry_id),
+        _ => None,
+    });
+
+    let join_id = closure_join.expect("non-tail join fixture should deliver a closure-call result to a join");
+    assert_eq!(
+        Some(join_id),
+        value_join,
+        "the closure-call and passthrough value branches should reconverge at the same join entry",
+    );
+    assert!(
+        matches!(
+            entries[join_id.as_u32() as usize].origin,
+            ControlEntryOrigin::DeliveredResume { .. }
+        ),
+        "a join reached by a closure-call result should publish itself as a delivered resume, not a local helper",
+    );
+}
+
+#[test]
+fn compiler2_native_program_routes_nontail_if_join_flow_through_continuation_entries() {
+    let tel = ConfiguredTelemetry::new();
+    let native = NativeProgramCapture::new();
+    tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures2/00466_nontail_if_join_flow.fz".to_string()),
+        text: include_str!("../../fixtures2/00466_nontail_if_join_flow.fz").to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    assert_resolved(
+        compiler.drive(),
+        "non-tail join fixture should settle before native continuation inspection",
+    );
+
+    let program = native.last(root_id).program;
+    let closure_continuations = program
+        .module
+        .fns
+        .iter()
+        .filter(|function| function.name.contains("map_every_list"))
+        .flat_map(|function| function.blocks.iter())
+        .filter_map(|block| match &block.terminator {
+            IrTerm::CallClosure { continuation, .. } => Some(continuation.fn_id),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+
+    assert!(
+        !closure_continuations.is_empty(),
+        "the non-tail join fixture should contain at least one closure-call continuation in native IR",
+    );
+
+    for continuation_fn in closure_continuations {
+        let body = program
+            .bodies
+            .iter()
+            .find(|body| body.fn_id == continuation_fn)
+            .unwrap_or_else(|| panic!("native body for continuation {:?} missing", continuation_fn));
+        assert!(
+            matches!(body.entry_abi, NativeEntryAbi::Continuation { .. }),
+            "closure-call continuation {:?} should publish a continuation entry ABI, got {:?}",
+            continuation_fn,
+            body.entry_abi,
+        );
+    }
+}
+
+#[test]
+fn compiler2_native_program_transports_reusable_cons_caps_through_delivered_continuations() {
+    let tel = ConfiguredTelemetry::new();
+    let native = NativeProgramCapture::new();
+    tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("reusable_cons_continuation.fz".to_string()),
+        text: r#"
+fn ping(x), do: x
+
+fn rebuild(xs) do
+  [h | t] = xs
+  ping(0)
+  [h | t]
+end
+
+fn main(), do: rebuild([1, 2])
+"#
+        .to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    assert_resolved(
+        compiler.drive(),
+        "reusable-cons continuation fixture should settle before native lowering inspection",
+    );
+
+    let program = native.last(root_id).program;
+    let continuation = program
+        .bodies
+        .iter()
+        .find(|body| matches!(body.origin, NativeBodyOrigin::Continuation { .. }))
+        .expect("the non-tail call should lower through a continuation helper");
+    let function = program.module.fn_by_id(continuation.fn_id);
+
+    assert!(
+        matches!(continuation.entry_abi, NativeEntryAbi::Continuation { extra_params: 1 }),
+        "the helper should resume with one delivered result before its captures, got {:?}",
+        continuation.entry_abi,
+    );
+    assert_eq!(
+        function.block(function.entry).params,
+        vec![
+            crate::fz_ir::Var(0),
+            crate::fz_ir::Var(1),
+            crate::fz_ir::Var(2),
+            crate::fz_ir::Var(3)
+        ],
+        "the continuation should append one hidden physical source param after its semantic params",
+    );
+    assert_eq!(
+        function.physical_entry_params,
+        vec![crate::fz_ir::Var(3)],
+        "the hidden source-cons param should be marked physical on the entry",
+    );
+    assert_eq!(
+        function.physical_capabilities,
+        vec![crate::fz_ir::PhysicalCapabilityFact {
+            source: crate::fz_ir::Var(3),
+            capability: PhysicalCapability::ReusableConsCell {
+                rebuilt_head: crate::fz_ir::Var(1),
+            },
+        }],
+        "the continuation should restore the reusable-cons fact for its captured head",
+    );
+    assert_eq!(
+        function.semantic_entry_params(),
+        vec![crate::fz_ir::Var(0), crate::fz_ir::Var(1), crate::fz_ir::Var(2)],
+        "semantic entry params must ignore the hidden physical capture",
+    );
+}
+
+#[test]
+fn compiler2_lowered_body_records_reusable_cons_capture_requirements_on_delivered_entries() {
+    let tel = ConfiguredTelemetry::new();
+    let functions = FunctionCapture::new();
+    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    let bodies = LoweredBodyCapture::new();
+    tel.attach(&["fz", "compiler2", "lowered_body", "defined"], bodies.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    let code_id = compiler.submit_code(CodeSubmission {
+        name: Some("reusable_cons_continuation.fz".to_string()),
+        text: r#"
+fn ping(x), do: x
+
+fn rebuild(xs) do
+  [h | t] = xs
+  ping(0)
+  [h | t]
+end
+"#
+        .to_string(),
+    });
+
+    assert_resolved(compiler.drive(), "reusable-cons fixture should index cleanly");
+    assert!(
+        compiler.demand(Job::ScopeCode(code_id)),
+        "reusable-cons fixture still needs function definition before lowered-body inspection",
+    );
+    assert_resolved(
+        compiler.drive(),
+        "reusable-cons fixture should define its functions cleanly",
+    );
+
+    let rebuild_id = function_id(&functions, "rebuild", 1);
+    assert!(
+        compiler.demand(Job::LowerFunction(rebuild_id)),
+        "rebuild/1 should be demandable for lowered-body inspection",
+    );
+    assert_resolved(
+        compiler.drive(),
+        "lowering rebuild/1 should publish reusable-cons capture metadata on its entries",
+    );
+
+    let body = lowered_body(&bodies, rebuild_id);
+    let LoweredBody::Clauses { clauses, entries, .. } = body else {
+        panic!("rebuild/1 should lower as clauses");
+    };
+    let continuation = entries
+        .iter()
+        .find(|entry| matches!(entry.origin, ControlEntryOrigin::DeliveredResume { .. }))
+        .expect("the non-tail call should lower through a delivered-resume entry");
+    assert_eq!(
+        continuation.reusable_cons_captures.len(),
+        1,
+        "the delivered entry should declare exactly the one reusable list cell it must receive",
+    );
+
+    let capture = continuation.reusable_cons_captures[0];
+    assert!(
+        continuation.captures.contains(&capture.head),
+        "the hidden physical capture should be paired with a semantic capture for the rebuilt head",
+    );
+
+    let source = clauses
+        .iter()
+        .flat_map(|clause| clause.projections.iter())
+        .chain(entries.iter().flat_map(|entry| entry.steps.iter()))
+        .find_map(|step| match step {
+            LoweredStep::SplitList { source, head, .. } if *head == capture.head => Some(*source),
+            _ => None,
+        });
+    assert_eq!(
+        source,
+        Some(capture.source),
+        "the delivered entry should capture the exact source cons paired with its rebuilt head",
+    );
+}
+
+#[test]
+fn compiler2_native_program_jit_runs_nontail_if_join_flow_through_compiler2_codegen() {
+    let tel = ConfiguredTelemetry::new();
+    let dbg = DbgCapture::new();
+    tel.attach(&["fz", "runtime", "dbg"], dbg.handler());
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures2/00466_nontail_if_join_flow.fz".to_string()),
+        text: include_str!("../../fixtures2/00466_nontail_if_join_flow.fz").to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    compiler.run_root_jit(root_id).unwrap_or_else(|error| {
+        panic!("compiler2 native codegen should run the non-tail join fixture end-to-end: {error}");
+    });
+
+    assert_eq!(
+        dbg.lines().as_slice(),
+        ["[100, 2, 300, 4]"],
+        "a branch that joins a closure-call result with a passthrough value should still rebuild the list correctly",
     );
 }
 
@@ -8811,12 +9834,25 @@ fn native_executable_body(program: &NativeProgram, function: FunctionId) -> &cra
         .unwrap_or_else(|| panic!("native executable body for {function:?}"))
 }
 
-fn native_callable_constructor_uses(program: &NativeProgram) -> HashSet<usize> {
+fn native_closure_call_targets(program: &NativeProgram) -> Vec<Option<FnId>> {
+    let mut out = Vec::new();
+    for function in &program.module.fns {
+        for block in &function.blocks {
+            match &block.terminator {
+                IrTerm::CallClosure { direct_target, .. } | IrTerm::TailCallClosure { direct_target, .. } => {
+                    out.push(*direct_target);
+                }
+                _ => {}
+            }
+        }
+    }
+    out
+}
+
+fn native_callable_boundary_uses(program: &NativeProgram) -> HashSet<NativeCallableBoundaryId> {
     let mut out = HashSet::new();
     for body in &program.bodies {
-        for entries in body.callable_constructors.values() {
-            out.extend(entries.iter().copied());
-        }
+        out.extend(body.callable_value_boundaries.values().copied());
     }
     out
 }
@@ -8835,7 +9871,7 @@ fn native_programs_match(left: &NativeProgram, right: &NativeProgram) -> bool {
     left.backend_revision == right.backend_revision
         && left.entry == right.entry
         && left.bodies == right.bodies
-        && left.callable_entries == right.callable_entries
+        && left.callable_boundaries == right.callable_boundaries
         && native_modules_match(&left.module, &right.module)
 }
 
@@ -8985,34 +10021,40 @@ fn native_terms_match(left: &IrTerm, right: &IrTerm) -> bool {
                 closure: left_closure,
                 args: left_args,
                 continuation: left_cont,
+                direct_target: left_direct_target,
             },
             IrTerm::CallClosure {
                 ident: right_ident,
                 closure: right_closure,
                 args: right_args,
                 continuation: right_cont,
+                direct_target: right_direct_target,
             },
         ) => {
             native_callsite_idents_match(left_ident, right_ident)
                 && left_closure == right_closure
                 && left_args == right_args
                 && native_conts_match(left_cont, right_cont)
+                && left_direct_target == right_direct_target
         }
         (
             IrTerm::TailCallClosure {
                 ident: left_ident,
                 closure: left_closure,
                 args: left_args,
+                direct_target: left_direct_target,
             },
             IrTerm::TailCallClosure {
                 ident: right_ident,
                 closure: right_closure,
                 args: right_args,
+                direct_target: right_direct_target,
             },
         ) => {
             native_callsite_idents_match(left_ident, right_ident)
                 && left_closure == right_closure
                 && left_args == right_args
+                && left_direct_target == right_direct_target
         }
         (IrTerm::Return(left_var), IrTerm::Return(right_var)) | (IrTerm::Halt(left_var), IrTerm::Halt(right_var)) => {
             left_var == right_var
@@ -9660,7 +10702,7 @@ fn compiler2_quicksort_cli_builds_are_stable_smoke() {
         binary.exists(),
         "build the release binary first: cargo build --release --bin fz2",
     );
-    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/quicksort/input.fz");
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures2/behavior/quicksort.fz");
     let mut line_counts = Vec::new();
     for run in 0..20 {
         let dir = std::env::temp_dir().join(format!("fz2-smoke-{run}"));
@@ -9828,4 +10870,42 @@ fn compiler2_numeric_literal_in_type_position_widens_with_a_warning() {
         .map(|def| def.rendered.clone())
         .expect("digit resolves");
     assert_eq!(digit, "int", "the literal type means its kind");
+}
+#[test]
+fn compiler2_native_program_jit_adapts_callable_raw_returns_back_to_value_refs() {
+    let tel = ConfiguredTelemetry::new();
+    let dbg = DbgCapture::new();
+    tel.attach(&[], dbg.handler());
+    let native = NativeProgramCapture::new();
+    tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures2/behavior/repr_seam_closure_predicate.fz".to_string()),
+        text: include_str!("../../fixtures2/behavior/repr_seam_closure_predicate.fz").to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    assert_resolved(
+        compiler.drive(),
+        "native lowering should preserve callable return seams for closure predicates and reducers",
+    );
+
+    let program = native.last(root_id).program;
+    let compiled = jit_compile_native_program(&mut compiler, &program);
+    assert_eq!(
+        compiled.run(&tel, program.entry),
+        2,
+        "the fixture should still return the final count after native callable-entry adaptation",
+    );
+    assert_eq!(
+        dbg.lines().as_slice(),
+        ["false", "false", "true", ":no", "2", "2", "2"],
+        "callable-entry adapters should box raw predicate/reducer returns back onto the ValueRef callable seam",
+    );
 }

@@ -53,13 +53,7 @@ pub(crate) fn linked_runtime_graph(src: &str, tel: &dyn Telemetry) -> crate::com
     let mut compiler = crate::compiler::Compiler::new();
     let mut world = crate::compiler::World::new();
     compiler
-        .prepare_execution_graph_from_source(
-            &mut world,
-            src.to_string(),
-            "test_fixture.fz".to_string(),
-            tel,
-            CompileMode::Normal,
-        )
+        .prepare_execution_graph_from_source(&mut world, src.to_string(), "test_fixture.fz", tel, CompileMode::Normal)
         .unwrap_or_else(|err| panic!("execution graph: {err}"));
     world
 }

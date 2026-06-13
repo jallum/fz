@@ -17,7 +17,7 @@ use crate::dispatch_matrix::{ComparisonValue, DispatchConst, DispatchNode, Proje
 
 use super::super::artifact::{
     AbiValueRepr, BackendBody, BackendCallArg, BackendCallableEntry, BackendClause, BackendEntry, BackendEntryOrigin,
-    BackendExecutable, BackendProgram, BackendStep, BackendTail, CallTarget, ReturnAbi,
+    BackendExecutable, BackendProgram, BackendStep, BackendTail, ReturnAbi,
 };
 use super::super::body::{
     CallArg, CallSiteId, ControlDestination, ControlEntryOrigin, LoweredBody, LoweredClause, LoweredEntry, LoweredStep,
@@ -37,7 +37,7 @@ use super::super::world::World;
 /// or backend-specific discovery.
 pub(super) fn lower_backend_program(world: &mut World<'_>, root_id: RootId) -> Result<JobEffects, FatalError> {
     let emission_ready_fact = FactKey::EmissionReadyProgram(root_id);
-    let Some(emission_ready_revision) = world.fact_revision(emission_ready_fact.clone()) else {
+    let Some(emission_ready_revision) = world.fact_revision(&emission_ready_fact) else {
         return Ok(JobEffects::wait_on_settled(
             emission_ready_fact,
             [Job::DeriveEmissionReady(root_id)],
@@ -45,7 +45,7 @@ pub(super) fn lower_backend_program(world: &mut World<'_>, root_id: RootId) -> R
     };
 
     let emission_ready = world.emission_ready_program(root_id);
-    let mut lowerer = BackendLowerer::new(world, root_id, &emission_ready);
+    let mut lowerer = BackendLowerer::new(world, root_id);
     let executables = emission_ready
         .executables
         .iter()
@@ -57,7 +57,8 @@ pub(super) fn lower_backend_program(world: &mut World<'_>, root_id: RootId) -> R
         .map(|entry| BackendCallableEntry {
             target: entry.target,
             capture_count: entry.capture_count,
-            param_reprs: entry.param_reprs.clone(),
+            capture_reprs: entry.capture_reprs.clone(),
+            arg_reprs: entry.arg_reprs.clone(),
             return_ty: entry.return_ty,
             return_abi: entry.return_abi.clone(),
         })
@@ -88,20 +89,11 @@ pub(super) fn lower_backend_program(world: &mut World<'_>, root_id: RootId) -> R
 struct BackendLowerer<'a, 'tel> {
     world: &'a mut World<'tel>,
     root_id: RootId,
-    program: &'a super::super::artifact::EmissionReadyProgram,
 }
 
 impl<'a, 'tel> BackendLowerer<'a, 'tel> {
-    fn new(
-        world: &'a mut World<'tel>,
-        root_id: RootId,
-        program: &'a super::super::artifact::EmissionReadyProgram,
-    ) -> Self {
-        Self {
-            world,
-            root_id,
-            program,
-        }
+    fn new(world: &'a mut World<'tel>, root_id: RootId) -> Self {
+        Self { world, root_id }
     }
 
     fn lower_executable(
@@ -134,8 +126,7 @@ impl<'a, 'tel> BackendLowerer<'a, 'tel> {
                 entries,
                 generated,
             } => {
-                let resume_abis =
-                    entry_input_abis(self.world, self.root_id, self.program, executable, entries, clauses)?;
+                let resume_abis = entry_input_abis(self.world, executable, entries, clauses)?;
                 Ok(BackendBody::Clauses {
                     clauses: clauses
                         .iter()
@@ -181,6 +172,14 @@ impl<'a, 'tel> BackendLowerer<'a, 'tel> {
             origin: lower_entry_origin(entry_index, entry, resume_abis),
             params: entry.params.clone(),
             captures: entry.captures.clone(),
+            reusable_cons_captures: entry
+                .reusable_cons_captures
+                .iter()
+                .map(|capture| super::super::artifact::ReusableConsCapture {
+                    head: capture.head,
+                    source: capture.source,
+                })
+                .collect(),
             steps: entry
                 .steps
                 .iter()
@@ -397,6 +396,7 @@ impl<'a, 'tel> BackendLowerer<'a, 'tel> {
                 dispatch: receive.dispatch.clone(),
                 clauses: receive.clauses.clone(),
                 after: receive.after.clone(),
+                dest: receive.dest.clone(),
             })),
             LoweredTail::Halt { atom } => BackendTail::Halt { atom: atom.clone() },
         })
@@ -421,21 +421,18 @@ fn lower_entry_origin(
     match entry.origin {
         ControlEntryOrigin::Clause => BackendEntryOrigin::Clause,
         ControlEntryOrigin::Branch => BackendEntryOrigin::Branch,
-        ControlEntryOrigin::Receive => BackendEntryOrigin::Receive,
-        ControlEntryOrigin::CallResume { value } => BackendEntryOrigin::CallResume {
+        ControlEntryOrigin::ReceiveOutcome => BackendEntryOrigin::ReceiveOutcome,
+        ControlEntryOrigin::DeliveredResume { value } => BackendEntryOrigin::DeliveredResume {
             value,
             return_abi: resume_abis[entry_index]
                 .clone()
                 .unwrap_or_else(|| panic!("resume entry {entry_index} should have a settled input ABI: {entry:?}")),
         },
-        ControlEntryOrigin::LocalResume { value } => BackendEntryOrigin::LocalResume { value },
     }
 }
 
 fn entry_input_abis(
     world: &mut World<'_>,
-    root_id: RootId,
-    program: &super::super::artifact::EmissionReadyProgram,
     executable: &super::super::artifact::EmissionReadyExecutable,
     entries: &[LoweredEntry],
     clauses: &[LoweredClause],
@@ -447,23 +444,20 @@ fn entry_input_abis(
             executable,
             entries,
             clause.entry,
-            executable.return_abi.clone(),
+            &executable.return_abi,
             &mut needs,
         );
     }
     let mut out = vec![None; entries.len()];
     for (index, entry) in entries.iter().enumerate() {
-        if let ControlEntryOrigin::CallResume { value } = entry.origin
+        if let Some(value) = entry.origin.input_value()
             && let Some(need) = needs[index]
         {
             out[index] = Some(return_abi_for_resume_input(world, executable, value, need));
         }
     }
-    for entry in entries {
-        publish_entry_input_abis(world, root_id, program, executable, entries, entry, &needs, &mut out)?;
-    }
     for (index, entry) in entries.iter().enumerate() {
-        if let ControlEntryOrigin::CallResume { value } = entry.origin
+        if let Some(value) = entry.origin.input_value()
             && out[index].is_none()
         {
             out[index] = Some(return_abi_for_resume_input(
@@ -482,7 +476,7 @@ fn collect_entry_input_need(
     executable: &super::super::artifact::EmissionReadyExecutable,
     entries: &[LoweredEntry],
     entry_id: super::super::body::ControlEntryId,
-    outgoing_need: ReturnAbi,
+    outgoing_need: &ReturnAbi,
     out: &mut [Option<ExecutableNeed>],
 ) -> ExecutableNeed {
     let entry = &entries[entry_id.as_u32() as usize];
@@ -492,7 +486,7 @@ fn collect_entry_input_need(
         LoweredTail::Value { value, dest } => {
             used_values.insert(*value);
             if let ExecutableNeed::TupleFields(arity) =
-                destination_need(world, executable, entries, dest, outgoing_need.clone(), out)
+                destination_need(world, executable, entries, dest, outgoing_need, out)
             {
                 tuple_demands.insert(*value, arity);
             }
@@ -501,14 +495,14 @@ fn collect_entry_input_need(
             for arg in args {
                 used_values.insert(arg.value);
             }
-            let _ = destination_need(world, executable, entries, dest, outgoing_need.clone(), out);
+            let _ = destination_need(world, executable, entries, dest, outgoing_need, out);
         }
         LoweredTail::ClosureCall { callee, args, dest, .. } => {
             used_values.insert(*callee);
             for arg in args {
                 used_values.insert(arg.value);
             }
-            let _ = destination_need(world, executable, entries, dest, outgoing_need.clone(), out);
+            let _ = destination_need(world, executable, entries, dest, outgoing_need, out);
         }
         LoweredTail::If {
             cond,
@@ -517,7 +511,7 @@ fn collect_entry_input_need(
             ..
         } => {
             used_values.insert(*cond);
-            let _ = collect_entry_input_need(world, executable, entries, *then_entry, outgoing_need.clone(), out);
+            let _ = collect_entry_input_need(world, executable, entries, *then_entry, outgoing_need, out);
             let _ = collect_entry_input_need(world, executable, entries, *else_entry, outgoing_need, out);
         }
         LoweredTail::Dispatch {
@@ -529,7 +523,7 @@ fn collect_entry_input_need(
             used_values.extend(bindings.pinned.iter().copied());
             used_values.extend(bindings.prepared.iter().copied());
             for arm_entry in &dispatch.arm_entries {
-                let _ = collect_entry_input_need(world, executable, entries, *arm_entry, outgoing_need.clone(), out);
+                let _ = collect_entry_input_need(world, executable, entries, *arm_entry, outgoing_need, out);
             }
             let _ = collect_entry_input_need(world, executable, entries, dispatch.miss_entry, outgoing_need, out);
         }
@@ -538,7 +532,7 @@ fn collect_entry_input_need(
             used_values.extend(bindings.pinned.iter().copied());
             used_values.extend(bindings.prepared.iter().copied());
             for clause in &receive.clauses {
-                let _ = collect_entry_input_need(world, executable, entries, clause.entry, outgoing_need.clone(), out);
+                let _ = collect_entry_input_need(world, executable, entries, clause.entry, outgoing_need, out);
             }
             if let Some(after) = &receive.after {
                 used_values.insert(after.timeout);
@@ -597,7 +591,7 @@ fn collect_entry_input_need(
             .map(ExecutableNeed::TupleFields)
             .or_else(|| used_values.contains(&value).then_some(ExecutableNeed::Value))
     });
-    if matches!(entry.origin, ControlEntryOrigin::CallResume { .. }) {
+    if entry.origin.input_value().is_some() {
         out[entry_id.as_u32() as usize] = input_need;
     }
     input_need.unwrap_or(ExecutableNeed::Value)
@@ -685,111 +679,16 @@ fn destination_need(
     executable: &super::super::artifact::EmissionReadyExecutable,
     entries: &[LoweredEntry],
     dest: &ControlDestination,
-    outgoing_need: ReturnAbi,
+    outgoing_need: &ReturnAbi,
     out: &mut [Option<ExecutableNeed>],
 ) -> ExecutableNeed {
     match dest {
         ControlDestination::Return => match outgoing_need {
             ReturnAbi::Value(_) => ExecutableNeed::Value,
-            ReturnAbi::TupleFields(ref reprs) => ExecutableNeed::TupleFields(reprs.len()),
+            ReturnAbi::TupleFields(reprs) => ExecutableNeed::TupleFields(reprs.len()),
         },
         ControlDestination::Deliver(entry_id) => {
             collect_entry_input_need(world, executable, entries, *entry_id, outgoing_need, out)
-        }
-    }
-}
-
-fn publish_entry_input_abis(
-    world: &mut World<'_>,
-    root_id: RootId,
-    program: &super::super::artifact::EmissionReadyProgram,
-    executable: &super::super::artifact::EmissionReadyExecutable,
-    entries: &[LoweredEntry],
-    entry: &LoweredEntry,
-    needs: &[Option<ExecutableNeed>],
-    out: &mut [Option<ReturnAbi>],
-) -> Result<(), FatalError> {
-    match &entry.tail {
-        LoweredTail::Value { value, dest } => {
-            if let ControlDestination::Deliver(target) = dest
-                && matches!(
-                    entries[target.as_u32() as usize].origin,
-                    ControlEntryOrigin::CallResume { .. }
-                )
-            {
-                let need = needs[target.as_u32() as usize].unwrap_or(ExecutableNeed::Value);
-                let abi = return_abi_for_resume_input(world, executable, *value, need);
-                merge_resume_abi(world, root_id, *target, abi, out)?;
-            }
-        }
-        LoweredTail::DirectCall { callsite, dest, .. } => {
-            if let ControlDestination::Deliver(target) = dest
-                && matches!(
-                    entries[target.as_u32() as usize].origin,
-                    ControlEntryOrigin::CallResume { .. }
-                )
-            {
-                let edge = call_edge(executable, *callsite).ok_or_else(|| {
-                    incomplete_backend_program(
-                        world,
-                        root_id,
-                        format!(
-                            "missing settled call edge while deriving resume ABI for callsite {}",
-                            callsite.as_u32()
-                        ),
-                    )
-                })?;
-                let abi = match edge.callee {
-                    CallTarget::Local(callee) => program.executables[callee].return_abi.clone(),
-                    CallTarget::ProviderBoundary(_) => ReturnAbi::Value(AbiValueRepr::ValueRef),
-                };
-                merge_resume_abi(world, root_id, *target, abi, out)?;
-            }
-        }
-        LoweredTail::ClosureCall { callsite, dest, .. } => {
-            if let ControlDestination::Deliver(target) = dest
-                && matches!(
-                    entries[target.as_u32() as usize].origin,
-                    ControlEntryOrigin::CallResume { .. }
-                )
-            {
-                let abi = call_edge(executable, *callsite)
-                    .map(|edge| match edge.callee {
-                        CallTarget::Local(callee) => program.executables[callee].return_abi.clone(),
-                        CallTarget::ProviderBoundary(_) => ReturnAbi::Value(AbiValueRepr::ValueRef),
-                    })
-                    .unwrap_or(ReturnAbi::Value(AbiValueRepr::ValueRef));
-                merge_resume_abi(world, root_id, *target, abi, out)?;
-            }
-        }
-        LoweredTail::If { .. } | LoweredTail::Dispatch { .. } | LoweredTail::Receive(_) | LoweredTail::Halt { .. } => {}
-    }
-    Ok(())
-}
-
-fn merge_resume_abi(
-    world: &World<'_>,
-    root_id: RootId,
-    entry_id: super::super::body::ControlEntryId,
-    abi: ReturnAbi,
-    out: &mut [Option<ReturnAbi>],
-) -> Result<(), FatalError> {
-    let slot = &mut out[entry_id.as_u32() as usize];
-    match slot {
-        Some(existing) if *existing != abi => Err(incomplete_backend_program(
-            world,
-            root_id,
-            format!(
-                "resume entry {} received conflicting input ABIs: {:?} vs {:?}",
-                entry_id.as_u32(),
-                existing,
-                abi
-            ),
-        )),
-        Some(_) => Ok(()),
-        None => {
-            *slot = Some(abi);
-            Ok(())
         }
     }
 }
@@ -800,18 +699,21 @@ fn return_abi_for_resume_input(
     value: ValueId,
     need: ExecutableNeed,
 ) -> ReturnAbi {
+    let fallback_ty = executable
+        .value_types
+        .get(&value)
+        .copied()
+        .unwrap_or_else(|| world.types_mut().any());
     match need {
         ExecutableNeed::Value => ReturnAbi::Value(
             executable
                 .value_reprs
                 .get(&value)
                 .copied()
-                .unwrap_or_else(|| backend_value_repr(world, executable.value_types[&value])),
+                .unwrap_or_else(|| backend_value_repr(world, fallback_ty)),
         ),
         ExecutableNeed::TupleFields(arity) => {
-            let field_tys = world
-                .types_mut()
-                .tuple_projections(&executable.value_types[&value], arity);
+            let field_tys = world.types_mut().tuple_projections(&fallback_ty, arity);
             let reprs = field_tys
                 .into_iter()
                 .map(|ty| backend_value_repr(world, ty))

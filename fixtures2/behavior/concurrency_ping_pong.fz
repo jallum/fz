@@ -1,0 +1,11 @@
+#---
+# purpose: "spawn + send + receive — parent blocks on receive, prints the message"
+# paths: [fz2-run, fz2-interp, fz2-build]
+#---
+fn child(), do: send(1, 42)
+
+fn main() do
+  spawn(child)
+  got = receive do x -> x end
+  assert(got == 42, "parent blocks on receive until the child sends")
+end

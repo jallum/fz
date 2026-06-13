@@ -1,0 +1,25 @@
+#---
+# purpose: "fibonacci via two-accumulator tail recursion — three-clause dispatch + tail-call forwarding under load"
+# paths: [fz2-run, fz2-interp, fz2-build]
+# budget.codegen.functions: 9
+# budget.codegen.instructions: 172
+# budget.specs.count: 9
+# budget.planner.worklist_pops: 9
+# budget.planner.walk_calls: 9
+# budget.planner.type_fn_calls: 9
+# budget.planner.matcher_specs: 0
+# budget.planner.vars: 37
+# budget.planner.blocks: 14
+# budget.planner.stmts: 23
+# budget.planner.dispatches: 12
+#---
+fn fib(0, a, _), do: a
+fn fib(1, _, b), do: b
+fn fib(n, a, b), do: fib(n - 1, b, a + b)
+
+fn main() do
+  dbg(fib(0, 0, 1))
+  dbg(fib(1, 0, 1))
+  dbg(fib(10, 0, 1))
+  dbg(fib(20, 0, 1))
+end

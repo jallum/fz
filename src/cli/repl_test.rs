@@ -789,7 +789,7 @@ fn run_script_str_accepts_program_with_main() {
 // PICKED: multi-process relay program runs through scheduler correctly
 #[test]
 fn run_script_str_uses_scheduler_backed_relay() {
-    let src = std::fs::read_to_string("fixtures/relay/input.fz").expect("read relay fixture");
+    let src = std::fs::read_to_string("fixtures2/behavior/relay.fz").expect("read relay fixture");
     run_script_str(&src).expect("relay should run through ir_interp-backed ReplSession");
 }
 

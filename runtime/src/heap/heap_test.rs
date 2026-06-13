@@ -649,25 +649,7 @@ fn published_ref_alias_marking_ignores_non_list_refs_and_empty_list() {
 }
 
 #[test]
-fn unaliased_list_cons_can_be_relinked_in_place() {
-    let mut h = Heap::new(1024, empty_registry());
-    let old_tail = alloc_int_list_cons(&mut h, 1, EMPTY_LIST);
-    let new_tail = alloc_int_list_cons(&mut h, 2, EMPTY_LIST);
-    let head = alloc_int_list_cons(&mut h, 0, old_tail);
-
-    let out = h
-        .relink_unaliased_list_cons_tail(list_ref_from_bits(head), list_ref_from_bits(new_tail))
-        .expect("relink");
-
-    assert_eq!(out, list_ref_from_bits(head));
-    let cons = unsafe { &*(list_addr_from_tagged(head).unwrap() as *const ListCons) };
-    assert_eq!(cons.head as i64, 0);
-    assert_eq!(cons.tail_bits(), new_tail);
-    assert!(!cons.aliased());
-}
-
-#[test]
-fn unaliased_reuse_or_alloc_relinks_in_place() {
+fn unaliased_reuse_or_alloc_rewrites_cons_in_place() {
     let mut h = Heap::new(1024, empty_registry());
     h.reset_alloc_stats();
     let old_tail = alloc_int_list_cons(&mut h, 1, EMPTY_LIST);
@@ -676,34 +658,25 @@ fn unaliased_reuse_or_alloc_relinks_in_place() {
     let before = h.alloc_stats_snapshot().list_cons.allocs;
 
     let out = h
-        .reuse_or_alloc_list_cons_tail(list_ref_from_bits(head), list_ref_from_bits(new_tail))
+        .reuse_or_alloc_list_cons_raw_kind(
+            list_ref_from_bits(head),
+            7,
+            ValueKind::ATOM,
+            list_ref_from_bits(new_tail),
+        )
         .expect("reuse");
 
     assert_eq!(out, list_ref_from_bits(head));
     assert_eq!(h.alloc_stats_snapshot().list_cons.allocs, before);
     let cons = unsafe { &*(list_addr_from_tagged(head).unwrap() as *const ListCons) };
-    assert_eq!(cons.head as i64, 0);
+    assert_eq!(cons.head as i64, 7);
+    assert_eq!(cons.head_kind(), ValueKind::ATOM);
     assert_eq!(cons.tail_bits(), new_tail);
     assert!(!cons.aliased());
 }
 
 #[test]
-#[should_panic(expected = "cannot destructively relink aliased list cons")]
-fn aliased_list_cons_rejects_destructive_relink() {
-    let mut h = Heap::new(1024, empty_registry());
-    let old_tail = alloc_int_list_cons(&mut h, 1, EMPTY_LIST);
-    let new_tail = alloc_int_list_cons(&mut h, 2, EMPTY_LIST);
-    let head = alloc_int_list_cons(&mut h, 0, old_tail);
-    let head_ref = list_ref_from_bits(head);
-    h.mark_list_cons_aliased(head_ref).expect("mark aliased");
-
-    let _ = h
-        .relink_unaliased_list_cons_tail(head_ref, list_ref_from_bits(new_tail))
-        .expect("relink must panic before returning");
-}
-
-#[test]
-fn aliased_reuse_or_alloc_allocates_fresh_cons() {
+fn aliased_reuse_or_alloc_allocates_fresh_cons_without_mutating_original() {
     let mut h = Heap::new(1024, empty_registry());
     let old_tail = alloc_int_list_cons(&mut h, 1, EMPTY_LIST);
     let new_tail = alloc_int_list_cons(&mut h, 2, EMPTY_LIST);
@@ -713,7 +686,35 @@ fn aliased_reuse_or_alloc_allocates_fresh_cons() {
     h.reset_alloc_stats();
 
     let out = h
-        .reuse_or_alloc_list_cons_tail(head_ref, list_ref_from_bits(new_tail))
+        .reuse_or_alloc_list_cons_raw_kind(head_ref, 9, ValueKind::FLOAT, list_ref_from_bits(new_tail))
+        .expect("fallback allocation");
+
+    assert_ne!(out, head_ref);
+    assert_eq!(h.alloc_stats_snapshot().list_cons.allocs, 1);
+    let original = unsafe { &*(list_addr_from_tagged(head).unwrap() as *const ListCons) };
+    assert_eq!(original.head as i64, 0);
+    assert_eq!(original.head_kind(), ValueKind::INT);
+    assert_eq!(original.tail_bits(), old_tail);
+    assert!(original.aliased());
+    let fresh = unsafe { &*(out.list_addr().expect("fresh list addr") as *const ListCons) };
+    assert_eq!(fresh.head as i64, 9);
+    assert_eq!(fresh.head_kind(), ValueKind::FLOAT);
+    assert_eq!(fresh.tail_bits(), new_tail);
+    assert!(!fresh.aliased());
+}
+
+#[test]
+fn published_reuse_or_alloc_allocates_fresh_cons_without_mutating_original() {
+    let mut h = Heap::new(1024, empty_registry());
+    let old_tail = alloc_int_list_cons(&mut h, 1, EMPTY_LIST);
+    let new_tail = alloc_int_list_cons(&mut h, 2, EMPTY_LIST);
+    let head = alloc_int_list_cons(&mut h, 0, old_tail);
+    let head_ref = list_ref_from_bits(head);
+    h.mark_published_ref_aliased(head_ref).expect("publish");
+    h.reset_alloc_stats();
+
+    let out = h
+        .reuse_or_alloc_list_cons_raw_kind(head_ref, 42, ValueKind::INT, list_ref_from_bits(new_tail))
         .expect("fallback allocation");
 
     assert_ne!(out, head_ref);
@@ -723,7 +724,8 @@ fn aliased_reuse_or_alloc_allocates_fresh_cons() {
     assert_eq!(original.tail_bits(), old_tail);
     assert!(original.aliased());
     let fresh = unsafe { &*(out.list_addr().expect("fresh list addr") as *const ListCons) };
-    assert_eq!(fresh.head as i64, 0);
+    assert_eq!(fresh.head as i64, 42);
+    assert_eq!(fresh.head_kind(), ValueKind::INT);
     assert_eq!(fresh.tail_bits(), new_tail);
     assert!(!fresh.aliased());
 }
@@ -1583,7 +1585,7 @@ fn gc_handles_cycle_via_forwarding() {
             },
         ],
     });
-    let mut h = Heap::new(1024, reg.clone());
+    let mut h = Heap::new(1024, reg);
     let a = h.alloc_struct(pair_id);
     let b = h.alloc_struct(pair_id);
     h.write_field_slot(a, 0, AnyValue::heap_ptr(b, ValueKind::STRUCT));

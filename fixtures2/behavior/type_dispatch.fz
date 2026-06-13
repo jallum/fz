@@ -1,0 +1,11 @@
+#---
+# purpose: multi-clause fn dispatches on parameter type at runtime (fz-ty1.8/1.9)
+# paths: [fz2-run, fz2-interp, fz2-build]
+#---
+fn check(x :: integer) do :is_int end
+fn check(x) do :other end
+
+fn main() do
+  assert(check(42) == :is_int, "integer arg dispatches to the TypeTest clause")
+  assert(check(:foo) == :other, "atom arg falls through to the fallback clause")
+end

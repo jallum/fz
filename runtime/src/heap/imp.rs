@@ -786,33 +786,19 @@ impl Heap {
         Ok(value)
     }
 
-    pub fn relink_unaliased_list_cons_tail(
+    pub fn reuse_or_alloc_list_cons_raw_kind(
         &mut self,
         list: AnyValueRef,
+        head_raw: u64,
+        head_kind: ValueKind,
         tail: AnyValueRef,
     ) -> Result<AnyValueRef, AnyValueRefError> {
         let addr = nonempty_list_addr(list)?;
         let tail_bits = list_tail_bits_from_ref(tail)?;
         let cons = unsafe { &mut *(addr as *mut ListCons) };
-        assert!(
-            cons.relink_tail_if_unaliased(tail_bits),
-            "cannot destructively relink aliased list cons"
-        );
-        Ok(list)
-    }
-
-    pub fn reuse_or_alloc_list_cons_tail(
-        &mut self,
-        list: AnyValueRef,
-        tail: AnyValueRef,
-    ) -> Result<AnyValueRef, AnyValueRefError> {
-        let addr = nonempty_list_addr(list)?;
-        let tail_bits = list_tail_bits_from_ref(tail)?;
-        let cons = unsafe { &mut *(addr as *mut ListCons) };
-        if cons.relink_tail_if_unaliased(tail_bits) {
+        if cons.rewrite_if_unaliased(head_raw, head_kind, tail_bits) {
             return Ok(list);
         }
-        let (head_raw, head_kind) = cons.head_raw_kind();
         let fresh = self.alloc_list_cons_raw_kind(head_raw, head_kind, tail_bits);
         let addr = list_addr_from_tagged(fresh).expect("fresh list cons");
         AnyValueRef::from_heap_object(ValueKind::LIST, addr)

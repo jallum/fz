@@ -26,8 +26,8 @@ fn compiler2_contract_harness_keeps_code_ingest_isolated_from_production_compile
         },
         ContractCase {
             name: "fixture_add1",
-            source_name: "fixtures/add1/input.fz",
-            source_text: include_str!("../../fixtures/add1/input.fz"),
+            source_name: "fixtures2/behavior/add1.fz",
+            source_text: include_str!("../../fixtures2/behavior/add1.fz"),
         },
     ] {
         run_contract(case);
@@ -322,7 +322,7 @@ fn assert_native_backend_compile_span(capture: &Capture, backend: &str, context:
         "backend_revision",
         "entry_fn_id",
         "body_count",
-        "callable_entry_count",
+        "callable_boundary_count",
     ] {
         assert!(
             matches!(boundary.metadata.get(key), Some(Value::U64(_))),
@@ -441,7 +441,7 @@ fn compiler2_compile_root_aot_consumes_native_program_without_legacy_prepare() {
         (
             "quicksort",
             "fixtures/quicksort_compiler2_aot.fz",
-            include_str!("../../fixtures/quicksort/input.fz").to_string(),
+            include_str!("../../fixtures2/behavior/quicksort.fz").to_string(),
             "quicksort_compiler2",
         ),
         (

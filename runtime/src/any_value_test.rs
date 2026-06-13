@@ -254,15 +254,16 @@ fn list_link_keeps_alias_bit_in_high_metadata() {
 }
 
 #[test]
-fn list_link_tail_rewrite_preserves_high_metadata() {
+fn list_link_rewrite_preserves_high_metadata() {
     let old_tail = alloc_list_cons_raw_kind(1, ValueKind::INT, EMPTY_LIST);
     let new_tail = alloc_list_cons_raw_kind(2, ValueKind::INT, EMPTY_LIST);
     let mut cons = ListCons::new(7, ValueKind::ATOM, old_tail);
     cons.mark_aliased();
 
-    cons.set_tail_bits(new_tail);
+    cons.set_head_raw_kind_tail(11, ValueKind::FLOAT, new_tail);
 
-    assert_eq!(cons.head_kind(), ValueKind::ATOM);
+    assert_eq!(cons.head as i64, 11);
+    assert_eq!(cons.head_kind(), ValueKind::FLOAT);
     assert!(cons.aliased());
     assert_eq!(cons.tail_bits(), new_tail);
 }

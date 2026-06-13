@@ -1,0 +1,18 @@
+eval/1[{:add, {:num, int}, {:mul, {:num, int}, {:num, int}}}] | @53-60 | direct | eval/1({:num, int}) => int => int
+eval/1[{:add, {:num, int}, {:mul, {:num, int}, {:num, int}}}] | @53-70 | direct | Kernel.+/2(int, int) => int => int
+eval/1[{:add, {:num, int}, {:mul, {:num, int}, {:num, int}}}] | @63-70 | direct | eval/1({:mul, {:num, int}, {:num, int}}) => int => int
+eval/1[{:add, {:num, int}, {:num, int}}] | @53-60 | direct | eval/1({:num, int}) => int => int
+eval/1[{:add, {:num, int}, {:num, int}}] | @53-70 | direct | Kernel.+/2(int, int) => int => int
+eval/1[{:add, {:num, int}, {:num, int}}] | @63-70 | direct | eval/1({:num, int}) => int => int
+eval/1[{:mul, {:add, {:num, int}, {:num, int}}, {:add, {:num, int}, {:num, int}}}] | @98-105 | direct | eval/1({:add, {:num, int}, {:num, int}}) => int => int
+eval/1[{:mul, {:add, {:num, int}, {:num, int}}, {:add, {:num, int}, {:num, int}}}] | @98-115 | direct | Kernel.*/2(int, int) => int => int
+eval/1[{:mul, {:add, {:num, int}, {:num, int}}, {:add, {:num, int}, {:num, int}}}] | @108-115 | direct | eval/1({:add, {:num, int}, {:num, int}}) => int => int
+eval/1[{:mul, {:num, int}, {:num, int}}] | @98-105 | direct | eval/1({:num, int}) => int => int
+eval/1[{:mul, {:num, int}, {:num, int}}] | @98-115 | direct | Kernel.*/2(int, int) => int => int
+eval/1[{:mul, {:num, int}, {:num, int}}] | @108-115 | direct | eval/1({:num, int}) => int => int
+main/0[] | @132-153 | direct | Kernel.dbg/1(int) => int => int
+main/0[] | @136-152 | direct | eval/1({:num, int}) => int => int
+main/0[] | @156-214 | direct | Kernel.dbg/1(int) => int => int
+main/0[] | @160-213 | direct | eval/1({:add, {:num, int}, {:mul, {:num, int}, {:num, int}}}) => int => int
+main/0[] | @217-294 | direct | Kernel.dbg/1(int) => int => int
+main/0[] | @221-293 | direct | eval/1({:mul, {:add, {:num, int}, {:num, int}}, {:add, {:num, int}, {:num, int}}}) => int => int

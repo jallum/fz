@@ -6,8 +6,8 @@ use super::dispatch_exec::{DispatchExecState, execute_dispatch_inputs};
 use super::extern_call::call_lowered_extern;
 use super::prim::{interp_list_cons, interp_list_head, interp_list_tail, interp_map_get, interp_map_put};
 use super::value::{
-    AnyValue, interp_bool_value, interp_empty_list_value, interp_nil_value, interp_struct_field_from_tagged_bits,
-    interp_value_from_ref_word, with_value_ref,
+    AnyValue, interp_bool_value, interp_empty_list_value, interp_nil_value, interp_runtime_type_predicate_schema_ids,
+    interp_struct_field_from_tagged_bits, interp_value_from_ref_word, with_value_ref,
 };
 use super::*;
 use crate::compiler2::{
@@ -16,6 +16,7 @@ use crate::compiler2::{
 };
 use crate::compiler2::{ExecutableNeed, FunctionId};
 use crate::fz_ir::{BinOp as IrBinOp, FnId, Module, UnOp as IrUnOp};
+use crate::runtime_type_predicate::matches_runtime_type_predicate;
 use crate::telemetry::Telemetry;
 use fz_runtime::any_value::{
     AnyValue as RuntimeAnyValue, AnyValueRef, ValueKind, closure_addr_from_tagged, struct_schema_id,
@@ -31,6 +32,26 @@ use fz_runtime::procbin::mso_drop_all_deferred;
 use fz_runtime::process::{CompiledModuleConsts, DEFAULT_REDUCTIONS_PER_QUANTUM, Process, ProcessState};
 
 enum BackendRunStep {
+    Done(AnyValue),
+    Blocked,
+}
+
+enum BackendEvalState {
+    Executable {
+        executable: usize,
+        args: Vec<AnyValue>,
+        continuations: Vec<BackendContinuation>,
+    },
+    Entry {
+        executable: usize,
+        entry: crate::compiler2::ControlEntryId,
+        env: HashMap<ValueId, AnyValue>,
+        continuations: Vec<BackendContinuation>,
+    },
+}
+
+enum BackendEvalTransition {
+    Next(BackendEvalState),
     Done(AnyValue),
     Blocked,
 }
@@ -299,53 +320,79 @@ fn run_backend_resume(
     module: &Module,
     resume: BackendResumeEntry,
 ) -> Result<BackendRunStep, String> {
-    match resume {
+    let mut state = match resume {
         BackendResumeEntry::Executable {
             executable,
             args,
             continuations,
-        } => run_backend_executable(runtime, types, tel, program, module, executable, args, continuations),
+        } => BackendEvalState::Executable {
+            executable,
+            args,
+            continuations,
+        },
         BackendResumeEntry::Entry {
             executable,
             entry,
             env,
             continuations,
-        } => {
-            let executable_ref = program
-                .executables
-                .get(executable)
-                .ok_or_else(|| format!("backend executable {} is out of bounds", executable))?;
-            let BackendBody::Clauses { entries, .. } = &executable_ref.body else {
-                return Err(format!("backend executable {} is not clause-backed", executable));
-            };
-            eval_entry(
-                runtime,
-                types,
-                tel,
-                program,
-                module,
+        } => BackendEvalState::Entry {
+            executable,
+            entry,
+            env,
+            continuations,
+        },
+    };
+
+    loop {
+        let next = match state {
+            BackendEvalState::Executable {
                 executable,
-                executable_ref,
-                entries,
+                args,
+                continuations,
+            } => step_backend_executable(runtime, types, tel, program, module, executable, args, continuations)?,
+            BackendEvalState::Entry {
+                executable,
                 entry,
                 env,
                 continuations,
-            )
+            } => {
+                let executable_ref = program
+                    .executables
+                    .get(executable)
+                    .ok_or_else(|| format!("backend executable {} is out of bounds", executable))?;
+                let BackendBody::Clauses { entries, .. } = &executable_ref.body else {
+                    return Err(format!("backend executable {} is not clause-backed", executable));
+                };
+                step_eval_entry(
+                    runtime,
+                    types,
+                    tel,
+                    program,
+                    module,
+                    executable,
+                    executable_ref,
+                    entries,
+                    entry,
+                    env,
+                    continuations,
+                )?
+            }
+        };
+        match next {
+            BackendEvalTransition::Next(next) => state = next,
+            BackendEvalTransition::Done(value) => return Ok(BackendRunStep::Done(value)),
+            BackendEvalTransition::Blocked => return Ok(BackendRunStep::Blocked),
         }
     }
 }
 
 fn continue_backend_value(
-    runtime: &mut IrInterpRuntime,
-    types: &mut crate::compiler2::Types,
-    tel: &dyn Telemetry,
     program: &BackendProgram,
-    module: &Module,
     value: AnyValue,
     mut continuations: Vec<BackendContinuation>,
-) -> Result<BackendRunStep, String> {
+) -> Result<BackendEvalTransition, String> {
     let Some(frame) = continuations.pop() else {
-        return Ok(BackendRunStep::Done(value));
+        return Ok(BackendEvalTransition::Done(value));
     };
     let executable = program
         .executables
@@ -357,22 +404,15 @@ fn continue_backend_value(
             frame.executable
         ));
     };
-    eval_entry(
-        runtime,
-        types,
-        tel,
-        program,
-        module,
-        frame.executable,
-        executable,
-        entries,
-        frame.entry,
-        delivered_env(entries, &frame.env, frame.entry, Some(value), &[])?,
+    Ok(BackendEvalTransition::Next(BackendEvalState::Entry {
+        executable: frame.executable,
+        entry: frame.entry,
+        env: delivered_env(entries, &frame.env, frame.entry, Some(value), &[])?,
         continuations,
-    )
+    }))
 }
 
-fn run_backend_executable(
+fn step_backend_executable(
     runtime: &mut IrInterpRuntime,
     types: &mut crate::compiler2::Types,
     tel: &dyn Telemetry,
@@ -381,7 +421,7 @@ fn run_backend_executable(
     executable_index: usize,
     args: Vec<AnyValue>,
     continuations: Vec<BackendContinuation>,
-) -> Result<BackendRunStep, String> {
+) -> Result<BackendEvalTransition, String> {
     let executable = program
         .executables
         .get(executable_index)
@@ -389,7 +429,7 @@ fn run_backend_executable(
     match &executable.body {
         BackendBody::Extern { signature } => {
             let value = call_lowered_extern(runtime, types, tel, program, module, signature, None, &args)?;
-            continue_backend_value(runtime, types, tel, program, module, value, continuations)
+            continue_backend_value(program, value, continuations)
         }
         BackendBody::Clauses { clauses, entries, .. } => {
             let dispatch = executable
@@ -427,7 +467,7 @@ fn run_backend_executable(
                 &clause.projections,
                 &mut env,
             )?;
-            eval_entry(
+            step_eval_entry(
                 runtime,
                 types,
                 tel,
@@ -477,9 +517,17 @@ fn select_dispatch_match(
     let mut state = DispatchExecState::default();
     let mut type_match =
         |runtime: &mut IrInterpRuntime, module: &Module, want: &crate::compiler2::Ty, value: AnyValue| {
-            let have = dynamic_value_ty(runtime, types, module, value).ok()?;
-            let overlap = types.intersect(have, *want);
-            Some(!types.is_empty(&overlap))
+            let predicate = types.runtime_type_predicate(want);
+            let runtime_value = value.value(runtime.cur_proc()).ok()?;
+            let (tuple_schema_ids, named_schema_ids) =
+                interp_runtime_type_predicate_schema_ids(runtime, module, &predicate);
+            Some(matches_runtime_type_predicate(
+                &predicate,
+                module,
+                runtime_value,
+                &tuple_schema_ids,
+                &named_schema_ids,
+            ))
         };
     Ok(execute_dispatch_inputs(
         runtime,
@@ -492,7 +540,7 @@ fn select_dispatch_match(
     ))
 }
 
-fn eval_entry(
+fn step_eval_entry(
     runtime: &mut IrInterpRuntime,
     types: &mut crate::compiler2::Types,
     tel: &dyn Telemetry,
@@ -504,7 +552,7 @@ fn eval_entry(
     entry_id: crate::compiler2::ControlEntryId,
     mut env: HashMap<ValueId, AnyValue>,
     continuations: Vec<BackendContinuation>,
-) -> Result<BackendRunStep, String> {
+) -> Result<BackendEvalTransition, String> {
     let entry = entries
         .get(entry_id.as_u32() as usize)
         .ok_or_else(|| format!("backend entry {} is out of bounds", entry_id.as_u32()))?;
@@ -513,22 +561,13 @@ fn eval_entry(
         BackendTail::Value { value, dest } => {
             let result = env_get(&env, *value)?;
             match dest {
-                ControlDestination::Return => {
-                    continue_backend_value(runtime, types, tel, program, module, result, continuations)
-                }
-                ControlDestination::Deliver(target) => eval_entry(
-                    runtime,
-                    types,
-                    tel,
-                    program,
-                    module,
-                    executable_index,
-                    executable,
-                    entries,
-                    *target,
-                    delivered_env(entries, &env, *target, Some(result), &[])?,
+                ControlDestination::Return => continue_backend_value(program, result, continuations),
+                ControlDestination::Deliver(target) => Ok(BackendEvalTransition::Next(BackendEvalState::Entry {
+                    executable: executable_index,
+                    entry: *target,
+                    env: delivered_env(entries, &env, *target, Some(result), &[])?,
                     continuations,
-                ),
+                })),
             }
         }
         BackendTail::DirectCall {
@@ -590,16 +629,11 @@ fn eval_entry(
                     continuations
                 }
             };
-            run_backend_executable(
-                runtime,
-                types,
-                tel,
-                program,
-                module,
-                executable_target,
-                call_args,
+            Ok(BackendEvalTransition::Next(BackendEvalState::Executable {
+                executable: executable_target,
+                args: call_args,
                 continuations,
-            )
+            }))
         }
         BackendTail::If {
             cond,
@@ -611,19 +645,12 @@ fn eval_entry(
             } else {
                 *else_entry
             };
-            eval_entry(
-                runtime,
-                types,
-                tel,
-                program,
-                module,
-                executable_index,
-                executable,
-                entries,
-                target,
-                delivered_env(entries, &env, target, None, &[])?,
+            Ok(BackendEvalTransition::Next(BackendEvalState::Entry {
+                executable: executable_index,
+                entry: target,
+                env: delivered_env(entries, &env, target, None, &[])?,
                 continuations,
-            )
+            }))
         }
         BackendTail::Dispatch {
             inputs,
@@ -640,19 +667,12 @@ fn eval_entry(
                         .ok_or_else(|| format!("backend local dispatch arm {} is out of bounds", body_id))?,
                     None => dispatch.miss_entry,
                 };
-            eval_entry(
-                runtime,
-                types,
-                tel,
-                program,
-                module,
-                executable_index,
-                executable,
-                entries,
-                target,
-                delivered_env(entries, &env, target, None, &[])?,
+            Ok(BackendEvalTransition::Next(BackendEvalState::Entry {
+                executable: executable_index,
+                entry: target,
+                env: delivered_env(entries, &env, target, None, &[])?,
                 continuations,
-            )
+            }))
         }
         BackendTail::Receive(receive) => {
             let bindings = &receive.bindings;
@@ -678,36 +698,22 @@ fn eval_entry(
                 let clause = clauses
                     .get(clause_index)
                     .ok_or_else(|| format!("backend receive clause {} is out of bounds", clause_index))?;
-                return eval_entry(
-                    runtime,
-                    types,
-                    tel,
-                    program,
-                    module,
-                    executable_index,
-                    executable,
-                    entries,
-                    clause.entry,
-                    delivered_env(entries, &env, clause.entry, None, &bound_values)?,
+                return Ok(BackendEvalTransition::Next(BackendEvalState::Entry {
+                    executable: executable_index,
+                    entry: clause.entry,
+                    env: delivered_env(entries, &env, clause.entry, None, &bound_values)?,
                     continuations,
-                );
+                }));
             }
             if let Some(after) = after
                 && env_get(&env, after.timeout)?.as_i64() == Some(0)
             {
-                return eval_entry(
-                    runtime,
-                    types,
-                    tel,
-                    program,
-                    module,
-                    executable_index,
-                    executable,
-                    entries,
-                    after.entry,
-                    delivered_env(entries, &env, after.entry, None, &[])?,
+                return Ok(BackendEvalTransition::Next(BackendEvalState::Entry {
+                    executable: executable_index,
+                    entry: after.entry,
+                    env: delivered_env(entries, &env, after.entry, None, &[])?,
                     continuations,
-                );
+                }));
             }
             runtime.backend_parked.insert(
                 unsafe { &*runtime.cur_proc() }.pid,
@@ -720,7 +726,7 @@ fn eval_entry(
                     continuations,
                 },
             );
-            Ok(BackendRunStep::Blocked)
+            Ok(BackendEvalTransition::Blocked)
         }
         BackendTail::Halt { atom } => Err(atom.clone()),
     }
@@ -1079,7 +1085,7 @@ fn eval_direct_call(
     executable_index: usize,
     dest: ControlDestination,
     continuations: Vec<BackendContinuation>,
-) -> Result<BackendRunStep, String> {
+) -> Result<BackendEvalTransition, String> {
     let executable = program
         .executables
         .get(callee)
@@ -1108,10 +1114,12 @@ fn eval_direct_call(
             extern_marshals,
             &call_args,
         )
-        .and_then(|value| continue_backend_value(runtime, types, tel, program, module, value, continuations)),
-        BackendBody::Clauses { .. } => {
-            run_backend_executable(runtime, types, tel, program, module, callee, call_args, continuations)
-        }
+        .and_then(|value| continue_backend_value(program, value, continuations)),
+        BackendBody::Clauses { .. } => Ok(BackendEvalTransition::Next(BackendEvalState::Executable {
+            executable: callee,
+            args: call_args,
+            continuations,
+        })),
     }
 }
 
@@ -1238,7 +1246,18 @@ fn drain_pending_dtors_backend(
             resolve_backend_callable_executable(runtime, types, module, program, fn_id, &captures, &[payload])?;
         let mut args = captures;
         args.push(payload);
-        let _ = run_backend_executable(runtime, types, tel, program, module, target, args, Vec::new())?;
+        let _ = run_backend_resume(
+            runtime,
+            types,
+            tel,
+            program,
+            module,
+            BackendResumeEntry::Executable {
+                executable: target,
+                args,
+                continuations: Vec::new(),
+            },
+        )?;
     }
     Ok(())
 }

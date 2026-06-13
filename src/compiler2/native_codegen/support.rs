@@ -4,9 +4,9 @@ use super::*;
 use crate::ast::{BitType, Endian};
 use crate::fz_ir::Var;
 use crate::types::Types;
-use cranelift_codegen::ir::{self};
+use cranelift_codegen::ir::{self, InstBuilder, MemFlags, types};
 use cranelift_module::Module;
-use fz_runtime::any_value::{FALSE_BITS as FALSE_BITS_RAW, TRUE_BITS as TRUE_BITS_RAW};
+use fz_runtime::any_value::{FALSE_BITS as FALSE_BITS_RAW, TRUE_BITS as TRUE_BITS_RAW, ValueKind};
 use std::collections::HashMap;
 
 pub(crate) const HEADER_SIZE: i32 = 16;
@@ -52,16 +52,47 @@ pub(crate) fn list_tail_bits_for_var<T: Types<Ty = Ty>>(
     }
 }
 
-pub(crate) fn emit_owned_cons_reuse_or_alloc<M: Module>(
+pub(crate) fn emit_reusable_cons_or_alloc<M: Module>(
     body: &mut CodegenFn<'_, '_, '_, M>,
     var_env: &HashMap<u32, CodegenValue>,
     head: Var,
     tail: ListTailBits,
 ) -> Option<ir::Value> {
-    let source_cons = body.owned_cons_reuse_source(head)?;
+    let source_cons = body.reusable_cons_source(head)?;
     let source_ref = body.any_ref_for_var(var_env, source_cons.0);
+    let head_value = binding_for_var(var_env, head.0);
+    let (head_raw, head_kind) = value_raw_kind_parts(body, head_value)?;
+    let head_kind = body.b.ins().iconst(types::I64, head_kind.tag() as i64);
     let tail_ref = body.list_tail_ref_word(tail);
-    Some(body.list_reuse_or_cons_tail_ref(source_ref, tail_ref))
+    Some(body.list_reuse_or_cons_parts(source_ref, head_raw, head_kind, tail_ref))
+}
+
+pub(crate) fn value_raw_kind_parts<M: Module>(
+    body: &mut CodegenFn<'_, '_, '_, M>,
+    value: CodegenValue,
+) -> Option<(ir::Value, ValueKind)> {
+    match value {
+        CodegenValue::RawInt(raw)
+        | CodegenValue::Known {
+            payload: raw,
+            kind: ValueKind::INT,
+        } => Some((raw, ValueKind::INT)),
+        CodegenValue::RawAtom(raw)
+        | CodegenValue::Known {
+            payload: raw,
+            kind: ValueKind::ATOM,
+        } => Some((raw, ValueKind::ATOM)),
+        CodegenValue::RawF64(raw) => {
+            let bits = body.b.ins().bitcast(types::I64, MemFlags::new(), raw);
+            Some((bits, ValueKind::FLOAT))
+        }
+        CodegenValue::Known {
+            payload,
+            kind: ValueKind::FLOAT,
+        } => Some((payload, ValueKind::FLOAT)),
+        CodegenValue::Known { payload, kind } if kind.is_heap() || kind == ValueKind::LIST => Some((payload, kind)),
+        _ => None,
+    }
 }
 
 pub(crate) const TRUE_BITS: i64 = TRUE_BITS_RAW as i64;

@@ -52,7 +52,7 @@ pub(crate) fn runtime_import_sig(name: &str) -> Signature {
         "fz_list_head_int_ref" => (&[I64], &[I64]),
         "fz_list_head_float_ref" => (&[I64], &[F64]),
         "fz_list_tail_ref" => (&[I64], &[I64]),
-        "fz_list_reuse_or_cons_tail_ref" => (&[I64, I64, I64], &[I64]),
+        "fz_list_reuse_or_cons_parts" => (&[I64, I64, I64, I64, I64], &[I64]),
         "fz_mark_published_ref_aliased" => (&[I64, I64], &[I64]),
         "fz_alloc_struct" => (&[I64, I32], &[I64]),
         "fz_struct_get_field_ref" => (&[I64, I64, I32], &[I64]),
@@ -173,7 +173,7 @@ pub(crate) fn declare_runtime_symbols<M: ClModule>(jmod: &mut M) -> Result<Runti
         list_head_int_ref_id: list.list_head_int_ref_id,
         list_head_float_ref_id: list.list_head_float_ref_id,
         list_tail_fallback_id: list.list_tail_fallback_id,
-        list_reuse_or_cons_tail_ref_id: list.list_reuse_or_cons_tail_ref_id,
+        list_reuse_or_cons_parts_id: list.list_reuse_or_cons_parts_id,
         mark_published_ref_aliased_id: list.mark_published_ref_aliased_id,
         alloc_struct_id: strct.alloc_struct_id,
         struct_get_field_id: strct.struct_get_field_id,
@@ -274,7 +274,7 @@ struct ListRefs {
     list_head_int_ref_id: FuncId,
     list_head_float_ref_id: FuncId,
     list_tail_fallback_id: FuncId,
-    list_reuse_or_cons_tail_ref_id: FuncId,
+    list_reuse_or_cons_parts_id: FuncId,
     mark_published_ref_aliased_id: FuncId,
 }
 
@@ -290,7 +290,7 @@ fn declare_list_runtime<M: ClModule>(jmod: &mut M) -> Result<ListRefs, CodegenEr
         list_head_int_ref_id: decl_import(jmod, "fz_list_head_int_ref")?,
         list_head_float_ref_id: decl_import(jmod, "fz_list_head_float_ref")?,
         list_tail_fallback_id: decl_import(jmod, "fz_list_tail_ref")?,
-        list_reuse_or_cons_tail_ref_id: decl_import(jmod, "fz_list_reuse_or_cons_tail_ref")?,
+        list_reuse_or_cons_parts_id: decl_import(jmod, "fz_list_reuse_or_cons_parts")?,
         mark_published_ref_aliased_id: decl_import(jmod, "fz_mark_published_ref_aliased")?,
     })
 }
@@ -668,7 +668,7 @@ pub(crate) struct RuntimeRefs {
     pub(crate) list_head_int_ref_id: FuncId,
     pub(crate) list_head_float_ref_id: FuncId,
     pub(crate) list_tail_fallback_id: FuncId,
-    pub(crate) list_reuse_or_cons_tail_ref_id: FuncId,
+    pub(crate) list_reuse_or_cons_parts_id: FuncId,
     pub(crate) mark_published_ref_aliased_id: FuncId,
     pub(crate) alloc_struct_id: FuncId,
     pub(crate) struct_get_field_id: FuncId,

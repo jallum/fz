@@ -483,7 +483,8 @@ pub(crate) fn return_contract_for_target(target: SpecKey) -> ReturnContract {
 }
 
 pub(crate) fn forwarded_return_contract_for_target(target: SpecKey) -> ReturnContract {
-    ReturnContract::new(target.clone(), ReturnStrategy::ForwardedDemand(target.demand.clone()))
+    let strategy = ReturnStrategy::ForwardedDemand(target.demand.clone());
+    ReturnContract::new(target, strategy)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]

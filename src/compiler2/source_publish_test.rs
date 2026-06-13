@@ -79,7 +79,7 @@ fn publish_compiler_fragment_scope(
 
 fn grouped_function_root(source_name: &str, text: &str) -> QuotedSourceRoot {
     let tel = ConfiguredTelemetry::new();
-    let root = parse_quoted_program(source_name.to_string(), text, &tel).expect("quoted parse");
+    let root = parse_quoted_program(source_name, text, &tel).expect("quoted parse");
     let items = root.cursor().list_items().expect("top-level items");
     let item_roots = items.into_iter().map(|item| item.root()).collect::<Vec<_>>();
     root.interned_list_subroot(&item_roots)
@@ -444,7 +444,7 @@ fn source_publication_defers_local_macro_expansion_until_function_demand() {
     let mut world = World::new(&tel);
     let code = world.submit_code(
         Some("macro_inc.fz".to_string()),
-        include_str!("../../fixtures/macro_inc/input.fz").to_string(),
+        include_str!("../../fixtures2/behavior/macro_inc.fz").to_string(),
     );
 
     assert!(world.demand(Job::ScopeCode(code)), "code scoping should be demandable");

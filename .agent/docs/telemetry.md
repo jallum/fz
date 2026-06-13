@@ -185,6 +185,17 @@ Two recurring patterns keep emit sites clone-free:
 - **Spans borrow.** Span-start metadata and `stop_with` payloads accept
   borrowed lifetimes; only `close_with` (drop-time emission) demands
   `'static`. Prefer `stop_with` so names and paths ride as borrows.
+- **Front doors borrow labels until storage.** CLI helpers, `compile_pipeline`,
+  and `parse_quoted_program` thread `source_name` as `&str` across the public
+  entry seams. If both the lexer and parser need the same label at once, they
+  share one `Rc<str>` internally; owned `String`s are created only where a
+  stored span or emitted metadata actually requires ownership.
+
+The workspace ratchets this boundary through Cargo-owned clippy policy:
+`redundant_clone`, `map_clone`, `iter_cloned_collect`, `implicit_clone`,
+`useless_conversion`, and `unnecessary_to_owned` all warn in both workspace
+crates, and the canonical `cargo clippy --workspace --all-targets -- -D warnings`
+path promotes them to errors in the hook and CI.
 
 **Slot revisions are the stable change signal.** Compiler2 state stores and fact
 slots bump revisions only when their aggregate value changes. Handlers and
@@ -279,9 +290,9 @@ when expected, and no legacy frontend/planner/type-infer events. Its
 the exact submitted source set one-for-one: user source plus the demanded
 runtime sources, with no duplicate pass and no fragment pseudo-source. The
 quicksort CLI probe carries the original perf question: on 2026-06-10,
-running `target/debug/fz2` with telemetry on `fixtures/quicksort/input.fz`
+running `target/debug/fz2` with telemetry on `fixtures2/behavior/quicksort.fz`
 emitted four lexer span-starts, exactly
-`fixtures/quicksort/input.fz`, `runtime:runtime.fz`, `runtime:Kernel.fz`, and
+`fixtures2/behavior/quicksort.fz`, `runtime:runtime.fz`, `runtime:Kernel.fz`, and
 `runtime:Process.fz`. The old source-fragment re-lex and its hidden per-call
 type-env rebuild are gone by construction on the compiler2 path. The same trace
 showed the native tail clearly: `fz.compiler2.drive` took 58.109 ms, then
@@ -323,13 +334,13 @@ test:
 Compiler2 emits `fz.compiler2.native_backend.compile` when a public native front
 door consumes a `NativeProgram(root)` through JIT or AOT. It is the artifact
 boundary span: metadata names the `root_id`, `backend_revision`, `entry_fn_id`,
-`body_count`, `callable_entry_count`, and backend kind. The raw
+`body_count`, `callable_boundary_count`, and backend kind. The raw
 `fz.codegen.compile` span nests under it, so a trace can account for both the
 fact drive and the post-drive native backend tail without treating codegen as an
 unattributed gap.
 
 Three codegen events carry stable enough fields to assert on in tests, proving
-codegen consumed the published ABI and callable-entry facts handed to it. They
+codegen consumed the published ABI and callable-boundary facts handed to it. They
 are emitted for reachable specs / lowered sites and pair with CLIF or runtime
 checks when the generated shape matters. Both backends emit them; the
 compiler2 copy (`compiler2/native_codegen/`) follows the cheap-emit
@@ -344,21 +355,26 @@ fields and dies with that pipeline.
   `&'static str`), and the `is_native` / `is_cont_fn` / `is_closure_target`
   flags. (The ir_codegen twin additionally carries `spec_key` and renders
   `param_reprs` as strings.)
-- `fz.codegen.callable_entry_selected` (`compiler2/native_codegen/prim.rs`) —
-  the site-specific callable entry chosen while lowering `MakeFnRef` /
-  `MakeClosure`. Measurements include the active `spec_id`/`fn_id`,
-  `closure_fn_id`, `capture_count`, `callable_entry_spec_id`, `block_id`,
-  `stmt_idx`, source `span_start`/`span_end`, and `candidate_count`. Metadata:
-  borrowed `module_path`/`body_name`, `selection_kind`,
-  `callable_entry_body_fn_id`, and the `fz_ir::Module` as a plain `opaque`
-  borrow — a handler wanting the closure's name resolves `closure_fn_id`
-  against it at event time.
+- `fz.codegen.callable_boundary_materialized` (`compiler2/native_codegen/prim.rs`)
+  — one per `MakeFnRef` / `MakeClosure` lowered through compiler2-native
+  codegen. Measurements include the active `spec_id`/`fn_id`,
+  `closure_fn_id`, `capture_count`, `callable_boundary_id`, `block_id`,
+  `stmt_idx`, and source `span_start`/`span_end`. Metadata: borrowed
+  `module_path`/`body_name`, `materialization_kind`,
+  `callable_boundary_target_fn_id`, and the `fz_ir::Module` as a plain
+  `opaque` borrow — a handler wanting the closure's name resolves
+  `closure_fn_id` against it at event time. For compiler2-native, this event
+  means "codegen materialized the settled callable boundary already published
+  by native lowering"; codegen no longer re-selects among candidate
+  boundaries from local type evidence.
 - `fz.codegen.closure_call_lowered` (`compiler2/native_codegen/terminator.rs`)
   — one per `CallClosure` lowering. Measurements: active `spec_id`,
   `closure_var`, `continuation_spec_id`. Metadata: `body_name`, `call_kind`,
   `closure_binding_repr` (`ArgRepr::as_str`), `dispatch_kind` (`direct` when
   the body literal resolves, else `indirect`), and `continuation_storage`
-  (`lazy_descriptor` or `heap_closure`).
+  (`lazy_descriptor` or `heap_closure`). Direct closure fast paths still use
+  boundary-return adapters when the exact body's delivered lane is narrower
+  than the caller or continuation seam.
 
 ## Telemetry In Tests
 

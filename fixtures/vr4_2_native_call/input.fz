@@ -1,7 +1,0 @@
-fn square(x) do
-  x * x
-end
-
-fn main() do
-  dbg(square(7))
-end

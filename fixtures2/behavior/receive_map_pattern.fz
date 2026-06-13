@@ -1,0 +1,54 @@
+#---
+# purpose: "receive with map pattern (atom key) — locks PerRow Map three-path parity"
+# paths: [fz2-run, fz2-interp, fz2-build]
+# budget.codegen.functions: 26
+# budget.codegen.instructions: 502
+# budget.specs.count: 23
+# budget.planner.worklist_pops: 23
+# budget.planner.walk_calls: 23
+# budget.planner.type_fn_calls: 23
+# budget.planner.matcher_specs: 0
+# budget.planner.vars: 71
+# budget.planner.blocks: 23
+# budget.planner.stmts: 27
+# budget.planner.dispatches: 28
+#---
+#
+# # receive_map_pattern
+#
+# fz-puj.47 (X6) — receive matcher implementing Pattern::Map via PerRow.
+#
+# Map patterns route through PerRow (no Switch specialisation), so the
+# matcher dispatches via `fz_matcher_map_get(map, key) -> u64` per entry.
+# A NIL_BITS return signals miss; otherwise the lookup result recurses
+# through compile_pattern against the value pattern.
+#
+# This fixture uses `%{name: n}` against incoming maps; the value
+# position binds `n` to the atom under the `name` key. Interp mirrors
+# via direct heap-walk of the map's pair array.
+#
+# Float and Binary map-key patterns surface a clean CodegenError pointing
+# at a follow-up — encoding them would require a per-receive startup
+# allocation pass (heap-typed RHS).
+fn main() do
+  send(self(), %{name: :alice, age: 30})
+  send(self(), %{name: :bob, age: 42})
+  send(self(), :stop)
+
+  a = receive do
+    %{name: n} -> n
+    _ -> :unknown
+  end
+
+  b = receive do
+    %{name: n} -> n
+    _ -> :unknown
+  end
+
+  c = receive do
+    %{name: n} -> n
+    _ -> :unknown
+  end
+
+  dbg({a, b, c})
+end

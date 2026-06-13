@@ -29,19 +29,13 @@ pub(crate) fn compile_fn<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
     let native_abi_fns = env.native_abi_fns;
     let cont_target_fns = env.cont_target_fns;
     let cont_fns = env.cont_fns;
-    let closure_capture_counts = env.closure_capture_counts;
     let native_body = env.body_native(this_spec_id);
     let value_types = &native_body.value_types;
     let is_native = native_abi_fns.contains(&f.id);
     let is_cont_fn = cont_fns.contains(&f.id);
-    // Closure-target fn shape: `(args..., self, cont) tail`. Only takes
-    // effect for native fns; uniform fns still go through the
-    // closure-stub adapter.
-    let closure_target_n_caps: Option<usize> = if is_native && !is_cont_fn {
-        closure_capture_counts.get(&f.id).copied()
-    } else {
-        None
-    };
+    let closure_target = (is_native && !is_cont_fn)
+        .then(|| env.surface.closure_target(f.id))
+        .flatten();
     let demand_abi = NativeDemandAbi::new(native_body);
     // When this fn is never invoked from any fz IR site (not a direct
     // callee, not a continuation, not a closure target), it can only
@@ -74,17 +68,15 @@ pub(crate) fn compile_fn<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
             // one-result input shape via their settled continuation ABI: their bound
             // values and captures are loaded from the closure env, leaving
             // only `self` in the Tail-CC signature.
-            let extras_count = demand_abi.continuation_extras();
+            let extras_count = demand_abi.continuation_entry_extras();
             for (i, r) in my_param_reprs[..extras_count].iter().enumerate() {
                 let _ = i;
                 append_block_param_for_repr(&mut b, entry_cl, *r);
             }
             b.append_block_param(entry_cl, types::I64); // self
-        } else if let Some(n_caps) = closure_target_n_caps {
+        } else if let Some(boundary) = closure_target {
             // Closure-target fn entry: `(args..., self:i64, cont:i64) tail`.
-            // n_args = total - n_caps.
-            let n_args = my_param_reprs.len().saturating_sub(n_caps);
-            for r in &my_param_reprs[..n_args] {
+            for r in &boundary.arg_reprs {
                 append_block_param_for_repr(&mut b, entry_cl, *r);
             }
             b.append_block_param(entry_cl, types::I64); // self
@@ -133,19 +125,19 @@ pub(crate) fn compile_fn<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
         this_spec_id,
         is_native,
         is_cont_fn,
-        closure_target_n_caps,
+        closure_target,
         entry_cl,
     );
 
     {
         let (if_only, all_used) = classify_var_uses(f);
-        let (tuple_return_fields, skipped_tuple_return_vars) = tuple_return_delivery_plan(f, native_body, is_cont_fn);
+        let (tuple_return_fields, skipped_tuple_return_vars) = tuple_return_delivery_plan(f, native_body);
         body.cache.if_only_conds = if_only.into_iter().map(|v| v.0).collect();
         body.cache.used_vars = all_used.into_iter().map(|v| v.0).collect();
         body.cache.tuple_field_params = tuple_field_params;
         body.cache.skipped_tuple_return_vars = skipped_tuple_return_vars;
         body.cache.tuple_return_fields = tuple_return_fields;
-        body.cache.owned_cons_reuse_sources = owned_cons_reuse_sources(f);
+        body.cache.reusable_cons_sources = reusable_cons_sources(f);
     }
     // Walk blocks in declared order with entry first.
     let mut order: Vec<&Block> = Vec::with_capacity(f.blocks.len());
@@ -266,23 +258,16 @@ pub(crate) fn compile_fn<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
     Ok(())
 }
 
-fn owned_cons_reuse_sources(f: &FnIr) -> HashMap<u32, Var> {
+fn reusable_cons_sources(f: &FnIr) -> HashMap<u32, Var> {
     f.physical_capabilities
         .iter()
         .map(|fact| match fact.capability {
-            PhysicalCapability::OwnedConsReuse { head } => (head.0, fact.source),
+            PhysicalCapability::ReusableConsCell { rebuilt_head } => (rebuilt_head.0, fact.source),
         })
         .collect()
 }
 
-fn tuple_return_delivery_plan(
-    f: &FnIr,
-    native_body: &NativeBody,
-    is_cont_fn: bool,
-) -> (HashMap<u32, Vec<Var>>, HashSet<u32>) {
-    if is_cont_fn && NativeDemandAbi::new(native_body).tuple_field_arity().is_some() {
-        return (HashMap::new(), HashSet::new());
-    }
+fn tuple_return_delivery_plan(f: &FnIr, native_body: &NativeBody) -> (HashMap<u32, Vec<Var>>, HashSet<u32>) {
     let arity = match NativeDemandAbi::new(native_body).tuple_field_arity() {
         Some(arity) => arity,
         None => return (HashMap::new(), HashSet::new()),

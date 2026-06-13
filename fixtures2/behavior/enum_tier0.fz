@@ -1,0 +1,40 @@
+#---
+# purpose: "Enum tier-0 functions return Elixir-style public values across List, Range, and Map"
+# paths: [fz2-run, fz2-interp, fz2-build]
+# oracle: oracle.exs
+# timeout.interp_secs: 15
+# timeout.repl_secs: 15
+#---
+#
+# Exercises the reduce-based public `Enum` surface that later Enum functions build
+# on: `reduce/2`, `reduce/3`, `reduce_while/3`, `each/2`, `count/1`, `count/2`,
+# `member?/2`, `to_list/1`, and `reverse/1,2`.
+#
+# The interp/repl timeout overrides are temporary correctness-only coverage for
+# the protocol-first tier-0 surface. `fz-g58.52` owns restoring the default 3s
+# fixture gate by removing these two overrides.
+fn main() do
+  xs = [1, 2, 3, 4]
+  range = 1..7//2
+  map = %{2 => :two, 1 => :one}
+
+  dbg(Enum.reduce(xs, fn (x, acc) -> x * acc end))
+  dbg(Enum.reduce(xs, 0, fn (x, acc) -> acc + x end))
+  dbg(Enum.reduce_while(xs, 0, fn (x, acc) ->
+    if x < 3 do
+      {:cont, acc + x}
+    else
+      {:halt, acc}
+    end
+  end))
+  dbg(Enum.each([:a, :b], fn (x) -> x end))
+  dbg(Enum.count(range))
+  dbg(Enum.count(xs, fn (x) -> x > 2 end))
+  dbg(Enum.member?(range, 5))
+  dbg(Enum.member?(range, 6))
+  dbg(Enum.member?(map, {1, :one}))
+  dbg(Enum.to_list(range))
+  dbg(Enum.to_list(map))
+  dbg(Enum.reverse(xs))
+  dbg(Enum.reverse(range, [:tail]))
+end

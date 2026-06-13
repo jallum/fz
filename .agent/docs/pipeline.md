@@ -184,10 +184,12 @@ That makes local control explicit instead of positional.
 
 - `ControlEntryOrigin::Clause` is a clause body entry.
 - `ControlEntryOrigin::Branch` is a compiler-made join/arm entry.
-- `ControlEntryOrigin::CallResume { value }` is where a non-tail call delivers
-  its result before more work continues.
+- `ControlEntryOrigin::DeliveredResume { value }` is where a continuation-owned
+  delivery seam resumes local work. Non-tail calls use it, and so does
+  post-`receive` work once an outcome closure hands a value back into the entry
+  graph.
 - `ControlEntryOrigin::LocalResume { value }` is where local control like
-  `receive`, `if`, or `dispatch` delivers a value without creating a callable
+  `if` or `dispatch` delivers a value without creating a callable
   continuation boundary.
 
 So a non-tail direct call is not "call, then keep walking the remaining steps."
@@ -199,7 +201,7 @@ entry N:
   tail = DirectCall { ..., dest: Deliver(resume_k) }
 
 entry resume_k:
-  origin = CallResume { value: v }
+  origin = DeliveredResume { value: v }
   captures = [...]
   steps...
   tail = ...
@@ -210,7 +212,18 @@ for resume entries, clause-entry helpers, and continuations from the same entry
 graph instead of rebuilding hidden CPS structure from "tail position" guesses.
 The backend interpreter preserves the same distinction: tail calls can park on
 `receive`, and blocked tasks keep an explicit backend continuation stack so a
-woken callee can still deliver into the caller's resume entry later.
+woken callee can still deliver into the caller's resume entry later. For the
+compiler2 backend executable/entry seam, it now drives transitions from that
+explicit resume state in a loop instead of re-entering through nested helper
+calls.
+
+Selective receive reuses the same delivered-resume model. A parked outcome
+closure publishes whether the resumed body reaches the post-`receive` join
+through its `outer_cont` or through an explicit continuation handoff, and
+native codegen consumes that contract directly when it builds the parked clause
+templates. That choice is derived from the reachable receive-outcome entry
+graph, not from the first tail in the clause body, so branches and local
+resumes cannot silently reclassify the join seam.
 
 ## The artifact boundary is one-way
 
@@ -253,19 +266,43 @@ The next two rungs narrow the contract:
   handoff.
 - `NativeProgram` is the native-specific handoff above `BackendProgram`: a
   Compiler2-owned CPS/codegen-ready projection carrying direct executable
-  bodies, clause helpers, continuations, callable-constructor metadata, and
+  bodies, clause helpers, continuations, callable-boundary refs on closure
+  values, and
   extern-marshal facts instead of rebuilt `ModulePlan`, `PlannedProgram`, or
   `AbiFacts`.
 
 Callable entry inventory is an artifact fact, not a native-codegen guess.
-`LowerBackendProgram` records callable-entry candidates from settled value types
-for callable constructor values, returned callable values, and explicit
-callable-boundary arguments. A closure-call callee is a consumer of an already
-materialized callable value, not a constructor obligation. Native codegen
-consumes callable-entry inventory for `MakeFnRef` / `MakeClosure`. Direct
-closure-call ABI shape is selected from `NativeProgram.closure_capture_counts`:
-entries with a capture count use the closure-target ABI `(args..., self, cont)`,
-while plain native executable bodies use `(args..., cont)`.
+`LowerBackendProgram` settles callable-boundary obligations from the closed
+artifact inventory for callable-construction values, returned callable values,
+and explicit callable-boundary arguments. A closure-call callee is a consumer
+of an already materialized callable value, not a constructor obligation.
+Native lowering preserves two distinct facts:
+
+- opaque callable-boundary refs on `MakeFnRef` / `MakeClosure` results
+- exact closure-target body facts for singleton-known direct closure calls
+
+Direct closure-call lowering no longer reconstructs its ABI from capture-count
+side tables or mixed capture+arg vectors. Compiler2 native codegen reads two
+published surfaces:
+
+- callable-boundary surface:
+  `arg_reprs` describe the outward callable ABI lanes in source call order
+  `return_shape` preserves the delivered result shape
+- closure-target surface:
+  `capture_reprs` describe the environment lanes loaded from `self`
+  `arg_reprs` describe the exact executable-body entry lanes
+
+Opaque closure construction materializes the settled callable boundary published
+by native lowering; singleton-known closure calls bypass that boundary only
+through an explicit `direct_target`, and direct paths still adapt the return
+lane through the same return-shape machinery as any other native seam.
+That constructor obligation is use-driven: a callable value earns a runtime
+callable boundary when it crosses an explicit callable-boundary argument seam,
+escapes as a value, or is reused opaquely / at multiple visible closure-call
+surfaces. A singleton-known direct closure call does not, by itself, create a
+new constructor obligation.
+Machine closure-target entry stays `(args..., self, cont)`; plain native bodies
+stay `(args..., cont)`.
 
 Things that belong in Compiler2 artifact facts:
 
@@ -320,8 +357,8 @@ questions at that rung:
 | executable / helper inventory | `NativeProgram.entry` plus `NativeProgram.bodies[*].fn_id` and `origin` |
 | `ModulePlan.effective_returns` and `fn_effects` | `NativeBody.return_ty`, `return_abi`, and `effects` |
 | `SpecPlan.vars` type queries | `NativeBody.value_types` |
-| `PlannedProgram.callable_entries` | `NativeProgram.callable_entries` |
-| callable-constructor lookup through planner state | `NativeBody.callable_constructors` |
+| `PlannedProgram.callable_entries` | `NativeProgram.callable_boundaries` |
+| callable-boundary lookup through planner state | `NativeBody.callable_value_boundaries` |
 | extern decls plus wire classes | `NativeProgram.module.externs` plus `NativeBody.extern_marshals` |
 | continuation / entry ABI classification | `NativeBody.entry_abi` and `NativeBodyOrigin::Continuation` |
 | runtime type-membership questions | explicit `RuntimeTypePredicate` facts |
@@ -346,6 +383,13 @@ Likewise, old semantic payloads still hanging off shared fz-IR structures
 authority for compiler2-native codegen after `NativeProgram(root)`. If the
 compiler2 backend still reads them, that is backend debt to remove, not part of
 the published handoff.
+
+The same rule applies to native return delivery. `NativeBody.return_abi` is the
+published result contract for a native body; codegen may derive boundary
+adapters from that authority when a producer and consumer disagree on a single
+value lane, and must pass tuple-field delivery through structurally when the
+contracts already match. It must not rediscover or improvise the contract at
+individual tailcall or callable-entry sites.
 
 The same two-layer split now applies on both sides of the migration seam:
 legacy lowering may still project legacy `Ty` handles into

@@ -739,26 +739,34 @@ pub enum Term {
         /// the yield-check inline check in JIT/AOT codegen and in the interp.
         is_back_edge: bool,
     },
-    /// Invoke a closure value (Var holding a Value::IrClosure). The closure's
-    /// captured slots are spliced ahead of `args` when entering the lambda's fn.
+    /// Invoke a closure value (Var holding a Value::IrClosure).
+    ///
+    /// Logical call arguments stay in `args` order. The closure environment is
+    /// carried separately by the closure value itself and is loaded from `self`
+    /// by the callee's entry harness; captures are not prepended to the
+    /// user-visible argument list.
+    ///
+    /// `direct_target` carries the exact closure body when the caller has a
+    /// singleton closure-lit target. `None` means the call stays opaque and
+    /// dispatches through the closure's published callable boundary.
     CallClosure {
         ident: CallsiteIdent,
         closure: Var,
+        direct_target: Option<FnId>,
         args: Vec<Var>,
         continuation: Cont,
     },
     TailCallClosure {
         ident: CallsiteIdent,
         closure: Var,
+        direct_target: Option<FnId>,
         args: Vec<Var>,
     },
     Return(Var),
     Halt(Var),
     /// fz-yxs — selective `receive do … after … end`. The cached dispatch
     /// plan is the executable route. Clause bodies receive bound pattern vars
-    /// (source order)
-    /// followed by `captures`. Body fns tail-call the join cont set up by
-    /// lowering — Term::ReceiveMatched is itself a terminator.
+    /// (source order) followed by `captures`.
     ///
     /// `pinned` carries the outer-scope vars referenced via `^name`
     /// inside any clause's pattern (snapshotted at the receive site);
@@ -781,15 +789,14 @@ pub enum Term {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ContinuationProvenanceKind {
-    DirectCall { callee: FnId, args: Vec<Var> },
-    ClosureCall { closure: Var, args: Vec<Var> },
+    CallResult,
     DispatchBody { bindings: Vec<(Var, PatternSubjectRef)> },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContinuationProvenance {
     pub caller: FnId,
-    pub captured: Vec<Var>,
+    pub semantic_capture_count: usize,
     pub capture_param_offset: usize,
     pub kind: ContinuationProvenanceKind,
 }
@@ -808,8 +815,8 @@ pub struct ReceiveClause {
     /// Optional guard fn. Params = bound vars ++ captures. Returns
     /// bool. Pure-codegen restricted (verified by ir_planner via F3).
     pub guard: Option<FnId>,
-    /// Clause body fn. Params = bound vars ++ captures. Body tail-
-    /// calls the join cont set up by ir_lower.
+    /// Clause body fn. Params = bound vars ++ captures. The body reaches the
+    /// enclosing receive join via explicit continuation handoff.
     pub body: FnId,
     /// Span of the whole `pattern when guard -> body` clause.
     pub span: Span,
@@ -824,8 +831,8 @@ pub struct ReceiveAfter {
     /// term. Interpreted at runtime as milliseconds, or the atom
     /// `:infinity` for "no timer".
     pub timeout: Var,
-    /// After body fn. Params = captures only (no message). Tail-calls
-    /// the join cont set up by ir_lower.
+    /// After body fn. Params = captures only (no message). The body reaches
+    /// the enclosing receive join via explicit continuation handoff.
     pub body: FnId,
     /// Span of the `after … -> …` clause.
     pub span: Span,
@@ -1246,13 +1253,15 @@ impl PhysicalCapabilityFact {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PhysicalCapability {
-    OwnedConsReuse { head: Var },
+    ReusableConsCell { rebuilt_head: Var },
 }
 
 impl PhysicalCapability {
     pub fn map_vars(self, mut map: impl FnMut(Var) -> Var) -> Self {
         match self {
-            PhysicalCapability::OwnedConsReuse { head } => PhysicalCapability::OwnedConsReuse { head: map(head) },
+            PhysicalCapability::ReusableConsCell { rebuilt_head } => PhysicalCapability::ReusableConsCell {
+                rebuilt_head: map(rebuilt_head),
+            },
         }
     }
 }
@@ -1715,33 +1724,32 @@ impl FnBuilder {
         }
     }
 
-    pub fn record_owned_cons_reuse_capability(&mut self, head: Var, source_cons: Var) {
-        debug_assert!(
-            self.is_entry_param(source_cons),
-            "owned-cons reuse sources must be physical entry params"
-        );
+    pub fn record_reusable_cons_cell(&mut self, rebuilt_head: Var, source_cons: Var) {
         if self.is_entry_param(source_cons) {
             self.record_physical_entry_param(source_cons);
         }
-        if let Some(fact) = self
-            .physical_capabilities
-            .iter_mut()
-            .find(|fact| matches!(fact.capability, PhysicalCapability::OwnedConsReuse { head: h } if h == head))
-        {
+        if let Some(fact) = self.physical_capabilities.iter_mut().find(|fact| {
+            matches!(
+                fact.capability,
+                PhysicalCapability::ReusableConsCell { rebuilt_head: head } if head == rebuilt_head
+            )
+        }) {
             fact.source = source_cons;
             return;
         }
         self.physical_capabilities.push(PhysicalCapabilityFact {
             source: source_cons,
-            capability: PhysicalCapability::OwnedConsReuse { head },
+            capability: PhysicalCapability::ReusableConsCell { rebuilt_head },
         });
     }
 
-    pub fn owned_cons_reuse_source_for_head(&self, head: Var) -> Option<Var> {
+    pub fn reusable_cons_source_for_head(&self, rebuilt_head: Var) -> Option<Var> {
         self.physical_capabilities
             .iter()
             .find_map(|fact| match fact.capability {
-                PhysicalCapability::OwnedConsReuse { head: h } if h == head => Some(fact.source),
+                PhysicalCapability::ReusableConsCell { rebuilt_head: head } if head == rebuilt_head => {
+                    Some(fact.source)
+                }
                 _ => None,
             })
     }
@@ -2218,8 +2226,8 @@ impl fmt::Display for PhysicalCapabilityFact {
 impl fmt::Display for PhysicalCapability {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            PhysicalCapability::OwnedConsReuse { head } => {
-                write!(f, "owned_cons_reuse(head={})", head)
+            PhysicalCapability::ReusableConsCell { rebuilt_head } => {
+                write!(f, "reusable_cons_cell(rebuilt_head={})", rebuilt_head)
             }
         }
     }

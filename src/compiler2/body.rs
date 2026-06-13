@@ -27,15 +27,26 @@ impl ValueId {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct CallSiteId(u32);
+pub struct CallSiteId {
+    raw: u32,
+    span: Span,
+}
 
 impl CallSiteId {
+    pub fn new(raw: u32, span: Span) -> Self {
+        Self { raw, span }
+    }
+
     pub fn from_u32(value: u32) -> Self {
-        Self(value)
+        Self::new(value, Span::DUMMY)
     }
 
     pub fn as_u32(self) -> u32 {
-        self.0
+        self.raw
+    }
+
+    pub fn span(self) -> Span {
+        self.span
     }
 }
 
@@ -126,24 +137,30 @@ pub struct LoweredEntry {
     pub origin: ControlEntryOrigin,
     pub params: Vec<ValueId>,
     pub captures: Vec<ValueId>,
+    pub reusable_cons_captures: Vec<ReusableConsCapture>,
     pub steps: Vec<LoweredStep>,
     pub tail: LoweredTail,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ReusableConsCapture {
+    pub head: ValueId,
+    pub source: ValueId,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ControlEntryOrigin {
     Clause,
     Branch,
-    Receive,
-    CallResume { value: ValueId },
-    LocalResume { value: ValueId },
+    ReceiveOutcome,
+    DeliveredResume { value: ValueId },
 }
 
 impl ControlEntryOrigin {
     pub fn input_value(&self) -> Option<ValueId> {
         match self {
-            Self::Clause | Self::Branch | Self::Receive => None,
-            Self::CallResume { value } | Self::LocalResume { value } => Some(*value),
+            Self::Clause | Self::Branch | Self::ReceiveOutcome => None,
+            Self::DeliveredResume { value } => Some(*value),
         }
     }
 }
@@ -186,6 +203,7 @@ pub struct LoweredReceive {
     pub bindings: DispatchBindings,
     pub clauses: Vec<ReceiveClause>,
     pub after: Option<ReceiveAfter>,
+    pub dest: ControlDestination,
     pub(crate) dispatch: PatternDispatchPlan<Ty>,
 }
 

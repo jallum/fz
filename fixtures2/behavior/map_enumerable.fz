@@ -1,0 +1,25 @@
+#---
+# purpose: "Map implements Enumerable reduce/count/member?/slice callbacks"
+# paths: [fz2-run, fz2-interp, fz2-build]
+# oracle: oracle.exs
+#---
+#
+# Exercises the source `defimpl Enumerable, for: Map` callback surface through
+# direct protocol calls. The oracle uses Elixir maps and `Enumerable.Map`, so the
+# checked output pins callback semantics and canonical map iteration order.
+fn main() do
+  map = %{3 => :three, 1 => :one, 2 => :two}
+  ints = %{2 => 20, 1 => 10}
+
+  dbg(Enumerable.reduce(map, {:cont, []}, fn (pair, acc) -> {:cont, [pair | acc]} end))
+  dbg(Enumerable.reduce(ints, {:cont, 0}, fn ({_key, value}, acc) -> {:cont, acc + value} end))
+  dbg(Enumerable.reduce(map, {:halt, 99}, fn (pair, acc) -> {:cont, [pair | acc]} end))
+
+  dbg(Enumerable.count(map))
+  dbg(Enumerable.member?(map, {1, :one}))
+  dbg(Enumerable.member?(map, {1, :two}))
+  dbg(Enumerable.member?(map, 1))
+  {:ok, n, slicer} = Enumerable.slice(map)
+  dbg(n)
+  dbg(slicer.(map))
+end

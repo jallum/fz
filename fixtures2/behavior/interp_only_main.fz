@@ -1,0 +1,17 @@
+#---
+# purpose: "tiny module with a single helper and a main — historical interp-tier-0 smoke test"
+# paths: [fz2-run, fz2-interp, fz2-build]
+# budget.codegen.functions: 1
+# budget.codegen.instructions: 7
+# budget.specs.count: 3
+# budget.planner.worklist_pops: 3
+# budget.planner.walk_calls: 3
+# budget.planner.type_fn_calls: 3
+# budget.planner.matcher_specs: 0
+# budget.planner.vars: 8
+# budget.planner.blocks: 3
+# budget.planner.stmts: 4
+# budget.planner.dispatches: 2
+#---
+fn inc(n) do n + 1 end
+fn main(), do: dbg(inc(41))

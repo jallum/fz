@@ -1,6 +1,0 @@
-fn main() do
-  dbg(40 + 2)
-  dbg(:ok)
-  dbg(true)
-  dbg(nil)
-end

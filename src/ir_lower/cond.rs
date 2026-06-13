@@ -101,13 +101,13 @@ pub(crate) fn lower_multi_clause<T: Types<Ty = Ty>>(
                         clause.span,
                         FnCategory::MultiClauseCont,
                     );
-                    cont.owned_cons_captures
-                        .extend(owned_cons_captures_for_bindings(ctx, &bindings));
+                    cont.reusable_cons_captures
+                        .extend(reusable_cons_captures_for_bindings(ctx, &bindings));
                     ctx.record_continuation_provenance(
                         cont.id,
                         ContinuationProvenance {
                             caller: ctx.cur_fn_id.expect("lower_multi_clause: missing current fn id"),
-                            captured: cont.outer_captured.iter().map(|(_, var)| *var).collect(),
+                            semantic_capture_count: cont.outer_captured.len(),
                             capture_param_offset: 0,
                             kind: ContinuationProvenanceKind::DispatchBody {
                                 bindings: bindings
@@ -152,14 +152,14 @@ pub(crate) fn lower_multi_clause<T: Types<Ty = Ty>>(
     Ok(())
 }
 
-fn owned_cons_captures_for_bindings(ctx: &LowerCtx, bindings: &[MatchedBinding]) -> Vec<OwnedConsCapture> {
+fn reusable_cons_captures_for_bindings(ctx: &LowerCtx, bindings: &[MatchedBinding]) -> Vec<ReusableConsCapture> {
     let Some(cur) = ctx.cur.as_ref() else {
         return Vec::new();
     };
     bindings
         .iter()
         .filter_map(|binding| match cur.prim_for_var(binding.var) {
-            Some(Prim::ListHead(source_cons)) => Some(OwnedConsCapture {
+            Some(Prim::ListHead(source_cons)) => Some(ReusableConsCapture {
                 head_name: binding.name.clone(),
                 source_cons: *source_cons,
             }),

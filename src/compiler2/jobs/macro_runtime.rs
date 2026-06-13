@@ -33,7 +33,7 @@ pub(super) fn build_macro_executable(world: &mut World<'_>, function: FunctionId
 
     let root = world.macro_root(function);
     let backend_fact = FactKey::BackendProgram(root);
-    let Some(backend_revision) = world.fact_revision(backend_fact.clone()) else {
+    let Some(backend_revision) = world.fact_revision(&backend_fact) else {
         return Ok(JobEffects::wait_on_settled(
             backend_fact,
             [Job::SeedRoot(root), Job::LowerBackendProgram(root)],

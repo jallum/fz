@@ -35,6 +35,14 @@ type RefinedCallSurface = (Vec<Ty>, Option<Ty>);
 /// activation demand it contributes, and its return evidence.
 type ResolvedCall = (Option<CallSiteSummary>, Vec<ActivationContribution>, Option<Ty>);
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum ClosureBoundaryUse {
+    Opaque,
+    Resolved(Vec<Ty>),
+    CallableArg,
+    Escape,
+}
+
 #[derive(Debug, Clone)]
 struct CallEmission {
     key: CallSiteKey,
@@ -119,10 +127,14 @@ pub(super) fn analyze_activation(world: &mut World<'_>, activation: &ActivationK
     // them, and the settled gate keeps everyone else out.
     let mut return_evidence: Option<Ty> = None;
     match lowered_body {
-        LoweredBody::Extern { signature } => {
+        LoweredBody::Extern { ref signature } => {
             return_evidence = Some(signature.return_ty);
         }
-        LoweredBody::Clauses { clauses, entries, .. } => {
+        LoweredBody::Clauses {
+            ref clauses,
+            ref entries,
+            ..
+        } => {
             for clause_id in &reachable_clauses {
                 let clause = &clauses[*clause_id as usize];
                 // Input evidence that has not caught up to the clause's
@@ -183,8 +195,16 @@ pub(super) fn analyze_activation(world: &mut World<'_>, activation: &ActivationK
         &mut follow_up,
     )?;
 
+    let runtime_callable_values = runtime_callable_boundary_values(
+        world,
+        &lowered_body,
+        &reachable_clauses,
+        &reachable_entries,
+        &value_types,
+        &analysis_calls,
+    );
     let covered_callable_activations = covered_callable_activations(&analysis_calls);
-    let latent_callable_activations = match return_evidence {
+    let mut latent_callable_activations = match return_evidence {
         Some(return_ty) => resolve_escaping_callable_activations_from_type(
             world,
             activation,
@@ -196,6 +216,15 @@ pub(super) fn analyze_activation(world: &mut World<'_>, activation: &ActivationK
         ),
         None => Vec::new(),
     };
+    latent_callable_activations.extend(resolve_materialized_runtime_callable_boundary_activations(
+        world,
+        activation,
+        &value_types,
+        &runtime_callable_values,
+        &mut reads,
+        &mut waits,
+        &mut follow_up,
+    ));
 
     let mut emitted_activations = HashSet::new();
     let mut emitted_executables = HashSet::new();
@@ -249,7 +278,7 @@ pub(super) fn analyze_activation(world: &mut World<'_>, activation: &ActivationK
     let analysis_changed = world.define_activation_analysis(
         activation,
         ActivationAnalysis {
-            reachable_clauses: reachable_clauses.clone(),
+            reachable_clauses,
             reachable_entries: {
                 let mut entries = reachable_entries.into_iter().collect::<Vec<_>>();
                 entries.sort_by_key(|entry| entry.as_u32());
@@ -267,6 +296,7 @@ pub(super) fn analyze_activation(world: &mut World<'_>, activation: &ActivationK
                     need: ExecutableNeed::Value,
                 }))
                 .collect(),
+            runtime_callable_values,
             value_types,
         },
     );
@@ -943,7 +973,7 @@ fn resolve_direct_call(
     }
 
     let (summary, mut activations, return_ty) =
-        resolve_function_call(world, caller, function, arg_types.clone(), reads, waits, follow_up)?;
+        resolve_function_call(world, caller, function, arg_types, reads, waits, follow_up)?;
     let mut latent_executables = Vec::new();
     if let Some(summary) = &summary {
         for target in &summary.targets {
@@ -954,7 +984,7 @@ fn resolve_direct_call(
                 world,
                 caller,
                 function,
-                target.input_types.as_slice(),
+                target.surface_inputs.as_slice(),
                 reads,
                 waits,
                 follow_up,
@@ -1088,7 +1118,7 @@ fn rebuild_coalesced_call_emission(
                     caller,
                     call.key.clone(),
                     function,
-                    target.input_types.clone(),
+                    target.surface_inputs.clone(),
                     reads,
                     waits,
                     follow_up,
@@ -1150,7 +1180,8 @@ fn call_emission_for_function(
             summary: Some(CallSiteSummary {
                 targets: vec![CallTargetSummary {
                     callee: SelectedCallee::ProviderBoundary(function),
-                    input_types,
+                    surface_inputs: input_types,
+                    activation: None,
                     return_ty,
                 }],
                 return_ty,
@@ -1160,13 +1191,13 @@ fn call_emission_for_function(
         }));
     }
     let Some((activation, already_present, return_ty)) =
-        prepare_function_call(world, caller, function, input_types.clone(), reads, waits, follow_up)
+        prepare_function_call(world, caller, function, &input_types, reads, waits, follow_up)
     else {
         return Ok(None);
     };
     let return_ty = refine_call_return(world, return_ty, contract_return_ty);
     let mut activations = vec![ActivationContribution {
-        key: activation,
+        key: activation.clone(),
         inputs: input_types.clone(),
         already_present,
     }];
@@ -1192,7 +1223,8 @@ fn call_emission_for_function(
         summary: Some(CallSiteSummary {
             targets: vec![CallTargetSummary {
                 callee: SelectedCallee::Function(function),
-                input_types,
+                surface_inputs: input_types,
+                activation: Some(activation),
                 return_ty,
             }],
             return_ty,
@@ -1240,6 +1272,7 @@ fn resolve_function_call(
                 targets: vec![call_target_summary(
                     SelectedCallee::ProviderBoundary(function),
                     input_types,
+                    None,
                     Some(return_ty),
                 )],
                 return_ty: Some(return_ty),
@@ -1249,7 +1282,7 @@ fn resolve_function_call(
         ));
     }
     let Some((activation, already_present, return_evidence)) =
-        prepare_function_call(world, caller, function, input_types.clone(), reads, waits, follow_up)
+        prepare_function_call(world, caller, function, &input_types, reads, waits, follow_up)
     else {
         return Ok((None, Vec::new(), None));
     };
@@ -1259,6 +1292,7 @@ fn resolve_function_call(
             targets: vec![call_target_summary(
                 SelectedCallee::Function(function),
                 input_types.clone(),
+                Some(activation.clone()),
                 return_ty,
             )],
             return_ty,
@@ -1353,7 +1387,7 @@ fn resolve_protocol_call(
             world,
             caller,
             selected.function,
-            refined_inputs.clone(),
+            &refined_inputs,
             reads,
             waits,
             follow_up,
@@ -1365,6 +1399,7 @@ fn resolve_protocol_call(
         targets.push(call_target_summary(
             SelectedCallee::Function(selected.function),
             refined_inputs.clone(),
+            Some(activation.clone()),
             target_return,
         ));
         activations.push(ActivationContribution {
@@ -1397,8 +1432,7 @@ fn resolve_closure_call(
         // dynamic edge: `any` is earned here, as at provider boundaries.
         return Ok((None, Some(any_ty(world))));
     };
-    let mut selected_functions = Vec::new();
-    let mut singleton_summary_inputs = None;
+    let mut selected_targets = Vec::new();
     let mut activations = Vec::new();
     let mut callable_target_executables = Vec::new();
     let mut latent_executables = Vec::new();
@@ -1411,11 +1445,7 @@ fn resolve_closure_call(
         if clause.args.len() != arg_types.len() {
             continue;
         }
-
         let function = function_id_of_closure_target(closure.target);
-        if !selected_functions.contains(&function) {
-            selected_functions.push(function);
-        }
 
         let refined_args = refine_contract_inputs(world, arg_types.clone(), std::iter::once(clause.args.as_slice()));
         let mut inputs = closure.captures;
@@ -1438,12 +1468,14 @@ fn resolve_closure_call(
             let Some(target) = summary.single_target() else {
                 return Err(FatalError);
             };
-            merge_call_inputs(world, &mut singleton_summary_inputs, &target.input_types);
+            if !selected_targets.contains(target) {
+                selected_targets.push(target.clone());
+            }
             let runtime_activations = resolve_runtime_callable_boundary_activations(
                 world,
                 caller,
                 function,
-                target.input_types.as_slice(),
+                target.surface_inputs.as_slice(),
                 reads,
                 waits,
                 follow_up,
@@ -1457,19 +1489,14 @@ fn resolve_closure_call(
         }
     }
 
-    if selected_functions.is_empty() {
+    if selected_targets.is_empty() {
         // No closure-shaped clause: a dynamic callable, the other earned-any
         // edge.
         return Ok((None, Some(any_ty(world))));
     };
-    let summary = if selected_functions.len() == 1 {
-        let function = selected_functions[0];
-        singleton_summary_inputs.map(|input_types| CallSiteSummary {
-            targets: vec![call_target_summary(
-                SelectedCallee::Function(function),
-                input_types,
-                return_ty,
-            )],
+    let summary = if selected_targets.len() == 1 {
+        Some(CallSiteSummary {
+            targets: selected_targets,
             return_ty,
         })
     } else {
@@ -1566,6 +1593,218 @@ fn resolve_escaping_callable_activations_from_type(
     activations
 }
 
+fn resolve_materialized_runtime_callable_boundary_activations(
+    world: &mut World<'_>,
+    caller: &ActivationKey,
+    value_types: &ValueTypes,
+    runtime_callable_values: &[ValueId],
+    reads: &mut Vec<FactKey>,
+    waits: &mut HashSet<FactKey>,
+    follow_up: &mut HashSet<Job>,
+) -> Vec<ActivationContribution> {
+    let mut seen = HashSet::new();
+    let mut activations = Vec::new();
+    for value in runtime_callable_values {
+        let Some(&ty) = value_types.get(value) else {
+            continue;
+        };
+        for activation in resolve_callable_activations_from_type(world, caller, ty, reads, waits, follow_up) {
+            if seen.insert(activation.key.clone()) {
+                activations.push(activation);
+            }
+        }
+    }
+    activations
+}
+
+fn runtime_callable_boundary_values(
+    world: &mut World<'_>,
+    lowered_body: &LoweredBody,
+    reachable_clauses: &[u32],
+    reachable_entries: &HashSet<super::super::body::ControlEntryId>,
+    value_types: &ValueTypes,
+    calls: &[CallEmission],
+) -> Vec<ValueId> {
+    let LoweredBody::Clauses { clauses, entries, .. } = lowered_body else {
+        return Vec::new();
+    };
+
+    let callsite_summaries = calls
+        .iter()
+        .filter_map(|call| call.summary.clone().map(|summary| (call.key.callsite, summary)))
+        .collect::<HashMap<_, _>>();
+
+    let mut callable_values = HashSet::new();
+    let mut producer_children = HashMap::<ValueId, Vec<ValueId>>::new();
+    let mut note_step = |step: &LoweredStep| match step {
+        LoweredStep::FunctionRef { value, .. } | LoweredStep::Lambda { value, .. } => {
+            callable_values.insert(*value);
+        }
+        LoweredStep::Tuple { value, items } => {
+            producer_children.insert(*value, items.clone());
+        }
+        LoweredStep::List { value, items, tail } => {
+            let mut children = items.clone();
+            if let Some(tail) = tail {
+                children.push(*tail);
+            }
+            producer_children.insert(*value, children);
+        }
+        LoweredStep::Map { value, entries } => {
+            producer_children.insert(*value, entries.iter().map(|(_, value)| *value).collect());
+        }
+        LoweredStep::MapUpdate { value, base, entries } => {
+            let mut children = vec![*base];
+            children.extend(entries.iter().map(|(_, value)| *value));
+            producer_children.insert(*value, children);
+        }
+        LoweredStep::Struct { value, fields, .. } => {
+            producer_children.insert(*value, fields.iter().map(|(_, value)| *value).collect());
+        }
+        _ => {}
+    };
+
+    let mut visit_entry = |entry: &LoweredEntry| {
+        for step in &entry.steps {
+            note_step(step);
+        }
+    };
+    for clause_id in reachable_clauses {
+        let Some(clause) = clauses.get(*clause_id as usize) else {
+            continue;
+        };
+        let Some(entry) = entries.get(clause.entry.as_u32() as usize) else {
+            continue;
+        };
+        visit_entry(entry);
+    }
+    for entry_id in reachable_entries {
+        let Some(entry) = entries.get(entry_id.as_u32() as usize) else {
+            continue;
+        };
+        visit_entry(entry);
+    }
+
+    let mut value_uses = HashMap::<ValueId, HashSet<ClosureBoundaryUse>>::new();
+    let mut escape_stack = Vec::<(ValueId, ClosureBoundaryUse)>::new();
+    let mut note_tail = |tail: &LoweredTail| match tail {
+        LoweredTail::Value {
+            value,
+            dest: ControlDestination::Return,
+        } => {
+            escape_stack.push((*value, ClosureBoundaryUse::Escape));
+        }
+        LoweredTail::DirectCall { callsite, args, .. } => {
+            note_callable_arg_uses(
+                world,
+                value_types,
+                &callsite_summaries,
+                *callsite,
+                None,
+                args,
+                &mut escape_stack,
+            );
+        }
+        LoweredTail::ClosureCall {
+            callee, callsite, args, ..
+        } => {
+            let usage = match callsite_summaries
+                .get(callsite)
+                .and_then(CallSiteSummary::single_target)
+            {
+                Some(target) => ClosureBoundaryUse::Resolved(target.surface_inputs.clone()),
+                None => ClosureBoundaryUse::Opaque,
+            };
+            value_uses.entry(*callee).or_default().insert(usage);
+            note_callable_arg_uses(
+                world,
+                value_types,
+                &callsite_summaries,
+                *callsite,
+                Some(*callee),
+                args,
+                &mut escape_stack,
+            );
+        }
+        _ => {}
+    };
+
+    for clause_id in reachable_clauses {
+        let Some(clause) = clauses.get(*clause_id as usize) else {
+            continue;
+        };
+        let Some(entry) = entries.get(clause.entry.as_u32() as usize) else {
+            continue;
+        };
+        note_tail(&entry.tail);
+    }
+    for entry_id in reachable_entries {
+        let Some(entry) = entries.get(entry_id.as_u32() as usize) else {
+            continue;
+        };
+        note_tail(&entry.tail);
+    }
+
+    let mut propagated = HashSet::<(ValueId, ClosureBoundaryUse)>::new();
+    while let Some((value, usage)) = escape_stack.pop() {
+        if !propagated.insert((value, usage.clone())) {
+            continue;
+        }
+        value_uses.entry(value).or_default().insert(usage.clone());
+        if let Some(children) = producer_children.get(&value) {
+            for child in children {
+                escape_stack.push((*child, usage.clone()));
+            }
+        }
+    }
+
+    let mut out = callable_values
+        .into_iter()
+        .filter(|value| value_uses.get(value).is_some_and(closure_value_needs_runtime_boundary))
+        .collect::<Vec<_>>();
+    out.sort_by_key(|value| value.as_u32());
+    out
+}
+
+fn note_callable_arg_uses(
+    world: &mut World<'_>,
+    value_types: &ValueTypes,
+    callsite_summaries: &HashMap<CallSiteId, CallSiteSummary>,
+    callsite: CallSiteId,
+    closure_callee: Option<ValueId>,
+    args: &[super::super::body::CallArg],
+    escape_stack: &mut Vec<(ValueId, ClosureBoundaryUse)>,
+) {
+    let Some(target) = callsite_summaries
+        .get(&callsite)
+        .and_then(CallSiteSummary::single_target)
+    else {
+        return;
+    };
+    let offset = closure_callee
+        .and_then(|callee| value_types.get(&callee).copied())
+        .and_then(|callee_ty| world.types().closure_lit_parts(&callee_ty))
+        .map_or(0, |parts| parts.captures.len());
+    for (arg_index, arg) in args.iter().enumerate() {
+        let Some(expected_ty) = target.surface_inputs.get(offset + arg_index) else {
+            continue;
+        };
+        if world.types_mut().callable_clauses(expected_ty).is_some() {
+            escape_stack.push((arg.value, ClosureBoundaryUse::CallableArg));
+        }
+    }
+}
+
+fn closure_value_needs_runtime_boundary(uses: &HashSet<ClosureBoundaryUse>) -> bool {
+    if uses
+        .iter()
+        .any(|usage| !matches!(usage, ClosureBoundaryUse::Resolved(_)))
+    {
+        return true;
+    }
+    uses.len() > 1
+}
+
 fn collect_escaping_callable_types(world: &mut World<'_>, ty: Ty, seen: &mut HashSet<Ty>, out: &mut Vec<Ty>) {
     if !seen.insert(ty) || world.types().is_empty(&ty) {
         return;
@@ -1619,7 +1858,7 @@ fn resolve_uncovered_callable_activations_from_type(
         if covered_activations.contains(&activation) {
             continue;
         }
-        let already_present = world.fact_revision(FactKey::Activation(activation.clone())).is_some();
+        let already_present = world.fact_revision(&FactKey::Activation(activation.clone())).is_some();
         activations.push(ActivationContribution {
             key: activation,
             inputs: input_types.clone(),
@@ -1793,7 +2032,7 @@ fn prepare_function_call(
     world: &mut World<'_>,
     caller: &ActivationKey,
     function: FunctionId,
-    arg_types: Vec<Ty>,
+    arg_types: &[Ty],
     reads: &mut Vec<FactKey>,
     waits: &mut HashSet<FactKey>,
     follow_up: &mut HashSet<Job>,
@@ -1802,7 +2041,7 @@ fn prepare_function_call(
         return None;
     }
 
-    let activation = world.activation_key(caller.root, function, &arg_types);
+    let activation = world.activation_key(caller.root, function, arg_types);
     let already_present = world.has_fact(&FactKey::Activation(activation.clone()));
     // The read is the subscription that re-wakes this caller when the
     // callee's return evidence rises — chaotic iteration needs no wait here,
@@ -1885,9 +2124,13 @@ fn merge_call_targets(
     for observed_target in observed {
         if let Some(current_target) = current
             .iter_mut()
-            .find(|target| target.callee == observed_target.callee)
+            .find(|target| target.callee == observed_target.callee && target.activation == observed_target.activation)
         {
-            merge_call_input_vec(world, &mut current_target.input_types, &observed_target.input_types);
+            merge_summary_input_vec(
+                world,
+                &mut current_target.surface_inputs,
+                &observed_target.surface_inputs,
+            );
             current_target.return_ty = join_evidence(world, current_target.return_ty, observed_target.return_ty);
             continue;
         }
@@ -1899,25 +2142,17 @@ fn merge_call_targets(
     Ok(())
 }
 
-fn merge_call_inputs(world: &mut World<'_>, merged: &mut Option<Vec<Ty>>, observed: &[Ty]) {
-    match merged {
-        Some(current) => merge_call_input_vec(world, current, observed),
-        None => {
-            *merged = Some(observed.to_vec());
-        }
-    }
-}
-
-/// Call inputs feed activation KEYS, where coarsening is deliberate
-/// (`refine_widen` keeps accumulator fan-out from minting one specialization
-/// per shape) — unlike published value-type summaries, which union.
-fn merge_call_input_vec(world: &mut World<'_>, current: &mut Vec<Ty>, observed: &[Ty]) {
+/// Published call-edge summaries live on the semantic/artifact plane, not the
+/// activation-key plane. They must preserve every shape the callsite can send,
+/// so later materialization can see the full semantic call surface. Key
+/// coarsening belongs in `ActivationInputs`, not in published call summaries.
+fn merge_summary_input_vec(world: &mut World<'_>, current: &mut Vec<Ty>, observed: &[Ty]) {
     if current.len() < observed.len() {
         current.resize_with(observed.len(), || any_ty(world));
     }
     for (slot, next_ty) in observed.iter().copied().enumerate() {
         if current[slot] != next_ty {
-            current[slot] = world.types_mut().refine_widen(&current[slot], &next_ty);
+            current[slot] = world.types_mut().union(current[slot], next_ty);
         }
     }
 }
@@ -1930,10 +2165,16 @@ fn refine_protocol_target_inputs(world: &mut World<'_>, input_types: &[Ty], rece
     refined
 }
 
-fn call_target_summary(callee: SelectedCallee, input_types: Vec<Ty>, return_ty: Option<Ty>) -> CallTargetSummary {
+fn call_target_summary(
+    callee: SelectedCallee,
+    surface_inputs: Vec<Ty>,
+    activation: Option<ActivationKey>,
+    return_ty: Option<Ty>,
+) -> CallTargetSummary {
     CallTargetSummary {
-        input_types,
         callee,
+        surface_inputs,
+        activation,
         return_ty,
     }
 }

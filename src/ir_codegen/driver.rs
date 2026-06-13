@@ -245,6 +245,7 @@ fn compute_tagged_return_specs<T: Types<Ty = Ty> + ClosureTypes>(
                 closure,
                 args,
                 ident: _,
+                ..
             } = &b.terminator
                 && resolve_tcc_body(t, closure, args, ft, module, |t, key| {
                     spec_registry.resolve_spec_key(t, key).map(|sid| sid.0)
@@ -306,6 +307,7 @@ fn compute_tagged_return_specs<T: Types<Ty = Ty> + ClosureTypes>(
                             closure,
                             args,
                             ident: _,
+                            ..
                         } => {
                             let body_sid = resolve_tcc_body(t, closure, args, ft, module, |t, key| {
                                 spec_registry.resolve_spec_key(t, key).map(|sid| sid.0)
@@ -355,6 +357,7 @@ fn compute_tagged_return_specs<T: Types<Ty = Ty> + ClosureTypes>(
                             closure,
                             args,
                             ident: _,
+                            ..
                         } => {
                             if let Some(body_sid) = resolve_tcc_body(t, closure, args, ft, module, |t, key| {
                                 spec_registry.resolve_spec_key(t, key).map(|sid| sid.0)
@@ -525,6 +528,7 @@ fn compute_halt_reprs<T: Types<Ty = Ty> + ClosureTypes>(
                         closure,
                         args,
                         ident: _,
+                        ..
                     } => {
                         let resolved_body = resolve_tcc_body(t, closure, args, ft, module, |t, key| {
                             spec_registry.resolve_spec_key(t, key).map(|sid| sid.0)

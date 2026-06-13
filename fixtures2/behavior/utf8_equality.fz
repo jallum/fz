@@ -1,0 +1,9 @@
+#---
+# purpose: "fz-axu.18 (P3) — `==` between utf8 strings compares bytes"
+# paths: [fz2-run, fz2-interp, fz2-build]
+#---
+fn main() do
+  assert("hi" == "hi", "equal utf8 strings compare equal")
+  refute("hi" == "bye", "different utf8 strings compare unequal")
+  assert("héllo" == "héllo", "multibyte utf8 strings compare by bytes")
+end

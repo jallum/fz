@@ -1,0 +1,12 @@
+#---
+# purpose: "Enum.count/2 remains correct after Enum.reduce/3 retains the same list"
+# paths: [fz2-run, fz2-interp, fz2-build]
+#---
+#
+# Pins the retained-list non-tail-call shape before a predicate count.
+fn main() do
+  xs = [1, 2, 3, 4]
+
+  dbg(Enum.reduce(xs, 0, fn (x, acc) -> acc + x end))
+  dbg(Enum.count(xs, fn (x) -> x > 2 end))
+end

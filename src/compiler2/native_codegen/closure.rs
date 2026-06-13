@@ -89,6 +89,21 @@ pub(crate) fn resolve_outer_cont<M: cranelift_module::Module>(
     }
 }
 
+fn explicit_or_resolved_outer_cont<M: cranelift_module::Module>(
+    body: &mut CodegenFn<'_, '_, '_, M>,
+    runtime: &RuntimeRefs,
+    return_reprs: &[ArgRepr],
+    is_cont_fn: bool,
+    cont_param: Option<ir::Value>,
+    frame_ptr: Option<ir::Value>,
+    cont_sid: u32,
+    outer_cont_override: Option<ir::Value>,
+) -> ir::Value {
+    outer_cont_override
+        .map(|outer_cont| body.materialize_cont(outer_cont))
+        .unwrap_or_else(|| resolve_outer_cont(body, runtime, return_reprs, is_cont_fn, cont_param, frame_ptr, cont_sid))
+}
+
 /// Allocate a cont closure, populate its code-addr, outer-cont, and user
 /// captures. Returns the heap pointer to the new closure object.
 ///
@@ -106,8 +121,18 @@ pub(crate) fn build_cont_closure<M: cranelift_module::Module>(
     cont_fid: FuncId,
     cap_bindings: &[ClosureCapture],
     extra_ref_captures: &[ir::Value],
+    outer_cont_override: Option<ir::Value>,
 ) -> ir::Value {
-    let my_outer_cont = resolve_outer_cont(body, runtime, return_reprs, is_cont_fn, cont_param, frame_ptr, cont_sid);
+    let my_outer_cont = explicit_or_resolved_outer_cont(
+        body,
+        runtime,
+        return_reprs,
+        is_cont_fn,
+        cont_param,
+        frame_ptr,
+        cont_sid,
+        outer_cont_override,
+    );
     let cl_fid_v = body.b.ins().iconst(types::I32, cont_sid as i64);
     // +1 reserves env field 0 for the synthetic outer_cont; user captures follow.
     let n_caps_v = body
@@ -170,8 +195,18 @@ pub(crate) fn build_lazy_cont_descriptor<M: cranelift_module::Module>(
     cont_fid: FuncId,
     cap_bindings: &[ClosureCapture],
     extra_ref_captures: &[ir::Value],
+    outer_cont_override: Option<ir::Value>,
 ) -> ir::Value {
-    let my_outer_cont = resolve_outer_cont(body, runtime, return_reprs, is_cont_fn, cont_param, frame_ptr, cont_sid);
+    let my_outer_cont = explicit_or_resolved_outer_cont(
+        body,
+        runtime,
+        return_reprs,
+        is_cont_fn,
+        cont_param,
+        frame_ptr,
+        cont_sid,
+        outer_cont_override,
+    );
     let captured_count = cap_bindings.len() + extra_ref_captures.len() + 1;
     let raw_base = LAZY_CONT_HEADER_BYTES;
     let kind_base = raw_base + captured_count * SLOT_BYTES as usize;

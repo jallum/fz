@@ -71,7 +71,7 @@ fn physical_entry_params_are_not_semantic_key_inputs() {
     let source = b.fresh_var();
     let value = b.fresh_var();
     let entry = b.block(vec![source, value]);
-    b.record_owned_cons_reuse_capability(head, source);
+    b.record_reusable_cons_cell(head, source);
     b.set_terminator(entry, Term::Return(value));
     let fn_ir = b.build();
 
@@ -80,7 +80,7 @@ fn physical_entry_params_are_not_semantic_key_inputs() {
         fn_ir.physical_capabilities,
         vec![PhysicalCapabilityFact {
             source,
-            capability: PhysicalCapability::OwnedConsReuse { head },
+            capability: PhysicalCapability::ReusableConsCell { rebuilt_head: head },
         }]
     );
     assert_eq!(fn_ir.semantic_entry_params(), vec![value]);
@@ -89,6 +89,30 @@ fn physical_entry_params_are_not_semantic_key_inputs() {
     let key = fn_ir.semantic_key(vec![t.any(), t.int()]);
     assert!(key[0].is_none());
     assert!(key[1].is_some());
+}
+
+#[test]
+fn local_reusable_cons_sources_do_not_become_physical_entry_params() {
+    let mut b = FnBuilder::new(FnId(0), "local_reusable_cons");
+    let entry = b.block(vec![]);
+    let source = b.let_(entry, Prim::Const(Const::Int(1)));
+    let head = b.let_(entry, Prim::Const(Const::Int(2)));
+    b.record_reusable_cons_cell(head, source);
+    b.set_terminator(entry, Term::Return(head));
+    let fn_ir = b.build();
+
+    assert!(
+        fn_ir.physical_entry_params.is_empty(),
+        "local reusable-cons sources should stay local metadata, not hidden entry params",
+    );
+    assert_eq!(
+        fn_ir.physical_capabilities,
+        vec![PhysicalCapabilityFact {
+            source,
+            capability: PhysicalCapability::ReusableConsCell { rebuilt_head: head },
+        }],
+        "the reusable-cons capability should still be recorded for local codegen consumption",
+    );
 }
 
 #[test]
@@ -143,7 +167,7 @@ fn lto_rewrites_external_call_edge_to_direct_fn_id() {
     caller.set_terminator(
         entry,
         Term::TailCall {
-            ident: ident.clone(),
+            ident,
             callee: DirectCallTarget::ProviderBoundary(Mfa::new(
                 ModuleName::from_segments(vec!["A".to_string()]),
                 "f",
@@ -180,7 +204,7 @@ fn lto_reports_missing_external_call_target() {
     caller.set_terminator(
         entry,
         Term::TailCall {
-            ident: ident.clone(),
+            ident,
             callee: DirectCallTarget::ProviderBoundary(export.clone()),
             args: Vec::new(),
             is_back_edge: false,

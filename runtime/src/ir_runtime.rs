@@ -27,9 +27,9 @@
 use crate::any_value::debug::render_value;
 use crate::any_value::{
     AnyValue, AnyValueRef, AnyValueRefPacking, FALSE_ATOM_ID, ListCons, NIL_ATOM_ID, TAG_BITSTRING, TAG_FWD, TAG_MASK,
-    TAG_PROCBIN, ValueKind, closure_addr_from_tagged, closure_capture_value, closure_flags_pack, closure_fn_ptr,
-    closure_halt_kind, heap_object_word, list_addr_from_tagged, map_addr_from_tagged, map_count, map_entry,
-    object_size, struct_addr_from_tagged, struct_schema_id,
+    TAG_PROCBIN, ValueKind, closure_addr_from_tagged, closure_capture_value, closure_captured_count,
+    closure_flags_pack, closure_fn_ptr, closure_halt_kind, closure_schema_id, heap_object_word, list_addr_from_tagged,
+    map_addr_from_tagged, map_count, map_entry, object_size, struct_addr_from_tagged, struct_schema_id,
 };
 use crate::bitstr::{
     BitReader, BitType, BitWriter, Endian, apply_endian_for_read, apply_endian_for_write, encode_utf8, encode_utf16,
@@ -1577,13 +1577,20 @@ pub extern "C" fn fz_mark_published_ref_aliased(process: *mut Process, value_ref
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_list_reuse_or_cons_tail_ref(process: *mut Process, list_ref_word: u64, tail_ref_word: u64) -> u64 {
-    let list = any_value_ref_from_word(list_ref_word, "fz_list_reuse_or_cons_tail_ref list");
-    let tail = any_value_ref_from_word(tail_ref_word, "fz_list_reuse_or_cons_tail_ref tail");
+pub extern "C" fn fz_list_reuse_or_cons_parts(
+    process: *mut Process,
+    list_ref_word: u64,
+    head_raw: u64,
+    head_kind_tag: u64,
+    tail_ref_word: u64,
+) -> u64 {
+    let list = any_value_ref_from_word(list_ref_word, "fz_list_reuse_or_cons_parts list");
+    let head_kind = ValueKind::new(head_kind_tag as u8).expect("fz_list_reuse_or_cons_parts head kind");
+    let tail = any_value_ref_from_word(tail_ref_word, "fz_list_reuse_or_cons_parts tail");
     (unsafe { &mut *process })
         .heap
-        .reuse_or_alloc_list_cons_tail(list, tail)
-        .expect("fz_list_reuse_or_cons_tail_ref")
+        .reuse_or_alloc_list_cons_raw_kind(list, head_raw, head_kind, tail)
+        .expect("fz_list_reuse_or_cons_parts")
         .raw_word()
 }
 
@@ -1681,10 +1688,34 @@ pub extern "C" fn fz_closure_get_capture_ref(closure_ref_word: u64, index: u64) 
     if is_lazy_cont_ref(closure_ref_word) {
         return unsafe { lazy_cont_capture_raw(closure_ref_word, index as usize) };
     }
-    let value = any_value_ref_from_word(closure_ref_word, "fz_closure_get_capture_ref");
-    closure_capture_ref(value, index as usize)
-        .expect("fz_closure_get_capture_ref")
-        .raw_word()
+    let value = AnyValueRef::from_raw_word(closure_ref_word).unwrap_or_else(|err| {
+        panic!(
+            "fz_closure_get_capture_ref idx={} invalid any value ref {:#x}: {:?}",
+            index, closure_ref_word, err
+        )
+    });
+    if value.tag() != ValueKind::CLOSURE {
+        panic!(
+            "fz_closure_get_capture_ref idx={} expected closure ref, got tag {:?} word={:#x}",
+            index,
+            value.tag(),
+            closure_ref_word
+        );
+    }
+    match closure_capture_ref(value, index as usize) {
+        Ok(capture) => capture.raw_word(),
+        Err(err) => {
+            let addr = value.closure_addr().expect("fz_closure_get_capture_ref closure");
+            panic!(
+                "fz_closure_get_capture_ref idx={} schema_id={} captured_count={} code_ptr={:#x}: {:?}",
+                index,
+                unsafe { closure_schema_id(addr) },
+                unsafe { closure_captured_count(addr) },
+                unsafe { closure_fn_ptr(addr) },
+                err
+            )
+        }
+    }
 }
 
 #[unsafe(no_mangle)]

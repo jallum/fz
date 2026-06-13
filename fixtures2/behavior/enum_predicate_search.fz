@@ -1,0 +1,48 @@
+#---
+# purpose: "Enum predicate and search functions match Elixir and halt as soon as the answer is known"
+# paths: [fz2-run, fz2-interp, fz2-build]
+# timeout.interp_secs: 15
+# timeout.repl_secs: 15
+# oracle: oracle.exs
+#---
+#
+# Exercises the `fz-g58.25` Enum predicate/search layer:
+# `all?/1,2`, `any?/1,2`, `empty?/1`, `find/2,3`, `find_index/2`, and
+# `find_value/2,3`.
+#
+# The final cases would panic if the runtime kept reducing after a decisive
+# answer, so this fixture also pins the `reduce_while/3` early-exit contract.
+fn main() do
+  xs = [1, 2, 3, 4]
+
+  dbg(Enum.all?(xs))
+  dbg(Enum.all?([true, 1, :ok]))
+  dbg(Enum.all?([true, false]))
+  dbg(Enum.all?(xs, fn (x) -> x < 5 end))
+  dbg(Enum.all?(xs, fn (x) -> x < 3 end))
+
+  dbg(Enum.any?([]))
+  dbg(Enum.any?([nil, false]))
+  dbg(Enum.any?([nil, 2]))
+  dbg(Enum.any?(xs, fn (x) -> x == 3 end))
+  dbg(Enum.any?(xs, fn (x) -> x > 9 end))
+
+  dbg(Enum.empty?([]))
+  dbg(Enum.empty?(xs))
+
+  dbg(Enum.find(xs, fn (x) -> x > 2 end))
+  dbg(Enum.find(xs, :none, fn (x) -> x > 2 end))
+  dbg(Enum.find(xs, :none, fn (x) -> x > 9 end))
+
+  dbg(Enum.find_index(xs, fn (x) -> (x % 2) == 0 end))
+  dbg(Enum.find_index(xs, fn (x) -> x > 9 end))
+
+  dbg(Enum.find_value(xs, fn (x) -> if (x % 2) == 0, do: {:even, x}, else: false end))
+  dbg(Enum.find_value(xs, :none, fn (x) -> if x > 9, do: x, else: nil end))
+  dbg(Enum.find_value([nil, false, :ok], :none, fn (x) -> x end))
+
+  dbg(Enum.all?([1, 2], fn (x) -> if x == 1, do: false, else: panic("late all?") end))
+  dbg(Enum.any?([1, 2], fn (x) -> if x == 1, do: true, else: panic("late any?") end))
+  dbg(Enum.find([1, 2], :none, fn (x) -> if x == 1, do: true, else: panic("late find") end))
+  dbg(Enum.find_value([1, 2], :none, fn (x) -> if x == 1, do: :first, else: panic("late find_value") end))
+end

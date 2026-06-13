@@ -1,5 +1,6 @@
 //! CodegenEnv (immutable per-module ctx) and CodegenCache (per-fn caches).
 
+use super::driver::BoundaryReturnAdapters;
 use super::*;
 use crate::compiler2::NativeBody;
 use crate::fz_ir::{BlockId, ExternId, FnId, Module, Var};
@@ -19,7 +20,8 @@ pub(crate) struct CodegenEnv<'a> {
     pub(super) active_body_fn_id: FnId,
     pub(super) active_body_name: &'a str,
     pub(super) fn_ids: &'a HashMap<u32, FuncId>,
-    pub(super) callable_entry_fn_ids: &'a HashMap<u32, FuncId>,
+    pub(super) callable_boundary_fn_ids: &'a HashMap<u32, FuncId>,
+    pub(super) boundary_return_adapters: &'a BoundaryReturnAdapters,
     pub(super) mid_flight_cont_tail_fn_ids: &'a HashMap<(u32, Vec<MidFlightArgShape>), FuncId>,
     pub(super) tuple_schema_ids: &'a HashMap<usize, u32>,
     pub(super) named_schema_ids: &'a HashMap<String, u32>,
@@ -32,7 +34,6 @@ pub(crate) struct CodegenEnv<'a> {
     pub(super) native_abi_fns: &'a HashSet<FnId>,
     pub(super) cont_target_fns: &'a HashSet<FnId>,
     pub(super) cont_fns: &'a HashSet<FnId>,
-    pub(super) closure_capture_counts: &'a HashMap<FnId, usize>,
     /// Receive-dispatch FuncId per ReceiveMatched site, keyed by `(parent_fn_id.0,
     /// block_id.0)`. Populated by the planned codegen declaration pass
     /// and consumed by the Term::ReceiveMatched arm in
@@ -136,6 +137,6 @@ pub(crate) struct CodegenCache {
     /// Return var -> field vars for TupleFields(N) specs whose returned tuple
     /// can be delivered to the continuation without materializing a struct.
     pub(super) tuple_return_fields: HashMap<u32, Vec<Var>>,
-    /// Head Var -> source cons Var facts for total owned-cons reuse attempts.
-    pub(super) owned_cons_reuse_sources: HashMap<u32, Var>,
+    /// Rebuilt head Var -> source cons Var facts for reusable-cons attempts.
+    pub(super) reusable_cons_sources: HashMap<u32, Var>,
 }

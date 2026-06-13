@@ -246,7 +246,7 @@ pub(crate) fn narrow_for_cond<T: Types<Ty = Ty>>(
             }
             if t.is_singleton_lit(&bt) {
                 let then_a = t.intersect(at.clone(), bt.clone());
-                let else_a = t.difference(at.clone(), bt.clone());
+                let else_a = t.difference(at, bt);
                 then_env.insert(*a, then_a);
                 else_env.insert(*a, else_a);
             }
@@ -264,7 +264,7 @@ pub(crate) fn narrow_for_cond<T: Types<Ty = Ty>>(
             }
             if t.is_singleton_lit(&bt) {
                 let else_a = t.intersect(at.clone(), bt.clone());
-                let then_a = t.difference(at.clone(), bt.clone());
+                let then_a = t.difference(at, bt);
                 else_env.insert(*a, else_a);
                 then_env.insert(*a, then_a);
             }

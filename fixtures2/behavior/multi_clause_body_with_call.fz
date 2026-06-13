@@ -1,0 +1,13 @@
+#---
+# purpose: "minimal multi-clause Bug-2 repro — clause body has a Call. Pre-fz-qbg.2 panicked at fz_ir.rs:453; now lowers correctly via the per-clause body cont-fn path"
+# paths: [fz2-run, fz2-interp, fz2-build]
+#---
+fn helper(), do: 7
+
+fn classify(0), do: helper()
+fn classify(_), do: 99
+
+fn main() do
+  assert(classify(0) == 7, "clause-0 body Call lowers via the per-clause cont-fn path")
+  assert(classify(5) == 99, "wildcard clause returns 99")
+end

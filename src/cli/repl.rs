@@ -176,7 +176,7 @@ pub fn run_script(path: &Path, tel: &dyn Telemetry) -> io::Result<()> {
     let src = std::fs::read_to_string(path)?;
     let source_name = path.display().to_string();
     let (diagnostics, handler_id) = attach_repl_diagnostic_renderer(tel);
-    let result = ReplSession::new().run_script_str(&src, source_name, tel, &diagnostics);
+    let result = ReplSession::new().run_script_str(&src, &source_name, tel, &diagnostics);
     assert!(
         tel.detach(handler_id),
         "temporary repl diagnostic renderer should detach"
@@ -190,7 +190,7 @@ pub fn run_script(path: &Path, tel: &dyn Telemetry) -> io::Result<()> {
 #[cfg(test)]
 pub fn run_script_str(src: &str) -> io::Result<()> {
     let (tel, diagnostics) = repl_diagnostic_telemetry();
-    ReplSession::new().run_script_str(src, "<repl-script>".to_string(), &tel, &diagnostics)
+    ReplSession::new().run_script_str(src, "<repl-script>", &tel, &diagnostics)
 }
 
 pub(crate) struct ReplSession {
@@ -260,7 +260,7 @@ impl ReplSession {
     fn run_script_str(
         &mut self,
         src: &str,
-        source_name: String,
+        source_name: &str,
         tel: &dyn Telemetry,
         diagnostics: &Rc<RefCell<Vec<u8>>>,
     ) -> io::Result<()> {

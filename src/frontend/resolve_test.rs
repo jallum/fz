@@ -1544,7 +1544,7 @@ end
         .impls
         .get(&ProtocolImplKey {
             protocol: enumerable.clone(),
-            target: ImplTarget::module(list.clone()),
+            target: ImplTarget::module(list),
         })
         .expect("impl fact");
     assert_eq!(
@@ -1559,7 +1559,7 @@ end
         !ct.is_equivalent(protocol_ty, &any),
         "Protocol.t must not resolve as any"
     );
-    let list_any = ct.list(any.clone());
+    let list_any = ct.list(any);
     let int = ct.int();
     assert!(ct.is_subtype(&list_any, protocol_ty));
     assert!(ct.is_disjoint(&int, protocol_ty));

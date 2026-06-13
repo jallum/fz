@@ -23,7 +23,7 @@ use crate::ir_lower::{explicit_extern_wire_hint, extern_semantic_contract, exter
 use super::super::body::{
     CallArg, CallSiteId, ControlDestination, ControlDispatch, ControlEntryId, ControlEntryOrigin, DispatchBindings,
     Literal, LoweredBitField, LoweredBitFieldSpec, LoweredBitSize, LoweredBody, LoweredClause, LoweredEntry,
-    LoweredExtern, LoweredMapKey, LoweredStep, LoweredTail, ReceiveAfter, ReceiveClause, ValueId,
+    LoweredExtern, LoweredMapKey, LoweredStep, LoweredTail, ReceiveAfter, ReceiveClause, ReusableConsCapture, ValueId,
 };
 use super::super::drive::{FactKey, Job, JobEffects, current_uses};
 use super::super::identity::{FunctionId, FunctionSource};
@@ -601,7 +601,7 @@ fn collect_local_guard_requirements(
     for call in calls {
         let callee = resolve_guard_callee(world, namespace, &call)?;
         let fact = FactKey::GuardDispatch(callee);
-        if world.fact_revision(fact.clone()).is_some() {
+        if world.fact_revision(&fact).is_some() {
             reads.push(fact);
         } else {
             waits.insert(fact);
@@ -1201,7 +1201,7 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
             }
             Expr::Call(target, args) => {
                 let lowered_args = self.lower_call_args(args, env, steps)?;
-                let callsite = self.fresh_callsite();
+                let callsite = self.fresh_callsite(expr.span);
                 if let Some(name) = direct_call_name(target, env) {
                     let value = self.fresh_value();
                     steps.push(ExprStep::DirectCall {
@@ -1228,7 +1228,7 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
                 let value = self.fresh_value();
                 steps.push(ExprStep::ClosureCall {
                     value,
-                    callsite: self.fresh_callsite(),
+                    callsite: self.fresh_callsite(expr.span),
                     callee,
                     args: lowered_args,
                 });
@@ -1241,7 +1241,7 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
                     let value = self.fresh_value();
                     steps.push(ExprStep::DirectCall {
                         value,
-                        callsite: self.fresh_callsite(),
+                        callsite: self.fresh_callsite(expr.span),
                         callee: self.resolve_direct_callee(name, 2, expr.span)?,
                         args: vec![
                             CallArg {
@@ -2164,8 +2164,11 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
             });
         }
         let captures = compute_entry_captures(&entries, &clause_bounds);
-        for (entry, captures) in entries.iter_mut().zip(captures) {
+        let reusable_cons_captures = compute_entry_reusable_cons_captures(&lowered, &entries);
+        for ((entry, captures), reusable_cons_captures) in entries.iter_mut().zip(captures).zip(reusable_cons_captures)
+        {
             entry.captures = captures;
+            entry.reusable_cons_captures = reusable_cons_captures;
         }
         (lowered, entries)
     }
@@ -2186,6 +2189,7 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
             origin,
             params,
             captures,
+            reusable_cons_captures: Vec::new(),
             steps,
             tail,
         });
@@ -2216,7 +2220,7 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
                                 steps: block.steps[index + 1..].to_vec(),
                                 result: block.result,
                             },
-                            ControlEntryOrigin::CallResume { value: *value },
+                            ControlEntryOrigin::DeliveredResume { value: *value },
                             dest,
                             Vec::new(),
                             Vec::new(),
@@ -2250,7 +2254,7 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
                                 steps: block.steps[index + 1..].to_vec(),
                                 result: block.result,
                             },
-                            ControlEntryOrigin::CallResume { value: *value },
+                            ControlEntryOrigin::DeliveredResume { value: *value },
                             dest,
                             Vec::new(),
                             Vec::new(),
@@ -2284,7 +2288,7 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
                                 steps: block.steps[index + 1..].to_vec(),
                                 result: block.result,
                             },
-                            ControlEntryOrigin::LocalResume { value: *value },
+                            ControlEntryOrigin::DeliveredResume { value: *value },
                             dest,
                             Vec::new(),
                             Vec::new(),
@@ -2332,7 +2336,7 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
                                 steps: block.steps[index + 1..].to_vec(),
                                 result: block.result,
                             },
-                            ControlEntryOrigin::LocalResume { value: *value },
+                            ControlEntryOrigin::DeliveredResume { value: *value },
                             dest,
                             Vec::new(),
                             Vec::new(),
@@ -2392,7 +2396,7 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
                                 steps: block.steps[index + 1..].to_vec(),
                                 result: block.result,
                             },
-                            ControlEntryOrigin::LocalResume { value },
+                            ControlEntryOrigin::DeliveredResume { value },
                             dest,
                             Vec::new(),
                             Vec::new(),
@@ -2400,32 +2404,39 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
                         );
                         ControlDestination::Deliver(resume)
                     };
+                    let receive_dest = branch_dest.clone();
                     let clauses = clauses
                         .iter()
-                        .map(|clause| ReceiveClause {
-                            span: clause.span,
-                            bound_names: clause.bound_names.clone(),
-                            entry: self.plan_block(
+                        .map(|clause| {
+                            let entry = self.plan_block(
                                 clause.body.clone(),
-                                ControlEntryOrigin::Receive,
+                                ControlEntryOrigin::ReceiveOutcome,
                                 branch_dest.clone(),
                                 clause.params.clone(),
                                 captures.clone(),
                                 entries,
-                            ),
+                            );
+                            ReceiveClause {
+                                span: clause.span,
+                                bound_names: clause.bound_names.clone(),
+                                entry,
+                            }
                         })
                         .collect::<Vec<_>>();
-                    let after = after.as_ref().map(|after| ReceiveAfter {
-                        span: after.span,
-                        timeout: after.timeout,
-                        entry: self.plan_block(
+                    let after = after.as_ref().map(|after| {
+                        let entry = self.plan_block(
                             after.body.clone(),
-                            ControlEntryOrigin::Receive,
+                            ControlEntryOrigin::ReceiveOutcome,
                             branch_dest,
                             Vec::new(),
                             captures.clone(),
                             entries,
-                        ),
+                        );
+                        ReceiveAfter {
+                            span: after.span,
+                            timeout: after.timeout,
+                            entry,
+                        }
                     });
                     return (
                         lowered,
@@ -2434,6 +2445,7 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
                             dispatch: dispatch.clone(),
                             clauses,
                             after,
+                            dest: receive_dest,
                         })),
                     );
                 }
@@ -2698,7 +2710,12 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
                 continue;
             };
             let value = self.fresh_value();
-            steps.push(ExprStep::TupleField { value, source, index });
+            let _ = index;
+            steps.push(ExprStep::FieldAccess {
+                value,
+                base: source,
+                field: field.clone(),
+            });
             if with_asserts {
                 self.apply_pattern(&pattern.node, pattern.span, value, env, steps)?;
             } else {
@@ -2777,8 +2794,8 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
         value
     }
 
-    fn fresh_callsite(&mut self) -> CallSiteId {
-        let value = CallSiteId::from_u32(self.next_callsite);
+    fn fresh_callsite(&mut self, span: Span) -> CallSiteId {
+        let value = CallSiteId::new(self.next_callsite, span);
         self.next_callsite += 1;
         value
     }
@@ -2972,6 +2989,139 @@ fn compute_entry_captures(
     (0..entries.len())
         .map(|index| memo.remove(&ControlEntryId::from_u32(index as u32)).unwrap_or_default())
         .collect()
+}
+
+fn compute_entry_reusable_cons_captures(
+    clauses: &[LoweredClause],
+    entries: &[LoweredEntry],
+) -> Vec<Vec<ReusableConsCapture>> {
+    let mut entry_clause_inputs = vec![Vec::<HashMap<ValueId, ValueId>>::new(); entries.len()];
+    for clause in clauses {
+        entry_clause_inputs[clause.entry.as_u32() as usize].push(reusable_cons_sources_in_steps(&clause.projections));
+    }
+
+    let mut entry_parents = vec![Vec::<ControlEntryId>::new(); entries.len()];
+    for (index, entry) in entries.iter().enumerate() {
+        let parent = ControlEntryId::from_u32(index as u32);
+        for child in child_entries(entry.tail.clone()) {
+            entry_parents[child.as_u32() as usize].push(parent);
+        }
+    }
+
+    let local_caps = entries
+        .iter()
+        .map(|entry| reusable_cons_sources_in_steps(&entry.steps))
+        .collect::<Vec<_>>();
+    let mut available_in = vec![HashMap::<ValueId, ValueId>::new(); entries.len()];
+    let mut available_out = local_caps.clone();
+
+    loop {
+        let mut changed = false;
+        for (index, entry) in entries.iter().enumerate() {
+            let incoming = if matches!(entry.origin, ControlEntryOrigin::ReceiveOutcome) {
+                HashMap::new()
+            } else {
+                let mut inputs = entry_clause_inputs[index].clone();
+                inputs.extend(
+                    entry_parents[index]
+                        .iter()
+                        .map(|parent| available_out[parent.as_u32() as usize].clone()),
+                );
+                intersect_reusable_cons_sources(inputs)
+            };
+            let mut outgoing = incoming.clone();
+            outgoing.extend(local_caps[index].iter().map(|(head, source)| (*head, *source)));
+            if available_in[index] != incoming {
+                available_in[index] = incoming;
+                changed = true;
+            }
+            if available_out[index] != outgoing {
+                available_out[index] = outgoing;
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    let direct_needed = entries.iter().map(direct_reusable_cons_heads).collect::<Vec<_>>();
+    let mut captures = vec![HashMap::<ValueId, ValueId>::new(); entries.len()];
+
+    loop {
+        let mut changed = false;
+        for index in (0..entries.len()).rev() {
+            let entry = &entries[index];
+            let mut needed = HashMap::new();
+            for head in &direct_needed[index] {
+                if let Some(source) = available_in[index].get(head).copied() {
+                    needed.insert(*head, source);
+                }
+            }
+            for child in child_entries(entry.tail.clone()) {
+                for (head, source) in &captures[child.as_u32() as usize] {
+                    if let Some(incoming_source) = available_in[index].get(head).copied()
+                        && incoming_source == *source
+                    {
+                        needed.insert(*head, *source);
+                    }
+                }
+            }
+            if captures[index] != needed {
+                captures[index] = needed;
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    captures
+        .into_iter()
+        .map(|caps| {
+            let mut caps = caps
+                .into_iter()
+                .map(|(head, source)| ReusableConsCapture { head, source })
+                .collect::<Vec<_>>();
+            caps.sort_by_key(|capture| (capture.head.as_u32(), capture.source.as_u32()));
+            caps
+        })
+        .collect()
+}
+
+fn direct_reusable_cons_heads(entry: &LoweredEntry) -> Vec<ValueId> {
+    entry
+        .steps
+        .iter()
+        .filter_map(|step| match step {
+            LoweredStep::List {
+                items, tail: Some(_), ..
+            } if items.len() == 1 => items.first().copied(),
+            _ => None,
+        })
+        .collect()
+}
+
+fn reusable_cons_sources_in_steps(steps: &[LoweredStep]) -> HashMap<ValueId, ValueId> {
+    let mut out = HashMap::new();
+    for step in steps {
+        if let LoweredStep::SplitList { source, head, .. } = step {
+            out.insert(*head, *source);
+        }
+    }
+    out
+}
+
+fn intersect_reusable_cons_sources(inputs: Vec<HashMap<ValueId, ValueId>>) -> HashMap<ValueId, ValueId> {
+    let mut inputs = inputs.into_iter();
+    let Some(mut shared) = inputs.next() else {
+        return HashMap::new();
+    };
+    for caps in inputs {
+        shared.retain(|head, source| caps.get(head).is_some_and(|other| other == source));
+    }
+    shared
 }
 
 fn entry_captures(

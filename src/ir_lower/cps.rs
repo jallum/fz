@@ -53,11 +53,11 @@ pub(crate) struct ContFn {
     /// fz-f88.5 — origin tag baked in at mint time.
     pub(super) category: FnCategory,
     pub(super) owner_module: String,
-    pub(super) owned_cons_captures: Vec<OwnedConsCapture>,
+    pub(super) reusable_cons_captures: Vec<ReusableConsCapture>,
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct OwnedConsCapture {
+pub(crate) struct ReusableConsCapture {
     pub(super) head_name: String,
     pub(super) source_cons: Var,
 }
@@ -69,7 +69,7 @@ pub(crate) fn mint_cont_fn(ctx: &mut LowerCtx, name: impl Into<String>, span: Sp
     let id = ctx.mb.fresh_fn_id();
     ctx.fn_spans.insert(id, span);
     let outer_captured = ctx.visible_locals();
-    let owned_cons_captures = owned_cons_captures_for_visible_locals(ctx, &outer_captured);
+    let reusable_cons_captures = reusable_cons_captures_for_visible_locals(ctx, &outer_captured);
     ContFn {
         id,
         name: name.into(),
@@ -77,19 +77,19 @@ pub(crate) fn mint_cont_fn(ctx: &mut LowerCtx, name: impl Into<String>, span: Sp
         span,
         category,
         owner_module: ctx.current_owner_module.clone(),
-        owned_cons_captures,
+        reusable_cons_captures,
     }
 }
 
-fn owned_cons_captures_for_visible_locals(ctx: &LowerCtx, visible: &[(String, Var)]) -> Vec<OwnedConsCapture> {
+fn reusable_cons_captures_for_visible_locals(ctx: &LowerCtx, visible: &[(String, Var)]) -> Vec<ReusableConsCapture> {
     let Some(cur) = ctx.cur.as_ref() else {
         return Vec::new();
     };
     visible
         .iter()
         .filter_map(|(name, head)| {
-            cur.owned_cons_reuse_source_for_head(*head)
-                .map(|source_cons| OwnedConsCapture {
+            cur.reusable_cons_source_for_head(*head)
+                .map(|source_cons| ReusableConsCapture {
                     head_name: name.clone(),
                     source_cons,
                 })
@@ -97,9 +97,9 @@ fn owned_cons_captures_for_visible_locals(ctx: &LowerCtx, visible: &[(String, Va
         .collect()
 }
 
-fn capture_call_args(captured: &[(String, Var)], owned_cons: &[OwnedConsCapture]) -> Vec<Var> {
+fn capture_call_args(captured: &[(String, Var)], reusable_cons: &[ReusableConsCapture]) -> Vec<Var> {
     let mut args: Vec<Var> = captured.iter().map(|(_, v)| *v).collect();
-    args.extend(owned_cons.iter().map(|capture| capture.source_cons));
+    args.extend(reusable_cons.iter().map(|capture| capture.source_cons));
     args
 }
 
@@ -109,49 +109,49 @@ pub(crate) fn cont_call_args(ctx: &LowerCtx, cont: &ContFn) -> Vec<Var> {
         .iter()
         .map(|(name, original)| (name.clone(), ctx.lookup(name).unwrap_or(*original)))
         .collect::<Vec<_>>();
-    capture_call_args(&captured, &cont.owned_cons_captures)
+    capture_call_args(&captured, &cont.reusable_cons_captures)
 }
 
 struct CaptureParams {
     semantic: Vec<Var>,
-    hidden_owned_cons: Vec<Var>,
+    hidden_reusable_cons: Vec<Var>,
 }
 
 fn capture_params_for(
     builder: &mut FnBuilder,
     captured: &[(String, Var)],
-    owned_cons: &[OwnedConsCapture],
+    reusable_cons: &[ReusableConsCapture],
 ) -> CaptureParams {
     CaptureParams {
         semantic: captured.iter().map(|_| builder.fresh_var()).collect(),
-        hidden_owned_cons: owned_cons.iter().map(|_| builder.fresh_var()).collect(),
+        hidden_reusable_cons: reusable_cons.iter().map(|_| builder.fresh_var()).collect(),
     }
 }
 
 fn push_capture_entry_params(entry_params: &mut Vec<Var>, params: &CaptureParams) {
     entry_params.extend(params.semantic.clone());
-    entry_params.extend(params.hidden_owned_cons.clone());
+    entry_params.extend(params.hidden_reusable_cons.clone());
 }
 
 fn install_capture_metadata(
     builder: &mut FnBuilder,
     captured: &[(String, Var)],
-    owned_cons: &[OwnedConsCapture],
+    reusable_cons: &[ReusableConsCapture],
     params: &CaptureParams,
 ) {
-    for (capture, source_param) in owned_cons.iter().zip(&params.hidden_owned_cons) {
+    for (capture, source_param) in reusable_cons.iter().zip(&params.hidden_reusable_cons) {
         if let Some((_, head_param)) = captured
             .iter()
             .zip(&params.semantic)
             .find(|((name, _), _)| name == &capture.head_name)
         {
-            builder.record_owned_cons_reuse_capability(*head_param, *source_param);
+            builder.record_reusable_cons_cell(*head_param, *source_param);
         }
     }
 }
 
 fn add_capture_var_meta(ctx: &mut LowerCtx, fn_id: FnId, span: Span, params: &CaptureParams) {
-    for v in params.semantic.iter().chain(&params.hidden_owned_cons) {
+    for v in params.semantic.iter().chain(&params.hidden_reusable_cons) {
         ctx.var_meta.insert((fn_id, *v), (span, String::new()));
     }
 }
@@ -170,7 +170,7 @@ fn start_cps_cont_fn(
     name: String,
     call_span: Span,
     captured: Vec<(String, Var)>,
-    owned_cons: Vec<OwnedConsCapture>,
+    reusable_cons: Vec<ReusableConsCapture>,
 ) -> Var {
     let done = ctx.cur.take().unwrap().build();
     ctx.mb.add_fn(done);
@@ -179,11 +179,11 @@ fn start_cps_cont_fn(
         .with_category(FnCategory::CpsCont)
         .with_owner_module(ctx.current_owner_module.clone());
     let result_param = kbuilder.fresh_var();
-    let capture_params = capture_params_for(&mut kbuilder, &captured, &owned_cons);
+    let capture_params = capture_params_for(&mut kbuilder, &captured, &reusable_cons);
     let mut entry_params = vec![result_param];
     push_capture_entry_params(&mut entry_params, &capture_params);
     let entry = kbuilder.block(entry_params);
-    install_capture_metadata(&mut kbuilder, &captured, &owned_cons, &capture_params);
+    install_capture_metadata(&mut kbuilder, &captured, &reusable_cons, &capture_params);
 
     ctx.cur = Some(kbuilder);
     ctx.cur_fn_id = Some(cont_id);
@@ -214,14 +214,14 @@ pub(crate) fn switch_to_cont_fn(ctx: &mut LowerCtx, cont: &ContFn, extra_param_c
 
     // Entry params: extras (e.g. join_param) first, then captured renames.
     let extras: Vec<Var> = (0..extra_param_count).map(|_| kbuilder.fresh_var()).collect();
-    let capture_params = capture_params_for(&mut kbuilder, &cont.outer_captured, &cont.owned_cons_captures);
+    let capture_params = capture_params_for(&mut kbuilder, &cont.outer_captured, &cont.reusable_cons_captures);
     let mut entry_params = extras.clone();
     push_capture_entry_params(&mut entry_params, &capture_params);
     let entry = kbuilder.block(entry_params);
     install_capture_metadata(
         &mut kbuilder,
         &cont.outer_captured,
-        &cont.owned_cons_captures,
+        &cont.reusable_cons_captures,
         &capture_params,
     );
 
@@ -259,7 +259,7 @@ pub(crate) fn finalize_arm(ctx: &mut LowerCtx, arm_value: Var, join: Option<&Con
         return;
     }
     if let Some(join) = join {
-        let mut tail_args = Vec::with_capacity(1 + join.outer_captured.len() + join.owned_cons_captures.len());
+        let mut tail_args = Vec::with_capacity(1 + join.outer_captured.len() + join.reusable_cons_captures.len());
         tail_args.push(arm_value);
         let captured: Vec<(String, Var)> = join
             .outer_captured
@@ -273,7 +273,7 @@ pub(crate) fn finalize_arm(ctx: &mut LowerCtx, arm_value: Var, join: Option<&Con
                 (name.clone(), v)
             })
             .collect();
-        tail_args.extend(capture_call_args(&captured, &join.owned_cons_captures));
+        tail_args.extend(capture_call_args(&captured, &join.reusable_cons_captures));
         ctx.set_term(Term::TailCall {
             ident: CallsiteIdent::from_source(Span::DUMMY),
             callee: DirectCallTarget::Local(join.id),
@@ -292,8 +292,8 @@ pub(crate) fn cps_split_call_closure(
     call_span: Span,
 ) -> Result<Var, LowerError> {
     let captured = ctx.visible_locals();
-    let owned_cons_captures = owned_cons_captures_for_visible_locals(ctx, &captured);
-    let captured_vars = capture_call_args(&captured, &owned_cons_captures);
+    let reusable_cons_captures = reusable_cons_captures_for_visible_locals(ctx, &captured);
+    let captured_vars = capture_call_args(&captured, &reusable_cons_captures);
     let cont_id = ctx.mb.fresh_fn_id();
     let caller = ctx.cur_fn_id.expect("cps_split_call_closure: missing current fn id");
 
@@ -301,10 +301,11 @@ pub(crate) fn cps_split_call_closure(
         Term::CallClosure {
             ident: CallsiteIdent::from_source(Span::DUMMY),
             closure: closure_var,
-            args: arg_vars.clone(),
+            direct_target: None,
+            args: arg_vars,
             continuation: Cont {
                 fn_id: cont_id,
-                captured: captured_vars.clone(),
+                captured: captured_vars,
             },
         },
         call_span,
@@ -313,12 +314,9 @@ pub(crate) fn cps_split_call_closure(
         cont_id,
         ContinuationProvenance {
             caller,
-            captured: captured.iter().map(|(_, var)| *var).collect(),
+            semantic_capture_count: captured.len(),
             capture_param_offset: 1,
-            kind: ContinuationProvenanceKind::ClosureCall {
-                closure: closure_var,
-                args: arg_vars.clone(),
-            },
+            kind: ContinuationProvenanceKind::CallResult,
         },
     );
 
@@ -328,7 +326,7 @@ pub(crate) fn cps_split_call_closure(
         format!("k_{}", cont_id.0),
         call_span,
         captured,
-        owned_cons_captures,
+        reusable_cons_captures,
     ))
 }
 
@@ -339,8 +337,8 @@ pub(crate) fn cps_split_call(
     call_span: Span,
 ) -> Result<Var, LowerError> {
     let captured = ctx.visible_locals();
-    let owned_cons_captures = owned_cons_captures_for_visible_locals(ctx, &captured);
-    let captured_vars = capture_call_args(&captured, &owned_cons_captures);
+    let reusable_cons_captures = reusable_cons_captures_for_visible_locals(ctx, &captured);
+    let captured_vars = capture_call_args(&captured, &reusable_cons_captures);
     let cont_id = ctx.mb.fresh_fn_id();
     let caller = ctx.cur_fn_id.expect("cps_split_call: missing current fn id");
 
@@ -349,10 +347,10 @@ pub(crate) fn cps_split_call(
         Term::Call {
             ident: CallsiteIdent::from_source(Span::DUMMY),
             callee: DirectCallTarget::Local(callee),
-            args: arg_vars.clone(),
+            args: arg_vars,
             continuation: Cont {
                 fn_id: cont_id,
-                captured: captured_vars.clone(),
+                captured: captured_vars,
             },
         },
         call_span,
@@ -361,12 +359,9 @@ pub(crate) fn cps_split_call(
         cont_id,
         ContinuationProvenance {
             caller,
-            captured: captured.iter().map(|(_, var)| *var).collect(),
+            semantic_capture_count: captured.len(),
             capture_param_offset: 1,
-            kind: ContinuationProvenanceKind::DirectCall {
-                callee,
-                args: arg_vars.clone(),
-            },
+            kind: ContinuationProvenanceKind::CallResult,
         },
     );
 
@@ -376,7 +371,7 @@ pub(crate) fn cps_split_call(
         format!("k_{}", cont_id.0),
         call_span,
         captured,
-        owned_cons_captures,
+        reusable_cons_captures,
     ))
 }
 
@@ -397,7 +392,7 @@ pub(crate) fn cps_split_external_call(
             args: arg_vars,
             continuation: Cont {
                 fn_id: cont_id,
-                captured: captured_vars.clone(),
+                captured: captured_vars,
             },
         },
         call_span,

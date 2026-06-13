@@ -1,5 +1,6 @@
 //! Entry-block harness: bind entry params and load closure captures.
 
+use super::surface::NativeClosureTargetSurface;
 use super::*;
 use crate::fz_ir::FnIr;
 use cranelift_codegen::ir::{self, InstBuilder, MemFlags, types};
@@ -27,7 +28,7 @@ pub(crate) fn build_entry_harness<M: ClModule>(
     this_spec_id: u32,
     is_native: bool,
     is_cont_fn: bool,
-    closure_target_n_caps: Option<usize>,
+    closure_target: Option<&NativeClosureTargetSurface>,
     entry_cl: ir::Block,
 ) -> EntryHarnessOut {
     let param_reprs = env.param_reprs;
@@ -57,8 +58,8 @@ pub(crate) fn build_entry_harness<M: ClModule>(
                 &mut var_env,
                 &mut tuple_field_params,
             )
-        } else if let Some(n_caps) = closure_target_n_caps {
-            harness_closure_target(body, entry_blk, &params, my_param_reprs, n_caps, &mut var_env)
+        } else if let Some(boundary) = closure_target {
+            harness_closure_target(body, entry_blk, &params, boundary, &mut var_env)
         } else {
             harness_plain_native(body.b, entry_blk, &params, my_param_reprs, &mut var_env)
         }
@@ -117,6 +118,10 @@ pub(crate) fn build_entry_harness<M: ClModule>(
 /// producer's Term::Return uses the same sig, so no coerce at
 /// entry.
 ///
+/// Tuple-field delivered continuations publish one entry block param per field,
+/// not one synthetic tuple param. If the semantic program wants a tuple value,
+/// native lowering reconstructs it explicitly in the body with `Prim::MakeTuple`.
+///
 /// Returns (frame_ptr, host_ctx, cont_param).
 fn harness_cont_fn<M: ClModule>(
     body: &mut CodegenFn<'_, '_, '_, M>,
@@ -125,32 +130,18 @@ fn harness_cont_fn<M: ClModule>(
     my_param_reprs: &[ArgRepr],
     demand_abi: &NativeDemandAbi<'_>,
     var_env: &mut HashMap<u32, CodegenValue>,
-    tuple_field_params: &mut HashMap<(u32, u32), CodegenValue>,
+    _tuple_field_params: &mut HashMap<(u32, u32), CodegenValue>,
 ) -> (Option<ir::Value>, Option<ir::Value>, Option<ir::Value>) {
-    let tuple_fields = demand_abi.tuple_field_arity();
-    let extras_count = demand_abi.continuation_extras();
+    let extras_count = demand_abi.continuation_entry_extras();
     let mut param_cursor = 0;
-    if let Some(field_count) = tuple_fields {
-        let tuple_param = entry_blk.params.first().expect("TupleFields cont requires tuple slot0");
-        for (i, repr) in my_param_reprs.iter().copied().enumerate().take(field_count) {
-            let binding = take_param_binding(body.b, params, &mut param_cursor, repr);
-            tuple_field_params.insert((tuple_param.0, i as u32), binding);
-        }
-    } else {
-        for (i, p) in entry_blk.params.iter().take(extras_count).enumerate() {
-            let repr = my_param_reprs[i];
-            var_env.insert(p.0, take_param_binding(body.b, params, &mut param_cursor, repr));
-        }
+    for (i, p) in entry_blk.params.iter().take(extras_count).enumerate() {
+        let repr = my_param_reprs[i];
+        var_env.insert(p.0, take_param_binding(body.b, params, &mut param_cursor, repr));
     }
     let self_val = params[param_cursor];
-    let first_capture_param = if tuple_fields.is_some() { 1 } else { extras_count };
-    for (i, p) in entry_blk.params.iter().enumerate().skip(first_capture_param) {
-        let capture_idx = 1 + i - first_capture_param;
-        let repr_idx = if tuple_fields.is_some() {
-            extras_count + i - first_capture_param
-        } else {
-            i
-        };
+    for (i, p) in entry_blk.params.iter().enumerate().skip(extras_count) {
+        let capture_idx = 1 + i - extras_count;
+        let repr_idx = i;
         let binding = body.closure_capture_as_binding(self_val, capture_idx, my_param_reprs[repr_idx]);
         var_env.insert(p.0, binding);
     }
@@ -175,25 +166,28 @@ fn harness_closure_target<M: ClModule>(
     body: &mut CodegenFn<'_, '_, '_, M>,
     entry_blk: &crate::fz_ir::Block,
     params: &[ir::Value],
-    my_param_reprs: &[ArgRepr],
-    n_caps: usize,
+    boundary: &NativeClosureTargetSurface,
     var_env: &mut HashMap<u32, CodegenValue>,
 ) -> (Option<ir::Value>, Option<ir::Value>, Option<ir::Value>) {
-    let _n_args = entry_blk.params.len().saturating_sub(n_caps);
+    let n_caps = boundary.capture_count;
     let mut param_cursor = 0;
-    for (j, p) in entry_blk.params.iter().enumerate().skip(n_caps) {
-        let repr = my_param_reprs[j];
+    for (p, repr) in entry_blk
+        .params
+        .iter()
+        .skip(n_caps)
+        .zip(boundary.arg_reprs.iter().copied())
+    {
         var_env.insert(p.0, take_param_binding(body.b, params, &mut param_cursor, repr));
     }
     let self_val = params[param_cursor];
     let cont_val = params[param_cursor + 1];
     for (k, p) in entry_blk.params.iter().enumerate().take(n_caps) {
-        let binding = body.closure_capture_as_binding(self_val, k, my_param_reprs[k]);
+        let binding = body.closure_capture_as_binding(self_val, k, boundary.capture_reprs[k]);
         var_env.insert(p.0, binding);
     }
     debug_assert_eq!(
         param_cursor,
-        my_param_reprs[n_caps..].iter().map(ArgRepr::abi_arity).sum::<usize>()
+        boundary.arg_reprs.iter().map(ArgRepr::abi_arity).sum::<usize>()
     );
     let _ = self_val;
     (None, None, Some(cont_val))

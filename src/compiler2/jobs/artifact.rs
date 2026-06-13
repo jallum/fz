@@ -28,7 +28,9 @@ use super::super::body::{
     Literal, LoweredBody, LoweredEntry, LoweredStep, LoweredTail, ValueId,
 };
 use super::super::drive::{FactKey, Job, JobEffects, settled_uses};
-use super::super::identity::{ExecutableKey, ExecutableNeed, FunctionId, RootId, function_id_of_closure_target};
+use super::super::identity::{
+    ActivationKey, ExecutableKey, ExecutableNeed, FunctionId, RootId, function_id_of_closure_target,
+};
 use super::super::scheduler::FatalError;
 use super::super::semantic::{ActivationAnalysis, CallSiteKey, CallTargetSummary, SelectedCallee};
 use super::super::types::Ty;
@@ -56,7 +58,7 @@ pub(super) fn materialize_root(world: &mut World<'_>, root_id: RootId) -> Result
     }
 
     let closed_revision = world
-        .fact_revision(closed_fact.clone())
+        .fact_revision(&closed_fact)
         .expect("settled semantic closure should have a revision");
     let closure = world.semantic_closure(root_id);
     let reads = settled_uses([closed_fact]);
@@ -102,6 +104,7 @@ pub(super) fn materialize_root(world: &mut World<'_>, root_id: RootId) -> Result
             MaterializedExecutable {
                 entry_dispatch: materialize_entry_dispatch(world, executable, &analysis),
                 return_ty,
+                runtime_callable_values: analysis.runtime_callable_values,
                 value_types: analysis.value_types,
                 effects,
                 body,
@@ -135,7 +138,7 @@ pub(super) fn materialize_root(world: &mut World<'_>, root_id: RootId) -> Result
 /// semantic question or discovering new executable work.
 pub(super) fn derive_abi_ready(world: &mut World<'_>, root_id: RootId) -> Result<JobEffects, FatalError> {
     let materialized_fact = FactKey::MaterializedProgram(root_id);
-    let Some(materialized_revision) = world.fact_revision(materialized_fact.clone()) else {
+    let Some(materialized_revision) = world.fact_revision(&materialized_fact) else {
         return Ok(JobEffects::wait_on_settled(
             materialized_fact,
             [Job::MaterializeRoot(root_id)],
@@ -212,7 +215,7 @@ enum DeliverySource {
 /// payload.
 pub(super) fn derive_emission_ready(world: &mut World<'_>, root_id: RootId) -> Result<JobEffects, FatalError> {
     let abi_ready_fact = FactKey::AbiReadyProgram(root_id);
-    let Some(abi_ready_revision) = world.fact_revision(abi_ready_fact.clone()) else {
+    let Some(abi_ready_revision) = world.fact_revision(&abi_ready_fact) else {
         return Ok(JobEffects::wait_on_settled(
             abi_ready_fact,
             [Job::DeriveAbiReady(root_id)],
@@ -252,7 +255,8 @@ pub(super) fn derive_emission_ready(world: &mut World<'_>, root_id: RootId) -> R
                     )
                 })?,
                 capture_count: entry.capture_count,
-                param_reprs: entry.param_reprs.clone(),
+                capture_reprs: entry.capture_reprs.clone(),
+                arg_reprs: entry.arg_reprs.clone(),
                 return_ty: entry.return_ty,
                 return_abi: entry.return_abi.clone(),
             })
@@ -294,7 +298,8 @@ pub(super) fn derive_emission_ready(world: &mut World<'_>, root_id: RootId) -> R
 #[derive(Debug, Clone)]
 struct SyntheticCallTarget {
     function: FunctionId,
-    input_types: Vec<Ty>,
+    surface_inputs: Vec<Ty>,
+    activation: ActivationKey,
     return_ty: Ty,
 }
 
@@ -345,8 +350,15 @@ fn rewrite_protocol_dispatch_calls(
             .unwrap_or_else(|| world.types_mut().any());
         let mut targets = summary.targets.clone();
         targets.sort_by_key(|target| match target.callee {
-            SelectedCallee::Function(function) => function.as_u32(),
-            SelectedCallee::ProviderBoundary(function) => function.as_u32(),
+            SelectedCallee::Function(function) => (
+                function.as_u32(),
+                target
+                    .activation
+                    .as_ref()
+                    .map(|activation| activation.input.len())
+                    .unwrap_or(0),
+            ),
+            SelectedCallee::ProviderBoundary(function) => (function.as_u32(), 0),
         });
         let plan = protocol_dispatch_plan(world, root_id, receiver_ty, &targets, entry.span)?;
 
@@ -367,7 +379,17 @@ fn rewrite_protocol_dispatch_calls(
                 synthetic_callsite,
                 SyntheticCallTarget {
                     function,
-                    input_types: target.input_types.clone(),
+                    surface_inputs: target.surface_inputs.clone(),
+                    activation: target.activation.clone().ok_or_else(|| {
+                        incomplete_semantic_plan(
+                            world,
+                            root_id,
+                            format!(
+                                "dispatch target {} is missing its settled activation",
+                                function.as_u32()
+                            ),
+                        )
+                    })?,
                     return_ty: target.settled_return(world.types_mut()),
                 },
             );
@@ -377,6 +399,7 @@ fn rewrite_protocol_dispatch_calls(
                 origin: ControlEntryOrigin::Branch,
                 params: Vec::new(),
                 captures: protocol_dispatch_entry_captures(entries, &args, &dest),
+                reusable_cons_captures: Vec::new(),
                 steps: Vec::new(),
                 tail: LoweredTail::DirectCall {
                     value,
@@ -395,6 +418,7 @@ fn rewrite_protocol_dispatch_calls(
             origin: ControlEntryOrigin::Branch,
             params: Vec::new(),
             captures: Vec::new(),
+            reusable_cons_captures: Vec::new(),
             steps: Vec::new(),
             tail: LoweredTail::Halt {
                 atom: PROTOCOL_DISPATCH_UNPLANNED_ATOM.to_string(),
@@ -497,7 +521,8 @@ fn materialize_direct_call_edge(
     let target = if let Some(target) = synthetic_targets.get(&callsite) {
         call_target_summary(
             SelectedCallee::Function(target.function),
-            target.input_types.clone(),
+            target.surface_inputs.clone(),
+            Some(target.activation.clone()),
             target.return_ty,
         )
     } else {
@@ -559,10 +584,18 @@ fn lower_materialized_call_target(
 ) -> Result<MaterializedCallEdge, FatalError> {
     let (callee, extern_marshals) = match target.callee {
         SelectedCallee::Function(function) => {
-            let callee = ExecutableKey {
-                activation: world.activation_key(root_id, function, &target.input_types),
-                need,
-            };
+            let activation = target.activation.clone().ok_or_else(|| {
+                incomplete_semantic_plan(
+                    world,
+                    root_id,
+                    format!(
+                        "function target {} at callsite {} is missing its settled activation",
+                        function.as_u32(),
+                        callsite.as_u32()
+                    ),
+                )
+            })?;
+            let callee = ExecutableKey { activation, need };
             let extern_marshals = if let LoweredBody::Extern { signature } = world.lowered_body(function) {
                 let Some(args) = callsite_args.get(&callsite) else {
                     return Err(incomplete_semantic_plan(
@@ -654,7 +687,7 @@ fn protocol_dispatch_plan(
     let mut covered = world.types_mut().none();
     for (index, target) in targets.iter().enumerate() {
         let target_ty = target
-            .input_types
+            .surface_inputs
             .first()
             .copied()
             .unwrap_or_else(|| world.types_mut().any());
@@ -724,10 +757,16 @@ fn protocol_dispatch_plan(
     })
 }
 
-fn call_target_summary(callee: SelectedCallee, input_types: Vec<Ty>, return_ty: Ty) -> CallTargetSummary {
+fn call_target_summary(
+    callee: SelectedCallee,
+    surface_inputs: Vec<Ty>,
+    activation: Option<ActivationKey>,
+    return_ty: Ty,
+) -> CallTargetSummary {
     CallTargetSummary {
         callee,
-        input_types,
+        surface_inputs,
+        activation,
         return_ty: Some(return_ty),
     }
 }
@@ -825,6 +864,9 @@ fn collect_reachable_entries(
             collect_reachable_entries(entries, dispatch.miss_entry, reachable_entries, order, out);
         }
         LoweredTail::Receive(receive) => {
+            if let super::super::body::ControlDestination::Deliver(target) = &receive.dest {
+                collect_reachable_entries(entries, *target, reachable_entries, order, out);
+            }
             for clause in &receive.clauses {
                 collect_reachable_entries(entries, clause.entry, reachable_entries, order, out);
             }
@@ -877,6 +919,9 @@ fn reindex_entries(
                 dispatch.miss_entry = ids[&dispatch.miss_entry];
             }
             LoweredTail::Receive(receive) => {
+                if let super::super::body::ControlDestination::Deliver(target) = &mut receive.dest {
+                    *target = ids[target];
+                }
                 for clause in &mut receive.clauses {
                     clause.entry = ids[&clause.entry];
                 }
@@ -1212,6 +1257,7 @@ fn derive_abi_ready_executable(
             .expect("ABI-ready executable should resolve through the settled return ABI")
             .clone(),
         param_reprs: plan.param_reprs.clone(),
+        runtime_callable_values: executable.runtime_callable_values.clone(),
         value_types: executable.value_types.clone(),
         value_reprs: plan.value_reprs.clone(),
         effects: executable.effects,
@@ -1768,9 +1814,7 @@ fn resume_values(body: &LoweredBody) -> HashMap<ControlEntryId, ValueId> {
     let mut values = HashMap::new();
     if let LoweredBody::Clauses { entries, .. } = body {
         for (index, entry) in entries.iter().enumerate() {
-            if let super::super::body::ControlEntryOrigin::CallResume { value }
-            | super::super::body::ControlEntryOrigin::LocalResume { value } = entry.origin
-            {
+            if let super::super::body::ControlEntryOrigin::DeliveredResume { value } = entry.origin {
                 values.insert(ControlEntryId::from_u32(index as u32), value);
             }
         }
@@ -1883,295 +1927,39 @@ fn derive_callable_entries(
 ) -> Result<Vec<CallableEntry>, FatalError> {
     let mut entries = Vec::new();
     for executable in executables.values() {
-        callable_entries_in_body(world, root_id, executables, executable, &mut entries)?;
+        for value in &executable.runtime_callable_values {
+            let ty = executable.value_types.get(value).copied().ok_or_else(|| {
+                incomplete_semantic_plan(
+                    world,
+                    root_id,
+                    format!(
+                        "ABI-ready executable is missing the settled type for runtime callable value {}",
+                        value.as_u32()
+                    ),
+                )
+            })?;
+            match resolve_callable_entries_for_type(world, root_id, executables, ty)? {
+                CallableResolution::Resolved(resolved) => entries.extend(resolved),
+                CallableResolution::NotCallable => {
+                    return Err(incomplete_semantic_plan(
+                        world,
+                        root_id,
+                        format!("runtime callable value {} is not callable", value.as_u32()),
+                    ));
+                }
+                CallableResolution::Opaque => {
+                    return Err(incomplete_semantic_plan(
+                        world,
+                        root_id,
+                        format!("runtime callable value {} is opaque", value.as_u32()),
+                    ));
+                }
+            }
+        }
     }
     entries.sort_by(compare_callable_entries);
     entries.dedup_by(|left, right| left.target == right.target && left.capture_count == right.capture_count);
     Ok(entries)
-}
-
-fn callable_entries_in_body(
-    world: &mut World<'_>,
-    root_id: RootId,
-    executables: &HashMap<ExecutableKey, AbiReadyExecutable>,
-    executable: &AbiReadyExecutable,
-    out: &mut Vec<CallableEntry>,
-) -> Result<(), FatalError> {
-    match &executable.body {
-        LoweredBody::Extern { .. } => Ok(()),
-        LoweredBody::Clauses { entries, .. } => {
-            for entry in entries {
-                callable_entries_in_tail(world, root_id, executables, executable, &entry.tail, out)?;
-            }
-            Ok(())
-        }
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn callable_entries_in_tail(
-    world: &mut World<'_>,
-    root_id: RootId,
-    executables: &HashMap<ExecutableKey, AbiReadyExecutable>,
-    executable: &AbiReadyExecutable,
-    tail: &LoweredTail,
-    out: &mut Vec<CallableEntry>,
-) -> Result<(), FatalError> {
-    match tail {
-        LoweredTail::DirectCall { callsite, args, .. } => {
-            record_callable_boundary_args(world, root_id, executables, executable, *callsite, None, args, out)
-        }
-        LoweredTail::ClosureCall {
-            callsite, callee, args, ..
-        } => {
-            record_callable_value_entries(
-                world,
-                root_id,
-                executables,
-                executable,
-                *callee,
-                "closure callee",
-                false,
-                out,
-            )?;
-            record_callable_boundary_args(
-                world,
-                root_id,
-                executables,
-                executable,
-                *callsite,
-                Some(*callee),
-                args,
-                out,
-            )
-        }
-        LoweredTail::Value {
-            value,
-            dest: ControlDestination::Return,
-        } => record_callable_value_entries(
-            world,
-            root_id,
-            executables,
-            executable,
-            *value,
-            "returned value",
-            false,
-            out,
-        ),
-        LoweredTail::Value {
-            dest: ControlDestination::Deliver(_),
-            ..
-        } => Ok(()),
-        LoweredTail::If { .. } | LoweredTail::Dispatch { .. } | LoweredTail::Receive(_) | LoweredTail::Halt { .. } => {
-            Ok(())
-        }
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn record_callable_value_entries(
-    world: &mut World<'_>,
-    root_id: RootId,
-    executables: &HashMap<ExecutableKey, AbiReadyExecutable>,
-    executable: &AbiReadyExecutable,
-    value: ValueId,
-    context: &'static str,
-    expect_callable: bool,
-    out: &mut Vec<CallableEntry>,
-) -> Result<(), FatalError> {
-    let Some(ty) = executable.value_types.get(&value).copied() else {
-        if expect_callable {
-            return Err(incomplete_semantic_plan(
-                world,
-                root_id,
-                format!(
-                    "ABI-ready executable is missing the settled type for {context} value {}",
-                    value.as_u32()
-                ),
-            ));
-        }
-        return Ok(());
-    };
-    match resolve_escaped_callable_entries_for_type(world, root_id, executables, ty)? {
-        CallableResolution::Resolved(entries) => {
-            out.extend(entries);
-            Ok(())
-        }
-        CallableResolution::NotCallable if !expect_callable => Ok(()),
-        CallableResolution::NotCallable => Err(incomplete_semantic_plan(
-            world,
-            root_id,
-            format!("{context} value {} is not a callable value", value.as_u32()),
-        )),
-        CallableResolution::Opaque => {
-            eprintln!(
-                "PROBE opaque: ctx={context} value={} ty={}",
-                value.as_u32(),
-                world.types().display(&ty)
-            );
-            Err(incomplete_semantic_plan(
-                world,
-                root_id,
-                format!("{context} value {} is an opaque callable value", value.as_u32()),
-            ))
-        }
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn record_callable_boundary_args(
-    world: &mut World<'_>,
-    root_id: RootId,
-    executables: &HashMap<ExecutableKey, AbiReadyExecutable>,
-    executable: &AbiReadyExecutable,
-    callsite: CallSiteId,
-    closure_callee: Option<ValueId>,
-    args: &[CallArg],
-    out: &mut Vec<CallableEntry>,
-) -> Result<(), FatalError> {
-    for (arg_index, arg) in args.iter().enumerate() {
-        if !boundary_expects_callable(world, executables, executable, callsite, closure_callee, arg_index) {
-            continue;
-        }
-
-        let arg_ty = executable.value_types.get(&arg.value).copied().ok_or_else(|| {
-            incomplete_semantic_plan(
-                world,
-                root_id,
-                format!(
-                    "ABI-ready executable is missing the settled type for call argument value {} at callsite {}",
-                    arg.value.as_u32(),
-                    callsite.as_u32()
-                ),
-            )
-        })?;
-        match resolve_callable_entries_for_type(world, root_id, executables, arg_ty)? {
-            CallableResolution::NotCallable => {
-                return Err(incomplete_semantic_plan(
-                    world,
-                    root_id,
-                    format!(
-                        "callable boundary at callsite {} expects a resolved callable entry for arg {}",
-                        callsite.as_u32(),
-                        arg_index
-                    ),
-                ));
-            }
-            CallableResolution::Opaque => {
-                return Err(incomplete_semantic_plan(
-                    world,
-                    root_id,
-                    format!(
-                        "callable boundary at callsite {} carries an opaque callable arg {}",
-                        callsite.as_u32(),
-                        arg_index
-                    ),
-                ));
-            }
-            CallableResolution::Resolved(entries) => out.extend(entries),
-        }
-    }
-    Ok(())
-}
-
-fn boundary_expects_callable(
-    world: &mut World<'_>,
-    executables: &HashMap<ExecutableKey, AbiReadyExecutable>,
-    executable: &AbiReadyExecutable,
-    callsite: CallSiteId,
-    closure_callee: Option<ValueId>,
-    arg_index: usize,
-) -> bool {
-    let Some(edge) = executable.call_edges.get(&callsite) else {
-        return false;
-    };
-    let Some(callee_key) = edge.callee.local() else {
-        return false;
-    };
-    let Some(callee) = executables.get(callee_key) else {
-        return false;
-    };
-    if !matches!(callee.body, LoweredBody::Extern { .. }) {
-        return false;
-    }
-    let offset = closure_callee
-        .and_then(|callee| executable.value_types.get(&callee))
-        .and_then(|callee_ty| world.types().closure_lit_parts(callee_ty))
-        .map_or(0, |parts| parts.captures.len());
-    let Some(expected_ty) = callee_key.activation.input.get(offset + arg_index) else {
-        return false;
-    };
-    world.types_mut().callable_clauses(expected_ty).is_some()
-}
-
-fn resolve_escaped_callable_entries_for_type(
-    world: &mut World<'_>,
-    root_id: RootId,
-    executables: &HashMap<ExecutableKey, AbiReadyExecutable>,
-    ty: Ty,
-) -> Result<CallableResolution, FatalError> {
-    let mut entries = Vec::new();
-    let mut saw_callable = false;
-    let mut saw_opaque = false;
-    collect_escaped_callable_entries(
-        world,
-        root_id,
-        executables,
-        ty,
-        &mut HashSet::new(),
-        &mut entries,
-        &mut saw_callable,
-        &mut saw_opaque,
-    )?;
-    if saw_opaque {
-        Ok(CallableResolution::Opaque)
-    } else if saw_callable {
-        Ok(CallableResolution::Resolved(entries))
-    } else {
-        Ok(CallableResolution::NotCallable)
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn collect_escaped_callable_entries(
-    world: &mut World<'_>,
-    root_id: RootId,
-    executables: &HashMap<ExecutableKey, AbiReadyExecutable>,
-    ty: Ty,
-    seen: &mut HashSet<Ty>,
-    out: &mut Vec<CallableEntry>,
-    saw_callable: &mut bool,
-    saw_opaque: &mut bool,
-) -> Result<(), FatalError> {
-    if !seen.insert(ty) || world.types().is_empty(&ty) {
-        return Ok(());
-    }
-    match resolve_callable_entries_for_type(world, root_id, executables, ty)? {
-        CallableResolution::Resolved(entries) => {
-            *saw_callable = true;
-            out.extend(entries);
-        }
-        CallableResolution::Opaque => {
-            *saw_opaque = true;
-        }
-        CallableResolution::NotCallable => {}
-    }
-
-    for index in 0..world.types().max_tuple_arity(&ty) {
-        let field = world.types_mut().tuple_field_type(&ty, index);
-        collect_escaped_callable_entries(world, root_id, executables, field, seen, out, saw_callable, saw_opaque)?;
-    }
-    if world.types().has_list_shape(&ty) {
-        let elem = world.types_mut().list_element_type(&ty);
-        collect_escaped_callable_entries(world, root_id, executables, elem, seen, out, saw_callable, saw_opaque)?;
-    }
-    let map_keys = world.types().map_known_keys(&ty);
-    for key in map_keys {
-        if let Some(field) = world.types_mut().map_field_lookup(&ty, &key) {
-            collect_escaped_callable_entries(world, root_id, executables, field, seen, out, saw_callable, saw_opaque)?;
-        }
-    }
-    Ok(())
 }
 
 fn resolve_callable_entries_for_type(
@@ -2211,7 +1999,8 @@ fn resolve_callable_entries_for_type(
             entries.push(CallableEntry {
                 target: target.clone(),
                 capture_count,
-                param_reprs: target_executable.param_reprs.clone(),
+                capture_reprs: target_executable.param_reprs[..capture_count].to_vec(),
+                arg_reprs: target_executable.param_reprs[capture_count..].to_vec(),
                 return_ty: target_executable.return_ty,
                 return_abi: target_executable.return_abi.clone(),
             });

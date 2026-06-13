@@ -568,10 +568,12 @@ dump-budget mechanism — are explained in
 
 A tracked pre-commit hook lives in [`.githooks/`](.githooks/). It formats
 the staged Rust with `cargo fmt --all`, re-stages it, then runs
-`cargo check --all` and `cargo clippy --all-targets -- -D warnings` —
-mirroring the CI lint job, so a clippy complaint aborts the commit before
-it ever reaches CI. Git looks for hooks in `.git/hooks` by default, so
-enable the tracked directory once per clone:
+`cargo check --all` and `cargo clippy --workspace --all-targets -- -D warnings`.
+The lint set itself lives in the workspace manifest, so the hook and CI both
+enforce the same ownership/cloning policy without carrying a second copy of
+the lint list. A clippy complaint aborts the commit before it ever reaches CI.
+Git looks for hooks in `.git/hooks` by default, so enable the tracked
+directory once per clone:
 
 ```sh
 git config core.hooksPath .githooks
@@ -593,7 +595,7 @@ git config core.hooksPath .githooks
   receive with sender-side matching
 - a working interpreter, JIT (Cranelift), AOT path, and REPL
 - C externs with marshal classes and resource destructors
-- destination planning + owned-cons reuse: textbook functional code
+- destination planning + reusable-cons transport: textbook functional code
   compiled to near-zero-allocation native code (JIT/AOT), no reference
   counting, no borrow annotations
 
@@ -603,7 +605,7 @@ git config core.hooksPath .githooks
 
 fz is early. The compiler, the runtime, four execution paths, the type
 system, the sender-side matcher, and the destination-planning /
-owned-cons-reuse path that gives native code its near-zero-allocation
+reusable-cons path that gives native code its near-zero-allocation
 profile are all working today — but the language is small, the standard
 library is smaller, and the edges are sharp. Expect to read the dumps
 when things surprise you.
@@ -647,7 +649,7 @@ them out properly. The ones that left the deepest marks:
 - **Alex Reinking, Ningning Xie, Leonardo de Moura & Daan Leijen,
   _Perceus: Garbage Free Reference Counting with Reuse_** (PLDI '21).
   The "garbage-free, reuse cells you can prove are private" goal behind
-  owned-cons reuse. Perceus reaches it with runtime reference counts;
+  reusable-cons transport. Perceus reaches it with runtime reference counts;
   fz chases the same near-zero-allocation profile but proves privacy
   statically and pays a single alias bit instead.
   [pdf](https://xnning.github.io/papers/perceus.pdf)

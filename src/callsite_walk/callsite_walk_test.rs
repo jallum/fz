@@ -80,6 +80,7 @@ fn tail_call_closure_unresolved_yields_nothing() {
         ident: CallsiteIdent::synthetic(),
         closure: Var(3),
         args: vec![Var(1)],
+        direct_target: None,
     };
     let env = empty_env();
     let fc = empty_fc();
@@ -94,6 +95,7 @@ fn tail_call_closure_known_fns_yields_known() {
         ident: CallsiteIdent::synthetic(),
         closure: Var(3),
         args: vec![Var(1)],
+        direct_target: None,
     };
     let env = empty_env();
     let mut fc = empty_fc();
@@ -110,6 +112,7 @@ fn tail_call_closure_closure_lit_yields_lit_callsite() {
         ident: CallsiteIdent::synthetic(),
         closure: Var(3),
         args: vec![Var(1)],
+        direct_target: None,
     };
     let mut env = empty_env();
     let cap = ct.int_lit(7);
@@ -138,6 +141,7 @@ fn call_closure_yields_cont_when_closure_unresolved() {
             fn_id: FnId(9),
             captured: vec![],
         },
+        direct_target: None,
     };
     let env = empty_env();
     let fc = empty_fc();

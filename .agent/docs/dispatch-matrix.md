@@ -53,7 +53,10 @@ Inline lowering for function heads, `case`, and `with else`, plus interpreter
 receive probes and native receive codegen, walk the resulting
 `PatternDispatchPlan` directly. Receive accept/reject policy is not encoded in
 `DispatchMatrix`; selective receive remains a producer/outcome policy layered
-above the same regions.
+above the same regions. For selective receive specifically, the winning outcome
+is not "put the message somewhere and revisit it later". A hit outcome is a
+projected outcome-closure payload for the winning clause body; a miss outcome is
+"append the full message to the mailbox and stay parked".
 
 ## Vocabulary Boundary
 

@@ -1,0 +1,28 @@
+#---
+# purpose: "three-level currying — nested lambdas each capturing outer scope; exercises multi-depth closure allocation"
+# paths: [fz2-run, fz2-interp, fz2-build]
+# budget.codegen.functions: 11
+# budget.codegen.instructions: 166
+# budget.specs.count: 11
+# budget.planner.worklist_pops: 14
+# budget.planner.walk_calls: 14
+# budget.planner.type_fn_calls: 14
+# budget.planner.matcher_specs: 0
+# budget.planner.vars: 31
+# budget.planner.blocks: 11
+# budget.planner.stmts: 12
+# budget.planner.dispatches: 12
+#---
+fn add3(x), do: fn(y) -> fn(z) -> x + y + z end end
+fn apply(f, x), do: f.(x)
+
+fn main() do
+  assert(
+    apply(apply(add3(10), 20), 12) == 42,
+    "three nested closures preserve their captured outer values"
+  )
+  assert(
+    apply(apply(add3(1), 2), 3) == 6,
+    "a second curried call chain still computes through the same nested shape"
+  )
+end

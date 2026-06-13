@@ -203,15 +203,23 @@ pub(crate) fn subst_term(t: &Term, subst: &HashMap<Var, Var>) -> Term {
             closure,
             args,
             continuation,
+            direct_target,
         } => Term::CallClosure {
             ident: ident.clone(),
             closure: sv(*closure),
+            direct_target: *direct_target,
             args: args.iter().map(|x| sv(*x)).collect(),
             continuation: subst_cont(continuation, subst),
         },
-        Term::TailCallClosure { closure, args, ident } => Term::TailCallClosure {
+        Term::TailCallClosure {
+            closure,
+            args,
+            ident,
+            direct_target,
+        } => Term::TailCallClosure {
             ident: ident.clone(),
             closure: sv(*closure),
+            direct_target: *direct_target,
             args: args.iter().map(|x| sv(*x)).collect(),
         },
         Term::Return(a) => Term::Return(sv(*a)),

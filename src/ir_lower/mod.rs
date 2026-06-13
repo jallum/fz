@@ -45,8 +45,8 @@ use crate::frontend::resolve::flatten_modules;
 #[cfg(test)]
 use crate::fz_ir::{BinOp, BranchOrigin, Const, DeadBranch, ExternMarshal, FnBuilder, ModuleBuilder};
 use crate::fz_ir::{
-    BlockId, ContinuationProvenance, ContinuationProvenanceKind, ExternDecl, ExternId, ExternTy, FnCategory, FnId,
-    FnIr, Module, Prim, SourceInfo, Stmt, Term, Var,
+    BlockId, ContinuationProvenance, ContinuationProvenanceKind, DirectCallTarget, ExternDecl, ExternId, ExternTy,
+    FnCategory, FnId, FnIr, Module, Prim, SourceInfo, Stmt, Term, Var,
 };
 use crate::ir_capture_norm::normalize_continuation_captures;
 #[cfg(test)]
@@ -98,7 +98,7 @@ use atom_table::AtomTable;
 use brand_erase::erase_brands;
 use cond::{lower_if, lower_multi_clause};
 use cps::{
-    ContFn, OwnedConsCapture, cont_call_args, cps_split_call, cps_split_call_closure, cps_split_external_call,
+    ContFn, ReusableConsCapture, cont_call_args, cps_split_call, cps_split_call_closure, cps_split_external_call,
     finalize_arm, mint_cont_fn, switch_to_cont_fn,
 };
 use ctx::LowerCtx;
@@ -268,6 +268,22 @@ pub(crate) fn compute_current_function_correspondence(
     module: &mut Module,
     provenance: &HashMap<FnId, ContinuationProvenance>,
 ) {
+    enum ContinuationCaller<'a> {
+        Direct {
+            semantic_captures: &'a [Var],
+            callee: FnId,
+            args: &'a [Var],
+        },
+        Closure {
+            semantic_captures: &'a [Var],
+            closure: Var,
+            args: &'a [Var],
+        },
+        Tail {
+            semantic_captures: &'a [Var],
+        },
+    }
+
     fn groups_to_sets(groups: &[StructuralCorrespondenceGroup]) -> Vec<BTreeSet<StructuralOccurrence>> {
         groups
             .iter()
@@ -310,16 +326,90 @@ pub(crate) fn compute_current_function_correspondence(
             .collect()
     }
 
-    fn continuation_capture_param_index(provenance: &ContinuationProvenance, var: Var) -> Option<usize> {
-        provenance
-            .captured
+    fn continuation_capture_param_index(
+        semantic_captures: &[Var],
+        capture_param_offset: usize,
+        var: Var,
+    ) -> Option<usize> {
+        semantic_captures
             .iter()
             .position(|captured| *captured == var)
-            .map(|slot| slot + provenance.capture_param_offset)
+            .map(|slot| slot + capture_param_offset)
+    }
+
+    fn continuation_semantic_captures(vars: &[Var], count: usize, continuation: FnId) -> &[Var] {
+        vars.get(..count).unwrap_or_else(|| {
+            panic!(
+                "continuation {} expected {} semantic captures, found {}",
+                continuation,
+                count,
+                vars.len()
+            )
+        })
+    }
+
+    fn find_continuation_caller<'a>(
+        caller: &'a FnIr,
+        continuation: FnId,
+        semantic_capture_count: usize,
+    ) -> ContinuationCaller<'a> {
+        for block in &caller.blocks {
+            let term = &block.terminator;
+            match term {
+                Term::Call {
+                    callee: DirectCallTarget::Local(callee),
+                    args,
+                    continuation: cont,
+                    ..
+                } if cont.fn_id == continuation => {
+                    return ContinuationCaller::Direct {
+                        semantic_captures: continuation_semantic_captures(
+                            &cont.captured,
+                            semantic_capture_count,
+                            continuation,
+                        ),
+                        callee: *callee,
+                        args: args.as_slice(),
+                    };
+                }
+                Term::CallClosure {
+                    closure,
+                    args,
+                    continuation: cont,
+                    ..
+                } if cont.fn_id == continuation => {
+                    return ContinuationCaller::Closure {
+                        semantic_captures: continuation_semantic_captures(
+                            &cont.captured,
+                            semantic_capture_count,
+                            continuation,
+                        ),
+                        closure: *closure,
+                        args: args.as_slice(),
+                    };
+                }
+                Term::TailCall {
+                    callee: DirectCallTarget::Local(callee),
+                    args,
+                    ..
+                } if *callee == continuation => {
+                    return ContinuationCaller::Tail {
+                        semantic_captures: continuation_semantic_captures(
+                            args.as_slice(),
+                            semantic_capture_count,
+                            continuation,
+                        ),
+                    };
+                }
+                _ => {}
+            }
+        }
+        panic!("continuation {} missing caller term in fn {}", continuation, caller.id)
     }
 
     fn rebase_caller_groups(
-        provenance: &ContinuationProvenance,
+        semantic_captures: &[Var],
+        capture_param_offset: usize,
         caller_params: &[Var],
         groups: &[StructuralCorrespondenceGroup],
         rebase_callback_occurrences: bool,
@@ -332,7 +422,8 @@ pub(crate) fn compute_current_function_correspondence(
                     match occ {
                         StructuralOccurrence::Param { param_index, path } => {
                             let caller_var = caller_params.get(*param_index).copied()?;
-                            let cont_param = continuation_capture_param_index(provenance, caller_var)?;
+                            let cont_param =
+                                continuation_capture_param_index(semantic_captures, capture_param_offset, caller_var)?;
                             out.insert(StructuralOccurrence::Param {
                                 param_index: cont_param,
                                 path: path.clone(),
@@ -343,7 +434,8 @@ pub(crate) fn compute_current_function_correspondence(
                             if rebase_callback_occurrences =>
                         {
                             let caller_var = caller_params.get(*param_index).copied()?;
-                            let cont_param = continuation_capture_param_index(provenance, caller_var)?;
+                            let cont_param =
+                                continuation_capture_param_index(semantic_captures, capture_param_offset, caller_var)?;
                             out.insert(StructuralOccurrence::Param {
                                 param_index: cont_param,
                                 path: vec![],
@@ -361,7 +453,8 @@ pub(crate) fn compute_current_function_correspondence(
     }
 
     fn project_direct_callee_groups(
-        provenance: &ContinuationProvenance,
+        semantic_captures: &[Var],
+        capture_param_offset: usize,
         caller_fn: &FnIr,
         args: &[Var],
         groups: &[StructuralCorrespondenceGroup],
@@ -437,8 +530,11 @@ pub(crate) fn compute_current_function_correspondence(
                         StructuralOccurrence::Param { param_index, path } => {
                             let arg = args.get(*param_index).copied()?;
                             for (projected_var, projected_path) in project_path_through_var(caller_fn, arg, path) {
-                                let Some(cont_param) = continuation_capture_param_index(provenance, projected_var)
-                                else {
+                                let Some(cont_param) = continuation_capture_param_index(
+                                    semantic_captures,
+                                    capture_param_offset,
+                                    projected_var,
+                                ) else {
                                     continue;
                                 };
                                 out.insert(StructuralOccurrence::Param {
@@ -450,7 +546,8 @@ pub(crate) fn compute_current_function_correspondence(
                         StructuralOccurrence::CallbackArg { param_index, .. }
                         | StructuralOccurrence::CallbackResult { param_index, .. } => {
                             let arg = args.get(*param_index).copied()?;
-                            let cont_param = continuation_capture_param_index(provenance, arg)?;
+                            let cont_param =
+                                continuation_capture_param_index(semantic_captures, capture_param_offset, arg)?;
                             out.insert(StructuralOccurrence::Param {
                                 param_index: cont_param,
                                 path: vec![],
@@ -470,7 +567,8 @@ pub(crate) fn compute_current_function_correspondence(
     }
 
     fn project_closure_call_groups(
-        provenance: &ContinuationProvenance,
+        semantic_captures: &[Var],
+        capture_param_offset: usize,
         caller_params: &[Var],
         closure: Var,
         args: &[Var],
@@ -487,7 +585,8 @@ pub(crate) fn compute_current_function_correspondence(
                     match occ {
                         StructuralOccurrence::Param { param_index, path } => {
                             let caller_var = caller_params.get(*param_index).copied()?;
-                            let cont_param = continuation_capture_param_index(provenance, caller_var)?;
+                            let cont_param =
+                                continuation_capture_param_index(semantic_captures, capture_param_offset, caller_var)?;
                             out.insert(StructuralOccurrence::Param {
                                 param_index: cont_param,
                                 path: path.clone(),
@@ -502,7 +601,8 @@ pub(crate) fn compute_current_function_correspondence(
                             path,
                         } if *param_index == caller_closure_param => {
                             let arg = args.get(*arg_index).copied()?;
-                            let cont_param = continuation_capture_param_index(provenance, arg)?;
+                            let cont_param =
+                                continuation_capture_param_index(semantic_captures, capture_param_offset, arg)?;
                             out.insert(StructuralOccurrence::Param {
                                 param_index: cont_param,
                                 path: path.clone(),
@@ -555,7 +655,8 @@ pub(crate) fn compute_current_function_correspondence(
     }
 
     fn project_dispatch_binding_groups(
-        provenance: &ContinuationProvenance,
+        semantic_captures: &[Var],
+        capture_param_offset: usize,
         bindings: &[(Var, PatternSubjectRef)],
         groups: &[StructuralCorrespondenceGroup],
     ) -> Vec<BTreeSet<StructuralOccurrence>> {
@@ -583,8 +684,11 @@ pub(crate) fn compute_current_function_correspondence(
                                 if *param_index != input_id as usize {
                                     continue;
                                 }
-                                let Some(cont_param) = continuation_capture_param_index(provenance, *binding_var)
-                                else {
+                                let Some(cont_param) = continuation_capture_param_index(
+                                    semantic_captures,
+                                    capture_param_offset,
+                                    *binding_var,
+                                ) else {
                                     continue;
                                 };
                                 let Some(projected_path) = project_path_through_dispatch_subject(path, source) else {
@@ -628,26 +732,81 @@ pub(crate) fn compute_current_function_correspondence(
                     .as_slice(),
             );
 
+            let caller_term = find_continuation_caller(caller, continuation, provenance.semantic_capture_count);
             match &provenance.kind {
-                ContinuationProvenanceKind::DirectCall { callee, args } => {
-                    sets.extend(rebase_caller_groups(provenance, &caller_params, &caller_groups, true));
-                    let callee_groups = module.function_correspondence.get(callee).cloned().unwrap_or_default();
-                    sets.extend(project_direct_callee_groups(provenance, caller, args, &callee_groups));
-                }
-                ContinuationProvenanceKind::ClosureCall { closure, args } => {
-                    sets.extend(rebase_caller_groups(provenance, &caller_params, &caller_groups, false));
-                    sets.extend(project_closure_call_groups(
-                        provenance,
-                        &caller_params,
-                        *closure,
+                ContinuationProvenanceKind::CallResult => match caller_term {
+                    ContinuationCaller::Direct {
+                        semantic_captures,
+                        callee,
                         args,
-                        &caller_groups,
-                    ));
-                }
-                ContinuationProvenanceKind::DispatchBody { bindings } => {
-                    sets.extend(rebase_caller_groups(provenance, &caller_params, &caller_groups, true));
-                    sets.extend(project_dispatch_binding_groups(provenance, bindings, &caller_groups));
-                }
+                    } => {
+                        sets.extend(rebase_caller_groups(
+                            semantic_captures,
+                            provenance.capture_param_offset,
+                            &caller_params,
+                            &caller_groups,
+                            true,
+                        ));
+                        let callee_groups = module.function_correspondence.get(&callee).cloned().unwrap_or_default();
+                        sets.extend(project_direct_callee_groups(
+                            semantic_captures,
+                            provenance.capture_param_offset,
+                            caller,
+                            args,
+                            &callee_groups,
+                        ));
+                    }
+                    ContinuationCaller::Closure {
+                        semantic_captures,
+                        closure,
+                        args,
+                    } => {
+                        sets.extend(rebase_caller_groups(
+                            semantic_captures,
+                            provenance.capture_param_offset,
+                            &caller_params,
+                            &caller_groups,
+                            false,
+                        ));
+                        sets.extend(project_closure_call_groups(
+                            semantic_captures,
+                            provenance.capture_param_offset,
+                            &caller_params,
+                            closure,
+                            args,
+                            &caller_groups,
+                        ));
+                    }
+                    ContinuationCaller::Tail { .. } => {
+                        panic!(
+                            "call-result continuation {} was invoked by tail-call in fn {}",
+                            continuation, provenance.caller
+                        );
+                    }
+                },
+                ContinuationProvenanceKind::DispatchBody { bindings } => match caller_term {
+                    ContinuationCaller::Tail { semantic_captures } => {
+                        sets.extend(rebase_caller_groups(
+                            semantic_captures,
+                            provenance.capture_param_offset,
+                            &caller_params,
+                            &caller_groups,
+                            true,
+                        ));
+                        sets.extend(project_dispatch_binding_groups(
+                            semantic_captures,
+                            provenance.capture_param_offset,
+                            bindings,
+                            &caller_groups,
+                        ));
+                    }
+                    ContinuationCaller::Direct { .. } | ContinuationCaller::Closure { .. } => {
+                        panic!(
+                            "dispatch-body continuation {} was invoked by call in fn {}",
+                            continuation, provenance.caller
+                        );
+                    }
+                },
             }
 
             let new_groups = sets_to_groups(sets);
@@ -909,9 +1068,9 @@ pub fn lower_program<T: Types<Ty = Ty>>(t: &mut T, prog: &Program, tel: &dyn Tel
         &prelude.module_type_envs,
         &ctx.combined_type_env,
     );
-    let continuation_provenance = ctx.continuation_provenance;
-    module.continuation_provenance = continuation_provenance.clone();
+    let continuation_provenance = std::mem::take(&mut ctx.continuation_provenance);
     compute_current_function_correspondence(&mut module, &continuation_provenance);
+    module.continuation_provenance = continuation_provenance;
     // fz-swt.8 — carry the resolver's opaque-inner-type map onto the
     // Module so the planner can resolve `handle.value` accesses to T.
     // Runtime built-in inners (utf8 brand, pid/ref opaques, ...) live in the

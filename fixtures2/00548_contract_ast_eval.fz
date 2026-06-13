@@ -1,0 +1,22 @@
+#---
+# purpose: tagged-tuple AST evaluator keeps its recursive clause and continuation edges stable
+# root: main/0
+# assert.metric.semantic.activations: 6
+# assert.metric.semantic.executables: 6
+# assert.metric.semantic.callsites: 18
+# assert.metric.call_edges.count: 18
+# assert.metric.return_type.widened: 0
+# assert.edge: eval/1[{:add, {:num, int}, {:mul, {:num, int}, {:num, int}}}] | @63-70 | direct | eval/1
+# assert.edge: eval/1[{:mul, {:add, {:num, int}, {:num, int}}, {:add, {:num, int}, {:num, int}}}] | @108-115 | direct | eval/1
+# assert.edge: main/0[] | @221-293 | direct | eval/1
+# snapshot.call_edges: call_edges
+#---
+fn eval({:num, n}), do: n
+fn eval({:add, a, b}), do: eval(a) + eval(b)
+fn eval({:mul, a, b}), do: eval(a) * eval(b)
+
+fn main() do
+  dbg(eval({:num, 42}))
+  dbg(eval({:add, {:num, 2}, {:mul, {:num, 3}, {:num, 4}}}))
+  dbg(eval({:mul, {:add, {:num, 1}, {:num, 2}}, {:add, {:num, 3}, {:num, 4}}}))
+end

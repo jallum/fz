@@ -204,8 +204,12 @@ fn compiler2_frontdoor_surface_root_is_real_quoted_source_not_old_ast() {
 #[test]
 fn compiler2_frontdoor_parses_function_and_macro_defs_with_quote_unquote() {
     let tel = ConfiguredTelemetry::new();
-    let root = parse_quoted_program("macro_inc.fz", include_str!("../../fixtures/macro_inc/input.fz"), &tel)
-        .expect("quoted parse");
+    let root = parse_quoted_program(
+        "macro_inc.fz",
+        include_str!("../../fixtures2/behavior/macro_inc.fz"),
+        &tel,
+    )
+    .expect("quoted parse");
 
     let items = root.cursor().list_items().expect("top-level items");
     assert_eq!(items.len(), 3);
@@ -299,7 +303,7 @@ fn compiler2_frontdoor_parses_remote_calls_captures_and_headless_case_from_fixtu
 
     let cross = parse_quoted_program(
         "cross_module_macro.fz",
-        include_str!("../../fixtures/cross_module_macro/input.fz"),
+        include_str!("../../fixtures2/behavior/cross_module_macro.fz"),
         &tel,
     )
     .expect("cross-module macro parse");
@@ -309,7 +313,7 @@ fn compiler2_frontdoor_parses_remote_calls_captures_and_headless_case_from_fixtu
 
     let pipe_case = parse_quoted_program(
         "pipe_headless_case.fz",
-        include_str!("../../fixtures/pipe_headless_case/input.fz"),
+        include_str!("../../fixtures2/behavior/pipe_headless_case.fz"),
         &tel,
     )
     .expect("pipe/headless-case parse");
@@ -319,7 +323,7 @@ fn compiler2_frontdoor_parses_remote_calls_captures_and_headless_case_from_fixtu
 
     let fn_ref = parse_quoted_program(
         "fn_ref.fz",
-        include_str!("../../fixtures/fn_ref_ampersand/input.fz"),
+        include_str!("../../fixtures2/behavior/fn_ref_ampersand.fz"),
         &tel,
     )
     .expect("fn-ref parse");
@@ -329,7 +333,7 @@ fn compiler2_frontdoor_parses_remote_calls_captures_and_headless_case_from_fixtu
 
     let lambda_sugars = parse_quoted_program(
         "lambda_sugars.fz",
-        include_str!("../../fixtures/lambda_sugars/input.fz"),
+        include_str!("../../fixtures2/behavior/lambda_sugars.fz"),
         &tel,
     )
     .expect("lambda sugar parse");
@@ -501,7 +505,7 @@ fn compiler2_frontdoor_parses_runtime_bootstrap_sources_directly() {
 
     parse_quoted_program(
         "receive_selective_refs.fz",
-        include_str!("../../fixtures/receive_selective_refs/input.fz"),
+        include_str!("../../fixtures2/behavior/receive_selective_refs.fz"),
         &tel,
     )
     .expect("receive selective refs quoted parse");

@@ -1,0 +1,27 @@
+#---
+# purpose: "`test()` macro from the prelude — assert / refute"
+# paths: [fz2-run, fz2-interp, fz2-build]
+# kind: test
+# defer.fz2-run: compiler2 does not implement `test` fixtures yet
+# defer.fz2-interp: compiler2 does not implement `test` fixtures yet
+# defer.fz2-build: compiler2 does not implement `test` fixtures yet
+#---
+test(:test_addition) do
+  assert(1 + 1 == 2)
+  assert(40 + 2 == 42)
+end
+
+test(:test_atoms_compare) do
+  assert(:ok == :ok)
+  refute(:ok == :error)
+end
+
+test(:test_truthiness) do
+  assert(true)
+end
+
+fn helper(x), do: x * 2
+
+test(:test_calls_helper) do
+  assert(helper(21) == 42)
+end

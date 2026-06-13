@@ -23,10 +23,10 @@ impl Compiler {
         &mut self,
         world: &mut World,
         src: String,
-        source_name: String,
+        source_name: &str,
         tel: &dyn Telemetry,
     ) -> FrontendResult {
-        compile_source_with_types(world.types(), src, source_name, tel)
+        compile_source_with_types(world.types(), src, source_name.to_owned(), tel)
     }
 
     pub(crate) fn compile_program(
@@ -43,7 +43,7 @@ impl Compiler {
         &mut self,
         world: &mut World,
         src: String,
-        source_name: String,
+        source_name: &str,
         tel: &dyn Telemetry,
         mode: CompileMode,
     ) -> Result<(), PipelineError> {

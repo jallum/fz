@@ -1,0 +1,63 @@
+#---
+# purpose: "FileHandle = fd + dtor, exercising cstring/binary/integer marshal classes against real libc with an observable resource lifecycle"
+# paths: [fz2-run, fz2-interp, fz2-build]
+# budget.codegen.functions: 6
+# budget.codegen.instructions: 74
+# budget.specs.count: 6
+# budget.planner.worklist_pops: 6
+# budget.planner.walk_calls: 6
+# budget.planner.type_fn_calls: 6
+# budget.planner.matcher_specs: 0
+# budget.planner.vars: 35
+# budget.planner.blocks: 6
+# budget.planner.stmts: 20
+# budget.planner.dispatches: 4
+#---
+#
+# # file_handle
+#
+# [[fz-x5m]] / [[fz-4mk]] — End-to-end demonstration of the extern marshal
+# classes plumbed through `make_resource`.
+#
+# ```
+# libc::creat (path :: cstring, mode :: integer)  :: integer
+# libc::write (integer, binary, integer)          :: integer
+# libc::close (integer)                           :: integer
+# libc::unlink(cstring)                           :: integer
+# ```
+#
+# The fixture wraps the fd in a `FileHandle` resource whose dtor calls
+# `libc::close` and then prints `:dtor_closed`. The dtor body runs as
+# real fz code at task-exit drain (fz-4mk) — the closure isn't picked
+# apart for an extracted C symbol; the wrapper's `print` actually fires.
+# The `:dtor_closed` line at the end of expected.txt is what proves the
+# destructor ran.
+extern "C" fn libc::creat(path :: cstring, mode :: integer) :: integer
+extern "C" fn libc::write(integer, binary, integer) :: integer
+extern "C" fn libc::close(integer) :: integer
+extern "C" fn libc::unlink(cstring) :: integer
+
+# Dtor body runs as real fz code at task-exit (fz-4mk). We can call
+# libc::close directly AND print so the test can observe the dtor fired
+# — the closure body is no longer extracted-then-discarded.
+fn close_observable(fd) do
+  libc::close(fd)
+  dbg(:dtor_closed)
+end
+
+defmodule FileHandle do
+  @type t :: opaque resource(integer)
+
+  fn from_fd(fd), do: make_resource(fd, &close_observable/1)
+end
+
+fn main() do
+  path = "/tmp/fz-x5m"
+  fd = libc::creat(path, 0o644)
+  dbg(:opened)
+  n = libc::write(fd, "hi\n", 3)
+  dbg(n)
+  _h = FileHandle.from_fd(fd)
+  libc::unlink(path)
+  dbg(:done)
+end

@@ -1,0 +1,3 @@
+apply1/2[(α0) -> α1, int] | @21-26 | closure | main/0::lambda[@50-67]/1(int) => int => int
+main/0[] | @70-86 | direct | apply1/2((α0) -> α1, int) => int => int
+main/0::lambda[@50-67]/1[int] | @58-63 | direct | Kernel.+/2(int, int) => int => int

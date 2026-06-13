@@ -364,10 +364,7 @@ fn repl_entry_fn_def(entry_name: &str, input_frame: &[String], output_frame: &[S
     let display_name = "__repl_display".to_string();
     let display_expr = Spanned::new(Expr::Var(display_name.clone()), expr.span);
     let bind_display = Spanned::new(
-        Expr::Match(
-            Spanned::new(Pattern::Var(display_name.clone()), expr.span),
-            Box::new(expr),
-        ),
+        Expr::Match(Spanned::new(Pattern::Var(display_name), expr.span), Box::new(expr)),
         display_expr.span,
     );
     let mut returns = vec![display_expr];

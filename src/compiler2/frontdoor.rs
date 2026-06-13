@@ -43,11 +43,11 @@ impl From<QuotedSourceError> for FrontDoorError {
 }
 
 pub fn parse_quoted_program(
-    source_name: impl Into<String>,
+    source_name: impl AsRef<str>,
     source_text: &str,
     tel: &dyn Telemetry,
 ) -> Result<QuotedSourceRoot, FrontDoorError> {
-    let source_name = source_name.into();
+    let source_name = Rc::<str>::from(source_name.as_ref());
     let tokens = Lexer::with_source_name(source_text, source_name.clone())
         .tokenize(tel)
         .map_err(|error| FrontDoorError::syntax(error.msg, error.span))?;
@@ -57,7 +57,7 @@ pub fn parse_quoted_program(
 struct FrontDoorParser<'a> {
     toks: Vec<Token>,
     pos: usize,
-    source_name: String,
+    source_name: Rc<str>,
     source_text: &'a str,
     builder: QuotedSourceBuilder,
     allow_trailing_do: bool,
@@ -105,7 +105,7 @@ impl ParsedExpr {
 }
 
 impl<'a> FrontDoorParser<'a> {
-    fn new(toks: Vec<Token>, source_name: String, source_text: &'a str) -> Self {
+    fn new(toks: Vec<Token>, source_name: Rc<str>, source_text: &'a str) -> Self {
         let heap = Rc::new(QuotedSourceHeap::new());
         let builder = heap.builder();
         Self {
@@ -205,7 +205,7 @@ impl<'a> FrontDoorParser<'a> {
             other => unreachable!("guarded by parse_item: {:?}", other),
         };
         let (function_name, mut head) = self.parse_function_head(module_path)?;
-        let scope = vec![function_name.clone()];
+        let scope = vec![function_name];
         if self.eat(&Tok::When) {
             let guard = self
                 .with_trailing_do_suppressed(|parser| parser.parse_expr(module_path, &scope))?
@@ -2037,7 +2037,7 @@ impl<'a> FrontDoorParser<'a> {
         let start = span.start as usize;
         let length = span.end.saturating_sub(span.start);
         let (line, column) = line_and_column(self.source_text, start);
-        QuotedSourceSpan::new(self.source_name.clone(), line, column, length)
+        QuotedSourceSpan::new(self.source_name.to_string(), line, column, length)
     }
 
     fn peek(&self) -> &Tok {

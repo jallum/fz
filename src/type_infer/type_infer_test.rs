@@ -326,7 +326,7 @@ fn infer_entry_return_via_main(module: &Module) -> Ty {
 // DROP: planner dispatch_subject_slots IR field, no compiler2 analogue
 #[test]
 fn partition_dispatch_mask_excludes_accumulators() {
-    let module = linked_fixture(include_str!("../../fixtures/quicksort/input.fz"));
+    let module = linked_fixture(include_str!("../../fixtures2/behavior/quicksort.fz"));
     let partition = module
         .fn_by_name("partition")
         .expect("quicksort fixture defines partition");
@@ -343,7 +343,7 @@ fn partition_dispatch_mask_excludes_accumulators() {
 // DROP: planner dispatch-mask telemetry, no compiler2 analogue
 #[test]
 fn partition_dispatch_mask_is_emitted() {
-    let module = linked_fixture(include_str!("../../fixtures/quicksort/input.fz"));
+    let module = linked_fixture(include_str!("../../fixtures2/behavior/quicksort.fz"));
     let mut t = crate::types::new();
     let report = infer_report_via_main(&mut t, &module);
     let partition = report
@@ -572,7 +572,7 @@ fn receive_clause_body_keeps_typed_capture_and_settles_caller_return() {
     let mut t = crate::types::new();
     let int = t.int();
     let any = t.any();
-    let parent_ret = t.tuple(&[int.clone(), any.clone()]);
+    let parent_ret = t.tuple(&[int, any]);
     let main_ret = t.tuple(std::slice::from_ref(&parent_ret));
     let report = infer_report_via_main(&mut t, &module);
 

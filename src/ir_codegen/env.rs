@@ -147,6 +147,6 @@ pub(crate) struct CodegenCache {
     /// Return var -> field vars for TupleFields(N) specs whose returned tuple
     /// can be delivered to the continuation without materializing a struct.
     pub(super) tuple_return_fields: HashMap<u32, Vec<Var>>,
-    /// Head Var -> source cons Var facts for total owned-cons reuse attempts.
-    pub(super) owned_cons_reuse_sources: HashMap<u32, Var>,
+    /// Rebuilt head Var -> source cons Var facts for reusable-cons attempts.
+    pub(super) reusable_cons_sources: HashMap<u32, Var>,
 }

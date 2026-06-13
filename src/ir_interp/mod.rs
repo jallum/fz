@@ -6,7 +6,7 @@
 //! renders through typed runtime helpers. Heap allocations
 //! go through the current Process's Heap.
 //!
-//! Scope at .5.2: minimal for fixtures/add1/input.fz —
+//! Scope at .5.2: minimal for fixtures2/behavior/add1.fz —
 //!   Const::{Int, Atom, Nil, True, False}
 //!   BinOp::Add  (Int + Int)
 //!   Term::{Call, Return, Halt}

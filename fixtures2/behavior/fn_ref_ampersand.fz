@@ -1,0 +1,18 @@
+#---
+# purpose: "&name/arity parses as an explicit function reference, disambiguating overloaded names by arity"
+# paths: [fz2-run, fz2-interp, fz2-build]
+#---
+fn double(x), do: x * 2
+fn neg(x), do: 0 - x
+fn add(x, y), do: x + y
+
+fn apply1(f, x), do: f.(x)
+fn apply2(f, x, y), do: f.(x, y)
+
+fn main() do
+  # Explicit &name/arity passes the disambiguated function reference
+  # through apply1/apply2 and back into a call site.
+  assert(apply1(&double/1, 21) == 42, "&double/1 reference applied")
+  assert(apply1(&neg/1, 7) == -7, "&neg/1 reference applied")
+  assert(apply2(&add/2, 30, 12) == 42, "&add/2 disambiguated by arity")
+end

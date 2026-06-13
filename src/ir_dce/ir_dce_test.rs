@@ -186,7 +186,7 @@ fn unreachable_capability_use_does_not_keep_physical_facts() {
     b.set_terminator(entry, Term::Return(nil));
 
     let head = b.let_(orphan, Prim::ListHead(source));
-    b.record_owned_cons_reuse_capability(head, source);
+    b.record_reusable_cons_cell(head, source);
     let tail = b.let_(orphan, Prim::MakeList(vec![], None));
     let result = b.let_(orphan, Prim::MakeList(vec![head], Some(tail)));
     b.set_terminator(orphan, Term::Return(result));
@@ -362,12 +362,12 @@ fn classify_var_uses_separates_pure_branch_from_dual_use() {
 }
 
 #[test]
-fn owned_cons_source_is_live_only_when_capability_head_is_used() {
+fn reusable_cons_source_is_live_only_when_capability_head_is_used() {
     let mut b = FnBuilder::new(FnId(0), "live_capability");
     let source = b.fresh_var();
     let entry = b.block(vec![source]);
     let head = b.let_(entry, Prim::ListHead(source));
-    b.record_owned_cons_reuse_capability(head, source);
+    b.record_reusable_cons_cell(head, source);
     let tail = b.let_(entry, Prim::MakeList(vec![], None));
     let result = b.let_(entry, Prim::MakeList(vec![head], Some(tail)));
     b.set_terminator(entry, Term::Return(result));
@@ -389,7 +389,7 @@ fn owned_cons_source_is_live_only_when_capability_head_is_used() {
     let source = b.fresh_var();
     let entry = b.block(vec![source]);
     let head = b.let_(entry, Prim::ListHead(source));
-    b.record_owned_cons_reuse_capability(head, source);
+    b.record_reusable_cons_cell(head, source);
     let nil = b.let_(entry, Prim::MakeList(vec![], None));
     b.set_terminator(entry, Term::Return(nil));
     let mut f = b.build();

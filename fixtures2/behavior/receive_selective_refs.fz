@@ -1,0 +1,94 @@
+#---
+# purpose: "fz-recv epic acceptance — selective receive across two pinned refs with out-of-order replies + after timeout"
+# paths: [fz2-run, fz2-interp, fz2-build]
+# budget.codegen.functions: 27
+# budget.codegen.instructions: 576
+# budget.specs.count: 24
+# budget.planner.worklist_pops: 24
+# budget.planner.walk_calls: 24
+# budget.planner.type_fn_calls: 24
+# budget.planner.matcher_specs: 0
+# budget.planner.vars: 85
+# budget.planner.blocks: 24
+# budget.planner.stmts: 22
+# budget.planner.dispatches: 27
+#---
+#
+# # receive_selective_refs
+#
+# Acceptance fixture for selective receive (see `guides/processes.html`).
+# Pins sender-side matcher miss + hit and receiver-side initial-scan hit
+# in a single trace.
+#
+# ## What it exercises
+#
+# | Path | Where in the trace |
+# |---|---|
+# | Sender-side matcher **miss** | ref_a reply arrives while main is parked on ref_b. Server invokes main's matcher; pattern's `^ref_b` does not match ref_a; message stays in mailbox. |
+# | Sender-side matcher **hit** | ref_b reply arrives. Server invokes main's matcher; `^ref_b` matches; v is bound; clause body resolved; main wakes pre-resolved via `ResumeMatched`. |
+# | Receiver-side scan **hit** | Main's second `receive` (on ref_a) walks the mailbox at entry, finds the ref_a reply already there, matches without parking. |
+# | Pinned variables | `^ref_a`, `^ref_b`. |
+# | `make_ref` | Both refs. |
+# | `after` clause | 500 ms timeout on the first receive (does not fire in a healthy run; presence exercises the parse + park-record + timer paths). |
+#
+# ## Expected output
+#
+# ```
+# 3
+# ```
+#
+# The server echoes integer keys back as the reply payload, so `val_a == 1`
+# and `val_b == 2`.
+#
+# ## Three-path parity
+#
+# The fixture is run through interpreter, JIT, and AOT; all three must
+# produce identical printed output. The README budget frontmatter keeps
+# compiler output shape from growing unexpectedly without committing the full
+# generated dumps.
+# fz-recv.fixture -- selective receive acceptance.
+#
+# Two replies arrive in the opposite order from the receives that want
+# them. Exercises sender-side matcher miss, sender-side matcher hit, and
+# receiver-side scan hit in a single trace. See
+# docs/receive-matched-stress-test.html for the step-by-step.
+
+fn handle_get(ref, from, key) do
+  send(from, {:reply, ref, key})
+  server()
+end
+
+fn server() do
+  receive do
+    {:get, ref, from, key} -> handle_get(ref, from, key)
+    {:stop} -> nil
+  end
+end
+
+fn main() do
+  s = spawn(server)
+  ref_a = make_ref()
+  ref_b = make_ref()
+  me = self()
+
+  # Server processes in arrival order, so ref_a's reply will arrive
+  # first. But we receive on ref_b first -- the sender-side matcher must
+  # reject ref_a's reply and accept ref_b's.
+  send(s, {:get, ref_a, me, 1})
+  send(s, {:get, ref_b, me, 2})
+
+  val_b = receive do
+    {:reply, ^ref_b, v} -> v
+  after
+    500 -> :timeout
+  end
+
+  # ref_a's reply has been sitting in the mailbox the whole time.
+  # This receive's initial scan finds it without parking.
+  val_a = receive do
+    {:reply, ^ref_a, v} -> v
+  end
+
+  dbg(val_a + val_b)
+  send(s, {:stop})
+end

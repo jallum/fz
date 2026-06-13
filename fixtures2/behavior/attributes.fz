@@ -1,0 +1,19 @@
+#---
+# purpose: "@moduledoc / @doc attributes parse and the module still executes"
+# paths: [fz2-run, fz2-interp, fz2-build]
+#---
+defmodule Greeter do
+  @moduledoc "Hand-rolled greeter for the v1 demo."
+
+  @doc "Returns a friendly greeting for the given name atom."
+  fn hi(name), do: name
+
+  @doc "Echoes its argument back."
+  fn echo(x), do: x
+end
+
+fn main() do
+  assert(Greeter.hi(:alice) == :alice, "module with @moduledoc/@doc still executes")
+  assert(Greeter.echo(42) == 42, "second documented fn executes")
+  assert(Greeter.__info__(:functions) == [{:hi, 1}, {:echo, 1}], "@doc/@moduledoc do not disturb the exports")
+end

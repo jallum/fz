@@ -159,7 +159,7 @@ fn enum_tier0_fixture_exercises_basic_operations() {
     });
     // TODO: drive() should return DriveOutcome::Resolved once all enum tier-0 operations are ported
     let _ = compiler.drive();
-    // TODO: JIT-execute and assert output matches fixtures/enum_tier0/expected.txt
+    // TODO: JIT-execute and assert output matches fixtures2/behavior/enum_tier0.expected.txt
 }
 
 // Ported from src/ir_codegen/ir_codegen_test.rs: Enum.count with predicate closure filters list correctly

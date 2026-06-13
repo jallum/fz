@@ -1,6 +1,0 @@
-fn main() do
-  xs = [1, 2, 3, 4]
-
-  dbg(Enum.reduce(xs, 0, fn (x, acc) -> acc + x end))
-  dbg(Enum.count(xs, fn (x) -> x > 2 end))
-end

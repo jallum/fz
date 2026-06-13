@@ -211,7 +211,7 @@ fn main(), do: Enum.reduce([1, 2, 3, 4, 5], 0, fn (x, acc) -> x + acc end)
 #[test]
 fn quicksort_run_lexes_each_source_once() {
     let telemetry_path = unique_temp_path("fz2_quicksort", ".jsonl");
-    let fixture = "fixtures/quicksort/input.fz";
+    let fixture = "fixtures2/behavior/quicksort.fz";
     let expected_lexer_sources = vec![
         fixture.to_string(),
         "runtime:runtime.fz".to_string(),
@@ -283,9 +283,9 @@ fn build_stays_on_compiler2_telemetry_and_links_a_native_binary() {
 #[test]
 fn run_and_interp_execute_map_struct_and_bitstring_fixtures() {
     for fixture in [
-        "fixtures/map_three_path_parity/input.fz",
-        "fixtures/defstruct_runtime/input.fz",
-        "fixtures/utf8_smart_constructor/input.fz",
+        "fixtures2/behavior/map_three_path_parity.fz",
+        "fixtures2/behavior/defstruct_runtime.fz",
+        "fixtures2/behavior/utf8_smart_constructor.fz",
     ] {
         let expected = fixture_expected_stdout(fixture);
         for command in ["run", "interp"] {
@@ -298,12 +298,12 @@ fn run_and_interp_execute_map_struct_and_bitstring_fixtures() {
 #[test]
 fn run_and_interp_execute_source_production_macro_and_sugar_fixtures() {
     for (fixture, expect_macro_expansion) in [
-        ("fixtures/macro_inc/input.fz", true),
-        ("fixtures/cross_module_macro/input.fz", true),
-        ("fixtures/item_macro_source/input.fz", true),
-        ("fixtures/pipe_headless_case/input.fz", false),
-        ("fixtures/lambda_sugars/input.fz", false),
-        ("fixtures/operator_sugars/input.fz", false),
+        ("fixtures2/behavior/macro_inc.fz", true),
+        ("fixtures2/behavior/cross_module_macro.fz", true),
+        ("fixtures2/behavior/item_macro_source.fz", true),
+        ("fixtures2/behavior/pipe_headless_case.fz", false),
+        ("fixtures2/behavior/lambda_sugars.fz", false),
+        ("fixtures2/behavior/operator_sugars.fz", false),
     ] {
         let expected = fixture_expected_stdout(fixture);
         for command in ["run", "interp"] {
@@ -366,9 +366,9 @@ fn main(), do: App.run()
 #[test]
 fn build_executes_map_struct_and_bitstring_fixtures() {
     for fixture in [
-        "fixtures/map_three_path_parity/input.fz",
-        "fixtures/defstruct_runtime/input.fz",
-        "fixtures/utf8_smart_constructor/input.fz",
+        "fixtures2/behavior/map_three_path_parity.fz",
+        "fixtures2/behavior/defstruct_runtime.fz",
+        "fixtures2/behavior/utf8_smart_constructor.fz",
     ] {
         let expected = fixture_expected_stdout(fixture);
         let out_bin = unique_temp_path("fz2_fixture_build", ".bin");
@@ -395,7 +395,7 @@ fn build_executes_map_struct_and_bitstring_fixtures() {
 
 #[test]
 fn run_and_interp_execute_case_and_with_fixtures() {
-    let fixture = "fixtures/case_with_total/input.fz";
+    let fixture = "fixtures2/behavior/case_with_total.fz";
     let expected = fixture_expected_stdout(fixture);
     for command in ["run", "interp"] {
         let out = run_fz2(&[OsStr::new(command), OsStr::new(fixture)]);
@@ -405,7 +405,7 @@ fn run_and_interp_execute_case_and_with_fixtures() {
 
 #[test]
 fn run_and_interp_report_partial_case_and_with_warnings() {
-    let fixture = "fixtures/case_tuple_pattern_sequential/input.fz";
+    let fixture = "fixtures2/behavior/case_tuple_pattern_sequential.fz";
     let expected = fixture_expected_stdout(fixture);
     for command in ["run", "interp"] {
         let out = run_fz2(&[OsStr::new(command), OsStr::new(fixture)]);
@@ -434,7 +434,7 @@ fn run_and_interp_report_partial_case_and_with_warnings() {
 
 #[test]
 fn build_executes_case_and_with_fixtures() {
-    let fixture = "fixtures/case_with_total/input.fz";
+    let fixture = "fixtures2/behavior/case_with_total.fz";
     let expected = fixture_expected_stdout(fixture);
     let out_bin = unique_temp_path("fz2_control_fixture_build", ".bin");
     let build = run_fz2(&[
@@ -460,9 +460,9 @@ fn build_executes_case_and_with_fixtures() {
 #[test]
 fn run_and_interp_execute_receive_fixtures() {
     for fixture in [
-        "fixtures/concurrency_ping_pong/input.fz",
-        "fixtures/receive_selective_refs/input.fz",
-        "fixtures/receive_float_pattern/input.fz",
+        "fixtures2/behavior/concurrency_ping_pong.fz",
+        "fixtures2/behavior/receive_selective_refs.fz",
+        "fixtures2/behavior/receive_float_pattern.fz",
     ] {
         let expected = fixture_expected_stdout(fixture);
         for command in ["run", "interp"] {
@@ -475,9 +475,9 @@ fn run_and_interp_execute_receive_fixtures() {
 #[test]
 fn build_executes_receive_fixtures() {
     for fixture in [
-        "fixtures/concurrency_ping_pong/input.fz",
-        "fixtures/receive_selective_refs/input.fz",
-        "fixtures/receive_float_pattern/input.fz",
+        "fixtures2/behavior/concurrency_ping_pong.fz",
+        "fixtures2/behavior/receive_selective_refs.fz",
+        "fixtures2/behavior/receive_float_pattern.fz",
     ] {
         let expected = fixture_expected_stdout(fixture);
         let out_bin = unique_temp_path("fz2_receive_fixture_build", ".bin");

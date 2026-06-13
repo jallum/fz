@@ -2,7 +2,7 @@
 //!
 //! This job turns one closed `BackendProgram(root)` into one CPS/native
 //! handoff. The result is still Compiler2-owned: direct executable entries,
-//! clause helpers, continuations, callable-constructor metadata, and extern
+//! clause helpers, continuations, settled callable-boundary facts, and extern
 //! marshal facts are all derived once here instead of being rediscovered by
 //! shared codegen.
 
@@ -28,8 +28,9 @@ use crate::types::Types as LegacyTypes;
 
 use super::super::artifact::{
     AbiValueRepr, BackendBody, BackendClause, BackendEntry, BackendEntryOrigin, BackendExecutable, BackendProgram,
-    BackendStep, BackendTail, CallTarget, EffectSummary, NativeBody, NativeBodyOrigin, NativeCallableEntry,
-    NativeEntryAbi, NativeProgram, ReturnAbi,
+    BackendStep, BackendTail, CallTarget, EffectSummary, NativeBody, NativeBodyOrigin, NativeCallableBoundary,
+    NativeCallableBoundaryId, NativeEntryAbi, NativeProgram, ReturnAbi,
+    ReusableConsCapture as BackendReusableConsCapture,
 };
 use super::super::body::{ControlDestination, ControlEntryId, Literal, LoweredExtern, ValueId};
 use super::super::drive::{FactKey, Job, JobEffects, settled_uses};
@@ -102,7 +103,7 @@ struct NativeLowerer<'a, 'tel> {
     atom_ids: HashMap<String, u32>,
     executable_fns: Vec<FnId>,
     callable_identity_fns: HashMap<(FunctionId, usize), FnId>,
-    callable_entries: Vec<NativeCallableEntry>,
+    callable_boundaries: Vec<NativeCallableBoundary>,
     extern_ids: HashMap<usize, ExternId>,
     extern_marshals: HashMap<usize, Vec<ExternTy>>,
     extern_decls: Vec<ExternDecl>,
@@ -165,21 +166,24 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
             });
         }
 
-        let callable_entries = program
+        let callable_boundaries = program
             .callable_entries
             .iter()
-            .map(|entry| {
+            .enumerate()
+            .map(|(index, entry)| {
                 let executable = &program.executables[entry.target];
                 let function = executable.key.activation.function;
                 let identity_fn = *callable_identity_fns
                     .get(&(function, entry.capture_count))
                     .expect("callable identity should be predeclared");
-                NativeCallableEntry {
+                NativeCallableBoundary {
+                    id: NativeCallableBoundaryId(index as u32),
                     identity_fn,
                     target_fn: executable_fns[entry.target],
                     target: executable.key.clone(),
                     capture_count: entry.capture_count,
-                    param_reprs: entry.param_reprs.clone(),
+                    capture_reprs: entry.capture_reprs.clone(),
+                    arg_reprs: entry.arg_reprs.clone(),
                     return_ty: entry.return_ty,
                     return_abi: entry.return_abi.clone(),
                 }
@@ -194,7 +198,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
             atom_ids,
             executable_fns,
             callable_identity_fns,
-            callable_entries,
+            callable_boundaries,
             extern_ids,
             extern_marshals,
             extern_decls,
@@ -262,7 +266,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
             entry,
             module,
             bodies: self.native_bodies,
-            callable_entries: self.callable_entries,
+            callable_boundaries: self.callable_boundaries,
         })
     }
 
@@ -481,7 +485,8 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
             self.world.function_ref(executable.key.activation.function).name,
             executable_index
         );
-        let (entry_tys, param_reprs, entry_abi) = self.entry_signature(executable, entry);
+        let (entry_tys, param_reprs, entry_abi) =
+            self.entry_signature(executable, entry, entry.reusable_cons_captures.as_slice());
         let mut ctx = NativeFnCtx::new(
             fn_id,
             &entry_name(&base_name, entry_id, &entry.origin),
@@ -499,13 +504,33 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
         let mut env = ValueEnv::default();
         let entry_vars = ctx.entry_params(entry_tys.as_slice());
         let capture_offset = self.bind_entry_input(&mut ctx, executable, entry, &entry_vars, &mut env)?;
+        let semantic_capture_vars = entry_vars
+            .iter()
+            .copied()
+            .skip(capture_offset)
+            .take(entry.captures.len())
+            .collect::<Vec<_>>();
+        let mut capture_bindings = HashMap::new();
         for (value, var) in entry
             .captures
             .iter()
             .copied()
-            .zip(entry_vars.iter().copied().skip(capture_offset))
+            .zip(semantic_capture_vars.iter().copied())
         {
             env.insert(value, var);
+            capture_bindings.insert(value, var);
+        }
+        for (capture, physical_var) in entry
+            .reusable_cons_captures
+            .iter()
+            .copied()
+            .zip(entry_vars.iter().copied().skip(capture_offset + entry.captures.len()))
+        {
+            bind_backend_value(&mut ctx, executable, &mut env, capture.source, physical_var);
+            let semantic_var = *capture_bindings
+                .get(&capture.head)
+                .expect("reusable-cons capture should have a semantic capture var");
+            ctx.builder.record_reusable_cons_cell(semantic_var, physical_var);
         }
         self.lower_entry_steps(&mut ctx, executable, &mut env, &entry.steps)?;
         self.lower_entry_tail(&mut ctx, executable, entries, entry_fns, &env, &entry.tail)?;
@@ -656,10 +681,9 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                 }
                 BackendStep::FunctionRef { value, function } => {
                     let identity = self.callable_identity(*function, 0);
-                    let candidates = self.callable_entry_candidates(*function, 0);
                     let (var, _) = ctx.emit_let(Prim::MakeFnRef(ctx.fresh_callsite(), identity));
-                    if !candidates.is_empty() {
-                        ctx.callable_constructors.insert(var, candidates);
+                    if let Some(boundary) = self.settled_callable_boundary(ctx, *function, &[])? {
+                        ctx.callable_value_boundaries.insert(var, boundary);
                     }
                     bind_backend_value(ctx, executable, env, *value, var);
                 }
@@ -677,15 +701,15 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                     })?;
                     let capture_count = captures.len();
                     let identity = self.callable_identity(*function, capture_count);
-                    let candidates = self.callable_entry_candidates(*function, capture_count);
+                    let boundary = self.settled_callable_boundary(ctx, *function, &capture_vars)?;
                     let prim = if capture_vars.is_empty() {
                         Prim::MakeFnRef(ctx.fresh_callsite(), identity)
                     } else {
                         Prim::MakeClosure(ctx.fresh_callsite(), identity, capture_vars)
                     };
                     let (var, _) = ctx.emit_let(prim);
-                    if !candidates.is_empty() {
-                        ctx.callable_constructors.insert(var, candidates);
+                    if let Some(boundary) = boundary {
+                        ctx.callable_value_boundaries.insert(var, boundary);
                     }
                     bind_backend_value(ctx, executable, env, *value, var);
                 }
@@ -788,6 +812,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                         .ok_or_else(|| missing_backend_value(self.root_id, *source))?;
                     let (head_var, _) = ctx.emit_let(Prim::ListHead(source));
                     bind_backend_value(ctx, executable, env, *head, head_var);
+                    ctx.builder.record_reusable_cons_cell(head_var, source);
                     let (tail_var, _) = ctx.emit_let(Prim::ListTail(source));
                     bind_backend_value(ctx, executable, env, *tail, tail_var);
                 }
@@ -878,7 +903,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                         Ok(())
                     }
                     ControlDestination::Deliver(entry_id) => {
-                        let continuation = self.entry_continuation(entries, entry_fns, *entry_id, env)?;
+                        let continuation = self.entry_continuation(executable, entries, entry_fns, *entry_id, env)?;
                         ctx.set_term(Term::Call {
                             ident: CallsiteIdent::from_source(Span::DUMMY),
                             callee,
@@ -906,24 +931,23 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                         "native closure call referenced an unbound argument",
                     )
                 })?;
-                if let Some(target) = target {
-                    let target_fn = self.executable_fns[*target];
-                    ctx.closure_call_targets.insert(ctx.current_block, target_fn);
-                }
+                let direct_target = target.map(|target| self.executable_fns[target]);
                 match dest {
                     ControlDestination::Return => {
                         ctx.set_term(Term::TailCallClosure {
                             ident: CallsiteIdent::from_source(Span::DUMMY),
                             closure,
+                            direct_target,
                             args: call_args,
                         });
                         Ok(())
                     }
                     ControlDestination::Deliver(entry_id) => {
-                        let continuation = self.entry_continuation(entries, entry_fns, *entry_id, env)?;
+                        let continuation = self.entry_continuation(executable, entries, entry_fns, *entry_id, env)?;
                         ctx.set_term(Term::CallClosure {
                             ident: CallsiteIdent::from_source(Span::DUMMY),
                             closure,
+                            direct_target,
                             args: call_args,
                             continuation,
                         });
@@ -948,7 +972,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                     origin: BranchOrigin::User,
                 });
                 ctx.current_block = then_b;
-                let then_args = self.entry_capture_args(entries, *then_entry, env)?;
+                let then_args = self.entry_capture_args(executable, entries, *then_entry, env)?;
                 ctx.set_term(Term::TailCall {
                     ident: CallsiteIdent::from_source(Span::DUMMY),
                     callee: DirectCallTarget::Local(
@@ -958,7 +982,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                     is_back_edge: false,
                 });
                 ctx.current_block = else_b;
-                let else_args = self.entry_capture_args(entries, *else_entry, env)?;
+                let else_args = self.entry_capture_args(executable, entries, *else_entry, env)?;
                 ctx.set_term(Term::TailCall {
                     ident: CallsiteIdent::from_source(Span::DUMMY),
                     callee: DirectCallTarget::Local(
@@ -1098,6 +1122,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
         &mut self,
         executable: &BackendExecutable,
         entry: &BackendEntry,
+        reusable_cons_captures: &[BackendReusableConsCapture],
     ) -> (Vec<Ty>, Vec<AbiValueRepr>, NativeEntryAbi) {
         let mut capture_tys = Vec::with_capacity(entry.params.len() + entry.captures.len());
         for value in entry.params.iter().chain(entry.captures.iter()) {
@@ -1108,17 +1133,35 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                 .unwrap_or_else(|| self.world.types_mut().any());
             capture_tys.push(ty);
         }
+        let physical_capture_tys = reusable_cons_captures
+            .iter()
+            .map(|capture| {
+                executable
+                    .value_types
+                    .get(&capture.source)
+                    .copied()
+                    .unwrap_or_else(|| self.world.types_mut().any())
+            })
+            .collect::<Vec<_>>();
         match entry.origin.clone() {
             BackendEntryOrigin::Clause => panic!("clause entries are lowered through their owning clause"),
             BackendEntryOrigin::Branch => {
-                let param_reprs = capture_tys
+                let mut param_reprs = capture_tys
                     .iter()
                     .copied()
                     .map(|ty| abi_value_repr(self.world, ty))
                     .collect::<Vec<_>>();
-                (capture_tys, param_reprs, NativeEntryAbi::Direct)
+                param_reprs.extend(
+                    physical_capture_tys
+                        .iter()
+                        .copied()
+                        .map(|ty| abi_value_repr(self.world, ty)),
+                );
+                let mut entry_tys = capture_tys;
+                entry_tys.extend(physical_capture_tys);
+                (entry_tys, param_reprs, NativeEntryAbi::Direct)
             }
-            BackendEntryOrigin::Receive => {
+            BackendEntryOrigin::ReceiveOutcome => {
                 let param_reprs = capture_tys
                     .iter()
                     .copied()
@@ -1130,7 +1173,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                     NativeEntryAbi::Continuation { extra_params: 0 },
                 )
             }
-            BackendEntryOrigin::CallResume { value, return_abi } => {
+            BackendEntryOrigin::DeliveredResume { value, return_abi } => {
                 let result_ty = executable
                     .value_types
                     .get(&value)
@@ -1140,19 +1183,14 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                 let extra_params = param_reprs.len();
                 entry_tys.extend(capture_tys.iter().copied());
                 param_reprs.extend(capture_tys.iter().copied().map(|ty| abi_value_repr(self.world, ty)));
+                entry_tys.extend(physical_capture_tys.iter().copied());
+                param_reprs.extend(
+                    physical_capture_tys
+                        .iter()
+                        .copied()
+                        .map(|ty| abi_value_repr(self.world, ty)),
+                );
                 (entry_tys, param_reprs, NativeEntryAbi::Continuation { extra_params })
-            }
-            BackendEntryOrigin::LocalResume { value } => {
-                let result_ty = executable
-                    .value_types
-                    .get(&value)
-                    .copied()
-                    .unwrap_or_else(|| self.world.types_mut().any());
-                let mut entry_tys = vec![result_ty];
-                let mut param_reprs = vec![abi_value_repr(self.world, result_ty)];
-                entry_tys.extend(capture_tys.iter().copied());
-                param_reprs.extend(capture_tys.iter().copied().map(|ty| abi_value_repr(self.world, ty)));
-                (entry_tys, param_reprs, NativeEntryAbi::Direct)
             }
         }
     }
@@ -1173,13 +1211,13 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                 }
                 Ok(entry.params.len())
             }
-            BackendEntryOrigin::Receive => {
+            BackendEntryOrigin::ReceiveOutcome => {
                 for (value, var) in entry.params.iter().copied().zip(entry_vars.iter().copied()) {
                     bind_backend_value(ctx, executable, env, value, var);
                 }
                 Ok(entry.params.len())
             }
-            BackendEntryOrigin::CallResume { value, return_abi } => match return_abi {
+            BackendEntryOrigin::DeliveredResume { value, return_abi } => match return_abi {
                 ReturnAbi::Value(_) => {
                     let var = *entry_vars
                         .first()
@@ -1194,18 +1232,12 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                     Ok(reprs.len())
                 }
             },
-            BackendEntryOrigin::LocalResume { value } => {
-                let var = *entry_vars
-                    .first()
-                    .expect("local resume should receive its delivered value as the first entry param");
-                bind_backend_value(ctx, executable, env, *value, var);
-                Ok(1)
-            }
         }
     }
 
     fn entry_continuation(
         &mut self,
+        executable: &BackendExecutable,
         entries: &[BackendEntry],
         entry_fns: &HashMap<ControlEntryId, FnId>,
         entry_id: ControlEntryId,
@@ -1217,25 +1249,29 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                 self.world,
                 self.root_id,
                 format!(
-                    "native call continuation targeted entry {} without an input value",
-                    entry_id.as_u32()
+                    "native call continuation targeted entry {} without an input value: origin={:?} params={} captures={}",
+                    entry_id.as_u32(),
+                    entry.origin,
+                    entry.params.len(),
+                    entry.captures.len(),
                 ),
             ));
         }
         Ok(Cont {
             fn_id: *entry_fns.get(&entry_id).expect("resume entry should have a helper fn"),
-            captured: self.entry_capture_args(entries, entry_id, env)?,
+            captured: self.entry_capture_args(executable, entries, entry_id, env)?,
         })
     }
 
     fn entry_capture_args(
         &mut self,
+        _executable: &BackendExecutable,
         entries: &[BackendEntry],
         entry_id: ControlEntryId,
         env: &ValueEnv,
     ) -> Result<Vec<Var>, FatalError> {
         let entry = &entries[entry_id.as_u32() as usize];
-        env.capture_args(&entry.captures).ok_or_else(|| {
+        let mut args = env.capture_args(&entry.captures).ok_or_else(|| {
             incomplete_native_program(
                 self.world,
                 self.root_id,
@@ -1244,7 +1280,21 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                     entry_id.as_u32()
                 ),
             )
-        })
+        })?;
+        for capture in &entry.reusable_cons_captures {
+            args.push(env.var(capture.source).ok_or_else(|| {
+                incomplete_native_program(
+                    self.world,
+                    self.root_id,
+                    format!(
+                        "native lowering could not resolve reusable-cons source capture {:?} for entry {}",
+                        capture.source,
+                        entry_id.as_u32()
+                    ),
+                )
+            })?);
+        }
+        Ok(args)
     }
 
     fn receive_pinned_vars(
@@ -1332,13 +1382,12 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
     ) -> Result<Vec<Var>, FatalError> {
         let entry = &entries[entry_id.as_u32() as usize];
         let mut args = match &entry.origin {
-            BackendEntryOrigin::Clause | BackendEntryOrigin::Branch | BackendEntryOrigin::Receive => Vec::new(),
-            BackendEntryOrigin::CallResume { return_abi, .. } => {
+            BackendEntryOrigin::Clause | BackendEntryOrigin::Branch | BackendEntryOrigin::ReceiveOutcome => Vec::new(),
+            BackendEntryOrigin::DeliveredResume { return_abi, .. } => {
                 self.delivered_args_for_abi(ctx, executable, value_id, value_var, return_abi)?
             }
-            BackendEntryOrigin::LocalResume { .. } => vec![value_var],
         };
-        args.extend(self.entry_capture_args(entries, entry_id, env)?);
+        args.extend(self.entry_capture_args(executable, entries, entry_id, env)?);
         Ok(args)
     }
 
@@ -1469,7 +1518,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
         };
         match node {
             DispatchNode::Fail => {
-                let args = self.entry_capture_args(entries, miss_entry, env)?;
+                let args = self.entry_capture_args(executable, entries, miss_entry, env)?;
                 ctx.set_term(Term::TailCall {
                     ident: CallsiteIdent::from_source(Span::DUMMY),
                     callee: DirectCallTarget::Local(
@@ -1484,7 +1533,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
             }
             DispatchNode::Outcome { outcome, .. } => {
                 let Some(body_id) = plan.outcome(outcome).map(|outcome| outcome.body_id) else {
-                    let args = self.entry_capture_args(entries, miss_entry, env)?;
+                    let args = self.entry_capture_args(executable, entries, miss_entry, env)?;
                     ctx.set_term(Term::TailCall {
                         ident: CallsiteIdent::from_source(Span::DUMMY),
                         callee: DirectCallTarget::Local(
@@ -1504,7 +1553,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                         format!("local dispatch arm {} is out of bounds", body_id),
                     )
                 })?;
-                let args = self.entry_capture_args(entries, arm_entry, env)?;
+                let args = self.entry_capture_args(executable, entries, arm_entry, env)?;
                 ctx.set_term(Term::TailCall {
                     ident: CallsiteIdent::from_source(Span::DUMMY),
                     callee: DirectCallTarget::Local(
@@ -1905,16 +1954,171 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
             .unwrap_or_else(|| panic!("callable identity for {function:?}/{capture_count}"))
     }
 
-    fn callable_entry_candidates(&self, function: FunctionId, capture_count: usize) -> Vec<usize> {
-        self.program
-            .callable_entries
+    fn settled_callable_boundary(
+        &mut self,
+        ctx: &NativeFnCtx,
+        function: FunctionId,
+        captures: &[Var],
+    ) -> Result<Option<NativeCallableBoundaryId>, FatalError> {
+        let capture_tys = captures
             .iter()
-            .filter_map(|entry| {
-                let target = &self.program.executables[entry.target];
-                (target.key.activation.function == function && entry.capture_count == capture_count)
-                    .then_some(self.executable_fns[entry.target].0 as usize)
+            .map(|capture| {
+                ctx.value_types.get(capture).copied().ok_or_else(|| {
+                    incomplete_native_program(
+                        self.world,
+                        self.root_id,
+                        format!(
+                            "native closure build referenced capture {:?} without a settled type",
+                            capture
+                        ),
+                    )
+                })
             })
-            .collect()
+            .collect::<Result<Vec<_>, _>>()?;
+        select_settled_callable_boundary(
+            self.world.types_mut(),
+            &self.callable_boundaries,
+            function,
+            &capture_tys,
+        )
+        .map_err(|message| incomplete_native_program(self.world, self.root_id, message))
+    }
+}
+
+fn callable_abi_strictly_more_specific(
+    lhs_args: &[AbiValueRepr],
+    lhs_return: &ReturnAbi,
+    rhs_args: &[AbiValueRepr],
+    rhs_return: &ReturnAbi,
+) -> bool {
+    if lhs_args.len() != rhs_args.len() {
+        return false;
+    }
+    let mut saw_stricter_lane = false;
+    for (lhs, rhs) in lhs_args.iter().copied().zip(rhs_args.iter().copied()) {
+        match (lhs, rhs) {
+            (AbiValueRepr::ValueRef, AbiValueRepr::ValueRef) => {}
+            (AbiValueRepr::ValueRef, _) => return false,
+            (_, AbiValueRepr::ValueRef) => saw_stricter_lane = true,
+            _ if lhs == rhs => {}
+            _ => return false,
+        }
+    }
+    match (lhs_return, rhs_return) {
+        (ReturnAbi::Value(AbiValueRepr::ValueRef), ReturnAbi::Value(AbiValueRepr::ValueRef)) => saw_stricter_lane,
+        (ReturnAbi::Value(AbiValueRepr::ValueRef), ReturnAbi::Value(_)) => false,
+        (ReturnAbi::Value(_), ReturnAbi::Value(AbiValueRepr::ValueRef)) => true,
+        (ReturnAbi::Value(lhs), ReturnAbi::Value(rhs)) => lhs == rhs && saw_stricter_lane,
+        (ReturnAbi::TupleFields(lhs), ReturnAbi::TupleFields(rhs)) => lhs == rhs && saw_stricter_lane,
+        (ReturnAbi::Value(_), ReturnAbi::TupleFields(_)) | (ReturnAbi::TupleFields(_), ReturnAbi::Value(_)) => false,
+    }
+}
+
+fn select_settled_callable_boundary(
+    types: &mut crate::compiler2::types::Types,
+    boundaries: &[NativeCallableBoundary],
+    function: FunctionId,
+    capture_tys: &[Ty],
+) -> Result<Option<NativeCallableBoundaryId>, String> {
+    let mut query = Vec::with_capacity(capture_tys.len());
+    for ty in capture_tys {
+        query.push(types.alpha_normalize_vars(ty));
+    }
+
+    let mut covers = boundaries
+        .iter()
+        .filter(|boundary| {
+            boundary.target.activation.function == function && boundary.capture_count == capture_tys.len()
+        })
+        .filter_map(|boundary| {
+            let capture_inputs = boundary
+                .target
+                .activation
+                .input
+                .iter()
+                .copied()
+                .take(boundary.capture_count)
+                .map(|ty| types.alpha_normalize_vars(&ty))
+                .collect::<Vec<_>>();
+            let capture_key = crate::types::key_slots_from_tys(capture_inputs);
+            let mut sigma = HashMap::new();
+            query
+                .iter()
+                .zip(capture_key.iter())
+                .all(|(query_ty, key_slot)| match key_slot {
+                    None => true,
+                    Some(key_ty) => types.key_subsumes_with(query_ty, key_ty, &mut sigma),
+                })
+                .then_some((
+                    boundary.id(),
+                    capture_key,
+                    boundary
+                        .target
+                        .activation
+                        .input
+                        .iter()
+                        .copied()
+                        .map(|ty| types.alpha_normalize_vars(&ty))
+                        .collect::<Vec<_>>(),
+                    &boundary.arg_reprs,
+                    &boundary.return_abi,
+                ))
+        })
+        .collect::<Vec<_>>();
+    if covers.is_empty() {
+        return Ok(None);
+    }
+
+    let min_var_count = covers
+        .iter()
+        .map(|(_, capture_key, _, _, _)| crate::types::key_slot_var_count(types, capture_key))
+        .min()
+        .unwrap_or(0);
+    covers.retain(|(_, capture_key, _, _, _)| crate::types::key_slot_var_count(types, capture_key) == min_var_count);
+    covers.sort_by_key(|(boundary_id, _, _, _, _)| boundary_id.as_u32());
+
+    let widest = covers
+        .iter()
+        .filter(|&(candidate_id, _, _, candidate_args, candidate_return)| {
+            !covers.iter().any(|(other_id, _, _, other_args, other_return)| {
+                other_id != candidate_id
+                    && callable_abi_strictly_more_specific(candidate_args, candidate_return, other_args, other_return)
+            })
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    let max_full_var_count = widest
+        .iter()
+        .map(|(_, _, full_key, _, _)| {
+            crate::types::key_slot_var_count(types, &crate::types::key_slots_from_tys(full_key.clone()))
+        })
+        .max()
+        .unwrap_or(0);
+    let widened = widest
+        .into_iter()
+        .filter(|(_, _, full_key, _, _)| {
+            crate::types::key_slot_var_count(types, &crate::types::key_slots_from_tys(full_key.clone()))
+                == max_full_var_count
+        })
+        .collect::<Vec<_>>();
+    match widened.as_slice() {
+        [] => Ok(None),
+        [(boundary_id, _, _, _, _)] => Ok(Some(*boundary_id)),
+        _ => Err(format!(
+            "ambiguous callable boundaries for {:?}/{} captures: candidates {:?}",
+            function,
+            capture_tys.len(),
+            widened
+                .iter()
+                .map(|(boundary_id, _, full_key, arg_reprs, return_abi)| format!(
+                    "{}:{:?}:{:?}->{:?}",
+                    boundary_id.as_u32(),
+                    full_key,
+                    arg_reprs,
+                    return_abi
+                ))
+                .collect::<Vec<_>>()
+        )),
     }
 }
 
@@ -1933,8 +2137,8 @@ fn entry_name(base: &str, entry_id: ControlEntryId, origin: &BackendEntryOrigin)
     match origin {
         BackendEntryOrigin::Clause => panic!("clause entries are named by their owning clause"),
         BackendEntryOrigin::Branch => format!("{base}__branch_{}", entry_id.as_u32()),
-        BackendEntryOrigin::Receive => format!("{base}__receive_{}", entry_id.as_u32()),
-        BackendEntryOrigin::CallResume { .. } | BackendEntryOrigin::LocalResume { .. } => {
+        BackendEntryOrigin::ReceiveOutcome => format!("{base}__receive_{}", entry_id.as_u32()),
+        BackendEntryOrigin::DeliveredResume { .. } => {
             format!("{base}__resume_{}", entry_id.as_u32())
         }
     }
@@ -1944,9 +2148,8 @@ fn entry_category(origin: &BackendEntryOrigin) -> FnCategory {
     match origin {
         BackendEntryOrigin::Clause => panic!("clause entries are named by their owning clause"),
         BackendEntryOrigin::Branch => FnCategory::ControlFlowCont,
-        BackendEntryOrigin::Receive => FnCategory::CpsCont,
-        BackendEntryOrigin::CallResume { .. } => FnCategory::CpsCont,
-        BackendEntryOrigin::LocalResume { .. } => FnCategory::ControlFlowCont,
+        BackendEntryOrigin::ReceiveOutcome => FnCategory::CpsCont,
+        BackendEntryOrigin::DeliveredResume { .. } => FnCategory::CpsCont,
     }
 }
 
@@ -2153,8 +2356,7 @@ struct NativeFnCtx {
     current_block: BlockId,
     stmt_counts: HashMap<BlockId, usize>,
     value_types: HashMap<Var, Ty>,
-    callable_constructors: HashMap<Var, Vec<usize>>,
-    closure_call_targets: HashMap<BlockId, FnId>,
+    callable_value_boundaries: HashMap<Var, NativeCallableBoundaryId>,
     extern_marshals: HashMap<ExternMarshalSite, ExternTy>,
     failure_blocks: HashMap<u32, BlockId>,
     origin: NativeBodyOrigin,
@@ -2185,8 +2387,7 @@ impl NativeFnCtx {
             current_block: BlockId(0),
             stmt_counts: HashMap::new(),
             value_types: HashMap::new(),
-            callable_constructors: HashMap::new(),
-            closure_call_targets: HashMap::new(),
+            callable_value_boundaries: HashMap::new(),
             extern_marshals: HashMap::new(),
             failure_blocks: HashMap::new(),
             origin,
@@ -2268,8 +2469,7 @@ impl NativeFnCtx {
             return_ty: self.return_ty,
             return_abi: self.return_abi,
             value_types: self.value_types,
-            callable_constructors: self.callable_constructors,
-            closure_call_targets: self.closure_call_targets,
+            callable_value_boundaries: self.callable_value_boundaries,
             extern_marshals: self.extern_marshals,
             effects: self.effects,
         };

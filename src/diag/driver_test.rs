@@ -28,7 +28,7 @@ fn report_through_emits_event_per_diagnostic() {
     let warn = Diagnostic::warning(DiagCode("a/w"), "warned", Span::new(fid, 0, 1));
     let err = Diagnostic::error(DiagCode("a/e"), "broken", Span::new(fid, 2, 3));
 
-    emit_through(&tel, None, &[warn.clone(), err.clone()]);
+    emit_through(&tel, None, &[warn, err]);
 
     assert_eq!(cap.count(&["fz", "diag", "warning"]), 1);
     assert_eq!(cap.count(&["fz", "diag", "error"]), 1);

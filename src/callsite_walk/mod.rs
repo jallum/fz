@@ -143,6 +143,7 @@ pub fn block_callsites<'a, T: Types<Ty = Ty> + ClosureTypes>(
             closure,
             args,
             continuation,
+            ..
         } => {
             push_closure_call(t, &mut out, *closure, args, env, known_closure_targets);
             out.push(BlockCallsite {
@@ -160,6 +161,7 @@ pub fn block_callsites<'a, T: Types<Ty = Ty> + ClosureTypes>(
             closure,
             args,
             ident: _,
+            ..
         } => {
             push_closure_call(t, &mut out, *closure, args, env, known_closure_targets);
         }

@@ -253,7 +253,7 @@ impl<'a> World<'a> {
             Some(name) => self.reference_module(name.to_string()),
             None => ModuleId::GLOBAL,
         };
-        let function = self.reference_function(module, name.clone(), arity);
+        let function = self.reference_function(module, name, arity);
         // The root is the program's public entry: its inputs arrive from
         // outside the analyzed world, so `any` is earned here — the same
         // boundary rule macro roots already follow. An arity-N root must
@@ -404,7 +404,7 @@ impl<'a> World<'a> {
     /// records that the activation has been demanded. Body input evidence lives
     /// in the separate `ActivationInputs(key)` fact.
     pub(crate) fn activation_inputs(&self, key: &ActivationKey) -> Option<Vec<Ty>> {
-        self.fact_revision(FactKey::ActivationInputs(key.clone()))?;
+        self.fact_revision(&FactKey::ActivationInputs(key.clone()))?;
         Some(self.activation_inputs.get(key)?.to_vec())
     }
 
@@ -418,7 +418,7 @@ impl<'a> World<'a> {
     /// is the fixpoint fact "provably never returns" (Kleene), and only
     /// there may consumers convert it to the empty type.
     pub fn activation_return(&self, key: &ActivationKey) -> Option<Ty> {
-        self.fact_revision(FactKey::ReturnType(key.clone()))?;
+        self.fact_revision(&FactKey::ReturnType(key.clone()))?;
         self.activations.get(key).and_then(|slot| slot.return_ty().cloned())
     }
 
@@ -542,12 +542,20 @@ impl<'a> World<'a> {
 
     pub fn define_callsite_summary(&mut self, key: CallSiteKey, mut summary: CallSiteSummary) -> bool {
         for target in &mut summary.targets {
-            target.input_types = target
-                .input_types
+            target.surface_inputs = target
+                .surface_inputs
                 .iter()
                 .copied()
                 .map(|input| self.types.alpha_normalize_vars(&input))
                 .collect();
+            if let Some(activation) = &mut target.activation {
+                activation.input = activation
+                    .input
+                    .iter()
+                    .copied()
+                    .map(|input| self.types.alpha_normalize_vars(&input))
+                    .collect();
+            }
             target.return_ty = target.return_ty.map(|ty| self.types.alpha_normalize_vars(&ty));
         }
         summary.return_ty = summary.return_ty.map(|ty| self.types.alpha_normalize_vars(&ty));
@@ -819,7 +827,7 @@ impl<'a> World<'a> {
             &measurements! {
                 root_id: root.as_u32(),
                 body_count: program.bodies.len(),
-                callable_entry_count: program.callable_entries.len(),
+                callable_boundary_count: program.callable_boundaries.len(),
                 fn_count: program.module.fns.len(),
                 changed: changed as u64,
             },
@@ -1809,8 +1817,8 @@ impl<'a> World<'a> {
         JobEffects::wait_on_current(FactKey::ModuleDefined(module), vec![Job::DefineModule(module)])
     }
 
-    pub fn fact_revision(&self, key: FactKey) -> Option<u64> {
-        self.work_graph.facts().revision(&key)
+    pub fn fact_revision(&self, key: &FactKey) -> Option<u64> {
+        self.work_graph.facts().revision(key)
     }
 
     pub fn has_fact(&self, key: &FactKey) -> bool {

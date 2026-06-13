@@ -1,0 +1,32 @@
+#---
+# purpose: "receive matcher supports bitstring patterns without AST fallback"
+# paths: [fz2-run, fz2-interp, fz2-build]
+# budget.codegen.functions: 11
+# budget.codegen.instructions: 229
+# budget.specs.count: 10
+# budget.planner.worklist_pops: 10
+# budget.planner.walk_calls: 10
+# budget.planner.type_fn_calls: 10
+# budget.planner.matcher_specs: 0
+# budget.planner.vars: 28
+# budget.planner.blocks: 10
+# budget.planner.stmts: 11
+# budget.planner.dispatches: 10
+#---
+#
+# # receive_bitstring_matcher
+#
+# fz-puj.50 — bitstring receive clauses lower to first-class Matcher
+# bitstring tests. The matcher extracts fields while probing the mailbox,
+# then routes to the matching clause without using the receive AST pattern
+# walker.
+fn main() do
+  send(self(), :skip)
+  send(self(), <<3, 10, 11, 12, 99>>)
+
+  result = receive do
+    <<len, payload::binary-size(len), rest::binary>> -> len
+  end
+
+  dbg(result)
+end

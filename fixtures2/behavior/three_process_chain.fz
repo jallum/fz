@@ -1,0 +1,19 @@
+#---
+# purpose: "two-hop process relay — main → first_relay → second_relay → main; exercises multi-process message chaining"
+# paths: [fz2-run, fz2-interp, fz2-build]
+#---
+fn first_relay() do
+  send(3, receive do x -> x + 1 end)
+end
+
+fn second_relay() do
+  send(1, receive do x -> x + 1 end)
+end
+
+fn main() do
+  spawn(first_relay)
+  spawn(second_relay)
+  send(2, 40)
+  got = receive do x -> x end
+  assert(got == 42, "main -> first_relay -> second_relay -> main, +1 each hop")
+end

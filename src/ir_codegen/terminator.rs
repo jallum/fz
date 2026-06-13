@@ -156,8 +156,11 @@ fn resolve_callee_sid<T: Types<Ty = Ty> + ClosureTypes>(
     })
 }
 
-fn resolve_native_closure_sid(env: &CodegenEnv<'_>, block_id: BlockId) -> Option<u32> {
-    let target_fn = env.active_native_body()?.closure_call_targets.get(&block_id).copied()?;
+fn resolve_native_closure_sid(env: &CodegenEnv<'_>, blk: &fz_ir::Block) -> Option<u32> {
+    let target_fn = match &blk.terminator {
+        Term::CallClosure { direct_target, .. } | Term::TailCallClosure { direct_target, .. } => *direct_target,
+        _ => None,
+    }?;
     env.body_id_for_fn(target_fn)
 }
 
@@ -398,6 +401,7 @@ pub(crate) fn emit_terminator<M: cranelift_module::Module, T: Types<Ty = Ty> + C
         Term::CallClosure {
             ident: _,
             closure,
+            direct_target: _,
             args,
             continuation,
         } => emit_call_closure(
@@ -418,6 +422,7 @@ pub(crate) fn emit_terminator<M: cranelift_module::Module, T: Types<Ty = Ty> + C
         ),
         Term::TailCallClosure {
             closure,
+            direct_target: _,
             args,
             ident: _,
         } => emit_tail_call_closure(
@@ -1135,15 +1140,14 @@ fn capture_forces_heap_continuation<T: Types<Ty = Ty> + ClosureTypes>(
         return false;
     }
     if let Some(native_body) = env.active_native_body() {
-        let Some(candidates) = native_body.callable_constructors.get(cv) else {
+        let Some(candidate) = native_body.callable_value_boundaries.get(cv) else {
             return true;
         };
-        return candidates.iter().any(|candidate| {
-            env.surface
-                .callable_entries
-                .get(&(*candidate as u32))
-                .is_none_or(|entry| entry.capture_count > 0)
-        });
+        return env
+            .surface
+            .callable_entries
+            .get(&candidate.as_u32())
+            .is_none_or(|entry| entry.capture_count > 0);
     }
     !matches!(
         fn_types.callable_capabilities.get(cv),
@@ -1190,8 +1194,7 @@ fn emit_call_closure<M: cranelift_module::Module, T: Types<Ty = Ty> + ClosureTyp
         // at [K..., arg_descrs...] and call it directly with the body's
         // narrow ABI. Opaque / polymorphic closures fall through to the
         // all-ValueRef indirect seam below.
-        let lit_resolved: Option<(u32, FuncId, usize)> = if let Some(body_sid) = resolve_native_closure_sid(env, blk.id)
-        {
+        let lit_resolved: Option<(u32, FuncId, usize)> = if let Some(body_sid) = resolve_native_closure_sid(env, blk) {
             let body_fn_id = spec_fn_id(env, body_sid);
             let body_fid = *fn_ids.get(&body_sid).expect("native closure target fn_id missing");
             let n_caps = closure_capture_counts.get(&body_fn_id).copied().unwrap_or(0);
@@ -1345,8 +1348,7 @@ fn emit_tail_call_closure<M: cranelift_module::Module, T: Types<Ty = Ty> + Closu
             }
         };
 
-        let lit_resolved: Option<(u32, FuncId, usize)> = if let Some(body_sid) = resolve_native_closure_sid(env, blk.id)
-        {
+        let lit_resolved: Option<(u32, FuncId, usize)> = if let Some(body_sid) = resolve_native_closure_sid(env, blk) {
             let body_fn_id = spec_fn_id(env, body_sid);
             let body_fid = *fn_ids.get(&body_sid).expect("native closure target fn_id missing");
             let n_caps = closure_capture_counts.get(&body_fn_id).copied().unwrap_or(0);
@@ -1620,7 +1622,7 @@ fn build_park_record<M: cranelift_module::Module, T: Types<Ty = Ty> + ClosureTyp
     let (after_deadline_v, after_cont_v) = match after {
         Some(a) => {
             let cont_sid = resolve_body_sid(t, a.body);
-            let payload = ContinuationPayload::from_parts(env, cont_sid, cap_bindings.clone(), vec![], vec![]);
+            let payload = ContinuationPayload::from_parts(env, cont_sid, cap_bindings, vec![], vec![]);
             let cl_ptr = ContinuationPlan::heap_closure(payload).emit_value(
                 body,
                 runtime,

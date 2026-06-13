@@ -1,0 +1,18 @@
+#---
+# purpose: closure call stays indirect while the surrounding flow remains direct
+# root: main/0
+# assert.metric.semantic.activations: 5
+# assert.metric.semantic.executables: 5
+# assert.metric.semantic.callsites: 8
+# assert.metric.call_edges.count: 8
+# assert.metric.return_type.widened: 0
+# assert.edge: apply1/2[(α0) -> α1, int] | @66-71 | closure | add_to/2::lambda[@21-44]/1
+# assert.edge: main/0[] | @99-113 | direct | add_to/2
+# snapshot.call_edges: call_edges
+#---
+fn add_to(x, y), do: fn (z) -> x + y + z end
+fn apply1(f, x), do: f.(x)
+
+fn main() do
+  dbg(apply1(add_to(10, 20), 12))
+end

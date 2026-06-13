@@ -39,6 +39,8 @@ fn test_int_ref(value: i64) -> AnyValueRef {
     AnyValueRef::from_scalar_slot(ValueKind::INT, slot as *const u64).expect("test int ref")
 }
 
+static MAP_KEY_ONE_SLOT: u64 = 1;
+
 /// Three tasks built from the same CompiledModule each compute their
 /// own halt value independently. PRE-.11.32 this would have been
 /// impossible (shared TLS); post-.19.1 this is the basic spawn shape.
@@ -855,6 +857,28 @@ extern "C" fn mock_eq_matcher(
     }
 }
 
+/// Deterministic projection matcher. Reads `msg[1]` from a map message and
+/// projects only that value into the winning clause payload.
+extern "C" fn project_map_key_one_matcher(
+    process: *mut Process,
+    msg: u64,
+    _pinned: *const AnyValueRef,
+    out: *mut AnyValueRef,
+) -> u32 {
+    let process = unsafe { &mut *process };
+    let msg_ref = AnyValueRef::from_raw_word(msg).expect("msg ref");
+    let key = AnyValueRef::from_scalar_slot(ValueKind::INT, &MAP_KEY_ONE_SLOT).expect("map key ref");
+    let projected = process
+        .heap
+        .read_map_value_ref(msg_ref, key)
+        .expect("map lookup should succeed")
+        .expect("projected key should exist");
+    unsafe {
+        *out = projected;
+    }
+    1
+}
+
 /// Set up a Runtime with two spawned tasks ready for direct
 /// `send_via_current_runtime` calls. Returns (runtime, sender_pid,
 /// receiver_pid). Both tasks are spawned but never executed — we
@@ -973,6 +997,78 @@ fn send_probe_miss_leaves_park_in_place_and_appends_to_mailbox() {
 }
 
 #[test]
+fn send_probe_hit_projects_only_matched_payload_into_outcome_closure() {
+    let src = "fn main(), do: 0";
+    let (compiled, _module, main_id) = compile_src(src);
+    let tel = ConfiguredTelemetry::new();
+    let (mut rt, sender_pid, receiver_pid) = two_task_rt(&compiled, main_id, &tel);
+
+    let (msg, projected_value) = {
+        let sender = rt.task_mut(sender_pid).unwrap();
+        let projected = test_int_ref(7);
+        let decoy = test_int_ref(99);
+        let msg = sender
+            .heap
+            .alloc_map_refs(&[(test_int_ref(1), projected), (test_int_ref(2), decoy)])
+            .expect("map message ref");
+        (msg, projected)
+    };
+
+    let before_live = {
+        let receiver = rt.task_mut(receiver_pid).unwrap();
+        receiver.state = ProcessState::Blocked;
+        let template = template_closure(receiver, 0xdead_beef);
+        receiver.wait = Some(Box::new(ParkRecord {
+            matcher_fn: project_map_key_one_matcher,
+            pinned: vec![],
+            clause_bodies: vec![template],
+            clause_bound_counts: vec![1],
+            bound_arity: 1,
+            after_deadline_ms: None,
+            after_cont: null_mut(),
+            after_timer_id: None,
+        }));
+        receiver.set_runnable_closure(null_mut());
+        receiver.heap.live_count()
+    };
+    rt.run_queue.clear();
+
+    let rt_ptr = &mut rt as *mut Runtime<'_> as *mut ();
+    let sender_ptr = rt.tasks.get_mut(&sender_pid).unwrap().as_mut() as *mut Process;
+    send_via(sender_ptr, rt_ptr, receiver_pid, msg);
+
+    let receiver = rt.task(receiver_pid).unwrap();
+    assert_eq!(receiver.state, ProcessState::Ready);
+    assert!(receiver.wait.is_none(), "park should be cleared on hit");
+    assert!(
+        receiver.mailbox.is_empty(),
+        "a sender-side hit should bypass mailbox insertion entirely"
+    );
+    assert_eq!(
+        receiver.heap.live_count(),
+        before_live + 2,
+        "a hit should allocate only the outcome closure plus the projected scalar payload, not a copied map message"
+    );
+    let runnable = receiver.runnable_ptr();
+    assert!(!runnable.is_null(), "outcome closure should be installed");
+    unsafe {
+        assert_eq!(read((runnable as *const u8).add(8) as *const u64), 0xdead_beef);
+        let projected_ref =
+            AnyValueRef::from_raw_word(closure_capture_ref_word(runnable, 1)).expect("projected capture ref");
+        assert_ne!(
+            projected_ref, projected_value,
+            "projected payload must be copied into the receiver heap, not aliased from the sender heap"
+        );
+        assert_eq!(
+            projected_ref.load_int().expect("projected int capture"),
+            7,
+            "the runnable closure should capture only the projected scalar payload from the winning arm"
+        );
+    }
+    assert!(rt.run_queue.iter().any(|pid| *pid == receiver_pid));
+}
+
+#[test]
 fn drain_expired_timers_wakes_after_cont() {
     let src = "fn main(), do: 0";
     let (compiled, _module, main_id) = compile_src(src);
@@ -1015,7 +1111,7 @@ fn drain_expired_timers_wakes_after_cont() {
 // fz-70q.5.5 — the per-arity dispatch test
 // (run_quantum_dispatches_runnable_closure_via_shim) was
 // retired with the nine-shim family. End-to-end dispatch is now
-// covered by `fixtures/receive_selective_refs/input.fz` exercising
+// covered by `fixtures2/behavior/receive_selective_refs.fz` exercising
 // the single fz_resume seam — see the test runner's matrix suite.
 // The smoke check below ensures the singular shim exists.
 

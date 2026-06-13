@@ -1,5 +1,0 @@
-fn main() do
-  assert("hi" == "hi", "equal utf8 strings compare equal")
-  refute("hi" == "bye", "different utf8 strings compare unequal")
-  assert("héllo" == "héllo", "multibyte utf8 strings compare by bytes")
-end

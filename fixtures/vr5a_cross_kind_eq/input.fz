@@ -1,3 +1,0 @@
-fn main() do
-  dbg(1 == :ok)
-end
