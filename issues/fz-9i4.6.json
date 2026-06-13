@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-13T01:22:23Z",
+  "description": "Fixtures like relay, multi_relay, and three_process_chain fail under fz2-run/build with send: receiver pid not in task registry or aot_send: no task with pid. This is a real process/runtime integration bug, not a fixture golden issue.",
+  "id": "fz-9i4.6",
+  "labels": [],
+  "parent": "fz-9i4",
+  "priority": 2,
+  "status": "open",
+  "title": "Fix compiler2 spawned-process pid routing",
+  "type": "bug",
+  "updated_at": "2026-06-13T01:22:23Z"
+}
