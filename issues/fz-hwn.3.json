@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-hwn.2"
   ],
@@ -12,8 +12,8 @@
   "labels": [],
   "parent": "fz-hwn",
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "Compiler2 ABI planning: derive runtime parameter layouts from demand",
   "type": "task",
-  "updated_at": "2026-06-13T21:24:41Z"
+  "updated_at": "2026-06-13T22:33:37Z"
 }
