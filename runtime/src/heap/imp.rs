@@ -786,6 +786,14 @@ impl Heap {
         Ok(value)
     }
 
+    /// Rebuild a non-empty list cons by reusing the source cell in place when
+    /// it is still unaliased, otherwise allocate a fresh cell.
+    ///
+    /// Return contract: in-place reuse returns the original `list` ref;
+    /// fallback allocation returns a distinct freshly-allocated cons ref.
+    /// Callers that need to count reuse vs fallback should interpret the
+    /// result through that identity contract rather than through a parallel
+    /// outcome channel.
     pub fn reuse_or_alloc_list_cons_raw_kind(
         &mut self,
         list: AnyValueRef,

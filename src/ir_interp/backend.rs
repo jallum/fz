@@ -26,8 +26,8 @@ use fz_runtime::exec_ctx::ExecCtx;
 use fz_runtime::heap::Schema;
 use fz_runtime::heap::{FieldKind, Heap, deep_copy_any_value_ref};
 use fz_runtime::ir_runtime::{
-    fz_bs_begin, fz_bs_finalize, fz_bs_write_field_ref, fz_map_empty, fz_map_get_atom_key_ref, fz_matcher_map_get_ref,
-    fz_struct_get_field_ref,
+    fz_bs_begin, fz_bs_finalize, fz_bs_write_field_ref, fz_list_reuse_or_cons_parts, fz_map_empty,
+    fz_map_get_atom_key_ref, fz_mark_published_ref_aliased, fz_matcher_map_get_ref, fz_struct_get_field_ref,
 };
 use fz_runtime::procbin::mso_drop_all_deferred;
 use fz_runtime::process::{CompiledModuleConsts, DEFAULT_REDUCTIONS_PER_QUANTUM, Process, ProcessState};
@@ -458,6 +458,7 @@ fn step_backend_executable(
             for (param, value) in clause.params.iter().copied().zip(args) {
                 env.insert(param, value);
             }
+            let mut reusable_cons_sources = HashMap::new();
             eval_steps(
                 runtime,
                 types,
@@ -466,6 +467,7 @@ fn step_backend_executable(
                 module,
                 executable,
                 &clause.projections,
+                &mut reusable_cons_sources,
                 &mut env,
             )?;
             step_eval_entry(
@@ -557,7 +559,22 @@ fn step_eval_entry(
     let entry = entries
         .get(entry_id.as_u32() as usize)
         .ok_or_else(|| format!("backend entry {} is out of bounds", entry_id.as_u32()))?;
-    eval_steps(runtime, types, tel, program, module, executable, &entry.steps, &mut env)?;
+    let mut reusable_cons_sources = entry
+        .reusable_cons_captures
+        .iter()
+        .map(|capture| (capture.head, capture.source))
+        .collect::<HashMap<_, _>>();
+    eval_steps(
+        runtime,
+        types,
+        tel,
+        program,
+        module,
+        executable,
+        &entry.steps,
+        &mut reusable_cons_sources,
+        &mut env,
+    )?;
     match &entry.tail {
         BackendTail::Value { value, dest } => {
             let result = env_get(&env, *value)?;
@@ -625,7 +642,7 @@ fn step_eval_entry(
                     continuations.push(BackendContinuation {
                         executable: executable_index,
                         entry: *target,
-                        env,
+                        env: capture_backend_continuation_env(runtime.cur_proc(), entries, *target, &env)?,
                     });
                     continuations
                 }
@@ -771,6 +788,7 @@ fn eval_steps(
     module: &Module,
     _executable: &BackendExecutable,
     steps: &[ProgramStep],
+    reusable_cons_sources: &mut HashMap<ValueId, ValueId>,
     env: &mut HashMap<ValueId, AnyValue>,
 ) -> Result<(), String> {
     for step in steps {
@@ -783,11 +801,27 @@ fn eval_steps(
                 env.insert(*value, tuple);
             }
             ProgramStep::List { value, items, tail } => {
-                let tail = tail.map_or(Ok(interp_empty_list_value()), |tail| env_get(env, tail))?;
-                let mut acc = tail;
-                for item in items.iter().rev() {
-                    acc = interp_list_cons(runtime.cur_proc(), env_get(env, *item)?, acc, "backend list")?;
-                }
+                let tail_value = tail.map_or(Ok(interp_empty_list_value()), |tail| env_get(env, tail))?;
+                let acc = if items.len() == 1 {
+                    let head = env_get(env, items[0])?;
+                    if let (Some(tail_id), Some(source_id)) = (*tail, reusable_cons_sources.get(&items[0]).copied()) {
+                        rebuild_backend_list_from_source(
+                            runtime.cur_proc(),
+                            env,
+                            source_id,
+                            head,
+                            env_get(env, tail_id)?,
+                        )?
+                    } else {
+                        interp_list_cons(runtime.cur_proc(), head, tail_value, "backend list")?
+                    }
+                } else {
+                    let mut acc = tail_value;
+                    for item in items.iter().rev() {
+                        acc = interp_list_cons(runtime.cur_proc(), env_get(env, *item)?, acc, "backend list")?;
+                    }
+                    acc
+                };
                 env.insert(*value, acc);
             }
             ProgramStep::Map { value, entries } => {
@@ -947,11 +981,12 @@ fn eval_steps(
                 }
             }
             ProgramStep::SplitList { source, head, tail } => {
-                let source = env_get(env, *source)?;
-                let head_value = interp_list_head(runtime.cur_proc(), source)?;
-                let tail_value = interp_list_tail(runtime.cur_proc(), source)?;
+                let source_value = env_get(env, *source)?;
+                let head_value = interp_list_head(runtime.cur_proc(), source_value)?;
+                let tail_value = interp_list_tail(runtime.cur_proc(), source_value)?;
                 env.insert(*head, head_value);
                 env.insert(*tail, tail_value);
+                reusable_cons_sources.insert(*head, *source);
             }
             ProgramStep::BitstringInit { reader, source } => {
                 let source = env_get(env, *source)?;
@@ -1036,6 +1071,35 @@ fn eval_steps(
     Ok(())
 }
 
+fn rebuild_backend_list_from_source(
+    proc: *mut Process,
+    env: &HashMap<ValueId, AnyValue>,
+    source_id: ValueId,
+    head: AnyValue,
+    tail: AnyValue,
+) -> Result<AnyValue, String> {
+    let source = env_get(env, source_id)?;
+    let source_ref = source
+        .as_any_value_ref(proc)
+        .map_err(|err| format!("backend list: cannot materialize reusable source ref: {err}"))?;
+    let head = head
+        .value(proc)
+        .map_err(|err| format!("backend list: cannot materialize list head: {err}"))?;
+    let tail_ref = tail
+        .as_any_value_ref(proc)
+        .map_err(|err| format!("backend list: cannot materialize list tail: {err}"))?;
+    interp_value_from_ref_word(
+        fz_list_reuse_or_cons_parts(
+            proc,
+            source_ref.raw_word(),
+            head.raw(),
+            u64::from(head.kind().tag()),
+            tail_ref.raw_word(),
+        ),
+        "backend list",
+    )
+}
+
 fn delivered_env(
     entries: &[BackendEntry],
     env: &HashMap<ValueId, AnyValue>,
@@ -1099,7 +1163,12 @@ fn eval_direct_call(
             continuations.push(BackendContinuation {
                 executable: executable_index,
                 entry: target,
-                env,
+                env: capture_backend_continuation_env(
+                    runtime.cur_proc(),
+                    entries_for_executable(program, executable_index)?,
+                    target,
+                    &env,
+                )?,
             });
             continuations
         }
@@ -1129,6 +1198,43 @@ fn eval_call_args(
     args: &[crate::compiler2::BackendCallArg],
 ) -> Result<Vec<AnyValue>, String> {
     args.iter().map(|arg| env_get(env, arg.value)).collect()
+}
+
+fn capture_backend_continuation_env(
+    proc: *mut Process,
+    entries: &[BackendEntry],
+    target: crate::compiler2::ControlEntryId,
+    env: &HashMap<ValueId, AnyValue>,
+) -> Result<HashMap<ValueId, AnyValue>, String> {
+    let entry = entries
+        .get(target.as_u32() as usize)
+        .ok_or_else(|| format!("backend entry {} is out of bounds", target.as_u32()))?;
+    let mut captured = HashMap::with_capacity(entry.captures.len());
+    for capture in &entry.captures {
+        captured.insert(*capture, publish_backend_capture(proc, env_get(env, *capture)?)?);
+    }
+    Ok(captured)
+}
+
+fn publish_backend_capture(proc: *mut Process, value: AnyValue) -> Result<AnyValue, String> {
+    let AnyValue::Ref(value_ref) = value else {
+        return Ok(value);
+    };
+    interp_value_from_ref_word(
+        fz_mark_published_ref_aliased(proc, value_ref.raw_word()),
+        "backend continuation capture",
+    )
+}
+
+fn entries_for_executable(program: &BackendProgram, executable_index: usize) -> Result<&[BackendEntry], String> {
+    let executable = program
+        .executables
+        .get(executable_index)
+        .ok_or_else(|| format!("backend executable {} is out of bounds", executable_index))?;
+    let BackendBody::Clauses { entries, .. } = &executable.body else {
+        return Err(format!("backend executable {} is not clause-backed", executable_index));
+    };
+    Ok(entries)
 }
 
 fn env_values(env: &HashMap<ValueId, AnyValue>, values: &[ValueId]) -> Result<Vec<AnyValue>, String> {

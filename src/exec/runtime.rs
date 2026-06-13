@@ -679,6 +679,15 @@ struct ProcessExitHandler {
 }
 
 #[cfg(test)]
+fn required_u64_measurement(ev: &Event<'_, '_, '_>, key: &str) -> u64 {
+    use crate::telemetry::value::Value;
+    match ev.measurements.get(key) {
+        Some(Value::U64(value)) => *value,
+        other => panic!("process_exited measurement `{key}` missing or not u64: {other:?}"),
+    }
+}
+
+#[cfg(test)]
 impl Handler for ProcessExitHandler {
     fn handle(&self, ev: &Event<'_, '_, '_>) {
         use crate::telemetry::value::Value;
@@ -701,14 +710,8 @@ impl Handler for ProcessExitHandler {
             Some(Value::U64(v)) => *v as usize,
             _ => 0,
         };
-        let reusable_cons_attempts = match ev.measurements.get("reusable_cons_attempts") {
-            Some(Value::U64(v)) => *v,
-            _ => 0,
-        };
-        let reusable_cons_reused = match ev.measurements.get("reusable_cons_reused") {
-            Some(Value::U64(v)) => *v,
-            _ => 0,
-        };
+        let reusable_cons_attempts = required_u64_measurement(ev, "reusable_cons_attempts");
+        let reusable_cons_reused = required_u64_measurement(ev, "reusable_cons_reused");
         self.records.borrow_mut().push(ExitRecord {
             pid,
             halt_value,

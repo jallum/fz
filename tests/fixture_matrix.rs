@@ -2302,6 +2302,10 @@ fn parse_json_u64_field(line: &str, key: &str) -> Option<usize> {
     digits.parse().ok()
 }
 
+fn required_json_u64_field(line: &str, key: &str, context: &str) -> usize {
+    parse_json_u64_field(line, key).unwrap_or_else(|| panic!("{context} missing {key}"))
+}
+
 fn is_committed_execution_plan_event(line: &str) -> bool {
     line.contains("\"role\":\"linked_execution_graph\"") || line.contains("\"role\":\"lto_linked_execution_graph\"")
 }
@@ -2537,8 +2541,9 @@ fn reusable_cons_telemetry_stats_for_fixture(fixture: &FixtureCase) -> ReusableC
             continue;
         }
         if line.contains("\"name\":[\"fz\",\"runtime\",\"process_exited\"]") {
-            stats.runtime_attempted_count += parse_json_u64_field(line, "reusable_cons_attempts").unwrap_or(0);
-            stats.runtime_reused_count += parse_json_u64_field(line, "reusable_cons_reused").unwrap_or(0);
+            let fixture = fixture.display_path().display().to_string();
+            stats.runtime_attempted_count += required_json_u64_field(line, "reusable_cons_attempts", &fixture);
+            stats.runtime_reused_count += required_json_u64_field(line, "reusable_cons_reused", &fixture);
         }
     }
     assert!(

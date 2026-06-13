@@ -102,6 +102,13 @@ fn heap_ref_word(tag: ValueKind, addr: *const u8) -> u64 {
         .raw_word()
 }
 
+fn list_rebuild_reused_source(source: AnyValueRef, rebuilt: AnyValueRef) -> bool {
+    // `Heap::reuse_or_alloc_list_cons_raw_kind` reports in-place reuse by
+    // returning the original source cons ref; fallback allocation returns a
+    // distinct fresh cons ref.
+    rebuilt == source
+}
+
 fn closure_ref_word_from_bits(bits: u64) -> u64 {
     let addr = closure_addr_from_tagged(bits).expect("closure heap bits");
     heap_ref_word(ValueKind::CLOSURE, addr)
@@ -1593,7 +1600,7 @@ pub extern "C" fn fz_list_reuse_or_cons_parts(
         .heap
         .reuse_or_alloc_list_cons_raw_kind(list, head_raw, head_kind, tail)
         .expect("fz_list_reuse_or_cons_parts");
-    if result == list {
+    if list_rebuild_reused_source(list, result) {
         process.reusable_cons_reused = process.reusable_cons_reused.saturating_add(1);
     }
     result.raw_word()

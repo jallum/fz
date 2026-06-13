@@ -39,6 +39,13 @@ reusable-cons counters on the `Process` — the single place that reads `Process
 internals for this event. `emit` projects, then publishes the scalars as
 measurements and the live `&Process` as opaque metadata beside `pid`.
 
+Reusable-cons fallbacks are derived, not emitted separately:
+`fallback_count = reusable_cons_attempts - reusable_cons_reused`. The runtime
+FFI helper increments `attempts` for every `fz_list_reuse_or_cons_parts` call,
+and increments `reused` only when the heap reports in-place reuse by returning
+the original source cons ref. That keeps the runtime telemetry seam at one
+boundary event instead of a per-attempt side channel.
+
 The split is deliberate, and it decides what a handler may read:
 
 - The **measurements** are the durable, stable contract — plain numbers. They are

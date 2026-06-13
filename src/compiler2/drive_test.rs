@@ -7482,6 +7482,91 @@ fn main(), do: rebuild([1, 2])
 }
 
 #[test]
+fn compiler2_jit_and_backend_interp_agree_on_reusable_cons_exit_counters() {
+    let source = r#"
+fn ping(x), do: x
+
+fn rebuild(xs) do
+  [h | t] = xs
+  [h | t]
+end
+
+fn rebuild_after_publish(xs) do
+  [h | t] = xs
+  ping(xs)
+  {xs, [h | t]}
+end
+
+fn main() do
+  rebuild([1, 2])
+  rebuild_after_publish([3, 4])
+  0
+end
+"#;
+
+    let jit_tel = ConfiguredTelemetry::new();
+    let jit_capture = Capture::new();
+    jit_tel.attach(&[], jit_capture.handler());
+    let mut jit_compiler = Compiler2::new(&jit_tel);
+    let jit_root = jit_compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    jit_compiler.submit_code(CodeSubmission {
+        name: Some("reusable_cons_mixed_exit_counters.fz".to_string()),
+        text: source.to_string(),
+    });
+    jit_compiler.run_root_jit(jit_root).unwrap_or_else(|error| {
+        panic!("compiler2 jit should run the mixed reusable-cons fixture: {error}");
+    });
+    let jit_exit = jit_capture
+        .last(&["fz", "runtime", "process_exited"])
+        .expect("jit runtime process exit telemetry");
+
+    let interp_tel = ConfiguredTelemetry::new();
+    let interp_capture = Capture::new();
+    interp_tel.attach(&[], interp_capture.handler());
+    let mut interp_compiler = Compiler2::new(&interp_tel);
+    let interp_root = interp_compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    interp_compiler.submit_code(CodeSubmission {
+        name: Some("reusable_cons_mixed_exit_counters.fz".to_string()),
+        text: source.to_string(),
+    });
+    let interp_halt = interp_compiler
+        .run_root_interp(interp_root)
+        .expect("compiler2 backend interpreter should run the mixed reusable-cons fixture");
+    assert_eq!(interp_halt, 0);
+    let interp_exit = interp_capture
+        .last(&["fz", "runtime", "process_exited"])
+        .expect("interp runtime process exit telemetry");
+
+    assert_eq!(measurement_i64(&jit_exit, "halt_value"), 0);
+    assert_eq!(
+        measurement_i64(&jit_exit, "halt_value"),
+        measurement_i64(&interp_exit, "halt_value")
+    );
+    assert_eq!(measurement_u64(&jit_exit, "reusable_cons_attempts"), 2);
+    assert_eq!(measurement_u64(&jit_exit, "reusable_cons_reused"), 1);
+    assert_eq!(
+        measurement_u64(&jit_exit, "reusable_cons_attempts"),
+        measurement_u64(&interp_exit, "reusable_cons_attempts"),
+        "jit and backend interpreter should agree on reusable-cons attempts",
+    );
+    assert_eq!(
+        measurement_u64(&jit_exit, "reusable_cons_reused"),
+        measurement_u64(&interp_exit, "reusable_cons_reused"),
+        "jit and backend interpreter should agree on in-place reusable-cons reuse",
+    );
+}
+
+#[test]
 fn compiler2_native_program_jit_runs_nontail_if_join_flow_through_compiler2_codegen() {
     let tel = ConfiguredTelemetry::new();
     let dbg = DbgCapture::new();
@@ -9831,6 +9916,13 @@ fn measurement_u64(event: &crate::telemetry::capture::OwnedEvent, key: &str) -> 
     match event.measurements.get(key) {
         Some(Value::U64(value)) => *value,
         other => panic!("measurement key `{key}` missing or not u64: {other:?}"),
+    }
+}
+
+fn measurement_i64(event: &crate::telemetry::capture::OwnedEvent, key: &str) -> i64 {
+    match event.measurements.get(key) {
+        Some(Value::I64(value)) => *value,
+        other => panic!("measurement key `{key}` missing or not i64: {other:?}"),
     }
 }
 
