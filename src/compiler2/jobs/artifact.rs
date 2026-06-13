@@ -22,6 +22,7 @@ use super::super::artifact::{
     AbiReadyCallEdge, AbiReadyExecutable, AbiReadyProgram, AbiValueRepr, CallTarget, CallableEntry, EffectSummary,
     EmissionReadyCallEdge, EmissionReadyCallableEntry, EmissionReadyExecutable, EmissionReadyProgram,
     ExecutableDispatch, MaterializedCallEdge, MaterializedExecutable, MaterializedProgram, ReturnAbi,
+    RuntimeInputLayout, RuntimeParamLayout,
 };
 use super::super::body::{
     CallArg, CallSiteId, ControlDestination, ControlDispatch, ControlEntryId, ControlEntryOrigin, DispatchBindings,
@@ -32,7 +33,9 @@ use super::super::identity::{
     ActivationKey, ExecutableKey, ExecutableNeed, FunctionId, RootId, function_id_of_closure_target,
 };
 use super::super::scheduler::FatalError;
-use super::super::semantic::{ActivationAnalysis, CallSiteKey, CallTargetSummary, SelectedCallee};
+use super::super::semantic::{
+    ActivationAnalysis, CallSiteKey, CallTargetSummary, CallableMaterialization, SelectedCallee,
+};
 use super::super::types::Ty;
 use super::super::world::World;
 use super::semantic::executable_callsite_needs;
@@ -104,7 +107,19 @@ pub(super) fn materialize_root(world: &mut World<'_>, root_id: RootId) -> Result
             MaterializedExecutable {
                 entry_dispatch: materialize_entry_dispatch(world, executable, &analysis),
                 return_ty,
-                runtime_callable_values: analysis.runtime_callable_values,
+                runtime_demand: closure
+                    .runtime_demands
+                    .get(executable)
+                    .cloned()
+                    .expect("settled semantic closure should have runtime demand for every executable"),
+                runtime_params: derive_runtime_param_layout(
+                    world,
+                    executable,
+                    closure
+                        .runtime_demands
+                        .get(executable)
+                        .expect("settled semantic closure should have runtime demand for every executable"),
+                ),
                 value_types: analysis.value_types,
                 effects,
                 body,
@@ -193,6 +208,7 @@ pub(super) fn derive_abi_ready(world: &mut World<'_>, root_id: RootId) -> Result
 
 #[derive(Debug, Clone)]
 struct ExecutableAbiPlan {
+    runtime_params: RuntimeParamLayout,
     param_reprs: Vec<AbiValueRepr>,
     result_abi: ReturnAbi,
     value_reprs: HashMap<ValueId, AbiValueRepr>,
@@ -1184,24 +1200,90 @@ fn settle_effects(
     }
 }
 
+fn derive_runtime_param_layout(
+    world: &mut World<'_>,
+    key: &ExecutableKey,
+    demand: &super::super::semantic::ExecutableRuntimeDemand,
+) -> RuntimeParamLayout {
+    let inputs = key
+        .activation
+        .input
+        .iter()
+        .copied()
+        .enumerate()
+        .map(|(semantic_index, ty)| {
+            let demand = demand.input_demands.get(semantic_index).cloned().unwrap_or_default();
+            match demand {
+                super::super::semantic::RuntimeDemand::Ignore => RuntimeInputLayout::Omitted { semantic_index },
+                super::super::semantic::RuntimeDemand::Value => RuntimeInputLayout::Value {
+                    semantic_index,
+                    repr: abi_value_repr(world, ty),
+                },
+                super::super::semantic::RuntimeDemand::TupleFields(fields) => RuntimeInputLayout::TupleFields {
+                    semantic_index,
+                    field_reprs: fields.into_iter().map(|_| AbiValueRepr::ValueRef).collect(),
+                },
+                super::super::semantic::RuntimeDemand::Callable(callable) => {
+                    if callable.opaque || callable.escape {
+                        return RuntimeInputLayout::Value {
+                            semantic_index,
+                            repr: AbiValueRepr::ValueRef,
+                        };
+                    }
+                    let Some(clauses) = world.types_mut().callable_value_clauses(&ty) else {
+                        return RuntimeInputLayout::Value {
+                            semantic_index,
+                            repr: AbiValueRepr::ValueRef,
+                        };
+                    };
+                    let [clause] = clauses.as_slice() else {
+                        return RuntimeInputLayout::Value {
+                            semantic_index,
+                            repr: AbiValueRepr::ValueRef,
+                        };
+                    };
+                    let Some(closure) = &clause.closure else {
+                        return RuntimeInputLayout::Value {
+                            semantic_index,
+                            repr: AbiValueRepr::ValueRef,
+                        };
+                    };
+                    let function = function_id_of_closure_target(closure.target);
+                    let capture_tys = closure.captures.clone();
+                    let capture_reprs = capture_tys
+                        .iter()
+                        .copied()
+                        .map(|capture_ty| abi_value_repr(world, capture_ty))
+                        .collect::<Vec<_>>();
+                    RuntimeInputLayout::DirectCallableCaptures {
+                        semantic_index,
+                        function,
+                        capture_tys,
+                        capture_reprs,
+                    }
+                }
+            }
+        })
+        .collect::<Vec<_>>();
+    RuntimeParamLayout::from_inputs(inputs)
+}
+
 fn build_executable_abi_plan(
     world: &mut World<'_>,
     key: &ExecutableKey,
     executable: &MaterializedExecutable,
 ) -> ExecutableAbiPlan {
-    let param_reprs = key
-        .activation
-        .input
-        .iter()
-        .copied()
-        .map(|ty| abi_value_repr(world, ty))
-        .collect::<Vec<_>>();
+    let runtime_params = executable.runtime_params.clone();
+    let param_reprs = runtime_params.reprs.clone();
     let mut value_reprs = HashMap::new();
     if let LoweredBody::Clauses { clauses, entries, .. } = &executable.body {
         for clause in clauses {
             for (index, value) in clause.params.iter().copied().enumerate() {
-                if let Some(repr) = param_reprs.get(index).copied() {
-                    value_reprs.insert(value, repr);
+                let Some(layout) = runtime_params.semantic_input(index) else {
+                    continue;
+                };
+                if let RuntimeInputLayout::Value { repr, .. } = layout {
+                    value_reprs.insert(value, *repr);
                 }
             }
         }
@@ -1214,6 +1296,7 @@ fn build_executable_abi_plan(
     }
 
     ExecutableAbiPlan {
+        runtime_params,
         param_reprs,
         result_abi: fixed_return_abi(world, executable.return_ty, key.need),
         value_reprs,
@@ -1257,7 +1340,8 @@ fn derive_abi_ready_executable(
             .expect("ABI-ready executable should resolve through the settled return ABI")
             .clone(),
         param_reprs: plan.param_reprs.clone(),
-        runtime_callable_values: executable.runtime_callable_values.clone(),
+        runtime_demand: executable.runtime_demand.clone(),
+        runtime_params: plan.runtime_params.clone(),
         value_types: executable.value_types.clone(),
         value_reprs: plan.value_reprs.clone(),
         effects: executable.effects,
@@ -1912,6 +1996,7 @@ fn derive_emission_ready_executable(
         return_ty: executable.return_ty,
         return_abi: executable.return_abi.clone(),
         param_reprs: executable.param_reprs.clone(),
+        runtime_params: executable.runtime_params.clone(),
         value_types: executable.value_types.clone(),
         value_reprs: executable.value_reprs.clone(),
         effects: executable.effects,
@@ -1927,7 +2012,14 @@ fn derive_callable_entries(
 ) -> Result<Vec<CallableEntry>, FatalError> {
     let mut entries = Vec::new();
     for executable in executables.values() {
-        for value in &executable.runtime_callable_values {
+        let producer_values = local_callable_producer_values(&executable.body);
+        for (value, materialization) in &executable.runtime_demand.callable_materializations {
+            if !matches!(materialization, CallableMaterialization::FirstClass { .. }) {
+                continue;
+            }
+            if !producer_values.contains(value) {
+                continue;
+            }
             let ty = executable.value_types.get(value).copied().ok_or_else(|| {
                 incomplete_semantic_plan(
                     world,
@@ -1951,7 +2043,10 @@ fn derive_callable_entries(
                     return Err(incomplete_semantic_plan(
                         world,
                         root_id,
-                        format!("runtime callable value {} is opaque", value.as_u32()),
+                        format!(
+                            "first-class callable materialization for value {} lost closure identity",
+                            value.as_u32()
+                        ),
                     ));
                 }
             }
@@ -1960,6 +2055,35 @@ fn derive_callable_entries(
     entries.sort_by(compare_callable_entries);
     entries.dedup_by(|left, right| left.target == right.target && left.capture_count == right.capture_count);
     Ok(entries)
+}
+
+fn local_callable_producer_values(body: &LoweredBody) -> HashSet<ValueId> {
+    let mut values = HashSet::new();
+    let LoweredBody::Clauses { clauses, entries, .. } = body else {
+        return values;
+    };
+    for clause in clauses {
+        for step in &clause.projections {
+            if let Some(value) = step_local_callable_value(step) {
+                values.insert(value);
+            }
+        }
+    }
+    for entry in entries {
+        for step in &entry.steps {
+            if let Some(value) = step_local_callable_value(step) {
+                values.insert(value);
+            }
+        }
+    }
+    values
+}
+
+fn step_local_callable_value(step: &LoweredStep) -> Option<ValueId> {
+    match step {
+        LoweredStep::FunctionRef { value, .. } | LoweredStep::Lambda { value, .. } => Some(*value),
+        _ => None,
+    }
 }
 
 fn resolve_callable_entries_for_type(

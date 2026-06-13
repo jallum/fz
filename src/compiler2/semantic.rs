@@ -301,8 +301,6 @@ pub struct ActivationAnalysis {
     pub reachable_entries: Vec<ControlEntryId>,
     pub callsites: Vec<CallSiteId>,
     pub latent_executables: Vec<ExecutableKey>,
-    pub runtime_demand: ExecutableRuntimeDemand,
-    pub runtime_callable_values: Vec<ValueId>,
     pub value_types: HashMap<ValueId, Ty>,
 }
 
@@ -311,6 +309,7 @@ pub struct SemanticClosure {
     pub entry: ExecutableKey,
     pub activations: HashSet<ActivationKey>,
     pub executables: HashSet<ExecutableKey>,
+    pub runtime_demands: HashMap<ExecutableKey, ExecutableRuntimeDemand>,
 }
 
 #[derive(Debug, Clone)]

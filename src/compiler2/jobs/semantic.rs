@@ -19,9 +19,7 @@ use super::super::body::{
 };
 use super::super::contract::FunctionContract;
 use super::super::drive::{FactKey, Job, JobEffects, current_uses};
-use super::super::identity::{
-    ActivationKey, ExecutableKey, ExecutableNeed, FunctionId, ModuleId, function_id_of_closure_target,
-};
+use super::super::identity::{ActivationKey, ExecutableNeed, FunctionId, ModuleId, function_id_of_closure_target};
 use super::super::scheduler::FatalError;
 use super::super::semantic::{ActivationAnalysis, CallSiteKey, CallSiteSummary, CallTargetSummary, SelectedCallee};
 use super::super::types::{ClosureTarget, Ty};
@@ -34,14 +32,6 @@ type RefinedCallSurface = (Vec<Ty>, Option<Ty>);
 /// One resolved call: its summary (when a single emission applies), the
 /// activation demand it contributes, and its return evidence.
 type ResolvedCall = (Option<CallSiteSummary>, Vec<ActivationContribution>, Option<Ty>);
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-enum ClosureBoundaryUse {
-    Opaque,
-    Resolved(Vec<Ty>),
-    CallableArg,
-    Escape,
-}
 
 #[derive(Debug, Clone)]
 struct CallEmission {
@@ -195,37 +185,6 @@ pub(super) fn analyze_activation(world: &mut World<'_>, activation: &ActivationK
         &mut follow_up,
     )?;
 
-    let runtime_callable_values = runtime_callable_boundary_values(
-        world,
-        &lowered_body,
-        &reachable_clauses,
-        &reachable_entries,
-        &value_types,
-        &analysis_calls,
-    );
-    let covered_callable_activations = covered_callable_activations(&analysis_calls);
-    let mut latent_callable_activations = match return_evidence {
-        Some(return_ty) => resolve_escaping_callable_activations_from_type(
-            world,
-            activation,
-            return_ty,
-            &covered_callable_activations,
-            &mut reads,
-            &mut waits,
-            &mut follow_up,
-        ),
-        None => Vec::new(),
-    };
-    latent_callable_activations.extend(resolve_materialized_runtime_callable_boundary_activations(
-        world,
-        activation,
-        &value_types,
-        &runtime_callable_values,
-        &mut reads,
-        &mut waits,
-        &mut follow_up,
-    ));
-
     let mut emitted_activations = HashSet::new();
     let mut emitted_executables = HashSet::new();
     let mut activation_input_contributions = Vec::new();
@@ -256,18 +215,6 @@ pub(super) fn analyze_activation(world: &mut World<'_>, activation: &ActivationK
         }
     }
 
-    for callable_activation in &latent_callable_activations {
-        if emitted_activations.insert(callable_activation.key.clone()) {
-            outputs.push(FactKey::Activation(callable_activation.key.clone()));
-        }
-        outputs.push(FactKey::ActivationInputs(callable_activation.key.clone()));
-        activation_input_contributions.push((callable_activation.key.clone(), callable_activation.inputs.clone()));
-        if !callable_activation.already_present {
-            follow_up.insert(Job::AnalyzeActivation(callable_activation.key.clone()));
-        }
-        follow_up.insert(Job::SealSemanticClosure(activation.root));
-    }
-
     let return_changed = world.define_activation_return(activation, return_evidence);
     let return_fact = FactKey::ReturnType(activation.clone());
     outputs.push(return_fact.clone());
@@ -291,13 +238,7 @@ pub(super) fn analyze_activation(world: &mut World<'_>, activation: &ActivationK
             latent_executables: analysis_calls
                 .iter()
                 .flat_map(|call| call.latent_executables.iter().cloned())
-                .chain(latent_callable_activations.iter().map(|activation| ExecutableKey {
-                    activation: activation.key.clone(),
-                    need: ExecutableNeed::Value,
-                }))
                 .collect(),
-            runtime_demand: Default::default(),
-            runtime_callable_values,
             value_types,
         },
     );
@@ -973,30 +914,8 @@ fn resolve_direct_call(
         return Ok((None, Some(none_ty(world))));
     }
 
-    let (summary, mut activations, return_ty) =
+    let (summary, activations, return_ty) =
         resolve_function_call(world, caller, function, arg_types, reads, waits, follow_up)?;
-    let mut latent_executables = Vec::new();
-    if let Some(summary) = &summary {
-        for target in &summary.targets {
-            let SelectedCallee::Function(function) = target.callee else {
-                continue;
-            };
-            let runtime_activations = resolve_runtime_callable_boundary_activations(
-                world,
-                caller,
-                function,
-                target.surface_inputs.as_slice(),
-                reads,
-                waits,
-                follow_up,
-            )?;
-            latent_executables.extend(runtime_activations.iter().map(|activation| ExecutableKey {
-                activation: activation.key.clone(),
-                need: ExecutableNeed::Value,
-            }));
-            activations.extend(runtime_activations);
-        }
-    }
     Ok((
         summary.map(|summary| CallEmission {
             key: CallSiteKey {
@@ -1004,7 +923,7 @@ fn resolve_direct_call(
                 callsite,
             },
             summary: Some(summary),
-            latent_executables,
+            latent_executables: Vec::new(),
             activations,
         }),
         return_ty,
@@ -1197,28 +1116,11 @@ fn call_emission_for_function(
         return Ok(None);
     };
     let return_ty = refine_call_return(world, return_ty, contract_return_ty);
-    let mut activations = vec![ActivationContribution {
+    let activations = vec![ActivationContribution {
         key: activation.clone(),
         inputs: input_types.clone(),
         already_present,
     }];
-    let runtime_activations = resolve_runtime_callable_boundary_activations(
-        world,
-        caller,
-        function,
-        input_types.as_slice(),
-        reads,
-        waits,
-        follow_up,
-    )?;
-    let latent_executables = runtime_activations
-        .iter()
-        .map(|activation| ExecutableKey {
-            activation: activation.key.clone(),
-            need: ExecutableNeed::Value,
-        })
-        .collect();
-    activations.extend(runtime_activations);
     Ok(Some(CallEmission {
         key,
         summary: Some(CallSiteSummary {
@@ -1231,7 +1133,7 @@ fn call_emission_for_function(
             return_ty,
         }),
         activations,
-        latent_executables,
+        latent_executables: Vec::new(),
     }))
 }
 
@@ -1435,8 +1337,7 @@ fn resolve_closure_call(
     };
     let mut selected_targets = Vec::new();
     let mut activations = Vec::new();
-    let mut callable_target_executables = Vec::new();
-    let mut latent_executables = Vec::new();
+    let latent_executables = Vec::new();
     let mut return_ty = None;
 
     for clause in clauses {
@@ -1450,18 +1351,9 @@ fn resolve_closure_call(
 
         let refined_args = refine_contract_inputs(world, arg_types.clone(), std::iter::once(clause.args.as_slice()));
         let mut inputs = closure.captures;
-        inputs.extend(refined_args);
+        inputs.extend(refined_args.clone());
         let (summary, clause_activations, observed_return) =
             resolve_function_call(world, caller, function, inputs, reads, waits, follow_up)?;
-        for activation in &clause_activations {
-            let executable = ExecutableKey {
-                activation: activation.key.clone(),
-                need: ExecutableNeed::Value,
-            };
-            if !callable_target_executables.contains(&executable) {
-                callable_target_executables.push(executable);
-            }
-        }
         let clause_return = refine_call_return(world, observed_return, Some(clause.ret));
         return_ty = join_evidence(world, return_ty, clause_return);
 
@@ -1469,23 +1361,15 @@ fn resolve_closure_call(
             let Some(target) = summary.single_target() else {
                 return Err(FatalError);
             };
-            if !selected_targets.contains(target) {
-                selected_targets.push(target.clone());
+            let rebuilt_target = call_target_summary(
+                target.callee.clone(),
+                refined_args.clone(),
+                target.activation.clone(),
+                clause_return,
+            );
+            if !selected_targets.contains(&rebuilt_target) {
+                selected_targets.push(rebuilt_target.clone());
             }
-            let runtime_activations = resolve_runtime_callable_boundary_activations(
-                world,
-                caller,
-                function,
-                target.surface_inputs.as_slice(),
-                reads,
-                waits,
-                follow_up,
-            )?;
-            latent_executables.extend(runtime_activations.iter().map(|activation| ExecutableKey {
-                activation: activation.key.clone(),
-                need: ExecutableNeed::Value,
-            }));
-            activations.extend(runtime_activations);
             activations.extend(clause_activations);
         }
     }
@@ -1495,378 +1379,21 @@ fn resolve_closure_call(
         // edge.
         return Ok((None, Some(any_ty(world))));
     };
-    let summary = if selected_targets.len() == 1 {
-        Some(CallSiteSummary {
-            targets: selected_targets,
-            return_ty,
-        })
-    } else {
-        latent_executables.extend(callable_target_executables);
-        None
-    };
     Ok((
         Some(CallEmission {
             key: CallSiteKey {
                 activation: caller.clone(),
                 callsite,
             },
-            summary,
+            summary: Some(CallSiteSummary {
+                targets: selected_targets,
+                return_ty,
+            }),
             latent_executables,
             activations,
         }),
         return_ty,
     ))
-}
-
-fn resolve_runtime_callable_boundary_activations(
-    world: &mut World<'_>,
-    caller: &ActivationKey,
-    function: FunctionId,
-    arg_types: &[Ty],
-    reads: &mut Vec<FactKey>,
-    waits: &mut HashSet<FactKey>,
-    follow_up: &mut HashSet<Job>,
-) -> Result<Vec<ActivationContribution>, FatalError> {
-    let lowered_fact = FactKey::LoweredBody(function);
-    if !world.has_fact(&lowered_fact) {
-        waits.insert(lowered_fact);
-        follow_up.insert(Job::LowerFunction(function));
-        return Ok(Vec::new());
-    }
-    reads.push(lowered_fact);
-    let LoweredBody::Extern { signature: _ } = world.lowered_body(function) else {
-        return Ok(Vec::new());
-    };
-
-    let mut activations = Vec::new();
-    for &callable_ty in arg_types {
-        if world.types_mut().callable_clauses(&callable_ty).is_none() {
-            continue;
-        }
-        activations.extend(resolve_callable_activations_from_type(
-            world,
-            caller,
-            callable_ty,
-            reads,
-            waits,
-            follow_up,
-        ));
-    }
-    Ok(activations)
-}
-
-fn covered_callable_activations(calls: &[CallEmission]) -> HashSet<ActivationKey> {
-    calls
-        .iter()
-        .flat_map(|call| call.activations.iter())
-        .map(|activation| activation.key.clone())
-        .collect()
-}
-
-fn resolve_escaping_callable_activations_from_type(
-    world: &mut World<'_>,
-    caller: &ActivationKey,
-    ty: Ty,
-    covered_activations: &HashSet<ActivationKey>,
-    reads: &mut Vec<FactKey>,
-    waits: &mut HashSet<FactKey>,
-    follow_up: &mut HashSet<Job>,
-) -> Vec<ActivationContribution> {
-    let mut callable_types = Vec::new();
-    collect_escaping_callable_types(world, ty, &mut HashSet::new(), &mut callable_types);
-    let mut seen = HashSet::new();
-    let mut activations = Vec::new();
-    for callable_ty in callable_types {
-        for activation in resolve_uncovered_callable_activations_from_type(
-            world,
-            caller,
-            callable_ty,
-            covered_activations,
-            reads,
-            waits,
-            follow_up,
-        ) {
-            if seen.insert(activation.key.clone()) {
-                activations.push(activation);
-            }
-        }
-    }
-    activations
-}
-
-fn resolve_materialized_runtime_callable_boundary_activations(
-    world: &mut World<'_>,
-    caller: &ActivationKey,
-    value_types: &ValueTypes,
-    runtime_callable_values: &[ValueId],
-    reads: &mut Vec<FactKey>,
-    waits: &mut HashSet<FactKey>,
-    follow_up: &mut HashSet<Job>,
-) -> Vec<ActivationContribution> {
-    let mut seen = HashSet::new();
-    let mut activations = Vec::new();
-    for value in runtime_callable_values {
-        let Some(&ty) = value_types.get(value) else {
-            continue;
-        };
-        for activation in resolve_callable_activations_from_type(world, caller, ty, reads, waits, follow_up) {
-            if seen.insert(activation.key.clone()) {
-                activations.push(activation);
-            }
-        }
-    }
-    activations
-}
-
-fn runtime_callable_boundary_values(
-    world: &mut World<'_>,
-    lowered_body: &LoweredBody,
-    reachable_clauses: &[u32],
-    reachable_entries: &HashSet<super::super::body::ControlEntryId>,
-    value_types: &ValueTypes,
-    calls: &[CallEmission],
-) -> Vec<ValueId> {
-    let LoweredBody::Clauses { clauses, entries, .. } = lowered_body else {
-        return Vec::new();
-    };
-
-    let callsite_summaries = calls
-        .iter()
-        .filter_map(|call| call.summary.clone().map(|summary| (call.key.callsite, summary)))
-        .collect::<HashMap<_, _>>();
-
-    let mut callable_values = HashSet::new();
-    let mut producer_children = HashMap::<ValueId, Vec<ValueId>>::new();
-    let mut note_step = |step: &LoweredStep| match step {
-        LoweredStep::FunctionRef { value, .. } | LoweredStep::Lambda { value, .. } => {
-            callable_values.insert(*value);
-        }
-        LoweredStep::Tuple { value, items } => {
-            producer_children.insert(*value, items.clone());
-        }
-        LoweredStep::List { value, items, tail } => {
-            let mut children = items.clone();
-            if let Some(tail) = tail {
-                children.push(*tail);
-            }
-            producer_children.insert(*value, children);
-        }
-        LoweredStep::Map { value, entries } => {
-            producer_children.insert(*value, entries.iter().map(|(_, value)| *value).collect());
-        }
-        LoweredStep::MapUpdate { value, base, entries } => {
-            let mut children = vec![*base];
-            children.extend(entries.iter().map(|(_, value)| *value));
-            producer_children.insert(*value, children);
-        }
-        LoweredStep::Struct { value, fields, .. } => {
-            producer_children.insert(*value, fields.iter().map(|(_, value)| *value).collect());
-        }
-        _ => {}
-    };
-
-    let mut visit_entry = |entry: &LoweredEntry| {
-        for step in &entry.steps {
-            note_step(step);
-        }
-    };
-    for clause_id in reachable_clauses {
-        let Some(clause) = clauses.get(*clause_id as usize) else {
-            continue;
-        };
-        let Some(entry) = entries.get(clause.entry.as_u32() as usize) else {
-            continue;
-        };
-        visit_entry(entry);
-    }
-    for entry_id in reachable_entries {
-        let Some(entry) = entries.get(entry_id.as_u32() as usize) else {
-            continue;
-        };
-        visit_entry(entry);
-    }
-
-    let mut value_uses = HashMap::<ValueId, HashSet<ClosureBoundaryUse>>::new();
-    let mut escape_stack = Vec::<(ValueId, ClosureBoundaryUse)>::new();
-    let mut note_tail = |tail: &LoweredTail| match tail {
-        LoweredTail::Value {
-            value,
-            dest: ControlDestination::Return,
-        } => {
-            escape_stack.push((*value, ClosureBoundaryUse::Escape));
-        }
-        LoweredTail::DirectCall { callsite, args, .. } => {
-            note_callable_arg_uses(
-                world,
-                value_types,
-                &callsite_summaries,
-                *callsite,
-                None,
-                args,
-                &mut escape_stack,
-            );
-        }
-        LoweredTail::ClosureCall {
-            callee, callsite, args, ..
-        } => {
-            let usage = match callsite_summaries
-                .get(callsite)
-                .and_then(CallSiteSummary::single_target)
-            {
-                Some(target) => ClosureBoundaryUse::Resolved(target.surface_inputs.clone()),
-                None => ClosureBoundaryUse::Opaque,
-            };
-            value_uses.entry(*callee).or_default().insert(usage);
-            note_callable_arg_uses(
-                world,
-                value_types,
-                &callsite_summaries,
-                *callsite,
-                Some(*callee),
-                args,
-                &mut escape_stack,
-            );
-        }
-        _ => {}
-    };
-
-    for clause_id in reachable_clauses {
-        let Some(clause) = clauses.get(*clause_id as usize) else {
-            continue;
-        };
-        let Some(entry) = entries.get(clause.entry.as_u32() as usize) else {
-            continue;
-        };
-        note_tail(&entry.tail);
-    }
-    for entry_id in reachable_entries {
-        let Some(entry) = entries.get(entry_id.as_u32() as usize) else {
-            continue;
-        };
-        note_tail(&entry.tail);
-    }
-
-    let mut propagated = HashSet::<(ValueId, ClosureBoundaryUse)>::new();
-    while let Some((value, usage)) = escape_stack.pop() {
-        if !propagated.insert((value, usage.clone())) {
-            continue;
-        }
-        value_uses.entry(value).or_default().insert(usage.clone());
-        if let Some(children) = producer_children.get(&value) {
-            for child in children {
-                escape_stack.push((*child, usage.clone()));
-            }
-        }
-    }
-
-    let mut out = callable_values
-        .into_iter()
-        .filter(|value| value_uses.get(value).is_some_and(closure_value_needs_runtime_boundary))
-        .collect::<Vec<_>>();
-    out.sort_by_key(|value| value.as_u32());
-    out
-}
-
-fn note_callable_arg_uses(
-    world: &mut World<'_>,
-    value_types: &ValueTypes,
-    callsite_summaries: &HashMap<CallSiteId, CallSiteSummary>,
-    callsite: CallSiteId,
-    closure_callee: Option<ValueId>,
-    args: &[super::super::body::CallArg],
-    escape_stack: &mut Vec<(ValueId, ClosureBoundaryUse)>,
-) {
-    let Some(target) = callsite_summaries
-        .get(&callsite)
-        .and_then(CallSiteSummary::single_target)
-    else {
-        return;
-    };
-    let offset = closure_callee
-        .and_then(|callee| value_types.get(&callee).copied())
-        .and_then(|callee_ty| world.types().closure_lit_parts(&callee_ty))
-        .map_or(0, |parts| parts.captures.len());
-    for (arg_index, arg) in args.iter().enumerate() {
-        let Some(expected_ty) = target.surface_inputs.get(offset + arg_index) else {
-            continue;
-        };
-        if world.types_mut().callable_clauses(expected_ty).is_some() {
-            escape_stack.push((arg.value, ClosureBoundaryUse::CallableArg));
-        }
-    }
-}
-
-fn closure_value_needs_runtime_boundary(uses: &HashSet<ClosureBoundaryUse>) -> bool {
-    if uses
-        .iter()
-        .any(|usage| !matches!(usage, ClosureBoundaryUse::Resolved(_)))
-    {
-        return true;
-    }
-    uses.len() > 1
-}
-
-fn collect_escaping_callable_types(world: &mut World<'_>, ty: Ty, seen: &mut HashSet<Ty>, out: &mut Vec<Ty>) {
-    if !seen.insert(ty) || world.types().is_empty(&ty) {
-        return;
-    }
-    if world.types_mut().callable_value_clauses(&ty).is_some() {
-        out.push(ty);
-    }
-
-    for index in 0..world.types().max_tuple_arity(&ty) {
-        let field = world.types_mut().tuple_field_type(&ty, index);
-        collect_escaping_callable_types(world, field, seen, out);
-    }
-
-    if world.types().has_list_shape(&ty) {
-        let elem = world.types_mut().list_element_type(&ty);
-        collect_escaping_callable_types(world, elem, seen, out);
-    }
-
-    let map_keys = world.types().map_known_keys(&ty);
-    for key in map_keys {
-        if let Some(field) = world.types_mut().map_field_lookup(&ty, &key) {
-            collect_escaping_callable_types(world, field, seen, out);
-        }
-    }
-}
-
-fn resolve_uncovered_callable_activations_from_type(
-    world: &mut World<'_>,
-    caller: &ActivationKey,
-    callable_ty: Ty,
-    covered_activations: &HashSet<ActivationKey>,
-    reads: &mut Vec<FactKey>,
-    waits: &mut HashSet<FactKey>,
-    follow_up: &mut HashSet<Job>,
-) -> Vec<ActivationContribution> {
-    let Some(clauses) = world.types_mut().callable_value_clauses(&callable_ty) else {
-        return Vec::new();
-    };
-    let mut activations = Vec::new();
-    for clause in clauses {
-        let Some(closure) = clause.closure else {
-            continue;
-        };
-        let function = function_id_of_closure_target(closure.target);
-        if !world.require_activation_key_facts(function, reads, waits, follow_up) {
-            continue;
-        }
-        let mut input_types = closure.captures;
-        input_types.extend(clause.args);
-        let activation = world.activation_key(caller.root, function, &input_types);
-        if covered_activations.contains(&activation) {
-            continue;
-        }
-        let already_present = world.fact_revision(&FactKey::Activation(activation.clone())).is_some();
-        activations.push(ActivationContribution {
-            key: activation,
-            inputs: input_types.clone(),
-            already_present,
-        });
-    }
-    activations
 }
 
 fn refine_function_call_surface(
@@ -1994,39 +1521,6 @@ fn refine_observed_return(world: &mut World<'_>, observed: Ty, contract: Option<
     } else {
         refined
     }
-}
-
-fn resolve_callable_activations_from_type(
-    world: &mut World<'_>,
-    caller: &ActivationKey,
-    callable_ty: Ty,
-    reads: &mut Vec<FactKey>,
-    waits: &mut HashSet<FactKey>,
-    follow_up: &mut HashSet<Job>,
-) -> Vec<ActivationContribution> {
-    let Some(clauses) = world.types_mut().callable_value_clauses(&callable_ty) else {
-        return Vec::new();
-    };
-    let mut activations = Vec::new();
-    for clause in clauses {
-        let Some(closure) = clause.closure else {
-            continue;
-        };
-        let function = function_id_of_closure_target(closure.target);
-        if !world.require_activation_key_facts(function, reads, waits, follow_up) {
-            continue;
-        }
-        let mut input_types = closure.captures;
-        input_types.extend(clause.args);
-        let activation = world.activation_key(caller.root, function, &input_types);
-        let already_present = world.has_fact(&FactKey::Activation(activation.clone()));
-        activations.push(ActivationContribution {
-            key: activation,
-            inputs: input_types.clone(),
-            already_present,
-        });
-    }
-    activations
 }
 
 fn prepare_function_call(

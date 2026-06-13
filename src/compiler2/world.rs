@@ -49,7 +49,7 @@ use super::scheduler::FatalError;
 use super::scope::ScopeSnapshot;
 use super::semantic::{
     ActivationAnalysis, ActivationInputMap, ActivationInputReplace, ActivationMap, CallSiteKey, CallSiteMap,
-    CallSiteSummary, SemanticClosure, SemanticClosureMap,
+    CallSiteSummary, RuntimeDemand, SemanticClosure, SemanticClosureMap,
 };
 use super::source::{
     QuotedLexicalContext, QuotedLexicalContextKind, QuotedSourceBuilder, QuotedSourceError, QuotedSourceMetadata,
@@ -93,6 +93,31 @@ impl WarningDiagnosticKey {
 enum CallableMatchScore {
     VariadicPrefix(usize),
     Exact,
+}
+
+fn count_tuple_field_demands(demand: &RuntimeDemand) -> u64 {
+    match demand {
+        RuntimeDemand::Ignore | RuntimeDemand::Value | RuntimeDemand::Callable(_) => 0,
+        RuntimeDemand::TupleFields(fields) => {
+            fields.len() as u64 + fields.iter().map(count_tuple_field_demands).sum::<u64>()
+        }
+    }
+}
+
+fn count_opaque_callable_demands(demand: &RuntimeDemand) -> u64 {
+    match demand {
+        RuntimeDemand::Ignore | RuntimeDemand::Value => 0,
+        RuntimeDemand::TupleFields(fields) => fields.iter().map(count_opaque_callable_demands).sum(),
+        RuntimeDemand::Callable(callable) => callable.opaque as u64,
+    }
+}
+
+fn count_escaped_callable_demands(demand: &RuntimeDemand) -> u64 {
+    match demand {
+        RuntimeDemand::Ignore | RuntimeDemand::Value => 0,
+        RuntimeDemand::TupleFields(fields) => fields.iter().map(count_escaped_callable_demands).sum(),
+        RuntimeDemand::Callable(callable) => callable.escape as u64,
+    }
 }
 
 pub struct World<'a> {
@@ -426,7 +451,6 @@ impl<'a> World<'a> {
         for ty in analysis.value_types.values_mut() {
             *ty = self.types.alpha_normalize_vars(ty);
         }
-        analysis.runtime_demand.alpha_normalize(&mut self.types);
         let changed = self.activations.define_analysis(key, analysis);
         let analysis = self
             .activations
@@ -587,7 +611,10 @@ impl<'a> World<'a> {
         self.callsites.get(key)
     }
 
-    pub(crate) fn define_semantic_closure(&mut self, root: RootId, closure: SemanticClosure) -> bool {
+    pub(crate) fn define_semantic_closure(&mut self, root: RootId, mut closure: SemanticClosure) -> bool {
+        for demand in closure.runtime_demands.values_mut() {
+            demand.alpha_normalize(&mut self.types);
+        }
         let changed = self.semantic_closures.define(root, closure);
         let closure = self
             .semantic_closures
@@ -601,6 +628,79 @@ impl<'a> World<'a> {
             &metadata! {
                 closure: opaque_debug(closure),
                 root_id: opaque_debug(&root),
+            },
+        );
+        self.tel.execute(
+            &["fz", "compiler2", "runtime_demand", "defined"],
+            &measurements! {
+                root_id: root.as_u32(),
+                executables: closure.runtime_demands.len() as u64,
+                demanded_inputs: closure
+                    .runtime_demands
+                    .values()
+                    .map(|demand| demand.input_demands.iter().filter(|demand| !demand.is_ignore()).count() as u64)
+                    .sum::<u64>(),
+                omitted_inputs: closure
+                    .runtime_demands
+                    .values()
+                    .map(|demand| demand.input_demands.iter().filter(|demand| demand.is_ignore()).count() as u64)
+                    .sum::<u64>(),
+                demanded_values: closure
+                    .runtime_demands
+                    .values()
+                    .map(|demand| demand.value_demands.values().filter(|demand| !demand.is_ignore()).count() as u64)
+                    .sum::<u64>(),
+                tuple_field_demands: closure
+                    .runtime_demands
+                    .values()
+                    .map(|demand| demand.value_demands.values().map(count_tuple_field_demands).sum::<u64>())
+                    .sum::<u64>(),
+                direct_callable_materializations: closure
+                    .runtime_demands
+                    .values()
+                    .map(|demand| {
+                        demand
+                            .callable_materializations
+                            .values()
+                            .filter(|materialization| {
+                                matches!(
+                                    materialization,
+                                    super::semantic::CallableMaterialization::DirectOnly { .. }
+                                )
+                            })
+                            .count() as u64
+                    })
+                    .sum::<u64>(),
+                first_class_callable_materializations: closure
+                    .runtime_demands
+                    .values()
+                    .map(|demand| {
+                        demand
+                            .callable_materializations
+                            .values()
+                            .filter(|materialization| {
+                                matches!(
+                                    materialization,
+                                    super::semantic::CallableMaterialization::FirstClass { .. }
+                                )
+                            })
+                            .count() as u64
+                    })
+                    .sum::<u64>(),
+                opaque_callable_demands: closure
+                    .runtime_demands
+                    .values()
+                    .map(|demand| demand.value_demands.values().map(count_opaque_callable_demands).sum::<u64>())
+                    .sum::<u64>(),
+                escaped_callable_demands: closure
+                    .runtime_demands
+                    .values()
+                    .map(|demand| demand.value_demands.values().map(count_escaped_callable_demands).sum::<u64>())
+                    .sum::<u64>(),
+            },
+            &metadata! {
+                root_id: opaque_debug(&root),
+                runtime_demands: opaque_debug(&closure.runtime_demands),
             },
         );
         changed

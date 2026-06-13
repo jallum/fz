@@ -27,7 +27,8 @@ use super::body::{
     CallSiteId, ControlDestination, ControlDispatch, ControlEntryId, DispatchBindings, Literal, LoweredBitField,
     LoweredBitFieldSpec, LoweredBody, LoweredExtern, ReceiveAfter, ReceiveClause, ValueId,
 };
-use super::identity::{ExecutableKey, FunctionId, RootId};
+use super::identity::{ExecutableKey, FunctionId, RootId, function_id_of_closure_target};
+use super::semantic::ExecutableRuntimeDemand;
 use super::types::Ty;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -62,7 +63,8 @@ pub struct MaterializedProgram {
 pub struct MaterializedExecutable {
     pub entry_dispatch: Option<ExecutableDispatch>,
     pub return_ty: Ty,
-    pub runtime_callable_values: Vec<ValueId>,
+    pub runtime_demand: ExecutableRuntimeDemand,
+    pub runtime_params: RuntimeParamLayout,
     pub value_types: HashMap<ValueId, Ty>,
     pub effects: EffectSummary,
     pub body: LoweredBody,
@@ -205,7 +207,8 @@ pub struct AbiReadyExecutable {
     pub return_ty: Ty,
     pub return_abi: ReturnAbi,
     pub param_reprs: Vec<AbiValueRepr>,
-    pub runtime_callable_values: Vec<ValueId>,
+    pub runtime_demand: ExecutableRuntimeDemand,
+    pub runtime_params: RuntimeParamLayout,
     pub value_types: HashMap<ValueId, Ty>,
     pub value_reprs: HashMap<ValueId, AbiValueRepr>,
     pub effects: EffectSummary,
@@ -238,6 +241,7 @@ pub struct EmissionReadyExecutable {
     pub return_ty: Ty,
     pub return_abi: ReturnAbi,
     pub param_reprs: Vec<AbiValueRepr>,
+    pub runtime_params: RuntimeParamLayout,
     pub value_types: HashMap<ValueId, Ty>,
     pub value_reprs: HashMap<ValueId, AbiValueRepr>,
     pub effects: EffectSummary,
@@ -269,10 +273,112 @@ pub struct BackendExecutable {
     pub return_ty: Ty,
     pub return_abi: ReturnAbi,
     pub param_reprs: Vec<AbiValueRepr>,
+    pub runtime_params: RuntimeParamLayout,
     pub value_types: HashMap<ValueId, Ty>,
     pub value_reprs: HashMap<ValueId, AbiValueRepr>,
     pub effects: EffectSummary,
     pub body: BackendBody,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeParamLayout {
+    pub inputs: Vec<RuntimeInputLayout>,
+    pub reprs: Vec<AbiValueRepr>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RuntimeInputLayout {
+    Omitted {
+        semantic_index: usize,
+    },
+    Value {
+        semantic_index: usize,
+        repr: AbiValueRepr,
+    },
+    TupleFields {
+        semantic_index: usize,
+        field_reprs: Vec<AbiValueRepr>,
+    },
+    DirectCallableCaptures {
+        semantic_index: usize,
+        function: FunctionId,
+        capture_tys: Vec<Ty>,
+        capture_reprs: Vec<AbiValueRepr>,
+    },
+}
+
+impl RuntimeInputLayout {
+    pub fn semantic_index(&self) -> usize {
+        match self {
+            Self::Omitted { semantic_index }
+            | Self::Value { semantic_index, .. }
+            | Self::TupleFields { semantic_index, .. }
+            | Self::DirectCallableCaptures { semantic_index, .. } => *semantic_index,
+        }
+    }
+
+    pub fn abi_reprs(&self) -> Vec<AbiValueRepr> {
+        match self {
+            Self::Omitted { .. } => Vec::new(),
+            Self::Value { repr, .. } => vec![*repr],
+            Self::TupleFields { field_reprs, .. } => field_reprs.clone(),
+            Self::DirectCallableCaptures { capture_reprs, .. } => capture_reprs.clone(),
+        }
+    }
+}
+
+impl RuntimeParamLayout {
+    pub fn from_inputs(inputs: Vec<RuntimeInputLayout>) -> Self {
+        let mut reprs = Vec::new();
+        for input in &inputs {
+            reprs.extend(input.abi_reprs());
+        }
+        Self { inputs, reprs }
+    }
+
+    pub fn semantic_input(&self, semantic_index: usize) -> Option<&RuntimeInputLayout> {
+        self.inputs
+            .iter()
+            .find(|input| input.semantic_index() == semantic_index)
+    }
+
+    pub fn direct_callable_from_type(
+        world: &mut crate::compiler2::World<'_>,
+        semantic_index: usize,
+        ty: Ty,
+    ) -> Option<Self> {
+        let clauses = world.types_mut().callable_value_clauses(&ty)?;
+        let [clause] = clauses.as_slice() else {
+            return None;
+        };
+        let closure = clause.closure.as_ref()?;
+        let function = function_id_of_closure_target(closure.target);
+        let capture_tys = closure.captures.clone();
+        let capture_reprs = capture_tys
+            .iter()
+            .copied()
+            .map(|capture_ty| {
+                if world.types().is_floating(&capture_ty) {
+                    AbiValueRepr::RawF64
+                } else if world.types().is_integer(&capture_ty) {
+                    AbiValueRepr::RawInt
+                } else {
+                    let atom = world.types_mut().atom();
+                    if world.types().is_subtype(&capture_ty, &atom) {
+                        AbiValueRepr::RawAtom
+                    } else {
+                        AbiValueRepr::ValueRef
+                    }
+                }
+            })
+            .collect::<Vec<_>>();
+        Some(Self::from_inputs(vec![RuntimeInputLayout::DirectCallableCaptures {
+            semantic_index,
+            function,
+            capture_tys,
+            capture_reprs,
+        }]))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -1,5 +1,5 @@
-use std::collections::HashSet;
 use std::collections::VecDeque;
+use std::collections::{HashMap, HashSet};
 
 use crate::compiler::source::Span;
 use crate::diag::Diagnostic;
@@ -11,6 +11,7 @@ use super::super::identity::{ExecutableKey, RootId, RootKind};
 use super::super::scheduler::FatalError;
 use super::super::semantic::{CallSiteKey, SelectedCallee, SemanticClosure};
 use super::super::world::World;
+use super::runtime_demand::settle_runtime_demands;
 use super::semantic::executable_callsite_needs;
 
 /// Seeds one semantic root once its entry definition exists.
@@ -105,6 +106,8 @@ pub(super) fn seal_semantic_closure(world: &mut World<'_>, root_id: RootId) -> R
     let mut follow_up = HashSet::new();
     let mut outputs = Vec::new();
     let mut changed = Vec::new();
+    let mut activation_input_contributions = Vec::new();
+    let mut bootstrapped_runtime_frontier = false;
 
     let root_fact = FactKey::RootEntry(root_id);
     if world.fact_is_settled(&root_fact) {
@@ -159,106 +162,150 @@ pub(super) fn seal_semantic_closure(world: &mut World<'_>, root_id: RootId) -> R
         pending.push_back(entry.clone());
     }
 
-    while let Some(executable) = pending.pop_front() {
-        let activation = executable.activation.clone();
-        let activation_fact = FactKey::Activation(activation.clone());
-        let activation_ready = read_fact(world, activation_fact, &mut reads, &mut waits);
-        if !activation_ready {
-            continue;
-        }
-        if !executables.insert(executable.clone()) {
-            continue;
-        }
-        activations.insert(activation.clone());
-
-        // Every gate here is a SETTLED gate, matching the `settled_uses`
-        // registration below. Presence alone is not enough: a blocked
-        // analyzer's claims stand (waiting extends, it cannot retract), so a
-        // merely-present analysis may be a half-built snapshot. Settledness
-        // is the freshness marker.
-        let analyzed_fact = FactKey::ActivationAnalyzed(activation.clone());
-        if !read_fact(world, analyzed_fact, &mut reads, &mut waits) {
-            follow_up.insert(Job::AnalyzeActivation(activation.clone()));
-            continue;
-        }
-        let analysis = world
-            .activation_analysis(&activation)
-            .expect("activation analysis fact should have an analysis value")
-            .clone();
-
-        let return_fact = FactKey::ReturnType(activation.clone());
-        if !read_fact(world, return_fact, &mut reads, &mut waits) {
-            follow_up.insert(Job::AnalyzeActivation(activation.clone()));
-            continue;
-        }
-
-        let lowered_fact = FactKey::LoweredBody(activation.function);
-        if !read_fact(world, lowered_fact.clone(), &mut reads, &mut waits) {
-            follow_up.insert(Job::LowerFunction(activation.function));
-            continue;
-        }
-
-        let lowered_body = world.lowered_body(activation.function);
-        let callsite_needs = executable_callsite_needs(&lowered_body, &analysis.reachable_clauses, executable.need);
-
-        for latent in &analysis.latent_executables {
-            if !executables.contains(latent) {
-                pending.push_back(latent.clone());
+    let mut runtime_demands = HashMap::new();
+    loop {
+        while let Some(executable) = pending.pop_front() {
+            let activation = executable.activation.clone();
+            let activation_fact = FactKey::Activation(activation.clone());
+            let activation_ready = read_fact(world, activation_fact, &mut reads, &mut waits);
+            if !activation_ready {
+                continue;
             }
-        }
+            if !executables.insert(executable.clone()) {
+                continue;
+            }
+            activations.insert(activation.clone());
 
-        for callsite in analysis.callsites {
-            let key = CallSiteKey {
-                activation: activation.clone(),
-                callsite,
-            };
-            let callsite_fact = FactKey::CallSiteSummary(key.clone());
-            if !read_fact(world, callsite_fact, &mut reads, &mut waits) {
+            // Every gate here is a SETTLED gate, matching the `settled_uses`
+            // registration below. Presence alone is not enough: a blocked
+            // analyzer's claims stand (waiting extends, it cannot retract), so a
+            // merely-present analysis may be a half-built snapshot. Settledness
+            // is the freshness marker.
+            let analyzed_fact = FactKey::ActivationAnalyzed(activation.clone());
+            if !read_fact(world, analyzed_fact, &mut reads, &mut waits) {
                 follow_up.insert(Job::AnalyzeActivation(activation.clone()));
                 continue;
             }
-            let summary = world
-                .callsite_summary(&key)
-                .expect("callsite facts should have a summary value")
+            let analysis = world
+                .activation_analysis(&activation)
+                .expect("activation analysis fact should have an analysis value")
                 .clone();
-            for target in &summary.targets {
-                let SelectedCallee::Function(function) = target.callee else {
-                    continue;
-                };
-                if !world.require_activation_key_facts(function, &mut reads, &mut waits, &mut follow_up) {
-                    continue;
-                }
-                let Some(callee_activation) = target.activation.clone() else {
-                    return Err(FatalError);
-                };
-                let need = callsite_needs
-                    .get(&callsite)
-                    .copied()
-                    .unwrap_or(super::super::identity::ExecutableNeed::Value);
-                let callee_executable = ExecutableKey {
-                    activation: callee_activation.clone(),
-                    need,
-                };
-                let callee_activation_ready = read_fact(
-                    world,
-                    FactKey::Activation(callee_activation.clone()),
-                    &mut reads,
-                    &mut waits,
-                );
-                if !callee_activation_ready {
-                    follow_up.insert(Job::AnalyzeActivation(callee_activation));
-                    continue;
-                }
-                if !executables.contains(&callee_executable) {
-                    pending.push_back(callee_executable);
+
+            let return_fact = FactKey::ReturnType(activation.clone());
+            if !read_fact(world, return_fact, &mut reads, &mut waits) {
+                follow_up.insert(Job::AnalyzeActivation(activation.clone()));
+                continue;
+            }
+
+            let lowered_fact = FactKey::LoweredBody(activation.function);
+            if !read_fact(world, lowered_fact.clone(), &mut reads, &mut waits) {
+                follow_up.insert(Job::LowerFunction(activation.function));
+                continue;
+            }
+
+            let lowered_body = world.lowered_body(activation.function);
+            let callsite_needs = executable_callsite_needs(&lowered_body, &analysis.reachable_clauses, executable.need);
+
+            for latent in &analysis.latent_executables {
+                if !executables.contains(latent) {
+                    pending.push_back(latent.clone());
                 }
             }
+
+            for callsite in analysis.callsites {
+                let key = CallSiteKey {
+                    activation: activation.clone(),
+                    callsite,
+                };
+                let callsite_fact = FactKey::CallSiteSummary(key.clone());
+                if !read_fact(world, callsite_fact, &mut reads, &mut waits) {
+                    follow_up.insert(Job::AnalyzeActivation(activation.clone()));
+                    continue;
+                }
+                let summary = world
+                    .callsite_summary(&key)
+                    .expect("callsite facts should have a summary value")
+                    .clone();
+                for target in &summary.targets {
+                    let SelectedCallee::Function(function) = target.callee else {
+                        continue;
+                    };
+                    if !world.require_activation_key_facts(function, &mut reads, &mut waits, &mut follow_up) {
+                        continue;
+                    }
+                    let Some(callee_activation) = target.activation.clone() else {
+                        return Err(FatalError);
+                    };
+                    let need = callsite_needs
+                        .get(&callsite)
+                        .copied()
+                        .unwrap_or(super::super::identity::ExecutableNeed::Value);
+                    let callee_executable = ExecutableKey {
+                        activation: callee_activation.clone(),
+                        need,
+                    };
+                    let callee_activation_ready = read_fact(
+                        world,
+                        FactKey::Activation(callee_activation.clone()),
+                        &mut reads,
+                        &mut waits,
+                    );
+                    if !callee_activation_ready {
+                        follow_up.insert(Job::AnalyzeActivation(callee_activation));
+                        continue;
+                    }
+                    if !executables.contains(&callee_executable) {
+                        pending.push_back(callee_executable);
+                    }
+                }
+            }
+        }
+
+        if !waits.is_empty() {
+            break;
+        }
+
+        let Some(runtime_closure) =
+            settle_runtime_demands(world, &executables, &mut reads, &mut waits, &mut follow_up)?
+        else {
+            break;
+        };
+        runtime_demands = runtime_closure.demands;
+
+        let mut added = false;
+        for latent in runtime_closure.latent_executables {
+            if executables.contains(&latent) {
+                continue;
+            }
+            let latent_activation_fact = FactKey::Activation(latent.activation.clone());
+            outputs.push(FactKey::Activation(latent.activation.clone()));
+            outputs.push(FactKey::ActivationInputs(latent.activation.clone()));
+            outputs.push(FactKey::Executable(latent.clone()));
+            activation_input_contributions.push((latent.activation.clone(), latent.activation.input.clone()));
+            if !world.fact_is_settled(&latent_activation_fact) {
+                follow_up.insert(Job::AnalyzeActivation(latent.activation.clone()));
+                added = true;
+                bootstrapped_runtime_frontier = true;
+                continue;
+            }
+            pending.push_back(latent);
+            added = true;
+        }
+        if bootstrapped_runtime_frontier {
+            break;
+        }
+        if !added {
+            break;
         }
     }
 
     outputs.extend(executables.iter().cloned().map(FactKey::Executable));
 
-    if waits.is_empty() {
+    if bootstrapped_runtime_frontier {
+        waits.clear();
+    }
+
+    if waits.is_empty() && !bootstrapped_runtime_frontier {
         let semantic_closed_fact = FactKey::SemanticClosed(root_id);
         let closure_changed = world.define_semantic_closure(
             root_id,
@@ -266,6 +313,7 @@ pub(super) fn seal_semantic_closure(world: &mut World<'_>, root_id: RootId) -> R
                 entry,
                 activations,
                 executables,
+                runtime_demands,
             },
         );
         outputs.push(semantic_closed_fact.clone());
@@ -282,7 +330,7 @@ pub(super) fn seal_semantic_closure(world: &mut World<'_>, root_id: RootId) -> R
         waits: settled_uses(waits),
         outputs,
         changed,
-        activation_input_contributions: Vec::new(),
+        activation_input_contributions,
         follow_up: follow_up.into_iter().collect(),
     })
 }
