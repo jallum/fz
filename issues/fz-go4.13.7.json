@@ -2,14 +2,15 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-06-13T18:49:56Z",
   "created": "2026-06-13T18:49:33Z",
   "description": "Goal\nMake the backend interpreter obey the same reusable-cons model and runtime telemetry contract as compiler2 JIT/native codegen.\n\nWhy\nThe post-.13.6 cleanup exposed two real gaps:\n- test/fixture readers still treated reusable_cons_* process_exited measurements as optional even though process_exited is now the authoritative boundary event;\n- the backend interpreter rebuilt lists blindly and retained whole continuation environments, so it neither observed reusable-cons attempts/reuse nor published retained refs at the same boundaries as the JIT path.\n\nScope\n- make process_exited reusable_cons_attempts and reusable_cons_reused mandatory in test/fixture readers;\n- make the runtime/heap identity contract explicit: reuse_or_alloc_list_cons_raw_kind returns the original ref iff it reused in place;\n- teach the backend interpreter to seed reusable-cons sources from entry reusable_cons_captures, extend that map through SplitList, and route single-cell list rebuilds through fz_list_reuse_or_cons_parts;\n- shrink backend continuation capture environments to the target entry's declared captures and publish captured refs with fz_mark_published_ref_aliased at continuation materialization boundaries;\n- add parity coverage proving compiler2 JIT and backend interpreter agree on reusable-cons exit counters for a mixed reuse/fallback fixture.\n\nValidation\n- cargo test -p fz-runtime list_reuse_or_cons_parts_updates_process_counters\n- cargo test runtime process_exited parity cases\n- cargo test compiler2 reusable-cons runtime/parity cases\n- fixture_matrix reusable-cons telemetry contract tests\n- cargo check\n- cargo clippy --workspace --all-targets -- -D warnings\n\nAcceptance\nThe backend interpreter should stop allocating/copying blindly at continuation boundaries, reusable-cons exit telemetry should be strict and engine-uniform, and the code/docs should expose one explicit boundary model rather than optional readers or hidden identity assumptions.",
   "id": "fz-go4.13.7",
   "labels": [],
   "parent": "fz-go4.13",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Backend interpreter: honor reusable-cons captures and strict exit telemetry",
   "type": "task",
-  "updated_at": "2026-06-13T18:49:36Z"
+  "updated_at": "2026-06-13T18:49:56Z"
 }
