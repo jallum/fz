@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-9i4.4.2"
+  ],
   "created": "2026-06-13T02:06:46Z",
   "description": "Goal: make closure boundary truth explicit before touching native lowering/codegen. Change the shared IR and compiler2 artifact model so captures are not modeled as leading call arguments. Publish callable boundary identity, separate argument and capture ABI lanes, and an explicit direct-vs-opaque closure-call contract. Update the IR comments/tests/docs that currently describe captures as spliced ahead of args. Acceptance: shared IR and artifact tests prove the new contract shape; telemetry schema for closure-call boundary events is defined; no artifact/native-facing type still requires reconstructing callable ABI by slicing a mixed capture+arg vector.",
   "id": "fz-9i4.4.1",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Define first-class callable boundary contracts in shared IR and compiler2 artifacts",
   "type": "task",
-  "updated_at": "2026-06-13T02:06:46Z"
+  "updated_at": "2026-06-13T02:07:02Z"
 }
