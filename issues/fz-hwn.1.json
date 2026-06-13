@@ -10,8 +10,8 @@
   "labels": [],
   "parent": "fz-hwn",
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "Compiler2 runtime demand: model semantic use separately from representation demand",
   "type": "task",
-  "updated_at": "2026-06-13T21:24:40Z"
+  "updated_at": "2026-06-13T21:27:45Z"
 }
