@@ -3,13 +3,13 @@
   "blocked_by": [],
   "blocks": [],
   "created": "2026-06-13T01:22:23Z",
-  "description": "Fixtures like closure_typed_captures, curried_add, fn_ref_ampersand, higher_order, and multi_caller_spec_divergent now fail under fz2-run with fz_ref_load_int ExpectedTag panics. These are real compiler2 runtime/codegen bugs exposed once semantic fixtures stop relying on dbg goldens.",
+  "description": "The current compiler2 closure-call failures on fz2-run and fz2-build are symptoms of a lossy native handoff: callable facts are computed strongly in the fact/artifact pipeline, then collapsed into constructor candidate vectors, mixed capture+arg ABI vectors, and block-local direct-target side tables that native codegen must reconstruct. Fix this at the model boundary. Closure captures are not call arguments. Publish first-class callable boundary contracts, carry exact direct-target closure-call facts explicitly, and make native codegen consume those contracts directly. This umbrella ticket closes the closure_typed_captures / curried_add / multi_caller_spec_divergent regression family by removing callable-constructor body guessing and mixed capture-prefix ABI reasoning.",
   "id": "fz-9i4.4",
   "labels": [],
   "parent": "fz-9i4",
   "priority": 2,
   "status": "open",
-  "title": "Fix compiler2 JIT closure-call scalar lane corruption",
+  "title": "Rebuild compiler2 closure-call boundaries around first-class callable contracts",
   "type": "bug",
-  "updated_at": "2026-06-13T01:22:23Z"
+  "updated_at": "2026-06-13T02:06:47Z"
 }
