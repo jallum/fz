@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [
     "fz-go4.13.3",
@@ -11,8 +11,8 @@
   "labels": [],
   "parent": "fz-go4.13",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "IR model: replace tail-only OwnedConsReuse with reusable cons-cell capabilities",
   "type": "task",
-  "updated_at": "2026-06-13T16:28:50Z"
+  "updated_at": "2026-06-13T16:41:50Z"
 }
