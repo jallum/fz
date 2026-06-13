@@ -4,14 +4,15 @@
   "blocks": [
     "fz-9i4.2"
   ],
+  "closed_at": "2026-06-13T00:35:32Z",
   "created": "2026-06-13T00:30:33Z",
   "description": "",
   "id": "fz-9i4.1",
   "labels": [],
   "parent": "fz-9i4",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Define unified fixtures2 metadata and participation rules",
   "type": "task",
-  "updated_at": "2026-06-13T00:30:43Z"
+  "updated_at": "2026-06-13T00:35:32Z"
 }
