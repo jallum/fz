@@ -1,0 +1,812 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Compiler2 Runtime Value Demand Proposal</title>
+<link rel="stylesheet" href="guides/style.css">
+<style>
+body { max-width: 1080px; }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px; margin: 14px 0 22px; }
+.card { border: 1px solid #30363d; border-radius: 6px; padding: 14px 16px; background: #161b22; }
+.card h3 { margin-top: 0; }
+.small { color: #8b949e; font-size: 12px; }
+.okline { color: #56d364; }
+.badline { color: #ff7b72; }
+.section-note { color: #8b949e; margin-top: -4px; }
+</style>
+</head>
+<body>
+
+<h1>Compiler2 Runtime Value Demand</h1>
+<p class="subtitle">A design proposal for replacing broad callable recovery with one explicit demand model for values, returns, parameters, and callable materialization.</p>
+
+<ul class="toc">
+  <li><a href="#goal">1. Goal, signal, strategy</a></li>
+  <li><a href="#code-read">2. Code read before designing</a></li>
+  <li><a href="#current">3. Current model and the bug</a></li>
+  <li><a href="#decision">4. The design decision</a></li>
+  <li><a href="#data">5. Data structures</a></li>
+  <li><a href="#algorithm">6. Algorithm</a></li>
+  <li><a href="#examples">7. Worked examples</a></li>
+  <li><a href="#flow">8. Information flow</a></li>
+  <li><a href="#changes">9. Code changes</a></li>
+  <li><a href="#remove">10. What gets removed</a></li>
+  <li><a href="#proof">11. Why this works</a></li>
+  <li><a href="#checks">12. Checks before commit</a></li>
+</ul>
+
+<h2 id="goal">1. Goal, signal, strategy</h2>
+
+<div class="grid">
+  <div class="card">
+    <h3>Goal</h3>
+    <p>Compiler2 should publish exactly the runtime work demanded by the closed program. Constructing, passing, returning, storing, or calling a callable value should not by itself create callable entries, native callable boundaries, closure allocations, or ABI lanes unless the runtime representation is actually needed.</p>
+  </div>
+  <div class="card">
+    <h3>Signal</h3>
+    <p>The artifact ladder should show no callable entries for unused callable constructors, no native callable boundaries unless a callable value escapes or is called opaquely, no hidden type-based recovery, and unchanged quicksort tuple-field delivery. Telemetry should expose demand counts directly.</p>
+  </div>
+  <div class="card">
+    <h3>Strategy</h3>
+    <p>Lift the existing return-demand idea into a general runtime value-demand projection over the closed lowered value graph. Derive ABI lanes, callable entries, native boundaries, and closure materialization from that projection.</p>
+  </div>
+</div>
+
+<div class="box green">
+<strong>Core rule:</strong> semantic facts say what values mean. Runtime demand says which values must physically exist. Callable boundaries are derived from runtime demand, not recovered from callable-looking types.
+</div>
+
+<h2 id="code-read">2. Code read before designing</h2>
+
+<p>The relevant implementation already contains most of the raw information. The problem is that the information is split across local mechanisms and then partially thrown away.</p>
+
+<table class="data">
+  <thead>
+    <tr><th>Area</th><th>Relevant code</th><th>What it proves</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td class="term">Semantic activation walk</td>
+      <td><code>src/compiler2/jobs/semantic.rs</code>, especially <code>analyze_activation</code>, <code>resolve_closure_call</code>, <code>runtime_callable_boundary_values</code></td>
+      <td>Compiler2 discovers exact callsites and closure-call surfaces on <code>CallTargetSummary.surface_inputs</code>, then collapses callable materialization to <code>runtime_callable_values: Vec&lt;ValueId&gt;</code>.</td>
+    </tr>
+    <tr>
+      <td class="term">Semantic facts</td>
+      <td><code>src/compiler2/semantic.rs</code></td>
+      <td><code>ActivationAnalysis</code> stores reachable clauses, callsites, latent executables, runtime callable values, and value types. It does not store exact runtime demand.</td>
+    </tr>
+    <tr>
+      <td class="term">Root closure</td>
+      <td><code>src/compiler2/jobs/root.rs</code></td>
+      <td>The closure sealer already walks <code>ExecutableKey</code>, not just activation keys, and already propagates return demand through <code>executable_callsite_needs</code>.</td>
+    </tr>
+    <tr>
+      <td class="term">Artifact projection</td>
+      <td><code>src/compiler2/jobs/artifact.rs</code></td>
+      <td>ABI-ready currently derives parameter lanes from semantic activation inputs, return ABIs from <code>ExecutableNeed</code>, and callable entries by re-reading callable types from <code>runtime_callable_values</code>.</td>
+    </tr>
+    <tr>
+      <td class="term">Backend handoff</td>
+      <td><code>src/compiler2/jobs/backend.rs</code></td>
+      <td><code>entry_input_abis</code> is already a small backward demand engine for delivered resume values. It should become part of the general demand projection instead of staying local.</td>
+    </tr>
+    <tr>
+      <td class="term">Native handoff</td>
+      <td><code>src/compiler2/jobs/native.rs</code></td>
+      <td>Native lowering materializes every <code>FunctionRef</code> and <code>Lambda</code> step, then selects a callable boundary from capture types. That is too late and too broad.</td>
+    </tr>
+    <tr>
+      <td class="term">Backend interpreter</td>
+      <td><code>src/ir_interp/backend.rs</code></td>
+      <td>The interpreter also materializes every lambda/function ref. The fix must change <code>BackendProgram</code>, not only native codegen.</td>
+    </tr>
+    <tr>
+      <td class="term">Native codegen</td>
+      <td><code>src/compiler2/native_codegen/prim.rs</code>, <code>src/compiler2/native_codegen/terminator.rs</code>, <code>src/compiler2/native_codegen/driver.rs</code></td>
+      <td>Codegen already wants settled callable-boundary ids and exact closure-target surfaces. It should consume explicit facts, not re-select obligations.</td>
+    </tr>
+  </tbody>
+</table>
+
+<h2 id="current">3. Current model and the bug</h2>
+
+<p>The current compiler2 path discovers more than it preserves.</p>
+
+<pre>
+AnalyzeActivation
+  -> resolves direct call targets
+  -> resolves closure-call targets and exact surface inputs
+  -> sees callable-looking arguments and escaping callable-looking returns
+  -> stores only runtime_callable_values: Vec&lt;ValueId&gt;
+
+DeriveAbiReady
+  -> for each runtime callable value
+  -> read the value type
+  -> enumerate callable clauses from that type
+  -> publish CallableEntry records
+
+LowerNativeProgram
+  -> materialize every FunctionRef / Lambda step
+  -> choose a NativeCallableBoundary by function + capture type
+</pre>
+
+<div class="box yellow">
+<strong>The bad recovery step is type-shaped, not use-shaped.</strong>
+Types can say a value could be callable. They cannot say this particular runtime program needs a callable object, callable entry, wrapper function, closure environment, or ABI lane.
+</div>
+
+<p>The bug in the narrow ticket is visible here:</p>
+
+<pre>
+fn ignore(_fun), do: 0
+
+fn main() do
+  fun = fn x -> x + 1 end
+  ignore(fun)
+end
+</pre>
+
+<p>The exact semantic fact is "the value <code>fun</code> flows to <code>ignore/1</code> input 0." The runtime fact is "that input is never read." Current compiler2 turns the first fact into a callable entry because the input type is callable-shaped. That is the modeling error.</p>
+
+<h2 id="decision">4. The design decision</h2>
+
+<p>The good decision is to make runtime value demand first-class, using the lowered value graph and the closed call graph we already have.</p>
+
+<div class="aside">
+This is not a new callable subsystem. It is the generalization of the mechanism quicksort already depends on: <code>ExecutableNeed::TupleFields(2)</code> tells <code>partition/4</code> to deliver fields instead of a heap tuple. The same idea should apply to function parameters, resume values, call arguments, tuple producers, and callable producers.
+</div>
+
+<p>Separate these facts permanently:</p>
+
+<table class="data">
+  <thead>
+    <tr><th>Fact</th><th>Meaning</th><th>Owned by</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td class="term">Semantic evidence</td>
+      <td>Activation input types, reachable clauses, selected callees, exact closure-call targets, return type evidence.</td>
+      <td><code>AnalyzeActivation</code></td>
+    </tr>
+    <tr>
+      <td class="term">Runtime demand</td>
+      <td>Which values must exist at runtime, in what shape, and which callable uses require first-class representation.</td>
+      <td>Root-scoped demand closure over the closed executable graph.</td>
+    </tr>
+    <tr>
+      <td class="term">Representation</td>
+      <td>ABI lanes, callable entries, native callable boundaries, direct closure-call operands, and closure materialization.</td>
+      <td>Artifact/backend/native projections derived from demand.</td>
+    </tr>
+  </tbody>
+</table>
+
+<h2 id="data">5. Data structures</h2>
+
+<p>The names below are proposal names. The important part is the shape: demand is a finite lattice over values, and callable demand is one variant inside it.</p>
+
+<pre>
+pub enum RuntimeDemand {
+    Ignore,
+    Value,
+    TupleFields(Vec&lt;RuntimeDemand&gt;),
+    Callable(CallableDemand),
+}
+
+pub struct CallableDemand {
+    pub resolved: BTreeSet&lt;CallableSurface&gt;,
+    pub opaque: bool,
+    pub escape: bool,
+}
+
+pub struct CallableSurface {
+    pub inputs: Vec&lt;Ty&gt;,
+}
+
+pub struct ExecutableRuntimeDemand {
+    pub return_demand: RuntimeDemand,
+    pub input_demands: Vec&lt;RuntimeDemand&gt;,
+    pub value_demands: HashMap&lt;ValueId, RuntimeDemand&gt;,
+    pub call_arg_demands: HashMap&lt;CallSiteId, Vec&lt;RuntimeDemand&gt;&gt;,
+    pub callable_materializations: HashMap&lt;ValueId, CallableMaterialization&gt;,
+}
+
+pub enum CallableMaterialization {
+    DirectOnly { surfaces: BTreeSet&lt;CallableSurface&gt; },
+    FirstClass { surfaces: BTreeSet&lt;CallableSurface&gt; },
+}
+
+pub struct RuntimeParamLayout {
+    pub inputs: Vec&lt;RuntimeInputLayout&gt;,
+    pub reprs: Vec&lt;AbiValueRepr&gt;,
+}
+
+pub enum RuntimeInputLayout {
+    Omitted { semantic_index: usize },
+    Value { semantic_index: usize, repr: AbiValueRepr },
+    TupleFields { semantic_index: usize, fields: Vec&lt;RuntimeInputLayout&gt; },
+    DirectCallableCaptures { semantic_index: usize, captures: Vec&lt;RuntimeInputLayout&gt; },
+}
+</pre>
+
+<p>The exact Rust shape may collapse some of these. The invariant must not collapse:</p>
+
+<div class="box blue">
+<strong>Invariant:</strong> <code>ActivationKey.input</code> remains semantic. Runtime parameter layout is derived. The number and order of semantic activation inputs no longer defines the native/interpreter ABI.
+</div>
+
+<h3>Demand join</h3>
+
+<pre>
+Ignore + D                         = D
+Value + anything                   = Value
+TupleFields(a) + TupleFields(b)    = TupleFields(join_fields(a, b)) when arities match
+TupleFields(_) + other             = Value
+Callable(a) + Callable(b)          = Callable(join_callable(a, b))
+Callable(_) + TupleFields(_)       = Value
+Callable(_) + Value                = Value
+</pre>
+
+<p><code>CallableDemand</code> can hold more than one resolved surface. Two exact direct calls to the same lambda do not automatically force a heap closure. <code>opaque</code> or <code>escape</code> does.</p>
+
+<h2 id="algorithm">6. Algorithm</h2>
+
+<p>The demand solver runs over a settled root and its closed executable graph. It is monotone and finite.</p>
+
+<h3>6.1 Build producer and consumer indexes</h3>
+
+<p>For each reachable executable, index the lowered body:</p>
+
+<pre>
+ValueId -> Producer
+
+Producer::Input(index)
+Producer::EntryInput(entry_id)
+Producer::Const
+Producer::Tuple(items)
+Producer::List(items, tail)
+Producer::Map(entries)
+Producer::MapUpdate(base, entries)
+Producer::FunctionRef(function)
+Producer::Lambda(function, captures)
+Producer::Op(inputs)
+Producer::Projection(source)
+Producer::CallResult(callsite)
+</pre>
+
+<p>This index is already implicit in <code>LoweredStep</code>, <code>LoweredTail</code>, and the current <code>collect_step_reads</code> helpers. The proposal makes it explicit once.</p>
+
+<h3>6.2 Seed demand</h3>
+
+<p>Each executable starts with the demand from its key:</p>
+
+<pre>
+ExecutableNeed::Value
+  -> RuntimeDemand::Value
+
+ExecutableNeed::TupleFields(n)
+  -> RuntimeDemand::TupleFields(vec![Value; n])
+</pre>
+
+<p>Then seed runtime boundary requirements:</p>
+
+<table class="data">
+  <thead>
+    <tr><th>Boundary</th><th>Demand</th></tr>
+  </thead>
+  <tbody>
+    <tr><td class="term">Extern call</td><td>Every extern argument is <code>Value</code>. The C boundary is opaque.</td></tr>
+    <tr><td class="term">Provider boundary call</td><td>Every argument crossing the provider boundary is <code>Value</code>.</td></tr>
+    <tr><td class="term">Entry dispatch</td><td>Inputs/projections/pinned values used by dispatch are <code>Value</code>.</td></tr>
+    <tr><td class="term">Receive/send/spawn/dbg</td><td>Published values are <code>Value</code>. Callable values published here get <code>escape = true</code>.</td></tr>
+    <tr><td class="term">Closure call with exact target</td><td>Callee gets <code>CallableDemand.resolved(surface)</code>. Runtime args get demand from target input demand.</td></tr>
+    <tr><td class="term">Closure call without exact target</td><td>Callee gets <code>opaque = true</code>. Runtime args are <code>Value</code>.</td></tr>
+  </tbody>
+</table>
+
+<h3>6.3 Propagate backward through producers</h3>
+
+<pre>
+demand(value, D):
+  old = value_demands[value]
+  new = join(old, D)
+  if new changed:
+    work.push(value)
+
+while work not empty:
+  value = work.pop()
+  demand = value_demands[value]
+  producer = producers[value]
+
+  match producer:
+    Input(i):
+      input_demands[i] = join(input_demands[i], demand)
+
+    Tuple(items):
+      if demand is TupleFields(fields):
+        demand each item with matching field demand
+      else if demand materializes the tuple:
+        demand each item as Value
+
+    Lambda(function, captures):
+      if demand is Callable(resolved only):
+        for each resolved surface:
+          demand captures using target activation input demand
+      else if demand requires first-class callable:
+        demand captures as Value
+        record callable materialization
+
+    FunctionRef(function):
+      if demand is Callable(resolved only):
+        record direct callable use
+      else if demand requires first-class callable:
+        record callable materialization
+
+    List / Map / Struct / Bitstring:
+      if demand is Value:
+        demand contained runtime values as Value
+      else:
+        use only supported projection demands; otherwise widen to Value
+
+    Projection(source):
+      demand source enough to perform the projection
+
+    Op(inputs):
+      demand inputs as Value
+</pre>
+
+<h3>6.4 Propagate across calls</h3>
+
+<p>The demand solver is root-scoped, just like <code>SealSemanticClosure</code>. It already walks <code>ExecutableKey</code> today, so it is the right place to generalize.</p>
+
+<pre>
+for each callsite in executable:
+  callee = materialized call edge
+  callee_return_demand = destination demand at this callsite
+  enqueue ExecutableKey { activation: callee.activation, need: callee_return_demand }
+
+  for each source argument:
+    source_arg_demand = callee.input_demands[arg_index]
+    demand(source_value, source_arg_demand)
+</pre>
+
+<p>This is a fixpoint because callee input demands are learned from callee bodies, and caller argument demands depend on them. The lattice is finite: each executable has finite values, finite callsites, finite tuple arities, and finite callable surfaces discovered from the program.</p>
+
+<h3>6.5 Derive representation</h3>
+
+<p>Only after demand settles:</p>
+
+<pre>
+Runtime demand plan
+  -> runtime param layouts
+  -> value reprs
+  -> callable entries
+  -> backend call arguments
+  -> native callable boundaries
+  -> closure materialization
+</pre>
+
+<p>Callable-entry ABI is a publication contract for first-class callable values. It is not the internal ABI for direct executable calls.</p>
+
+<h2 id="examples">7. Worked examples</h2>
+
+<h3>7.1 Unused callable constructor</h3>
+
+<pre>
+fn ignore(_fun), do: 0
+
+fn main() do
+  fun = fn x -> x + 1 end
+  ignore(fun)
+end
+</pre>
+
+<table class="data">
+  <thead>
+    <tr><th>Step</th><th>Demand fact</th><th>Result</th></tr>
+  </thead>
+  <tbody>
+    <tr><td class="term">Analyze <code>ignore/1</code></td><td>Input 0 has semantic type <code>closure_lit(lambda)</code>.</td><td>No runtime read of input 0.</td></tr>
+    <tr><td class="term">Demand <code>ignore/1</code></td><td><code>input_demands[0] = Ignore</code>.</td><td>No ABI lane for <code>_fun</code>.</td></tr>
+    <tr><td class="term">Propagate to caller</td><td><code>fun</code> receives <code>Ignore</code>.</td><td>Lambda producer has no runtime demand.</td></tr>
+    <tr><td class="term">Artifact result</td><td>No materialized callable value.</td><td>No lambda executable, no callable entry, no native boundary, no closure allocation.</td></tr>
+  </tbody>
+</table>
+
+<p class="okline">This fixes the current failing invariant without special-casing callable arguments.</p>
+
+<h3>7.2 Direct call of a captured lambda</h3>
+
+<pre>
+fn apply(fun), do: fun.(41)
+
+fn main(a) do
+  fun = fn x -> x + a end
+  apply(fun)
+end
+</pre>
+
+<table class="data">
+  <thead>
+    <tr><th>Step</th><th>Demand fact</th><th>Result</th></tr>
+  </thead>
+  <tbody>
+    <tr><td class="term">Analyze <code>apply/1</code></td><td>Closure call resolves to lambda surface <code>[integer]</code>.</td><td><code>input_demands[0] = Callable(resolved=[integer])</code>.</td></tr>
+    <tr><td class="term">Propagate to caller</td><td><code>fun</code> receives resolved callable demand.</td><td>Lambda producer projects demand to its capture <code>a</code>.</td></tr>
+    <tr><td class="term">Runtime ABI</td><td><code>apply/1</code> needs capture lane <code>a</code>, not a heap closure.</td><td>Direct call passes capture plus call arg to the lambda executable.</td></tr>
+    <tr><td class="term">Artifact result</td><td>Callable is direct-only.</td><td>No callable entry unless the value also escapes or is called opaquely.</td></tr>
+  </tbody>
+</table>
+
+<div class="box yellow">
+<strong>Pressure point:</strong> today <code>BackendTail::ClosureCall</code> names a callee value, and native codegen's direct fast path still passes a <code>self</code> closure pointer. This design requires the backend artifact to distinguish direct callable operands from first-class callable operands. That is not optional.
+</div>
+
+<h3>7.3 Escaped callable</h3>
+
+<pre>
+fn make_adder(a), do: fn x -> x + a end
+
+fn main() do
+  make_adder(10)
+end
+</pre>
+
+<table class="data">
+  <thead>
+    <tr><th>Step</th><th>Demand fact</th><th>Result</th></tr>
+  </thead>
+  <tbody>
+    <tr><td class="term">Root demand</td><td><code>main/0</code> return is <code>Value</code>.</td><td>The returned value must physically exist.</td></tr>
+    <tr><td class="term">Propagate through call</td><td><code>make_adder/1</code> return is <code>Value</code>.</td><td>The lambda result gets <code>Callable(escape=true)</code>.</td></tr>
+    <tr><td class="term">Lambda producer</td><td>Escaped callable requires first-class representation.</td><td>Capture <code>a</code> is demanded as <code>Value</code>.</td></tr>
+    <tr><td class="term">Artifact result</td><td>Callable entry and native callable boundary are published.</td><td>The ABI boundary exists because the value escaped.</td></tr>
+  </tbody>
+</table>
+
+<h3>7.4 Quicksort</h3>
+
+<pre>
+fn partition(_, [], lo, hi), do: {lo, hi}
+fn partition(p, [h | t], lo, hi) when h &lt; p, do: partition(p, t, [h | lo], hi)
+fn partition(p, [h | t], lo, hi), do: partition(p, t, lo, [h | hi])
+
+fn qsort([]), do: []
+fn qsort([p | rest]) do
+  {lo, hi} = partition(p, rest, [], [])
+  append(qsort(lo), [p | qsort(hi)])
+end
+</pre>
+
+<p>Demand flow:</p>
+
+<pre>
+main return                         Value
+qsort return                        Value
+qsort -> partition call result      TupleFields([Value, Value])
+partition base tuple {lo, hi}       TupleFields([Value, Value])
+partition recursive tail call       TupleFields([Value, Value])
+qsort continuation after partition  receives lo, hi as lanes; captures p
+append / qsort recursive calls      Value
+</pre>
+
+<p>Nothing in this path is callable. That is the point: the same demand model preserves the existing quicksort win without knowing about callables.</p>
+
+<table class="data">
+  <thead>
+    <tr><th>Existing contract</th><th>Demand explanation</th></tr>
+  </thead>
+  <tbody>
+    <tr><td class="term"><code>partition/4</code> uses <code>TupleFields(2)</code></td><td>The caller destructures the result, so the tuple object is not demanded.</td></tr>
+    <tr><td class="term">Continuation has two result lanes plus pivot capture</td><td>The delivered resume value demand is field-shaped, and the remaining live value is <code>p</code>.</td></tr>
+    <tr><td class="term">No <code>ListTail</code> demand</td><td>Reusable-cons capability stays a physical ownership fact, not a semantic demand variant.</td></tr>
+    <tr><td class="term">No callable inventory</td><td>No callable value receives escape or opaque demand.</td></tr>
+  </tbody>
+</table>
+
+<h2 id="flow">8. Information flow</h2>
+
+<pre>
+LowerFunction
+  -> LoweredBody: exact value graph
+
+AnalyzeActivation
+  -> ActivationAnalysis:
+       reachable clauses
+       reachable entries
+       callsite summaries
+       exact closure-call target surfaces
+       value types
+
+SealSemanticClosure / DemandClosure
+  -> SemanticClosed:
+       executable frontier keyed by semantic activation + return demand
+       runtime demand plan per executable
+
+MaterializeRoot
+  -> MaterializedProgram:
+       pruned lowered bodies
+       selected call edges
+       runtime demand plans
+
+DeriveAbiReady
+  -> AbiReadyProgram:
+       return ABI
+       runtime parameter layouts
+       value reprs from demand
+       callable entries from first-class callable demand
+
+DeriveEmissionReady
+  -> stable inventory indexes
+
+LowerBackendProgram
+  -> BackendProgram:
+       backend operands shaped by demand
+       direct callable operands separated from first-class callable operands
+
+LowerNativeProgram
+  -> NativeProgram:
+       CPS/native bodies
+       native callable boundaries only for first-class callable values
+       no type-based callable boundary selection
+</pre>
+
+<h2 id="changes">9. Code changes</h2>
+
+<h3>9.1 Semantic layer</h3>
+
+<p>Keep semantic analysis focused on meaning and exact call facts.</p>
+
+<table class="data">
+  <thead>
+    <tr><th>Change</th><th>Why</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td class="term">Remove <code>ActivationAnalysis.runtime_callable_values</code></td>
+      <td>It is a lossy representation fact stored in the semantic layer.</td>
+    </tr>
+    <tr>
+      <td class="term">Keep <code>CallTargetSummary.surface_inputs</code></td>
+      <td>It is already the exact semantic callable surface we need, nested under <code>CallSiteSummary.targets</code>.</td>
+    </tr>
+    <tr>
+      <td class="term">Keep value types</td>
+      <td>Demand derivation needs type evidence to project tuple fields and callable captures.</td>
+    </tr>
+    <tr>
+      <td class="term">Stop resolving escaping/materialized callable activations inside <code>AnalyzeActivation</code></td>
+      <td>Escapes depend on runtime demand, which is executable/root-specific.</td>
+    </tr>
+  </tbody>
+</table>
+
+<h3>9.2 Root closure and demand closure</h3>
+
+<p>Generalize the existing executable traversal in <code>SealSemanticClosure</code>.</p>
+
+<pre>
+FactKey::SemanticClosed(root) stores SemanticClosure today:
+  entry: ExecutableKey
+  activations: HashSet&lt;ActivationKey&gt;
+  executables: HashSet&lt;ExecutableKey&gt;
+
+Proposed:
+  entry: ExecutableKey
+  activations: HashSet&lt;ActivationKey&gt;
+  executables: HashSet&lt;ExecutableKey&gt;
+  runtime_demands: HashMap&lt;ExecutableKey, ExecutableRuntimeDemand&gt;
+</pre>
+
+<p>The closure sealer becomes the place where runtime demand can grow the executable frontier. That is already its job for tuple-field return demand.</p>
+
+<h3>9.3 Artifact layer</h3>
+
+<table class="data">
+  <thead>
+    <tr><th>Current</th><th>Replacement</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td class="term"><code>param_reprs = activation.input.map(abi_value_repr)</code></td>
+      <td>Derive <code>RuntimeParamLayout</code> from <code>input_demands</code>.</td>
+    </tr>
+    <tr>
+      <td class="term"><code>runtime_callable_values</code> copied through artifacts</td>
+      <td>Carry <code>ExecutableRuntimeDemand</code> and derived callable materializations.</td>
+    </tr>
+    <tr>
+      <td class="term"><code>derive_callable_entries</code> resolves entries from types</td>
+      <td>Derive entries only from first-class callable materialization demand.</td>
+    </tr>
+    <tr>
+      <td class="term"><code>entry_input_abis</code> recomputes resume demand in backend lowering</td>
+      <td>Move this demand into the shared demand plan so backend and native consume the same fact.</td>
+    </tr>
+  </tbody>
+</table>
+
+<h3>9.4 BackendProgram</h3>
+
+<p><code>BackendProgram</code> is the shared interpreter/native handoff, so it should carry demand-shaped operands.</p>
+
+<pre>
+BackendCallArg today:
+  value: ValueId
+
+BackendCallArg proposed:
+  source: RuntimeOperand
+
+RuntimeOperand:
+  Value(ValueId)
+  TupleFields(Vec&lt;RuntimeOperand&gt;)
+  DirectCallable { function, captures: Vec&lt;RuntimeOperand&gt; }
+  FirstClassCallable(ValueId)
+</pre>
+
+<p>The exact enum can be smaller, but the split is essential. A direct callable operand is not a closure ref. A first-class callable operand is.</p>
+
+<h3>9.5 Native lowering and codegen</h3>
+
+<table class="data">
+  <thead>
+    <tr><th>Change</th><th>Why</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td class="term">Stop scanning all lambda/function-ref steps for callable identities</td>
+      <td>Only first-class callable materialization needs a callable identity wrapper.</td>
+    </tr>
+    <tr>
+      <td class="term">Stop calling <code>settled_callable_boundary</code> by capture type</td>
+      <td>The boundary id should be an artifact fact attached to the materialized value.</td>
+    </tr>
+    <tr>
+      <td class="term">Lower direct callable calls without a heap closure when demand permits</td>
+      <td>Resolved callable demand already names target and capture operands.</td>
+    </tr>
+    <tr>
+      <td class="term">Keep callable-entry ABI separate from executable-internal direct ABI</td>
+      <td>Callable entries are publication wrappers for first-class callable values only.</td>
+    </tr>
+  </tbody>
+</table>
+
+<h3>9.6 Backend interpreter</h3>
+
+<p>The interpreter must consume the same <code>BackendProgram</code> facts. It should not eagerly create <code>AnyValue::FnRef</code> or heap closures for every callable producer.</p>
+
+<pre>
+ProgramStep::Lambda today:
+  make_closure(...)
+
+After demand:
+  DirectOnly       -> bind a direct callable descriptor or no value at all
+  FirstClass       -> make_closure(...)
+  Ignored          -> no binding required unless later structural demand exists
+</pre>
+
+<h2 id="remove">10. What gets removed</h2>
+
+<ul>
+  <li><code>ClosureBoundaryUse::CallableArg</code>. It is the broad recovery bug under a different name.</li>
+  <li><code>runtime_callable_boundary_values</code>, <code>note_callable_arg_uses</code>, and <code>closure_value_needs_runtime_boundary</code>.</li>
+  <li><code>resolve_materialized_runtime_callable_boundary_activations</code> and type-driven callable activation recovery for materialized values.</li>
+  <li>ABI-ready callable entry derivation from arbitrary callable value types.</li>
+  <li>Native callable boundary selection from capture types.</li>
+  <li>Native callable identity collection from all callable-producing steps.</li>
+  <li>Backend-local resume demand recomputation once the shared demand plan exists.</li>
+  <li>The assumption that every semantic activation input is a runtime ABI lane.</li>
+</ul>
+
+<h2 id="proof">11. Why this works</h2>
+
+<h3>11.1 It is finite</h3>
+
+<p>For one settled root, the graph is finite:</p>
+
+<ul>
+  <li>Finite executables in the semantic closure.</li>
+  <li>Finite lowered values per executable.</li>
+  <li>Finite tuple arities present in source and demand sites.</li>
+  <li>Finite callable surfaces from resolved callsites.</li>
+  <li>A finite demand lattice with <code>Ignore</code> as bottom and <code>Value</code> as conservative top.</li>
+</ul>
+
+<p>Every propagation step only joins demand upward. Therefore the demand fixpoint terminates.</p>
+
+<h3>11.2 It is conservative</h3>
+
+<p>Every runtime read seeds demand. If the compiler cannot project a narrow demand through a producer, it joins to <code>Value</code>. That may keep a value alive, but it cannot remove a needed runtime value.</p>
+
+<h3>11.3 It preserves semantic precision</h3>
+
+<p>Semantic activation keys do not shrink when runtime parameters shrink. Dispatch, contracts, recursive keying, and return typing still see the full semantic input vector. Runtime ABI layout is a derived representation, not identity.</p>
+
+<h3>11.4 It removes the bad recovery path</h3>
+
+<p>No later stage asks, "Does this type look callable?" to decide runtime obligations. Later stages ask, "What did the demand plan say this value must be?" That is the correct boundary.</p>
+
+<h3>11.5 It generalizes quicksort instead of threatening it</h3>
+
+<p>Quicksort is already a proof point. <code>TupleFields(2)</code> is a runtime demand that avoids tuple allocation. General runtime demand keeps that behavior and uses the same machinery to answer callable questions.</p>
+
+<h2 id="checks">12. Checks before commit</h2>
+
+<h3>12.1 Unit and drive tests</h3>
+
+<pre>
+cargo test --lib compiler2::drive_test::compiler2_abi_ready_does_not_publish_unused_callable_constructors -- --exact --nocapture
+cargo test --lib compiler2::drive_test::compiler2_abi_ready_derives_only_the_closed_enum_reduce_callable_entries -- --exact --nocapture
+cargo test --lib compiler2::drive_test::compiler2_native_program_keeps_only_the_closed_quicksort_inventory -- --exact --nocapture
+cargo test --lib compiler2::drive_test::compiler2_native_program_matches_tuple_field_call_continuations_to_the_callee_return_abi -- --exact --nocapture
+cargo test --lib compiler2::drive_test::compiler2_quicksort_root_closes_with_a_finite_recursive_frontier -- --exact --nocapture
+cargo test --lib compiler2::drive_test::compiler2_native_program_jit_runs_quicksort_through_compiler2_codegen -- --exact --nocapture
+cargo test --lib compiler2::drive_test::compiler2_interp_runs_quicksort_from_backend_artifacts -- --exact --nocapture
+</pre>
+
+<h3>12.2 New tests to add</h3>
+
+<table class="data">
+  <thead>
+    <tr><th>Test</th><th>Intent</th></tr>
+  </thead>
+  <tbody>
+    <tr><td class="term">unused callable input</td><td>Passing an ignored lambda creates no executable, callable entry, native boundary, or closure allocation.</td></tr>
+    <tr><td class="term">direct captured lambda</td><td>A resolved call to a captured lambda passes captures directly and does not require first-class callable materialization.</td></tr>
+    <tr><td class="term">escaped captured lambda</td><td>Returning/sending/storing a callable materializes the boundary and preserves capture ABI.</td></tr>
+    <tr><td class="term">opaque callable call</td><td>A call through unresolved callable value uses a first-class callable boundary.</td></tr>
+    <tr><td class="term">semantic input vs runtime param</td><td>A callee may keep a full semantic activation key while omitting an unused runtime input lane.</td></tr>
+    <tr><td class="term">backend interpreter parity</td><td>Interpreter and native consume the same demand-shaped backend artifact.</td></tr>
+  </tbody>
+</table>
+
+<h3>12.3 Telemetry</h3>
+
+<p>Add one artifact-level event. Tests should use it instead of scraping internal structs where possible.</p>
+
+<pre>
+fz.compiler2.runtime_demand.defined
+
+measurements:
+  root_id
+  executable_count
+  omitted_input_count
+  runtime_param_lane_count
+  tuple_field_delivery_count
+  direct_callable_use_count
+  first_class_callable_count
+  opaque_callable_count
+  escaped_callable_count
+
+metadata:
+  demand_summary
+</pre>
+
+<p>Useful CLI probes:</p>
+
+<pre>
+target/debug/fz2 --log-telemetry /tmp/fz-demand-quicksort.jsonl run fixtures2/behavior/quicksort.fz
+target/debug/fz2 --log-telemetry /tmp/fz-demand-enum-reduce.jsonl run fixtures2/behavior/enum_reduce_suspend.fz
+</pre>
+
+<h3>12.4 Fixture contracts</h3>
+
+<ul>
+  <li>Quicksort keeps <code>partition</code> under tuple-field return demand and keeps callable inventory empty.</li>
+  <li>Enum reducer fixtures keep the required callable entries, but only where the callable is actually first-class or opaque.</li>
+  <li>Unused callable constructor fixture stays cold below semantic analysis.</li>
+  <li>Closure allocation telemetry drops for direct-only callable paths and stays nonzero for escaped callable paths.</li>
+</ul>
+
+<h2>Conclusion</h2>
+
+<p>The smallest correct model is not a callable patch. It is a runtime value-demand model over the lowered value graph. The compiler already has the expensive facts: exact callsite summaries, exact value producers, semantic activation keys, and a working tuple-field return-demand example in quicksort. The clean move is to keep those facts intact, compute demand once at the root artifact boundary, and let representation fall out mechanically.</p>
+
+<div class="box green">
+<strong>Acceptance contract:</strong> no runtime object, ABI lane, callable entry, native callable boundary, or closure allocation exists unless a settled demand fact requires it.
+</div>
+
+</body>
+</html>

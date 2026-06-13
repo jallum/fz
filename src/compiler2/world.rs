@@ -426,6 +426,7 @@ impl<'a> World<'a> {
         for ty in analysis.value_types.values_mut() {
             *ty = self.types.alpha_normalize_vars(ty);
         }
+        analysis.runtime_demand.alpha_normalize(&mut self.types);
         let changed = self.activations.define_analysis(key, analysis);
         let analysis = self
             .activations

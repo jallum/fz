@@ -4,7 +4,7 @@
 //! the work graph owns: observed input shapes, reachable callsites, settled
 //! return types, and the semantic closure each root has reached.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::hash::Hash;
 
 use super::body::{CallSiteId, ControlEntryId, ValueId};
@@ -64,12 +64,244 @@ impl CallSiteSummary {
     }
 }
 
+/// One exact callable surface observed semantically at a call boundary.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct CallableSurface {
+    pub inputs: Vec<Ty>,
+}
+
+impl CallableSurface {
+    pub fn new(inputs: Vec<Ty>) -> Self {
+        Self { inputs }
+    }
+
+    pub(crate) fn alpha_normalize(&mut self, types: &mut Types) {
+        self.inputs = self
+            .inputs
+            .iter()
+            .copied()
+            .map(|ty| types.alpha_normalize_vars(&ty))
+            .collect();
+    }
+}
+
+/// Runtime demand specific to callable values, kept separate from type-based
+/// callable recovery so later phases can derive first-class materialization
+/// from one exact fact.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct CallableDemand {
+    pub resolved: BTreeSet<CallableSurface>,
+    pub opaque: bool,
+    pub escape: bool,
+}
+
+impl CallableDemand {
+    pub fn resolved(inputs: Vec<Ty>) -> Self {
+        let mut resolved = BTreeSet::new();
+        resolved.insert(CallableSurface::new(inputs));
+        Self {
+            resolved,
+            opaque: false,
+            escape: false,
+        }
+    }
+
+    pub fn opaque() -> Self {
+        Self {
+            resolved: BTreeSet::new(),
+            opaque: true,
+            escape: false,
+        }
+    }
+
+    pub fn escaped() -> Self {
+        Self {
+            resolved: BTreeSet::new(),
+            opaque: false,
+            escape: true,
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.resolved.is_empty() && !self.opaque && !self.escape
+    }
+
+    pub fn join(&self, other: &Self) -> Self {
+        let mut joined = self.clone();
+        joined.join_assign(other);
+        joined
+    }
+
+    pub fn join_assign(&mut self, other: &Self) {
+        self.resolved.extend(other.resolved.iter().cloned());
+        self.opaque |= other.opaque;
+        self.escape |= other.escape;
+    }
+
+    pub(crate) fn alpha_normalize(&mut self, types: &mut Types) {
+        let mut normalized = BTreeSet::new();
+        for mut surface in self.resolved.clone() {
+            surface.alpha_normalize(types);
+            normalized.insert(surface);
+        }
+        self.resolved = normalized;
+    }
+}
+
+/// The runtime shape a consumer actually needs from one semantic value.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum RuntimeDemand {
+    #[default]
+    Ignore,
+    Value,
+    TupleFields(Vec<RuntimeDemand>),
+    Callable(CallableDemand),
+}
+
+impl RuntimeDemand {
+    pub fn tuple_fields(fields: Vec<Self>) -> Self {
+        Self::TupleFields(fields).normalized()
+    }
+
+    pub fn callable(demand: CallableDemand) -> Self {
+        Self::Callable(demand).normalized()
+    }
+
+    pub fn is_ignore(&self) -> bool {
+        matches!(self, Self::Ignore)
+    }
+
+    pub fn join(&self, other: &Self) -> Self {
+        let mut joined = self.clone();
+        joined.join_assign(other);
+        joined
+    }
+
+    pub fn join_assign(&mut self, other: &Self) {
+        *self = join_runtime_demand(self.clone(), other.clone());
+    }
+
+    fn normalized(self) -> Self {
+        match self {
+            Self::TupleFields(fields) => {
+                let normalized = fields.into_iter().map(Self::normalized).collect::<Vec<_>>();
+                if normalized.iter().all(Self::is_ignore) {
+                    Self::Ignore
+                } else {
+                    Self::TupleFields(normalized)
+                }
+            }
+            Self::Callable(callable) => {
+                if callable.is_empty() {
+                    Self::Ignore
+                } else {
+                    Self::Callable(callable)
+                }
+            }
+            other => other,
+        }
+    }
+
+    pub(crate) fn alpha_normalize(&mut self, types: &mut Types) {
+        match self {
+            Self::Ignore | Self::Value => {}
+            Self::TupleFields(fields) => {
+                for field in fields {
+                    field.alpha_normalize(types);
+                }
+            }
+            Self::Callable(callable) => callable.alpha_normalize(types),
+        }
+        *self = self.clone().normalized();
+    }
+}
+
+fn join_runtime_demand(left: RuntimeDemand, right: RuntimeDemand) -> RuntimeDemand {
+    match (left.normalized(), right.normalized()) {
+        (RuntimeDemand::Ignore, other) | (other, RuntimeDemand::Ignore) => other,
+        (RuntimeDemand::Value, RuntimeDemand::Value) => RuntimeDemand::Value,
+        // A plain whole-value demand is representation-agnostic. When a caller
+        // knows the whole value is callable, it must seed `Callable { escape }`
+        // instead so resolved surfaces are preserved rather than collapsed.
+        (RuntimeDemand::Value, RuntimeDemand::TupleFields(_))
+        | (RuntimeDemand::TupleFields(_), RuntimeDemand::Value)
+        | (RuntimeDemand::Value, RuntimeDemand::Callable(_))
+        | (RuntimeDemand::Callable(_), RuntimeDemand::Value)
+        | (RuntimeDemand::TupleFields(_), RuntimeDemand::Callable(_))
+        | (RuntimeDemand::Callable(_), RuntimeDemand::TupleFields(_)) => RuntimeDemand::Value,
+        (RuntimeDemand::TupleFields(left), RuntimeDemand::TupleFields(right)) => {
+            if left.len() != right.len() {
+                return RuntimeDemand::Value;
+            }
+            RuntimeDemand::tuple_fields(
+                left.into_iter()
+                    .zip(right)
+                    .map(|(left, right)| left.join(&right))
+                    .collect(),
+            )
+        }
+        (RuntimeDemand::Callable(left), RuntimeDemand::Callable(right)) => RuntimeDemand::callable(left.join(&right)),
+    }
+}
+
+/// Post-propagation runtime callable obligations for one produced value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CallableMaterialization {
+    DirectOnly { surfaces: BTreeSet<CallableSurface> },
+    FirstClass { surfaces: BTreeSet<CallableSurface> },
+}
+
+impl CallableMaterialization {
+    pub(crate) fn alpha_normalize(&mut self, types: &mut Types) {
+        let surfaces = match self {
+            Self::DirectOnly { surfaces } | Self::FirstClass { surfaces } => surfaces,
+        };
+        let mut normalized = BTreeSet::new();
+        for mut surface in surfaces.clone() {
+            surface.alpha_normalize(types);
+            normalized.insert(surface);
+        }
+        *surfaces = normalized;
+    }
+}
+
+/// The full runtime-demand projection for one analyzed executable.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ExecutableRuntimeDemand {
+    pub return_demand: RuntimeDemand,
+    pub input_demands: Vec<RuntimeDemand>,
+    pub value_demands: HashMap<ValueId, RuntimeDemand>,
+    pub call_arg_demands: HashMap<CallSiteId, Vec<RuntimeDemand>>,
+    pub callable_materializations: HashMap<ValueId, CallableMaterialization>,
+}
+
+impl ExecutableRuntimeDemand {
+    pub(crate) fn alpha_normalize(&mut self, types: &mut Types) {
+        self.return_demand.alpha_normalize(types);
+        for demand in &mut self.input_demands {
+            demand.alpha_normalize(types);
+        }
+        for demand in self.value_demands.values_mut() {
+            demand.alpha_normalize(types);
+        }
+        for demands in self.call_arg_demands.values_mut() {
+            for demand in demands {
+                demand.alpha_normalize(types);
+            }
+        }
+        for materialization in self.callable_materializations.values_mut() {
+            materialization.alpha_normalize(types);
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActivationAnalysis {
     pub reachable_clauses: Vec<u32>,
     pub reachable_entries: Vec<ControlEntryId>,
     pub callsites: Vec<CallSiteId>,
     pub latent_executables: Vec<ExecutableKey>,
+    pub runtime_demand: ExecutableRuntimeDemand,
     pub runtime_callable_values: Vec<ValueId>,
     pub value_types: HashMap<ValueId, Ty>,
 }
@@ -498,6 +730,8 @@ fn join_activation_inputs<'a>(types: &mut Types, contributors: impl Iterator<Ite
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use super::*;
     use crate::compiler2::{ExecutableNeed, World};
     use crate::telemetry::ConfiguredTelemetry;
@@ -510,6 +744,77 @@ mod tests {
             function: world.root_function(root),
             input: vec![any, any],
         }
+    }
+
+    fn resolved_surface(tys: &[Ty]) -> CallableDemand {
+        CallableDemand::resolved(tys.to_vec())
+    }
+
+    #[test]
+    fn runtime_demand_ignore_plus_resolved_callable_preserves_the_surface() {
+        let tel = ConfiguredTelemetry::new();
+        let mut world = World::new(&tel);
+        let int = world.types_mut().int();
+
+        let joined = RuntimeDemand::Ignore.join(&RuntimeDemand::callable(resolved_surface(&[int])));
+
+        assert_eq!(
+            joined,
+            RuntimeDemand::callable(CallableDemand::resolved(vec![int])),
+            "bottom must contribute nothing to callable demand",
+        );
+    }
+
+    #[test]
+    fn runtime_demand_resolved_callable_plus_escape_stays_callable_and_marks_first_class() {
+        let tel = ConfiguredTelemetry::new();
+        let mut world = World::new(&tel);
+        let int = world.types_mut().int();
+
+        let joined =
+            RuntimeDemand::callable(resolved_surface(&[int])).join(&RuntimeDemand::callable(CallableDemand::escaped()));
+
+        assert_eq!(
+            joined,
+            RuntimeDemand::callable(CallableDemand {
+                resolved: BTreeSet::from([CallableSurface::new(vec![int])]),
+                opaque: false,
+                escape: true,
+            }),
+            "escape is a first-class callable demand, not a reason to erase known surfaces",
+        );
+    }
+
+    #[test]
+    fn runtime_demand_tuple_fields_plus_whole_value_collapses_to_value() {
+        let joined =
+            RuntimeDemand::tuple_fields(vec![RuntimeDemand::Value, RuntimeDemand::Ignore]).join(&RuntimeDemand::Value);
+
+        assert_eq!(joined, RuntimeDemand::Value);
+    }
+
+    #[test]
+    fn runtime_demand_callable_escape_preserves_known_resolved_surfaces() {
+        let tel = ConfiguredTelemetry::new();
+        let mut world = World::new(&tel);
+        let int = world.types_mut().int();
+        let atom = world.types_mut().atom();
+
+        let joined = RuntimeDemand::callable(resolved_surface(&[int])).join(&RuntimeDemand::callable(CallableDemand {
+            resolved: BTreeSet::from([CallableSurface::new(vec![atom])]),
+            opaque: false,
+            escape: true,
+        }));
+
+        assert_eq!(
+            joined,
+            RuntimeDemand::callable(CallableDemand {
+                resolved: BTreeSet::from([CallableSurface::new(vec![atom]), CallableSurface::new(vec![int]),]),
+                opaque: false,
+                escape: true,
+            }),
+            "whole-value callable demand must keep any exact surfaces we already proved",
+        );
     }
 
     #[test]

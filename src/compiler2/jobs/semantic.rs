@@ -296,6 +296,7 @@ pub(super) fn analyze_activation(world: &mut World<'_>, activation: &ActivationK
                     need: ExecutableNeed::Value,
                 }))
                 .collect(),
+            runtime_demand: Default::default(),
             runtime_callable_values,
             value_types,
         },

@@ -82,7 +82,8 @@ pub use scheduler::{AppliedStep, DriveOutcome, FatalError, Scheduler};
 pub use scope::ScopeSnapshot;
 pub use semantic::{
     ActivationAnalysis, ActivationMap, ActivationSlot, CallSiteKey, CallSiteMap, CallSiteSummary, CallTargetSummary,
-    SelectedCallee, SemanticClosure, SemanticClosureMap,
+    CallableDemand, CallableMaterialization, CallableSurface, ExecutableRuntimeDemand, RuntimeDemand, SelectedCallee,
+    SemanticClosure, SemanticClosureMap,
 };
 pub use source::{
     Horizon, QuotedAstNode, QuotedLexicalContext, QuotedLexicalContextKind, QuotedSourceBuilder, QuotedSourceCursor,
