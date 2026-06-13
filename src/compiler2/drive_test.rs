@@ -15,7 +15,8 @@ use crate::dispatch_matrix::pattern::{PatternDispatchPlan, PatternGuardDispatch,
 use crate::exec::runtime::DbgCapture;
 use crate::fz_ir::{
     Block as IrBlock, CallsiteId as IrCallsiteId, CallsiteIdent, Cont as IrCont, ExternTy, ExternalCallEdge, FnId,
-    FnIr as IrFn, Module as IrModule, Prim as IrPrim, ReceiveAfter, ReceiveClause, Stmt as IrStmt, Term as IrTerm,
+    FnIr as IrFn, Module as IrModule, PhysicalCapability, Prim as IrPrim, ReceiveAfter, ReceiveClause, Stmt as IrStmt,
+    Term as IrTerm,
 };
 use crate::ir_interp::{
     tests_support_dtor_fired, tests_support_dtor_last_payload, tests_support_dtor_reset, tests_support_lock,
@@ -7129,6 +7130,85 @@ fn compiler2_native_program_routes_nontail_if_join_flow_through_continuation_ent
             body.entry_abi,
         );
     }
+}
+
+#[test]
+fn compiler2_native_program_transports_reusable_cons_caps_through_delivered_continuations() {
+    let tel = ConfiguredTelemetry::new();
+    let native = NativeProgramCapture::new();
+    tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("reusable_cons_continuation.fz".to_string()),
+        text: r#"
+fn ping(x), do: x
+
+fn rebuild(xs) do
+  [h | t] = xs
+  ping(0)
+  [h | t]
+end
+
+fn main(), do: rebuild([1, 2])
+"#
+        .to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    assert_resolved(
+        compiler.drive(),
+        "reusable-cons continuation fixture should settle before native lowering inspection",
+    );
+
+    let program = native.last(root_id).program;
+    let continuation = program
+        .bodies
+        .iter()
+        .find(|body| matches!(body.origin, NativeBodyOrigin::Continuation { .. }))
+        .expect("the non-tail call should lower through a continuation helper");
+    let function = program.module.fn_by_id(continuation.fn_id);
+
+    assert!(
+        matches!(continuation.entry_abi, NativeEntryAbi::Continuation { extra_params: 1 }),
+        "the helper should resume with one delivered result before its captures, got {:?}",
+        continuation.entry_abi,
+    );
+    assert_eq!(
+        function.block(function.entry).params,
+        vec![
+            crate::fz_ir::Var(0),
+            crate::fz_ir::Var(1),
+            crate::fz_ir::Var(2),
+            crate::fz_ir::Var(3)
+        ],
+        "the continuation should append one hidden physical source param after its semantic params",
+    );
+    assert_eq!(
+        function.physical_entry_params,
+        vec![crate::fz_ir::Var(3)],
+        "the hidden source-cons param should be marked physical on the entry",
+    );
+    assert_eq!(
+        function.physical_capabilities,
+        vec![crate::fz_ir::PhysicalCapabilityFact {
+            source: crate::fz_ir::Var(3),
+            capability: PhysicalCapability::ReusableConsCell {
+                rebuilt_head: crate::fz_ir::Var(1),
+            },
+        }],
+        "the continuation should restore the reusable-cons fact for its captured head",
+    );
+    assert_eq!(
+        function.semantic_entry_params(),
+        vec![crate::fz_ir::Var(0), crate::fz_ir::Var(1), crate::fz_ir::Var(2)],
+        "semantic entry params must ignore the hidden physical capture",
+    );
 }
 
 #[test]

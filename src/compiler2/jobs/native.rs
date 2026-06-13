@@ -484,7 +484,9 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
             self.world.function_ref(executable.key.activation.function).name,
             executable_index
         );
-        let (entry_tys, param_reprs, entry_abi) = self.entry_signature(executable, entry);
+        let reusable_cons_captures = self.entry_reusable_cons_captures(executable, entry);
+        let (entry_tys, param_reprs, entry_abi) =
+            self.entry_signature(executable, entry, reusable_cons_captures.as_slice());
         let mut ctx = NativeFnCtx::new(
             fn_id,
             &entry_name(&base_name, entry_id, &entry.origin),
@@ -502,13 +504,31 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
         let mut env = ValueEnv::default();
         let entry_vars = ctx.entry_params(entry_tys.as_slice());
         let capture_offset = self.bind_entry_input(&mut ctx, executable, entry, &entry_vars, &mut env)?;
+        let semantic_capture_vars = entry_vars
+            .iter()
+            .copied()
+            .skip(capture_offset)
+            .take(entry.captures.len())
+            .collect::<Vec<_>>();
+        let mut capture_bindings = HashMap::new();
         for (value, var) in entry
             .captures
             .iter()
             .copied()
-            .zip(entry_vars.iter().copied().skip(capture_offset))
+            .zip(semantic_capture_vars.iter().copied())
         {
             env.insert(value, var);
+            capture_bindings.insert(value, var);
+        }
+        for ((captured_value, _), physical_var) in reusable_cons_captures
+            .iter()
+            .copied()
+            .zip(entry_vars.iter().copied().skip(capture_offset + entry.captures.len()))
+        {
+            let semantic_var = *capture_bindings
+                .get(&captured_value)
+                .expect("reusable-cons capture should have a semantic capture var");
+            ctx.builder.record_reusable_cons_cell(semantic_var, physical_var);
         }
         self.lower_entry_steps(&mut ctx, executable, &mut env, &entry.steps)?;
         self.lower_entry_tail(&mut ctx, executable, entries, entry_fns, &env, &entry.tail)?;
@@ -790,6 +810,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                         .ok_or_else(|| missing_backend_value(self.root_id, *source))?;
                     let (head_var, _) = ctx.emit_let(Prim::ListHead(source));
                     bind_backend_value(ctx, executable, env, *head, head_var);
+                    ctx.builder.record_reusable_cons_cell(head_var, source);
                     let (tail_var, _) = ctx.emit_let(Prim::ListTail(source));
                     bind_backend_value(ctx, executable, env, *tail, tail_var);
                 }
@@ -880,7 +901,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                         Ok(())
                     }
                     ControlDestination::Deliver(entry_id) => {
-                        let continuation = self.entry_continuation(entries, entry_fns, *entry_id, env)?;
+                        let continuation = self.entry_continuation(executable, entries, entry_fns, *entry_id, env)?;
                         ctx.set_term(Term::Call {
                             ident: CallsiteIdent::from_source(Span::DUMMY),
                             callee,
@@ -920,7 +941,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                         Ok(())
                     }
                     ControlDestination::Deliver(entry_id) => {
-                        let continuation = self.entry_continuation(entries, entry_fns, *entry_id, env)?;
+                        let continuation = self.entry_continuation(executable, entries, entry_fns, *entry_id, env)?;
                         ctx.set_term(Term::CallClosure {
                             ident: CallsiteIdent::from_source(Span::DUMMY),
                             closure,
@@ -949,7 +970,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                     origin: BranchOrigin::User,
                 });
                 ctx.current_block = then_b;
-                let then_args = self.entry_capture_args(entries, *then_entry, env)?;
+                let then_args = self.entry_capture_args(executable, entries, *then_entry, env)?;
                 ctx.set_term(Term::TailCall {
                     ident: CallsiteIdent::from_source(Span::DUMMY),
                     callee: DirectCallTarget::Local(
@@ -959,7 +980,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                     is_back_edge: false,
                 });
                 ctx.current_block = else_b;
-                let else_args = self.entry_capture_args(entries, *else_entry, env)?;
+                let else_args = self.entry_capture_args(executable, entries, *else_entry, env)?;
                 ctx.set_term(Term::TailCall {
                     ident: CallsiteIdent::from_source(Span::DUMMY),
                     callee: DirectCallTarget::Local(
@@ -1099,6 +1120,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
         &mut self,
         executable: &BackendExecutable,
         entry: &BackendEntry,
+        reusable_cons_captures: &[(ValueId, ValueId)],
     ) -> (Vec<Ty>, Vec<AbiValueRepr>, NativeEntryAbi) {
         let mut capture_tys = Vec::with_capacity(entry.params.len() + entry.captures.len());
         for value in entry.params.iter().chain(entry.captures.iter()) {
@@ -1109,15 +1131,33 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                 .unwrap_or_else(|| self.world.types_mut().any());
             capture_tys.push(ty);
         }
+        let physical_capture_tys = reusable_cons_captures
+            .iter()
+            .map(|(_, source)| {
+                executable
+                    .value_types
+                    .get(source)
+                    .copied()
+                    .unwrap_or_else(|| self.world.types_mut().any())
+            })
+            .collect::<Vec<_>>();
         match entry.origin.clone() {
             BackendEntryOrigin::Clause => panic!("clause entries are lowered through their owning clause"),
             BackendEntryOrigin::Branch => {
-                let param_reprs = capture_tys
+                let mut param_reprs = capture_tys
                     .iter()
                     .copied()
                     .map(|ty| abi_value_repr(self.world, ty))
                     .collect::<Vec<_>>();
-                (capture_tys, param_reprs, NativeEntryAbi::Direct)
+                param_reprs.extend(
+                    physical_capture_tys
+                        .iter()
+                        .copied()
+                        .map(|ty| abi_value_repr(self.world, ty)),
+                );
+                let mut entry_tys = capture_tys;
+                entry_tys.extend(physical_capture_tys);
+                (entry_tys, param_reprs, NativeEntryAbi::Direct)
             }
             BackendEntryOrigin::ReceiveOutcome => {
                 let param_reprs = capture_tys
@@ -1141,6 +1181,13 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                 let extra_params = param_reprs.len();
                 entry_tys.extend(capture_tys.iter().copied());
                 param_reprs.extend(capture_tys.iter().copied().map(|ty| abi_value_repr(self.world, ty)));
+                entry_tys.extend(physical_capture_tys.iter().copied());
+                param_reprs.extend(
+                    physical_capture_tys
+                        .iter()
+                        .copied()
+                        .map(|ty| abi_value_repr(self.world, ty)),
+                );
                 (entry_tys, param_reprs, NativeEntryAbi::Continuation { extra_params })
             }
         }
@@ -1188,6 +1235,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
 
     fn entry_continuation(
         &mut self,
+        executable: &BackendExecutable,
         entries: &[BackendEntry],
         entry_fns: &HashMap<ControlEntryId, FnId>,
         entry_id: ControlEntryId,
@@ -1209,18 +1257,19 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
         }
         Ok(Cont {
             fn_id: *entry_fns.get(&entry_id).expect("resume entry should have a helper fn"),
-            captured: self.entry_capture_args(entries, entry_id, env)?,
+            captured: self.entry_capture_args(executable, entries, entry_id, env)?,
         })
     }
 
     fn entry_capture_args(
         &mut self,
+        executable: &BackendExecutable,
         entries: &[BackendEntry],
         entry_id: ControlEntryId,
         env: &ValueEnv,
     ) -> Result<Vec<Var>, FatalError> {
         let entry = &entries[entry_id.as_u32() as usize];
-        env.capture_args(&entry.captures).ok_or_else(|| {
+        let mut args = env.capture_args(&entry.captures).ok_or_else(|| {
             incomplete_native_program(
                 self.world,
                 self.root_id,
@@ -1229,7 +1278,40 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                     entry_id.as_u32()
                 ),
             )
-        })
+        })?;
+        for (_, source_value) in self.entry_reusable_cons_captures(executable, entry) {
+            args.push(env.var(source_value).ok_or_else(|| {
+                incomplete_native_program(
+                    self.world,
+                    self.root_id,
+                    format!(
+                        "native lowering could not resolve reusable-cons source capture {:?} for entry {}",
+                        source_value,
+                        entry_id.as_u32()
+                    ),
+                )
+            })?);
+        }
+        Ok(args)
+    }
+
+    fn entry_reusable_cons_captures(
+        &mut self,
+        executable: &BackendExecutable,
+        entry: &BackendEntry,
+    ) -> Vec<(ValueId, ValueId)> {
+        if matches!(
+            entry.origin,
+            BackendEntryOrigin::ReceiveOutcome | BackendEntryOrigin::Clause
+        ) {
+            return Vec::new();
+        }
+        let sources = reusable_cons_sources_for_executable(executable);
+        entry
+            .captures
+            .iter()
+            .filter_map(|captured| sources.get(captured).copied().map(|source| (*captured, source)))
+            .collect()
     }
 
     fn receive_pinned_vars(
@@ -1322,7 +1404,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                 self.delivered_args_for_abi(ctx, executable, value_id, value_var, return_abi)?
             }
         };
-        args.extend(self.entry_capture_args(entries, entry_id, env)?);
+        args.extend(self.entry_capture_args(executable, entries, entry_id, env)?);
         Ok(args)
     }
 
@@ -1453,7 +1535,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
         };
         match node {
             DispatchNode::Fail => {
-                let args = self.entry_capture_args(entries, miss_entry, env)?;
+                let args = self.entry_capture_args(executable, entries, miss_entry, env)?;
                 ctx.set_term(Term::TailCall {
                     ident: CallsiteIdent::from_source(Span::DUMMY),
                     callee: DirectCallTarget::Local(
@@ -1468,7 +1550,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
             }
             DispatchNode::Outcome { outcome, .. } => {
                 let Some(body_id) = plan.outcome(outcome).map(|outcome| outcome.body_id) else {
-                    let args = self.entry_capture_args(entries, miss_entry, env)?;
+                    let args = self.entry_capture_args(executable, entries, miss_entry, env)?;
                     ctx.set_term(Term::TailCall {
                         ident: CallsiteIdent::from_source(Span::DUMMY),
                         callee: DirectCallTarget::Local(
@@ -1488,7 +1570,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                         format!("local dispatch arm {} is out of bounds", body_id),
                     )
                 })?;
-                let args = self.entry_capture_args(entries, arm_entry, env)?;
+                let args = self.entry_capture_args(executable, entries, arm_entry, env)?;
                 ctx.set_term(Term::TailCall {
                     ident: CallsiteIdent::from_source(Span::DUMMY),
                     callee: DirectCallTarget::Local(
@@ -2469,6 +2551,27 @@ fn collect_callable_identity_needs_in_steps(
                 }
             }
             _ => {}
+        }
+    }
+}
+
+fn reusable_cons_sources_for_executable(executable: &BackendExecutable) -> HashMap<ValueId, ValueId> {
+    let mut out = HashMap::new();
+    if let BackendBody::Clauses { clauses, entries, .. } = &executable.body {
+        for clause in clauses {
+            collect_reusable_cons_sources(&clause.projections, &mut out);
+        }
+        for entry in entries {
+            collect_reusable_cons_sources(&entry.steps, &mut out);
+        }
+    }
+    out
+}
+
+fn collect_reusable_cons_sources(steps: &[BackendStep], out: &mut HashMap<ValueId, ValueId>) {
+    for step in steps {
+        if let BackendStep::SplitList { source, head, .. } = step {
+            out.insert(*head, *source);
         }
     }
 }
