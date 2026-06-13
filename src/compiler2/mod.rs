@@ -9,7 +9,7 @@ mod deps;
 mod dispatch;
 mod drive;
 mod facts;
-mod fixture_contract;
+mod fixture_metadata;
 mod frontdoor;
 mod identity;
 mod jobs;
@@ -59,8 +59,11 @@ pub use contract::{FunctionContract, FunctionContractMap};
 pub use deps::{DependencyIndex, UnresolvedWait};
 pub use drive::{FactKey, Job, WorkGraph};
 pub use facts::{FactChange, FactReadiness, FactReplace, FactTable, FactUse};
-pub use fixture_contract::{
-    EdgeAssertion, FixtureContract, FixtureContractError, FixtureRoot, MetricAssertion, parse_fixture_contract,
+#[cfg(test)]
+pub use fixture_metadata::fixture_frontmatter_prefix_bytes;
+pub use fixture_metadata::{
+    BudgetAssertion, EdgeAssertion, FixtureCompilerMetadata, FixtureExpect, FixtureKind, FixtureMatrixMetadata,
+    FixtureMetadata, FixtureMetadataError, FixtureRoot, MetricAssertion, PathTimeout, parse_fixture_metadata,
 };
 pub use frontdoor::{FrontDoorError, parse_quoted_program};
 pub use identity::{
@@ -107,11 +110,11 @@ mod facts_test;
 #[cfg(test)]
 mod fixture_contract_harness_test;
 #[cfg(test)]
-mod fixture_contract_test;
-#[cfg(test)]
 mod fixture_facts;
 #[cfg(test)]
 mod fixture_facts_test;
+#[cfg(test)]
+mod fixture_metadata_test;
 #[cfg(test)]
 mod frontdoor_test;
 #[cfg(test)]

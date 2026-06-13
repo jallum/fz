@@ -48,12 +48,13 @@ It is a tiny YAML subset, only the keys below:
 - `budget.<namespace>.<metric>:` — a compiler-shape target counter (see Dump
   budgets).
 
-Fixtures under `fixtures2/` may also open with a compiler-contract block in the
-source file itself:
+Fixtures under `fixtures2/` may also open with a comment-frontmatter block in
+the source file itself:
 
 ```text
 #---
 # purpose: closure call stays indirect
+# paths: [jit, interp, aot, repl]
 # root: main/0
 # assert.metric.semantic.callsites: 2
 # assert.edge: main/0[] | @66-71 | closure | main/0::lambda[@14-33]/1
@@ -62,8 +63,9 @@ source file itself:
 ```
 
 This is raw source metadata, not language syntax. The parser sees ordinary
-comments; compiler2's contract harness reads the leading block directly from the
-fixture text so one file owns both the program and the compiler-shape claims.
+comments; fixtures2 metadata readers parse the leading block directly from the
+fixture text so one file owns the program, its behavioural matrix metadata, and
+its compiler-shape claims.
 
 The prose body after the frontmatter is a plain statement of present-tense facts
 about what the fixture proves. It is optional and carries no code: the code is
@@ -191,15 +193,24 @@ and `actual.specs` as local debugging artifacts (gitignored). Budgets have no
 BLESS step — the frontmatter target is hand-updated in the same commit as the
 change that moves it.
 
-## Fixtures2 Compiler Contracts
+## Fixtures2 Frontmatter
 
-Compiler2 fixtures live under `fixtures2/`. Their contract surface is separate
-from the old `fixtures/` matrix because the claims are not "this path prints
-X" but "compiler2 observed this semantic/codegen shape for this source".
+Compiler2 fixtures live under `fixtures2/`. Their source-frontmatter can carry
+two independent kinds of intent:
 
-The contract grammar is intentionally small:
+- behavioural matrix metadata (`paths`, `expect`, `budget.*`, etc.)
+- compiler contract metadata (`root`, `assert.metric.*`, `assert.edge`, snapshots)
+
+The shared grammar is intentionally small:
 
 - `purpose:` — one-line reason the contract exists.
+- `paths:` — behavioural matrix paths when the fixture participates in runtime
+  execution checks.
+- `kind:` / `expect:` / `diagnostic.code:` / `defer:` / `oracle:` —
+  behavioural matrix policy knobs, using the same meanings as the old
+  directory-shaped fixtures.
+- `timeout.<path>_secs:` — behavioural matrix timeout overrides.
+- `budget.<namespace>.<metric>:` — behavioural compiler-shape budgets.
 - `root:` — compiler2 root to drive, written as `name/arity`.
 - `assert.metric.<name>:` — a numeric invariant. The current built-in names are
   `semantic.activations`, `semantic.executables`, `semantic.callsites`,
@@ -211,6 +222,11 @@ The contract grammar is intentionally small:
 
 The source block is the authority. Optional sidecars exist only for dense
 snapshots that would be noisy inline.
+
+A fixtures2 file participates in the behavioural matrix when it declares matrix
+keys such as `paths:` or `defer:`. It participates in the compiler-contract
+harness when it declares compiler keys such as `root:` or `assert.metric.*`.
+One file may do either or both.
 
 Fixture-facing identity is provenance-based rather than allocator-order based:
 

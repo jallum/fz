@@ -1,7 +1,7 @@
-use super::fixture_contract::{
-    EdgeAssertion, FixtureContract, MetricAssertion, fixture_contract_prefix_bytes, parse_fixture_contract,
-};
 use super::fixture_facts::{canonical_call_edge_facts, render_canonical_call_edge_snapshot};
+use super::fixture_metadata::{
+    EdgeAssertion, FixtureMetadata, MetricAssertion, fixture_frontmatter_prefix_bytes, parse_fixture_metadata,
+};
 use super::{DriveOutcome, ExecutableNeed, FactKey, Job};
 use crate::telemetry::ConfiguredTelemetry;
 use crate::telemetry::handler::{Event, Handler};
@@ -15,7 +15,7 @@ struct ContractFixture {
     path: PathBuf,
     name: String,
     source: String,
-    contract: FixtureContract,
+    contract: FixtureMetadata,
 }
 
 #[derive(Debug)]
@@ -58,7 +58,10 @@ fn discover_contract_fixtures() -> Vec<ContractFixture> {
         .filter(|path| path.extension().is_some_and(|ext| ext == "fz"))
         .filter_map(|path| {
             let source = fs::read_to_string(&path).expect("fixture source");
-            let contract = parse_fixture_contract(&source).expect("fixture contract parse")?;
+            let contract = parse_fixture_metadata(&source).expect("fixture frontmatter parse")?;
+            if !contract.participates_in_compiler_contracts() {
+                return None;
+            }
             let name = path.file_stem().expect("fixture stem").to_string_lossy().into_owned();
             if filter.as_ref().is_some_and(|filter| !name.contains(filter)) {
                 return None;
@@ -78,6 +81,7 @@ fn discover_contract_fixtures() -> Vec<ContractFixture> {
 fn evaluate_fixture(fixture: &ContractFixture) -> EvaluatedFixture {
     let root = fixture
         .contract
+        .compiler
         .root
         .as_ref()
         .unwrap_or_else(|| panic!("fixture {} is missing `root:`", fixture.name));
@@ -94,8 +98,8 @@ fn evaluate_fixture(fixture: &ContractFixture) -> EvaluatedFixture {
         &format!("fixture {} should compile and settle", fixture.name),
     );
 
-    let prefix = fixture_contract_prefix_bytes(&fixture.source)
-        .expect("fixture contract prefix")
+    let prefix = fixture_frontmatter_prefix_bytes(&fixture.source)
+        .expect("fixture frontmatter prefix")
         .unwrap_or(0);
     let facts = normalize_fact_spans(canonical_call_edge_facts(&world, root_id), prefix);
     let snapshot = render_canonical_call_edge_snapshot(&facts);
@@ -201,7 +205,7 @@ fn bless_enabled() -> bool {
 }
 
 fn check_fixture_metrics(fixture: &ContractFixture, evaluated: &EvaluatedFixture) -> Option<String> {
-    let metrics = &fixture.contract.metric_assertions;
+    let metrics = &fixture.contract.compiler.metric_assertions;
     if metrics.is_empty() {
         return None;
     }
@@ -239,7 +243,7 @@ fn check_fixture_metrics(fixture: &ContractFixture, evaluated: &EvaluatedFixture
 }
 
 fn check_fixture_edges(fixture: &ContractFixture, evaluated: &EvaluatedFixture) -> Option<String> {
-    let edges = &fixture.contract.edge_assertions;
+    let edges = &fixture.contract.compiler.edge_assertions;
     if edges.is_empty() {
         return None;
     }
@@ -279,7 +283,7 @@ fn check_fixture_edges(fixture: &ContractFixture, evaluated: &EvaluatedFixture) 
 }
 
 fn check_fixture_snapshot(fixture: &ContractFixture, evaluated: &EvaluatedFixture) -> Option<String> {
-    let snapshot_name = fixture.contract.call_edge_snapshot.as_deref()?;
+    let snapshot_name = fixture.contract.compiler.call_edge_snapshot.as_deref()?;
     let snapshot_path = snapshot_sidecar_path(&fixture.path, snapshot_name);
     if bless_enabled() {
         fs::write(&snapshot_path, &evaluated.snapshot).expect("bless canonical snapshot");
