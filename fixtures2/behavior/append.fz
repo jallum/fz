@@ -19,7 +19,8 @@
 # Target for native JIT/AOT:
 #
 # - the two list literals allocate five cons cells;
-# - owned-cons reuse removes the append prefix copy, so no extra cons cells are
+# - reusable-cons transport removes the append prefix copy, so no extra cons
+#   cells are
 #   allocated;
 # - no tuple/struct or map objects are needed for the value path;
 # - `heap_bytes = 80`.

@@ -229,7 +229,7 @@ predictable. A plain recursive append:</p>
 <p>still compiles as source code. In the <code>append</code> fixture,
 <code>append([1, 2, 3], [4, 5])</code> allocates the five list-literal cons cells
 and no prefix-copy cons cells, with no tuple/struct or map allocation in the
-value path. The recursive append clauses get ordinary owned-cons reuse capabilities;
+value path. The recursive append clauses get ordinary reusable-cons capabilities;
 there is no append BIF.</p>
 
 <p><strong>Map construction:</strong></p>
@@ -260,7 +260,7 @@ selected <code>SpecKey</code>. <code>TupleFields</code> delivers a tuple result
 as independent continuation values; a tail-call edge can instead forward the
 caller's own demand. Recursive list code needs no list-tail delivery shape: it
 builds the list forward with an O(1) continuation (tail recursion modulo cons)
-plus owned-cons reuse. Codegen implements the planner-selected
+plus reusable-cons transport. Codegen implements the planner-selected
 capability; it does not guess from source names.</p>
 
 <p>For recursive list code this is tail recursion modulo cons: the compiler

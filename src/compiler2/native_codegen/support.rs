@@ -52,13 +52,13 @@ pub(crate) fn list_tail_bits_for_var<T: Types<Ty = Ty>>(
     }
 }
 
-pub(crate) fn emit_owned_cons_reuse_or_alloc<M: Module>(
+pub(crate) fn emit_reusable_cons_or_alloc<M: Module>(
     body: &mut CodegenFn<'_, '_, '_, M>,
     var_env: &HashMap<u32, CodegenValue>,
     head: Var,
     tail: ListTailBits,
 ) -> Option<ir::Value> {
-    let source_cons = body.owned_cons_reuse_source(head)?;
+    let source_cons = body.reusable_cons_source(head)?;
     let source_ref = body.any_ref_for_var(var_env, source_cons.0);
     let head_value = binding_for_var(var_env, head.0);
     let (head_raw, head_kind) = value_raw_kind_parts(body, head_value)?;

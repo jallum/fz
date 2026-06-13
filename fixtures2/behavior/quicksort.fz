@@ -66,7 +66,7 @@
 #
 # Those numbers mean the native paths allocate only the 11 literal input cons
 # cells. JIT and AOT keep this target; the interpreter and REPL remain direct IR
-# baselines because they do not execute native ReturnDemand or owned-cons reuse
+# baselines because they do not execute native ReturnDemand or reusable-cons
 # lowering.
 fn append([], ys), do: ys
 fn append([h | t], ys), do: [h | append(t, ys)]

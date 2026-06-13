@@ -122,10 +122,10 @@ fn render_physical_capabilities(f: &FnIr, out: &mut String) {
     out.push_str(";   physical_capabilities:\n");
     for cap in physical {
         match cap.capability {
-            PhysicalCapability::OwnedConsReuse { head } => {
+            PhysicalCapability::ReusableConsCell { rebuilt_head } => {
                 out.push_str(&format!(
-                    ";     owned_cons_source param=Var({}) head=Var({})\n",
-                    cap.source.0, head.0
+                    ";     reusable_cons_source param=Var({}) rebuilt_head=Var({})\n",
+                    cap.source.0, rebuilt_head.0
                 ));
             }
         }

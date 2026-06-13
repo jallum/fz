@@ -37,7 +37,7 @@
 # - `allocation_pressure_yields = 0`
 #
 # The interpreter and REPL legs are direct-IR baselines: they do not run native
-# `ReturnDemand` / owned-cons-reuse lowering, so they allocate more cons cells
+# `ReturnDemand` / reusable-cons lowering, so they allocate more cons cells
 # (`154`), ten protocol/control structs, and three small closures. They share
 # the same growable heap and each reports one allocation-pressure yield.
 #

@@ -71,7 +71,7 @@ fn physical_entry_params_are_not_semantic_key_inputs() {
     let source = b.fresh_var();
     let value = b.fresh_var();
     let entry = b.block(vec![source, value]);
-    b.record_owned_cons_reuse_capability(head, source);
+    b.record_reusable_cons_cell(head, source);
     b.set_terminator(entry, Term::Return(value));
     let fn_ir = b.build();
 
@@ -80,7 +80,7 @@ fn physical_entry_params_are_not_semantic_key_inputs() {
         fn_ir.physical_capabilities,
         vec![PhysicalCapabilityFact {
             source,
-            capability: PhysicalCapability::OwnedConsReuse { head },
+            capability: PhysicalCapability::ReusableConsCell { rebuilt_head: head },
         }]
     );
     assert_eq!(fn_ir.semantic_entry_params(), vec![value]);

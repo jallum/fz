@@ -31,7 +31,7 @@ pub fn dce_fn(module_path: &str, f: &mut FnIr, tel: &dyn Telemetry) {
             break;
         }
     }
-    prune_dead_owned_cons_capabilities(f);
+    prune_dead_reusable_cons_capabilities(f);
 
     // Dead block elimination: compute reachable set BEFORE retaining so that
     // f.block(id) — which panics on unknown id — is still safe to call.
@@ -53,7 +53,7 @@ pub fn dce_fn(module_path: &str, f: &mut FnIr, tel: &dyn Telemetry) {
         }
     }
     f.blocks.retain(|b| reachable.contains(&b.id));
-    prune_dead_owned_cons_capabilities(f);
+    prune_dead_reusable_cons_capabilities(f);
 }
 
 fn reachable_from_entry(f: &FnIr) -> HashSet<BlockId> {
@@ -109,7 +109,7 @@ pub fn collect_used(f: &FnIr) -> HashSet<Var> {
     let mut used = semantic_used.clone();
     for fact in &f.physical_capabilities {
         match fact.capability {
-            PhysicalCapability::OwnedConsReuse { head } if semantic_used.contains(&head) => {
+            PhysicalCapability::ReusableConsCell { rebuilt_head } if semantic_used.contains(&rebuilt_head) => {
                 used.insert(fact.source);
             }
             _ => {}
@@ -118,10 +118,10 @@ pub fn collect_used(f: &FnIr) -> HashSet<Var> {
     used
 }
 
-fn prune_dead_owned_cons_capabilities(f: &mut FnIr) {
+fn prune_dead_reusable_cons_capabilities(f: &mut FnIr) {
     let semantic_used = classify_var_uses(f).1;
     f.physical_capabilities.retain(|fact| match fact.capability {
-        PhysicalCapability::OwnedConsReuse { head } => semantic_used.contains(&head),
+        PhysicalCapability::ReusableConsCell { rebuilt_head } => semantic_used.contains(&rebuilt_head),
     });
     let live_sources: HashSet<Var> = f.physical_capabilities.iter().map(|fact| fact.source).collect();
     let entry_params: HashSet<Var> = f.block(f.entry).params.iter().copied().collect();

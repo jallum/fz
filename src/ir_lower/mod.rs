@@ -98,7 +98,7 @@ use atom_table::AtomTable;
 use brand_erase::erase_brands;
 use cond::{lower_if, lower_multi_clause};
 use cps::{
-    ContFn, OwnedConsCapture, cont_call_args, cps_split_call, cps_split_call_closure, cps_split_external_call,
+    ContFn, ReusableConsCapture, cont_call_args, cps_split_call, cps_split_call_closure, cps_split_external_call,
     finalize_arm, mint_cont_fn, switch_to_cont_fn,
 };
 use ctx::LowerCtx;

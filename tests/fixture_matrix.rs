@@ -227,11 +227,11 @@ fn static_tests() -> Vec<(&'static str, fn())> {
             production_and_guides_have_no_old_value_format_gate_names,
         ),
         // disabled: reads .agent/docs/destination-passing.md which was deleted
-        // ("owned_cons_reuse_docs_pin_alias_fallback_contract", owned_cons_reuse_docs_pin_alias_fallback_contract),
+        // ("reusable_cons_docs_pin_alias_fallback_contract", reusable_cons_docs_pin_alias_fallback_contract),
         // ("physical_capability_model_and_signals_are_pinned", physical_capability_model_and_signals_are_pinned),
         (
-            "owned_cons_reuse_negative_barriers_do_not_advertise_capabilities",
-            owned_cons_reuse_negative_barriers_do_not_advertise_capabilities,
+            "reusable_cons_negative_barriers_do_not_advertise_capabilities",
+            reusable_cons_negative_barriers_do_not_advertise_capabilities,
         ),
         (
             "quicksort_clif_inlines_nonempty_list_projection",
@@ -250,8 +250,8 @@ fn static_tests() -> Vec<(&'static str, fn())> {
             quicksort_tuple_return_demand_removes_partition_structs,
         ),
         (
-            "quicksort_delivers_tuple_fields_with_owned_cons_reuse",
-            quicksort_delivers_tuple_fields_with_owned_cons_reuse,
+            "quicksort_delivers_tuple_fields_with_reusable_cons",
+            quicksort_delivers_tuple_fields_with_reusable_cons,
         ),
         (
             "list_tail_demand_rejects_print_between_prefix_and_append",
@@ -2788,7 +2788,7 @@ fn collect_source_files(dir: &Path, files: &mut Vec<PathBuf>) {
 }
 
 #[allow(dead_code)]
-fn owned_cons_reuse_docs_pin_alias_fallback_contract() {
+fn reusable_cons_docs_pin_alias_fallback_contract() {
     let docs = [
         (
             ".agent/docs/any-value.md",
@@ -2816,7 +2816,7 @@ fn owned_cons_reuse_docs_pin_alias_fallback_contract() {
         ] {
             assert!(
                 text.contains(needle),
-                "{} must document owned-cons reuse contract term `{}`",
+                "{} must document reusable-cons contract term `{}`",
                 path,
                 needle
             );
@@ -2845,14 +2845,14 @@ fn physical_capability_model_and_signals_are_pinned() {
         "physical_entry_params",
         "ignored_entry_params",
         "src/ir_lower/cps.rs",
-        "owned_cons_captures",
+        "reusable_cons_captures",
         "physical\n  params",
         "src/ir_dce/mod.rs",
         "live heads keep their source-cons",
         "src/ir_capture_norm/mod.rs",
-        "standalone reuse-pruning pass and duplicate owned-cons capability lane",
+        "standalone reuse-pruning pass and duplicate reusable-cons capability lane",
         "physical_capabilities",
-        "emit_owned_cons_reuse_or_alloc",
+        "emit_reusable_cons_or_alloc",
         "list_cons_allocs = 11",
         "list_cons_allocs = 5",
         "closure_allocs = 1",
@@ -2866,14 +2866,16 @@ fn physical_capability_model_and_signals_are_pinned() {
             && fz_ir.contains("physical_entry_params")
             && fz_ir.contains("physical_capabilities")
             && fz_ir.contains("PhysicalCapability")
-            && fz_ir.contains("record_owned_cons_reuse_capability"),
-        "FnIr should carry owned-cons reuse through physical capability facts"
+            && fz_ir.contains("record_reusable_cons_cell"),
+        "FnIr should carry reusable-cons capability facts through physical capabilities"
     );
 
     let cps = fs::read_to_string("src/ir_lower/cps.rs").expect("read cps lowering");
     assert!(
-        cps.contains("owned_cons_captures") && cps.contains("hidden_owned_cons") && !cps.contains("mark_param_ignored"),
-        "CPS owned-cons transport should use physical params, not ignored semantic params"
+        cps.contains("reusable_cons_captures")
+            && cps.contains("hidden_reusable_cons")
+            && !cps.contains("mark_param_ignored"),
+        "CPS reusable-cons transport should use physical params, not ignored semantic params"
     );
 
     let capture_norm = fs::read_to_string("src/ir_capture_norm/mod.rs").expect("read capture normalization");
@@ -2884,7 +2886,7 @@ fn physical_capability_model_and_signals_are_pinned() {
 
     let dce = fs::read_to_string("src/ir_dce/mod.rs").expect("read dce");
     assert!(
-        dce.contains("prune_dead_owned_cons_capabilities") && dce.contains("physical_entry_params"),
+        dce.contains("prune_dead_reusable_cons_capabilities") && dce.contains("physical_entry_params"),
         "ordinary DCE should preserve or drop physical capabilities"
     );
 
@@ -2906,7 +2908,7 @@ fn physical_capability_model_and_signals_are_pinned() {
     assert_fixture_output_contains("enum_reduce_suspend", "expected.txt", &["{3, 48, 1, 48, 1, 48, 1, 16}"]);
 }
 
-fn owned_cons_reuse_negative_barriers_do_not_advertise_capabilities() {
+fn reusable_cons_negative_barriers_do_not_advertise_capabilities() {
     let cases = [
         (
             "double_use",
@@ -2950,10 +2952,10 @@ fn main(), do: publish([1, 2])
     ];
 
     for (name, source) in cases {
-        let specs = dump_specs_for_source(&format!("owned_cons_negative_{}", name), source);
+        let specs = dump_specs_for_source(&format!("reusable_cons_negative_{}", name), source);
         assert!(
-            !specs.contains("owned_cons_source") && !specs.contains("physical_capabilities"),
-            "{} must not advertise owned-cons reuse capabilities across a publication or observer barrier:\n{}",
+            !specs.contains("reusable_cons_source") && !specs.contains("physical_capabilities"),
+            "{} must not advertise reusable-cons capabilities across a publication or observer barrier:\n{}",
             name,
             specs
         );
@@ -3085,7 +3087,7 @@ fn quicksort_tuple_return_demand_removes_partition_structs() {
     );
 }
 
-fn quicksort_delivers_tuple_fields_with_owned_cons_reuse() {
+fn quicksort_delivers_tuple_fields_with_reusable_cons() {
     // fz-qwf — the achieved destructure-up contract. partition delivers its
     // {lo, hi} as tuple fields (no struct); qsort is an ordinary value on every
     // reach; the partition clause helpers reuse the physical source cons cell
@@ -3111,7 +3113,7 @@ fn quicksort_delivers_tuple_fields_with_owned_cons_reuse() {
 
     assert!(
         !specs.contains("list_tail"),
-        "quicksort needs no ListTail demand: owned-cons reuse and the codegen forward build deliver \
+        "quicksort needs no ListTail demand: reusable-cons transport and the codegen forward build deliver \
          minimal allocation and O(1) continuations without it:\n{}",
         specs
     );
@@ -3121,9 +3123,9 @@ fn quicksort_delivers_tuple_fields_with_owned_cons_reuse() {
             (s.name == "fn_clause_1" || s.name == "fn_clause_2")
                 && s.arity == 6
                 && s.body.contains("physical_capabilities")
-                && s.body.contains("owned_cons_source param=Var(5) head=Var(3)")
+                && s.body.contains("reusable_cons_source param=Var(5) rebuilt_head=Var(3)")
         }),
-        "partition clause helpers must dump a physical source-cons capability for owned cons reuse:\n{}",
+        "partition clause helpers must dump a physical reusable-cons capability:\n{}",
         specs
     );
 }
@@ -3225,8 +3227,8 @@ fn list_cell_uninit_is_immediately_initialized_in_clif() {
         clif
     );
     assert!(
-        clif.contains("@fz_list_reuse_or_cons_tail_ref"),
-        "quicksort should reuse owned cons cells through the total reuse-or-cons helper:\n{}",
+        clif.contains("@fz_list_reuse_or_cons_parts"),
+        "quicksort should reuse cons cells through the generalized reuse-or-cons helper:\n{}",
         clif
     );
 }
@@ -3284,7 +3286,7 @@ fn append_pins_source_append_target() {
     let readme = fs::read_to_string("fixtures2/behavior/append.fz").expect("read append README");
     for needle in [
         "the two list literals allocate five cons cells",
-        "owned-cons reuse removes the append prefix copy",
+        "reusable-cons transport removes the append prefix copy",
         "`heap_bytes = 80`",
     ] {
         assert!(

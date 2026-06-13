@@ -137,7 +137,7 @@ pub(crate) fn compile_fn<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
         body.cache.tuple_field_params = tuple_field_params;
         body.cache.skipped_tuple_return_vars = skipped_tuple_return_vars;
         body.cache.tuple_return_fields = tuple_return_fields;
-        body.cache.owned_cons_reuse_sources = owned_cons_reuse_sources(f);
+        body.cache.reusable_cons_sources = reusable_cons_sources(f);
     }
     // Walk blocks in declared order with entry first.
     let mut order: Vec<&Block> = Vec::with_capacity(f.blocks.len());
@@ -258,11 +258,11 @@ pub(crate) fn compile_fn<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
     Ok(())
 }
 
-fn owned_cons_reuse_sources(f: &FnIr) -> HashMap<u32, Var> {
+fn reusable_cons_sources(f: &FnIr) -> HashMap<u32, Var> {
     f.physical_capabilities
         .iter()
         .map(|fact| match fact.capability {
-            PhysicalCapability::OwnedConsReuse { head } => (head.0, fact.source),
+            PhysicalCapability::ReusableConsCell { rebuilt_head } => (rebuilt_head.0, fact.source),
         })
         .collect()
 }

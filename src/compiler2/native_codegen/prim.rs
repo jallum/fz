@@ -379,7 +379,7 @@ pub(crate) fn lower_collection_prim<M: cranelift_module::Module, T: Types<Ty = T
             {
                 let tail_bits = body.any_ref_for_var(var_env, tail_var.0);
                 let tail = list_tail_bits_for_var(t, value_types, block_env, *tail_var, tail_bits);
-                let reused = emit_owned_cons_reuse_or_alloc(body, var_env, elems[0], tail);
+                let reused = emit_reusable_cons_or_alloc(body, var_env, elems[0], tail);
                 if let Some(reused) = reused {
                     return Ok(LowerOut::ValueRef(reused));
                 }
@@ -516,7 +516,7 @@ pub(crate) fn lower_collection_prim<M: cranelift_module::Module, T: Types<Ty = T
             if let Some(tail_var) = tail {
                 let tail_bits = body.any_ref_for_var(var_env, tail_var.0);
                 let tail = list_tail_bits_for_var(t, value_types, block_env, *tail_var, tail_bits);
-                let reused = emit_owned_cons_reuse_or_alloc(body, var_env, *head, tail);
+                let reused = emit_reusable_cons_or_alloc(body, var_env, *head, tail);
                 if let Some(reused) = reused {
                     return Ok(LowerOut::ValueRef(reused));
                 }

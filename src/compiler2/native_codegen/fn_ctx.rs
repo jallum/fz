@@ -725,8 +725,8 @@ impl<'a, 'env, 'fb, M: Module> CodegenFn<'a, 'env, 'fb, M> {
         }
     }
 
-    pub(crate) fn owned_cons_reuse_source(&self, head: Var) -> Option<Var> {
-        self.cache.owned_cons_reuse_sources.get(&head.0).copied()
+    pub(crate) fn reusable_cons_source(&self, rebuilt_head: Var) -> Option<Var> {
+        self.cache.reusable_cons_sources.get(&rebuilt_head.0).copied()
     }
 
     pub(crate) fn store_frame_value_dynamic(&mut self, frame: ir::Value, field_offset: u32, value: CodegenValue) {

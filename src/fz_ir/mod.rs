@@ -1253,13 +1253,15 @@ impl PhysicalCapabilityFact {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PhysicalCapability {
-    OwnedConsReuse { head: Var },
+    ReusableConsCell { rebuilt_head: Var },
 }
 
 impl PhysicalCapability {
     pub fn map_vars(self, mut map: impl FnMut(Var) -> Var) -> Self {
         match self {
-            PhysicalCapability::OwnedConsReuse { head } => PhysicalCapability::OwnedConsReuse { head: map(head) },
+            PhysicalCapability::ReusableConsCell { rebuilt_head } => PhysicalCapability::ReusableConsCell {
+                rebuilt_head: map(rebuilt_head),
+            },
         }
     }
 }
@@ -1722,33 +1724,36 @@ impl FnBuilder {
         }
     }
 
-    pub fn record_owned_cons_reuse_capability(&mut self, head: Var, source_cons: Var) {
+    pub fn record_reusable_cons_cell(&mut self, rebuilt_head: Var, source_cons: Var) {
         debug_assert!(
             self.is_entry_param(source_cons),
-            "owned-cons reuse sources must be physical entry params"
+            "reusable-cons sources must be physical entry params"
         );
         if self.is_entry_param(source_cons) {
             self.record_physical_entry_param(source_cons);
         }
-        if let Some(fact) = self
-            .physical_capabilities
-            .iter_mut()
-            .find(|fact| matches!(fact.capability, PhysicalCapability::OwnedConsReuse { head: h } if h == head))
-        {
+        if let Some(fact) = self.physical_capabilities.iter_mut().find(|fact| {
+            matches!(
+                fact.capability,
+                PhysicalCapability::ReusableConsCell { rebuilt_head: head } if head == rebuilt_head
+            )
+        }) {
             fact.source = source_cons;
             return;
         }
         self.physical_capabilities.push(PhysicalCapabilityFact {
             source: source_cons,
-            capability: PhysicalCapability::OwnedConsReuse { head },
+            capability: PhysicalCapability::ReusableConsCell { rebuilt_head },
         });
     }
 
-    pub fn owned_cons_reuse_source_for_head(&self, head: Var) -> Option<Var> {
+    pub fn reusable_cons_source_for_head(&self, rebuilt_head: Var) -> Option<Var> {
         self.physical_capabilities
             .iter()
             .find_map(|fact| match fact.capability {
-                PhysicalCapability::OwnedConsReuse { head: h } if h == head => Some(fact.source),
+                PhysicalCapability::ReusableConsCell { rebuilt_head: head } if head == rebuilt_head => {
+                    Some(fact.source)
+                }
                 _ => None,
             })
     }
@@ -2225,8 +2230,8 @@ impl fmt::Display for PhysicalCapabilityFact {
 impl fmt::Display for PhysicalCapability {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            PhysicalCapability::OwnedConsReuse { head } => {
-                write!(f, "owned_cons_reuse(head={})", head)
+            PhysicalCapability::ReusableConsCell { rebuilt_head } => {
+                write!(f, "reusable_cons_cell(rebuilt_head={})", rebuilt_head)
             }
         }
     }
