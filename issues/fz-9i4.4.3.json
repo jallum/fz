@@ -1,8 +1,6 @@
 {
   "assignee": "",
-  "blocked_by": [
-    "fz-9i4.4.2"
-  ],
+  "blocked_by": [],
   "blocks": [
     "fz-9i4.4.4"
   ],
@@ -15,5 +13,5 @@
   "status": "open",
   "title": "Rewrite compiler2 native codegen around callable boundaries and split arg/capture ABI",
   "type": "task",
-  "updated_at": "2026-06-13T02:07:02Z"
+  "updated_at": "2026-06-13T02:07:25Z"
 }
