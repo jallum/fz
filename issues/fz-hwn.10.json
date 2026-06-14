@@ -1,8 +1,6 @@
 {
   "assignee": "Jason Allum",
-  "blocked_by": [
-    "fz-hwn.9"
-  ],
+  "blocked_by": [],
   "blocks": [
     "fz-hwn.6"
   ],
@@ -15,5 +13,5 @@
   "status": "in_progress",
   "title": "Compiler2 runtime transport: preserve nested direct-callable captures recursively",
   "type": "task",
-  "updated_at": "2026-06-14T12:10:06Z"
+  "updated_at": "2026-06-14T12:11:37Z"
 }
