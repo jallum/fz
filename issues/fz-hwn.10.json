@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [
     "fz-hwn.6"
@@ -10,7 +10,7 @@
   "labels": [],
   "parent": "fz-hwn",
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "Compiler2 runtime transport: preserve nested direct-callable captures recursively",
   "type": "task",
   "updated_at": "2026-06-14T10:18:26Z"
