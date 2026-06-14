@@ -12,6 +12,7 @@ use cranelift_codegen::ir::{self, AbiParam, BlockArg, InstBuilder, MemFlags, Sig
 use cranelift_codegen::isa::CallConv;
 use cranelift_frontend::FunctionBuilder;
 use cranelift_module::FuncId;
+use fz_runtime::any_value::AnyValue;
 use fz_runtime::heap::Schema;
 use fz_runtime::process::YIELD_REASON_REDUCTIONS;
 use fz_runtime::process_abi::PROCESS_REDUCTIONS_REMAINING_OFFSET;
@@ -101,17 +102,17 @@ fn continuation_input_shape(env: &CodegenEnv<'_>, cont_sid: u32) -> DeliveredSha
     let demand_abi = NativeDemandAbi::new(env.body_native(cont_sid));
     let extras = demand_abi.continuation_entry_extras();
     let reprs = &env.param_reprs[cont_sid as usize];
-    if extras == 1 {
-        DeliveredShape::Value(reprs.first().copied().unwrap_or(ArgRepr::ValueRef))
-    } else {
-        DeliveredShape::TupleFields(
+    match extras {
+        0 => DeliveredShape::Omitted,
+        1 => DeliveredShape::Value(reprs.first().copied().unwrap_or(ArgRepr::ValueRef)),
+        _ => DeliveredShape::TupleFields(
             reprs
                 .iter()
                 .copied()
                 .take(extras)
                 .collect::<Vec<_>>()
                 .into_boxed_slice(),
-        )
+        ),
     }
 }
 
@@ -638,10 +639,10 @@ fn emit_halt<M: cranelift_module::Module>(
 #[allow(clippy::too_many_arguments)]
 fn emit_return_term<M: cranelift_module::Module, T: Types<Ty = Ty> + ClosureTypes>(
     body: &mut CodegenFn<'_, '_, '_, M>,
-    t: &mut T,
+    _t: &mut T,
     env: &CodegenEnv<'_>,
     var_env: &HashMap<u32, CodegenValue>,
-    var_types: &HashMap<Var, Ty>,
+    _var_types: &HashMap<Var, Ty>,
     _block_env: Option<&HashMap<Var, Ty>>,
     is_native: bool,
     is_cont_fn: bool,
@@ -655,50 +656,6 @@ fn emit_return_term<M: cranelift_module::Module, T: Types<Ty = Ty> + ClosureType
     {
         if is_native {
             let return_abi = NativeDemandAbi::new(env.body_native(this_spec_id));
-            if let Some(arity) = return_abi.returned_tuple_field_arity()
-                && let Some(fields) = body.cache.tuple_return_fields.get(&v.0)
-            {
-                let fields = fields.clone();
-                debug_assert_eq!(fields.len(), arity);
-                let cont_val = if is_cont_fn {
-                    let self_val = cont_param.expect("cont fn binds self via cont_param");
-                    body.outer_cont_ref(self_val)
-                } else {
-                    cont_param.expect("non-cont native fn has cont_param")
-                };
-                let code = body.closure_code_ref(cont_val);
-                let mut sig = Signature::new(CallConv::Tail);
-                let mut cont_args = Vec::with_capacity(fields.len() + 1);
-                for field in fields {
-                    let binding = *var_env.get(&field.0).expect("unbound tuple return field");
-                    let repr = var_types
-                        .get(&field)
-                        .map(|ty| ArgRepr::from_ty(t, ty))
-                        .unwrap_or_else(|| binding.repr());
-                    push_repr_param(&mut sig, repr);
-                    body.push_binding_as_abi_arg(&mut cont_args, binding, repr);
-                }
-                sig.params.push(AbiParam::new(types::I64));
-                sig.returns.push(AbiParam::new(types::I64));
-                let sigref = body.b.import_signature(sig);
-                cont_args.push(cont_val);
-                body.b.ins().return_call_indirect(sigref, code, &cont_args);
-                return Ok(());
-            }
-            // Native Term::Return (see docs/cps-in-clif.md §2.1): read
-            // cont code_ptr; return_call_indirect sig(val, cont). Cont
-            // fns fetch outer_cont from `self`; non-cont fns use their
-            // cont_param SSA. Sig and val coerce match this fn's
-            // narrow return_repr — chosen at construction to match.
-            //
-            // ReturnDemand selects the return shape; return_reprs selects
-            // the wire representation for the single delivered lane.
-            let _ = caller_fn_id;
-            assert!(
-                return_abi.returned_delivers_value_lane(),
-                "native return must deliver one value lane outside tuple-field fast path"
-            );
-            let my_return_repr = env.return_reprs[this_spec_id as usize];
             let binding = *var_env.get(&v.0).expect("unbound return val");
             let cont_val = if is_cont_fn {
                 let self_val = cont_param.expect("cont fn binds self via cont_param");
@@ -706,16 +663,52 @@ fn emit_return_term<M: cranelift_module::Module, T: Types<Ty = Ty> + ClosureType
             } else {
                 cont_param.expect("non-cont native fn has cont_param")
             };
-            let code = body.closure_code_ref(cont_val);
-            let mut sig = Signature::new(CallConv::Tail);
-            push_repr_param(&mut sig, my_return_repr);
-            sig.params.push(AbiParam::new(types::I64));
-            sig.returns.push(AbiParam::new(types::I64));
-            let sigref = body.b.import_signature(sig);
-            let mut cont_args = Vec::with_capacity(2);
-            body.push_binding_as_abi_arg(&mut cont_args, binding, my_return_repr);
-            cont_args.push(cont_val);
-            body.b.ins().return_call_indirect(sigref, code, &cont_args);
+            match return_abi.returned_shape() {
+                DeliveredShape::Omitted => {
+                    let code = body.closure_code_ref(cont_val);
+                    let mut sig = Signature::new(CallConv::Tail);
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let sigref = body.b.import_signature(sig);
+                    body.b.ins().return_call_indirect(sigref, code, &[cont_val]);
+                }
+                DeliveredShape::TupleFields(fields) => {
+                    let Some(cached_fields) = body.cache.tuple_return_fields.get(&v.0) else {
+                        panic!(
+                            "native tuple-field return must cache returned fields: spec={} value={}",
+                            this_spec_id, v.0
+                        );
+                    };
+                    let cached_fields = cached_fields.clone();
+                    debug_assert_eq!(cached_fields.len(), fields.len());
+                    let code = body.closure_code_ref(cont_val);
+                    let mut sig = Signature::new(CallConv::Tail);
+                    let mut cont_args = Vec::with_capacity(cached_fields.len() + 1);
+                    for (field, repr) in cached_fields.into_iter().zip(fields.iter().copied()) {
+                        let binding = *var_env.get(&field.0).expect("unbound tuple return field");
+                        push_repr_param(&mut sig, repr);
+                        body.push_binding_as_abi_arg(&mut cont_args, binding, repr);
+                    }
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let sigref = body.b.import_signature(sig);
+                    cont_args.push(cont_val);
+                    body.b.ins().return_call_indirect(sigref, code, &cont_args);
+                }
+                DeliveredShape::Value(my_return_repr) => {
+                    let _ = caller_fn_id;
+                    let code = body.closure_code_ref(cont_val);
+                    let mut sig = Signature::new(CallConv::Tail);
+                    push_repr_param(&mut sig, my_return_repr);
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let sigref = body.b.import_signature(sig);
+                    let mut cont_args = Vec::with_capacity(2);
+                    body.push_binding_as_abi_arg(&mut cont_args, binding, my_return_repr);
+                    cont_args.push(cont_val);
+                    body.b.ins().return_call_indirect(sigref, code, &cont_args);
+                }
+            }
         } else if cont_ptr_known_null {
             let value = *var_env.get(&v.0).expect("unbound return val");
             // This fn is never a cont target; cont_ptr is statically
@@ -864,11 +857,10 @@ fn emit_native_call_with_cont<M: cranelift_module::Module>(
             Some(c) => c,
             None => {
                 synth_halt_cont = true;
-                let callee_ret_repr = NativeDemandAbi::new(env.body_native(callee_sid))
-                    .returned_delivers_value_lane()
-                    .then_some(env.return_reprs[callee_sid as usize])
-                    .expect("synthesized halt continuation requires one delivered value lane");
-                synthesize_halt_cont(body, runtime, callee_ret_repr)
+                match NativeDemandAbi::new(env.body_native(callee_sid)).returned_shape() {
+                    DeliveredShape::Value(callee_ret_repr) => synthesize_halt_cont(body, runtime, callee_ret_repr),
+                    shape => panic!("synthesized halt continuation requires one delivered value lane, got {shape:?}"),
+                }
             }
         }
     };
@@ -1063,13 +1055,10 @@ fn emit_native_tail_call<M: cranelift_module::Module>(
             Some(c) => c,
             None => {
                 synth_halt_cont = true;
-                let DeliveredShape::Value(caller_ret_repr) = caller_shape else {
-                    panic!(
-                        "top-level native tail delivery must end in one value lane, got {:?}",
-                        caller_shape
-                    );
-                };
-                synthesize_halt_cont(body, runtime, caller_ret_repr)
+                match caller_shape {
+                    DeliveredShape::Value(caller_ret_repr) => synthesize_halt_cont(body, runtime, caller_ret_repr),
+                    shape => panic!("top-level native tail delivery must end in one value lane, got {shape:?}"),
+                }
             }
         }
     };
@@ -1116,13 +1105,6 @@ fn emit_native_tail_call<M: cranelift_module::Module>(
         // into MY cont according to the continuation schema.
         let call_inst = body.b.ins().call(callee_fref, &native_args);
         let result = body.b.inst_results(call_inst)[0];
-        let DeliveredShape::Value(callee_ret_repr) = callee_shape else {
-            panic!(
-                "uniform native tail call requires one delivered value lane, got {:?}",
-                callee_shape
-            );
-        };
-        let result_value = native_call_result_value(body, result, callee_ret_repr);
         let my_cont = body.b.ins().load(
             types::I64,
             MemFlags::trusted(),
@@ -1142,13 +1124,42 @@ fn emit_native_tail_call<M: cranelift_module::Module>(
         body.b.switch_to_block(halt_blk);
         body.b.seal_block(halt_blk);
         let _ = host_ctx;
-        emit_halt_from_codegen_value(body, result_value);
+        match callee_shape {
+            DeliveredShape::Omitted => {
+                let nil_value = strict_const_value(body.b, AnyValue::nil_atom());
+                emit_halt_from_codegen_value(body, nil_value);
+            }
+            DeliveredShape::Value(callee_ret_repr) => {
+                let result_value = native_call_result_value(body, result, callee_ret_repr);
+                emit_halt_from_codegen_value(body, result_value);
+            }
+            DeliveredShape::TupleFields(_) => {
+                panic!(
+                    "uniform native tail call halt path requires a scalar delivered value, got {:?}",
+                    callee_shape
+                )
+            }
+        }
         let null = body.b.ins().iconst(types::I64, 0);
         body.b.ins().return_(&[null]);
         body.b.switch_to_block(invoke_blk);
         body.b.seal_block(invoke_blk);
-        body.store_frame_value_dynamic(my_cont, SLOT_BYTES as u32, result_value);
-        body.b.ins().return_(&[my_cont]);
+        match callee_shape {
+            DeliveredShape::Omitted => {
+                body.b.ins().return_(&[my_cont]);
+            }
+            DeliveredShape::Value(callee_ret_repr) => {
+                let result_value = native_call_result_value(body, result, callee_ret_repr);
+                body.store_frame_value_dynamic(my_cont, SLOT_BYTES as u32, result_value);
+                body.b.ins().return_(&[my_cont]);
+            }
+            DeliveredShape::TupleFields(_) => {
+                panic!(
+                    "uniform native tail call write-back requires a scalar delivered value, got {:?}",
+                    callee_shape
+                )
+            }
+        }
     }
 }
 

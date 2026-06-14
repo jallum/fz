@@ -5,6 +5,7 @@ use crate::compiler2::{NativeBody, NativeEntryAbi};
 
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub(crate) enum DeliveredShape {
+    Omitted,
     Value(ArgRepr),
     TupleFields(Box<[ArgRepr]>),
 }
@@ -21,17 +22,13 @@ impl<'a> NativeDemandAbi<'a> {
 
     pub(crate) fn tuple_field_arity(self) -> Option<usize> {
         match self.body.return_lane_reprs.len() {
-            1 => None,
+            0 | 1 => None,
             arity => Some(arity),
         }
     }
 
-    pub(crate) fn returned_tuple_field_arity(self) -> Option<usize> {
-        self.tuple_field_arity()
-    }
-
     pub(crate) fn delivers_value_lane(self) -> bool {
-        self.tuple_field_arity().is_none()
+        matches!(self.returned_shape(), DeliveredShape::Value(_))
     }
 
     pub(crate) fn returned_delivers_value_lane(self) -> bool {
@@ -39,25 +36,17 @@ impl<'a> NativeDemandAbi<'a> {
     }
 
     pub(crate) fn returned_shape(self) -> DeliveredShape {
-        if self.returned_delivers_value_lane() {
-            let repr = self
-                .body
-                .return_lane_reprs
-                .first()
-                .copied()
-                .map(arg_repr_from_compiler2)
-                .unwrap_or(ArgRepr::ValueRef);
-            DeliveredShape::Value(repr)
-        } else {
-            DeliveredShape::TupleFields(
-                self.body
-                    .return_lane_reprs
+        match self.body.return_lane_reprs.as_slice() {
+            [] => DeliveredShape::Omitted,
+            [repr] => DeliveredShape::Value(arg_repr_from_compiler2(*repr)),
+            reprs => DeliveredShape::TupleFields(
+                reprs
                     .iter()
                     .copied()
                     .map(arg_repr_from_compiler2)
                     .collect::<Vec<_>>()
                     .into_boxed_slice(),
-            )
+            ),
         }
     }
 

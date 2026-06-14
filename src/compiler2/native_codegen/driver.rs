@@ -184,6 +184,7 @@ fn collect_static_closure_targets(
             .get(&boundary_id)
             .expect("zero-cap closure boundary must have a callable-boundary FuncId");
         let halt_kind = match &boundary.return_shape {
+            DeliveredShape::Omitted => ArgRepr::ValueRef.halt_kind(),
             DeliveredShape::Value(repr) => repr.halt_kind(),
             DeliveredShape::TupleFields(_) => ArgRepr::ValueRef.halt_kind(),
         };
@@ -416,7 +417,7 @@ fn emit_callable_boundary_bodies<M: cranelift_module::Module>(
             .ok_or_else(|| CodegenError::new(format!("missing callable-boundary FuncId for boundary {boundary_id}")))?;
         let arg_reprs = boundary.arg_reprs.as_slice();
         let return_adapter_id = match &boundary.return_shape {
-            DeliveredShape::Value(ArgRepr::ValueRef) | DeliveredShape::TupleFields(_) => None,
+            DeliveredShape::Omitted | DeliveredShape::Value(ArgRepr::ValueRef) | DeliveredShape::TupleFields(_) => None,
             DeliveredShape::Value(return_repr) => {
                 Some(return_adapters.id_for(*return_repr, ArgRepr::ValueRef).ok_or_else(|| {
                     CodegenError::new(format!(
@@ -1063,6 +1064,7 @@ fn build_codegen_return_repr(body: &crate::compiler2::NativeBody) -> ArgRepr {
 
 fn build_codegen_delivered_shape(return_lane_reprs: &[crate::compiler2::AbiValueRepr]) -> DeliveredShape {
     match return_lane_reprs {
+        [] => DeliveredShape::Omitted,
         [repr] => DeliveredShape::Value(arg_repr_from_compiler2(*repr)),
         reprs => DeliveredShape::TupleFields(
             reprs

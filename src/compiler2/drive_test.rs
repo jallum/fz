@@ -2651,6 +2651,11 @@ end
 
     let main_id = function_id(&functions, "main", 0);
     let reduce_plain_id = functions.id("reduce_plain", 3);
+    let predicate_id = generated_functions_owned_by(&functions, main_id)
+        .into_iter()
+        .find(|record| record.arity == 1)
+        .expect("main should generate the captured predicate closure")
+        .function_id;
     let reducer_id = generated_functions_owned_by(&functions, main_id)
         .into_iter()
         .find(|record| record.arity == 2)
@@ -2660,8 +2665,8 @@ end
     let program = abi_ready.last(root_id).program;
     let (_, reduce_plain_executable) = abi_ready_executable(&program, reduce_plain_id);
     assert!(
-        reduce_plain_executable.param_reprs == vec![AbiValueRepr::ValueRef, AbiValueRepr::ValueRef],
-        "reduce_plain/3 should lower the reducer input to its captured predicate lane only",
+        reduce_plain_executable.param_reprs == vec![AbiValueRepr::ValueRef, AbiValueRepr::RawInt],
+        "reduce_plain/3 should keep only its list and narrowed acc lanes in flat param_reprs while transporting the reducer capture structurally in runtime_params",
     );
     assert_eq!(reduce_plain_executable.runtime_params.inputs.len(), 3);
     match &reduce_plain_executable.runtime_params.inputs[2] {
@@ -2682,11 +2687,19 @@ end
                 1,
                 "the reducer callable should transport exactly one captured predicate value",
             );
-            assert_eq!(
-                captures[0].abi_reprs(),
-                vec![AbiValueRepr::ValueRef],
-                "the reducer callable should carry the captured predicate through one boxed runtime lane",
-            );
+            match &captures[0] {
+                RuntimeValueLayout::DirectCallable { function, captures } => {
+                    assert_eq!(
+                        *function, predicate_id,
+                        "the reducer callable should preserve the exact generated predicate body",
+                    );
+                    assert!(
+                        captures.is_empty(),
+                        "the captured predicate is itself zero-capture, so its direct callable transport should need no nested capture lanes",
+                    );
+                }
+                other => panic!("expected the captured predicate to stay a direct callable, found {other:?}"),
+            }
             assert!(
                 program.executables.keys().any(|key| {
                     key.activation.function == reducer_id && key.activation.input.len() == captures.len() + 2
@@ -3867,7 +3880,8 @@ fn compiler2_native_program_keeps_direct_only_enum_reduce_out_of_callable_invent
 }
 
 #[test]
-fn compiler2_native_program_keeps_distinct_callable_boundaries_for_same_surface_when_capture_identity_differs() {
+fn compiler2_native_program_keeps_distinct_direct_callable_executables_for_same_surface_when_capture_identity_differs()
+{
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
     tel.attach(&[], capture.handler());
@@ -3913,7 +3927,7 @@ end
             .map(|event| metadata_str(&event, "message").to_string())
             .unwrap_or_else(|| "<missing diagnostic>".to_string());
         panic!(
-            "native lowering should preserve distinct callable-boundary identities when the same reducer surface captures different predicates: {outcome:?}; diagnostic={message}"
+            "native lowering should preserve distinct direct callable identities when the same reducer surface captures different predicates: {outcome:?}; diagnostic={message}"
         );
     }
 
@@ -3925,63 +3939,27 @@ end
         .function_id;
 
     let program = native.last(root_id).program;
-    let reducer_boundaries = program
-        .callable_boundaries
+    let reducer_executables = program
+        .bodies
         .iter()
-        .filter(|entry| entry.target.activation.function == reducer_id)
+        .filter_map(|body| match &body.origin {
+            NativeBodyOrigin::Executable(key) if key.activation.function == reducer_id => Some(key),
+            _ => None,
+        })
         .collect::<Vec<_>>();
     assert!(
-        reducer_boundaries.iter().all(|entry| entry.capture_count == 1),
-        "the reducer callable should capture exactly one predicate closure",
+        reducer_executables.iter().all(|key| !key.activation.input.is_empty()),
+        "the reducer executable should still carry a captured predicate identity lane",
     );
 
-    let capture_identities = reducer_boundaries
+    let capture_identities = reducer_executables
         .iter()
-        .map(|entry| entry.target.activation.input[..entry.capture_count].to_vec())
+        .map(|key| key.activation.input[..1].to_vec())
         .collect::<HashSet<_>>();
     assert_eq!(
         capture_identities.len(),
         2,
-        "the reducer lambda should keep two distinct captured predicate identities in the native callable-boundary inventory",
-    );
-
-    let mut outward_surface_groups: Vec<Vec<&crate::compiler2::artifact::NativeCallableBoundary>> = Vec::new();
-    for boundary in &reducer_boundaries {
-        if let Some(group) = outward_surface_groups.iter_mut().find(|group| {
-            let representative = group[0];
-            representative.arg_reprs == boundary.arg_reprs && representative.return_abi == boundary.return_abi
-        }) {
-            group.push(*boundary);
-        } else {
-            outward_surface_groups.push(vec![*boundary]);
-        }
-    }
-    assert!(
-        outward_surface_groups.iter().any(|group| {
-            group
-                .iter()
-                .map(|entry| entry.target.activation.input[..entry.capture_count].to_vec())
-                .collect::<HashSet<_>>()
-                .len()
-                == 2
-        }),
-        "at least one shared outward callable surface should keep both predicate capture identities distinct instead of collapsing them to one surface-only boundary",
-    );
-
-    let used_boundaries = native_callable_boundary_uses(&program);
-    let used_reducer_boundaries = reducer_boundaries
-        .iter()
-        .copied()
-        .filter(|entry| used_boundaries.contains(&entry.id()))
-        .collect::<Vec<_>>();
-    assert_eq!(
-        used_reducer_boundaries
-            .iter()
-            .map(|entry| entry.target.activation.input[..entry.capture_count].to_vec())
-            .collect::<HashSet<_>>()
-            .len(),
-        2,
-        "native callable values should keep both captured predicate identities alive instead of collapsing them to one surface-only boundary",
+        "the reducer lambda should keep two distinct captured predicate identities in the direct callable executable frontier",
     );
 }
 
@@ -4038,10 +4016,12 @@ fn compiler2_native_program_joins_callable_resume_before_materializing_closure_c
 }
 
 #[test]
-fn compiler2_native_program_marks_settled_singleton_closure_calls_with_exact_targets() {
+fn compiler2_native_program_marks_settled_singleton_closure_flows_with_exact_targets() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
     tel.attach(&[], capture.handler());
+    let functions = FunctionCapture::new();
+    tel.attach(&["fz", "compiler2", "function"], functions.handler());
     let native = NativeProgramCapture::new();
     tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
 
@@ -4068,12 +4048,24 @@ fn compiler2_native_program_marks_settled_singleton_closure_calls_with_exact_tar
         );
     }
 
+    let add_to_id = function_id(&functions, "add_to", 2);
+    let lambda_id = generated_functions_owned_by(&functions, add_to_id)
+        .into_iter()
+        .find(|record| record.arity == 1)
+        .expect("add_to/2 should generate the singleton closure body")
+        .function_id;
     let program = native.last(root_id).program;
     assert!(
-        native_closure_call_targets(&program)
+        native_exact_call_targets(&program)
             .into_iter()
-            .any(|target| target.is_some()),
-        "singleton closure-lits should carry their exact direct target through native lowering",
+            .filter_map(|fn_id| {
+                program.bodies.iter().find_map(|body| match &body.origin {
+                    NativeBodyOrigin::Executable(key) if body.fn_id == fn_id => Some(key.activation.function),
+                    _ => None,
+                })
+            })
+            .any(|function| function == lambda_id),
+        "singleton closure flows should carry the exact generated lambda target through native lowering, even when the closure call itself collapses to a direct call",
     );
 }
 
@@ -4712,8 +4704,8 @@ fn compiler2_native_program_jit_runs_source_lambda_sugars_through_compiler2_code
 
     let program = native.last(root_id).program;
     assert!(
-        !program.callable_boundaries.is_empty() && !native_callable_boundary_uses(&program).is_empty(),
-        "zero-capture lambda constructors should publish callable-boundary inventory for native materialization",
+        program.callable_boundaries.is_empty() && native_callable_boundary_uses(&program).is_empty(),
+        "direct-only lambda sugars should stay out of native callable-boundary inventory when they never escape",
     );
     let compiled = jit_compile_native_program(&mut compiler, &program);
     let _ = compiled.run(&tel, program.entry);
@@ -7349,24 +7341,24 @@ fn compiler2_native_program_routes_nontail_if_join_flow_through_continuation_ent
     );
 
     let program = native.last(root_id).program;
-    let closure_continuations = program
+    let join_continuations = program
         .module
         .fns
         .iter()
         .filter(|function| function.name.contains("map_every_list"))
         .flat_map(|function| function.blocks.iter())
         .filter_map(|block| match &block.terminator {
-            IrTerm::CallClosure { continuation, .. } => Some(continuation.fn_id),
+            IrTerm::Call { continuation, .. } | IrTerm::CallClosure { continuation, .. } => Some(continuation.fn_id),
             _ => None,
         })
         .collect::<Vec<_>>();
 
     assert!(
-        !closure_continuations.is_empty(),
-        "the non-tail join fixture should contain at least one closure-call continuation in native IR",
+        !join_continuations.is_empty(),
+        "the non-tail join fixture should contain at least one delivered continuation in native IR",
     );
 
-    for continuation_fn in closure_continuations {
+    for continuation_fn in join_continuations {
         let body = program
             .bodies
             .iter()
@@ -7374,7 +7366,7 @@ fn compiler2_native_program_routes_nontail_if_join_flow_through_continuation_ent
             .unwrap_or_else(|| panic!("native body for continuation {:?} missing", continuation_fn));
         assert!(
             matches!(body.entry_abi, NativeEntryAbi::Continuation { .. }),
-            "closure-call continuation {:?} should publish a continuation entry ABI, got {:?}",
+            "delivered continuation {:?} should publish a continuation entry ABI, got {:?}",
             continuation_fn,
             body.entry_abi,
         );
@@ -10356,6 +10348,31 @@ fn native_closure_call_targets(program: &NativeProgram) -> Vec<Option<FnId>> {
                 IrTerm::CallClosure { direct_target, .. } | IrTerm::TailCallClosure { direct_target, .. } => {
                     out.push(*direct_target);
                 }
+                _ => {}
+            }
+        }
+    }
+    out
+}
+
+fn native_exact_call_targets(program: &NativeProgram) -> Vec<FnId> {
+    let mut out = Vec::new();
+    for function in &program.module.fns {
+        for block in &function.blocks {
+            match &block.terminator {
+                IrTerm::Call { callee, .. } | IrTerm::TailCall { callee, .. } => {
+                    if let crate::fz_ir::DirectCallTarget::Local(fn_id) = callee {
+                        out.push(*fn_id);
+                    }
+                }
+                IrTerm::CallClosure {
+                    direct_target: Some(fn_id),
+                    ..
+                }
+                | IrTerm::TailCallClosure {
+                    direct_target: Some(fn_id),
+                    ..
+                } => out.push(*fn_id),
                 _ => {}
             }
         }

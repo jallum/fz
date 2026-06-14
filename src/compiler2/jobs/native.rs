@@ -771,80 +771,39 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                     bind_runtime_value(ctx, executable, env, *value, var);
                 }
                 BackendStep::FunctionRef { value, function } => {
-                    if matches!(
-                        executable.runtime_demand.callable_materializations.get(value),
-                        Some(crate::compiler2::CallableMaterialization::DirectOnly { .. })
-                    ) {
-                        bind_local_value(
-                            ctx,
-                            executable,
-                            env,
-                            *value,
-                            NativeLocalValue::DirectCallable {
-                                function: *function,
-                                captures: Vec::new(),
-                            },
-                        );
-                    } else {
-                        let var = self.materialize_native_value(
-                            ctx,
-                            executable.value_types.get(value).copied(),
-                            &NativeLocalValue::DirectCallable {
-                                function: *function,
-                                captures: Vec::new(),
-                            },
-                        )?;
-                        bind_runtime_value(ctx, executable, env, *value, var);
-                    }
+                    bind_local_value(
+                        ctx,
+                        executable,
+                        env,
+                        *value,
+                        NativeLocalValue::DirectCallable {
+                            function: *function,
+                            captures: Vec::new(),
+                        },
+                    );
                 }
                 BackendStep::Lambda {
                     value,
                     function,
                     captures,
                 } => {
-                    if matches!(
-                        executable.runtime_demand.callable_materializations.get(value),
-                        Some(crate::compiler2::CallableMaterialization::DirectOnly { .. })
-                    ) {
-                        let capture_values = env.values(captures).ok_or_else(|| {
-                            incomplete_native_program(
-                                self.world,
-                                self.root_id,
-                                "native direct callable build referenced an unbound capture",
-                            )
-                        })?;
-                        bind_local_value(
-                            ctx,
-                            executable,
-                            env,
-                            *value,
-                            NativeLocalValue::DirectCallable {
-                                function: *function,
-                                captures: capture_values,
-                            },
-                        );
-                    } else {
-                        let capture_vars = self.env_runtime_vars(ctx, executable, env, captures).map_err(|_| {
-                            incomplete_native_program(
-                                self.world,
-                                self.root_id,
-                                "native closure build referenced an unbound capture",
-                            )
-                        })?;
-                        let captures = capture_vars
-                            .into_iter()
-                            .map(NativeLocalValue::Runtime)
-                            .collect::<Vec<_>>();
-                        let var = self.materialize_native_value(
-                            ctx,
-                            executable.value_types.get(value).copied(),
-                            &NativeLocalValue::DirectCallable {
-                                function: *function,
-                                captures,
-                            },
-                        )?;
-                        bind_runtime_value(ctx, executable, env, *value, var);
-                    }
+                    let capture_values = env.values(captures).ok_or_else(|| {
+                        incomplete_native_program(
+                            self.world,
+                            self.root_id,
+                            "native direct callable build referenced an unbound capture",
+                        )
+                    })?;
+                    bind_local_value(
+                        ctx,
+                        executable,
+                        env,
+                        *value,
+                        NativeLocalValue::DirectCallable {
+                            function: *function,
+                            captures: capture_values,
+                        },
+                    );
                 }
                 BackendStep::BinaryOp { value, op, left, right } => {
                     let left = self

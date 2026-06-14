@@ -2513,6 +2513,7 @@ fn emit_capturing_closure<M: cranelift_module::Module>(
     let fid_v = body.b.ins().iconst(types::I32, fn_id.0 as i64);
     let nc_v = body.b.ins().iconst(types::I32, n_caps as i64);
     let halt_repr = match &boundary.return_shape {
+        DeliveredShape::Omitted => ArgRepr::ValueRef,
         DeliveredShape::Value(repr) => *repr,
         DeliveredShape::TupleFields(_) => ArgRepr::ValueRef,
     };
