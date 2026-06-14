@@ -30,7 +30,7 @@ use super::super::artifact::{
     AbiValueRepr, BackendBody, BackendClause, BackendEntry, BackendEntryOrigin, BackendExecutable, BackendProgram,
     BackendStep, BackendTail, CallTarget, EffectSummary, NativeBody, NativeBodyOrigin, NativeCallableBoundary,
     NativeCallableBoundaryId, NativeEntryAbi, NativeProgram, ReturnAbi,
-    ReusableConsCapture as BackendReusableConsCapture,
+    ReusableConsCapture as BackendReusableConsCapture, RuntimeParamLayout, RuntimeValueLayout,
 };
 use super::super::body::{ControlDestination, ControlEntryId, Literal, LoweredExtern, ValueId};
 use super::super::drive::{FactKey, Job, JobEffects, settled_uses};
@@ -333,6 +333,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
             NativeEntryAbi::Direct,
             executable.param_reprs.clone(),
             executable.return_ty,
+            executable.return_layout.abi_reprs(),
             executable.return_abi.clone(),
             executable.effects,
         );
@@ -398,15 +399,42 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
             NativeEntryAbi::Direct,
             executable.param_reprs.clone(),
             executable.return_ty,
+            executable.return_layout.abi_reprs(),
             executable.return_abi.clone(),
             executable.effects,
         );
-        let inputs = ctx.entry_params(executable.key.activation.input.as_slice());
-        let mut state = DispatchState::new(inputs, Vec::new());
+        let entry_tys = runtime_param_tys(&executable.runtime_params);
+        let entry_vars = ctx.entry_params(entry_tys.as_slice());
+        let semantic_inputs = bind_executable_inputs(executable, &entry_vars)?;
         let dispatch = executable
             .entry_dispatch
             .as_ref()
             .expect("clause dispatch lowering requires a settled entry dispatch");
+        let required_inputs = dispatch.required_input_ordinals();
+        let inputs = semantic_inputs
+            .iter()
+            .enumerate()
+            .map(
+                |(semantic_index, value)| match (required_inputs.contains(&semantic_index), value) {
+                    (true, Some(value)) => self.materialize_native_value(
+                        &mut ctx,
+                        executable.key.activation.input.get(semantic_index).copied(),
+                        value,
+                    ),
+                    (true, None) => Err(incomplete_native_program(
+                        self.world,
+                        self.root_id,
+                        format!(
+                            "native clause dispatch required omitted semantic input {} for executable {}",
+                            semantic_index,
+                            executable.key.activation.function.as_u32(),
+                        ),
+                    )),
+                    (false, _) => Ok(ctx.emit_let(Prim::Const(Const::Nil)).0),
+                },
+            )
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut state = DispatchState::new(inputs, entry_vars, Vec::new());
         self.lower_dispatch_node(
             &mut ctx,
             executable,
@@ -458,24 +486,18 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
             NativeEntryAbi::Direct,
             executable.param_reprs.clone(),
             executable.return_ty,
+            executable.return_layout.abi_reprs(),
             executable.return_abi.clone(),
             executable.effects,
         );
         let mut env = ValueEnv::default();
-        let entry_tys = clause
-            .params
-            .iter()
-            .map(|value| {
-                executable
-                    .value_types
-                    .get(value)
-                    .copied()
-                    .unwrap_or_else(|| self.world.types_mut().any())
-            })
-            .collect::<Vec<_>>();
+        let entry_tys = runtime_param_tys(&executable.runtime_params);
         let entry_vars = ctx.entry_params(entry_tys.as_slice());
-        for (value, var) in clause.params.iter().copied().zip(entry_vars) {
-            env.insert(value, var);
+        let semantic_inputs = bind_executable_inputs(executable, &entry_vars)?;
+        for (value, bound) in clause.params.iter().copied().zip(semantic_inputs) {
+            if let Some(bound) = bound {
+                bind_local_value(&mut ctx, executable, &mut env, value, bound);
+            }
         }
         self.lower_entry_steps(&mut ctx, executable, &mut env, &clause.projections)?;
         self.lower_entry_from_id(&mut ctx, executable, entries, entry_fns, clause.entry, env)?;
@@ -528,12 +550,27 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
             self.world.function_ref(executable.key.activation.function).name,
             executable_index
         );
+        let (entry_name, entry_category) = match &entry.origin {
+            BackendEntryOrigin::Clause => return Err(FatalError),
+            BackendEntryOrigin::Branch => (
+                format!("{base_name}__branch_{}", entry_id.as_u32()),
+                FnCategory::ControlFlowCont,
+            ),
+            BackendEntryOrigin::ReceiveOutcome => (
+                format!("{base_name}__receive_{}", entry_id.as_u32()),
+                FnCategory::CpsCont,
+            ),
+            BackendEntryOrigin::DeliveredResume { .. } => (
+                format!("{base_name}__resume_{}", entry_id.as_u32()),
+                FnCategory::CpsCont,
+            ),
+        };
         let (entry_tys, param_reprs, entry_abi) =
             self.entry_signature(executable, entry, entry.reusable_cons_captures.as_slice());
         let mut ctx = NativeFnCtx::new(
             fn_id,
-            &entry_name(&base_name, entry_id, &entry.origin),
-            entry_category(&entry.origin),
+            &entry_name,
+            entry_category,
             NativeBodyOrigin::Continuation {
                 owner: self.executable_fns[executable_index],
                 index: entry_id.as_u32(),
@@ -541,38 +578,37 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
             entry_abi,
             param_reprs,
             executable.return_ty,
+            executable.return_layout.abi_reprs(),
             executable.return_abi.clone(),
             executable.effects,
         );
         let mut env = ValueEnv::default();
         let entry_vars = ctx.entry_params(entry_tys.as_slice());
-        let capture_offset = self.bind_entry_input(&mut ctx, executable, entry, &entry_vars, &mut env)?;
-        let semantic_capture_vars = entry_vars
-            .iter()
-            .copied()
-            .skip(capture_offset)
-            .take(entry.captures.len())
-            .collect::<Vec<_>>();
-        let mut capture_bindings = HashMap::new();
-        for (value, var) in entry
-            .captures
-            .iter()
-            .copied()
-            .zip(semantic_capture_vars.iter().copied())
-        {
-            env.insert(value, var);
-            capture_bindings.insert(value, var);
+        let mut capture_offset = self.bind_entry_input(&mut ctx, executable, entry, &entry_vars, &mut env)?;
+        for (value, layout) in entry.captures.iter().copied().zip(entry.capture_layouts.iter()) {
+            let bound = decode_runtime_value(&entry_vars, layout, &mut capture_offset)?;
+            bind_local_value(&mut ctx, executable, &mut env, value, bound);
         }
         for (capture, physical_var) in entry
             .reusable_cons_captures
             .iter()
             .copied()
-            .zip(entry_vars.iter().copied().skip(capture_offset + entry.captures.len()))
+            .zip(entry_vars.iter().copied().skip(capture_offset))
         {
-            bind_backend_value(&mut ctx, executable, &mut env, capture.source, physical_var);
-            let semantic_var = *capture_bindings
-                .get(&capture.head)
-                .expect("reusable-cons capture should have a semantic capture var");
+            bind_runtime_value(&mut ctx, executable, &mut env, capture.source, physical_var);
+            let semantic_var = self
+                .env_runtime_var(&mut ctx, executable, &env, capture.head)
+                .map_err(|_| {
+                    incomplete_native_program(
+                        self.world,
+                        self.root_id,
+                        format!(
+                            "native lowering could not resolve reusable-cons semantic head {:?} for entry {}",
+                            capture.head,
+                            entry_id.as_u32()
+                        ),
+                    )
+                })?;
             ctx.builder.record_reusable_cons_cell(semantic_var, physical_var);
         }
         self.lower_entry_steps(&mut ctx, executable, &mut env, &entry.steps)?;
@@ -606,30 +642,38 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
             match step {
                 BackendStep::Const { value, literal } => {
                     let var = lower_backend_literal(ctx, &self.atom_ids, literal)?;
-                    bind_backend_value(ctx, executable, env, *value, var);
+                    bind_runtime_value(ctx, executable, env, *value, var);
                 }
                 BackendStep::Tuple { value, items } => {
-                    let vars = env.vars(items).ok_or_else(|| {
+                    let fields = env.values(items).ok_or_else(|| {
                         incomplete_native_program(
                             self.world,
                             self.root_id,
                             "native tuple build referenced an unbound value",
                         )
                     })?;
-                    let (var, _) = ctx.emit_let(Prim::MakeTuple(vars));
-                    bind_backend_value(ctx, executable, env, *value, var);
+                    bind_local_value(ctx, executable, env, *value, NativeLocalValue::TupleFields(fields));
                 }
                 BackendStep::List { value, items, tail } => {
-                    let vars = env.vars(items).ok_or_else(|| {
+                    let vars = self.env_runtime_vars(ctx, executable, env, items).map_err(|_| {
                         incomplete_native_program(
                             self.world,
                             self.root_id,
                             "native list build referenced an unbound value",
                         )
                     })?;
-                    let tail = tail.and_then(|tail| env.var(tail));
+                    let tail = tail
+                        .map(|tail| self.env_runtime_var(ctx, executable, env, tail))
+                        .transpose()
+                        .map_err(|_| {
+                            incomplete_native_program(
+                                self.world,
+                                self.root_id,
+                                "native list build referenced an unbound tail value",
+                            )
+                        })?;
                     let (var, _) = ctx.emit_let(Prim::MakeList(vars, tail));
-                    bind_backend_value(ctx, executable, env, *value, var);
+                    bind_runtime_value(ctx, executable, env, *value, var);
                 }
                 BackendStep::Map { value, entries } => {
                     let token = ctx.fresh_token();
@@ -641,10 +685,12 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                     let mut token = token;
                     for (key, item) in entries {
                         let next = ctx.fresh_token();
-                        let key = env.var(*key).ok_or_else(|| missing_backend_value(self.root_id, *key))?;
-                        let value = env
-                            .var(*item)
-                            .ok_or_else(|| missing_backend_value(self.root_id, *item))?;
+                        let key = self
+                            .env_runtime_var(ctx, executable, env, *key)
+                            .map_err(|_| missing_backend_value(self.root_id, *key))?;
+                        let value = self
+                            .env_runtime_var(ctx, executable, env, *item)
+                            .map_err(|_| missing_backend_value(self.root_id, *item))?;
                         let _ = ctx.emit_let(Prim::DestMapPut {
                             map,
                             token,
@@ -655,12 +701,12 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                         token = next;
                     }
                     let (var, _) = ctx.emit_let(Prim::DestMapFreeze { map, token });
-                    bind_backend_value(ctx, executable, env, *value, var);
+                    bind_runtime_value(ctx, executable, env, *value, var);
                 }
                 BackendStep::MapUpdate { value, base, entries } => {
-                    let base = env
-                        .var(*base)
-                        .ok_or_else(|| missing_backend_value(self.root_id, *base))?;
+                    let base = self
+                        .env_runtime_var(ctx, executable, env, *base)
+                        .map_err(|_| missing_backend_value(self.root_id, *base))?;
                     let token = ctx.fresh_token();
                     let (map, _) = ctx.emit_let(Prim::DestMapBegin {
                         token,
@@ -670,10 +716,12 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                     let mut token = token;
                     for (key, item) in entries {
                         let next = ctx.fresh_token();
-                        let key = env.var(*key).ok_or_else(|| missing_backend_value(self.root_id, *key))?;
-                        let value = env
-                            .var(*item)
-                            .ok_or_else(|| missing_backend_value(self.root_id, *item))?;
+                        let key = self
+                            .env_runtime_var(ctx, executable, env, *key)
+                            .map_err(|_| missing_backend_value(self.root_id, *key))?;
+                        let value = self
+                            .env_runtime_var(ctx, executable, env, *item)
+                            .map_err(|_| missing_backend_value(self.root_id, *item))?;
                         let _ = ctx.emit_let(Prim::DestMapPut {
                             map,
                             token,
@@ -684,7 +732,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                         token = next;
                     }
                     let (var, _) = ctx.emit_let(Prim::DestMapFreeze { map, token });
-                    bind_backend_value(ctx, executable, env, *value, var);
+                    bind_runtime_value(ctx, executable, env, *value, var);
                 }
                 BackendStep::Struct {
                     value,
@@ -695,23 +743,23 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                     for (field, item) in fields {
                         lowered.push((
                             field.clone(),
-                            env.var(*item)
-                                .ok_or_else(|| missing_backend_value(self.root_id, *item))?,
+                            self.env_runtime_var(ctx, executable, env, *item)
+                                .map_err(|_| missing_backend_value(self.root_id, *item))?,
                         ));
                     }
                     let (var, _) = ctx.emit_let(Prim::MakeStruct {
                         module: module_name.clone(),
                         fields: lowered,
                     });
-                    bind_backend_value(ctx, executable, env, *value, var);
+                    bind_runtime_value(ctx, executable, env, *value, var);
                 }
                 BackendStep::Bitstring { value, fields } => {
                     let mut lowered = Vec::with_capacity(fields.len());
                     for field in fields {
                         lowered.push(crate::fz_ir::BitFieldIr {
-                            value: env
-                                .var(field.value)
-                                .ok_or_else(|| missing_backend_value(self.root_id, field.value))?,
+                            value: self
+                                .env_runtime_var(ctx, executable, env, field.value)
+                                .map_err(|_| missing_backend_value(self.root_id, field.value))?,
                             ty: field.spec.ty,
                             size: lower_bit_size_ir(&field.spec.size, env)?,
                             endian: field.spec.endian,
@@ -720,151 +768,204 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                         });
                     }
                     let (var, _) = ctx.emit_let(Prim::MakeBitstring(lowered));
-                    bind_backend_value(ctx, executable, env, *value, var);
+                    bind_runtime_value(ctx, executable, env, *value, var);
                 }
                 BackendStep::FunctionRef { value, function } => {
-                    let identity = self.callable_identity(*function, 0);
-                    let (var, _) = ctx.emit_let(Prim::MakeFnRef(ctx.fresh_callsite(), identity));
-                    if let Some(boundary) = self.settled_callable_boundary(ctx, *function, &[])? {
-                        ctx.callable_value_boundaries.insert(var, boundary);
+                    if matches!(
+                        executable.runtime_demand.callable_materializations.get(value),
+                        Some(crate::compiler2::CallableMaterialization::DirectOnly { .. })
+                    ) {
+                        bind_local_value(
+                            ctx,
+                            executable,
+                            env,
+                            *value,
+                            NativeLocalValue::DirectCallable {
+                                function: *function,
+                                captures: Vec::new(),
+                            },
+                        );
+                    } else {
+                        let var = self.materialize_native_value(
+                            ctx,
+                            executable.value_types.get(value).copied(),
+                            &NativeLocalValue::DirectCallable {
+                                function: *function,
+                                captures: Vec::new(),
+                            },
+                        )?;
+                        bind_runtime_value(ctx, executable, env, *value, var);
                     }
-                    bind_backend_value(ctx, executable, env, *value, var);
                 }
                 BackendStep::Lambda {
                     value,
                     function,
                     captures,
                 } => {
-                    let capture_vars = env.vars(captures).ok_or_else(|| {
-                        incomplete_native_program(
-                            self.world,
-                            self.root_id,
-                            "native closure build referenced an unbound capture",
-                        )
-                    })?;
-                    let capture_count = captures.len();
-                    let identity = self.callable_identity(*function, capture_count);
-                    let boundary = self.settled_callable_boundary(ctx, *function, &capture_vars)?;
-                    let prim = if capture_vars.is_empty() {
-                        Prim::MakeFnRef(ctx.fresh_callsite(), identity)
+                    if matches!(
+                        executable.runtime_demand.callable_materializations.get(value),
+                        Some(crate::compiler2::CallableMaterialization::DirectOnly { .. })
+                    ) {
+                        let capture_values = env.values(captures).ok_or_else(|| {
+                            incomplete_native_program(
+                                self.world,
+                                self.root_id,
+                                "native direct callable build referenced an unbound capture",
+                            )
+                        })?;
+                        bind_local_value(
+                            ctx,
+                            executable,
+                            env,
+                            *value,
+                            NativeLocalValue::DirectCallable {
+                                function: *function,
+                                captures: capture_values,
+                            },
+                        );
                     } else {
-                        Prim::MakeClosure(ctx.fresh_callsite(), identity, capture_vars)
-                    };
-                    let (var, _) = ctx.emit_let(prim);
-                    if let Some(boundary) = boundary {
-                        ctx.callable_value_boundaries.insert(var, boundary);
+                        let capture_vars = self.env_runtime_vars(ctx, executable, env, captures).map_err(|_| {
+                            incomplete_native_program(
+                                self.world,
+                                self.root_id,
+                                "native closure build referenced an unbound capture",
+                            )
+                        })?;
+                        let captures = capture_vars
+                            .into_iter()
+                            .map(NativeLocalValue::Runtime)
+                            .collect::<Vec<_>>();
+                        let var = self.materialize_native_value(
+                            ctx,
+                            executable.value_types.get(value).copied(),
+                            &NativeLocalValue::DirectCallable {
+                                function: *function,
+                                captures,
+                            },
+                        )?;
+                        bind_runtime_value(ctx, executable, env, *value, var);
                     }
-                    bind_backend_value(ctx, executable, env, *value, var);
                 }
                 BackendStep::BinaryOp { value, op, left, right } => {
-                    let left = env
-                        .var(*left)
-                        .ok_or_else(|| missing_backend_value(self.root_id, *left))?;
-                    let right = env
-                        .var(*right)
-                        .ok_or_else(|| missing_backend_value(self.root_id, *right))?;
+                    let left = self
+                        .env_runtime_var(ctx, executable, env, *left)
+                        .map_err(|_| missing_backend_value(self.root_id, *left))?;
+                    let right = self
+                        .env_runtime_var(ctx, executable, env, *right)
+                        .map_err(|_| missing_backend_value(self.root_id, *right))?;
                     let (var, _) = ctx.emit_let(Prim::BinOp(lower_binop(*op), left, right));
-                    bind_backend_value(ctx, executable, env, *value, var);
+                    bind_runtime_value(ctx, executable, env, *value, var);
                 }
                 BackendStep::UnaryOp { value, op, input } => {
-                    let input = env
-                        .var(*input)
-                        .ok_or_else(|| missing_backend_value(self.root_id, *input))?;
+                    let input = self
+                        .env_runtime_var(ctx, executable, env, *input)
+                        .map_err(|_| missing_backend_value(self.root_id, *input))?;
                     let (var, _) = ctx.emit_let(Prim::UnOp(lower_unop(*op), input));
-                    bind_backend_value(ctx, executable, env, *value, var);
+                    bind_runtime_value(ctx, executable, env, *value, var);
                 }
                 BackendStep::MapIndex { value, base, key } => {
-                    let base = env
-                        .var(*base)
-                        .ok_or_else(|| missing_backend_value(self.root_id, *base))?;
-                    let key = env.var(*key).ok_or_else(|| missing_backend_value(self.root_id, *key))?;
+                    let base = self
+                        .env_runtime_var(ctx, executable, env, *base)
+                        .map_err(|_| missing_backend_value(self.root_id, *base))?;
+                    let key = self
+                        .env_runtime_var(ctx, executable, env, *key)
+                        .map_err(|_| missing_backend_value(self.root_id, *key))?;
                     let (var, _) = ctx.emit_let(Prim::MapGet(base, key));
-                    bind_backend_value(ctx, executable, env, *value, var);
+                    bind_runtime_value(ctx, executable, env, *value, var);
                 }
                 BackendStep::FieldAccess { value, base, field } => {
-                    let base = env
-                        .var(*base)
-                        .ok_or_else(|| missing_backend_value(self.root_id, *base))?;
+                    let base = self
+                        .env_runtime_var(ctx, executable, env, *base)
+                        .map_err(|_| missing_backend_value(self.root_id, *base))?;
                     let (var, _) = ctx.emit_let(Prim::StructField(base, field.clone()));
-                    bind_backend_value(ctx, executable, env, *value, var);
+                    bind_runtime_value(ctx, executable, env, *value, var);
                 }
                 BackendStep::AssertLiteral { source, literal } => {
-                    let source = env
-                        .var(*source)
-                        .ok_or_else(|| missing_backend_value(self.root_id, *source))?;
+                    let source = self
+                        .env_runtime_var(ctx, executable, env, *source)
+                        .map_err(|_| missing_backend_value(self.root_id, *source))?;
                     let expected = lower_backend_literal(ctx, &self.atom_ids, literal)?;
                     let (matches, _) = ctx.emit_let(Prim::BinOp(IrBinOp::Eq, source, expected));
                     ctx.assert_truthy(matches, self.atom_id("match_error"));
                 }
                 BackendStep::AssertStruct { source, module_name } => {
-                    let source = env
-                        .var(*source)
-                        .ok_or_else(|| missing_backend_value(self.root_id, *source))?;
+                    let source = self
+                        .env_runtime_var(ctx, executable, env, *source)
+                        .map_err(|_| missing_backend_value(self.root_id, *source))?;
                     let predicate =
                         RuntimeTypePredicate::named_struct(module_name.rsplit('.').next().unwrap_or(module_name));
                     let (matches, _) = ctx.emit_let(Prim::RuntimeTypeTest(source, Box::new(predicate)));
                     ctx.assert_truthy(matches, self.atom_id("match_error"));
                 }
                 BackendStep::RequireMapValue { value, source, key } => {
-                    let source = env
-                        .var(*source)
-                        .ok_or_else(|| missing_backend_value(self.root_id, *source))?;
+                    let source = self
+                        .env_runtime_var(ctx, executable, env, *source)
+                        .map_err(|_| missing_backend_value(self.root_id, *source))?;
                     let key = lower_backend_literal(ctx, &self.atom_ids, key)?;
                     let (var, _) = ctx.emit_let(Prim::MatcherMapGet(source, key));
                     let (is_miss, _) = ctx.emit_let(Prim::IsMatcherMapMiss(var));
                     let (false_v, _) = ctx.emit_let(Prim::Const(Const::False));
                     let (matches, _) = ctx.emit_let(Prim::BinOp(IrBinOp::Eq, is_miss, false_v));
                     ctx.assert_truthy(matches, self.atom_id("match_error"));
-                    bind_backend_value(ctx, executable, env, *value, var);
+                    bind_runtime_value(ctx, executable, env, *value, var);
                 }
-                BackendStep::AssertTuple { source, arity } => {
-                    let source = env
-                        .var(*source)
-                        .ok_or_else(|| missing_backend_value(self.root_id, *source))?;
-                    let tuple_ty = RuntimeTypePredicate::tuple_arity(*arity);
-                    let (matches, _) = ctx.emit_let(Prim::RuntimeTypeTest(source, Box::new(tuple_ty)));
-                    ctx.assert_truthy(matches, self.atom_id("match_error"));
-                }
+                BackendStep::AssertTuple { source, arity } => match env.cloned_value(*source) {
+                    Some(NativeLocalValue::TupleFields(fields)) if fields.len() == *arity => {}
+                    Some(other) => {
+                        let source = self.materialize_native_value(ctx, None, &other)?;
+                        let tuple_ty = RuntimeTypePredicate::tuple_arity(*arity);
+                        let (matches, _) = ctx.emit_let(Prim::RuntimeTypeTest(source, Box::new(tuple_ty)));
+                        ctx.assert_truthy(matches, self.atom_id("match_error"));
+                    }
+                    None => return Err(missing_backend_value(self.root_id, *source)),
+                },
                 BackendStep::TupleField { value, source, index } => {
-                    let source = env
-                        .var(*source)
-                        .ok_or_else(|| missing_backend_value(self.root_id, *source))?;
-                    let (var, _) = ctx.emit_let(Prim::TupleField(source, *index as u32));
-                    bind_backend_value(ctx, executable, env, *value, var);
+                    let field = match env.cloned_value(*source) {
+                        Some(NativeLocalValue::TupleFields(fields)) => fields
+                            .get(*index)
+                            .cloned()
+                            .ok_or_else(|| missing_backend_value(self.root_id, *source))?,
+                        Some(other) => {
+                            let source = self.materialize_native_value(ctx, None, &other)?;
+                            NativeLocalValue::Runtime(ctx.emit_let(Prim::TupleField(source, *index as u32)).0)
+                        }
+                        None => return Err(missing_backend_value(self.root_id, *source)),
+                    };
+                    bind_local_value(ctx, executable, env, *value, field);
                 }
                 BackendStep::AssertEmptyList { source } => {
-                    let source = env
-                        .var(*source)
-                        .ok_or_else(|| missing_backend_value(self.root_id, *source))?;
+                    let source = self
+                        .env_runtime_var(ctx, executable, env, *source)
+                        .map_err(|_| missing_backend_value(self.root_id, *source))?;
                     let (matches, _) = ctx.emit_let(Prim::IsEmptyList(source));
                     ctx.assert_truthy(matches, self.atom_id("match_error"));
                 }
                 BackendStep::AssertSame { source, value } => {
-                    let source = env
-                        .var(*source)
-                        .ok_or_else(|| missing_backend_value(self.root_id, *source))?;
-                    let value = env
-                        .var(*value)
-                        .ok_or_else(|| missing_backend_value(self.root_id, *value))?;
+                    let source = self
+                        .env_runtime_var(ctx, executable, env, *source)
+                        .map_err(|_| missing_backend_value(self.root_id, *source))?;
+                    let value = self
+                        .env_runtime_var(ctx, executable, env, *value)
+                        .map_err(|_| missing_backend_value(self.root_id, *value))?;
                     let (matches, _) = ctx.emit_let(Prim::BinOp(IrBinOp::Eq, source, value));
                     ctx.assert_truthy(matches, self.atom_id("match_error"));
                 }
                 BackendStep::SplitList { source, head, tail } => {
-                    let source = env
-                        .var(*source)
-                        .ok_or_else(|| missing_backend_value(self.root_id, *source))?;
+                    let source = self
+                        .env_runtime_var(ctx, executable, env, *source)
+                        .map_err(|_| missing_backend_value(self.root_id, *source))?;
                     let (head_var, _) = ctx.emit_let(Prim::ListHead(source));
-                    bind_backend_value(ctx, executable, env, *head, head_var);
+                    bind_runtime_value(ctx, executable, env, *head, head_var);
                     ctx.builder.record_reusable_cons_cell(head_var, source);
                     let (tail_var, _) = ctx.emit_let(Prim::ListTail(source));
-                    bind_backend_value(ctx, executable, env, *tail, tail_var);
+                    bind_runtime_value(ctx, executable, env, *tail, tail_var);
                 }
                 BackendStep::BitstringInit { reader, source } => {
-                    let source = env
-                        .var(*source)
-                        .ok_or_else(|| missing_backend_value(self.root_id, *source))?;
+                    let source = self
+                        .env_runtime_var(ctx, executable, env, *source)
+                        .map_err(|_| missing_backend_value(self.root_id, *source))?;
                     let (var, _) = ctx.emit_let(Prim::BitReaderInit(source));
-                    bind_backend_value(ctx, executable, env, *reader, var);
+                    bind_runtime_value(ctx, executable, env, *reader, var);
                 }
                 BackendStep::BitstringRead {
                     ok,
@@ -874,9 +975,9 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                     spec,
                     is_last,
                 } => {
-                    let reader = env
-                        .var(*reader)
-                        .ok_or_else(|| missing_backend_value(self.root_id, *reader))?;
+                    let reader = self
+                        .env_runtime_var(ctx, executable, env, *reader)
+                        .map_err(|_| missing_backend_value(self.root_id, *reader))?;
                     let (result, _) = ctx.emit_let(Prim::BitReadField {
                         reader,
                         ty: spec.ty,
@@ -887,16 +988,16 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                         is_last: *is_last,
                     });
                     let (ok_var, _) = ctx.emit_let(Prim::TupleField(result, 0));
-                    bind_backend_value(ctx, executable, env, *ok, ok_var);
+                    bind_runtime_value(ctx, executable, env, *ok, ok_var);
                     let (value_var, _) = ctx.emit_let(Prim::TupleField(result, 1));
-                    bind_backend_value(ctx, executable, env, *value, value_var);
+                    bind_runtime_value(ctx, executable, env, *value, value_var);
                     let (reader_var, _) = ctx.emit_let(Prim::TupleField(result, 2));
-                    bind_backend_value(ctx, executable, env, *next_reader, reader_var);
+                    bind_runtime_value(ctx, executable, env, *next_reader, reader_var);
                 }
                 BackendStep::AssertBitstringDone { reader } => {
-                    let reader = env
-                        .var(*reader)
-                        .ok_or_else(|| missing_backend_value(self.root_id, *reader))?;
+                    let reader = self
+                        .env_runtime_var(ctx, executable, env, *reader)
+                        .map_err(|_| missing_backend_value(self.root_id, *reader))?;
                     let (done, _) = ctx.emit_let(Prim::BitReaderDone(reader));
                     ctx.assert_truthy(done, self.atom_id("match_error"));
                 }
@@ -916,24 +1017,48 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
     ) -> Result<(), FatalError> {
         match tail {
             BackendTail::Value { value, dest } => {
-                let result = env
-                    .var(*value)
-                    .ok_or_else(|| missing_backend_value(self.root_id, *value))?;
-                self.lower_value_destination(ctx, executable, entries, entry_fns, env, *value, result, dest)
+                self.lower_value_destination(ctx, executable, entries, entry_fns, env, *value, dest)
             }
             BackendTail::DirectCall { callee, args, dest, .. } => {
-                let call_args = env.call_args(args).ok_or_else(|| {
-                    incomplete_native_program(
-                        self.world,
-                        self.root_id,
-                        "native direct call referenced an unbound argument",
-                    )
-                })?;
-                let callee = match callee {
-                    CallTarget::Local(callee) => DirectCallTarget::Local(self.executable_fns[*callee]),
-                    CallTarget::ProviderBoundary(function) => {
-                        DirectCallTarget::ProviderBoundary(self.world.function_mfa(*function))
+                let (callee, call_args) = match callee {
+                    CallTarget::Local(callee) => {
+                        let callee_executable = &self.program.executables[*callee];
+                        let mut lanes = Vec::new();
+                        for (arg, layout) in args.iter().zip(callee_executable.runtime_params.inputs.iter()) {
+                            let local = env.cloned_value(arg.value).ok_or_else(|| {
+                                incomplete_native_program(
+                                    self.world,
+                                    self.root_id,
+                                    "native direct call referenced an unbound argument",
+                                )
+                            })?;
+                            self.encode_runtime_value(
+                                ctx,
+                                callee_executable,
+                                Some(arg.value),
+                                &local,
+                                layout.value_layout(),
+                                &mut lanes,
+                            )?;
+                        }
+                        (DirectCallTarget::Local(self.executable_fns[*callee]), lanes)
                     }
+                    CallTarget::ProviderBoundary(function) => (
+                        DirectCallTarget::ProviderBoundary(self.world.function_mfa(*function)),
+                        self.env_runtime_vars(
+                            ctx,
+                            executable,
+                            env,
+                            &args.iter().map(|arg| arg.value).collect::<Vec<_>>(),
+                        )
+                        .map_err(|_| {
+                            incomplete_native_program(
+                                self.world,
+                                self.root_id,
+                                "native direct call referenced an unbound argument",
+                            )
+                        })?,
+                    ),
                 };
                 match dest {
                     ControlDestination::Return => {
@@ -946,7 +1071,8 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                         Ok(())
                     }
                     ControlDestination::Deliver(entry_id) => {
-                        let continuation = self.entry_continuation(executable, entries, entry_fns, *entry_id, env)?;
+                        let continuation =
+                            self.entry_continuation(ctx, executable, entries, entry_fns, *entry_id, env)?;
                         ctx.set_term(Term::Call {
                             ident: CallsiteIdent::from_source(Span::DUMMY),
                             callee,
@@ -964,37 +1090,111 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                 dest,
                 ..
             } => {
-                let closure = env
-                    .var(*callee)
-                    .ok_or_else(|| missing_backend_value(self.root_id, *callee))?;
-                let call_args = env.call_args(args).ok_or_else(|| {
-                    incomplete_native_program(
-                        self.world,
-                        self.root_id,
-                        "native closure call referenced an unbound argument",
-                    )
-                })?;
-                let direct_target = target.map(|target| self.executable_fns[target]);
-                match dest {
-                    ControlDestination::Return => {
-                        ctx.set_term(Term::TailCallClosure {
-                            ident: CallsiteIdent::from_source(Span::DUMMY),
-                            closure,
-                            direct_target,
-                            args: call_args,
-                        });
-                        Ok(())
+                match env
+                    .cloned_value(*callee)
+                    .ok_or_else(|| missing_backend_value(self.root_id, *callee))?
+                {
+                    NativeLocalValue::DirectCallable { captures, .. } => {
+                        let target = target.ok_or_else(|| {
+                            incomplete_native_program(
+                                self.world,
+                                self.root_id,
+                                "native direct-only closure call did not settle an exact local target",
+                            )
+                        })?;
+                        let callee_executable = &self.program.executables[target];
+                        let mut call_args = Vec::new();
+                        for (capture, layout) in captures
+                            .iter()
+                            .zip(callee_executable.runtime_params.inputs.iter().take(captures.len()))
+                        {
+                            self.encode_runtime_value(
+                                ctx,
+                                callee_executable,
+                                None,
+                                capture,
+                                layout.value_layout(),
+                                &mut call_args,
+                            )?;
+                        }
+                        for (arg, layout) in args
+                            .iter()
+                            .zip(callee_executable.runtime_params.inputs.iter().skip(captures.len()))
+                        {
+                            let local = env.cloned_value(arg.value).ok_or(FatalError)?;
+                            self.encode_runtime_value(
+                                ctx,
+                                callee_executable,
+                                Some(arg.value),
+                                &local,
+                                layout.value_layout(),
+                                &mut call_args,
+                            )?;
+                        }
+                        let callee = DirectCallTarget::Local(self.executable_fns[target]);
+                        match dest {
+                            ControlDestination::Return => {
+                                ctx.set_term(Term::TailCall {
+                                    ident: CallsiteIdent::from_source(Span::DUMMY),
+                                    callee,
+                                    args: call_args,
+                                    is_back_edge: false,
+                                });
+                                Ok(())
+                            }
+                            ControlDestination::Deliver(entry_id) => {
+                                let continuation =
+                                    self.entry_continuation(ctx, executable, entries, entry_fns, *entry_id, env)?;
+                                ctx.set_term(Term::Call {
+                                    ident: CallsiteIdent::from_source(Span::DUMMY),
+                                    callee,
+                                    args: call_args,
+                                    continuation,
+                                });
+                                Ok(())
+                            }
+                        }
                     }
-                    ControlDestination::Deliver(entry_id) => {
-                        let continuation = self.entry_continuation(executable, entries, entry_fns, *entry_id, env)?;
-                        ctx.set_term(Term::CallClosure {
-                            ident: CallsiteIdent::from_source(Span::DUMMY),
-                            closure,
-                            direct_target,
-                            args: call_args,
-                            continuation,
-                        });
-                        Ok(())
+                    other => {
+                        let closure = self.materialize_native_value(ctx, None, &other)?;
+                        let call_args = self
+                            .env_runtime_vars(
+                                ctx,
+                                executable,
+                                env,
+                                &args.iter().map(|arg| arg.value).collect::<Vec<_>>(),
+                            )
+                            .map_err(|_| {
+                                incomplete_native_program(
+                                    self.world,
+                                    self.root_id,
+                                    "native closure call referenced an unbound argument",
+                                )
+                            })?;
+                        let direct_target = target.map(|target| self.executable_fns[target]);
+                        match dest {
+                            ControlDestination::Return => {
+                                ctx.set_term(Term::TailCallClosure {
+                                    ident: CallsiteIdent::from_source(Span::DUMMY),
+                                    closure,
+                                    direct_target,
+                                    args: call_args,
+                                });
+                                Ok(())
+                            }
+                            ControlDestination::Deliver(entry_id) => {
+                                let continuation =
+                                    self.entry_continuation(ctx, executable, entries, entry_fns, *entry_id, env)?;
+                                ctx.set_term(Term::CallClosure {
+                                    ident: CallsiteIdent::from_source(Span::DUMMY),
+                                    closure,
+                                    direct_target,
+                                    args: call_args,
+                                    continuation,
+                                });
+                                Ok(())
+                            }
+                        }
                     }
                 }
             }
@@ -1003,9 +1203,9 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                 then_entry,
                 else_entry,
             } => {
-                let cond = env
-                    .var(*cond)
-                    .ok_or_else(|| missing_backend_value(self.root_id, *cond))?;
+                let cond = self
+                    .env_runtime_var(ctx, executable, env, *cond)
+                    .map_err(|_| missing_backend_value(self.root_id, *cond))?;
                 let then_b = ctx.builder.block(vec![]);
                 let else_b = ctx.builder.block(vec![]);
                 ctx.set_term(Term::If {
@@ -1015,7 +1215,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                     origin: BranchOrigin::User,
                 });
                 ctx.current_block = then_b;
-                let then_args = self.entry_capture_args(executable, entries, *then_entry, env)?;
+                let then_args = self.entry_capture_args(ctx, executable, entries, *then_entry, env)?;
                 ctx.set_term(Term::TailCall {
                     ident: CallsiteIdent::from_source(Span::DUMMY),
                     callee: DirectCallTarget::Local(
@@ -1025,7 +1225,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                     is_back_edge: false,
                 });
                 ctx.current_block = else_b;
-                let else_args = self.entry_capture_args(executable, entries, *else_entry, env)?;
+                let else_args = self.entry_capture_args(ctx, executable, entries, *else_entry, env)?;
                 ctx.set_term(Term::TailCall {
                     ident: CallsiteIdent::from_source(Span::DUMMY),
                     callee: DirectCallTarget::Local(
@@ -1041,21 +1241,23 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                 bindings,
                 dispatch,
             } => {
-                let input_vars = env.vars(inputs).ok_or_else(|| {
+                let input_vars = self.env_runtime_vars(ctx, executable, env, inputs).map_err(|_| {
                     incomplete_native_program(
                         self.world,
                         self.root_id,
                         "native local dispatch referenced an unbound input value",
                     )
                 })?;
-                let pinned_vars = env.vars(&bindings.pinned).ok_or_else(|| {
-                    incomplete_native_program(
-                        self.world,
-                        self.root_id,
-                        "native local dispatch referenced an unbound pinned value",
-                    )
-                })?;
-                let mut state = DispatchState::new(input_vars, pinned_vars);
+                let pinned_vars = self
+                    .env_runtime_vars(ctx, executable, env, &bindings.pinned)
+                    .map_err(|_| {
+                        incomplete_native_program(
+                            self.world,
+                            self.root_id,
+                            "native local dispatch referenced an unbound pinned value",
+                        )
+                    })?;
+                let mut state = DispatchState::new(input_vars.clone(), input_vars, pinned_vars);
                 self.lower_control_dispatch_node(
                     ctx,
                     executable,
@@ -1074,7 +1276,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                 let dispatch = &receive.dispatch;
                 let clauses = &receive.clauses;
                 let after = receive.after.as_ref();
-                let captures = self.receive_capture_vars(entries, clauses, after, env)?;
+                let captures = self.receive_capture_vars(ctx, executable, entries, clauses, after, env)?;
                 let clauses = clauses
                     .iter()
                     .map(|clause| {
@@ -1093,7 +1295,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                     .map(|after| {
                         Ok(ReceiveAfter {
                             ident: CallsiteIdent::from_source(after.span),
-                            timeout: env.var(after.timeout).ok_or_else(|| {
+                            timeout: self.env_runtime_var(ctx, executable, env, after.timeout).map_err(|_| {
                                 incomplete_native_program(
                                     self.world,
                                     self.root_id,
@@ -1107,7 +1309,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                         })
                     })
                     .transpose()?;
-                let pinned = self.receive_pinned_vars(env, bindings, dispatch)?;
+                let pinned = self.receive_pinned_vars(ctx, executable, env, bindings, dispatch)?;
                 let dispatch = {
                     let types = self.world.types();
                     dispatch.map_type_handle(&mut |ty| types.runtime_type_predicate(ty))
@@ -1137,17 +1339,16 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
         entry_fns: &HashMap<ControlEntryId, FnId>,
         env: &ValueEnv,
         value_id: ValueId,
-        value_var: Var,
         dest: &ControlDestination,
     ) -> Result<(), FatalError> {
         match dest {
             ControlDestination::Return => {
+                let value_var = self.return_carrier_var(ctx, executable, env, value_id)?;
                 ctx.set_term(Term::Return(value_var));
                 Ok(())
             }
             ControlDestination::Deliver(entry_id) => {
-                let args =
-                    self.entry_call_args_from_value(ctx, executable, entries, *entry_id, env, value_id, value_var)?;
+                let args = self.entry_call_args_from_value(ctx, executable, entries, *entry_id, env, value_id)?;
                 ctx.set_term(Term::TailCall {
                     ident: CallsiteIdent::from_source(Span::DUMMY),
                     callee: DirectCallTarget::Local(
@@ -1161,21 +1362,59 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
         }
     }
 
+    fn return_carrier_var(
+        &mut self,
+        ctx: &mut NativeFnCtx,
+        executable: &BackendExecutable,
+        env: &ValueEnv,
+        value_id: ValueId,
+    ) -> Result<Var, FatalError> {
+        let local = env
+            .cloned_value(value_id)
+            .ok_or_else(|| missing_backend_value(self.root_id, value_id))?;
+        let mut lanes = Vec::new();
+        self.encode_runtime_value(
+            ctx,
+            executable,
+            Some(value_id),
+            &local,
+            &executable.return_layout,
+            &mut lanes,
+        )?;
+        match lanes.len() {
+            0 => Ok(ctx.emit_let(Prim::MakeTuple(Vec::new())).0),
+            1 => Ok(lanes[0]),
+            _ => Ok(ctx.emit_let(Prim::MakeTuple(lanes)).0),
+        }
+    }
+
     fn entry_signature(
         &mut self,
         executable: &BackendExecutable,
         entry: &BackendEntry,
         reusable_cons_captures: &[BackendReusableConsCapture],
     ) -> (Vec<Ty>, Vec<AbiValueRepr>, NativeEntryAbi) {
-        let mut capture_tys = Vec::with_capacity(entry.params.len() + entry.captures.len());
-        for value in entry.params.iter().chain(entry.captures.iter()) {
-            let ty = executable
-                .value_types
-                .get(value)
-                .copied()
-                .unwrap_or_else(|| self.world.types_mut().any());
-            capture_tys.push(ty);
-        }
+        let mut param_tys = entry
+            .params
+            .iter()
+            .map(|value| {
+                executable
+                    .value_types
+                    .get(value)
+                    .copied()
+                    .unwrap_or_else(|| self.world.types_mut().any())
+            })
+            .collect::<Vec<_>>();
+        let capture_lane_tys = entry
+            .capture_layouts
+            .iter()
+            .flat_map(RuntimeValueLayout::lane_tys)
+            .collect::<Vec<_>>();
+        let capture_lane_reprs = entry
+            .capture_layouts
+            .iter()
+            .flat_map(RuntimeValueLayout::abi_reprs)
+            .collect::<Vec<_>>();
         let physical_capture_tys = reusable_cons_captures
             .iter()
             .map(|capture| {
@@ -1189,43 +1428,40 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
         match entry.origin.clone() {
             BackendEntryOrigin::Clause => panic!("clause entries are lowered through their owning clause"),
             BackendEntryOrigin::Branch => {
-                let mut param_reprs = capture_tys
+                let mut param_reprs = param_tys
                     .iter()
                     .copied()
                     .map(|ty| abi_value_repr(self.world, ty))
                     .collect::<Vec<_>>();
+                param_reprs.extend(capture_lane_reprs.iter().copied());
                 param_reprs.extend(
                     physical_capture_tys
                         .iter()
                         .copied()
                         .map(|ty| abi_value_repr(self.world, ty)),
                 );
-                let mut entry_tys = capture_tys;
+                param_tys.extend(capture_lane_tys.iter().copied());
+                let mut entry_tys = param_tys;
                 entry_tys.extend(physical_capture_tys);
                 (entry_tys, param_reprs, NativeEntryAbi::Direct)
             }
             BackendEntryOrigin::ReceiveOutcome => {
-                let param_reprs = capture_tys
+                let mut param_reprs = param_tys
                     .iter()
                     .copied()
                     .map(|ty| abi_value_repr(self.world, ty))
                     .collect::<Vec<_>>();
-                (
-                    capture_tys,
-                    param_reprs,
-                    NativeEntryAbi::Continuation { extra_params: 0 },
-                )
+                param_reprs.extend(capture_lane_reprs.iter().copied());
+                param_tys.extend(capture_lane_tys.iter().copied());
+                (param_tys, param_reprs, NativeEntryAbi::Continuation { extra_params: 0 })
             }
-            BackendEntryOrigin::DeliveredResume { value, return_abi } => {
-                let result_ty = executable
-                    .value_types
-                    .get(&value)
-                    .copied()
-                    .unwrap_or_else(|| self.world.types_mut().any());
-                let (mut entry_tys, mut param_reprs) = continuation_result_entry(self.world, result_ty, &return_abi);
+            BackendEntryOrigin::DeliveredResume { value: _, layout } => {
+                let (mut entry_tys, mut param_reprs) = continuation_result_entry(&layout);
                 let extra_params = param_reprs.len();
-                entry_tys.extend(capture_tys.iter().copied());
-                param_reprs.extend(capture_tys.iter().copied().map(|ty| abi_value_repr(self.world, ty)));
+                entry_tys.extend(param_tys.iter().copied());
+                param_reprs.extend(param_tys.iter().copied().map(|ty| abi_value_repr(self.world, ty)));
+                entry_tys.extend(capture_lane_tys.iter().copied());
+                param_reprs.extend(capture_lane_reprs.iter().copied());
                 entry_tys.extend(physical_capture_tys.iter().copied());
                 param_reprs.extend(
                     physical_capture_tys
@@ -1250,36 +1486,31 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
             BackendEntryOrigin::Clause => Ok(0),
             BackendEntryOrigin::Branch => {
                 for (value, var) in entry.params.iter().copied().zip(entry_vars.iter().copied()) {
-                    bind_backend_value(ctx, executable, env, value, var);
+                    bind_runtime_value(ctx, executable, env, value, var);
                 }
                 Ok(entry.params.len())
             }
             BackendEntryOrigin::ReceiveOutcome => {
                 for (value, var) in entry.params.iter().copied().zip(entry_vars.iter().copied()) {
-                    bind_backend_value(ctx, executable, env, value, var);
+                    bind_runtime_value(ctx, executable, env, value, var);
                 }
                 Ok(entry.params.len())
             }
-            BackendEntryOrigin::DeliveredResume { value, return_abi } => match return_abi {
-                ReturnAbi::Value(_) => {
-                    let var = *entry_vars
-                        .first()
-                        .expect("value continuation should have one entry param");
-                    bind_backend_value(ctx, executable, env, *value, var);
-                    Ok(1)
+            BackendEntryOrigin::DeliveredResume { value, layout } => {
+                if matches!(layout, RuntimeValueLayout::Omitted) {
+                    return Ok(0);
                 }
-                ReturnAbi::TupleFields(reprs) => {
-                    let tuple_fields = entry_vars.iter().copied().take(reprs.len()).collect::<Vec<_>>();
-                    let (result_var, _) = ctx.emit_let(Prim::MakeTuple(tuple_fields));
-                    bind_backend_value(ctx, executable, env, *value, result_var);
-                    Ok(reprs.len())
-                }
-            },
+                let mut lane_index = 0;
+                let bound = decode_runtime_value(entry_vars, layout, &mut lane_index)?;
+                bind_local_value(ctx, executable, env, *value, bound);
+                Ok(lane_index)
+            }
         }
     }
 
     fn entry_continuation(
         &mut self,
+        ctx: &mut NativeFnCtx,
         executable: &BackendExecutable,
         entries: &[BackendEntry],
         entry_fns: &HashMap<ControlEntryId, FnId>,
@@ -1302,46 +1533,57 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
         }
         Ok(Cont {
             fn_id: *entry_fns.get(&entry_id).expect("resume entry should have a helper fn"),
-            captured: self.entry_capture_args(executable, entries, entry_id, env)?,
+            captured: self.entry_capture_args(ctx, executable, entries, entry_id, env)?,
         })
     }
 
     fn entry_capture_args(
         &mut self,
-        _executable: &BackendExecutable,
+        ctx: &mut NativeFnCtx,
+        executable: &BackendExecutable,
         entries: &[BackendEntry],
         entry_id: ControlEntryId,
         env: &ValueEnv,
     ) -> Result<Vec<Var>, FatalError> {
         let entry = &entries[entry_id.as_u32() as usize];
-        let mut args = env.capture_args(&entry.captures).ok_or_else(|| {
-            incomplete_native_program(
-                self.world,
-                self.root_id,
-                format!(
-                    "native lowering could not resolve captures for entry {}",
-                    entry_id.as_u32()
-                ),
-            )
-        })?;
-        for capture in &entry.reusable_cons_captures {
-            args.push(env.var(capture.source).ok_or_else(|| {
+        let mut args = Vec::new();
+        for (value, layout) in entry.captures.iter().copied().zip(entry.capture_layouts.iter()) {
+            let local = env.cloned_value(value).ok_or_else(|| {
                 incomplete_native_program(
                     self.world,
                     self.root_id,
                     format!(
-                        "native lowering could not resolve reusable-cons source capture {:?} for entry {}",
-                        capture.source,
+                        "native lowering could not resolve capture {} for entry {}",
+                        value.as_u32(),
                         entry_id.as_u32()
                     ),
                 )
-            })?);
+            })?;
+            self.encode_runtime_value(ctx, executable, Some(value), &local, layout, &mut args)?;
+        }
+        for capture in &entry.reusable_cons_captures {
+            args.push(
+                self.env_runtime_var(ctx, executable, env, capture.source)
+                    .map_err(|_| {
+                        incomplete_native_program(
+                            self.world,
+                            self.root_id,
+                            format!(
+                                "native lowering could not resolve reusable-cons source capture {:?} for entry {}",
+                                capture.source,
+                                entry_id.as_u32()
+                            ),
+                        )
+                    })?,
+            );
         }
         Ok(args)
     }
 
     fn receive_pinned_vars(
         &mut self,
+        ctx: &mut NativeFnCtx,
+        executable: &BackendExecutable,
         env: &ValueEnv,
         bindings: &super::super::body::DispatchBindings,
         dispatch: &PatternDispatchPlan<Ty>,
@@ -1356,7 +1598,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                 ));
             };
             if pin.input.is_none() {
-                let var = env.var(value_id).ok_or_else(|| {
+                let var = self.env_runtime_var(ctx, executable, env, value_id).map_err(|_| {
                     incomplete_native_program(
                         self.world,
                         self.root_id,
@@ -1367,7 +1609,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
             }
         }
         for (index, value_id) in bindings.prepared.iter().copied().enumerate() {
-            let var = env.var(value_id).ok_or_else(|| {
+            let var = self.env_runtime_var(ctx, executable, env, value_id).map_err(|_| {
                 incomplete_native_program(
                     self.world,
                     self.root_id,
@@ -1381,6 +1623,8 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
 
     fn receive_capture_vars(
         &mut self,
+        ctx: &mut NativeFnCtx,
+        executable: &BackendExecutable,
         entries: &[BackendEntry],
         clauses: &[super::super::body::ReceiveClause],
         after: Option<&super::super::body::ReceiveAfter>,
@@ -1404,13 +1648,21 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                 ));
             }
         }
-        env.capture_args(&capture_ids).ok_or_else(|| {
-            incomplete_native_program(
-                self.world,
-                self.root_id,
-                "native receive could not resolve capture values",
+        let entry = entries
+            .get(
+                clauses
+                    .first()
+                    .map(|clause| clause.entry.as_u32() as usize)
+                    .or_else(|| after.map(|after| after.entry.as_u32() as usize))
+                    .unwrap_or(0),
             )
-        })
+            .ok_or(FatalError)?;
+        let mut args = Vec::new();
+        for (value, layout) in capture_ids.into_iter().zip(entry.capture_layouts.iter()) {
+            let local = env.cloned_value(value).ok_or(FatalError)?;
+            self.encode_runtime_value(ctx, executable, Some(value), &local, layout, &mut args)?;
+        }
+        Ok(args)
     }
 
     fn entry_call_args_from_value(
@@ -1421,45 +1673,28 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
         entry_id: ControlEntryId,
         env: &ValueEnv,
         value_id: ValueId,
-        value_var: Var,
     ) -> Result<Vec<Var>, FatalError> {
         let entry = &entries[entry_id.as_u32() as usize];
         let mut args = match &entry.origin {
             BackendEntryOrigin::Clause | BackendEntryOrigin::Branch | BackendEntryOrigin::ReceiveOutcome => Vec::new(),
-            BackendEntryOrigin::DeliveredResume { return_abi, .. } => {
-                self.delivered_args_for_abi(ctx, executable, value_id, value_var, return_abi)?
+            BackendEntryOrigin::DeliveredResume { layout, .. } => {
+                let local = env.cloned_value(value_id).ok_or_else(|| {
+                    incomplete_native_program(
+                        self.world,
+                        self.root_id,
+                        format!(
+                            "native lowering could not resolve delivered value {}",
+                            value_id.as_u32()
+                        ),
+                    )
+                })?;
+                let mut lanes = Vec::new();
+                self.encode_runtime_value(ctx, executable, Some(value_id), &local, layout, &mut lanes)?;
+                lanes
             }
         };
-        args.extend(self.entry_capture_args(executable, entries, entry_id, env)?);
+        args.extend(self.entry_capture_args(ctx, executable, entries, entry_id, env)?);
         Ok(args)
-    }
-
-    fn delivered_args_for_abi(
-        &mut self,
-        ctx: &mut NativeFnCtx,
-        executable: &BackendExecutable,
-        value_id: ValueId,
-        value_var: Var,
-        return_abi: &ReturnAbi,
-    ) -> Result<Vec<Var>, FatalError> {
-        match return_abi {
-            ReturnAbi::Value(_) => Ok(vec![value_var]),
-            ReturnAbi::TupleFields(reprs) => {
-                let tuple_ty = executable
-                    .value_types
-                    .get(&value_id)
-                    .copied()
-                    .unwrap_or_else(|| self.world.types_mut().any());
-                let field_tys = self.world.types_mut().tuple_projections(&tuple_ty, reprs.len());
-                let mut out = Vec::with_capacity(reprs.len());
-                for (index, field_ty) in field_tys.into_iter().enumerate() {
-                    let (field_var, _) = ctx.emit_let(Prim::TupleField(value_var, index as u32));
-                    ctx.value_types.insert(field_var, field_ty);
-                    out.push(field_var);
-                }
-                Ok(out)
-            }
-        }
     }
 
     fn lower_dispatch_node(
@@ -1499,7 +1734,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                     ctx.halt_with_atom(self.atom_id("function_clause"));
                     return Ok(());
                 };
-                let args = state.inputs.clone();
+                let args = state.forwarded_args.clone();
                 ctx.set_term(Term::TailCall {
                     ident: CallsiteIdent::from_source(Span::DUMMY),
                     callee: DirectCallTarget::Local(helper_ids[clause_index]),
@@ -1561,7 +1796,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
         };
         match node {
             DispatchNode::Fail => {
-                let args = self.entry_capture_args(executable, entries, miss_entry, env)?;
+                let args = self.entry_capture_args(ctx, executable, entries, miss_entry, env)?;
                 ctx.set_term(Term::TailCall {
                     ident: CallsiteIdent::from_source(Span::DUMMY),
                     callee: DirectCallTarget::Local(
@@ -1576,7 +1811,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
             }
             DispatchNode::Outcome { outcome, .. } => {
                 let Some(body_id) = plan.outcome(outcome).map(|outcome| outcome.body_id) else {
-                    let args = self.entry_capture_args(executable, entries, miss_entry, env)?;
+                    let args = self.entry_capture_args(ctx, executable, entries, miss_entry, env)?;
                     ctx.set_term(Term::TailCall {
                         ident: CallsiteIdent::from_source(Span::DUMMY),
                         callee: DirectCallTarget::Local(
@@ -1596,7 +1831,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                         format!("local dispatch arm {} is out of bounds", body_id),
                     )
                 })?;
-                let args = self.entry_capture_args(executable, entries, arm_entry, env)?;
+                let args = self.entry_capture_args(ctx, executable, entries, arm_entry, env)?;
                 ctx.set_term(Term::TailCall {
                     ident: CallsiteIdent::from_source(Span::DUMMY),
                     callee: DirectCallTarget::Local(
@@ -1799,7 +2034,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
         let done_value = ctx.builder.fresh_var();
         let done_b = ctx.builder.block(vec![done_value]);
         let fail_b = ctx.builder.block(vec![]);
-        let mut dispatch_state = DispatchState::new(input_vars, Vec::new());
+        let mut dispatch_state = DispatchState::new(input_vars, Vec::new(), Vec::new());
         self.lower_guard_dispatch_node(
             ctx,
             executable,
@@ -1912,7 +2147,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
         };
         let var = match &subject_data.source {
             crate::dispatch_matrix::SubjectSource::Input { ordinal } => {
-                state.inputs.get(*ordinal as usize).copied().ok_or_else(|| {
+                state.dispatch_inputs.get(*ordinal as usize).copied().ok_or_else(|| {
                     incomplete_native_program(
                         self.world,
                         self.root_id,
@@ -1969,7 +2204,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
             )
         })?;
         if let Some(input) = pin.input {
-            return state.inputs.get(input as usize).copied().ok_or_else(|| {
+            return state.dispatch_inputs.get(input as usize).copied().ok_or_else(|| {
                 incomplete_native_program(
                     self.world,
                     self.root_id,
@@ -2025,6 +2260,134 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
             &capture_tys,
         )
         .map_err(|message| incomplete_native_program(self.world, self.root_id, message))
+    }
+
+    fn env_runtime_var(
+        &mut self,
+        ctx: &mut NativeFnCtx,
+        executable: &BackendExecutable,
+        env: &ValueEnv,
+        value_id: ValueId,
+    ) -> Result<Var, FatalError> {
+        let value = env_local_value(env, value_id)?;
+        let ty = executable.value_types.get(&value_id).copied();
+        self.materialize_native_value(ctx, ty, &value)
+    }
+
+    fn env_runtime_vars(
+        &mut self,
+        ctx: &mut NativeFnCtx,
+        executable: &BackendExecutable,
+        env: &ValueEnv,
+        values: &[ValueId],
+    ) -> Result<Vec<Var>, FatalError> {
+        values
+            .iter()
+            .map(|value| self.env_runtime_var(ctx, executable, env, *value))
+            .collect()
+    }
+
+    fn materialize_native_value(
+        &mut self,
+        ctx: &mut NativeFnCtx,
+        ty: Option<Ty>,
+        value: &NativeLocalValue,
+    ) -> Result<Var, FatalError> {
+        let var = match value {
+            NativeLocalValue::Runtime(var) => *var,
+            NativeLocalValue::TupleFields(fields) => {
+                let vars = fields
+                    .iter()
+                    .map(|field| self.materialize_native_value(ctx, None, field))
+                    .collect::<Result<Vec<_>, _>>()?;
+                ctx.emit_let(Prim::MakeTuple(vars)).0
+            }
+            NativeLocalValue::DirectCallable { function, captures } => {
+                let capture_vars = captures
+                    .iter()
+                    .map(|capture| self.materialize_native_value(ctx, None, capture))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let identity = self.callable_identity(*function, captures.len());
+                let boundary = self
+                    .settled_callable_boundary(ctx, *function, &capture_vars)?
+                    .ok_or_else(|| {
+                        incomplete_native_program(
+                            self.world,
+                            self.root_id,
+                            format!(
+                                "native callable materialization for {:?}/{} has no settled callable boundary in {:?}",
+                                function,
+                                captures.len(),
+                                ctx.origin,
+                            ),
+                        )
+                    })?;
+                let prim = if capture_vars.is_empty() {
+                    Prim::MakeFnRef(ctx.fresh_callsite(), identity)
+                } else {
+                    Prim::MakeClosure(ctx.fresh_callsite(), identity, capture_vars)
+                };
+                let (var, _) = ctx.emit_let(prim);
+                ctx.callable_value_boundaries.insert(var, boundary);
+                var
+            }
+        };
+        if let Some(ty) = ty {
+            ctx.value_types.insert(var, ty);
+        }
+        Ok(var)
+    }
+
+    fn tuple_fields_for_layout(
+        &mut self,
+        ctx: &mut NativeFnCtx,
+        value: &NativeLocalValue,
+        arity: usize,
+    ) -> Result<Vec<NativeLocalValue>, FatalError> {
+        match value {
+            NativeLocalValue::TupleFields(fields) if fields.len() == arity => Ok(fields.clone()),
+            other => {
+                let tuple = self.materialize_native_value(ctx, None, other)?;
+                Ok((0..arity)
+                    .map(|index| NativeLocalValue::Runtime(ctx.emit_let(Prim::TupleField(tuple, index as u32)).0))
+                    .collect())
+            }
+        }
+    }
+
+    fn encode_runtime_value(
+        &mut self,
+        ctx: &mut NativeFnCtx,
+        executable: &BackendExecutable,
+        value_id: Option<ValueId>,
+        value: &NativeLocalValue,
+        layout: &RuntimeValueLayout,
+        lanes: &mut Vec<Var>,
+    ) -> Result<(), FatalError> {
+        match layout {
+            RuntimeValueLayout::Omitted => Ok(()),
+            RuntimeValueLayout::Value { ty, .. } => {
+                let ty = value_id
+                    .and_then(|value_id| executable.value_types.get(&value_id).copied())
+                    .or(Some(*ty));
+                lanes.push(self.materialize_native_value(ctx, ty, value)?);
+                Ok(())
+            }
+            RuntimeValueLayout::TupleFields { fields } => {
+                let tuple_fields = self.tuple_fields_for_layout(ctx, value, fields.len())?;
+                for (field, field_layout) in tuple_fields.iter().zip(fields.iter()) {
+                    self.encode_runtime_value(ctx, executable, None, field, field_layout, lanes)?;
+                }
+                Ok(())
+            }
+            RuntimeValueLayout::DirectCallable { function, captures } => {
+                let callable_captures = direct_callable_captures_for_layout(value, *function, captures.len())?;
+                for (capture, capture_layout) in callable_captures.iter().zip(captures.iter()) {
+                    self.encode_runtime_value(ctx, executable, None, capture, capture_layout, lanes)?;
+                }
+                Ok(())
+            }
+        }
     }
 }
 
@@ -2174,26 +2537,6 @@ fn entry_fn_ids(module: &mut ModuleBuilder, entries: &[BackendEntry]) -> HashMap
         out.insert(ControlEntryId::from_u32(index as u32), module.fresh_fn_id());
     }
     out
-}
-
-fn entry_name(base: &str, entry_id: ControlEntryId, origin: &BackendEntryOrigin) -> String {
-    match origin {
-        BackendEntryOrigin::Clause => panic!("clause entries are named by their owning clause"),
-        BackendEntryOrigin::Branch => format!("{base}__branch_{}", entry_id.as_u32()),
-        BackendEntryOrigin::ReceiveOutcome => format!("{base}__receive_{}", entry_id.as_u32()),
-        BackendEntryOrigin::DeliveredResume { .. } => {
-            format!("{base}__resume_{}", entry_id.as_u32())
-        }
-    }
-}
-
-fn entry_category(origin: &BackendEntryOrigin) -> FnCategory {
-    match origin {
-        BackendEntryOrigin::Clause => panic!("clause entries are named by their owning clause"),
-        BackendEntryOrigin::Branch => FnCategory::ControlFlowCont,
-        BackendEntryOrigin::ReceiveOutcome => FnCategory::CpsCont,
-        BackendEntryOrigin::DeliveredResume { .. } => FnCategory::CpsCont,
-    }
 }
 
 fn annotate_back_edges(module: &mut crate::fz_ir::Module) {
@@ -2349,44 +2692,59 @@ fn annotate_back_edges(module: &mut crate::fz_ir::Module) {
     }
 }
 
+#[derive(Clone)]
+enum NativeLocalValue {
+    Runtime(Var),
+    TupleFields(Vec<NativeLocalValue>),
+    DirectCallable {
+        function: FunctionId,
+        captures: Vec<NativeLocalValue>,
+    },
+}
+
 #[derive(Default, Clone)]
 struct ValueEnv {
-    vars: HashMap<ValueId, Var>,
+    values: HashMap<ValueId, NativeLocalValue>,
 }
 
 impl ValueEnv {
-    fn insert(&mut self, value: ValueId, var: Var) {
-        self.vars.insert(value, var);
+    fn insert(&mut self, value: ValueId, bound: NativeLocalValue) {
+        self.values.insert(value, bound);
     }
 
-    fn var(&self, value: ValueId) -> Option<Var> {
-        self.vars.get(&value).copied()
+    fn value(&self, value: ValueId) -> Option<&NativeLocalValue> {
+        self.values.get(&value)
     }
 
-    fn vars(&self, values: &[ValueId]) -> Option<Vec<Var>> {
-        values.iter().map(|value| self.var(*value)).collect()
+    fn cloned_value(&self, value: ValueId) -> Option<NativeLocalValue> {
+        self.value(value).cloned()
     }
 
-    fn call_args(&self, args: &[crate::compiler2::BackendCallArg]) -> Option<Vec<Var>> {
-        args.iter().map(|arg| self.var(arg.value)).collect()
+    fn values(&self, ids: &[ValueId]) -> Option<Vec<NativeLocalValue>> {
+        ids.iter().map(|value| self.cloned_value(*value)).collect()
     }
 
-    fn capture_args(&self, captured: &[ValueId]) -> Option<Vec<Var>> {
-        captured.iter().map(|value| self.var(*value)).collect()
+    fn runtime_var(&self, value: ValueId) -> Option<Var> {
+        match self.value(value) {
+            Some(NativeLocalValue::Runtime(var)) => Some(*var),
+            _ => None,
+        }
     }
 }
 
 #[derive(Clone)]
 struct DispatchState {
-    inputs: Vec<Var>,
+    dispatch_inputs: Vec<Var>,
+    forwarded_args: Vec<Var>,
     pinned: Vec<Var>,
     values: HashMap<SubjectId, Var>,
 }
 
 impl DispatchState {
-    fn new(inputs: Vec<Var>, pinned: Vec<Var>) -> Self {
+    fn new(dispatch_inputs: Vec<Var>, forwarded_args: Vec<Var>, pinned: Vec<Var>) -> Self {
         Self {
-            inputs,
+            dispatch_inputs,
+            forwarded_args,
             pinned,
             values: HashMap::new(),
         }
@@ -2406,6 +2764,7 @@ struct NativeFnCtx {
     entry_abi: NativeEntryAbi,
     param_reprs: Vec<AbiValueRepr>,
     return_ty: Ty,
+    return_lane_reprs: Vec<AbiValueRepr>,
     return_abi: ReturnAbi,
     effects: EffectSummary,
     next_token: u32,
@@ -2420,6 +2779,7 @@ impl NativeFnCtx {
         entry_abi: NativeEntryAbi,
         param_reprs: Vec<AbiValueRepr>,
         return_ty: Ty,
+        return_lane_reprs: Vec<AbiValueRepr>,
         return_abi: ReturnAbi,
         effects: EffectSummary,
     ) -> Self {
@@ -2437,6 +2797,7 @@ impl NativeFnCtx {
             entry_abi,
             param_reprs,
             return_ty,
+            return_lane_reprs,
             return_abi,
             effects,
             next_token: 0,
@@ -2510,6 +2871,7 @@ impl NativeFnCtx {
             entry_abi: self.entry_abi,
             param_reprs: self.param_reprs,
             return_ty: self.return_ty,
+            return_lane_reprs: self.return_lane_reprs,
             return_abi: self.return_abi,
             value_types: self.value_types,
             callable_value_boundaries: self.callable_value_boundaries,
@@ -2520,17 +2882,104 @@ impl NativeFnCtx {
     }
 }
 
-fn bind_backend_value(
+fn env_local_value(env: &ValueEnv, value: ValueId) -> Result<NativeLocalValue, FatalError> {
+    env.cloned_value(value).ok_or(FatalError)
+}
+
+fn runtime_param_tys(layout: &RuntimeParamLayout) -> Vec<Ty> {
+    layout
+        .inputs
+        .iter()
+        .flat_map(|input| input.value_layout().lane_tys())
+        .collect()
+}
+
+fn bind_executable_inputs(
+    executable: &BackendExecutable,
+    params: &[Var],
+) -> Result<Vec<Option<NativeLocalValue>>, FatalError> {
+    let semantic_arity = executable.key.activation.input.len();
+    let mut bound = vec![None; semantic_arity];
+    let mut lane_index = 0;
+    for input in &executable.runtime_params.inputs {
+        let semantic_index = input.semantic_index();
+        let value = match input.value_layout() {
+            RuntimeValueLayout::Omitted => None,
+            layout => Some(decode_runtime_value(params, layout, &mut lane_index)?),
+        };
+        bound[semantic_index] = value;
+    }
+    if lane_index != params.len() {
+        return Err(FatalError);
+    }
+    Ok(bound)
+}
+
+fn decode_runtime_value(
+    params: &[Var],
+    layout: &RuntimeValueLayout,
+    lane_index: &mut usize,
+) -> Result<NativeLocalValue, FatalError> {
+    match layout {
+        RuntimeValueLayout::Omitted => Err(FatalError),
+        RuntimeValueLayout::Value { .. } => {
+            let value = *params.get(*lane_index).ok_or(FatalError)?;
+            *lane_index += 1;
+            Ok(NativeLocalValue::Runtime(value))
+        }
+        RuntimeValueLayout::TupleFields { fields } => Ok(NativeLocalValue::TupleFields(
+            fields
+                .iter()
+                .map(|field| decode_runtime_value(params, field, lane_index))
+                .collect::<Result<Vec<_>, _>>()?,
+        )),
+        RuntimeValueLayout::DirectCallable { function, captures } => Ok(NativeLocalValue::DirectCallable {
+            function: *function,
+            captures: captures
+                .iter()
+                .map(|capture| decode_runtime_value(params, capture, lane_index))
+                .collect::<Result<Vec<_>, _>>()?,
+        }),
+    }
+}
+
+fn direct_callable_captures_for_layout(
+    value: &NativeLocalValue,
+    function: FunctionId,
+    capture_count: usize,
+) -> Result<Vec<NativeLocalValue>, FatalError> {
+    match value {
+        NativeLocalValue::DirectCallable {
+            function: actual,
+            captures,
+        } if *actual == function && captures.len() == capture_count => Ok(captures.clone()),
+        _ => Err(FatalError),
+    }
+}
+
+fn bind_runtime_value(
     ctx: &mut NativeFnCtx,
     executable: &BackendExecutable,
     env: &mut ValueEnv,
     value: ValueId,
     var: Var,
 ) {
-    env.insert(value, var);
-    if let Some(ty) = executable.value_types.get(&value).copied() {
-        ctx.value_types.insert(var, ty);
+    bind_local_value(ctx, executable, env, value, NativeLocalValue::Runtime(var));
+}
+
+fn bind_local_value(
+    ctx: &mut NativeFnCtx,
+    executable: &BackendExecutable,
+    env: &mut ValueEnv,
+    value: ValueId,
+    bound: NativeLocalValue,
+) {
+    if let NativeLocalValue::Runtime(var) = &bound
+        && let Some(ty) = executable.value_types.get(&value).copied()
+    {
+        ctx.value_types.insert(*var, ty);
     }
+    env.insert(value, bound);
 }
 
 fn collect_callable_identity_needs(program: &BackendProgram) -> Vec<(FunctionId, usize)> {
@@ -2757,7 +3206,7 @@ fn lower_bit_size_ir(
         None => None,
         Some(super::super::body::LoweredBitSize::Literal(value)) => Some(BitSizeIr::Literal(*value)),
         Some(super::super::body::LoweredBitSize::Value(value)) => {
-            Some(BitSizeIr::Var(env.var(*value).ok_or(FatalError)?))
+            Some(BitSizeIr::Var(env.runtime_var(*value).ok_or(FatalError)?))
         }
     })
 }
@@ -2777,18 +3226,8 @@ fn abi_value_repr(world: &mut World<'_>, ty: Ty) -> AbiValueRepr {
     }
 }
 
-fn continuation_result_entry(
-    world: &mut World<'_>,
-    result_ty: Ty,
-    result_abi: &ReturnAbi,
-) -> (Vec<Ty>, Vec<AbiValueRepr>) {
-    match result_abi {
-        ReturnAbi::Value(repr) => (vec![result_ty], vec![*repr]),
-        ReturnAbi::TupleFields(reprs) => (
-            world.types_mut().tuple_projections(&result_ty, reprs.len()),
-            reprs.clone(),
-        ),
-    }
+fn continuation_result_entry(result_layout: &RuntimeValueLayout) -> (Vec<Ty>, Vec<AbiValueRepr>) {
+    (result_layout.lane_tys(), result_layout.abi_reprs())
 }
 
 fn missing_backend_value(root_id: RootId, value: ValueId) -> FatalError {

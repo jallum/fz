@@ -271,6 +271,7 @@ pub struct ExecutableRuntimeDemand {
     pub return_demand: RuntimeDemand,
     pub input_demands: Vec<RuntimeDemand>,
     pub value_demands: HashMap<ValueId, RuntimeDemand>,
+    pub entry_capture_demands: HashMap<ControlEntryId, Vec<RuntimeDemand>>,
     pub call_arg_demands: HashMap<CallSiteId, Vec<RuntimeDemand>>,
     pub callable_materializations: HashMap<ValueId, CallableMaterialization>,
 }
@@ -283,6 +284,11 @@ impl ExecutableRuntimeDemand {
         }
         for demand in self.value_demands.values_mut() {
             demand.alpha_normalize(types);
+        }
+        for demands in self.entry_capture_demands.values_mut() {
+            for demand in demands {
+                demand.alpha_normalize(types);
+            }
         }
         for demands in self.call_arg_demands.values_mut() {
             for demand in demands {

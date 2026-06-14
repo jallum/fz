@@ -325,8 +325,14 @@ fn collect_entry_external_demands(
     {
         external.insert(value, demand);
     }
-    for capture in &entry.captures {
-        if let Some(demand) = live.remove(capture) {
+    let capture_demands = entry
+        .captures
+        .iter()
+        .map(|capture| live.remove(capture).unwrap_or(RuntimeDemand::Ignore))
+        .collect::<Vec<_>>();
+    record_entry_capture_demands(out, entry_id, &capture_demands);
+    for (capture, demand) in entry.captures.iter().zip(capture_demands) {
+        if !demand.is_ignore() {
             join_map_demand(&mut external, *capture, demand);
         }
     }
@@ -352,7 +358,7 @@ fn collect_entry_live_demands(
     let mut live = HashMap::new();
     match &entry.tail {
         LoweredTail::Value { value, dest } => {
-            let boundary_demand = demand_for_destination(
+            let (boundary_demand, external_demands) = destination_demands(
                 world,
                 executable,
                 entries,
@@ -365,6 +371,7 @@ fn collect_entry_live_demands(
             );
             let demand = boundary_value_demand(world, facts, *value, boundary_demand);
             note_live_demand(world, out, &mut live, *value, demand);
+            merge_live_demands(&mut live, external_demands);
         }
         LoweredTail::DirectCall {
             value,
@@ -373,7 +380,7 @@ fn collect_entry_live_demands(
             dest,
             ..
         } => {
-            let boundary_demand = demand_for_destination(
+            let (boundary_demand, external_demands) = destination_demands(
                 world,
                 executable,
                 entries,
@@ -387,6 +394,7 @@ fn collect_entry_live_demands(
             let demand = boundary_value_demand(world, facts, *value, boundary_demand);
             note_live_demand(world, out, &mut live, *value, demand.clone());
             record_call_return_demand(call_return_demands, *callsite, demand);
+            merge_live_demands(&mut live, external_demands);
             let arg_demands = direct_call_arg_demands(world, executable, *callsite, args.as_slice(), facts, demands);
             record_call_arg_demands(out, *callsite, arg_demands.as_slice());
             for (arg, demand) in args.iter().zip(arg_demands) {
@@ -401,7 +409,7 @@ fn collect_entry_live_demands(
             dest,
             ..
         } => {
-            let boundary_demand = demand_for_destination(
+            let (boundary_demand, external_demands) = destination_demands(
                 world,
                 executable,
                 entries,
@@ -415,6 +423,7 @@ fn collect_entry_live_demands(
             let demand = boundary_value_demand(world, facts, *value, boundary_demand);
             note_live_demand(world, out, &mut live, *value, demand.clone());
             record_call_return_demand(call_return_demands, *callsite, demand);
+            merge_live_demands(&mut live, external_demands);
             note_live_demand(
                 world,
                 out,
@@ -558,7 +567,7 @@ fn collect_entry_live_demands(
     live
 }
 
-fn demand_for_destination(
+fn destination_demands(
     world: &mut World<'_>,
     executable: &ExecutableKey,
     entries: &[LoweredEntry],
@@ -568,15 +577,15 @@ fn demand_for_destination(
     demands: &HashMap<ExecutableKey, ExecutableRuntimeDemand>,
     out: &mut ExecutableRuntimeDemand,
     call_return_demands: &mut HashMap<CallSiteId, RuntimeDemand>,
-) -> RuntimeDemand {
+) -> (RuntimeDemand, HashMap<ValueId, RuntimeDemand>) {
     match dest {
-        ControlDestination::Return => outgoing_demand,
+        ControlDestination::Return => (outgoing_demand, HashMap::new()),
         ControlDestination::Deliver(entry_id) => {
             let delivered = entries[entry_id.as_u32() as usize]
                 .origin
                 .input_value()
                 .expect("delivered control edges should target a resume entry");
-            collect_entry_external_demands(
+            let mut external_demands = collect_entry_external_demands(
                 world,
                 executable,
                 entries,
@@ -586,9 +595,9 @@ fn demand_for_destination(
                 demands,
                 out,
                 call_return_demands,
-            )
-            .remove(&delivered)
-            .unwrap_or(RuntimeDemand::Ignore)
+            );
+            let delivered_demand = external_demands.remove(&delivered).unwrap_or(RuntimeDemand::Ignore);
+            (delivered_demand, external_demands)
         }
     }
 }
@@ -602,6 +611,7 @@ fn propagate_steps_reverse(
     demands: &HashMap<ExecutableKey, ExecutableRuntimeDemand>,
     out: &mut ExecutableRuntimeDemand,
 ) {
+    let asserted_tuple_arities = step_asserted_tuple_arities(steps);
     for step in steps.iter().rev() {
         match step {
             LoweredStep::Const { .. } | LoweredStep::FunctionRef { .. } => {}
@@ -729,18 +739,15 @@ fn propagate_steps_reverse(
                 }
             }
             LoweredStep::AssertTuple { source, arity } => {
-                note_live_demand(
-                    world,
-                    out,
-                    live,
-                    *source,
-                    RuntimeDemand::tuple_fields(vec![RuntimeDemand::Ignore; *arity]),
-                );
+                if !live.contains_key(source) || asserted_tuple_arities.get(source).copied() != Some(*arity) {
+                    note_live_demand(world, out, live, *source, RuntimeDemand::Value);
+                }
             }
             LoweredStep::TupleField { value, source, index } => {
                 let demand = take_live_demand(live, *value);
                 if !demand.is_ignore() {
-                    let mut fields = vec![RuntimeDemand::Ignore; index + 1];
+                    let arity = asserted_tuple_arities.get(source).copied().unwrap_or(index + 1);
+                    let mut fields = vec![RuntimeDemand::Ignore; arity];
                     fields[*index] = demand;
                     note_live_demand(world, out, live, *source, RuntimeDemand::tuple_fields(fields));
                 }
@@ -787,6 +794,16 @@ fn propagate_steps_reverse(
             }
         }
     }
+}
+
+fn step_asserted_tuple_arities(steps: &[LoweredStep]) -> HashMap<ValueId, usize> {
+    let mut arities = HashMap::new();
+    for step in steps {
+        if let LoweredStep::AssertTuple { source, arity } = step {
+            arities.insert(*source, *arity);
+        }
+    }
+    arities
 }
 
 fn note_clause_matcher_demands(
@@ -1212,6 +1229,23 @@ fn record_call_arg_demands(out: &mut ExecutableRuntimeDemand, callsite: CallSite
     let slot = out
         .call_arg_demands
         .entry(callsite)
+        .or_insert_with(|| vec![RuntimeDemand::Ignore; observed.len()]);
+    if slot.len() < observed.len() {
+        slot.resize(observed.len(), RuntimeDemand::Ignore);
+    }
+    for (existing, observed) in slot.iter_mut().zip(observed.iter()) {
+        existing.join_assign(observed);
+    }
+}
+
+fn record_entry_capture_demands(
+    out: &mut ExecutableRuntimeDemand,
+    entry_id: ControlEntryId,
+    observed: &[RuntimeDemand],
+) {
+    let slot = out
+        .entry_capture_demands
+        .entry(entry_id)
         .or_insert_with(|| vec![RuntimeDemand::Ignore; observed.len()]);
     if slot.len() < observed.len() {
         slot.resize(observed.len(), RuntimeDemand::Ignore);

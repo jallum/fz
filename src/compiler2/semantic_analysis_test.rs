@@ -553,3 +553,60 @@ fn compiler2_runtime_demand_makes_opaque_callable_use_explicit() {
         "runtime-demand telemetry should count opaque callable demands",
     );
 }
+
+#[test]
+fn compiler2_runtime_demand_keeps_dbg_inputs_live_when_the_return_is_ignored() {
+    let tel = crate::telemetry::ConfiguredTelemetry::new();
+    let functions = FunctionCapture::new();
+    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    let runtime_demands = RuntimeDemandCapture::new();
+    tel.attach(
+        &["fz", "compiler2", "runtime_demand", "defined"],
+        runtime_demands.handler(),
+    );
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("heap_stats_dbg_resume.fz".to_string()),
+        text: r#"
+fn main() do
+  stats = Process.heap_alloc_stats()
+  dbg(stats)
+  dbg(stats[:list_cons_allocs])
+end
+"#
+        .to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    let outcome = compiler.drive();
+    assert!(
+        matches!(outcome, DriveOutcome::Resolved)
+            || matches!(outcome, DriveOutcome::Fatal { ref job } if *job == Job::LowerNativeProgram(root_id)),
+        "heap_stats dbg-resume runtime-demand probe should either resolve or stop at the known downstream native blocker: {outcome:?}",
+    );
+
+    let dbg = functions.id("dbg", 1);
+    let record = runtime_demands.last(root_id);
+    let (_, demand) = runtime_demand_for_function(&record, dbg);
+    assert_eq!(
+        demand.input_demands,
+        vec![RuntimeDemand::Value],
+        "Kernel.dbg/1 must still demand its input as a runtime value even when callers ignore the returned value",
+    );
+
+    let main = functions.id("main", 0);
+    let (_, main_demand) = runtime_demand_for_function(&record, main);
+    assert!(
+        main_demand
+            .entry_capture_demands
+            .values()
+            .any(|demands| demands.as_slice() == [RuntimeDemand::Value]),
+        "the continuation after dbg(stats) must keep one captured runtime value live for the later field access: {main_demand:?}",
+    );
+}

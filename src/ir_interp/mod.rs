@@ -85,11 +85,12 @@ struct BackendContinuation {
 
 #[derive(Clone, Debug)]
 enum BackendValue {
+    Omitted,
     Runtime(AnyValue),
-    TupleFields(Vec<AnyValue>),
+    TupleFields(Vec<BackendValue>),
     DirectCallable {
         function: crate::compiler2::FunctionId,
-        captures: Vec<AnyValue>,
+        captures: Vec<BackendValue>,
     },
 }
 

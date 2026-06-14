@@ -12,7 +12,7 @@ use super::value::{
 use super::*;
 use crate::compiler2::{
     BackendBody, BackendEntry, BackendExecutable, BackendProgram, BackendStep as ProgramStep, BackendTail, CallTarget,
-    ControlDestination, ExecutableDispatch, ReturnAbi, RuntimeInputLayout, ValueId,
+    ControlDestination, ExecutableDispatch, RuntimeValueLayout, ValueId,
 };
 use crate::compiler2::{ExecutableNeed, FunctionId};
 use crate::exec::runtime::output_hook_thunk;
@@ -680,22 +680,41 @@ fn step_eval_entry(
                         AnyValue::FnRef(fn_id) => (fn_id, Vec::new()),
                         other => unpack_closure(other.value(runtime.cur_proc())?)?,
                     };
-                    (FunctionId::from_fn_id(fn_id), captures)
+                    (
+                        FunctionId::from_fn_id(fn_id),
+                        captures.into_iter().map(BackendValue::Runtime).collect(),
+                    )
                 }
             };
             let fn_id = FnId(function.as_u32());
             let executable_target = match target {
                 Some(target) => *target,
                 None => {
+                    let capture_values = captures
+                        .iter()
+                        .map(|value| materialize_backend_value(runtime.cur_proc(), value))
+                        .collect::<Result<Vec<_>, _>>()?;
                     let arg_values = materialize_call_args(runtime.cur_proc(), &env, args)?;
-                    resolve_backend_callable_executable(runtime, types, module, program, fn_id, &captures, &arg_values)?
+                    resolve_backend_callable_executable(
+                        runtime,
+                        types,
+                        module,
+                        program,
+                        fn_id,
+                        &capture_values,
+                        &arg_values,
+                    )?
                 }
             };
             let callee_executable = program
                 .executables
                 .get(executable_target)
                 .ok_or_else(|| format!("backend executable {} is out of bounds", executable_target))?;
-            let mut call_args = captures.clone();
+            let mut call_args = encode_runtime_inputs(
+                runtime.cur_proc(),
+                &captures,
+                &callee_executable.runtime_params.inputs[..captures.len()],
+            )?;
             call_args.extend(encode_call_args(
                 runtime,
                 callee_executable,
@@ -1010,7 +1029,7 @@ fn eval_steps(
                 ) {
                     BackendValue::DirectCallable {
                         function: *function,
-                        captures: env_values(runtime.cur_proc(), env, captures)?,
+                        captures: env_get_values(env, captures)?,
                     }
                 } else {
                     BackendValue::Runtime(make_closure(
@@ -1080,18 +1099,21 @@ fn eval_steps(
             },
             ProgramStep::TupleField { value, source, index } => {
                 let field = match env_get_value(env, *source)? {
-                    BackendValue::TupleFields(fields) => *fields
+                    BackendValue::TupleFields(fields) => fields
                         .get(*index)
+                        .cloned()
                         .ok_or_else(|| format!("match_error: tuple-field index {} is out of bounds", index))?,
                     other => {
                         let source = materialize_backend_value(runtime.cur_proc(), &other)?;
-                        with_value_ref(runtime.cur_proc(), source, "backend tuple field", |struct_ref| {
-                            fz_struct_get_field_ref(runtime.cur_proc(), struct_ref, (*index as u32) * 8)
-                        })
-                        .and_then(|ref_word| interp_value_from_ref_word(ref_word, "backend tuple field"))?
+                        BackendValue::Runtime(
+                            with_value_ref(runtime.cur_proc(), source, "backend tuple field", |struct_ref| {
+                                fz_struct_get_field_ref(runtime.cur_proc(), struct_ref, (*index as u32) * 8)
+                            })
+                            .and_then(|ref_word| interp_value_from_ref_word(ref_word, "backend tuple field"))?,
+                        )
                     }
                 };
-                env.insert(*value, BackendValue::Runtime(field));
+                env.insert(*value, field);
             }
             ProgramStep::AssertEmptyList { source } => {
                 if !env_get(runtime.cur_proc(), env, *source)?.is_empty_list() {
@@ -1254,20 +1276,11 @@ fn delivered_env(
         crate::compiler2::BackendEntryOrigin::Clause
         | crate::compiler2::BackendEntryOrigin::Branch
         | crate::compiler2::BackendEntryOrigin::ReceiveOutcome => {}
-        crate::compiler2::BackendEntryOrigin::DeliveredResume { value, return_abi } => {
-            let delivered = delivered.ok_or_else(|| {
-                format!(
-                    "backend entry {} expected a delivered value but none was provided",
-                    entry_id.as_u32()
-                )
-            })?;
-            let bound = match return_abi {
-                ReturnAbi::Value(_) => delivered,
-                ReturnAbi::TupleFields(reprs) => {
-                    BackendValue::TupleFields(extract_tuple_fields(runtime.cur_proc(), &delivered, reprs.len())?)
-                }
-            };
-            next.insert(*value, bound);
+        crate::compiler2::BackendEntryOrigin::DeliveredResume { value, layout } => {
+            let bound = bind_delivered_value(runtime.cur_proc(), entry_id, delivered.as_ref(), layout)?;
+            if let Some(bound) = bound {
+                next.insert(*value, bound);
+            }
         }
     }
     for capture in &entry.captures {
@@ -1359,20 +1372,19 @@ fn capture_backend_continuation_env(
 
 fn publish_backend_capture(proc: *mut Process, value: &BackendValue) -> Result<BackendValue, String> {
     Ok(match value {
+        BackendValue::Omitted => BackendValue::Omitted,
         BackendValue::Runtime(value) => BackendValue::Runtime(publish_runtime_value(proc, *value)?),
         BackendValue::TupleFields(fields) => BackendValue::TupleFields(
             fields
                 .iter()
-                .copied()
-                .map(|value| publish_runtime_value(proc, value))
+                .map(|value| publish_backend_capture(proc, value))
                 .collect::<Result<Vec<_>, _>>()?,
         ),
         BackendValue::DirectCallable { function, captures } => BackendValue::DirectCallable {
             function: *function,
             captures: captures
                 .iter()
-                .copied()
-                .map(|value| publish_runtime_value(proc, value))
+                .map(|value| publish_backend_capture(proc, value))
                 .collect::<Result<Vec<_>, _>>()?,
         },
     })
@@ -1395,6 +1407,10 @@ fn env_values(
     values: &[ValueId],
 ) -> Result<Vec<AnyValue>, String> {
     values.iter().map(|value| env_get(proc, env, *value)).collect()
+}
+
+fn env_get_values(env: &HashMap<ValueId, BackendValue>, values: &[ValueId]) -> Result<Vec<BackendValue>, String> {
+    values.iter().map(|value| env_get_value(env, *value)).collect()
 }
 
 fn local_dispatch_pinned(
@@ -1441,59 +1457,7 @@ fn bind_executable_inputs(
     let mut lane_index = 0;
     for input in &executable.runtime_params.inputs {
         let semantic_index = input.semantic_index();
-        let value = match input {
-            RuntimeInputLayout::Omitted { .. } => None,
-            RuntimeInputLayout::Value { .. } => {
-                let value = *args.get(lane_index).ok_or_else(|| {
-                    format!(
-                        "backend executable {} expected runtime lane {}",
-                        executable.key.activation.function.as_u32(),
-                        lane_index
-                    )
-                })?;
-                lane_index += 1;
-                Some(BackendValue::Runtime(value))
-            }
-            RuntimeInputLayout::TupleFields { field_reprs, .. } => {
-                let end = lane_index + field_reprs.len();
-                let fields = args
-                    .get(lane_index..end)
-                    .ok_or_else(|| {
-                        format!(
-                            "backend executable {} expected {} tuple-field lane(s) starting at {}",
-                            executable.key.activation.function.as_u32(),
-                            field_reprs.len(),
-                            lane_index
-                        )
-                    })?
-                    .to_vec();
-                lane_index = end;
-                Some(BackendValue::TupleFields(fields))
-            }
-            RuntimeInputLayout::DirectCallableCaptures {
-                function,
-                capture_reprs,
-                ..
-            } => {
-                let end = lane_index + capture_reprs.len();
-                let captures = args
-                    .get(lane_index..end)
-                    .ok_or_else(|| {
-                        format!(
-                            "backend executable {} expected {} direct-callable capture lane(s) starting at {}",
-                            executable.key.activation.function.as_u32(),
-                            capture_reprs.len(),
-                            lane_index
-                        )
-                    })?
-                    .to_vec();
-                lane_index = end;
-                Some(BackendValue::DirectCallable {
-                    function: *function,
-                    captures,
-                })
-            }
-        };
+        let value = decode_runtime_input(executable, args, input.value_layout(), &mut lane_index)?;
         bound[semantic_index] = value;
     }
     if lane_index != args.len() {
@@ -1509,13 +1473,24 @@ fn bind_executable_inputs(
 
 fn materialize_backend_value(proc: *mut Process, value: &BackendValue) -> Result<AnyValue, String> {
     match value {
+        BackendValue::Omitted => Err("backend value was omitted and cannot be materialized".to_string()),
         BackendValue::Runtime(value) => Ok(*value),
-        BackendValue::TupleFields(fields) => make_tuple_on_proc(proc, fields.clone()),
+        BackendValue::TupleFields(fields) => make_tuple_on_proc(
+            proc,
+            fields
+                .iter()
+                .map(|field| materialize_backend_value(proc, field))
+                .collect::<Result<Vec<_>, _>>()?,
+        ),
         BackendValue::DirectCallable { function, captures } => {
+            let captures = captures
+                .iter()
+                .map(|capture| materialize_backend_value(proc, capture))
+                .collect::<Result<Vec<_>, _>>()?;
             if captures.is_empty() {
                 Ok(AnyValue::FnRef(FnId(function.as_u32())))
             } else {
-                make_closure_on_proc(proc, function.as_u32(), captures.clone())
+                make_closure_on_proc(proc, function.as_u32(), captures)
             }
         }
     }
@@ -1551,28 +1526,119 @@ fn encode_call_args(
         .zip(executable.runtime_params.inputs.iter().skip(semantic_start))
     {
         let value = env_get_value(env, arg.value)?;
-        match layout {
-            RuntimeInputLayout::Omitted { .. } => {}
-            RuntimeInputLayout::Value { .. } => lanes.push(materialize_backend_value(runtime.cur_proc(), &value)?),
-            RuntimeInputLayout::TupleFields { field_reprs, .. } => {
-                lanes.extend(extract_tuple_fields(runtime.cur_proc(), &value, field_reprs.len())?);
-            }
-            RuntimeInputLayout::DirectCallableCaptures {
-                function,
-                capture_reprs,
-                ..
-            } => lanes.extend(extract_direct_callable(
-                runtime.cur_proc(),
-                &value,
-                *function,
-                capture_reprs.len(),
-            )?),
-        }
+        encode_runtime_value(runtime.cur_proc(), &value, layout.value_layout(), &mut lanes)?;
     }
     Ok(lanes)
 }
 
-fn extract_tuple_fields(proc: *mut Process, value: &BackendValue, arity: usize) -> Result<Vec<AnyValue>, String> {
+fn bind_delivered_value(
+    proc: *mut Process,
+    entry_id: crate::compiler2::ControlEntryId,
+    delivered: Option<&BackendValue>,
+    layout: &RuntimeValueLayout,
+) -> Result<Option<BackendValue>, String> {
+    match layout {
+        RuntimeValueLayout::Omitted => Ok(None),
+        _ => {
+            let delivered = delivered.ok_or_else(|| {
+                format!(
+                    "backend entry {} expected a delivered value but none was provided",
+                    entry_id.as_u32()
+                )
+            })?;
+            Ok(Some(project_backend_value(proc, delivered, layout)?))
+        }
+    }
+}
+
+fn decode_runtime_input(
+    executable: &BackendExecutable,
+    args: &[AnyValue],
+    layout: &RuntimeValueLayout,
+    lane_index: &mut usize,
+) -> Result<Option<BackendValue>, String> {
+    match layout {
+        RuntimeValueLayout::Omitted => Ok(None),
+        _ => decode_runtime_value(executable, args, layout, lane_index).map(Some),
+    }
+}
+
+fn decode_runtime_value(
+    executable: &BackendExecutable,
+    args: &[AnyValue],
+    layout: &RuntimeValueLayout,
+    lane_index: &mut usize,
+) -> Result<BackendValue, String> {
+    match layout {
+        RuntimeValueLayout::Omitted => Ok(BackendValue::Omitted),
+        RuntimeValueLayout::Value { .. } => {
+            let value = *args.get(*lane_index).ok_or_else(|| {
+                format!(
+                    "backend executable {} expected runtime lane {}",
+                    executable.key.activation.function.as_u32(),
+                    *lane_index
+                )
+            })?;
+            *lane_index += 1;
+            Ok(BackendValue::Runtime(value))
+        }
+        RuntimeValueLayout::TupleFields { fields } => Ok(BackendValue::TupleFields(
+            fields
+                .iter()
+                .map(|field| decode_runtime_value(executable, args, field, lane_index))
+                .collect::<Result<Vec<_>, _>>()?,
+        )),
+        RuntimeValueLayout::DirectCallable { function, captures } => Ok(BackendValue::DirectCallable {
+            function: *function,
+            captures: captures
+                .iter()
+                .map(|capture| decode_runtime_value(executable, args, capture, lane_index))
+                .collect::<Result<Vec<_>, _>>()?,
+        }),
+    }
+}
+
+fn project_backend_value(
+    proc: *mut Process,
+    value: &BackendValue,
+    layout: &RuntimeValueLayout,
+) -> Result<BackendValue, String> {
+    match layout {
+        RuntimeValueLayout::Omitted => Ok(BackendValue::Omitted),
+        RuntimeValueLayout::Value { .. } => Ok(materialize_runtime_projection(proc, value)?),
+        RuntimeValueLayout::TupleFields { fields } => {
+            let tuple_fields = tuple_fields_for_layout(proc, value, fields.len())?;
+            Ok(BackendValue::TupleFields(
+                tuple_fields
+                    .iter()
+                    .zip(fields.iter())
+                    .map(|(field_value, field_layout)| project_backend_value(proc, field_value, field_layout))
+                    .collect::<Result<Vec<_>, _>>()?,
+            ))
+        }
+        RuntimeValueLayout::DirectCallable { function, captures } => {
+            let callable_captures = direct_callable_captures_for_layout(proc, value, *function, captures.len())?;
+            Ok(BackendValue::DirectCallable {
+                function: *function,
+                captures: callable_captures
+                    .iter()
+                    .zip(captures.iter())
+                    .map(|(capture_value, capture_layout)| project_backend_value(proc, capture_value, capture_layout))
+                    .collect::<Result<Vec<_>, _>>()?,
+            })
+        }
+    }
+}
+
+fn materialize_runtime_projection(proc: *mut Process, value: &BackendValue) -> Result<BackendValue, String> {
+    Ok(BackendValue::Runtime(materialize_backend_value(proc, value)?))
+}
+
+fn tuple_fields_for_layout(
+    proc: *mut Process,
+    value: &BackendValue,
+    arity: usize,
+) -> Result<Vec<BackendValue>, String> {
     match value {
         BackendValue::TupleFields(fields) => {
             if fields.len() != arity {
@@ -1592,18 +1658,19 @@ fn extract_tuple_fields(proc: *mut Process, value: &BackendValue, arity: usize) 
                         fz_struct_get_field_ref(proc, struct_ref, (index as u32) * 8)
                     })
                     .and_then(|ref_word| interp_value_from_ref_word(ref_word, "backend tuple field lane"))
+                    .map(BackendValue::Runtime)
                 })
                 .collect()
         }
     }
 }
 
-fn extract_direct_callable(
+fn direct_callable_captures_for_layout(
     proc: *mut Process,
     value: &BackendValue,
     function: FunctionId,
     capture_count: usize,
-) -> Result<Vec<AnyValue>, String> {
+) -> Result<Vec<BackendValue>, String> {
     match value {
         BackendValue::DirectCallable {
             function: actual,
@@ -1624,7 +1691,48 @@ fn extract_direct_callable(
                     fn_id.0
                 ));
             }
-            Ok(captures)
+            Ok(captures.into_iter().map(BackendValue::Runtime).collect())
+        }
+    }
+}
+
+fn encode_runtime_inputs(
+    proc: *mut Process,
+    values: &[BackendValue],
+    layouts: &[crate::compiler2::RuntimeInputLayout],
+) -> Result<Vec<AnyValue>, String> {
+    let mut lanes = Vec::new();
+    for (value, layout) in values.iter().zip(layouts.iter()) {
+        encode_runtime_value(proc, value, layout.value_layout(), &mut lanes)?;
+    }
+    Ok(lanes)
+}
+
+fn encode_runtime_value(
+    proc: *mut Process,
+    value: &BackendValue,
+    layout: &RuntimeValueLayout,
+    lanes: &mut Vec<AnyValue>,
+) -> Result<(), String> {
+    match layout {
+        RuntimeValueLayout::Omitted => Ok(()),
+        RuntimeValueLayout::Value { .. } => {
+            lanes.push(materialize_backend_value(proc, value)?);
+            Ok(())
+        }
+        RuntimeValueLayout::TupleFields { fields } => {
+            let tuple_fields = tuple_fields_for_layout(proc, value, fields.len())?;
+            for (field_value, field_layout) in tuple_fields.iter().zip(fields.iter()) {
+                encode_runtime_value(proc, field_value, field_layout, lanes)?;
+            }
+            Ok(())
+        }
+        RuntimeValueLayout::DirectCallable { function, captures } => {
+            let callable_captures = direct_callable_captures_for_layout(proc, value, *function, captures.len())?;
+            for (capture_value, capture_layout) in callable_captures.iter().zip(captures.iter()) {
+                encode_runtime_value(proc, capture_value, capture_layout, lanes)?;
+            }
+            Ok(())
         }
     }
 }

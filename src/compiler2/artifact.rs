@@ -69,6 +69,9 @@ pub struct MaterializedExecutable {
     pub return_ty: Ty,
     pub runtime_demand: ExecutableRuntimeDemand,
     pub runtime_params: RuntimeParamLayout,
+    pub return_layout: RuntimeValueLayout,
+    pub resume_layouts: Vec<Option<RuntimeValueLayout>>,
+    pub entry_capture_layouts: Vec<Vec<RuntimeValueLayout>>,
     pub value_types: HashMap<ValueId, Ty>,
     pub effects: EffectSummary,
     pub body: LoweredBody,
@@ -167,6 +170,9 @@ pub(crate) struct NativeBody {
     /// ABI lanes at the entry seam.
     pub param_reprs: Vec<AbiValueRepr>,
     pub return_ty: Ty,
+    /// ABI lanes delivered across internal return/continuation seams.
+    pub return_lane_reprs: Vec<AbiValueRepr>,
+    /// Boundary-facing callable contract metadata.
     pub return_abi: ReturnAbi,
     /// Final per-value types after Compiler2 lowering into CPS/native form.
     pub value_types: HashMap<Var, Ty>,
@@ -213,6 +219,9 @@ pub struct AbiReadyExecutable {
     pub param_reprs: Vec<AbiValueRepr>,
     pub runtime_demand: ExecutableRuntimeDemand,
     pub runtime_params: RuntimeParamLayout,
+    pub return_layout: RuntimeValueLayout,
+    pub resume_layouts: Vec<Option<RuntimeValueLayout>>,
+    pub entry_capture_layouts: Vec<Vec<RuntimeValueLayout>>,
     pub value_types: HashMap<ValueId, Ty>,
     pub value_reprs: HashMap<ValueId, AbiValueRepr>,
     pub effects: EffectSummary,
@@ -247,6 +256,9 @@ pub struct EmissionReadyExecutable {
     pub param_reprs: Vec<AbiValueRepr>,
     pub runtime_demand: ExecutableRuntimeDemand,
     pub runtime_params: RuntimeParamLayout,
+    pub return_layout: RuntimeValueLayout,
+    pub resume_layouts: Vec<Option<RuntimeValueLayout>>,
+    pub entry_capture_layouts: Vec<Vec<RuntimeValueLayout>>,
     pub value_types: HashMap<ValueId, Ty>,
     pub value_reprs: HashMap<ValueId, AbiValueRepr>,
     pub effects: EffectSummary,
@@ -280,6 +292,9 @@ pub struct BackendExecutable {
     pub param_reprs: Vec<AbiValueRepr>,
     pub runtime_demand: ExecutableRuntimeDemand,
     pub runtime_params: RuntimeParamLayout,
+    pub return_layout: RuntimeValueLayout,
+    pub resume_layouts: Vec<Option<RuntimeValueLayout>>,
+    pub entry_capture_layouts: Vec<Vec<RuntimeValueLayout>>,
     pub value_types: HashMap<ValueId, Ty>,
     pub value_reprs: HashMap<ValueId, AbiValueRepr>,
     pub effects: EffectSummary,
@@ -289,57 +304,71 @@ pub struct BackendExecutable {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeParamLayout {
     pub inputs: Vec<RuntimeInputLayout>,
-    pub reprs: Vec<AbiValueRepr>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RuntimeInputLayout {
-    Omitted {
-        semantic_index: usize,
-    },
+pub enum RuntimeValueLayout {
+    Omitted,
     Value {
-        semantic_index: usize,
+        ty: Ty,
         repr: AbiValueRepr,
     },
     TupleFields {
-        semantic_index: usize,
-        field_reprs: Vec<AbiValueRepr>,
+        fields: Vec<RuntimeValueLayout>,
     },
-    DirectCallableCaptures {
-        semantic_index: usize,
+    DirectCallable {
         function: FunctionId,
-        capture_tys: Vec<Ty>,
-        capture_reprs: Vec<AbiValueRepr>,
+        captures: Vec<RuntimeValueLayout>,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeInputLayout {
+    pub semantic_index: usize,
+    pub layout: RuntimeValueLayout,
 }
 
 impl RuntimeInputLayout {
     pub fn semantic_index(&self) -> usize {
-        match self {
-            Self::Omitted { semantic_index }
-            | Self::Value { semantic_index, .. }
-            | Self::TupleFields { semantic_index, .. }
-            | Self::DirectCallableCaptures { semantic_index, .. } => *semantic_index,
-        }
+        self.semantic_index
     }
 
     pub fn abi_reprs(&self) -> Vec<AbiValueRepr> {
+        self.value_layout().abi_reprs()
+    }
+
+    pub fn value_layout(&self) -> &RuntimeValueLayout {
+        &self.layout
+    }
+}
+
+impl RuntimeValueLayout {
+    pub fn abi_reprs(&self) -> Vec<AbiValueRepr> {
         match self {
-            Self::Omitted { .. } => Vec::new(),
+            Self::Omitted => Vec::new(),
             Self::Value { repr, .. } => vec![*repr],
-            Self::TupleFields { field_reprs, .. } => field_reprs.clone(),
-            Self::DirectCallableCaptures { capture_reprs, .. } => capture_reprs.clone(),
+            Self::TupleFields { fields } => fields.iter().flat_map(Self::abi_reprs).collect(),
+            Self::DirectCallable { captures, .. } => captures.iter().flat_map(Self::abi_reprs).collect(),
+        }
+    }
+
+    pub fn lane_tys(&self) -> Vec<Ty> {
+        match self {
+            Self::Omitted => Vec::new(),
+            Self::Value { ty, .. } => vec![*ty],
+            Self::TupleFields { fields } => fields.iter().flat_map(Self::lane_tys).collect(),
+            Self::DirectCallable { captures, .. } => captures.iter().flat_map(Self::lane_tys).collect(),
         }
     }
 }
 
 impl RuntimeParamLayout {
     pub fn from_inputs(inputs: Vec<RuntimeInputLayout>) -> Self {
-        let mut reprs = Vec::new();
-        for input in &inputs {
-            reprs.extend(input.abi_reprs());
-        }
-        Self { inputs, reprs }
+        Self { inputs }
+    }
+
+    pub fn abi_reprs(&self) -> Vec<AbiValueRepr> {
+        self.inputs.iter().flat_map(RuntimeInputLayout::abi_reprs).collect()
     }
 
     pub fn semantic_input(&self, semantic_index: usize) -> Option<&RuntimeInputLayout> {
@@ -518,6 +547,7 @@ pub struct BackendEntry {
     pub origin: BackendEntryOrigin,
     pub params: Vec<ValueId>,
     pub captures: Vec<ValueId>,
+    pub capture_layouts: Vec<RuntimeValueLayout>,
     pub reusable_cons_captures: Vec<ReusableConsCapture>,
     pub steps: Vec<BackendStep>,
     pub tail: BackendTail,
@@ -543,7 +573,7 @@ pub enum BackendEntryOrigin {
     Clause,
     Branch,
     ReceiveOutcome,
-    DeliveredResume { value: ValueId, return_abi: ReturnAbi },
+    DeliveredResume { value: ValueId, layout: RuntimeValueLayout },
 }
 
 impl BackendEntryOrigin {

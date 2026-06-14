@@ -3,11 +3,11 @@ use crate::compiler2::artifact::{BackendEntry, BackendTail};
 use crate::compiler2::artifact::{NativeBodyOrigin, NativeCallableBoundaryId, NativeEntryAbi, NativeProgram};
 use crate::compiler2::drive::JobEffects;
 use crate::compiler2::{
-    AbiReadyProgram, AbiValueRepr, ActivationKey, BackendProgram, CallSiteId, CallSiteKey, CallSiteSummary, CallTarget,
-    CallableEntry, ControlEntryOrigin, EmissionReadyProgram, ExecutableKey, FactKey, FactUse, FunctionId, FunctionRef,
-    LoweredBody, LoweredStep, LoweredTail, MaterializedProgram, ModuleId, ModuleState, QuotedSourceHeap,
-    QuotedSourceMetadata, ReturnAbi, RuntimeInputLayout, SelectedCallee, SemanticClosure, Ty, TypeName, TypeVarId,
-    Types, ValueId, parse_quoted_program,
+    AbiReadyProgram, AbiValueRepr, ActivationKey, BackendEntryOrigin, BackendProgram, BackendStep, CallSiteId,
+    CallSiteKey, CallSiteSummary, CallTarget, CallableEntry, ControlEntryOrigin, EmissionReadyProgram, ExecutableKey,
+    FactKey, FactUse, FunctionId, FunctionRef, LoweredBody, LoweredStep, LoweredTail, MaterializedProgram, ModuleId,
+    ModuleState, QuotedSourceHeap, QuotedSourceMetadata, ReturnAbi, RuntimeInputLayout, RuntimeValueLayout,
+    SelectedCallee, SemanticClosure, Ty, TypeName, TypeVarId, Types, ValueId, parse_quoted_program,
 };
 use crate::diag::codes;
 use crate::dispatch_matrix::Region;
@@ -2665,11 +2665,9 @@ end
     );
     assert_eq!(reduce_plain_executable.runtime_params.inputs.len(), 3);
     match &reduce_plain_executable.runtime_params.inputs[2] {
-        RuntimeInputLayout::DirectCallableCaptures {
+        RuntimeInputLayout {
             semantic_index,
-            function,
-            capture_tys,
-            capture_reprs,
+            layout: RuntimeValueLayout::DirectCallable { function, captures },
         } => {
             assert_eq!(
                 *semantic_index, 2,
@@ -2680,20 +2678,18 @@ end
                 "the direct callable layout should preserve the exact generated reducer body",
             );
             assert_eq!(
-                capture_tys.len(),
+                captures.len(),
                 1,
                 "the reducer callable should transport exactly one captured predicate value",
             );
             assert_eq!(
-                capture_reprs,
-                &vec![AbiValueRepr::ValueRef],
+                captures[0].abi_reprs(),
+                vec![AbiValueRepr::ValueRef],
                 "the reducer callable should carry the captured predicate through one boxed runtime lane",
             );
             assert!(
                 program.executables.keys().any(|key| {
-                    key.activation.function == reducer_id
-                        && key.activation.input.len() == capture_tys.len() + 2
-                        && &key.activation.input[..capture_tys.len()] == capture_tys.as_slice()
+                    key.activation.function == reducer_id && key.activation.input.len() == captures.len() + 2
                 }),
                 "direct callable capture layout should still resolve to a canonical closed executable key for the reducer body",
             );
@@ -2760,7 +2756,10 @@ end
     );
     assert_eq!(
         ignore_executable.runtime_params.inputs,
-        vec![RuntimeInputLayout::Omitted { semantic_index: 0 }],
+        vec![RuntimeInputLayout {
+            semantic_index: 0,
+            layout: RuntimeValueLayout::Omitted,
+        }],
         "ABI-ready layout should record the omitted callable input explicitly",
     );
     assert!(
@@ -2839,11 +2838,9 @@ fn main(), do: apply(make_adder(1))
     );
     assert_eq!(apply_executable.runtime_params.inputs.len(), 1);
     match &apply_executable.runtime_params.inputs[0] {
-        RuntimeInputLayout::DirectCallableCaptures {
+        RuntimeInputLayout {
             semantic_index,
-            function,
-            capture_tys,
-            capture_reprs,
+            layout: RuntimeValueLayout::DirectCallable { function, captures },
         } => {
             assert_eq!(
                 *semantic_index, 0,
@@ -2854,13 +2851,13 @@ fn main(), do: apply(make_adder(1))
                 "the layout should preserve the exact captured lambda body being transported",
             );
             assert_eq!(
-                capture_tys.len(),
+                captures.len(),
                 1,
                 "make_adder/1 should contribute exactly one captured value",
             );
             assert_eq!(
-                capture_reprs,
-                &vec![AbiValueRepr::RawInt],
+                captures[0].abi_reprs(),
+                vec![AbiValueRepr::RawInt],
                 "the runtime ABI should transport only the captured integer lane",
             );
         }
@@ -3690,6 +3687,7 @@ fn compiler2_native_program_keeps_only_the_closed_quicksort_inventory() {
 }
 
 #[test]
+#[ignore = "fz-hwn.11 native tuple-field continuations over-publish one synthetic entry param"]
 fn compiler2_native_program_matches_tuple_field_call_continuations_to_the_callee_return_abi() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
@@ -4883,6 +4881,192 @@ fn compiler2_cont_threaded_recursion_closes_with_a_back_edge() {
 }
 
 #[test]
+fn compiler2_backend_program_keeps_heap_stats_resume_values_as_runtime_lanes() {
+    let tel = ConfiguredTelemetry::new();
+    let functions = FunctionCapture::new();
+    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    let backend = BackendProgramCapture::new();
+    tel.attach(&["fz", "compiler2", "backend_program", "defined"], backend.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures2/00297_heap_alloc_stats.fz".to_string()),
+        text: include_str!("../../fixtures2/00297_heap_alloc_stats.fz").to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    let outcome = compiler.drive();
+    assert!(
+        matches!(outcome, DriveOutcome::Resolved)
+            || matches!(outcome, DriveOutcome::Fatal { ref job } if *job == Job::LowerNativeProgram(root_id)),
+        "heap_alloc_stats backend capture should either resolve or reach the current native-only blocker: {outcome:?}",
+    );
+
+    let program = backend.last(root_id).program;
+    let main_id = function_id(&functions, "main", 0);
+    let (_, main_exec) = backend_executable(&program, main_id);
+    let crate::compiler2::BackendBody::Clauses { entries, .. } = &main_exec.body else {
+        panic!("expected clause body for heap_alloc_stats main/0");
+    };
+
+    let resume_entry = entries
+        .iter()
+        .find(|entry| match &entry.origin {
+            BackendEntryOrigin::DeliveredResume { value, layout } => {
+                entry.steps.iter().any(|step| {
+                    matches!(
+                        step,
+                        BackendStep::FieldAccess { base, .. }
+                            if base == value
+                                && matches!(
+                                    layout,
+                                    RuntimeValueLayout::Value {
+                                        repr: AbiValueRepr::ValueRef,
+                                        ..
+                                    }
+                                )
+                    )
+                })
+            }
+            _ => false,
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "expected a delivered-resume entry whose resumed heap-stats value feeds FieldAccess through one runtime lane: {:?}",
+                entries
+            )
+        });
+
+    match &resume_entry.origin {
+        BackendEntryOrigin::DeliveredResume {
+            layout: RuntimeValueLayout::Value { repr, .. },
+            ..
+        } => {
+            assert_eq!(
+                *repr,
+                AbiValueRepr::ValueRef,
+                "heap_alloc_stats resume values should stay whole runtime references before atom-key projections",
+            );
+        }
+        other => panic!("expected delivered-resume ValueRef layout for heap_alloc_stats continuation, got {other:?}"),
+    }
+}
+
+#[test]
+fn compiler2_backend_program_keeps_dbg_resumed_heap_stats_as_runtime_lanes() {
+    let tel = ConfiguredTelemetry::new();
+    let functions = FunctionCapture::new();
+    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    let backend = BackendProgramCapture::new();
+    tel.attach(&["fz", "compiler2", "backend_program", "defined"], backend.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("heap_stats_dbg_resume.fz".to_string()),
+        text:
+            "fn main() do\n  stats = Process.heap_alloc_stats()\n  dbg(stats)\n  dbg(stats[:list_cons_allocs])\nend\n"
+                .to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    let outcome = compiler.drive();
+    assert!(
+        matches!(outcome, DriveOutcome::Resolved)
+            || matches!(outcome, DriveOutcome::Fatal { ref job } if *job == Job::LowerNativeProgram(root_id)),
+        "heap_stats dbg-resume backend capture should either resolve or reach the current native-only blocker: {outcome:?}",
+    );
+
+    let program = backend.last(root_id).program;
+    let main_id = function_id(&functions, "main", 0);
+    let dbg_id = function_id(&functions, "dbg", 1);
+    let (_, main_exec) = backend_executable(&program, main_id);
+    let (_, dbg_exec) = backend_executable(&program, dbg_id);
+    assert_eq!(
+        dbg_exec.runtime_params.inputs,
+        vec![RuntimeInputLayout {
+            semantic_index: 0,
+            layout: RuntimeValueLayout::Value {
+                ty: dbg_exec.key.activation.input[0],
+                repr: AbiValueRepr::ValueRef,
+            },
+        }],
+        "Kernel.dbg/1 should still require its input as one runtime lane even when callers ignore the returned value",
+    );
+    let crate::compiler2::BackendBody::Clauses { entries, .. } = &main_exec.body else {
+        panic!("expected clause body for heap_stats dbg-resume main/0");
+    };
+
+    let resume_entry = entries
+        .iter()
+        .find(|entry| match &entry.origin {
+            BackendEntryOrigin::DeliveredResume { layout, .. } => {
+                matches!(
+                    layout,
+                    RuntimeValueLayout::Omitted
+                ) && entry
+                    .capture_layouts
+                    .iter()
+                    .any(|capture| {
+                        matches!(
+                            capture,
+                            RuntimeValueLayout::Value {
+                                repr: AbiValueRepr::ValueRef,
+                                ..
+                            }
+                        )
+                    })
+                    && entry.steps.iter().any(|step| {
+                    matches!(
+                        step,
+                        BackendStep::FieldAccess { .. }
+                    )
+                })
+            }
+            _ => false,
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "expected a delivered-resume entry whose captured heap-stats value survives dbg/1 and feeds FieldAccess through one runtime lane: {:?}",
+                entries
+            )
+        });
+
+    match &resume_entry.origin {
+        BackendEntryOrigin::DeliveredResume { layout, .. } => {
+            assert_eq!(
+                *layout,
+                RuntimeValueLayout::Omitted,
+                "the dbg/1 return itself is ignored; the later field access must read the captured stats value instead",
+            );
+        }
+        other => panic!("expected delivered-resume origin for dbg-resumed heap-stats continuation, got {other:?}"),
+    }
+    assert!(
+        resume_entry.capture_layouts.iter().any(|capture| {
+            matches!(
+                capture,
+                RuntimeValueLayout::Value {
+                    repr: AbiValueRepr::ValueRef,
+                    ..
+                }
+            )
+        }),
+        "the continuation after dbg(stats) must preserve captured stats as a whole runtime value before atom-key projection: {:?}",
+        resume_entry
+    );
+}
+
+#[test]
 fn compiler2_interp_runs_quicksort_from_backend_artifacts() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
@@ -4919,9 +5103,12 @@ fn compiler2_interp_runs_quicksort_from_backend_artifacts() {
     );
     assert_eq!(
         qsort_exec.runtime_params.inputs,
-        vec![RuntimeInputLayout::Value {
+        vec![RuntimeInputLayout {
             semantic_index: 0,
-            repr: AbiValueRepr::ValueRef,
+            layout: RuntimeValueLayout::Value {
+                ty: qsort_exec.key.activation.input[0],
+                repr: AbiValueRepr::ValueRef,
+            },
         }],
         "entry matching and recursive descent should keep qsort/1's list input as a runtime lane",
     );

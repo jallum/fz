@@ -6,7 +6,7 @@
 //! required callable-entry inventory, and every extern callsite carries its
 //! concrete wire classes.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use crate::compiler::source::Span;
 use crate::diag::Diagnostic;
@@ -16,16 +16,15 @@ use crate::dispatch_matrix::pattern::{PatternDispatchPlan, PatternGuardDispatch,
 use crate::dispatch_matrix::{ComparisonValue, DispatchConst, DispatchNode, ProjectionKind, Region, SubjectSource};
 
 use super::super::artifact::{
-    AbiValueRepr, BackendBody, BackendCallArg, BackendCallableEntry, BackendClause, BackendEntry, BackendEntryOrigin,
-    BackendExecutable, BackendProgram, BackendStep, BackendTail, ReturnAbi,
+    BackendBody, BackendCallArg, BackendCallableEntry, BackendClause, BackendEntry, BackendEntryOrigin,
+    BackendExecutable, BackendProgram, BackendStep, BackendTail,
 };
 use super::super::body::{
-    CallArg, CallSiteId, ControlDestination, ControlEntryOrigin, LoweredBody, LoweredClause, LoweredEntry, LoweredStep,
-    LoweredTail, ValueId,
+    CallArg, CallSiteId, ControlEntryOrigin, LoweredBody, LoweredClause, LoweredEntry, LoweredStep, LoweredTail,
 };
 use super::super::drive::{FactKey, Job, JobEffects, settled_uses};
+use super::super::identity::RootId;
 use super::super::identity::RootKind;
-use super::super::identity::{ExecutableNeed, RootId};
 use super::super::scheduler::FatalError;
 use super::super::types::Ty;
 use super::super::world::World;
@@ -108,6 +107,9 @@ impl<'a, 'tel> BackendLowerer<'a, 'tel> {
             param_reprs: executable.param_reprs.clone(),
             runtime_demand: executable.runtime_demand.clone(),
             runtime_params: executable.runtime_params.clone(),
+            return_layout: executable.return_layout.clone(),
+            resume_layouts: executable.resume_layouts.clone(),
+            entry_capture_layouts: executable.entry_capture_layouts.clone(),
             value_types: executable.value_types.clone(),
             value_reprs: executable.value_reprs.clone(),
             effects: executable.effects,
@@ -127,21 +129,18 @@ impl<'a, 'tel> BackendLowerer<'a, 'tel> {
                 clauses,
                 entries,
                 generated,
-            } => {
-                let resume_abis = entry_input_abis(self.world, executable, entries, clauses)?;
-                Ok(BackendBody::Clauses {
-                    clauses: clauses
-                        .iter()
-                        .map(|clause| self.lower_clause(executable, clause))
-                        .collect::<Result<Vec<_>, _>>()?,
-                    entries: entries
-                        .iter()
-                        .enumerate()
-                        .map(|(index, entry)| self.lower_entry(executable, index, entry, &resume_abis))
-                        .collect::<Result<Vec<_>, _>>()?,
-                    generated: generated.clone(),
-                })
-            }
+            } => Ok(BackendBody::Clauses {
+                clauses: clauses
+                    .iter()
+                    .map(|clause| self.lower_clause(executable, clause))
+                    .collect::<Result<Vec<_>, _>>()?,
+                entries: entries
+                    .iter()
+                    .enumerate()
+                    .map(|(index, entry)| self.lower_entry(executable, index, entry))
+                    .collect::<Result<Vec<_>, _>>()?,
+                generated: generated.clone(),
+            }),
         }
     }
 
@@ -167,13 +166,13 @@ impl<'a, 'tel> BackendLowerer<'a, 'tel> {
         executable: &super::super::artifact::EmissionReadyExecutable,
         entry_index: usize,
         entry: &LoweredEntry,
-        resume_abis: &[Option<ReturnAbi>],
     ) -> Result<BackendEntry, FatalError> {
         Ok(BackendEntry {
             span: entry.span,
-            origin: lower_entry_origin(entry_index, entry, resume_abis),
+            origin: lower_entry_origin(executable, entry_index, entry),
             params: entry.params.clone(),
             captures: entry.captures.clone(),
+            capture_layouts: executable.entry_capture_layouts[entry_index].clone(),
             reusable_cons_captures: entry
                 .reusable_cons_captures
                 .iter()
@@ -416,9 +415,9 @@ impl<'a, 'tel> BackendLowerer<'a, 'tel> {
 }
 
 fn lower_entry_origin(
+    executable: &super::super::artifact::EmissionReadyExecutable,
     entry_index: usize,
     entry: &LoweredEntry,
-    resume_abis: &[Option<ReturnAbi>],
 ) -> BackendEntryOrigin {
     match entry.origin {
         ControlEntryOrigin::Clause => BackendEntryOrigin::Clause,
@@ -426,317 +425,10 @@ fn lower_entry_origin(
         ControlEntryOrigin::ReceiveOutcome => BackendEntryOrigin::ReceiveOutcome,
         ControlEntryOrigin::DeliveredResume { value } => BackendEntryOrigin::DeliveredResume {
             value,
-            return_abi: resume_abis[entry_index]
+            layout: executable.resume_layouts[entry_index]
                 .clone()
-                .unwrap_or_else(|| panic!("resume entry {entry_index} should have a settled input ABI: {entry:?}")),
+                .unwrap_or_else(|| panic!("resume entry {entry_index} should have a settled input layout: {entry:?}")),
         },
-    }
-}
-
-fn entry_input_abis(
-    world: &mut World<'_>,
-    executable: &super::super::artifact::EmissionReadyExecutable,
-    entries: &[LoweredEntry],
-    clauses: &[LoweredClause],
-) -> Result<Vec<Option<ReturnAbi>>, FatalError> {
-    let mut needs = vec![None; entries.len()];
-    for clause in clauses {
-        let _ = collect_entry_input_need(
-            world,
-            executable,
-            entries,
-            clause.entry,
-            &executable.return_abi,
-            &mut needs,
-        );
-    }
-    let mut out = vec![None; entries.len()];
-    for (index, entry) in entries.iter().enumerate() {
-        if let Some(value) = entry.origin.input_value()
-            && let Some(need) = needs[index]
-        {
-            out[index] = Some(return_abi_for_resume_input(world, executable, value, need));
-        }
-    }
-    for (index, entry) in entries.iter().enumerate() {
-        if let Some(value) = entry.origin.input_value()
-            && out[index].is_none()
-        {
-            out[index] = Some(return_abi_for_resume_input(
-                world,
-                executable,
-                value,
-                ExecutableNeed::Value,
-            ));
-        }
-    }
-    Ok(out)
-}
-
-fn collect_entry_input_need(
-    world: &mut World<'_>,
-    executable: &super::super::artifact::EmissionReadyExecutable,
-    entries: &[LoweredEntry],
-    entry_id: super::super::body::ControlEntryId,
-    outgoing_need: &ReturnAbi,
-    out: &mut [Option<ExecutableNeed>],
-) -> ExecutableNeed {
-    let entry = &entries[entry_id.as_u32() as usize];
-    let mut tuple_demands = HashMap::new();
-    let mut used_values = HashSet::new();
-    match &entry.tail {
-        LoweredTail::Value { value, dest } => {
-            used_values.insert(*value);
-            if let ExecutableNeed::TupleFields(arity) =
-                destination_need(world, executable, entries, dest, outgoing_need, out)
-            {
-                tuple_demands.insert(*value, arity);
-            }
-        }
-        LoweredTail::DirectCall { args, dest, .. } => {
-            for arg in args {
-                used_values.insert(arg.value);
-            }
-            let _ = destination_need(world, executable, entries, dest, outgoing_need, out);
-        }
-        LoweredTail::ClosureCall { callee, args, dest, .. } => {
-            used_values.insert(*callee);
-            for arg in args {
-                used_values.insert(arg.value);
-            }
-            let _ = destination_need(world, executable, entries, dest, outgoing_need, out);
-        }
-        LoweredTail::If {
-            cond,
-            then_entry,
-            else_entry,
-            ..
-        } => {
-            used_values.insert(*cond);
-            let _ = collect_entry_input_need(world, executable, entries, *then_entry, outgoing_need, out);
-            let _ = collect_entry_input_need(world, executable, entries, *else_entry, outgoing_need, out);
-        }
-        LoweredTail::Dispatch {
-            inputs,
-            bindings,
-            dispatch,
-        } => {
-            used_values.extend(inputs.iter().copied());
-            used_values.extend(bindings.pinned.iter().copied());
-            used_values.extend(bindings.prepared.iter().copied());
-            for arm_entry in &dispatch.arm_entries {
-                let _ = collect_entry_input_need(world, executable, entries, *arm_entry, outgoing_need, out);
-            }
-            let _ = collect_entry_input_need(world, executable, entries, dispatch.miss_entry, outgoing_need, out);
-        }
-        LoweredTail::Receive(receive) => {
-            let bindings = &receive.bindings;
-            used_values.extend(bindings.pinned.iter().copied());
-            used_values.extend(bindings.prepared.iter().copied());
-            for clause in &receive.clauses {
-                let _ = collect_entry_input_need(world, executable, entries, clause.entry, outgoing_need, out);
-            }
-            if let Some(after) = &receive.after {
-                used_values.insert(after.timeout);
-                let _ = collect_entry_input_need(world, executable, entries, after.entry, outgoing_need, out);
-            }
-        }
-        LoweredTail::Halt { .. } => {}
-    }
-    for step in entry.steps.iter().rev() {
-        collect_step_reads(step, &mut used_values);
-        match step {
-            LoweredStep::AssertTuple { source, arity } => {
-                tuple_demands.insert(*source, *arity);
-            }
-            LoweredStep::Const { value, .. }
-            | LoweredStep::Tuple { value, .. }
-            | LoweredStep::List { value, .. }
-            | LoweredStep::Map { value, .. }
-            | LoweredStep::MapUpdate { value, .. }
-            | LoweredStep::Struct { value, .. }
-            | LoweredStep::Bitstring { value, .. }
-            | LoweredStep::FunctionRef { value, .. }
-            | LoweredStep::Lambda { value, .. }
-            | LoweredStep::BinaryOp { value, .. }
-            | LoweredStep::UnaryOp { value, .. }
-            | LoweredStep::MapIndex { value, .. }
-            | LoweredStep::FieldAccess { value, .. }
-            | LoweredStep::RequireMapValue { value, .. }
-            | LoweredStep::TupleField { value, .. } => {
-                tuple_demands.remove(value);
-            }
-            LoweredStep::SplitList { head, tail, .. } => {
-                tuple_demands.remove(head);
-                tuple_demands.remove(tail);
-            }
-            LoweredStep::BitstringInit { reader, .. } => {
-                tuple_demands.remove(reader);
-            }
-            LoweredStep::BitstringRead {
-                ok, value, next_reader, ..
-            } => {
-                tuple_demands.remove(ok);
-                tuple_demands.remove(value);
-                tuple_demands.remove(next_reader);
-            }
-            LoweredStep::AssertLiteral { .. }
-            | LoweredStep::AssertStruct { .. }
-            | LoweredStep::AssertEmptyList { .. }
-            | LoweredStep::AssertSame { .. }
-            | LoweredStep::AssertBitstringDone { .. } => {}
-        }
-    }
-    let input_need = entry.origin.input_value().and_then(|value| {
-        tuple_demands
-            .remove(&value)
-            .map(ExecutableNeed::TupleFields)
-            .or_else(|| used_values.contains(&value).then_some(ExecutableNeed::Value))
-    });
-    if entry.origin.input_value().is_some() {
-        out[entry_id.as_u32() as usize] = input_need;
-    }
-    input_need.unwrap_or(ExecutableNeed::Value)
-}
-
-fn collect_step_reads(step: &LoweredStep, out: &mut HashSet<ValueId>) {
-    match step {
-        LoweredStep::Const { .. } | LoweredStep::FunctionRef { .. } => {}
-        LoweredStep::Tuple { items, .. } => out.extend(items.iter().copied()),
-        LoweredStep::List { items, tail, .. } => {
-            out.extend(items.iter().copied());
-            if let Some(tail) = tail {
-                out.insert(*tail);
-            }
-        }
-        LoweredStep::Map { entries, .. } => {
-            for (key, value) in entries {
-                out.insert(key.value);
-                out.insert(*value);
-            }
-        }
-        LoweredStep::MapUpdate { base, entries, .. } => {
-            out.insert(*base);
-            for (key, value) in entries {
-                out.insert(key.value);
-                out.insert(*value);
-            }
-        }
-        LoweredStep::Struct { fields, .. } => out.extend(fields.iter().map(|(_, value)| *value)),
-        LoweredStep::Bitstring { fields, .. } => {
-            for field in fields {
-                out.insert(field.value);
-                if let Some(super::super::body::LoweredBitSize::Value(size)) = &field.spec.size {
-                    out.insert(*size);
-                }
-            }
-        }
-        LoweredStep::Lambda { captures, .. } => out.extend(captures.iter().copied()),
-        LoweredStep::BinaryOp { left, right, .. } => {
-            out.insert(*left);
-            out.insert(*right);
-        }
-        LoweredStep::UnaryOp { input, .. } => {
-            out.insert(*input);
-        }
-        LoweredStep::MapIndex { base, key, .. } => {
-            out.insert(*base);
-            out.insert(key.value);
-        }
-        LoweredStep::FieldAccess { base, .. } | LoweredStep::AssertStruct { source: base, .. } => {
-            out.insert(*base);
-        }
-        LoweredStep::RequireMapValue { source, .. } => {
-            out.insert(*source);
-        }
-        LoweredStep::AssertLiteral { source, .. }
-        | LoweredStep::AssertTuple { source, .. }
-        | LoweredStep::AssertEmptyList { source } => {
-            out.insert(*source);
-        }
-        LoweredStep::TupleField { source, .. } => {
-            out.insert(*source);
-        }
-        LoweredStep::AssertSame { source, value } => {
-            out.insert(*source);
-            out.insert(*value);
-        }
-        LoweredStep::SplitList { source, .. } => {
-            out.insert(*source);
-        }
-        LoweredStep::BitstringInit { source, .. } | LoweredStep::AssertBitstringDone { reader: source } => {
-            out.insert(*source);
-        }
-        LoweredStep::BitstringRead { reader, spec, .. } => {
-            out.insert(*reader);
-            if let Some(super::super::body::LoweredBitSize::Value(size)) = &spec.size {
-                out.insert(*size);
-            }
-        }
-    }
-}
-
-fn destination_need(
-    world: &mut World<'_>,
-    executable: &super::super::artifact::EmissionReadyExecutable,
-    entries: &[LoweredEntry],
-    dest: &ControlDestination,
-    outgoing_need: &ReturnAbi,
-    out: &mut [Option<ExecutableNeed>],
-) -> ExecutableNeed {
-    match dest {
-        ControlDestination::Return => match outgoing_need {
-            ReturnAbi::Value(_) => ExecutableNeed::Value,
-            ReturnAbi::TupleFields(reprs) => ExecutableNeed::TupleFields(reprs.len()),
-        },
-        ControlDestination::Deliver(entry_id) => {
-            collect_entry_input_need(world, executable, entries, *entry_id, outgoing_need, out)
-        }
-    }
-}
-
-fn return_abi_for_resume_input(
-    world: &mut World<'_>,
-    executable: &super::super::artifact::EmissionReadyExecutable,
-    value: ValueId,
-    need: ExecutableNeed,
-) -> ReturnAbi {
-    let fallback_ty = executable
-        .value_types
-        .get(&value)
-        .copied()
-        .unwrap_or_else(|| world.types_mut().any());
-    match need {
-        ExecutableNeed::Value => ReturnAbi::Value(
-            executable
-                .value_reprs
-                .get(&value)
-                .copied()
-                .unwrap_or_else(|| backend_value_repr(world, fallback_ty)),
-        ),
-        ExecutableNeed::TupleFields(arity) => {
-            let field_tys = world.types_mut().tuple_projections(&fallback_ty, arity);
-            let reprs = field_tys
-                .into_iter()
-                .map(|ty| backend_value_repr(world, ty))
-                .collect::<Vec<_>>();
-            ReturnAbi::TupleFields(reprs)
-        }
-    }
-}
-
-fn backend_value_repr(world: &mut World<'_>, ty: Ty) -> AbiValueRepr {
-    if world.types().is_floating(&ty) {
-        return AbiValueRepr::RawF64;
-    }
-    if world.types().is_integer(&ty) {
-        return AbiValueRepr::RawInt;
-    }
-    let atom = world.types_mut().atom();
-    if world.types().is_subtype(&ty, &atom) {
-        AbiValueRepr::RawAtom
-    } else {
-        AbiValueRepr::ValueRef
     }
 }
 

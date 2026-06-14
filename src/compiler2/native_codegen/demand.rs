@@ -1,7 +1,7 @@
 //! Codegen view of compiler2-native return and continuation ABI facts.
 
 use super::{ArgRepr, arg_repr_from_compiler2};
-use crate::compiler2::{NativeBody, NativeEntryAbi, ReturnAbi};
+use crate::compiler2::{NativeBody, NativeEntryAbi};
 
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub(crate) enum DeliveredShape {
@@ -20,9 +20,9 @@ impl<'a> NativeDemandAbi<'a> {
     }
 
     pub(crate) fn tuple_field_arity(self) -> Option<usize> {
-        match &self.body.return_abi {
-            ReturnAbi::Value(_) => None,
-            ReturnAbi::TupleFields(fields) => Some(fields.len()),
+        match self.body.return_lane_reprs.len() {
+            1 => None,
+            arity => Some(arity),
         }
     }
 
@@ -40,23 +40,24 @@ impl<'a> NativeDemandAbi<'a> {
 
     pub(crate) fn returned_shape(self) -> DeliveredShape {
         if self.returned_delivers_value_lane() {
-            let repr = match &self.body.return_abi {
-                ReturnAbi::Value(repr) => arg_repr_from_compiler2(*repr),
-                ReturnAbi::TupleFields(_) => ArgRepr::ValueRef,
-            };
+            let repr = self
+                .body
+                .return_lane_reprs
+                .first()
+                .copied()
+                .map(arg_repr_from_compiler2)
+                .unwrap_or(ArgRepr::ValueRef);
             DeliveredShape::Value(repr)
         } else {
-            match &self.body.return_abi {
-                ReturnAbi::TupleFields(fields) => DeliveredShape::TupleFields(
-                    fields
-                        .iter()
-                        .copied()
-                        .map(arg_repr_from_compiler2)
-                        .collect::<Vec<_>>()
-                        .into_boxed_slice(),
-                ),
-                ReturnAbi::Value(repr) => DeliveredShape::Value(arg_repr_from_compiler2(*repr)),
-            }
+            DeliveredShape::TupleFields(
+                self.body
+                    .return_lane_reprs
+                    .iter()
+                    .copied()
+                    .map(arg_repr_from_compiler2)
+                    .collect::<Vec<_>>()
+                    .into_boxed_slice(),
+            )
         }
     }
 

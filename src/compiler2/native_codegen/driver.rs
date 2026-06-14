@@ -1055,17 +1055,17 @@ pub(crate) fn compile_with_backend_native_program<
 }
 
 fn build_codegen_return_repr(body: &crate::compiler2::NativeBody) -> ArgRepr {
-    match &body.return_abi {
-        crate::compiler2::ReturnAbi::Value(repr) => arg_repr_from_compiler2(*repr),
-        crate::compiler2::ReturnAbi::TupleFields(_) => ArgRepr::ValueRef,
+    match body.return_lane_reprs.as_slice() {
+        [repr] => arg_repr_from_compiler2(*repr),
+        _ => ArgRepr::ValueRef,
     }
 }
 
-fn build_codegen_delivered_shape(return_abi: &crate::compiler2::ReturnAbi) -> DeliveredShape {
-    match return_abi {
-        crate::compiler2::ReturnAbi::Value(repr) => DeliveredShape::Value(arg_repr_from_compiler2(*repr)),
-        crate::compiler2::ReturnAbi::TupleFields(fields) => DeliveredShape::TupleFields(
-            fields
+fn build_codegen_delivered_shape(return_lane_reprs: &[crate::compiler2::AbiValueRepr]) -> DeliveredShape {
+    match return_lane_reprs {
+        [repr] => DeliveredShape::Value(arg_repr_from_compiler2(*repr)),
+        reprs => DeliveredShape::TupleFields(
+            reprs
                 .iter()
                 .copied()
                 .map(arg_repr_from_compiler2)
@@ -1112,7 +1112,10 @@ fn build_codegen_callable_boundaries<T: Types<Ty = Ty> + ClosureTypes>(
                 .copied()
                 .map(arg_repr_from_compiler2)
                 .collect(),
-            return_shape: build_codegen_delivered_shape(&boundary.return_abi),
+            return_shape: build_codegen_delivered_shape(match &boundary.return_abi {
+                crate::compiler2::ReturnAbi::Value(repr) => std::slice::from_ref(repr),
+                crate::compiler2::ReturnAbi::TupleFields(fields) => fields.as_slice(),
+            }),
         };
         if let Some(previous) = boundaries.insert(boundary_id, next.clone()) {
             debug_assert_eq!(previous, next);
@@ -1124,17 +1127,10 @@ fn build_codegen_callable_boundaries<T: Types<Ty = Ty> + ClosureTypes>(
 fn build_codegen_closure_targets(
     program: &crate::compiler2::NativeProgram,
     param_reprs: &[Vec<ArgRepr>],
-    return_reprs: &[ArgRepr],
 ) -> HashMap<FnId, NativeClosureTargetSurface> {
     let mut targets = HashMap::new();
     for boundary in &program.callable_boundaries {
-        let next = closure_target_surface_from_body(
-            program,
-            param_reprs,
-            return_reprs,
-            boundary.target_fn,
-            boundary.capture_count,
-        );
+        let next = closure_target_surface_from_body(program, param_reprs, boundary.target_fn, boundary.capture_count);
         if let Some(previous) = targets.insert(boundary.target_fn, next.clone()) {
             debug_assert_eq!(previous, next);
         }
@@ -1165,7 +1161,7 @@ fn build_codegen_closure_targets(
                 logical_param_count,
             );
             let capture_count = logical_param_count - arg_count;
-            let next = closure_target_surface_from_body(program, param_reprs, return_reprs, target_fn, capture_count);
+            let next = closure_target_surface_from_body(program, param_reprs, target_fn, capture_count);
             match targets.get(&target_fn) {
                 Some(previous) => debug_assert_eq!(previous, &next),
                 None => {
@@ -1181,7 +1177,6 @@ fn build_codegen_closure_targets(
 fn closure_target_surface_from_body(
     program: &crate::compiler2::NativeProgram,
     param_reprs: &[Vec<ArgRepr>],
-    return_reprs: &[ArgRepr],
     target_fn: FnId,
     capture_count: usize,
 ) -> NativeClosureTargetSurface {
@@ -1210,17 +1205,7 @@ fn closure_target_surface_from_body(
         capture_count,
         capture_reprs: target_param_reprs[..capture_count].to_vec(),
         arg_reprs: target_param_reprs[capture_count..].to_vec(),
-        return_shape: match &target_body.return_abi {
-            crate::compiler2::ReturnAbi::Value(_) => DeliveredShape::Value(return_reprs[target_sid]),
-            crate::compiler2::ReturnAbi::TupleFields(fields) => DeliveredShape::TupleFields(
-                fields
-                    .iter()
-                    .copied()
-                    .map(arg_repr_from_compiler2)
-                    .collect::<Vec<_>>()
-                    .into_boxed_slice(),
-            ),
-        },
+        return_shape: build_codegen_delivered_shape(&target_body.return_lane_reprs),
     }
 }
 
@@ -1321,7 +1306,7 @@ fn prepare_native_codegen_surface_from_native_program<'a>(
     }
 
     let callable_boundaries = build_codegen_callable_boundaries(t, program);
-    let closure_targets = build_codegen_closure_targets(program, &param_reprs, &return_reprs);
+    let closure_targets = build_codegen_closure_targets(program, &param_reprs);
     let native_abi_fns = program
         .module
         .fns
