@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-hwn.7"
+  ],
   "created": "2026-06-14T19:53:16Z",
   "description": "Goal\nPreserve the correct runtime shape for closure captures on the quicksort native path so a value that should be a closure capture never degrades into an atom/scalar lane.\n\nProblem being fixed\nThe widened native-program suite still fails on quicksort after fz-hwn.6. The crash is not test drift and not the old omitted-lane bug. Runtime executes a closure capture load and finds an atom where a closure is expected.\n\nVerified failure\n- `cargo test compiler2_native_program_jit_runs_quicksort_through_compiler2_codegen --lib -- --nocapture`\n- Runtime panic: `fz_closure_get_capture_i64 closure: ExpectedTag { expected: ValueKind(4), found: ValueKind(0) }`\n\nWhat we know\n- Backend/interpreter quicksort is green, so the earlier runtime-demand / artifact transport work is not the current root.\n- The failure happens on the native path after codegen, which means some native/codegen seam is still flattening or mis-materializing a closure capture into the wrong runtime shape.\n- The fix should trace the first place the capture stops being represented as the demanded callable/runtime value and becomes a scalar/atom instead.\n\nDesign rule\n- Closure captures must keep the runtime shape chosen by settled layout all the way through native lowering and codegen.\n- A capture that is semantically callable may only become a scalar lane if settled layout explicitly says so.\n- Do not patch the runtime to tolerate the wrong shape; fix the compiler seam where the shape becomes wrong.\n\nCode seams\n- quicksort native lowering and codegen path\n- closure capture encoding/materialization helpers\n- any continuation/delivered-return path that rebinds quicksort captures\n\nChecks\n- `cargo test compiler2_native_program_jit_runs_quicksort_through_compiler2_codegen --lib`\n- no `fz_closure_get_capture_i64` runtime panic\n- quicksort still keeps tuple-field return/input demand explicit where already proven",
   "id": "fz-hwn.15",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Compiler2 native quicksort loses closure capture runtime shape",
   "type": "bug",
-  "updated_at": "2026-06-14T19:53:16Z"
+  "updated_at": "2026-06-14T19:53:20Z"
 }
