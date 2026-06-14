@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-hwn.7"
+  ],
   "blocks": [],
   "created": "2026-06-14T01:18:46Z",
   "description": "Goal\nEliminate the semantic-analysis churn that causes Enum.with_index/2 with a mapper closure to time out in compiler2, then re-enable the temporarily disabled backend-interp regression test.\n\nProblem being fixed\nThis is not a runtime-demand/backend/native bug. --log-telemetry shows compiler2 timing out in semantic analysis with repeated AnalyzeActivation retractions and redefinitions through the Enum.to_list -\u003e Enum.reverse -\u003e Enum.reduce -\u003e Enumerable(List).reduce -\u003e List.reduce_cont/reduce_step SCC. The active runtime-demand arc should finish first; this follow-on belongs at the end of the arc so we do not conflate a preexisting semantic/type-growth bug with the ownership-boundary cleanup.\n\nDisabled test to re-enable\n- src/compiler2/drive_test.rs: compiler2_interp_runs_enum_with_index_mapper_from_backend_artifacts\n\nObserved failure\n- Repro source:\n  fn main() do\n    dbg(Enum.with_index([\"a\", \"b\"], fn (x, _index) -\u003e x \u003c\u003e \"!\" end))\n  end\n- fz2 command:\n  target/debug/fz2 --log-telemetry /tmp/fz2-enum-with-index.jsonl interp /tmp/fz2-enum-with-index.fz\n- Current result:\n  compiler2 root 0 exceeded 5000 ms drive limit after 7845 jobs with 11 pending\n- Telemetry shape:\n  - dominated by activation_analysis.defined / return_type.defined / callsite.defined churn\n  - SealSemanticClosure(RootId(0)) stalls waiting on ActivationAnalyzed(FunctionId(74), input [Ty(22)])\n  - hot functions map to Enum.to_list/1, Enum.reverse/1, Enum.reduce/3, Enum.reduce_finish/1, the reducer lambdas in Enum, and List.reduce/3, List.reduce_cont/3, List.reduce_step/3\n\nWhy this sits after fz-hwn.7\nThe current epic is about making runtime demand authoritative and removing representation recovery from types. This Enum.with_index failure is a separate semantic-analysis instability. Track it now so we do not lose it, but fix it after the runtime-demand arc lands cleanly.\n\nRequired work\n- Read the telemetry trace and identify the exact semantic fact or type-instantiation cycle that keeps retracting the hot activation SCC.\n- Minimize the repro if possible without losing the churn.\n- Fix the semantic/type model in the right place; do not add timeouts, caps, or local special-cases for Enum.with_index.\n- Re-enable compiler2_interp_runs_enum_with_index_mapper_from_backend_artifacts and make it pass for the right reason.\n\nChecks\n- cargo test compiler2_interp_runs_enum_with_index_mapper_from_backend_artifacts --lib\n- target/debug/fz2 --log-telemetry \u003cpath\u003e interp \u003crepro\u003e completes without the drive timeout\n- telemetry no longer shows unbounded AnalyzeActivation retraction/redefine churn for the hot Enum/List SCC",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Compiler2 semantic analysis: Enum.with_index mapper activation churn times out",
   "type": "bug",
-  "updated_at": "2026-06-14T01:18:46Z"
+  "updated_at": "2026-06-14T01:18:49Z"
 }

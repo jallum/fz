@@ -4,6 +4,7 @@
     "fz-hwn.6"
   ],
   "blocks": [
+    "fz-hwn.9",
     "fz-rh2.16.5"
   ],
   "created": "2026-06-13T21:24:40Z",
@@ -15,5 +16,5 @@
   "status": "open",
   "title": "Compiler2 runtime demand: pin telemetry, fixtures, docs, and remove scaffolding",
   "type": "task",
-  "updated_at": "2026-06-13T21:25:23Z"
+  "updated_at": "2026-06-14T01:18:49Z"
 }
