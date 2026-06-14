@@ -11,9 +11,15 @@
   "id": "fz-hwn.6",
   "labels": [],
   "parent": "fz-hwn",
+  "comments": [
+    {
+      "text": "Current seam after mirroring demand-shaped local values into native executable inputs and entry captures: native direct-only callable transport still collapses at DeliveredResume because ReturnAbi can only express Value or TupleFields. Repro: compiler2_native_program_jit_runs_enum_reduce_through_compiler2_codegen fails in LowerNativeProgram with 'native call arg 7 for callee 66 expected direct-callable 65 with 0 capture(s), observed Some(Runtime(Var(7)))'. This indicates a direct-only callable returning through a continuation resume boundary and being rebound as a runtime value. Next correct step is to generalize internal return/resume transport from ReturnAbi::{Value,TupleFields} to the same value-layout model used for runtime params/captures, then thread that through artifact planning, backend interpreter DeliveredResume binding, native entry signatures, delivered_args_for_abi, and NativeDemandAbi/codegen delivered-shape handling. Do not restore old closure materialization to satisfy the test.",
+      "timestamp": "2026-06-14T01:44:18Z"
+    }
+  ],
   "priority": 1,
   "status": "in_progress",
   "title": "Compiler2 native: lower direct callable demand without first-class closure materialization",
   "type": "task",
-  "updated_at": "2026-06-14T01:27:43Z"
+  "updated_at": "2026-06-14T01:44:18Z"
 }
