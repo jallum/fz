@@ -877,19 +877,20 @@ fn propagate_lambda_capture_demands(
     live: &mut HashMap<ValueId, RuntimeDemand>,
     out: &mut ExecutableRuntimeDemand,
 ) {
-    let capture_types = captures
-        .iter()
-        .map(|capture| facts.analysis.value_types.get(capture).copied())
-        .collect::<Option<Vec<_>>>();
     let RuntimeDemand::Callable(callable) = demand else {
         for capture in captures {
             note_live_demand(world, out, live, *capture, RuntimeDemand::Value);
         }
         return;
     };
-    if callable.opaque || callable.escape || capture_types.is_none() || callable.resolved.is_empty() {
+    let capture_types = captures
+        .iter()
+        .map(|capture| facts.analysis.value_types.get(capture).copied())
+        .collect::<Option<Vec<_>>>();
+    if capture_types.is_none() || callable.resolved.is_empty() {
         for capture in captures {
-            note_live_demand(world, out, live, *capture, RuntimeDemand::Value);
+            let demand = closure_capture_boundary_demand(world, facts, *capture, RuntimeDemand::Value, &callable);
+            note_live_demand(world, out, live, *capture, demand);
         }
         return;
     }
@@ -911,15 +912,32 @@ fn propagate_lambda_capture_demands(
             }
             matched = true;
             for (capture, demand) in captures.iter().zip(callee_demand.input_demands.iter()) {
-                note_live_demand(world, out, live, *capture, demand.clone());
+                let demand = closure_capture_boundary_demand(world, facts, *capture, demand.clone(), &callable);
+                note_live_demand(world, out, live, *capture, demand);
             }
         }
     }
     if !matched {
         for capture in captures {
-            note_live_demand(world, out, live, *capture, RuntimeDemand::Value);
+            let demand = closure_capture_boundary_demand(world, facts, *capture, RuntimeDemand::Value, &callable);
+            note_live_demand(world, out, live, *capture, demand);
         }
     }
+}
+
+fn closure_capture_boundary_demand(
+    world: &mut World<'_>,
+    facts: &ExecutableFacts,
+    capture: ValueId,
+    demand: RuntimeDemand,
+    closure: &CallableDemand,
+) -> RuntimeDemand {
+    let mut upgraded = boundary_value_demand(world, facts, capture, demand);
+    if let RuntimeDemand::Callable(callable) = &mut upgraded {
+        callable.opaque |= closure.opaque;
+        callable.escape |= closure.escape;
+    }
+    upgraded
 }
 
 fn direct_call_arg_demands(

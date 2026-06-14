@@ -2115,6 +2115,7 @@ fn witness_value_slots(executable: &MaterializedExecutable, fact: &ExecutableCal
     let value_max = executable
         .value_types
         .keys()
+        .chain(executable.runtime_demand.value_demands.keys())
         .chain(fact.local_values.keys())
         .chain(fact.params.keys())
         .chain(fact.resume_entries.keys())
