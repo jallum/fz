@@ -199,3 +199,31 @@ fn function_contract_application_does_not_publish_underconstrained_result_eviden
         "an underconstrained callable match should refine inputs but must not publish a raw type variable as result evidence"
     );
 }
+
+#[test]
+fn function_contract_application_does_not_recurse_through_concrete_any_inputs() {
+    let mut types = Types::new();
+    let any = types.any();
+    let contract = FunctionContract {
+        arrows: vec![ContractArrow {
+            params: vec![any],
+            result: any,
+            constraints: HashMap::new(),
+        }],
+    };
+
+    let applied = contract.apply(&mut types, &[any]);
+
+    assert_eq!(
+        applied.matched_arrows.len(),
+        1,
+        "the concrete any contract should still match"
+    );
+    assert!(
+        applied
+            .result
+            .as_ref()
+            .is_some_and(|result| types.is_equivalent(result, &any)),
+        "the result should stay any without recursively re-walking top list structure",
+    );
+}

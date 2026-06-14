@@ -1551,7 +1551,6 @@ fn compiler2_runtime_roots_reject_macro_entries() {
 }
 
 #[test]
-#[ignore = "fz-hwn.8: Process.heap_alloc_stats dbg path stack-overflows during compilation"]
 fn compiler2_runtime_refs_pull_only_the_reached_runtime_modules() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();

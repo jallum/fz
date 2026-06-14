@@ -192,11 +192,12 @@ fn instantiate_match(
 
     let mut sigma: Sigma<Ty> = Sigma::new();
     let mut ambiguous_vars = HashSet::new();
+    let mut ambiguous_seen = HashSet::new();
     for (pattern, witness) in params.iter().zip(witnesses.iter()) {
         if collect_contract_subst(types, pattern, witness, &mut sigma) == Witness::Invalid {
             return SchemeInstantiation::Invalid;
         }
-        collect_ambiguous_empty_list_vars(types, pattern, witness, &mut ambiguous_vars);
+        collect_ambiguous_empty_list_vars(types, pattern, witness, &mut ambiguous_vars, &mut ambiguous_seen);
     }
 
     for (var, bound) in constraints {
@@ -322,7 +323,12 @@ fn collect_ambiguous_empty_list_vars(
     pattern: &Ty,
     witness: &Ty,
     ambiguous_vars: &mut HashSet<TypeVarId>,
+    seen: &mut HashSet<(Ty, Ty)>,
 ) {
+    if !types.has_vars(pattern) || !seen.insert((*pattern, *witness)) {
+        return;
+    }
+
     if is_exact_empty_list(types, witness) {
         let mut direct = Sigma::new();
         types.collect_instantiation_subst(pattern, witness, &mut direct);
@@ -335,21 +341,21 @@ fn collect_ambiguous_empty_list_vars(
         let pattern_fields = types.tuple_projections(pattern, arity);
         let witness_fields = types.tuple_projections(witness, arity);
         for (pattern_field, witness_field) in pattern_fields.iter().zip(witness_fields.iter()) {
-            collect_ambiguous_empty_list_vars(types, pattern_field, witness_field, ambiguous_vars);
+            collect_ambiguous_empty_list_vars(types, pattern_field, witness_field, ambiguous_vars, seen);
         }
     }
 
     if types.has_list_shape(pattern) && types.has_list_shape(witness) {
         let pattern_elem = types.list_element_type(pattern);
         let witness_elem = types.list_element_type(witness);
-        collect_ambiguous_empty_list_vars(types, &pattern_elem, &witness_elem, ambiguous_vars);
+        collect_ambiguous_empty_list_vars(types, &pattern_elem, &witness_elem, ambiguous_vars, seen);
     }
 
     if let (Some(pattern_payload), Some(witness_payload)) = (
         types.resource_payload_type(pattern),
         types.resource_payload_type(witness),
     ) {
-        collect_ambiguous_empty_list_vars(types, &pattern_payload, &witness_payload, ambiguous_vars);
+        collect_ambiguous_empty_list_vars(types, &pattern_payload, &witness_payload, ambiguous_vars, seen);
     }
 
     let witness_keys = types.map_known_keys(witness);
@@ -361,7 +367,7 @@ fn collect_ambiguous_empty_list_vars(
             continue;
         }
         if let Some(witness_field) = types.map_field_lookup(witness, &key) {
-            collect_ambiguous_empty_list_vars(types, &pattern_field, &witness_field, ambiguous_vars);
+            collect_ambiguous_empty_list_vars(types, &pattern_field, &witness_field, ambiguous_vars, seen);
         }
     }
 
@@ -377,9 +383,9 @@ fn collect_ambiguous_empty_list_vars(
                 continue;
             }
             for (pattern_arg, witness_arg) in pattern_clause.args.iter().zip(witness_clause.args.iter()) {
-                collect_ambiguous_empty_list_vars(types, pattern_arg, witness_arg, ambiguous_vars);
+                collect_ambiguous_empty_list_vars(types, pattern_arg, witness_arg, ambiguous_vars, seen);
             }
-            collect_ambiguous_empty_list_vars(types, &pattern_clause.ret, &witness_clause.ret, ambiguous_vars);
+            collect_ambiguous_empty_list_vars(types, &pattern_clause.ret, &witness_clause.ret, ambiguous_vars, seen);
         }
     }
 }
