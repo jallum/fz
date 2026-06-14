@@ -80,7 +80,17 @@ type ResumeEntry = (FnId, Vec<AnyValue>, Option<SpecKey>, Vec<InterpContinuation
 struct BackendContinuation {
     executable: usize,
     entry: crate::compiler2::ControlEntryId,
-    env: HashMap<crate::compiler2::ValueId, AnyValue>,
+    env: HashMap<crate::compiler2::ValueId, BackendValue>,
+}
+
+#[derive(Clone, Debug)]
+enum BackendValue {
+    Runtime(AnyValue),
+    TupleFields(Vec<AnyValue>),
+    DirectCallable {
+        function: crate::compiler2::FunctionId,
+        captures: Vec<AnyValue>,
+    },
 }
 
 enum BackendResumeEntry {
@@ -92,7 +102,7 @@ enum BackendResumeEntry {
     Entry {
         executable: usize,
         entry: crate::compiler2::ControlEntryId,
-        env: HashMap<crate::compiler2::ValueId, AnyValue>,
+        env: HashMap<crate::compiler2::ValueId, BackendValue>,
         continuations: Vec<BackendContinuation>,
     },
 }
@@ -105,7 +115,7 @@ struct BackendParkRecord {
     clauses: Vec<crate::compiler2::ReceiveClause>,
     dispatch: crate::dispatch_matrix::pattern::PatternDispatchPlan<crate::compiler2::Ty>,
     bindings: crate::compiler2::DispatchBindings,
-    env: HashMap<crate::compiler2::ValueId, AnyValue>,
+    env: HashMap<crate::compiler2::ValueId, BackendValue>,
     continuations: Vec<BackendContinuation>,
 }
 

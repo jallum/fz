@@ -12,7 +12,7 @@ use super::value::{
 use super::*;
 use crate::compiler2::{
     BackendBody, BackendEntry, BackendExecutable, BackendProgram, BackendStep as ProgramStep, BackendTail, CallTarget,
-    ControlDestination, ExecutableDispatch, ValueId,
+    ControlDestination, ExecutableDispatch, ReturnAbi, RuntimeInputLayout, ValueId,
 };
 use crate::compiler2::{ExecutableNeed, FunctionId};
 use crate::exec::runtime::output_hook_thunk;
@@ -46,7 +46,7 @@ enum BackendEvalState {
     Entry {
         executable: usize,
         entry: crate::compiler2::ControlEntryId,
-        env: HashMap<ValueId, AnyValue>,
+        env: HashMap<ValueId, BackendValue>,
         continuations: Vec<BackendContinuation>,
     },
 }
@@ -155,7 +155,7 @@ impl IrInterpRuntime {
         pid: u32,
         executable: usize,
         entry: crate::compiler2::ControlEntryId,
-        env: HashMap<ValueId, AnyValue>,
+        env: HashMap<ValueId, BackendValue>,
         continuations: Vec<BackendContinuation>,
     ) -> Result<(), String> {
         if !self.tasks.contains_key(&pid) {
@@ -232,7 +232,7 @@ impl IrInterpRuntime {
                     .clauses
                     .get(clause_index)
                     .ok_or_else(|| format!("backend parked receive clause {} is out of bounds", clause_index))?;
-                let env = delivered_env(entries, &park.env, clause.entry, None, &bound_values)?;
+                let env = delivered_env(self, entries, &park.env, clause.entry, None, &bound_values)?;
                 self.enqueue_backend_local_entry(receiver_pid, park.executable, clause.entry, env, park.continuations)?;
                 return Ok(());
             }
@@ -388,12 +388,16 @@ fn run_backend_resume(
 }
 
 fn continue_backend_value(
+    runtime: &mut IrInterpRuntime,
     program: &BackendProgram,
-    value: AnyValue,
+    value: BackendValue,
     mut continuations: Vec<BackendContinuation>,
 ) -> Result<BackendEvalTransition, String> {
     let Some(frame) = continuations.pop() else {
-        return Ok(BackendEvalTransition::Done(value));
+        return Ok(BackendEvalTransition::Done(materialize_backend_value(
+            runtime.cur_proc(),
+            &value,
+        )?));
     };
     let executable = program
         .executables
@@ -408,7 +412,7 @@ fn continue_backend_value(
     Ok(BackendEvalTransition::Next(BackendEvalState::Entry {
         executable: frame.executable,
         entry: frame.entry,
-        env: delivered_env(entries, &frame.env, frame.entry, Some(value), &[])?,
+        env: delivered_env(runtime, entries, &frame.env, frame.entry, Some(value), &[])?,
         continuations,
     }))
 }
@@ -430,33 +434,49 @@ fn step_backend_executable(
     match &executable.body {
         BackendBody::Extern { signature } => {
             let value = call_lowered_extern(runtime, types, tel, program, module, signature, None, &args)?;
-            continue_backend_value(program, value, continuations)
+            continue_backend_value(runtime, program, BackendValue::Runtime(value), continuations)
         }
         BackendBody::Clauses { clauses, entries, .. } => {
-            let dispatch = executable
-                .entry_dispatch
-                .as_ref()
-                .ok_or_else(|| format!("backend executable {} is missing clause dispatch", executable_index))?;
-            let clause_index = select_clause(runtime, types, module, dispatch, &args)?.ok_or_else(|| {
-                format!(
-                    "function_clause: no backend entry clause matched for executable {}",
-                    executable_index
-                )
-            })?;
+            let semantic_inputs = bind_executable_inputs(executable, &args)?;
+            let clause_index = if clauses.len() == 1 {
+                0
+            } else {
+                let dispatch = executable
+                    .entry_dispatch
+                    .as_ref()
+                    .ok_or_else(|| format!("backend executable {} is missing clause dispatch", executable_index))?;
+                let dispatch_inputs = semantic_inputs
+                    .iter()
+                    .map(|input| {
+                        input
+                            .as_ref()
+                            .map(|value| materialize_backend_value(runtime.cur_proc(), value))
+                            .transpose()
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                select_clause(runtime, types, module, dispatch, &dispatch_inputs)?.ok_or_else(|| {
+                    format!(
+                        "function_clause: no backend entry clause matched for executable {}",
+                        executable_index
+                    )
+                })?
+            };
             let clause = clauses
                 .get(clause_index)
                 .ok_or_else(|| format!("backend clause {} is out of bounds", clause_index))?;
-            if clause.params.len() != args.len() {
+            if clause.params.len() != semantic_inputs.len() {
                 return Err(format!(
-                    "backend executable {} expected {} arg(s), got {}",
+                    "backend executable {} expected {} semantic input(s), got {}",
                     executable_index,
                     clause.params.len(),
-                    args.len()
+                    semantic_inputs.len()
                 ));
             }
             let mut env = HashMap::new();
-            for (param, value) in clause.params.iter().copied().zip(args) {
-                env.insert(param, value);
+            for (param, value) in clause.params.iter().copied().zip(semantic_inputs) {
+                if let Some(value) = value {
+                    env.insert(param, value);
+                }
             }
             let mut reusable_cons_sources = HashMap::new();
             eval_steps(
@@ -469,7 +489,16 @@ fn step_backend_executable(
                 &clause.projections,
                 &mut reusable_cons_sources,
                 &mut env,
-            )?;
+            )
+            .map_err(|error| {
+                format!(
+                    "backend executable {} function {} clause {} failed before entry {}: {error}",
+                    executable_index,
+                    executable.key.activation.function.as_u32(),
+                    clause_index,
+                    clause.entry.as_u32()
+                )
+            })?;
             step_eval_entry(
                 runtime,
                 types,
@@ -492,9 +521,22 @@ fn select_clause(
     types: &mut crate::compiler2::Types,
     module: &Module,
     dispatch: &ExecutableDispatch,
-    args: &[AnyValue],
+    args: &[Option<AnyValue>],
 ) -> Result<Option<usize>, String> {
-    let selected = select_dispatch_body(runtime, types, module, dispatch.plan(), args, &HashMap::new())?;
+    let required_inputs = dispatch.required_input_ordinals();
+    for ordinal in required_inputs {
+        if args.get(ordinal).and_then(|value| *value).is_none() {
+            return Err(format!(
+                "backend clause dispatch required omitted semantic input {}",
+                ordinal
+            ));
+        }
+    }
+    let inputs = args
+        .iter()
+        .map(|value| value.unwrap_or_else(interp_nil_value))
+        .collect::<Vec<_>>();
+    let selected = select_dispatch_body(runtime, types, module, dispatch.plan(), &inputs, &HashMap::new())?;
     Ok(selected.and_then(|body_id| dispatch.clause_index(body_id)))
 }
 
@@ -553,7 +595,7 @@ fn step_eval_entry(
     executable: &BackendExecutable,
     entries: &[BackendEntry],
     entry_id: crate::compiler2::ControlEntryId,
-    mut env: HashMap<ValueId, AnyValue>,
+    mut env: HashMap<ValueId, BackendValue>,
     continuations: Vec<BackendContinuation>,
 ) -> Result<BackendEvalTransition, String> {
     let entry = entries
@@ -574,16 +616,24 @@ fn step_eval_entry(
         &entry.steps,
         &mut reusable_cons_sources,
         &mut env,
-    )?;
+    )
+    .map_err(|error| {
+        format!(
+            "backend executable {} function {} entry {} step evaluation failed: {error}",
+            executable_index,
+            executable.key.activation.function.as_u32(),
+            entry_id.as_u32()
+        )
+    })?;
     match &entry.tail {
         BackendTail::Value { value, dest } => {
-            let result = env_get(&env, *value)?;
+            let result = env_get_value(&env, *value)?;
             match dest {
-                ControlDestination::Return => continue_backend_value(program, result, continuations),
+                ControlDestination::Return => continue_backend_value(runtime, program, result, continuations),
                 ControlDestination::Deliver(target) => Ok(BackendEvalTransition::Next(BackendEvalState::Entry {
                     executable: executable_index,
                     entry: *target,
-                    env: delivered_env(entries, &env, *target, Some(result), &[])?,
+                    env: delivered_env(runtime, entries, &env, *target, Some(result), &[])?,
                     continuations,
                 })),
             }
@@ -621,20 +671,38 @@ fn step_eval_entry(
             dest,
             ..
         } => {
-            let callee_value = env_get(&env, *callee)?;
-            let (fn_id, captures) = match callee_value {
-                AnyValue::FnRef(fn_id) => (fn_id, Vec::new()),
-                other => unpack_closure(other.value(runtime.cur_proc())?)?,
+            let callee_value = env_get_value(&env, *callee)?;
+            let (function, captures) = match callee_value {
+                BackendValue::DirectCallable { function, captures } => (function, captures),
+                other => {
+                    let materialized = materialize_backend_value(runtime.cur_proc(), &other)?;
+                    let (fn_id, captures) = match materialized {
+                        AnyValue::FnRef(fn_id) => (fn_id, Vec::new()),
+                        other => unpack_closure(other.value(runtime.cur_proc())?)?,
+                    };
+                    (FunctionId::from_fn_id(fn_id), captures)
+                }
             };
-            let arg_values = eval_call_args(&env, args)?;
+            let fn_id = FnId(function.as_u32());
             let executable_target = match target {
                 Some(target) => *target,
                 None => {
+                    let arg_values = materialize_call_args(runtime.cur_proc(), &env, args)?;
                     resolve_backend_callable_executable(runtime, types, module, program, fn_id, &captures, &arg_values)?
                 }
             };
-            let mut call_args = captures;
-            call_args.extend(arg_values);
+            let callee_executable = program
+                .executables
+                .get(executable_target)
+                .ok_or_else(|| format!("backend executable {} is out of bounds", executable_target))?;
+            let mut call_args = captures.clone();
+            call_args.extend(encode_call_args(
+                runtime,
+                callee_executable,
+                &env,
+                args,
+                captures.len(),
+            )?);
             let continuations = match dest {
                 ControlDestination::Return => continuations,
                 ControlDestination::Deliver(target) => {
@@ -658,7 +726,7 @@ fn step_eval_entry(
             then_entry,
             else_entry,
         } => {
-            let target = if env_get(&env, *cond)?.is_truthy() {
+            let target = if env_get(runtime.cur_proc(), &env, *cond)?.is_truthy() {
                 *then_entry
             } else {
                 *else_entry
@@ -666,7 +734,7 @@ fn step_eval_entry(
             Ok(BackendEvalTransition::Next(BackendEvalState::Entry {
                 executable: executable_index,
                 entry: target,
-                env: delivered_env(entries, &env, target, None, &[])?,
+                env: delivered_env(runtime, entries, &env, target, None, &[])?,
                 continuations,
             }))
         }
@@ -675,8 +743,8 @@ fn step_eval_entry(
             bindings,
             dispatch,
         } => {
-            let input_values = env_values(&env, inputs)?;
-            let pinned_values = local_dispatch_pinned(&env, bindings, &dispatch.plan)?;
+            let input_values = env_values(runtime.cur_proc(), &env, inputs)?;
+            let pinned_values = local_dispatch_pinned(runtime.cur_proc(), &env, bindings, &dispatch.plan)?;
             let target =
                 match select_dispatch_body(runtime, types, module, &dispatch.plan, &input_values, &pinned_values)? {
                     Some(body_id) => *dispatch
@@ -688,7 +756,7 @@ fn step_eval_entry(
             Ok(BackendEvalTransition::Next(BackendEvalState::Entry {
                 executable: executable_index,
                 entry: target,
-                env: delivered_env(entries, &env, target, None, &[])?,
+                env: delivered_env(runtime, entries, &env, target, None, &[])?,
                 continuations,
             }))
         }
@@ -719,17 +787,17 @@ fn step_eval_entry(
                 return Ok(BackendEvalTransition::Next(BackendEvalState::Entry {
                     executable: executable_index,
                     entry: clause.entry,
-                    env: delivered_env(entries, &env, clause.entry, None, &bound_values)?,
+                    env: delivered_env(runtime, entries, &env, clause.entry, None, &bound_values)?,
                     continuations,
                 }));
             }
             if let Some(after) = after
-                && env_get(&env, after.timeout)?.as_i64() == Some(0)
+                && env_get(runtime.cur_proc(), &env, after.timeout)?.as_i64() == Some(0)
             {
                 return Ok(BackendEvalTransition::Next(BackendEvalState::Entry {
                     executable: executable_index,
                     entry: after.entry,
-                    env: delivered_env(entries, &env, after.entry, None, &[])?,
+                    env: delivered_env(runtime, entries, &env, after.entry, None, &[])?,
                     continuations,
                 }));
             }
@@ -758,9 +826,9 @@ fn try_match_backend_receive(
     dispatch: &crate::dispatch_matrix::pattern::PatternDispatchPlan<crate::compiler2::Ty>,
     msg: AnyValue,
     bindings: &crate::compiler2::DispatchBindings,
-    env: &HashMap<ValueId, AnyValue>,
+    env: &HashMap<ValueId, BackendValue>,
 ) -> Result<Option<(usize, Vec<AnyValue>)>, String> {
-    let pinned = local_dispatch_pinned(env, bindings, dispatch)?;
+    let pinned = local_dispatch_pinned(runtime.cur_proc(), env, bindings, dispatch)?;
     let Some((body_id, binds)) = select_dispatch_match(runtime, types, module, dispatch, &[msg], &pinned)? else {
         return Ok(None);
     };
@@ -786,31 +854,33 @@ fn eval_steps(
     _tel: &dyn Telemetry,
     _program: &BackendProgram,
     module: &Module,
-    _executable: &BackendExecutable,
+    executable: &BackendExecutable,
     steps: &[ProgramStep],
     reusable_cons_sources: &mut HashMap<ValueId, ValueId>,
-    env: &mut HashMap<ValueId, AnyValue>,
+    env: &mut HashMap<ValueId, BackendValue>,
 ) -> Result<(), String> {
     for step in steps {
         match step {
             ProgramStep::Const { value, literal } => {
-                env.insert(*value, literal_value(runtime, literal)?);
+                env.insert(*value, BackendValue::Runtime(literal_value(runtime, literal)?));
             }
             ProgramStep::Tuple { value, items } => {
-                let tuple = make_tuple(runtime, env_values(env, items)?)?;
-                env.insert(*value, tuple);
+                let tuple = make_tuple(runtime, env_values(runtime.cur_proc(), env, items)?)?;
+                env.insert(*value, BackendValue::Runtime(tuple));
             }
             ProgramStep::List { value, items, tail } => {
-                let tail_value = tail.map_or(Ok(interp_empty_list_value()), |tail| env_get(env, tail))?;
+                let tail_value = tail.map_or(Ok(interp_empty_list_value()), |tail| {
+                    env_get(runtime.cur_proc(), env, tail)
+                })?;
                 let acc = if items.len() == 1 {
-                    let head = env_get(env, items[0])?;
+                    let head = env_get(runtime.cur_proc(), env, items[0])?;
                     if let (Some(tail_id), Some(source_id)) = (*tail, reusable_cons_sources.get(&items[0]).copied()) {
                         rebuild_backend_list_from_source(
                             runtime.cur_proc(),
                             env,
                             source_id,
                             head,
-                            env_get(env, tail_id)?,
+                            env_get(runtime.cur_proc(), env, tail_id)?,
                         )?
                     } else {
                         interp_list_cons(runtime.cur_proc(), head, tail_value, "backend list")?
@@ -818,11 +888,16 @@ fn eval_steps(
                 } else {
                     let mut acc = tail_value;
                     for item in items.iter().rev() {
-                        acc = interp_list_cons(runtime.cur_proc(), env_get(env, *item)?, acc, "backend list")?;
+                        acc = interp_list_cons(
+                            runtime.cur_proc(),
+                            env_get(runtime.cur_proc(), env, *item)?,
+                            acc,
+                            "backend list",
+                        )?;
                     }
                     acc
                 };
-                env.insert(*value, acc);
+                env.insert(*value, BackendValue::Runtime(acc));
             }
             ProgramStep::Map { value, entries } => {
                 let mut map_bits = if entries.is_empty() {
@@ -834,26 +909,32 @@ fn eval_steps(
                     map_bits = interp_map_put(
                         runtime.cur_proc(),
                         map_bits,
-                        env_get(env, *key)?,
-                        env_get(env, *item)?,
+                        env_get(runtime.cur_proc(), env, *key)?,
+                        env_get(runtime.cur_proc(), env, *item)?,
                         "backend map",
                     )?;
                 }
-                env.insert(*value, interp_value_from_ref_word(map_bits, "backend map")?);
+                env.insert(
+                    *value,
+                    BackendValue::Runtime(interp_value_from_ref_word(map_bits, "backend map")?),
+                );
             }
             ProgramStep::MapUpdate { value, base, entries } => {
-                let base = env_get(env, *base)?;
+                let base = env_get(runtime.cur_proc(), env, *base)?;
                 let mut map_bits = base.value(runtime.cur_proc())?.ref_word().raw_word();
                 for (key, item) in entries {
                     map_bits = interp_map_put(
                         runtime.cur_proc(),
                         map_bits,
-                        env_get(env, *key)?,
-                        env_get(env, *item)?,
+                        env_get(runtime.cur_proc(), env, *key)?,
+                        env_get(runtime.cur_proc(), env, *item)?,
                         "backend map update",
                     )?;
                 }
-                env.insert(*value, interp_value_from_ref_word(map_bits, "backend map update")?);
+                env.insert(
+                    *value,
+                    BackendValue::Runtime(interp_value_from_ref_word(map_bits, "backend map update")?),
+                );
             }
             ProgramStep::Struct {
                 value,
@@ -870,7 +951,7 @@ fn eval_steps(
                     .register_schema(Schema::named_struct(module_name.clone(), schema));
                 let ptr = unsafe { &mut *runtime.cur_proc() }.heap.alloc_struct(schema_id);
                 for (index, (_, item)) in fields.iter().enumerate() {
-                    let item = env_get(env, *item)?;
+                    let item = env_get(runtime.cur_proc(), env, *item)?;
                     unsafe { &mut *runtime.cur_proc() }.heap.write_field_slot(
                         ptr,
                         (index as u32) * 8,
@@ -878,13 +959,13 @@ fn eval_steps(
                     );
                 }
                 let struct_ref = AnyValueRef::from_heap_object(ValueKind::STRUCT, ptr).expect("backend struct ref");
-                env.insert(*value, AnyValue::Ref(struct_ref));
+                env.insert(*value, BackendValue::Runtime(AnyValue::Ref(struct_ref)));
             }
             ProgramStep::Bitstring { value, fields } => {
                 fz_bs_begin(runtime.cur_proc());
                 for field in fields {
-                    let item = env_get(env, field.value)?;
-                    let (size_present, size_value) = backend_bit_size_value(env, &field.spec.size)?;
+                    let item = env_get(runtime.cur_proc(), env, field.value)?;
+                    let (size_present, size_value) = backend_bit_size_value(runtime.cur_proc(), env, &field.spec.size)?;
                     fz_bs_write_field_ref(
                         runtime.cur_proc(),
                         item.as_ref_word(runtime.cur_proc())?,
@@ -898,44 +979,76 @@ fn eval_steps(
                 }
                 env.insert(
                     *value,
-                    interp_value_from_ref_word(fz_bs_finalize(runtime.cur_proc()), "backend bitstring")?,
+                    BackendValue::Runtime(interp_value_from_ref_word(
+                        fz_bs_finalize(runtime.cur_proc()),
+                        "backend bitstring",
+                    )?),
                 );
             }
             ProgramStep::FunctionRef { value, function } => {
-                env.insert(*value, AnyValue::FnRef(FnId(function.as_u32())));
+                let bound = if matches!(
+                    executable.runtime_demand.callable_materializations.get(value),
+                    Some(crate::compiler2::CallableMaterialization::DirectOnly { .. })
+                ) {
+                    BackendValue::DirectCallable {
+                        function: *function,
+                        captures: Vec::new(),
+                    }
+                } else {
+                    BackendValue::Runtime(AnyValue::FnRef(FnId(function.as_u32())))
+                };
+                env.insert(*value, bound);
             }
             ProgramStep::Lambda {
                 value,
                 function,
                 captures,
             } => {
-                let closure = make_closure(runtime, function.as_u32(), env_values(env, captures)?)?;
-                env.insert(*value, closure);
+                let bound = if matches!(
+                    executable.runtime_demand.callable_materializations.get(value),
+                    Some(crate::compiler2::CallableMaterialization::DirectOnly { .. })
+                ) {
+                    BackendValue::DirectCallable {
+                        function: *function,
+                        captures: env_values(runtime.cur_proc(), env, captures)?,
+                    }
+                } else {
+                    BackendValue::Runtime(make_closure(
+                        runtime,
+                        function.as_u32(),
+                        env_values(runtime.cur_proc(), env, captures)?,
+                    )?)
+                };
+                env.insert(*value, bound);
             }
             ProgramStep::BinaryOp { value, op, left, right } => {
                 let result = eval_binop(
                     runtime.cur_proc(),
                     backend_binop(*op)?,
-                    env_get(env, *left)?,
-                    env_get(env, *right)?,
+                    env_get(runtime.cur_proc(), env, *left)?,
+                    env_get(runtime.cur_proc(), env, *right)?,
                 )?;
-                env.insert(*value, result);
+                env.insert(*value, BackendValue::Runtime(result));
             }
             ProgramStep::UnaryOp { value, op, input } => {
-                let result = eval_unop(backend_unop(*op)?, env_get(env, *input)?)?;
-                env.insert(*value, result);
+                let result = eval_unop(backend_unop(*op)?, env_get(runtime.cur_proc(), env, *input)?)?;
+                env.insert(*value, BackendValue::Runtime(result));
             }
             ProgramStep::MapIndex { value, base, key } => {
-                let result = interp_map_get(runtime.cur_proc(), env_get(env, *base)?, env_get(env, *key)?)?;
-                env.insert(*value, result);
+                let result = interp_map_get(
+                    runtime.cur_proc(),
+                    env_get(runtime.cur_proc(), env, *base)?,
+                    env_get(runtime.cur_proc(), env, *key)?,
+                )?;
+                env.insert(*value, BackendValue::Runtime(result));
             }
             ProgramStep::FieldAccess { value, base, field } => {
-                let base = env_get(env, *base)?;
+                let base = env_get(runtime.cur_proc(), env, *base)?;
                 let result = interp_struct_field(runtime, module, base, field)?;
-                env.insert(*value, result);
+                env.insert(*value, BackendValue::Runtime(result));
             }
             ProgramStep::AssertLiteral { source, literal } => {
-                let actual = env_get(env, *source)?;
+                let actual = env_get(runtime.cur_proc(), env, *source)?;
                 let expected = literal_value(runtime, literal)?;
                 if !interp_value_eq(runtime.cur_proc(), actual, expected)? {
                     return Err(format!(
@@ -945,56 +1058,70 @@ fn eval_steps(
                 }
             }
             ProgramStep::AssertStruct { source, module_name } => {
-                if !is_named_struct(runtime, module, env_get(env, *source)?, module_name)? {
+                if !is_named_struct(runtime, module, env_get(runtime.cur_proc(), env, *source)?, module_name)? {
                     return Err(format!("match_error: expected struct {module_name}"));
                 }
             }
             ProgramStep::RequireMapValue { value, source, key } => {
                 let key = literal_value(runtime, key)?;
-                let result = matcher_map_get(runtime, env_get(env, *source)?, key)?;
+                let result = matcher_map_get(runtime, env_get(runtime.cur_proc(), env, *source)?, key)?;
                 if matches!(result, AnyValue::Null) {
                     return Err("match_error: expected map key to exist".to_string());
                 }
-                env.insert(*value, result);
+                env.insert(*value, BackendValue::Runtime(result));
             }
-            ProgramStep::AssertTuple { source, arity } => {
-                if !is_tuple_arity(runtime, env_get(env, *source)?, *arity)? {
-                    return Err(format!("match_error: expected tuple arity {}", arity));
+            ProgramStep::AssertTuple { source, arity } => match env_get_value(env, *source)? {
+                BackendValue::TupleFields(fields) if fields.len() == *arity => {}
+                other => {
+                    if !is_tuple_arity(runtime, materialize_backend_value(runtime.cur_proc(), &other)?, *arity)? {
+                        return Err(format!("match_error: expected tuple arity {}", arity));
+                    }
                 }
-            }
+            },
             ProgramStep::TupleField { value, source, index } => {
-                let source = env_get(env, *source)?;
-                let field = with_value_ref(runtime.cur_proc(), source, "backend tuple field", |struct_ref| {
-                    fz_struct_get_field_ref(runtime.cur_proc(), struct_ref, (*index as u32) * 8)
-                })
-                .and_then(|ref_word| interp_value_from_ref_word(ref_word, "backend tuple field"))?;
-                env.insert(*value, field);
+                let field = match env_get_value(env, *source)? {
+                    BackendValue::TupleFields(fields) => *fields
+                        .get(*index)
+                        .ok_or_else(|| format!("match_error: tuple-field index {} is out of bounds", index))?,
+                    other => {
+                        let source = materialize_backend_value(runtime.cur_proc(), &other)?;
+                        with_value_ref(runtime.cur_proc(), source, "backend tuple field", |struct_ref| {
+                            fz_struct_get_field_ref(runtime.cur_proc(), struct_ref, (*index as u32) * 8)
+                        })
+                        .and_then(|ref_word| interp_value_from_ref_word(ref_word, "backend tuple field"))?
+                    }
+                };
+                env.insert(*value, BackendValue::Runtime(field));
             }
             ProgramStep::AssertEmptyList { source } => {
-                if !env_get(env, *source)?.is_empty_list() {
+                if !env_get(runtime.cur_proc(), env, *source)?.is_empty_list() {
                     return Err("match_error: expected empty list".to_string());
                 }
             }
             ProgramStep::AssertSame { source, value } => {
-                if !interp_value_eq(runtime.cur_proc(), env_get(env, *source)?, env_get(env, *value)?)? {
+                if !interp_value_eq(
+                    runtime.cur_proc(),
+                    env_get(runtime.cur_proc(), env, *source)?,
+                    env_get(runtime.cur_proc(), env, *value)?,
+                )? {
                     return Err("match_error: pinned value mismatch".to_string());
                 }
             }
             ProgramStep::SplitList { source, head, tail } => {
-                let source_value = env_get(env, *source)?;
+                let source_value = env_get(runtime.cur_proc(), env, *source)?;
                 let head_value = interp_list_head(runtime.cur_proc(), source_value)?;
                 let tail_value = interp_list_tail(runtime.cur_proc(), source_value)?;
-                env.insert(*head, head_value);
-                env.insert(*tail, tail_value);
+                env.insert(*head, BackendValue::Runtime(head_value));
+                env.insert(*tail, BackendValue::Runtime(tail_value));
                 reusable_cons_sources.insert(*head, *source);
             }
             ProgramStep::BitstringInit { reader, source } => {
-                let source = env_get(env, *source)?;
+                let source = env_get(runtime.cur_proc(), env, *source)?;
                 let source_ref = source.as_ref_word(runtime.cur_proc())?;
                 let reader_ref = fz_runtime::ir_runtime::fz_bs_reader_init_ref(runtime.cur_proc(), source_ref);
                 env.insert(
                     *reader,
-                    interp_value_from_ref_word(reader_ref, "backend bitstring reader")?,
+                    BackendValue::Runtime(interp_value_from_ref_word(reader_ref, "backend bitstring reader")?),
                 );
             }
             ProgramStep::BitstringRead {
@@ -1005,8 +1132,8 @@ fn eval_steps(
                 spec,
                 is_last,
             } => {
-                let reader_ref = env_get(env, *reader)?.as_ref_word(runtime.cur_proc())?;
-                let (size_present, size_value) = backend_bit_size_value(env, &spec.size)?;
+                let reader_ref = env_get(runtime.cur_proc(), env, *reader)?.as_ref_word(runtime.cur_proc())?;
+                let (size_present, size_value) = backend_bit_size_value(runtime.cur_proc(), env, &spec.size)?;
                 let field_spec = fz_runtime::ir_runtime::fz_bs_field_spec(
                     backend_bit_type_tag(spec.ty),
                     size_present,
@@ -1023,33 +1150,33 @@ fn eval_steps(
                 );
                 let ok_value =
                     interp_struct_field_from_tagged_bits(runtime.cur_proc(), result, 0, "backend bitstring ok")?;
-                env.insert(*ok, ok_value);
+                env.insert(*ok, BackendValue::Runtime(ok_value));
                 if ok_value.is_false() || ok_value.is_nil() {
-                    env.insert(*value, AnyValue::Null);
-                    env.insert(*next_reader, AnyValue::Null);
+                    env.insert(*value, BackendValue::Runtime(AnyValue::Null));
+                    env.insert(*next_reader, BackendValue::Runtime(AnyValue::Null));
                 } else {
                     env.insert(
                         *value,
-                        interp_struct_field_from_tagged_bits(
+                        BackendValue::Runtime(interp_struct_field_from_tagged_bits(
                             runtime.cur_proc(),
                             result,
                             8,
                             "backend bitstring extracted",
-                        )?,
+                        )?),
                     );
                     env.insert(
                         *next_reader,
-                        interp_struct_field_from_tagged_bits(
+                        BackendValue::Runtime(interp_struct_field_from_tagged_bits(
                             runtime.cur_proc(),
                             result,
                             16,
                             "backend bitstring next reader",
-                        )?,
+                        )?),
                     );
                 }
             }
             ProgramStep::AssertBitstringDone { reader } => {
-                let reader = env_get(env, *reader)?;
+                let reader = env_get(runtime.cur_proc(), env, *reader)?;
                 let bit_len = interp_struct_field_from_tagged_bits(
                     runtime.cur_proc(),
                     reader.as_ref_word(runtime.cur_proc())?,
@@ -1073,12 +1200,12 @@ fn eval_steps(
 
 fn rebuild_backend_list_from_source(
     proc: *mut Process,
-    env: &HashMap<ValueId, AnyValue>,
+    env: &HashMap<ValueId, BackendValue>,
     source_id: ValueId,
     head: AnyValue,
     tail: AnyValue,
 ) -> Result<AnyValue, String> {
-    let source = env_get(env, source_id)?;
+    let source = env_get(proc, env, source_id)?;
     let source_ref = source
         .as_any_value_ref(proc)
         .map_err(|err| format!("backend list: cannot materialize reusable source ref: {err}"))?;
@@ -1101,12 +1228,13 @@ fn rebuild_backend_list_from_source(
 }
 
 fn delivered_env(
+    runtime: &mut IrInterpRuntime,
     entries: &[BackendEntry],
-    env: &HashMap<ValueId, AnyValue>,
+    env: &HashMap<ValueId, BackendValue>,
     entry_id: crate::compiler2::ControlEntryId,
-    delivered: Option<AnyValue>,
+    delivered: Option<BackendValue>,
     params: &[AnyValue],
-) -> Result<HashMap<ValueId, AnyValue>, String> {
+) -> Result<HashMap<ValueId, BackendValue>, String> {
     let entry = entries
         .get(entry_id.as_u32() as usize)
         .ok_or_else(|| format!("backend entry {} is out of bounds", entry_id.as_u32()))?;
@@ -1120,19 +1248,33 @@ fn delivered_env(
         ));
     }
     for (param, value) in entry.params.iter().copied().zip(params.iter().copied()) {
-        next.insert(param, value);
+        next.insert(param, BackendValue::Runtime(value));
     }
-    if let Some(value) = entry.origin.input_value() {
-        let delivered = delivered.ok_or_else(|| {
-            format!(
-                "backend entry {} expected a delivered value but none was provided",
-                entry_id.as_u32()
-            )
-        })?;
-        next.insert(value, delivered);
+    match &entry.origin {
+        crate::compiler2::BackendEntryOrigin::Clause
+        | crate::compiler2::BackendEntryOrigin::Branch
+        | crate::compiler2::BackendEntryOrigin::ReceiveOutcome => {}
+        crate::compiler2::BackendEntryOrigin::DeliveredResume { value, return_abi } => {
+            let delivered = delivered.ok_or_else(|| {
+                format!(
+                    "backend entry {} expected a delivered value but none was provided",
+                    entry_id.as_u32()
+                )
+            })?;
+            let bound = match return_abi {
+                ReturnAbi::Value(_) => delivered,
+                ReturnAbi::TupleFields(reprs) => {
+                    BackendValue::TupleFields(extract_tuple_fields(runtime.cur_proc(), &delivered, reprs.len())?)
+                }
+            };
+            next.insert(*value, bound);
+        }
     }
     for capture in &entry.captures {
-        next.insert(*capture, env_get(env, *capture)?);
+        next.insert(*capture, env_get_value(env, *capture)?);
+    }
+    for capture in &entry.reusable_cons_captures {
+        next.insert(capture.source, env_get_value(env, capture.source)?);
     }
     Ok(next)
 }
@@ -1146,7 +1288,7 @@ fn eval_direct_call(
     callee: usize,
     args: &[crate::compiler2::BackendCallArg],
     extern_marshals: Option<&[crate::fz_ir::ExternTy]>,
-    env: HashMap<ValueId, AnyValue>,
+    env: HashMap<ValueId, BackendValue>,
     executable_index: usize,
     dest: ControlDestination,
     continuations: Vec<BackendContinuation>,
@@ -1155,7 +1297,7 @@ fn eval_direct_call(
         .executables
         .get(callee)
         .ok_or_else(|| format!("backend direct callee {} is out of bounds", callee))?;
-    let call_args = eval_call_args(&env, args)?;
+    let call_args = encode_call_args(runtime, executable, &env, args, 0)?;
     let continuations = match dest {
         ControlDestination::Return => continuations,
         ControlDestination::Deliver(target) => {
@@ -1184,7 +1326,7 @@ fn eval_direct_call(
             extern_marshals,
             &call_args,
         )
-        .and_then(|value| continue_backend_value(program, value, continuations)),
+        .and_then(|value| continue_backend_value(runtime, program, BackendValue::Runtime(value), continuations)),
         BackendBody::Clauses { .. } => Ok(BackendEvalTransition::Next(BackendEvalState::Executable {
             executable: callee,
             args: call_args,
@@ -1193,37 +1335,47 @@ fn eval_direct_call(
     }
 }
 
-fn eval_call_args(
-    env: &HashMap<ValueId, AnyValue>,
-    args: &[crate::compiler2::BackendCallArg],
-) -> Result<Vec<AnyValue>, String> {
-    args.iter().map(|arg| env_get(env, arg.value)).collect()
-}
-
 fn capture_backend_continuation_env(
     proc: *mut Process,
     entries: &[BackendEntry],
     target: crate::compiler2::ControlEntryId,
-    env: &HashMap<ValueId, AnyValue>,
-) -> Result<HashMap<ValueId, AnyValue>, String> {
+    env: &HashMap<ValueId, BackendValue>,
+) -> Result<HashMap<ValueId, BackendValue>, String> {
     let entry = entries
         .get(target.as_u32() as usize)
         .ok_or_else(|| format!("backend entry {} is out of bounds", target.as_u32()))?;
-    let mut captured = HashMap::with_capacity(entry.captures.len());
+    let mut captured = HashMap::with_capacity(entry.captures.len() + entry.reusable_cons_captures.len());
     for capture in &entry.captures {
-        captured.insert(*capture, publish_backend_capture(proc, env_get(env, *capture)?)?);
+        captured.insert(*capture, publish_backend_capture(proc, &env_get_value(env, *capture)?)?);
+    }
+    for capture in &entry.reusable_cons_captures {
+        captured.insert(
+            capture.source,
+            publish_backend_capture(proc, &env_get_value(env, capture.source)?)?,
+        );
     }
     Ok(captured)
 }
 
-fn publish_backend_capture(proc: *mut Process, value: AnyValue) -> Result<AnyValue, String> {
-    let AnyValue::Ref(value_ref) = value else {
-        return Ok(value);
-    };
-    interp_value_from_ref_word(
-        fz_mark_published_ref_aliased(proc, value_ref.raw_word()),
-        "backend continuation capture",
-    )
+fn publish_backend_capture(proc: *mut Process, value: &BackendValue) -> Result<BackendValue, String> {
+    Ok(match value {
+        BackendValue::Runtime(value) => BackendValue::Runtime(publish_runtime_value(proc, *value)?),
+        BackendValue::TupleFields(fields) => BackendValue::TupleFields(
+            fields
+                .iter()
+                .copied()
+                .map(|value| publish_runtime_value(proc, value))
+                .collect::<Result<Vec<_>, _>>()?,
+        ),
+        BackendValue::DirectCallable { function, captures } => BackendValue::DirectCallable {
+            function: *function,
+            captures: captures
+                .iter()
+                .copied()
+                .map(|value| publish_runtime_value(proc, value))
+                .collect::<Result<Vec<_>, _>>()?,
+        },
+    })
 }
 
 fn entries_for_executable(program: &BackendProgram, executable_index: usize) -> Result<&[BackendEntry], String> {
@@ -1237,12 +1389,17 @@ fn entries_for_executable(program: &BackendProgram, executable_index: usize) -> 
     Ok(entries)
 }
 
-fn env_values(env: &HashMap<ValueId, AnyValue>, values: &[ValueId]) -> Result<Vec<AnyValue>, String> {
-    values.iter().map(|value| env_get(env, *value)).collect()
+fn env_values(
+    proc: *mut Process,
+    env: &HashMap<ValueId, BackendValue>,
+    values: &[ValueId],
+) -> Result<Vec<AnyValue>, String> {
+    values.iter().map(|value| env_get(proc, env, *value)).collect()
 }
 
 fn local_dispatch_pinned(
-    env: &HashMap<ValueId, AnyValue>,
+    proc: *mut Process,
+    env: &HashMap<ValueId, BackendValue>,
     bindings: &crate::compiler2::DispatchBindings,
     plan: &crate::dispatch_matrix::pattern::PatternDispatchPlan<crate::compiler2::Ty>,
 ) -> Result<HashMap<String, AnyValue>, String> {
@@ -1252,22 +1409,234 @@ fn local_dispatch_pinned(
             return Err(format!("backend local dispatch pinned {} is out of bounds", index));
         };
         if pin.input.is_none() {
-            pinned.insert(pin.name.clone(), env_get(env, value_id)?);
+            pinned.insert(pin.name.clone(), env_get(proc, env, value_id)?);
         }
     }
     for (index, value_id) in bindings.prepared.iter().copied().enumerate() {
         pinned.insert(
             crate::dispatch_matrix::pattern::prepared_key_name(index),
-            env_get(env, value_id)?,
+            env_get(proc, env, value_id)?,
         );
     }
     Ok(pinned)
 }
 
-fn env_get(env: &HashMap<ValueId, AnyValue>, value: ValueId) -> Result<AnyValue, String> {
+fn env_get(proc: *mut Process, env: &HashMap<ValueId, BackendValue>, value: ValueId) -> Result<AnyValue, String> {
+    let value = env_get_value(env, value)?;
+    materialize_backend_value(proc, &value)
+}
+
+fn env_get_value(env: &HashMap<ValueId, BackendValue>, value: ValueId) -> Result<BackendValue, String> {
     env.get(&value)
-        .copied()
+        .cloned()
         .ok_or_else(|| format!("backend value {} is unbound", value.as_u32()))
+}
+
+fn bind_executable_inputs(
+    executable: &BackendExecutable,
+    args: &[AnyValue],
+) -> Result<Vec<Option<BackendValue>>, String> {
+    let semantic_arity = executable.key.activation.input.len();
+    let mut bound = vec![None; semantic_arity];
+    let mut lane_index = 0;
+    for input in &executable.runtime_params.inputs {
+        let semantic_index = input.semantic_index();
+        let value = match input {
+            RuntimeInputLayout::Omitted { .. } => None,
+            RuntimeInputLayout::Value { .. } => {
+                let value = *args.get(lane_index).ok_or_else(|| {
+                    format!(
+                        "backend executable {} expected runtime lane {}",
+                        executable.key.activation.function.as_u32(),
+                        lane_index
+                    )
+                })?;
+                lane_index += 1;
+                Some(BackendValue::Runtime(value))
+            }
+            RuntimeInputLayout::TupleFields { field_reprs, .. } => {
+                let end = lane_index + field_reprs.len();
+                let fields = args
+                    .get(lane_index..end)
+                    .ok_or_else(|| {
+                        format!(
+                            "backend executable {} expected {} tuple-field lane(s) starting at {}",
+                            executable.key.activation.function.as_u32(),
+                            field_reprs.len(),
+                            lane_index
+                        )
+                    })?
+                    .to_vec();
+                lane_index = end;
+                Some(BackendValue::TupleFields(fields))
+            }
+            RuntimeInputLayout::DirectCallableCaptures {
+                function,
+                capture_reprs,
+                ..
+            } => {
+                let end = lane_index + capture_reprs.len();
+                let captures = args
+                    .get(lane_index..end)
+                    .ok_or_else(|| {
+                        format!(
+                            "backend executable {} expected {} direct-callable capture lane(s) starting at {}",
+                            executable.key.activation.function.as_u32(),
+                            capture_reprs.len(),
+                            lane_index
+                        )
+                    })?
+                    .to_vec();
+                lane_index = end;
+                Some(BackendValue::DirectCallable {
+                    function: *function,
+                    captures,
+                })
+            }
+        };
+        bound[semantic_index] = value;
+    }
+    if lane_index != args.len() {
+        return Err(format!(
+            "backend executable {} expected {} runtime lane(s), got {}",
+            executable.key.activation.function.as_u32(),
+            lane_index,
+            args.len()
+        ));
+    }
+    Ok(bound)
+}
+
+fn materialize_backend_value(proc: *mut Process, value: &BackendValue) -> Result<AnyValue, String> {
+    match value {
+        BackendValue::Runtime(value) => Ok(*value),
+        BackendValue::TupleFields(fields) => make_tuple_on_proc(proc, fields.clone()),
+        BackendValue::DirectCallable { function, captures } => {
+            if captures.is_empty() {
+                Ok(AnyValue::FnRef(FnId(function.as_u32())))
+            } else {
+                make_closure_on_proc(proc, function.as_u32(), captures.clone())
+            }
+        }
+    }
+}
+
+fn materialize_call_args(
+    proc: *mut Process,
+    env: &HashMap<ValueId, BackendValue>,
+    args: &[crate::compiler2::BackendCallArg],
+) -> Result<Vec<AnyValue>, String> {
+    args.iter().map(|arg| env_get(proc, env, arg.value)).collect()
+}
+
+fn encode_call_args(
+    runtime: &mut IrInterpRuntime,
+    executable: &BackendExecutable,
+    env: &HashMap<ValueId, BackendValue>,
+    args: &[crate::compiler2::BackendCallArg],
+    semantic_start: usize,
+) -> Result<Vec<AnyValue>, String> {
+    let expected = executable.key.activation.input.len().saturating_sub(semantic_start);
+    if args.len() != expected {
+        return Err(format!(
+            "backend executable {} expected {} semantic call arg(s), got {}",
+            executable.key.activation.function.as_u32(),
+            expected,
+            args.len()
+        ));
+    }
+    let mut lanes = Vec::new();
+    for (arg, layout) in args
+        .iter()
+        .zip(executable.runtime_params.inputs.iter().skip(semantic_start))
+    {
+        let value = env_get_value(env, arg.value)?;
+        match layout {
+            RuntimeInputLayout::Omitted { .. } => {}
+            RuntimeInputLayout::Value { .. } => lanes.push(materialize_backend_value(runtime.cur_proc(), &value)?),
+            RuntimeInputLayout::TupleFields { field_reprs, .. } => {
+                lanes.extend(extract_tuple_fields(runtime.cur_proc(), &value, field_reprs.len())?);
+            }
+            RuntimeInputLayout::DirectCallableCaptures {
+                function,
+                capture_reprs,
+                ..
+            } => lanes.extend(extract_direct_callable(
+                runtime.cur_proc(),
+                &value,
+                *function,
+                capture_reprs.len(),
+            )?),
+        }
+    }
+    Ok(lanes)
+}
+
+fn extract_tuple_fields(proc: *mut Process, value: &BackendValue, arity: usize) -> Result<Vec<AnyValue>, String> {
+    match value {
+        BackendValue::TupleFields(fields) => {
+            if fields.len() != arity {
+                return Err(format!(
+                    "backend tuple-field value expected {} field(s), got {}",
+                    arity,
+                    fields.len()
+                ));
+            }
+            Ok(fields.clone())
+        }
+        other => {
+            let tuple = materialize_backend_value(proc, other)?;
+            (0..arity)
+                .map(|index| {
+                    with_value_ref(proc, tuple, "backend tuple field lane", |struct_ref| {
+                        fz_struct_get_field_ref(proc, struct_ref, (index as u32) * 8)
+                    })
+                    .and_then(|ref_word| interp_value_from_ref_word(ref_word, "backend tuple field lane"))
+                })
+                .collect()
+        }
+    }
+}
+
+fn extract_direct_callable(
+    proc: *mut Process,
+    value: &BackendValue,
+    function: FunctionId,
+    capture_count: usize,
+) -> Result<Vec<AnyValue>, String> {
+    match value {
+        BackendValue::DirectCallable {
+            function: actual,
+            captures,
+        } if *actual == function && captures.len() == capture_count => Ok(captures.clone()),
+        other => {
+            let materialized = materialize_backend_value(proc, other)?;
+            let (fn_id, captures) = match materialized {
+                AnyValue::FnRef(fn_id) => (fn_id, Vec::new()),
+                other => unpack_closure(other.value(proc)?)?,
+            };
+            if FunctionId::from_fn_id(fn_id) != function || captures.len() != capture_count {
+                return Err(format!(
+                    "backend direct-callable transport expected {} capture(s) for function {}, got {} capture(s) for {}",
+                    capture_count,
+                    function.as_u32(),
+                    captures.len(),
+                    fn_id.0
+                ));
+            }
+            Ok(captures)
+        }
+    }
+}
+
+fn publish_runtime_value(proc: *mut Process, value: AnyValue) -> Result<AnyValue, String> {
+    let AnyValue::Ref(value_ref) = value else {
+        return Ok(value);
+    };
+    interp_value_from_ref_word(
+        fz_mark_published_ref_aliased(proc, value_ref.raw_word()),
+        "backend continuation capture",
+    )
 }
 
 fn literal_value(runtime: &mut IrInterpRuntime, literal: &crate::compiler2::Literal) -> Result<AnyValue, String> {
@@ -1290,32 +1659,37 @@ fn literal_value(runtime: &mut IrInterpRuntime, literal: &crate::compiler2::Lite
 }
 
 fn make_tuple(runtime: &mut IrInterpRuntime, items: Vec<AnyValue>) -> Result<AnyValue, String> {
-    let schema_id = interp_tuple_schema_id(runtime, items.len());
-    let p = unsafe { &mut *runtime.cur_proc() }.heap.alloc_struct(schema_id);
+    make_tuple_on_proc(runtime.cur_proc(), items)
+}
+
+fn make_tuple_on_proc(proc: *mut Process, items: Vec<AnyValue>) -> Result<AnyValue, String> {
+    let process = unsafe { &mut *proc };
+    let schema_id = process.heap.register_schema(Schema::tuple_of_arity(items.len()));
+    let p = process.heap.alloc_struct(schema_id);
     for (index, item) in items.iter().enumerate() {
-        unsafe { &mut *runtime.cur_proc() }.heap.write_field_slot(
-            p,
-            (index as u32) * 8,
-            item.value(runtime.cur_proc())?,
-        );
+        process.heap.write_field_slot(p, (index as u32) * 8, item.value(proc)?);
     }
     Ok(AnyValue::Ref(
         AnyValueRef::from_heap_object(ValueKind::STRUCT, p).expect("backend tuple ref"),
     ))
 }
 
-fn make_closure(runtime: &mut IrInterpRuntime, code: u32, captures: Vec<AnyValue>) -> Result<AnyValue, String> {
-    let heap = &mut unsafe { &mut *runtime.cur_proc() }.heap;
+fn make_closure_on_proc(proc: *mut Process, code: u32, captures: Vec<AnyValue>) -> Result<AnyValue, String> {
+    let heap = &mut unsafe { &mut *proc }.heap;
     let bits = heap.alloc_closure_slots(code, captures.len(), 0);
     let p = closure_addr_from_tagged(bits).expect("new backend closure ptr");
     unsafe { std::ptr::write(p.add(8) as *mut u64, code as u64) };
     for (index, value) in captures.iter().enumerate() {
-        unsafe { heap.write_closure_capture_value(p, index, value.value(runtime.cur_proc())?) };
+        unsafe { heap.write_closure_capture_value(p, index, value.value(proc)?) };
     }
     let closure_addr = closure_addr_from_tagged(bits).expect("backend closure bits");
     Ok(AnyValue::Ref(
         AnyValueRef::from_heap_object(ValueKind::CLOSURE, closure_addr).expect("backend closure ref"),
     ))
+}
+
+fn make_closure(runtime: &mut IrInterpRuntime, code: u32, captures: Vec<AnyValue>) -> Result<AnyValue, String> {
+    make_closure_on_proc(runtime.cur_proc(), code, captures)
 }
 
 fn drain_pending_dtors_backend(
@@ -1562,14 +1936,15 @@ fn backend_endian_tag(endian: crate::ast::Endian) -> u32 {
 }
 
 fn backend_bit_size_value(
-    env: &HashMap<ValueId, AnyValue>,
+    proc: *mut Process,
+    env: &HashMap<ValueId, BackendValue>,
     size: &Option<crate::compiler2::LoweredBitSize>,
 ) -> Result<(u32, u32), String> {
     Ok(match size {
         None => (0, 0),
         Some(crate::compiler2::LoweredBitSize::Literal(value)) => (1, *value),
         Some(crate::compiler2::LoweredBitSize::Value(value)) => {
-            let size = env_get(env, *value)?
+            let size = env_get(proc, env, *value)?
                 .as_i64()
                 .ok_or_else(|| "bit size value must be an integer".to_string())?;
             (1, size as u32)

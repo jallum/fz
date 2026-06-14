@@ -19,6 +19,7 @@ use super::semantic::executable_callsite_needs;
 struct ExecutableFacts {
     analysis: ActivationAnalysis,
     body: LoweredBody,
+    entry_dispatch_inputs: HashSet<usize>,
     callsites: HashMap<CallSiteId, CallSiteSummary>,
     callsite_needs: HashMap<CallSiteId, ExecutableNeed>,
 }
@@ -102,6 +103,11 @@ fn collect_executable_facts(
                 .cloned()
                 .expect("settled semantic closure should have analysis for every executable");
             let body = world.lowered_body(executable.activation.function);
+            let entry_dispatch_inputs = executable_dispatch_input_ordinals(
+                world,
+                executable.activation.function,
+                analysis.reachable_clauses.clone(),
+            );
             let callsites = analysis
                 .callsites
                 .iter()
@@ -121,6 +127,7 @@ fn collect_executable_facts(
                 ExecutableFacts {
                     analysis,
                     body,
+                    entry_dispatch_inputs,
                     callsites,
                     callsite_needs,
                 },
@@ -167,6 +174,21 @@ fn local_call_targets(summary: &CallSiteSummary, need: ExecutableNeed) -> Vec<Ex
                 .map(|activation| ExecutableKey { activation, need })
         })
         .collect()
+}
+
+fn executable_dispatch_input_ordinals(
+    world: &World<'_>,
+    function: FunctionId,
+    reachable_clauses: Vec<u32>,
+) -> HashSet<usize> {
+    match world.lowered_body(function) {
+        LoweredBody::Extern { .. } => HashSet::new(),
+        LoweredBody::Clauses { .. } => {
+            let dispatch =
+                crate::compiler2::artifact::ExecutableDispatch::new(world.entry_dispatch(function), reachable_clauses);
+            dispatch.required_input_ordinals()
+        }
+    }
 }
 
 fn propagate_call_return_demands(
@@ -231,7 +253,7 @@ fn derive_executable_runtime_demand(
 
     for clause_id in &facts.analysis.reachable_clauses {
         let clause = &clauses[*clause_id as usize];
-        let mut live = collect_entry_external_demands(
+        let mut live = collect_entry_live_demands(
             world,
             executable,
             entries.as_slice(),
@@ -251,11 +273,20 @@ fn derive_executable_runtime_demand(
             demands,
             &mut out,
         );
+        note_clause_matcher_demands(world, facts, clause.projections.as_slice(), &mut live, &mut out);
         for (index, param) in clause.params.iter().enumerate() {
             if let Some(demand) = live.remove(param) {
                 out.input_demands[index].join_assign(&demand);
             }
         }
+    }
+
+    for &semantic_index in &facts.entry_dispatch_inputs {
+        let Some(&ty) = executable.activation.input.get(semantic_index) else {
+            continue;
+        };
+        let demand = boundary_runtime_demand(world, ty);
+        out.input_demands[semantic_index].join_assign(&demand);
     }
 
     derive_callable_materializations(world, facts, &mut out);
@@ -266,6 +297,47 @@ fn derive_executable_runtime_demand(
 }
 
 fn collect_entry_external_demands(
+    world: &mut World<'_>,
+    executable: &ExecutableKey,
+    entries: &[LoweredEntry],
+    entry_id: ControlEntryId,
+    outgoing_demand: RuntimeDemand,
+    facts: &ExecutableFacts,
+    demands: &HashMap<ExecutableKey, ExecutableRuntimeDemand>,
+    out: &mut ExecutableRuntimeDemand,
+    call_return_demands: &mut HashMap<CallSiteId, RuntimeDemand>,
+) -> HashMap<ValueId, RuntimeDemand> {
+    let entry = &entries[entry_id.as_u32() as usize];
+    let mut live = collect_entry_live_demands(
+        world,
+        executable,
+        entries,
+        entry_id,
+        outgoing_demand,
+        facts,
+        demands,
+        out,
+        call_return_demands,
+    );
+    let mut external = HashMap::new();
+    if let Some(value) = entry.origin.input_value()
+        && let Some(demand) = live.remove(&value)
+    {
+        external.insert(value, demand);
+    }
+    for capture in &entry.captures {
+        if let Some(demand) = live.remove(capture) {
+            join_map_demand(&mut external, *capture, demand);
+        }
+    }
+    for param in &entry.params {
+        live.remove(param);
+    }
+    merge_live_demands(&mut external, live);
+    external
+}
+
+fn collect_entry_live_demands(
     world: &mut World<'_>,
     executable: &ExecutableKey,
     entries: &[LoweredEntry],
@@ -483,23 +555,7 @@ fn collect_entry_external_demands(
         demands,
         out,
     );
-
-    let mut external = HashMap::new();
-    if let Some(value) = entry.origin.input_value()
-        && let Some(demand) = live.remove(&value)
-    {
-        external.insert(value, demand);
-    }
-    for capture in &entry.captures {
-        if let Some(demand) = live.remove(capture) {
-            join_map_demand(&mut external, *capture, demand);
-        }
-    }
-    for param in &entry.params {
-        live.remove(param);
-    }
-    merge_live_demands(&mut external, live);
-    external
+    live
 }
 
 fn demand_for_destination(
@@ -729,6 +785,66 @@ fn propagate_steps_reverse(
             LoweredStep::AssertBitstringDone { reader } => {
                 note_live_demand(world, out, live, *reader, RuntimeDemand::Value);
             }
+        }
+    }
+}
+
+fn note_clause_matcher_demands(
+    world: &mut World<'_>,
+    facts: &ExecutableFacts,
+    steps: &[LoweredStep],
+    live: &mut HashMap<ValueId, RuntimeDemand>,
+    out: &mut ExecutableRuntimeDemand,
+) {
+    for step in steps {
+        match step {
+            LoweredStep::AssertLiteral { source, .. }
+            | LoweredStep::AssertStruct { source, .. }
+            | LoweredStep::AssertTuple { source, .. }
+            | LoweredStep::AssertEmptyList { source }
+            | LoweredStep::BitstringInit { source, .. } => {
+                let demand = boundary_value_demand(world, facts, *source, RuntimeDemand::Value);
+                note_live_demand(world, out, live, *source, demand);
+            }
+            LoweredStep::RequireMapValue { source, .. } => {
+                let source_demand = boundary_value_demand(world, facts, *source, RuntimeDemand::Value);
+                note_live_demand(world, out, live, *source, source_demand);
+            }
+            LoweredStep::AssertSame { source, value } => {
+                let source_demand = boundary_value_demand(world, facts, *source, RuntimeDemand::Value);
+                note_live_demand(world, out, live, *source, source_demand);
+                let value_demand = boundary_value_demand(world, facts, *value, RuntimeDemand::Value);
+                note_live_demand(world, out, live, *value, value_demand);
+            }
+            LoweredStep::SplitList { source, .. } => {
+                let demand = boundary_value_demand(world, facts, *source, RuntimeDemand::Value);
+                note_live_demand(world, out, live, *source, demand);
+            }
+            LoweredStep::BitstringRead { reader, spec, .. } => {
+                let demand = boundary_value_demand(world, facts, *reader, RuntimeDemand::Value);
+                note_live_demand(world, out, live, *reader, demand);
+                if let Some(super::super::body::LoweredBitSize::Value(size)) = &spec.size {
+                    note_live_demand(world, out, live, *size, RuntimeDemand::Value);
+                }
+            }
+            LoweredStep::AssertBitstringDone { reader } => {
+                let demand = boundary_value_demand(world, facts, *reader, RuntimeDemand::Value);
+                note_live_demand(world, out, live, *reader, demand);
+            }
+            LoweredStep::Const { .. }
+            | LoweredStep::Tuple { .. }
+            | LoweredStep::List { .. }
+            | LoweredStep::Map { .. }
+            | LoweredStep::MapUpdate { .. }
+            | LoweredStep::Struct { .. }
+            | LoweredStep::Bitstring { .. }
+            | LoweredStep::FunctionRef { .. }
+            | LoweredStep::Lambda { .. }
+            | LoweredStep::BinaryOp { .. }
+            | LoweredStep::UnaryOp { .. }
+            | LoweredStep::MapIndex { .. }
+            | LoweredStep::FieldAccess { .. }
+            | LoweredStep::TupleField { .. } => {}
         }
     }
 }

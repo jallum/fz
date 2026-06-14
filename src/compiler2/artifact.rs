@@ -12,11 +12,15 @@
 //! codegen-ready CPS/native handoff that carries only backend-consumption
 //! facts and never rebuilds `ModulePlan`, `PlannedProgram`, or `AbiFacts`.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::ast::{BinOp, UnOp};
 use crate::compiler::source::Span;
-use crate::dispatch_matrix::pattern::PatternDispatchPlan;
+use crate::dispatch_matrix::pattern::{PatternDispatchPlan, PatternGuardExpr};
+use crate::dispatch_matrix::{
+    ComparisonValue, DispatchEdge, DispatchNode, EdgeEvidence, GraphNodeId, PinnedValueId, Region, RegionPredicate,
+    SubjectId, SubjectSource,
+};
 use crate::fz_ir::{
     Block as IrBlock, CallsiteId as IrCallsiteId, CallsiteIdent, Cont as IrCont, ExternMarshalSite, ExternTy,
     ExternalCallEdge, FnId, FnIr as IrFn, Module as IrModule, Prim as IrPrim, ReceiveAfter as IrReceiveAfter,
@@ -241,6 +245,7 @@ pub struct EmissionReadyExecutable {
     pub return_ty: Ty,
     pub return_abi: ReturnAbi,
     pub param_reprs: Vec<AbiValueRepr>,
+    pub runtime_demand: ExecutableRuntimeDemand,
     pub runtime_params: RuntimeParamLayout,
     pub value_types: HashMap<ValueId, Ty>,
     pub value_reprs: HashMap<ValueId, AbiValueRepr>,
@@ -273,6 +278,7 @@ pub struct BackendExecutable {
     pub return_ty: Ty,
     pub return_abi: ReturnAbi,
     pub param_reprs: Vec<AbiValueRepr>,
+    pub runtime_demand: ExecutableRuntimeDemand,
     pub runtime_params: RuntimeParamLayout,
     pub value_types: HashMap<ValueId, Ty>,
     pub value_reprs: HashMap<ValueId, AbiValueRepr>,
@@ -382,6 +388,119 @@ impl ExecutableDispatch {
 
     pub(crate) fn clause_index(&self, body_id: u32) -> Option<usize> {
         self.clause_ids.iter().position(|candidate| *candidate == body_id)
+    }
+
+    pub(crate) fn required_input_ordinals(&self) -> HashSet<usize> {
+        let mut required = HashSet::new();
+        let mut visited = HashSet::new();
+        collect_dispatch_node_inputs(&self.plan, self.plan.graph.root, &mut visited, &mut required);
+        required
+    }
+}
+
+fn collect_dispatch_node_inputs(
+    plan: &PatternDispatchPlan<Ty>,
+    node_id: GraphNodeId,
+    visited: &mut HashSet<GraphNodeId>,
+    out: &mut HashSet<usize>,
+) {
+    if !visited.insert(node_id) {
+        return;
+    }
+    let Some(node) = plan.graph.node(node_id) else {
+        return;
+    };
+    match node {
+        DispatchNode::Fail | DispatchNode::Outcome { .. } => {}
+        DispatchNode::Test {
+            predicate,
+            on_match,
+            on_miss,
+        } => {
+            collect_region_predicate_inputs(plan, predicate, out);
+            collect_dispatch_edge_inputs(plan, on_match, out);
+            collect_dispatch_edge_inputs(plan, on_miss, out);
+            collect_dispatch_node_inputs(plan, on_match.target, visited, out);
+            collect_dispatch_node_inputs(plan, on_miss.target, visited, out);
+        }
+    }
+}
+
+fn collect_dispatch_edge_inputs(plan: &PatternDispatchPlan<Ty>, edge: &DispatchEdge<Ty>, out: &mut HashSet<usize>) {
+    collect_edge_evidence_inputs(plan, &edge.evidence, out);
+}
+
+fn collect_edge_evidence_inputs(plan: &PatternDispatchPlan<Ty>, evidence: &EdgeEvidence<Ty>, out: &mut HashSet<usize>) {
+    for proof in &evidence.proofs {
+        collect_region_predicate_inputs(plan, &proof.predicate, out);
+    }
+    for projection in &evidence.projections {
+        collect_subject_inputs(plan, projection.source, out);
+    }
+}
+
+fn collect_region_predicate_inputs(
+    plan: &PatternDispatchPlan<Ty>,
+    predicate: &RegionPredicate<Ty>,
+    out: &mut HashSet<usize>,
+) {
+    collect_subject_inputs(plan, predicate.subject, out);
+    match &predicate.region {
+        Region::Equal(ComparisonValue::Pinned(pinned)) => collect_pinned_input(plan, *pinned, out),
+        Region::Guard(guard_id) => {
+            if let Some(guard) = plan.guards.get(guard_id.0 as usize) {
+                collect_guard_expr_inputs(plan, guard, out);
+            }
+        }
+        Region::Any
+        | Region::Never
+        | Region::Type(_)
+        | Region::Equal(ComparisonValue::Const(_))
+        | Region::TupleArity(_)
+        | Region::List(_)
+        | Region::MapKind
+        | Region::MapKeyPresent { .. }
+        | Region::Bitstring(_) => {}
+    }
+}
+
+fn collect_guard_expr_inputs(plan: &PatternDispatchPlan<Ty>, expr: &PatternGuardExpr<Ty>, out: &mut HashSet<usize>) {
+    match expr {
+        PatternGuardExpr::Const(_) => {}
+        PatternGuardExpr::Subject(subject) => collect_subject_inputs(plan, *subject, out),
+        PatternGuardExpr::Pinned(pinned) => collect_pinned_input(plan, *pinned, out),
+        PatternGuardExpr::Unary { expr, .. } => collect_guard_expr_inputs(plan, expr, out),
+        PatternGuardExpr::Binary { lhs, rhs, .. } => {
+            collect_guard_expr_inputs(plan, lhs, out);
+            collect_guard_expr_inputs(plan, rhs, out);
+        }
+        PatternGuardExpr::Dispatch { inputs, dispatch } => {
+            for input in inputs {
+                collect_guard_expr_inputs(plan, input, out);
+            }
+            for body in &dispatch.bodies {
+                collect_guard_expr_inputs(&dispatch.plan, body, out);
+            }
+            collect_dispatch_node_inputs(&dispatch.plan, dispatch.plan.graph.root, &mut HashSet::new(), out);
+        }
+    }
+}
+
+fn collect_subject_inputs(plan: &PatternDispatchPlan<Ty>, subject: SubjectId, out: &mut HashSet<usize>) {
+    let Some(subject_data) = plan.matrix.subjects.get(subject.0 as usize) else {
+        return;
+    };
+    match &subject_data.source {
+        SubjectSource::Input { ordinal } => {
+            out.insert(*ordinal as usize);
+        }
+        SubjectSource::Projection(projection) => collect_subject_inputs(plan, projection.source, out),
+    }
+}
+
+fn collect_pinned_input(plan: &PatternDispatchPlan<Ty>, pinned: PinnedValueId, out: &mut HashSet<usize>) {
+    if let Some(input) = plan.pinned.get(pinned.0 as usize).and_then(|pinned| pinned.input) {
+        out.insert(input as usize);
     }
 }
 

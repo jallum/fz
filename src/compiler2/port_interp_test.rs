@@ -198,7 +198,7 @@ fn enum_take_chained_non_tail_calls_preserve_continuations() {
 
 // Ported from src/ir_interp/tests/typed_slot.rs: case-joined function reference used as Enum.reduce reducer
 #[test]
-#[ignore = "compiler2 DeriveAbiReady fatal on Process.heap_alloc_stats fixture — unblock when BIF is wired"]
+#[ignore = "fz-hwn.8: Process.heap_alloc_stats dbg path stack-overflows during compilation"]
 fn case_joined_fn_refs_callable_as_enum_reduce_reducer() {
     let tel = ConfiguredTelemetry::new();
     let mut compiler = Compiler2::new(&tel);
