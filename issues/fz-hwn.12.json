@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-14T18:47:48Z",
+  "description": "Goal\nFix native lowering so direct returns can encode reusable-cons structural values without losing the bound source value.\n\nProblem being fixed\nThe reusable-cons continuation proof is currently red even though the quicksort continuation shape is correct. The minimal repro:\n\nfn ping(x), do: x\n\nfn rebuild(xs) do\n  [h | t] = xs\n  ping(0)\n  [h | t]\nend\n\nfn main(), do: rebuild([1, 2])\n\nConcrete repro\ncargo test compiler2_native_program_transports_reusable_cons_caps_through_delivered_continuations --lib\n\nCurrent failure\npanic: native lowering referenced unbound value 0 for root 0\nbacktrace hot path:\n- NativeLowerer::return_carrier_var\n- NativeLowerer::lower_value_destination\n- NativeLowerer::lower_entry_tail\n- NativeLowerer::lower_clause_body_fn\n\nRoot cause hypothesis\nThis is a native direct-return seam, not a tuple-field continuation seam. After the return-layout cleanup, `return_carrier_var` assumes the returned semantic value can always be recovered from the local env as one coherent bound value. The reusable-cons rebuild fixture shows a counterexample: the returned value is still structurally representable, but the original semantic value id is not present in the env in the way `return_carrier_var` expects, so native panics before codegen.\n\nDesign decision\nFix the native direct-return data model in the right place. Do not special-case the fixture and do not disable reusable-cons transport. Native should encode direct returns from the same structural local-value facts it already carries for tuples and direct callables.\n\nCode seams\n- src/compiler2/jobs/native.rs `return_carrier_var` / `lower_value_destination`\n- any clause-body binding path that drops the returned structural value before the return seam\n\nChecks\n- cargo test compiler2_native_program_transports_reusable_cons_caps_through_delivered_continuations --lib\n- cargo test compiler2_native_program_matches_tuple_field_call_continuations_to_the_callee_return_abi --lib\n- cargo test compiler2_interp_runs_quicksort_from_backend_artifacts --lib",
+  "id": "fz-hwn.12",
+  "labels": [],
+  "parent": "fz-hwn",
+  "priority": 1,
+  "status": "open",
+  "title": "Compiler2 native reusable-cons return-carrier drops a bound structural value",
+  "type": "bug",
+  "updated_at": "2026-06-14T18:47:48Z"
+}
