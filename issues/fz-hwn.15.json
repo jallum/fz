@@ -4,14 +4,15 @@
   "blocks": [
     "fz-hwn.7"
   ],
+  "closed_at": "2026-06-14T22:24:10Z",
   "created": "2026-06-14T19:53:16Z",
   "description": "Goal\nMake compiler2 native codegen consume the settled native return/continuation ABI directly, so tuple-field return delivery into quicksort continuations uses the exact shape chosen upstream.\n\nProblem being fixed\nThe quicksort native JIT crash is not a closure-capture flattening bug. The continuation closure for `qsort__e9__resume_1` is built correctly. The failure happens earlier: `partition__clause_0` returns into that continuation using a one-value ABI even though the callee return contract is `TupleFields([ValueRef, ValueRef])`.\n\nVerified failure\n- `cargo test compiler2_native_program_jit_runs_quicksort_through_compiler2_codegen --lib -- --nocapture`\n- `target/debug/fz2 --log-telemetry /tmp/fz2-quicksort.telemetry.jsonl run fixtures2/00020_quicksort_jit_entry.fz`\n- Runtime panic: `fz_closure_get_capture_i64 closure: ExpectedTag { expected: ValueKind(4), found: ValueKind(0) }`\n\nRoot cause\n- `NativeBody.return_abi` carries the authoritative delivered return contract: for `partition`, `ReturnAbi::TupleFields([ValueRef, ValueRef])`.\n- `NativeBody.return_lane_reprs` is derived from `return_layout.abi_reprs()`, which describes the physical layout of the returned tuple object and is `[ValueRef]` for a tuple value.\n- Native codegen has a local decision engine (`NativeDemandAbi::returned_shape`, `tuple_field_arity`, and related helpers) that reconstructs delivered shape from `return_lane_reprs`.\n- That local reconstruction chooses `DeliveredShape::Value(ValueRef)`, so `partition__clause_0` emits `cont(tuple_value, self)` while `qsort__e9__resume_1` expects `cont(low, high, self)`. The continuation self argument is then garbage, and the first closure capture read panics.\n\nDesign rule\n- Return delivery shape flows down from `ReturnAbi`; codegen must not rediscover it from type/layout/lane side channels.\n- `return_lane_reprs` may only survive if it has a sharply named non-delivery purpose. It must not decide return shape.\n- The local decision-engine functions should become tripwires while callers are migrated, then be deleted in the cleanup sweep.\n\nCode seams\n- `src/compiler2/native_codegen/demand.rs`\n- native codegen return-shape helpers in `driver.rs`, `function.rs`, and `terminator.rs`\n- native lowering only if `return_lane_reprs` can be removed or renamed without widening this ticket beyond the return delivery seam\n\nChecks\n- targeted unit/codegen tests that prove tuple-field return contracts use `ReturnAbi`, not `return_lane_reprs`\n- `cargo test compiler2_native_program_jit_runs_quicksort_through_compiler2_codegen --lib`\n- no `fz_closure_get_capture_i64` runtime panic\n- dump/telemetry for quicksort shows `partition` returning two fields into `qsort__e9__resume_1`\n",
   "id": "fz-hwn.15",
   "labels": [],
   "parent": "fz-hwn",
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Compiler2 native quicksort uses stale local return-shape inference",
   "type": "bug",
-  "updated_at": "2026-06-14T21:58:56Z"
+  "updated_at": "2026-06-14T22:24:10Z"
 }
