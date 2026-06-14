@@ -1,9 +1,7 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [
-    "fz-hwn.6"
-  ],
+  "blocks": [],
   "created": "2026-06-14T18:32:30Z",
   "description": "Goal\nConfirm and encode the correct native quicksort continuation contract: tuple-field continuations carry delivered field lanes and semantic captures, and may also carry separate physical capability params when reusable-cons transport is live.\n\nProblem being fixed\nThe failing quicksort tuple-field continuation test treated every native entry param as semantic transport. That is wrong once reusable-cons transport is enabled. The quicksort continuation really has:\n- 2 delivered tuple-field lanes from partition/4\n- 1 semantic pivot capture\n- 1 physical reusable-cons source param\n\nConcrete repro\ncargo test compiler2_native_program_matches_tuple_field_call_continuations_to_the_callee_return_abi --lib -- --include-ignored\n\nRoot cause\nThe data model does not become wrong in native lowering. Native continuations intentionally publish hidden physical entry params for reusable-cons capabilities, and quicksort legitimately uses that path because the delivered continuation later rebuilds `[p | qsort(hi)]`. The bug is at the test/expectation boundary: it counted raw entry params and raw `param_reprs` as if they were semantic continuation params.\n\nDesign decision\nDo not remove the physical param and do not special-case quicksort. Keep the native/data model as-is:\n- raw entry params = semantic transport params + physical capability params\n- semantic specialization must ignore physical params\n- tests for continuation shape must distinguish semantic params from physical capability params\n\nCode seams\n- src/compiler2/drive_test.rs quicksort continuation assertion\n- any nearby helper/assertion should use `FnIr::semantic_entry_params()` and `physical_entry_params` instead of raw block arity when reusable-cons may be live\n\nChecks\n- cargo test compiler2_native_program_matches_tuple_field_call_continuations_to_the_callee_return_abi --lib\n- cargo test compiler2_native_program_transports_reusable_cons_caps_through_delivered_continuations --lib\n- cargo test compiler2_interp_runs_quicksort_from_backend_artifacts --lib",
   "id": "fz-hwn.11",
@@ -13,5 +11,5 @@
   "status": "open",
   "title": "Compiler2 native tuple-field continuations over-publish entry params",
   "type": "bug",
-  "updated_at": "2026-06-14T18:45:27Z"
+  "updated_at": "2026-06-14T18:47:28Z"
 }
