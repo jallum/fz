@@ -752,6 +752,7 @@ pub enum AbiValueRepr {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReturnAbi {
+    Never,
     Value(AbiValueRepr),
     TupleFields(Vec<AbiValueRepr>),
 }

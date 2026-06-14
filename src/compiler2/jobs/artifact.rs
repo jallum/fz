@@ -219,7 +219,6 @@ pub(super) fn derive_abi_ready(world: &mut World<'_>, root_id: RootId) -> Result
 #[derive(Debug, Clone)]
 struct ExecutableAbiPlan {
     param_reprs: Vec<AbiValueRepr>,
-    result_abi: ReturnAbi,
     value_reprs: HashMap<ValueId, AbiValueRepr>,
     resume_values: HashMap<ControlEntryId, ValueId>,
     deliveries: HashMap<ControlEntryId, Vec<DeliverySource>>,
@@ -2023,6 +2022,9 @@ impl<'a> CallableWitnessResolver<'a> {
         demand: &super::super::semantic::RuntimeDemand,
         witness: Option<&CallableWitnessState>,
     ) -> RuntimeValueLayout {
+        if world.types().is_empty(&ty) {
+            return RuntimeValueLayout::Omitted;
+        }
         match demand {
             super::super::semantic::RuntimeDemand::Ignore => RuntimeValueLayout::Omitted,
             super::super::semantic::RuntimeDemand::Value => RuntimeValueLayout::Value {
@@ -2141,7 +2143,7 @@ fn join_callable_witness(left: CallableWitnessState, right: CallableWitnessState
 
 fn build_executable_abi_plan(
     world: &mut World<'_>,
-    key: &ExecutableKey,
+    _key: &ExecutableKey,
     executable: &MaterializedExecutable,
 ) -> ExecutableAbiPlan {
     let runtime_params = executable.runtime_params.clone();
@@ -2168,7 +2170,6 @@ fn build_executable_abi_plan(
 
     ExecutableAbiPlan {
         param_reprs,
-        result_abi: fixed_return_abi(world, executable.return_ty, key.need),
         value_reprs,
         resume_values: resume_values(&executable.body),
         deliveries: deliveries(&executable.body),
@@ -2287,7 +2288,7 @@ fn settle_return_abis(
             .executables
             .get(key)
             .expect("settled executable key should resolve in the materialized program");
-        return_abis.insert(key.clone(), conservative_return_abi(executable, key.need));
+        return_abis.insert(key.clone(), conservative_return_abi(world, executable, key.need));
     }
 
     for key in &executable_keys {
@@ -2382,7 +2383,7 @@ fn delivery_repr(
                 )
             })?;
             Ok(match &edge.callee {
-                CallTarget::Local(callee) => return_abis.get(callee).map(return_repr_for_delivery),
+                CallTarget::Local(callee) => return_abis.get(callee).and_then(return_repr_for_delivery),
                 CallTarget::ProviderBoundary(_) => Some(AbiValueRepr::ValueRef),
             })
         }
@@ -2391,7 +2392,7 @@ fn delivery_repr(
                 return Ok(Some(AbiValueRepr::ValueRef));
             };
             Ok(match &edge.callee {
-                CallTarget::Local(callee) => return_abis.get(callee).map(return_repr_for_delivery),
+                CallTarget::Local(callee) => return_abis.get(callee).and_then(return_repr_for_delivery),
                 CallTarget::ProviderBoundary(_) => Some(AbiValueRepr::ValueRef),
             })
         }
@@ -2599,7 +2600,7 @@ fn resolve_entry_return_abi(
             }
             widened
         }
-        LoweredTail::Halt { .. } => Some(plan.result_abi.clone()),
+        LoweredTail::Halt { .. } => Some(ReturnAbi::Never),
     };
     seen.remove(&entry_id);
     Ok(resolved)
@@ -2650,6 +2651,7 @@ fn merge_repr(slot: &mut Option<AbiValueRepr>, next: AbiValueRepr) -> Result<(),
 
 fn widen_return_abi(left: ReturnAbi, right: ReturnAbi) -> Option<ReturnAbi> {
     match (left, right) {
+        (ReturnAbi::Never, other) | (other, ReturnAbi::Never) => Some(other),
         (ReturnAbi::Value(left), ReturnAbi::Value(right)) => Some(ReturnAbi::Value(widen_value_repr(left, right))),
         (ReturnAbi::TupleFields(left), ReturnAbi::TupleFields(right)) if left == right => {
             Some(ReturnAbi::TupleFields(left))
@@ -2662,9 +2664,19 @@ fn widen_value_repr(left: AbiValueRepr, right: AbiValueRepr) -> AbiValueRepr {
     if left == right { left } else { AbiValueRepr::ValueRef }
 }
 
-fn conservative_return_abi(_executable: &MaterializedExecutable, need: ExecutableNeed) -> ReturnAbi {
+fn conservative_return_abi(
+    world: &mut World<'_>,
+    executable: &MaterializedExecutable,
+    need: ExecutableNeed,
+) -> ReturnAbi {
     match need {
-        ExecutableNeed::Value => ReturnAbi::Value(AbiValueRepr::ValueRef),
+        ExecutableNeed::Value => {
+            if world.types().is_empty(&executable.return_ty) {
+                ReturnAbi::Never
+            } else {
+                ReturnAbi::Value(AbiValueRepr::ValueRef)
+            }
+        }
         ExecutableNeed::TupleFields(_) => {
             unreachable!("tuple-field return ABIs should settle eagerly from the executable need")
         }
@@ -2672,6 +2684,9 @@ fn conservative_return_abi(_executable: &MaterializedExecutable, need: Executabl
 }
 
 fn fixed_return_abi(world: &mut World<'_>, return_ty: Ty, need: ExecutableNeed) -> ReturnAbi {
+    if world.types().is_empty(&return_ty) {
+        return ReturnAbi::Never;
+    }
     match need {
         ExecutableNeed::Value => ReturnAbi::Value(abi_value_repr(world, return_ty)),
         ExecutableNeed::TupleFields(arity) => ReturnAbi::TupleFields(
@@ -2684,14 +2699,17 @@ fn fixed_return_abi(world: &mut World<'_>, return_ty: Ty, need: ExecutableNeed) 
 }
 
 fn extern_return_abi(signature: &super::super::body::LoweredExtern) -> ReturnAbi {
+    if matches!(signature.ret, crate::fz_ir::ExternTy::Never) {
+        return ReturnAbi::Never;
+    }
     let repr = match signature.ret {
         crate::fz_ir::ExternTy::I64 => AbiValueRepr::RawInt,
         crate::fz_ir::ExternTy::F64 => AbiValueRepr::RawF64,
         crate::fz_ir::ExternTy::Any
         | crate::fz_ir::ExternTy::Binary
         | crate::fz_ir::ExternTy::CString
-        | crate::fz_ir::ExternTy::Unit
-        | crate::fz_ir::ExternTy::Never => AbiValueRepr::ValueRef,
+        | crate::fz_ir::ExternTy::Unit => AbiValueRepr::ValueRef,
+        crate::fz_ir::ExternTy::Never => unreachable!("handled above"),
     };
     ReturnAbi::Value(repr)
 }
@@ -2812,10 +2830,11 @@ fn record_delivery(tail: &LoweredTail, deliveries: &mut HashMap<ControlEntryId, 
     }
 }
 
-fn return_repr_for_delivery(return_abi: &ReturnAbi) -> AbiValueRepr {
+fn return_repr_for_delivery(return_abi: &ReturnAbi) -> Option<AbiValueRepr> {
     match return_abi {
-        ReturnAbi::Value(repr) => *repr,
-        ReturnAbi::TupleFields(_) => AbiValueRepr::ValueRef,
+        ReturnAbi::Never => None,
+        ReturnAbi::Value(repr) => Some(*repr),
+        ReturnAbi::TupleFields(_) => Some(AbiValueRepr::ValueRef),
     }
 }
 

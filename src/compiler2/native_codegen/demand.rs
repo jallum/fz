@@ -5,6 +5,7 @@ use crate::compiler2::{NativeBody, NativeEntryAbi};
 
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub(crate) enum DeliveredShape {
+    Never,
     Omitted,
     Value(ArgRepr),
     TupleFields(Box<[ArgRepr]>),
@@ -36,6 +37,9 @@ impl<'a> NativeDemandAbi<'a> {
     }
 
     pub(crate) fn returned_shape(self) -> DeliveredShape {
+        if matches!(self.body.return_abi, crate::compiler2::ReturnAbi::Never) {
+            return DeliveredShape::Never;
+        }
         match self.body.return_lane_reprs.as_slice() {
             [] => DeliveredShape::Omitted,
             [repr] => DeliveredShape::Value(arg_repr_from_compiler2(*repr)),

@@ -2368,6 +2368,9 @@ fn callable_abi_strictly_more_specific(
         }
     }
     match (lhs_return, rhs_return) {
+        (&ReturnAbi::Never, &ReturnAbi::Never) => saw_stricter_lane,
+        (&ReturnAbi::Never, _) => true,
+        (_, &ReturnAbi::Never) => false,
         (ReturnAbi::Value(AbiValueRepr::ValueRef), ReturnAbi::Value(AbiValueRepr::ValueRef)) => saw_stricter_lane,
         (ReturnAbi::Value(AbiValueRepr::ValueRef), ReturnAbi::Value(_)) => false,
         (ReturnAbi::Value(_), ReturnAbi::Value(AbiValueRepr::ValueRef)) => true,

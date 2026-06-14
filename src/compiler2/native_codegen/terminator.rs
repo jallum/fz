@@ -8,6 +8,7 @@ use crate::fz_ir::{
 };
 use crate::types::{ClosureTypes, Types};
 use crate::{measurements, metadata};
+use cranelift_codegen::ir::TrapCode;
 use cranelift_codegen::ir::{self, AbiParam, BlockArg, InstBuilder, MemFlags, Signature, condcodes::IntCC, types};
 use cranelift_codegen::isa::CallConv;
 use cranelift_frontend::FunctionBuilder;
@@ -232,6 +233,7 @@ fn adapt_direct_closure_cont<M: cranelift_module::Module>(
     seam: &'static str,
 ) -> ir::Value {
     match (source_shape, expected_shape) {
+        (DeliveredShape::Never, _) => passthrough_cont,
         (left, right) if left == right => passthrough_cont,
         (DeliveredShape::Value(callee_ret_repr), DeliveredShape::Value(expected_repr)) => {
             build_boundary_return_adapter_cont(body, env, passthrough_cont, callee_ret_repr, expected_repr)
@@ -664,6 +666,9 @@ fn emit_return_term<M: cranelift_module::Module, T: Types<Ty = Ty> + ClosureType
                 cont_param.expect("non-cont native fn has cont_param")
             };
             match return_abi.returned_shape() {
+                DeliveredShape::Never => {
+                    body.b.ins().trap(TrapCode::user(1).unwrap());
+                }
                 DeliveredShape::Omitted => {
                     let code = body.closure_code_ref(cont_val);
                     let mut sig = Signature::new(CallConv::Tail);
@@ -858,6 +863,7 @@ fn emit_native_call_with_cont<M: cranelift_module::Module>(
             None => {
                 synth_halt_cont = true;
                 match NativeDemandAbi::new(env.body_native(callee_sid)).returned_shape() {
+                    DeliveredShape::Never => synthesize_halt_cont(body, runtime, ArgRepr::ValueRef),
                     DeliveredShape::Value(callee_ret_repr) => synthesize_halt_cont(body, runtime, callee_ret_repr),
                     shape => panic!("synthesized halt continuation requires one delivered value lane, got {shape:?}"),
                 }
@@ -1056,6 +1062,7 @@ fn emit_native_tail_call<M: cranelift_module::Module>(
             None => {
                 synth_halt_cont = true;
                 match caller_shape {
+                    DeliveredShape::Never => synthesize_halt_cont(body, runtime, ArgRepr::ValueRef),
                     DeliveredShape::Value(caller_ret_repr) => synthesize_halt_cont(body, runtime, caller_ret_repr),
                     shape => panic!("top-level native tail delivery must end in one value lane, got {shape:?}"),
                 }
@@ -1063,6 +1070,7 @@ fn emit_native_tail_call<M: cranelift_module::Module>(
         }
     };
     let tail_cont_arg = match (&callee_shape, &caller_shape) {
+        (DeliveredShape::Never, _) => caller_outer_cont,
         (left, right) if left == right => caller_outer_cont,
         (DeliveredShape::Value(callee_ret_repr), DeliveredShape::Value(caller_ret_repr)) => {
             build_boundary_return_adapter_cont(body, env, caller_outer_cont, *callee_ret_repr, *caller_ret_repr)
@@ -1125,6 +1133,9 @@ fn emit_native_tail_call<M: cranelift_module::Module>(
         body.b.seal_block(halt_blk);
         let _ = host_ctx;
         match callee_shape {
+            DeliveredShape::Never => {
+                body.b.ins().trap(TrapCode::user(1).unwrap());
+            }
             DeliveredShape::Omitted => {
                 let nil_value = strict_const_value(body.b, AnyValue::nil_atom());
                 emit_halt_from_codegen_value(body, nil_value);
@@ -1145,6 +1156,9 @@ fn emit_native_tail_call<M: cranelift_module::Module>(
         body.b.switch_to_block(invoke_blk);
         body.b.seal_block(invoke_blk);
         match callee_shape {
+            DeliveredShape::Never => {
+                body.b.ins().trap(TrapCode::user(1).unwrap());
+            }
             DeliveredShape::Omitted => {
                 body.b.ins().return_(&[my_cont]);
             }
