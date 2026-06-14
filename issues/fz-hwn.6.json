@@ -2,6 +2,7 @@
   "assignee": "Jason Allum",
   "blocked_by": [
     "fz-hwn.10",
+    "fz-hwn.11",
     "fz-hwn.5"
   ],
   "blocks": [
@@ -22,5 +23,5 @@
   "status": "open",
   "title": "Compiler2 native: lower direct callable demand without first-class closure materialization",
   "type": "task",
-  "updated_at": "2026-06-14T10:25:05Z"
+  "updated_at": "2026-06-14T18:33:01Z"
 }

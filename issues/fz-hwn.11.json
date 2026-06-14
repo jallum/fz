@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-hwn.6"
+  ],
   "created": "2026-06-14T18:32:30Z",
   "description": "Goal\nMake native tuple-field continuations publish exactly the delivered field lanes plus real captures, with no extra synthetic entry param.\n\nProblem being fixed\nAfter the direct-callable return transport cleanup, compiler2_native_program_matches_tuple_field_call_continuations_to_the_callee_return_abi now reaches a real native-body shape assertion instead of the older unrelated failure mode. The tuple-field continuation body publishes 4 param reprs where the test intent and transport model require 3: two returned tuple-field lanes plus one captured pivot lane.\n\nConcrete repro\ncargo test compiler2_native_program_matches_tuple_field_call_continuations_to_the_callee_return_abi --lib\n\nCurrent failure\nassertion failed: the tuple-field continuation should still carry exactly one captured pivot lane after the returned fields\nleft: 4\nright: 3\n\nRoot cause hypothesis\nThis sits in the native continuation entry-signature seam, not in callable witness settlement. Native continuation entry shaping still duplicates one transport lane or synthetic param when combining delivered tuple-field result lanes with capture lanes. The failure surfaced once direct-callable return transport stopped crashing earlier.\n\nDesign decision\nFix the native continuation signature/data-model seam directly. Do not paper over it in tests and do not route tuple-field returns back through whole-value transport. Keep one transport rule: internal continuation params are the delivered result lanes followed by true capture lanes.\n\nCode seams\n- src/compiler2/jobs/native.rs entry_signature / bind_entry_input / continuation helpers\n- any matching NativeBody or codegen assumption that still counts an extra synthetic tuple slot for native tuple-field continuations\n\nChecks\n- cargo test compiler2_native_program_matches_tuple_field_call_continuations_to_the_callee_return_abi --lib\n- cargo test compiler2_interp_runs_quicksort_from_backend_artifacts --lib\n- any nearby quicksort / partition tuple-field transport proofs stay green",
   "id": "fz-hwn.11",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Compiler2 native tuple-field continuations over-publish entry params",
   "type": "bug",
-  "updated_at": "2026-06-14T18:32:30Z"
+  "updated_at": "2026-06-14T18:33:01Z"
 }
