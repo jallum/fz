@@ -5029,7 +5029,10 @@ fn compiler2_backend_program_keeps_dbg_resumed_heap_stats_as_runtime_lanes() {
             BackendEntryOrigin::DeliveredResume { layout, .. } => {
                 matches!(
                     layout,
-                    RuntimeValueLayout::Omitted
+                    RuntimeValueLayout::Value {
+                        repr: AbiValueRepr::ValueRef,
+                        ..
+                    }
                 ) && entry
                     .capture_layouts
                     .iter()
@@ -5059,11 +5062,23 @@ fn compiler2_backend_program_keeps_dbg_resumed_heap_stats_as_runtime_lanes() {
         });
 
     match &resume_entry.origin {
-        BackendEntryOrigin::DeliveredResume { layout, .. } => {
+        BackendEntryOrigin::DeliveredResume { value, layout } => {
             assert_eq!(
                 *layout,
-                RuntimeValueLayout::Omitted,
-                "the dbg/1 return itself is ignored; the later field access must read the captured stats value instead",
+                RuntimeValueLayout::Value {
+                    ty: main_exec.value_types[value],
+                    repr: AbiValueRepr::ValueRef,
+                },
+                "the dbg/1 return is delivered over the continuation boundary as one value lane",
+            );
+            assert!(
+                main_exec
+                    .runtime_demand
+                    .value_demands
+                    .get(value)
+                    .map(|demand| demand.is_ignore())
+                    .unwrap_or(true),
+                "the dbg/1 return boundary lane should remain semantically ignored; the later field access must read the captured stats value instead",
             );
         }
         other => panic!("expected delivered-resume origin for dbg-resumed heap-stats continuation, got {other:?}"),
@@ -7416,34 +7431,44 @@ fn main(), do: rebuild([1, 2])
     let function = program.module.fn_by_id(continuation.fn_id);
 
     assert!(
-        matches!(continuation.entry_abi, NativeEntryAbi::Continuation { extra_params: 0 }),
-        "the ignored ping/1 result should not force a delivered resume lane, got {:?}",
+        matches!(continuation.entry_abi, NativeEntryAbi::Continuation { extra_params: 1 }),
+        "the ignored ping/1 result should still occupy the callee's delivered return lane, got {:?}",
         continuation.entry_abi,
     );
     assert_eq!(
         function.block(function.entry).params,
-        vec![crate::fz_ir::Var(0), crate::fz_ir::Var(1), crate::fz_ir::Var(2)],
-        "the continuation should carry only its two semantic captures plus one hidden physical source param",
+        vec![
+            crate::fz_ir::Var(0),
+            crate::fz_ir::Var(1),
+            crate::fz_ir::Var(2),
+            crate::fz_ir::Var(3),
+        ],
+        "the continuation should accept the delivered result, its two semantic captures, and one hidden physical source param",
+    );
+    assert_eq!(
+        function.ignored_entry_params,
+        vec![true, false, false, false],
+        "the delivered ping/1 result is a boundary lane, but it must not become a semantic specialization input",
     );
     assert_eq!(
         function.physical_entry_params,
-        vec![crate::fz_ir::Var(2)],
+        vec![crate::fz_ir::Var(3)],
         "the hidden source-cons param should be marked physical on the entry",
     );
     assert_eq!(
         function.physical_capabilities,
         vec![crate::fz_ir::PhysicalCapabilityFact {
-            source: crate::fz_ir::Var(2),
+            source: crate::fz_ir::Var(3),
             capability: PhysicalCapability::ReusableConsCell {
-                rebuilt_head: crate::fz_ir::Var(0),
+                rebuilt_head: crate::fz_ir::Var(1),
             },
         }],
         "the continuation should restore the reusable-cons fact for its captured head",
     );
     assert_eq!(
         function.semantic_entry_params(),
-        vec![crate::fz_ir::Var(0), crate::fz_ir::Var(1)],
-        "semantic entry params must ignore the hidden physical capture",
+        vec![crate::fz_ir::Var(1), crate::fz_ir::Var(2)],
+        "semantic entry params must ignore both the unused delivered result and the hidden physical capture",
     );
 }
 

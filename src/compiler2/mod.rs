@@ -8,6 +8,7 @@ mod contract;
 mod deps;
 mod dispatch;
 mod drive;
+mod dump;
 mod facts;
 mod fixture_metadata;
 mod frontdoor;

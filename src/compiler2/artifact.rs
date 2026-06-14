@@ -170,9 +170,7 @@ pub(crate) struct NativeBody {
     /// ABI lanes at the entry seam.
     pub param_reprs: Vec<AbiValueRepr>,
     pub return_ty: Ty,
-    /// ABI lanes delivered across internal return/continuation seams.
-    pub return_lane_reprs: Vec<AbiValueRepr>,
-    /// Boundary-facing callable contract metadata.
+    /// Delivered return/continuation contract.
     pub return_abi: ReturnAbi,
     /// Final per-value types after Compiler2 lowering into CPS/native form.
     pub value_types: HashMap<Var, Ty>,

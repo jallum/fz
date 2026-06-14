@@ -1,7 +1,7 @@
 //! Codegen view of compiler2-native return and continuation ABI facts.
 
 use super::{ArgRepr, arg_repr_from_compiler2};
-use crate::compiler2::{NativeBody, NativeEntryAbi};
+use crate::compiler2::{NativeBody, NativeEntryAbi, ReturnAbi};
 
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub(crate) enum DeliveredShape {
@@ -22,9 +22,9 @@ impl<'a> NativeDemandAbi<'a> {
     }
 
     pub(crate) fn tuple_field_arity(self) -> Option<usize> {
-        match self.body.return_lane_reprs.len() {
-            0 | 1 => None,
-            arity => Some(arity),
+        match &self.body.return_abi {
+            ReturnAbi::TupleFields(fields) => Some(fields.len()),
+            ReturnAbi::Never | ReturnAbi::Value(_) => None,
         }
     }
 
@@ -37,21 +37,7 @@ impl<'a> NativeDemandAbi<'a> {
     }
 
     pub(crate) fn returned_shape(self) -> DeliveredShape {
-        if matches!(self.body.return_abi, crate::compiler2::ReturnAbi::Never) {
-            return DeliveredShape::Never;
-        }
-        match self.body.return_lane_reprs.as_slice() {
-            [] => DeliveredShape::Omitted,
-            [repr] => DeliveredShape::Value(arg_repr_from_compiler2(*repr)),
-            reprs => DeliveredShape::TupleFields(
-                reprs
-                    .iter()
-                    .copied()
-                    .map(arg_repr_from_compiler2)
-                    .collect::<Vec<_>>()
-                    .into_boxed_slice(),
-            ),
-        }
+        delivered_shape_from_return_abi(&self.body.return_abi)
     }
 
     pub(crate) fn continuation_entry_extras(self) -> usize {
@@ -59,5 +45,20 @@ impl<'a> NativeDemandAbi<'a> {
             NativeEntryAbi::Direct => 1,
             NativeEntryAbi::Continuation { extra_params } => extra_params,
         }
+    }
+}
+
+pub(crate) fn delivered_shape_from_return_abi(return_abi: &ReturnAbi) -> DeliveredShape {
+    match return_abi {
+        ReturnAbi::Never => DeliveredShape::Never,
+        ReturnAbi::Value(repr) => DeliveredShape::Value(arg_repr_from_compiler2(*repr)),
+        ReturnAbi::TupleFields(fields) => DeliveredShape::TupleFields(
+            fields
+                .iter()
+                .copied()
+                .map(arg_repr_from_compiler2)
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
+        ),
     }
 }

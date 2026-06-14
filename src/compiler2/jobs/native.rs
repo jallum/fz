@@ -36,6 +36,7 @@ use super::super::body::{ControlDestination, ControlEntryId, Literal, LoweredExt
 use super::super::drive::{FactKey, Job, JobEffects, settled_uses};
 use super::super::identity::{FunctionId, RootId};
 use super::super::scheduler::FatalError;
+use super::super::semantic::RuntimeDemand;
 use super::super::types::Ty;
 use super::super::world::World;
 
@@ -333,7 +334,6 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
             NativeEntryAbi::Direct,
             executable.param_reprs.clone(),
             executable.return_ty,
-            executable.return_layout.abi_reprs(),
             executable.return_abi.clone(),
             executable.effects,
         );
@@ -399,7 +399,6 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
             NativeEntryAbi::Direct,
             executable.param_reprs.clone(),
             executable.return_ty,
-            executable.return_layout.abi_reprs(),
             executable.return_abi.clone(),
             executable.effects,
         );
@@ -486,7 +485,6 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
             NativeEntryAbi::Direct,
             executable.param_reprs.clone(),
             executable.return_ty,
-            executable.return_layout.abi_reprs(),
             executable.return_abi.clone(),
             executable.effects,
         );
@@ -578,13 +576,13 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
             entry_abi,
             param_reprs,
             executable.return_ty,
-            executable.return_layout.abi_reprs(),
             executable.return_abi.clone(),
             executable.effects,
         );
         let mut env = ValueEnv::default();
         let entry_vars = ctx.entry_params(entry_tys.as_slice());
         let mut capture_offset = self.bind_entry_input(&mut ctx, executable, entry, &entry_vars, &mut env)?;
+        self.mark_delivered_entry_semantics(&mut ctx, executable, entry, &entry_vars[..capture_offset])?;
         for (value, layout) in entry.captures.iter().copied().zip(entry.capture_layouts.iter()) {
             let bound = decode_runtime_value(&entry_vars, layout, &mut capture_offset)?;
             bind_local_value(&mut ctx, executable, &mut env, value, bound);
@@ -1455,6 +1453,37 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                 Ok(lane_index)
             }
         }
+    }
+
+    fn mark_delivered_entry_semantics(
+        &mut self,
+        ctx: &mut NativeFnCtx,
+        executable: &BackendExecutable,
+        entry: &BackendEntry,
+        input_vars: &[Var],
+    ) -> Result<(), FatalError> {
+        let BackendEntryOrigin::DeliveredResume { value, layout } = &entry.origin else {
+            return Ok(());
+        };
+        let mut lane_index = 0;
+        if let Some(demand) = executable.runtime_demand.value_demands.get(value) {
+            mark_ignored_lanes_for_demand(&mut ctx.builder, input_vars, layout, demand, &mut lane_index)?;
+        } else {
+            mark_all_runtime_lanes_ignored(&mut ctx.builder, input_vars, layout, &mut lane_index)?;
+        }
+        if lane_index != input_vars.len() {
+            return Err(incomplete_native_program(
+                self.world,
+                self.root_id,
+                format!(
+                    "delivered resume value {} semantic demand consumed {} lanes but entry exposes {}",
+                    value.as_u32(),
+                    lane_index,
+                    input_vars.len()
+                ),
+            ));
+        }
+        Ok(())
     }
 
     fn entry_continuation(
@@ -2724,7 +2753,6 @@ struct NativeFnCtx {
     entry_abi: NativeEntryAbi,
     param_reprs: Vec<AbiValueRepr>,
     return_ty: Ty,
-    return_lane_reprs: Vec<AbiValueRepr>,
     return_abi: ReturnAbi,
     effects: EffectSummary,
     next_token: u32,
@@ -2739,7 +2767,6 @@ impl NativeFnCtx {
         entry_abi: NativeEntryAbi,
         param_reprs: Vec<AbiValueRepr>,
         return_ty: Ty,
-        return_lane_reprs: Vec<AbiValueRepr>,
         return_abi: ReturnAbi,
         effects: EffectSummary,
     ) -> Self {
@@ -2757,7 +2784,6 @@ impl NativeFnCtx {
             entry_abi,
             param_reprs,
             return_ty,
-            return_lane_reprs,
             return_abi,
             effects,
             next_token: 0,
@@ -2831,7 +2857,6 @@ impl NativeFnCtx {
             entry_abi: self.entry_abi,
             param_reprs: self.param_reprs,
             return_ty: self.return_ty,
-            return_lane_reprs: self.return_lane_reprs,
             return_abi: self.return_abi,
             value_types: self.value_types,
             callable_value_boundaries: self.callable_value_boundaries,
@@ -3188,6 +3213,101 @@ fn abi_value_repr(world: &mut World<'_>, ty: Ty) -> AbiValueRepr {
 
 fn continuation_result_entry(result_layout: &RuntimeValueLayout) -> (Vec<Ty>, Vec<AbiValueRepr>) {
     (result_layout.lane_tys(), result_layout.abi_reprs())
+}
+
+fn mark_ignored_lanes_for_demand(
+    builder: &mut FnBuilder,
+    vars: &[Var],
+    layout: &RuntimeValueLayout,
+    demand: &RuntimeDemand,
+    lane_index: &mut usize,
+) -> Result<(), FatalError> {
+    match layout {
+        RuntimeValueLayout::Omitted => Ok(()),
+        RuntimeValueLayout::Value { .. } => {
+            let var = next_runtime_lane(vars, lane_index)?;
+            if demand.is_ignore() {
+                builder.mark_param_ignored(var);
+            }
+            Ok(())
+        }
+        RuntimeValueLayout::TupleFields { fields } => match demand {
+            RuntimeDemand::Ignore => {
+                for field in fields {
+                    mark_all_runtime_lanes_ignored(builder, vars, field, lane_index)?;
+                }
+                Ok(())
+            }
+            RuntimeDemand::TupleFields(demands) => {
+                if demands.len() > fields.len() {
+                    return Err(FatalError);
+                }
+                for (index, field) in fields.iter().enumerate() {
+                    if let Some(field_demand) = demands.get(index) {
+                        mark_ignored_lanes_for_demand(builder, vars, field, field_demand, lane_index)?;
+                    } else {
+                        mark_all_runtime_lanes_ignored(builder, vars, field, lane_index)?;
+                    }
+                }
+                Ok(())
+            }
+            RuntimeDemand::Value | RuntimeDemand::Callable(_) => skip_runtime_lanes(vars, layout, lane_index),
+        },
+        RuntimeValueLayout::DirectCallable { captures, .. } => {
+            if demand.is_ignore() {
+                for capture in captures {
+                    mark_all_runtime_lanes_ignored(builder, vars, capture, lane_index)?;
+                }
+                Ok(())
+            } else {
+                skip_runtime_lanes(vars, layout, lane_index)
+            }
+        }
+    }
+}
+
+fn mark_all_runtime_lanes_ignored(
+    builder: &mut FnBuilder,
+    vars: &[Var],
+    layout: &RuntimeValueLayout,
+    lane_index: &mut usize,
+) -> Result<(), FatalError> {
+    match layout {
+        RuntimeValueLayout::Omitted => Ok(()),
+        RuntimeValueLayout::Value { .. } => {
+            let var = next_runtime_lane(vars, lane_index)?;
+            builder.mark_param_ignored(var);
+            Ok(())
+        }
+        RuntimeValueLayout::TupleFields { fields } | RuntimeValueLayout::DirectCallable { captures: fields, .. } => {
+            for field in fields {
+                mark_all_runtime_lanes_ignored(builder, vars, field, lane_index)?;
+            }
+            Ok(())
+        }
+    }
+}
+
+fn skip_runtime_lanes(vars: &[Var], layout: &RuntimeValueLayout, lane_index: &mut usize) -> Result<(), FatalError> {
+    match layout {
+        RuntimeValueLayout::Omitted => Ok(()),
+        RuntimeValueLayout::Value { .. } => {
+            next_runtime_lane(vars, lane_index)?;
+            Ok(())
+        }
+        RuntimeValueLayout::TupleFields { fields } | RuntimeValueLayout::DirectCallable { captures: fields, .. } => {
+            for field in fields {
+                skip_runtime_lanes(vars, field, lane_index)?;
+            }
+            Ok(())
+        }
+    }
+}
+
+fn next_runtime_lane(vars: &[Var], lane_index: &mut usize) -> Result<Var, FatalError> {
+    let var = vars.get(*lane_index).copied().ok_or(FatalError)?;
+    *lane_index += 1;
+    Ok(var)
 }
 
 fn missing_backend_value(root_id: RootId, value: ValueId) -> FatalError {

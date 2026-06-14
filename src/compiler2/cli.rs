@@ -15,9 +15,11 @@ use std::time::Duration;
 use crate::aot_link;
 use crate::diag::diagnostic::Severity;
 use crate::diag::driver::emit_through;
+use crate::ir_codegen::{ir_text_record_enable, ir_text_record_take};
 use crate::notify_fixture_execution_start;
 use crate::telemetry::{ConfiguredTelemetry, Event, Handler, JsonlBackend, StatsHandler, Value};
 
+use super::dump::{DumpSpec, install_dump_handlers, max_requested_stage, parse_dump_spec};
 use super::{CodeSubmission, Compiler2, ExecutableNeed, RootId, RootSubmission};
 
 const FZ2_COMPILER_DRIVE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -147,6 +149,8 @@ Global options (placed before the command):
 Compile options (run, build):
   --lto, --whole-program   accepted for compatibility; Compiler2 already
                            closes the root whole-program
+  --dump <spec>            install one dump sink; spec is either <path>
+                           (kind inferred from extension) or <kind>=<path>
 
 build options:
   -o <out>                 output executable path (required)
@@ -155,35 +159,78 @@ build options:
 }
 
 fn run_command(tel: &ConfiguredTelemetry, args: &[String]) -> Result<(), CliError> {
-    let path = parse_source_path("fz2 run [--lto] <src.fz>", args)?;
+    let options = parse_source_options("fz2 run [--lto] [--dump <spec>] <src.fz>", args)?;
+    let path = options.path;
     let (mut compiler, root) = load_main_root(tel, &path)?;
+    install_dump_handlers(tel, root, &options.dumps);
+    if options
+        .dumps
+        .iter()
+        .any(|spec| matches!(spec.kind, super::dump::DumpKind::Clif))
+    {
+        ir_text_record_enable();
+    }
+    emit_requested_root_dumps(&mut compiler, root, &options.dumps).map_err(CliError::failure)?;
     notify_fixture_execution_start();
     compiler
         .run_root_jit(root)
         .map_err(|error| CliError::failure(format!("fz2 run: {error}")))?;
+    if options
+        .dumps
+        .iter()
+        .any(|spec| matches!(spec.kind, super::dump::DumpKind::Clif))
+    {
+        let _ = ir_text_record_take();
+    }
     Ok(())
 }
 
 fn interp_command(tel: &ConfiguredTelemetry, args: &[String]) -> Result<(), CliError> {
-    let path = match args {
-        [path] => PathBuf::from(path),
-        _ => return Err(CliError::usage("fz2 interp <src.fz>")),
-    };
+    let options = parse_source_options("fz2 interp [--dump <spec>] <src.fz>", args)?;
+    let path = options.path;
     let (mut compiler, root) = load_main_root(tel, &path)?;
+    install_dump_handlers(tel, root, &options.dumps);
+    if options
+        .dumps
+        .iter()
+        .any(|spec| matches!(spec.kind, super::dump::DumpKind::Clif))
+    {
+        ir_text_record_enable();
+    }
+    emit_requested_root_dumps(&mut compiler, root, &options.dumps).map_err(CliError::failure)?;
     notify_fixture_execution_start();
-    compiler.run_root_interp(root).map_err(|error| {
+    let result = compiler.run_root_interp(root).map_err(|error| {
         if error.contains("not yet supported") {
             CliError::deferred(format!("fz2 interp: {error}"))
         } else {
             CliError::failure(format!("fz2 interp: {error}"))
         }
-    })?;
+    });
+    if options
+        .dumps
+        .iter()
+        .any(|spec| matches!(spec.kind, super::dump::DumpKind::Clif))
+    {
+        let _ = ir_text_record_take();
+    }
+    result?;
     Ok(())
 }
 
 fn build_command(tel: &ConfiguredTelemetry, args: &[String]) -> Result<(), CliError> {
-    let (path, output) = parse_build_args(args)?;
+    let options = parse_build_options(args)?;
+    let path = options.path;
+    let output = options.output;
     let (mut compiler, root) = load_main_root(tel, &path)?;
+    install_dump_handlers(tel, root, &options.dumps);
+    if options
+        .dumps
+        .iter()
+        .any(|spec| matches!(spec.kind, super::dump::DumpKind::Clif))
+    {
+        ir_text_record_enable();
+    }
+    emit_requested_root_dumps(&mut compiler, root, &options.dumps).map_err(CliError::failure)?;
     let obj_name = path.file_stem().and_then(|stem| stem.to_str()).unwrap_or("fz_program");
     let artifact = compiler
         .compile_root_aot(root, obj_name)
@@ -202,48 +249,92 @@ fn build_command(tel: &ConfiguredTelemetry, args: &[String]) -> Result<(), CliEr
     }
     aot_link::link_aot_artifact(&artifact, &output)
         .map_err(|error| CliError::failure(format!("fz2 build: {error}")))?;
+    if options
+        .dumps
+        .iter()
+        .any(|spec| matches!(spec.kind, super::dump::DumpKind::Clif))
+    {
+        let _ = ir_text_record_take();
+    }
     Ok(())
 }
 
-fn parse_source_path(usage: &'static str, args: &[String]) -> Result<PathBuf, CliError> {
-    let mut path = None;
-    for arg in args {
-        match arg.as_str() {
-            "--lto" | "--whole-program" => {}
-            other if !other.starts_with('-') && path.is_none() => path = Some(PathBuf::from(other)),
-            other => return Err(CliError::usage(format!("{usage}\nunknown arg `{other}`"))),
-        }
-    }
-    path.ok_or_else(|| CliError::usage(usage))
+struct SourceOptions {
+    path: PathBuf,
+    dumps: Vec<DumpSpec>,
 }
 
-fn parse_build_args(args: &[String]) -> Result<(PathBuf, PathBuf), CliError> {
+struct BuildOptions {
+    path: PathBuf,
+    output: PathBuf,
+    dumps: Vec<DumpSpec>,
+}
+
+fn parse_source_options(usage: &'static str, args: &[String]) -> Result<SourceOptions, CliError> {
     let mut path = None;
-    let mut output = None;
+    let mut dumps = Vec::new();
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
             "--lto" | "--whole-program" => {}
+            "--dump" => {
+                index += 1;
+                let spec = args
+                    .get(index)
+                    .ok_or_else(|| CliError::usage(format!("{usage}\n--dump expects a spec")))?;
+                dumps.push(parse_dump_spec(spec).map_err(CliError::usage)?);
+            }
+            other if !other.starts_with('-') && path.is_none() => path = Some(PathBuf::from(other)),
+            other => return Err(CliError::usage(format!("{usage}\nunknown arg `{other}`"))),
+        }
+        index += 1;
+    }
+    let path = path.ok_or_else(|| CliError::usage(usage))?;
+    Ok(SourceOptions { path, dumps })
+}
+
+fn parse_build_options(args: &[String]) -> Result<BuildOptions, CliError> {
+    let mut path = None;
+    let mut output = None;
+    let mut dumps = Vec::new();
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--lto" | "--whole-program" => {}
+            "--dump" => {
+                index += 1;
+                let spec = args.get(index).ok_or_else(|| {
+                    CliError::usage("fz2 build [--lto] [--dump <spec>] <src.fz> -o <out>\n--dump expects a spec")
+                })?;
+                dumps.push(parse_dump_spec(spec).map_err(CliError::usage)?);
+            }
             "-o" => {
                 index += 1;
-                output = Some(PathBuf::from(
-                    args.get(index)
-                        .cloned()
-                        .ok_or_else(|| CliError::usage("fz2 build [--lto] <src.fz> -o <out>"))?,
-                ));
+                output = Some(PathBuf::from(args.get(index).cloned().ok_or_else(|| {
+                    CliError::usage("fz2 build [--lto] [--dump <spec>] <src.fz> -o <out>")
+                })?));
             }
             other if !other.starts_with('-') && path.is_none() => path = Some(PathBuf::from(other)),
             other => {
                 return Err(CliError::usage(format!(
-                    "fz2 build [--lto] <src.fz> -o <out>\nunknown arg `{other}`"
+                    "fz2 build [--lto] [--dump <spec>] <src.fz> -o <out>\nunknown arg `{other}`"
                 )));
             }
         }
         index += 1;
     }
-    let path = path.ok_or_else(|| CliError::usage("fz2 build [--lto] <src.fz> -o <out>"))?;
+    let path = path.ok_or_else(|| CliError::usage("fz2 build [--lto] [--dump <spec>] <src.fz> -o <out>"))?;
     let output = output.ok_or_else(|| CliError::usage("fz2 build: -o <out> is required"))?;
-    Ok((path, output))
+    Ok(BuildOptions { path, output, dumps })
+}
+
+fn emit_requested_root_dumps(compiler: &mut Compiler2<'_>, root: RootId, dumps: &[DumpSpec]) -> Result<(), String> {
+    if let Some(stage) = max_requested_stage(dumps) {
+        compiler
+            .drive_root_to_dump_stage(root, stage)
+            .map_err(|error| format!("fz2 dump prep: {error}"))?;
+    }
+    Ok(())
 }
 
 fn load_main_root<'a>(tel: &'a ConfiguredTelemetry, path: &Path) -> Result<(Compiler2<'a>, RootId), CliError> {

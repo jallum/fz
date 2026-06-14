@@ -134,6 +134,10 @@ pub fn ir_text_record_enable() {
     VALUE_DESCR_RECORD.with(|c| *c.borrow_mut() = Some(HashMap::new()));
 }
 
+pub fn ir_text_record_enabled() -> bool {
+    IR_TEXT_RECORD.with(|c| c.borrow().is_some())
+}
+
 pub fn ir_text_record_take() -> Vec<(String, String)> {
     VALUE_DESCR_RECORD.with(|c| *c.borrow_mut() = None);
     IR_TEXT_RECORD.with(|c| c.borrow_mut().take().unwrap_or_default())

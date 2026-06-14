@@ -79,7 +79,9 @@ pub(crate) use value::*;
 // Public surface preserved for `crate::ir_codegen::*` callers.
 pub use compiled::{CompiledImage, CompiledMetadata, CompiledModule, CompiledProgram, CompiledUnit, ImageLinkError};
 pub use error::CodegenError;
-pub use support::{asm_record_enable, asm_record_take, ir_text_record_enable, ir_text_record_take};
+pub use support::{
+    asm_record_enable, asm_record_take, ir_text_record_enable, ir_text_record_enabled, ir_text_record_take,
+};
 
 pub use fz_runtime::process::{PidId, Process, ProcessState};
 

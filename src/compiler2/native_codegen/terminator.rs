@@ -658,7 +658,6 @@ fn emit_return_term<M: cranelift_module::Module, T: Types<Ty = Ty> + ClosureType
     {
         if is_native {
             let return_abi = NativeDemandAbi::new(env.body_native(this_spec_id));
-            let binding = *var_env.get(&v.0).expect("unbound return val");
             let cont_val = if is_cont_fn {
                 let self_val = cont_param.expect("cont fn binds self via cont_param");
                 body.outer_cont_ref(self_val)
@@ -702,6 +701,7 @@ fn emit_return_term<M: cranelift_module::Module, T: Types<Ty = Ty> + ClosureType
                 }
                 DeliveredShape::Value(my_return_repr) => {
                     let _ = caller_fn_id;
+                    let binding = *var_env.get(&v.0).expect("unbound return val");
                     let code = body.closure_code_ref(cont_val);
                     let mut sig = Signature::new(CallConv::Tail);
                     push_repr_param(&mut sig, my_return_repr);

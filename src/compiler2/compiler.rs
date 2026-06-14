@@ -4,6 +4,7 @@ use std::time::Duration;
 use super::Job;
 use super::NativeProgram;
 use super::code::CodeId;
+use super::dump::DumpStage;
 use super::identity::{FunctionId, RootId};
 use super::scheduler::DriveOutcome;
 use super::world::World;
@@ -132,6 +133,17 @@ impl<'a> Compiler2<'a> {
                 pending_jobs,
             )),
         }
+    }
+
+    pub(crate) fn drive_root_to_dump_stage(&mut self, root: RootId, stage: DumpStage) -> Result<(), String> {
+        let job = match stage {
+            DumpStage::Semantic => Job::SealSemanticClosure(root),
+            DumpStage::Materialized => Job::MaterializeRoot(root),
+            DumpStage::AbiReady => Job::DeriveAbiReady(root),
+            DumpStage::Backend => Job::LowerBackendProgram(root),
+            DumpStage::Native => Job::LowerNativeProgram(root),
+        };
+        self.drive_root_to(root, job)
     }
 
     /// Drives one root to `BackendProgram` and runs it through the shared

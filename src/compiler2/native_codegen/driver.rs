@@ -1060,24 +1060,9 @@ pub(crate) fn compile_with_backend_native_program<
 }
 
 fn build_codegen_return_repr(body: &crate::compiler2::NativeBody) -> ArgRepr {
-    match body.return_lane_reprs.as_slice() {
-        [repr] => arg_repr_from_compiler2(*repr),
-        _ => ArgRepr::ValueRef,
-    }
-}
-
-fn build_codegen_return_shape(return_abi: &crate::compiler2::ReturnAbi) -> DeliveredShape {
-    match return_abi {
-        crate::compiler2::ReturnAbi::Never => DeliveredShape::Never,
-        crate::compiler2::ReturnAbi::Value(repr) => DeliveredShape::Value(arg_repr_from_compiler2(*repr)),
-        crate::compiler2::ReturnAbi::TupleFields(fields) => DeliveredShape::TupleFields(
-            fields
-                .iter()
-                .copied()
-                .map(arg_repr_from_compiler2)
-                .collect::<Vec<_>>()
-                .into_boxed_slice(),
-        ),
+    match &body.return_abi {
+        crate::compiler2::ReturnAbi::Value(repr) => arg_repr_from_compiler2(*repr),
+        crate::compiler2::ReturnAbi::Never | crate::compiler2::ReturnAbi::TupleFields(_) => ArgRepr::ValueRef,
     }
 }
 
@@ -1118,7 +1103,7 @@ fn build_codegen_callable_boundaries<T: Types<Ty = Ty> + ClosureTypes>(
                 .copied()
                 .map(arg_repr_from_compiler2)
                 .collect(),
-            return_shape: build_codegen_return_shape(&boundary.return_abi),
+            return_shape: delivered_shape_from_return_abi(&boundary.return_abi),
         };
         if let Some(previous) = boundaries.insert(boundary_id, next.clone()) {
             debug_assert_eq!(previous, next);
@@ -1208,7 +1193,7 @@ fn closure_target_surface_from_body(
         capture_count,
         capture_reprs: target_param_reprs[..capture_count].to_vec(),
         arg_reprs: target_param_reprs[capture_count..].to_vec(),
-        return_shape: build_codegen_return_shape(&target_body.return_abi),
+        return_shape: delivered_shape_from_return_abi(&target_body.return_abi),
     }
 }
 
@@ -1514,6 +1499,23 @@ pub(crate) fn compile_with_backend_surface<
                 spec_id: sid as u64,
             },
         );
+        if crate::ir_codegen::ir_text_record_enabled() {
+            let entry = crate::compiler2::dump::ClifDumpEntry {
+                fn_id: body_slot.fn_id.0,
+                fn_name: display_name.clone(),
+                text: ctx.func.display().to_string(),
+            };
+            tel.execute(
+                &["fz", "compiler2", "dump", "clif"],
+                &crate::measurements! {
+                    fn_id: body_slot.fn_id.0 as u64,
+                    spec_id: sid as u64,
+                },
+                &crate::metadata! {
+                    entry: crate::telemetry::opaque(&entry),
+                },
+            );
+        }
         #[cfg(test)]
         if matches!(body_slot.fn_id.0, 1 | 6 | 39 | 41 | 56 | 57 | 58 | 59) {
             eprintln!(

@@ -140,6 +140,14 @@ fn output_text(out: &Output) -> String {
     )
 }
 
+fn assert_file_contains(path: &Path, needle: &str, context: &str) {
+    let text = read_to_string(path).unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
+    assert!(
+        text.contains(needle),
+        "{context} should contain `{needle}`; got:\n{text}"
+    );
+}
+
 #[test]
 fn help_lists_compiler2_commands_on_stdout() {
     for flag in ["help", "--help", "-h"] {
@@ -155,6 +163,10 @@ fn help_lists_compiler2_commands_on_stdout() {
                 "fz2 {flag} output should mention `{command}`; got:\n{stdout}"
             );
         }
+        assert!(
+            stdout.contains("--dump <spec>"),
+            "fz2 {flag} output should mention the dump flag; got:\n{stdout}"
+        );
         assert!(
             out.stderr.is_empty(),
             "fz2 {flag} should write nothing to stderr; got: {}",
@@ -205,6 +217,59 @@ fn main(), do: Enum.reduce([1, 2, 3, 4, 5], 0, fn (x, acc) -> x + acc end)
         let _ = remove_file(&telemetry_path);
     }
 
+    let _ = remove_file(&source_path);
+}
+
+#[test]
+fn build_accepts_repeated_dump_specs_with_extension_or_kind_override() {
+    let source_path = unique_temp_path("fz2_dump_build", ".fz");
+    let output_path = unique_temp_path("fz2_dump_build", ".out");
+    let types_path = unique_temp_path("fz2_dump_types", ".types");
+    let activations_path = unique_temp_path("fz2_dump_activations", ".txt");
+    let native_path = unique_temp_path("fz2_dump_native", ".native");
+    let fnir_path = unique_temp_path("fz2_dump_fnir", ".txt");
+    let clif_path = unique_temp_path("fz2_dump_clif", ".clif");
+    let activations_spec = format!("activations={}", activations_path.display());
+    let fnir_spec = format!("fnir={}", fnir_path.display());
+
+    write(&source_path, "fn main(), do: 42\n").expect("write dump fixture");
+
+    let out = run_fz2(&[
+        OsStr::new("build"),
+        OsStr::new("--dump"),
+        types_path.as_os_str(),
+        OsStr::new("--dump"),
+        OsStr::new(&activations_spec),
+        OsStr::new("--dump"),
+        native_path.as_os_str(),
+        OsStr::new("--dump"),
+        OsStr::new(&fnir_spec),
+        OsStr::new("--dump"),
+        clif_path.as_os_str(),
+        source_path.as_os_str(),
+        OsStr::new("-o"),
+        output_path.as_os_str(),
+    ]);
+
+    assert!(
+        out.status.success(),
+        "fz2 build with dumps should succeed; stdout={:?} stderr={:?}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(metadata(&output_path).is_ok(), "build should produce the linked output");
+    assert_file_contains(&types_path, "main/0[] =>", "types dump");
+    assert_file_contains(&activations_path, "main/0[]", "activations dump");
+    assert_file_contains(&native_path, "NativeProgram", "native dump");
+    assert_file_contains(&fnir_path, "FnIr", "fnir dump");
+    assert_file_contains(&clif_path, "function", "clif dump");
+
+    let _ = remove_file(&clif_path);
+    let _ = remove_file(&fnir_path);
+    let _ = remove_file(&native_path);
+    let _ = remove_file(&activations_path);
+    let _ = remove_file(&types_path);
+    let _ = remove_file(&output_path);
     let _ = remove_file(&source_path);
 }
 

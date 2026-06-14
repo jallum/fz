@@ -703,6 +703,7 @@ impl<'a> World<'a> {
                 runtime_demands: opaque_debug(&closure.runtime_demands),
             },
         );
+        super::dump::emit_semantic_dump_events(self, root, closure);
         changed
     }
 
