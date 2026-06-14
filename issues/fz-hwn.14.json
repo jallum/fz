@@ -4,14 +4,15 @@
   "blocks": [
     "fz-hwn.7"
   ],
+  "closed_at": "2026-06-14T20:32:27Z",
   "created": "2026-06-14T19:53:04Z",
   "description": "Goal\nMake native/codegen respect the settled scalar runtime representation on the map fixture path so codegen never asks for a raw ABI lane that contradicts the value's known runtime kind.\n\nProblem being fixed\nThe widened native-program suite still fails on the map fixture after fz-hwn.6. The crash is no longer about callable transport; it is a scalar representation mismatch during native codegen.\n\nVerified failure\n- `cargo test compiler2_native_program_jit_runs_map_fixture_through_compiler2_codegen --lib -- --nocapture`\n- Panic: `known scalar kind does not match requested raw ABI repr`\n- The failure happens in native codegen after lowering, which means the settled transport facts and the requested ABI repr disagree.\n\nWhat we know\n- This is a real compiler bug, not stale test drift.\n- The failure appears after the transport model changes, so some native/codegen path is still re-litigating representation instead of consuming the settled value/layout facts.\n- The right fix is data-model driven: identify where a boxed/scalar value's known kind becomes inconsistent with the requested raw ABI lane, then remove the re-interpretation.\n\nDesign rule\n- Once native lowering has chosen the scalar representation for a lane, codegen must consume that representation directly.\n- No later path may request a narrower raw ABI repr than the settled value kind can support.\n- Do not paper over the mismatch with fallback boxing/unboxing shims.\n\nCode seams\n- `src/compiler2/jobs/native.rs`\n- `src/compiler2/native_codegen/*`\n- scalar repr / ABI coercion helpers around the map fixture path\n\nChecks\n- `cargo test compiler2_native_program_jit_runs_map_fixture_through_compiler2_codegen --lib`\n- no `known scalar kind does not match requested raw ABI repr` panic\n- no regression in the focused `.6` spawn/omitted/direct-callable checks",
   "id": "fz-hwn.14",
   "labels": [],
   "parent": "fz-hwn",
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "Compiler2 native map fixture requests an impossible raw ABI repr",
   "type": "bug",
-  "updated_at": "2026-06-14T19:53:20Z"
+  "updated_at": "2026-06-14T20:32:27Z"
 }
