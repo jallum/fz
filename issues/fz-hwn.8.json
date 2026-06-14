@@ -4,14 +4,15 @@
   "blocks": [
     "fz-hwn.10"
   ],
+  "closed_at": "2026-06-14T12:18:09Z",
   "created": "2026-06-13T23:28:20Z",
   "description": "Goal\nMake provider-boundary Process.heap_alloc_stats/0 values flow through compiler2 without recursive overflow, so runtime refs and heap-stats fixtures compile normally through semantic closure and rooted quicksort fixtures that exercise the same provider path stop failing before transport/native lowering.\n\nMinimal repros\n- fn main() do\n    stats = Process.heap_alloc_stats()\n    dbg(stats)\n  end\n- fn main() do\n    stats = Process.heap_alloc_stats()\n    dbg(stats[:list_cons_allocs])\n  end\n- fixtures2/00007_runtime_refs.fz\n- fixtures2/00297_heap_alloc_stats.fz\n- fixtures2/00001_quicksort_plus_foo.fz via tests that root the full main/0 and therefore execute the same stats -\u003e dbg / map-projection path\n\nObserved facts\n- Process.heap_alloc_stats() by itself compiles.\n- dbg(%{list_cons_allocs: 1, map_allocs: 2}[:list_cons_allocs]) compiles.\n- The overflow requires a value flowing from Process.heap_alloc_stats/0 into dbg or dbg after map projection from that provider result.\n- LLDB traced the rooted quicksort overflow into src/compiler2/contract.rs:collect_ambiguous_empty_list_vars while semantic analysis applied function contracts to the provider-returned map path.\n- The root bug was that the ambiguous-empty-list collector descended through concrete top types like any even though it only exists to find ambiguous type variables. any projects back to list(any), so the traversal re-entered itself forever.\n- After the fix, the same fixtures advance past semantic analysis and any remaining failures belong to downstream native lowering in fz-hwn.10 rather than recursive overflow.\n\nWhy this matters\nThis is a separate provider-boundary / semantic-contract bug. It should not be “fixed” by widening callable-demand work or by reintroducing type-driven callable inventory. The right fix is to keep ambiguous-empty-list discovery scoped to polymorphic structure and terminate repeated pattern/witness traversals structurally.\n\nCode seams to inspect\n- src/modules/runtime_library/process.fz\n- src/compiler2/contract.rs\n- src/compiler2/jobs/semantic.rs\n- src/compiler2/jobs/root.rs via fixtures2/00007_runtime_refs.fz and rooted quicksort fixtures\n- src/compiler2/jobs/runtime_demand.rs provider-boundary return and structural reverse-propagation only if the semantic fix proves a downstream issue remains\n- src/compiler2/jobs/artifact.rs runtime param / ABI derivation for provider-returned values only after semantic closure is sound\n\nAcceptance signal\n- compiler2_runtime_refs_pull_only_the_reached_runtime_modules resolves without ignore\n- minimal repros above no longer stack-overflow in semantic analysis\n- rooted quicksort proof tests that use fixtures2/00001_quicksort_plus_foo.fz advance past semantic analysis; any later LowerNativeProgram failures are owned by fz-hwn.10\n- no new callable-entry or callable-boundary inventory appears for these value-only paths",
   "id": "fz-hwn.8",
   "labels": [],
   "parent": "fz-hwn",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Compiler2 runtime refs: Process.heap_alloc_stats dbg path stack-overflows during compilation",
   "type": "bug",
-  "updated_at": "2026-06-14T12:15:46Z"
+  "updated_at": "2026-06-14T12:18:09Z"
 }
