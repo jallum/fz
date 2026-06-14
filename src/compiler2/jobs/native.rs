@@ -1369,18 +1369,8 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
         env: &ValueEnv,
         value_id: ValueId,
     ) -> Result<Var, FatalError> {
-        let local = env
-            .cloned_value(value_id)
-            .ok_or_else(|| missing_backend_value(self.root_id, value_id))?;
         let mut lanes = Vec::new();
-        self.encode_runtime_value(
-            ctx,
-            executable,
-            Some(value_id),
-            &local,
-            &executable.return_layout,
-            &mut lanes,
-        )?;
+        self.encode_env_value_for_layout(ctx, executable, env, value_id, &executable.return_layout, &mut lanes)?;
         match lanes.len() {
             0 => Ok(ctx.emit_let(Prim::MakeTuple(Vec::new())).0),
             1 => Ok(lanes[0]),
@@ -1678,18 +1668,8 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
         let mut args = match &entry.origin {
             BackendEntryOrigin::Clause | BackendEntryOrigin::Branch | BackendEntryOrigin::ReceiveOutcome => Vec::new(),
             BackendEntryOrigin::DeliveredResume { layout, .. } => {
-                let local = env.cloned_value(value_id).ok_or_else(|| {
-                    incomplete_native_program(
-                        self.world,
-                        self.root_id,
-                        format!(
-                            "native lowering could not resolve delivered value {}",
-                            value_id.as_u32()
-                        ),
-                    )
-                })?;
                 let mut lanes = Vec::new();
-                self.encode_runtime_value(ctx, executable, Some(value_id), &local, layout, &mut lanes)?;
+                self.encode_env_value_for_layout(ctx, executable, env, value_id, layout, &mut lanes)?;
                 lanes
             }
         };
@@ -2388,6 +2368,24 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                 Ok(())
             }
         }
+    }
+
+    fn encode_env_value_for_layout(
+        &mut self,
+        ctx: &mut NativeFnCtx,
+        executable: &BackendExecutable,
+        env: &ValueEnv,
+        value_id: ValueId,
+        layout: &RuntimeValueLayout,
+        lanes: &mut Vec<Var>,
+    ) -> Result<(), FatalError> {
+        if matches!(layout, RuntimeValueLayout::Omitted) {
+            return Ok(());
+        }
+        let local = env
+            .cloned_value(value_id)
+            .ok_or_else(|| missing_backend_value(self.root_id, value_id))?;
+        self.encode_runtime_value(ctx, executable, Some(value_id), &local, layout, lanes)
     }
 }
 

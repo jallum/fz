@@ -7382,7 +7382,6 @@ fn compiler2_native_program_routes_nontail_if_join_flow_through_continuation_ent
 }
 
 #[test]
-#[ignore = "fz-hwn.12 native reusable-cons return-carrier loses a bound structural value"]
 fn compiler2_native_program_transports_reusable_cons_caps_through_delivered_continuations() {
     let tel = ConfiguredTelemetry::new();
     let native = NativeProgramCapture::new();
@@ -7425,38 +7424,33 @@ fn main(), do: rebuild([1, 2])
     let function = program.module.fn_by_id(continuation.fn_id);
 
     assert!(
-        matches!(continuation.entry_abi, NativeEntryAbi::Continuation { extra_params: 1 }),
-        "the helper should resume with one delivered result before its captures, got {:?}",
+        matches!(continuation.entry_abi, NativeEntryAbi::Continuation { extra_params: 0 }),
+        "the ignored ping/1 result should not force a delivered resume lane, got {:?}",
         continuation.entry_abi,
     );
     assert_eq!(
         function.block(function.entry).params,
-        vec![
-            crate::fz_ir::Var(0),
-            crate::fz_ir::Var(1),
-            crate::fz_ir::Var(2),
-            crate::fz_ir::Var(3)
-        ],
-        "the continuation should append one hidden physical source param after its semantic params",
+        vec![crate::fz_ir::Var(0), crate::fz_ir::Var(1), crate::fz_ir::Var(2)],
+        "the continuation should carry only its two semantic captures plus one hidden physical source param",
     );
     assert_eq!(
         function.physical_entry_params,
-        vec![crate::fz_ir::Var(3)],
+        vec![crate::fz_ir::Var(2)],
         "the hidden source-cons param should be marked physical on the entry",
     );
     assert_eq!(
         function.physical_capabilities,
         vec![crate::fz_ir::PhysicalCapabilityFact {
-            source: crate::fz_ir::Var(3),
+            source: crate::fz_ir::Var(2),
             capability: PhysicalCapability::ReusableConsCell {
-                rebuilt_head: crate::fz_ir::Var(1),
+                rebuilt_head: crate::fz_ir::Var(0),
             },
         }],
         "the continuation should restore the reusable-cons fact for its captured head",
     );
     assert_eq!(
         function.semantic_entry_params(),
-        vec![crate::fz_ir::Var(0), crate::fz_ir::Var(1), crate::fz_ir::Var(2)],
+        vec![crate::fz_ir::Var(0), crate::fz_ir::Var(1)],
         "semantic entry params must ignore the hidden physical capture",
     );
 }
