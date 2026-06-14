@@ -4,14 +4,15 @@
   "blocks": [
     "fz-hwn.6"
   ],
+  "closed_at": "2026-06-14T18:58:17Z",
   "created": "2026-06-14T18:47:48Z",
   "description": "Goal\nMake native lowering treat omitted runtime layouts as authoritative, so ignored-return executables and continuations do not demand nonexistent semantic value bindings.\n\nProblem being fixed\nThe reusable-cons continuation fixture exposed a broader native data-model bug. The minimal repro is still:\n\nfn ping(x), do: x\n\nfn rebuild(xs) do\n  [h | t] = xs\n  ping(0)\n  [h | t]\nend\n\nfn main(), do: rebuild([1, 2])\n\nConcrete repro\ncargo test compiler2_native_program_transports_reusable_cons_caps_through_delivered_continuations --lib\n\nOriginal failure\npanic: native lowering referenced unbound value 0 for root 0\n\nActual root cause\nThe model does not become wrong in lowered/body or backend artifacts. The key facts are correct:\n- `ping/1` is lowered as a semantic body that returns its input `ValueId(0)`\n- the only live callsite ignores that return\n- runtime demand therefore settles `ping/1` to `return_demand = Ignore`, `return_layout = Omitted`, and `runtime_params.inputs[0] = Omitted`\n\nThat is coherent. The bug was in native lowering: `return_carrier_var` and delivered-value encoding still tried to look up and encode the semantic return value even when the settled runtime layout was `Omitted`. That reintroduced a semantic-value obligation after the runtime contract had already said “carry no lanes.”\n\nThe same stale assumption also existed in the reusable-cons continuation test, which expected one delivered resume lane from `ping/1` even though the ignored result should deliver zero lanes.\n\nDesign decision\nFix this in native’s env-to-layout seam. Omitted layouts carry no lanes and therefore must not require a bound semantic local. Keep the semantic body unchanged; runtime representation is determined by the settled layout.\n\nCode seams\n- src/compiler2/jobs/native.rs `return_carrier_var`\n- src/compiler2/jobs/native.rs delivered resume arg encoding\n- src/compiler2/drive_test.rs reusable-cons continuation proof\n\nChecks\n- cargo test compiler2_native_program_transports_reusable_cons_caps_through_delivered_continuations --lib\n- cargo test compiler2_native_program_matches_tuple_field_call_continuations_to_the_callee_return_abi --lib\n- cargo test compiler2_interp_runs_quicksort_from_backend_artifacts --lib",
   "id": "fz-hwn.12",
   "labels": [],
   "parent": "fz-hwn",
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "Compiler2 native reusable-cons return-carrier drops a bound structural value",
   "type": "bug",
-  "updated_at": "2026-06-14T18:57:49Z"
+  "updated_at": "2026-06-14T18:58:17Z"
 }
