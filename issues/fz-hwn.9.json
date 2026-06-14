@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [
     "fz-hwn.10"
@@ -10,8 +10,8 @@
   "labels": [],
   "parent": "fz-hwn",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "Compiler2 semantic analysis: contract matching recurses or churns on higher-order recursive fixtures",
   "type": "bug",
-  "updated_at": "2026-06-14T12:10:06Z"
+  "updated_at": "2026-06-14T12:10:15Z"
 }
