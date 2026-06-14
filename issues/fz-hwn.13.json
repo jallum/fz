@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-14T19:52:53Z",
+  "description": "Goal\nPreserve settled callable-boundary obligations when a returned suspend continuation must become a first-class runtime callable object during native lowering.\n\nProblem being fixed\nAfter fz-hwn.6, direct-only callables stay structural until some true runtime boundary demands materialization. The returned-suspend Enumerable/List reduce path still fails at that materialization point. Native tries to materialize a structural callable value in `main`'s clause body, but no settled boundary is published for it.\n\nVerified failure\n- `cargo test compiler2_abi_ready_keeps_returned_suspend_continuation_callable_entry --lib`\n- `target/debug/fz2 --log-telemetry ... run \u003creturned-suspend fixture\u003e`\n- Diagnostic: `compiler2 native lowering for root 0: native callable materialization for FunctionId(65)/0 has no settled callable boundary in Clause { owner: ExecutableKey { activation: ActivationKey { root: RootId(0), function: FunctionId(0), input: [] }, need: Value }, index: 0 }`\n\nWhat we know\n- This is not the old broad type-recovery bug.\n- Native structural transport is already correct enough for direct-only flows.\n- The failure occurs when a structural callable is intentionally materialized into `MakeFnRef` / `MakeClosure`, but the matching settled callable boundary is missing at that exact point.\n- The follow-on fix must preserve the project rule: one place decides first-class callable materialization, and that same place publishes the settled boundary fact.\n\nDesign rule\n- Structural direct callables remain structural until a real boundary demands a runtime callable object.\n- The operation that materializes a callable object must also attach the settled native callable boundary. Materialization and boundary publication are one step.\n- Do not re-introduce eager materialization at `FunctionRef` / `Lambda` step time.\n\nCode seams\n- `src/compiler2/jobs/native.rs`\n- native callable boundary selection / materialization helpers\n- native lowering of returned suspend continuation flows\n\nChecks\n- `cargo test compiler2_abi_ready_keeps_returned_suspend_continuation_callable_entry --lib`\n- `target/debug/fz2 --log-telemetry ... run \u003creturned-suspend fixture\u003e` emits no native materialization-without-boundary diagnostic\n- no direct-only path regresses back to eager first-class callable materialization",
+  "id": "fz-hwn.13",
+  "labels": [],
+  "parent": "fz-hwn",
+  "priority": 1,
+  "status": "open",
+  "title": "Compiler2 native returned suspend continuations lose settled callable boundaries",
+  "type": "bug",
+  "updated_at": "2026-06-14T19:52:53Z"
+}
