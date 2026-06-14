@@ -10,8 +10,8 @@
   "labels": [],
   "parent": "fz-hwn",
   "priority": 2,
-  "status": "in_progress",
+  "status": "open",
   "title": "Compiler2 semantic analysis: Enum.with_index mapper activation churn times out",
   "type": "bug",
-  "updated_at": "2026-06-14T12:11:37Z"
+  "updated_at": "2026-06-14T12:11:46Z"
 }
