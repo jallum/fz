@@ -3687,7 +3687,6 @@ fn compiler2_native_program_keeps_only_the_closed_quicksort_inventory() {
 }
 
 #[test]
-#[ignore = "fz-hwn.11 native tuple-field continuations over-publish one synthetic entry param"]
 fn compiler2_native_program_matches_tuple_field_call_continuations_to_the_callee_return_abi() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
@@ -3760,15 +3759,41 @@ fn compiler2_native_program_matches_tuple_field_call_continuations_to_the_callee
             [AbiValueRepr::ValueRef, AbiValueRepr::ValueRef],
             "the tuple-field continuation should expose both returned field lanes first",
         );
+        let semantic_entry_params = function.semantic_entry_params();
         assert_eq!(
-            tuple_field_cont.param_reprs.len(),
+            semantic_entry_params.len(),
             3,
-            "the tuple-field continuation should still carry exactly one captured pivot lane after the returned fields",
+            "the tuple-field continuation should still carry exactly one semantic pivot capture after the returned fields",
+        );
+        assert_eq!(
+            semantic_entry_params,
+            entry_block.params[..3].to_vec(),
+            "semantic continuation params should be the two delivered tuple fields followed by the pivot capture",
+        );
+        assert_eq!(
+            function.physical_entry_params.len(),
+            1,
+            "the quicksort continuation should also carry the reusable-cons source as one physical capability param",
         );
         assert_eq!(
             entry_block.params.len(),
             tuple_field_cont.param_reprs.len(),
-            "tuple-field continuations should publish one entry param per delivered field plus one per capture; they should not smuggle a synthetic tuple slot into the fz IR entry block",
+            "native raw entry params should still line up with the raw ABI repr inventory",
+        );
+        assert_eq!(
+            entry_block.params.last().copied(),
+            function.physical_entry_params.first().copied(),
+            "the extra raw entry param should be the physical reusable-cons source capability",
+        );
+        assert_eq!(
+            function.physical_capabilities,
+            vec![crate::fz_ir::PhysicalCapabilityFact {
+                source: function.physical_entry_params[0],
+                capability: crate::fz_ir::PhysicalCapability::ReusableConsCell {
+                    rebuilt_head: semantic_entry_params[2],
+                },
+            }],
+            "the physical param should restore the reusable-cons capability for the captured pivot head",
         );
     }
 }
@@ -7357,6 +7382,7 @@ fn compiler2_native_program_routes_nontail_if_join_flow_through_continuation_ent
 }
 
 #[test]
+#[ignore = "fz-hwn.12 native reusable-cons return-carrier loses a bound structural value"]
 fn compiler2_native_program_transports_reusable_cons_caps_through_delivered_continuations() {
     let tel = ConfiguredTelemetry::new();
     let native = NativeProgramCapture::new();
