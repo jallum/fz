@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-15T19:27:32Z",
+  "description": "Goal\nMake CallableId the single callable identity below demand settlement. First-class materialization, direct callable transport, capture lanes, callable entries, native boundaries, identity fns, and boundary boxing must all be fact projections keyed by CallableId.\n\nWhy\nCallable locality and boundary behavior are not shape variants. They are facts about a callable identity at a specific root/executable transport plan. This prevents type-shaped recovery and prevents LocalCallableId/locality from leaking into the spine.\n\nRequired changes\nReplace any remaining LocalCallableId-as-transport-authority usage with CallableId facts. Derive callable entries only from first-class/opaque/escape demand facts. Attach settled boundary ids at the materialization owner; codegen must never re-select a boundary from function plus capture types.\n\nRemoval target\nCallable boundary selection from capture types, broad callable-looking type recovery, settled_callable_boundary lookup by local shape, native callable identity collection from all callable producers, and any path that publishes callable entries without a first-class boundary demand.\n\nChecks\nUnused callable constructor publishes no entry; direct lambda call stays direct; direct callable crosses return/resume without heap closure; escaped lambda publishes exactly one boundary; opaque callable path has explicit boundary fact; fz-hwn.13 symptom tests are either fixed here or blocked by a separate non-transport bug ticket with evidence.",
+  "id": "fz-hwn.19.3",
+  "labels": [],
+  "parent": "fz-hwn.19",
+  "priority": 1,
+  "status": "open",
+  "title": "Transport spine: make callable materialization and boundaries CallableId fact projections",
+  "type": "task",
+  "updated_at": "2026-06-15T19:27:32Z"
+}
