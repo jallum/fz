@@ -7,13 +7,13 @@
     "fz-hwn.19.6"
   ],
   "created": "2026-06-15T19:27:49Z",
-  "description": "Goal\nMake native codegen boring: it reads published codegen lane facts keyed by ShapeId/ScalarId/CallableId and emits those lanes. It does not derive shape, repr, delivery arity, or continuation result shape locally.\n\nRequired changes\nReplace DeliveredShape/NativeDemandAbi and codegen surface shape derivation with direct reads from transport/codegen fact tables. Function signatures, continuation entries, closure targets, tail calls, call continuations, mid-flight continuations, and return terms all use the same published lane contracts.\n\nRemoval target\nDeliveredShape, delivered_shape_from_layout, delivered_shape_from_return_abi for internal flow, continuation_input_shape shape reconstruction, build_codegen_return_repr over body layout, ArgRepr::from_ty/for_block_param_ty use for compiler2 transport lanes, tuple_return_delivery_plan raw-IR rediscovery, collect_codegen_mid_flight_cont_keys deriving shapes from params, and structural mismatch adapters caused by local projections.\n\nBoundary rule\nTrue extern/callable/public boundaries may read boundary fact columns. They still do not mutate the spine or produce an internal delivery shape.\n\nChecks\nNative codegen transport tests green; cargo clippy --all-targets -- -D warnings; rg confirms codegen no longer derives transport reprs from types except for non-compiler2 legacy paths explicitly named and ticketed.",
+  "description": "Goal\nMake native codegen boring: it walks ShapeId structure and reads published codegen lane facts keyed by LaneId/CallableId. It does not derive shape, repr, delivery arity, or continuation result shape locally. If ArgRepr survives as a low-level codegen enum, it is filled from facts; it is not transport authority.\n\nRequired changes\nReplace DeliveredShape/NativeDemandAbi and codegen surface shape derivation with direct reads from transport/codegen fact tables. Function signatures, continuation entries, closure targets, tail calls, call continuations, mid-flight continuations, and return terms all use the same published lane contracts.\n\nRemoval target\nDeliveredShape, delivered_shape_from_layout, delivered_shape_from_return_abi for internal flow, continuation_input_shape shape reconstruction, build_codegen_return_repr over body layout, ArgRepr::from_ty/for_block_param_ty use for compiler2 transport lanes, tuple_return_delivery_plan raw-IR rediscovery, collect_codegen_mid_flight_cont_keys deriving shapes from params, and structural mismatch adapters caused by local projections.\n\nBoundary rule\nTrue extern/callable/public boundaries may read published boundary contract columns. They still do not mutate the spine or produce an internal delivery shape.\n\nChecks\nNative codegen transport tests green; cargo clippy --all-targets -- -D warnings; rg confirms codegen no longer derives transport reprs from types except for non-compiler2 legacy paths explicitly named and ticketed.",
   "id": "fz-hwn.19.5",
   "labels": [],
   "parent": "fz-hwn.19",
   "priority": 1,
   "status": "open",
-  "title": "Transport spine: make native codegen consume published lane facts only",
+  "title": "Transport spine: make native codegen consume LaneId codegen facts only",
   "type": "task",
-  "updated_at": "2026-06-15T19:28:25Z"
+  "updated_at": "2026-06-15T19:57:13Z"
 }
