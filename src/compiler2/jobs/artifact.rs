@@ -1335,6 +1335,52 @@ struct SettledCallableWitnesses {
     states: Vec<ExecutableCallableWitnesses>,
 }
 
+/// Maps each resume entry (by `ControlEntryId::as_u32()` index) to the callsite
+/// of the call that delivers to it. A `DeliveredResume` entry is always the
+/// continuation of exactly one call tail whose `dest` is `Deliver(entry)`.
+fn deliver_callsites(body: &LoweredBody) -> HashMap<usize, CallSiteId> {
+    let mut map = HashMap::new();
+    let LoweredBody::Clauses { entries, .. } = body else {
+        return map;
+    };
+    for entry in entries {
+        let (callsite, dest) = match &entry.tail {
+            LoweredTail::DirectCall { callsite, dest, .. } | LoweredTail::ClosureCall { callsite, dest, .. } => {
+                (*callsite, dest)
+            }
+            _ => continue,
+        };
+        if let ControlDestination::Deliver(target) = dest {
+            map.insert(target.as_u32() as usize, callsite);
+        }
+    }
+    map
+}
+
+/// The runtime demand a resume continuation will physically RECEIVE: exactly
+/// what the producing callee emits. The callee delivers per its own settled
+/// `return_demand` (a boundary callee delivers a `Value`); the resume value's
+/// own demand only governs which delivered lanes are subsequently ignored, and
+/// that stays a separate fact consumed at the native seam. Deriving the resume
+/// layout from the callee's delivery -- not from the local use demand -- keeps
+/// the continuation's reception and the callee's emission a single transport
+/// fact, so they cannot diverge (e.g. an ignored `:ok` return still arrives as
+/// a `Value` lane the continuation receives-then-drops, instead of vanishing to
+/// `Omitted` and shifting the continuation's `self` pointer into a stale slot).
+fn resume_delivery_demand(
+    executable: &MaterializedExecutable,
+    executables: &HashMap<ExecutableKey, MaterializedExecutable>,
+    deliver_callsites: &HashMap<usize, CallSiteId>,
+    entry_index: usize,
+) -> Option<super::super::semantic::RuntimeDemand> {
+    let callsite = deliver_callsites.get(&entry_index)?;
+    let edge = executable.call_edges.get(callsite)?;
+    match &edge.callee {
+        CallTarget::Local(callee_key) => Some(executables.get(callee_key)?.runtime_demand.return_demand.clone()),
+        CallTarget::ProviderBoundary(_) => Some(super::super::semantic::RuntimeDemand::Value),
+    }
+}
+
 fn derive_runtime_transports(
     world: &mut World<'_>,
     executables: &HashMap<ExecutableKey, MaterializedExecutable>,
@@ -1385,25 +1431,36 @@ fn derive_runtime_transports(
                 witness_states.get(exec).map(|states| &states.result),
             );
             let resume_layouts = match &executable.body {
-                LoweredBody::Clauses { entries, .. } => entries
-                    .iter()
-                    .map(|entry| {
-                        let value = entry.origin.input_value()?;
-                        let ty = executable
-                            .value_types
-                            .get(&value)
-                            .copied()
-                            .unwrap_or_else(|| world.types_mut().any());
-                        let demand = executable
-                            .runtime_demand
-                            .value_demands
-                            .get(&value)
-                            .cloned()
-                            .unwrap_or_default();
-                        let witness = resolver.value_witness(exec, value);
-                        Some(resolver.runtime_value_layout_from_demand(world, exec, ty, &demand, Some(&witness)))
-                    })
-                    .collect(),
+                LoweredBody::Clauses { entries, .. } => {
+                    let deliver_callsites = deliver_callsites(&executable.body);
+                    entries
+                        .iter()
+                        .enumerate()
+                        .map(|(entry_index, entry)| {
+                            let value = entry.origin.input_value()?;
+                            let ty = executable
+                                .value_types
+                                .get(&value)
+                                .copied()
+                                .unwrap_or_else(|| world.types_mut().any());
+                            // Transport follows the producing callee's settled return
+                            // delivery; the resume value's own use demand only governs
+                            // lane-ignoring at the native seam, never the layout itself.
+                            let demand =
+                                resume_delivery_demand(executable, executables, &deliver_callsites, entry_index)
+                                    .unwrap_or_else(|| {
+                                        executable
+                                            .runtime_demand
+                                            .value_demands
+                                            .get(&value)
+                                            .cloned()
+                                            .unwrap_or_default()
+                                    });
+                            let witness = resolver.value_witness(exec, value);
+                            Some(resolver.runtime_value_layout_from_demand(world, exec, ty, &demand, Some(&witness)))
+                        })
+                        .collect()
+                }
                 LoweredBody::Extern { .. } => Vec::new(),
             };
             let entry_capture_layouts = match &executable.body {
