@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-hwn.20.5"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-hwn.19.1"
+  ],
   "created": "2026-06-15T20:55:40Z",
   "description": "Goal\nClose the parallel-build phase by proving the new TransportPlan is complete enough for fz-hwn.19 to cut consumers over and delete the trash-prefixed model.\n\nRequired proof\nThe old compiler path still produces behavior, but tests and telemetry prove the independent TransportPlan answers the transport questions fz-hwn.19 needs: positions, shapes, lane facts, callable facts, BoundaryId contracts, seam-specific codegen facts, producer/resume shape identity, direct callable transport, first-class publication, and ignored-value Nothing nodes.\n\nOld-code inventory\nProduce an rg-backed removal inventory for fz-hwn.19: every remaining Trash* type/helper, recursive value mirror, shape translation helper, boundary recovery path, and codegen-local repr derivation. The inventory must classify each item by the new fact it should read during cutover.\n\nDocs\nUpdate outline/proposal/.agent docs touched by this model so they state: parallel construction is over; fz-hwn.19 consumes the independent flow graph and deletes old consumers. Remove any doc language that says the spine is introduced during the ripout epic.\n\nChecks\nAll fz-hwn.20 targeted tests pass. cargo check --all-targets. Telemetry for the worked example and at least one fixture emits the expected transport-flow counts. bw tickets for fz-hwn.19 point at this handoff rather than asking future agents to rediscover the model.",
   "id": "fz-hwn.20.6",

@@ -1,7 +1,8 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-hwn.19.7"
+    "fz-hwn.19.7",
+    "fz-hwn.20.6"
   ],
   "blocks": [
     "fz-hwn.19.2"
@@ -15,5 +16,5 @@
   "status": "open",
   "title": "Transport spine: pin ShapeId/LaneId/BoundaryId contracts before the cutover",
   "type": "task",
-  "updated_at": "2026-06-15T20:35:51Z"
+  "updated_at": "2026-06-15T20:55:50Z"
 }
