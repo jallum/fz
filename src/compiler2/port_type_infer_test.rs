@@ -175,7 +175,6 @@ fn enum_reduce_named_ref_ok_settles_to_int() {
 
 // Ported from src/type_infer/type_infer_test.rs: Enum.reduce and Enum.count settle to int over list and range
 #[test]
-#[ignore = "red-worklist: triage + re-enable"]
 fn enum_count_list_settles_to_int() {
     let tel = ConfiguredTelemetry::new();
     let mut compiler = Compiler2::new(&tel);

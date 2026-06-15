@@ -30,7 +30,7 @@ use super::super::artifact::{
     AbiValueRepr, BackendBody, BackendClause, BackendEntry, BackendEntryOrigin, BackendExecutable, BackendProgram,
     BackendStep, BackendTail, CallTarget, EffectSummary, NativeBody, NativeBodyOrigin, NativeCallableBoundary,
     NativeCallableBoundaryId, NativeEntryAbi, NativeProgram, ReturnAbi,
-    ReusableConsCapture as BackendReusableConsCapture, RuntimeParamLayout, RuntimeValueLayout,
+    ReusableConsCapture as BackendReusableConsCapture, RuntimeLane, RuntimeParamLayout, RuntimeValueLayout,
 };
 use super::super::body::{ControlDestination, ControlEntryId, Literal, LoweredExtern, ValueId};
 use super::super::drive::{FactKey, Job, JobEffects, settled_uses};
@@ -593,7 +593,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
             .copied()
             .zip(entry_vars.iter().copied().skip(capture_offset))
         {
-            bind_runtime_value(&mut ctx, executable, &mut env, capture.source, physical_var);
+            self.bind_runtime_value(&mut ctx, executable, &mut env, capture.source, physical_var);
             let semantic_var = self
                 .env_runtime_var(&mut ctx, executable, &env, capture.head)
                 .map_err(|_| {
@@ -640,7 +640,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
             match step {
                 BackendStep::Const { value, literal } => {
                     let var = lower_backend_literal(ctx, &self.atom_ids, literal)?;
-                    bind_runtime_value(ctx, executable, env, *value, var);
+                    self.bind_runtime_value(ctx, executable, env, *value, var);
                 }
                 BackendStep::Tuple { value, items } => {
                     let fields = env.values(items).ok_or_else(|| {
@@ -650,7 +650,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                             "native tuple build referenced an unbound value",
                         )
                     })?;
-                    bind_local_value(ctx, executable, env, *value, NativeLocalValue::TupleFields(fields));
+                    bind_local_value(ctx, executable, env, *value, RealizedValue::tuple(fields));
                 }
                 BackendStep::List { value, items, tail } => {
                     let vars = self.env_runtime_vars(ctx, executable, env, items).map_err(|_| {
@@ -671,7 +671,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                             )
                         })?;
                     let (var, _) = ctx.emit_let(Prim::MakeList(vars, tail));
-                    bind_runtime_value(ctx, executable, env, *value, var);
+                    self.bind_runtime_value(ctx, executable, env, *value, var);
                 }
                 BackendStep::Map { value, entries } => {
                     let token = ctx.fresh_token();
@@ -699,7 +699,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                         token = next;
                     }
                     let (var, _) = ctx.emit_let(Prim::DestMapFreeze { map, token });
-                    bind_runtime_value(ctx, executable, env, *value, var);
+                    self.bind_runtime_value(ctx, executable, env, *value, var);
                 }
                 BackendStep::MapUpdate { value, base, entries } => {
                     let base = self
@@ -730,7 +730,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                         token = next;
                     }
                     let (var, _) = ctx.emit_let(Prim::DestMapFreeze { map, token });
-                    bind_runtime_value(ctx, executable, env, *value, var);
+                    self.bind_runtime_value(ctx, executable, env, *value, var);
                 }
                 BackendStep::Struct {
                     value,
@@ -749,7 +749,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                         module: module_name.clone(),
                         fields: lowered,
                     });
-                    bind_runtime_value(ctx, executable, env, *value, var);
+                    self.bind_runtime_value(ctx, executable, env, *value, var);
                 }
                 BackendStep::Bitstring { value, fields } => {
                     let mut lowered = Vec::with_capacity(fields.len());
@@ -766,7 +766,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                         });
                     }
                     let (var, _) = ctx.emit_let(Prim::MakeBitstring(lowered));
-                    bind_runtime_value(ctx, executable, env, *value, var);
+                    self.bind_runtime_value(ctx, executable, env, *value, var);
                 }
                 BackendStep::FunctionRef { value, function } => {
                     bind_local_value(
@@ -774,10 +774,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                         executable,
                         env,
                         *value,
-                        NativeLocalValue::DirectCallable {
-                            function: *function,
-                            captures: Vec::new(),
-                        },
+                        RealizedValue::direct_callable(*function, Vec::new()),
                     );
                 }
                 BackendStep::Lambda {
@@ -797,10 +794,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                         executable,
                         env,
                         *value,
-                        NativeLocalValue::DirectCallable {
-                            function: *function,
-                            captures: capture_values,
-                        },
+                        RealizedValue::direct_callable(*function, capture_values),
                     );
                 }
                 BackendStep::BinaryOp { value, op, left, right } => {
@@ -811,14 +805,14 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                         .env_runtime_var(ctx, executable, env, *right)
                         .map_err(|_| missing_backend_value(self.root_id, *right))?;
                     let (var, _) = ctx.emit_let(Prim::BinOp(lower_binop(*op), left, right));
-                    bind_runtime_value(ctx, executable, env, *value, var);
+                    self.bind_runtime_value(ctx, executable, env, *value, var);
                 }
                 BackendStep::UnaryOp { value, op, input } => {
                     let input = self
                         .env_runtime_var(ctx, executable, env, *input)
                         .map_err(|_| missing_backend_value(self.root_id, *input))?;
                     let (var, _) = ctx.emit_let(Prim::UnOp(lower_unop(*op), input));
-                    bind_runtime_value(ctx, executable, env, *value, var);
+                    self.bind_runtime_value(ctx, executable, env, *value, var);
                 }
                 BackendStep::MapIndex { value, base, key } => {
                     let base = self
@@ -828,14 +822,14 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                         .env_runtime_var(ctx, executable, env, *key)
                         .map_err(|_| missing_backend_value(self.root_id, *key))?;
                     let (var, _) = ctx.emit_let(Prim::MapGet(base, key));
-                    bind_runtime_value(ctx, executable, env, *value, var);
+                    self.bind_runtime_value(ctx, executable, env, *value, var);
                 }
                 BackendStep::FieldAccess { value, base, field } => {
                     let base = self
                         .env_runtime_var(ctx, executable, env, *base)
                         .map_err(|_| missing_backend_value(self.root_id, *base))?;
                     let (var, _) = ctx.emit_let(Prim::StructField(base, field.clone()));
-                    bind_runtime_value(ctx, executable, env, *value, var);
+                    self.bind_runtime_value(ctx, executable, env, *value, var);
                 }
                 BackendStep::AssertLiteral { source, literal } => {
                     let source = self
@@ -864,29 +858,38 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                     let (false_v, _) = ctx.emit_let(Prim::Const(Const::False));
                     let (matches, _) = ctx.emit_let(Prim::BinOp(IrBinOp::Eq, is_miss, false_v));
                     ctx.assert_truthy(matches, self.atom_id("match_error"));
-                    bind_runtime_value(ctx, executable, env, *value, var);
+                    self.bind_runtime_value(ctx, executable, env, *value, var);
                 }
-                BackendStep::AssertTuple { source, arity } => match env.cloned_value(*source) {
-                    Some(NativeLocalValue::TupleFields(fields)) if fields.len() == *arity => {}
-                    Some(other) => {
-                        let source = self.materialize_native_value(ctx, None, &other)?;
+                BackendStep::AssertTuple { source, arity } => {
+                    let realized = env
+                        .cloned_value(*source)
+                        .ok_or_else(|| missing_backend_value(self.root_id, *source))?;
+                    let known_tuple = matches!(&realized.layout, RuntimeValueLayout::TupleFields { fields } if fields.len() == *arity);
+                    if !known_tuple {
+                        let source = self.materialize_native_value(ctx, None, &realized)?;
                         let tuple_ty = RuntimeTypePredicate::tuple_arity(*arity);
                         let (matches, _) = ctx.emit_let(Prim::RuntimeTypeTest(source, Box::new(tuple_ty)));
                         ctx.assert_truthy(matches, self.atom_id("match_error"));
                     }
-                    None => return Err(missing_backend_value(self.root_id, *source)),
-                },
+                }
                 BackendStep::TupleField { value, source, index } => {
-                    let field = match env.cloned_value(*source) {
-                        Some(NativeLocalValue::TupleFields(fields)) => fields
+                    let realized = env
+                        .cloned_value(*source)
+                        .ok_or_else(|| missing_backend_value(self.root_id, *source))?;
+                    let field = if let Some(fields) = realized.tuple_fields() {
+                        fields
                             .get(*index)
                             .cloned()
-                            .ok_or_else(|| missing_backend_value(self.root_id, *source))?,
-                        Some(other) => {
-                            let source = self.materialize_native_value(ctx, None, &other)?;
-                            NativeLocalValue::Runtime(ctx.emit_let(Prim::TupleField(source, *index as u32)).0)
-                        }
-                        None => return Err(missing_backend_value(self.root_id, *source)),
+                            .ok_or_else(|| missing_backend_value(self.root_id, *source))?
+                    } else {
+                        let tuple = self.materialize_native_value(ctx, None, &realized)?;
+                        let (var, _) = ctx.emit_let(Prim::TupleField(tuple, *index as u32));
+                        let ty = executable
+                            .value_types
+                            .get(value)
+                            .copied()
+                            .unwrap_or_else(|| self.world.types_mut().any());
+                        RealizedValue::runtime(var, ty, abi_value_repr(self.world, ty))
                     };
                     bind_local_value(ctx, executable, env, *value, field);
                 }
@@ -912,17 +915,17 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                         .env_runtime_var(ctx, executable, env, *source)
                         .map_err(|_| missing_backend_value(self.root_id, *source))?;
                     let (head_var, _) = ctx.emit_let(Prim::ListHead(source));
-                    bind_runtime_value(ctx, executable, env, *head, head_var);
+                    self.bind_runtime_value(ctx, executable, env, *head, head_var);
                     ctx.builder.record_reusable_cons_cell(head_var, source);
                     let (tail_var, _) = ctx.emit_let(Prim::ListTail(source));
-                    bind_runtime_value(ctx, executable, env, *tail, tail_var);
+                    self.bind_runtime_value(ctx, executable, env, *tail, tail_var);
                 }
                 BackendStep::BitstringInit { reader, source } => {
                     let source = self
                         .env_runtime_var(ctx, executable, env, *source)
                         .map_err(|_| missing_backend_value(self.root_id, *source))?;
                     let (var, _) = ctx.emit_let(Prim::BitReaderInit(source));
-                    bind_runtime_value(ctx, executable, env, *reader, var);
+                    self.bind_runtime_value(ctx, executable, env, *reader, var);
                 }
                 BackendStep::BitstringRead {
                     ok,
@@ -945,11 +948,11 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                         is_last: *is_last,
                     });
                     let (ok_var, _) = ctx.emit_let(Prim::TupleField(result, 0));
-                    bind_runtime_value(ctx, executable, env, *ok, ok_var);
+                    self.bind_runtime_value(ctx, executable, env, *ok, ok_var);
                     let (value_var, _) = ctx.emit_let(Prim::TupleField(result, 1));
-                    bind_runtime_value(ctx, executable, env, *value, value_var);
+                    self.bind_runtime_value(ctx, executable, env, *value, value_var);
                     let (reader_var, _) = ctx.emit_let(Prim::TupleField(result, 2));
-                    bind_runtime_value(ctx, executable, env, *next_reader, reader_var);
+                    self.bind_runtime_value(ctx, executable, env, *next_reader, reader_var);
                 }
                 BackendStep::AssertBitstringDone { reader } => {
                     let reader = self
@@ -1051,7 +1054,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                     .cloned_value(*callee)
                     .ok_or_else(|| missing_backend_value(self.root_id, *callee))?
                 {
-                    NativeLocalValue::DirectCallable { captures, .. } => {
+                    callee_value if matches!(callee_value.layout, RuntimeValueLayout::DirectCallable { .. }) => {
                         let target = target.ok_or_else(|| {
                             incomplete_native_program(
                                 self.world,
@@ -1060,14 +1063,12 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                             )
                         })?;
                         let callee_executable = &self.program.executables[target];
-                        let mut call_args = Vec::new();
-                        // The captured value's lanes are already the flat ABI lanes for the
-                        // callee's leading capture inputs (that is how capture layout was
-                        // settled), so forward them directly. The capture/arg split is the
-                        // callee's own fact: total inputs minus the explicit call args.
-                        for capture in &captures {
-                            flatten_native_value_to_lanes(capture, &mut call_args);
-                        }
+                        // The realized direct-callable's lanes are already the flat ABI
+                        // lanes for the callee's leading capture inputs (that is how
+                        // capture layout was settled), so forward them directly. The
+                        // capture/arg split is the callee's own fact: total inputs minus
+                        // the explicit call args.
+                        let mut call_args = callee_value.lanes;
                         let arg_inputs_start = callee_executable
                             .runtime_params
                             .inputs
@@ -1433,13 +1434,13 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
             BackendEntryOrigin::Clause => Ok(0),
             BackendEntryOrigin::Branch => {
                 for (value, var) in entry.params.iter().copied().zip(entry_vars.iter().copied()) {
-                    bind_runtime_value(ctx, executable, env, value, var);
+                    self.bind_runtime_value(ctx, executable, env, value, var);
                 }
                 Ok(entry.params.len())
             }
             BackendEntryOrigin::ReceiveOutcome => {
                 for (value, var) in entry.params.iter().copied().zip(entry_vars.iter().copied()) {
-                    bind_runtime_value(ctx, executable, env, value, var);
+                    self.bind_runtime_value(ctx, executable, env, value, var);
                 }
                 Ok(entry.params.len())
             }
@@ -2255,38 +2256,62 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
             .collect()
     }
 
+    /// Bind a single native `Var` as a scalar value, recording its settled
+    /// representation lane so downstream seams read it back uniformly.
+    fn bind_runtime_value(
+        &mut self,
+        ctx: &mut NativeFnCtx,
+        executable: &BackendExecutable,
+        env: &mut ValueEnv,
+        value: ValueId,
+        var: Var,
+    ) {
+        let ty = executable
+            .value_types
+            .get(&value)
+            .copied()
+            .unwrap_or_else(|| self.world.types_mut().any());
+        let repr = abi_value_repr(self.world, ty);
+        bind_local_value(ctx, executable, env, value, RealizedValue::runtime(var, ty, repr));
+    }
+
+    /// Collapse a realized value into a single native `Var`, boxing structure as
+    /// needed (a tuple becomes one heap tuple; a direct callable becomes one
+    /// closure). An `Omitted` value occupies no lane and cannot become a `Var`.
     fn materialize_native_value(
         &mut self,
         ctx: &mut NativeFnCtx,
         ty: Option<Ty>,
-        value: &NativeLocalValue,
+        value: &RealizedValue,
     ) -> Result<Var, FatalError> {
-        let var = match value {
-            NativeLocalValue::Runtime(var) => *var,
-            NativeLocalValue::TupleFields(fields) => {
+        let var = match &value.layout {
+            RuntimeValueLayout::Omitted => return Err(FatalError),
+            RuntimeValueLayout::Value { .. } => *value.lanes.first().ok_or(FatalError)?,
+            RuntimeValueLayout::TupleFields { .. } => {
+                let fields = value.tuple_fields().ok_or(FatalError)?;
                 let vars = fields
                     .iter()
                     .map(|field| self.materialize_native_value(ctx, None, field))
                     .collect::<Result<Vec<_>, _>>()?;
                 ctx.emit_let(Prim::MakeTuple(vars)).0
             }
-            NativeLocalValue::DirectCallable { function, captures } => {
-                let capture_vars = captures
-                    .iter()
-                    .map(|capture| self.materialize_native_value(ctx, None, capture))
-                    .collect::<Result<Vec<_>, _>>()?;
-                let identity = self.callable_identity(*function, captures.len());
+            RuntimeValueLayout::DirectCallable {
+                function,
+                capture_lanes,
+            } => {
+                let function = *function;
+                let capture_count = capture_lanes.len();
+                let capture_vars = value.lanes.clone();
+                let identity = self.callable_identity(function, capture_count);
                 let boundary = self
-                    .settled_callable_boundary(ctx, *function, &capture_vars)?
+                    .settled_callable_boundary(ctx, function, &capture_vars)?
                     .ok_or_else(|| {
                         incomplete_native_program(
                             self.world,
                             self.root_id,
                             format!(
                                 "native callable materialization for {:?}/{} has no settled callable boundary in {:?}",
-                                function,
-                                captures.len(),
-                                ctx.origin,
+                                function, capture_count, ctx.origin,
                             ),
                         )
                     })?;
@@ -2309,18 +2334,23 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
     fn tuple_fields_for_layout(
         &mut self,
         ctx: &mut NativeFnCtx,
-        value: &NativeLocalValue,
+        value: &RealizedValue,
         arity: usize,
-    ) -> Result<Vec<NativeLocalValue>, FatalError> {
-        match value {
-            NativeLocalValue::TupleFields(fields) if fields.len() == arity => Ok(fields.clone()),
-            other => {
-                let tuple = self.materialize_native_value(ctx, None, other)?;
-                Ok((0..arity)
-                    .map(|index| NativeLocalValue::Runtime(ctx.emit_let(Prim::TupleField(tuple, index as u32)).0))
-                    .collect())
-            }
+    ) -> Result<Vec<RealizedValue>, FatalError> {
+        if let Some(fields) = value.tuple_fields()
+            && fields.len() == arity
+        {
+            return Ok(fields);
         }
+        let tuple = self.materialize_native_value(ctx, None, value)?;
+        let any = self.world.types_mut().any();
+        let repr = abi_value_repr(self.world, any);
+        Ok((0..arity)
+            .map(|index| {
+                let (var, _) = ctx.emit_let(Prim::TupleField(tuple, index as u32));
+                RealizedValue::runtime(var, any, repr)
+            })
+            .collect())
     }
 
     fn encode_runtime_value(
@@ -2328,7 +2358,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
         ctx: &mut NativeFnCtx,
         executable: &BackendExecutable,
         value_id: Option<ValueId>,
-        value: &NativeLocalValue,
+        value: &RealizedValue,
         layout: &RuntimeValueLayout,
         lanes: &mut Vec<Var>,
     ) -> Result<(), FatalError> {
@@ -2352,26 +2382,17 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                 function,
                 capture_lanes,
             } => {
-                // Direct-only structural carry: the value's captures flatten to
-                // exactly the settled flat lanes. We forward raw lanes; we never
-                // reconstruct or box the captured structure here.
-                match value {
-                    NativeLocalValue::DirectCallable {
-                        function: actual,
-                        captures,
-                    } if actual == function => {
-                        let mut produced = Vec::new();
-                        for capture in captures {
-                            flatten_native_value_to_lanes(capture, &mut produced);
-                        }
-                        if produced.len() != capture_lanes.len() {
-                            return Err(FatalError);
-                        }
-                        lanes.extend(produced);
-                        Ok(())
-                    }
-                    _ => Err(FatalError),
+                // Direct-only structural carry: the realized value's lanes are
+                // already exactly the settled flat capture lanes. We forward raw
+                // lanes; we never reconstruct or box the captured structure.
+                let RuntimeValueLayout::DirectCallable { function: actual, .. } = &value.layout else {
+                    return Err(FatalError);
+                };
+                if actual != function || value.lanes.len() != capture_lanes.len() {
+                    return Err(FatalError);
                 }
+                lanes.extend(value.lanes.iter().copied());
+                Ok(())
             }
         }
     }
@@ -2699,43 +2720,113 @@ fn annotate_back_edges(module: &mut crate::fz_ir::Module) {
     }
 }
 
+/// A runtime value realized into native transport lanes.
+///
+/// The *structure* lives in `layout` -- the one settled transport shape
+/// (`RuntimeValueLayout`) -- and `lanes` are the flat `Var`s that inhabit it, in
+/// `layout.abi_reprs()` order. There is no parallel value tree: a tuple's
+/// fields, a direct callable's captures, and an omitted value's absence are all
+/// read back out of the layout. `Omitted` is therefore just an empty `lanes`
+/// vector behind an `Omitted` layout -- no special case to forget.
 #[derive(Clone)]
-enum NativeLocalValue {
-    Runtime(Var),
-    TupleFields(Vec<NativeLocalValue>),
-    DirectCallable {
-        function: FunctionId,
-        captures: Vec<NativeLocalValue>,
-    },
+struct RealizedValue {
+    layout: RuntimeValueLayout,
+    lanes: Vec<Var>,
+}
+
+impl RealizedValue {
+    fn runtime(var: Var, ty: Ty, repr: AbiValueRepr) -> Self {
+        Self {
+            layout: RuntimeValueLayout::Value { ty, repr },
+            lanes: vec![var],
+        }
+    }
+
+    /// Combine field values into a settled tuple, concatenating their lanes.
+    fn tuple(fields: Vec<RealizedValue>) -> Self {
+        let mut field_layouts = Vec::with_capacity(fields.len());
+        let mut lanes = Vec::new();
+        for field in fields {
+            field_layouts.push(field.layout);
+            lanes.extend(field.lanes);
+        }
+        Self {
+            layout: RuntimeValueLayout::TupleFields { fields: field_layouts },
+            lanes,
+        }
+    }
+
+    /// Carry a direct-only callable structurally: its function identity plus the
+    /// flat capture lanes it occupies.
+    fn direct_callable(function: FunctionId, captures: Vec<RealizedValue>) -> Self {
+        let mut capture_lanes = Vec::new();
+        let mut lanes = Vec::new();
+        for capture in captures {
+            for (ty, repr) in capture.layout.lane_tys().into_iter().zip(capture.layout.abi_reprs()) {
+                capture_lanes.push(RuntimeLane { ty, repr });
+            }
+            lanes.extend(capture.lanes);
+        }
+        Self {
+            layout: RuntimeValueLayout::DirectCallable {
+                function,
+                capture_lanes,
+            },
+            lanes,
+        }
+    }
+
+    /// The flat lanes split per tuple field, when this value is a settled tuple.
+    fn tuple_fields(&self) -> Option<Vec<RealizedValue>> {
+        let RuntimeValueLayout::TupleFields { fields } = &self.layout else {
+            return None;
+        };
+        let mut out = Vec::with_capacity(fields.len());
+        let mut offset = 0;
+        for field in fields {
+            let width = field.abi_reprs().len();
+            out.push(RealizedValue {
+                layout: field.clone(),
+                lanes: self.lanes[offset..offset + width].to_vec(),
+            });
+            offset += width;
+        }
+        Some(out)
+    }
+
+    /// The single lane backing a scalar value, if this is one.
+    fn as_runtime_var(&self) -> Option<Var> {
+        match self.layout {
+            RuntimeValueLayout::Value { .. } => self.lanes.first().copied(),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Default, Clone)]
 struct ValueEnv {
-    values: HashMap<ValueId, NativeLocalValue>,
+    values: HashMap<ValueId, RealizedValue>,
 }
 
 impl ValueEnv {
-    fn insert(&mut self, value: ValueId, bound: NativeLocalValue) {
+    fn insert(&mut self, value: ValueId, bound: RealizedValue) {
         self.values.insert(value, bound);
     }
 
-    fn value(&self, value: ValueId) -> Option<&NativeLocalValue> {
+    fn value(&self, value: ValueId) -> Option<&RealizedValue> {
         self.values.get(&value)
     }
 
-    fn cloned_value(&self, value: ValueId) -> Option<NativeLocalValue> {
+    fn cloned_value(&self, value: ValueId) -> Option<RealizedValue> {
         self.value(value).cloned()
     }
 
-    fn values(&self, ids: &[ValueId]) -> Option<Vec<NativeLocalValue>> {
+    fn values(&self, ids: &[ValueId]) -> Option<Vec<RealizedValue>> {
         ids.iter().map(|value| self.cloned_value(*value)).collect()
     }
 
     fn runtime_var(&self, value: ValueId) -> Option<Var> {
-        match self.value(value) {
-            Some(NativeLocalValue::Runtime(var)) => Some(*var),
-            _ => None,
-        }
+        self.value(value).and_then(RealizedValue::as_runtime_var)
     }
 }
 
@@ -2885,7 +2976,7 @@ impl NativeFnCtx {
     }
 }
 
-fn env_local_value(env: &ValueEnv, value: ValueId) -> Result<NativeLocalValue, FatalError> {
+fn env_local_value(env: &ValueEnv, value: ValueId) -> Result<RealizedValue, FatalError> {
     env.cloned_value(value).ok_or(FatalError)
 }
 
@@ -2900,7 +2991,7 @@ fn runtime_param_tys(layout: &RuntimeParamLayout) -> Vec<Ty> {
 fn bind_executable_inputs(
     executable: &BackendExecutable,
     params: &[Var],
-) -> Result<Vec<Option<NativeLocalValue>>, FatalError> {
+) -> Result<Vec<Option<RealizedValue>>, FatalError> {
     let semantic_arity = executable.key.activation.input.len();
     let mut bound = vec![None; semantic_arity];
     let mut lane_index = 0;
@@ -2918,74 +3009,23 @@ fn bind_executable_inputs(
     Ok(bound)
 }
 
+/// Decode a value from its settled layout and a flat lane window. The realized
+/// value carries the layout verbatim and the exact `Var`s it spans; an `Omitted`
+/// layout spans zero lanes, so it decodes to an empty `RealizedValue` with no
+/// special case.
 fn decode_runtime_value(
     params: &[Var],
     layout: &RuntimeValueLayout,
     lane_index: &mut usize,
-) -> Result<NativeLocalValue, FatalError> {
-    match layout {
-        RuntimeValueLayout::Omitted => Err(FatalError),
-        RuntimeValueLayout::Value { .. } => {
-            let value = *params.get(*lane_index).ok_or(FatalError)?;
-            *lane_index += 1;
-            Ok(NativeLocalValue::Runtime(value))
-        }
-        RuntimeValueLayout::TupleFields { fields } => Ok(NativeLocalValue::TupleFields(
-            fields
-                .iter()
-                .map(|field| decode_runtime_value(params, field, lane_index))
-                .collect::<Result<Vec<_>, _>>()?,
-        )),
-        RuntimeValueLayout::DirectCallable {
-            function,
-            capture_lanes,
-        } => {
-            // A direct-only callable arrives as flat transport lanes. It is only
-            // ever forwarded or invoked directly (an escaping callable would have
-            // been carried as a ValueRef), so we bind flat raw-lane leaves and
-            // never rebuild the captured structure.
-            let mut captures = Vec::with_capacity(capture_lanes.len());
-            for _ in capture_lanes {
-                let value = *params.get(*lane_index).ok_or(FatalError)?;
-                *lane_index += 1;
-                captures.push(NativeLocalValue::Runtime(value));
-            }
-            Ok(NativeLocalValue::DirectCallable {
-                function: *function,
-                captures,
-            })
-        }
-    }
-}
-
-/// Flattens a live native value into its raw transport lanes without any
-/// first-class boxing: every leaf is already a `Var`. Tuple and direct-callable
-/// captures flatten in order, so the result matches the settled flat lane
-/// contract a carrier was handed.
-fn flatten_native_value_to_lanes(value: &NativeLocalValue, lanes: &mut Vec<Var>) {
-    match value {
-        NativeLocalValue::Runtime(var) => lanes.push(*var),
-        NativeLocalValue::TupleFields(fields) => {
-            for field in fields {
-                flatten_native_value_to_lanes(field, lanes);
-            }
-        }
-        NativeLocalValue::DirectCallable { captures, .. } => {
-            for capture in captures {
-                flatten_native_value_to_lanes(capture, lanes);
-            }
-        }
-    }
-}
-
-fn bind_runtime_value(
-    ctx: &mut NativeFnCtx,
-    executable: &BackendExecutable,
-    env: &mut ValueEnv,
-    value: ValueId,
-    var: Var,
-) {
-    bind_local_value(ctx, executable, env, value, NativeLocalValue::Runtime(var));
+) -> Result<RealizedValue, FatalError> {
+    let width = layout.abi_reprs().len();
+    let end = lane_index.checked_add(width).ok_or(FatalError)?;
+    let lanes = params.get(*lane_index..end).ok_or(FatalError)?.to_vec();
+    *lane_index = end;
+    Ok(RealizedValue {
+        layout: layout.clone(),
+        lanes,
+    })
 }
 
 fn bind_local_value(
@@ -2993,12 +3033,12 @@ fn bind_local_value(
     executable: &BackendExecutable,
     env: &mut ValueEnv,
     value: ValueId,
-    bound: NativeLocalValue,
+    bound: RealizedValue,
 ) {
-    if let NativeLocalValue::Runtime(var) = &bound
+    if let Some(var) = bound.as_runtime_var()
         && let Some(ty) = executable.value_types.get(&value).copied()
     {
-        ctx.value_types.insert(*var, ty);
+        ctx.value_types.insert(var, ty);
     }
     env.insert(value, bound);
 }
@@ -3360,12 +3400,13 @@ fn next_runtime_lane(vars: &[Var], lane_index: &mut usize) -> Result<Var, FatalE
     Ok(var)
 }
 
-fn missing_backend_value(root_id: RootId, value: ValueId) -> FatalError {
-    panic!(
-        "native lowering referenced unbound value {} for root {}",
-        value.as_u32(),
-        root_id.as_u32()
-    )
+fn missing_backend_value(_root_id: RootId, _value: ValueId) -> FatalError {
+    // An unbound or non-materializable value at a use site means the upstream
+    // plan was incomplete for this root -- e.g. a residual external-provider
+    // stub whose value is settled `Omitted` yet still referenced. Fail the
+    // native-lowering job gracefully (the driver surfaces it as a FatalError)
+    // rather than crashing the whole compiler.
+    FatalError
 }
 
 fn incomplete_native_program(world: &World<'_>, root_id: RootId, message: impl Into<String>) -> FatalError {
