@@ -777,7 +777,7 @@ impl<'a> World<'a> {
                 callable_shape_count: callable_shape_count,
                 direct_callable_count: direct_callable_count,
                 first_class_callable_count: first_class_callable_count,
-                boundary_publication_count: interners.boundary_count() as u64,
+                boundary_publication_count: plan.boundaries.len() as u64,
                 codegen_seam_fact_count: plan.positions.len() as u64,
             },
             &metadata! {
@@ -786,8 +786,8 @@ impl<'a> World<'a> {
                 transport_positions: opaque_debug(&plan.positions),
                 shape_descriptors: opaque_debug(&interners.shapes().map(|(id, descr)| (id, descr.clone())).collect::<Vec<_>>()),
                 lane_descriptors: opaque_debug(&interners.lanes().map(|(id, descr)| (id, descr.clone())).collect::<Vec<_>>()),
-                callable_facts: opaque_debug(&interners.callables().map(|(id, descr)| (id, descr.clone())).collect::<Vec<_>>()),
-                boundary_facts: opaque_debug(&interners.boundaries().map(|(id, descr)| (id, descr.clone())).collect::<Vec<_>>()),
+                callable_facts: opaque_debug(&plan.callables),
+                boundary_facts: opaque_debug(&plan.boundaries),
                 seam_facts: opaque_debug(&plan.positions),
             },
         );

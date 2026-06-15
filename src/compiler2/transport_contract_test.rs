@@ -324,6 +324,168 @@ end
     );
 }
 
+#[test]
+fn compiler2_transport_plan_keeps_unused_callable_construction_out_of_boundary_inventory() {
+    let source = r#"
+fn make(), do: fn (x) -> x + 1 end
+
+fn main() do
+  make()
+  :ok
+end
+"#;
+
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new(&tel);
+    world.submit_code(Some("transport_unused_callable.fz".to_string()), source.to_string());
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    assert_resolved(world.drive_for(None), "unused callable fixture should settle");
+
+    let plan = transport_plan(&world, root);
+    assert_eq!(
+        plan.boundaries.len(),
+        0,
+        "a constructed-but-unused callable should not publish any boundary contract"
+    );
+}
+
+#[test]
+fn compiler2_transport_plan_tracks_direct_lambda_use_without_boundary_publication() {
+    let source = r#"
+fn main() do
+  add1 = fn (x) -> x + 1 end
+  add1.(1)
+end
+"#;
+
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new(&tel);
+    world.submit_code(Some("transport_direct_lambda_use.fz".to_string()), source.to_string());
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    assert_resolved(world.drive_for(None), "direct lambda fixture should settle");
+
+    let plan = transport_plan(&world, root);
+    let main = executable_for(&world, &plan, "main", 0);
+    let callable_shapes = plan
+        .positions
+        .iter()
+        .filter_map(|(position, shape)| match position {
+            TransportPosition::Value {
+                executable: candidate, ..
+            } if candidate == &main && matches!(shape_descr(&world, *shape), ShapeDescr::Callable(_)) => Some(*shape),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        !callable_shapes.is_empty(),
+        "direct lambda use should keep a callable shape in the root plan"
+    );
+    assert_eq!(
+        plan.boundaries.len(),
+        0,
+        "a direct-only lambda path should not publish a first-class boundary"
+    );
+}
+
+#[test]
+fn compiler2_transport_plan_requires_a_boundary_for_an_escaped_lambda() {
+    let source = r#"
+fn make(), do: fn (x) -> x + 1 end
+fn main(), do: make()
+"#;
+
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new(&tel);
+    world.submit_code(Some("transport_escaped_lambda.fz".to_string()), source.to_string());
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    assert_resolved(world.drive_for(None), "escaped lambda fixture should settle");
+
+    let plan = transport_plan(&world, root);
+    let make = executable_for(&world, &plan, "make", 0);
+    let returned = plan_shape_at(&plan, &TransportPosition::ExecutableReturn { executable: make });
+    assert!(
+        matches!(shape_descr(&world, returned), ShapeDescr::Callable(_)),
+        "escaped lambda should still be a callable shape in the transport plan"
+    );
+    assert_eq!(
+        plan.boundaries.len(),
+        1,
+        "escaping a lambda as a returned callable should publish exactly one boundary contract"
+    );
+}
+
+#[test]
+fn compiler2_transport_plan_requires_a_boundary_for_an_opaque_callable_input() {
+    let source = "fn main(f), do: f.(1)\n";
+
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new(&tel);
+    world.submit_code(
+        Some("transport_opaque_callable_input.fz".to_string()),
+        source.to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 1, ExecutableNeed::Value);
+    assert_resolved(world.drive_for(None), "opaque callable input fixture should settle");
+
+    let plan = transport_plan(&world, root);
+    let main = executable_for(&world, &plan, "main", 1);
+    let input_shape = plan_shape_at(
+        &plan,
+        &TransportPosition::ExecutableInput {
+            executable: main,
+            semantic_index: 0,
+        },
+    );
+    assert!(
+        matches!(shape_descr(&world, input_shape), ShapeDescr::Callable(_)),
+        "a callable input with opaque closure-call demand should stay callable-shaped, not collapse to a value lane"
+    );
+    assert_eq!(
+        plan.boundaries.len(),
+        1,
+        "an opaque callable input should publish one explicit boundary contract"
+    );
+}
+
+#[test]
+fn compiler2_transport_plan_distinguishes_same_surface_callables_by_capture_obligation() {
+    let source = r#"
+fn make1(a), do: fn (x) -> x + a end
+fn make2(a, b), do: fn (x) -> x + a + b end
+
+fn main(), do: {make1(1), make2(1, 2)}
+"#;
+
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new(&tel);
+    world.submit_code(
+        Some("transport_same_surface_distinct_captures.fz".to_string()),
+        source.to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::TupleFields(2));
+    assert_resolved(world.drive_for(None), "same-surface callable fixture should settle");
+
+    let plan = transport_plan(&world, root);
+    let main = executable_for(&world, &plan, "main", 0);
+    let returned = plan_shape_at(&plan, &TransportPosition::ExecutableReturn { executable: main });
+    let ShapeDescr::Tuple(items) = shape_descr(&world, returned) else {
+        panic!("main/0 should return a tuple of callable values")
+    };
+    let [left, right] = items.as_ref() else {
+        panic!("main/0 should return exactly two callable tuple fields")
+    };
+    let ShapeDescr::Callable(left) = shape_descr(&world, *left) else {
+        panic!("first tuple field should be callable-shaped")
+    };
+    let ShapeDescr::Callable(right) = shape_descr(&world, *right) else {
+        panic!("second tuple field should be callable-shaped")
+    };
+    assert_ne!(
+        left, right,
+        "two same-surface callables with different capture obligations must stay distinguishable"
+    );
+}
+
 fn assert_resolved(outcome: DriveOutcome<super::Job, super::FactKey>, message: &str) {
     assert!(matches!(outcome, DriveOutcome::Resolved), "{message}: {outcome:?}");
 }

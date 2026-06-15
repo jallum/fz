@@ -126,9 +126,23 @@ pub struct ExecutableSymbol {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct CallableDescr {
-    pub target: ExecutableSymbol,
+    pub function: Option<FunctionId>,
     pub capture_shapes: Box<[ShapeId]>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CallableMaterializationKind {
+    DirectOnly,
+    FirstClass,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CallableFacts {
+    pub resolutions: Box<[ExecutableSymbol]>,
     pub direct_surfaces: Box<[Box<[ShapeId]>]>,
+    pub capture_lanes: Box<[LaneId]>,
+    pub materialization: CallableMaterializationKind,
+    pub boundary_ids: Box<[BoundaryId]>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -145,6 +159,11 @@ pub struct BoundaryDescr {
     pub published_capture_lanes: Box<[LaneId]>,
     pub published_arg_lanes: Box<[LaneId]>,
     pub published_return: BoundaryReturnDescr,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BoundaryFacts {
+    pub publications: Box<[TransportPosition]>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -185,6 +204,8 @@ pub struct TransportPlan {
     pub entry: ExecutableSymbol,
     pub executable_membership: Box<[ExecutableSymbol]>,
     pub positions: HashMap<TransportPosition, ShapeId>,
+    pub callables: HashMap<CallableId, CallableFacts>,
+    pub boundaries: HashMap<BoundaryId, BoundaryFacts>,
 }
 
 #[derive(Debug, Default)]
@@ -430,18 +451,16 @@ mod tests {
             semantic_index: 0,
         };
         let second_position = TransportPosition::Value {
-            executable: executable.clone(),
+            executable,
             value: ValueId::from_u32(7),
         };
         let callable = interners.intern_callable(CallableDescr {
-            target: executable.clone(),
+            function: Some(add),
             capture_shapes: vec![shape].into_boxed_slice(),
-            direct_surfaces: vec![vec![shape].into_boxed_slice()].into_boxed_slice(),
         });
         let same_callable = interners.intern_callable(CallableDescr {
-            target: executable.clone(),
+            function: Some(add),
             capture_shapes: vec![shape].into_boxed_slice(),
-            direct_surfaces: vec![vec![shape].into_boxed_slice()].into_boxed_slice(),
         });
         let callable_shape = interners.intern_shape(ShapeDescr::Callable(callable));
         let same_callable_shape = interners.intern_shape(ShapeDescr::Callable(same_callable));
@@ -454,9 +473,8 @@ mod tests {
         assert_eq!(
             interners.callable(callable),
             &CallableDescr {
-                target: executable,
+                function: Some(add),
                 capture_shapes: vec![shape].into_boxed_slice(),
-                direct_surfaces: vec![vec![shape].into_boxed_slice()].into_boxed_slice(),
             },
             "callable descriptors are independent of root-scoped positions"
         );
@@ -476,15 +494,8 @@ mod tests {
         });
         let shape = interners.intern_shape(ShapeDescr::Lane(lane));
         let callable = interners.intern_callable(CallableDescr {
-            target: ExecutableSymbol {
-                activation: ActivationSymbol {
-                    function: add,
-                    input: vec![int, int].into_boxed_slice(),
-                },
-                need: ExecutableNeed::Value,
-            },
+            function: Some(add),
             capture_shapes: vec![shape].into_boxed_slice(),
-            direct_surfaces: Box::default(),
         });
         let boundary = BoundaryDescr {
             callable,

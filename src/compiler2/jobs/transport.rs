@@ -11,8 +11,9 @@ use super::super::semantic::{
     RuntimeDemand, SelectedCallee,
 };
 use super::super::transport::{
-    ActivationSymbol, CallableDescr, ExecutableSymbol, ShapeDescr, ShapeId, TransportClass, TransportPlan,
-    TransportPosition,
+    ActivationSymbol, BoundaryDescr, BoundaryFacts, BoundaryId, BoundaryReturnDescr, CallableDescr, CallableFacts,
+    CallableId, CallableMaterializationKind, ExecutableSymbol, LaneId, ShapeDescr, ShapeId, TransportClass,
+    TransportPlan, TransportPosition,
 };
 use super::super::types::Ty;
 use super::super::world::World;
@@ -26,7 +27,9 @@ struct ExecutableContext {
     runtime_demand: ExecutableRuntimeDemand,
     callsite_needs: HashMap<CallSiteId, ExecutableNeed>,
     callsite_args: HashMap<CallSiteId, Vec<CallArg>>,
+    input_values: Vec<Box<[ValueId]>>,
     local_origins: HashMap<ValueId, ValueOrigin>,
+    callable_uses: HashMap<ValueId, Vec<CallSiteId>>,
     return_sources: Vec<ProducedSource>,
     resume_entries: Vec<ResumeEntry>,
 }
@@ -35,6 +38,7 @@ struct ExecutableContext {
 enum ValueOrigin {
     Tuple(Box<[ValueId]>),
     Callable(LocalCallableProducer),
+    Callsite(CallSiteId),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -54,6 +58,103 @@ struct ResumeEntry {
     entry: ControlEntryId,
     value: ValueId,
     callsite: CallSiteId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CallableFactsDraft {
+    resolutions: Vec<ExecutableSymbol>,
+    direct_surfaces: Vec<Box<[ShapeId]>>,
+    capture_lanes: Vec<LaneId>,
+    materialization: CallableMaterializationKind,
+    boundary_ids: Vec<BoundaryId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BoundaryFactsDraft {
+    publications: Vec<TransportPosition>,
+}
+
+#[derive(Debug, Default)]
+struct TransportFactsBuilder {
+    callables: HashMap<CallableId, CallableFactsDraft>,
+    boundaries: HashMap<BoundaryId, BoundaryFactsDraft>,
+}
+
+impl TransportFactsBuilder {
+    fn record_callable(
+        &mut self,
+        callable: CallableId,
+        resolutions: Vec<ExecutableSymbol>,
+        direct_surfaces: Vec<Box<[ShapeId]>>,
+        capture_lanes: Vec<LaneId>,
+        materialization: CallableMaterializationKind,
+        boundary_ids: Vec<BoundaryId>,
+    ) {
+        let entry = self.callables.entry(callable).or_insert_with(|| CallableFactsDraft {
+            resolutions: Vec::new(),
+            direct_surfaces: Vec::new(),
+            capture_lanes: Vec::new(),
+            materialization,
+            boundary_ids: Vec::new(),
+        });
+        entry.materialization = match (entry.materialization, materialization) {
+            (CallableMaterializationKind::FirstClass, _) | (_, CallableMaterializationKind::FirstClass) => {
+                CallableMaterializationKind::FirstClass
+            }
+            _ => CallableMaterializationKind::DirectOnly,
+        };
+        extend_unique(&mut entry.resolutions, resolutions);
+        extend_unique(&mut entry.direct_surfaces, direct_surfaces);
+        extend_unique(&mut entry.capture_lanes, capture_lanes);
+        extend_unique(&mut entry.boundary_ids, boundary_ids);
+    }
+
+    fn record_boundary(&mut self, boundary: BoundaryId, publication: TransportPosition) {
+        let entry = self.boundaries.entry(boundary).or_insert_with(|| BoundaryFactsDraft {
+            publications: Vec::new(),
+        });
+        if !entry.publications.contains(&publication) {
+            entry.publications.push(publication);
+        }
+    }
+
+    fn finish(self) -> (HashMap<CallableId, CallableFacts>, HashMap<BoundaryId, BoundaryFacts>) {
+        let callables = self
+            .callables
+            .into_iter()
+            .map(|(id, mut draft)| {
+                draft.resolutions.sort_by_key(executable_symbol_sort_key);
+                draft
+                    .direct_surfaces
+                    .sort_by_key(|surface| surface.iter().map(|shape| shape.as_u32()).collect::<Vec<_>>());
+                draft.capture_lanes.sort_by_key(|lane| lane.as_u32());
+                draft.boundary_ids.sort_by_key(|boundary| boundary.as_u32());
+                (
+                    id,
+                    CallableFacts {
+                        resolutions: draft.resolutions.into_boxed_slice(),
+                        direct_surfaces: draft.direct_surfaces.into_boxed_slice(),
+                        capture_lanes: draft.capture_lanes.into_boxed_slice(),
+                        materialization: draft.materialization,
+                        boundary_ids: draft.boundary_ids.into_boxed_slice(),
+                    },
+                )
+            })
+            .collect();
+        let boundaries = self
+            .boundaries
+            .into_iter()
+            .map(|(id, draft)| {
+                (
+                    id,
+                    BoundaryFacts {
+                        publications: draft.publications.into_boxed_slice(),
+                    },
+                )
+            })
+            .collect();
+        (callables, boundaries)
+    }
 }
 
 pub(super) fn derive_transport_plan(world: &mut World<'_>, root_id: RootId) -> Result<JobEffects, FatalError> {
@@ -106,13 +207,23 @@ pub(super) fn derive_transport_plan(world: &mut World<'_>, root_id: RootId) -> R
             }
             reads.push(fact);
         }
+        let resume_entries = collect_resume_entries(&body, &analysis);
+        let mut local_origins = collect_value_origins(&body);
+        for (value, callsite) in collect_callsite_result_origins(&body) {
+            local_origins.insert(value, ValueOrigin::Callsite(callsite));
+        }
+        for resume in &resume_entries {
+            local_origins.insert(resume.value, ValueOrigin::Callsite(resume.callsite));
+        }
         contexts.insert(
             executable.clone(),
             ExecutableContext {
                 callsite_args: collect_callsite_args(&body),
-                local_origins: collect_value_origins(&body),
+                input_values: collect_input_values(&body),
+                local_origins,
+                callable_uses: collect_callable_uses(&body),
                 return_sources: collect_return_sources(&body, &analysis),
-                resume_entries: collect_resume_entries(&body, &analysis),
+                resume_entries,
                 analysis,
                 return_ty,
                 body,
@@ -133,6 +244,7 @@ pub(super) fn derive_transport_plan(world: &mut World<'_>, root_id: RootId) -> R
 
     let mut executables = closure.executables.into_iter().collect::<Vec<_>>();
     executables.sort_by_key(executable_sort_key);
+    let executables = order_executables_by_call_dependencies(world, executables, &contexts);
 
     let entry = executable_symbol(&closure.entry);
     let executable_membership = executables
@@ -141,20 +253,24 @@ pub(super) fn derive_transport_plan(world: &mut World<'_>, root_id: RootId) -> R
         .collect::<Vec<_>>()
         .into_boxed_slice();
 
+    let mut facts = TransportFactsBuilder::default();
     let mut return_shapes = HashMap::<ExecutableKey, ShapeId>::new();
     for executable in &executables {
         let context = contexts
             .get(executable)
             .expect("transport derivation requires one context per settled executable");
+        let symbol = executable_symbol(executable);
         let shape = shape_for_sources(
             world,
             &contexts,
             &return_shapes,
+            &mut facts,
             executable,
             context,
             context.return_ty,
             &context.runtime_demand.return_demand,
             &context.return_sources,
+            Some(TransportPosition::ExecutableReturn { executable: symbol }),
         );
         return_shapes.insert(executable.clone(), shape);
     }
@@ -173,14 +289,25 @@ pub(super) fn derive_transport_plan(world: &mut World<'_>, root_id: RootId) -> R
                 .get(semantic_index)
                 .cloned()
                 .unwrap_or_default();
-            let shape = generic_shape_from_demand(world, ty, &demand);
-            positions.insert(
-                TransportPosition::ExecutableInput {
-                    executable: symbol.clone(),
-                    semantic_index,
-                },
-                shape,
+            let position = TransportPosition::ExecutableInput {
+                executable: symbol.clone(),
+                semantic_index,
+            };
+            let input_values = context
+                .input_values
+                .get(semantic_index)
+                .map(|values| values.as_ref())
+                .unwrap_or(&[]);
+            let shape = shape_for_executable_input(
+                world,
+                context,
+                ty,
+                &demand,
+                input_values,
+                &mut facts,
+                Some(position.clone()),
             );
+            positions.insert(position, shape);
         }
 
         positions.insert(
@@ -205,11 +332,16 @@ pub(super) fn derive_transport_plan(world: &mut World<'_>, root_id: RootId) -> R
                 world,
                 &contexts,
                 &return_shapes,
+                &mut facts,
                 executable,
                 context,
                 value,
                 ty,
                 &demand,
+                Some(TransportPosition::Value {
+                    executable: symbol.clone(),
+                    value,
+                }),
             );
             positions.insert(
                 TransportPosition::Value {
@@ -237,14 +369,32 @@ pub(super) fn derive_transport_plan(world: &mut World<'_>, root_id: RootId) -> R
                             world,
                             &contexts,
                             &return_shapes,
+                            &mut facts,
                             executable,
                             context,
                             arg.value,
                             ty,
                             &demand,
+                            Some(TransportPosition::CallArg {
+                                executable: symbol.clone(),
+                                callsite,
+                                semantic_index,
+                            }),
                         )
                     })
-                    .unwrap_or_else(|| generic_shape_from_demand(world, ty, &demand));
+                    .unwrap_or_else(|| {
+                        generic_shape_from_demand(
+                            world,
+                            ty,
+                            &demand,
+                            &mut facts,
+                            Some(TransportPosition::CallArg {
+                                executable: symbol.clone(),
+                                callsite,
+                                semantic_index,
+                            }),
+                        )
+                    });
                 positions.insert(
                     TransportPosition::CallArg {
                         executable: symbol.clone(),
@@ -280,11 +430,17 @@ pub(super) fn derive_transport_plan(world: &mut World<'_>, root_id: RootId) -> R
                     world,
                     &contexts,
                     &return_shapes,
+                    &mut facts,
                     executable,
                     context,
                     capture,
                     ty,
                     &demand,
+                    Some(TransportPosition::EntryCapture {
+                        executable: symbol.clone(),
+                        entry,
+                        capture_index,
+                    }),
                 );
                 positions.insert(
                     TransportPosition::EntryCapture {
@@ -299,17 +455,26 @@ pub(super) fn derive_transport_plan(world: &mut World<'_>, root_id: RootId) -> R
 
         for resume in &context.resume_entries {
             let demand = resume_demand(world, &contexts, executable, context, *resume);
-            let shape = resume_shape(world, &contexts, &return_shapes, executable, context, *resume, &demand);
-            positions.insert(
-                TransportPosition::ResumePayload {
-                    executable: symbol.clone(),
-                    callsite: resume.callsite,
-                    entry: resume.entry,
-                },
-                shape,
+            let position = TransportPosition::ResumePayload {
+                executable: symbol.clone(),
+                callsite: resume.callsite,
+                entry: resume.entry,
+            };
+            let shape = resume_shape(
+                world,
+                &contexts,
+                &return_shapes,
+                &mut facts,
+                executable,
+                context,
+                *resume,
+                &demand,
+                Some(position.clone()),
             );
+            positions.insert(position, shape);
         }
     }
+    let (callables, boundaries) = facts.finish();
 
     let changed = world.define_transport_plan(
         root_id,
@@ -317,6 +482,8 @@ pub(super) fn derive_transport_plan(world: &mut World<'_>, root_id: RootId) -> R
             entry,
             executable_membership,
             positions,
+            callables,
+            boundaries,
         },
     );
 
@@ -348,6 +515,94 @@ fn executable_symbol(executable: &ExecutableKey) -> ExecutableSymbol {
             input: executable.activation.input.clone().into_boxed_slice(),
         },
         need: executable.need,
+    }
+}
+
+fn order_executables_by_call_dependencies(
+    world: &World<'_>,
+    executables: Vec<ExecutableKey>,
+    contexts: &HashMap<ExecutableKey, ExecutableContext>,
+) -> Vec<ExecutableKey> {
+    let membership = executables.iter().cloned().collect::<HashSet<_>>();
+    let mut visiting = HashSet::new();
+    let mut visited = HashSet::new();
+    let mut out = Vec::new();
+    for executable in &executables {
+        visit_executable_dependencies(
+            world,
+            contexts,
+            &membership,
+            executable,
+            &mut visiting,
+            &mut visited,
+            &mut out,
+        );
+    }
+    out
+}
+
+fn visit_executable_dependencies(
+    world: &World<'_>,
+    contexts: &HashMap<ExecutableKey, ExecutableContext>,
+    membership: &HashSet<ExecutableKey>,
+    executable: &ExecutableKey,
+    visiting: &mut HashSet<ExecutableKey>,
+    visited: &mut HashSet<ExecutableKey>,
+    out: &mut Vec<ExecutableKey>,
+) {
+    if visited.contains(executable) || !visiting.insert(executable.clone()) {
+        return;
+    }
+    if let Some(context) = contexts.get(executable) {
+        let mut callsites = context.analysis.callsites.clone();
+        callsites.sort_by_key(|callsite| callsite.as_u32());
+        for callsite in callsites {
+            let key = CallSiteKey {
+                activation: executable.activation.clone(),
+                callsite,
+            };
+            let Some(summary) = world.callsite_summary(&key) else {
+                continue;
+            };
+            let need = context
+                .callsite_needs
+                .get(&callsite)
+                .copied()
+                .unwrap_or(ExecutableNeed::Value);
+            for target in &summary.targets {
+                let Some(activation) = target.activation.clone() else {
+                    continue;
+                };
+                let dependency = ExecutableKey { activation, need };
+                if membership.contains(&dependency) {
+                    visit_executable_dependencies(world, contexts, membership, &dependency, visiting, visited, out);
+                }
+            }
+        }
+    }
+    visiting.remove(executable);
+    visited.insert(executable.clone());
+    out.push(executable.clone());
+}
+
+fn executable_symbol_sort_key(symbol: &ExecutableSymbol) -> (u32, Vec<Ty>, u8, usize) {
+    let need = match symbol.need {
+        ExecutableNeed::Value => (0, 0),
+        ExecutableNeed::TupleFields(arity) => (1, arity),
+    };
+    (
+        symbol.activation.function.as_u32(),
+        symbol.activation.input.to_vec(),
+        need.0,
+        need.1,
+    )
+}
+
+fn extend_unique<T: PartialEq>(target: &mut Vec<T>, values: Vec<T>) {
+    for value in values {
+        if !target.contains(&value) {
+            target.push(value);
+        }
     }
 }
 
@@ -402,6 +657,52 @@ fn collect_tail_call_args(
         }
         LoweredTail::Halt { .. } => {}
     }
+}
+
+fn collect_callsite_result_origins(body: &LoweredBody) -> HashMap<ValueId, CallSiteId> {
+    let mut out = HashMap::new();
+    let LoweredBody::Clauses { entries, .. } = body else {
+        return out;
+    };
+    for entry in entries {
+        match &entry.tail {
+            LoweredTail::DirectCall { value, callsite, .. } | LoweredTail::ClosureCall { value, callsite, .. } => {
+                out.insert(*value, *callsite);
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+fn collect_input_values(body: &LoweredBody) -> Vec<Box<[ValueId]>> {
+    let LoweredBody::Clauses { clauses, .. } = body else {
+        return Vec::new();
+    };
+    let arity = clauses.iter().map(|clause| clause.params.len()).max().unwrap_or(0);
+    let mut out = vec![Vec::new(); arity];
+    for clause in clauses {
+        for (index, value) in clause.params.iter().copied().enumerate() {
+            if !out[index].contains(&value) {
+                out[index].push(value);
+            }
+        }
+    }
+    out.into_iter().map(Vec::into_boxed_slice).collect()
+}
+
+fn collect_callable_uses(body: &LoweredBody) -> HashMap<ValueId, Vec<CallSiteId>> {
+    let mut out = HashMap::new();
+    let LoweredBody::Clauses { entries, .. } = body else {
+        return out;
+    };
+    for entry in entries {
+        let LoweredTail::ClosureCall { callee, callsite, .. } = &entry.tail else {
+            continue;
+        };
+        out.entry(*callee).or_insert_with(Vec::new).push(*callsite);
+    }
+    out
 }
 
 fn collect_value_origins(body: &LoweredBody) -> HashMap<ValueId, ValueOrigin> {
@@ -573,53 +874,84 @@ fn shape_for_local_value(
     world: &mut World<'_>,
     contexts: &HashMap<ExecutableKey, ExecutableContext>,
     return_shapes: &HashMap<ExecutableKey, ShapeId>,
+    facts: &mut TransportFactsBuilder,
     executable: &ExecutableKey,
     context: &ExecutableContext,
     value: ValueId,
     ty: Ty,
     demand: &RuntimeDemand,
+    publication: Option<TransportPosition>,
 ) -> ShapeId {
     shape_for_sources(
         world,
         contexts,
         return_shapes,
+        facts,
         executable,
         context,
         ty,
         demand,
         &[ProducedSource::LocalValue(value)],
+        publication,
     )
+}
+
+fn shape_for_executable_input(
+    world: &mut World<'_>,
+    context: &ExecutableContext,
+    ty: Ty,
+    demand: &RuntimeDemand,
+    input_values: &[ValueId],
+    facts: &mut TransportFactsBuilder,
+    publication: Option<TransportPosition>,
+) -> ShapeId {
+    let RuntimeDemand::Callable(callable) = demand else {
+        return generic_shape_from_demand(world, ty, demand, facts, publication);
+    };
+    let surfaces = callable_surface_evidence(world, context, ty, callable, input_values);
+    generic_callable_shape(world, ty, callable, &surfaces, facts, publication)
 }
 
 fn shape_for_sources(
     world: &mut World<'_>,
     contexts: &HashMap<ExecutableKey, ExecutableContext>,
     return_shapes: &HashMap<ExecutableKey, ShapeId>,
+    facts: &mut TransportFactsBuilder,
     executable: &ExecutableKey,
     context: &ExecutableContext,
     ty: Ty,
     demand: &RuntimeDemand,
     sources: &[ProducedSource],
+    publication: Option<TransportPosition>,
 ) -> ShapeId {
     if demand.is_ignore() || world.types().is_empty(&ty) {
         return world.transport_mut().interners_mut().intern_shape(ShapeDescr::Nothing);
     }
     let mut exact = Vec::new();
     for source in sources {
-        let Some(shape) =
-            exact_shape_for_source(world, contexts, return_shapes, executable, context, ty, demand, *source)
-        else {
-            return generic_shape_from_demand(world, ty, demand);
+        let Some(shape) = exact_shape_for_source(
+            world,
+            contexts,
+            return_shapes,
+            facts,
+            executable,
+            context,
+            ty,
+            demand,
+            *source,
+            publication.clone(),
+        ) else {
+            return generic_shape_from_demand(world, ty, demand, facts, publication);
         };
         exact.push(shape);
     }
     if exact.is_empty() {
-        return generic_shape_from_demand(world, ty, demand);
+        return generic_shape_from_demand(world, ty, demand, facts, publication);
     }
     if exact.windows(2).all(|pair| pair[0] == pair[1]) {
         exact[0]
     } else {
-        generic_shape_from_demand(world, ty, demand)
+        generic_shape_from_demand(world, ty, demand, facts, publication)
     }
 }
 
@@ -627,16 +959,27 @@ fn exact_shape_for_source(
     world: &mut World<'_>,
     contexts: &HashMap<ExecutableKey, ExecutableContext>,
     return_shapes: &HashMap<ExecutableKey, ShapeId>,
+    facts: &mut TransportFactsBuilder,
     executable: &ExecutableKey,
     context: &ExecutableContext,
     ty: Ty,
     demand: &RuntimeDemand,
     source: ProducedSource,
+    publication: Option<TransportPosition>,
 ) -> Option<ShapeId> {
     match source {
-        ProducedSource::LocalValue(value) => {
-            exact_shape_for_local_value(world, contexts, return_shapes, executable, context, value, ty, demand)
-        }
+        ProducedSource::LocalValue(value) => exact_shape_for_local_value(
+            world,
+            contexts,
+            return_shapes,
+            facts,
+            executable,
+            context,
+            value,
+            ty,
+            demand,
+            publication,
+        ),
         ProducedSource::Callsite(callsite) => {
             exact_shape_for_callsite(world, return_shapes, executable, context, callsite)
         }
@@ -647,15 +990,22 @@ fn exact_shape_for_local_value(
     world: &mut World<'_>,
     contexts: &HashMap<ExecutableKey, ExecutableContext>,
     return_shapes: &HashMap<ExecutableKey, ShapeId>,
+    facts: &mut TransportFactsBuilder,
     executable: &ExecutableKey,
     context: &ExecutableContext,
     value: ValueId,
     ty: Ty,
     demand: &RuntimeDemand,
+    publication: Option<TransportPosition>,
 ) -> Option<ShapeId> {
     match demand {
         RuntimeDemand::Ignore => Some(world.transport_mut().interners_mut().intern_shape(ShapeDescr::Nothing)),
-        RuntimeDemand::Value => None,
+        RuntimeDemand::Value => match context.local_origins.get(&value) {
+            Some(ValueOrigin::Callsite(callsite)) => {
+                exact_shape_for_callsite(world, return_shapes, executable, context, *callsite)
+            }
+            _ => None,
+        },
         RuntimeDemand::TupleFields(fields) => {
             let ValueOrigin::Tuple(items) = context.local_origins.get(&value)? else {
                 return None;
@@ -673,22 +1023,26 @@ fn exact_shape_for_local_value(
                         world,
                         contexts,
                         return_shapes,
+                        facts,
                         executable,
                         context,
                         item,
                         item_ty,
                         field_demand,
+                        None,
                     )
                     .or_else(|| {
                         Some(shape_for_local_value(
                             world,
                             contexts,
                             return_shapes,
+                            facts,
                             executable,
                             context,
                             item,
                             item_ty,
                             field_demand,
+                            None,
                         ))
                     })
                 })
@@ -701,19 +1055,37 @@ fn exact_shape_for_local_value(
             )
         }
         RuntimeDemand::Callable(_) => {
-            let ValueOrigin::Callable(producer) = context.local_origins.get(&value)? else {
-                return None;
+            let callable = match context.local_origins.get(&value)? {
+                ValueOrigin::Callable(producer) => {
+                    let materialization = context.runtime_demand.callable_materializations.get(&value)?;
+                    let callable_demand =
+                        context
+                            .runtime_demand
+                            .value_demands
+                            .get(&value)
+                            .and_then(|demand| match demand {
+                                RuntimeDemand::Callable(callable) => Some(callable),
+                                _ => None,
+                            });
+                    callable_for_producer(
+                        world,
+                        contexts,
+                        return_shapes,
+                        facts,
+                        executable,
+                        context,
+                        producer,
+                        materialization,
+                        ty,
+                        callable_demand,
+                        publication,
+                    )?
+                }
+                ValueOrigin::Callsite(callsite) => {
+                    return exact_shape_for_callsite(world, return_shapes, executable, context, *callsite);
+                }
+                ValueOrigin::Tuple(_) => return None,
             };
-            let materialization = context.runtime_demand.callable_materializations.get(&value)?;
-            let callable = callable_descr_for_producer(
-                world,
-                contexts,
-                return_shapes,
-                executable,
-                context,
-                producer,
-                materialization,
-            )?;
             Some(
                 world
                     .transport_mut()
@@ -757,14 +1129,18 @@ fn exact_shape_for_callsite(
     Some(shapes[0])
 }
 
-fn callable_descr_for_producer(
+fn callable_for_producer(
     world: &mut World<'_>,
     contexts: &HashMap<ExecutableKey, ExecutableContext>,
     return_shapes: &HashMap<ExecutableKey, ShapeId>,
+    facts: &mut TransportFactsBuilder,
     executable: &ExecutableKey,
     context: &ExecutableContext,
     producer: &LocalCallableProducer,
     materialization: &CallableMaterialization,
+    callable_ty: Ty,
+    callable_demand: Option<&CallableDemand>,
+    publication: Option<TransportPosition>,
 ) -> Option<super::super::transport::CallableId> {
     let capture_shapes = producer
         .captures
@@ -777,40 +1153,149 @@ fn callable_descr_for_producer(
                 world,
                 contexts,
                 return_shapes,
+                facts,
                 executable,
                 context,
                 capture,
                 capture_ty,
                 &capture_demand,
+                None,
             ))
         })
         .collect::<Option<Vec<_>>>()?;
-    let surfaces = match materialization {
-        CallableMaterialization::DirectOnly { surfaces } => direct_surface_shapes(world, surfaces),
+    let capture_lanes = capture_shapes
+        .iter()
+        .copied()
+        .flat_map(|shape| shape_lanes(world, shape))
+        .collect::<Vec<_>>();
+    let materialization_surfaces = match materialization {
+        CallableMaterialization::DirectOnly { surfaces } | CallableMaterialization::FirstClass { surfaces } => surfaces,
+    };
+    let surface_demands = callable_demand
+        .map(|demand| callable_surface_evidence(world, context, callable_ty, demand, &[]))
+        .filter(|surfaces| !surfaces.is_empty())
+        .unwrap_or_else(|| {
+            if materialization_surfaces.is_empty() {
+                callable_type_surfaces(world, callable_ty)
+            } else {
+                materialization_surfaces.clone()
+            }
+        });
+    let surface_shapes = surface_shapes(world, &surface_demands, facts);
+    let direct_surfaces = match materialization {
+        CallableMaterialization::DirectOnly { .. } => surface_shapes.clone(),
         CallableMaterialization::FirstClass { .. } => Vec::new(),
     };
-    let target_input = callable_target_input(world, producer, materialization, &capture_shapes, context);
-    Some(world.transport_mut().interners_mut().intern_callable(CallableDescr {
-        target: ExecutableSymbol {
-            activation: ActivationSymbol {
-                function: producer.function,
-                input: target_input.into_boxed_slice(),
-            },
-            need: ExecutableNeed::Value,
-        },
+    let materialization_kind = match materialization {
+        CallableMaterialization::DirectOnly { .. } => CallableMaterializationKind::DirectOnly,
+        CallableMaterialization::FirstClass { .. } => CallableMaterializationKind::FirstClass,
+    };
+    let callable = world.transport_mut().interners_mut().intern_callable(CallableDescr {
+        function: Some(producer.function),
         capture_shapes: capture_shapes.into_boxed_slice(),
-        direct_surfaces: surfaces.into_boxed_slice(),
-    }))
+    });
+    let resolutions = callable_resolutions(world, context, producer, &surface_demands);
+    let boundary_ids = match materialization {
+        CallableMaterialization::DirectOnly { .. } => Vec::new(),
+        CallableMaterialization::FirstClass { .. } => publish_boundaries_for_callable(
+            world,
+            facts,
+            callable,
+            &surface_demands,
+            &surface_shapes,
+            &capture_lanes,
+            callable_ty,
+            publication,
+        ),
+    };
+    facts.record_callable(
+        callable,
+        resolutions,
+        direct_surfaces,
+        capture_lanes,
+        materialization_kind,
+        boundary_ids,
+    );
+    Some(callable)
 }
 
-fn callable_target_input(
+fn surface_shapes(
     world: &mut World<'_>,
-    producer: &LocalCallableProducer,
-    materialization: &CallableMaterialization,
-    _capture_shapes: &[ShapeId],
+    surfaces: &BTreeSet<CallableSurface>,
+    facts: &mut TransportFactsBuilder,
+) -> Vec<Box<[ShapeId]>> {
+    let mut rendered = surfaces
+        .iter()
+        .map(|surface| {
+            surface
+                .inputs
+                .iter()
+                .copied()
+                .map(|ty| {
+                    let demand = boundary_runtime_demand(world, ty);
+                    generic_shape_from_demand(world, ty, &demand, facts, None)
+                })
+                .collect::<Vec<_>>()
+                .into_boxed_slice()
+        })
+        .collect::<Vec<_>>();
+    rendered.sort_by_key(|surface| surface.iter().map(|shape| shape.as_u32()).collect::<Vec<_>>());
+    rendered
+}
+
+fn callable_surface_evidence(
+    world: &mut World<'_>,
     context: &ExecutableContext,
-) -> Vec<Ty> {
-    let mut out = producer
+    callable_ty: Ty,
+    demand: &CallableDemand,
+    values: &[ValueId],
+) -> BTreeSet<CallableSurface> {
+    let mut surfaces = demand.resolved.clone();
+    for value in values {
+        let Some(callsites) = context.callable_uses.get(value) else {
+            continue;
+        };
+        for callsite in callsites {
+            let Some(args) = context.callsite_args.get(callsite) else {
+                continue;
+            };
+            surfaces.insert(CallableSurface::new(
+                args.iter()
+                    .map(|arg| {
+                        context
+                            .analysis
+                            .value_types
+                            .get(&arg.value)
+                            .copied()
+                            .unwrap_or_else(|| world.types_mut().any())
+                    })
+                    .collect(),
+            ));
+        }
+    }
+    if surfaces.is_empty() {
+        surfaces = callable_type_surfaces(world, callable_ty);
+    }
+    surfaces
+}
+
+fn callable_type_surfaces(world: &mut World<'_>, callable_ty: Ty) -> BTreeSet<CallableSurface> {
+    world
+        .types_mut()
+        .callable_clauses(&callable_ty)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|clause| CallableSurface::new(clause.args))
+        .collect()
+}
+
+fn callable_resolutions(
+    world: &mut World<'_>,
+    context: &ExecutableContext,
+    producer: &LocalCallableProducer,
+    surfaces: &BTreeSet<CallableSurface>,
+) -> Vec<ExecutableSymbol> {
+    let capture_tys = producer
         .captures
         .iter()
         .copied()
@@ -823,36 +1308,29 @@ fn callable_target_input(
                 .unwrap_or_else(|| world.types_mut().any())
         })
         .collect::<Vec<_>>();
-    let surfaces = match materialization {
-        CallableMaterialization::DirectOnly { surfaces } | CallableMaterialization::FirstClass { surfaces } => surfaces,
-    };
-    if let Some(surface) = surfaces.iter().next() {
-        out.extend(surface.inputs.iter().copied());
-    }
-    out
-}
-
-fn direct_surface_shapes(world: &mut World<'_>, surfaces: &BTreeSet<CallableSurface>) -> Vec<Box<[ShapeId]>> {
-    let mut rendered = surfaces
+    surfaces
         .iter()
         .map(|surface| {
-            surface
-                .inputs
-                .iter()
-                .copied()
-                .map(|ty| {
-                    let demand = boundary_runtime_demand(world, ty);
-                    generic_shape_from_demand(world, ty, &demand)
-                })
-                .collect::<Vec<_>>()
-                .into_boxed_slice()
+            let mut input = capture_tys.clone();
+            input.extend(surface.inputs.iter().copied());
+            ExecutableSymbol {
+                activation: ActivationSymbol {
+                    function: producer.function,
+                    input: input.into_boxed_slice(),
+                },
+                need: ExecutableNeed::Value,
+            }
         })
-        .collect::<Vec<_>>();
-    rendered.sort_by_key(|surface| surface.iter().map(|shape| shape.as_u32()).collect::<Vec<_>>());
-    rendered
+        .collect()
 }
 
-fn generic_shape_from_demand(world: &mut World<'_>, ty: Ty, demand: &RuntimeDemand) -> ShapeId {
+fn generic_shape_from_demand(
+    world: &mut World<'_>,
+    ty: Ty,
+    demand: &RuntimeDemand,
+    facts: &mut TransportFactsBuilder,
+    publication: Option<TransportPosition>,
+) -> ShapeId {
     if demand.is_ignore() || world.types().is_empty(&ty) {
         return world.transport_mut().interners_mut().intern_shape(ShapeDescr::Nothing);
     }
@@ -863,29 +1341,141 @@ fn generic_shape_from_demand(world: &mut World<'_>, ty: Ty, demand: &RuntimeDema
             let items = tuple_field_tys(world, ty, fields.len())
                 .into_iter()
                 .zip(fields.iter())
-                .map(|(field_ty, field_demand)| generic_shape_from_demand(world, field_ty, field_demand))
+                .map(|(field_ty, field_demand)| generic_shape_from_demand(world, field_ty, field_demand, facts, None))
                 .collect::<Vec<_>>();
             world
                 .transport_mut()
                 .interners_mut()
                 .intern_shape(ShapeDescr::Tuple(items.into_boxed_slice()))
         }
-        RuntimeDemand::Callable(_) => value_lane_shape(world, ty),
+        RuntimeDemand::Callable(callable) => {
+            let surfaces = if callable.resolved.is_empty() {
+                callable_type_surfaces(world, ty)
+            } else {
+                callable.resolved.clone()
+            };
+            generic_callable_shape(world, ty, callable, &surfaces, facts, publication)
+        }
+    }
+}
+
+fn generic_callable_shape(
+    world: &mut World<'_>,
+    ty: Ty,
+    demand: &CallableDemand,
+    surfaces: &BTreeSet<CallableSurface>,
+    facts: &mut TransportFactsBuilder,
+    publication: Option<TransportPosition>,
+) -> ShapeId {
+    let callable = world.transport_mut().interners_mut().intern_callable(CallableDescr {
+        function: None,
+        capture_shapes: Box::default(),
+    });
+    let surface_shapes = surface_shapes(world, surfaces, facts);
+    let materialization = if demand.opaque || demand.escape {
+        CallableMaterializationKind::FirstClass
+    } else {
+        CallableMaterializationKind::DirectOnly
+    };
+    let direct_surfaces = if matches!(materialization, CallableMaterializationKind::DirectOnly) {
+        surface_shapes.clone()
+    } else {
+        Vec::new()
+    };
+    let boundary_ids = if matches!(materialization, CallableMaterializationKind::FirstClass) {
+        publish_boundaries_for_callable(world, facts, callable, surfaces, &surface_shapes, &[], ty, publication)
+    } else {
+        Vec::new()
+    };
+    facts.record_callable(
+        callable,
+        Vec::new(),
+        direct_surfaces,
+        Vec::new(),
+        materialization,
+        boundary_ids,
+    );
+    world
+        .transport_mut()
+        .interners_mut()
+        .intern_shape(ShapeDescr::Callable(callable))
+}
+
+fn publish_boundaries_for_callable(
+    world: &mut World<'_>,
+    facts: &mut TransportFactsBuilder,
+    callable: CallableId,
+    surfaces: &BTreeSet<CallableSurface>,
+    surface_shapes: &[Box<[ShapeId]>],
+    capture_lanes: &[LaneId],
+    callable_ty: Ty,
+    publication: Option<TransportPosition>,
+) -> Vec<BoundaryId> {
+    let ret = boundary_return_for_callable(world, callable_ty);
+    let mut boundary_ids = Vec::new();
+    for (surface, arg_shapes) in surfaces.iter().zip(surface_shapes.iter()) {
+        let arg_lanes = arg_shapes
+            .iter()
+            .copied()
+            .flat_map(|shape| shape_lanes(world, shape))
+            .collect::<Vec<_>>();
+        let boundary = world.transport_mut().interners_mut().intern_boundary(BoundaryDescr {
+            callable,
+            surface_arg_shapes: arg_shapes.clone(),
+            published_capture_lanes: capture_lanes.to_vec().into_boxed_slice(),
+            published_arg_lanes: arg_lanes.into_boxed_slice(),
+            published_return: ret.clone(),
+        });
+        if let Some(position) = publication.clone() {
+            facts.record_boundary(boundary, position);
+        } else {
+            facts.record_boundary(boundary, TransportPosition::Boundary { boundary });
+        }
+        boundary_ids.push(boundary);
+        let _ = surface;
+    }
+    boundary_ids
+}
+
+fn boundary_return_for_callable(world: &mut World<'_>, callable_ty: Ty) -> BoundaryReturnDescr {
+    let ret_ty = world.types_mut().arrow_join_return(&callable_ty);
+    if world.types().is_empty(&ret_ty) {
+        BoundaryReturnDescr::Nothing
+    } else {
+        let lane = value_lane(world, ret_ty);
+        BoundaryReturnDescr::Value(lane)
+    }
+}
+
+fn shape_lanes(world: &World<'_>, shape: ShapeId) -> Vec<LaneId> {
+    match world.transport().interners().shape(shape) {
+        ShapeDescr::Nothing => Vec::new(),
+        ShapeDescr::Lane(lane) => vec![*lane],
+        ShapeDescr::Tuple(items) => items
+            .iter()
+            .copied()
+            .flat_map(|item| shape_lanes(world, item))
+            .collect(),
+        ShapeDescr::Callable(_) => Vec::new(),
     }
 }
 
 fn value_lane_shape(world: &mut World<'_>, ty: Ty) -> ShapeId {
-    let lane = world
+    let lane = value_lane(world, ty);
+    world
+        .transport_mut()
+        .interners_mut()
+        .intern_shape(ShapeDescr::Lane(lane))
+}
+
+fn value_lane(world: &mut World<'_>, ty: Ty) -> LaneId {
+    world
         .transport_mut()
         .interners_mut()
         .intern_lane(super::super::transport::LaneDescr {
             ty,
             class: TransportClass::Value,
-        });
-    world
-        .transport_mut()
-        .interners_mut()
-        .intern_shape(ShapeDescr::Lane(lane))
+        })
 }
 
 fn tuple_field_tys(world: &mut World<'_>, ty: Ty, arity: usize) -> Vec<Ty> {
@@ -965,10 +1555,12 @@ fn resume_shape(
     world: &mut World<'_>,
     contexts: &HashMap<ExecutableKey, ExecutableContext>,
     return_shapes: &HashMap<ExecutableKey, ShapeId>,
+    facts: &mut TransportFactsBuilder,
     executable: &ExecutableKey,
     context: &ExecutableContext,
     resume: ResumeEntry,
     demand: &RuntimeDemand,
+    publication: Option<TransportPosition>,
 ) -> ShapeId {
     let value_ty = context
         .analysis
@@ -981,11 +1573,13 @@ fn resume_shape(
             world,
             contexts,
             return_shapes,
+            facts,
             executable,
             context,
             value_ty,
             demand,
             &[ProducedSource::Callsite(resume.callsite)],
+            publication,
         )
     })
 }

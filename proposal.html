@@ -228,7 +228,7 @@ SemanticClosed(root)
 
 <p>The exact Rust names can differ. The important property is that shared structure lives in descriptor interners and root-specific validity/details live in plan tables.</p>
 
-<p>Implementation status after <code>fz-hwn.20.2</code>: <code>src/compiler2/transport.rs</code> defines the root-independent ids, descriptors, transport symbols, <code>TransportPosition</code>, <code>TransportInterners</code>, and <code>TransportStore</code>. <code>World</code> owns one <code>TransportStore</code>. No materialization, backend, native, or codegen consumer reads these ids yet, and no old <code>Trash*</code> layout is translated into descriptors.</p>
+<p>Implementation status after <code>fz-hwn.20.4</code>: <code>src/compiler2/transport.rs</code> defines the root-independent ids, descriptors, transport symbols, <code>TransportPosition</code>, <code>TransportInterners</code>, and <code>TransportStore</code>. <code>World</code> owns one <code>TransportStore</code>. <code>DeriveTransportPlan(root)</code> now populates root-scoped positions plus <code>CallableId</code> and <code>BoundaryId</code> fact tables from settled semantic evidence. No materialization, backend, native, or codegen consumer reads these ids yet, and no old <code>Trash*</code> layout is translated into descriptors.</p>
 
 <pre>
 TransportStore {
@@ -427,9 +427,9 @@ rg "TransportPlan\\(root\\)|root-scoped transport spine|codegen repr, not shape"
 
 <h3>10.3 Telemetry</h3>
 
-<p>Prefer event-level assertions over brittle dumps where the event expresses the invariant. <code>fz-hwn.20.3</code> turns on the production-boundary assertion in <code>src/compiler2/transport_contract_test.rs</code> and adds targeted fixtures for ignored returns, tuple return/resume sharing, and direct-callable return/resume sharing.</p>
+<p>Prefer event-level assertions over brittle dumps where the event expresses the invariant. <code>fz-hwn.20.3</code> turns on the production-boundary assertion in <code>src/compiler2/transport_contract_test.rs</code> and adds targeted fixtures for ignored returns, tuple return/resume sharing, and direct-callable return/resume sharing. <code>fz-hwn.20.4</code> adds worked source fixtures for callable/boundary facts: unused callable constructors publish no boundary, direct lambda calls stay direct-only, escaped lambdas publish exactly one first-class boundary, opaque callable inputs publish an explicit boundary, and same-surface callables remain distinct when their capture obligations differ.</p>
 
-<p>The landed scope is narrow on purpose: exact callable shapes are derived only when semantic evidence names one local producer (<code>FunctionRef</code> or <code>Lambda</code>) or one local callee return shape. Joined callable inputs without exact producer identity stay generic value lanes until callable/boundary facts land.</p>
+<p>The landed derivation boundary is explicit: callable and boundary facts are derived by the new transport calculator from settled demand, lowered callable use sites, local callable producers, captures, callsite summaries, and settled type evidence. The old layout, native boundary inventories, and callable-entry materialization are not inputs to the transport plan.</p>
 
 <pre>
 fz.compiler2.transport_flow.defined

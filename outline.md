@@ -82,11 +82,13 @@ SemanticClosed(root) + settled RuntimeDemand
 The plan answers "what runtime structure moves at this seam?" exactly once.
 Backends answer "how do I emit this seam?" by reading facts from the plan.
 
-Implementation status after `fz-hwn.20.2`: `src/compiler2/transport.rs`
+Implementation status after `fz-hwn.20.4`: `src/compiler2/transport.rs`
 defines the root-independent ids, descriptors, transport symbols,
 `TransportPosition`, `TransportInterners`, and `TransportStore`. `World` owns one
-`TransportStore`. No materialization, backend, native, or codegen consumer reads
-these ids yet, and no old `Trash*` layout is translated into descriptors.
+`TransportStore`. `DeriveTransportPlan(root)` now populates root-scoped
+positions plus `CallableId` and `BoundaryId` fact tables from settled semantic
+evidence. No materialization, backend, native, or codegen consumer reads these
+ids yet, and no old `Trash*` layout is translated into descriptors.
 
 ## Required First Move
 
@@ -387,12 +389,17 @@ The contract test for this model lives in
 `src/compiler2/transport_contract_test.rs`. `fz-hwn.20.3` turns the
 production-boundary test on against the real `TransportPlan(root)` job/fact and
 adds targeted fixtures for ignored returns, tuple return/resume sharing, and
-direct-callable return/resume sharing.
+direct-callable return/resume sharing. `fz-hwn.20.4` adds worked source
+fixtures for callable/boundary facts: unused callable constructors publish no
+boundary, direct lambda calls stay direct-only, escaped lambdas publish exactly
+one first-class boundary, opaque callable inputs publish an explicit boundary,
+and same-surface callables remain distinct when their capture obligations differ.
 
-The landed derivation boundary is explicit: exact callable shapes are produced
-only when semantic evidence names one local producer (`FunctionRef` or
-`Lambda`) or one local callee return shape. Arbitrary joined callable inputs
-stay generic value lanes until the later callable/boundary fact work lands.
+The landed derivation boundary is explicit: callable and boundary facts are
+derived by the new transport calculator from settled demand, lowered callable
+use sites, local callable producers, captures, callsite summaries, and settled
+type evidence. The old layout, native boundary inventories, and callable-entry
+materialization are not inputs to the transport plan.
 
 Plan construction emits exactly one output signal:
 
