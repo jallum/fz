@@ -7,13 +7,13 @@
     "fz-hwn.19.2"
   ],
   "created": "2026-06-15T19:27:13Z",
-  "description": "Goal\nWrite characterization tests that describe the desired transport authority before changing the model. These tests should observe the contracts we must preserve and the old structures we intend to remove.\n\nSignal\nTests cover scalar returns, ignored inputs/results, tuple-field returns/resumes, direct callable returns/resumes, escaped callable boundaries, opaque callable boundaries, closure captures, backend interpreter parity, and native JIT delivery. Existing tests that assert RuntimeValueLayout or DeliveredShape as authority are marked for rewrite to spine/fact assertions.\n\nStrategy\nUse the current fixtures and telemetry capture harnesses. Add tests only where a behavior is not already pinned. Do not add compatibility helpers. The tests should state intent: one settled transport shape plus fact-table projections.\n\nRemoval target identified\nRuntimeValueLayout assertions in drive/artifact tests, DeliveredShape assertions in native codegen tests, local repr derivation expectations, and any stale ValueRef expectations at exact internal transport seams.\n\nChecks\ncargo test for the targeted compiler2 transport tests; rg inventory of old transport-type assertions captured in this ticket notes.",
+  "description": "Goal\nWrite characterization tests that describe the desired transport authority before changing the model. These tests should observe the behavior we must preserve and the old structures we intend to remove.\n\nSignal\nTests cover single-lane returns, ignored inputs/results, tuple-field returns/resumes, direct callable returns/resumes, escaped callable boundaries, opaque callable boundaries, closure captures, backend interpreter parity, and native JIT delivery. Existing tests that assert RuntimeValueLayout, DeliveredShape, or local repr derivation as authority are marked for rewrite to interned spine/fact assertions.\n\nStrategy\nUse the current fixtures and telemetry capture harnesses. Add tests only where a behavior is not already pinned. Do not add compatibility helpers. The tests should state intent: one settled ShapeId graph plus fact-table projections keyed by LaneId and CallableId.\n\nRemoval target identified\nRuntimeValueLayout assertions in drive/artifact tests, DeliveredShape assertions in native codegen tests, local ArgRepr-from-type expectations, and any stale ValueRef expectations at exact internal transport seams.\n\nChecks\ncargo test for the targeted compiler2 transport tests; rg inventory of old transport-type assertions captured in this ticket's implementation notes or removed by the test rewrite.",
   "id": "fz-hwn.19.1",
   "labels": [],
   "parent": "fz-hwn.19",
   "priority": 1,
   "status": "open",
-  "title": "Transport spine: pin executable transport contracts before the cutover",
+  "title": "Transport spine: pin ShapeId/LaneId transport contracts before the cutover",
   "type": "task",
-  "updated_at": "2026-06-15T19:40:57Z"
+  "updated_at": "2026-06-15T19:56:31Z"
 }
