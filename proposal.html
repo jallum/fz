@@ -228,6 +228,8 @@ SemanticClosed(root)
 
 <p>The exact Rust names can differ. The important property is that shared structure lives in descriptor interners and root-specific validity/details live in plan tables.</p>
 
+<p>Implementation status after <code>fz-hwn.20.2</code>: <code>src/compiler2/transport.rs</code> defines the root-independent ids, descriptors, transport symbols, <code>TransportPosition</code>, <code>TransportInterners</code>, and <code>TransportStore</code>. <code>World</code> owns one <code>TransportStore</code>. No materialization, backend, native, or codegen consumer reads these ids yet, and no old <code>Trash*</code> layout is translated into descriptors.</p>
+
 <pre>
 TransportStore {
   interners: TransportInterners,

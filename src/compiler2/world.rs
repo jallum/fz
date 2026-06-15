@@ -55,6 +55,7 @@ use super::source::{
     QuotedLexicalContext, QuotedLexicalContextKind, QuotedSourceBuilder, QuotedSourceError, QuotedSourceMetadata,
     QuotedSourceRoot,
 };
+use super::transport::TransportStore;
 use super::typedef::{TypeDef, TypeDefMap};
 use super::types::{ClosureTarget, MapKey, Ty, Types};
 use crate::ir_interp::AnyValue as RuntimeValue;
@@ -152,6 +153,7 @@ pub struct World<'a> {
     macro_roots: HashMap<FunctionId, RootId>,
     namespaces: NamespaceStore,
     types: Types,
+    transport: TransportStore,
     runtime_prelude: CodeId,
     runtime_modules: HashMap<ModuleId, RuntimeModuleCode>,
     reported_unresolved: HashSet<UnresolvedIssueKey>,
@@ -170,6 +172,7 @@ impl std::fmt::Debug for World<'_> {
             .field("bodies", &self.bodies)
             .field("roots", &self.roots)
             .field("namespaces", &self.namespaces)
+            .field("transport", &self.transport)
             .field("runtime_prelude", &self.runtime_prelude)
             .field("runtime_modules", &self.runtime_modules)
             .field("work_graph", &self.work_graph)
@@ -211,6 +214,7 @@ impl<'a> World<'a> {
             macro_roots: HashMap::new(),
             namespaces: NamespaceStore::new(),
             types: Types::new(),
+            transport: TransportStore::new(),
             runtime_prelude: CodeId::ZERO,
             runtime_modules: HashMap::new(),
             reported_unresolved: HashSet::new(),
@@ -240,6 +244,14 @@ impl<'a> World<'a> {
 
     pub(crate) fn types_mut(&mut self) -> &mut Types {
         &mut self.types
+    }
+
+    pub fn transport(&self) -> &TransportStore {
+        &self.transport
+    }
+
+    pub fn transport_mut(&mut self) -> &mut TransportStore {
+        &mut self.transport
     }
 
     pub fn submit_code(&mut self, name: Option<String>, text: String) -> CodeId {

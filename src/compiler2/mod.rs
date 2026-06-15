@@ -32,6 +32,7 @@ mod source_diagnostics;
 mod source_publish;
 mod source_sugar;
 mod token_payload;
+pub mod transport;
 mod type_expr;
 mod typedef;
 mod types;

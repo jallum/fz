@@ -82,6 +82,12 @@ SemanticClosed(root) + settled RuntimeDemand
 The plan answers "what runtime structure moves at this seam?" exactly once.
 Backends answer "how do I emit this seam?" by reading facts from the plan.
 
+Implementation status after `fz-hwn.20.2`: `src/compiler2/transport.rs`
+defines the root-independent ids, descriptors, transport symbols,
+`TransportPosition`, `TransportInterners`, and `TransportStore`. `World` owns one
+`TransportStore`. No materialization, backend, native, or codegen consumer reads
+these ids yet, and no old `Trash*` layout is translated into descriptors.
+
 ## Required First Move
 
 Before any transport-spine or parallel-flow implementation work, rename the
