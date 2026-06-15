@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-15T20:55:31Z",
+  "description": "Goal\nAdd seam-specific representation facts to the independent TransportPlan without cutting native/codegen consumers over yet. This proves the model can answer how to emit a seam without making codegen derive shape locally.\n\nRequired facts\nRepresent function-entry lanes, block-param lanes, return delivery, continuation entry, tail-call, callable boundary, extern boundary, and first-class publication seams as facts keyed by ShapeId/LaneId/CallableId/BoundaryId plus an explicit seam id. Repr may differ by seam; for example a lane may be RawF64 for a function ABI and ValueRef for a block-param seam.\n\nNo-consumer rule\nThis ticket publishes facts and tests them. It does not add adapters that feed old codegen. Native/codegen remains on the old path until fz-hwn.19 consumes these facts and deletes the old derivations.\n\nSource rule\nFacts come from settled transport plan plus legitimate seam constraints. Do not call ArgRepr::from_ty or for_block_param_ty as transport authority for compiler2 lanes; if low-level helpers survive, they are implementation details behind the fact producer and must be covered by seam tests.\n\nChecks\nTelemetry exposes codegen seam fact counts by seam kind. Tests prove at least one type has different reprs on two seams without forking ShapeId/LaneId. rg confirms no old DeliveredShape/NativeDemandAbi compatibility bridge was added.",
+  "id": "fz-hwn.20.5",
+  "labels": [],
+  "parent": "fz-hwn.20",
+  "priority": 1,
+  "status": "open",
+  "title": "Transport flow graph: publish seam-specific codegen facts without consuming them",
+  "type": "task",
+  "updated_at": "2026-06-15T20:55:31Z"
+}
