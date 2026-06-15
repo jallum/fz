@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-15T19:26:35Z",
+  "description": "Goal\nReplace the remaining recursive transport-layout authority with one settled runtime transport spine: Shape = Nothing | Scalar(ScalarId) | Tuple(Vec\u003cShapeId\u003e) | Callable(CallableId). The spine is built once after runtime demand settles. All downstream ABI, boundary, native, interpreter, and codegen facts are table columns keyed by the spine ids.\n\nSignal\nNo stage below spine construction walks one transport vocabulary to emit another. Tests assert spine facts and fact-table projections, not RuntimeValueLayout/DeliveredShape copies. Quicksort tuple-field transport, direct callable returns/resumes, ignored values, escaped callables, opaque callable boundaries, backend interpreter parity, and native JIT all remain correct.\n\nStrategy\nWork data-model-up. First pin the current contracts, then introduce the spine and fact tables, then switch one seam at a time by deleting the old recursive model from that seam in the same commit. No compatibility bridge is committed. RuntimeValueLayout, DeliveredShape, RealizedValue layout trees, local repr derivation, and shape-recovery helpers are removal targets, not extension points.\n\nDesign rule\nThe only runtime shape authority after demand settles is the transport spine. Divergence is is_empty(return_ty), not a shape. ExecutableNeed stays the coarse pre-spine seed. CallableId is the callable identity in the spine; locality, capture lanes, first-class materialization, boundary boxing, and codegen lanes are facts keyed by CallableId.",
+  "id": "fz-hwn.19",
+  "labels": [],
+  "parent": "fz-hwn",
+  "priority": 1,
+  "status": "open",
+  "title": "Compiler2 transport spine: replace runtime layout translations with one stable shape authority",
+  "type": "epic",
+  "updated_at": "2026-06-15T19:26:35Z"
+}
