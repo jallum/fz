@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-15T18:00:21Z",
+  "description": "## Why\nThe internal runtime-transport shape {Omitted | scalar | TupleFields | DirectCallable} is re-encoded in three lockstep enums that differ only in leaf payload:\n- RuntimeDemand (Ignore | Value | TupleFields | Callable) -- what's needed\n- RuntimeValueLayout (Omitted | Value{ty,repr} | TupleFields | DirectCallable{fn, capture_lanes}) -- the settled plan\n- NativeLocalValue (Runtime(Var) | TupleFields | DirectCallable{fn, captures}) -- the realized binding (native.rs only)\n\nEvery variant must be mirrored across all three plus the derive/decode/encode maps -- a lockstep tax. The disease surfaced concretely: NativeLocalValue is MISSING the Omitted variant, so decode_runtime_value(Omitted) returns a bare FatalError. enum_count_list (Enum.count over a List) hits this: count's resume continuation captures `enumerable` with an Omitted layout (count_result ignores it), and native lowering cannot decode the Omitted capture.\n\nNativeLocalValue is pure redundancy: a realized value is fully described by its RuntimeValueLayout (the structure) + its flat Var lanes (the data). The TupleFields/Value/DirectCallable structure NativeLocalValue carries already lives in the layout. RuntimeValueLayout::DirectCallable was ALREADY de-over-modeled to flat capture_lanes (see the comment at its def); NativeLocalValue::DirectCallable kept the vestigial recursive Vec, filled only with flat Runtime leaves.\n\n## Decision\nRuntimeValueLayout is the single transport shape. Delete NativeLocalValue. Represent a realized value as (RuntimeValueLayout, flat Vec\u003cVar\u003e) -- a pairing, not a new shape. Omitted falls out for free: { layout: Omitted, lanes: [] }.\n\n## Scope (native.rs, ~40 refs, one file)\n- Define the realized-value pairing (layout + flat lanes); ValueEnv stores it.\n- Rewrite the maps against (layout, lanes):\n  - decode_runtime_value(layout, lanes) -\u003e realized; Omitted -\u003e empty lanes (the fix).\n  - encode_runtime_value(target_layout, realized) -\u003e emit lanes; Omitted -\u003e none (already handled on encode side).\n  - materialize_native_value(realized) -\u003e single Var (Value=lane0; TupleFields=box; DirectCallable=box; Omitted=genuine error).\n  - delete flatten_native_value_to_lanes (lanes are already flat).\n- Rewrite structural consumers against the layout: TupleField access (slice lanes by field layout), AssertTuple (no-op when layout is TupleFields{n}), DirectCallable build/use.\n\n## Out of scope\nRuntimeDemand (its Callable arm is a flat surface, genuinely different -- not a transport tree) and ReturnAbi/ExecutableNeed (legitimate boundary/key facts per outline.md). Leave them.\n\n## Done when\n- NativeLocalValue is gone; rg finds no refs.\n- enum_count_list_settles_to_int re-enabled and green.\n- Full lib suite green, zero warnings.",
+  "id": "fz-hwn.18",
+  "labels": [],
+  "parent": "fz-hwn",
+  "priority": 1,
+  "status": "open",
+  "title": "Collapse realized transport onto RuntimeValueLayout: delete NativeLocalValue",
+  "type": "task",
+  "updated_at": "2026-06-15T18:00:21Z"
+}
