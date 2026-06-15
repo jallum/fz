@@ -425,25 +425,42 @@ rg "TransportPlan\\(root\\)|root-scoped transport spine|codegen repr, not shape"
 
 <h3>10.3 Telemetry</h3>
 
-<p>Prefer event-level assertions over brittle dumps where the event expresses the invariant.</p>
+<p>Prefer event-level assertions over brittle dumps where the event expresses the invariant. The pending target is <code>src/compiler2/transport_contract_test.rs</code>: two tests pin the worked-example contract now, and one ignored test becomes the production-boundary assertion once real <code>TransportPlan</code> telemetry exists.</p>
 
 <pre>
-fz.compiler2.transport_spine.defined
 fz.compiler2.transport_flow.defined
 
 measurements:
   root_id
+  semantic_revision
   executable_count
   transport_position_count
-  shape_count
-  nothing_count
-  lane_count
-  tuple_count
-  callable_count
-  boundary_count
-  codegen_seam_fact_count
+  shape_descriptor_count
+  lane_descriptor_count
+  callable_descriptor_count
+  boundary_descriptor_count
+  nothing_shape_count
+  tuple_shape_count
+  callable_shape_count
+  direct_callable_count
   first_class_callable_count
+  boundary_publication_count
+  codegen_seam_fact_count
 </pre>
+
+<pre>
+metadata:
+  entry_executable_symbol
+  executable_membership
+  transport_positions
+  shape_descriptors
+  lane_descriptors
+  callable_facts
+  boundary_facts
+  seam_facts
+</pre>
+
+<p>The event is emitted by clean transport-flow derivation, not by old materialization. Descriptor metadata must not contain root-relative evidence such as <code>RootId</code>, <code>ValueId</code>, callsites, or resume points. Root-scoped evidence belongs in <code>TransportPlan</code> metadata: membership, positions, demand/use obligations, boundary publication, and seam facts. The event must not serialize <code>Trash*</code> layout facts or <code>ArgRepr</code>-from-type decisions as authority.</p>
 
 <h2 id="tickets">11. Ticket DAG</h2>
 

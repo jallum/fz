@@ -159,6 +159,8 @@ mod source_test;
 #[cfg(test)]
 mod telemetry_dump_test;
 #[cfg(test)]
+mod transport_contract_test;
+#[cfg(test)]
 mod type_expr_test;
 #[cfg(test)]
 mod world_test;

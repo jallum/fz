@@ -375,6 +375,59 @@ Resume payload   -> same ShapeId as producing return
 Codegen repr     -> seam fact, not shape
 ```
 
+## Output Contract Signal
+
+The contract test for this model lives in
+`src/compiler2/transport_contract_test.rs`. Until production derivation exists,
+it pins the worked example as expected facts and leaves one ignored
+production-boundary test that `fz-hwn.20.3` must enable against real telemetry.
+
+Plan construction emits exactly one output signal:
+
+```
+fz.compiler2.transport_flow.defined
+```
+
+Measurements:
+
+```
+root_id
+semantic_revision
+executable_count
+transport_position_count
+shape_descriptor_count
+lane_descriptor_count
+callable_descriptor_count
+boundary_descriptor_count
+nothing_shape_count
+tuple_shape_count
+callable_shape_count
+direct_callable_count
+first_class_callable_count
+boundary_publication_count
+codegen_seam_fact_count
+```
+
+Metadata:
+
+```
+entry_executable_symbol
+executable_membership
+transport_positions
+shape_descriptors
+lane_descriptors
+callable_facts
+boundary_facts
+seam_facts
+```
+
+The event is emitted by clean transport-flow derivation, not by old
+materialization. Descriptor metadata must not contain root-relative evidence
+such as `RootId`, `ValueId`, callsites, or resume points. Root-scoped evidence
+belongs in `TransportPlan` metadata: membership, positions, demand/use
+obligations, boundary publication, and seam facts. The event must not serialize
+`Trash*` layout facts or `ArgRepr`-from-type decisions as authority.
+
 The minimality check is mechanical:
 
 - without `Nothing`, ignored slots need a fake payload
