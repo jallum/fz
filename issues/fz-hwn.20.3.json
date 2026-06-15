@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-hwn.20.2"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-hwn.20.4"
+  ],
   "created": "2026-06-15T20:55:12Z",
   "description": "Goal\nBuild TransportPlan(root) independently from SemanticClosed(root), settled RuntimeDemand, types, lowered flow evidence, and callsite/capture facts. The old layout path stays alive for behavior, but the new plan must not depend on it.\n\nRequired facts\nTransportPlan owns root closure membership, TransportPosition -\u003e ShapeId for executable inputs, returns, delivered resumes, entry captures, body values, call args, and continuation payload positions. RuntimeDemand::Ignore becomes Shape::Nothing exactly once here. Producer return and consumer resume positions must point to the same ShapeId for the same delivered value. Local ignored-use facts may drop lanes later, but cannot rewrite the received shape.\n\nSource rule\nDerive from SemanticClosure.runtime_demands, ActivationAnalysis.value_types, lowered bodies, callsite summaries, executable frontier, and flow edges. Do not read RuntimeValueLayout, RuntimeInputLayout, ReturnAbi, DeliveredShape, NativeDemandAbi, RealizedValue, or codegen surfaces.\n\nTelemetry\nEmit transport-flow construction counts: roots, executable symbols, transport positions, shape nodes, Nothing nodes, lanes, tuple nodes, callable nodes, and producer/resume shared-shape assertions.\n\nChecks\nThe worked-example test from fz-hwn.20.1 passes against the real plan. Targeted fixtures prove ignored values, tuple-field return/resume, and direct-callable return/resume positions. cargo check --all-targets.",
   "id": "fz-hwn.20.3",
