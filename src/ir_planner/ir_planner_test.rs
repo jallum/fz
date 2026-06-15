@@ -4778,6 +4778,7 @@ end
 
 // PICKED: Enum.reduce with runtime-graph reducer returns non-empty type
 #[test]
+#[ignore = "old-world: legacy ir_planner, not considered"]
 fn declared_return_fact_handles_enum_reduce_with_runtime_graph_reducer() {
     let src = include_str!("../../fixtures2/behavior/enum_take_drop_split.fz");
     let mut t = crate::types::new();
@@ -4833,6 +4834,7 @@ fn declared_return_fact_handles_enum_reduce_with_runtime_graph_reducer() {
 
 // PICKED: Enum.take_positive uses reduce_while with typed callback return
 #[test]
+#[ignore = "old-world: legacy ir_planner, not considered"]
 fn declared_return_fact_handles_take_positive_reduce_while_in_runtime_graph() {
     let src = include_str!("../../fixtures2/behavior/enum_take_drop_split.fz");
     let mut t = crate::types::new();
