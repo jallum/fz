@@ -1,7 +1,8 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-hwn.20.4"
+    "fz-hwn.20.4",
+    "fz-hwn.20.7"
   ],
   "blocks": [
     "fz-hwn.20.6"
@@ -15,5 +16,5 @@
   "status": "open",
   "title": "Transport flow graph: publish seam-specific codegen facts without consuming them",
   "type": "task",
-  "updated_at": "2026-06-15T20:55:50Z"
+  "updated_at": "2026-06-15T22:57:57Z"
 }
