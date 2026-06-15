@@ -42,7 +42,7 @@ pub(crate) fn compile_fn<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
     let closure_target = (is_native && !is_cont_fn)
         .then(|| env.surface.closure_target(f.id))
         .flatten();
-    let demand_abi = NativeDemandAbi::new(native_body);
+    let demand_abi = TrashNativeDemandAbi::new(native_body);
     // When this fn is never invoked from any fz IR site (not a direct
     // callee, not a continuation, not a closure target), it can only
     // enter via the trampoline entry, which writes null into the frame's
@@ -137,7 +137,7 @@ pub(crate) fn compile_fn<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
 
     {
         let (if_only, all_used) = classify_var_uses(f);
-        let (tuple_return_fields, skipped_tuple_return_vars) = tuple_return_delivery_plan(f, native_body);
+        let (tuple_return_fields, skipped_tuple_return_vars) = trash_tuple_return_delivery_plan(f, native_body);
         body.cache.if_only_conds = if_only.into_iter().map(|v| v.0).collect();
         body.cache.used_vars = all_used.into_iter().map(|v| v.0).collect();
         body.cache.tuple_field_params = tuple_field_params;
@@ -276,8 +276,8 @@ fn reusable_cons_sources(f: &FnIr) -> HashMap<u32, Var> {
         .collect()
 }
 
-fn tuple_return_delivery_plan(f: &FnIr, native_body: &NativeBody) -> (HashMap<u32, Vec<Var>>, HashSet<u32>) {
-    let arity = match NativeDemandAbi::new(native_body).tuple_field_arity() {
+fn trash_tuple_return_delivery_plan(f: &FnIr, native_body: &NativeBody) -> (HashMap<u32, Vec<Var>>, HashSet<u32>) {
+    let arity = match TrashNativeDemandAbi::new(native_body).tuple_field_arity() {
         Some(arity) => arity,
         None => return (HashMap::new(), HashSet::new()),
     };

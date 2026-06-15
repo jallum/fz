@@ -21,8 +21,8 @@ use crate::parser::lexer::Tok;
 use super::super::artifact::{
     AbiReadyCallEdge, AbiReadyExecutable, AbiReadyProgram, AbiValueRepr, CallTarget, CallableEntry, EffectSummary,
     EmissionReadyCallEdge, EmissionReadyCallableEntry, EmissionReadyExecutable, EmissionReadyProgram,
-    ExecutableDispatch, MaterializedCallEdge, MaterializedExecutable, MaterializedProgram, ReturnAbi,
-    RuntimeInputLayout, RuntimeLane, RuntimeParamLayout, RuntimeValueLayout,
+    ExecutableDispatch, MaterializedCallEdge, MaterializedExecutable, MaterializedProgram, TrashReturnAbi,
+    TrashRuntimeInputLayout, TrashRuntimeLane, TrashRuntimeParamLayout, TrashRuntimeValueLayout,
 };
 use super::super::body::{
     CallArg, CallSiteId, ControlDestination, ControlDispatch, ControlEntryId, ControlEntryOrigin, DispatchBindings,
@@ -115,8 +115,8 @@ pub(super) fn materialize_root(world: &mut World<'_>, root_id: RootId) -> Result
                     .get(executable)
                     .cloned()
                     .expect("settled semantic closure should have runtime demand for every executable"),
-                runtime_params: RuntimeParamLayout::from_inputs(Vec::new()),
-                return_layout: RuntimeValueLayout::Omitted,
+                runtime_params: TrashRuntimeParamLayout::from_inputs(Vec::new()),
+                return_layout: TrashRuntimeValueLayout::Omitted,
                 resume_layouts: Vec::new(),
                 entry_capture_layouts: Vec::new(),
                 value_types: analysis.value_types,
@@ -220,10 +220,10 @@ struct ExecutableAbiPlan {
 }
 
 struct ExecutableRuntimeTransport {
-    runtime_params: RuntimeParamLayout,
-    return_layout: RuntimeValueLayout,
-    resume_layouts: Vec<Option<RuntimeValueLayout>>,
-    entry_capture_layouts: Vec<Vec<RuntimeValueLayout>>,
+    runtime_params: TrashRuntimeParamLayout,
+    return_layout: TrashRuntimeValueLayout,
+    resume_layouts: Vec<Option<TrashRuntimeValueLayout>>,
+    entry_capture_layouts: Vec<Vec<TrashRuntimeValueLayout>>,
 }
 
 struct PrunedLoweredBody {
@@ -1319,7 +1319,7 @@ struct CallableWitnessResolver<'a> {
     value_memo: Vec<Vec<WitnessMemo<CallableWitnessState>>>,
     resume_memo: Vec<Vec<WitnessMemo<CallableWitnessState>>>,
     entry_return_memo: Vec<Vec<WitnessMemo<CallableWitnessState>>>,
-    local_layout_memo: Vec<WitnessMemo<RuntimeValueLayout>>,
+    local_layout_memo: Vec<WitnessMemo<TrashRuntimeValueLayout>>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1412,7 +1412,7 @@ fn derive_runtime_transports(
                         .get(semantic_index)
                         .cloned()
                         .unwrap_or_default();
-                    runtime_input_layout_from_demand(
+                    trash_runtime_input_layout_from_demand(
                         world,
                         &mut resolver,
                         exec,
@@ -1423,7 +1423,7 @@ fn derive_runtime_transports(
                     )
                 })
                 .collect::<Vec<_>>();
-            let return_layout = resolver.runtime_value_layout_from_demand(
+            let return_layout = resolver.trash_runtime_value_layout_from_demand(
                 world,
                 exec,
                 executable.return_ty,
@@ -1457,7 +1457,7 @@ fn derive_runtime_transports(
                                             .unwrap_or_default()
                                     });
                             let witness = resolver.value_witness(exec, value);
-                            Some(resolver.runtime_value_layout_from_demand(world, exec, ty, &demand, Some(&witness)))
+                            Some(resolver.trash_runtime_value_layout_from_demand(world, exec, ty, &demand, Some(&witness)))
                         })
                         .collect()
                 }
@@ -1494,7 +1494,7 @@ fn derive_runtime_transports(
                                     .copied()
                                     .unwrap_or_else(|| world.types_mut().any());
                                 let witness = resolver.value_witness(exec, capture);
-                                resolver.runtime_value_layout_from_demand(world, exec, ty, &demand, Some(&witness))
+                                resolver.trash_runtime_value_layout_from_demand(world, exec, ty, &demand, Some(&witness))
                             })
                             .collect::<Vec<_>>()
                     })
@@ -1504,7 +1504,7 @@ fn derive_runtime_transports(
             (
                 key.clone(),
                 ExecutableRuntimeTransport {
-                    runtime_params: RuntimeParamLayout::from_inputs(inputs),
+                    runtime_params: TrashRuntimeParamLayout::from_inputs(inputs),
                     return_layout,
                     resume_layouts,
                     entry_capture_layouts,
@@ -1514,7 +1514,7 @@ fn derive_runtime_transports(
         .collect()
 }
 
-fn runtime_input_layout_from_demand(
+fn trash_runtime_input_layout_from_demand(
     world: &mut World<'_>,
     resolver: &mut CallableWitnessResolver<'_>,
     exec: usize,
@@ -1522,10 +1522,10 @@ fn runtime_input_layout_from_demand(
     ty: Ty,
     demand: &super::super::semantic::RuntimeDemand,
     witness: Option<&CallableWitnessState>,
-) -> RuntimeInputLayout {
-    RuntimeInputLayout {
+) -> TrashRuntimeInputLayout {
+    TrashRuntimeInputLayout {
         semantic_index,
-        layout: resolver.runtime_value_layout_from_demand(world, exec, ty, demand, witness),
+        layout: resolver.trash_runtime_value_layout_from_demand(world, exec, ty, demand, witness),
     }
 }
 
@@ -2066,42 +2066,42 @@ impl<'a> CallableWitnessResolver<'a> {
         }
     }
 
-    fn runtime_value_layout_from_demand(
+    fn trash_runtime_value_layout_from_demand(
         &mut self,
         world: &mut World<'_>,
         _exec: usize,
         ty: Ty,
         demand: &super::super::semantic::RuntimeDemand,
         witness: Option<&CallableWitnessState>,
-    ) -> RuntimeValueLayout {
+    ) -> TrashRuntimeValueLayout {
         if world.types().is_empty(&ty) {
-            return RuntimeValueLayout::Omitted;
+            return TrashRuntimeValueLayout::Omitted;
         }
         match demand {
-            super::super::semantic::RuntimeDemand::Ignore => RuntimeValueLayout::Omitted,
-            super::super::semantic::RuntimeDemand::Value => RuntimeValueLayout::Value {
+            super::super::semantic::RuntimeDemand::Ignore => TrashRuntimeValueLayout::Omitted,
+            super::super::semantic::RuntimeDemand::Value => TrashRuntimeValueLayout::Value {
                 ty,
                 repr: abi_value_repr(world, ty),
             },
-            super::super::semantic::RuntimeDemand::TupleFields(fields) => RuntimeValueLayout::TupleFields {
+            super::super::semantic::RuntimeDemand::TupleFields(fields) => TrashRuntimeValueLayout::TupleFields {
                 fields: tuple_field_tys(world, ty, fields.len())
                     .into_iter()
                     .zip(fields.iter())
                     .map(|(field_ty, field_demand)| {
-                        self.runtime_value_layout_from_demand(world, _exec, field_ty, field_demand, None)
+                        self.trash_runtime_value_layout_from_demand(world, _exec, field_ty, field_demand, None)
                     })
                     .collect(),
             },
             super::super::semantic::RuntimeDemand::Callable(callable) => {
                 if callable.opaque || callable.escape || callable.resolved.is_empty() {
-                    return RuntimeValueLayout::Value {
+                    return TrashRuntimeValueLayout::Value {
                         ty,
                         repr: AbiValueRepr::ValueRef,
                     };
                 }
                 match witness {
-                    Some(CallableWitnessState::Exact(local_id)) => self.local_callable_layout(world, *local_id),
-                    _ => RuntimeValueLayout::Value {
+                    Some(CallableWitnessState::Exact(local_id)) => self.trash_local_callable_layout(world, *local_id),
+                    _ => TrashRuntimeValueLayout::Value {
                         ty,
                         repr: AbiValueRepr::ValueRef,
                     },
@@ -2118,7 +2118,11 @@ impl<'a> CallableWitnessResolver<'a> {
     /// (a lambda's captures are bound before the lambda), so re-entry is
     /// impossible; we treat it as an invariant violation rather than silently
     /// collapsing to a ValueRef as the old recursive model did.
-    fn local_callable_layout(&mut self, world: &mut World<'_>, local_id: LocalCallableId) -> RuntimeValueLayout {
+    fn trash_local_callable_layout(
+        &mut self,
+        world: &mut World<'_>,
+        local_id: LocalCallableId,
+    ) -> TrashRuntimeValueLayout {
         match self.local_layout_memo.get(local_id.0) {
             Some(WitnessMemo::Ready(layout)) => return layout.clone(),
             Some(WitnessMemo::Pending) => {
@@ -2140,13 +2144,18 @@ impl<'a> CallableWitnessResolver<'a> {
                 .unwrap_or_default();
             let capture_ty = fact.ty.unwrap_or_else(|| world.types_mut().any());
             let capture_witness = self.value_witness(exec, capture);
-            let layout =
-                self.runtime_value_layout_from_demand(world, exec, capture_ty, &fact.demand, Some(&capture_witness));
+            let layout = self.trash_runtime_value_layout_from_demand(
+                world,
+                exec,
+                capture_ty,
+                &fact.demand,
+                Some(&capture_witness),
+            );
             for (ty, repr) in layout.lane_tys().into_iter().zip(layout.abi_reprs()) {
-                capture_lanes.push(RuntimeLane { ty, repr });
+                capture_lanes.push(TrashRuntimeLane { ty, repr });
             }
         }
-        let layout = RuntimeValueLayout::DirectCallable {
+        let layout = TrashRuntimeValueLayout::DirectCallable {
             function,
             capture_lanes,
         };
@@ -2204,7 +2213,7 @@ fn build_executable_abi_plan(
                 let Some(layout) = runtime_params.semantic_input(index) else {
                     continue;
                 };
-                if let RuntimeValueLayout::Value { repr, .. } = layout.value_layout() {
+                if let TrashRuntimeValueLayout::Value { repr, .. } = layout.value_layout() {
                     value_reprs.insert(value, *repr);
                 }
             }
@@ -2513,19 +2522,23 @@ fn step_local_callable_value(step: &LoweredStep) -> Option<ValueId> {
 }
 
 /// Projects a true callable boundary's return ABI from the target's settled
-/// return transport. This is the only place ReturnAbi is produced: a boundary
+/// return transport. This is the only place TrashReturnAbi is produced: a boundary
 /// is a publication contract for a first-class callable, so a structural return
 /// (tuple fields, direct callable) boxes to one ValueRef at the boundary, and a
 /// diverging target (empty return type) never returns.
-fn boundary_return_abi(world: &mut World<'_>, return_ty: Ty, return_layout: &RuntimeValueLayout) -> ReturnAbi {
+fn trash_boundary_return_abi(
+    world: &mut World<'_>,
+    return_ty: Ty,
+    return_layout: &TrashRuntimeValueLayout,
+) -> TrashReturnAbi {
     if world.types().is_empty(&return_ty) {
-        return ReturnAbi::Never;
+        return TrashReturnAbi::Never;
     }
     match return_layout {
-        RuntimeValueLayout::Value { repr, .. } => ReturnAbi::Value(*repr),
-        RuntimeValueLayout::Omitted
-        | RuntimeValueLayout::TupleFields { .. }
-        | RuntimeValueLayout::DirectCallable { .. } => ReturnAbi::Value(AbiValueRepr::ValueRef),
+        TrashRuntimeValueLayout::Value { repr, .. } => TrashReturnAbi::Value(*repr),
+        TrashRuntimeValueLayout::Omitted
+        | TrashRuntimeValueLayout::TupleFields { .. }
+        | TrashRuntimeValueLayout::DirectCallable { .. } => TrashReturnAbi::Value(AbiValueRepr::ValueRef),
     }
 }
 
@@ -2580,7 +2593,11 @@ fn resolve_callable_entries_for_type(
                 capture_reprs,
                 arg_reprs,
                 return_ty: target_executable.return_ty,
-                return_abi: boundary_return_abi(world, target_executable.return_ty, &target_executable.return_layout),
+                return_abi: trash_boundary_return_abi(
+                    world,
+                    target_executable.return_ty,
+                    &target_executable.return_layout,
+                ),
             });
         }
         if !matched {

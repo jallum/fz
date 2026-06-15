@@ -153,7 +153,7 @@ pub(crate) fn compile_fn<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
     {
         let (if_only, all_used) = classify_var_uses(f);
         let (tuple_return_fields, skipped_tuple_return_vars) =
-            tuple_return_delivery_plan(f, env.body_key(this_spec_id), is_cont_fn);
+            trash_tuple_return_delivery_plan(f, env.body_key(this_spec_id), is_cont_fn);
         body.cache.if_only_conds = if_only.into_iter().map(|v| v.0).collect();
         body.cache.used_vars = all_used.into_iter().map(|v| v.0).collect();
         body.cache.tuple_field_params = tuple_field_params;
@@ -309,7 +309,7 @@ fn reusable_cons_sources(f: &FnIr) -> HashMap<u32, Var> {
         .collect()
 }
 
-fn tuple_return_delivery_plan(
+fn trash_tuple_return_delivery_plan(
     f: &FnIr,
     spec_key: &SpecKey,
     is_cont_fn: bool,

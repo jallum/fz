@@ -133,7 +133,7 @@ fn build_fn_sigs(module: &Module, surface: &NativeCodegenSurface<'_>) -> Vec<Sig
             Some(body_slot) => {
                 let f = &module.fns[body_slot.fn_idx];
                 let is_native = surface.native_abi_fns.contains(&f.id);
-                let demand_abi = NativeDemandAbi::new(body_slot.native_body);
+                let demand_abi = TrashNativeDemandAbi::new(body_slot.native_body);
                 build_fn_signature(
                     &surface.param_reprs[body_slot.codegen_id as usize],
                     is_native,
@@ -184,10 +184,10 @@ fn collect_static_closure_targets(
             .get(&boundary_id)
             .expect("zero-cap closure boundary must have a callable-boundary FuncId");
         let halt_kind = match &boundary.return_shape {
-            DeliveredShape::Never => ArgRepr::ValueRef.halt_kind(),
-            DeliveredShape::Omitted => ArgRepr::ValueRef.halt_kind(),
-            DeliveredShape::Value(repr) => repr.halt_kind(),
-            DeliveredShape::TupleFields(_) => ArgRepr::ValueRef.halt_kind(),
+            TrashDeliveredShape::Never => ArgRepr::ValueRef.halt_kind(),
+            TrashDeliveredShape::Omitted => ArgRepr::ValueRef.halt_kind(),
+            TrashDeliveredShape::Value(repr) => repr.halt_kind(),
+            TrashDeliveredShape::TupleFields(_) => ArgRepr::ValueRef.halt_kind(),
         };
         targets.insert(boundary_id, (boundary.target_fn.0, body_fid, halt_kind));
     }
@@ -281,14 +281,14 @@ fn build_boundary_return_adapter_signature(source: ArgRepr) -> Signature {
     sig
 }
 
-fn delivered_shape(surface: &NativeCodegenSurface<'_>, body_sid: u32, _is_cont_fn: bool) -> DeliveredShape {
+fn delivered_shape(surface: &NativeCodegenSurface<'_>, body_sid: u32, _is_cont_fn: bool) -> TrashDeliveredShape {
     surface.return_shapes[body_sid as usize].clone()
 }
 
 fn collect_boundary_return_adapter_pairs(surface: &NativeCodegenSurface<'_>) -> BTreeSet<(ArgRepr, ArgRepr)> {
     let mut pairs = BTreeSet::new();
     for boundary in surface.callable_boundaries.values() {
-        if let DeliveredShape::Value(source) = boundary.return_shape
+        if let TrashDeliveredShape::Value(source) = boundary.return_shape
             && source != ArgRepr::ValueRef
         {
             pairs.insert((source, ArgRepr::ValueRef));
@@ -317,7 +317,7 @@ fn collect_boundary_return_adapter_pairs(surface: &NativeCodegenSurface<'_>) -> 
             };
             let callee_is_cont = surface.cont_fns.contains(callee);
             let callee_shape = delivered_shape(surface, callee_sid, callee_is_cont);
-            if let (DeliveredShape::Value(callee_repr), DeliveredShape::Value(caller_repr)) =
+            if let (TrashDeliveredShape::Value(callee_repr), TrashDeliveredShape::Value(caller_repr)) =
                 (&callee_shape, &caller_shape)
                 && callee_repr != caller_repr
             {
@@ -417,11 +417,11 @@ fn emit_callable_boundary_bodies<M: cranelift_module::Module>(
             .ok_or_else(|| CodegenError::new(format!("missing callable-boundary FuncId for boundary {boundary_id}")))?;
         let arg_reprs = boundary.arg_reprs.as_slice();
         let return_adapter_id = match &boundary.return_shape {
-            DeliveredShape::Never
-            | DeliveredShape::Omitted
-            | DeliveredShape::Value(ArgRepr::ValueRef)
-            | DeliveredShape::TupleFields(_) => None,
-            DeliveredShape::Value(return_repr) => {
+            TrashDeliveredShape::Never
+            | TrashDeliveredShape::Omitted
+            | TrashDeliveredShape::Value(ArgRepr::ValueRef)
+            | TrashDeliveredShape::TupleFields(_) => None,
+            TrashDeliveredShape::Value(return_repr) => {
                 Some(return_adapters.id_for(*return_repr, ArgRepr::ValueRef).ok_or_else(|| {
                     CodegenError::new(format!(
                         "missing callable return adapter for boundary {boundary_id} return {}",
@@ -1063,10 +1063,10 @@ fn build_codegen_return_repr(body: &crate::compiler2::NativeBody) -> ArgRepr {
     // (omitted, tuple fields, direct-callable lanes) returns through the ref
     // register. Divergence does not change the register repr.
     match &body.return_layout {
-        crate::compiler2::RuntimeValueLayout::Value { repr, .. } => arg_repr_from_compiler2(*repr),
-        crate::compiler2::RuntimeValueLayout::Omitted
-        | crate::compiler2::RuntimeValueLayout::TupleFields { .. }
-        | crate::compiler2::RuntimeValueLayout::DirectCallable { .. } => ArgRepr::ValueRef,
+        crate::compiler2::TrashRuntimeValueLayout::Value { repr, .. } => arg_repr_from_compiler2(*repr),
+        crate::compiler2::TrashRuntimeValueLayout::Omitted
+        | crate::compiler2::TrashRuntimeValueLayout::TupleFields { .. }
+        | crate::compiler2::TrashRuntimeValueLayout::DirectCallable { .. } => ArgRepr::ValueRef,
     }
 }
 
@@ -1107,7 +1107,7 @@ fn build_codegen_callable_boundaries<T: Types<Ty = Ty> + ClosureTypes>(
                 .copied()
                 .map(arg_repr_from_compiler2)
                 .collect(),
-            return_shape: delivered_shape_from_return_abi(&boundary.return_abi),
+            return_shape: trash_delivered_shape_from_return_abi(&boundary.return_abi),
         };
         if let Some(previous) = boundaries.insert(boundary_id, next.clone()) {
             debug_assert_eq!(previous, next);
@@ -1119,7 +1119,7 @@ fn build_codegen_callable_boundaries<T: Types<Ty = Ty> + ClosureTypes>(
 fn build_codegen_closure_targets(
     program: &crate::compiler2::NativeProgram,
     param_reprs: &[Vec<ArgRepr>],
-    return_shapes: &[DeliveredShape],
+    return_shapes: &[TrashDeliveredShape],
 ) -> HashMap<FnId, NativeClosureTargetSurface> {
     let mut targets = HashMap::new();
     for boundary in &program.callable_boundaries {
@@ -1176,7 +1176,7 @@ fn build_codegen_closure_targets(
 fn closure_target_surface_from_body(
     program: &crate::compiler2::NativeProgram,
     param_reprs: &[Vec<ArgRepr>],
-    return_shapes: &[DeliveredShape],
+    return_shapes: &[TrashDeliveredShape],
     target_fn: FnId,
     capture_count: usize,
 ) -> NativeClosureTargetSurface {
@@ -1285,7 +1285,7 @@ fn prepare_native_codegen_surface_from_native_program<'a>(
     let mut return_shapes = Vec::with_capacity(max_fn_id + 1);
     param_reprs.resize(max_fn_id + 1, Vec::new());
     return_reprs.resize(max_fn_id + 1, ArgRepr::ValueRef);
-    return_shapes.resize(max_fn_id + 1, DeliveredShape::Omitted);
+    return_shapes.resize(max_fn_id + 1, TrashDeliveredShape::Omitted);
 
     for body in &program.bodies {
         let codegen_id = body.fn_id.0 as usize;
@@ -1305,7 +1305,7 @@ fn prepare_native_codegen_surface_from_native_program<'a>(
         });
         param_reprs[codegen_id] = body.param_reprs.iter().copied().map(arg_repr_from_compiler2).collect();
         return_reprs[codegen_id] = build_codegen_return_repr(body);
-        return_shapes[codegen_id] = delivered_shape_from_layout(t.is_empty(&body.return_ty), &body.return_layout);
+        return_shapes[codegen_id] = trash_delivered_shape_from_layout(t.is_empty(&body.return_ty), &body.return_layout);
     }
 
     let callable_boundaries = build_codegen_callable_boundaries(t, program);

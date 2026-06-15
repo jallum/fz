@@ -2,8 +2,8 @@ use std::collections::HashMap;
 
 use super::identity::{FunctionMap, ModuleId, RootEntry, RootKind, RootMap};
 use super::{
-    AbiValueRepr, ActivationKey, ExecutableKey, ExecutableNeed, FunctionId, ReturnAbi, RootId, RuntimeValueLayout,
-    Types,
+    AbiValueRepr, ActivationKey, ExecutableKey, ExecutableNeed, FunctionId, RootId, TrashReturnAbi,
+    TrashRuntimeValueLayout, Types,
 };
 use crate::compiler2::artifact::{
     EffectSummary, NativeBody, NativeBodyOrigin, NativeCallableBoundary, NativeCallableBoundaryId, NativeEntryAbi,
@@ -79,7 +79,7 @@ fn compiler2_native_program_contract_keeps_codegen_facts_on_body_records() {
             entry_abi: NativeEntryAbi::Direct,
             param_reprs: vec![AbiValueRepr::RawInt],
             return_ty: int,
-            return_layout: RuntimeValueLayout::Value {
+            return_layout: TrashRuntimeValueLayout::Value {
                 ty: int,
                 repr: AbiValueRepr::RawInt,
             },
@@ -97,7 +97,7 @@ fn compiler2_native_program_contract_keeps_codegen_facts_on_body_records() {
             capture_reprs: Vec::new(),
             arg_reprs: vec![AbiValueRepr::RawInt],
             return_ty: int,
-            return_abi: ReturnAbi::Value(AbiValueRepr::RawInt),
+            return_abi: TrashReturnAbi::Value(AbiValueRepr::RawInt),
         }],
     };
 
@@ -217,7 +217,7 @@ fn compiler2_native_program_contract_maps_old_native_inputs_to_local_facts() {
                 entry_abi: NativeEntryAbi::Direct,
                 param_reprs: vec![AbiValueRepr::RawInt],
                 return_ty: int,
-                return_layout: RuntimeValueLayout::Value {
+                return_layout: TrashRuntimeValueLayout::Value {
                     ty: int,
                     repr: AbiValueRepr::RawInt,
                 },
@@ -235,7 +235,7 @@ fn compiler2_native_program_contract_maps_old_native_inputs_to_local_facts() {
                 entry_abi: NativeEntryAbi::Continuation { extra_params: 1 },
                 param_reprs: vec![AbiValueRepr::ValueRef],
                 return_ty: int,
-                return_layout: RuntimeValueLayout::Value {
+                return_layout: TrashRuntimeValueLayout::Value {
                     ty: int,
                     repr: AbiValueRepr::ValueRef,
                 },
@@ -254,7 +254,7 @@ fn compiler2_native_program_contract_maps_old_native_inputs_to_local_facts() {
             capture_reprs: Vec::new(),
             arg_reprs: vec![AbiValueRepr::RawInt],
             return_ty: int,
-            return_abi: ReturnAbi::Value(AbiValueRepr::RawInt),
+            return_abi: TrashReturnAbi::Value(AbiValueRepr::RawInt),
         }],
     };
 
@@ -273,7 +273,7 @@ fn compiler2_native_program_contract_maps_old_native_inputs_to_local_facts() {
     );
     assert_eq!(
         program.bodies[0].return_layout,
-        RuntimeValueLayout::Value {
+        TrashRuntimeValueLayout::Value {
             ty: int,
             repr: AbiValueRepr::RawInt
         },
@@ -378,7 +378,7 @@ fn compiler2_native_program_contract_treats_old_extern_semantics_as_cleanup_not_
             entry_abi: NativeEntryAbi::Direct,
             param_reprs: vec![AbiValueRepr::RawInt],
             return_ty: int,
-            return_layout: RuntimeValueLayout::Value {
+            return_layout: TrashRuntimeValueLayout::Value {
                 ty: int,
                 repr: AbiValueRepr::RawInt,
             },

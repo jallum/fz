@@ -68,10 +68,10 @@ pub struct MaterializedExecutable {
     pub entry_dispatch: Option<ExecutableDispatch>,
     pub return_ty: Ty,
     pub runtime_demand: ExecutableRuntimeDemand,
-    pub runtime_params: RuntimeParamLayout,
-    pub return_layout: RuntimeValueLayout,
-    pub resume_layouts: Vec<Option<RuntimeValueLayout>>,
-    pub entry_capture_layouts: Vec<Vec<RuntimeValueLayout>>,
+    pub runtime_params: TrashRuntimeParamLayout,
+    pub return_layout: TrashRuntimeValueLayout,
+    pub resume_layouts: Vec<Option<TrashRuntimeValueLayout>>,
+    pub entry_capture_layouts: Vec<Vec<TrashRuntimeValueLayout>>,
     pub value_types: HashMap<ValueId, Ty>,
     pub effects: EffectSummary,
     pub body: LoweredBody,
@@ -173,7 +173,7 @@ pub(crate) struct NativeBody {
     /// Settled return transport. Divergence is not encoded here: a body that
     /// never returns has an empty `return_ty`. Codegen settles its delivered
     /// shape once, where types are available, from this layout plus that fact.
-    pub return_layout: RuntimeValueLayout,
+    pub return_layout: TrashRuntimeValueLayout,
     /// Final per-value types after Compiler2 lowering into CPS/native form.
     pub value_types: HashMap<Var, Ty>,
     /// Closure-producing vars mapped to the settled callable boundary they
@@ -202,7 +202,7 @@ pub(crate) struct NativeCallableBoundary {
     /// Executable closure-entry argument lanes in source call order.
     pub arg_reprs: Vec<AbiValueRepr>,
     pub return_ty: Ty,
-    pub return_abi: ReturnAbi,
+    pub return_abi: TrashReturnAbi,
 }
 
 impl NativeCallableBoundary {
@@ -217,10 +217,10 @@ pub struct AbiReadyExecutable {
     pub return_ty: Ty,
     pub param_reprs: Vec<AbiValueRepr>,
     pub runtime_demand: ExecutableRuntimeDemand,
-    pub runtime_params: RuntimeParamLayout,
-    pub return_layout: RuntimeValueLayout,
-    pub resume_layouts: Vec<Option<RuntimeValueLayout>>,
-    pub entry_capture_layouts: Vec<Vec<RuntimeValueLayout>>,
+    pub runtime_params: TrashRuntimeParamLayout,
+    pub return_layout: TrashRuntimeValueLayout,
+    pub resume_layouts: Vec<Option<TrashRuntimeValueLayout>>,
+    pub entry_capture_layouts: Vec<Vec<TrashRuntimeValueLayout>>,
     pub value_types: HashMap<ValueId, Ty>,
     pub value_reprs: HashMap<ValueId, AbiValueRepr>,
     pub effects: EffectSummary,
@@ -242,7 +242,7 @@ pub struct CallableEntry {
     pub capture_reprs: Vec<AbiValueRepr>,
     pub arg_reprs: Vec<AbiValueRepr>,
     pub return_ty: Ty,
-    pub return_abi: ReturnAbi,
+    pub return_abi: TrashReturnAbi,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -252,10 +252,10 @@ pub struct EmissionReadyExecutable {
     pub return_ty: Ty,
     pub param_reprs: Vec<AbiValueRepr>,
     pub runtime_demand: ExecutableRuntimeDemand,
-    pub runtime_params: RuntimeParamLayout,
-    pub return_layout: RuntimeValueLayout,
-    pub resume_layouts: Vec<Option<RuntimeValueLayout>>,
-    pub entry_capture_layouts: Vec<Vec<RuntimeValueLayout>>,
+    pub runtime_params: TrashRuntimeParamLayout,
+    pub return_layout: TrashRuntimeValueLayout,
+    pub resume_layouts: Vec<Option<TrashRuntimeValueLayout>>,
+    pub entry_capture_layouts: Vec<Vec<TrashRuntimeValueLayout>>,
     pub value_types: HashMap<ValueId, Ty>,
     pub value_reprs: HashMap<ValueId, AbiValueRepr>,
     pub effects: EffectSummary,
@@ -277,7 +277,7 @@ pub struct EmissionReadyCallableEntry {
     pub capture_reprs: Vec<AbiValueRepr>,
     pub arg_reprs: Vec<AbiValueRepr>,
     pub return_ty: Ty,
-    pub return_abi: ReturnAbi,
+    pub return_abi: TrashReturnAbi,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -287,10 +287,10 @@ pub struct BackendExecutable {
     pub return_ty: Ty,
     pub param_reprs: Vec<AbiValueRepr>,
     pub runtime_demand: ExecutableRuntimeDemand,
-    pub runtime_params: RuntimeParamLayout,
-    pub return_layout: RuntimeValueLayout,
-    pub resume_layouts: Vec<Option<RuntimeValueLayout>>,
-    pub entry_capture_layouts: Vec<Vec<RuntimeValueLayout>>,
+    pub runtime_params: TrashRuntimeParamLayout,
+    pub return_layout: TrashRuntimeValueLayout,
+    pub resume_layouts: Vec<Option<TrashRuntimeValueLayout>>,
+    pub entry_capture_layouts: Vec<Vec<TrashRuntimeValueLayout>>,
     pub value_types: HashMap<ValueId, Ty>,
     pub value_reprs: HashMap<ValueId, AbiValueRepr>,
     pub effects: EffectSummary,
@@ -298,8 +298,8 @@ pub struct BackendExecutable {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RuntimeParamLayout {
-    pub inputs: Vec<RuntimeInputLayout>,
+pub struct TrashRuntimeParamLayout {
+    pub inputs: Vec<TrashRuntimeInputLayout>,
 }
 
 /// One flat transport lane: the machine type and ABI repr of a single value
@@ -308,41 +308,41 @@ pub struct RuntimeParamLayout {
 /// correct by construction: a carrier stores and forwards lanes, it never
 /// reconstructs the structure they were flattened from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RuntimeLane {
+pub struct TrashRuntimeLane {
     pub ty: Ty,
     pub repr: AbiValueRepr,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RuntimeValueLayout {
+pub enum TrashRuntimeValueLayout {
     Omitted,
     Value {
         ty: Ty,
         repr: AbiValueRepr,
     },
     TupleFields {
-        fields: Vec<RuntimeValueLayout>,
+        fields: Vec<TrashRuntimeValueLayout>,
     },
     /// A direct-only callable carried structurally: one-level target identity
     /// plus the flat capture lanes it occupies. The captured values' own
     /// structure is NOT held here — the callee body interprets these lanes via
     /// its own settled capture layout. A carrier only writes/reads/forwards the
     /// lanes. This is the one place the over-modeling used to live, where
-    /// `captures` was recursively `Vec<RuntimeValueLayout>` and forced every
+    /// `captures` was recursively `Vec<TrashRuntimeValueLayout>` and forced every
     /// carrier to know its callees' callees.
     DirectCallable {
         function: FunctionId,
-        capture_lanes: Vec<RuntimeLane>,
+        capture_lanes: Vec<TrashRuntimeLane>,
     },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RuntimeInputLayout {
+pub struct TrashRuntimeInputLayout {
     pub semantic_index: usize,
-    pub layout: RuntimeValueLayout,
+    pub layout: TrashRuntimeValueLayout,
 }
 
-impl RuntimeInputLayout {
+impl TrashRuntimeInputLayout {
     pub fn semantic_index(&self) -> usize {
         self.semantic_index
     }
@@ -351,12 +351,12 @@ impl RuntimeInputLayout {
         self.value_layout().abi_reprs()
     }
 
-    pub fn value_layout(&self) -> &RuntimeValueLayout {
+    pub fn value_layout(&self) -> &TrashRuntimeValueLayout {
         &self.layout
     }
 }
 
-impl RuntimeValueLayout {
+impl TrashRuntimeValueLayout {
     pub fn abi_reprs(&self) -> Vec<AbiValueRepr> {
         match self {
             Self::Omitted => Vec::new(),
@@ -376,16 +376,19 @@ impl RuntimeValueLayout {
     }
 }
 
-impl RuntimeParamLayout {
-    pub fn from_inputs(inputs: Vec<RuntimeInputLayout>) -> Self {
+impl TrashRuntimeParamLayout {
+    pub fn from_inputs(inputs: Vec<TrashRuntimeInputLayout>) -> Self {
         Self { inputs }
     }
 
     pub fn abi_reprs(&self) -> Vec<AbiValueRepr> {
-        self.inputs.iter().flat_map(RuntimeInputLayout::abi_reprs).collect()
+        self.inputs
+            .iter()
+            .flat_map(TrashRuntimeInputLayout::abi_reprs)
+            .collect()
     }
 
-    pub fn semantic_input(&self, semantic_index: usize) -> Option<&RuntimeInputLayout> {
+    pub fn semantic_input(&self, semantic_index: usize) -> Option<&TrashRuntimeInputLayout> {
         self.inputs
             .iter()
             .find(|input| input.semantic_index() == semantic_index)
@@ -399,7 +402,7 @@ pub struct BackendCallableEntry {
     pub capture_reprs: Vec<AbiValueRepr>,
     pub arg_reprs: Vec<AbiValueRepr>,
     pub return_ty: Ty,
-    pub return_abi: ReturnAbi,
+    pub return_abi: TrashReturnAbi,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -561,7 +564,7 @@ pub struct BackendEntry {
     pub origin: BackendEntryOrigin,
     pub params: Vec<ValueId>,
     pub captures: Vec<ValueId>,
-    pub capture_layouts: Vec<RuntimeValueLayout>,
+    pub capture_layouts: Vec<TrashRuntimeValueLayout>,
     pub reusable_cons_captures: Vec<ReusableConsCapture>,
     pub steps: Vec<BackendStep>,
     pub tail: BackendTail,
@@ -587,7 +590,10 @@ pub enum BackendEntryOrigin {
     Clause,
     Branch,
     ReceiveOutcome,
-    DeliveredResume { value: ValueId, layout: RuntimeValueLayout },
+    DeliveredResume {
+        value: ValueId,
+        layout: TrashRuntimeValueLayout,
+    },
 }
 
 impl BackendEntryOrigin {
@@ -765,7 +771,7 @@ pub enum AbiValueRepr {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ReturnAbi {
+pub enum TrashReturnAbi {
     Never,
     Value(AbiValueRepr),
     TupleFields(Vec<AbiValueRepr>),

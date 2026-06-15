@@ -755,7 +755,7 @@ impl<'a> World<'a> {
                     .runtime_params
                     .inputs
                     .iter()
-                    .filter(|input| matches!(input.layout, super::artifact::RuntimeValueLayout::Omitted))
+                    .filter(|input| matches!(input.layout, super::artifact::TrashRuntimeValueLayout::Omitted))
                     .count() as u64
             })
             .sum::<u64>();

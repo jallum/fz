@@ -29,8 +29,8 @@ use crate::types::Types as LegacyTypes;
 use super::super::artifact::{
     AbiValueRepr, BackendBody, BackendClause, BackendEntry, BackendEntryOrigin, BackendExecutable, BackendProgram,
     BackendStep, BackendTail, CallTarget, EffectSummary, NativeBody, NativeBodyOrigin, NativeCallableBoundary,
-    NativeCallableBoundaryId, NativeEntryAbi, NativeProgram, ReturnAbi,
-    ReusableConsCapture as BackendReusableConsCapture, RuntimeLane, RuntimeParamLayout, RuntimeValueLayout,
+    NativeCallableBoundaryId, NativeEntryAbi, NativeProgram, ReusableConsCapture as BackendReusableConsCapture,
+    TrashReturnAbi, TrashRuntimeLane, TrashRuntimeParamLayout, TrashRuntimeValueLayout,
 };
 use super::super::body::{ControlDestination, ControlEntryId, Literal, LoweredExtern, ValueId};
 use super::super::drive::{FactKey, Job, JobEffects, settled_uses};
@@ -650,7 +650,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                             "native tuple build referenced an unbound value",
                         )
                     })?;
-                    bind_local_value(ctx, executable, env, *value, RealizedValue::tuple(fields));
+                    bind_local_value(ctx, executable, env, *value, TrashRealizedValue::tuple(fields));
                 }
                 BackendStep::List { value, items, tail } => {
                     let vars = self.env_runtime_vars(ctx, executable, env, items).map_err(|_| {
@@ -774,7 +774,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                         executable,
                         env,
                         *value,
-                        RealizedValue::direct_callable(*function, Vec::new()),
+                        TrashRealizedValue::direct_callable(*function, Vec::new()),
                     );
                 }
                 BackendStep::Lambda {
@@ -794,7 +794,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                         executable,
                         env,
                         *value,
-                        RealizedValue::direct_callable(*function, capture_values),
+                        TrashRealizedValue::direct_callable(*function, capture_values),
                     );
                 }
                 BackendStep::BinaryOp { value, op, left, right } => {
@@ -864,7 +864,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                     let realized = env
                         .cloned_value(*source)
                         .ok_or_else(|| missing_backend_value(self.root_id, *source))?;
-                    let known_tuple = matches!(&realized.layout, RuntimeValueLayout::TupleFields { fields } if fields.len() == *arity);
+                    let known_tuple = matches!(&realized.layout, TrashRuntimeValueLayout::TupleFields { fields } if fields.len() == *arity);
                     if !known_tuple {
                         let source = self.materialize_native_value(ctx, None, &realized)?;
                         let tuple_ty = RuntimeTypePredicate::tuple_arity(*arity);
@@ -889,7 +889,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                             .get(value)
                             .copied()
                             .unwrap_or_else(|| self.world.types_mut().any());
-                        RealizedValue::runtime(var, ty, abi_value_repr(self.world, ty))
+                        TrashRealizedValue::runtime(var, ty, abi_value_repr(self.world, ty))
                     };
                     bind_local_value(ctx, executable, env, *value, field);
                 }
@@ -1054,7 +1054,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                     .cloned_value(*callee)
                     .ok_or_else(|| missing_backend_value(self.root_id, *callee))?
                 {
-                    callee_value if matches!(callee_value.layout, RuntimeValueLayout::DirectCallable { .. }) => {
+                    callee_value if matches!(callee_value.layout, TrashRuntimeValueLayout::DirectCallable { .. }) => {
                         let target = target.ok_or_else(|| {
                             incomplete_native_program(
                                 self.world,
@@ -1356,12 +1356,12 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
         let capture_lane_tys = entry
             .capture_layouts
             .iter()
-            .flat_map(RuntimeValueLayout::lane_tys)
+            .flat_map(TrashRuntimeValueLayout::lane_tys)
             .collect::<Vec<_>>();
         let capture_lane_reprs = entry
             .capture_layouts
             .iter()
-            .flat_map(RuntimeValueLayout::abi_reprs)
+            .flat_map(TrashRuntimeValueLayout::abi_reprs)
             .collect::<Vec<_>>();
         let physical_capture_tys = reusable_cons_captures
             .iter()
@@ -1445,7 +1445,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                 Ok(entry.params.len())
             }
             BackendEntryOrigin::DeliveredResume { value, layout } => {
-                if matches!(layout, RuntimeValueLayout::Omitted) {
+                if matches!(layout, TrashRuntimeValueLayout::Omitted) {
                     return Ok(0);
                 }
                 let mut lane_index = 0;
@@ -2272,7 +2272,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
             .copied()
             .unwrap_or_else(|| self.world.types_mut().any());
         let repr = abi_value_repr(self.world, ty);
-        bind_local_value(ctx, executable, env, value, RealizedValue::runtime(var, ty, repr));
+        bind_local_value(ctx, executable, env, value, TrashRealizedValue::runtime(var, ty, repr));
     }
 
     /// Collapse a realized value into a single native `Var`, boxing structure as
@@ -2282,12 +2282,12 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
         &mut self,
         ctx: &mut NativeFnCtx,
         ty: Option<Ty>,
-        value: &RealizedValue,
+        value: &TrashRealizedValue,
     ) -> Result<Var, FatalError> {
         let var = match &value.layout {
-            RuntimeValueLayout::Omitted => return Err(FatalError),
-            RuntimeValueLayout::Value { .. } => *value.lanes.first().ok_or(FatalError)?,
-            RuntimeValueLayout::TupleFields { .. } => {
+            TrashRuntimeValueLayout::Omitted => return Err(FatalError),
+            TrashRuntimeValueLayout::Value { .. } => *value.lanes.first().ok_or(FatalError)?,
+            TrashRuntimeValueLayout::TupleFields { .. } => {
                 let fields = value.tuple_fields().ok_or(FatalError)?;
                 let vars = fields
                     .iter()
@@ -2295,7 +2295,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                     .collect::<Result<Vec<_>, _>>()?;
                 ctx.emit_let(Prim::MakeTuple(vars)).0
             }
-            RuntimeValueLayout::DirectCallable {
+            TrashRuntimeValueLayout::DirectCallable {
                 function,
                 capture_lanes,
             } => {
@@ -2334,9 +2334,9 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
     fn tuple_fields_for_layout(
         &mut self,
         ctx: &mut NativeFnCtx,
-        value: &RealizedValue,
+        value: &TrashRealizedValue,
         arity: usize,
-    ) -> Result<Vec<RealizedValue>, FatalError> {
+    ) -> Result<Vec<TrashRealizedValue>, FatalError> {
         if let Some(fields) = value.tuple_fields()
             && fields.len() == arity
         {
@@ -2348,7 +2348,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
         Ok((0..arity)
             .map(|index| {
                 let (var, _) = ctx.emit_let(Prim::TupleField(tuple, index as u32));
-                RealizedValue::runtime(var, any, repr)
+                TrashRealizedValue::runtime(var, any, repr)
             })
             .collect())
     }
@@ -2358,34 +2358,34 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
         ctx: &mut NativeFnCtx,
         executable: &BackendExecutable,
         value_id: Option<ValueId>,
-        value: &RealizedValue,
-        layout: &RuntimeValueLayout,
+        value: &TrashRealizedValue,
+        layout: &TrashRuntimeValueLayout,
         lanes: &mut Vec<Var>,
     ) -> Result<(), FatalError> {
         match layout {
-            RuntimeValueLayout::Omitted => Ok(()),
-            RuntimeValueLayout::Value { ty, .. } => {
+            TrashRuntimeValueLayout::Omitted => Ok(()),
+            TrashRuntimeValueLayout::Value { ty, .. } => {
                 let ty = value_id
                     .and_then(|value_id| executable.value_types.get(&value_id).copied())
                     .or(Some(*ty));
                 lanes.push(self.materialize_native_value(ctx, ty, value)?);
                 Ok(())
             }
-            RuntimeValueLayout::TupleFields { fields } => {
+            TrashRuntimeValueLayout::TupleFields { fields } => {
                 let tuple_fields = self.tuple_fields_for_layout(ctx, value, fields.len())?;
                 for (field, field_layout) in tuple_fields.iter().zip(fields.iter()) {
                     self.encode_runtime_value(ctx, executable, None, field, field_layout, lanes)?;
                 }
                 Ok(())
             }
-            RuntimeValueLayout::DirectCallable {
+            TrashRuntimeValueLayout::DirectCallable {
                 function,
                 capture_lanes,
             } => {
                 // Direct-only structural carry: the realized value's lanes are
                 // already exactly the settled flat capture lanes. We forward raw
                 // lanes; we never reconstruct or box the captured structure.
-                let RuntimeValueLayout::DirectCallable { function: actual, .. } = &value.layout else {
+                let TrashRuntimeValueLayout::DirectCallable { function: actual, .. } = &value.layout else {
                     return Err(FatalError);
                 };
                 if actual != function || value.lanes.len() != capture_lanes.len() {
@@ -2403,10 +2403,10 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
         executable: &BackendExecutable,
         env: &ValueEnv,
         value_id: ValueId,
-        layout: &RuntimeValueLayout,
+        layout: &TrashRuntimeValueLayout,
         lanes: &mut Vec<Var>,
     ) -> Result<(), FatalError> {
-        if matches!(layout, RuntimeValueLayout::Omitted) {
+        if matches!(layout, TrashRuntimeValueLayout::Omitted) {
             return Ok(());
         }
         let local = env
@@ -2418,9 +2418,9 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
 
 fn callable_abi_strictly_more_specific(
     lhs_args: &[AbiValueRepr],
-    lhs_return: &ReturnAbi,
+    lhs_return: &TrashReturnAbi,
     rhs_args: &[AbiValueRepr],
-    rhs_return: &ReturnAbi,
+    rhs_return: &TrashReturnAbi,
 ) -> bool {
     if lhs_args.len() != rhs_args.len() {
         return false;
@@ -2436,15 +2436,18 @@ fn callable_abi_strictly_more_specific(
         }
     }
     match (lhs_return, rhs_return) {
-        (&ReturnAbi::Never, &ReturnAbi::Never) => saw_stricter_lane,
-        (&ReturnAbi::Never, _) => true,
-        (_, &ReturnAbi::Never) => false,
-        (ReturnAbi::Value(AbiValueRepr::ValueRef), ReturnAbi::Value(AbiValueRepr::ValueRef)) => saw_stricter_lane,
-        (ReturnAbi::Value(AbiValueRepr::ValueRef), ReturnAbi::Value(_)) => false,
-        (ReturnAbi::Value(_), ReturnAbi::Value(AbiValueRepr::ValueRef)) => true,
-        (ReturnAbi::Value(lhs), ReturnAbi::Value(rhs)) => lhs == rhs && saw_stricter_lane,
-        (ReturnAbi::TupleFields(lhs), ReturnAbi::TupleFields(rhs)) => lhs == rhs && saw_stricter_lane,
-        (ReturnAbi::Value(_), ReturnAbi::TupleFields(_)) | (ReturnAbi::TupleFields(_), ReturnAbi::Value(_)) => false,
+        (&TrashReturnAbi::Never, &TrashReturnAbi::Never) => saw_stricter_lane,
+        (&TrashReturnAbi::Never, _) => true,
+        (_, &TrashReturnAbi::Never) => false,
+        (TrashReturnAbi::Value(AbiValueRepr::ValueRef), TrashReturnAbi::Value(AbiValueRepr::ValueRef)) => {
+            saw_stricter_lane
+        }
+        (TrashReturnAbi::Value(AbiValueRepr::ValueRef), TrashReturnAbi::Value(_)) => false,
+        (TrashReturnAbi::Value(_), TrashReturnAbi::Value(AbiValueRepr::ValueRef)) => true,
+        (TrashReturnAbi::Value(lhs), TrashReturnAbi::Value(rhs)) => lhs == rhs && saw_stricter_lane,
+        (TrashReturnAbi::TupleFields(lhs), TrashReturnAbi::TupleFields(rhs)) => lhs == rhs && saw_stricter_lane,
+        (TrashReturnAbi::Value(_), TrashReturnAbi::TupleFields(_))
+        | (TrashReturnAbi::TupleFields(_), TrashReturnAbi::Value(_)) => false,
     }
 }
 
@@ -2723,27 +2726,27 @@ fn annotate_back_edges(module: &mut crate::fz_ir::Module) {
 /// A runtime value realized into native transport lanes.
 ///
 /// The *structure* lives in `layout` -- the one settled transport shape
-/// (`RuntimeValueLayout`) -- and `lanes` are the flat `Var`s that inhabit it, in
+/// (`TrashRuntimeValueLayout`) -- and `lanes` are the flat `Var`s that inhabit it, in
 /// `layout.abi_reprs()` order. There is no parallel value tree: a tuple's
 /// fields, a direct callable's captures, and an omitted value's absence are all
 /// read back out of the layout. `Omitted` is therefore just an empty `lanes`
 /// vector behind an `Omitted` layout -- no special case to forget.
 #[derive(Clone)]
-struct RealizedValue {
-    layout: RuntimeValueLayout,
+struct TrashRealizedValue {
+    layout: TrashRuntimeValueLayout,
     lanes: Vec<Var>,
 }
 
-impl RealizedValue {
+impl TrashRealizedValue {
     fn runtime(var: Var, ty: Ty, repr: AbiValueRepr) -> Self {
         Self {
-            layout: RuntimeValueLayout::Value { ty, repr },
+            layout: TrashRuntimeValueLayout::Value { ty, repr },
             lanes: vec![var],
         }
     }
 
     /// Combine field values into a settled tuple, concatenating their lanes.
-    fn tuple(fields: Vec<RealizedValue>) -> Self {
+    fn tuple(fields: Vec<TrashRealizedValue>) -> Self {
         let mut field_layouts = Vec::with_capacity(fields.len());
         let mut lanes = Vec::new();
         for field in fields {
@@ -2751,24 +2754,24 @@ impl RealizedValue {
             lanes.extend(field.lanes);
         }
         Self {
-            layout: RuntimeValueLayout::TupleFields { fields: field_layouts },
+            layout: TrashRuntimeValueLayout::TupleFields { fields: field_layouts },
             lanes,
         }
     }
 
     /// Carry a direct-only callable structurally: its function identity plus the
     /// flat capture lanes it occupies.
-    fn direct_callable(function: FunctionId, captures: Vec<RealizedValue>) -> Self {
+    fn direct_callable(function: FunctionId, captures: Vec<TrashRealizedValue>) -> Self {
         let mut capture_lanes = Vec::new();
         let mut lanes = Vec::new();
         for capture in captures {
             for (ty, repr) in capture.layout.lane_tys().into_iter().zip(capture.layout.abi_reprs()) {
-                capture_lanes.push(RuntimeLane { ty, repr });
+                capture_lanes.push(TrashRuntimeLane { ty, repr });
             }
             lanes.extend(capture.lanes);
         }
         Self {
-            layout: RuntimeValueLayout::DirectCallable {
+            layout: TrashRuntimeValueLayout::DirectCallable {
                 function,
                 capture_lanes,
             },
@@ -2777,15 +2780,15 @@ impl RealizedValue {
     }
 
     /// The flat lanes split per tuple field, when this value is a settled tuple.
-    fn tuple_fields(&self) -> Option<Vec<RealizedValue>> {
-        let RuntimeValueLayout::TupleFields { fields } = &self.layout else {
+    fn tuple_fields(&self) -> Option<Vec<TrashRealizedValue>> {
+        let TrashRuntimeValueLayout::TupleFields { fields } = &self.layout else {
             return None;
         };
         let mut out = Vec::with_capacity(fields.len());
         let mut offset = 0;
         for field in fields {
             let width = field.abi_reprs().len();
-            out.push(RealizedValue {
+            out.push(TrashRealizedValue {
                 layout: field.clone(),
                 lanes: self.lanes[offset..offset + width].to_vec(),
             });
@@ -2797,7 +2800,7 @@ impl RealizedValue {
     /// The single lane backing a scalar value, if this is one.
     fn as_runtime_var(&self) -> Option<Var> {
         match self.layout {
-            RuntimeValueLayout::Value { .. } => self.lanes.first().copied(),
+            TrashRuntimeValueLayout::Value { .. } => self.lanes.first().copied(),
             _ => None,
         }
     }
@@ -2805,28 +2808,28 @@ impl RealizedValue {
 
 #[derive(Default, Clone)]
 struct ValueEnv {
-    values: HashMap<ValueId, RealizedValue>,
+    values: HashMap<ValueId, TrashRealizedValue>,
 }
 
 impl ValueEnv {
-    fn insert(&mut self, value: ValueId, bound: RealizedValue) {
+    fn insert(&mut self, value: ValueId, bound: TrashRealizedValue) {
         self.values.insert(value, bound);
     }
 
-    fn value(&self, value: ValueId) -> Option<&RealizedValue> {
+    fn value(&self, value: ValueId) -> Option<&TrashRealizedValue> {
         self.values.get(&value)
     }
 
-    fn cloned_value(&self, value: ValueId) -> Option<RealizedValue> {
+    fn cloned_value(&self, value: ValueId) -> Option<TrashRealizedValue> {
         self.value(value).cloned()
     }
 
-    fn values(&self, ids: &[ValueId]) -> Option<Vec<RealizedValue>> {
+    fn values(&self, ids: &[ValueId]) -> Option<Vec<TrashRealizedValue>> {
         ids.iter().map(|value| self.cloned_value(*value)).collect()
     }
 
     fn runtime_var(&self, value: ValueId) -> Option<Var> {
-        self.value(value).and_then(RealizedValue::as_runtime_var)
+        self.value(value).and_then(TrashRealizedValue::as_runtime_var)
     }
 }
 
@@ -2862,7 +2865,7 @@ struct NativeFnCtx {
     entry_abi: NativeEntryAbi,
     param_reprs: Vec<AbiValueRepr>,
     return_ty: Ty,
-    return_layout: RuntimeValueLayout,
+    return_layout: TrashRuntimeValueLayout,
     effects: EffectSummary,
     next_token: u32,
 }
@@ -2876,7 +2879,7 @@ impl NativeFnCtx {
         entry_abi: NativeEntryAbi,
         param_reprs: Vec<AbiValueRepr>,
         return_ty: Ty,
-        return_layout: RuntimeValueLayout,
+        return_layout: TrashRuntimeValueLayout,
         effects: EffectSummary,
     ) -> Self {
         let builder = FnBuilder::new(fn_id, name.to_string()).with_category(category);
@@ -2976,11 +2979,11 @@ impl NativeFnCtx {
     }
 }
 
-fn env_local_value(env: &ValueEnv, value: ValueId) -> Result<RealizedValue, FatalError> {
+fn env_local_value(env: &ValueEnv, value: ValueId) -> Result<TrashRealizedValue, FatalError> {
     env.cloned_value(value).ok_or(FatalError)
 }
 
-fn runtime_param_tys(layout: &RuntimeParamLayout) -> Vec<Ty> {
+fn runtime_param_tys(layout: &TrashRuntimeParamLayout) -> Vec<Ty> {
     layout
         .inputs
         .iter()
@@ -2991,14 +2994,14 @@ fn runtime_param_tys(layout: &RuntimeParamLayout) -> Vec<Ty> {
 fn bind_executable_inputs(
     executable: &BackendExecutable,
     params: &[Var],
-) -> Result<Vec<Option<RealizedValue>>, FatalError> {
+) -> Result<Vec<Option<TrashRealizedValue>>, FatalError> {
     let semantic_arity = executable.key.activation.input.len();
     let mut bound = vec![None; semantic_arity];
     let mut lane_index = 0;
     for input in &executable.runtime_params.inputs {
         let semantic_index = input.semantic_index();
         let value = match input.value_layout() {
-            RuntimeValueLayout::Omitted => None,
+            TrashRuntimeValueLayout::Omitted => None,
             layout => Some(decode_runtime_value(params, layout, &mut lane_index)?),
         };
         bound[semantic_index] = value;
@@ -3011,18 +3014,18 @@ fn bind_executable_inputs(
 
 /// Decode a value from its settled layout and a flat lane window. The realized
 /// value carries the layout verbatim and the exact `Var`s it spans; an `Omitted`
-/// layout spans zero lanes, so it decodes to an empty `RealizedValue` with no
+/// layout spans zero lanes, so it decodes to an empty `TrashRealizedValue` with no
 /// special case.
 fn decode_runtime_value(
     params: &[Var],
-    layout: &RuntimeValueLayout,
+    layout: &TrashRuntimeValueLayout,
     lane_index: &mut usize,
-) -> Result<RealizedValue, FatalError> {
+) -> Result<TrashRealizedValue, FatalError> {
     let width = layout.abi_reprs().len();
     let end = lane_index.checked_add(width).ok_or(FatalError)?;
     let lanes = params.get(*lane_index..end).ok_or(FatalError)?.to_vec();
     *lane_index = end;
-    Ok(RealizedValue {
+    Ok(TrashRealizedValue {
         layout: layout.clone(),
         lanes,
     })
@@ -3033,7 +3036,7 @@ fn bind_local_value(
     executable: &BackendExecutable,
     env: &mut ValueEnv,
     value: ValueId,
-    bound: RealizedValue,
+    bound: TrashRealizedValue,
 ) {
     if let Some(var) = bound.as_runtime_var()
         && let Some(ty) = executable.value_types.get(&value).copied()
@@ -3287,27 +3290,27 @@ fn abi_value_repr(world: &mut World<'_>, ty: Ty) -> AbiValueRepr {
     }
 }
 
-fn continuation_result_entry(result_layout: &RuntimeValueLayout) -> (Vec<Ty>, Vec<AbiValueRepr>) {
+fn continuation_result_entry(result_layout: &TrashRuntimeValueLayout) -> (Vec<Ty>, Vec<AbiValueRepr>) {
     (result_layout.lane_tys(), result_layout.abi_reprs())
 }
 
 fn mark_ignored_lanes_for_demand(
     builder: &mut FnBuilder,
     vars: &[Var],
-    layout: &RuntimeValueLayout,
+    layout: &TrashRuntimeValueLayout,
     demand: &RuntimeDemand,
     lane_index: &mut usize,
 ) -> Result<(), FatalError> {
     match layout {
-        RuntimeValueLayout::Omitted => Ok(()),
-        RuntimeValueLayout::Value { .. } => {
+        TrashRuntimeValueLayout::Omitted => Ok(()),
+        TrashRuntimeValueLayout::Value { .. } => {
             let var = next_runtime_lane(vars, lane_index)?;
             if demand.is_ignore() {
                 builder.mark_param_ignored(var);
             }
             Ok(())
         }
-        RuntimeValueLayout::TupleFields { fields } => match demand {
+        TrashRuntimeValueLayout::TupleFields { fields } => match demand {
             RuntimeDemand::Ignore => {
                 for field in fields {
                     mark_all_runtime_lanes_ignored(builder, vars, field, lane_index)?;
@@ -3329,7 +3332,7 @@ fn mark_ignored_lanes_for_demand(
             }
             RuntimeDemand::Value | RuntimeDemand::Callable(_) => skip_runtime_lanes(vars, layout, lane_index),
         },
-        RuntimeValueLayout::DirectCallable { capture_lanes, .. } => {
+        TrashRuntimeValueLayout::DirectCallable { capture_lanes, .. } => {
             if demand.is_ignore() {
                 for _ in capture_lanes {
                     let var = next_runtime_lane(vars, lane_index)?;
@@ -3346,23 +3349,23 @@ fn mark_ignored_lanes_for_demand(
 fn mark_all_runtime_lanes_ignored(
     builder: &mut FnBuilder,
     vars: &[Var],
-    layout: &RuntimeValueLayout,
+    layout: &TrashRuntimeValueLayout,
     lane_index: &mut usize,
 ) -> Result<(), FatalError> {
     match layout {
-        RuntimeValueLayout::Omitted => Ok(()),
-        RuntimeValueLayout::Value { .. } => {
+        TrashRuntimeValueLayout::Omitted => Ok(()),
+        TrashRuntimeValueLayout::Value { .. } => {
             let var = next_runtime_lane(vars, lane_index)?;
             builder.mark_param_ignored(var);
             Ok(())
         }
-        RuntimeValueLayout::TupleFields { fields } => {
+        TrashRuntimeValueLayout::TupleFields { fields } => {
             for field in fields {
                 mark_all_runtime_lanes_ignored(builder, vars, field, lane_index)?;
             }
             Ok(())
         }
-        RuntimeValueLayout::DirectCallable { capture_lanes, .. } => {
+        TrashRuntimeValueLayout::DirectCallable { capture_lanes, .. } => {
             for _ in capture_lanes {
                 let var = next_runtime_lane(vars, lane_index)?;
                 builder.mark_param_ignored(var);
@@ -3372,20 +3375,24 @@ fn mark_all_runtime_lanes_ignored(
     }
 }
 
-fn skip_runtime_lanes(vars: &[Var], layout: &RuntimeValueLayout, lane_index: &mut usize) -> Result<(), FatalError> {
+fn skip_runtime_lanes(
+    vars: &[Var],
+    layout: &TrashRuntimeValueLayout,
+    lane_index: &mut usize,
+) -> Result<(), FatalError> {
     match layout {
-        RuntimeValueLayout::Omitted => Ok(()),
-        RuntimeValueLayout::Value { .. } => {
+        TrashRuntimeValueLayout::Omitted => Ok(()),
+        TrashRuntimeValueLayout::Value { .. } => {
             next_runtime_lane(vars, lane_index)?;
             Ok(())
         }
-        RuntimeValueLayout::TupleFields { fields } => {
+        TrashRuntimeValueLayout::TupleFields { fields } => {
             for field in fields {
                 skip_runtime_lanes(vars, field, lane_index)?;
             }
             Ok(())
         }
-        RuntimeValueLayout::DirectCallable { capture_lanes, .. } => {
+        TrashRuntimeValueLayout::DirectCallable { capture_lanes, .. } => {
             for _ in capture_lanes {
                 next_runtime_lane(vars, lane_index)?;
             }

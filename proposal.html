@@ -18,12 +18,13 @@ body { max-width: 1080px; }
 <body>
 
 <h1>Compiler2 Runtime Transport Spine</h1>
-<p class="subtitle">The current plan for replacing runtime-layout translation with one stable transport shape authority.</p>
+<p class="subtitle">The current plan for replacing runtime-layout translation with one pure transport information-flow authority.</p>
 
 <div class="box yellow">
 <strong>Status:</strong> this document supersedes the older runtime-value-demand proposal that ended at
 <code>RuntimeParamLayout</code>, <code>RuntimeInputLayout</code>, and <code>RuntimeValueLayout</code>.
 Runtime demand is still the right pre-spine solver. Recursive runtime layout is not the destination.
+The implementation strategy is now explicit: first trash-prefix the doomed vocabulary, then build the clean flow graph independently beside the old path, then cut consumers over and delete the old path.
 The short canonical statement is <a href="outline.md">outline.md</a>.
 </div>
 
@@ -46,27 +47,27 @@ The short canonical statement is <a href="outline.md">outline.md</a>.
 <div class="grid">
   <div class="card">
     <h3>Goal</h3>
-    <p>Compiler2 has one runtime transport shape for every transported value. It is built once after demand settles. Every downstream layer reads that shape and indexes fact tables; no layer rebuilds or translates it.</p>
+    <p>Compiler2 has one runtime transport shape for every transported value. It is built once into a root-scoped <code>TransportPlan</code> using shared interned descriptors. Every downstream layer reads that plan and indexes fact tables; no layer rebuilds or translates it.</p>
   </div>
   <div class="card">
     <h3>Signal</h3>
-    <p>No function below spine construction walks <code>RuntimeDemand</code>, <code>RuntimeValueLayout</code>, <code>ReturnAbi</code>, or <code>DeliveredShape</code> to emit another shape. Tests assert the spine and fact-table projections.</p>
+    <p>No function below plan construction walks <code>RuntimeDemand</code>, <code>TrashRuntimeValueLayout</code>, <code>TrashReturnAbi</code>, or <code>TrashDeliveredShape</code> to emit another shape. Tests assert the plan and fact-table projections.</p>
   </div>
   <div class="card">
     <h3>Strategy</h3>
-    <p>Work data-model-up. Pin current behavior, introduce the spine, replace recursive layout as authority, collapse backend/native value mirrors, then make codegen consume published lane facts only.</p>
+    <p>Use the Output Contract Loop. Build the clean flow graph alongside the old path from semantic evidence only; use the old path as behavior oracle and removal inventory, never as an adapter. Then cut consumers over and delete the trash-prefixed authority.</p>
   </div>
 </div>
 
 <div class="box green">
 <strong>Core rule:</strong> semantic evidence is not representation obligation. Runtime demand discovers what must move.
-The transport spine records the settled shape. ABI, boundary, interpreter, native, and codegen details are columns keyed by that spine.
+The transport plan records the settled shape. Published boundary contracts, interpreter, native, and codegen details are columns keyed by that plan.
 </div>
 
 <h2 id="law">2. The law</h2>
 
 <pre>
-Shape = Nothing | Scalar(ScalarId) | Tuple(Vec&lt;ShapeId&gt;) | Callable(CallableId)
+Shape = Nothing | Lane(LaneId) | Tuple(Vec&lt;ShapeId&gt;) | Callable(CallableId)
 </pre>
 
 <table class="data">
@@ -76,15 +77,19 @@ Shape = Nothing | Scalar(ScalarId) | Tuple(Vec&lt;ShapeId&gt;) | Callable(Callab
   <tbody>
     <tr>
       <td class="term"><code>ShapeId</code></td>
-      <td>A node in the settled root-scoped transport spine.</td>
+      <td>An interned shape descriptor. Like the type interner, recursive children are ids. Sharing scope follows descriptor key stability; root-scoped validity lives in <code>TransportPlan</code>.</td>
     </tr>
     <tr>
-      <td class="term"><code>ScalarId</code></td>
-      <td>A scalar leaf. It is rooted in <code>ValueId</code> when there is a body value, or in a stable minted leaf id for interior tuple leaves.</td>
+      <td class="term"><code>LaneId</code></td>
+      <td>One non-callable transported leaf, usually keyed by settled <code>Ty</code> or a stable transport class. Boundary and codegen representation are contextual facts, not global lane identity.</td>
     </tr>
     <tr>
       <td class="term"><code>CallableId</code></td>
-      <td>A callable identity. Locality, directness, captures, boundary boxing, and materialization are facts keyed by this id.</td>
+      <td>A callable identity. Its descriptor may include immutable key material, but locality, directness, captures, first-class materialization, and published boundary contracts are facts keyed by this id.</td>
+    </tr>
+    <tr>
+      <td class="term"><code>BoundaryId</code></td>
+      <td>One published callable contract. A callable may have zero or more boundary contracts; publication context is a fact, not a shape variant.</td>
     </tr>
     <tr>
       <td class="term"><code>Nothing</code></td>
@@ -94,26 +99,32 @@ Shape = Nothing | Scalar(ScalarId) | Tuple(Vec&lt;ShapeId&gt;) | Callable(Callab
 </table>
 
 <div class="box blue">
-<strong>Two facts stay outside the spine.</strong> Divergence is <code>is_empty(return_ty)</code>, not a shape node.
+<strong>Some facts stay outside the spine.</strong> Divergence is <code>is_empty(return_ty)</code>, not a shape node.
 <code>ExecutableNeed</code> is the coarse pre-spine seed, not a post-spine shape key.
+<code>ValueId</code> maps to <code>ShapeId</code>; it is not embedded in the shape.
+<code>RootId</code> owns a closure/query over symbols; it is not automatically part of shareable descriptor identity.
 </div>
 
 <h2 id="first">3. Required first move</h2>
 
-<p>Before any transport-spine implementation work, rename the doomed vocabulary with an explicit trash marker. This is not cosmetic. It is a compaction-resistant guardrail: future work should have to type an ugly name if it tries to wire doomed architecture back in.</p>
+<p>Before any transport-spine or parallel-flow implementation work, rename the doomed vocabulary with an explicit trash marker. This is not cosmetic. It is a compaction-resistant guardrail: future work should have to type an ugly name if it tries to wire doomed architecture back in.</p>
 
 <pre>
 RuntimeValueLayout -> TrashRuntimeValueLayout
 RuntimeInputLayout -> TrashRuntimeInputLayout
+RuntimeParamLayout -> TrashRuntimeParamLayout
 RuntimeLane -> TrashRuntimeLane
+ReturnAbi -> TrashReturnAbi
 DeliveredShape -> TrashDeliveredShape
 NativeDemandAbi -> TrashNativeDemandAbi
+RealizedValue -> TrashRealizedValue
+BackendValue -> TrashBackendValue
 </pre>
 
-<p>Apply the same rule to recursive value mirrors and shape-translation helpers where they are transport authority.</p>
+<p>Apply the same rule to shape-translation helpers where they are transport authority.</p>
 
 <div class="box red">
-<strong>Scope of the first ticket:</strong> pure rename plus required docs/test-name updates. No behavior work, no aliases, no compatibility layer, no bridge from the old names to the new spine. If something cannot be renamed cleanly, create a follow-up ticket before closing the guardrail ticket.
+<strong>Scope of the first ticket:</strong> pure rename plus required docs/test-name updates. No behavior work, no aliases, no compatibility layer, no bridge from the old names to the new model, and no <code>ShapeId</code> / <code>BoundaryId</code> / <code>TransportPlan</code> implementation. If something cannot be renamed cleanly, create a follow-up ticket before closing the guardrail ticket.
 </div>
 
 <h2 id="current">4. Current disease</h2>
@@ -124,7 +135,7 @@ NativeDemandAbi -> TrashNativeDemandAbi
 RuntimeDemand
   -> RuntimeValueLayout
   -> abi_reprs / lane_tys
-  -> ReturnAbi boundary projection
+  -> ReturnAbi / boundary projection
   -> NativeBody return_layout / resume_layouts / capture_layouts
   -> RealizedValue { layout, lanes }
   -> DeliveredShape / NativeCodegenSurface
@@ -144,7 +155,7 @@ RuntimeDemand
     </tr>
     <tr>
       <td class="term"><code>DeliveredShape</code></td>
-      <td>It is a codegen-local delivery shape derived from layout or boundary ABI.</td>
+      <td>It is a codegen-local delivery shape derived from layout or a boundary projection.</td>
     </tr>
     <tr>
       <td class="term"><code>RealizedValue.layout</code></td>
@@ -152,23 +163,30 @@ RuntimeDemand
     </tr>
     <tr>
       <td class="term"><code>ArgRepr::from_ty</code></td>
-      <td>Compiler2 transport lanes should read published scalar/codegen lane facts, not rederive reprs from type locally.</td>
+      <td>Compiler2 transport lanes should read published lane/codegen facts, not rederive reprs from type locally.</td>
     </tr>
   </tbody>
 </table>
 
 <h2 id="model">5. Target model</h2>
 
-<p>The transport plan is root-scoped and built after semantic closure and runtime demand settle.</p>
+<p>The target has shared descriptor interners plus a root-scoped plan built after semantic closure and runtime demand settle.</p>
 
 <pre>
 SemanticClosed(root)
   -> RuntimeDemandClosure
-  -> TransportSpine(root)
-       shapes: ShapeId -> Shape
-       executable roots: ExecutableKey -> executable transport facts
-       scalar facts: ScalarId -> ty/repr/codegen lane
-       callable facts: CallableId -> target/captures/materialization/boundary facts
+  -> shared descriptor interners
+       ShapeId -> Shape
+       LaneId -> lane descriptor
+       CallableId -> callable descriptor
+       BoundaryId -> boundary descriptor
+  -> TransportPlan(root)
+       membership: executable symbols
+       positions: TransportPosition -> ShapeId
+       lane facts: LaneId -> ty/transport class
+       callable facts: CallableId -> captures/materialization/boundary ids
+       boundary facts: BoundaryId -> published contract
+       seam facts: (id, seam) -> codegen representation
 </pre>
 
 <p>Downstream artifacts carry references into this plan. They do not copy the tree.</p>
@@ -180,12 +198,12 @@ SemanticClosed(root)
   <tbody>
     <tr>
       <td class="term">Artifact</td>
-      <td>Demand closure; builds the spine and fact tables once.</td>
+      <td>Demand closure; builds the independent plan and fact tables once.</td>
       <td>Does not publish recursive layout as a second shape authority.</td>
     </tr>
     <tr>
-      <td class="term">Boundary ABI</td>
-      <td>Boundary fact columns keyed by <code>ShapeId</code> / <code>CallableId</code>.</td>
+      <td class="term">Published boundary contract</td>
+      <td>Boundary contract columns keyed by <code>BoundaryId</code>, <code>CallableId</code>, and shared shape ids.</td>
       <td>Does not reshape internal returns, captures, or resumes.</td>
     </tr>
     <tr>
@@ -200,7 +218,7 @@ SemanticClosed(root)
     </tr>
     <tr>
       <td class="term">Codegen</td>
-      <td>Published codegen lane facts.</td>
+      <td>Published seam-specific codegen facts.</td>
       <td>Does not derive delivery shape, repr, continuation arity, or tuple-return plans locally.</td>
     </tr>
   </tbody>
@@ -208,14 +226,30 @@ SemanticClosed(root)
 
 <h2 id="facts">6. Fact tables</h2>
 
-<p>The exact Rust names can differ. The important property is that structure lives in one spine and layer-specific details live in tables.</p>
+<p>The exact Rust names can differ. The important property is that shared structure lives in descriptor interners and root-specific validity/details live in plan tables.</p>
 
 <pre>
-TransportSpine {
-  shapes: Vec&lt;Shape&gt;,
-  executable: HashMap&lt;ExecutableKey, ExecutableTransport&gt;,
-  scalars: HashMap&lt;ScalarId, ScalarTransportFacts&gt;,
+TransportStore {
+  interners: TransportInterners,
+  plans: HashMap&lt;RootId, TransportPlan&gt;,
+}
+
+TransportInterners {
+  shapes: Interner&lt;ShapeDescr, ShapeId&gt;,
+  lanes: Interner&lt;LaneDescr, LaneId&gt;,
+  callables: Interner&lt;CallableDescr, CallableId&gt;,
+  boundaries: Interner&lt;BoundaryDescr, BoundaryId&gt;,
+}
+
+TransportPlan {
+  semantic_revision: u64,
+  entry: ExecutableSymbol,
+  membership: HashSet&lt;ExecutableSymbol&gt;,
+  positions: HashMap&lt;TransportPosition, ShapeId&gt;,
+  lanes: HashMap&lt;LaneId, LaneFacts&gt;,
   callables: HashMap&lt;CallableId, CallableTransportFacts&gt;,
+  boundaries: HashMap&lt;BoundaryId, BoundaryFacts&gt;,
+  seam_facts: HashMap&lt;TransportSeam, CodegenFacts&gt;,
 }
 
 ExecutableTransport {
@@ -225,22 +259,30 @@ ExecutableTransport {
   entry_capture_shapes: Vec&lt;Vec&lt;ShapeId&gt;&gt;,
 }
 
-ScalarTransportFacts {
+LaneFacts {
   ty: Ty,
-  abi_repr: AbiValueRepr,
-  codegen_repr: ArgRepr,
+  transport_class: TransportClass,
 }
 
 CallableTransportFacts {
-  target: ExecutableKey,
+  target: ExecutableSymbol,
   capture_shapes: Vec&lt;ShapeId&gt;,
-  capture_lanes: Vec&lt;LaneFact&gt;,
+  capture_lanes: Vec&lt;LaneId&gt;,
   materialization: CallableMaterialization,
-  boundary: Option&lt;CallableBoundaryFact&gt;,
+  boundary_ids: Vec&lt;BoundaryId&gt;,
+}
+
+BoundaryFacts {
+  callable: CallableId,
+  surface_arg_shapes: Vec&lt;ShapeId&gt;,
+  published_capture_lanes: Vec&lt;LaneId&gt;,
+  published_arg_lanes: Vec&lt;LaneId&gt;,
+  published_return: BoundaryReturn,
 }
 </pre>
 
 <p><code>CallableId</code> is not <code>LocalCallableId</code>. Local/direct/first-class behavior is a fact about the callable, not a different identity class.</p>
+<p><code>ValueId</code> is not <code>LaneId</code> and not <code>ShapeId</code>. A value, slot, return, capture, or continuation payload position maps to a shape; the shape itself stays interned and independent of semantic value identity.</p>
 
 <h2 id="flow">7. Pipeline flow</h2>
 
@@ -256,54 +298,56 @@ SealSemanticClosure
   -> closed executable frontier
   -> settled RuntimeDemandClosure
 
-MaterializeRoot
-  -> TransportSpine(root)
-  -> MaterializedProgram with shape refs and fact tables
+DeriveTransportFlow (fz-hwn.20)
+  -> shared descriptor ids
+  -> TransportPlan(root)
+  -> telemetry proving positions, callables, boundaries, and seam facts
 
-DeriveAbiReady / DeriveEmissionReady / LowerBackendProgram
-  -> stable inventory indexes
-  -> boundary facts
-  -> no copied shape tree
+Old materialization path
+  -> continues to carry current behavior while the independent plan is proven
+  -> must not feed TransportPlan
 
-LowerNativeProgram
-  -> CPS/native bodies with shape refs and lane facts
-  -> callable boundary ids only where first-class or opaque demand exists
+Consumer cutover (fz-hwn.19)
+  -> MaterializedProgram / backend / native carry plan refs
+  -> trash-prefixed recursive layout authority is deleted seam by seam
 
-Native codegen
-  -> emits lanes from published codegen facts
+Native codegen after cutover
+  -> emits lanes from published seam facts
 </pre>
 
 <h2 id="changes">8. Required changes</h2>
 
 <h3>8.1 Trash-prefix the doomed vocabulary before any other work</h3>
 
-<p>This is <code>fz-hwn.19.7</code>. It blocks the rest of the spine plan and the still-open symptom tickets that touch this vocabulary.</p>
+<p>This is <code>fz-hwn.19.7</code>. It blocks the parallel flow-graph epic and the still-open symptom tickets that touch this vocabulary.</p>
 
-<h3>8.2 Pin contracts before changing the model</h3>
+<h3>8.2 Build the independent flow graph beside the old path</h3>
 
-<p>Tests must state the desired authority before the cutover: scalar transport, ignored values, tuple-field returns/resumes, direct callable returns/resumes, escaped callable boundaries, opaque callable boundaries, backend interpreter parity, and native JIT delivery.</p>
+<p>This is <code>fz-hwn.20</code>. Use the Output Contract Loop: pin the worked example, introduce shared interners and symbols, derive <code>TransportPlan(root)</code> from semantic evidence only, publish callable/boundary facts, publish seam-specific codegen facts, then prove the plan with telemetry/tests. The old path can keep behavior running, but it must not feed the new plan.</p>
 
-<h3>8.3 Replace recursive layout in one cutover</h3>
+<h3>8.3 Accept the handoff and cut consumers over</h3>
 
-<p>This is the painful step. If old and new models both survive a commit, we have created the bridge we are trying to delete.</p>
+<p>This starts <code>fz-hwn.19</code>. If a consumer reads the new plan, the matching old authority must disappear from that seam in the same commit or remain behind an explicit later cutover ticket. No compatibility bridge is committed.</p>
 
 <pre>
 Remove:
-  RuntimeValueLayout
-  RuntimeInputLayout
-  RuntimeLane
+  TrashRuntimeValueLayout
+  TrashRuntimeInputLayout
+  TrashRuntimeLane
   runtime_value_layout_from_demand
   runtime_input_layout_from_demand
   local_callable_layout as a layout builder
 
 Replace with:
-  ShapeId-backed executable transport facts
-  ScalarId facts
+  TransportPlan(root)
+  TransportPosition -> ShapeId tables
+  LaneId facts
   CallableId facts
-  lane tables
+  BoundaryId facts
+  seam-specific codegen facts
 </pre>
 
-<h3>8.4 Make callable materialization a <code>CallableId</code> projection</h3>
+<h3>8.4 Make callable materialization consume <code>CallableId</code> / <code>BoundaryId</code> facts</h3>
 
 <p>First-class callable entries, native boundaries, identity fns, capture lanes, boundary boxing, and direct-callable transport are all facts keyed by <code>CallableId</code>. Codegen never re-selects a boundary from function plus capture types.</p>
 
@@ -311,9 +355,9 @@ Replace with:
 
 <p>Backend/interpreter/native values carry a <code>ShapeId</code> and lane bundle/span. Tuple fields are views through child shape ids. Direct callable invocation reads target and capture facts from <code>CallableId</code>.</p>
 
-<h3>8.6 Make codegen consume facts only</h3>
+<h3>8.6 Make codegen consume seam facts only</h3>
 
-<p>Codegen reads lane facts. It does not decide transport shape, infer continuation result shape, derive reprs from type, or inspect raw IR to rediscover tuple return delivery.</p>
+<p>Codegen reads seam facts. It does not decide transport shape, infer continuation result shape, derive reprs from type, or inspect raw IR to rediscover tuple return delivery.</p>
 
 <h2 id="remove">9. Removal map</h2>
 
@@ -324,15 +368,15 @@ Replace with:
   <tbody>
     <tr>
       <td class="term"><code>RuntimeValueLayout</code> family</td>
-      <td><code>ShapeId</code> plus spine/fact-table lookups.</td>
+      <td><code>TransportPlan</code> lookups.</td>
     </tr>
     <tr>
       <td class="term"><code>abi_reprs()</code> / <code>lane_tys()</code> walks</td>
-      <td>Lane table reads.</td>
+      <td>Lane and seam-fact reads.</td>
     </tr>
     <tr>
       <td class="term"><code>DeliveredShape</code> / <code>NativeDemandAbi</code></td>
-      <td>Published codegen lane facts and divergence bit.</td>
+      <td>Published seam-specific codegen facts and divergence bit.</td>
     </tr>
     <tr>
       <td class="term">Recursive <code>RealizedValue</code> / <code>BackendValue</code> mirrors</td>
@@ -340,15 +384,15 @@ Replace with:
     </tr>
     <tr>
       <td class="term">Boundary selection from capture types</td>
-      <td>Settled boundary id fact attached to <code>CallableId</code>.</td>
+      <td>Settled <code>BoundaryId</code> fact attached to <code>CallableId</code>.</td>
     </tr>
     <tr>
       <td class="term"><code>ArgRepr::from_ty</code> for compiler2 transport</td>
-      <td>Scalar/codegen lane fact keyed by <code>ScalarId</code>.</td>
+      <td>Codegen seam fact keyed by <code>LaneId</code> plus seam.</td>
     </tr>
     <tr>
       <td class="term">Shape mismatch adapters caused by local projections</td>
-      <td>No adapter: both sides read the same spine facts.</td>
+      <td>No adapter: both sides read the same <code>TransportPlan</code> facts.</td>
     </tr>
   </tbody>
 </table>
@@ -364,7 +408,7 @@ Replace with:
   <li>Direct callable values cross return/resume seams structurally.</li>
   <li>Escaped callables publish exactly the required first-class boundary.</li>
   <li>Opaque callable calls use explicit boundary facts, not type recovery.</li>
-  <li>Backend interpreter and native JIT consume the same transport facts.</li>
+  <li>Backend interpreter and native JIT consume the same transport facts after cutover.</li>
 </ul>
 
 <h3>10.2 Static checks</h3>
@@ -372,8 +416,9 @@ Replace with:
 <pre>
 cargo check --all-targets
 cargo clippy --all-targets -- -D warnings
-rg "RuntimeValueLayout|RuntimeInputLayout|RuntimeLane|DeliveredShape|NativeDemandAbi"
-rg "runtime_value_layout_from_demand|delivered_shape_from_layout|tuple_return_delivery_plan"
+rg "\\b(RuntimeValueLayout|RuntimeInputLayout|RuntimeParamLayout|RuntimeLane|ReturnAbi|DeliveredShape|NativeDemandAbi|RealizedValue|BackendValue)\\b" src/compiler2 src/ir_interp src/ir_codegen
+rg "\\b(runtime_value_layout_from_demand|runtime_input_layout_from_demand|delivered_shape_from_layout|delivered_shape_from_return_abi|tuple_return_delivery_plan|local_callable_layout|boundary_return_abi)\\b" src/compiler2 src/ir_interp src/ir_codegen
+rg "TransportPlan\\(root\\)|root-scoped transport spine|codegen repr, not shape"
 </pre>
 
 <p>Those <code>rg</code> checks should only find historical notes that explicitly describe the removed model, or legacy non-compiler2 paths that have their own tickets.</p>
@@ -384,18 +429,20 @@ rg "runtime_value_layout_from_demand|delivered_shape_from_layout|tuple_return_de
 
 <pre>
 fz.compiler2.transport_spine.defined
+fz.compiler2.transport_flow.defined
 
 measurements:
   root_id
   executable_count
+  transport_position_count
   shape_count
   nothing_count
-  scalar_count
+  lane_count
   tuple_count
   callable_count
-  lane_count
+  boundary_count
+  codegen_seam_fact_count
   first_class_callable_count
-  callable_boundary_count
 </pre>
 
 <h2 id="tickets">11. Ticket DAG</h2>
@@ -406,21 +453,28 @@ measurements:
   </thead>
   <tbody>
     <tr><td class="term"><code>fz-hwn.19.7</code></td><td>Trash-prefix doomed transport vocabulary before any other work.</td></tr>
-    <tr><td class="term"><code>fz-hwn.19.1</code></td><td>Pin executable transport contracts before the cutover.</td></tr>
-    <tr><td class="term"><code>fz-hwn.19.2</code></td><td>Replace <code>RuntimeValueLayout</code> with <code>ShapeId</code>-backed transport facts in one cutover.</td></tr>
-    <tr><td class="term"><code>fz-hwn.19.3</code></td><td>Make callable materialization and boundaries <code>CallableId</code> fact projections.</td></tr>
+    <tr><td class="term"><code>fz-hwn.20</code></td><td>Build and prove the pure transport information-flow graph beside the old path.</td></tr>
+    <tr><td class="term"><code>fz-hwn.20.1</code></td><td>Pin the output contract and worked-example telemetry/test signal.</td></tr>
+    <tr><td class="term"><code>fz-hwn.20.2</code></td><td>Introduce shared descriptor interners and symbol types.</td></tr>
+    <tr><td class="term"><code>fz-hwn.20.3</code></td><td>Derive root <code>TransportPlan</code> facts from semantic evidence only.</td></tr>
+    <tr><td class="term"><code>fz-hwn.20.4</code></td><td>Derive <code>CallableId</code> and <code>BoundaryId</code> facts without type recovery.</td></tr>
+    <tr><td class="term"><code>fz-hwn.20.5</code></td><td>Publish seam-specific codegen facts without consuming them.</td></tr>
+    <tr><td class="term"><code>fz-hwn.20.6</code></td><td>Prove independent authority and hand off the cutover inventory.</td></tr>
+    <tr><td class="term"><code>fz-hwn.19.1</code></td><td>Accept the flow-graph handoff and pin consumer contracts.</td></tr>
+    <tr><td class="term"><code>fz-hwn.19.2</code></td><td>Replace recursive layout consumers with <code>TransportPlan</code> facts.</td></tr>
+    <tr><td class="term"><code>fz-hwn.19.3</code></td><td>Make callable materialization consume <code>CallableId</code> / <code>BoundaryId</code> facts.</td></tr>
     <tr><td class="term"><code>fz-hwn.19.4</code></td><td>Collapse backend, interpreter, and native values to shape refs plus lane bundles.</td></tr>
-    <tr><td class="term"><code>fz-hwn.19.5</code></td><td>Make native codegen consume published lane facts only.</td></tr>
-    <tr><td class="term"><code>fz-hwn.19.6</code></td><td>Delete old vocabulary, update docs, and pin telemetry.</td></tr>
+    <tr><td class="term"><code>fz-hwn.19.5</code></td><td>Make native codegen consume <code>TransportPlan</code> seam facts.</td></tr>
+    <tr><td class="term"><code>fz-hwn.19.6</code></td><td>Delete old vocabulary, update docs, and pin final telemetry.</td></tr>
   </tbody>
 </table>
 
 <h2>Conclusion</h2>
 
-<p>The smallest correct model is not a callable patch and not a better recursive layout. It is one transport spine plus fact tables. Runtime demand discovers what must move. The spine records the shape once. Every later layer reads facts.</p>
+<p>The smallest correct model is not a callable patch and not a better recursive layout. It is shared descriptor interners plus root-scoped transport plans. Runtime demand discovers what must move. The plan records the shape once. Every later layer reads facts.</p>
 
 <div class="box green">
-<strong>Acceptance contract:</strong> no runtime object, ABI lane, callable entry, native callable boundary, closure allocation, continuation payload, or codegen delivery shape exists unless a settled spine fact requires it.
+<strong>Acceptance contract:</strong> no runtime object, published boundary lane, callable entry, native callable boundary, closure allocation, continuation payload, or codegen delivery shape exists unless a settled <code>TransportPlan</code> fact requires it.
 </div>
 
 </body>

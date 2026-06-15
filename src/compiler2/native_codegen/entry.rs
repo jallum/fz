@@ -44,7 +44,7 @@ pub(crate) fn build_entry_harness<M: ClModule>(
     // the Option panics loudly at codegen if any future path violates
     // the invariant. `cont_param` is the trailing i64 in the native-tier
     // signature.
-    let demand_abi = NativeDemandAbi::new(env.body_native(this_spec_id));
+    let demand_abi = TrashNativeDemandAbi::new(env.body_native(this_spec_id));
     let (frame_ptr, host_ctx, cont_param): (Option<ir::Value>, Option<ir::Value>, Option<ir::Value>) = if is_native {
         let params: Vec<ir::Value> = body.b.block_params(entry_cl).to_vec();
         let my_param_reprs = &param_reprs[this_spec_id as usize];
@@ -128,7 +128,7 @@ fn harness_cont_fn<M: ClModule>(
     entry_blk: &crate::fz_ir::Block,
     params: &[ir::Value],
     my_param_reprs: &[ArgRepr],
-    demand_abi: &NativeDemandAbi<'_>,
+    demand_abi: &TrashNativeDemandAbi<'_>,
     var_env: &mut HashMap<u32, CodegenValue>,
     _tuple_field_params: &mut HashMap<(u32, u32), CodegenValue>,
 ) -> (Option<ir::Value>, Option<ir::Value>, Option<ir::Value>) {

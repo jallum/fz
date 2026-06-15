@@ -80,17 +80,17 @@ type ResumeEntry = (FnId, Vec<AnyValue>, Option<SpecKey>, Vec<InterpContinuation
 struct BackendContinuation {
     executable: usize,
     entry: crate::compiler2::ControlEntryId,
-    env: HashMap<crate::compiler2::ValueId, BackendValue>,
+    env: HashMap<crate::compiler2::ValueId, TrashBackendValue>,
 }
 
 #[derive(Clone, Debug)]
-enum BackendValue {
+enum TrashBackendValue {
     Omitted,
     Runtime(AnyValue),
-    TupleFields(Vec<BackendValue>),
+    TupleFields(Vec<TrashBackendValue>),
     DirectCallable {
         function: crate::compiler2::FunctionId,
-        captures: Vec<BackendValue>,
+        captures: Vec<TrashBackendValue>,
     },
 }
 
@@ -103,7 +103,7 @@ enum BackendResumeEntry {
     Entry {
         executable: usize,
         entry: crate::compiler2::ControlEntryId,
-        env: HashMap<crate::compiler2::ValueId, BackendValue>,
+        env: HashMap<crate::compiler2::ValueId, TrashBackendValue>,
         continuations: Vec<BackendContinuation>,
     },
 }
@@ -116,7 +116,7 @@ struct BackendParkRecord {
     clauses: Vec<crate::compiler2::ReceiveClause>,
     dispatch: crate::dispatch_matrix::pattern::PatternDispatchPlan<crate::compiler2::Ty>,
     bindings: crate::compiler2::DispatchBindings,
-    env: HashMap<crate::compiler2::ValueId, BackendValue>,
+    env: HashMap<crate::compiler2::ValueId, TrashBackendValue>,
     continuations: Vec<BackendContinuation>,
 }
 

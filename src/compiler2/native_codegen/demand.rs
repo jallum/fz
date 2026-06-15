@@ -1,10 +1,10 @@
 //! Codegen view of compiler2-native return and continuation ABI facts.
 
 use super::{ArgRepr, arg_repr_from_compiler2};
-use crate::compiler2::{NativeBody, NativeEntryAbi, ReturnAbi, RuntimeValueLayout};
+use crate::compiler2::{NativeBody, NativeEntryAbi, TrashReturnAbi, TrashRuntimeValueLayout};
 
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub(crate) enum DeliveredShape {
+pub(crate) enum TrashDeliveredShape {
     Never,
     Omitted,
     Value(ArgRepr),
@@ -12,11 +12,11 @@ pub(crate) enum DeliveredShape {
 }
 
 #[derive(Clone, Copy)]
-pub(crate) struct NativeDemandAbi<'a> {
+pub(crate) struct TrashNativeDemandAbi<'a> {
     body: &'a NativeBody,
 }
 
-impl<'a> NativeDemandAbi<'a> {
+impl<'a> TrashNativeDemandAbi<'a> {
     pub(crate) fn new(body: &'a NativeBody) -> Self {
         Self { body }
     }
@@ -27,10 +27,10 @@ impl<'a> NativeDemandAbi<'a> {
     /// destructured into tuple fields, so it is not a tuple-field delivery.
     pub(crate) fn tuple_field_arity(self) -> Option<usize> {
         match &self.body.return_layout {
-            RuntimeValueLayout::TupleFields { fields } => Some(fields.len()),
-            RuntimeValueLayout::Omitted
-            | RuntimeValueLayout::Value { .. }
-            | RuntimeValueLayout::DirectCallable { .. } => None,
+            TrashRuntimeValueLayout::TupleFields { fields } => Some(fields.len()),
+            TrashRuntimeValueLayout::Omitted
+            | TrashRuntimeValueLayout::Value { .. }
+            | TrashRuntimeValueLayout::DirectCallable { .. } => None,
         }
     }
 
@@ -46,23 +46,26 @@ impl<'a> NativeDemandAbi<'a> {
 /// `is_empty(return_ty)`; everything else flattens from the settled transport
 /// layout. This is the single place return shape is decided, run where types
 /// are available, so codegen consumes it without re-deriving anything.
-pub(crate) fn delivered_shape_from_layout(diverges: bool, layout: &RuntimeValueLayout) -> DeliveredShape {
+pub(crate) fn trash_delivered_shape_from_layout(
+    diverges: bool,
+    layout: &TrashRuntimeValueLayout,
+) -> TrashDeliveredShape {
     if diverges {
-        return DeliveredShape::Never;
+        return TrashDeliveredShape::Never;
     }
     match layout {
-        RuntimeValueLayout::Omitted => DeliveredShape::Omitted,
-        RuntimeValueLayout::Value { repr, .. } => DeliveredShape::Value(arg_repr_from_compiler2(*repr)),
-        RuntimeValueLayout::TupleFields { .. } => DeliveredShape::TupleFields(arg_reprs_boxed(layout)),
-        RuntimeValueLayout::DirectCallable { capture_lanes, .. } => match capture_lanes.len() {
-            0 => DeliveredShape::Omitted,
-            1 => DeliveredShape::Value(arg_repr_from_compiler2(capture_lanes[0].repr)),
-            _ => DeliveredShape::TupleFields(arg_reprs_boxed(layout)),
+        TrashRuntimeValueLayout::Omitted => TrashDeliveredShape::Omitted,
+        TrashRuntimeValueLayout::Value { repr, .. } => TrashDeliveredShape::Value(arg_repr_from_compiler2(*repr)),
+        TrashRuntimeValueLayout::TupleFields { .. } => TrashDeliveredShape::TupleFields(arg_reprs_boxed(layout)),
+        TrashRuntimeValueLayout::DirectCallable { capture_lanes, .. } => match capture_lanes.len() {
+            0 => TrashDeliveredShape::Omitted,
+            1 => TrashDeliveredShape::Value(arg_repr_from_compiler2(capture_lanes[0].repr)),
+            _ => TrashDeliveredShape::TupleFields(arg_reprs_boxed(layout)),
         },
     }
 }
 
-fn arg_reprs_boxed(layout: &RuntimeValueLayout) -> Box<[ArgRepr]> {
+fn arg_reprs_boxed(layout: &TrashRuntimeValueLayout) -> Box<[ArgRepr]> {
     layout
         .abi_reprs()
         .into_iter()
@@ -73,11 +76,11 @@ fn arg_reprs_boxed(layout: &RuntimeValueLayout) -> Box<[ArgRepr]> {
 
 /// Projects a true-boundary return ABI to its delivered shape. Boundary ABIs
 /// remain scalar/tuple publication facts, so this stays narrow.
-pub(crate) fn delivered_shape_from_return_abi(return_abi: &ReturnAbi) -> DeliveredShape {
+pub(crate) fn trash_delivered_shape_from_return_abi(return_abi: &TrashReturnAbi) -> TrashDeliveredShape {
     match return_abi {
-        ReturnAbi::Never => DeliveredShape::Never,
-        ReturnAbi::Value(repr) => DeliveredShape::Value(arg_repr_from_compiler2(*repr)),
-        ReturnAbi::TupleFields(fields) => DeliveredShape::TupleFields(
+        TrashReturnAbi::Never => TrashDeliveredShape::Never,
+        TrashReturnAbi::Value(repr) => TrashDeliveredShape::Value(arg_repr_from_compiler2(*repr)),
+        TrashReturnAbi::TupleFields(fields) => TrashDeliveredShape::TupleFields(
             fields
                 .iter()
                 .copied()

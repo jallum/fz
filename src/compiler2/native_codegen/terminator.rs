@@ -99,14 +99,14 @@ fn spec_is_native(env: &CodegenEnv<'_>, sid: u32) -> bool {
     callee_is_native(env, spec_fn_id(env, sid).0)
 }
 
-fn continuation_input_shape(env: &CodegenEnv<'_>, cont_sid: u32) -> DeliveredShape {
-    let demand_abi = NativeDemandAbi::new(env.body_native(cont_sid));
+fn continuation_input_shape(env: &CodegenEnv<'_>, cont_sid: u32) -> TrashDeliveredShape {
+    let demand_abi = TrashNativeDemandAbi::new(env.body_native(cont_sid));
     let extras = demand_abi.continuation_entry_extras();
     let reprs = &env.param_reprs[cont_sid as usize];
     match extras {
-        0 => DeliveredShape::Omitted,
-        1 => DeliveredShape::Value(reprs.first().copied().unwrap_or(ArgRepr::ValueRef)),
-        _ => DeliveredShape::TupleFields(
+        0 => TrashDeliveredShape::Omitted,
+        1 => TrashDeliveredShape::Value(reprs.first().copied().unwrap_or(ArgRepr::ValueRef)),
+        _ => TrashDeliveredShape::TupleFields(
             reprs
                 .iter()
                 .copied()
@@ -227,15 +227,15 @@ fn emit_native_continuation_tail_delivery<M: cranelift_module::Module>(
 fn adapt_direct_closure_cont<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, '_, M>,
     env: &CodegenEnv<'_>,
-    source_shape: DeliveredShape,
+    source_shape: TrashDeliveredShape,
     passthrough_cont: ir::Value,
-    expected_shape: DeliveredShape,
+    expected_shape: TrashDeliveredShape,
     seam: &'static str,
 ) -> ir::Value {
     match (source_shape, expected_shape) {
-        (DeliveredShape::Never, _) => passthrough_cont,
+        (TrashDeliveredShape::Never, _) => passthrough_cont,
         (left, right) if left == right => passthrough_cont,
-        (DeliveredShape::Value(callee_ret_repr), DeliveredShape::Value(expected_repr)) => {
+        (TrashDeliveredShape::Value(callee_ret_repr), TrashDeliveredShape::Value(expected_repr)) => {
             build_boundary_return_adapter_cont(body, env, passthrough_cont, callee_ret_repr, expected_repr)
         }
         (callee_shape, expected_shape) => {
@@ -285,7 +285,7 @@ impl ContinuationPayload {
         cont_sid: u32,
         captures: &[Var],
     ) -> Self {
-        let demand_abi = NativeDemandAbi::new(env.body_native(cont_sid));
+        let demand_abi = TrashNativeDemandAbi::new(env.body_native(cont_sid));
         let extras_count = demand_abi.continuation_entry_extras();
         let cap_bindings = captures
             .iter()
@@ -417,7 +417,7 @@ fn build_boundary_return_adapter_cont<M: cranelift_module::Module>(
     adapter_cont
 }
 
-fn returned_shape(env: &CodegenEnv<'_>, body_sid: u32) -> DeliveredShape {
+fn returned_shape(env: &CodegenEnv<'_>, body_sid: u32) -> TrashDeliveredShape {
     env.return_shapes[body_sid as usize].clone()
 }
 
@@ -664,10 +664,10 @@ fn emit_return_term<M: cranelift_module::Module, T: Types<Ty = Ty> + ClosureType
                 cont_param.expect("non-cont native fn has cont_param")
             };
             match returned_shape(env, this_spec_id) {
-                DeliveredShape::Never => {
+                TrashDeliveredShape::Never => {
                     body.b.ins().trap(TrapCode::user(1).unwrap());
                 }
-                DeliveredShape::Omitted => {
+                TrashDeliveredShape::Omitted => {
                     let code = body.closure_code_ref(cont_val);
                     let mut sig = Signature::new(CallConv::Tail);
                     sig.params.push(AbiParam::new(types::I64));
@@ -675,7 +675,7 @@ fn emit_return_term<M: cranelift_module::Module, T: Types<Ty = Ty> + ClosureType
                     let sigref = body.b.import_signature(sig);
                     body.b.ins().return_call_indirect(sigref, code, &[cont_val]);
                 }
-                DeliveredShape::TupleFields(fields) => {
+                TrashDeliveredShape::TupleFields(fields) => {
                     let Some(cached_fields) = body.cache.tuple_return_fields.get(&v.0) else {
                         panic!(
                             "native tuple-field return must cache returned fields: spec={} value={}",
@@ -698,7 +698,7 @@ fn emit_return_term<M: cranelift_module::Module, T: Types<Ty = Ty> + ClosureType
                     cont_args.push(cont_val);
                     body.b.ins().return_call_indirect(sigref, code, &cont_args);
                 }
-                DeliveredShape::Value(my_return_repr) => {
+                TrashDeliveredShape::Value(my_return_repr) => {
                     let _ = caller_fn_id;
                     let binding = *var_env.get(&v.0).expect("unbound return val");
                     let code = body.closure_code_ref(cont_val);
@@ -862,8 +862,8 @@ fn emit_native_call_with_cont<M: cranelift_module::Module>(
             None => {
                 synth_halt_cont = true;
                 match returned_shape(env, callee_sid) {
-                    DeliveredShape::Never => synthesize_halt_cont(body, runtime, ArgRepr::ValueRef),
-                    DeliveredShape::Value(callee_ret_repr) => synthesize_halt_cont(body, runtime, callee_ret_repr),
+                    TrashDeliveredShape::Never => synthesize_halt_cont(body, runtime, ArgRepr::ValueRef),
+                    TrashDeliveredShape::Value(callee_ret_repr) => synthesize_halt_cont(body, runtime, callee_ret_repr),
                     shape => panic!("synthesized halt continuation requires one delivered value lane, got {shape:?}"),
                 }
             }
@@ -917,7 +917,7 @@ fn emit_native_call_with_cont<M: cranelift_module::Module>(
         // Result + captures are written into the cont's
         // typed entry slots. Native result already has an
         // ABI repr; captured vars come from var_env.
-        let callee_ret_repr = matches!(returned_shape(env, callee_sid), DeliveredShape::Value(_))
+        let callee_ret_repr = matches!(returned_shape(env, callee_sid), TrashDeliveredShape::Value(_))
             .then_some(env.return_reprs[callee_sid as usize])
             .expect("uniform continuation write-back requires one delivered value lane");
         let mut payload: Vec<(ir::Value, ArgRepr)> = Vec::with_capacity(continuation.captured.len() + 1);
@@ -1060,17 +1060,17 @@ fn emit_native_tail_call<M: cranelift_module::Module>(
             None => {
                 synth_halt_cont = true;
                 match caller_shape {
-                    DeliveredShape::Never => synthesize_halt_cont(body, runtime, ArgRepr::ValueRef),
-                    DeliveredShape::Value(caller_ret_repr) => synthesize_halt_cont(body, runtime, caller_ret_repr),
+                    TrashDeliveredShape::Never => synthesize_halt_cont(body, runtime, ArgRepr::ValueRef),
+                    TrashDeliveredShape::Value(caller_ret_repr) => synthesize_halt_cont(body, runtime, caller_ret_repr),
                     shape => panic!("top-level native tail delivery must end in one value lane, got {shape:?}"),
                 }
             }
         }
     };
     let tail_cont_arg = match (&callee_shape, &caller_shape) {
-        (DeliveredShape::Never, _) => caller_outer_cont,
+        (TrashDeliveredShape::Never, _) => caller_outer_cont,
         (left, right) if left == right => caller_outer_cont,
-        (DeliveredShape::Value(callee_ret_repr), DeliveredShape::Value(caller_ret_repr)) => {
+        (TrashDeliveredShape::Value(callee_ret_repr), TrashDeliveredShape::Value(caller_ret_repr)) => {
             build_boundary_return_adapter_cont(body, env, caller_outer_cont, *callee_ret_repr, *caller_ret_repr)
         }
         _ => {
@@ -1131,18 +1131,18 @@ fn emit_native_tail_call<M: cranelift_module::Module>(
         body.b.seal_block(halt_blk);
         let _ = host_ctx;
         match callee_shape {
-            DeliveredShape::Never => {
+            TrashDeliveredShape::Never => {
                 body.b.ins().trap(TrapCode::user(1).unwrap());
             }
-            DeliveredShape::Omitted => {
+            TrashDeliveredShape::Omitted => {
                 let nil_value = strict_const_value(body.b, AnyValue::nil_atom());
                 emit_halt_from_codegen_value(body, nil_value);
             }
-            DeliveredShape::Value(callee_ret_repr) => {
+            TrashDeliveredShape::Value(callee_ret_repr) => {
                 let result_value = native_call_result_value(body, result, callee_ret_repr);
                 emit_halt_from_codegen_value(body, result_value);
             }
-            DeliveredShape::TupleFields(_) => {
+            TrashDeliveredShape::TupleFields(_) => {
                 panic!(
                     "uniform native tail call halt path requires a scalar delivered value, got {:?}",
                     callee_shape
@@ -1154,18 +1154,18 @@ fn emit_native_tail_call<M: cranelift_module::Module>(
         body.b.switch_to_block(invoke_blk);
         body.b.seal_block(invoke_blk);
         match callee_shape {
-            DeliveredShape::Never => {
+            TrashDeliveredShape::Never => {
                 body.b.ins().trap(TrapCode::user(1).unwrap());
             }
-            DeliveredShape::Omitted => {
+            TrashDeliveredShape::Omitted => {
                 body.b.ins().return_(&[my_cont]);
             }
-            DeliveredShape::Value(callee_ret_repr) => {
+            TrashDeliveredShape::Value(callee_ret_repr) => {
                 let result_value = native_call_result_value(body, result, callee_ret_repr);
                 body.store_frame_value_dynamic(my_cont, SLOT_BYTES as u32, result_value);
                 body.b.ins().return_(&[my_cont]);
             }
-            DeliveredShape::TupleFields(_) => {
+            TrashDeliveredShape::TupleFields(_) => {
                 panic!(
                     "uniform native tail call write-back requires a scalar delivered value, got {:?}",
                     callee_shape

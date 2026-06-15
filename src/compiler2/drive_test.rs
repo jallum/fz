@@ -6,8 +6,8 @@ use crate::compiler2::{
     AbiReadyProgram, AbiValueRepr, ActivationKey, BackendEntryOrigin, BackendProgram, BackendStep, CallSiteId,
     CallSiteKey, CallSiteSummary, CallTarget, CallableEntry, ControlEntryOrigin, EmissionReadyProgram, ExecutableKey,
     FactKey, FactUse, FunctionId, FunctionRef, LoweredBody, LoweredStep, LoweredTail, MaterializedProgram, ModuleId,
-    ModuleState, QuotedSourceHeap, QuotedSourceMetadata, ReturnAbi, RuntimeInputLayout, RuntimeValueLayout,
-    SelectedCallee, SemanticClosure, Ty, TypeName, TypeVarId, Types, ValueId, parse_quoted_program,
+    ModuleState, QuotedSourceHeap, QuotedSourceMetadata, SelectedCallee, SemanticClosure, TrashReturnAbi,
+    TrashRuntimeInputLayout, TrashRuntimeValueLayout, Ty, TypeName, TypeVarId, Types, ValueId, parse_quoted_program,
 };
 use crate::diag::codes;
 use crate::dispatch_matrix::Region;
@@ -2409,7 +2409,10 @@ fn compiler2_abi_ready_makes_tuple_field_return_delivery_explicit_for_quicksort(
     );
     let (_, partition_exec) = abi_ready_executable(&program, partition_id);
     assert!(
-        matches!(partition_exec.return_layout, RuntimeValueLayout::TupleFields { .. }),
+        matches!(
+            partition_exec.return_layout,
+            TrashRuntimeValueLayout::TupleFields { .. }
+        ),
         "partition/4 settles its two-field tuple delivery in its return layout, not on the call edge: {:?}",
         partition_exec.return_layout,
     );
@@ -2693,10 +2696,10 @@ end
     // reducer transports zero capture lanes. The predicate identity is NOT
     // modeled here — a carrier never knows its callee's callees.
     match &reduce_plain_executable.runtime_params.inputs[2] {
-        RuntimeInputLayout {
+        TrashRuntimeInputLayout {
             semantic_index,
             layout:
-                RuntimeValueLayout::DirectCallable {
+                TrashRuntimeValueLayout::DirectCallable {
                     function,
                     capture_lanes,
                 },
@@ -2731,9 +2734,9 @@ end
         "the reducer keeps its full semantic arity: one captured predicate plus two call args",
     );
     match &reducer_executable.runtime_params.inputs[0] {
-        RuntimeInputLayout {
+        TrashRuntimeInputLayout {
             layout:
-                RuntimeValueLayout::DirectCallable {
+                TrashRuntimeValueLayout::DirectCallable {
                     function,
                     capture_lanes,
                 },
@@ -2810,9 +2813,9 @@ end
     );
     assert_eq!(
         ignore_executable.runtime_params.inputs,
-        vec![RuntimeInputLayout {
+        vec![TrashRuntimeInputLayout {
             semantic_index: 0,
-            layout: RuntimeValueLayout::Omitted,
+            layout: TrashRuntimeValueLayout::Omitted,
         }],
         "ABI-ready layout should record the omitted callable input explicitly",
     );
@@ -2892,10 +2895,10 @@ fn main(), do: apply(make_adder(1))
     );
     assert_eq!(apply_executable.runtime_params.inputs.len(), 1);
     match &apply_executable.runtime_params.inputs[0] {
-        RuntimeInputLayout {
+        TrashRuntimeInputLayout {
             semantic_index,
             layout:
-                RuntimeValueLayout::DirectCallable {
+                TrashRuntimeValueLayout::DirectCallable {
                     function,
                     capture_lanes,
                 },
@@ -4989,7 +4992,7 @@ fn compiler2_backend_program_keeps_heap_stats_resume_values_as_runtime_lanes() {
                             if base == value
                                 && matches!(
                                     layout,
-                                    RuntimeValueLayout::Value {
+                                    TrashRuntimeValueLayout::Value {
                                         repr: AbiValueRepr::ValueRef,
                                         ..
                                     }
@@ -5008,7 +5011,7 @@ fn compiler2_backend_program_keeps_heap_stats_resume_values_as_runtime_lanes() {
 
     match &resume_entry.origin {
         BackendEntryOrigin::DeliveredResume {
-            layout: RuntimeValueLayout::Value { repr, .. },
+            layout: TrashRuntimeValueLayout::Value { repr, .. },
             ..
         } => {
             assert_eq!(
@@ -5057,9 +5060,9 @@ fn compiler2_backend_program_keeps_dbg_resumed_heap_stats_as_runtime_lanes() {
     let (_, dbg_exec) = backend_executable(&program, dbg_id);
     assert_eq!(
         dbg_exec.runtime_params.inputs,
-        vec![RuntimeInputLayout {
+        vec![TrashRuntimeInputLayout {
             semantic_index: 0,
-            layout: RuntimeValueLayout::Value {
+            layout: TrashRuntimeValueLayout::Value {
                 ty: dbg_exec.key.activation.input[0],
                 repr: AbiValueRepr::ValueRef,
             },
@@ -5085,7 +5088,7 @@ fn compiler2_backend_program_keeps_dbg_resumed_heap_stats_as_runtime_lanes() {
                 && entry.capture_layouts.iter().any(|capture| {
                     matches!(
                         capture,
-                        RuntimeValueLayout::Value {
+                        TrashRuntimeValueLayout::Value {
                             repr: AbiValueRepr::ValueRef,
                             ..
                         }
@@ -5108,7 +5111,7 @@ fn compiler2_backend_program_keeps_dbg_resumed_heap_stats_as_runtime_lanes() {
             assert!(
                 matches!(
                     layout,
-                    RuntimeValueLayout::Value {
+                    TrashRuntimeValueLayout::Value {
                         repr: AbiValueRepr::ValueRef,
                         ..
                     }
@@ -5131,7 +5134,7 @@ fn compiler2_backend_program_keeps_dbg_resumed_heap_stats_as_runtime_lanes() {
         resume_entry.capture_layouts.iter().any(|capture| {
             matches!(
                 capture,
-                RuntimeValueLayout::Value {
+                TrashRuntimeValueLayout::Value {
                     repr: AbiValueRepr::ValueRef,
                     ..
                 }
@@ -5179,9 +5182,9 @@ fn compiler2_interp_runs_quicksort_from_backend_artifacts() {
     );
     assert_eq!(
         qsort_exec.runtime_params.inputs,
-        vec![RuntimeInputLayout {
+        vec![TrashRuntimeInputLayout {
             semantic_index: 0,
-            layout: RuntimeValueLayout::Value {
+            layout: TrashRuntimeValueLayout::Value {
                 ty: qsort_exec.key.activation.input[0],
                 repr: AbiValueRepr::ValueRef,
             },
@@ -5851,7 +5854,11 @@ fn compiler2_native_program_resource_fixture_shapes_callable_boundaries_explicit
         .collect::<Vec<_>>();
     assert_eq!(
         callable_boundaries,
-        vec![(0, vec![AbiValueRepr::RawInt], ReturnAbi::Value(AbiValueRepr::RawAtom))],
+        vec![(
+            0,
+            vec![AbiValueRepr::RawInt],
+            TrashReturnAbi::Value(AbiValueRepr::RawAtom)
+        )],
         "resource destructor lambdas should surface one zero-capture callable boundary that takes the raw payload lane and returns the settled nil atom through the raw atom lane (the runtime drain discards the dtor return, so it carries the dtor body's own grounded repr, not a boxed seam)",
     );
     assert_eq!(
@@ -5867,7 +5874,7 @@ fn compiler2_native_program_resource_fixture_shapes_callable_boundaries_explicit
         "fz_make_resource/2 must take the payload through the raw integer lane and the destructor closure through the boxed value lane",
     );
     assert!(
-        matches!(make_resource_body.return_layout, RuntimeValueLayout::Omitted),
+        matches!(make_resource_body.return_layout, TrashRuntimeValueLayout::Omitted),
         "main discards the resource handle, so fz_make_resource/2's resource return is not transported",
     );
 
@@ -5996,7 +6003,7 @@ fn compiler2_native_codegen_materializes_the_settled_callable_boundary_for_opaqu
         .find(|boundary| {
             boundary.capture_count == 2
                 && boundary.arg_reprs == vec![AbiValueRepr::ValueRef]
-                && boundary.return_abi == ReturnAbi::Value(AbiValueRepr::ValueRef)
+                && boundary.return_abi == TrashReturnAbi::Value(AbiValueRepr::ValueRef)
         })
         .expect("native program should publish the widened ValueRef callable boundary for the captured lambda");
 
