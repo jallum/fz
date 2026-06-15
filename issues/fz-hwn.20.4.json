@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-15T20:55:22Z",
+  "description": "Goal\nPopulate callable and boundary facts in the independent TransportPlan. Callable identity, direct transport, first-class materialization, and published boundary contracts must be explicit facts, not recovered from broad callable types or old native boundary selection.\n\nRequired facts\nCallableId facts name target symbol/executable resolution, capture shapes, capture lanes, direct surfaces, materialization kind, and associated BoundaryIds. BoundaryId facts name one published callable contract: callable, surface arg shapes, published capture lanes, published arg lanes, return shape/lane contract, and boundary context.\n\nSharing rule\nCallableId and BoundaryId descriptors may include immutable key material, including executable-like symbols, when that is the identity. Root/value/callsite publication evidence should live in TransportPlan facts unless it truly changes the descriptor identity. Maximize sharing by default; narrow identity only when required for correctness.\n\nSource rule\nUse callable demand, exact surfaces, escape/opaque evidence, local producers, captures, and callsite summaries. Do not select boundaries by scanning callable-looking types below the plan. Do not use NativeCallableBoundaryId or old callable-entry inventories as authority.\n\nChecks\nFixtures prove: unused callable constructor publishes no BoundaryId; direct lambda call uses CallableId and no first-class boundary; escaped lambda publishes exactly the demanded BoundaryId; opaque callable demand has explicit BoundaryId; two callables with same surface but distinct capture obligations remain distinguishable only where the facts require it.",
+  "id": "fz-hwn.20.4",
+  "labels": [],
+  "parent": "fz-hwn.20",
+  "priority": 1,
+  "status": "open",
+  "title": "Transport flow graph: derive CallableId and BoundaryId facts without type recovery",
+  "type": "task",
+  "updated_at": "2026-06-15T20:55:22Z"
+}
