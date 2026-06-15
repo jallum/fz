@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-15T23:11:27Z",
+  "description": "Goal\nTriage the current broad `cargo test --all-targets` fixture_matrix failures observed while landing fz-hwn.20.7.\n\nObserved signal\n`cargo test --all-targets` passed lib tests, bin tests, aot_variadic_open, and cli_help, then failed `--test fixture_matrix` with 119 fixture failures. The first failure was `production_and_guides_have_no_old_value_format_gate_names`: `src/compiler2/jobs/artifact.rs` still contains removed value-format gate name `value_slot`. Other failures included fixture output mismatches, old artifact panics at `src/compiler2/jobs/artifact.rs:1475`, and an enum_map_family drive timeout.\n\nScope\nDo not fold this into transport-boundary work unless it is proven caused by the new transport calculator. Reproduce from a clean worktree and split into narrower tickets if the failures have independent causes.",
+  "id": "fz-9i4.7",
+  "labels": [],
+  "parent": "fz-9i4",
+  "priority": 2,
+  "status": "open",
+  "title": "Fixture matrix currently fails outside targeted transport boundary work",
+  "type": "bug",
+  "updated_at": "2026-06-15T23:11:27Z"
+}
