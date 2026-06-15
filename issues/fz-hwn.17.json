@@ -7,9 +7,15 @@
   "id": "fz-hwn.17",
   "labels": [],
   "parent": "fz-hwn",
+  "comments": [
+    {
+      "text": "GROUND-TRUTH ROOT (instrumented, then reverted) -- corrects earlier guesses:\n\nThe escaping lambda's ACTIVATION is keyed with the UN-INSTANTIATED contract type variable, not the instantiation and not the body-inferred type.\n\nEvidence (make_resource fixture 00026):\n- [TYIN] dump of key.activation.input per executable:\n  - make_resource/fz_make_resource (arity 2): input[0] = Ty(17):RawInt  -\u003e arg 1 specialized to integer CORRECTLY (t=integer bound from 42).\n  - dtor lambda (arity 1): input[0] = Ty(21):ValueRef.\n- [CTR] dump of the make_resource contract arrow: params=[Ty(21), Ty(22)], param_has_vars=[true,true], constraints=[alpha0]. So Ty(21) IS alpha0 -- the raw type variable `t` itself, NOT the bound integer|cpointer. abi_value_repr(free var) = ValueRef.\n\nSo: the type var `t` is preserved in the contract (NOT baked to its bound -- earlier spec-resolution hypothesis WRONG). The substitution machinery is correct: Descr::instantiate (descr.rs:274 walked_funcs) DOES recurse into arrow args/ret, so (Var t)-\u003enil with sigma{t:integer} WOULD become (integer)-\u003enil. The make_resource call DOES bind t=integer (arg1 -\u003e Ty(17)).\n\nThe defect: the escaping lambda's activation is materialized from the contract's GENERIC callable parameter `(t)-\u003enil` carrying the free var `t` (Ty(21)=alpha0), instead of the INSTANTIATED `(integer)-\u003enil` (Ty(17)) or the body-inferred type (x: integer from _resource_test_dtor(x)). A lambda activation whose input is a free spec variable can only lower to ValueRef.\n\nFIX LOCATION: where compiler2 materializes the escaping callable's activation input types (the demand-closure callable materialization / callable_executables_from_type and the surface that feeds it). Two correct options:\n(a) instantiate the callable param with the call-site sigma (t=integer) before keying the escaping activation, OR\n(b) key the escaping lambda from its OWN body-inferred type (x: integer), the old-world insight (type_infer boundary_requests reads the closure's own clause.args) WITHOUT old-world's activation-fixpoint machinery.\n\nDOMINANCE: this is plausibly the dominant typing root behind the worklist. Reducers (Enum.reduce `(acc,elem)-\u003eacc` etc.) are callables bound to Enum's spec type vars in arrow positions -- same shape. If their activations carry free vars, the type fixpoint can't settle -\u003e the ~18 reducer/enum HANGS, and starves LowerNativeProgram of concrete types -\u003e the ~10 LowerNativeProgram fatals. Worklist root-cluster triage: 41 assert_resolved (split into ExpandFunctionSource macros ~12, LowerNativeProgram ~10, ScopeCode 2), 9 original_entry_ids, 3 unbound-value, 18 hangs, ~12 singletons -\u003e ~6 roots; types upstream of lowering upstream of codegen, so fixing this typing root should cascade-clear the lowering/hang clusters. Macros (~12) are an orthogonal sibling subsystem, not in this pipeline.",
+      "timestamp": "2026-06-15T12:13:11Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "Compiler2: instantiate extern/contract type variables into callable parameters (escaping lambda specialization)",
   "type": "task",
-  "updated_at": "2026-06-15T11:45:01Z"
+  "updated_at": "2026-06-15T12:13:11Z"
 }
