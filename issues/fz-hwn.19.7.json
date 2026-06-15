@@ -3,7 +3,8 @@
   "blocked_by": [],
   "blocks": [
     "fz-hwn.13",
-    "fz-hwn.16"
+    "fz-hwn.16",
+    "fz-hwn.19.1"
   ],
   "created": "2026-06-15T19:40:49Z",
   "description": "Goal\nBefore any transport-spine implementation, rename every doomed transport vocabulary item with an explicit Trash/Delete marker so future work cannot accidentally treat it as good architecture. This is a guardrail commit, not the ripout.\n\nWhy\nThere are multiple tickets and likely context compactions before the final deletion. Unmarked names such as RuntimeValueLayout and DeliveredShape look legitimate. Prefixing them forces every future caller, test, and compiler error to acknowledge that the path is garbage scheduled for removal.\n\nRequired rename\nUse one consistent prefix, preferably Trash, for doomed compiler2 transport authority names. At minimum cover RuntimeValueLayout, RuntimeInputLayout, RuntimeLane, DeliveredShape, NativeDemandAbi, recursive RealizedValue/BackendValue layout mirrors where they encode transport shape, and helper functions whose purpose is shape translation such as runtime_value_layout_from_demand and delivered_shape_from_layout.\n\nRules\nThis is pure rename plus docs/test name updates needed for compilation. Do not improve behavior, add bridges, or redesign during this ticket. Do not leave unprefixed aliases. If a name cannot be renamed cleanly because it is a legacy non-compiler2 path, create a follow-up ticket before closing.\n\nChecks\ncargo check --all-targets; cargo clippy --all-targets -- -D warnings if feasible; rg confirms doomed names either have the Trash prefix or appear only in docs describing the removed/pre-rename vocabulary.",

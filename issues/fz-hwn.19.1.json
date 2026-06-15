@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-hwn.19.7"
+  ],
   "blocks": [
     "fz-hwn.19.2"
   ],
@@ -13,5 +15,5 @@
   "status": "open",
   "title": "Transport spine: pin executable transport contracts before the cutover",
   "type": "task",
-  "updated_at": "2026-06-15T19:28:18Z"
+  "updated_at": "2026-06-15T19:40:57Z"
 }
