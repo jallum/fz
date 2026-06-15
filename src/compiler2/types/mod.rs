@@ -627,6 +627,18 @@ impl Types {
     pub fn collect_instantiation_subst(&mut self, pattern: &Ty, witness: &Ty, sigma: &mut Sigma<Ty>) {
         collect_subst_into(self, *pattern, *witness, sigma);
     }
+
+    /// Ground a callable's template argument lanes against a settled surface,
+    /// returning the instantiated argument types. Used to key an escaping
+    /// body's activation at the surface a boundary settled rather than the
+    /// callable value's own polymorphic template.
+    pub fn grounded_callable_args(&mut self, template_args: &[Ty], surface_inputs: &[Ty]) -> Vec<Ty> {
+        let mut sigma = Sigma::new();
+        for (pattern, witness) in template_args.iter().zip(surface_inputs.iter()) {
+            self.collect_instantiation_subst(pattern, witness, &mut sigma);
+        }
+        template_args.iter().map(|arg| self.instantiate(arg, &sigma)).collect()
+    }
 }
 
 impl Types {

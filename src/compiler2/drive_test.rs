@@ -5809,7 +5809,6 @@ fn compiler2_interp_runs_resource_dtors_from_backend_runtime_intrinsics() {
 }
 
 #[test]
-#[ignore = "fz-hwn.17: escaping-lambda type-var instantiation; re-aim assertions on fix"]
 fn compiler2_native_program_resource_fixture_shapes_callable_boundaries_explicitly() {
     let _lock = tests_support_lock().lock().unwrap();
     tests_support_dtor_reset();
@@ -5852,8 +5851,8 @@ fn compiler2_native_program_resource_fixture_shapes_callable_boundaries_explicit
         .collect::<Vec<_>>();
     assert_eq!(
         callable_boundaries,
-        vec![(0, vec![AbiValueRepr::RawInt], ReturnAbi::Value(AbiValueRepr::ValueRef))],
-        "resource destructor lambdas should surface one zero-capture callable boundary that takes the raw payload lane and returns through the boxed nil seam",
+        vec![(0, vec![AbiValueRepr::RawInt], ReturnAbi::Value(AbiValueRepr::RawAtom))],
+        "resource destructor lambdas should surface one zero-capture callable boundary that takes the raw payload lane and returns the settled nil atom through the raw atom lane (the runtime drain discards the dtor return, so it carries the dtor body's own grounded repr, not a boxed seam)",
     );
     assert_eq!(
         native_executable_body(&program, lambda_id).param_reprs,
@@ -5861,15 +5860,15 @@ fn compiler2_native_program_resource_fixture_shapes_callable_boundaries_explicit
         "resource destructor executable bodies should specialize their native entry lane to the raw payload type",
     );
     let make_resource_id = function_id(&functions, "fz_make_resource", 2);
+    let make_resource_body = native_executable_body(&program, make_resource_id);
+    assert_eq!(
+        make_resource_body.param_reprs,
+        vec![AbiValueRepr::RawInt, AbiValueRepr::ValueRef],
+        "fz_make_resource/2 must take the payload through the raw integer lane and the destructor closure through the boxed value lane",
+    );
     assert!(
-        matches!(
-            native_executable_body(&program, make_resource_id).return_layout,
-            RuntimeValueLayout::Value {
-                repr: AbiValueRepr::ValueRef,
-                ..
-            }
-        ),
-        "fz_make_resource/2 must return a boxed resource ref through the native ABI",
+        matches!(make_resource_body.return_layout, RuntimeValueLayout::Omitted),
+        "main discards the resource handle, so fz_make_resource/2's resource return is not transported",
     );
 
     let native_callable_boundary = program
@@ -5889,6 +5888,78 @@ fn compiler2_native_program_resource_fixture_shapes_callable_boundaries_explicit
     assert_ne!(
         static_target.2, body_ptr,
         "static closure singletons should point at callable-boundary wrappers, not straight at the lambda body",
+    );
+}
+
+/// fz-hwn.17 -- an escaping callable grounded by its boundary contract keys its
+/// activation at the grounded surface, not its own polymorphic template.
+///
+/// `make_resource(42, fn (x) -> _resource_test_dtor(x) end)` passes the
+/// destructor lambda across the `fz_make_resource(t, (t) -> nil) :: resource(t)
+/// when t: integer | cpointer` boundary. The literal `42` pins `t := integer`,
+/// so the boundary's settled surface for the lambda is `(integer) -> nil`. The
+/// lambda's *own* type stays the polymorphic template `(t) -> nil` -- that is
+/// correct, and is left untouched. What must happen is that the escape demand
+/// carries the boundary's grounded surface so the lambda's specialized
+/// activation is keyed at `[integer]`.
+///
+/// We observe the cause directly: the lambda's executable body is keyed at the
+/// grounded `int` payload type (the same interned `int` that `main` returns),
+/// and therefore takes the raw integer lane. A leaked free type variable would
+/// key a distinct, un-grounded activation with no raw lane -- it would box to
+/// `ValueRef`, which is exactly the regression this pins against.
+#[test]
+fn escaping_destructor_keys_its_activation_at_the_grounded_boundary_surface() {
+    let _lock = tests_support_lock().lock().unwrap();
+    tests_support_dtor_reset();
+
+    let tel = ConfiguredTelemetry::new();
+    let native = NativeProgramCapture::new();
+    tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
+    let functions = FunctionCapture::new();
+    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/compiler2_resource_callable_shape.fz".to_string()),
+        text: include_str!("../../fixtures2/00026_make_resource.fz").to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    assert_resolved(
+        compiler.drive(),
+        "resource fixture should settle through native lowering",
+    );
+
+    let program = native.last(root_id).program;
+    let main_id = function_id(&functions, "main", 0);
+    let lambda_id = generated_functions_owned_by(&functions, main_id)
+        .into_iter()
+        .next()
+        .expect("generated dtor lambda")
+        .function_id;
+
+    // `main` ends in the literal `0`, so its settled return type is the
+    // interned `int`. The escaping destructor's payload must be that same type.
+    let int_ty = native_executable_body(&program, main_id).return_ty;
+    let lambda_body = native_executable_body(&program, lambda_id);
+    let NativeBodyOrigin::Executable(key) = &lambda_body.origin else {
+        panic!("the destructor lambda should lower to a top-level executable body");
+    };
+    assert_eq!(
+        key.activation.input,
+        vec![int_ty],
+        "the escaping destructor keys its activation at the grounded payload type carried by make_resource's boundary surface, not its own (t) template",
+    );
+    assert_eq!(
+        lambda_body.param_reprs,
+        vec![AbiValueRepr::RawInt],
+        "the grounded activation takes the raw integer lane; a leaked type variable would have no raw lane and box to ValueRef",
     );
 }
 

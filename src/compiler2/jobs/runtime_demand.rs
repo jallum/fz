@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use super::super::body::{
     CallArg, CallSiteId, ControlDestination, ControlEntryId, LoweredBody, LoweredEntry, LoweredStep, LoweredTail,
@@ -8,8 +8,8 @@ use super::super::drive::{FactKey, Job};
 use super::super::identity::{ExecutableKey, ExecutableNeed, FunctionId, function_id_of_closure_target};
 use super::super::scheduler::FatalError;
 use super::super::semantic::{
-    ActivationAnalysis, CallSiteKey, CallSiteSummary, CallableDemand, CallableMaterialization, ExecutableRuntimeDemand,
-    RuntimeDemand,
+    ActivationAnalysis, CallSiteKey, CallSiteSummary, CallableDemand, CallableMaterialization, CallableSurface,
+    ExecutableRuntimeDemand, RuntimeDemand,
 };
 use super::super::types::Ty;
 use super::super::world::World;
@@ -1052,15 +1052,24 @@ fn local_target_input_demands(
 }
 
 fn boundary_runtime_demand(world: &mut World<'_>, ty: Ty) -> RuntimeDemand {
-    if world.types_mut().callable_clauses(&ty).is_some() {
-        RuntimeDemand::callable(CallableDemand {
-            resolved: Default::default(),
-            opaque: true,
-            escape: true,
-        })
-    } else {
-        RuntimeDemand::Value
-    }
+    let Some(clauses) = world.types_mut().callable_clauses(&ty) else {
+        return RuntimeDemand::Value;
+    };
+    // A callable crossing a boundary escapes as a first-class value. Carry the
+    // boundary's settled surface (its grounded argument lanes) so the escaping
+    // body's activation is keyed at those exact types. Without this the
+    // materialization re-derives the key from the callable value's own type,
+    // which is still the polymorphic template -- correct only while an
+    // activation fixpoint propagated use-site grounding back onto it.
+    let resolved = clauses
+        .into_iter()
+        .map(|clause| CallableSurface::new(clause.args))
+        .collect::<BTreeSet<_>>();
+    RuntimeDemand::callable(CallableDemand {
+        resolved,
+        opaque: false,
+        escape: true,
+    })
 }
 
 fn boundary_value_demand(
@@ -1123,16 +1132,16 @@ fn demanded_callable_executables(
             .get(executable)
             .expect("runtime demand closure should produce a plan for every executable");
         for (value, materialization) in &demand.callable_materializations {
-            if !matches!(materialization, CallableMaterialization::FirstClass { .. }) {
+            let CallableMaterialization::FirstClass { surfaces } = materialization else {
                 continue;
-            }
+            };
             if !producer_values.contains(value) {
                 continue;
             }
             let Some(&ty) = facts.analysis.value_types.get(value) else {
                 continue;
             };
-            for callee in callable_executables_from_type(world, executable, ty, reads, waits, follow_up) {
+            for callee in callable_executables_from_type(world, executable, ty, surfaces, reads, waits, follow_up) {
                 latent.insert(callee);
             }
         }
@@ -1173,6 +1182,7 @@ fn callable_executables_from_type(
     world: &mut World<'_>,
     executable: &ExecutableKey,
     callable_ty: Ty,
+    surfaces: &BTreeSet<CallableSurface>,
     reads: &mut Vec<FactKey>,
     waits: &mut HashSet<FactKey>,
     follow_up: &mut HashSet<Job>,
@@ -1189,14 +1199,37 @@ fn callable_executables_from_type(
         if !world.require_activation_key_facts(function, reads, waits, follow_up) {
             continue;
         }
-        let mut inputs = closure.captures;
-        inputs.extend(clause.args);
-        out.push(ExecutableKey {
-            activation: world.activation_key(executable.activation.root, function, &inputs),
-            need: ExecutableNeed::Value,
-        });
+        for args in grounded_activation_args(world, &clause.args, surfaces) {
+            let mut inputs = closure.captures.clone();
+            inputs.extend(args);
+            out.push(ExecutableKey {
+                activation: world.activation_key(executable.activation.root, function, &inputs),
+                need: ExecutableNeed::Value,
+            });
+        }
     }
     out
+}
+
+/// The argument lanes to key an escaping body's activation at. Each settled
+/// boundary surface of matching arity grounds the body's template arguments to
+/// the exact types that boundary demanded; with no matching surface the
+/// callable escapes opaquely and its own (template) arguments are the truth.
+fn grounded_activation_args(
+    world: &mut World<'_>,
+    template_args: &[Ty],
+    surfaces: &BTreeSet<CallableSurface>,
+) -> Vec<Vec<Ty>> {
+    let grounded = surfaces
+        .iter()
+        .filter(|surface| surface.inputs.len() == template_args.len())
+        .map(|surface| world.types_mut().grounded_callable_args(template_args, &surface.inputs))
+        .collect::<Vec<_>>();
+    if grounded.is_empty() {
+        vec![template_args.to_vec()]
+    } else {
+        grounded
+    }
 }
 
 fn derive_callable_materializations(world: &mut World<'_>, facts: &ExecutableFacts, out: &mut ExecutableRuntimeDemand) {
