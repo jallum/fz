@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-15T20:54:54Z",
+  "description": "Goal\nTurn the paper model into an executable contract before implementation. The tests and telemetry spec must describe the pure information flow, not the old layout names.\n\nStrategy\nUse Output Contract Loop. Start from the worked example in outline.md and write down the exact source evidence, symbol graph, TransportPosition -\u003e ShapeId facts, CallableId facts, BoundaryId facts, and seam-fact expectations. Then pin the minimum test/telemetry surface that will prove those facts when the plan exists.\n\nRequired contract\nThe contract must distinguish shared symbols from root-scoped facts. Activation/executable/callable symbols describe semantic meaning; RootId owns closure membership and validity. ShapeId/LaneId/CallableId/BoundaryId descriptors are interned immutable ids. TransportPlan(root) owns position mapping, demand/use obligations, boundary publication, and codegen seam facts.\n\nNo bridge rule\nDo not assert old RuntimeValueLayout, ReturnAbi, DeliveredShape, NativeDemandAbi, or ArgRepr-from-type behavior as authority. They may be mentioned only as removal inventory.\n\nChecks\nA failing or pending-target test documents the worked example at the production boundary where possible. Telemetry event names and fields are specified. rg over the new test/docs confirms root-scoped wording applies to TransportPlan facts, not to descriptor interning.",
+  "id": "fz-hwn.20.1",
+  "labels": [],
+  "parent": "fz-hwn.20",
+  "priority": 1,
+  "status": "open",
+  "title": "Transport flow graph: pin pure output contract and worked-example signal",
+  "type": "task",
+  "updated_at": "2026-06-15T20:54:54Z"
+}
