@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-hwn.19.2"
+  ],
   "created": "2026-06-15T19:27:13Z",
   "description": "Goal\nWrite characterization tests that describe the desired transport authority before changing the model. These tests should observe the contracts we must preserve and the old structures we intend to remove.\n\nSignal\nTests cover scalar returns, ignored inputs/results, tuple-field returns/resumes, direct callable returns/resumes, escaped callable boundaries, opaque callable boundaries, closure captures, backend interpreter parity, and native JIT delivery. Existing tests that assert RuntimeValueLayout or DeliveredShape as authority are marked for rewrite to spine/fact assertions.\n\nStrategy\nUse the current fixtures and telemetry capture harnesses. Add tests only where a behavior is not already pinned. Do not add compatibility helpers. The tests should state intent: one settled transport shape plus fact-table projections.\n\nRemoval target identified\nRuntimeValueLayout assertions in drive/artifact tests, DeliveredShape assertions in native codegen tests, local repr derivation expectations, and any stale ValueRef expectations at exact internal transport seams.\n\nChecks\ncargo test for the targeted compiler2 transport tests; rg inventory of old transport-type assertions captured in this ticket notes.",
   "id": "fz-hwn.19.1",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Transport spine: pin executable transport contracts before the cutover",
   "type": "task",
-  "updated_at": "2026-06-15T19:27:13Z"
+  "updated_at": "2026-06-15T19:28:18Z"
 }
