@@ -6,14 +6,16 @@
   "blocks": [
     "fz-hwn.20.3"
   ],
+  "closed_at": "2026-06-15T21:50:11Z",
+  "close_reason": "Completed in 18a8931b9: added compiler2::transport ids, descriptors, root-independent symbols, TransportPosition, TransportInterners/TransportStore, World ownership, and interner tests; no consumers read the new ids yet.",
   "created": "2026-06-15T20:55:03Z",
   "description": "Goal\nAdd the transport module and immutable descriptor interners without changing old runtime behavior. This creates the vocabulary the independent plan will use.\n\nRequired model\nAdd ids and descriptors for ShapeId, LaneId, CallableId, BoundaryId, activation/executable/callable symbols as needed, and TransportPosition. Shape = Nothing | Lane(LaneId) | Tuple(Vec\u003cShapeId\u003e) | Callable(CallableId). Tuple children are ShapeIds. LaneId is keyed by settled Ty or a stable transport class if needed. Descriptors may contain any immutable key material, but root/revision/value/callsite evidence should stay out unless it truly defines identity.\n\nStorage rule\nWorld may own the compiler-context transport interners initially, behind a focused TransportStore/TransportInterners API. Do not scatter maps directly across World. Root-scoped plans are separate from descriptor interners.\n\nNo behavior rule\nDo not thread these ids into materialization/backend/native consumers yet. Do not translate old layouts into descriptors. Unit tests should prove recursive interning, id equality, descriptor lookup, and maximal sharing for root-independent descriptors.\n\nChecks\ncargo test for transport interner tests; cargo check --all-targets; rg confirms no production consumer reads new ids as a compatibility adapter for old layout.",
   "id": "fz-hwn.20.2",
   "labels": [],
   "parent": "fz-hwn.20",
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "Transport flow graph: introduce shared descriptor interners and symbol types",
   "type": "task",
-  "updated_at": "2026-06-15T20:55:49Z"
+  "updated_at": "2026-06-15T21:50:11Z"
 }
