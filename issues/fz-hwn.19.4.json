@@ -7,7 +7,7 @@
     "fz-hwn.19.5"
   ],
   "created": "2026-06-15T19:27:40Z",
-  "description": "Goal\nRemove realized recursive value trees from backend/interpreter/native lowering. A runtime-carried value is a ShapeId plus a lane span/bundle; tuple projection and callable invocation use the spine/fact tables, not a mirrored value layout.\n\nRequired changes\nBackendValue and native RealizedValue stop carrying recursive RuntimeValueLayout-like structure. Decode/encode routines take ShapeId and read lane counts/reprs from facts. Tuple fields are views over child ShapeIds. DirectCallable values carry CallableId plus lane bundle; invocation reads callee/capture facts from CallableId.\n\nRemoval target\nRealizedValue.layout tree, RealizedValue::tuple/direct_callable constructors that build layout, BackendValue direct recursive shape mirrors, encode_runtime_value/decode_runtime_value functions that match over layout variants, tuple_fields_for_layout, direct callable reconstruction from nested captures, and lane-count derivation by walking a local tree.\n\nChecks\nBackend interpreter and native JIT agree on direct callable calls, tuple-field returns, resume delivery, reusable-cons flows, escaped callable boundaries, and ignored values. rg confirms no recursive runtime-value mirror remains in backend/native/interp.",
+  "description": "Goal\nRemove realized recursive value trees from backend/interpreter/native lowering. A runtime-carried value is a ShapeId plus a lane span/bundle; tuple projection and callable invocation use the spine/fact tables, not a mirrored value layout.\n\nRequired changes\nBackendValue and native RealizedValue stop carrying recursive RuntimeValueLayout-like structure. Decode/encode routines take ShapeId and read lane counts/reprs from LaneId facts. Tuple fields are views over child ShapeIds. DirectCallable values carry CallableId plus lane bundle; invocation reads callee/capture facts from CallableId.\n\nRemoval target\nRealizedValue.layout tree, RealizedValue::tuple/direct_callable constructors that build layout, BackendValue direct recursive shape mirrors, encode_runtime_value/decode_runtime_value functions that match over layout variants, tuple_fields_for_layout, direct callable reconstruction from nested captures, and lane-count derivation by walking a local tree.\n\nChecks\nBackend interpreter and native JIT agree on direct callable calls, tuple-field returns, resume delivery, reusable-cons flows, escaped callable boundaries, and ignored values. rg confirms no recursive runtime-value mirror remains in backend/native/interp.",
   "id": "fz-hwn.19.4",
   "labels": [],
   "parent": "fz-hwn.19",
@@ -15,5 +15,5 @@
   "status": "open",
   "title": "Transport spine: collapse backend, interpreter, and native values to shape refs plus lane bundles",
   "type": "task",
-  "updated_at": "2026-06-15T19:28:19Z"
+  "updated_at": "2026-06-15T19:57:03Z"
 }
