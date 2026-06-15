@@ -1,3 +1,10 @@
+use std::cell::RefCell;
+use std::rc::Rc;
+
+use super::transport::{ShapeDescr, ShapeId, TransportPlan, TransportPosition};
+use super::{DriveOutcome, ExecutableNeed, World};
+use crate::telemetry::{Capture, ConfiguredTelemetry, Value};
+
 const EVENT_NAME: &[&str] = &["fz", "compiler2", "transport_flow", "defined"];
 
 const MEASUREMENT_FIELDS: &[&str] = &[
@@ -183,13 +190,190 @@ fn compiler2_transport_flow_telemetry_contract_names_the_output_signal() {
 }
 
 #[test]
-#[ignore = "fz-hwn.20.3 enables this against real TransportPlan telemetry"]
 fn compiler2_transport_flow_worked_example_is_emitted_by_the_production_boundary() {
-    panic!(
-        "compile the worked example, capture {}, and compare the emitted facts to \
-         compiler2_transport_flow_contract_separates_shared_descriptors_from_root_plan",
-        EVENT_NAME.join(".")
+    let source = r#"
+fn add(x), do: fn (y) -> x + y end
+fn apply1(f, x), do: f.(x)
+fn pair(x), do: {x, add(x)}
+
+fn main() do
+  {n, f} = pair(41)
+  apply1(f, n)
+end
+"#;
+
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    let metadata_keys = Rc::new(RefCell::new(Vec::<Vec<&'static str>>::new()));
+    let metadata_keys_in = metadata_keys.clone();
+    tel.attach(EVENT_NAME, capture.handler());
+    tel.attach(
+        EVENT_NAME,
+        Box::new(move |event: &crate::telemetry::handler::Event<'_, '_, '_>| {
+            metadata_keys_in
+                .borrow_mut()
+                .push(event.metadata.iter().map(|(key, _)| *key).collect::<Vec<_>>());
+        }),
     );
+    let mut world = World::new(&tel);
+    world.submit_code(Some("transport_worked_example.fz".to_string()), source.to_string());
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    assert_resolved(world.drive_for(None), "worked example should settle");
+
+    let event = capture
+        .last(EVENT_NAME)
+        .unwrap_or_else(|| panic!("{} should be emitted", EVENT_NAME.join(".")));
+    assert_eq!(
+        event.name, EVENT_NAME,
+        "worked example should emit the production transport-flow signal"
+    );
+    assert!(
+        matches!(event.measurements.get("transport_position_count"), Some(Value::U64(count)) if *count >= 1),
+        "worked example should report concrete transport positions: {:?}",
+        event.measurements
+    );
+    let seen_keys = metadata_keys
+        .borrow()
+        .last()
+        .cloned()
+        .expect("worked example should record one transport-flow event");
+    for field in METADATA_FIELDS {
+        assert!(
+            seen_keys.contains(field),
+            "worked example transport metadata should include {field}"
+        );
+    }
+
+    let plan = transport_plan(&world, root);
+    let pair = executable_for(&world, &plan, "pair", 1);
+    let main = executable_for(&world, &plan, "main", 0);
+    let pair_return = plan_shape_at(&plan, &TransportPosition::ExecutableReturn { executable: pair });
+    let main_resume = resume_shapes_for(&plan, &main)
+        .into_iter()
+        .find(|shape| *shape == pair_return)
+        .unwrap_or_else(|| panic!("main should resume the tuple returned by pair/1: {:?}", plan.positions));
+    assert_eq!(
+        pair_return, main_resume,
+        "pair/1 return and main/0 resume should share one ShapeId"
+    );
+    let ShapeDescr::Tuple(items) = shape_descr(&world, pair_return) else {
+        panic!("pair/1 should return a tuple transport shape")
+    };
+    assert_eq!(items.len(), 2, "pair/1 should return two tuple fields");
+}
+
+#[test]
+fn compiler2_transport_plan_maps_ignored_returns_to_nothing_once() {
+    let source = r#"
+fn ping(x), do: x + 1
+
+fn main() do
+  ping(41)
+  :ok
+end
+"#;
+
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new(&tel);
+    world.submit_code(Some("transport_ignore.fz".to_string()), source.to_string());
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    assert_resolved(world.drive_for(None), "ignored-return fixture should settle");
+
+    let plan = transport_plan(&world, root);
+    let ping = executable_for(&world, &plan, "ping", 1);
+    let ping_return = plan_shape_at(&plan, &TransportPosition::ExecutableReturn { executable: ping });
+    assert!(
+        matches!(shape_descr(&world, ping_return), ShapeDescr::Nothing),
+        "ignored callee returns should collapse to Shape::Nothing at transport derivation"
+    );
+}
+
+#[test]
+fn compiler2_transport_plan_shares_direct_callable_return_and_resume_shapes() {
+    let source = r#"
+fn apply1(f, x), do: f.(x)
+fn make_adder(a), do: fn (x) -> x + a end
+
+fn main() do
+  f = make_adder(1)
+  apply1(f, 41)
+end
+"#;
+
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new(&tel);
+    world.submit_code(Some("transport_direct_callable.fz".to_string()), source.to_string());
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    assert_resolved(world.drive_for(None), "direct-callable fixture should settle");
+
+    let plan = transport_plan(&world, root);
+    let make_adder = executable_for(&world, &plan, "make_adder", 1);
+    let main = executable_for(&world, &plan, "main", 0);
+    let returned = plan_shape_at(&plan, &TransportPosition::ExecutableReturn { executable: make_adder });
+    let resumed = resume_shapes_for(&plan, &main)
+        .into_iter()
+        .find(|shape| *shape == returned)
+        .unwrap_or_else(|| panic!("main should resume the direct callable returned by make_adder/1"));
+    assert_eq!(
+        returned, resumed,
+        "direct callable return and resume positions should share one ShapeId"
+    );
+    assert!(
+        matches!(shape_descr(&world, returned), ShapeDescr::Callable(_)),
+        "direct callable return should materialize as a callable shape"
+    );
+}
+
+fn assert_resolved(outcome: DriveOutcome<super::Job, super::FactKey>, message: &str) {
+    assert!(matches!(outcome, DriveOutcome::Resolved), "{message}: {outcome:?}");
+}
+
+fn executable_for(
+    world: &World<'_>,
+    plan: &TransportPlan,
+    name: &str,
+    arity: usize,
+) -> super::transport::ExecutableSymbol {
+    plan.executable_membership
+        .iter()
+        .find(|symbol| {
+            let function_ref = world.function_ref(symbol.activation.function);
+            function_ref.name == name && function_ref.arity == arity
+        })
+        .cloned()
+        .unwrap_or_else(|| panic!("transport plan executable {name}/{arity}"))
+}
+
+fn transport_plan(world: &World<'_>, root: super::RootId) -> TransportPlan {
+    world
+        .transport()
+        .plans()
+        .get(root)
+        .cloned()
+        .unwrap_or_else(|| panic!("transport plan for root {}", root.as_u32()))
+}
+
+fn resume_shapes_for(plan: &TransportPlan, executable: &super::transport::ExecutableSymbol) -> Vec<ShapeId> {
+    plan.positions
+        .iter()
+        .filter_map(|(position, shape)| match position {
+            TransportPosition::ResumePayload {
+                executable: candidate, ..
+            } if candidate == executable => Some(*shape),
+            _ => None,
+        })
+        .collect()
+}
+
+fn plan_shape_at(plan: &TransportPlan, position: &TransportPosition) -> ShapeId {
+    *plan
+        .positions
+        .get(position)
+        .unwrap_or_else(|| panic!("transport position should exist: {position:?}"))
+}
+
+fn shape_descr<'a>(world: &'a World<'_>, shape: ShapeId) -> &'a ShapeDescr {
+    world.transport().interners().shape(shape)
 }
 
 fn shape(id: &str) -> Option<&'static str> {

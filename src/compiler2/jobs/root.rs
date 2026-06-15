@@ -321,6 +321,9 @@ pub(super) fn seal_semantic_closure(world: &mut World<'_>, root_id: RootId) -> R
             changed.push(semantic_closed_fact);
         }
         if closure_changed {
+            follow_up.insert(Job::DeriveTransportPlan(root_id));
+        }
+        if closure_changed {
             follow_up.insert(Job::MaterializeRoot(root_id));
         }
     }

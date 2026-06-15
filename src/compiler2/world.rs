@@ -55,7 +55,7 @@ use super::source::{
     QuotedLexicalContext, QuotedLexicalContextKind, QuotedSourceBuilder, QuotedSourceError, QuotedSourceMetadata,
     QuotedSourceRoot,
 };
-use super::transport::TransportStore;
+use super::transport::{TransportPlan, TransportStore};
 use super::typedef::{TypeDef, TypeDefMap};
 use super::types::{ClosureTarget, MapKey, Ty, Types};
 use crate::ir_interp::AnyValue as RuntimeValue;
@@ -724,6 +724,74 @@ impl<'a> World<'a> {
             .get(root)
             .cloned()
             .expect("semantic closures should only be read after their fact is defined")
+    }
+
+    pub(crate) fn define_transport_plan(&mut self, root: RootId, plan: TransportPlan) -> bool {
+        let semantic_revision = self
+            .fact_revision(&FactKey::SemanticClosed(root))
+            .expect("transport plans should only be defined from settled semantic closures");
+        let changed = self.transport.plans_mut().define(root, plan);
+        let plan = self
+            .transport
+            .plans()
+            .get(root)
+            .expect("transport plans should be readable right after they are defined");
+        let interners = self.transport.interners();
+        let nothing_shape_count = interners
+            .shapes()
+            .filter(|(_, descr)| matches!(descr, super::transport::ShapeDescr::Nothing))
+            .count() as u64;
+        let tuple_shape_count = interners
+            .shapes()
+            .filter(|(_, descr)| matches!(descr, super::transport::ShapeDescr::Tuple(_)))
+            .count() as u64;
+        let callable_shape_count = interners
+            .shapes()
+            .filter(|(_, descr)| matches!(descr, super::transport::ShapeDescr::Callable(_)))
+            .count() as u64;
+        let closure = self.semantic_closure(root);
+        let (direct_callable_count, first_class_callable_count) = closure
+            .runtime_demands
+            .values()
+            .flat_map(|demand| demand.callable_materializations.values())
+            .fold(
+                (0_u64, 0_u64),
+                |(direct, first_class), materialization| match materialization {
+                    super::semantic::CallableMaterialization::DirectOnly { .. } => (direct + 1, first_class),
+                    super::semantic::CallableMaterialization::FirstClass { .. } => (direct, first_class + 1),
+                },
+            );
+        self.tel.execute(
+            &["fz", "compiler2", "transport_flow", "defined"],
+            &measurements! {
+                root_id: root.as_u32(),
+                semantic_revision: semantic_revision,
+                executable_count: plan.executable_membership.len() as u64,
+                transport_position_count: plan.positions.len() as u64,
+                shape_descriptor_count: interners.shape_count() as u64,
+                lane_descriptor_count: interners.lane_count() as u64,
+                callable_descriptor_count: interners.callable_count() as u64,
+                boundary_descriptor_count: interners.boundary_count() as u64,
+                nothing_shape_count: nothing_shape_count,
+                tuple_shape_count: tuple_shape_count,
+                callable_shape_count: callable_shape_count,
+                direct_callable_count: direct_callable_count,
+                first_class_callable_count: first_class_callable_count,
+                boundary_publication_count: interners.boundary_count() as u64,
+                codegen_seam_fact_count: plan.positions.len() as u64,
+            },
+            &metadata! {
+                entry_executable_symbol: opaque_debug(&plan.entry),
+                executable_membership: opaque_debug(&plan.executable_membership),
+                transport_positions: opaque_debug(&plan.positions),
+                shape_descriptors: opaque_debug(&interners.shapes().map(|(id, descr)| (id, descr.clone())).collect::<Vec<_>>()),
+                lane_descriptors: opaque_debug(&interners.lanes().map(|(id, descr)| (id, descr.clone())).collect::<Vec<_>>()),
+                callable_facts: opaque_debug(&interners.callables().map(|(id, descr)| (id, descr.clone())).collect::<Vec<_>>()),
+                boundary_facts: opaque_debug(&interners.boundaries().map(|(id, descr)| (id, descr.clone())).collect::<Vec<_>>()),
+                seam_facts: opaque_debug(&plan.positions),
+            },
+        );
+        changed
     }
 
     pub(crate) fn define_materialized_program(&mut self, root: RootId, program: MaterializedProgram) -> bool {

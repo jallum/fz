@@ -9,7 +9,7 @@ use std::hash::Hash;
 use std::marker::PhantomData;
 
 use super::body::{CallSiteId, ControlEntryId, ValueId};
-use super::identity::{ExecutableNeed, FunctionId};
+use super::identity::{ExecutableNeed, FunctionId, RootId};
 use super::types::Ty;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -161,6 +161,11 @@ pub enum TransportPosition {
         callsite: CallSiteId,
         entry: ControlEntryId,
     },
+    CallArg {
+        executable: ExecutableSymbol,
+        callsite: CallSiteId,
+        semantic_index: usize,
+    },
     EntryCapture {
         executable: ExecutableSymbol,
         entry: ControlEntryId,
@@ -175,9 +180,17 @@ pub enum TransportPosition {
     },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TransportPlan {
+    pub entry: ExecutableSymbol,
+    pub executable_membership: Box<[ExecutableSymbol]>,
+    pub positions: HashMap<TransportPosition, ShapeId>,
+}
+
 #[derive(Debug, Default)]
 pub struct TransportStore {
     interners: TransportInterners,
+    plans: TransportPlanMap,
 }
 
 impl TransportStore {
@@ -191,6 +204,14 @@ impl TransportStore {
 
     pub fn interners_mut(&mut self) -> &mut TransportInterners {
         &mut self.interners
+    }
+
+    pub fn plans(&self) -> &TransportPlanMap {
+        &self.plans
+    }
+
+    pub fn plans_mut(&mut self) -> &mut TransportPlanMap {
+        &mut self.plans
     }
 }
 
@@ -250,6 +271,22 @@ impl TransportInterners {
     pub fn boundary_count(&self) -> usize {
         self.boundaries.len()
     }
+
+    pub fn shapes(&self) -> impl Iterator<Item = (ShapeId, &ShapeDescr)> + '_ {
+        self.shapes.iter()
+    }
+
+    pub fn lanes(&self) -> impl Iterator<Item = (LaneId, &LaneDescr)> + '_ {
+        self.lanes.iter()
+    }
+
+    pub fn callables(&self) -> impl Iterator<Item = (CallableId, &CallableDescr)> + '_ {
+        self.callables.iter()
+    }
+
+    pub fn boundaries(&self) -> impl Iterator<Item = (BoundaryId, &BoundaryDescr)> + '_ {
+        self.boundaries.iter()
+    }
 }
 
 #[derive(Debug)]
@@ -294,6 +331,43 @@ where
 
     fn len(&self) -> usize {
         self.arena.len()
+    }
+
+    fn iter(&self) -> impl Iterator<Item = (I, &D)> + '_ {
+        self.arena
+            .iter()
+            .enumerate()
+            .map(|(index, descr)| (I::from_u32(index as u32), descr))
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct TransportPlanMap {
+    slots: Vec<Option<TransportPlan>>,
+}
+
+impl TransportPlanMap {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn define(&mut self, root: RootId, plan: TransportPlan) -> bool {
+        self.ensure(root);
+        let slot = &mut self.slots[root.as_u32() as usize];
+        let changed = !matches!(slot, Some(existing) if existing == &plan);
+        *slot = Some(plan);
+        changed
+    }
+
+    pub fn get(&self, root: RootId) -> Option<&TransportPlan> {
+        self.slots.get(root.as_u32() as usize).and_then(|slot| slot.as_ref())
+    }
+
+    fn ensure(&mut self, root: RootId) {
+        let needed = root.as_u32() as usize + 1;
+        if self.slots.len() < needed {
+            self.slots.resize_with(needed, || None);
+        }
     }
 }
 

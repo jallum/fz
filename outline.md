@@ -384,9 +384,15 @@ Codegen repr     -> seam fact, not shape
 ## Output Contract Signal
 
 The contract test for this model lives in
-`src/compiler2/transport_contract_test.rs`. Until production derivation exists,
-it pins the worked example as expected facts and leaves one ignored
-production-boundary test that `fz-hwn.20.3` must enable against real telemetry.
+`src/compiler2/transport_contract_test.rs`. `fz-hwn.20.3` turns the
+production-boundary test on against the real `TransportPlan(root)` job/fact and
+adds targeted fixtures for ignored returns, tuple return/resume sharing, and
+direct-callable return/resume sharing.
+
+The landed derivation boundary is explicit: exact callable shapes are produced
+only when semantic evidence names one local producer (`FunctionRef` or
+`Lambda`) or one local callee return shape. Arbitrary joined callable inputs
+stay generic value lanes until the later callable/boundary fact work lands.
 
 Plan construction emits exactly one output signal:
 

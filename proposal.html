@@ -427,7 +427,9 @@ rg "TransportPlan\\(root\\)|root-scoped transport spine|codegen repr, not shape"
 
 <h3>10.3 Telemetry</h3>
 
-<p>Prefer event-level assertions over brittle dumps where the event expresses the invariant. The pending target is <code>src/compiler2/transport_contract_test.rs</code>: two tests pin the worked-example contract now, and one ignored test becomes the production-boundary assertion once real <code>TransportPlan</code> telemetry exists.</p>
+<p>Prefer event-level assertions over brittle dumps where the event expresses the invariant. <code>fz-hwn.20.3</code> turns on the production-boundary assertion in <code>src/compiler2/transport_contract_test.rs</code> and adds targeted fixtures for ignored returns, tuple return/resume sharing, and direct-callable return/resume sharing.</p>
+
+<p>The landed scope is narrow on purpose: exact callable shapes are derived only when semantic evidence names one local producer (<code>FunctionRef</code> or <code>Lambda</code>) or one local callee return shape. Joined callable inputs without exact producer identity stay generic value lanes until callable/boundary facts land.</p>
 
 <pre>
 fz.compiler2.transport_flow.defined
@@ -475,7 +477,7 @@ metadata:
     <tr><td class="term"><code>fz-hwn.20</code></td><td>Build and prove the pure transport information-flow graph beside the old path.</td></tr>
     <tr><td class="term"><code>fz-hwn.20.1</code></td><td>Pin the output contract and worked-example telemetry/test signal.</td></tr>
     <tr><td class="term"><code>fz-hwn.20.2</code></td><td>Introduce shared descriptor interners and symbol types.</td></tr>
-    <tr><td class="term"><code>fz-hwn.20.3</code></td><td>Derive root <code>TransportPlan</code> facts from semantic evidence only.</td></tr>
+    <tr><td class="term"><code>fz-hwn.20.3</code></td><td>Derive and publish root <code>TransportPlan</code> facts from semantic evidence only, including real telemetry/tests.</td></tr>
     <tr><td class="term"><code>fz-hwn.20.4</code></td><td>Derive <code>CallableId</code> and <code>BoundaryId</code> facts without type recovery.</td></tr>
     <tr><td class="term"><code>fz-hwn.20.5</code></td><td>Publish seam-specific codegen facts without consuming them.</td></tr>
     <tr><td class="term"><code>fz-hwn.20.6</code></td><td>Prove independent authority and hand off the cutover inventory.</td></tr>

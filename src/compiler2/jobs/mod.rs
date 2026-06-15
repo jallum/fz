@@ -22,6 +22,7 @@ mod semantic;
 mod source;
 #[cfg(test)]
 mod source_test;
+mod transport;
 mod types;
 
 pub(crate) fn run(world: &mut World<'_>, job: &Job) -> Result<JobEffects, FatalError> {
@@ -43,6 +44,7 @@ pub(crate) fn run(world: &mut World<'_>, job: &Job) -> Result<JobEffects, FatalE
         Job::SeedRoot(root_id) => root::seed_root(world, *root_id),
         Job::AnalyzeActivation(activation) => semantic::analyze_activation(world, activation),
         Job::SealSemanticClosure(root_id) => root::seal_semantic_closure(world, *root_id),
+        Job::DeriveTransportPlan(root_id) => transport::derive_transport_plan(world, *root_id),
         Job::MaterializeRoot(root_id) => artifact::materialize_root(world, *root_id),
         Job::DeriveAbiReady(root_id) => artifact::derive_abi_ready(world, *root_id),
         Job::DeriveEmissionReady(root_id) => artifact::derive_emission_ready(world, *root_id),
