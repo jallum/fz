@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-hwn.19.7"
+  ],
   "blocks": [
     "fz-hwn.7"
   ],
@@ -13,5 +15,5 @@
   "status": "open",
   "title": "Compiler2 native returned suspend continuations lose settled callable boundaries",
   "type": "bug",
-  "updated_at": "2026-06-14T19:53:20Z"
+  "updated_at": "2026-06-15T19:40:57Z"
 }
