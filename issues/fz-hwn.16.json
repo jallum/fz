@@ -1,6 +1,8 @@
 {
   "assignee": "Jason Allum",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-hwn.19.7"
+  ],
   "blocks": [
     "fz-hwn.7"
   ],
@@ -59,5 +61,5 @@
   "status": "in_progress",
   "title": "Compiler2 artifact return ABI collapses direct-callable transport to ValueRef",
   "type": "bug",
-  "updated_at": "2026-06-15T10:43:38Z"
+  "updated_at": "2026-06-15T19:40:57Z"
 }
