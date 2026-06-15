@@ -1,7 +1,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use super::transport::{ShapeDescr, ShapeId, TransportPlan, TransportPosition};
+use super::transport::{BoundaryDescr, BoundaryReturnDescr, ShapeDescr, ShapeId, TransportPlan, TransportPosition};
 use super::{DriveOutcome, ExecutableNeed, World};
 use crate::telemetry::{Capture, ConfiguredTelemetry, Value};
 
@@ -75,14 +75,7 @@ const TRANSPORT_POSITIONS: &[(&str, &str)] = &[
     ("Pos(E_main.value(pub))", "S_pub_callable"),
 ];
 
-const SEAM_FACTS: &[(&str, &str)] = &[
-    ("Seam(E_pair.return)", "lanes [L_int, L_int]"),
-    ("Seam(E_main.resume(pair call))", "lanes [L_int, L_int]"),
-    (
-        "Seam(B_pub.publish)",
-        "capture [L_int]; args [L_int]; return Value(L_int)",
-    ),
-];
+const SEAM_FACTS: &[(&str, &str)] = &[];
 
 #[test]
 fn compiler2_transport_flow_contract_separates_shared_descriptors_from_root_plan() {
@@ -230,6 +223,11 @@ end
     assert!(
         matches!(event.measurements.get("transport_position_count"), Some(Value::U64(count)) if *count >= 1),
         "worked example should report concrete transport positions: {:?}",
+        event.measurements
+    );
+    assert!(
+        matches!(event.measurements.get("codegen_seam_fact_count"), Some(Value::U64(0))),
+        "transport derivation should not claim codegen seam facts before the seam-fact ticket: {:?}",
         event.measurements
     );
     let seen_keys = metadata_keys
@@ -486,8 +484,127 @@ fn main(), do: {make1(1), make2(1, 2)}
     );
 }
 
+#[test]
+fn compiler2_transport_plan_publishes_callable_argument_lanes_at_boundaries() {
+    let source = r#"
+fn main(f) do
+  g = fn (x) -> x + 1 end
+  f.(g)
+end
+"#;
+
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new(&tel);
+    world.submit_code(
+        Some("transport_boundary_callable_arg.fz".to_string()),
+        source.to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 1, ExecutableNeed::Value);
+    drive_until_transport_plan(
+        &mut world,
+        root,
+        "callable boundary-arg fixture should produce a transport plan",
+    );
+
+    let plan = transport_plan(&world, root);
+    let boundary = boundary_with_callable_arg(&world, &plan);
+    let [arg_shape] = boundary.surface_arg_shapes.as_ref() else {
+        panic!("f/1 boundary should publish one surface argument shape")
+    };
+    assert!(
+        matches!(shape_descr(&world, *arg_shape), ShapeDescr::Callable(_)),
+        "the published boundary argument should preserve the callable shape"
+    );
+    assert_eq!(
+        boundary.published_arg_lanes.len(),
+        1,
+        "a callable argument crossing a boundary should be boxed into one published lane"
+    );
+}
+
+#[test]
+fn compiler2_transport_plan_preserves_tuple_return_contracts_at_boundaries() {
+    let source = r#"
+fn make_pairer(), do: fn (x) -> {1, 2} end
+fn main(), do: make_pairer()
+"#;
+
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new(&tel);
+    world.submit_code(
+        Some("transport_boundary_tuple_return.fz".to_string()),
+        source.to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    assert_resolved(world.drive_for(None), "tuple-return boundary fixture should settle");
+
+    let plan = transport_plan(&world, root);
+    let boundary = single_boundary_descr(&world, &plan);
+    let BoundaryReturnDescr::Tuple(lanes) = &boundary.published_return else {
+        panic!(
+            "a callable returning a tuple should publish a tuple boundary return, got {:?}",
+            boundary.published_return
+        );
+    };
+    assert_eq!(
+        lanes.len(),
+        2,
+        "the tuple boundary return should publish one lane per tuple field"
+    );
+}
+
+#[test]
+fn compiler2_transport_plan_keeps_direct_surfaces_when_a_callable_also_escapes() {
+    let source = r#"
+fn main() do
+  add1 = fn (x) -> x + 1 end
+  add1.(1)
+  add1
+end
+"#;
+
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new(&tel);
+    world.submit_code(
+        Some("transport_direct_and_escaped_callable.fz".to_string()),
+        source.to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    assert_resolved(
+        world.drive_for(None),
+        "direct-and-escaped callable fixture should settle",
+    );
+
+    let plan = transport_plan(&world, root);
+    let main = executable_for(&world, &plan, "main", 0);
+    let returned = plan_shape_at(&plan, &TransportPosition::ExecutableReturn { executable: main });
+    let ShapeDescr::Callable(callable) = shape_descr(&world, returned) else {
+        panic!("main/0 should return the callable value it also invoked directly")
+    };
+    let facts = plan
+        .callables
+        .get(callable)
+        .unwrap_or_else(|| panic!("returned callable facts should be present"));
+    assert!(
+        !facts.direct_surfaces.is_empty(),
+        "direct-call surfaces must remain visible even when the same callable also escapes"
+    );
+    assert!(
+        !facts.boundary_ids.is_empty(),
+        "the escaped callable should still publish a first-class boundary"
+    );
+}
+
 fn assert_resolved(outcome: DriveOutcome<super::Job, super::FactKey>, message: &str) {
     assert!(matches!(outcome, DriveOutcome::Resolved), "{message}: {outcome:?}");
+}
+
+fn drive_until_transport_plan(world: &mut World<'_>, root: super::RootId, message: &str) {
+    let outcome = world.drive_for(None);
+    assert!(
+        world.transport().plans().get(root).is_some(),
+        "{message}; drive outcome was {outcome:?}"
+    );
 }
 
 fn executable_for(
@@ -536,6 +653,35 @@ fn plan_shape_at(plan: &TransportPlan, position: &TransportPosition) -> ShapeId 
 
 fn shape_descr<'a>(world: &'a World<'_>, shape: ShapeId) -> &'a ShapeDescr {
     world.transport().interners().shape(shape)
+}
+
+fn single_boundary_descr<'a>(world: &'a World<'_>, plan: &TransportPlan) -> &'a BoundaryDescr {
+    let boundaries = plan.boundaries.keys().copied().collect::<Vec<_>>();
+    let [boundary] = boundaries.as_slice() else {
+        panic!(
+            "fixture should publish exactly one boundary contract: {:?}",
+            plan.boundaries
+        )
+    };
+    world.transport().interners().boundary(*boundary)
+}
+
+fn boundary_with_callable_arg<'a>(world: &'a World<'_>, plan: &TransportPlan) -> &'a BoundaryDescr {
+    plan.boundaries
+        .keys()
+        .map(|boundary| world.transport().interners().boundary(*boundary))
+        .find(|boundary| {
+            boundary
+                .surface_arg_shapes
+                .iter()
+                .any(|shape| matches!(shape_descr(world, *shape), ShapeDescr::Callable(_)))
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "fixture should publish a boundary with a callable argument: {:?}",
+                plan.boundaries
+            )
+        })
 }
 
 fn shape(id: &str) -> Option<&'static str> {

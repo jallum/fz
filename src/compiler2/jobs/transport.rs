@@ -12,8 +12,7 @@ use super::super::semantic::{
 };
 use super::super::transport::{
     ActivationSymbol, BoundaryDescr, BoundaryFacts, BoundaryId, BoundaryReturnDescr, CallableDescr, CallableFacts,
-    CallableId, CallableMaterializationKind, ExecutableSymbol, LaneId, ShapeDescr, ShapeId, TransportClass,
-    TransportPlan, TransportPosition,
+    CallableId, ExecutableSymbol, LaneId, ShapeDescr, ShapeId, TransportClass, TransportPlan, TransportPosition,
 };
 use super::super::types::Ty;
 use super::super::world::World;
@@ -65,7 +64,6 @@ struct CallableFactsDraft {
     resolutions: Vec<ExecutableSymbol>,
     direct_surfaces: Vec<Box<[ShapeId]>>,
     capture_lanes: Vec<LaneId>,
-    materialization: CallableMaterializationKind,
     boundary_ids: Vec<BoundaryId>,
 }
 
@@ -87,22 +85,14 @@ impl TransportFactsBuilder {
         resolutions: Vec<ExecutableSymbol>,
         direct_surfaces: Vec<Box<[ShapeId]>>,
         capture_lanes: Vec<LaneId>,
-        materialization: CallableMaterializationKind,
         boundary_ids: Vec<BoundaryId>,
     ) {
         let entry = self.callables.entry(callable).or_insert_with(|| CallableFactsDraft {
             resolutions: Vec::new(),
             direct_surfaces: Vec::new(),
             capture_lanes: Vec::new(),
-            materialization,
             boundary_ids: Vec::new(),
         });
-        entry.materialization = match (entry.materialization, materialization) {
-            (CallableMaterializationKind::FirstClass, _) | (_, CallableMaterializationKind::FirstClass) => {
-                CallableMaterializationKind::FirstClass
-            }
-            _ => CallableMaterializationKind::DirectOnly,
-        };
         extend_unique(&mut entry.resolutions, resolutions);
         extend_unique(&mut entry.direct_surfaces, direct_surfaces);
         extend_unique(&mut entry.capture_lanes, capture_lanes);
@@ -135,7 +125,6 @@ impl TransportFactsBuilder {
                         resolutions: draft.resolutions.into_boxed_slice(),
                         direct_surfaces: draft.direct_surfaces.into_boxed_slice(),
                         capture_lanes: draft.capture_lanes.into_boxed_slice(),
-                        materialization: draft.materialization,
                         boundary_ids: draft.boundary_ids.into_boxed_slice(),
                     },
                 )
@@ -1004,6 +993,37 @@ fn exact_shape_for_local_value(
             Some(ValueOrigin::Callsite(callsite)) => {
                 exact_shape_for_callsite(world, return_shapes, executable, context, *callsite)
             }
+            Some(ValueOrigin::Callable(producer)) => {
+                let materialization = context.runtime_demand.callable_materializations.get(&value)?;
+                let callable_demand =
+                    context
+                        .runtime_demand
+                        .value_demands
+                        .get(&value)
+                        .and_then(|demand| match demand {
+                            RuntimeDemand::Callable(callable) => Some(callable),
+                            _ => None,
+                        });
+                let callable = callable_for_producer(
+                    world,
+                    contexts,
+                    return_shapes,
+                    facts,
+                    executable,
+                    context,
+                    producer,
+                    materialization,
+                    ty,
+                    callable_demand,
+                    publication,
+                )?;
+                Some(
+                    world
+                        .transport_mut()
+                        .interners_mut()
+                        .intern_shape(ShapeDescr::Callable(callable)),
+                )
+            }
             _ => None,
         },
         RuntimeDemand::TupleFields(fields) => {
@@ -1142,12 +1162,18 @@ fn callable_for_producer(
     callable_demand: Option<&CallableDemand>,
     publication: Option<TransportPosition>,
 ) -> Option<super::super::transport::CallableId> {
+    let capture_tys = producer
+        .captures
+        .iter()
+        .copied()
+        .map(|capture| context.analysis.value_types.get(&capture).copied())
+        .collect::<Option<Vec<_>>>()?;
     let capture_shapes = producer
         .captures
         .iter()
         .copied()
-        .map(|capture| {
-            let capture_ty = context.analysis.value_types.get(&capture).copied()?;
+        .zip(capture_tys.iter().copied())
+        .map(|(capture, capture_ty)| {
             let capture_demand = boundary_runtime_demand(world, capture_ty);
             Some(shape_for_local_value(
                 world,
@@ -1166,7 +1192,8 @@ fn callable_for_producer(
     let capture_lanes = capture_shapes
         .iter()
         .copied()
-        .flat_map(|shape| shape_lanes(world, shape))
+        .zip(capture_tys.iter().copied())
+        .flat_map(|(shape, ty)| boundary_lanes_for_shape(world, shape, ty))
         .collect::<Vec<_>>();
     let materialization_surfaces = match materialization {
         CallableMaterialization::DirectOnly { surfaces } | CallableMaterialization::FirstClass { surfaces } => surfaces,
@@ -1181,14 +1208,11 @@ fn callable_for_producer(
                 materialization_surfaces.clone()
             }
         });
-    let surface_shapes = surface_shapes(world, &surface_demands, facts);
-    let direct_surfaces = match materialization {
-        CallableMaterialization::DirectOnly { .. } => surface_shapes.clone(),
-        CallableMaterialization::FirstClass { .. } => Vec::new(),
-    };
-    let materialization_kind = match materialization {
-        CallableMaterialization::DirectOnly { .. } => CallableMaterializationKind::DirectOnly,
-        CallableMaterialization::FirstClass { .. } => CallableMaterializationKind::FirstClass,
+    let surface_arg_shapes = surface_shapes(world, &surface_demands, facts);
+    let direct_surfaces = if materialization_surfaces.is_empty() {
+        Vec::new()
+    } else {
+        surface_shapes(world, materialization_surfaces, facts)
     };
     let callable = world.transport_mut().interners_mut().intern_callable(CallableDescr {
         function: Some(producer.function),
@@ -1197,25 +1221,23 @@ fn callable_for_producer(
     let resolutions = callable_resolutions(world, context, producer, &surface_demands);
     let boundary_ids = match materialization {
         CallableMaterialization::DirectOnly { .. } => Vec::new(),
-        CallableMaterialization::FirstClass { .. } => publish_boundaries_for_callable(
-            world,
-            facts,
-            callable,
-            &surface_demands,
-            &surface_shapes,
-            &capture_lanes,
-            callable_ty,
-            publication,
-        ),
+        CallableMaterialization::FirstClass { .. } => {
+            let return_shape =
+                boundary_return_shape_for_resolutions(world, contexts, return_shapes, facts, &resolutions, callable_ty);
+            publish_boundaries_for_callable(
+                world,
+                facts,
+                callable,
+                &surface_demands,
+                &surface_arg_shapes,
+                &capture_lanes,
+                callable_ty,
+                return_shape,
+                publication,
+            )
+        }
     };
-    facts.record_callable(
-        callable,
-        resolutions,
-        direct_surfaces,
-        capture_lanes,
-        materialization_kind,
-        boundary_ids,
-    );
+    facts.record_callable(callable, resolutions, direct_surfaces, capture_lanes, boundary_ids);
     Some(callable)
 }
 
@@ -1372,29 +1394,29 @@ fn generic_callable_shape(
         capture_shapes: Box::default(),
     });
     let surface_shapes = surface_shapes(world, surfaces, facts);
-    let materialization = if demand.opaque || demand.escape {
-        CallableMaterializationKind::FirstClass
+    let publishes_boundary = demand.opaque || demand.escape;
+    let direct_surfaces = if publishes_boundary {
+        Vec::new()
     } else {
-        CallableMaterializationKind::DirectOnly
-    };
-    let direct_surfaces = if matches!(materialization, CallableMaterializationKind::DirectOnly) {
         surface_shapes.clone()
+    };
+    let boundary_ids = if publishes_boundary {
+        let return_shape = boundary_return_shape_for_callable(world, ty, facts);
+        publish_boundaries_for_callable(
+            world,
+            facts,
+            callable,
+            surfaces,
+            &surface_shapes,
+            &[],
+            ty,
+            return_shape,
+            publication,
+        )
     } else {
         Vec::new()
     };
-    let boundary_ids = if matches!(materialization, CallableMaterializationKind::FirstClass) {
-        publish_boundaries_for_callable(world, facts, callable, surfaces, &surface_shapes, &[], ty, publication)
-    } else {
-        Vec::new()
-    };
-    facts.record_callable(
-        callable,
-        Vec::new(),
-        direct_surfaces,
-        Vec::new(),
-        materialization,
-        boundary_ids,
-    );
+    facts.record_callable(callable, Vec::new(), direct_surfaces, Vec::new(), boundary_ids);
     world
         .transport_mut()
         .interners_mut()
@@ -1409,15 +1431,18 @@ fn publish_boundaries_for_callable(
     surface_shapes: &[Box<[ShapeId]>],
     capture_lanes: &[LaneId],
     callable_ty: Ty,
+    return_shape: ShapeId,
     publication: Option<TransportPosition>,
 ) -> Vec<BoundaryId> {
-    let ret = boundary_return_for_callable(world, callable_ty);
+    let ret_ty = world.types_mut().arrow_join_return(&callable_ty);
+    let ret = boundary_return_for_shape(world, return_shape, ret_ty);
     let mut boundary_ids = Vec::new();
     for (surface, arg_shapes) in surfaces.iter().zip(surface_shapes.iter()) {
         let arg_lanes = arg_shapes
             .iter()
             .copied()
-            .flat_map(|shape| shape_lanes(world, shape))
+            .zip(surface.inputs.iter().copied())
+            .flat_map(|(shape, ty)| boundary_lanes_for_shape(world, shape, ty))
             .collect::<Vec<_>>();
         let boundary = world.transport_mut().interners_mut().intern_boundary(BoundaryDescr {
             callable,
@@ -1432,32 +1457,118 @@ fn publish_boundaries_for_callable(
             facts.record_boundary(boundary, TransportPosition::Boundary { boundary });
         }
         boundary_ids.push(boundary);
-        let _ = surface;
     }
     boundary_ids
 }
 
-fn boundary_return_for_callable(world: &mut World<'_>, callable_ty: Ty) -> BoundaryReturnDescr {
+fn boundary_return_shape_for_callable(
+    world: &mut World<'_>,
+    callable_ty: Ty,
+    facts: &mut TransportFactsBuilder,
+) -> ShapeId {
     let ret_ty = world.types_mut().arrow_join_return(&callable_ty);
     if world.types().is_empty(&ret_ty) {
-        BoundaryReturnDescr::Nothing
-    } else {
-        let lane = value_lane(world, ret_ty);
-        BoundaryReturnDescr::Value(lane)
+        return world.transport_mut().interners_mut().intern_shape(ShapeDescr::Nothing);
+    }
+    if let Some(fields) = exact_tuple_field_tys(world, ret_ty) {
+        let field_shapes = fields
+            .into_iter()
+            .map(|field_ty| {
+                let demand = boundary_runtime_demand(world, field_ty);
+                generic_shape_from_demand(world, field_ty, &demand, facts, None)
+            })
+            .collect::<Vec<_>>();
+        return world
+            .transport_mut()
+            .interners_mut()
+            .intern_shape(ShapeDescr::Tuple(field_shapes.into_boxed_slice()));
+    }
+    let demand = boundary_runtime_demand(world, ret_ty);
+    generic_shape_from_demand(world, ret_ty, &demand, facts, None)
+}
+
+fn boundary_return_shape_for_resolutions(
+    world: &mut World<'_>,
+    contexts: &HashMap<ExecutableKey, ExecutableContext>,
+    return_shapes: &HashMap<ExecutableKey, ShapeId>,
+    facts: &mut TransportFactsBuilder,
+    resolutions: &[ExecutableSymbol],
+    callable_ty: Ty,
+) -> ShapeId {
+    let mut shapes = Vec::new();
+    for resolution in resolutions {
+        let Some((executable, context)) = contexts.iter().find(|(candidate, _)| {
+            candidate.need == resolution.need
+                && candidate.activation.function == resolution.activation.function
+                && candidate.activation.input.as_slice() == resolution.activation.input.as_ref()
+        }) else {
+            return boundary_return_shape_for_callable(world, callable_ty, facts);
+        };
+        let demand = boundary_runtime_demand(world, context.return_ty);
+        shapes.push(shape_for_sources(
+            world,
+            contexts,
+            return_shapes,
+            facts,
+            executable,
+            context,
+            context.return_ty,
+            &demand,
+            &context.return_sources,
+            None,
+        ));
+    }
+    if shapes.is_empty() || !shapes.windows(2).all(|pair| pair[0] == pair[1]) {
+        return boundary_return_shape_for_callable(world, callable_ty, facts);
+    }
+    shapes[0]
+}
+
+fn boundary_return_for_shape(world: &mut World<'_>, shape: ShapeId, ty: Ty) -> BoundaryReturnDescr {
+    match world.transport().interners().shape(shape).clone() {
+        ShapeDescr::Nothing => BoundaryReturnDescr::Nothing,
+        ShapeDescr::Lane(lane) => BoundaryReturnDescr::Value(lane),
+        ShapeDescr::Tuple(_) => {
+            let lanes = boundary_lanes_for_shape(world, shape, ty);
+            if lanes.is_empty() {
+                BoundaryReturnDescr::Nothing
+            } else {
+                BoundaryReturnDescr::Tuple(lanes.into_boxed_slice())
+            }
+        }
+        ShapeDescr::Callable(_) => {
+            let lane = value_lane(world, ty);
+            BoundaryReturnDescr::Value(lane)
+        }
     }
 }
 
-fn shape_lanes(world: &World<'_>, shape: ShapeId) -> Vec<LaneId> {
-    match world.transport().interners().shape(shape) {
+fn boundary_lanes_for_shape(world: &mut World<'_>, shape: ShapeId, ty: Ty) -> Vec<LaneId> {
+    match world.transport().interners().shape(shape).clone() {
         ShapeDescr::Nothing => Vec::new(),
-        ShapeDescr::Lane(lane) => vec![*lane],
-        ShapeDescr::Tuple(items) => items
-            .iter()
-            .copied()
-            .flat_map(|item| shape_lanes(world, item))
-            .collect(),
-        ShapeDescr::Callable(_) => Vec::new(),
+        ShapeDescr::Lane(lane) => vec![lane],
+        ShapeDescr::Tuple(items) => {
+            let field_tys = tuple_field_tys(world, ty, items.len());
+            items
+                .iter()
+                .copied()
+                .zip(field_tys)
+                .flat_map(|(item, field_ty)| boundary_lanes_for_shape(world, item, field_ty))
+                .collect()
+        }
+        ShapeDescr::Callable(_) => {
+            vec![value_lane(world, ty)]
+        }
     }
+}
+
+fn exact_tuple_field_tys(world: &mut World<'_>, ty: Ty) -> Option<Vec<Ty>> {
+    let predicate = world.types().runtime_type_predicate(&ty);
+    if predicate.tuple_arities.cofinite || predicate.tuple_arities.values.len() != 1 {
+        return None;
+    }
+    let arity = *predicate.tuple_arities.values.iter().next()?;
+    Some(tuple_field_tys(world, ty, arity))
 }
 
 fn value_lane_shape(world: &mut World<'_>, ty: Ty) -> ShapeId {
@@ -1491,6 +1602,14 @@ fn tuple_field_tys(world: &mut World<'_>, ty: Ty, arity: usize) -> Vec<Ty> {
 
 fn boundary_runtime_demand(world: &mut World<'_>, ty: Ty) -> RuntimeDemand {
     let Some(clauses) = world.types_mut().callable_clauses(&ty) else {
+        if let Some(fields) = exact_tuple_field_tys(world, ty) {
+            return RuntimeDemand::tuple_fields(
+                fields
+                    .into_iter()
+                    .map(|field_ty| boundary_runtime_demand(world, field_ty))
+                    .collect(),
+            );
+        }
         return RuntimeDemand::Value;
     };
     RuntimeDemand::callable(CallableDemand {

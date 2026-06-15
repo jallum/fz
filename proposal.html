@@ -85,7 +85,7 @@ Shape = Nothing | Lane(LaneId) | Tuple(Vec&lt;ShapeId&gt;) | Callable(CallableId
     </tr>
     <tr>
       <td class="term"><code>CallableId</code></td>
-      <td>A callable identity. Its descriptor may include immutable key material, but locality, directness, captures, first-class materialization, and published boundary contracts are facts keyed by this id.</td>
+      <td>A callable identity. Its descriptor may include immutable key material, but locality, direct surfaces, captures, and published boundary contracts are facts keyed by this id.</td>
     </tr>
     <tr>
       <td class="term"><code>BoundaryId</code></td>
@@ -184,7 +184,7 @@ SemanticClosed(root)
        membership: executable symbols
        positions: TransportPosition -> ShapeId
        lane facts: LaneId -> ty/transport class
-       callable facts: CallableId -> captures/materialization/boundary ids
+       callable facts: CallableId -> direct surfaces/captures/boundary ids
        boundary facts: BoundaryId -> published contract
        seam facts: (id, seam) -> codegen representation
 </pre>
@@ -228,7 +228,7 @@ SemanticClosed(root)
 
 <p>The exact Rust names can differ. The important property is that shared structure lives in descriptor interners and root-specific validity/details live in plan tables.</p>
 
-<p>Implementation status after <code>fz-hwn.20.4</code>: <code>src/compiler2/transport.rs</code> defines the root-independent ids, descriptors, transport symbols, <code>TransportPosition</code>, <code>TransportInterners</code>, and <code>TransportStore</code>. <code>World</code> owns one <code>TransportStore</code>. <code>DeriveTransportPlan(root)</code> now populates root-scoped positions plus <code>CallableId</code> and <code>BoundaryId</code> fact tables from settled semantic evidence. No materialization, backend, native, or codegen consumer reads these ids yet, and no old <code>Trash*</code> layout is translated into descriptors.</p>
+<p>Implementation status after <code>fz-hwn.20.4</code>: <code>src/compiler2/transport.rs</code> defines the root-independent ids, descriptors, transport symbols, <code>TransportPosition</code>, <code>TransportInterners</code>, and <code>TransportStore</code>. <code>World</code> owns one <code>TransportStore</code>. <code>DeriveTransportPlan(root)</code> now populates root-scoped positions plus <code>CallableId</code> and <code>BoundaryId</code> fact tables from settled semantic evidence. Boundary contracts preserve callable leaves as one published value lane and tuple returns as tuple lane contracts. Direct-call surfaces and first-class boundary publication are independent facts, so one callable can have both. Codegen seam facts are deliberately empty until <code>fz-hwn.20.5</code>. No materialization, backend, native, or codegen consumer reads these ids yet, and no old <code>Trash*</code> layout is translated into descriptors.</p>
 
 <pre>
 TransportStore {
@@ -269,8 +269,8 @@ LaneFacts {
 CallableTransportFacts {
   target: ExecutableSymbol,
   capture_shapes: Vec&lt;ShapeId&gt;,
+  direct_surfaces: Vec&lt;Vec&lt;ShapeId&gt;&gt;,
   capture_lanes: Vec&lt;LaneId&gt;,
-  materialization: CallableMaterialization,
   boundary_ids: Vec&lt;BoundaryId&gt;,
 }
 
@@ -427,7 +427,7 @@ rg "TransportPlan\\(root\\)|root-scoped transport spine|codegen repr, not shape"
 
 <h3>10.3 Telemetry</h3>
 
-<p>Prefer event-level assertions over brittle dumps where the event expresses the invariant. <code>fz-hwn.20.3</code> turns on the production-boundary assertion in <code>src/compiler2/transport_contract_test.rs</code> and adds targeted fixtures for ignored returns, tuple return/resume sharing, and direct-callable return/resume sharing. <code>fz-hwn.20.4</code> adds worked source fixtures for callable/boundary facts: unused callable constructors publish no boundary, direct lambda calls stay direct-only, escaped lambdas publish exactly one first-class boundary, opaque callable inputs publish an explicit boundary, and same-surface callables remain distinct when their capture obligations differ.</p>
+<p>Prefer event-level assertions over brittle dumps where the event expresses the invariant. <code>fz-hwn.20.3</code> turns on the production-boundary assertion in <code>src/compiler2/transport_contract_test.rs</code> and adds targeted fixtures for ignored returns, tuple return/resume sharing, and direct-callable return/resume sharing. <code>fz-hwn.20.4</code> adds worked source fixtures for callable/boundary facts: unused callable constructors publish no boundary, direct lambda calls stay direct-only, escaped lambdas publish exactly one first-class boundary, opaque callable inputs publish an explicit boundary, same-surface callables remain distinct when their capture obligations differ, callable arguments publish one boundary lane, tuple callable returns publish tuple return contracts, and a directly-called callable that also escapes keeps both direct surfaces and boundary ids.</p>
 
 <p>The landed derivation boundary is explicit: callable and boundary facts are derived by the new transport calculator from settled demand, lowered callable use sites, local callable producers, captures, callsite summaries, and settled type evidence. The old layout, native boundary inventories, and callable-entry materialization are not inputs to the transport plan.</p>
 
@@ -464,7 +464,7 @@ metadata:
   seam_facts
 </pre>
 
-<p>The event is emitted by clean transport-flow derivation, not by old materialization. Descriptor metadata must not contain root-relative evidence such as <code>RootId</code>, <code>ValueId</code>, callsites, or resume points. Root-scoped evidence belongs in <code>TransportPlan</code> metadata: membership, positions, demand/use obligations, boundary publication, and seam facts. The event must not serialize <code>Trash*</code> layout facts or <code>ArgRepr</code>-from-type decisions as authority.</p>
+<p>The event is emitted by clean transport-flow derivation, not by old materialization. Descriptor metadata must not contain root-relative evidence such as <code>RootId</code>, <code>ValueId</code>, callsites, or resume points. Root-scoped evidence belongs in <code>TransportPlan</code> metadata: membership, positions, demand/use obligations, boundary publication, and seam facts. The event must not serialize <code>Trash*</code> layout facts or <code>ArgRepr</code>-from-type decisions as authority. Until <code>fz-hwn.20.5</code>, <code>codegen_seam_fact_count</code> is <code>0</code> and <code>seam_facts</code> is empty; non-empty seam facts must be produced by the seam-fact ticket, not aliased to transport positions.</p>
 
 <h2 id="tickets">11. Ticket DAG</h2>
 
@@ -479,6 +479,7 @@ metadata:
     <tr><td class="term"><code>fz-hwn.20.2</code></td><td>Introduce shared descriptor interners and symbol types.</td></tr>
     <tr><td class="term"><code>fz-hwn.20.3</code></td><td>Derive and publish root <code>TransportPlan</code> facts from semantic evidence only, including real telemetry/tests.</td></tr>
     <tr><td class="term"><code>fz-hwn.20.4</code></td><td>Derive <code>CallableId</code> and <code>BoundaryId</code> facts without type recovery.</td></tr>
+    <tr><td class="term"><code>fz-hwn.20.7</code></td><td>Complete callable boundary contracts before seam-specific codegen facts.</td></tr>
     <tr><td class="term"><code>fz-hwn.20.5</code></td><td>Publish seam-specific codegen facts without consuming them.</td></tr>
     <tr><td class="term"><code>fz-hwn.20.6</code></td><td>Prove independent authority and hand off the cutover inventory.</td></tr>
     <tr><td class="term"><code>fz-hwn.19.1</code></td><td>Accept the flow-graph handoff and pin consumer contracts.</td></tr>

@@ -749,18 +749,17 @@ impl<'a> World<'a> {
             .shapes()
             .filter(|(_, descr)| matches!(descr, super::transport::ShapeDescr::Callable(_)))
             .count() as u64;
-        let closure = self.semantic_closure(root);
-        let (direct_callable_count, first_class_callable_count) = closure
-            .runtime_demands
+        let direct_callable_count = plan
+            .callables
             .values()
-            .flat_map(|demand| demand.callable_materializations.values())
-            .fold(
-                (0_u64, 0_u64),
-                |(direct, first_class), materialization| match materialization {
-                    super::semantic::CallableMaterialization::DirectOnly { .. } => (direct + 1, first_class),
-                    super::semantic::CallableMaterialization::FirstClass { .. } => (direct, first_class + 1),
-                },
-            );
+            .filter(|facts| !facts.direct_surfaces.is_empty())
+            .count() as u64;
+        let first_class_callable_count = plan
+            .callables
+            .values()
+            .filter(|facts| !facts.boundary_ids.is_empty())
+            .count() as u64;
+        let no_codegen_seam_facts = Vec::<String>::new();
         self.tel.execute(
             &["fz", "compiler2", "transport_flow", "defined"],
             &measurements! {
@@ -778,7 +777,7 @@ impl<'a> World<'a> {
                 direct_callable_count: direct_callable_count,
                 first_class_callable_count: first_class_callable_count,
                 boundary_publication_count: plan.boundaries.len() as u64,
-                codegen_seam_fact_count: plan.positions.len() as u64,
+                codegen_seam_fact_count: 0_u64,
             },
             &metadata! {
                 entry_executable_symbol: opaque_debug(&plan.entry),
@@ -788,7 +787,7 @@ impl<'a> World<'a> {
                 lane_descriptors: opaque_debug(&interners.lanes().map(|(id, descr)| (id, descr.clone())).collect::<Vec<_>>()),
                 callable_facts: opaque_debug(&plan.callables),
                 boundary_facts: opaque_debug(&plan.boundaries),
-                seam_facts: opaque_debug(&plan.positions),
+                seam_facts: opaque_debug(&no_codegen_seam_facts),
             },
         );
         changed

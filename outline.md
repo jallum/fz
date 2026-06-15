@@ -33,9 +33,9 @@ Shape = Nothing | Lane(LaneId) | Tuple(Vec<ShapeId>) | Callable(CallableId)
   still one leaf id, not a value id.
 - `CallableId` names a callable identity. Its descriptor may contain any
   immutable key material that actually defines identity. Maximal sharing comes
-  from keeping root-relative evidence out of the descriptor; locality,
-  directness, capture lanes, first-class materialization, and published boundary
-  obligations are facts about that `CallableId`, not shape variants.
+  from keeping root-relative evidence out of the descriptor; locality, direct
+  surfaces, capture lanes, and published boundary obligations are facts about
+  that `CallableId`, not shape variants.
 - `BoundaryId` names one published callable contract. A callable may have zero
   or more boundary contracts. Boundary publication is contextual and cannot be
   the identity of `CallableId` or `LaneId`.
@@ -87,8 +87,12 @@ defines the root-independent ids, descriptors, transport symbols,
 `TransportPosition`, `TransportInterners`, and `TransportStore`. `World` owns one
 `TransportStore`. `DeriveTransportPlan(root)` now populates root-scoped
 positions plus `CallableId` and `BoundaryId` fact tables from settled semantic
-evidence. No materialization, backend, native, or codegen consumer reads these
-ids yet, and no old `Trash*` layout is translated into descriptors.
+evidence. Boundary contracts preserve callable leaves as one published value
+lane and preserve tuple returns as tuple lane contracts. Direct-call surfaces
+and first-class boundary publication are independent facts, so one callable can
+have both. Codegen seam facts are still deliberately empty until
+`fz-hwn.20.5`. No materialization, backend, native, or codegen consumer reads
+these ids yet, and no old `Trash*` layout is translated into descriptors.
 
 ## Required First Move
 
@@ -143,8 +147,8 @@ id the descriptor graph or `TransportPlan` already holds:
 - a `Lane`'s settled type and stable transport class — computed once from the
   settled type/fact evidence, then stored as facts and read, never recomputed per
   consumer
-- a `Callable`'s captured surface, flat capture lanes, first-class
-  materialization, and published boundary ids — columns keyed by `CallableId`
+- a `Callable`'s direct surfaces, flat capture lanes, and published boundary ids
+  — columns keyed by `CallableId`
 - a boundary's published lane contract — columns keyed by `BoundaryId`
 - codegen lane representations — columns keyed by the lane plus the codegen seam
   that consumes it
@@ -445,7 +449,10 @@ materialization. Descriptor metadata must not contain root-relative evidence
 such as `RootId`, `ValueId`, callsites, or resume points. Root-scoped evidence
 belongs in `TransportPlan` metadata: membership, positions, demand/use
 obligations, boundary publication, and seam facts. The event must not serialize
-`Trash*` layout facts or `ArgRepr`-from-type decisions as authority.
+`Trash*` layout facts or `ArgRepr`-from-type decisions as authority. Until
+`fz-hwn.20.5`, `codegen_seam_fact_count` is `0` and `seam_facts` is empty; any
+non-empty seam fact must be produced by the seam-fact ticket, not aliased to
+transport positions.
 
 The minimality check is mechanical:
 

@@ -130,18 +130,11 @@ pub struct CallableDescr {
     pub capture_shapes: Box<[ShapeId]>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum CallableMaterializationKind {
-    DirectOnly,
-    FirstClass,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CallableFacts {
     pub resolutions: Box<[ExecutableSymbol]>,
     pub direct_surfaces: Box<[Box<[ShapeId]>]>,
     pub capture_lanes: Box<[LaneId]>,
-    pub materialization: CallableMaterializationKind,
     pub boundary_ids: Box<[BoundaryId]>,
 }
 
