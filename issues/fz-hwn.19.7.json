@@ -5,6 +5,7 @@
     "fz-hwn.13",
     "fz-hwn.16",
     "fz-hwn.19.1",
+    "fz-hwn.20",
     "fz-hwn.20.1"
   ],
   "created": "2026-06-15T19:40:49Z",
@@ -16,5 +17,5 @@
   "status": "open",
   "title": "[FIRST] Transport spine: trash-prefix doomed vocabulary before any spine work",
   "type": "task",
-  "updated_at": "2026-06-15T20:57:30Z"
+  "updated_at": "2026-06-15T21:01:01Z"
 }

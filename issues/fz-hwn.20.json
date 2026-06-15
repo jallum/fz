@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-hwn.19.7"
+  ],
   "blocks": [],
   "created": "2026-06-15T20:54:32Z",
   "description": "Goal\nBuild the clean transport information-flow model as an independent authority before cutting consumers away from the old recursive layout path. The old path may remain running for behavior while this epic proves the new model, but production code in the new model must derive from semantic evidence and settled demand, not from RuntimeValueLayout, DeliveredShape, ReturnAbi recovery, or codegen-local shape inference.\n\nStrategy\nUse the Output Contract Loop. Start with the output contract and the worked example, make the signal loud with telemetry/tests, derive the pure flow graph from semantic evidence, then prove the new graph against production fixtures. This is parallel construction with independent authority: old code is a reference/oracle for current observable behavior and case inventory, never an adapter or source of new-model facts.\n\nPure information-flow contract\nShared symbology describes meaning without unnecessary owner context: activation/executable/callable symbols, ShapeId, LaneId, CallableId, BoundaryId, and semantic transport positions. RootId owns a closure/query over those symbols; it should not be baked into shareable descriptors unless the descriptor truly changes meaning per root. Interned descriptors may include any immutable key material, but maximal sharing comes from keeping root/revision/value/callsite evidence in root-scoped facts.\n\nRequired split\nWorld/compiler-context interners own immutable descriptor ids. Root-scoped TransportPlan facts own membership, TransportPosition -\u003e ShapeId, demand/use obligations, boundary publication facts, and seam-specific codegen facts. Shape descriptors are not root plans. Root plans are not downstream handoff snapshots.\n\nNo bridge rule\nDo not commit a path that translates old RuntimeValueLayout into ShapeId or ShapeId back into old layout as a compatibility layer. Do not use old layout, ReturnAbi, DeliveredShape, NativeDemandAbi, or local ArgRepr derivation as input to the new plan. If old code is inspected, it is for test coverage and removal inventory only.\n\nExit signal\nA new transport-flow fact store exists beside the old path, is derived independently from SemanticClosed(root) plus settled RuntimeDemand and flow evidence, has telemetry and tests for the worked example, and exposes the facts fz-hwn.19 needs to cut consumers over and delete old vocabulary. When this epic closes, fz-hwn.19 starts from a proven model rather than inventing the model during ripout.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Compiler2 transport flow graph: build pure information-flow authority alongside old layout",
   "type": "epic",
-  "updated_at": "2026-06-15T20:54:32Z"
+  "updated_at": "2026-06-15T21:01:01Z"
 }
