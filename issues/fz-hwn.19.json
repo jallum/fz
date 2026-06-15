@@ -11,7 +11,7 @@
   "parent": "fz-hwn",
   "priority": 1,
   "status": "open",
-  "title": "[EPIC] Compiler2 transport spine: replace runtime layout translations with interned ShapeId authority",
+  "title": "Compiler2 transport spine: replace runtime layout translations with interned ShapeId authority",
   "type": "epic",
-  "updated_at": "2026-06-15T19:56:22Z"
+  "updated_at": "2026-06-15T19:58:11Z"
 }
