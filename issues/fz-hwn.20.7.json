@@ -4,14 +4,15 @@
   "blocks": [
     "fz-hwn.20.5"
   ],
+  "closed_at": "2026-06-15T23:10:43Z",
   "created": "2026-06-15T22:57:51Z",
   "description": "Goal\nRepair the expected fz-hwn.20.4 functionality before publishing seam-specific codegen facts. Boundary contracts must be complete facts derived by the new transport calculator, not lossy summaries or old-model recovery.\n\nRequired behavior\nCallable-shaped leaves crossing a published boundary are represented by one concrete published value lane. Tuple return contracts remain tuple contracts instead of collapsing to one broad return lane. Direct call surfaces and first-class boundary publication remain separately observable for the same callable when both obligations exist.\n\nSource rule\nUse source-level worked examples before implementation. Use semantic evidence, settled demand, callable surfaces, capture types, producer return sources, and shared ShapeId descriptors. Do not use old RuntimeValueLayout/DeliveredShape/ReturnAbi/NativeDemandAbi or codegen ArgRepr as authority.\n\nChecks\nTests inspect actual BoundaryDescr and CallableFacts contents, not just counts. Telemetry reports zero/empty codegen seam facts until fz-hwn.20.5 creates them. outline.md and proposal.html describe the corrected boundary-contract status.",
   "id": "fz-hwn.20.7",
   "labels": [],
   "parent": "fz-hwn.20",
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Transport flow graph: complete callable boundary contracts before seam facts",
   "type": "bug",
-  "updated_at": "2026-06-15T23:07:50Z"
+  "updated_at": "2026-06-15T23:10:43Z"
 }
