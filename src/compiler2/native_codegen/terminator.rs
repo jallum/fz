@@ -418,7 +418,7 @@ fn build_boundary_return_adapter_cont<M: cranelift_module::Module>(
 }
 
 fn returned_shape(env: &CodegenEnv<'_>, body_sid: u32) -> DeliveredShape {
-    NativeDemandAbi::new(env.body_native(body_sid)).returned_shape()
+    env.return_shapes[body_sid as usize].clone()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -657,14 +657,13 @@ fn emit_return_term<M: cranelift_module::Module, T: Types<Ty = Ty> + ClosureType
 ) -> Result<(), CodegenError> {
     {
         if is_native {
-            let return_abi = NativeDemandAbi::new(env.body_native(this_spec_id));
             let cont_val = if is_cont_fn {
                 let self_val = cont_param.expect("cont fn binds self via cont_param");
                 body.outer_cont_ref(self_val)
             } else {
                 cont_param.expect("non-cont native fn has cont_param")
             };
-            match return_abi.returned_shape() {
+            match returned_shape(env, this_spec_id) {
                 DeliveredShape::Never => {
                     body.b.ins().trap(TrapCode::user(1).unwrap());
                 }
@@ -862,7 +861,7 @@ fn emit_native_call_with_cont<M: cranelift_module::Module>(
             Some(c) => c,
             None => {
                 synth_halt_cont = true;
-                match NativeDemandAbi::new(env.body_native(callee_sid)).returned_shape() {
+                match returned_shape(env, callee_sid) {
                     DeliveredShape::Never => synthesize_halt_cont(body, runtime, ArgRepr::ValueRef),
                     DeliveredShape::Value(callee_ret_repr) => synthesize_halt_cont(body, runtime, callee_ret_repr),
                     shape => panic!("synthesized halt continuation requires one delivered value lane, got {shape:?}"),
@@ -918,8 +917,7 @@ fn emit_native_call_with_cont<M: cranelift_module::Module>(
         // Result + captures are written into the cont's
         // typed entry slots. Native result already has an
         // ABI repr; captured vars come from var_env.
-        let callee_ret_repr = NativeDemandAbi::new(env.body_native(callee_sid))
-            .returned_delivers_value_lane()
+        let callee_ret_repr = matches!(returned_shape(env, callee_sid), DeliveredShape::Value(_))
             .then_some(env.return_reprs[callee_sid as usize])
             .expect("uniform continuation write-back requires one delivered value lane");
         let mut payload: Vec<(ir::Value, ArgRepr)> = Vec::with_capacity(continuation.captured.len() + 1);

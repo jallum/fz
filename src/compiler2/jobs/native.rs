@@ -334,7 +334,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
             NativeEntryAbi::Direct,
             executable.param_reprs.clone(),
             executable.return_ty,
-            executable.return_abi.clone(),
+            executable.return_layout.clone(),
             executable.effects,
         );
         let params = ctx.entry_params(executable.key.activation.input.as_slice());
@@ -399,7 +399,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
             NativeEntryAbi::Direct,
             executable.param_reprs.clone(),
             executable.return_ty,
-            executable.return_abi.clone(),
+            executable.return_layout.clone(),
             executable.effects,
         );
         let entry_tys = runtime_param_tys(&executable.runtime_params);
@@ -485,7 +485,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
             NativeEntryAbi::Direct,
             executable.param_reprs.clone(),
             executable.return_ty,
-            executable.return_abi.clone(),
+            executable.return_layout.clone(),
             executable.effects,
         );
         let mut env = ValueEnv::default();
@@ -576,7 +576,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
             entry_abi,
             param_reprs,
             executable.return_ty,
-            executable.return_abi.clone(),
+            executable.return_layout.clone(),
             executable.effects,
         );
         let mut env = ValueEnv::default();
@@ -1061,22 +1061,22 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                         })?;
                         let callee_executable = &self.program.executables[target];
                         let mut call_args = Vec::new();
-                        for (capture, layout) in captures
-                            .iter()
-                            .zip(callee_executable.runtime_params.inputs.iter().take(captures.len()))
-                        {
-                            self.encode_runtime_value(
-                                ctx,
-                                callee_executable,
-                                None,
-                                capture,
-                                layout.value_layout(),
-                                &mut call_args,
-                            )?;
+                        // The captured value's lanes are already the flat ABI lanes for the
+                        // callee's leading capture inputs (that is how capture layout was
+                        // settled), so forward them directly. The capture/arg split is the
+                        // callee's own fact: total inputs minus the explicit call args.
+                        for capture in &captures {
+                            flatten_native_value_to_lanes(capture, &mut call_args);
                         }
+                        let arg_inputs_start = callee_executable
+                            .runtime_params
+                            .inputs
+                            .len()
+                            .checked_sub(args.len())
+                            .ok_or(FatalError)?;
                         for (arg, layout) in args
                             .iter()
-                            .zip(callee_executable.runtime_params.inputs.iter().skip(captures.len()))
+                            .zip(callee_executable.runtime_params.inputs.iter().skip(arg_inputs_start))
                         {
                             let local = env.cloned_value(arg.value).ok_or(FatalError)?;
                             self.encode_runtime_value(
@@ -2348,12 +2348,30 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                 }
                 Ok(())
             }
-            RuntimeValueLayout::DirectCallable { function, captures } => {
-                let callable_captures = direct_callable_captures_for_layout(value, *function, captures.len())?;
-                for (capture, capture_layout) in callable_captures.iter().zip(captures.iter()) {
-                    self.encode_runtime_value(ctx, executable, None, capture, capture_layout, lanes)?;
+            RuntimeValueLayout::DirectCallable {
+                function,
+                capture_lanes,
+            } => {
+                // Direct-only structural carry: the value's captures flatten to
+                // exactly the settled flat lanes. We forward raw lanes; we never
+                // reconstruct or box the captured structure here.
+                match value {
+                    NativeLocalValue::DirectCallable {
+                        function: actual,
+                        captures,
+                    } if actual == function => {
+                        let mut produced = Vec::new();
+                        for capture in captures {
+                            flatten_native_value_to_lanes(capture, &mut produced);
+                        }
+                        if produced.len() != capture_lanes.len() {
+                            return Err(FatalError);
+                        }
+                        lanes.extend(produced);
+                        Ok(())
+                    }
+                    _ => Err(FatalError),
                 }
-                Ok(())
             }
         }
     }
@@ -2753,7 +2771,7 @@ struct NativeFnCtx {
     entry_abi: NativeEntryAbi,
     param_reprs: Vec<AbiValueRepr>,
     return_ty: Ty,
-    return_abi: ReturnAbi,
+    return_layout: RuntimeValueLayout,
     effects: EffectSummary,
     next_token: u32,
 }
@@ -2767,7 +2785,7 @@ impl NativeFnCtx {
         entry_abi: NativeEntryAbi,
         param_reprs: Vec<AbiValueRepr>,
         return_ty: Ty,
-        return_abi: ReturnAbi,
+        return_layout: RuntimeValueLayout,
         effects: EffectSummary,
     ) -> Self {
         let builder = FnBuilder::new(fn_id, name.to_string()).with_category(category);
@@ -2784,7 +2802,7 @@ impl NativeFnCtx {
             entry_abi,
             param_reprs,
             return_ty,
-            return_abi,
+            return_layout,
             effects,
             next_token: 0,
         }
@@ -2857,7 +2875,7 @@ impl NativeFnCtx {
             entry_abi: self.entry_abi,
             param_reprs: self.param_reprs,
             return_ty: self.return_ty,
-            return_abi: self.return_abi,
+            return_layout: self.return_layout,
             value_types: self.value_types,
             callable_value_boundaries: self.callable_value_boundaries,
             extern_marshals: self.extern_marshals,
@@ -2918,27 +2936,45 @@ fn decode_runtime_value(
                 .map(|field| decode_runtime_value(params, field, lane_index))
                 .collect::<Result<Vec<_>, _>>()?,
         )),
-        RuntimeValueLayout::DirectCallable { function, captures } => Ok(NativeLocalValue::DirectCallable {
-            function: *function,
-            captures: captures
-                .iter()
-                .map(|capture| decode_runtime_value(params, capture, lane_index))
-                .collect::<Result<Vec<_>, _>>()?,
-        }),
+        RuntimeValueLayout::DirectCallable {
+            function,
+            capture_lanes,
+        } => {
+            // A direct-only callable arrives as flat transport lanes. It is only
+            // ever forwarded or invoked directly (an escaping callable would have
+            // been carried as a ValueRef), so we bind flat raw-lane leaves and
+            // never rebuild the captured structure.
+            let mut captures = Vec::with_capacity(capture_lanes.len());
+            for _ in capture_lanes {
+                let value = *params.get(*lane_index).ok_or(FatalError)?;
+                *lane_index += 1;
+                captures.push(NativeLocalValue::Runtime(value));
+            }
+            Ok(NativeLocalValue::DirectCallable {
+                function: *function,
+                captures,
+            })
+        }
     }
 }
 
-fn direct_callable_captures_for_layout(
-    value: &NativeLocalValue,
-    function: FunctionId,
-    capture_count: usize,
-) -> Result<Vec<NativeLocalValue>, FatalError> {
+/// Flattens a live native value into its raw transport lanes without any
+/// first-class boxing: every leaf is already a `Var`. Tuple and direct-callable
+/// captures flatten in order, so the result matches the settled flat lane
+/// contract a carrier was handed.
+fn flatten_native_value_to_lanes(value: &NativeLocalValue, lanes: &mut Vec<Var>) {
     match value {
-        NativeLocalValue::DirectCallable {
-            function: actual,
-            captures,
-        } if *actual == function && captures.len() == capture_count => Ok(captures.clone()),
-        _ => Err(FatalError),
+        NativeLocalValue::Runtime(var) => lanes.push(*var),
+        NativeLocalValue::TupleFields(fields) => {
+            for field in fields {
+                flatten_native_value_to_lanes(field, lanes);
+            }
+        }
+        NativeLocalValue::DirectCallable { captures, .. } => {
+            for capture in captures {
+                flatten_native_value_to_lanes(capture, lanes);
+            }
+        }
     }
 }
 
@@ -3253,10 +3289,11 @@ fn mark_ignored_lanes_for_demand(
             }
             RuntimeDemand::Value | RuntimeDemand::Callable(_) => skip_runtime_lanes(vars, layout, lane_index),
         },
-        RuntimeValueLayout::DirectCallable { captures, .. } => {
+        RuntimeValueLayout::DirectCallable { capture_lanes, .. } => {
             if demand.is_ignore() {
-                for capture in captures {
-                    mark_all_runtime_lanes_ignored(builder, vars, capture, lane_index)?;
+                for _ in capture_lanes {
+                    let var = next_runtime_lane(vars, lane_index)?;
+                    builder.mark_param_ignored(var);
                 }
                 Ok(())
             } else {
@@ -3279,9 +3316,16 @@ fn mark_all_runtime_lanes_ignored(
             builder.mark_param_ignored(var);
             Ok(())
         }
-        RuntimeValueLayout::TupleFields { fields } | RuntimeValueLayout::DirectCallable { captures: fields, .. } => {
+        RuntimeValueLayout::TupleFields { fields } => {
             for field in fields {
                 mark_all_runtime_lanes_ignored(builder, vars, field, lane_index)?;
+            }
+            Ok(())
+        }
+        RuntimeValueLayout::DirectCallable { capture_lanes, .. } => {
+            for _ in capture_lanes {
+                let var = next_runtime_lane(vars, lane_index)?;
+                builder.mark_param_ignored(var);
             }
             Ok(())
         }
@@ -3295,9 +3339,15 @@ fn skip_runtime_lanes(vars: &[Var], layout: &RuntimeValueLayout, lane_index: &mu
             next_runtime_lane(vars, lane_index)?;
             Ok(())
         }
-        RuntimeValueLayout::TupleFields { fields } | RuntimeValueLayout::DirectCallable { captures: fields, .. } => {
+        RuntimeValueLayout::TupleFields { fields } => {
             for field in fields {
                 skip_runtime_lanes(vars, field, lane_index)?;
+            }
+            Ok(())
+        }
+        RuntimeValueLayout::DirectCallable { capture_lanes, .. } => {
+            for _ in capture_lanes {
+                next_runtime_lane(vars, lane_index)?;
             }
             Ok(())
         }

@@ -201,20 +201,30 @@ fn propagate_call_return_demands(
             continue;
         };
         for (callsite, observed) in observed_returns {
-            if observed.is_ignore() {
-                continue;
-            }
             let need = caller
                 .callsite_needs
                 .get(callsite)
                 .copied()
                 .unwrap_or(ExecutableNeed::Value);
+            // A tuple-field callsite delivers exactly the field shape its need
+            // names: that is the executable's ABI contract, fixed by the planner
+            // when it keyed the callee. The observed value demand only refines a
+            // plain value return, where an ignored result may stay unmaterialized.
+            let delivered = match need {
+                ExecutableNeed::TupleFields(_) => runtime_demand_for_executable_need(need),
+                ExecutableNeed::Value => {
+                    if observed.is_ignore() {
+                        continue;
+                    }
+                    observed.clone()
+                }
+            };
             let Some(summary) = caller.callsites.get(callsite) else {
                 continue;
             };
             for target in local_call_targets(summary, need) {
                 if let Some(callee) = demands.get_mut(&target) {
-                    callee.return_demand.join_assign(observed);
+                    callee.return_demand.join_assign(&delivered);
                 }
             }
         }

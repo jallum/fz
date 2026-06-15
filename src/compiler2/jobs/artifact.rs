@@ -22,7 +22,7 @@ use super::super::artifact::{
     AbiReadyCallEdge, AbiReadyExecutable, AbiReadyProgram, AbiValueRepr, CallTarget, CallableEntry, EffectSummary,
     EmissionReadyCallEdge, EmissionReadyCallableEntry, EmissionReadyExecutable, EmissionReadyProgram,
     ExecutableDispatch, MaterializedCallEdge, MaterializedExecutable, MaterializedProgram, ReturnAbi,
-    RuntimeInputLayout, RuntimeParamLayout, RuntimeValueLayout,
+    RuntimeInputLayout, RuntimeLane, RuntimeParamLayout, RuntimeValueLayout,
 };
 use super::super::body::{
     CallArg, CallSiteId, ControlDestination, ControlDispatch, ControlEntryId, ControlEntryOrigin, DispatchBindings,
@@ -172,12 +172,11 @@ pub(super) fn derive_abi_ready(world: &mut World<'_>, root_id: RootId) -> Result
 
     let reads = settled_uses([materialized_fact]);
     let materialized = world.materialized_program(root_id);
-    let mut plans = materialized
+    let plans = materialized
         .executables
         .iter()
         .map(|(key, executable)| (key.clone(), build_executable_abi_plan(world, key, executable)))
         .collect::<HashMap<_, _>>();
-    let return_abis = settle_return_abis(world, root_id, &materialized, &mut plans)?;
     let executables = materialized
         .executables
         .iter()
@@ -185,14 +184,10 @@ pub(super) fn derive_abi_ready(world: &mut World<'_>, root_id: RootId) -> Result
             Ok((
                 key.clone(),
                 derive_abi_ready_executable(
-                    world,
-                    root_id,
-                    key,
                     executable,
                     plans
                         .get(key)
                         .expect("ABI-ready executable plan should exist for every materialized executable"),
-                    &return_abis,
                 )?,
             ))
         })
@@ -222,8 +217,6 @@ pub(super) fn derive_abi_ready(world: &mut World<'_>, root_id: RootId) -> Result
 struct ExecutableAbiPlan {
     param_reprs: Vec<AbiValueRepr>,
     value_reprs: HashMap<ValueId, AbiValueRepr>,
-    resume_values: HashMap<ControlEntryId, ValueId>,
-    deliveries: HashMap<ControlEntryId, Vec<DeliverySource>>,
 }
 
 struct ExecutableRuntimeTransport {
@@ -2060,48 +2053,45 @@ impl<'a> CallableWitnessResolver<'a> {
         }
     }
 
+    /// Serves the settled transport layout for a direct-only callable value:
+    /// one-level target identity plus the FLAT capture lanes it occupies. Each
+    /// capture's own structure is flattened to leaf lanes here and never stored
+    /// nested — the carrier only moves lanes; the callee body interprets them
+    /// via its own settled capture layout. A direct-only capture chain is a DAG
+    /// (a lambda's captures are bound before the lambda), so re-entry is
+    /// impossible; we treat it as an invariant violation rather than silently
+    /// collapsing to a ValueRef as the old recursive model did.
     fn local_callable_layout(&mut self, world: &mut World<'_>, local_id: LocalCallableId) -> RuntimeValueLayout {
         match self.local_layout_memo.get(local_id.0) {
             Some(WitnessMemo::Ready(layout)) => return layout.clone(),
             Some(WitnessMemo::Pending) => {
-                return RuntimeValueLayout::Value {
-                    ty: world.types_mut().any(),
-                    repr: AbiValueRepr::ValueRef,
-                };
+                panic!("direct-only callable capture chain must be acyclic; local callable {local_id:?} re-entered");
             }
             Some(WitnessMemo::Unvisited) => {}
-            None => {
-                return RuntimeValueLayout::Value {
-                    ty: world.types_mut().any(),
-                    repr: AbiValueRepr::ValueRef,
-                };
-            }
+            None => panic!("local callable layout requested for unknown local callable {local_id:?}"),
         }
         self.local_layout_memo[local_id.0] = WitnessMemo::Pending;
         let callable = &self.plan.local_callables[local_id.0];
-        let captures = callable
-            .captures
-            .iter()
-            .copied()
-            .map(|capture| {
-                let fact = self.plan.value_facts[callable.exec]
-                    .get(capture.as_u32() as usize)
-                    .cloned()
-                    .unwrap_or_default();
-                let capture_ty = fact.ty.unwrap_or_else(|| world.types_mut().any());
-                let capture_witness = self.value_witness(callable.exec, capture);
-                self.runtime_value_layout_from_demand(
-                    world,
-                    callable.exec,
-                    capture_ty,
-                    &fact.demand,
-                    Some(&capture_witness),
-                )
-            })
-            .collect::<Vec<_>>();
+        let function = callable.function;
+        let exec = callable.exec;
+        let captures = callable.captures.clone();
+        let mut capture_lanes = Vec::new();
+        for capture in captures {
+            let fact = self.plan.value_facts[exec]
+                .get(capture.as_u32() as usize)
+                .cloned()
+                .unwrap_or_default();
+            let capture_ty = fact.ty.unwrap_or_else(|| world.types_mut().any());
+            let capture_witness = self.value_witness(exec, capture);
+            let layout =
+                self.runtime_value_layout_from_demand(world, exec, capture_ty, &fact.demand, Some(&capture_witness));
+            for (ty, repr) in layout.lane_tys().into_iter().zip(layout.abi_reprs()) {
+                capture_lanes.push(RuntimeLane { ty, repr });
+            }
+        }
         let layout = RuntimeValueLayout::DirectCallable {
-            function: callable.function,
-            captures,
+            function,
+            capture_lanes,
         };
         self.local_layout_memo[local_id.0] = WitnessMemo::Ready(layout.clone());
         layout
@@ -2173,18 +2163,12 @@ fn build_executable_abi_plan(
     ExecutableAbiPlan {
         param_reprs,
         value_reprs,
-        resume_values: resume_values(&executable.body),
-        deliveries: deliveries(&executable.body),
     }
 }
 
 fn derive_abi_ready_executable(
-    world: &mut World<'_>,
-    root_id: RootId,
-    key: &ExecutableKey,
     executable: &MaterializedExecutable,
     plan: &ExecutableAbiPlan,
-    return_abis: &HashMap<ExecutableKey, ReturnAbi>,
 ) -> Result<AbiReadyExecutable, FatalError> {
     let call_edges = executable
         .call_edges
@@ -2195,31 +2179,21 @@ fn derive_abi_ready_executable(
                 AbiReadyCallEdge {
                     callee: edge.callee.clone(),
                     return_ty: edge.return_ty,
-                    return_abi: match &edge.callee {
-                        CallTarget::Local(callee) => return_abis
-                            .get(callee)
-                            .expect("ABI-ready local call edge should resolve through the settled callee return ABI")
-                            .clone(),
-                        CallTarget::ProviderBoundary(_) => ReturnAbi::Value(AbiValueRepr::ValueRef),
-                    },
                     extern_marshals: edge.extern_marshals.clone(),
                 },
             )
         })
         .collect::<HashMap<_, _>>();
-    let resume_layouts = delivered_resume_layouts(world, root_id, executable, plan, return_abis)?;
     Ok(AbiReadyExecutable {
         entry_dispatch: executable.entry_dispatch.clone(),
         return_ty: executable.return_ty,
-        return_abi: return_abis
-            .get(key)
-            .expect("ABI-ready executable should resolve through the settled return ABI")
-            .clone(),
         param_reprs: plan.param_reprs.clone(),
         runtime_demand: executable.runtime_demand.clone(),
         runtime_params: executable.runtime_params.clone(),
         return_layout: executable.return_layout.clone(),
-        resume_layouts,
+        // The settled recursive resume transport from MaterializeRoot is the
+        // authority. We no longer recover it from the narrow return ABI.
+        resume_layouts: executable.resume_layouts.clone(),
         entry_capture_layouts: executable.entry_capture_layouts.clone(),
         value_types: executable.value_types.clone(),
         value_reprs: plan.value_reprs.clone(),
@@ -2227,611 +2201,6 @@ fn derive_abi_ready_executable(
         body: executable.body.clone(),
         call_edges,
     })
-}
-
-fn delivered_resume_layouts(
-    world: &mut World<'_>,
-    root_id: RootId,
-    executable: &MaterializedExecutable,
-    plan: &ExecutableAbiPlan,
-    return_abis: &HashMap<ExecutableKey, ReturnAbi>,
-) -> Result<Vec<Option<RuntimeValueLayout>>, FatalError> {
-    let LoweredBody::Clauses { entries, .. } = &executable.body else {
-        return Ok(Vec::new());
-    };
-    entries
-        .iter()
-        .enumerate()
-        .map(|(entry_index, entry)| {
-            let ControlEntryOrigin::DeliveredResume { value } = entry.origin else {
-                return Ok(None);
-            };
-            let entry_id = ControlEntryId::from_u32(entry_index as u32);
-            let deliveries = plan.deliveries.get(&entry_id).ok_or_else(|| {
-                incomplete_semantic_plan(
-                    world,
-                    root_id,
-                    format!(
-                        "delivered resume entry {} has no incoming delivery source for value {}",
-                        entry_index,
-                        value.as_u32()
-                    ),
-                )
-            })?;
-            let return_abi = resolve_resume_return_abi(world, root_id, executable, plan, deliveries, return_abis)?;
-            let value_ty = executable
-                .value_types
-                .get(&value)
-                .copied()
-                .unwrap_or_else(|| world.types_mut().any());
-            Ok(Some(runtime_layout_from_return_abi(world, value_ty, &return_abi)))
-        })
-        .collect()
-}
-
-fn resolve_resume_return_abi(
-    world: &World<'_>,
-    root_id: RootId,
-    executable: &MaterializedExecutable,
-    plan: &ExecutableAbiPlan,
-    deliveries: &[DeliverySource],
-    return_abis: &HashMap<ExecutableKey, ReturnAbi>,
-) -> Result<ReturnAbi, FatalError> {
-    let mut merged = None;
-    for delivery in deliveries {
-        let next = delivery_return_abi(world, root_id, executable, plan, *delivery, return_abis)?;
-        merge_return_abi(world, root_id, &mut merged, next)?;
-    }
-    merged.ok_or_else(|| {
-        incomplete_semantic_plan(
-            world,
-            root_id,
-            "delivered resume entry has no concrete incoming return ABI",
-        )
-    })
-}
-
-fn delivery_return_abi(
-    world: &World<'_>,
-    root_id: RootId,
-    executable: &MaterializedExecutable,
-    plan: &ExecutableAbiPlan,
-    delivery: DeliverySource,
-    return_abis: &HashMap<ExecutableKey, ReturnAbi>,
-) -> Result<ReturnAbi, FatalError> {
-    match delivery {
-        DeliverySource::Value(value) => plan
-            .value_reprs
-            .get(&value)
-            .copied()
-            .map(ReturnAbi::Value)
-            .ok_or_else(|| {
-                incomplete_semantic_plan(
-                    world,
-                    root_id,
-                    format!("value delivery {} has no settled ABI repr", value.as_u32()),
-                )
-            }),
-        DeliverySource::DirectCall(callsite) | DeliverySource::ClosureCall(callsite) => {
-            let Some(edge) = executable.call_edges.get(&callsite) else {
-                return Ok(ReturnAbi::Value(AbiValueRepr::ValueRef));
-            };
-            Ok(match &edge.callee {
-                CallTarget::Local(callee) => return_abis.get(callee).cloned().ok_or_else(|| {
-                    incomplete_semantic_plan(
-                        world,
-                        root_id,
-                        format!("call delivery {} has no settled callee return ABI", callsite.as_u32()),
-                    )
-                })?,
-                CallTarget::ProviderBoundary(_) => ReturnAbi::Value(AbiValueRepr::ValueRef),
-            })
-        }
-    }
-}
-
-fn runtime_layout_from_return_abi(world: &mut World<'_>, ty: Ty, return_abi: &ReturnAbi) -> RuntimeValueLayout {
-    match return_abi {
-        ReturnAbi::Never => RuntimeValueLayout::Omitted,
-        ReturnAbi::Value(repr) => RuntimeValueLayout::Value { ty, repr: *repr },
-        ReturnAbi::TupleFields(fields) => RuntimeValueLayout::TupleFields {
-            fields: tuple_field_tys(world, ty, fields.len())
-                .into_iter()
-                .zip(fields.iter().copied())
-                .map(|(ty, repr)| RuntimeValueLayout::Value { ty, repr })
-                .collect(),
-        },
-    }
-}
-
-fn settle_return_abis(
-    world: &mut World<'_>,
-    root_id: RootId,
-    materialized: &MaterializedProgram,
-    plans: &mut HashMap<ExecutableKey, ExecutableAbiPlan>,
-) -> Result<HashMap<ExecutableKey, ReturnAbi>, FatalError> {
-    let mut return_abis = materialized
-        .executables
-        .iter()
-        .filter_map(|(key, executable)| match (&executable.body, key.need) {
-            (LoweredBody::Extern { signature }, _) => Some((key.clone(), extern_return_abi(signature))),
-            (_, ExecutableNeed::TupleFields(_)) => {
-                Some((key.clone(), fixed_return_abi(world, executable.return_ty, key.need)))
-            }
-            (_, ExecutableNeed::Value) => None,
-        })
-        .collect::<HashMap<_, _>>();
-    let executable_keys = materialized.executables.keys().cloned().collect::<Vec<_>>();
-
-    loop {
-        let mut changed = false;
-        for key in &executable_keys {
-            let executable = materialized
-                .executables
-                .get(key)
-                .expect("settled executable key should resolve in the materialized program");
-            let plan = plans
-                .get_mut(key)
-                .expect("settled executable key should resolve in the ABI-ready plan map");
-            if propagate_resume_value_reprs(world, root_id, executable, plan, &return_abis)? {
-                changed = true;
-            }
-        }
-
-        for key in &executable_keys {
-            if return_abis.contains_key(key) {
-                continue;
-            }
-            let executable = materialized
-                .executables
-                .get(key)
-                .expect("settled executable key should resolve in the materialized program");
-            let plan = plans
-                .get(key)
-                .expect("settled executable key should resolve in the ABI-ready plan map");
-            if let Some(return_abi) = resolve_executable_return_abi(world, root_id, executable, plan, &return_abis)? {
-                return_abis.insert(key.clone(), return_abi);
-                changed = true;
-            }
-        }
-
-        if !changed {
-            break;
-        }
-    }
-
-    for key in &executable_keys {
-        if return_abis.contains_key(key) {
-            continue;
-        }
-        let executable = materialized
-            .executables
-            .get(key)
-            .expect("settled executable key should resolve in the materialized program");
-        return_abis.insert(key.clone(), conservative_return_abi(world, executable, key.need));
-    }
-
-    for key in &executable_keys {
-        let executable = materialized
-            .executables
-            .get(key)
-            .expect("settled executable key should resolve in the materialized program");
-        let plan = plans
-            .get_mut(key)
-            .expect("settled executable key should resolve in the ABI-ready plan map");
-        let _ = propagate_resume_value_reprs(world, root_id, executable, plan, &return_abis)?;
-    }
-
-    Ok(return_abis)
-}
-
-fn propagate_resume_value_reprs(
-    world: &World<'_>,
-    root_id: RootId,
-    executable: &MaterializedExecutable,
-    plan: &mut ExecutableAbiPlan,
-    return_abis: &HashMap<ExecutableKey, ReturnAbi>,
-) -> Result<bool, FatalError> {
-    let mut changed = false;
-    for (entry_id, value) in &plan.resume_values {
-        let Some(deliveries) = plan.deliveries.get(entry_id) else {
-            continue;
-        };
-        let Some(repr) = resolve_resume_value_repr(world, root_id, executable, plan, deliveries, return_abis)? else {
-            continue;
-        };
-        match plan.value_reprs.get(value).copied() {
-            Some(existing) if existing == repr => {}
-            Some(existing) => {
-                return Err(incomplete_semantic_plan(
-                    world,
-                    root_id,
-                    format!(
-                        "resume value {} resolved to conflicting ABI lanes: {:?} vs {:?}",
-                        value.as_u32(),
-                        existing,
-                        repr
-                    ),
-                ));
-            }
-            None => {
-                plan.value_reprs.insert(*value, repr);
-                changed = true;
-            }
-        }
-    }
-    Ok(changed)
-}
-
-fn resolve_resume_value_repr(
-    world: &World<'_>,
-    root_id: RootId,
-    executable: &MaterializedExecutable,
-    plan: &ExecutableAbiPlan,
-    deliveries: &[DeliverySource],
-    return_abis: &HashMap<ExecutableKey, ReturnAbi>,
-) -> Result<Option<AbiValueRepr>, FatalError> {
-    let mut merged = None;
-    for delivery in deliveries {
-        let Some(next) = delivery_repr(world, root_id, executable, plan, *delivery, return_abis)? else {
-            return Ok(None);
-        };
-        merge_repr(&mut merged, next)?;
-    }
-    Ok(merged)
-}
-
-fn delivery_repr(
-    world: &World<'_>,
-    root_id: RootId,
-    executable: &MaterializedExecutable,
-    plan: &ExecutableAbiPlan,
-    delivery: DeliverySource,
-    return_abis: &HashMap<ExecutableKey, ReturnAbi>,
-) -> Result<Option<AbiValueRepr>, FatalError> {
-    match delivery {
-        DeliverySource::Value(value) => Ok(plan.value_reprs.get(&value).copied()),
-        DeliverySource::DirectCall(callsite) => {
-            let edge = executable.call_edges.get(&callsite).ok_or_else(|| {
-                incomplete_semantic_plan(
-                    world,
-                    root_id,
-                    format!(
-                        "delivery references missing materialized call edge {}",
-                        callsite.as_u32()
-                    ),
-                )
-            })?;
-            Ok(match &edge.callee {
-                CallTarget::Local(callee) => return_abis.get(callee).and_then(return_repr_for_delivery),
-                CallTarget::ProviderBoundary(_) => Some(AbiValueRepr::ValueRef),
-            })
-        }
-        DeliverySource::ClosureCall(callsite) => {
-            let Some(edge) = executable.call_edges.get(&callsite) else {
-                return Ok(Some(AbiValueRepr::ValueRef));
-            };
-            Ok(match &edge.callee {
-                CallTarget::Local(callee) => return_abis.get(callee).and_then(return_repr_for_delivery),
-                CallTarget::ProviderBoundary(_) => Some(AbiValueRepr::ValueRef),
-            })
-        }
-    }
-}
-
-fn resolve_executable_return_abi(
-    world: &World<'_>,
-    root_id: RootId,
-    executable: &MaterializedExecutable,
-    plan: &ExecutableAbiPlan,
-    return_abis: &HashMap<ExecutableKey, ReturnAbi>,
-) -> Result<Option<ReturnAbi>, FatalError> {
-    let LoweredBody::Clauses { clauses, entries, .. } = &executable.body else {
-        return Ok(None);
-    };
-    let mut merged = None;
-    for clause in clauses {
-        let Some(next) = resolve_entry_return_abi(
-            world,
-            root_id,
-            executable,
-            plan,
-            entries,
-            clause.entry,
-            return_abis,
-            &mut HashSet::new(),
-        )?
-        else {
-            return Ok(None);
-        };
-        merge_return_abi(world, root_id, &mut merged, next)?;
-    }
-    Ok(merged)
-}
-
-fn resolve_entry_return_abi(
-    world: &World<'_>,
-    root_id: RootId,
-    executable: &MaterializedExecutable,
-    plan: &ExecutableAbiPlan,
-    entries: &[LoweredEntry],
-    entry_id: ControlEntryId,
-    return_abis: &HashMap<ExecutableKey, ReturnAbi>,
-    seen: &mut HashSet<ControlEntryId>,
-) -> Result<Option<ReturnAbi>, FatalError> {
-    if !seen.insert(entry_id) {
-        return Err(incomplete_semantic_plan(
-            world,
-            root_id,
-            format!("entry {} participates in a control cycle", entry_id.as_u32()),
-        ));
-    }
-    let entry = &entries[entry_id.as_u32() as usize];
-    let resolved = match &entry.tail {
-        LoweredTail::Value { value, dest } => match dest {
-            ControlDestination::Return => plan.value_reprs.get(value).copied().map(ReturnAbi::Value),
-            ControlDestination::Deliver(target) => {
-                resolve_entry_return_abi(world, root_id, executable, plan, entries, *target, return_abis, seen)?
-            }
-        },
-        LoweredTail::DirectCall { callsite, dest, .. } => match dest {
-            ControlDestination::Return => executable.call_edges.get(callsite).and_then(|edge| match &edge.callee {
-                CallTarget::Local(callee) => return_abis.get(callee).cloned(),
-                CallTarget::ProviderBoundary(_) => Some(ReturnAbi::Value(AbiValueRepr::ValueRef)),
-            }),
-            ControlDestination::Deliver(target) => {
-                resolve_entry_return_abi(world, root_id, executable, plan, entries, *target, return_abis, seen)?
-            }
-        },
-        LoweredTail::ClosureCall { callsite, dest, .. } => match dest {
-            ControlDestination::Return => executable
-                .call_edges
-                .get(callsite)
-                .and_then(|edge| match &edge.callee {
-                    CallTarget::Local(callee) => return_abis.get(callee).cloned(),
-                    CallTarget::ProviderBoundary(_) => Some(ReturnAbi::Value(AbiValueRepr::ValueRef)),
-                })
-                .or(Some(ReturnAbi::Value(AbiValueRepr::ValueRef))),
-            ControlDestination::Deliver(target) => {
-                resolve_entry_return_abi(world, root_id, executable, plan, entries, *target, return_abis, seen)?
-            }
-        },
-        LoweredTail::If {
-            then_entry, else_entry, ..
-        } => {
-            let then_abi = resolve_entry_return_abi(
-                world,
-                root_id,
-                executable,
-                plan,
-                entries,
-                *then_entry,
-                return_abis,
-                seen,
-            )?;
-            let else_abi = resolve_entry_return_abi(
-                world,
-                root_id,
-                executable,
-                plan,
-                entries,
-                *else_entry,
-                return_abis,
-                seen,
-            )?;
-            match (then_abi, else_abi) {
-                (Some(left), Some(right)) if left == right => Some(left),
-                (Some(left), Some(right)) => widen_return_abi(left, right),
-                _ => None,
-            }
-        }
-        LoweredTail::Dispatch { dispatch, .. } => {
-            let mut widened = None;
-            for arm_entry in &dispatch.arm_entries {
-                let Some(arm_abi) =
-                    resolve_entry_return_abi(world, root_id, executable, plan, entries, *arm_entry, return_abis, seen)?
-                else {
-                    return Ok(None);
-                };
-                widened = Some(match widened {
-                    None => arm_abi,
-                    Some(current) if current == arm_abi => current,
-                    Some(current) => widen_return_abi(current, arm_abi).ok_or_else(|| {
-                        incomplete_semantic_plan(
-                            world,
-                            root_id,
-                            format!("dispatch arm returns disagree for entry {}", entry_id.as_u32()),
-                        )
-                    })?,
-                });
-            }
-            let Some(miss_abi) = resolve_entry_return_abi(
-                world,
-                root_id,
-                executable,
-                plan,
-                entries,
-                dispatch.miss_entry,
-                return_abis,
-                seen,
-            )?
-            else {
-                return Ok(None);
-            };
-            match widened {
-                None => Some(miss_abi),
-                Some(current) if current == miss_abi => Some(current),
-                Some(current) => widen_return_abi(current, miss_abi),
-            }
-        }
-        LoweredTail::Receive(receive) => {
-            let mut widened = None;
-            for clause in &receive.clauses {
-                let Some(clause_abi) = resolve_entry_return_abi(
-                    world,
-                    root_id,
-                    executable,
-                    plan,
-                    entries,
-                    clause.entry,
-                    return_abis,
-                    seen,
-                )?
-                else {
-                    return Ok(None);
-                };
-                widened = Some(match widened {
-                    None => clause_abi,
-                    Some(current) if current == clause_abi => current,
-                    Some(current) => widen_return_abi(current, clause_abi).ok_or_else(|| {
-                        incomplete_semantic_plan(
-                            world,
-                            root_id,
-                            format!("receive clause returns disagree for entry {}", entry_id.as_u32()),
-                        )
-                    })?,
-                });
-            }
-            if let Some(after) = &receive.after {
-                let Some(after_abi) = resolve_entry_return_abi(
-                    world,
-                    root_id,
-                    executable,
-                    plan,
-                    entries,
-                    after.entry,
-                    return_abis,
-                    seen,
-                )?
-                else {
-                    return Ok(None);
-                };
-                widened = Some(match widened {
-                    None => after_abi,
-                    Some(current) if current == after_abi => current,
-                    Some(current) => widen_return_abi(current, after_abi).ok_or_else(|| {
-                        incomplete_semantic_plan(
-                            world,
-                            root_id,
-                            format!("receive branches disagree for entry {}", entry_id.as_u32()),
-                        )
-                    })?,
-                });
-            }
-            widened
-        }
-        LoweredTail::Halt { .. } => Some(ReturnAbi::Never),
-    };
-    seen.remove(&entry_id);
-    Ok(resolved)
-}
-
-fn merge_return_abi(
-    world: &World<'_>,
-    root_id: RootId,
-    slot: &mut Option<ReturnAbi>,
-    next: ReturnAbi,
-) -> Result<(), FatalError> {
-    match slot {
-        Some(existing) if *existing == next => Ok(()),
-        Some(existing) => match widen_return_abi(existing.clone(), next.clone()) {
-            Some(widened) => {
-                *slot = Some(widened);
-                Ok(())
-            }
-            None => Err(incomplete_semantic_plan(
-                world,
-                root_id,
-                format!(
-                    "conflicting function return ABI contracts: {:?} vs {:?}",
-                    existing, next
-                ),
-            )),
-        },
-        None => {
-            *slot = Some(next);
-            Ok(())
-        }
-    }
-}
-
-fn merge_repr(slot: &mut Option<AbiValueRepr>, next: AbiValueRepr) -> Result<(), FatalError> {
-    match slot {
-        Some(existing) if *existing == next => Ok(()),
-        Some(existing) => {
-            *slot = Some(widen_value_repr(*existing, next));
-            Ok(())
-        }
-        None => {
-            *slot = Some(next);
-            Ok(())
-        }
-    }
-}
-
-fn widen_return_abi(left: ReturnAbi, right: ReturnAbi) -> Option<ReturnAbi> {
-    match (left, right) {
-        (ReturnAbi::Never, other) | (other, ReturnAbi::Never) => Some(other),
-        (ReturnAbi::Value(left), ReturnAbi::Value(right)) => Some(ReturnAbi::Value(widen_value_repr(left, right))),
-        (ReturnAbi::TupleFields(left), ReturnAbi::TupleFields(right)) if left == right => {
-            Some(ReturnAbi::TupleFields(left))
-        }
-        _ => None,
-    }
-}
-
-fn widen_value_repr(left: AbiValueRepr, right: AbiValueRepr) -> AbiValueRepr {
-    if left == right { left } else { AbiValueRepr::ValueRef }
-}
-
-fn conservative_return_abi(
-    world: &mut World<'_>,
-    executable: &MaterializedExecutable,
-    need: ExecutableNeed,
-) -> ReturnAbi {
-    match need {
-        ExecutableNeed::Value => {
-            if world.types().is_empty(&executable.return_ty) {
-                ReturnAbi::Never
-            } else {
-                ReturnAbi::Value(AbiValueRepr::ValueRef)
-            }
-        }
-        ExecutableNeed::TupleFields(_) => {
-            unreachable!("tuple-field return ABIs should settle eagerly from the executable need")
-        }
-    }
-}
-
-fn fixed_return_abi(world: &mut World<'_>, return_ty: Ty, need: ExecutableNeed) -> ReturnAbi {
-    if world.types().is_empty(&return_ty) {
-        return ReturnAbi::Never;
-    }
-    match need {
-        ExecutableNeed::Value => ReturnAbi::Value(abi_value_repr(world, return_ty)),
-        ExecutableNeed::TupleFields(arity) => ReturnAbi::TupleFields(
-            tuple_field_tys(world, return_ty, arity)
-                .into_iter()
-                .map(|field| abi_value_repr(world, field))
-                .collect(),
-        ),
-    }
-}
-
-fn extern_return_abi(signature: &super::super::body::LoweredExtern) -> ReturnAbi {
-    if matches!(signature.ret, crate::fz_ir::ExternTy::Never) {
-        return ReturnAbi::Never;
-    }
-    let repr = match signature.ret {
-        crate::fz_ir::ExternTy::I64 => AbiValueRepr::RawInt,
-        crate::fz_ir::ExternTy::F64 => AbiValueRepr::RawF64,
-        crate::fz_ir::ExternTy::Any
-        | crate::fz_ir::ExternTy::Binary
-        | crate::fz_ir::ExternTy::CString
-        | crate::fz_ir::ExternTy::Unit => AbiValueRepr::ValueRef,
-        crate::fz_ir::ExternTy::Never => unreachable!("handled above"),
-    };
-    ReturnAbi::Value(repr)
 }
 
 fn record_step_reprs(
@@ -2950,14 +2319,6 @@ fn record_delivery(tail: &LoweredTail, deliveries: &mut HashMap<ControlEntryId, 
     }
 }
 
-fn return_repr_for_delivery(return_abi: &ReturnAbi) -> Option<AbiValueRepr> {
-    match return_abi {
-        ReturnAbi::Never => None,
-        ReturnAbi::Value(repr) => Some(*repr),
-        ReturnAbi::TupleFields(_) => Some(AbiValueRepr::ValueRef),
-    }
-}
-
 fn derive_emission_ready_executable(
     world: &World<'_>,
     root_id: RootId,
@@ -2999,7 +2360,6 @@ fn derive_emission_ready_executable(
         key,
         entry_dispatch: executable.entry_dispatch.clone(),
         return_ty: executable.return_ty,
-        return_abi: executable.return_abi.clone(),
         param_reprs: executable.param_reprs.clone(),
         runtime_demand: executable.runtime_demand.clone(),
         runtime_params: executable.runtime_params.clone(),
@@ -3095,6 +2455,23 @@ fn step_local_callable_value(step: &LoweredStep) -> Option<ValueId> {
     }
 }
 
+/// Projects a true callable boundary's return ABI from the target's settled
+/// return transport. This is the only place ReturnAbi is produced: a boundary
+/// is a publication contract for a first-class callable, so a structural return
+/// (tuple fields, direct callable) boxes to one ValueRef at the boundary, and a
+/// diverging target (empty return type) never returns.
+fn boundary_return_abi(world: &mut World<'_>, return_ty: Ty, return_layout: &RuntimeValueLayout) -> ReturnAbi {
+    if world.types().is_empty(&return_ty) {
+        return ReturnAbi::Never;
+    }
+    match return_layout {
+        RuntimeValueLayout::Value { repr, .. } => ReturnAbi::Value(*repr),
+        RuntimeValueLayout::Omitted
+        | RuntimeValueLayout::TupleFields { .. }
+        | RuntimeValueLayout::DirectCallable { .. } => ReturnAbi::Value(AbiValueRepr::ValueRef),
+    }
+}
+
 fn resolve_callable_entries_for_type(
     world: &mut World<'_>,
     root_id: RootId,
@@ -3146,7 +2523,7 @@ fn resolve_callable_entries_for_type(
                 capture_reprs,
                 arg_reprs,
                 return_ty: target_executable.return_ty,
-                return_abi: target_executable.return_abi.clone(),
+                return_abi: boundary_return_abi(world, target_executable.return_ty, &target_executable.return_layout),
             });
         }
         if !matched {

@@ -47,6 +47,9 @@ pub(crate) struct NativeCodegenSurface<'a> {
     pub mid_flight_cont_keys: Vec<(u32, Vec<MidFlightArgShape>)>,
     pub param_reprs: Vec<Vec<ArgRepr>>,
     pub return_reprs: Vec<ArgRepr>,
+    /// Settled delivered return shape per body slot. Decided once here, where
+    /// types are available, and consumed verbatim by codegen.
+    pub return_shapes: Vec<DeliveredShape>,
     pub native_abi_fns: HashSet<FnId>,
     pub cont_target_fns: HashSet<FnId>,
     pub cont_fns: HashSet<FnId>,

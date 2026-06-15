@@ -1,7 +1,10 @@
 use std::collections::HashMap;
 
 use super::identity::{FunctionMap, ModuleId, RootEntry, RootKind, RootMap};
-use super::{AbiValueRepr, ActivationKey, ExecutableKey, ExecutableNeed, FunctionId, ReturnAbi, RootId, Types};
+use super::{
+    AbiValueRepr, ActivationKey, ExecutableKey, ExecutableNeed, FunctionId, ReturnAbi, RootId, RuntimeValueLayout,
+    Types,
+};
 use crate::compiler2::artifact::{
     EffectSummary, NativeBody, NativeBodyOrigin, NativeCallableBoundary, NativeCallableBoundaryId, NativeEntryAbi,
     NativeProgram,
@@ -76,7 +79,10 @@ fn compiler2_native_program_contract_keeps_codegen_facts_on_body_records() {
             entry_abi: NativeEntryAbi::Direct,
             param_reprs: vec![AbiValueRepr::RawInt],
             return_ty: int,
-            return_abi: ReturnAbi::Value(AbiValueRepr::RawInt),
+            return_layout: RuntimeValueLayout::Value {
+                ty: int,
+                repr: AbiValueRepr::RawInt,
+            },
             value_types: HashMap::from([(Var(0), int)]),
             callable_value_boundaries: HashMap::from([(Var(0), NativeCallableBoundaryId(0))]),
             extern_marshals: marshals.clone(),
@@ -211,7 +217,10 @@ fn compiler2_native_program_contract_maps_old_native_inputs_to_local_facts() {
                 entry_abi: NativeEntryAbi::Direct,
                 param_reprs: vec![AbiValueRepr::RawInt],
                 return_ty: int,
-                return_abi: ReturnAbi::Value(AbiValueRepr::RawInt),
+                return_layout: RuntimeValueLayout::Value {
+                    ty: int,
+                    repr: AbiValueRepr::RawInt,
+                },
                 value_types: HashMap::from([(Var(0), int)]),
                 callable_value_boundaries: HashMap::from([(Var(0), NativeCallableBoundaryId(0))]),
                 extern_marshals: HashMap::from([(extern_site, ExternTy::CString)]),
@@ -226,7 +235,10 @@ fn compiler2_native_program_contract_maps_old_native_inputs_to_local_facts() {
                 entry_abi: NativeEntryAbi::Continuation { extra_params: 1 },
                 param_reprs: vec![AbiValueRepr::ValueRef],
                 return_ty: int,
-                return_abi: ReturnAbi::Value(AbiValueRepr::ValueRef),
+                return_layout: RuntimeValueLayout::Value {
+                    ty: int,
+                    repr: AbiValueRepr::ValueRef,
+                },
                 value_types: HashMap::from([(Var(1), int)]),
                 callable_value_boundaries: HashMap::new(),
                 extern_marshals: HashMap::new(),
@@ -260,9 +272,12 @@ fn compiler2_native_program_contract_maps_old_native_inputs_to_local_facts() {
         "native codegen should read effective return types from NativeBody.return_ty instead of ModulePlan.effective_returns",
     );
     assert_eq!(
-        program.bodies[0].return_abi,
-        ReturnAbi::Value(AbiValueRepr::RawInt),
-        "native codegen should read return-lane contracts from NativeBody.return_abi instead of re-deriving them through planner state",
+        program.bodies[0].return_layout,
+        RuntimeValueLayout::Value {
+            ty: int,
+            repr: AbiValueRepr::RawInt
+        },
+        "native codegen should read return transport from NativeBody.return_layout instead of re-deriving it through planner state",
     );
     assert_eq!(
         program.bodies[0].value_types.get(&Var(0)),
@@ -363,7 +378,10 @@ fn compiler2_native_program_contract_treats_old_extern_semantics_as_cleanup_not_
             entry_abi: NativeEntryAbi::Direct,
             param_reprs: vec![AbiValueRepr::RawInt],
             return_ty: int,
-            return_abi: ReturnAbi::Value(AbiValueRepr::RawInt),
+            return_layout: RuntimeValueLayout::Value {
+                ty: int,
+                repr: AbiValueRepr::RawInt,
+            },
             value_types: HashMap::from([(Var(0), int)]),
             callable_value_boundaries: HashMap::new(),
             extern_marshals: HashMap::from([(marshal_site, ExternTy::CString)]),

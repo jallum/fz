@@ -103,7 +103,6 @@ impl<'a, 'tel> BackendLowerer<'a, 'tel> {
             key: executable.key.clone(),
             entry_dispatch: executable.entry_dispatch.clone(),
             return_ty: executable.return_ty,
-            return_abi: executable.return_abi.clone(),
             param_reprs: executable.param_reprs.clone(),
             runtime_demand: executable.runtime_demand.clone(),
             runtime_params: executable.runtime_params.clone(),

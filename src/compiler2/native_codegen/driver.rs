@@ -282,8 +282,7 @@ fn build_boundary_return_adapter_signature(source: ArgRepr) -> Signature {
 }
 
 fn delivered_shape(surface: &NativeCodegenSurface<'_>, body_sid: u32, _is_cont_fn: bool) -> DeliveredShape {
-    let body = surface.body(body_sid).native_body;
-    NativeDemandAbi::new(body).returned_shape()
+    surface.return_shapes[body_sid as usize].clone()
 }
 
 fn collect_boundary_return_adapter_pairs(surface: &NativeCodegenSurface<'_>) -> BTreeSet<(ArgRepr, ArgRepr)> {
@@ -1060,9 +1059,14 @@ pub(crate) fn compile_with_backend_native_program<
 }
 
 fn build_codegen_return_repr(body: &crate::compiler2::NativeBody) -> ArgRepr {
-    match &body.return_abi {
-        crate::compiler2::ReturnAbi::Value(repr) => arg_repr_from_compiler2(*repr),
-        crate::compiler2::ReturnAbi::Never | crate::compiler2::ReturnAbi::TupleFields(_) => ArgRepr::ValueRef,
+    // A single scalar value lane returns in its own repr; every other shape
+    // (omitted, tuple fields, direct-callable lanes) returns through the ref
+    // register. Divergence does not change the register repr.
+    match &body.return_layout {
+        crate::compiler2::RuntimeValueLayout::Value { repr, .. } => arg_repr_from_compiler2(*repr),
+        crate::compiler2::RuntimeValueLayout::Omitted
+        | crate::compiler2::RuntimeValueLayout::TupleFields { .. }
+        | crate::compiler2::RuntimeValueLayout::DirectCallable { .. } => ArgRepr::ValueRef,
     }
 }
 
@@ -1115,10 +1119,17 @@ fn build_codegen_callable_boundaries<T: Types<Ty = Ty> + ClosureTypes>(
 fn build_codegen_closure_targets(
     program: &crate::compiler2::NativeProgram,
     param_reprs: &[Vec<ArgRepr>],
+    return_shapes: &[DeliveredShape],
 ) -> HashMap<FnId, NativeClosureTargetSurface> {
     let mut targets = HashMap::new();
     for boundary in &program.callable_boundaries {
-        let next = closure_target_surface_from_body(program, param_reprs, boundary.target_fn, boundary.capture_count);
+        let next = closure_target_surface_from_body(
+            program,
+            param_reprs,
+            return_shapes,
+            boundary.target_fn,
+            boundary.capture_count,
+        );
         if let Some(previous) = targets.insert(boundary.target_fn, next.clone()) {
             debug_assert_eq!(previous, next);
         }
@@ -1149,7 +1160,7 @@ fn build_codegen_closure_targets(
                 logical_param_count,
             );
             let capture_count = logical_param_count - arg_count;
-            let next = closure_target_surface_from_body(program, param_reprs, target_fn, capture_count);
+            let next = closure_target_surface_from_body(program, param_reprs, return_shapes, target_fn, capture_count);
             match targets.get(&target_fn) {
                 Some(previous) => debug_assert_eq!(previous, &next),
                 None => {
@@ -1165,6 +1176,7 @@ fn build_codegen_closure_targets(
 fn closure_target_surface_from_body(
     program: &crate::compiler2::NativeProgram,
     param_reprs: &[Vec<ArgRepr>],
+    return_shapes: &[DeliveredShape],
     target_fn: FnId,
     capture_count: usize,
 ) -> NativeClosureTargetSurface {
@@ -1193,7 +1205,7 @@ fn closure_target_surface_from_body(
         capture_count,
         capture_reprs: target_param_reprs[..capture_count].to_vec(),
         arg_reprs: target_param_reprs[capture_count..].to_vec(),
-        return_shape: delivered_shape_from_return_abi(&target_body.return_abi),
+        return_shape: return_shapes[target_sid].clone(),
     }
 }
 
@@ -1270,8 +1282,10 @@ fn prepare_native_codegen_surface_from_native_program<'a>(
     let mut body_slots = (0..=max_fn_id).map(|_| None).collect::<Vec<_>>();
     let mut param_reprs = Vec::with_capacity(max_fn_id + 1);
     let mut return_reprs = Vec::with_capacity(max_fn_id + 1);
+    let mut return_shapes = Vec::with_capacity(max_fn_id + 1);
     param_reprs.resize(max_fn_id + 1, Vec::new());
     return_reprs.resize(max_fn_id + 1, ArgRepr::ValueRef);
+    return_shapes.resize(max_fn_id + 1, DeliveredShape::Omitted);
 
     for body in &program.bodies {
         let codegen_id = body.fn_id.0 as usize;
@@ -1291,10 +1305,11 @@ fn prepare_native_codegen_surface_from_native_program<'a>(
         });
         param_reprs[codegen_id] = body.param_reprs.iter().copied().map(arg_repr_from_compiler2).collect();
         return_reprs[codegen_id] = build_codegen_return_repr(body);
+        return_shapes[codegen_id] = delivered_shape_from_layout(t.is_empty(&body.return_ty), &body.return_layout);
     }
 
     let callable_boundaries = build_codegen_callable_boundaries(t, program);
-    let closure_targets = build_codegen_closure_targets(program, &param_reprs);
+    let closure_targets = build_codegen_closure_targets(program, &param_reprs, &return_shapes);
     let native_abi_fns = program
         .module
         .fns
@@ -1327,6 +1342,7 @@ fn prepare_native_codegen_surface_from_native_program<'a>(
         mid_flight_cont_keys: collect_codegen_mid_flight_cont_keys(program, &param_reprs, &closure_targets),
         param_reprs,
         return_reprs,
+        return_shapes,
         native_abi_fns,
         cont_target_fns,
         cont_fns,
@@ -1436,6 +1452,7 @@ pub(crate) fn compile_with_backend_surface<
             bs_const_data: &bs_const_data,
             param_reprs: &surface.param_reprs,
             return_reprs: &surface.return_reprs,
+            return_shapes: &surface.return_shapes,
             native_abi_fns: &surface.native_abi_fns,
             cont_target_fns: &surface.cont_target_fns,
             cont_fns: &surface.cont_fns,

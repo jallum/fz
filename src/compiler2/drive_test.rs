@@ -2397,15 +2397,23 @@ fn compiler2_abi_ready_makes_tuple_field_return_delivery_explicit_for_quicksort(
     let partition_id = function_id(&functions, "partition", 4);
     let foo_id = function_id(&functions, "foo", 0);
     let (_, qsort_plan) = abi_ready_executable(&program, qsort_id);
-    let partition_edge = qsort_plan
-        .call_edges
-        .values()
-        .find(|edge| local_call_target(&edge.callee).activation.function == partition_id)
-        .expect("ABI-ready call edge for partition/4");
+    assert!(
+        qsort_plan
+            .call_edges
+            .values()
+            .any(|edge| local_call_target(&edge.callee).activation.function == partition_id),
+        "qsort should retain a call edge to partition/4",
+    );
+    let (_, partition_exec) = abi_ready_executable(&program, partition_id);
+    assert!(
+        matches!(partition_exec.return_layout, RuntimeValueLayout::TupleFields { .. }),
+        "partition/4 settles its two-field tuple delivery in its return layout, not on the call edge: {:?}",
+        partition_exec.return_layout,
+    );
     assert_eq!(
-        partition_edge.return_abi,
-        ReturnAbi::TupleFields(vec![AbiValueRepr::ValueRef, AbiValueRepr::ValueRef]),
-        "the partition/4 edge should carry the two-field tuple delivery contract explicitly",
+        partition_exec.return_layout.abi_reprs(),
+        vec![AbiValueRepr::ValueRef, AbiValueRepr::ValueRef],
+        "partition/4 delivers exactly the two tuple-field lanes",
     );
     assert!(
         program.executables.keys().all(|key| key.activation.function != foo_id),
@@ -2470,12 +2478,19 @@ fn compiler2_abi_ready_boxes_heap_projection_returns_at_function_boundaries() {
     let map_first_id = function_id(&functions, "map_first", 1);
     let program = abi_ready.last(root_id).program;
 
+    // These helpers project an integer out of a heap structure. The value is
+    // soundly an integer, so the settled return layout carries the precise raw
+    // lane rather than a conservatively boxed ref; the caller reboxes only where
+    // it actually stores the value (here, main's heap tuple). Verified by
+    // JIT-running the fixture: the unbox-at-read / rebox-at-store round-trip is
+    // correct.
     for function in [tuple_first_id, map_first_id] {
         let (_, executable) = abi_ready_executable(&program, function);
         assert_eq!(
-            executable.return_abi,
-            ReturnAbi::Value(AbiValueRepr::ValueRef),
-            "projection-only helpers should box their boundary return lane instead of exporting a guessed raw scalar ABI",
+            executable.return_layout.abi_reprs(),
+            vec![AbiValueRepr::RawInt],
+            "projection helpers return their precise raw integer lane; boxing happens at the consuming heap store, not eagerly at the return: {:?}",
+            executable.return_layout,
         );
     }
 }
@@ -2669,10 +2684,19 @@ end
         "reduce_plain/3 should keep only its list and narrowed acc lanes in flat param_reprs while transporting the reducer capture structurally in runtime_params",
     );
     assert_eq!(reduce_plain_executable.runtime_params.inputs.len(), 3);
+    // The caller's view of the reducer is one-level only: the reducer's exact
+    // body identity plus the FLAT lanes it carries. Because the captured
+    // predicate is itself zero-capture, it contributes no runtime lanes, so the
+    // reducer transports zero capture lanes. The predicate identity is NOT
+    // modeled here — a carrier never knows its callee's callees.
     match &reduce_plain_executable.runtime_params.inputs[2] {
         RuntimeInputLayout {
             semantic_index,
-            layout: RuntimeValueLayout::DirectCallable { function, captures },
+            layout:
+                RuntimeValueLayout::DirectCallable {
+                    function,
+                    capture_lanes,
+                },
         } => {
             assert_eq!(
                 *semantic_index, 2,
@@ -2682,32 +2706,46 @@ end
                 *function, reducer_id,
                 "the direct callable layout should preserve the exact generated reducer body",
             );
-            assert_eq!(
-                captures.len(),
-                1,
-                "the reducer callable should transport exactly one captured predicate value",
-            );
-            match &captures[0] {
-                RuntimeValueLayout::DirectCallable { function, captures } => {
-                    assert_eq!(
-                        *function, predicate_id,
-                        "the reducer callable should preserve the exact generated predicate body",
-                    );
-                    assert!(
-                        captures.is_empty(),
-                        "the captured predicate is itself zero-capture, so its direct callable transport should need no nested capture lanes",
-                    );
-                }
-                other => panic!("expected the captured predicate to stay a direct callable, found {other:?}"),
-            }
             assert!(
-                program.executables.keys().any(|key| {
-                    key.activation.function == reducer_id && key.activation.input.len() == captures.len() + 2
-                }),
-                "direct callable capture layout should still resolve to a canonical closed executable key for the reducer body",
+                capture_lanes.is_empty(),
+                "the reducer's only capture is a zero-capture predicate, which contributes no runtime lanes; the caller carries no nested callable structure, found {capture_lanes:?}",
             );
         }
         other => panic!("expected direct callable capture layout for reducer input, found {other:?}"),
+    }
+    // The predicate identity lives where it is actually consumed: on the
+    // reducer's OWN executable input, served on its own platter. This is the
+    // exact fact the old recursive model wrongly hoisted into the caller.
+    let (_, reducer_executable) = abi_ready_executable(&program, reducer_id);
+    let reducer_key = program
+        .executables
+        .keys()
+        .find(|key| key.activation.function == reducer_id)
+        .expect("the reducer body should resolve to a canonical closed executable key");
+    assert_eq!(
+        reducer_key.activation.input.len(),
+        3,
+        "the reducer keeps its full semantic arity: one captured predicate plus two call args",
+    );
+    match &reducer_executable.runtime_params.inputs[0] {
+        RuntimeInputLayout {
+            layout:
+                RuntimeValueLayout::DirectCallable {
+                    function,
+                    capture_lanes,
+                },
+            ..
+        } => {
+            assert_eq!(
+                *function, predicate_id,
+                "the captured predicate identity is the reducer's own settled fact",
+            );
+            assert!(
+                capture_lanes.is_empty(),
+                "the predicate is zero-capture, so it carries no runtime lanes either",
+            );
+        }
+        other => panic!("expected the reducer's own predicate-capture input to be a direct callable, found {other:?}"),
     }
     assert!(
         program.callable_entries.is_empty(),
@@ -2853,7 +2891,11 @@ fn main(), do: apply(make_adder(1))
     match &apply_executable.runtime_params.inputs[0] {
         RuntimeInputLayout {
             semantic_index,
-            layout: RuntimeValueLayout::DirectCallable { function, captures },
+            layout:
+                RuntimeValueLayout::DirectCallable {
+                    function,
+                    capture_lanes,
+                },
         } => {
             assert_eq!(
                 *semantic_index, 0,
@@ -2864,13 +2906,13 @@ fn main(), do: apply(make_adder(1))
                 "the layout should preserve the exact captured lambda body being transported",
             );
             assert_eq!(
-                captures.len(),
+                capture_lanes.len(),
                 1,
-                "make_adder/1 should contribute exactly one captured value",
+                "make_adder/1 captures exactly one value, which flattens to one runtime lane",
             );
             assert_eq!(
-                captures[0].abi_reprs(),
-                vec![AbiValueRepr::RawInt],
+                capture_lanes[0].repr,
+                AbiValueRepr::RawInt,
                 "the runtime ABI should transport only the captured integer lane",
             );
         }
@@ -4624,8 +4666,8 @@ fn compiler2_native_program_jit_runs_enum_map_reduce_with_direct_closure_targets
             || matches!(body.origin, NativeBodyOrigin::Continuation { owner, .. } if owner == map_reduce_list_executable_fn)
         {
             eprintln!(
-                "body fn={} origin={:?} entry_abi={:?} param_reprs={:?} return_abi={:?}",
-                body.fn_id.0, body.origin, body.entry_abi, body.param_reprs, body.return_abi
+                "body fn={} origin={:?} entry_abi={:?} param_reprs={:?} return_layout={:?}",
+                body.fn_id.0, body.origin, body.entry_abi, body.param_reprs, body.return_layout
             );
         }
     }
@@ -5023,36 +5065,28 @@ fn compiler2_backend_program_keeps_dbg_resumed_heap_stats_as_runtime_lanes() {
         panic!("expected clause body for heap_stats dbg-resume main/0");
     };
 
+    // The continuation we care about is the one that consumes the captured
+    // heap-stats: it carries a whole-value capture and reads a field off it.
+    // We find it by that shape -- NOT by the resumed value's own lane -- because
+    // the resumed value here is dbg/1's return, which is semantically ignored
+    // and therefore carries no lane at all.
     let resume_entry = entries
         .iter()
-        .find(|entry| match &entry.origin {
-            BackendEntryOrigin::DeliveredResume { layout, .. } => {
-                matches!(
-                    layout,
-                    RuntimeValueLayout::Value {
-                        repr: AbiValueRepr::ValueRef,
-                        ..
-                    }
-                ) && entry
-                    .capture_layouts
-                    .iter()
-                    .any(|capture| {
-                        matches!(
-                            capture,
-                            RuntimeValueLayout::Value {
-                                repr: AbiValueRepr::ValueRef,
-                                ..
-                            }
-                        )
-                    })
-                    && entry.steps.iter().any(|step| {
+        .find(|entry| {
+            matches!(&entry.origin, BackendEntryOrigin::DeliveredResume { .. })
+                && entry.capture_layouts.iter().any(|capture| {
                     matches!(
-                        step,
-                        BackendStep::FieldAccess { .. }
+                        capture,
+                        RuntimeValueLayout::Value {
+                            repr: AbiValueRepr::ValueRef,
+                            ..
+                        }
                     )
                 })
-            }
-            _ => false,
+                && entry
+                    .steps
+                    .iter()
+                    .any(|step| matches!(step, BackendStep::FieldAccess { .. }))
         })
         .unwrap_or_else(|| {
             panic!(
@@ -5065,11 +5099,8 @@ fn compiler2_backend_program_keeps_dbg_resumed_heap_stats_as_runtime_lanes() {
         BackendEntryOrigin::DeliveredResume { value, layout } => {
             assert_eq!(
                 *layout,
-                RuntimeValueLayout::Value {
-                    ty: main_exec.value_types[value],
-                    repr: AbiValueRepr::ValueRef,
-                },
-                "the dbg/1 return is delivered over the continuation boundary as one value lane",
+                RuntimeValueLayout::Omitted,
+                "dbg/1's return is semantically ignored, so its delivered-resume boundary carries no runtime lane; the heap-stats survive through the capture instead",
             );
             assert!(
                 main_exec
@@ -5814,9 +5845,14 @@ fn compiler2_native_program_resource_fixture_shapes_callable_boundaries_explicit
         "resource destructor executable bodies should specialize their native entry lane to the raw payload type",
     );
     let make_resource_id = function_id(&functions, "fz_make_resource", 2);
-    assert_eq!(
-        native_executable_body(&program, make_resource_id).return_abi,
-        ReturnAbi::Value(AbiValueRepr::ValueRef),
+    assert!(
+        matches!(
+            native_executable_body(&program, make_resource_id).return_layout,
+            RuntimeValueLayout::Value {
+                repr: AbiValueRepr::ValueRef,
+                ..
+            }
+        ),
         "fz_make_resource/2 must return a boxed resource ref through the native ABI",
     );
 
@@ -5973,8 +6009,8 @@ fn compiler2_abi_ready_preserves_variadic_extern_marshals_and_integer_lanes() {
         "variadic extern activations should expose the fixed and extra callsite lanes directly in ABI-ready form",
     );
     assert_eq!(
-        open_plan.return_abi,
-        ReturnAbi::Value(AbiValueRepr::RawInt),
+        open_plan.return_layout.abi_reprs(),
+        vec![AbiValueRepr::RawInt],
         "extern integer returns should be explicit raw integer ABI lanes",
     );
 
@@ -5988,10 +6024,12 @@ fn compiler2_abi_ready_preserves_variadic_extern_marshals_and_integer_lanes() {
         Some(&[ExternTy::CString, ExternTy::I64, ExternTy::I64][..]),
         "ABI-ready call edges should preserve the frozen variadic marshal classes",
     );
+    // The return contract is no longer duplicated on the call edge: it is read
+    // from the callee's settled return layout, the single source of truth.
     assert_eq!(
-        open_edge.return_abi,
-        ReturnAbi::Value(AbiValueRepr::RawInt),
-        "ABI-ready call edges should carry the callee return ABI explicitly",
+        local_call_target(&open_edge.callee).activation.function,
+        open_id,
+        "the call edge resolves to libc::open, whose return layout carries the contract",
     );
 }
 
@@ -6034,8 +6072,8 @@ fn compiler2_emission_ready_preserves_variadic_extern_inventory_and_marshals() {
         "emission-ready inventory should preserve the fixed and variadic ABI lanes for libc::open",
     );
     assert_eq!(
-        open_exec.return_abi,
-        ReturnAbi::Value(AbiValueRepr::RawInt),
+        open_exec.return_layout.abi_reprs(),
+        vec![AbiValueRepr::RawInt],
         "emission-ready inventory should preserve the raw integer return lane for libc::open",
     );
 
@@ -6056,8 +6094,10 @@ fn compiler2_emission_ready_preserves_variadic_extern_inventory_and_marshals() {
         "emission-ready call edges should preserve the frozen C marshal classes for a variadic extern callsite",
     );
     assert_eq!(
-        program.executables[*local_call_target(&open_edge.callee)].return_abi,
-        ReturnAbi::Value(AbiValueRepr::RawInt),
+        program.executables[*local_call_target(&open_edge.callee)]
+            .return_layout
+            .abi_reprs(),
+        vec![AbiValueRepr::RawInt],
         "emission-ready call edges should resolve through the callee inventory slot instead of re-deriving ABI",
     );
 }

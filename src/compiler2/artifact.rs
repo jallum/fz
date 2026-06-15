@@ -170,8 +170,10 @@ pub(crate) struct NativeBody {
     /// ABI lanes at the entry seam.
     pub param_reprs: Vec<AbiValueRepr>,
     pub return_ty: Ty,
-    /// Delivered return/continuation contract.
-    pub return_abi: ReturnAbi,
+    /// Settled return transport. Divergence is not encoded here: a body that
+    /// never returns has an empty `return_ty`. Codegen settles its delivered
+    /// shape once, where types are available, from this layout plus that fact.
+    pub return_layout: RuntimeValueLayout,
     /// Final per-value types after Compiler2 lowering into CPS/native form.
     pub value_types: HashMap<Var, Ty>,
     /// Closure-producing vars mapped to the settled callable boundary they
@@ -213,7 +215,6 @@ impl NativeCallableBoundary {
 pub struct AbiReadyExecutable {
     pub entry_dispatch: Option<ExecutableDispatch>,
     pub return_ty: Ty,
-    pub return_abi: ReturnAbi,
     pub param_reprs: Vec<AbiValueRepr>,
     pub runtime_demand: ExecutableRuntimeDemand,
     pub runtime_params: RuntimeParamLayout,
@@ -231,7 +232,6 @@ pub struct AbiReadyExecutable {
 pub struct AbiReadyCallEdge {
     pub callee: CallTarget<ExecutableKey>,
     pub return_ty: Ty,
-    pub return_abi: ReturnAbi,
     pub extern_marshals: Option<Vec<ExternTy>>,
 }
 
@@ -250,7 +250,6 @@ pub struct EmissionReadyExecutable {
     pub key: ExecutableKey,
     pub entry_dispatch: Option<ExecutableDispatch>,
     pub return_ty: Ty,
-    pub return_abi: ReturnAbi,
     pub param_reprs: Vec<AbiValueRepr>,
     pub runtime_demand: ExecutableRuntimeDemand,
     pub runtime_params: RuntimeParamLayout,
@@ -286,7 +285,6 @@ pub struct BackendExecutable {
     pub key: ExecutableKey,
     pub entry_dispatch: Option<ExecutableDispatch>,
     pub return_ty: Ty,
-    pub return_abi: ReturnAbi,
     pub param_reprs: Vec<AbiValueRepr>,
     pub runtime_demand: ExecutableRuntimeDemand,
     pub runtime_params: RuntimeParamLayout,
@@ -304,6 +302,17 @@ pub struct RuntimeParamLayout {
     pub inputs: Vec<RuntimeInputLayout>,
 }
 
+/// One flat transport lane: the machine type and ABI repr of a single value
+/// word that must physically move through the program. Lanes are leaves —
+/// they never nest — which is what makes carried direct-callable captures
+/// correct by construction: a carrier stores and forwards lanes, it never
+/// reconstructs the structure they were flattened from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RuntimeLane {
+    pub ty: Ty,
+    pub repr: AbiValueRepr,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RuntimeValueLayout {
     Omitted,
@@ -314,9 +323,16 @@ pub enum RuntimeValueLayout {
     TupleFields {
         fields: Vec<RuntimeValueLayout>,
     },
+    /// A direct-only callable carried structurally: one-level target identity
+    /// plus the flat capture lanes it occupies. The captured values' own
+    /// structure is NOT held here — the callee body interprets these lanes via
+    /// its own settled capture layout. A carrier only writes/reads/forwards the
+    /// lanes. This is the one place the over-modeling used to live, where
+    /// `captures` was recursively `Vec<RuntimeValueLayout>` and forced every
+    /// carrier to know its callees' callees.
     DirectCallable {
         function: FunctionId,
-        captures: Vec<RuntimeValueLayout>,
+        capture_lanes: Vec<RuntimeLane>,
     },
 }
 
@@ -346,7 +362,7 @@ impl RuntimeValueLayout {
             Self::Omitted => Vec::new(),
             Self::Value { repr, .. } => vec![*repr],
             Self::TupleFields { fields } => fields.iter().flat_map(Self::abi_reprs).collect(),
-            Self::DirectCallable { captures, .. } => captures.iter().flat_map(Self::abi_reprs).collect(),
+            Self::DirectCallable { capture_lanes, .. } => capture_lanes.iter().map(|lane| lane.repr).collect(),
         }
     }
 
@@ -355,7 +371,7 @@ impl RuntimeValueLayout {
             Self::Omitted => Vec::new(),
             Self::Value { ty, .. } => vec![*ty],
             Self::TupleFields { fields } => fields.iter().flat_map(Self::lane_tys).collect(),
-            Self::DirectCallable { captures, .. } => captures.iter().flat_map(Self::lane_tys).collect(),
+            Self::DirectCallable { capture_lanes, .. } => capture_lanes.iter().map(|lane| lane.ty).collect(),
         }
     }
 }

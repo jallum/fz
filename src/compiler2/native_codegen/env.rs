@@ -31,6 +31,7 @@ pub(crate) struct CodegenEnv<'a> {
     pub(super) bs_const_data: &'a RefCell<HashMap<Vec<u8>, BsConstSyms>>,
     pub(super) param_reprs: &'a [Vec<ArgRepr>],
     pub(super) return_reprs: &'a [ArgRepr],
+    pub(super) return_shapes: &'a [DeliveredShape],
     pub(super) native_abi_fns: &'a HashSet<FnId>,
     pub(super) cont_target_fns: &'a HashSet<FnId>,
     pub(super) cont_fns: &'a HashSet<FnId>,

@@ -710,17 +710,30 @@ fn step_eval_entry(
                 .executables
                 .get(executable_target)
                 .ok_or_else(|| format!("backend executable {} is out of bounds", executable_target))?;
-            let mut call_args = encode_runtime_inputs(
-                runtime.cur_proc(),
-                &captures,
-                &callee_executable.runtime_params.inputs[..captures.len()],
-            )?;
+            // Capture lanes are already the flat ABI lanes for the callee's leading
+            // capture inputs; forward them directly. The capture/arg split is the
+            // callee's fact: total inputs minus the explicit call args.
+            let arg_inputs_start = callee_executable
+                .runtime_params
+                .inputs
+                .len()
+                .checked_sub(args.len())
+                .ok_or_else(|| {
+                    format!(
+                        "backend executable {} has fewer inputs than call args",
+                        callee_executable.key.activation.function.as_u32()
+                    )
+                })?;
+            let mut call_args = Vec::new();
+            for capture in &captures {
+                flatten_backend_value_to_lanes(runtime.cur_proc(), capture, &mut call_args)?;
+            }
             call_args.extend(encode_call_args(
                 runtime,
                 callee_executable,
                 &env,
                 args,
-                captures.len(),
+                arg_inputs_start,
             )?);
             let continuations = match dest {
                 ControlDestination::Return => continuations,
@@ -1588,13 +1601,30 @@ fn decode_runtime_value(
                 .map(|field| decode_runtime_value(executable, args, field, lane_index))
                 .collect::<Result<Vec<_>, _>>()?,
         )),
-        RuntimeValueLayout::DirectCallable { function, captures } => Ok(BackendValue::DirectCallable {
-            function: *function,
-            captures: captures
-                .iter()
-                .map(|capture| decode_runtime_value(executable, args, capture, lane_index))
-                .collect::<Result<Vec<_>, _>>()?,
-        }),
+        RuntimeValueLayout::DirectCallable {
+            function,
+            capture_lanes,
+        } => {
+            // Direct-only callable arrives as flat transport lanes. Bind flat
+            // raw-lane leaves; the captured structure is the callee's own fact,
+            // not reconstructed here.
+            let mut captures = Vec::with_capacity(capture_lanes.len());
+            for _ in capture_lanes {
+                let value = *args.get(*lane_index).ok_or_else(|| {
+                    format!(
+                        "backend executable {} expected runtime lane {}",
+                        executable.key.activation.function.as_u32(),
+                        *lane_index
+                    )
+                })?;
+                *lane_index += 1;
+                captures.push(BackendValue::Runtime(value));
+            }
+            Ok(BackendValue::DirectCallable {
+                function: *function,
+                captures,
+            })
+        }
     }
 }
 
@@ -1616,15 +1646,14 @@ fn project_backend_value(
                     .collect::<Result<Vec<_>, _>>()?,
             ))
         }
-        RuntimeValueLayout::DirectCallable { function, captures } => {
-            let callable_captures = direct_callable_captures_for_layout(proc, value, *function, captures.len())?;
+        RuntimeValueLayout::DirectCallable {
+            function,
+            capture_lanes,
+        } => {
+            let lanes = direct_callable_capture_lanes(proc, value, *function, capture_lanes.len())?;
             Ok(BackendValue::DirectCallable {
                 function: *function,
-                captures: callable_captures
-                    .iter()
-                    .zip(captures.iter())
-                    .map(|(capture_value, capture_layout)| project_backend_value(proc, capture_value, capture_layout))
-                    .collect::<Result<Vec<_>, _>>()?,
+                captures: lanes.into_iter().map(BackendValue::Runtime).collect(),
             })
         }
     }
@@ -1665,47 +1694,81 @@ fn tuple_fields_for_layout(
     }
 }
 
-fn direct_callable_captures_for_layout(
+/// Extracts a direct-only callable value as its flat transport lanes. A live
+/// structured callable flattens its captures to raw lanes; a value that arrived
+/// boxed (a true callable boundary) is unpacked to its stored words. Either way
+/// the result is the flat lane vector the settled layout demands — no nested
+/// structure is preserved or rebuilt.
+fn direct_callable_capture_lanes(
     proc: *mut Process,
     value: &BackendValue,
     function: FunctionId,
-    capture_count: usize,
-) -> Result<Vec<BackendValue>, String> {
-    match value {
+    lane_count: usize,
+) -> Result<Vec<AnyValue>, String> {
+    let lanes = match value {
         BackendValue::DirectCallable {
             function: actual,
             captures,
-        } if *actual == function && captures.len() == capture_count => Ok(captures.clone()),
+        } if *actual == function => {
+            let mut lanes = Vec::new();
+            for capture in captures {
+                flatten_backend_value_to_lanes(proc, capture, &mut lanes)?;
+            }
+            lanes
+        }
         other => {
             let materialized = materialize_backend_value(proc, other)?;
-            let (fn_id, captures) = match materialized {
+            let (fn_id, words) = match materialized {
                 AnyValue::FnRef(fn_id) => (fn_id, Vec::new()),
                 other => unpack_closure(other.value(proc)?)?,
             };
-            if FunctionId::from_fn_id(fn_id) != function || captures.len() != capture_count {
+            if FunctionId::from_fn_id(fn_id) != function {
                 return Err(format!(
-                    "backend direct-callable transport expected {} capture(s) for function {}, got {} capture(s) for {}",
-                    capture_count,
+                    "backend direct-callable transport expected function {}, got {}",
                     function.as_u32(),
-                    captures.len(),
                     fn_id.0
                 ));
             }
-            Ok(captures.into_iter().map(BackendValue::Runtime).collect())
+            words
         }
-    }
-}
-
-fn encode_runtime_inputs(
-    proc: *mut Process,
-    values: &[BackendValue],
-    layouts: &[crate::compiler2::RuntimeInputLayout],
-) -> Result<Vec<AnyValue>, String> {
-    let mut lanes = Vec::new();
-    for (value, layout) in values.iter().zip(layouts.iter()) {
-        encode_runtime_value(proc, value, layout.value_layout(), &mut lanes)?;
+    };
+    if lanes.len() != lane_count {
+        return Err(format!(
+            "backend direct-callable transport expected {} lane(s) for function {}, got {}",
+            lane_count,
+            function.as_u32(),
+            lanes.len()
+        ));
     }
     Ok(lanes)
+}
+
+/// Flattens a live backend value into its raw transport lanes with no boxing,
+/// matching the flat lane contract a carrier was handed.
+fn flatten_backend_value_to_lanes(
+    proc: *mut Process,
+    value: &BackendValue,
+    lanes: &mut Vec<AnyValue>,
+) -> Result<(), String> {
+    match value {
+        BackendValue::Omitted => Ok(()),
+        BackendValue::Runtime(_) => {
+            lanes.push(materialize_backend_value(proc, value)?);
+            Ok(())
+        }
+        BackendValue::TupleFields(fields) => {
+            for field in fields {
+                flatten_backend_value_to_lanes(proc, field, lanes)?;
+            }
+            Ok(())
+        }
+        BackendValue::DirectCallable { captures, .. } => {
+            for capture in captures {
+                flatten_backend_value_to_lanes(proc, capture, lanes)?;
+            }
+            Ok(())
+        }
+    }
 }
 
 fn encode_runtime_value(
@@ -1727,11 +1790,12 @@ fn encode_runtime_value(
             }
             Ok(())
         }
-        RuntimeValueLayout::DirectCallable { function, captures } => {
-            let callable_captures = direct_callable_captures_for_layout(proc, value, *function, captures.len())?;
-            for (capture_value, capture_layout) in callable_captures.iter().zip(captures.iter()) {
-                encode_runtime_value(proc, capture_value, capture_layout, lanes)?;
-            }
+        RuntimeValueLayout::DirectCallable {
+            function,
+            capture_lanes,
+        } => {
+            let extracted = direct_callable_capture_lanes(proc, value, *function, capture_lanes.len())?;
+            lanes.extend(extracted);
             Ok(())
         }
     }
