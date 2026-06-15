@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-hwn.19.3"
+  ],
   "created": "2026-06-15T19:27:24Z",
   "description": "Goal\nDo the painful structural cutover: remove RuntimeValueLayout/RuntimeInputLayout/RuntimeLane as the artifact authority and replace them with a root-scoped transport spine plus fact tables keyed by ShapeId, ScalarId, and CallableId.\n\nRequired model\nShape = Nothing | Scalar(ScalarId) | Tuple(Vec\u003cShapeId\u003e) | Callable(CallableId). ExecutableNeed remains only the coarse pre-spine seed. Divergence remains is_empty(return_ty). CallableId is the spine identity; target executable, capture lanes, local/direct status, boundary materialization, and codegen lanes are facts keyed by CallableId.\n\nStrategy\nBuild the spine once from settled RuntimeDemand inside MaterializeRoot/transport planning. Every artifact rung carries ShapeId/TransportPlan references, not copied recursive layouts. Fact tables hold scalar ty/repr, tuple children, callable target/captures, executable return/input/resume/capture shapes, boundary ABI facts, and codegen lane facts.\n\nNo bridge rule\nDo not keep a committed path that derives RuntimeValueLayout from Shape or Shape from RuntimeValueLayout. If this cannot compile atomically split-wise, it is one large commit.\n\nRemoval target\nRuntimeValueLayout, RuntimeInputLayout, RuntimeLane, abi_reprs()/lane_tys() on recursive layout, runtime_value_layout_from_demand, runtime_input_layout_from_demand, local_callable_layout as a layout builder, boundary_return_abi over layout, and artifact fields named return_layout/resume_layouts/entry_capture_layouts/runtime_params when they carry layouts rather than shape refs.\n\nChecks\nAll tests from fz-hwn.19.1 green; cargo check --all-targets; rg confirms RuntimeValueLayout/RuntimeInputLayout/RuntimeLane are gone outside historical docs or migration notes.",
   "id": "fz-hwn.19.2",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Transport spine: replace RuntimeValueLayout with ShapeId-backed transport facts in one cutover",
   "type": "task",
-  "updated_at": "2026-06-15T19:27:24Z"
+  "updated_at": "2026-06-15T19:28:18Z"
 }
