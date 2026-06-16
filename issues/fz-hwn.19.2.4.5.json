@@ -4,14 +4,15 @@
   "blocks": [
     "fz-hwn.19.3"
   ],
+  "closed_at": "2026-06-16T21:46:49Z",
   "created": "2026-06-16T20:11:41Z",
   "description": "Re-enable compiler2_native_program_resource_fixture_shapes_callable_boundaries_explicitly. Use the output-contract loop: first remove the ignore, run the test, identify the exact transport/artifact seam fact that is missing or mis-carried, then fix that seam. Do not add downstream recomputation, fallback layout derivation, compatibility adapters, copied interner tables, or old Trash* authority. Native callable-boundary inventory must consume BoundaryId/CallableId/seam facts already produced upstream.",
   "id": "fz-hwn.19.2.4.5",
   "labels": [],
   "parent": "fz-hwn.19.2.4",
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "Artifact seam: re-enable native resource callable boundary inventory",
   "type": "task",
-  "updated_at": "2026-06-16T20:12:04Z"
+  "updated_at": "2026-06-16T21:46:49Z"
 }
