@@ -495,7 +495,6 @@ fn compiler2_compile_root_aot_consumes_native_program_without_legacy_prepare() {
 }
 
 #[test]
-#[ignore = "fz-hwn.19.2.4 WIP: downstream JIT execution waits on the transport-backed artifact handoff"]
 fn compiler2_run_root_jit_executes_resources_without_legacy_prepare() {
     let _lock = tests_support_lock().lock().unwrap();
     tests_support_dtor_reset();
