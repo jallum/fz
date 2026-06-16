@@ -5413,7 +5413,6 @@ fn compiler2_interp_uses_backend_runtime_self_and_send_intrinsics() {
 }
 
 #[test]
-#[ignore = "fz-hwn.19.2.4 WIP: downstream backend-runtime intrinsic execution waits on the transport-backed artifact handoff"]
 fn compiler2_interp_runs_spawned_children_from_backend_runtime_intrinsics() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();

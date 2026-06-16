@@ -1716,25 +1716,40 @@ fn decode_runtime_value(
         )),
         ShapeDescr::Callable(callable) => {
             let callable = transport.interners().callable(*callable);
-            let function = callable.function.ok_or_else(|| {
-                "backend interpreter cannot decode generic callable shape as direct callable".to_string()
-            })?;
-            // Direct-only callable arrives as flat transport lanes. Bind flat
-            // raw-lane leaves; the captured structure is the callee's own fact,
-            // not reconstructed here.
-            let mut captures = Vec::with_capacity(callable.capture_lanes.len());
-            for _ in callable.capture_lanes.iter() {
-                let value = *args.get(*lane_index).ok_or_else(|| {
-                    format!(
-                        "backend executable {} expected runtime lane {}",
-                        executable.key.activation.function.as_u32(),
-                        *lane_index
-                    )
-                })?;
-                *lane_index += 1;
-                captures.push(TrashBackendValue::Runtime(value));
+            match callable.function {
+                // Direct-only callable arrives as flat transport lanes. Bind flat
+                // raw-lane leaves; the captured structure is the callee's own fact,
+                // not reconstructed here.
+                Some(function) => {
+                    let mut captures = Vec::with_capacity(callable.capture_lanes.len());
+                    for _ in callable.capture_lanes.iter() {
+                        let value = *args.get(*lane_index).ok_or_else(|| {
+                            format!(
+                                "backend executable {} expected runtime lane {}",
+                                executable.key.activation.function.as_u32(),
+                                *lane_index
+                            )
+                        })?;
+                        *lane_index += 1;
+                        captures.push(TrashBackendValue::Runtime(value));
+                    }
+                    Ok(TrashBackendValue::DirectCallable { function, captures })
+                }
+                // Generic (escaped / boundary-published) callable arrives as one
+                // boxed callable ref lane, the same single published value lane the
+                // encoder wrote.
+                None => {
+                    let value = *args.get(*lane_index).ok_or_else(|| {
+                        format!(
+                            "backend executable {} expected runtime lane {}",
+                            executable.key.activation.function.as_u32(),
+                            *lane_index
+                        )
+                    })?;
+                    *lane_index += 1;
+                    Ok(TrashBackendValue::Runtime(value))
+                }
             }
-            Ok(TrashBackendValue::DirectCallable { function, captures })
         }
     }
 }
@@ -1906,12 +1921,22 @@ fn encode_runtime_value(
         }
         ShapeDescr::Callable(callable) => {
             let callable = transport.interners().callable(*callable);
-            let function = callable.function.ok_or_else(|| {
-                "backend interpreter cannot encode generic callable shape as direct callable".to_string()
-            })?;
-            let extracted = direct_callable_capture_lanes(proc, value, function, callable.capture_lanes.len())?;
-            lanes.extend(extracted);
-            Ok(())
+            match callable.function {
+                // Direct callable: descriptor names the target, so the value
+                // travels as its flat capture lanes.
+                Some(function) => {
+                    let extracted = direct_callable_capture_lanes(proc, value, function, callable.capture_lanes.len())?;
+                    lanes.extend(extracted);
+                    Ok(())
+                }
+                // Generic (escaped / boundary-published) callable: the published
+                // value lane is one boxed callable ref. Materialize the value into
+                // that single lane instead of flattening captures.
+                None => {
+                    lanes.push(materialize_backend_value(proc, value)?);
+                    Ok(())
+                }
+            }
         }
     }
 }
