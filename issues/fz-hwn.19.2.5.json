@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-16T05:15:21Z",
+  "description": "Goal\nClose the transport/artifact seam by proving artifact has no remaining transport authority and by updating docs so future tickets do not wire old vocabulary back in.\n\nRequired cleanup\nDelete dead helpers, stale comments, old tests, and telemetry that treat TrashRuntimeValueLayout, TrashRuntimeInputLayout, TrashRuntimeParamLayout, TrashRuntimeLane, TrashReturnAbi, LocalCallableId, or artifact-side layout walkers as live authority. World telemetry for materialized/ABI-ready artifacts must count TransportPlan-backed facts or artifact inventory facts, not omitted/layout variants from TrashRuntimeValueLayout.\n\nDocumentation\nUpdate outline.md, proposal.html, and .agent/docs/pipeline.md with the final seam rule: artifact input is SemanticClosed(root) plus TransportPlan(root); transport owns all movement facts; artifact owns closed program packaging and stable downstream inventory. Document the allowed artifact products and the removed authority. Ensure no doc says AbiReady derives ABI lanes from MaterializedProgram plus ExecutableNeed as an independent calculator; it reads transport seam facts.\n\nStatic proof\nrg must show no live artifact/materialization imports, fields, helper names, tests, or telemetry still treat the old Trash* family as authority. Any remaining Trash* names must be outside the artifact seam and named by fz-hwn.19.3-.19.5 or historical docs that explicitly describe removed code.\n\nChecks\nRun targeted tests, cargo check --all-targets, and cargo clippy --workspace --all-targets -- -D warnings unless a known pre-existing blocker prevents it. If blocked, record the exact command and blocker in the closing note and ensure the artifact rg proof still passes.",
+  "id": "fz-hwn.19.2.5",
+  "labels": [],
+  "parent": "fz-hwn.19.2",
+  "priority": 1,
+  "status": "open",
+  "title": "Artifact seam: delete artifact transport authority and document the new boundary",
+  "type": "task",
+  "updated_at": "2026-06-16T05:15:21Z"
+}
