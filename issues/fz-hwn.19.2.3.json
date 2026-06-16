@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-16T05:15:00Z",
+  "description": "Goal\nMake AbiReadyProgram and CallableEntry inventory consume TransportPlan facts instead of deriving ABI lanes and boundary returns from recursive layouts, local types, or runtime_demand.callable_flows.\n\nRequired change\nbuild_executable_abi_plan must read function-entry, block/continuation, return-delivery, tail-call, callable-boundary, and extern-boundary CodegenSeamFact rows as appropriate for artifact-owned handoff facts. CallableEntry inventory must be projected from TransportPlan CallableId and BoundaryId facts: target identity, capture lanes, direct surfaces, first-class publication surfaces, boundary argument lanes, and published return contracts come from the plan. Artifact may preserve stable inventory order, but it may not select which callable surfaces exist.\n\nDeletion in the same commit\nRemove layout-derived param_reprs, semantic_input layout probing, type-derived capture_reprs/arg_reprs for callable entries, derive_callable_entries walking runtime_demand.callable_flows as authority, and trash_boundary_return_abi. Remove remaining LocalCallableId/witness solver pieces once no ABI/callable inventory path reads them.\n\nBoundary rule\nReturn ABI for a published callable boundary is a BoundaryId contract fact. Internal executable return transport remains ShapeId plus divergence bit. Do not resurrect ReturnAbi as an internal model.\n\nTests\nExtend the worked examples to assert AbiReadyProgram/CallableEntry facts match TransportPlan rows: unused callable producers publish no entry; direct-only callables do not publish first-class entries; escaped/opaque callables publish exactly the BoundaryId contracts proven by transport; tuple callable returns preserve recursive boundary return shape while boundary lanes flatten only at the boundary contract.\n\nChecks\nTargeted tests; cargo check --all-targets; rg confirms trash_boundary_return_abi, LocalCallableId, local callable witness solver, and layout-derived callable-entry repr calculation are absent from artifact jobs.",
+  "id": "fz-hwn.19.2.3",
+  "labels": [],
+  "parent": "fz-hwn.19.2",
+  "priority": 1,
+  "status": "open",
+  "title": "Artifact seam: derive ABI and callable inventory from transport facts",
+  "type": "task",
+  "updated_at": "2026-06-16T05:15:00Z"
+}
