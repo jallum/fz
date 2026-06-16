@@ -4,6 +4,7 @@
   "blocks": [
     "fz-hwn.19.3"
   ],
+  "closed_at": "2026-06-16T21:37:59Z",
   "created": "2026-06-16T20:11:40Z",
   "description": "Re-enable compiler2_native_multi_relay_delivers_resume_values_through_continuation_abi. Use the output-contract loop: first remove the ignore, run the test, identify the exact transport/artifact seam fact that is missing or mis-carried, then fix that seam. Do not add downstream recomputation, fallback layout derivation, compatibility adapters, copied interner tables, or old Trash* authority. Native continuation ABI must consume the transport-backed artifact handoff facts already produced upstream.",
   "id": "fz-hwn.19.2.4.3",
@@ -16,8 +17,8 @@
     }
   ],
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "Artifact seam: re-enable native multi-relay continuation ABI execution",
   "type": "task",
-  "updated_at": "2026-06-16T21:00:45Z"
+  "updated_at": "2026-06-16T21:37:59Z"
 }
