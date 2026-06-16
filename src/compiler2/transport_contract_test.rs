@@ -1419,20 +1419,245 @@ end
     );
 }
 
+#[test]
+fn compiler2_transport_plan_keeps_enum_reduce_operator_refs_direct_callable() {
+    let source = r#"
+fn main() do
+  {
+    Enum.reduce([1, 2, 3], 0, &Kernel.+/2),
+    Enum.reduce([1, 2, 3], 0, &+/2)
+  }
+end
+"#;
+
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new(&tel);
+    world.submit_code(
+        Some("transport_enum_reduce_operator_refs.fz".to_string()),
+        source.to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::TupleFields(2));
+    drive_until_transport_plan(
+        &mut world,
+        root,
+        "Enum.reduce operator-ref fixture should produce a transport plan",
+    );
+
+    let plan = transport_plan(&world, root);
+    let kernel_plus = executable_for(&world, &plan, "+", 2);
+    let plus_callables = callable_facts_for_function(&world, &plan, "+", 2);
+    assert!(
+        !plus_callables.is_empty(),
+        "qualified and bare operator refs should produce callable facts for Kernel.+/2"
+    );
+    assert!(
+        plus_callables
+            .iter()
+            .any(|(_, facts)| facts.resolutions.iter().any(|resolution| resolution == &kernel_plus)),
+        "operator refs should resolve to the Kernel.+/2 executable, not a boxed value lane: {:?}",
+        plan.callables
+    );
+    assert!(
+        plus_callables
+            .iter()
+            .any(|(_, facts)| facts.direct_surfaces.iter().any(|surface| surface.len() == 2)),
+        "Enum.reduce should demand the reducer as a direct two-argument callable surface: {:?}",
+        plan.callables
+    );
+    assert!(
+        plus_callables.iter().all(|(_, facts)| facts.boundary_ids.is_empty()),
+        "operator refs used only as Enum.reduce reducers should not publish first-class boundaries"
+    );
+
+    let main = executable_for(&world, &plan, "main", 0);
+    let returned = plan_shape_at(&plan, &TransportPosition::ExecutableReturn { executable: main });
+    let ShapeDescr::Tuple(items) = shape_descr(&world, returned) else {
+        panic!("main/0 should return the two reduced integer results as a tuple")
+    };
+    assert_eq!(items.len(), 2, "main/0 should return one field per reduce call");
+    assert!(
+        shape_leaf_lanes(&world, returned)
+            .iter()
+            .all(|(_, lane)| world.types().is_integer(&world.transport().interners().lane(*lane).ty)),
+        "both reduce results should stay on integer transport lanes"
+    );
+}
+
+#[test]
+fn compiler2_transport_plan_keeps_joined_enum_reduce_reducer_callable_shaped() {
+    let source = r#"
+fn add_a(x, acc), do: acc + x
+fn add_b(x, acc), do: acc + x
+
+fn main(flag) do
+  reducer = case flag do
+    true -> add_a
+    _ -> add_b
+  end
+
+  Enum.reduce([1, 2, 3], 0, reducer)
+end
+"#;
+
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new(&tel);
+    world.submit_code(
+        Some("transport_enum_reduce_joined_reducer.fz".to_string()),
+        source.to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 1, ExecutableNeed::Value);
+    drive_until_transport_plan(
+        &mut world,
+        root,
+        "joined Enum.reduce reducer fixture should produce a transport plan",
+    );
+
+    let plan = transport_plan(&world, root);
+    assert!(
+        plan.executable_membership.iter().any(|executable| function_is(
+            &world,
+            executable.activation.function,
+            "add_a",
+            2
+        )),
+        "the joined reducer frontier should keep add_a/2 live"
+    );
+    assert!(
+        plan.executable_membership.iter().any(|executable| function_is(
+            &world,
+            executable.activation.function,
+            "add_b",
+            2
+        )),
+        "the joined reducer frontier should keep add_b/2 live"
+    );
+
+    let reducer_arg_shapes = plan
+        .positions
+        .iter()
+        .filter_map(|(position, shape)| match position {
+            TransportPosition::CallArg { semantic_index: 2, .. }
+                if matches!(shape_descr(&world, *shape), ShapeDescr::Callable(_)) =>
+            {
+                Some(*shape)
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        !reducer_arg_shapes.is_empty(),
+        "the third Enum.reduce argument should be transported as a callable shape, not a scalar lane: {:?}",
+        plan.positions
+    );
+    assert!(
+        reducer_arg_shapes.iter().any(|shape| {
+            let ShapeDescr::Callable(callable) = shape_descr(&world, *shape) else {
+                return false;
+            };
+            plan.callables.get(callable).is_some_and(|facts| {
+                facts.direct_surfaces.iter().any(|surface| surface.len() == 2) && facts.boundary_ids.is_empty()
+            })
+        }),
+        "the joined reducer should retain a direct two-argument callable surface without becoming a boundary"
+    );
+}
+
+#[test]
+fn compiler2_transport_plan_preserves_callable_capture_inside_enum_style_reducer() {
+    let source = r#"
+fn reduce_plain([], acc, _reducer), do: acc
+fn reduce_plain([head | tail], acc, reducer), do: reduce_plain(tail, reducer.(head, acc), reducer)
+
+fn count_via_param(enumerable, fun) do
+  reduce_plain(enumerable, 0, fn (entry, acc) ->
+    if fun.(entry), do: acc + 1, else: acc
+  end)
+end
+
+fn main() do
+  predicate = fn (x) -> x > 2 end
+  count_via_param([1, 2, 3, 4], predicate)
+end
+"#;
+
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new(&tel);
+    world.submit_code(
+        Some("transport_enum_style_reducer_captures_callable.fz".to_string()),
+        source.to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    drive_until_transport_plan(
+        &mut world,
+        root,
+        "enum-style reducer callable-capture fixture should produce a transport plan",
+    );
+
+    let plan = transport_plan(&world, root);
+    let captured_callable = plan.callables.iter().find_map(|(outer, facts)| {
+        let outer_descr = world.transport().interners().callable(*outer);
+        let [capture_shape] = outer_descr.capture_shapes.as_ref() else {
+            return None;
+        };
+        let ShapeDescr::Callable(captured) = shape_descr(&world, *capture_shape) else {
+            return None;
+        };
+        (!facts.direct_surfaces.is_empty() && facts.capture_lanes.len() == 1).then_some(*captured)
+    });
+    let captured_callable =
+        captured_callable.unwrap_or_else(|| panic!("the reducer lambda should capture predicate as a callable shape"));
+    let captured_facts = plan
+        .callables
+        .get(&captured_callable)
+        .unwrap_or_else(|| panic!("captured predicate callable facts should be present"));
+    assert!(
+        captured_facts.direct_surfaces.iter().any(|surface| surface.len() == 1),
+        "the captured predicate should retain its direct one-argument callable surface"
+    );
+    assert!(
+        captured_facts.boundary_ids.is_empty(),
+        "a predicate captured for direct reducer use should not be upgraded to a first-class boundary"
+    );
+}
+
 fn assert_resolved(outcome: DriveOutcome<super::Job, super::FactKey>, message: &str) {
     assert!(matches!(outcome, DriveOutcome::Resolved), "{message}: {outcome:?}");
 }
 
 fn drive_until_transport_plan(world: &mut World<'_>, root: super::RootId, message: &str) {
-    let outcome = world.drive_for(None);
-    if world.transport().plans().get(root).is_none() {
-        world.demand(super::Job::DeriveTransportPlan(root));
-        let _ = world.drive_for(None);
+    world.demand(super::Job::DeriveTransportPlan(root));
+    let mut ran = 0;
+    while world.transport().plans().get(root).is_none() && ran < 10_000 {
+        let Some(job) = world.work_graph.pop() else {
+            break;
+        };
+        if is_post_transport_consumer_for_root(&job, root) {
+            continue;
+        }
+        let effects = super::jobs::run(world, &job).unwrap_or_else(|_| {
+            panic!("{message}; prerequisite job failed before transport plan was derived: {job:?}")
+        });
+        world.complete_job(job, effects);
+        ran += 1;
     }
     assert!(
         world.transport().plans().get(root).is_some(),
-        "{message}; drive outcome was {outcome:?}"
+        "{message}; transport plan was not produced after {ran} prerequisite jobs; pending={}; unresolved={:?}",
+        world.work_graph.pending_jobs(),
+        world.work_graph.unresolved()
     );
+}
+
+fn is_post_transport_consumer_for_root(job: &super::Job, root: super::RootId) -> bool {
+    matches!(
+        job,
+        super::Job::MaterializeRoot(candidate)
+            | super::Job::DeriveAbiReady(candidate)
+            | super::Job::DeriveEmissionReady(candidate)
+            | super::Job::LowerBackendProgram(candidate)
+            | super::Job::LowerNativeProgram(candidate)
+            if *candidate == root
+    )
 }
 
 fn executable_for(
@@ -1449,6 +1674,27 @@ fn executable_for(
         })
         .cloned()
         .unwrap_or_else(|| panic!("transport plan executable {name}/{arity}"))
+}
+
+fn callable_facts_for_function<'a>(
+    world: &'a World<'_>,
+    plan: &'a TransportPlan,
+    name: &str,
+    arity: usize,
+) -> Vec<(super::transport::CallableId, &'a super::transport::CallableFacts)> {
+    plan.callables
+        .iter()
+        .filter_map(|(callable, facts)| {
+            let descr = world.transport().interners().callable(*callable);
+            let function = descr.function?;
+            function_is(world, function, name, arity).then_some((*callable, facts))
+        })
+        .collect()
+}
+
+fn function_is(world: &World<'_>, function: super::FunctionId, name: &str, arity: usize) -> bool {
+    let function_ref = world.function_ref(function);
+    function_ref.name == name && function_ref.arity == arity
 }
 
 fn transport_plan(world: &World<'_>, root: super::RootId) -> TransportPlan {
