@@ -188,7 +188,9 @@ fn format_codegen_seam_fact(fact: &CodegenSeamFact) -> String {
 fn format_codegen_lane_repr(repr: CodegenLaneRepr) -> &'static str {
     match repr {
         CodegenLaneRepr::ValueRef => "ValueRef",
+        CodegenLaneRepr::RawInt => "RawInt",
         CodegenLaneRepr::RawF64 => "RawF64",
+        CodegenLaneRepr::RawAtom => "RawAtom",
     }
 }
 

@@ -127,7 +127,9 @@ pub struct ExecutableSymbol {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CodegenLaneRepr {
     ValueRef,
+    RawInt,
     RawF64,
+    RawAtom,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -229,9 +231,6 @@ pub enum TransportPosition {
     Value {
         executable: ExecutableSymbol,
         value: ValueId,
-    },
-    Boundary {
-        boundary: BoundaryId,
     },
 }
 

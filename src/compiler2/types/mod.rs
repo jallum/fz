@@ -609,7 +609,6 @@ impl Types {
         self.descr(a).is_subtype(cx, &Descr::bool_t())
     }
 
-    #[cfg(test)]
     pub fn is_atom_type(&self, a: &Ty) -> bool {
         let cx = self.ctx();
         self.descr(a).is_subtype(cx, &Descr::atom_top())

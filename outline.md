@@ -84,7 +84,7 @@ SemanticClosed(root) + settled RuntimeDemand
 The plan answers "what runtime structure moves at this seam?" exactly once.
 Backends answer "how do I emit this seam?" by reading facts from the plan.
 
-Implementation status after `fz-hwn.20.5`: `src/compiler2/transport.rs`
+Implementation status after `fz-hwn.20.6`: `src/compiler2/transport.rs`
 defines the root-independent ids, descriptors, transport symbols,
 `TransportPosition`, `TransportInterners`, and `TransportStore`. `World` owns one
 `TransportStore`. `DeriveTransportPlan(root)` now populates root-scoped
@@ -107,13 +107,16 @@ synthetic boundary self-position. `DeriveTransportPlan(root)` is scheduled as a
 side-output of settled semantic closure and is also re-requested if the
 root-scoped plan is missing, but materialization, backend, native, and codegen
 do not wait on or consume it yet. Codegen seam facts are now plan-owned facts
-for the worked float-lane seams: function entry, return delivery, tail call, and
-extern boundary use `RawF64`; block parameter, continuation entry, callable
-boundary, and first-class publication use `ValueRef`. These facts are derived
-from `TransportPlan` positions and boundary contracts only; no native/codegen
-consumer reads them yet. The transport calculator reads `RuntimeDemand`/
-`CallableDemand`, not the old callable-materialization inventory, and no old
-`Trash*` layout is translated into descriptors.
+for the worked scalar, tuple-leaf, and boxed-lane seams. Function entry, return
+delivery, tail call, and extern boundary use raw lane reprs when settled type
+evidence proves `RawInt`, `RawF64`, or `RawAtom`; otherwise they publish
+`ValueRef`. Block parameter and continuation entry use `ValueRef` for float and
+boxed leaves and raw integer/atom reprs for integer/atom leaves. Callable
+boundary and first-class publication lanes use `ValueRef`. These facts are
+derived from `TransportPlan` positions and boundary contracts only; no
+native/codegen consumer reads them yet. The transport calculator reads
+`RuntimeDemand`/`CallableDemand`, not the old callable-materialization
+inventory, and no old `Trash*` layout is translated into descriptors.
 
 ## Required First Move
 
@@ -203,7 +206,8 @@ Some facts deliberately ride *alongside* the shape, not inside it:
   points at the same shape ids. It is not a shape variant.
 - **Codegen representation.** `ArgRepr`-like facts are seam-specific. For
   example, a float may travel as `RawF64` through a function ABI but must be a
-  `ValueRef` across a block-param seam. That is a codegen fact, not `Shape`.
+  `ValueRef` across a block-param seam, while integer and atom lanes can remain
+  raw across that seam. That is a codegen fact, not `Shape`.
 
 ## The Disease: Spine Translation
 
@@ -243,6 +247,49 @@ the destination:
 The replacement for each is the same: read `TransportPlan`, then index the fact
 table for the lane, callable, codegen seam, or published boundary contract
 needed at that seam.
+
+### `fz-hwn.20.6` Handoff Inventory
+
+This inventory is backed by:
+
+```
+rg -n "\b(TrashRuntimeValueLayout|TrashRuntimeInputLayout|TrashRuntimeParamLayout|TrashRuntimeLane|TrashReturnAbi|TrashDeliveredShape|TrashNativeDemandAbi|TrashRealizedValue|TrashBackendValue|LocalCallableId|runtime_value_layout_from_demand|runtime_input_layout_from_demand|trash_delivered_shape_from_layout|trash_delivered_shape_from_return_abi|tuple_return_delivery_plan|local_callable_layout|boundary_return_abi|ArgRepr::from_ty|for_block_param_ty)\b" src/compiler2 src/ir_interp src/ir_codegen
+```
+
+Cutover classification:
+
+- `src/compiler2/artifact.rs`, `src/compiler2/jobs/artifact.rs`, and
+  `src/compiler2/world.rs` still carry `TrashRuntimeValueLayout`,
+  `TrashRuntimeInputLayout`, `TrashRuntimeParamLayout`, `TrashRuntimeLane`, and
+  `TrashReturnAbi`. `fz-hwn.19.2` replaces these materialization handoff trees
+  with `TransportPosition -> ShapeId`, lane fact reads, and executable
+  membership from `TransportPlan`.
+- `src/compiler2/jobs/artifact.rs` still has `LocalCallableId`,
+  local-callable layout memoization, `local_callable_layout`, and
+  `boundary_return_abi`. `fz-hwn.19.3` replaces local callable transport
+  authority with `CallableId` facts and first-class publication with
+  `BoundaryId` contracts.
+- `src/ir_interp/backend.rs`, `src/ir_interp/mod.rs`, and
+  `src/compiler2/jobs/native.rs` still carry recursive runtime-value mirrors:
+  `TrashBackendValue` and `TrashRealizedValue`. `fz-hwn.19.4` replaces those
+  mirrors with `ShapeId` or `TransportPosition` plus lane bundles/spans; tuple
+  fields are child shape views and direct callables carry `CallableId`.
+- `src/compiler2/native_codegen/demand.rs`,
+  `src/compiler2/native_codegen/driver.rs`,
+  `src/compiler2/native_codegen/entry.rs`,
+  `src/compiler2/native_codegen/function.rs`,
+  `src/compiler2/native_codegen/terminator.rs`, and
+  `src/compiler2/native_codegen/prim.rs` still carry `TrashDeliveredShape`,
+  `TrashNativeDemandAbi`, `trash_delivered_shape_from_layout`,
+  `trash_delivered_shape_from_return_abi`, continuation-shape recovery, and
+  compiler2-local `ArgRepr` decisions. `fz-hwn.19.5` replaces those with
+  `CodegenSeamFact` reads keyed by `LaneId` plus `CodegenSeam`; low-level
+  `ArgRepr` may remain only as an emission enum filled from those facts.
+- `src/ir_codegen/*` still has non-compiler2 legacy `ArgRepr::from_ty` and
+  `for_block_param_ty` paths. They are not inputs to the new transport plan.
+  They are either outside the compiler2 cutover or must be named by a separate
+  legacy-codegen ticket before `fz-hwn.19.6` deletes the remaining old
+  vocabulary.
 
 ## Boundaries
 
@@ -429,10 +476,12 @@ that opaque callable contracts with different observed surfaces do not share one
 `CallableId`, recursive callable returns preserve the resolved local callable
 identity, missing side-product plans are regenerated even when the semantic
 closure itself is unchanged, and boundary publications never use a synthetic
-self-position. `fz-hwn.20.5` adds worked float-lane fixtures for function-entry
-vs block-param representation splitting, return delivery, continuation entry,
-tail-call delivery, callable boundary publication, extern boundary delivery, and
-per-kind seam telemetry counts.
+self-position. `fz-hwn.20.5` adds worked scalar and tuple-leaf fixtures for
+function-entry vs block-param representation splitting, return delivery,
+continuation entry, tail-call delivery, callable boundary publication, extern
+boundary delivery, and per-kind seam telemetry counts. `fz-hwn.20.6` adds
+boxed-lane fixtures pinning that non-raw transported leaves publish explicit
+`ValueRef` seam facts instead of disappearing from the codegen fact table.
 
 The landed derivation boundary is explicit: callable and boundary facts are
 derived by the new transport calculator from settled demand, lowered callable
@@ -494,9 +543,9 @@ such as `RootId`, `ValueId`, callsites, or resume points. Root-scoped evidence
 belongs in `TransportPlan` metadata: membership, positions, demand/use
 obligations, boundary publication, and seam facts. The event must not serialize
 `Trash*` layout facts or `ArgRepr`-from-type decisions as authority. After
-`fz-hwn.20.5`, `codegen_seam_fact_count` and per-kind seam counts report the
-plan-owned seam facts; `seam_facts` is non-empty only when a worked
-source-level example requires the fact.
+`fz-hwn.20.6`, `codegen_seam_fact_count` and per-kind seam counts report the
+plan-owned seam facts for raw and boxed leaves; `seam_facts` is non-empty only
+when a worked source-level example requires the fact.
 
 The minimality check is mechanical:
 

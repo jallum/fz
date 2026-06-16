@@ -519,111 +519,103 @@ fn derive_codegen_seam_facts(
 ) -> Box<[CodegenSeamFact]> {
     let mut out = Vec::new();
     for (position, shape) in positions {
-        let Some(lane) = lane_for_codegen_seam_shape(world, *shape) else {
-            continue;
-        };
-        match position {
-            TransportPosition::ExecutableInput {
-                executable,
-                semantic_index,
-            } => {
-                let Some(repr) = function_entry_repr_for_lane(world, lane) else {
-                    continue;
-                };
-                out.push(CodegenSeamFact {
-                    seam: CodegenSeam::FunctionEntry {
-                        executable: executable.clone(),
-                        semantic_index: *semantic_index,
-                    },
-                    shape: Some(*shape),
-                    lane,
-                    repr,
-                });
-                if executable_context_for_symbol(contexts, executable)
-                    .is_some_and(|context| matches!(context.body, LoweredBody::Extern { .. }))
-                {
+        for (leaf_shape, lane) in lanes_for_codegen_seam_shape(world, *shape) {
+            match position {
+                TransportPosition::ExecutableInput {
+                    executable,
+                    semantic_index,
+                } => {
+                    let repr = codegen_repr_for_lane(world, lane);
                     out.push(CodegenSeamFact {
-                        seam: CodegenSeam::ExternBoundary {
+                        seam: CodegenSeam::FunctionEntry {
                             executable: executable.clone(),
+                            semantic_index: *semantic_index,
                         },
-                        shape: Some(*shape),
+                        shape: Some(leaf_shape),
                         lane,
                         repr,
                     });
+                    if executable_context_for_symbol(contexts, executable)
+                        .is_some_and(|context| matches!(context.body, LoweredBody::Extern { .. }))
+                    {
+                        out.push(CodegenSeamFact {
+                            seam: CodegenSeam::ExternBoundary {
+                                executable: executable.clone(),
+                            },
+                            shape: Some(leaf_shape),
+                            lane,
+                            repr,
+                        });
+                    }
                 }
-            }
-            TransportPosition::ExecutableReturn { executable } => {
-                let Some(repr) = function_entry_repr_for_lane(world, lane) else {
-                    continue;
-                };
-                out.push(CodegenSeamFact {
-                    seam: CodegenSeam::ReturnDelivery {
-                        executable: executable.clone(),
-                    },
-                    shape: Some(*shape),
-                    lane,
-                    repr,
-                });
-                if executable_context_for_symbol(contexts, executable)
-                    .is_some_and(|context| matches!(context.body, LoweredBody::Extern { .. }))
-                {
+                TransportPosition::ExecutableReturn { executable } => {
+                    let repr = codegen_repr_for_lane(world, lane);
                     out.push(CodegenSeamFact {
-                        seam: CodegenSeam::ExternBoundary {
+                        seam: CodegenSeam::ReturnDelivery {
                             executable: executable.clone(),
                         },
-                        shape: Some(*shape),
+                        shape: Some(leaf_shape),
                         lane,
                         repr,
                     });
+                    if executable_context_for_symbol(contexts, executable)
+                        .is_some_and(|context| matches!(context.body, LoweredBody::Extern { .. }))
+                    {
+                        out.push(CodegenSeamFact {
+                            seam: CodegenSeam::ExternBoundary {
+                                executable: executable.clone(),
+                            },
+                            shape: Some(leaf_shape),
+                            lane,
+                            repr,
+                        });
+                    }
                 }
-            }
-            TransportPosition::ResumePayload { executable, entry, .. }
-                if function_entry_repr_for_lane(world, lane).is_some() =>
-            {
-                out.push(CodegenSeamFact {
-                    seam: CodegenSeam::BlockParam {
-                        executable: executable.clone(),
-                        entry: *entry,
-                    },
-                    shape: Some(*shape),
-                    lane,
-                    repr: CodegenLaneRepr::ValueRef,
-                });
-                if let TransportPosition::ResumePayload { callsite, .. } = position {
+                TransportPosition::ResumePayload { executable, entry, .. } => {
+                    let repr = block_param_codegen_repr_for_lane(world, lane);
                     out.push(CodegenSeamFact {
-                        seam: CodegenSeam::ContinuationEntry {
+                        seam: CodegenSeam::BlockParam {
                             executable: executable.clone(),
-                            callsite: *callsite,
                             entry: *entry,
                         },
-                        shape: Some(*shape),
-                        lane,
-                        repr: CodegenLaneRepr::ValueRef,
-                    });
-                }
-            }
-            TransportPosition::CallArg {
-                executable, callsite, ..
-            } => {
-                let Some(repr) = function_entry_repr_for_lane(world, lane) else {
-                    continue;
-                };
-                if executable_context_for_symbol(contexts, executable)
-                    .and_then(|context| context.callsite_dests.get(callsite))
-                    .is_some_and(|dest| matches!(dest, ControlDestination::Return))
-                {
-                    out.push(CodegenSeamFact {
-                        seam: CodegenSeam::TailCall {
-                            executable: executable.clone(),
-                            callsite: *callsite,
-                        },
-                        shape: Some(*shape),
+                        shape: Some(leaf_shape),
                         lane,
                         repr,
                     });
+                    if let TransportPosition::ResumePayload { callsite, .. } = position {
+                        out.push(CodegenSeamFact {
+                            seam: CodegenSeam::ContinuationEntry {
+                                executable: executable.clone(),
+                                callsite: *callsite,
+                                entry: *entry,
+                            },
+                            shape: Some(leaf_shape),
+                            lane,
+                            repr,
+                        });
+                    }
                 }
+                TransportPosition::CallArg {
+                    executable, callsite, ..
+                } => {
+                    let repr = codegen_repr_for_lane(world, lane);
+                    if executable_context_for_symbol(contexts, executable)
+                        .and_then(|context| context.callsite_dests.get(callsite))
+                        .is_some_and(|dest| matches!(dest, ControlDestination::Return))
+                    {
+                        out.push(CodegenSeamFact {
+                            seam: CodegenSeam::TailCall {
+                                executable: executable.clone(),
+                                callsite: *callsite,
+                            },
+                            shape: Some(leaf_shape),
+                            lane,
+                            repr,
+                        });
+                    }
+                }
+                _ => {}
             }
-            _ => {}
         }
     }
     for boundary in boundaries.keys().copied() {
@@ -671,16 +663,40 @@ fn executable_context_for_symbol<'a>(
     })
 }
 
-fn lane_for_codegen_seam_shape(world: &World<'_>, shape: ShapeId) -> Option<LaneId> {
+fn lanes_for_codegen_seam_shape(world: &World<'_>, shape: ShapeId) -> Vec<(ShapeId, LaneId)> {
     match world.transport().interners().shape(shape) {
-        ShapeDescr::Lane(lane) => Some(*lane),
-        ShapeDescr::Nothing | ShapeDescr::Tuple(_) | ShapeDescr::Callable(_) => None,
+        ShapeDescr::Nothing | ShapeDescr::Callable(_) => Vec::new(),
+        ShapeDescr::Lane(lane) => vec![(shape, *lane)],
+        ShapeDescr::Tuple(items) => items
+            .iter()
+            .copied()
+            .flat_map(|item| lanes_for_codegen_seam_shape(world, item))
+            .collect(),
     }
 }
 
-fn function_entry_repr_for_lane(world: &World<'_>, lane: LaneId) -> Option<CodegenLaneRepr> {
+fn raw_codegen_repr_for_lane(world: &World<'_>, lane: LaneId) -> Option<CodegenLaneRepr> {
     let ty = world.transport().interners().lane(lane).ty;
-    world.types().is_floating(&ty).then_some(CodegenLaneRepr::RawF64)
+    if world.types().is_floating(&ty) {
+        Some(CodegenLaneRepr::RawF64)
+    } else if world.types().is_integer(&ty) {
+        Some(CodegenLaneRepr::RawInt)
+    } else if world.types().is_atom_type(&ty) {
+        Some(CodegenLaneRepr::RawAtom)
+    } else {
+        None
+    }
+}
+
+fn codegen_repr_for_lane(world: &World<'_>, lane: LaneId) -> CodegenLaneRepr {
+    raw_codegen_repr_for_lane(world, lane).unwrap_or(CodegenLaneRepr::ValueRef)
+}
+
+fn block_param_codegen_repr_for_lane(world: &World<'_>, lane: LaneId) -> CodegenLaneRepr {
+    match raw_codegen_repr_for_lane(world, lane) {
+        Some(repr @ (CodegenLaneRepr::RawInt | CodegenLaneRepr::RawAtom)) => repr,
+        Some(CodegenLaneRepr::RawF64 | CodegenLaneRepr::ValueRef) | None => CodegenLaneRepr::ValueRef,
+    }
 }
 
 fn codegen_seam_fact_sort_key(fact: &CodegenSeamFact) -> (u8, u32, u32, u32, usize, u32, u8) {
@@ -717,7 +733,9 @@ fn codegen_seam_fact_sort_key(fact: &CodegenSeamFact) -> (u8, u32, u32, u32, usi
     };
     let repr = match fact.repr {
         CodegenLaneRepr::ValueRef => 0,
-        CodegenLaneRepr::RawF64 => 1,
+        CodegenLaneRepr::RawInt => 1,
+        CodegenLaneRepr::RawF64 => 2,
+        CodegenLaneRepr::RawAtom => 3,
     };
     (kind, function, boundary, entry, index, fact.lane.as_u32(), repr)
 }

@@ -2,7 +2,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use super::transport::{
-    BoundaryDescr, CodegenLaneRepr, CodegenSeam, ShapeDescr, ShapeId, TransportPlan, TransportPosition,
+    BoundaryDescr, CodegenLaneRepr, CodegenSeam, LaneId, ShapeDescr, ShapeId, TransportPlan, TransportPosition,
 };
 use super::{DriveOutcome, ExecutableNeed, World};
 use crate::telemetry::{Capture, ConfiguredTelemetry, Value};
@@ -483,6 +483,260 @@ fn main(), do: fz_float_id(1.0)
             .any(|fact| matches!(fact.seam, CodegenSeam::ExternBoundary { .. }) && fact.repr == CodegenLaneRepr::RawF64),
         "a float extern should publish RawF64 extern-boundary lane facts: {:?}",
         plan.codegen_seam_facts
+    );
+}
+
+#[test]
+fn compiler2_transport_flow_publishes_tuple_codegen_seams_for_leaf_lanes() {
+    let source = r#"
+fn pair(x, y), do: {x, y}
+
+fn main() do
+  {left, right} = pair(1.0, 2)
+  {left, right}
+end
+"#;
+
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new(&tel);
+    world.submit_code(
+        Some("transport_codegen_seam_tuple_leaf_lanes.fz".to_string()),
+        source.to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::TupleFields(2));
+    assert_resolved(world.drive_for(None), "tuple seam fixture should settle");
+
+    let plan = transport_plan(&world, root);
+    let pair = executable_for(&world, &plan, "pair", 2);
+    let pair_return = plan_shape_at(
+        &plan,
+        &TransportPosition::ExecutableReturn {
+            executable: pair.clone(),
+        },
+    );
+    let leaf_lanes = shape_leaf_lanes(&world, pair_return);
+    assert_eq!(
+        leaf_lanes.len(),
+        2,
+        "the worked example should return a two-leaf tuple shape: {:?}",
+        shape_descr(&world, pair_return)
+    );
+
+    assert_seam_fact(
+        &plan,
+        |seam| matches!(seam, CodegenSeam::ReturnDelivery { executable } if executable == &pair),
+        Some(leaf_lanes[0].0),
+        leaf_lanes[0].1,
+        CodegenLaneRepr::RawF64,
+        "float tuple leaves should publish raw return-delivery seam facts",
+    );
+    assert_seam_fact(
+        &plan,
+        |seam| matches!(seam, CodegenSeam::ReturnDelivery { executable } if executable == &pair),
+        Some(leaf_lanes[1].0),
+        leaf_lanes[1].1,
+        CodegenLaneRepr::RawInt,
+        "integer tuple leaves should publish raw return-delivery seam facts",
+    );
+
+    let main = executable_for(&world, &plan, "main", 0);
+    assert_seam_fact(
+        &plan,
+        |seam| matches!(seam, CodegenSeam::BlockParam { executable, .. } if executable == &main),
+        Some(leaf_lanes[0].0),
+        leaf_lanes[0].1,
+        CodegenLaneRepr::ValueRef,
+        "float tuple leaves should enter continuation blocks as ValueRef",
+    );
+    assert_seam_fact(
+        &plan,
+        |seam| matches!(seam, CodegenSeam::BlockParam { executable, .. } if executable == &main),
+        Some(leaf_lanes[1].0),
+        leaf_lanes[1].1,
+        CodegenLaneRepr::RawInt,
+        "integer tuple leaves should enter continuation blocks as RawInt",
+    );
+}
+
+#[test]
+fn compiler2_transport_flow_publishes_integer_and_atom_codegen_reprs() {
+    let source = r#"
+fn id_int(x), do: x + 1
+fn id_atom(x), do: x
+
+fn main() do
+  int_value = id_int(41)
+  atom_value = id_atom(:ok)
+  {int_value, atom_value}
+end
+"#;
+
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new(&tel);
+    world.submit_code(
+        Some("transport_codegen_seam_int_atom_reprs.fz".to_string()),
+        source.to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::TupleFields(2));
+    assert_resolved(world.drive_for(None), "integer/atom seam fixture should settle");
+
+    let plan = transport_plan(&world, root);
+    let id_int = executable_for(&world, &plan, "id_int", 1);
+    let id_atom = executable_for(&world, &plan, "id_atom", 1);
+
+    assert!(
+        plan.codegen_seam_facts.iter().any(|fact| matches!(
+            &fact.seam,
+            CodegenSeam::FunctionEntry { executable, .. } if executable == &id_int
+        ) && fact.repr == CodegenLaneRepr::RawInt),
+        "integer function entries should publish RawInt seam facts: {:?}",
+        plan.codegen_seam_facts
+    );
+    assert!(
+        plan.codegen_seam_facts.iter().any(|fact| matches!(
+            &fact.seam,
+            CodegenSeam::ReturnDelivery { executable } if executable == &id_int
+        ) && fact.repr == CodegenLaneRepr::RawInt),
+        "integer returns should publish RawInt seam facts: {:?}",
+        plan.codegen_seam_facts
+    );
+    assert!(
+        plan.codegen_seam_facts.iter().any(|fact| matches!(
+            &fact.seam,
+            CodegenSeam::FunctionEntry { executable, .. } if executable == &id_atom
+        ) && fact.repr == CodegenLaneRepr::RawAtom),
+        "atom function entries should publish RawAtom seam facts: {:?}",
+        plan.codegen_seam_facts
+    );
+    assert!(
+        plan.codegen_seam_facts.iter().any(|fact| matches!(
+            &fact.seam,
+            CodegenSeam::ReturnDelivery { executable } if executable == &id_atom
+        ) && fact.repr == CodegenLaneRepr::RawAtom),
+        "atom returns should publish RawAtom seam facts: {:?}",
+        plan.codegen_seam_facts
+    );
+}
+
+#[test]
+fn compiler2_transport_flow_publishes_value_ref_codegen_reprs_for_boxed_internal_lanes() {
+    let source = r#"
+fn id_box(x), do: x
+
+fn main() do
+  y = id_box("hello")
+  {y, 1}
+end
+"#;
+
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new(&tel);
+    world.submit_code(
+        Some("transport_codegen_seam_boxed_internal_reprs.fz".to_string()),
+        source.to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::TupleFields(2));
+    assert_resolved(world.drive_for(None), "boxed internal seam fixture should settle");
+
+    let plan = transport_plan(&world, root);
+    let id_box = executable_for(&world, &plan, "id_box", 1);
+    let id_box_return = plan_shape_at(
+        &plan,
+        &TransportPosition::ExecutableReturn {
+            executable: id_box.clone(),
+        },
+    );
+    let leaf_lanes = shape_leaf_lanes(&world, id_box_return);
+    let [(leaf_shape, lane)] = leaf_lanes.as_slice() else {
+        panic!(
+            "id_box/1 should return one boxed leaf lane, got {:?}",
+            shape_descr(&world, id_box_return)
+        )
+    };
+
+    assert_seam_fact(
+        &plan,
+        |seam| matches!(seam, CodegenSeam::FunctionEntry { executable, .. } if executable == &id_box),
+        Some(*leaf_shape),
+        *lane,
+        CodegenLaneRepr::ValueRef,
+        "boxed function-entry lanes should publish ValueRef seam facts",
+    );
+    assert_seam_fact(
+        &plan,
+        |seam| matches!(seam, CodegenSeam::ReturnDelivery { executable } if executable == &id_box),
+        Some(*leaf_shape),
+        *lane,
+        CodegenLaneRepr::ValueRef,
+        "boxed return-delivery lanes should publish ValueRef seam facts",
+    );
+
+    let main = executable_for(&world, &plan, "main", 0);
+    assert_seam_fact(
+        &plan,
+        |seam| matches!(seam, CodegenSeam::BlockParam { executable, .. } if executable == &main),
+        Some(*leaf_shape),
+        *lane,
+        CodegenLaneRepr::ValueRef,
+        "boxed continuation block params should publish ValueRef seam facts",
+    );
+    assert_seam_fact(
+        &plan,
+        |seam| matches!(seam, CodegenSeam::ContinuationEntry { executable, .. } if executable == &main),
+        Some(*leaf_shape),
+        *lane,
+        CodegenLaneRepr::ValueRef,
+        "boxed continuation entries should publish ValueRef seam facts",
+    );
+}
+
+#[test]
+fn compiler2_transport_flow_publishes_value_ref_codegen_reprs_for_boxed_tail_and_extern_lanes() {
+    let source = r#"
+extern "C" fn fz_binary_id(binary) :: binary
+fn main(), do: fz_binary_id("hello")
+"#;
+
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new(&tel);
+    world.submit_code(
+        Some("transport_codegen_seam_boxed_tail_extern_reprs.fz".to_string()),
+        source.to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    assert_resolved(world.drive_for(None), "boxed tail/extern seam fixture should settle");
+
+    let plan = transport_plan(&world, root);
+    let extern_id = executable_for(&world, &plan, "fz_binary_id", 1);
+    let extern_return = plan_shape_at(
+        &plan,
+        &TransportPosition::ExecutableReturn {
+            executable: extern_id.clone(),
+        },
+    );
+    let leaf_lanes = shape_leaf_lanes(&world, extern_return);
+    let [(leaf_shape, lane)] = leaf_lanes.as_slice() else {
+        panic!(
+            "fz_binary_id/1 should return one boxed leaf lane, got {:?}",
+            shape_descr(&world, extern_return)
+        )
+    };
+
+    assert_seam_fact(
+        &plan,
+        |seam| matches!(seam, CodegenSeam::TailCall { .. }),
+        Some(*leaf_shape),
+        *lane,
+        CodegenLaneRepr::ValueRef,
+        "boxed tail-call lanes should publish ValueRef seam facts",
+    );
+    assert_seam_fact(
+        &plan,
+        |seam| matches!(seam, CodegenSeam::ExternBoundary { executable } if executable == &extern_id),
+        Some(*leaf_shape),
+        *lane,
+        CodegenLaneRepr::ValueRef,
+        "boxed extern-boundary lanes should publish ValueRef seam facts",
     );
 }
 
@@ -1039,7 +1293,7 @@ end
     for facts in plan.boundaries.values() {
         for publication in facts.publications.iter() {
             assert!(
-                !matches!(publication, TransportPosition::Boundary { .. }),
+                transport_position_is_semantic(publication),
                 "boundary publications must name semantic positions, not synthetic self-positions: {publication:?}"
             );
         }
@@ -1227,6 +1481,46 @@ fn plan_shape_at(plan: &TransportPlan, position: &TransportPosition) -> ShapeId 
 
 fn shape_descr<'a>(world: &'a World<'_>, shape: ShapeId) -> &'a ShapeDescr {
     world.transport().interners().shape(shape)
+}
+
+fn shape_leaf_lanes(world: &World<'_>, shape: ShapeId) -> Vec<(ShapeId, LaneId)> {
+    match shape_descr(world, shape) {
+        ShapeDescr::Nothing | ShapeDescr::Callable(_) => Vec::new(),
+        ShapeDescr::Lane(lane) => vec![(shape, *lane)],
+        ShapeDescr::Tuple(items) => items
+            .iter()
+            .copied()
+            .flat_map(|item| shape_leaf_lanes(world, item))
+            .collect(),
+    }
+}
+
+fn assert_seam_fact(
+    plan: &TransportPlan,
+    seam_matches: impl Fn(&CodegenSeam) -> bool,
+    shape: Option<ShapeId>,
+    lane: LaneId,
+    repr: CodegenLaneRepr,
+    intent: &str,
+) {
+    assert!(
+        plan.codegen_seam_facts
+            .iter()
+            .any(|fact| { seam_matches(&fact.seam) && fact.shape == shape && fact.lane == lane && fact.repr == repr }),
+        "{intent}: expected shape {shape:?}, lane {lane:?}, repr {repr:?}; facts: {:?}",
+        plan.codegen_seam_facts
+    );
+}
+
+fn transport_position_is_semantic(position: &TransportPosition) -> bool {
+    match position {
+        TransportPosition::ExecutableInput { .. }
+        | TransportPosition::ExecutableReturn { .. }
+        | TransportPosition::ResumePayload { .. }
+        | TransportPosition::CallArg { .. }
+        | TransportPosition::EntryCapture { .. }
+        | TransportPosition::Value { .. } => true,
+    }
 }
 
 fn single_boundary_descr<'a>(world: &'a World<'_>, plan: &TransportPlan) -> &'a BoundaryDescr {
