@@ -10,8 +10,8 @@
   "labels": [],
   "parent": "fz-hwn.19.2",
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "Artifact seam: delete artifact transport authority and document the new boundary",
   "type": "task",
-  "updated_at": "2026-06-16T05:15:33Z"
+  "updated_at": "2026-06-16T14:17:48Z"
 }
