@@ -1,10 +1,13 @@
 use std::cell::RefCell;
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 use std::rc::Rc;
 
+use super::semantic::{CallableFlowFact, CallableSurface};
+use super::transport::{ActivationSymbol, ExecutableSymbol};
 use super::transport::{
     BoundaryDescr, CodegenLaneRepr, CodegenSeam, LaneId, ShapeDescr, ShapeId, TransportPlan, TransportPosition,
 };
+use super::types::Ty;
 use super::{DriveOutcome, ExecutableNeed, World};
 use crate::telemetry::{Capture, ConfiguredTelemetry, Value};
 
@@ -844,6 +847,17 @@ end
         matches!(shape_descr(&world, returned), ShapeDescr::Callable(_)),
         "direct callable return should materialize as a callable shape"
     );
+    let ShapeDescr::Callable(callable) = shape_descr(&world, returned) else {
+        unreachable!("checked above")
+    };
+    let producer_function = world
+        .transport()
+        .interners()
+        .callable(*callable)
+        .function
+        .unwrap_or_else(|| panic!("returned direct callable should name its local producer"));
+    let flow = upstream_callable_flow_for_producer(&world, root, producer_function);
+    assert_callable_facts_match_upstream_flow(&world, &plan, *callable, &flow);
 }
 
 #[test]
@@ -1309,6 +1323,14 @@ end
     let ShapeDescr::Callable(callable) = shape_descr(&world, returned) else {
         panic!("main/0 should return the callable value it also invoked directly")
     };
+    let producer_function = world
+        .transport()
+        .interners()
+        .callable(*callable)
+        .function
+        .unwrap_or_else(|| panic!("returned direct-and-escaped callable should name its local producer"));
+    let flow = upstream_callable_flow_for_producer(&world, root, producer_function);
+    assert_callable_facts_match_upstream_flow(&world, &plan, *callable, &flow);
     let facts = plan
         .callables
         .get(callable)
@@ -1324,7 +1346,7 @@ end
 }
 
 #[test]
-fn compiler2_transport_plan_shapes_callable_captures_from_settled_callable_demand() {
+fn compiler2_transport_plan_shapes_callable_captures_from_upstream_callable_flow() {
     let source = r#"
 fn main() do
   add1 = fn (x) -> x + 1 end
@@ -1336,11 +1358,11 @@ end
     let tel = ConfiguredTelemetry::new();
     let mut world = World::new(&tel);
     world.submit_code(
-        Some("transport_callable_capture_demand.fz".to_string()),
+        Some("transport_callable_capture_flow.fz".to_string()),
         source.to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
-    drive_until_transport_plan(&mut world, root, "callable capture-demand fixture should settle");
+    drive_until_transport_plan(&mut world, root, "callable capture-flow fixture should settle");
 
     let plan = transport_plan(&world, root);
     let captured_callable = plan
@@ -1920,6 +1942,110 @@ fn callable_facts_for_function<'a>(
             function_is(world, function, name, arity).then_some((*callable, facts))
         })
         .collect()
+}
+
+fn upstream_callable_flow_for_producer(
+    world: &World<'_>,
+    root: super::RootId,
+    function: super::FunctionId,
+) -> CallableFlowFact {
+    let closure = world.semantic_closure(root);
+    closure
+        .runtime_demands
+        .values()
+        .flat_map(|demand| demand.callable_flows.values())
+        .find(|flow| flow.function == function)
+        .cloned()
+        .unwrap_or_else(|| panic!("upstream callable flow for producer {function:?}"))
+}
+
+fn assert_callable_facts_match_upstream_flow(
+    world: &World<'_>,
+    plan: &TransportPlan,
+    callable: super::transport::CallableId,
+    flow: &CallableFlowFact,
+) {
+    let facts = plan
+        .callables
+        .get(&callable)
+        .unwrap_or_else(|| panic!("callable facts should exist for {callable:?}"));
+    assert_eq!(
+        sorted_executable_symbols(facts.resolutions.as_ref()),
+        flow_resolution_symbols(flow),
+        "transport callable resolutions should exactly project upstream callable-flow evidence"
+    );
+    assert_transport_surfaces_match_upstream(world, &facts.direct_surfaces, &flow.direct_surfaces);
+    assert_eq!(
+        facts.boundary_ids.len(),
+        flow.first_class_surfaces.len(),
+        "transport boundary ids should be published exactly for upstream first-class surfaces"
+    );
+}
+
+fn flow_resolution_symbols(flow: &CallableFlowFact) -> Vec<ExecutableSymbol> {
+    let mut symbols = flow
+        .resolutions
+        .iter()
+        .map(|resolution| ExecutableSymbol {
+            activation: ActivationSymbol {
+                function: resolution.activation.function,
+                input: resolution.activation.input.clone().into_boxed_slice(),
+            },
+            need: resolution.need,
+        })
+        .collect::<Vec<_>>();
+    symbols.sort_by_key(executable_symbol_test_key);
+    symbols
+}
+
+fn sorted_executable_symbols(symbols: &[ExecutableSymbol]) -> Vec<ExecutableSymbol> {
+    let mut sorted = symbols.to_vec();
+    sorted.sort_by_key(executable_symbol_test_key);
+    sorted
+}
+
+fn executable_symbol_test_key(symbol: &ExecutableSymbol) -> (u32, Vec<Ty>, u8, usize) {
+    let need = match symbol.need {
+        ExecutableNeed::Value => (0, 0),
+        ExecutableNeed::TupleFields(arity) => (1, arity),
+    };
+    (
+        symbol.activation.function.as_u32(),
+        symbol.activation.input.to_vec(),
+        need.0,
+        need.1,
+    )
+}
+
+fn assert_transport_surfaces_match_upstream(
+    world: &World<'_>,
+    actual: &[Box<[ShapeId]>],
+    expected: &BTreeSet<CallableSurface>,
+) {
+    let actual_inputs = actual
+        .iter()
+        .map(|surface| {
+            surface
+                .iter()
+                .map(|shape| surface_input_ty(world, *shape))
+                .collect::<Vec<_>>()
+        })
+        .collect::<BTreeSet<_>>();
+    let expected_inputs = expected
+        .iter()
+        .map(|surface| surface.inputs.clone())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        actual_inputs, expected_inputs,
+        "transport callable surfaces should exactly project upstream callable-flow inputs"
+    );
+}
+
+fn surface_input_ty(world: &World<'_>, shape: ShapeId) -> Ty {
+    match shape_descr(world, shape) {
+        ShapeDescr::Lane(lane) => world.transport().interners().lane(*lane).ty,
+        other => panic!("worked callable surface inputs should project to lane shapes, got {other:?}"),
+    }
 }
 
 fn function_is(world: &World<'_>, function: super::FunctionId, name: &str, arity: usize) -> bool {

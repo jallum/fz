@@ -5,11 +5,11 @@ use super::super::body::{
     ValueId,
 };
 use super::super::drive::{FactKey, Job};
-use super::super::identity::{ExecutableKey, ExecutableNeed, FunctionId, function_id_of_closure_target};
+use super::super::identity::{ExecutableKey, ExecutableNeed, FunctionId};
 use super::super::scheduler::FatalError;
 use super::super::semantic::{
-    ActivationAnalysis, CallSiteKey, CallSiteSummary, CallableDemand, CallableFlowFact, CallableMaterialization,
-    CallableSurface, ExecutableRuntimeDemand, RuntimeDemand,
+    ActivationAnalysis, CallSiteKey, CallSiteSummary, CallableDemand, CallableFlowFact, CallableSurface,
+    ExecutableRuntimeDemand, RuntimeDemand,
 };
 use super::super::types::Ty;
 use super::super::world::World;
@@ -95,8 +95,7 @@ pub(super) fn settle_runtime_demands(
         waits,
         follow_up,
     )?;
-    let latent_executables =
-        demanded_callable_executables(world, executables, &facts, &demands, reads, waits, follow_up)?;
+    let latent_executables = demanded_callable_executables(executables, &demands);
     if !waits.is_empty() {
         return Ok(None);
     }
@@ -315,7 +314,6 @@ fn derive_executable_runtime_demand(
         out.input_demands[semantic_index].join_assign(&demand);
     }
 
-    derive_callable_materializations(world, facts, &mut out);
     DerivedExecutableDemand {
         demand: out,
         call_return_demands,
@@ -1077,11 +1075,8 @@ fn boundary_runtime_demand(world: &mut World<'_>, ty: Ty) -> RuntimeDemand {
         return RuntimeDemand::Value;
     };
     // A callable crossing a boundary escapes as a first-class value. Carry the
-    // boundary's settled surface (its grounded argument lanes) so the escaping
-    // body's activation is keyed at those exact types. Without this the
-    // materialization re-derives the key from the callable value's own type,
-    // which is still the polymorphic template -- correct only while an
-    // activation fixpoint propagated use-site grounding back onto it.
+    // boundary's settled surface so callable-flow derivation keys the escaping
+    // body at those exact argument lanes.
     let resolved = clauses
         .into_iter()
         .map(|clause| CallableSurface::new(clause.args))
@@ -1135,39 +1130,22 @@ fn runtime_demand_for_executable_need(need: ExecutableNeed) -> RuntimeDemand {
 }
 
 fn demanded_callable_executables(
-    world: &mut World<'_>,
     executables: &HashSet<ExecutableKey>,
-    facts: &HashMap<ExecutableKey, ExecutableFacts>,
     demands: &HashMap<ExecutableKey, ExecutableRuntimeDemand>,
-    reads: &mut Vec<FactKey>,
-    waits: &mut HashSet<FactKey>,
-    follow_up: &mut HashSet<Job>,
-) -> Result<HashSet<ExecutableKey>, FatalError> {
+) -> HashSet<ExecutableKey> {
     let mut latent = HashSet::new();
     for executable in executables {
-        let facts = facts
-            .get(executable)
-            .expect("runtime demand closure should have facts for every executable");
-        let producer_values = local_callable_producer_values(&facts.body);
         let demand = demands
             .get(executable)
             .expect("runtime demand closure should produce a plan for every executable");
-        for (value, materialization) in &demand.callable_materializations {
-            let CallableMaterialization::FirstClass { surfaces } = materialization else {
-                continue;
-            };
-            if !producer_values.contains(value) {
+        for flow in demand.callable_flows.values() {
+            if !flow.escape && !flow.opaque {
                 continue;
             }
-            let Some(&ty) = facts.analysis.value_types.get(value) else {
-                continue;
-            };
-            for callee in callable_executables_from_type(world, executable, ty, surfaces, reads, waits, follow_up) {
-                latent.insert(callee);
-            }
+            latent.extend(flow.resolutions.iter().cloned());
         }
     }
-    Ok(latent)
+    latent
 }
 
 fn derive_callable_flow_facts(
@@ -1196,15 +1174,20 @@ fn derive_callable_flow_facts(
             let closed = closed_callable_resolutions(world, locally_called, executables, facts, &producer);
             let mut direct_surfaces = callable.resolved.clone();
             direct_surfaces.extend(closed.iter().map(|(_, surface)| surface.clone()));
-            let first_class_surfaces = if callable.opaque || callable.escape {
-                callable.resolved.clone()
-            } else {
-                BTreeSet::new()
-            };
+            let first_class_surfaces = first_class_surfaces_for_flow(world, facts, value, callable);
             let mut resolutions = closed.into_iter().map(|(resolution, _)| resolution).collect::<Vec<_>>();
             extend_unique(
                 &mut resolutions,
-                callable_flow_resolutions(world, executable, facts, &producer, callable, reads, waits, follow_up),
+                callable_flow_resolutions(
+                    world,
+                    executable,
+                    facts,
+                    &producer,
+                    &first_class_surfaces,
+                    reads,
+                    waits,
+                    follow_up,
+                ),
             );
             demand.callable_flows.insert(
                 value,
@@ -1221,6 +1204,29 @@ fn derive_callable_flow_facts(
         }
     }
     Ok(())
+}
+
+fn first_class_surfaces_for_flow(
+    world: &mut World<'_>,
+    facts: &ExecutableFacts,
+    value: ValueId,
+    callable: &CallableDemand,
+) -> BTreeSet<CallableSurface> {
+    if !callable.opaque && !callable.escape {
+        return BTreeSet::new();
+    }
+    let mut surfaces = callable.resolved.clone();
+    if !surfaces.is_empty() {
+        return surfaces;
+    }
+    let Some(&ty) = facts.analysis.value_types.get(&value) else {
+        return surfaces;
+    };
+    let Some(clauses) = world.types_mut().callable_value_clauses(&ty) else {
+        return surfaces;
+    };
+    surfaces.extend(clauses.into_iter().map(|clause| CallableSurface::new(clause.args)));
+    surfaces
 }
 
 fn closed_callable_resolutions(
@@ -1267,12 +1273,12 @@ fn callable_flow_resolutions(
     executable: &ExecutableKey,
     facts: &ExecutableFacts,
     producer: &LocalCallableProducer,
-    callable: &CallableDemand,
+    surfaces: &BTreeSet<CallableSurface>,
     reads: &mut Vec<FactKey>,
     waits: &mut HashSet<FactKey>,
     follow_up: &mut HashSet<Job>,
 ) -> Vec<ExecutableKey> {
-    if callable.resolved.is_empty() {
+    if surfaces.is_empty() {
         return Vec::new();
     }
     if !world.require_activation_key_facts(producer.function, reads, waits, follow_up) {
@@ -1287,8 +1293,7 @@ fn callable_flow_resolutions(
     else {
         return Vec::new();
     };
-    callable
-        .resolved
+    surfaces
         .iter()
         .map(|surface| {
             let mut inputs = capture_tys.clone();
@@ -1344,10 +1349,6 @@ fn local_callable_producers(body: &LoweredBody) -> HashMap<ValueId, LocalCallabl
     producers
 }
 
-fn local_callable_producer_values(body: &LoweredBody) -> HashSet<ValueId> {
-    local_callable_producers(body).into_keys().collect()
-}
-
 fn step_local_callable_producer(step: &LoweredStep) -> Option<(ValueId, LocalCallableProducer)> {
     match step {
         LoweredStep::FunctionRef { value, function } => Some((
@@ -1369,87 +1370,6 @@ fn step_local_callable_producer(step: &LoweredStep) -> Option<(ValueId, LocalCal
             },
         )),
         _ => None,
-    }
-}
-
-fn callable_executables_from_type(
-    world: &mut World<'_>,
-    executable: &ExecutableKey,
-    callable_ty: Ty,
-    surfaces: &BTreeSet<CallableSurface>,
-    reads: &mut Vec<FactKey>,
-    waits: &mut HashSet<FactKey>,
-    follow_up: &mut HashSet<Job>,
-) -> Vec<ExecutableKey> {
-    let Some(clauses) = world.types_mut().callable_value_clauses(&callable_ty) else {
-        return Vec::new();
-    };
-    let mut out = Vec::new();
-    for clause in clauses {
-        let Some(closure) = clause.closure else {
-            continue;
-        };
-        let function = function_id_of_closure_target(closure.target);
-        if !world.require_activation_key_facts(function, reads, waits, follow_up) {
-            continue;
-        }
-        for args in grounded_activation_args(world, &clause.args, surfaces) {
-            let mut inputs = closure.captures.clone();
-            inputs.extend(args);
-            out.push(ExecutableKey {
-                activation: world.activation_key(executable.activation.root, function, &inputs),
-                need: ExecutableNeed::Value,
-            });
-        }
-    }
-    out
-}
-
-/// The argument lanes to key an escaping body's activation at. Each settled
-/// boundary surface of matching arity grounds the body's template arguments to
-/// the exact types that boundary demanded; with no matching surface the
-/// callable escapes opaquely and its own (template) arguments are the truth.
-fn grounded_activation_args(
-    world: &mut World<'_>,
-    template_args: &[Ty],
-    surfaces: &BTreeSet<CallableSurface>,
-) -> Vec<Vec<Ty>> {
-    let grounded = surfaces
-        .iter()
-        .filter(|surface| surface.inputs.len() == template_args.len())
-        .map(|surface| world.types_mut().grounded_callable_args(template_args, &surface.inputs))
-        .collect::<Vec<_>>();
-    if grounded.is_empty() {
-        vec![template_args.to_vec()]
-    } else {
-        grounded
-    }
-}
-
-fn derive_callable_materializations(world: &mut World<'_>, facts: &ExecutableFacts, out: &mut ExecutableRuntimeDemand) {
-    out.callable_materializations.clear();
-    for (value, demand) in &out.value_demands {
-        let RuntimeDemand::Callable(callable) = demand else {
-            continue;
-        };
-        let Some(&ty) = facts.analysis.value_types.get(value) else {
-            continue;
-        };
-        if world.types_mut().callable_clauses(&ty).is_none() {
-            continue;
-        }
-        let materialization = if callable.opaque || callable.escape {
-            CallableMaterialization::FirstClass {
-                surfaces: callable.resolved.clone(),
-            }
-        } else if callable.resolved.is_empty() {
-            continue;
-        } else {
-            CallableMaterialization::DirectOnly {
-                surfaces: callable.resolved.clone(),
-            }
-        };
-        out.callable_materializations.insert(*value, materialization);
     }
 }
 

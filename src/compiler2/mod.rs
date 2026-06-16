@@ -86,7 +86,7 @@ pub use scheduler::{AppliedStep, DriveOutcome, FatalError, Scheduler};
 pub use scope::ScopeSnapshot;
 pub use semantic::{
     ActivationAnalysis, ActivationMap, ActivationSlot, CallSiteKey, CallSiteMap, CallSiteSummary, CallTargetSummary,
-    CallableDemand, CallableMaterialization, CallableSurface, ExecutableRuntimeDemand, RuntimeDemand, SelectedCallee,
+    CallableDemand, CallableFlowFact, CallableSurface, ExecutableRuntimeDemand, RuntimeDemand, SelectedCallee,
     SemanticClosure, SemanticClosureMap,
 };
 pub use source::{

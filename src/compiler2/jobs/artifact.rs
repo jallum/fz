@@ -29,13 +29,9 @@ use super::super::body::{
     Literal, LoweredBody, LoweredEntry, LoweredStep, LoweredTail, ValueId,
 };
 use super::super::drive::{FactKey, Job, JobEffects, settled_uses};
-use super::super::identity::{
-    ActivationKey, ExecutableKey, ExecutableNeed, FunctionId, RootId, function_id_of_closure_target,
-};
+use super::super::identity::{ActivationKey, ExecutableKey, ExecutableNeed, FunctionId, RootId};
 use super::super::scheduler::FatalError;
-use super::super::semantic::{
-    ActivationAnalysis, CallSiteKey, CallTargetSummary, CallableMaterialization, SelectedCallee,
-};
+use super::super::semantic::{ActivationAnalysis, CallSiteKey, CallTargetSummary, SelectedCallee};
 use super::super::types::Ty;
 use super::super::world::World;
 use super::semantic::executable_callsite_needs;
@@ -2447,78 +2443,90 @@ fn derive_callable_entries(
 ) -> Result<Vec<CallableEntry>, FatalError> {
     let mut entries = Vec::new();
     for executable in executables.values() {
-        let producer_values = local_callable_producer_values(&executable.body);
-        for (value, materialization) in &executable.runtime_demand.callable_materializations {
-            if !matches!(materialization, CallableMaterialization::FirstClass { .. }) {
+        for flow in executable.runtime_demand.callable_flows.values() {
+            if !flow.escape && !flow.opaque {
                 continue;
             }
-            if !producer_values.contains(value) {
-                continue;
-            }
-            let ty = executable.value_types.get(value).copied().ok_or_else(|| {
-                incomplete_semantic_plan(
-                    world,
-                    root_id,
-                    format!(
-                        "ABI-ready executable is missing the settled type for runtime callable value {}",
-                        value.as_u32()
-                    ),
-                )
-            })?;
-            match resolve_callable_entries_for_type(world, root_id, executables, ty)? {
-                CallableResolution::Resolved(resolved) => entries.extend(resolved),
-                CallableResolution::NotCallable => {
-                    return Err(incomplete_semantic_plan(
-                        world,
-                        root_id,
-                        format!("runtime callable value {} is not callable", value.as_u32()),
-                    ));
-                }
-                CallableResolution::Opaque => {
+            let capture_tys = flow
+                .captures
+                .iter()
+                .copied()
+                .map(|capture| {
+                    executable.value_types.get(&capture).copied().ok_or_else(|| {
+                        incomplete_semantic_plan(
+                            world,
+                            root_id,
+                            format!(
+                                "ABI-ready executable is missing the settled type for runtime callable capture {}",
+                                capture.as_u32()
+                            ),
+                        )
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            for target in &flow.resolutions {
+                if target.activation.function != flow.function || target.need != ExecutableNeed::Value {
+                    let function_ref = world.function_ref(flow.function);
                     return Err(incomplete_semantic_plan(
                         world,
                         root_id,
                         format!(
-                            "first-class callable materialization for value {} lost closure identity",
-                            value.as_u32()
+                            "callable flow for `{}/{}` published mismatched target {:?}",
+                            function_ref.name, function_ref.arity, target
                         ),
                     ));
                 }
+                if target.activation.input.len() < capture_tys.len() {
+                    let function_ref = world.function_ref(flow.function);
+                    return Err(incomplete_semantic_plan(
+                        world,
+                        root_id,
+                        format!(
+                            "callable flow for `{}/{}` published target with fewer inputs than captures",
+                            function_ref.name, function_ref.arity
+                        ),
+                    ));
+                }
+                let target_executable = executables.get(target).ok_or_else(|| {
+                    let function_ref = world.function_ref(flow.function);
+                    incomplete_semantic_plan(
+                        world,
+                        root_id,
+                        format!(
+                            "callable flow target `{}/{}` is missing from the ABI-ready executable frontier",
+                            function_ref.name, function_ref.arity
+                        ),
+                    )
+                })?;
+                let capture_count = capture_tys.len();
+                let capture_reprs = capture_tys
+                    .iter()
+                    .copied()
+                    .map(|capture_ty| abi_value_repr(world, capture_ty))
+                    .collect::<Vec<_>>();
+                let arg_reprs = target.activation.input[capture_count..]
+                    .iter()
+                    .copied()
+                    .map(|arg_ty| abi_value_repr(world, arg_ty))
+                    .collect::<Vec<_>>();
+                entries.push(CallableEntry {
+                    target: target.clone(),
+                    capture_count,
+                    capture_reprs,
+                    arg_reprs,
+                    return_ty: target_executable.return_ty,
+                    return_abi: trash_boundary_return_abi(
+                        world,
+                        target_executable.return_ty,
+                        &target_executable.return_layout,
+                    ),
+                });
             }
         }
     }
     entries.sort_by(compare_callable_entries);
     entries.dedup_by(|left, right| left.target == right.target && left.capture_count == right.capture_count);
     Ok(entries)
-}
-
-fn local_callable_producer_values(body: &LoweredBody) -> HashSet<ValueId> {
-    let mut values = HashSet::new();
-    let LoweredBody::Clauses { clauses, entries, .. } = body else {
-        return values;
-    };
-    for clause in clauses {
-        for step in &clause.projections {
-            if let Some(value) = step_local_callable_value(step) {
-                values.insert(value);
-            }
-        }
-    }
-    for entry in entries {
-        for step in &entry.steps {
-            if let Some(value) = step_local_callable_value(step) {
-                values.insert(value);
-            }
-        }
-    }
-    values
-}
-
-fn step_local_callable_value(step: &LoweredStep) -> Option<ValueId> {
-    match step {
-        LoweredStep::FunctionRef { value, .. } | LoweredStep::Lambda { value, .. } => Some(*value),
-        _ => None,
-    }
 }
 
 /// Projects a true callable boundary's return ABI from the target's settled
@@ -2540,79 +2548,6 @@ fn trash_boundary_return_abi(
         | TrashRuntimeValueLayout::TupleFields { .. }
         | TrashRuntimeValueLayout::DirectCallable { .. } => TrashReturnAbi::Value(AbiValueRepr::ValueRef),
     }
-}
-
-fn resolve_callable_entries_for_type(
-    world: &mut World<'_>,
-    root_id: RootId,
-    executables: &HashMap<ExecutableKey, AbiReadyExecutable>,
-    ty: Ty,
-) -> Result<CallableResolution, FatalError> {
-    let Some(clauses) = world.types_mut().callable_value_clauses(&ty) else {
-        return Ok(CallableResolution::NotCallable);
-    };
-    if clauses.is_empty() {
-        return Ok(CallableResolution::NotCallable);
-    }
-
-    let mut entries = Vec::with_capacity(clauses.len());
-    for clause in clauses {
-        let Some(closure) = clause.closure else {
-            return Ok(CallableResolution::Opaque);
-        };
-        let function = function_id_of_closure_target(closure.target);
-        let capture_count = closure.captures.len();
-        let fixed_arity = clause.args.len();
-        let variadic = world.function_variadic(function);
-        let mut matched = false;
-        for (target, target_executable) in executables {
-            if target.activation.function != function || target.need != ExecutableNeed::Value {
-                continue;
-            }
-            if !callable_entry_arity_matches(target, capture_count, fixed_arity, variadic) {
-                continue;
-            }
-            if !capture_prefix_matches(world, &target.activation.input, &closure.captures) {
-                continue;
-            }
-            matched = true;
-            let capture_reprs = closure
-                .captures
-                .iter()
-                .copied()
-                .map(|capture_ty| abi_value_repr(world, capture_ty))
-                .collect::<Vec<_>>();
-            let arg_reprs = target.activation.input[capture_count..]
-                .iter()
-                .copied()
-                .map(|arg_ty| abi_value_repr(world, arg_ty))
-                .collect::<Vec<_>>();
-            entries.push(CallableEntry {
-                target: target.clone(),
-                capture_count,
-                capture_reprs,
-                arg_reprs,
-                return_ty: target_executable.return_ty,
-                return_abi: trash_boundary_return_abi(
-                    world,
-                    target_executable.return_ty,
-                    &target_executable.return_layout,
-                ),
-            });
-        }
-        if !matched {
-            let function_ref = world.function_ref(function);
-            return Err(incomplete_semantic_plan(
-                world,
-                root_id,
-                format!(
-                    "callable entry target `{}/{}` with {} capture(s) is missing from the closed executable frontier",
-                    function_ref.name, function_ref.arity, capture_count,
-                ),
-            ));
-        }
-    }
-    Ok(CallableResolution::Resolved(entries))
 }
 
 fn compare_callable_entries(left: &CallableEntry, right: &CallableEntry) -> std::cmp::Ordering {
@@ -2656,40 +2591,6 @@ fn compare_emission_callable_entries(
     left.target
         .cmp(&right.target)
         .then_with(|| left.capture_count.cmp(&right.capture_count))
-}
-
-fn capture_prefix_matches(world: &mut World<'_>, input: &[Ty], captures: &[Ty]) -> bool {
-    if input.len() < captures.len() {
-        return false;
-    }
-    input
-        .iter()
-        .copied()
-        .zip(captures.iter().copied())
-        .all(|(target, capture)| {
-            let overlap = world.types_mut().intersect(target, capture);
-            !world.types().is_empty(&overlap)
-        })
-}
-
-fn callable_entry_arity_matches(
-    target: &ExecutableKey,
-    capture_count: usize,
-    fixed_arity: usize,
-    variadic: bool,
-) -> bool {
-    let actual_arity = target.activation.input.len().saturating_sub(capture_count);
-    if variadic {
-        actual_arity >= fixed_arity
-    } else {
-        actual_arity == fixed_arity
-    }
-}
-
-enum CallableResolution {
-    NotCallable,
-    Opaque,
-    Resolved(Vec<CallableEntry>),
 }
 
 fn abi_value_repr(world: &mut World<'_>, ty: Ty) -> AbiValueRepr {

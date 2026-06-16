@@ -1018,10 +1018,12 @@ fn eval_steps(
                 );
             }
             ProgramStep::FunctionRef { value, function } => {
-                let bound = if matches!(
-                    executable.runtime_demand.callable_materializations.get(value),
-                    Some(crate::compiler2::CallableMaterialization::DirectOnly { .. })
-                ) {
+                let bound = if executable
+                    .runtime_demand
+                    .callable_flows
+                    .get(value)
+                    .is_some_and(|flow| !flow.escape && !flow.opaque && !flow.direct_surfaces.is_empty())
+                {
                     TrashBackendValue::DirectCallable {
                         function: *function,
                         captures: Vec::new(),
@@ -1036,10 +1038,12 @@ fn eval_steps(
                 function,
                 captures,
             } => {
-                let bound = if matches!(
-                    executable.runtime_demand.callable_materializations.get(value),
-                    Some(crate::compiler2::CallableMaterialization::DirectOnly { .. })
-                ) {
+                let bound = if executable
+                    .runtime_demand
+                    .callable_flows
+                    .get(value)
+                    .is_some_and(|flow| !flow.escape && !flow.opaque && !flow.direct_surfaces.is_empty())
+                {
                     TrashBackendValue::DirectCallable {
                         function: *function,
                         captures: env_get_values(env, captures)?,

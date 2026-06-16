@@ -7,8 +7,8 @@ use super::super::drive::{FactKey, Job, JobEffects, settled_uses};
 use super::super::identity::{ExecutableKey, ExecutableNeed, FunctionId, RootId};
 use super::super::scheduler::FatalError;
 use super::super::semantic::{
-    ActivationAnalysis, CallSiteKey, CallableDemand, CallableSurface, ExecutableRuntimeDemand, RuntimeDemand,
-    SelectedCallee,
+    ActivationAnalysis, CallSiteKey, CallableDemand, CallableFlowFact, CallableSurface, ExecutableRuntimeDemand,
+    RuntimeDemand, SelectedCallee,
 };
 use super::super::transport::{
     ActivationSymbol, BoundaryDescr, BoundaryFacts, BoundaryId, CallableDescr, CallableFacts, CallableId,
@@ -1188,6 +1188,7 @@ fn project_source(
                 &producer,
                 publication,
                 context.runtime_demand.value_demands.get(&value),
+                context.runtime_demand.callable_flows.get(&value),
             ),
             Some(source) => project_source(
                 world,
@@ -1219,6 +1220,7 @@ fn project_source(
             demand,
             &producer,
             publication,
+            None,
             None,
         ),
     };
@@ -1336,9 +1338,13 @@ fn project_callable_value(
     producer: &LocalCallableProducer,
     publication: Option<TransportPosition>,
     precise_demand: Option<&RuntimeDemand>,
+    upstream_flow: Option<&CallableFlowFact>,
 ) -> SourceShape {
-    let Some(callable_demand) = callable_transport_demand(world, ty, demand, precise_demand) else {
+    if !local_callable_transport_requested(demand, precise_demand) {
         return SourceShape::Unknown;
+    }
+    let Some(upstream_flow) = upstream_flow else {
+        panic!("local callable producer reached transport without upstream CallableFlowFact: {producer:?}");
     };
     let Some(callable) = callable_for_producer(
         world,
@@ -1348,7 +1354,7 @@ fn project_callable_value(
         context,
         producer,
         ty,
-        &callable_demand,
+        upstream_flow,
         publication,
     ) else {
         return SourceShape::Unknown;
@@ -1440,24 +1446,36 @@ fn callable_for_producer(
     context: &ExecutableContext,
     producer: &LocalCallableProducer,
     callable_ty: Ty,
-    callable_demand: &CallableDemand,
+    upstream_flow: &CallableFlowFact,
     publication: Option<TransportPosition>,
 ) -> Option<super::super::transport::CallableId> {
+    assert_eq!(
+        upstream_flow.function, producer.function,
+        "upstream callable-flow fact must describe the projected producer"
+    );
+    assert_eq!(
+        upstream_flow.captures, producer.captures,
+        "upstream callable-flow captures must describe the projected producer"
+    );
     let capture_tys = producer
         .captures
         .iter()
         .copied()
         .map(|capture| context.analysis.value_types.get(&capture).copied())
         .collect::<Option<Vec<_>>>()?;
-    let surface_demands = callable_surface_evidence(world, context, callable_ty, callable_demand, &[]);
-    let surface_arg_shapes = surface_shapes(world, &surface_demands, facts);
-    let direct_surfaces = if callable_demand.resolved.is_empty() {
+    let direct_surface_demands = upstream_flow.direct_surfaces.clone();
+    let boundary_surface_demands = upstream_flow.first_class_surfaces.clone();
+    let resolution_symbols = upstream_flow
+        .resolutions
+        .iter()
+        .map(executable_symbol)
+        .collect::<Vec<_>>();
+    let direct_surfaces = if direct_surface_demands.is_empty() {
         Vec::new()
     } else {
-        surface_shapes(world, &callable_demand.resolved, facts)
+        surface_shapes(world, &direct_surface_demands, facts)
     };
-    let resolutions = callable_resolutions(world, contexts, executable, context, producer, &surface_demands);
-    let capture_demands = capture_demands_for_resolutions(world, contexts, &capture_tys, &resolutions);
+    let capture_demands = capture_demands_for_resolutions(world, contexts, &capture_tys, &resolution_symbols);
     let capture_shapes = producer
         .captures
         .iter()
@@ -1489,14 +1507,22 @@ fn callable_for_producer(
         capture_lanes: capture_lanes.clone().into_boxed_slice(),
         contract_surfaces: Box::default(),
     });
-    let boundary_ids = if callable_demand.opaque || callable_demand.escape {
-        let boundary_return_shapes =
-            boundary_return_shapes_for_resolutions(world, contexts, facts, &resolutions, callable_ty, &surface_demands);
+    let boundary_ids = if !boundary_surface_demands.is_empty() {
+        let surface_arg_shapes = surface_shapes(world, &boundary_surface_demands, facts);
+        let boundary_return_shapes = boundary_return_shapes_for_flow_surfaces(
+            world,
+            contexts,
+            facts,
+            upstream_flow,
+            &capture_tys,
+            callable_ty,
+            &boundary_surface_demands,
+        );
         publish_boundaries_for_callable(
             world,
             facts,
             callable,
-            &surface_demands,
+            &boundary_surface_demands,
             &surface_arg_shapes,
             &capture_lanes,
             callable_ty,
@@ -1506,24 +1532,18 @@ fn callable_for_producer(
     } else {
         Vec::new()
     };
-    facts.record_callable(callable, resolutions, direct_surfaces, capture_lanes, boundary_ids);
+    facts.record_callable(
+        callable,
+        resolution_symbols,
+        direct_surfaces,
+        capture_lanes,
+        boundary_ids,
+    );
     Some(callable)
 }
 
-fn callable_transport_demand(
-    world: &mut World<'_>,
-    ty: Ty,
-    demand: &RuntimeDemand,
-    precise_demand: Option<&RuntimeDemand>,
-) -> Option<CallableDemand> {
-    if let Some(RuntimeDemand::Callable(callable)) = precise_demand {
-        return Some(callable.clone());
-    }
-    match demand {
-        RuntimeDemand::Callable(callable) => Some(callable.clone()),
-        RuntimeDemand::Value if world.types_mut().callable_clauses(&ty).is_some() => Some(CallableDemand::escaped()),
-        _ => None,
-    }
+fn local_callable_transport_requested(demand: &RuntimeDemand, precise_demand: Option<&RuntimeDemand>) -> bool {
+    matches!(precise_demand, Some(RuntimeDemand::Callable(_))) || matches!(demand, RuntimeDemand::Callable(_))
 }
 
 fn capture_demands_for_resolutions(
@@ -1631,42 +1651,6 @@ fn callable_type_surfaces(world: &mut World<'_>, callable_ty: Ty) -> BTreeSet<Ca
         .unwrap_or_default()
         .into_iter()
         .map(|clause| CallableSurface::new(clause.args))
-        .collect()
-}
-
-fn callable_resolutions(
-    world: &mut World<'_>,
-    contexts: &HashMap<ExecutableKey, ExecutableContext>,
-    executable: &ExecutableKey,
-    context: &ExecutableContext,
-    producer: &LocalCallableProducer,
-    surfaces: &BTreeSet<CallableSurface>,
-) -> Vec<ExecutableSymbol> {
-    let capture_tys = producer
-        .captures
-        .iter()
-        .copied()
-        .map(|capture| {
-            context
-                .analysis
-                .value_types
-                .get(&capture)
-                .copied()
-                .unwrap_or_else(|| world.types_mut().any())
-        })
-        .collect::<Vec<_>>();
-    surfaces
-        .iter()
-        .filter_map(|surface| {
-            let mut input = capture_tys.clone();
-            input.extend(surface.inputs.iter().copied());
-            let activation = world.activation_key(executable.activation.root, producer.function, &input);
-            let key = ExecutableKey {
-                activation,
-                need: ExecutableNeed::Value,
-            };
-            contexts.contains_key(&key).then(|| executable_symbol(&key))
-        })
         .collect()
 }
 
@@ -1821,24 +1805,34 @@ fn boundary_return_shape_for_ty(world: &mut World<'_>, ret_ty: Ty, facts: &mut T
     generic_shape_from_demand(world, ret_ty, &demand, facts, None)
 }
 
-fn boundary_return_shapes_for_resolutions(
+fn boundary_return_shapes_for_flow_surfaces(
     world: &mut World<'_>,
     contexts: &HashMap<ExecutableKey, ExecutableContext>,
     facts: &mut TransportFactsBuilder,
-    resolutions: &[ExecutableSymbol],
+    flow: &CallableFlowFact,
+    capture_tys: &[Ty],
     callable_ty: Ty,
     surfaces: &BTreeSet<CallableSurface>,
 ) -> Vec<ShapeId> {
-    assert_eq!(
-        surfaces.len(),
-        resolutions.len(),
-        "callable resolutions must align with demanded callable surfaces"
-    );
     surfaces
         .iter()
-        .zip(resolutions.iter())
-        .map(|(surface, resolution)| {
-            boundary_return_shape_for_resolution(world, contexts, facts, resolution, callable_ty, surface)
+        .map(|surface| {
+            let mut inputs = capture_tys.to_vec();
+            inputs.extend(surface.inputs.iter().copied());
+            let resolution = flow
+                .resolutions
+                .iter()
+                .find(|resolution| {
+                    resolution.activation.function == flow.function
+                        && resolution.activation.input.as_slice() == inputs.as_slice()
+                })
+                .map(executable_symbol);
+            match resolution {
+                Some(resolution) => {
+                    boundary_return_shape_for_resolution(world, contexts, facts, &resolution, callable_ty, surface)
+                }
+                None => boundary_return_shape_for_surface(world, callable_ty, surface, facts),
+            }
         })
         .collect()
 }

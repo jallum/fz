@@ -118,8 +118,9 @@ boxed leaves and raw integer/atom reprs for integer/atom leaves. Callable
 boundary and first-class publication lanes use `ValueRef`. These facts are
 derived from `TransportPlan` positions and boundary contracts only; no
 native/codegen consumer reads them yet. The transport calculator reads
-`RuntimeDemand`/`CallableDemand`, not the old callable-materialization
-inventory, and no old `Trash*` layout is translated into descriptors.
+`RuntimeDemand` plus semantic `callable_flows`, not the old
+callable-materialization inventory, and no old `Trash*` layout is translated
+into descriptors.
 
 ## Required First Move
 
@@ -520,9 +521,9 @@ to a non-capturing resume function.
 The landed derivation boundary is explicit: callable and boundary facts are
 derived by the new transport calculator from settled demand, lowered callable
 use sites, local callable producers, captures, callsite summaries, and settled
-type evidence. The old layout, native boundary inventories, and callable-entry
-materialization are not inputs to the transport plan; the new calculator does
-not read `CallableMaterialization`.
+type evidence. The old layout and native boundary inventories are not inputs to
+the transport plan. The old callable-materialization store has been deleted;
+semantic `callable_flows` are the single callable obligation source.
 Call-boundary argument demand is settled upstream: when a direct or closure call
 argument falls back to whole-value demand, callable-typed values are upgraded by
 the same boundary rule used for returns and matcher boundaries. Transport does
@@ -530,14 +531,15 @@ not recover that escape from type. Callable resolutions in `TransportPlan` are
 also gated through `world.activation_key(...)` and the settled semantic
 executable contexts, so a plan cannot publish a callable target that is outside
 the root's executable membership.
-After `fz-hwn.20.8.2`, `ExecutableRuntimeDemand` also carries
-`callable_flows`: upstream facts keyed by local callable producer `ValueId`.
-Each flow names the producer target, ordered captures, direct surfaces,
-first-class publication surfaces, opaque/escape bits, and canonical direct
-resolutions. Direct surfaces are linked from locally called executable
-membership, not from every latent first-class body. This keeps "body exists for
-first-class publication" distinct from "body is directly invoked at this
-surface" before transport runs.
+After `fz-hwn.20.8.3`, `ExecutableRuntimeDemand` carries `callable_flows`:
+upstream facts keyed by local callable producer `ValueId`. Each flow names the
+producer target, ordered captures, direct surfaces, first-class publication
+surfaces, opaque/escape bits, and canonical executable resolutions. Direct
+surfaces are linked from locally called executable membership. First-class
+surfaces come from settled callable demand, or from the producer's settled type
+when a callable escapes without an observed call surface. This keeps "body
+exists for first-class publication" distinct from "body is directly invoked at
+this surface" before transport runs.
 
 Test builds install a `World`-level `TransportPlanTestHandler` that receives
 `&World` and the committed `RootId` after each plan definition. The default

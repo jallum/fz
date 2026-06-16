@@ -4,7 +4,7 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use super::{
-    CallSiteKey, CallSiteSummary, CallableMaterialization, CodeSubmission, Compiler2, DriveOutcome, ExecutableKey,
+    CallSiteKey, CallSiteSummary, CallableFlowFact, CodeSubmission, Compiler2, DriveOutcome, ExecutableKey,
     ExecutableNeed, ExecutableRuntimeDemand, FactKey, FunctionId, FunctionRef, Job, RootId, RootSubmission,
     RuntimeDemand, SelectedCallee, World,
 };
@@ -32,8 +32,8 @@ struct CallsiteDef {
 struct RuntimeDemandRecord {
     root_id: RootId,
     omitted_inputs: u64,
-    direct_callable_materializations: u64,
-    first_class_callable_materializations: u64,
+    direct_callable_flows: u64,
+    first_class_callable_flows: u64,
     opaque_callable_demands: u64,
     runtime_demands: HashMap<ExecutableKey, ExecutableRuntimeDemand>,
 }
@@ -206,14 +206,10 @@ impl Handler for RuntimeDemandCaptureHandler {
         let Some(Value::U64(omitted_inputs)) = event.measurements.get("omitted_inputs") else {
             return;
         };
-        let Some(Value::U64(direct_callable_materializations)) =
-            event.measurements.get("direct_callable_materializations")
-        else {
+        let Some(Value::U64(direct_callable_flows)) = event.measurements.get("direct_callable_flows") else {
             return;
         };
-        let Some(Value::U64(first_class_callable_materializations)) =
-            event.measurements.get("first_class_callable_materializations")
-        else {
+        let Some(Value::U64(first_class_callable_flows)) = event.measurements.get("first_class_callable_flows") else {
             return;
         };
         let Some(Value::U64(opaque_callable_demands)) = event.measurements.get("opaque_callable_demands") else {
@@ -229,8 +225,8 @@ impl Handler for RuntimeDemandCaptureHandler {
         self.defs.borrow_mut().push(RuntimeDemandRecord {
             root_id,
             omitted_inputs: *omitted_inputs,
-            direct_callable_materializations: *direct_callable_materializations,
-            first_class_callable_materializations: *first_class_callable_materializations,
+            direct_callable_flows: *direct_callable_flows,
+            first_class_callable_flows: *first_class_callable_flows,
             opaque_callable_demands: *opaque_callable_demands,
             runtime_demands: runtime_demands.clone(),
         });
@@ -279,11 +275,8 @@ fn runtime_demand_for_function(
         .unwrap_or_else(|| panic!("runtime demand for function {}", function.as_u32()))
 }
 
-fn has_callable_materialization(
-    demand: &ExecutableRuntimeDemand,
-    predicate: impl Fn(&CallableMaterialization) -> bool,
-) -> bool {
-    demand.callable_materializations.values().any(predicate)
+fn has_callable_flow(demand: &ExecutableRuntimeDemand, predicate: impl Fn(&CallableFlowFact) -> bool) -> bool {
+    demand.callable_flows.values().any(predicate)
 }
 
 #[test]
@@ -418,16 +411,13 @@ end
 
     let record = runtime_demands.last(root_id);
     assert!(
-        record.direct_callable_materializations >= 1,
-        "runtime-demand telemetry should report direct callable materialization",
+        record.direct_callable_flows >= 1,
+        "runtime-demand telemetry should report direct callable flow",
     );
     assert!(
         record.runtime_demands.values().any(|demand| {
-            has_callable_materialization(demand, |materialization| {
-                matches!(
-                    materialization,
-                    CallableMaterialization::DirectOnly { surfaces } if surfaces.len() == 1
-                )
+            has_callable_flow(demand, |flow| {
+                !flow.escape && !flow.opaque && flow.direct_surfaces.len() == 1
             })
         }),
         "a directly-invoked lambda should keep one exact resolved surface",
@@ -469,21 +459,22 @@ fn main(), do: make()
     let record = runtime_demands.last(root_id);
     let (_, demand) = runtime_demand_for_function(&record, make);
     assert!(
-        has_callable_materialization(demand, |materialization| matches!(
-            materialization,
-            CallableMaterialization::FirstClass { .. }
-        )),
+        has_callable_flow(demand, |flow| flow.escape && !flow.opaque),
         "a callable that escapes should be first-class at runtime: {demand:?}",
     );
     assert!(
         demand.callable_flows.values().any(|flow| {
-            flow.escape && !flow.opaque && flow.direct_surfaces.is_empty() && flow.first_class_surfaces.is_empty()
+            flow.escape
+                && !flow.opaque
+                && flow.direct_surfaces.is_empty()
+                && flow.first_class_surfaces.len() == 1
+                && flow.resolutions.len() == 1
         }),
-        "an escaped callable with no known call surface should publish an explicit first-class upstream flow: {demand:?}",
+        "an escaped callable with no known call surface should publish a first-class surface and canonical resolution upstream: {demand:?}",
     );
     assert!(
-        record.first_class_callable_materializations >= 1,
-        "runtime-demand telemetry should count first-class callable materialization",
+        record.first_class_callable_flows >= 1,
+        "runtime-demand telemetry should count first-class callable flows",
     );
 }
 
@@ -527,15 +518,13 @@ fn main(), do: apply(make_adder(1))
     let record = runtime_demands.last(root_id);
     let (_, demand) = runtime_demand_for_function(&record, make_adder);
     assert!(
-        has_callable_materialization(demand, |materialization| {
-            matches!(materialization, CallableMaterialization::DirectOnly { .. })
+        has_callable_flow(demand, |flow| {
+            !flow.escape && !flow.opaque && !flow.direct_surfaces.is_empty()
         }),
-        "make_adder/1 should still materialize its returned closure for direct transport",
+        "make_adder/1 should still publish direct callable flow for transport",
     );
     assert!(
-        !has_callable_materialization(demand, |materialization| {
-            matches!(materialization, CallableMaterialization::FirstClass { .. })
-        }),
+        !has_callable_flow(demand, |flow| flow.escape || flow.opaque),
         "direct-only returned callable transport should not require a first-class callable object",
     );
 }
@@ -627,14 +616,22 @@ end
         "opaque closure-call argument demand should preserve callable escape before transport runs: {demand:?}",
     );
     assert!(
-        has_callable_materialization(demand, |materialization| {
-            matches!(materialization, CallableMaterialization::FirstClass { surfaces } if surfaces.is_empty())
+        has_callable_flow(demand, |flow| {
+            flow.escape
+                && !flow.opaque
+                && flow.direct_surfaces.is_empty()
+                && flow.first_class_surfaces.len() == 1
+                && flow.resolutions.len() == 1
         }),
         "the local lambda passed through the opaque call should be a first-class runtime obligation: {demand:?}",
     );
     assert!(
         demand.callable_flows.values().any(|flow| {
-            flow.escape && !flow.opaque && flow.direct_surfaces.is_empty() && flow.first_class_surfaces.is_empty()
+            flow.escape
+                && !flow.opaque
+                && flow.direct_surfaces.is_empty()
+                && flow.first_class_surfaces.len() == 1
+                && flow.resolutions.len() == 1
         }),
         "the opaque-call argument should publish first-class callable-flow evidence before transport: {demand:?}",
     );
@@ -695,12 +692,8 @@ fn main(), do: make()
     let record = runtime_demands.last(root_id);
     assert!(
         record.runtime_demands.values().any(|demand| {
-            has_callable_materialization(demand, |materialization| {
-                matches!(
-                    materialization,
-                    CallableMaterialization::DirectOnly { surfaces }
-                        if surfaces.iter().any(|surface| surface.inputs.len() == 2)
-                )
+            has_callable_flow(demand, |flow| {
+                !flow.opaque && flow.direct_surfaces.iter().any(|surface| surface.inputs.len() == 2)
             })
         }),
         "the reducer direct-call surface should be proven upstream before transport: {:?}",

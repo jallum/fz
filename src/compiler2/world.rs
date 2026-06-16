@@ -752,35 +752,25 @@ impl<'a> World<'a> {
                     .values()
                     .map(|demand| demand.value_demands.values().map(count_tuple_field_demands).sum::<u64>())
                     .sum::<u64>(),
-                direct_callable_materializations: closure
+                direct_callable_flows: closure
                     .runtime_demands
                     .values()
                     .map(|demand| {
                         demand
-                            .callable_materializations
+                            .callable_flows
                             .values()
-                            .filter(|materialization| {
-                                matches!(
-                                    materialization,
-                                    super::semantic::CallableMaterialization::DirectOnly { .. }
-                                )
-                            })
+                            .filter(|flow| !flow.direct_surfaces.is_empty())
                             .count() as u64
                     })
                     .sum::<u64>(),
-                first_class_callable_materializations: closure
+                first_class_callable_flows: closure
                     .runtime_demands
                     .values()
                     .map(|demand| {
                         demand
-                            .callable_materializations
+                            .callable_flows
                             .values()
-                            .filter(|materialization| {
-                                matches!(
-                                    materialization,
-                                    super::semantic::CallableMaterialization::FirstClass { .. }
-                                )
-                            })
+                            .filter(|flow| flow.escape || flow.opaque)
                             .count() as u64
                     })
                     .sum::<u64>(),

@@ -85,9 +85,9 @@ impl CallableSurface {
     }
 }
 
-/// Runtime demand specific to callable values, kept separate from type-based
-/// callable recovery so later phases can derive first-class materialization
-/// from one exact fact.
+/// Runtime demand specific to callable values, kept separate from generic
+/// whole-value demand so semantic flow derivation can publish one exact
+/// callable-flow fact per local producer.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct CallableDemand {
     pub resolved: BTreeSet<CallableSurface>,
@@ -244,27 +244,6 @@ fn join_runtime_demand(left: RuntimeDemand, right: RuntimeDemand) -> RuntimeDema
     }
 }
 
-/// Post-propagation runtime callable obligations for one produced value.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum CallableMaterialization {
-    DirectOnly { surfaces: BTreeSet<CallableSurface> },
-    FirstClass { surfaces: BTreeSet<CallableSurface> },
-}
-
-impl CallableMaterialization {
-    pub(crate) fn alpha_normalize(&mut self, types: &mut Types) {
-        let surfaces = match self {
-            Self::DirectOnly { surfaces } | Self::FirstClass { surfaces } => surfaces,
-        };
-        let mut normalized = BTreeSet::new();
-        for mut surface in surfaces.clone() {
-            surface.alpha_normalize(types);
-            normalized.insert(surface);
-        }
-        *surfaces = normalized;
-    }
-}
-
 /// Upstream callable-flow evidence for one local callable producer.
 ///
 /// Transport may project these facts, but it must not rediscover them from
@@ -313,7 +292,6 @@ pub struct ExecutableRuntimeDemand {
     pub value_demands: HashMap<ValueId, RuntimeDemand>,
     pub entry_capture_demands: HashMap<ControlEntryId, Vec<RuntimeDemand>>,
     pub call_arg_demands: HashMap<CallSiteId, Vec<RuntimeDemand>>,
-    pub callable_materializations: HashMap<ValueId, CallableMaterialization>,
     pub callable_flows: HashMap<ValueId, CallableFlowFact>,
 }
 
@@ -335,9 +313,6 @@ impl ExecutableRuntimeDemand {
             for demand in demands {
                 demand.alpha_normalize(types);
             }
-        }
-        for materialization in self.callable_materializations.values_mut() {
-            materialization.alpha_normalize(types);
         }
         for flow in self.callable_flows.values_mut() {
             flow.alpha_normalize(types);
