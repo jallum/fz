@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-hwn.20.8.3"
+  ],
   "blocks": [
     "fz-hwn.20.8.5"
   ],
@@ -13,5 +15,5 @@
   "status": "open",
   "title": "Transport authority: delete transport demand and surface recovery",
   "type": "task",
-  "updated_at": "2026-06-16T03:42:53Z"
+  "updated_at": "2026-06-16T03:42:54Z"
 }
