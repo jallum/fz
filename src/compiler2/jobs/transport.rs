@@ -12,7 +12,8 @@ use super::super::semantic::{
 };
 use super::super::transport::{
     ActivationSymbol, BoundaryDescr, BoundaryFacts, BoundaryId, CallableDescr, CallableFacts, CallableId,
-    ExecutableSymbol, LaneId, ShapeDescr, ShapeId, TransportClass, TransportPlan, TransportPosition,
+    CodegenLaneRepr, CodegenSeam, CodegenSeamFact, ExecutableSymbol, LaneId, ShapeDescr, ShapeId, TransportClass,
+    TransportPlan, TransportPosition,
 };
 use super::super::types::Ty;
 use super::super::world::World;
@@ -29,6 +30,7 @@ struct ExecutableContext {
     input_values: Vec<Box<[ValueId]>>,
     local_origins: HashMap<ValueId, ValueOrigin>,
     callable_uses: HashMap<ValueId, Vec<CallSiteId>>,
+    callsite_dests: HashMap<CallSiteId, ControlDestination>,
     return_sources: Vec<ProducedSource>,
     resume_entries: Vec<ResumeEntry>,
 }
@@ -230,6 +232,7 @@ pub(super) fn derive_transport_plan(world: &mut World<'_>, root_id: RootId) -> R
             executable.clone(),
             ExecutableContext {
                 callsite_args: collect_callsite_args(&body),
+                callsite_dests: collect_callsite_dests(&body),
                 input_values: collect_input_values(&body),
                 local_origins,
                 callable_uses: collect_callable_uses(&body),
@@ -486,6 +489,7 @@ pub(super) fn derive_transport_plan(world: &mut World<'_>, root_id: RootId) -> R
         }
     }
     let (callables, boundaries) = facts.finish();
+    let codegen_seam_facts = derive_codegen_seam_facts(world, &contexts, &positions, &boundaries);
 
     let changed = world.define_transport_plan(
         root_id,
@@ -495,6 +499,7 @@ pub(super) fn derive_transport_plan(world: &mut World<'_>, root_id: RootId) -> R
             positions,
             callables,
             boundaries,
+            codegen_seam_facts,
         },
     );
 
@@ -504,6 +509,217 @@ pub(super) fn derive_transport_plan(world: &mut World<'_>, root_id: RootId) -> R
         changed: changed.then_some(FactKey::TransportPlan(root_id)).into_iter().collect(),
         ..JobEffects::default()
     })
+}
+
+fn derive_codegen_seam_facts(
+    world: &World<'_>,
+    contexts: &HashMap<ExecutableKey, ExecutableContext>,
+    positions: &HashMap<TransportPosition, ShapeId>,
+    boundaries: &HashMap<BoundaryId, BoundaryFacts>,
+) -> Box<[CodegenSeamFact]> {
+    let mut out = Vec::new();
+    for (position, shape) in positions {
+        let Some(lane) = lane_for_codegen_seam_shape(world, *shape) else {
+            continue;
+        };
+        match position {
+            TransportPosition::ExecutableInput {
+                executable,
+                semantic_index,
+            } => {
+                let Some(repr) = function_entry_repr_for_lane(world, lane) else {
+                    continue;
+                };
+                out.push(CodegenSeamFact {
+                    seam: CodegenSeam::FunctionEntry {
+                        executable: executable.clone(),
+                        semantic_index: *semantic_index,
+                    },
+                    shape: Some(*shape),
+                    lane,
+                    repr,
+                });
+                if executable_context_for_symbol(contexts, executable)
+                    .is_some_and(|context| matches!(context.body, LoweredBody::Extern { .. }))
+                {
+                    out.push(CodegenSeamFact {
+                        seam: CodegenSeam::ExternBoundary {
+                            executable: executable.clone(),
+                        },
+                        shape: Some(*shape),
+                        lane,
+                        repr,
+                    });
+                }
+            }
+            TransportPosition::ExecutableReturn { executable } => {
+                let Some(repr) = function_entry_repr_for_lane(world, lane) else {
+                    continue;
+                };
+                out.push(CodegenSeamFact {
+                    seam: CodegenSeam::ReturnDelivery {
+                        executable: executable.clone(),
+                    },
+                    shape: Some(*shape),
+                    lane,
+                    repr,
+                });
+                if executable_context_for_symbol(contexts, executable)
+                    .is_some_and(|context| matches!(context.body, LoweredBody::Extern { .. }))
+                {
+                    out.push(CodegenSeamFact {
+                        seam: CodegenSeam::ExternBoundary {
+                            executable: executable.clone(),
+                        },
+                        shape: Some(*shape),
+                        lane,
+                        repr,
+                    });
+                }
+            }
+            TransportPosition::ResumePayload { executable, entry, .. }
+                if function_entry_repr_for_lane(world, lane).is_some() =>
+            {
+                out.push(CodegenSeamFact {
+                    seam: CodegenSeam::BlockParam {
+                        executable: executable.clone(),
+                        entry: *entry,
+                    },
+                    shape: Some(*shape),
+                    lane,
+                    repr: CodegenLaneRepr::ValueRef,
+                });
+                if let TransportPosition::ResumePayload { callsite, .. } = position {
+                    out.push(CodegenSeamFact {
+                        seam: CodegenSeam::ContinuationEntry {
+                            executable: executable.clone(),
+                            callsite: *callsite,
+                            entry: *entry,
+                        },
+                        shape: Some(*shape),
+                        lane,
+                        repr: CodegenLaneRepr::ValueRef,
+                    });
+                }
+            }
+            TransportPosition::CallArg {
+                executable, callsite, ..
+            } => {
+                let Some(repr) = function_entry_repr_for_lane(world, lane) else {
+                    continue;
+                };
+                if executable_context_for_symbol(contexts, executable)
+                    .and_then(|context| context.callsite_dests.get(callsite))
+                    .is_some_and(|dest| matches!(dest, ControlDestination::Return))
+                {
+                    out.push(CodegenSeamFact {
+                        seam: CodegenSeam::TailCall {
+                            executable: executable.clone(),
+                            callsite: *callsite,
+                        },
+                        shape: Some(*shape),
+                        lane,
+                        repr,
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+    for boundary in boundaries.keys().copied() {
+        let descr = world.transport().interners().boundary(boundary);
+        for lane in descr
+            .published_capture_lanes
+            .iter()
+            .chain(descr.published_arg_lanes.iter())
+            .chain(descr.published_return_lanes.iter())
+            .copied()
+        {
+            out.push(CodegenSeamFact {
+                seam: CodegenSeam::CallableBoundary { boundary },
+                shape: None,
+                lane,
+                repr: CodegenLaneRepr::ValueRef,
+            });
+            if boundaries
+                .get(&boundary)
+                .is_some_and(|facts| !facts.publications.is_empty())
+            {
+                out.push(CodegenSeamFact {
+                    seam: CodegenSeam::FirstClassPublication { boundary },
+                    shape: None,
+                    lane,
+                    repr: CodegenLaneRepr::ValueRef,
+                });
+            }
+        }
+    }
+    out.sort_by_key(codegen_seam_fact_sort_key);
+    out.dedup();
+    out.into_boxed_slice()
+}
+
+fn executable_context_for_symbol<'a>(
+    contexts: &'a HashMap<ExecutableKey, ExecutableContext>,
+    symbol: &ExecutableSymbol,
+) -> Option<&'a ExecutableContext> {
+    contexts.iter().find_map(|(candidate, context)| {
+        (candidate.need == symbol.need
+            && candidate.activation.function == symbol.activation.function
+            && candidate.activation.input.as_slice() == symbol.activation.input.as_ref())
+        .then_some(context)
+    })
+}
+
+fn lane_for_codegen_seam_shape(world: &World<'_>, shape: ShapeId) -> Option<LaneId> {
+    match world.transport().interners().shape(shape) {
+        ShapeDescr::Lane(lane) => Some(*lane),
+        ShapeDescr::Nothing | ShapeDescr::Tuple(_) | ShapeDescr::Callable(_) => None,
+    }
+}
+
+fn function_entry_repr_for_lane(world: &World<'_>, lane: LaneId) -> Option<CodegenLaneRepr> {
+    let ty = world.transport().interners().lane(lane).ty;
+    world.types().is_floating(&ty).then_some(CodegenLaneRepr::RawF64)
+}
+
+fn codegen_seam_fact_sort_key(fact: &CodegenSeamFact) -> (u8, u32, u32, u32, usize, u32, u8) {
+    let (kind, function, boundary, entry, index) = match &fact.seam {
+        CodegenSeam::FunctionEntry {
+            executable,
+            semantic_index,
+        } => (0, executable.activation.function.as_u32(), 0, 0, *semantic_index),
+        CodegenSeam::BlockParam { executable, entry } => {
+            (1, executable.activation.function.as_u32(), 0, entry.as_u32(), 0)
+        }
+        CodegenSeam::ReturnDelivery { executable } => (2, executable.activation.function.as_u32(), 0, 0, 0),
+        CodegenSeam::ContinuationEntry {
+            executable,
+            callsite,
+            entry,
+        } => (
+            3,
+            executable.activation.function.as_u32(),
+            0,
+            entry.as_u32(),
+            callsite.as_u32() as usize,
+        ),
+        CodegenSeam::TailCall { executable, callsite } => (
+            4,
+            executable.activation.function.as_u32(),
+            0,
+            0,
+            callsite.as_u32() as usize,
+        ),
+        CodegenSeam::CallableBoundary { boundary } => (5, 0, boundary.as_u32(), 0, 0),
+        CodegenSeam::ExternBoundary { executable } => (6, executable.activation.function.as_u32(), 0, 0, 0),
+        CodegenSeam::FirstClassPublication { boundary } => (7, 0, boundary.as_u32(), 0, 0),
+    };
+    let repr = match fact.repr {
+        CodegenLaneRepr::ValueRef => 0,
+        CodegenLaneRepr::RawF64 => 1,
+    };
+    (kind, function, boundary, entry, index, fact.lane.as_u32(), repr)
 }
 
 fn executable_sort_key(executable: &ExecutableKey) -> (u32, Vec<Ty>, u8, usize) {
@@ -626,6 +842,59 @@ fn collect_callsite_args(body: &LoweredBody) -> HashMap<CallSiteId, Vec<CallArg>
         collect_tail_call_args(&clause.entry, entries, &mut out);
     }
     out
+}
+
+fn collect_callsite_dests(body: &LoweredBody) -> HashMap<CallSiteId, ControlDestination> {
+    let mut out = HashMap::new();
+    let LoweredBody::Clauses { clauses, entries, .. } = body else {
+        return out;
+    };
+    for clause in clauses {
+        collect_tail_call_dests(&clause.entry, entries, &mut out);
+    }
+    out
+}
+
+fn collect_tail_call_dests(
+    entry_id: &ControlEntryId,
+    entries: &[super::super::body::LoweredEntry],
+    out: &mut HashMap<CallSiteId, ControlDestination>,
+) {
+    let entry = &entries[entry_id.as_u32() as usize];
+    match &entry.tail {
+        LoweredTail::DirectCall { callsite, dest, .. } | LoweredTail::ClosureCall { callsite, dest, .. } => {
+            out.insert(*callsite, dest.clone());
+        }
+        LoweredTail::If {
+            then_entry, else_entry, ..
+        } => {
+            collect_tail_call_dests(then_entry, entries, out);
+            collect_tail_call_dests(else_entry, entries, out);
+        }
+        LoweredTail::Dispatch { dispatch, .. } => {
+            for arm_entry in &dispatch.arm_entries {
+                collect_tail_call_dests(arm_entry, entries, out);
+            }
+            collect_tail_call_dests(&dispatch.miss_entry, entries, out);
+        }
+        LoweredTail::Receive(receive) => {
+            for clause in &receive.clauses {
+                collect_tail_call_dests(&clause.entry, entries, out);
+            }
+            if let Some(after) = &receive.after {
+                collect_tail_call_dests(&after.entry, entries, out);
+            }
+            if let ControlDestination::Deliver(target) = receive.dest {
+                collect_tail_call_dests(&target, entries, out);
+            }
+        }
+        LoweredTail::Value { dest, .. } => {
+            if let ControlDestination::Deliver(target) = dest {
+                collect_tail_call_dests(target, entries, out);
+            }
+        }
+        LoweredTail::Halt { .. } => {}
+    }
 }
 
 fn collect_tail_call_args(

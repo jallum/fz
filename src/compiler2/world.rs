@@ -55,7 +55,7 @@ use super::source::{
     QuotedLexicalContext, QuotedLexicalContextKind, QuotedSourceBuilder, QuotedSourceError, QuotedSourceMetadata,
     QuotedSourceRoot,
 };
-use super::transport::{TransportPlan, TransportStore};
+use super::transport::{CodegenLaneRepr, CodegenSeam, CodegenSeamFact, TransportPlan, TransportStore};
 use super::typedef::{TypeDef, TypeDefMap};
 use super::types::{ClosureTarget, MapKey, Ty, Types};
 use crate::ir_interp::AnyValue as RuntimeValue;
@@ -118,6 +118,77 @@ fn count_escaped_callable_demands(demand: &RuntimeDemand) -> u64 {
         RuntimeDemand::Ignore | RuntimeDemand::Value => 0,
         RuntimeDemand::TupleFields(fields) => fields.iter().map(count_escaped_callable_demands).sum(),
         RuntimeDemand::Callable(callable) => callable.escape as u64,
+    }
+}
+
+fn format_codegen_seam_fact(fact: &CodegenSeamFact) -> String {
+    let seam = match &fact.seam {
+        CodegenSeam::FunctionEntry {
+            executable,
+            semantic_index,
+        } => {
+            format!(
+                "FunctionEntry(function {}, input {})",
+                executable.activation.function.as_u32(),
+                semantic_index
+            )
+        }
+        CodegenSeam::BlockParam { executable, entry } => {
+            format!(
+                "BlockParam(function {}, entry {})",
+                executable.activation.function.as_u32(),
+                entry.as_u32()
+            )
+        }
+        CodegenSeam::ReturnDelivery { executable } => {
+            format!("ReturnDelivery(function {})", executable.activation.function.as_u32())
+        }
+        CodegenSeam::ContinuationEntry {
+            executable,
+            callsite,
+            entry,
+        } => {
+            format!(
+                "ContinuationEntry(function {}, callsite {}, entry {})",
+                executable.activation.function.as_u32(),
+                callsite.as_u32(),
+                entry.as_u32()
+            )
+        }
+        CodegenSeam::TailCall { executable, callsite } => {
+            format!(
+                "TailCall(function {}, callsite {})",
+                executable.activation.function.as_u32(),
+                callsite.as_u32()
+            )
+        }
+        CodegenSeam::CallableBoundary { boundary } => {
+            format!("CallableBoundary(boundary {})", boundary.as_u32())
+        }
+        CodegenSeam::ExternBoundary { executable } => {
+            format!("ExternBoundary(function {})", executable.activation.function.as_u32())
+        }
+        CodegenSeam::FirstClassPublication { boundary } => {
+            format!("FirstClassPublication(boundary {})", boundary.as_u32())
+        }
+    };
+    let shape = fact
+        .shape
+        .map(|shape| format!("S{}", shape.as_u32()))
+        .unwrap_or_else(|| "none".to_string());
+    format!(
+        "seam {}; shape {}; lane L{}; repr {}",
+        seam,
+        shape,
+        fact.lane.as_u32(),
+        format_codegen_lane_repr(fact.repr)
+    )
+}
+
+fn format_codegen_lane_repr(repr: CodegenLaneRepr) -> &'static str {
+    match repr {
+        CodegenLaneRepr::ValueRef => "ValueRef",
+        CodegenLaneRepr::RawF64 => "RawF64",
     }
 }
 
@@ -759,7 +830,51 @@ impl<'a> World<'a> {
             .values()
             .filter(|facts| !facts.boundary_ids.is_empty())
             .count() as u64;
-        let no_codegen_seam_facts = Vec::<String>::new();
+        let codegen_seam_facts = plan
+            .codegen_seam_facts
+            .iter()
+            .map(format_codegen_seam_fact)
+            .collect::<Vec<_>>();
+        let codegen_function_entry_seam_fact_count = plan
+            .codegen_seam_facts
+            .iter()
+            .filter(|fact| matches!(fact.seam, CodegenSeam::FunctionEntry { .. }))
+            .count() as u64;
+        let codegen_block_param_seam_fact_count = plan
+            .codegen_seam_facts
+            .iter()
+            .filter(|fact| matches!(fact.seam, CodegenSeam::BlockParam { .. }))
+            .count() as u64;
+        let codegen_return_delivery_seam_fact_count = plan
+            .codegen_seam_facts
+            .iter()
+            .filter(|fact| matches!(fact.seam, CodegenSeam::ReturnDelivery { .. }))
+            .count() as u64;
+        let codegen_continuation_entry_seam_fact_count = plan
+            .codegen_seam_facts
+            .iter()
+            .filter(|fact| matches!(fact.seam, CodegenSeam::ContinuationEntry { .. }))
+            .count() as u64;
+        let codegen_tail_call_seam_fact_count = plan
+            .codegen_seam_facts
+            .iter()
+            .filter(|fact| matches!(fact.seam, CodegenSeam::TailCall { .. }))
+            .count() as u64;
+        let codegen_callable_boundary_seam_fact_count = plan
+            .codegen_seam_facts
+            .iter()
+            .filter(|fact| matches!(fact.seam, CodegenSeam::CallableBoundary { .. }))
+            .count() as u64;
+        let codegen_extern_boundary_seam_fact_count = plan
+            .codegen_seam_facts
+            .iter()
+            .filter(|fact| matches!(fact.seam, CodegenSeam::ExternBoundary { .. }))
+            .count() as u64;
+        let codegen_first_class_publication_seam_fact_count = plan
+            .codegen_seam_facts
+            .iter()
+            .filter(|fact| matches!(fact.seam, CodegenSeam::FirstClassPublication { .. }))
+            .count() as u64;
         self.tel.execute(
             &["fz", "compiler2", "transport_flow", "defined"],
             &measurements! {
@@ -777,7 +892,15 @@ impl<'a> World<'a> {
                 direct_callable_count: direct_callable_count,
                 first_class_callable_count: first_class_callable_count,
                 boundary_publication_count: plan.boundaries.len() as u64,
-                codegen_seam_fact_count: 0_u64,
+                codegen_seam_fact_count: plan.codegen_seam_facts.len() as u64,
+                codegen_function_entry_seam_fact_count: codegen_function_entry_seam_fact_count,
+                codegen_block_param_seam_fact_count: codegen_block_param_seam_fact_count,
+                codegen_return_delivery_seam_fact_count: codegen_return_delivery_seam_fact_count,
+                codegen_continuation_entry_seam_fact_count: codegen_continuation_entry_seam_fact_count,
+                codegen_tail_call_seam_fact_count: codegen_tail_call_seam_fact_count,
+                codegen_callable_boundary_seam_fact_count: codegen_callable_boundary_seam_fact_count,
+                codegen_extern_boundary_seam_fact_count: codegen_extern_boundary_seam_fact_count,
+                codegen_first_class_publication_seam_fact_count: codegen_first_class_publication_seam_fact_count,
             },
             &metadata! {
                 entry_executable_symbol: opaque_debug(&plan.entry),
@@ -787,7 +910,7 @@ impl<'a> World<'a> {
                 lane_descriptors: opaque_debug(&interners.lanes().map(|(id, descr)| (id, descr.clone())).collect::<Vec<_>>()),
                 callable_facts: opaque_debug(&plan.callables),
                 boundary_facts: opaque_debug(&plan.boundaries),
-                seam_facts: opaque_debug(&no_codegen_seam_facts),
+                seam_facts: codegen_seam_facts,
             },
         );
         changed

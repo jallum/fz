@@ -84,7 +84,7 @@ SemanticClosed(root) + settled RuntimeDemand
 The plan answers "what runtime structure moves at this seam?" exactly once.
 Backends answer "how do I emit this seam?" by reading facts from the plan.
 
-Implementation status after `fz-hwn.20.4`: `src/compiler2/transport.rs`
+Implementation status after `fz-hwn.20.5`: `src/compiler2/transport.rs`
 defines the root-independent ids, descriptors, transport symbols,
 `TransportPosition`, `TransportInterners`, and `TransportStore`. `World` owns one
 `TransportStore`. `DeriveTransportPlan(root)` now populates root-scoped
@@ -106,8 +106,12 @@ Boundary publication facts only name real semantic positions; there is no
 synthetic boundary self-position. `DeriveTransportPlan(root)` is scheduled as a
 side-output of settled semantic closure and is also re-requested if the
 root-scoped plan is missing, but materialization, backend, native, and codegen
-do not wait on or consume it yet. Codegen seam facts are still deliberately
-empty until `fz-hwn.20.5`. The transport calculator reads `RuntimeDemand`/
+do not wait on or consume it yet. Codegen seam facts are now plan-owned facts
+for the worked float-lane seams: function entry, return delivery, tail call, and
+extern boundary use `RawF64`; block parameter, continuation entry, callable
+boundary, and first-class publication use `ValueRef`. These facts are derived
+from `TransportPlan` positions and boundary contracts only; no native/codegen
+consumer reads them yet. The transport calculator reads `RuntimeDemand`/
 `CallableDemand`, not the old callable-materialization inventory, and no old
 `Trash*` layout is translated into descriptors.
 
@@ -425,7 +429,10 @@ that opaque callable contracts with different observed surfaces do not share one
 `CallableId`, recursive callable returns preserve the resolved local callable
 identity, missing side-product plans are regenerated even when the semantic
 closure itself is unchanged, and boundary publications never use a synthetic
-self-position.
+self-position. `fz-hwn.20.5` adds worked float-lane fixtures for function-entry
+vs block-param representation splitting, return delivery, continuation entry,
+tail-call delivery, callable boundary publication, extern boundary delivery, and
+per-kind seam telemetry counts.
 
 The landed derivation boundary is explicit: callable and boundary facts are
 derived by the new transport calculator from settled demand, lowered callable
@@ -458,6 +465,14 @@ direct_callable_count
 first_class_callable_count
 boundary_publication_count
 codegen_seam_fact_count
+codegen_function_entry_seam_fact_count
+codegen_block_param_seam_fact_count
+codegen_return_delivery_seam_fact_count
+codegen_continuation_entry_seam_fact_count
+codegen_tail_call_seam_fact_count
+codegen_callable_boundary_seam_fact_count
+codegen_extern_boundary_seam_fact_count
+codegen_first_class_publication_seam_fact_count
 ```
 
 Metadata:
@@ -478,10 +493,10 @@ materialization. Descriptor metadata must not contain root-relative evidence
 such as `RootId`, `ValueId`, callsites, or resume points. Root-scoped evidence
 belongs in `TransportPlan` metadata: membership, positions, demand/use
 obligations, boundary publication, and seam facts. The event must not serialize
-`Trash*` layout facts or `ArgRepr`-from-type decisions as authority. Until
-`fz-hwn.20.5`, `codegen_seam_fact_count` is `0` and `seam_facts` is empty; any
-non-empty seam fact must be produced by the seam-fact ticket, not aliased to
-transport positions.
+`Trash*` layout facts or `ArgRepr`-from-type decisions as authority. After
+`fz-hwn.20.5`, `codegen_seam_fact_count` and per-kind seam counts report the
+plan-owned seam facts; `seam_facts` is non-empty only when a worked
+source-level example requires the fact.
 
 The minimality check is mechanical:
 

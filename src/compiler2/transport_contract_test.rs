@@ -1,7 +1,9 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use super::transport::{BoundaryDescr, ShapeDescr, ShapeId, TransportPlan, TransportPosition};
+use super::transport::{
+    BoundaryDescr, CodegenLaneRepr, CodegenSeam, ShapeDescr, ShapeId, TransportPlan, TransportPosition,
+};
 use super::{DriveOutcome, ExecutableNeed, World};
 use crate::telemetry::{Capture, ConfiguredTelemetry, Value};
 
@@ -23,6 +25,14 @@ const MEASUREMENT_FIELDS: &[&str] = &[
     "first_class_callable_count",
     "boundary_publication_count",
     "codegen_seam_fact_count",
+    "codegen_function_entry_seam_fact_count",
+    "codegen_block_param_seam_fact_count",
+    "codegen_return_delivery_seam_fact_count",
+    "codegen_continuation_entry_seam_fact_count",
+    "codegen_tail_call_seam_fact_count",
+    "codegen_callable_boundary_seam_fact_count",
+    "codegen_extern_boundary_seam_fact_count",
+    "codegen_first_class_publication_seam_fact_count",
 ];
 
 const METADATA_FIELDS: &[&str] = &[
@@ -155,6 +165,14 @@ fn compiler2_transport_flow_telemetry_contract_names_the_output_signal() {
             "first_class_callable_count",
             "boundary_publication_count",
             "codegen_seam_fact_count",
+            "codegen_function_entry_seam_fact_count",
+            "codegen_block_param_seam_fact_count",
+            "codegen_return_delivery_seam_fact_count",
+            "codegen_continuation_entry_seam_fact_count",
+            "codegen_tail_call_seam_fact_count",
+            "codegen_callable_boundary_seam_fact_count",
+            "codegen_extern_boundary_seam_fact_count",
+            "codegen_first_class_publication_seam_fact_count",
         ],
         "measurements should make sharing, shape inventory, and seam coverage visible"
     );
@@ -226,8 +244,8 @@ end
         event.measurements
     );
     assert!(
-        matches!(event.measurements.get("codegen_seam_fact_count"), Some(Value::U64(0))),
-        "transport derivation should not claim codegen seam facts before the seam-fact ticket: {:?}",
+        matches!(event.measurements.get("codegen_seam_fact_count"), Some(Value::U64(_))),
+        "transport derivation should report the seam fact count field: {:?}",
         event.measurements
     );
     let seen_keys = metadata_keys
@@ -258,6 +276,214 @@ end
         panic!("pair/1 should return a tuple transport shape")
     };
     assert_eq!(items.len(), 2, "pair/1 should return two tuple fields");
+}
+
+#[test]
+fn compiler2_transport_flow_publishes_seam_specific_codegen_facts() {
+    let source = r#"
+fn inc(x), do: x + 1.0
+
+fn main() do
+  y = inc(1.0)
+  y + 2.0
+end
+"#;
+
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    let seam_facts = Rc::new(RefCell::new(Vec::<String>::new()));
+    let seam_facts_in = seam_facts.clone();
+    tel.attach(EVENT_NAME, capture.handler());
+    tel.attach(
+        EVENT_NAME,
+        Box::new(move |event: &crate::telemetry::handler::Event<'_, '_, '_>| {
+            if let Some(Value::StrSeq(facts)) = event.metadata.get("seam_facts") {
+                *seam_facts_in.borrow_mut() = facts.iter().cloned().collect();
+            } else if let Some(facts) = event
+                .metadata
+                .get("seam_facts")
+                .and_then(|value| value.downcast_ref::<Vec<String>>())
+            {
+                *seam_facts_in.borrow_mut() = facts.clone();
+            }
+        }),
+    );
+    let mut world = World::new(&tel);
+    world.submit_code(
+        Some("transport_codegen_seam_float_resume.fz".to_string()),
+        source.to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    assert_resolved(world.drive_for(None), "codegen seam fixture should settle");
+
+    let event = capture
+        .last(EVENT_NAME)
+        .unwrap_or_else(|| panic!("{} should be emitted", EVENT_NAME.join(".")));
+    assert!(
+        matches!(event.measurements.get("codegen_seam_fact_count"), Some(Value::U64(count)) if *count > 0),
+        "transport flow should report seam facts once fz-hwn.20.5 publishes them: {:?}",
+        event.measurements
+    );
+    assert!(
+        matches!(event.measurements.get("codegen_function_entry_seam_fact_count"), Some(Value::U64(count)) if *count > 0),
+        "transport flow should count function-entry seam facts by kind: {:?}",
+        event.measurements
+    );
+    assert!(
+        matches!(event.measurements.get("codegen_block_param_seam_fact_count"), Some(Value::U64(count)) if *count > 0),
+        "transport flow should count block-param seam facts by kind: {:?}",
+        event.measurements
+    );
+    assert!(
+        matches!(event.measurements.get("codegen_return_delivery_seam_fact_count"), Some(Value::U64(count)) if *count > 0),
+        "transport flow should count return-delivery seam facts by kind: {:?}",
+        event.measurements
+    );
+    assert!(
+        matches!(event.measurements.get("codegen_continuation_entry_seam_fact_count"), Some(Value::U64(count)) if *count > 0),
+        "transport flow should count continuation-entry seam facts by kind: {:?}",
+        event.measurements
+    );
+    let plan = transport_plan(&world, root);
+    let function_entry = plan
+        .codegen_seam_facts
+        .iter()
+        .find(|fact| matches!(fact.seam, CodegenSeam::FunctionEntry { .. }) && fact.repr == CodegenLaneRepr::RawF64)
+        .unwrap_or_else(|| {
+            panic!(
+                "float function-entry seam should use RawF64: {:?}",
+                plan.codegen_seam_facts
+            )
+        });
+    let block_param = plan
+        .codegen_seam_facts
+        .iter()
+        .find(|fact| matches!(fact.seam, CodegenSeam::BlockParam { .. }) && fact.repr == CodegenLaneRepr::ValueRef)
+        .unwrap_or_else(|| {
+            panic!(
+                "float block-param seam should use ValueRef: {:?}",
+                plan.codegen_seam_facts
+            )
+        });
+    assert_eq!(
+        function_entry.lane, block_param.lane,
+        "the same float LaneId should have seam-specific reprs without forking lane identity"
+    );
+    assert!(
+        plan.codegen_seam_facts
+            .iter()
+            .any(|fact| matches!(fact.seam, CodegenSeam::ReturnDelivery { .. }) && fact.repr == CodegenLaneRepr::RawF64),
+        "a float-returning producer should publish a RawF64 return-delivery seam: {:?}",
+        plan.codegen_seam_facts
+    );
+    assert!(
+        plan.codegen_seam_facts
+            .iter()
+            .any(|fact| matches!(fact.seam, CodegenSeam::ContinuationEntry { .. })
+                && fact.repr == CodegenLaneRepr::ValueRef),
+        "a non-tail float call should publish a ValueRef continuation-entry seam: {:?}",
+        plan.codegen_seam_facts
+    );
+    let facts = seam_facts.borrow();
+    assert!(
+        facts
+            .iter()
+            .any(|fact| fact.contains("FunctionEntry") && fact.contains("RawF64")),
+        "telemetry should expose the function-entry seam fact: {facts:?}"
+    );
+    assert!(
+        facts
+            .iter()
+            .any(|fact| fact.contains("BlockParam") && fact.contains("ValueRef")),
+        "telemetry should expose the block-param seam fact: {facts:?}"
+    );
+}
+
+#[test]
+fn compiler2_transport_flow_publishes_tail_call_codegen_seams() {
+    let source = r#"
+fn inc(x), do: x + 1.0
+fn main(), do: inc(1.0)
+"#;
+
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new(&tel);
+    world.submit_code(
+        Some("transport_codegen_seam_tail_call.fz".to_string()),
+        source.to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    assert_resolved(world.drive_for(None), "tail-call seam fixture should settle");
+
+    let plan = transport_plan(&world, root);
+    assert!(
+        plan.codegen_seam_facts
+            .iter()
+            .any(|fact| matches!(fact.seam, CodegenSeam::TailCall { .. }) && fact.repr == CodegenLaneRepr::RawF64),
+        "a tail float call should publish a RawF64 tail-call seam: {:?}",
+        plan.codegen_seam_facts
+    );
+}
+
+#[test]
+fn compiler2_transport_flow_publishes_callable_boundary_codegen_seams() {
+    let source = r#"
+fn make(), do: fn (x) -> x + 1.0 end
+fn main(), do: make()
+"#;
+
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new(&tel);
+    world.submit_code(
+        Some("transport_codegen_seam_callable_boundary.fz".to_string()),
+        source.to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    assert_resolved(world.drive_for(None), "callable-boundary seam fixture should settle");
+
+    let plan = transport_plan(&world, root);
+    assert!(
+        plan.codegen_seam_facts
+            .iter()
+            .any(|fact| matches!(fact.seam, CodegenSeam::CallableBoundary { .. })
+                && fact.repr == CodegenLaneRepr::ValueRef),
+        "a published callable boundary should expose ValueRef callable-boundary lane facts: {:?}",
+        plan.codegen_seam_facts
+    );
+    assert!(
+        plan.codegen_seam_facts
+            .iter()
+            .any(|fact| matches!(fact.seam, CodegenSeam::FirstClassPublication { .. })
+                && fact.repr == CodegenLaneRepr::ValueRef),
+        "an escaped callable should expose ValueRef first-class-publication lane facts: {:?}",
+        plan.codegen_seam_facts
+    );
+}
+
+#[test]
+fn compiler2_transport_flow_publishes_extern_boundary_codegen_seams() {
+    let source = r#"
+extern "C" fn fz_float_id(float) :: float
+fn main(), do: fz_float_id(1.0)
+"#;
+
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new(&tel);
+    world.submit_code(
+        Some("transport_codegen_seam_extern_boundary.fz".to_string()),
+        source.to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    assert_resolved(world.drive_for(None), "extern-boundary seam fixture should settle");
+
+    let plan = transport_plan(&world, root);
+    assert!(
+        plan.codegen_seam_facts
+            .iter()
+            .any(|fact| matches!(fact.seam, CodegenSeam::ExternBoundary { .. }) && fact.repr == CodegenLaneRepr::RawF64),
+        "a float extern should publish RawF64 extern-boundary lane facts: {:?}",
+        plan.codegen_seam_facts
+    );
 }
 
 #[test]

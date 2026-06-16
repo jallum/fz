@@ -124,6 +124,53 @@ pub struct ExecutableSymbol {
     pub need: ExecutableNeed,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CodegenLaneRepr {
+    ValueRef,
+    RawF64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum CodegenSeam {
+    FunctionEntry {
+        executable: ExecutableSymbol,
+        semantic_index: usize,
+    },
+    BlockParam {
+        executable: ExecutableSymbol,
+        entry: ControlEntryId,
+    },
+    ReturnDelivery {
+        executable: ExecutableSymbol,
+    },
+    ContinuationEntry {
+        executable: ExecutableSymbol,
+        callsite: CallSiteId,
+        entry: ControlEntryId,
+    },
+    TailCall {
+        executable: ExecutableSymbol,
+        callsite: CallSiteId,
+    },
+    CallableBoundary {
+        boundary: BoundaryId,
+    },
+    ExternBoundary {
+        executable: ExecutableSymbol,
+    },
+    FirstClassPublication {
+        boundary: BoundaryId,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct CodegenSeamFact {
+    pub seam: CodegenSeam,
+    pub shape: Option<ShapeId>,
+    pub lane: LaneId,
+    pub repr: CodegenLaneRepr,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct CallableDescr {
     pub function: Option<FunctionId>,
@@ -195,6 +242,7 @@ pub struct TransportPlan {
     pub positions: HashMap<TransportPosition, ShapeId>,
     pub callables: HashMap<CallableId, CallableFacts>,
     pub boundaries: HashMap<BoundaryId, BoundaryFacts>,
+    pub codegen_seam_facts: Box<[CodegenSeamFact]>,
 }
 
 #[derive(Debug, Default)]
