@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-16T13:44:49Z",
+  "description": "Goal\nReplace pass-order-dependent TransportPosition shape propagation with a minimal constraint solve: collect ShapeId anchors and TransportPosition equality edges, solve connected components with interned ShapeId equality, then publish TransportPlan.positions. The final positions map is output, not mutable derivation state.\n\nSignal\nWorked transport contract tests prove producer value, call argument, executable input, callable capture-prefix input, and clause parameter positions solve to the same ShapeId for direct and enum-style reducer examples. Unit-level solver tests prove insertion order independence and hard failure when one connected component has two distinct anchored ShapeIds.\n\nStrategy\nUse TDD. First add failing tests for order-independent solving and conflicting anchors. Then introduce the smallest transport-local ShapeConstraintGraph needed by DeriveTransportPlan. Convert the .19.2.6 fixed-point helpers into anchor/equality collection; do not add evidence-kind taxonomies, compatibility layers, alternate fact stores, or downstream wiring. Because ShapeId is interned all the way down, conflict detection is literal ShapeId inequality.\n\nRemoval\nRemove the bounded executable-input propagation loop and last-writer-wins insert helper from transport derivation. Do not leave a shadow propagation model beside the solver.\n\nChecks\nRun cargo test --lib compiler2_transport_plan_ -- --nocapture. Run cargo fmt --all \u0026\u0026 cargo check --all-targets \u0026\u0026 cargo clippy --workspace --all-targets -- -D warnings before close if the workspace permits.",
+  "id": "fz-hwn.19.2.7",
+  "labels": [],
+  "parent": "fz-hwn.19.2",
+  "priority": 1,
+  "status": "open",
+  "title": "Transport plan: solve position shapes from anchors and equalities",
+  "type": "task",
+  "updated_at": "2026-06-16T13:44:49Z"
+}
