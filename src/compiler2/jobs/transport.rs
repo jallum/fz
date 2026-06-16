@@ -1056,11 +1056,7 @@ fn shape_for_executable_input(
     let RuntimeDemand::Callable(callable) = demand else {
         return generic_shape_from_demand(world, ty, demand, facts, publication);
     };
-    let surfaces = if callable.resolved.is_empty() {
-        callable_type_surfaces(world, ty)
-    } else {
-        callable.resolved.clone()
-    };
+    let surfaces = callable.resolved.clone();
     generic_callable_shape(world, ty, callable, &surfaces, facts, publication)
 }
 
@@ -1552,16 +1548,6 @@ fn surface_shapes(
     rendered
 }
 
-fn callable_type_surfaces(world: &mut World<'_>, callable_ty: Ty) -> BTreeSet<CallableSurface> {
-    world
-        .types_mut()
-        .callable_clauses(&callable_ty)
-        .unwrap_or_default()
-        .into_iter()
-        .map(|clause| CallableSurface::new(clause.args))
-        .collect()
-}
-
 fn generic_shape_from_demand(
     world: &mut World<'_>,
     ty: Ty,
@@ -1587,11 +1573,7 @@ fn generic_shape_from_demand(
                 .intern_shape(ShapeDescr::Tuple(items.into_boxed_slice()))
         }
         RuntimeDemand::Callable(callable) => {
-            let surfaces = if callable.resolved.is_empty() {
-                callable_type_surfaces(world, ty)
-            } else {
-                callable.resolved.clone()
-            };
+            let surfaces = callable.resolved.clone();
             generic_callable_shape(world, ty, callable, &surfaces, facts, publication)
         }
     }
@@ -1605,6 +1587,10 @@ fn generic_callable_shape(
     facts: &mut TransportFactsBuilder,
     publication: Option<TransportPosition>,
 ) -> ShapeId {
+    assert!(
+        !(demand.opaque || demand.escape) || !surfaces.is_empty(),
+        "generic callable transport requires upstream callable surfaces for opaque or escaped demand"
+    );
     let published_surface_shapes = surface_shapes(world, surfaces, facts);
     let callable = world.transport_mut().interners_mut().intern_callable(CallableDescr {
         function: None,

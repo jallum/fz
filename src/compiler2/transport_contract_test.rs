@@ -8,7 +8,7 @@ use super::transport::{
     BoundaryDescr, CodegenLaneRepr, CodegenSeam, LaneId, ShapeDescr, ShapeId, TransportPlan, TransportPosition,
 };
 use super::types::Ty;
-use super::{DriveOutcome, ExecutableNeed, World};
+use super::{DriveOutcome, ExecutableNeed, RuntimeDemand, World};
 use crate::telemetry::{Capture, ConfiguredTelemetry, Value};
 
 const EVENT_NAME: &[&str] = &["fz", "compiler2", "transport_flow", "defined"];
@@ -976,6 +976,11 @@ fn compiler2_transport_plan_requires_a_boundary_for_an_opaque_callable_input() {
         matches!(shape_descr(&world, input_shape), ShapeDescr::Callable(_)),
         "a callable input with opaque closure-call demand should stay callable-shaped, not collapse to a value lane"
     );
+    let ShapeDescr::Callable(input_callable) = shape_descr(&world, input_shape) else {
+        unreachable!("checked above")
+    };
+    let input_demand = upstream_input_demand_for_function(&world, root, "main", 1, 0);
+    assert_generic_callable_shape_matches_upstream_demand(&world, &plan, *input_callable, input_demand);
     assert_eq!(
         plan.boundaries.len(),
         1,
@@ -1973,6 +1978,52 @@ fn upstream_callable_flow_for_producer(
         .find(|flow| flow.function == function)
         .cloned()
         .unwrap_or_else(|| panic!("upstream callable flow for producer {function:?}"))
+}
+
+fn upstream_input_demand_for_function(
+    world: &World<'_>,
+    root: super::RootId,
+    name: &str,
+    arity: usize,
+    semantic_index: usize,
+) -> RuntimeDemand {
+    let closure = world.semantic_closure(root);
+    closure
+        .runtime_demands
+        .iter()
+        .find_map(|(executable, demand)| {
+            let function_ref = world.function_ref(executable.activation.function);
+            (function_ref.name == name && function_ref.arity == arity)
+                .then(|| demand.input_demands.get(semantic_index).cloned())
+                .flatten()
+        })
+        .unwrap_or_else(|| panic!("upstream input demand for {name}/{arity}[{semantic_index}]"))
+}
+
+fn assert_generic_callable_shape_matches_upstream_demand(
+    world: &World<'_>,
+    plan: &TransportPlan,
+    callable: super::transport::CallableId,
+    demand: RuntimeDemand,
+) {
+    let RuntimeDemand::Callable(demand) = demand else {
+        panic!("expected upstream callable demand for generic callable shape, got {demand:?}")
+    };
+    let descr = world.transport().interners().callable(callable);
+    assert_eq!(
+        descr.contract_surfaces.len(),
+        demand.resolved.len(),
+        "generic callable descriptor surfaces should project upstream callable demand, not recover from type"
+    );
+    let facts = plan
+        .callables
+        .get(&callable)
+        .unwrap_or_else(|| panic!("callable facts should exist for generic callable {callable:?}"));
+    assert_eq!(
+        facts.boundary_ids.len(),
+        usize::from(demand.opaque || demand.escape) * demand.resolved.len(),
+        "generic callable boundaries should be published from upstream callable surfaces"
+    );
 }
 
 fn assert_callable_facts_match_upstream_flow(
