@@ -28,30 +28,26 @@ struct ExecutableContext {
     callsite_needs: HashMap<CallSiteId, ExecutableNeed>,
     callsite_args: HashMap<CallSiteId, Vec<CallArg>>,
     input_values: Vec<Box<[ValueId]>>,
-    local_origins: HashMap<ValueId, ValueOrigin>,
+    local_sources: HashMap<ValueId, TransportSource>,
     callable_uses: HashMap<ValueId, Vec<CallSiteId>>,
     callsite_dests: HashMap<CallSiteId, ControlDestination>,
-    return_sources: Vec<ProducedSource>,
+    return_sources: Vec<TransportSource>,
     resume_entries: Vec<ResumeEntry>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum ValueOrigin {
-    Tuple(Box<[ValueId]>),
-    Callable(LocalCallableProducer),
-    Callsite(CallSiteId),
+enum TransportSource {
+    ExecutableReturn,
+    LocalValue(ValueId),
+    CallsiteReturn(CallSiteId),
+    TupleValue(Box<[ValueId]>),
+    CallableValue(LocalCallableProducer),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct LocalCallableProducer {
     function: FunctionId,
     captures: Box<[ValueId]>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ProducedSource {
-    LocalValue(ValueId),
-    Callsite(CallSiteId),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -81,16 +77,7 @@ enum SourceShape {
     Unknown,
 }
 
-impl SourceShape {
-    fn exact(self) -> Option<ShapeId> {
-        match self {
-            SourceShape::Exact(shape) => Some(shape),
-            SourceShape::Recursive | SourceShape::Unknown => None,
-        }
-    }
-}
-
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 struct TransportFactsBuilder {
     callables: HashMap<CallableId, CallableFactsDraft>,
     boundaries: HashMap<BoundaryId, BoundaryFactsDraft>,
@@ -221,12 +208,12 @@ pub(super) fn derive_transport_plan(world: &mut World<'_>, root_id: RootId) -> R
             reads.push(fact);
         }
         let resume_entries = collect_resume_entries(&body, &analysis);
-        let mut local_origins = collect_value_origins(&body);
+        let mut local_sources = collect_value_sources(&body);
         for (value, callsite) in collect_callsite_result_origins(&body) {
-            local_origins.insert(value, ValueOrigin::Callsite(callsite));
+            local_sources.insert(value, TransportSource::CallsiteReturn(callsite));
         }
         for resume in &resume_entries {
-            local_origins.insert(resume.value, ValueOrigin::Callsite(resume.callsite));
+            local_sources.insert(resume.value, TransportSource::CallsiteReturn(resume.callsite));
         }
         contexts.insert(
             executable.clone(),
@@ -234,7 +221,7 @@ pub(super) fn derive_transport_plan(world: &mut World<'_>, root_id: RootId) -> R
                 callsite_args: collect_callsite_args(&body),
                 callsite_dests: collect_callsite_dests(&body),
                 input_values: collect_input_values(&body),
-                local_origins,
+                local_sources,
                 callable_uses: collect_callable_uses(&body),
                 return_sources: collect_return_sources(&body, &analysis),
                 resume_entries,
@@ -258,7 +245,6 @@ pub(super) fn derive_transport_plan(world: &mut World<'_>, root_id: RootId) -> R
 
     let mut executables = closure.executables.into_iter().collect::<Vec<_>>();
     executables.sort_by_key(executable_sort_key);
-    let executables = order_executables_by_call_dependencies(world, executables, &contexts);
 
     let entry = executable_symbol(&closure.entry);
     let executable_membership = executables
@@ -268,27 +254,6 @@ pub(super) fn derive_transport_plan(world: &mut World<'_>, root_id: RootId) -> R
         .into_boxed_slice();
 
     let mut facts = TransportFactsBuilder::default();
-    let mut return_shapes = HashMap::<ExecutableKey, ShapeId>::new();
-    for executable in &executables {
-        let context = contexts
-            .get(executable)
-            .expect("transport derivation requires one context per settled executable");
-        let symbol = executable_symbol(executable);
-        let shape = shape_for_sources(
-            world,
-            &contexts,
-            &return_shapes,
-            &mut facts,
-            executable,
-            context,
-            context.return_ty,
-            &context.runtime_demand.return_demand,
-            &context.return_sources,
-            Some(TransportPosition::ExecutableReturn { executable: symbol }),
-        );
-        return_shapes.insert(executable.clone(), shape);
-    }
-
     let mut positions = HashMap::new();
     for executable in &executables {
         let symbol = executable_symbol(executable);
@@ -324,14 +289,21 @@ pub(super) fn derive_transport_plan(world: &mut World<'_>, root_id: RootId) -> R
             positions.insert(position, shape);
         }
 
-        positions.insert(
-            TransportPosition::ExecutableReturn {
-                executable: symbol.clone(),
-            },
-            *return_shapes
-                .get(executable)
-                .expect("return shapes should be precomputed for every executable"),
+        let return_position = TransportPosition::ExecutableReturn {
+            executable: symbol.clone(),
+        };
+        let return_shape = shape_for_source(
+            world,
+            &contexts,
+            &mut facts,
+            executable,
+            context,
+            context.return_ty,
+            &context.runtime_demand.return_demand,
+            TransportSource::ExecutableReturn,
+            Some(return_position.clone()),
         );
+        positions.insert(return_position, return_shape);
 
         let mut values = context.analysis.value_types.iter().collect::<Vec<_>>();
         values.sort_by_key(|(value, _)| value.as_u32());
@@ -345,7 +317,6 @@ pub(super) fn derive_transport_plan(world: &mut World<'_>, root_id: RootId) -> R
             let shape = shape_for_local_value(
                 world,
                 &contexts,
-                &return_shapes,
                 &mut facts,
                 executable,
                 context,
@@ -382,7 +353,6 @@ pub(super) fn derive_transport_plan(world: &mut World<'_>, root_id: RootId) -> R
                         shape_for_local_value(
                             world,
                             &contexts,
-                            &return_shapes,
                             &mut facts,
                             executable,
                             context,
@@ -443,7 +413,6 @@ pub(super) fn derive_transport_plan(world: &mut World<'_>, root_id: RootId) -> R
                 let shape = shape_for_local_value(
                     world,
                     &contexts,
-                    &return_shapes,
                     &mut facts,
                     executable,
                     context,
@@ -477,7 +446,6 @@ pub(super) fn derive_transport_plan(world: &mut World<'_>, root_id: RootId) -> R
             let shape = resume_shape(
                 world,
                 &contexts,
-                &return_shapes,
                 &mut facts,
                 executable,
                 context,
@@ -763,73 +731,6 @@ fn executable_symbol(executable: &ExecutableKey) -> ExecutableSymbol {
     }
 }
 
-fn order_executables_by_call_dependencies(
-    world: &World<'_>,
-    executables: Vec<ExecutableKey>,
-    contexts: &HashMap<ExecutableKey, ExecutableContext>,
-) -> Vec<ExecutableKey> {
-    let membership = executables.iter().cloned().collect::<HashSet<_>>();
-    let mut visiting = HashSet::new();
-    let mut visited = HashSet::new();
-    let mut out = Vec::new();
-    for executable in &executables {
-        visit_executable_dependencies(
-            world,
-            contexts,
-            &membership,
-            executable,
-            &mut visiting,
-            &mut visited,
-            &mut out,
-        );
-    }
-    out
-}
-
-fn visit_executable_dependencies(
-    world: &World<'_>,
-    contexts: &HashMap<ExecutableKey, ExecutableContext>,
-    membership: &HashSet<ExecutableKey>,
-    executable: &ExecutableKey,
-    visiting: &mut HashSet<ExecutableKey>,
-    visited: &mut HashSet<ExecutableKey>,
-    out: &mut Vec<ExecutableKey>,
-) {
-    if visited.contains(executable) || !visiting.insert(executable.clone()) {
-        return;
-    }
-    if let Some(context) = contexts.get(executable) {
-        let mut callsites = context.analysis.callsites.clone();
-        callsites.sort_by_key(|callsite| callsite.as_u32());
-        for callsite in callsites {
-            let key = CallSiteKey {
-                activation: executable.activation.clone(),
-                callsite,
-            };
-            let Some(summary) = world.callsite_summary(&key) else {
-                continue;
-            };
-            let need = context
-                .callsite_needs
-                .get(&callsite)
-                .copied()
-                .unwrap_or(ExecutableNeed::Value);
-            for target in &summary.targets {
-                let Some(activation) = target.activation.clone() else {
-                    continue;
-                };
-                let dependency = ExecutableKey { activation, need };
-                if membership.contains(&dependency) {
-                    visit_executable_dependencies(world, contexts, membership, &dependency, visiting, visited, out);
-                }
-            }
-        }
-    }
-    visiting.remove(executable);
-    visited.insert(executable.clone());
-    out.push(executable.clone());
-}
-
 fn executable_symbol_sort_key(symbol: &ExecutableSymbol) -> (u32, Vec<Ty>, u8, usize) {
     let need = match symbol.need {
         ExecutableNeed::Value => (0, 0),
@@ -1003,7 +904,7 @@ fn collect_callable_uses(body: &LoweredBody) -> HashMap<ValueId, Vec<CallSiteId>
     out
 }
 
-fn collect_value_origins(body: &LoweredBody) -> HashMap<ValueId, ValueOrigin> {
+fn collect_value_sources(body: &LoweredBody) -> HashMap<ValueId, TransportSource> {
     let mut out = HashMap::new();
     let LoweredBody::Clauses { clauses, entries, .. } = body else {
         return out;
@@ -1021,15 +922,15 @@ fn collect_value_origins(body: &LoweredBody) -> HashMap<ValueId, ValueOrigin> {
     out
 }
 
-fn collect_step_origin(step: &LoweredStep, out: &mut HashMap<ValueId, ValueOrigin>) {
+fn collect_step_origin(step: &LoweredStep, out: &mut HashMap<ValueId, TransportSource>) {
     match step {
         LoweredStep::Tuple { value, items } => {
-            out.insert(*value, ValueOrigin::Tuple(items.clone().into_boxed_slice()));
+            out.insert(*value, TransportSource::TupleValue(items.clone().into_boxed_slice()));
         }
         LoweredStep::FunctionRef { value, function } => {
             out.insert(
                 *value,
-                ValueOrigin::Callable(LocalCallableProducer {
+                TransportSource::CallableValue(LocalCallableProducer {
                     function: *function,
                     captures: Box::default(),
                 }),
@@ -1042,7 +943,7 @@ fn collect_step_origin(step: &LoweredStep, out: &mut HashMap<ValueId, ValueOrigi
         } => {
             out.insert(
                 *value,
-                ValueOrigin::Callable(LocalCallableProducer {
+                TransportSource::CallableValue(LocalCallableProducer {
                     function: *function,
                     captures: captures.clone().into_boxed_slice(),
                 }),
@@ -1052,7 +953,7 @@ fn collect_step_origin(step: &LoweredStep, out: &mut HashMap<ValueId, ValueOrigi
     }
 }
 
-fn collect_return_sources(body: &LoweredBody, analysis: &ActivationAnalysis) -> Vec<ProducedSource> {
+fn collect_return_sources(body: &LoweredBody, analysis: &ActivationAnalysis) -> Vec<TransportSource> {
     let LoweredBody::Clauses { clauses, entries, .. } = body else {
         return Vec::new();
     };
@@ -1069,7 +970,7 @@ fn collect_return_sources_from_entry(
     entry_id: ControlEntryId,
     entries: &[super::super::body::LoweredEntry],
     reachable_entries: &HashSet<ControlEntryId>,
-    out: &mut Vec<ProducedSource>,
+    out: &mut Vec<TransportSource>,
 ) {
     if !reachable_entries.contains(&entry_id) {
         return;
@@ -1079,7 +980,7 @@ fn collect_return_sources_from_entry(
         LoweredTail::Value {
             value,
             dest: ControlDestination::Return,
-        } => out.push(ProducedSource::LocalValue(*value)),
+        } => out.push(TransportSource::LocalValue(*value)),
         LoweredTail::DirectCall {
             callsite,
             dest: ControlDestination::Return,
@@ -1089,7 +990,7 @@ fn collect_return_sources_from_entry(
             callsite,
             dest: ControlDestination::Return,
             ..
-        } => out.push(ProducedSource::Callsite(*callsite)),
+        } => out.push(TransportSource::CallsiteReturn(*callsite)),
         LoweredTail::Value {
             dest: ControlDestination::Deliver(target),
             ..
@@ -1171,7 +1072,6 @@ fn collect_resume_entries(body: &LoweredBody, analysis: &ActivationAnalysis) -> 
 fn shape_for_local_value(
     world: &mut World<'_>,
     contexts: &HashMap<ExecutableKey, ExecutableContext>,
-    return_shapes: &HashMap<ExecutableKey, ShapeId>,
     facts: &mut TransportFactsBuilder,
     executable: &ExecutableKey,
     context: &ExecutableContext,
@@ -1180,16 +1080,15 @@ fn shape_for_local_value(
     demand: &RuntimeDemand,
     publication: Option<TransportPosition>,
 ) -> ShapeId {
-    shape_for_sources(
+    shape_for_source(
         world,
         contexts,
-        return_shapes,
         facts,
         executable,
         context,
         ty,
         demand,
-        &[ProducedSource::LocalValue(value)],
+        TransportSource::LocalValue(value),
         publication,
     )
 }
@@ -1210,214 +1109,267 @@ fn shape_for_executable_input(
     generic_callable_shape(world, ty, callable, &surfaces, facts, publication)
 }
 
-fn shape_for_sources(
+fn shape_for_source(
     world: &mut World<'_>,
     contexts: &HashMap<ExecutableKey, ExecutableContext>,
-    return_shapes: &HashMap<ExecutableKey, ShapeId>,
     facts: &mut TransportFactsBuilder,
     executable: &ExecutableKey,
     context: &ExecutableContext,
     ty: Ty,
     demand: &RuntimeDemand,
-    sources: &[ProducedSource],
+    source: TransportSource,
     publication: Option<TransportPosition>,
 ) -> ShapeId {
-    if demand.is_ignore() || world.types().is_empty(&ty) {
-        return world.transport_mut().interners_mut().intern_shape(ShapeDescr::Nothing);
+    let mut staged = facts.clone();
+    match project_source(
+        world,
+        contexts,
+        &mut staged,
+        executable,
+        context,
+        ty,
+        demand,
+        source,
+        publication.clone(),
+        &mut Vec::new(),
+    ) {
+        SourceShape::Exact(shape) => {
+            *facts = staged;
+            shape
+        }
+        SourceShape::Recursive | SourceShape::Unknown => {
+            generic_shape_from_demand(world, ty, demand, facts, publication)
+        }
     }
-    let mut exact = Vec::new();
-    for source in sources {
-        match exact_shape_for_source(
+}
+
+fn project_source(
+    world: &mut World<'_>,
+    contexts: &HashMap<ExecutableKey, ExecutableContext>,
+    facts: &mut TransportFactsBuilder,
+    executable: &ExecutableKey,
+    context: &ExecutableContext,
+    ty: Ty,
+    demand: &RuntimeDemand,
+    source: TransportSource,
+    publication: Option<TransportPosition>,
+    visiting: &mut Vec<(ExecutableKey, TransportSource, RuntimeDemand)>,
+) -> SourceShape {
+    if demand.is_ignore() || world.types().is_empty(&ty) {
+        return SourceShape::Exact(world.transport_mut().interners_mut().intern_shape(ShapeDescr::Nothing));
+    }
+    let frame = (executable.clone(), source.clone(), demand.clone());
+    if visiting.contains(&frame) {
+        return SourceShape::Recursive;
+    }
+    visiting.push(frame);
+    let projected = match source {
+        TransportSource::ExecutableReturn => project_sources(
             world,
             contexts,
-            return_shapes,
             facts,
             executable,
             context,
             ty,
             demand,
-            *source,
+            &context.return_sources,
+            publication,
+            visiting,
+        ),
+        TransportSource::LocalValue(value) => match context.local_sources.get(&value).cloned() {
+            Some(TransportSource::CallableValue(producer)) => project_callable_value(
+                world,
+                contexts,
+                facts,
+                executable,
+                context,
+                ty,
+                demand,
+                &producer,
+                publication,
+                context.runtime_demand.value_demands.get(&value),
+            ),
+            Some(source) => project_source(
+                world,
+                contexts,
+                facts,
+                executable,
+                context,
+                ty,
+                demand,
+                source,
+                publication,
+                visiting,
+            ),
+            None => SourceShape::Unknown,
+        },
+        TransportSource::CallsiteReturn(callsite) => {
+            project_callsite_return(world, contexts, facts, executable, context, callsite, demand, visiting)
+        }
+        TransportSource::TupleValue(items) => project_tuple_value(
+            world, contexts, facts, executable, context, ty, demand, &items, visiting,
+        ),
+        TransportSource::CallableValue(producer) => project_callable_value(
+            world,
+            contexts,
+            facts,
+            executable,
+            context,
+            ty,
+            demand,
+            &producer,
+            publication,
+            None,
+        ),
+    };
+    visiting.pop();
+    projected
+}
+
+fn project_sources(
+    world: &mut World<'_>,
+    contexts: &HashMap<ExecutableKey, ExecutableContext>,
+    facts: &mut TransportFactsBuilder,
+    executable: &ExecutableKey,
+    context: &ExecutableContext,
+    ty: Ty,
+    demand: &RuntimeDemand,
+    sources: &[TransportSource],
+    publication: Option<TransportPosition>,
+    visiting: &mut Vec<(ExecutableKey, TransportSource, RuntimeDemand)>,
+) -> SourceShape {
+    let mut exact = Vec::new();
+    let mut recursive = false;
+    let mut staged = facts.clone();
+    for source in sources {
+        match project_source(
+            world,
+            contexts,
+            &mut staged,
+            executable,
+            context,
+            ty,
+            demand,
+            source.clone(),
             publication.clone(),
+            visiting,
         ) {
             SourceShape::Exact(shape) => exact.push(shape),
-            SourceShape::Recursive => {}
-            SourceShape::Unknown => return generic_shape_from_demand(world, ty, demand, facts, publication),
+            SourceShape::Recursive => recursive = true,
+            SourceShape::Unknown => return SourceShape::Unknown,
         }
     }
     if exact.is_empty() {
-        return generic_shape_from_demand(world, ty, demand, facts, publication);
+        return if recursive {
+            SourceShape::Recursive
+        } else {
+            SourceShape::Unknown
+        };
     }
     if exact.windows(2).all(|pair| pair[0] == pair[1]) {
-        exact[0]
+        *facts = staged;
+        SourceShape::Exact(exact[0])
     } else {
-        generic_shape_from_demand(world, ty, demand, facts, publication)
+        SourceShape::Unknown
     }
 }
 
-fn exact_shape_for_source(
+fn project_tuple_value(
     world: &mut World<'_>,
     contexts: &HashMap<ExecutableKey, ExecutableContext>,
-    return_shapes: &HashMap<ExecutableKey, ShapeId>,
     facts: &mut TransportFactsBuilder,
     executable: &ExecutableKey,
     context: &ExecutableContext,
     ty: Ty,
     demand: &RuntimeDemand,
-    source: ProducedSource,
-    publication: Option<TransportPosition>,
+    items: &[ValueId],
+    visiting: &mut Vec<(ExecutableKey, TransportSource, RuntimeDemand)>,
 ) -> SourceShape {
-    match source {
-        ProducedSource::LocalValue(value) => exact_shape_for_local_value(
+    let RuntimeDemand::TupleFields(fields) = demand else {
+        return SourceShape::Unknown;
+    };
+    if items.len() != fields.len() {
+        return SourceShape::Unknown;
+    }
+    let field_tys = tuple_field_tys(world, ty, fields.len());
+    let mut item_shapes = Vec::with_capacity(items.len());
+    for (item, (item_ty, field_demand)) in items.iter().copied().zip(field_tys.into_iter().zip(fields.iter())) {
+        let mut staged = facts.clone();
+        let shape = match project_source(
             world,
             contexts,
-            return_shapes,
-            facts,
+            &mut staged,
             executable,
             context,
-            value,
-            ty,
-            demand,
-            publication,
-        )
-        .map(SourceShape::Exact)
-        .unwrap_or(SourceShape::Unknown),
-        ProducedSource::Callsite(callsite) => {
-            exact_shape_for_callsite(world, contexts, return_shapes, executable, context, callsite)
-        }
+            item_ty,
+            field_demand,
+            TransportSource::LocalValue(item),
+            None,
+            visiting,
+        ) {
+            SourceShape::Exact(shape) => {
+                *facts = staged;
+                shape
+            }
+            SourceShape::Recursive | SourceShape::Unknown => {
+                generic_shape_from_demand(world, item_ty, field_demand, facts, None)
+            }
+        };
+        item_shapes.push(shape);
     }
+    SourceShape::Exact(
+        world
+            .transport_mut()
+            .interners_mut()
+            .intern_shape(ShapeDescr::Tuple(item_shapes.into_boxed_slice())),
+    )
 }
 
-fn exact_shape_for_local_value(
+fn project_callable_value(
     world: &mut World<'_>,
     contexts: &HashMap<ExecutableKey, ExecutableContext>,
-    return_shapes: &HashMap<ExecutableKey, ShapeId>,
     facts: &mut TransportFactsBuilder,
     executable: &ExecutableKey,
     context: &ExecutableContext,
-    value: ValueId,
     ty: Ty,
     demand: &RuntimeDemand,
+    producer: &LocalCallableProducer,
     publication: Option<TransportPosition>,
-) -> Option<ShapeId> {
-    match demand {
-        RuntimeDemand::Ignore => Some(world.transport_mut().interners_mut().intern_shape(ShapeDescr::Nothing)),
-        RuntimeDemand::Value => match context.local_origins.get(&value) {
-            Some(ValueOrigin::Callsite(callsite)) => {
-                exact_shape_for_callsite(world, contexts, return_shapes, executable, context, *callsite).exact()
-            }
-            Some(ValueOrigin::Callable(producer)) => {
-                let precise_demand = context.runtime_demand.value_demands.get(&value);
-                let callable_demand = callable_transport_demand(world, ty, demand, precise_demand)?;
-                let callable = callable_for_producer(
-                    world,
-                    contexts,
-                    return_shapes,
-                    facts,
-                    executable,
-                    context,
-                    producer,
-                    ty,
-                    &callable_demand,
-                    publication,
-                )?;
-                Some(
-                    world
-                        .transport_mut()
-                        .interners_mut()
-                        .intern_shape(ShapeDescr::Callable(callable)),
-                )
-            }
-            _ => None,
-        },
-        RuntimeDemand::TupleFields(fields) => {
-            let ValueOrigin::Tuple(items) = context.local_origins.get(&value)? else {
-                return None;
-            };
-            if items.len() != fields.len() {
-                return None;
-            }
-            let field_tys = tuple_field_tys(world, ty, fields.len());
-            let item_shapes = items
-                .iter()
-                .copied()
-                .zip(field_tys.into_iter().zip(fields.iter()))
-                .map(|(item, (item_ty, field_demand))| {
-                    exact_shape_for_local_value(
-                        world,
-                        contexts,
-                        return_shapes,
-                        facts,
-                        executable,
-                        context,
-                        item,
-                        item_ty,
-                        field_demand,
-                        None,
-                    )
-                    .or_else(|| {
-                        Some(shape_for_local_value(
-                            world,
-                            contexts,
-                            return_shapes,
-                            facts,
-                            executable,
-                            context,
-                            item,
-                            item_ty,
-                            field_demand,
-                            None,
-                        ))
-                    })
-                })
-                .collect::<Option<Vec<_>>>()?;
-            Some(
-                world
-                    .transport_mut()
-                    .interners_mut()
-                    .intern_shape(ShapeDescr::Tuple(item_shapes.into_boxed_slice())),
-            )
-        }
-        RuntimeDemand::Callable(_) => {
-            let callable = match context.local_origins.get(&value)? {
-                ValueOrigin::Callable(producer) => {
-                    let precise_demand = context.runtime_demand.value_demands.get(&value);
-                    let callable_demand = callable_transport_demand(world, ty, demand, precise_demand)?;
-                    callable_for_producer(
-                        world,
-                        contexts,
-                        return_shapes,
-                        facts,
-                        executable,
-                        context,
-                        producer,
-                        ty,
-                        &callable_demand,
-                        publication,
-                    )?
-                }
-                ValueOrigin::Callsite(callsite) => {
-                    return exact_shape_for_callsite(world, contexts, return_shapes, executable, context, *callsite)
-                        .exact();
-                }
-                ValueOrigin::Tuple(_) => return None,
-            };
-            Some(
-                world
-                    .transport_mut()
-                    .interners_mut()
-                    .intern_shape(ShapeDescr::Callable(callable)),
-            )
-        }
-    }
+    precise_demand: Option<&RuntimeDemand>,
+) -> SourceShape {
+    let Some(callable_demand) = callable_transport_demand(world, ty, demand, precise_demand) else {
+        return SourceShape::Unknown;
+    };
+    let Some(callable) = callable_for_producer(
+        world,
+        contexts,
+        facts,
+        executable,
+        context,
+        producer,
+        ty,
+        &callable_demand,
+        publication,
+    ) else {
+        return SourceShape::Unknown;
+    };
+    SourceShape::Exact(
+        world
+            .transport_mut()
+            .interners_mut()
+            .intern_shape(ShapeDescr::Callable(callable)),
+    )
 }
 
-fn exact_shape_for_callsite(
+fn project_callsite_return(
     world: &mut World<'_>,
     contexts: &HashMap<ExecutableKey, ExecutableContext>,
-    return_shapes: &HashMap<ExecutableKey, ShapeId>,
+    facts: &mut TransportFactsBuilder,
     executable: &ExecutableKey,
     context: &ExecutableContext,
     callsite: CallSiteId,
+    demand: &RuntimeDemand,
+    visiting: &mut Vec<(ExecutableKey, TransportSource, RuntimeDemand)>,
 ) -> SourceShape {
     let key = CallSiteKey {
         activation: executable.activation.clone(),
@@ -1426,6 +1378,7 @@ fn exact_shape_for_callsite(
     let Some(summary) = world.callsite_summary(&key) else {
         return SourceShape::Unknown;
     };
+    let targets = summary.targets.clone();
     let need = context
         .callsite_needs
         .get(&callsite)
@@ -1433,20 +1386,33 @@ fn exact_shape_for_callsite(
         .unwrap_or(ExecutableNeed::Value);
     let mut shapes = Vec::new();
     let mut recursive = false;
-    for target in &summary.targets {
+    let mut staged = facts.clone();
+    for target in targets {
         match target.callee {
             SelectedCallee::ProviderBoundary(_) => return SourceShape::Unknown,
             SelectedCallee::Function(_) => {
-                let Some(activation) = target.activation.clone() else {
+                let Some(activation) = target.activation else {
                     return SourceShape::Unknown;
                 };
                 let target = ExecutableKey { activation, need };
-                if let Some(shape) = return_shapes.get(&target) {
-                    shapes.push(*shape);
-                } else if contexts.contains_key(&target) {
-                    recursive = true;
-                } else {
+                let Some(target_context) = contexts.get(&target) else {
                     return SourceShape::Unknown;
+                };
+                match project_source(
+                    world,
+                    contexts,
+                    &mut staged,
+                    &target,
+                    target_context,
+                    target_context.return_ty,
+                    demand,
+                    TransportSource::ExecutableReturn,
+                    None,
+                    visiting,
+                ) {
+                    SourceShape::Exact(shape) => shapes.push(shape),
+                    SourceShape::Recursive => recursive = true,
+                    SourceShape::Unknown => return SourceShape::Unknown,
                 }
             }
         }
@@ -1458,16 +1424,17 @@ fn exact_shape_for_callsite(
             SourceShape::Unknown
         };
     }
-    if !shapes.windows(2).all(|pair| pair[0] == pair[1]) {
-        return SourceShape::Unknown;
+    if shapes.windows(2).all(|pair| pair[0] == pair[1]) {
+        *facts = staged;
+        SourceShape::Exact(shapes[0])
+    } else {
+        SourceShape::Unknown
     }
-    SourceShape::Exact(shapes[0])
 }
 
 fn callable_for_producer(
     world: &mut World<'_>,
     contexts: &HashMap<ExecutableKey, ExecutableContext>,
-    return_shapes: &HashMap<ExecutableKey, ShapeId>,
     facts: &mut TransportFactsBuilder,
     executable: &ExecutableKey,
     context: &ExecutableContext,
@@ -1500,7 +1467,6 @@ fn callable_for_producer(
             Some(shape_for_local_value(
                 world,
                 contexts,
-                return_shapes,
                 facts,
                 executable,
                 context,
@@ -1524,15 +1490,8 @@ fn callable_for_producer(
         contract_surfaces: Box::default(),
     });
     let boundary_ids = if callable_demand.opaque || callable_demand.escape {
-        let boundary_return_shapes = boundary_return_shapes_for_resolutions(
-            world,
-            contexts,
-            return_shapes,
-            facts,
-            &resolutions,
-            callable_ty,
-            &surface_demands,
-        );
+        let boundary_return_shapes =
+            boundary_return_shapes_for_resolutions(world, contexts, facts, &resolutions, callable_ty, &surface_demands);
         publish_boundaries_for_callable(
             world,
             facts,
@@ -1864,7 +1823,6 @@ fn boundary_return_shape_for_ty(world: &mut World<'_>, ret_ty: Ty, facts: &mut T
 fn boundary_return_shapes_for_resolutions(
     world: &mut World<'_>,
     contexts: &HashMap<ExecutableKey, ExecutableContext>,
-    return_shapes: &HashMap<ExecutableKey, ShapeId>,
     facts: &mut TransportFactsBuilder,
     resolutions: &[ExecutableSymbol],
     callable_ty: Ty,
@@ -1879,15 +1837,7 @@ fn boundary_return_shapes_for_resolutions(
         .iter()
         .zip(resolutions.iter())
         .map(|(surface, resolution)| {
-            boundary_return_shape_for_resolution(
-                world,
-                contexts,
-                return_shapes,
-                facts,
-                resolution,
-                callable_ty,
-                surface,
-            )
+            boundary_return_shape_for_resolution(world, contexts, facts, resolution, callable_ty, surface)
         })
         .collect()
 }
@@ -1895,7 +1845,6 @@ fn boundary_return_shapes_for_resolutions(
 fn boundary_return_shape_for_resolution(
     world: &mut World<'_>,
     contexts: &HashMap<ExecutableKey, ExecutableContext>,
-    return_shapes: &HashMap<ExecutableKey, ShapeId>,
     facts: &mut TransportFactsBuilder,
     resolution: &ExecutableSymbol,
     callable_ty: Ty,
@@ -1909,16 +1858,15 @@ fn boundary_return_shape_for_resolution(
         return boundary_return_shape_for_surface(world, callable_ty, surface, facts);
     };
     let demand = boundary_runtime_demand(world, context.return_ty);
-    shape_for_sources(
+    shape_for_source(
         world,
         contexts,
-        return_shapes,
         facts,
         executable,
         context,
         context.return_ty,
         &demand,
-        &context.return_sources,
+        TransportSource::ExecutableReturn,
         None,
     )
 }
@@ -2105,7 +2053,6 @@ fn resume_demand(
 fn resume_shape(
     world: &mut World<'_>,
     contexts: &HashMap<ExecutableKey, ExecutableContext>,
-    return_shapes: &HashMap<ExecutableKey, ShapeId>,
     facts: &mut TransportFactsBuilder,
     executable: &ExecutableKey,
     context: &ExecutableContext,
@@ -2119,20 +2066,15 @@ fn resume_shape(
         .get(&resume.value)
         .copied()
         .unwrap_or_else(|| world.types_mut().any());
-    exact_shape_for_callsite(world, contexts, return_shapes, executable, context, resume.callsite)
-        .exact()
-        .unwrap_or_else(|| {
-            shape_for_sources(
-                world,
-                contexts,
-                return_shapes,
-                facts,
-                executable,
-                context,
-                value_ty,
-                demand,
-                &[ProducedSource::Callsite(resume.callsite)],
-                publication,
-            )
-        })
+    shape_for_source(
+        world,
+        contexts,
+        facts,
+        executable,
+        context,
+        value_ty,
+        demand,
+        TransportSource::CallsiteReturn(resume.callsite),
+        publication,
+    )
 }

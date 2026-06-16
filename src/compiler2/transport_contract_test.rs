@@ -1,4 +1,5 @@
 use std::cell::RefCell;
+use std::collections::HashSet;
 use std::rc::Rc;
 
 use super::transport::{
@@ -1093,6 +1094,151 @@ fn main(), do: make_pairer()
 }
 
 #[test]
+fn compiler2_transport_plan_preserves_captured_callable_return_inside_boundary_tuple() {
+    let source = r#"
+fn make_suspender() do
+  fn (acc) ->
+    {:suspended, acc, fn () -> {:cont, acc + 1} end}
+  end
+end
+
+fn main(), do: make_suspender()
+"#;
+
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new(&tel);
+    world.submit_code(
+        Some("transport_boundary_suspend_tuple_return.fz".to_string()),
+        source.to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    drive_until_transport_plan(
+        &mut world,
+        root,
+        "boundary suspend-tuple fixture should produce a transport plan",
+    );
+
+    let plan = transport_plan(&world, root);
+    let make_suspender = executable_for(&world, &plan, "make_suspender", 0);
+    let outer = callable_return_for_executable(&world, &plan, make_suspender);
+    let boundary = boundary_with_callable_return(&world, &plan, outer);
+    let ShapeDescr::Tuple(items) = shape_descr(&world, boundary.published_return_shape) else {
+        panic!(
+            "a suspend-shaped callable return should publish a tuple return shape, got {:?}",
+            shape_descr(&world, boundary.published_return_shape)
+        );
+    };
+    let [tag_shape, acc_shape, resume_shape] = items.as_ref() else {
+        panic!("the suspend-shaped boundary return should have tag, accumulator, and resume callable fields")
+    };
+    assert!(
+        matches!(shape_descr(&world, *tag_shape), ShapeDescr::Lane(_)),
+        "the suspend tag should remain a normal lane field"
+    );
+    assert!(
+        matches!(shape_descr(&world, *acc_shape), ShapeDescr::Lane(_)),
+        "the suspend accumulator should remain a normal lane field"
+    );
+    assert!(
+        matches!(shape_descr(&world, *resume_shape), ShapeDescr::Callable(_)),
+        "the suspend resume function should remain a callable child shape, not a flattened lane"
+    );
+    assert_eq!(
+        boundary.published_return_lanes.len(),
+        3,
+        "boundary lane facts should flatten tag, accumulator, and the callable child into lanes without replacing the return structure"
+    );
+}
+
+#[test]
+fn compiler2_transport_plan_preserves_enumerable_suspend_continuation_captures() {
+    let source = r#"
+fn make() do
+  fn () ->
+    Enumerable.reduce([1, 2, 3], {:suspend, 0}, fn (x, acc) -> {:cont, acc + x} end)
+  end
+end
+
+fn main(), do: make()
+"#;
+
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new(&tel);
+    world.submit_code(
+        Some("transport_enumerable_reduce_suspend_continuation.fz".to_string()),
+        source.to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    drive_until_transport_plan(
+        &mut world,
+        root,
+        "Enumerable.reduce suspend fixture should produce a transport plan",
+    );
+
+    let plan = transport_plan(&world, root);
+    let make = executable_for(&world, &plan, "make", 0);
+    let outer = callable_return_for_executable(&world, &plan, make);
+    let boundary = boundary_with_callable_return(&world, &plan, outer);
+    let ShapeDescr::Tuple(items) = shape_descr(&world, boundary.published_return_shape) else {
+        panic!(
+            "the escaped callable should publish the Enumerable.reduce suspend tuple return shape, got {:?}",
+            shape_descr(&world, boundary.published_return_shape)
+        );
+    };
+    let [tag_shape, acc_shape, continuation_shape] = items.as_ref() else {
+        panic!("the suspend return should have tag, accumulator, and continuation fields")
+    };
+    assert!(
+        matches!(shape_descr(&world, *tag_shape), ShapeDescr::Lane(_)),
+        "the suspend tag should remain a normal lane field"
+    );
+    assert!(
+        matches!(shape_descr(&world, *acc_shape), ShapeDescr::Lane(_)),
+        "the suspended accumulator should remain a normal lane field"
+    );
+    let ShapeDescr::Callable(continuation) = shape_descr(&world, *continuation_shape) else {
+        panic!(
+            "the third suspend field should remain a callable continuation shape, got {:?}",
+            shape_descr(&world, *continuation_shape)
+        )
+    };
+    let continuation_descr = world.transport().interners().callable(*continuation);
+    assert_eq!(
+        continuation_descr.capture_shapes.len(),
+        3,
+        "the suspend continuation should capture the remaining list, accumulator, and reducer"
+    );
+    assert!(
+        matches!(
+            shape_descr(&world, continuation_descr.capture_shapes[2]),
+            ShapeDescr::Callable(_)
+        ),
+        "the captured reducer should remain callable-shaped inside the continuation descriptor"
+    );
+    assert_eq!(
+        plan.callables
+            .get(continuation)
+            .unwrap_or_else(|| panic!("returned continuation facts should be present"))
+            .boundary_ids
+            .len(),
+        1,
+        "the escaped suspend continuation should publish one zero-argument boundary contract"
+    );
+    let continuation_boundary = continuation_boundary_descr(&world, &plan, *continuation);
+    assert_eq!(
+        continuation_boundary.surface_arg_shapes.len(),
+        0,
+        "the suspend continuation boundary should expose the zero-argument callable surface"
+    );
+    assert_eq!(
+        continuation_boundary.published_capture_lanes.len(),
+        3,
+        "the continuation boundary should publish list, accumulator, and reducer capture lanes"
+    );
+    assert_no_unreachable_callable_facts(&world, &plan);
+}
+
+#[test]
 fn compiler2_transport_plan_keeps_direct_surfaces_when_a_callable_also_escapes() {
     let source = r#"
 fn main() do
@@ -1326,6 +1472,42 @@ fn compiler2_transport_plan_is_rederived_when_missing_after_unchanged_semantic_c
     assert!(
         world.transport().plans().get(root).is_some(),
         "transport plan should be restored even when SemanticClosed did not change"
+    );
+}
+
+#[test]
+fn compiler2_transport_plan_helper_preserves_pending_post_transport_consumers() {
+    let source = "fn main(), do: 41\n";
+
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new(&tel);
+    world.submit_code(
+        Some("transport_helper_preserves_consumers.fz".to_string()),
+        source.to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    assert_resolved(
+        world.drive_for(None),
+        "helper preservation fixture should initially settle",
+    );
+    world.transport_mut().plans_mut().remove(root);
+
+    let consumer = super::Job::MaterializeRoot(root);
+    world.demand(consumer.clone());
+
+    drive_until_transport_plan(
+        &mut world,
+        root,
+        "transport-only helper should produce a plan without consuming downstream jobs",
+    );
+
+    let mut remaining = Vec::new();
+    while let Some(job) = world.work_graph.pop() {
+        remaining.push(job);
+    }
+    assert!(
+        remaining.contains(&consumer),
+        "transport-only helper must not drop pending post-transport consumers; remaining={remaining:?}"
     );
 }
 
@@ -1627,11 +1809,13 @@ fn assert_resolved(outcome: DriveOutcome<super::Job, super::FactKey>, message: &
 fn drive_until_transport_plan(world: &mut World<'_>, root: super::RootId, message: &str) {
     world.demand(super::Job::DeriveTransportPlan(root));
     let mut ran = 0;
+    let mut deferred = Vec::new();
     while world.transport().plans().get(root).is_none() && ran < 10_000 {
         let Some(job) = world.work_graph.pop() else {
             break;
         };
         if is_post_transport_consumer_for_root(&job, root) {
+            deferred.push(job);
             continue;
         }
         let effects = super::jobs::run(world, &job).unwrap_or_else(|_| {
@@ -1639,6 +1823,9 @@ fn drive_until_transport_plan(world: &mut World<'_>, root: super::RootId, messag
         });
         world.complete_job(job, effects);
         ran += 1;
+    }
+    for job in deferred {
+        world.demand(job);
     }
     assert!(
         world.transport().plans().get(root).is_some(),
@@ -1798,11 +1985,116 @@ fn boundary_with_callable_arg<'a>(world: &'a World<'_>, plan: &TransportPlan) ->
         })
 }
 
+fn callable_return_for_executable(
+    world: &World<'_>,
+    plan: &TransportPlan,
+    executable: super::transport::ExecutableSymbol,
+) -> super::transport::CallableId {
+    let returned = plan_shape_at(plan, &TransportPosition::ExecutableReturn { executable });
+    let ShapeDescr::Callable(callable) = shape_descr(world, returned) else {
+        panic!(
+            "fixture executable should return a callable shape, got {:?}",
+            shape_descr(world, returned)
+        )
+    };
+    *callable
+}
+
+fn boundary_with_callable_return<'a>(
+    world: &'a World<'_>,
+    plan: &TransportPlan,
+    callable: super::transport::CallableId,
+) -> &'a BoundaryDescr {
+    plan.callables
+        .get(&callable)
+        .into_iter()
+        .flat_map(|facts| facts.boundary_ids.iter())
+        .map(|boundary| world.transport().interners().boundary(*boundary))
+        .find(|boundary| {
+            boundary.callable == callable && shape_contains_callable(world, boundary.published_return_shape)
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "callable {callable:?} should publish a boundary with a callable return child: {:?}",
+                plan.callables
+            )
+        })
+}
+
+fn continuation_boundary_descr<'a>(
+    world: &'a World<'_>,
+    plan: &TransportPlan,
+    callable: super::transport::CallableId,
+) -> &'a BoundaryDescr {
+    plan.callables
+        .get(&callable)
+        .into_iter()
+        .flat_map(|facts| facts.boundary_ids.iter())
+        .map(|boundary| world.transport().interners().boundary(*boundary))
+        .find(|boundary| boundary.callable == callable)
+        .unwrap_or_else(|| {
+            panic!(
+                "escaped callable {callable:?} should publish a boundary: {:?}",
+                plan.callables
+            )
+        })
+}
+
+fn assert_no_unreachable_callable_facts(world: &World<'_>, plan: &TransportPlan) {
+    let mut reachable = HashSet::new();
+    for shape in plan.positions.values().copied() {
+        collect_callable_shapes(world, shape, &mut reachable);
+    }
+    for boundary in boundary_descrs(world, plan) {
+        for shape in boundary.surface_arg_shapes.iter().copied() {
+            collect_callable_shapes(world, shape, &mut reachable);
+        }
+        collect_callable_shapes(world, boundary.published_return_shape, &mut reachable);
+    }
+    let unreachable = plan
+        .callables
+        .keys()
+        .copied()
+        .filter(|callable| !reachable.contains(callable))
+        .collect::<Vec<_>>();
+    assert!(
+        unreachable.is_empty(),
+        "callable facts must be justified by reachable transport shapes; unreachable={unreachable:?}; facts={:?}",
+        plan.callables
+    );
+}
+
+fn collect_callable_shapes(world: &World<'_>, shape: ShapeId, out: &mut HashSet<super::transport::CallableId>) {
+    match shape_descr(world, shape) {
+        ShapeDescr::Callable(callable) => {
+            out.insert(*callable);
+            let descr = world.transport().interners().callable(*callable);
+            for capture in descr.capture_shapes.iter().copied() {
+                collect_callable_shapes(world, capture, out);
+            }
+        }
+        ShapeDescr::Tuple(items) => {
+            for item in items.iter().copied() {
+                collect_callable_shapes(world, item, out);
+            }
+        }
+        ShapeDescr::Nothing | ShapeDescr::Lane(_) => {}
+    }
+}
+
 fn boundary_descrs<'a>(world: &'a World<'_>, plan: &TransportPlan) -> Vec<&'a BoundaryDescr> {
     plan.boundaries
         .keys()
         .map(|boundary| world.transport().interners().boundary(*boundary))
         .collect()
+}
+
+fn shape_contains_callable(world: &World<'_>, shape: ShapeId) -> bool {
+    match shape_descr(world, shape) {
+        ShapeDescr::Callable(_) => true,
+        ShapeDescr::Tuple(items) => items.iter().any(|item| shape_contains_callable(world, *item)),
+        ShapeDescr::Nothing | ShapeDescr::Lane(_) => false,
+    }
 }
 
 fn shape(id: &str) -> Option<&'static str> {

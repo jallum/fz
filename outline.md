@@ -483,6 +483,37 @@ boundary delivery, and per-kind seam telemetry counts. `fz-hwn.20.6` adds
 boxed-lane fixtures pinning that non-raw transported leaves publish explicit
 `ValueRef` seam facts instead of disappearing from the codegen fact table.
 
+`fz-rh2.26` resolved the `fz-hwn.20.7.blocker` semantic/fixpoint break that
+blocked callable boundary contracts. The worked source is a suspend-shaped
+boundary return:
+
+```fz
+fn make_suspender() do
+  fn (acc) ->
+    {:suspended, acc, fn () -> {:cont, acc + 1} end}
+  end
+end
+
+fn main(), do: make_suspender()
+```
+
+The transport contract is an escaped callable whose published return shape is
+`Tuple([tag lane, acc lane, callable resume child])`, with boundary lane facts
+flattening those three leaves without replacing the recursive return shape. The
+failure was before transport construction: `SealSemanticClosure(root)`
+discovered runtime-demand latent executables for the outer suspend lambda, the
+captured resume lambda, and `Kernel.+/2 [α0, int]`, then later treated one of
+its own dirty latent `Activation` facts as unavailable, completed a partial
+wait-free pass, and retracted the resume lambda's `ActivationInputs`.
+
+The fix is the semantic authority rule: activations published by
+`SealSemanticClosure` in the current pass are known by construction for that
+pass, while activation facts from other publishers still use the settled gate.
+That removes the self-dependency without making stale frontier facts permanent;
+normal rebased wait-free conclusions still retract frontiers after real source
+changes. The source fixture is now a live contract test and must not be weakened
+to a non-capturing resume function.
+
 The landed derivation boundary is explicit: callable and boundary facts are
 derived by the new transport calculator from settled demand, lowered callable
 use sites, local callable producers, captures, callsite summaries, and settled

@@ -107,7 +107,7 @@ pub(super) fn seal_semantic_closure(world: &mut World<'_>, root_id: RootId) -> R
     let mut outputs = Vec::new();
     let mut changed = Vec::new();
     let mut activation_input_contributions = Vec::new();
-    let mut bootstrapped_runtime_frontier = false;
+    let mut locally_published_activations = HashSet::new();
 
     let root_fact = FactKey::RootEntry(root_id);
     if world.fact_is_settled(&root_fact) {
@@ -167,7 +167,11 @@ pub(super) fn seal_semantic_closure(world: &mut World<'_>, root_id: RootId) -> R
         while let Some(executable) = pending.pop_front() {
             let activation = executable.activation.clone();
             let activation_fact = FactKey::Activation(activation.clone());
-            let activation_ready = read_fact(world, activation_fact, &mut reads, &mut waits);
+            let activation_ready = if locally_published_activations.contains(&activation) {
+                true
+            } else {
+                read_fact(world, activation_fact, &mut reads, &mut waits)
+            };
             if !activation_ready {
                 continue;
             }
@@ -277,22 +281,13 @@ pub(super) fn seal_semantic_closure(world: &mut World<'_>, root_id: RootId) -> R
             if executables.contains(&latent) {
                 continue;
             }
-            let latent_activation_fact = FactKey::Activation(latent.activation.clone());
             outputs.push(FactKey::Activation(latent.activation.clone()));
             outputs.push(FactKey::ActivationInputs(latent.activation.clone()));
             outputs.push(FactKey::Executable(latent.clone()));
             activation_input_contributions.push((latent.activation.clone(), latent.activation.input.clone()));
-            if !world.fact_is_settled(&latent_activation_fact) {
-                follow_up.insert(Job::AnalyzeActivation(latent.activation.clone()));
-                added = true;
-                bootstrapped_runtime_frontier = true;
-                continue;
-            }
+            locally_published_activations.insert(latent.activation.clone());
             pending.push_back(latent);
             added = true;
-        }
-        if bootstrapped_runtime_frontier {
-            break;
         }
         if !added {
             break;
@@ -301,11 +296,7 @@ pub(super) fn seal_semantic_closure(world: &mut World<'_>, root_id: RootId) -> R
 
     outputs.extend(executables.iter().cloned().map(FactKey::Executable));
 
-    if bootstrapped_runtime_frontier {
-        waits.clear();
-    }
-
-    if waits.is_empty() && !bootstrapped_runtime_frontier {
+    if waits.is_empty() {
         let semantic_closed_fact = FactKey::SemanticClosed(root_id);
         let closure_changed = world.define_semantic_closure(
             root_id,
