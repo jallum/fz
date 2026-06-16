@@ -2176,6 +2176,99 @@ fn compiler2_materialization_projects_only_the_closed_quicksort_frontier() {
 }
 
 #[test]
+fn compiler2_materialized_program_carries_transport_plan_refs_not_layout_trees() {
+    let tel = ConfiguredTelemetry::new();
+    let materialized = MaterializedProgramCapture::new();
+    tel.attach(
+        &["fz", "compiler2", "materialized_program", "defined"],
+        materialized.handler(),
+    );
+    let functions = FunctionCapture::new();
+    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+
+    let source = r#"
+fn apply1(f, x), do: f.(x)
+fn make_adder(a), do: fn (x) -> x + a end
+fn pair(x), do: {x, make_adder(x)}
+fn escape(), do: make_adder(10)
+
+fn main() do
+  {n, f} = pair(41)
+  {apply1(f, n), escape()}
+end
+"#;
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("materialized_transport_handoff_refs.fz".to_string()),
+        text: source.to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::TupleFields(2),
+    });
+
+    assert_resolved(
+        compiler.drive(),
+        "materialization should consume the transport plan handoff",
+    );
+
+    let program = materialized.last(root_id).program;
+    assert!(
+        program.transport_revision > 0,
+        "materialized programs should record the TransportPlan fact revision they consumed"
+    );
+    assert_eq!(
+        program.transport.executable_membership.len(),
+        program.executables.len(),
+        "materialized executable inventory should mirror TransportPlan membership"
+    );
+    assert!(
+        !program.transport.callable_ids.is_empty(),
+        "direct/escaped callables should be named by CallableId refs in the materialized handoff"
+    );
+    assert!(
+        !program.transport.boundary_ids.is_empty(),
+        "escaped callable publication should be named by BoundaryId refs in the materialized handoff"
+    );
+    assert!(
+        !program.transport.codegen_seam_facts.is_empty(),
+        "codegen seam facts should be carried as plan-owned rows, not recomputed from layout trees"
+    );
+
+    let pair_id = function_id(&functions, "pair", 1);
+    let main_id = function_id(&functions, "main", 0);
+    let (_, pair_executable) = materialized_executable(&program, pair_id);
+    assert!(
+        matches!(
+            pair_executable.transport.return_position,
+            crate::compiler2::transport::TransportPosition::ExecutableReturn { .. }
+        ),
+        "materialized executables should name their transport return position"
+    );
+    assert!(
+        !pair_executable.transport.input_positions.is_empty(),
+        "materialized executables should name their function-entry input positions"
+    );
+
+    let (_, main_executable) = materialized_executable(&program, main_id);
+    assert!(
+        !main_executable.transport.resume_positions.is_empty(),
+        "materialized executables should name delivered-resume positions from TransportPlan"
+    );
+    assert!(
+        !main_executable.transport.call_arg_positions.is_empty(),
+        "materialized executables should name call-argument positions from TransportPlan"
+    );
+    assert!(
+        !main_executable.transport.value_positions.is_empty(),
+        "materialized executables should name body-value positions from TransportPlan"
+    );
+}
+
+#[test]
 fn compiler2_materialization_turns_semantically_cold_cond_arms_into_halt_stubs() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
@@ -3321,8 +3414,11 @@ fn compiler2_artifact_ladder_consumes_only_the_previous_rung() {
     let materialize = outputs.effects(Job::MaterializeRoot(root_id));
     assert_eq!(
         materialize.reads,
-        vec![settled_fact(FactKey::SemanticClosed(root_id))],
-        "materialization should consume only the closed semantic root fact",
+        vec![
+            settled_fact(FactKey::SemanticClosed(root_id)),
+            settled_fact(FactKey::TransportPlan(root_id)),
+        ],
+        "materialization should consume the closed semantic root and its settled transport plan",
     );
     assert!(
         materialize.waits.is_empty(),

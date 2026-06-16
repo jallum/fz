@@ -21,8 +21,9 @@ use crate::parser::lexer::Tok;
 use super::super::artifact::{
     AbiReadyCallEdge, AbiReadyExecutable, AbiReadyProgram, AbiValueRepr, CallTarget, CallableEntry, EffectSummary,
     EmissionReadyCallEdge, EmissionReadyCallableEntry, EmissionReadyExecutable, EmissionReadyProgram,
-    ExecutableDispatch, MaterializedCallEdge, MaterializedExecutable, MaterializedProgram, TrashReturnAbi,
-    TrashRuntimeInputLayout, TrashRuntimeLane, TrashRuntimeParamLayout, TrashRuntimeValueLayout,
+    ExecutableDispatch, MaterializedCallEdge, MaterializedExecutable, MaterializedExecutableTransport,
+    MaterializedProgram, MaterializedTransportPlan, TrashReturnAbi, TrashRuntimeInputLayout, TrashRuntimeLane,
+    TrashRuntimeParamLayout, TrashRuntimeValueLayout,
 };
 use super::super::body::{
     CallArg, CallSiteId, ControlDestination, ControlDispatch, ControlEntryId, ControlEntryOrigin, DispatchBindings,
@@ -32,6 +33,7 @@ use super::super::drive::{FactKey, Job, JobEffects, settled_uses};
 use super::super::identity::{ActivationKey, ExecutableKey, ExecutableNeed, FunctionId, RootId};
 use super::super::scheduler::FatalError;
 use super::super::semantic::{ActivationAnalysis, CallSiteKey, CallTargetSummary, SelectedCallee};
+use super::super::transport::{ActivationSymbol, ExecutableSymbol, TransportPlan, TransportPosition};
 use super::super::types::Ty;
 use super::super::world::World;
 use super::semantic::executable_callsite_needs;
@@ -55,14 +57,29 @@ pub(super) fn materialize_root(world: &mut World<'_>, root_id: RootId) -> Result
             [super::super::Job::SealSemanticClosure(root_id)],
         ));
     }
+    let transport_fact = FactKey::TransportPlan(root_id);
+    if !world.fact_is_settled(&transport_fact) {
+        return Ok(JobEffects::wait_on_settled(
+            transport_fact,
+            [super::super::Job::DeriveTransportPlan(root_id)],
+        ));
+    }
 
     let closed_revision = world
         .fact_revision(&closed_fact)
         .expect("settled semantic closure should have a revision");
+    let transport_revision = world
+        .fact_revision(&transport_fact)
+        .expect("settled transport plan should have a revision");
+    let transport_plan = world
+        .transport()
+        .plans()
+        .get(root_id)
+        .cloned()
+        .expect("settled transport plan should be readable");
     let closure = world.semantic_closure(root_id);
-    let reads = settled_uses([closed_fact]);
+    let reads = settled_uses([closed_fact, transport_fact]);
     let mut executables = HashMap::new();
-    let mut original_entry_ids = HashMap::new();
 
     for executable in &closure.executables {
         let analysis = world
@@ -100,7 +117,6 @@ pub(super) fn materialize_root(world: &mut World<'_>, root_id: RootId) -> Result
             ));
         };
         let effects = local_effects(&body, &call_edges);
-        original_entry_ids.insert(executable.clone(), pruned.original_entry_ids);
         executables.insert(
             executable.clone(),
             MaterializedExecutable {
@@ -111,10 +127,8 @@ pub(super) fn materialize_root(world: &mut World<'_>, root_id: RootId) -> Result
                     .get(executable)
                     .cloned()
                     .expect("settled semantic closure should have runtime demand for every executable"),
-                runtime_params: TrashRuntimeParamLayout::from_inputs(Vec::new()),
-                return_layout: TrashRuntimeValueLayout::Omitted,
-                resume_layouts: Vec::new(),
-                entry_capture_layouts: Vec::new(),
+                transport: materialized_executable_transport(&transport_plan, executable),
+                original_entry_ids: pruned.original_entry_ids,
                 value_types: analysis.value_types,
                 effects,
                 body,
@@ -123,22 +137,13 @@ pub(super) fn materialize_root(world: &mut World<'_>, root_id: RootId) -> Result
         );
     }
 
-    let runtime_transports = derive_runtime_transports(world, &executables, &original_entry_ids);
-    for (key, transport) in runtime_transports {
-        let executable = executables
-            .get_mut(&key)
-            .expect("runtime transports should resolve for every materialized executable");
-        executable.runtime_params = transport.runtime_params;
-        executable.return_layout = transport.return_layout;
-        executable.resume_layouts = transport.resume_layouts;
-        executable.entry_capture_layouts = transport.entry_capture_layouts;
-    }
-
     settle_effects(world, root_id, &mut executables)?;
 
     let program = MaterializedProgram {
         semantic_revision: closed_revision,
+        transport_revision,
         entry: closure.entry,
+        transport: materialized_transport_plan(&transport_plan),
         executables,
     };
     let materialized_fact = FactKey::MaterializedProgram(root_id);
@@ -168,10 +173,28 @@ pub(super) fn derive_abi_ready(world: &mut World<'_>, root_id: RootId) -> Result
 
     let reads = settled_uses([materialized_fact]);
     let materialized = world.materialized_program(root_id);
+    let original_entry_ids = materialized
+        .executables
+        .iter()
+        .map(|(key, executable)| (key.clone(), executable.original_entry_ids.clone()))
+        .collect::<HashMap<_, _>>();
+    let runtime_transports = derive_runtime_transports(world, &materialized.executables, &original_entry_ids);
     let plans = materialized
         .executables
         .iter()
-        .map(|(key, executable)| (key.clone(), build_executable_abi_plan(world, key, executable)))
+        .map(|(key, executable)| {
+            (
+                key.clone(),
+                build_executable_abi_plan(
+                    world,
+                    key,
+                    executable,
+                    runtime_transports
+                        .get(key)
+                        .expect("runtime transport should exist for every materialized executable"),
+                ),
+            )
+        })
         .collect::<HashMap<_, _>>();
     let executables = materialized
         .executables
@@ -184,6 +207,9 @@ pub(super) fn derive_abi_ready(world: &mut World<'_>, root_id: RootId) -> Result
                     plans
                         .get(key)
                         .expect("ABI-ready executable plan should exist for every materialized executable"),
+                    runtime_transports
+                        .get(key)
+                        .expect("runtime transport should exist for every materialized executable"),
                 )?,
             ))
         })
@@ -225,6 +251,133 @@ struct ExecutableRuntimeTransport {
 struct PrunedLoweredBody {
     body: LoweredBody,
     original_entry_ids: Vec<ControlEntryId>,
+}
+
+fn materialized_transport_plan(plan: &TransportPlan) -> MaterializedTransportPlan {
+    let mut callable_ids = plan.callables.keys().copied().collect::<Vec<_>>();
+    callable_ids.sort_by_key(|callable| callable.as_u32());
+    let mut boundary_ids = plan.boundaries.keys().copied().collect::<Vec<_>>();
+    boundary_ids.sort_by_key(|boundary| boundary.as_u32());
+    MaterializedTransportPlan {
+        entry: plan.entry.clone(),
+        executable_membership: plan.executable_membership.clone(),
+        callable_ids,
+        boundary_ids,
+        codegen_seam_facts: plan.codegen_seam_facts.clone(),
+    }
+}
+
+fn materialized_executable_transport(
+    plan: &TransportPlan,
+    executable: &ExecutableKey,
+) -> MaterializedExecutableTransport {
+    let symbol = transport_executable_symbol(executable);
+    let mut input_positions = Vec::new();
+    let mut return_position = None;
+    let mut resume_positions = Vec::new();
+    let mut entry_capture_positions = Vec::new();
+    let mut call_arg_positions = Vec::new();
+    let mut value_positions = Vec::new();
+    for position in plan.positions.keys() {
+        if transport_position_executable(position) != &symbol {
+            continue;
+        }
+        match position {
+            TransportPosition::ExecutableInput { .. } => input_positions.push(position.clone()),
+            TransportPosition::ExecutableReturn { .. } => return_position = Some(position.clone()),
+            TransportPosition::ResumePayload { .. } => resume_positions.push(position.clone()),
+            TransportPosition::EntryCapture { .. } => entry_capture_positions.push(position.clone()),
+            TransportPosition::CallArg { .. } => call_arg_positions.push(position.clone()),
+            TransportPosition::Value { .. } => value_positions.push(position.clone()),
+        }
+    }
+    sort_transport_positions(&mut input_positions);
+    sort_transport_positions(&mut resume_positions);
+    sort_transport_positions(&mut entry_capture_positions);
+    sort_transport_positions(&mut call_arg_positions);
+    sort_transport_positions(&mut value_positions);
+    MaterializedExecutableTransport {
+        executable: symbol,
+        input_positions,
+        return_position: return_position.unwrap_or_else(|| {
+            panic!("transport plan should publish one return position for materialized executable {executable:?}")
+        }),
+        resume_positions,
+        entry_capture_positions,
+        call_arg_positions,
+        value_positions,
+    }
+}
+
+fn transport_executable_symbol(executable: &ExecutableKey) -> ExecutableSymbol {
+    ExecutableSymbol {
+        activation: ActivationSymbol {
+            function: executable.activation.function,
+            input: executable.activation.input.clone().into_boxed_slice(),
+        },
+        need: executable.need,
+    }
+}
+
+fn transport_position_executable(position: &TransportPosition) -> &ExecutableSymbol {
+    match position {
+        TransportPosition::ExecutableInput { executable, .. }
+        | TransportPosition::ExecutableReturn { executable }
+        | TransportPosition::ResumePayload { executable, .. }
+        | TransportPosition::CallArg { executable, .. }
+        | TransportPosition::EntryCapture { executable, .. }
+        | TransportPosition::Value { executable, .. } => executable,
+    }
+}
+
+fn sort_transport_positions(positions: &mut [TransportPosition]) {
+    positions.sort_by_key(transport_position_sort_key);
+}
+
+fn transport_position_sort_key(position: &TransportPosition) -> (u8, u32, u32, u32, usize) {
+    match position {
+        TransportPosition::ExecutableInput {
+            executable,
+            semantic_index,
+        } => (0, executable.activation.function.as_u32(), 0, 0, *semantic_index),
+        TransportPosition::ExecutableReturn { executable } => (1, executable.activation.function.as_u32(), 0, 0, 0),
+        TransportPosition::ResumePayload {
+            executable,
+            callsite,
+            entry,
+        } => (
+            2,
+            executable.activation.function.as_u32(),
+            callsite.as_u32(),
+            entry.as_u32(),
+            0,
+        ),
+        TransportPosition::EntryCapture {
+            executable,
+            entry,
+            capture_index,
+        } => (
+            3,
+            executable.activation.function.as_u32(),
+            0,
+            entry.as_u32(),
+            *capture_index,
+        ),
+        TransportPosition::CallArg {
+            executable,
+            callsite,
+            semantic_index,
+        } => (
+            4,
+            executable.activation.function.as_u32(),
+            callsite.as_u32(),
+            0,
+            *semantic_index,
+        ),
+        TransportPosition::Value { executable, value } => {
+            (5, executable.activation.function.as_u32(), value.as_u32(), 0, 0)
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2199,8 +2352,9 @@ fn build_executable_abi_plan(
     world: &mut World<'_>,
     _key: &ExecutableKey,
     executable: &MaterializedExecutable,
+    transport: &ExecutableRuntimeTransport,
 ) -> ExecutableAbiPlan {
-    let runtime_params = executable.runtime_params.clone();
+    let runtime_params = transport.runtime_params.clone();
     let param_reprs = runtime_params.abi_reprs();
     let mut value_reprs = HashMap::new();
     if let LoweredBody::Clauses { clauses, entries, .. } = &executable.body {
@@ -2231,6 +2385,7 @@ fn build_executable_abi_plan(
 fn derive_abi_ready_executable(
     executable: &MaterializedExecutable,
     plan: &ExecutableAbiPlan,
+    transport: &ExecutableRuntimeTransport,
 ) -> Result<AbiReadyExecutable, FatalError> {
     let call_edges = executable
         .call_edges
@@ -2251,12 +2406,12 @@ fn derive_abi_ready_executable(
         return_ty: executable.return_ty,
         param_reprs: plan.param_reprs.clone(),
         runtime_demand: executable.runtime_demand.clone(),
-        runtime_params: executable.runtime_params.clone(),
-        return_layout: executable.return_layout.clone(),
-        // The settled recursive resume transport from MaterializeRoot is the
-        // authority. We no longer recover it from the narrow return ABI.
-        resume_layouts: executable.resume_layouts.clone(),
-        entry_capture_layouts: executable.entry_capture_layouts.clone(),
+        runtime_params: transport.runtime_params.clone(),
+        return_layout: transport.return_layout.clone(),
+        // Temporary fz-hwn.19.2.3 removal target: ABI-ready still receives the
+        // old recursive transport until it reads TransportPlan seam facts.
+        resume_layouts: transport.resume_layouts.clone(),
+        entry_capture_layouts: transport.entry_capture_layouts.clone(),
         value_types: executable.value_types.clone(),
         value_reprs: plan.value_reprs.clone(),
         effects: executable.effects,

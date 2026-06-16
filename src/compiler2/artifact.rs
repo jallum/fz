@@ -33,6 +33,7 @@ use super::body::{
 };
 use super::identity::{ExecutableKey, FunctionId, RootId};
 use super::semantic::ExecutableRuntimeDemand;
+use super::transport::{BoundaryId, CallableId, CodegenSeamFact, ExecutableSymbol, TransportPosition};
 use super::types::Ty;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,8 +60,30 @@ impl<T: Copy> CallTarget<T> {
 #[derive(Debug, Clone, PartialEq)]
 pub struct MaterializedProgram {
     pub semantic_revision: u64,
+    pub transport_revision: u64,
     pub entry: ExecutableKey,
+    pub transport: MaterializedTransportPlan,
     pub executables: HashMap<ExecutableKey, MaterializedExecutable>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct MaterializedTransportPlan {
+    pub entry: ExecutableSymbol,
+    pub executable_membership: Box<[ExecutableSymbol]>,
+    pub callable_ids: Vec<CallableId>,
+    pub boundary_ids: Vec<BoundaryId>,
+    pub codegen_seam_facts: Box<[CodegenSeamFact]>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MaterializedExecutableTransport {
+    pub executable: ExecutableSymbol,
+    pub input_positions: Vec<TransportPosition>,
+    pub return_position: TransportPosition,
+    pub resume_positions: Vec<TransportPosition>,
+    pub entry_capture_positions: Vec<TransportPosition>,
+    pub call_arg_positions: Vec<TransportPosition>,
+    pub value_positions: Vec<TransportPosition>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -68,10 +91,8 @@ pub struct MaterializedExecutable {
     pub entry_dispatch: Option<ExecutableDispatch>,
     pub return_ty: Ty,
     pub runtime_demand: ExecutableRuntimeDemand,
-    pub runtime_params: TrashRuntimeParamLayout,
-    pub return_layout: TrashRuntimeValueLayout,
-    pub resume_layouts: Vec<Option<TrashRuntimeValueLayout>>,
-    pub entry_capture_layouts: Vec<Vec<TrashRuntimeValueLayout>>,
+    pub transport: MaterializedExecutableTransport,
+    pub original_entry_ids: Vec<ControlEntryId>,
     pub value_types: HashMap<ValueId, Ty>,
     pub effects: EffectSummary,
     pub body: LoweredBody,
