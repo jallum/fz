@@ -10,11 +10,6 @@ use crate::compiler::source::Span;
 use crate::diag::Diagnostic;
 use crate::diag::codes;
 use crate::diag::driver::emit_through;
-use crate::dispatch_matrix::pattern::{PatternDispatchOutcome, PatternDispatchPlan, PatternSubjectRef};
-use crate::dispatch_matrix::{
-    DispatchCompileOptions, DispatchMatrixBuilder, EdgeEvidence, EqualTypeRegionPolicy, Order, OutcomeMultiplicity,
-    RegionQuestion, compile_dispatch_matrix_with_type_order,
-};
 use crate::ir_lower::extern_ty_from_name;
 use crate::parser::lexer::Tok;
 
@@ -25,11 +20,10 @@ use super::super::artifact::{
     MaterializedProgram, MaterializedTransportPlan,
 };
 use super::super::body::{
-    CallArg, CallSiteId, ControlDestination, ControlDispatch, ControlEntryId, ControlEntryOrigin, DispatchBindings,
-    Literal, LoweredBody, LoweredEntry, LoweredStep, LoweredTail, ValueId,
+    CallArg, CallSiteId, ControlEntryId, Literal, LoweredBody, LoweredEntry, LoweredStep, LoweredTail, ValueId,
 };
 use super::super::drive::{FactKey, Job, JobEffects, settled_uses};
-use super::super::identity::{ActivationKey, ExecutableKey, ExecutableNeed, FunctionId, RootId};
+use super::super::identity::{ExecutableKey, ExecutableNeed, RootId};
 use super::super::scheduler::FatalError;
 use super::super::semantic::{ActivationAnalysis, CallSiteKey, CallTargetSummary, SelectedCallee};
 use super::super::transport::{
@@ -41,7 +35,6 @@ use super::super::world::World;
 use super::semantic::executable_callsite_needs;
 
 const UNREACHABLE_CONTROL_ATOM: &str = "compiler2_unreachable_control";
-const PROTOCOL_DISPATCH_UNPLANNED_ATOM: &str = "protocol_dispatch_unplanned";
 
 /// Materializes one closed root into a backend-owned program snapshot.
 ///
@@ -99,18 +92,9 @@ pub(super) fn materialize_root(world: &mut World<'_>, root_id: RootId) -> Result
             &analysis.reachable_clauses,
             &analysis.reachable_entries,
         );
-        let mut body = pruned.body;
-        let synthetic_targets = rewrite_protocol_dispatch_calls(world, root_id, executable, &analysis, &mut body)?;
+        let body = pruned.body;
         let callsite_args = collect_callsite_args(&body);
-        let Some(call_edges) = materialize_call_edges(
-            world,
-            root_id,
-            executable,
-            &analysis,
-            &body,
-            &callsite_args,
-            &synthetic_targets,
-        )?
+        let Some(call_edges) = materialize_call_edges(world, root_id, executable, &analysis, &body, &callsite_args)?
         else {
             return Err(incomplete_semantic_plan(
                 world,
@@ -482,164 +466,6 @@ pub(super) fn derive_emission_ready(world: &mut World<'_>, root_id: RootId) -> R
     })
 }
 
-#[derive(Debug, Clone)]
-struct SyntheticCallTarget {
-    function: FunctionId,
-    surface_inputs: Vec<Ty>,
-    activation: ActivationKey,
-    return_ty: Ty,
-}
-
-fn rewrite_protocol_dispatch_calls(
-    world: &mut World<'_>,
-    root_id: RootId,
-    executable: &ExecutableKey,
-    analysis: &ActivationAnalysis,
-    body: &mut LoweredBody,
-) -> Result<HashMap<CallSiteId, SyntheticCallTarget>, FatalError> {
-    let LoweredBody::Clauses { entries, .. } = body else {
-        return Ok(HashMap::new());
-    };
-
-    let mut synthetic = HashMap::new();
-    let mut next_entry_id = entries.len() as u32;
-    let mut next_callsite_id = next_callsite_id(entries);
-    let mut entry_index = 0;
-    while entry_index < entries.len() {
-        let entry = entries[entry_index].clone();
-        let LoweredTail::DirectCall {
-            value,
-            callsite,
-            args,
-            dest,
-            ..
-        } = entry.tail
-        else {
-            entry_index += 1;
-            continue;
-        };
-        let key = CallSiteKey {
-            activation: executable.activation.clone(),
-            callsite,
-        };
-        let Some(summary) = world.callsite_summary(&key).cloned() else {
-            entry_index += 1;
-            continue;
-        };
-        if summary.targets.len() <= 1 {
-            entry_index += 1;
-            continue;
-        }
-
-        let receiver_ty = args
-            .first()
-            .and_then(|arg| analysis.value_types.get(&arg.value).copied())
-            .unwrap_or_else(|| world.types_mut().any());
-        let mut targets = summary.targets.clone();
-        targets.sort_by_key(|target| match target.callee {
-            SelectedCallee::Function(function) => (
-                function.as_u32(),
-                target
-                    .activation
-                    .as_ref()
-                    .map(|activation| activation.input.len())
-                    .unwrap_or(0),
-            ),
-            SelectedCallee::ProviderBoundary(function) => (function.as_u32(), 0),
-        });
-        let plan = protocol_dispatch_plan(world, root_id, receiver_ty, &targets, entry.span)?;
-
-        let mut arm_entries = Vec::with_capacity(targets.len());
-        for target in &targets {
-            let SelectedCallee::Function(function) = target.callee else {
-                return Err(incomplete_semantic_plan(
-                    world,
-                    root_id,
-                    "multi-target direct-call dispatch cannot target a provider boundary",
-                ));
-            };
-            let arm_entry = ControlEntryId::from_u32(next_entry_id);
-            next_entry_id += 1;
-            let synthetic_callsite = CallSiteId::from_u32(next_callsite_id);
-            next_callsite_id += 1;
-            synthetic.insert(
-                synthetic_callsite,
-                SyntheticCallTarget {
-                    function,
-                    surface_inputs: target.surface_inputs.clone(),
-                    activation: target.activation.clone().ok_or_else(|| {
-                        incomplete_semantic_plan(
-                            world,
-                            root_id,
-                            format!(
-                                "dispatch target {} is missing its settled activation",
-                                function.as_u32()
-                            ),
-                        )
-                    })?,
-                    return_ty: target.settled_return(world.types_mut()),
-                },
-            );
-            arm_entries.push(arm_entry);
-            entries.push(LoweredEntry {
-                span: entry.span,
-                origin: ControlEntryOrigin::Branch,
-                params: Vec::new(),
-                captures: protocol_dispatch_entry_captures(entries, &args, &dest),
-                reusable_cons_captures: Vec::new(),
-                steps: Vec::new(),
-                tail: LoweredTail::DirectCall {
-                    value,
-                    callsite: synthetic_callsite,
-                    callee: function,
-                    args: args.clone(),
-                    dest: dest.clone(),
-                },
-            });
-        }
-
-        let miss_entry = ControlEntryId::from_u32(next_entry_id);
-        next_entry_id += 1;
-        entries.push(LoweredEntry {
-            span: entry.span,
-            origin: ControlEntryOrigin::Branch,
-            params: Vec::new(),
-            captures: Vec::new(),
-            reusable_cons_captures: Vec::new(),
-            steps: Vec::new(),
-            tail: LoweredTail::Halt {
-                atom: PROTOCOL_DISPATCH_UNPLANNED_ATOM.to_string(),
-            },
-        });
-
-        let receiver_value = args.first().map(|arg| arg.value).ok_or_else(|| {
-            incomplete_semantic_plan(
-                world,
-                root_id,
-                format!(
-                    "protocol dispatch callsite {} is missing its receiver",
-                    callsite.as_u32()
-                ),
-            )
-        })?;
-        entries[entry_index].tail = LoweredTail::Dispatch {
-            inputs: vec![receiver_value],
-            bindings: DispatchBindings {
-                pinned: Vec::new(),
-                prepared: Vec::new(),
-            },
-            dispatch: Box::new(ControlDispatch {
-                plan,
-                arm_entries,
-                miss_entry,
-            }),
-        };
-        entry_index += 1;
-    }
-
-    Ok(synthetic)
-}
-
 fn materialize_call_edges(
     world: &mut World<'_>,
     root_id: RootId,
@@ -647,7 +473,6 @@ fn materialize_call_edges(
     analysis: &ActivationAnalysis,
     body: &LoweredBody,
     callsite_args: &HashMap<CallSiteId, Vec<CallArg>>,
-    synthetic_targets: &HashMap<CallSiteId, SyntheticCallTarget>,
 ) -> Result<Option<HashMap<CallSiteId, MaterializedCallEdge>>, FatalError> {
     let mut call_edges = HashMap::new();
     let callsite_needs = callsite_needs_for_body(body, executable.need);
@@ -665,7 +490,6 @@ fn materialize_call_edges(
                     callsite_needs.get(callsite).copied().unwrap_or(ExecutableNeed::Value),
                     *callsite,
                     callsite_args,
-                    synthetic_targets,
                 )?
                 else {
                     return Ok(None);
@@ -703,37 +527,26 @@ fn materialize_direct_call_edge(
     need: ExecutableNeed,
     callsite: CallSiteId,
     callsite_args: &HashMap<CallSiteId, Vec<CallArg>>,
-    synthetic_targets: &HashMap<CallSiteId, SyntheticCallTarget>,
 ) -> Result<Option<MaterializedCallEdge>, FatalError> {
-    let target = if let Some(target) = synthetic_targets.get(&callsite) {
-        call_target_summary(
-            SelectedCallee::Function(target.function),
-            target.surface_inputs.clone(),
-            Some(target.activation.clone()),
-            target.return_ty,
-        )
-    } else {
-        let key = CallSiteKey {
-            activation: executable.activation.clone(),
-            callsite,
-        };
-        if !world.has_fact(&FactKey::CallSiteSummary(key.clone())) {
-            return Ok(None);
-        }
-        let Some(summary) = world.callsite_summary(&key).cloned() else {
-            return Ok(None);
-        };
-        let Some(target) = summary.single_target().cloned() else {
-            return Err(incomplete_semantic_plan(
-                world,
-                root_id,
-                format!(
-                    "materialization reached unresolved multi-target direct callsite {} without a dispatch rewrite",
-                    callsite.as_u32()
-                ),
-            ));
-        };
-        target
+    let key = CallSiteKey {
+        activation: executable.activation.clone(),
+        callsite,
+    };
+    if !world.has_fact(&FactKey::CallSiteSummary(key.clone())) {
+        return Ok(None);
+    }
+    let Some(summary) = world.callsite_summary(&key).cloned() else {
+        return Ok(None);
+    };
+    let Some(target) = summary.single_target().cloned() else {
+        return Err(incomplete_semantic_plan(
+            world,
+            root_id,
+            format!(
+                "materialization reached unresolved multi-target direct callsite {}; dispatch must be settled upstream",
+                callsite.as_u32()
+            ),
+        ));
     };
     lower_materialized_call_target(world, root_id, analysis, need, callsite, callsite_args, target).map(Some)
 }
@@ -823,138 +636,6 @@ fn callsite_needs_for_body(body: &LoweredBody, need: ExecutableNeed) -> HashMap<
             let clause_ids = (0..clauses.len() as u32).collect::<Vec<_>>();
             executable_callsite_needs(body, &clause_ids, need)
         }
-    }
-}
-
-fn next_callsite_id(entries: &[LoweredEntry]) -> u32 {
-    entries
-        .iter()
-        .filter_map(|entry| match entry.tail {
-            LoweredTail::DirectCall { callsite, .. } | LoweredTail::ClosureCall { callsite, .. } => {
-                Some(callsite.as_u32())
-            }
-            _ => None,
-        })
-        .max()
-        .map_or(0, |next| next + 1)
-}
-
-fn protocol_dispatch_entry_captures(
-    entries: &[LoweredEntry],
-    args: &[CallArg],
-    dest: &ControlDestination,
-) -> Vec<ValueId> {
-    let mut seen = HashSet::new();
-    let mut captures = Vec::new();
-    for arg in args {
-        if seen.insert(arg.value) {
-            captures.push(arg.value);
-        }
-    }
-    if let ControlDestination::Deliver(target) = dest {
-        for capture in &entries[target.as_u32() as usize].captures {
-            if seen.insert(*capture) {
-                captures.push(*capture);
-            }
-        }
-    }
-    captures
-}
-
-fn protocol_dispatch_plan(
-    world: &mut World<'_>,
-    root_id: RootId,
-    receiver_ty: Ty,
-    targets: &[CallTargetSummary],
-    span: Span,
-) -> Result<PatternDispatchPlan<Ty>, FatalError> {
-    let mut builder = DispatchMatrixBuilder::typed(Order::Specificity);
-    let receiver = builder.add_input_subject();
-    let mut outcomes = Vec::with_capacity(targets.len());
-    let mut covered = world.types_mut().none();
-    for (index, target) in targets.iter().enumerate() {
-        let target_ty = target
-            .surface_inputs
-            .first()
-            .copied()
-            .unwrap_or_else(|| world.types_mut().any());
-        covered = if world.types().is_empty(&covered) {
-            target_ty
-        } else {
-            world.types_mut().union(covered, target_ty)
-        };
-        let outcome = builder.add_outcome(OutcomeMultiplicity::Unique);
-        builder
-            .add_arm_questions(
-                vec![RegionQuestion::type_region(receiver, target_ty)],
-                EdgeEvidence::empty(),
-                outcome,
-            )
-            .map_err(|error| {
-                incomplete_semantic_plan(
-                    world,
-                    root_id,
-                    format!("protocol dispatch matrix build failed: {error:?}"),
-                )
-            })?;
-        outcomes.push(PatternDispatchOutcome {
-            outcome,
-            body_id: index as u32,
-            bindings: Vec::new(),
-            span,
-        });
-    }
-    let fallback =
-        (!world.types().is_subtype(&receiver_ty, &covered)).then_some(builder.add_outcome(OutcomeMultiplicity::Unique));
-    let matrix = builder.build().map_err(|error| {
-        incomplete_semantic_plan(
-            world,
-            root_id,
-            format!("protocol dispatch matrix build failed: {error:?}"),
-        )
-    })?;
-    let options = fallback
-        .map(DispatchCompileOptions::open)
-        .unwrap_or_else(DispatchCompileOptions::closed);
-    let graph = compile_dispatch_matrix_with_type_order(
-        world.types_mut(),
-        &matrix,
-        options,
-        EqualTypeRegionPolicy::DuplicateCoverage,
-    )
-    .map_err(|error| {
-        incomplete_semantic_plan(
-            world,
-            root_id,
-            format!("protocol dispatch graph compile failed: {error:?}"),
-        )
-    })?;
-    let mut subjects = vec![None; matrix.subjects.len()];
-    subjects[receiver.0 as usize] = Some(PatternSubjectRef::Input(0));
-    Ok(PatternDispatchPlan {
-        matrix,
-        graph: graph.graph,
-        input_count: 1,
-        subjects,
-        outcomes,
-        guards: Vec::new(),
-        pinned: Vec::new(),
-        prepared_keys: Vec::new(),
-        bitstring_direct_bindings: HashMap::new(),
-    })
-}
-
-fn call_target_summary(
-    callee: SelectedCallee,
-    surface_inputs: Vec<Ty>,
-    activation: Option<ActivationKey>,
-    return_ty: Ty,
-) -> CallTargetSummary {
-    CallTargetSummary {
-        callee,
-        surface_inputs,
-        activation,
-        return_ty: Some(return_ty),
     }
 }
 
@@ -1395,6 +1076,11 @@ fn build_executable_abi_plan(
             else {
                 return Vec::new();
             };
+            let publication_reprs =
+                function_entry_publication_reprs(&transport_plan.codegen_seam_facts, symbol, *semantic_index);
+            if !publication_reprs.is_empty() {
+                return publication_reprs;
+            }
             let shape = *transport_plan
                 .positions
                 .get(position)
@@ -1447,20 +1133,26 @@ fn build_executable_abi_plan(
                     else {
                         continue;
                     };
-                    let repr = seam_repr_for_lane(
-                        &transport_plan.codegen_seam_facts,
-                        |seam| {
-                            matches!(
-                                seam,
-                                CodegenSeam::FunctionEntry {
-                                    executable,
-                                    semantic_index: index
-                                } if executable == symbol && index == semantic_index
-                            )
-                        },
-                        Some(*leaf_shape),
-                        *lane,
-                    );
+                    let publication_reprs =
+                        function_entry_publication_reprs(&transport_plan.codegen_seam_facts, symbol, *semantic_index);
+                    let repr = if let [repr] = publication_reprs.as_slice() {
+                        *repr
+                    } else {
+                        seam_repr_for_lane(
+                            &transport_plan.codegen_seam_facts,
+                            |seam| {
+                                matches!(
+                                    seam,
+                                    CodegenSeam::FunctionEntry {
+                                        executable,
+                                        semantic_index: index
+                                    } if executable == symbol && index == semantic_index
+                                )
+                            },
+                            Some(*leaf_shape),
+                            *lane,
+                        )
+                    };
                     value_reprs.insert(value, repr);
                 }
             }
@@ -1510,6 +1202,27 @@ fn derive_abi_ready_executable(
         body: executable.body.clone(),
         call_edges,
     })
+}
+
+fn function_entry_publication_reprs(
+    facts: &[super::super::transport::CodegenSeamFact],
+    executable: &ExecutableSymbol,
+    semantic_index: usize,
+) -> Vec<AbiValueRepr> {
+    facts
+        .iter()
+        .filter(|fact| {
+            fact.shape.is_none()
+                && matches!(
+                    &fact.seam,
+                    CodegenSeam::FunctionEntry {
+                        executable: candidate,
+                        semantic_index: candidate_index,
+                    } if candidate == executable && *candidate_index == semantic_index
+                )
+        })
+        .map(|fact| abi_repr_from_codegen(fact.repr))
+        .collect()
 }
 
 fn shape_leaf_lanes_for_artifact(world: &World<'_>, shape: ShapeId) -> Vec<(ShapeId, LaneId)> {

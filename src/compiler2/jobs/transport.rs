@@ -1,7 +1,8 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 use super::super::body::{
-    CallArg, CallSiteId, ControlDestination, ControlEntryId, LoweredBody, LoweredStep, LoweredTail, ValueId,
+    CallArg, CallSiteId, ControlDestination, ControlEntryId, DeliveredValueSource, LoweredBody, LoweredStep,
+    LoweredTail, ValueId, delivered_value_joins,
 };
 use super::super::drive::{FactKey, Job, JobEffects, settled_uses};
 use super::super::identity::{ExecutableKey, ExecutableNeed, FunctionId, RootId};
@@ -36,8 +37,10 @@ struct ExecutableContext {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum TransportSource {
     ExecutableReturn,
+    ExecutableInput(usize),
     LocalValue(ValueId),
     CallsiteReturn(CallSiteId),
+    Join(Box<[TransportSource]>),
     TupleValue(Box<[ValueId]>),
     TupleField { source: ValueId, index: usize },
     CallableValue(LocalCallableProducer),
@@ -60,7 +63,6 @@ struct ResumeEntry {
 struct CallableFactsDraft {
     resolutions: Vec<ExecutableSymbol>,
     direct_surfaces: Vec<Box<[ShapeId]>>,
-    capture_lanes: Vec<LaneId>,
     boundary_ids: Vec<BoundaryId>,
 }
 
@@ -132,6 +134,30 @@ impl ShapeConstraintGraph {
             })
             .collect()
     }
+
+    fn equivalent_positions(&self) -> HashMap<TransportPosition, Vec<TransportPosition>> {
+        let mut union = PositionUnion::default();
+        for (position, _) in &self.anchors {
+            union.add(position.clone());
+        }
+        for (left, right) in &self.equalities {
+            union.union(left.clone(), right.clone());
+        }
+
+        let mut by_root = HashMap::<usize, Vec<TransportPosition>>::new();
+        for position in union.positions() {
+            let root = union.find_existing(position);
+            by_root.entry(root).or_default().push(position.clone());
+        }
+
+        let mut out = HashMap::new();
+        for positions in by_root.values() {
+            for position in positions {
+                out.insert(position.clone(), positions.clone());
+            }
+        }
+        out
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -201,25 +227,15 @@ impl TransportFactsBuilder {
         callable: CallableId,
         resolutions: Vec<ExecutableSymbol>,
         direct_surfaces: Vec<Box<[ShapeId]>>,
-        capture_lanes: Vec<LaneId>,
         boundary_ids: Vec<BoundaryId>,
     ) {
         let entry = self.callables.entry(callable).or_insert_with(|| CallableFactsDraft {
             resolutions: Vec::new(),
             direct_surfaces: Vec::new(),
-            capture_lanes: Vec::new(),
             boundary_ids: Vec::new(),
         });
         extend_unique(&mut entry.resolutions, resolutions);
         extend_unique(&mut entry.direct_surfaces, direct_surfaces);
-        if entry.capture_lanes.is_empty() {
-            entry.capture_lanes = capture_lanes;
-        } else if !capture_lanes.is_empty() {
-            assert_eq!(
-                entry.capture_lanes, capture_lanes,
-                "one CallableId must have one ordered capture-lane payload"
-            );
-        }
         extend_unique(&mut entry.boundary_ids, boundary_ids);
     }
 
@@ -229,6 +245,21 @@ impl TransportFactsBuilder {
         });
         if !entry.publications.contains(&publication) {
             entry.publications.push(publication);
+        }
+    }
+
+    fn expand_boundary_publications(&mut self, equivalents: &HashMap<TransportPosition, Vec<TransportPosition>>) {
+        for draft in self.boundaries.values_mut() {
+            let publications = draft.publications.clone();
+            for publication in publications {
+                if let Some(positions) = equivalents.get(&publication) {
+                    for position in positions {
+                        if !draft.publications.contains(position) {
+                            draft.publications.push(position.clone());
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -247,7 +278,6 @@ impl TransportFactsBuilder {
                     CallableFacts {
                         resolutions: draft.resolutions.into_boxed_slice(),
                         direct_surfaces: draft.direct_surfaces.into_boxed_slice(),
-                        capture_lanes: draft.capture_lanes.into_boxed_slice(),
                         boundary_ids: draft.boundary_ids.into_boxed_slice(),
                     },
                 )
@@ -321,13 +351,14 @@ pub(super) fn derive_transport_plan(world: &mut World<'_>, root_id: RootId) -> R
         }
         let resume_entries = collect_resume_entries(&body, &analysis);
         let mut local_sources = collect_value_sources(&body);
+        for (value, semantic_index) in collect_clause_parameter_sources(&body) {
+            local_sources.insert(value, TransportSource::ExecutableInput(semantic_index));
+        }
         for (value, callsite) in collect_callsite_result_origins(&body) {
             local_sources.insert(value, TransportSource::CallsiteReturn(callsite));
         }
-        for resume in &resume_entries {
-            if let Some(callsite) = resume.callsite {
-                local_sources.insert(resume.value, TransportSource::CallsiteReturn(callsite));
-            }
+        for (value, source) in collect_delivered_value_sources(&body) {
+            local_sources.insert(value, source);
         }
         contexts.insert(
             executable.clone(),
@@ -522,10 +553,12 @@ pub(super) fn derive_transport_plan(world: &mut World<'_>, root_id: RootId) -> R
         &local_shapes,
         &mut shape_graph,
     );
+    let equivalents = shape_graph.equivalent_positions();
     let positions = shape_graph.solve();
+    facts.expand_boundary_publications(&equivalents);
 
     let (callables, boundaries) = facts.finish();
-    let codegen_seam_facts = derive_codegen_seam_facts(world, &contexts, &positions, &boundaries);
+    let codegen_seam_facts = derive_codegen_seam_facts(world, &contexts, &positions, &callables, &boundaries);
 
     let changed = world.define_transport_plan(
         root_id,
@@ -596,6 +629,11 @@ fn collect_executable_input_constraints(
                 executable: symbol.clone(),
                 semantic_index,
             };
+            if executable_input_demand_requires_own_shape(&demand) && !shape_graph.has_anchor(&position) {
+                let shape = shape_for_executable_input(world, ty, &demand, facts, Some(position.clone()));
+                shape_graph.anchor(position, shape);
+                continue;
+            }
             if let Some(incoming) = incoming_executable_input_positions(world, contexts, executable, semantic_index) {
                 let incoming_shapes = incoming
                     .iter()
@@ -621,6 +659,14 @@ fn collect_executable_input_constraints(
                 shape_graph.anchor(position, shape);
             }
         }
+    }
+}
+
+fn executable_input_demand_requires_own_shape(demand: &RuntimeDemand) -> bool {
+    match demand {
+        RuntimeDemand::Ignore => false,
+        RuntimeDemand::Value | RuntimeDemand::TupleFields(_) => true,
+        RuntimeDemand::Callable(callable) => callable.opaque || callable.escape,
     }
 }
 
@@ -659,6 +705,7 @@ fn derive_codegen_seam_facts(
     world: &World<'_>,
     contexts: &HashMap<ExecutableKey, ExecutableContext>,
     positions: &HashMap<TransportPosition, ShapeId>,
+    callables: &HashMap<CallableId, CallableFacts>,
     boundaries: &HashMap<BoundaryId, BoundaryFacts>,
 ) -> Box<[CodegenSeamFact]> {
     let mut out = Vec::new();
@@ -807,12 +854,80 @@ fn derive_codegen_seam_facts(
                 lane,
                 repr: CodegenLaneRepr::ValueRef,
             });
-            if boundaries
-                .get(&boundary)
-                .is_some_and(|facts| !facts.publications.is_empty())
-            {
+        }
+        if let Some(facts) = boundaries.get(&boundary)
+            && !facts.publications.is_empty()
+        {
+            out.push(CodegenSeamFact {
+                seam: CodegenSeam::FirstClassPublication { boundary },
+                shape: None,
+                lane: descr.published_value_lane,
+                repr: CodegenLaneRepr::ValueRef,
+            });
+            for publication in facts.publications.iter() {
+                match publication {
+                    TransportPosition::ExecutableInput {
+                        executable,
+                        semantic_index,
+                    } => {
+                        out.push(CodegenSeamFact {
+                            seam: CodegenSeam::FunctionEntry {
+                                executable: executable.clone(),
+                                semantic_index: *semantic_index,
+                            },
+                            shape: None,
+                            lane: descr.published_value_lane,
+                            repr: CodegenLaneRepr::ValueRef,
+                        });
+                    }
+                    TransportPosition::ResumePayload {
+                        executable,
+                        callsite: Some(callsite),
+                        entry,
+                    } => {
+                        out.push(CodegenSeamFact {
+                            seam: CodegenSeam::ContinuationEntry {
+                                executable: executable.clone(),
+                                callsite: *callsite,
+                                entry: *entry,
+                            },
+                            shape: None,
+                            lane: descr.published_value_lane,
+                            repr: CodegenLaneRepr::ValueRef,
+                        });
+                    }
+                    TransportPosition::ResumePayload {
+                        executable,
+                        callsite: None,
+                        entry,
+                    }
+                    | TransportPosition::EntryCapture { executable, entry, .. } => {
+                        out.push(CodegenSeamFact {
+                            seam: CodegenSeam::BlockParam {
+                                executable: executable.clone(),
+                                entry: *entry,
+                            },
+                            shape: None,
+                            lane: descr.published_value_lane,
+                            repr: CodegenLaneRepr::ValueRef,
+                        });
+                    }
+                    TransportPosition::ExecutableReturn { .. }
+                    | TransportPosition::CallArg { .. }
+                    | TransportPosition::Value { .. } => {}
+                }
+            }
+        }
+    }
+    for (callable, facts) in callables {
+        let descr = world.transport().interners().callable(*callable);
+        for (semantic_index, lane) in callable_function_entry_publication_lanes(world, descr) {
+            for executable in facts.resolutions.iter() {
                 out.push(CodegenSeamFact {
-                    seam: CodegenSeam::FirstClassPublication { boundary },
+                    seam: CodegenSeam::FunctionEntry {
+                        executable: executable.clone(),
+                        semantic_index,
+                    },
                     shape: None,
                     lane,
                     repr: CodegenLaneRepr::ValueRef,
@@ -822,6 +937,21 @@ fn derive_codegen_seam_facts(
     }
     out.sort_by_key(codegen_seam_fact_sort_key);
     out.into_boxed_slice()
+}
+
+fn callable_function_entry_publication_lanes(world: &World<'_>, descr: &CallableDescr) -> Vec<(usize, LaneId)> {
+    let mut lane_index = 0;
+    let mut lanes = Vec::new();
+    for (semantic_index, shape) in descr.capture_shapes.iter().copied().enumerate() {
+        let structural_width = lanes_for_codegen_seam_shape(world, shape).len();
+        if structural_width == 0 && lane_index < descr.capture_lanes.len() {
+            lanes.push((semantic_index, descr.capture_lanes[lane_index]));
+            lane_index += 1;
+        } else {
+            lane_index += structural_width;
+        }
+    }
+    lanes
 }
 
 fn resume_callsite_for_entry(context: &ExecutableContext, entry: ControlEntryId) -> Option<CallSiteId> {
@@ -1113,6 +1243,33 @@ fn collect_callsite_result_origins(body: &LoweredBody) -> HashMap<ValueId, CallS
     out
 }
 
+fn collect_delivered_value_sources(body: &LoweredBody) -> HashMap<ValueId, TransportSource> {
+    delivered_value_joins(body)
+        .into_values()
+        .map(|join| {
+            let mut sources = join
+                .sources
+                .into_iter()
+                .map(|source| match source {
+                    DeliveredValueSource::LocalValue(value) => TransportSource::LocalValue(value),
+                    DeliveredValueSource::CallsiteReturn(callsite) => TransportSource::CallsiteReturn(callsite),
+                })
+                .collect::<Vec<_>>();
+            sources.sort_by_key(transport_source_sort_key);
+            sources.dedup();
+            let source = match sources.as_slice() {
+                [source] => source.clone(),
+                _ => TransportSource::Join(sources.into_boxed_slice()),
+            };
+            (join.value, source)
+        })
+        .collect()
+}
+
+fn transport_source_sort_key(source: &TransportSource) -> String {
+    format!("{source:?}")
+}
+
 fn collect_value_sources(body: &LoweredBody) -> HashMap<ValueId, TransportSource> {
     let mut out = HashMap::new();
     let LoweredBody::Clauses { clauses, entries, .. } = body else {
@@ -1129,6 +1286,23 @@ fn collect_value_sources(body: &LoweredBody) -> HashMap<ValueId, TransportSource
         }
     }
     out
+}
+
+fn collect_clause_parameter_sources(body: &LoweredBody) -> Vec<(ValueId, usize)> {
+    let LoweredBody::Clauses { clauses, .. } = body else {
+        return Vec::new();
+    };
+    clauses
+        .iter()
+        .flat_map(|clause| {
+            clause
+                .params
+                .iter()
+                .copied()
+                .enumerate()
+                .map(|(semantic_index, value)| (value, semantic_index))
+        })
+        .collect()
 }
 
 fn collect_step_origin(step: &LoweredStep, out: &mut HashMap<ValueId, TransportSource>) {
@@ -1452,6 +1626,9 @@ fn project_source(
             publication,
             visiting,
         ),
+        TransportSource::ExecutableInput(semantic_index) => {
+            project_executable_input_source(world, contexts, facts, executable, ty, demand, semantic_index, visiting)
+        }
         TransportSource::LocalValue(value) => match context.local_sources.get(&value).cloned() {
             Some(TransportSource::CallableValue(producer)) => project_callable_value(
                 world,
@@ -1483,6 +1660,18 @@ fn project_source(
         TransportSource::CallsiteReturn(callsite) => {
             project_callsite_return(world, contexts, facts, executable, context, callsite, demand, visiting)
         }
+        TransportSource::Join(sources) => project_sources(
+            world,
+            contexts,
+            facts,
+            executable,
+            context,
+            ty,
+            demand,
+            &sources,
+            publication,
+            visiting,
+        ),
         TransportSource::TupleValue(items) => project_tuple_value(
             world, contexts, facts, executable, context, ty, demand, &items, visiting,
         ),
@@ -1551,7 +1740,150 @@ fn project_sources(
         *facts = staged;
         SourceShape::Exact(exact[0])
     } else {
+        if matches!(demand, RuntimeDemand::Callable(callable) if callable.opaque || callable.escape) {
+            *facts = staged;
+        }
         SourceShape::Unknown
+    }
+}
+
+fn project_executable_input_source(
+    world: &mut World<'_>,
+    contexts: &HashMap<ExecutableKey, ExecutableContext>,
+    facts: &mut TransportFactsBuilder,
+    executable: &ExecutableKey,
+    ty: Ty,
+    demand: &RuntimeDemand,
+    semantic_index: usize,
+    visiting: &mut Vec<(ExecutableKey, TransportSource, RuntimeDemand)>,
+) -> SourceShape {
+    let mut sources = Vec::new();
+    collect_call_arg_input_sources(world, contexts, executable, semantic_index, &mut sources);
+    collect_callable_capture_input_sources(contexts, executable, semantic_index, &mut sources);
+    if sources.is_empty() {
+        return SourceShape::Unknown;
+    }
+
+    let mut staged = facts.clone();
+    let mut exact = Vec::new();
+    let mut recursive = false;
+    for (source_executable, value) in sources {
+        let Some(source_context) = contexts.get(&source_executable) else {
+            return SourceShape::Unknown;
+        };
+        let Some(source_ty) = source_context.analysis.value_types.get(&value).copied() else {
+            return SourceShape::Unknown;
+        };
+        match project_source(
+            world,
+            contexts,
+            &mut staged,
+            &source_executable,
+            source_context,
+            source_ty,
+            demand,
+            TransportSource::LocalValue(value),
+            None,
+            visiting,
+        ) {
+            SourceShape::Exact(shape) => exact.push(shape),
+            SourceShape::Recursive => recursive = true,
+            SourceShape::Unknown => return SourceShape::Unknown,
+        }
+    }
+    if exact.is_empty() {
+        return if recursive {
+            SourceShape::Recursive
+        } else {
+            SourceShape::Unknown
+        };
+    }
+    if exact.windows(2).all(|pair| pair[0] == pair[1]) {
+        *facts = staged;
+        SourceShape::Exact(exact[0])
+    } else if exact
+        .iter()
+        .all(|shape| matches!(world.transport().interners().shape(*shape), ShapeDescr::Nothing))
+    {
+        SourceShape::Exact(generic_shape_from_demand(
+            world,
+            ty,
+            &RuntimeDemand::Ignore,
+            facts,
+            None,
+        ))
+    } else {
+        SourceShape::Unknown
+    }
+}
+
+fn collect_call_arg_input_sources(
+    world: &World<'_>,
+    contexts: &HashMap<ExecutableKey, ExecutableContext>,
+    executable: &ExecutableKey,
+    semantic_index: usize,
+    out: &mut Vec<(ExecutableKey, ValueId)>,
+) {
+    for (caller, context) in contexts {
+        if caller == executable {
+            continue;
+        }
+        for (callsite, args) in &context.callsite_args {
+            let Some(capture_prefix) = executable.activation.input.len().checked_sub(args.len()) else {
+                continue;
+            };
+            if semantic_index < capture_prefix {
+                continue;
+            }
+            let arg_index = semantic_index - capture_prefix;
+            let Some(arg) = args.get(arg_index) else {
+                continue;
+            };
+            if context
+                .callsite_needs
+                .get(callsite)
+                .copied()
+                .unwrap_or(ExecutableNeed::Value)
+                != executable.need
+            {
+                continue;
+            }
+            let key = CallSiteKey {
+                activation: caller.activation.clone(),
+                callsite: *callsite,
+            };
+            let Some(summary) = world.callsite_summary(&key) else {
+                continue;
+            };
+            if !summary.targets.iter().any(|target| {
+                target.activation.as_ref().is_some_and(|activation| {
+                    activation.function == executable.activation.function
+                        && activation.input == executable.activation.input
+                })
+            }) {
+                continue;
+            }
+            out.push((caller.clone(), arg.value));
+        }
+    }
+}
+
+fn collect_callable_capture_input_sources(
+    contexts: &HashMap<ExecutableKey, ExecutableContext>,
+    executable: &ExecutableKey,
+    semantic_index: usize,
+    out: &mut Vec<(ExecutableKey, ValueId)>,
+) {
+    for (producer_executable, context) in contexts {
+        for flow in context.runtime_demand.callable_flows.values() {
+            if !flow.resolutions.iter().any(|resolution| resolution == executable) {
+                continue;
+            }
+            let Some(capture) = flow.captures.get(semantic_index).copied() else {
+                continue;
+            };
+            out.push((producer_executable.clone(), capture));
+        }
     }
 }
 
@@ -1818,10 +2150,10 @@ fn callable_for_producer(
     let capture_lanes = capture_shapes
         .iter()
         .copied()
-        .flat_map(|shape| {
-            lanes_for_codegen_seam_shape(world, shape)
-                .into_iter()
-                .map(|(_, lane)| lane)
+        .zip(capture_tys.iter().copied())
+        .zip(capture_demands.iter())
+        .flat_map(|((shape, capture_ty), demand)| {
+            capture_lanes_for_callable_descriptor(world, shape, capture_ty, demand)
         })
         .collect::<Vec<_>>();
     let callable = world.transport_mut().interners_mut().intern_callable(CallableDescr {
@@ -1854,13 +2186,7 @@ fn callable_for_producer(
     } else {
         Vec::new()
     };
-    facts.record_callable(
-        callable,
-        resolution_symbols,
-        direct_surfaces,
-        capture_lanes,
-        boundary_ids,
-    );
+    facts.record_callable(callable, resolution_symbols, direct_surfaces, boundary_ids);
     Some(callable)
 }
 
@@ -1970,13 +2296,7 @@ fn generic_callable_shape(
         capture_lanes: Box::default(),
         contract_surfaces: published_surface_shapes.clone().into_boxed_slice(),
     });
-    let publishes_boundary = demand.opaque || demand.escape;
-    let direct_surfaces = if demand.resolved.is_empty() {
-        Vec::new()
-    } else {
-        surface_shapes(world, &demand.resolved, facts)
-    };
-    let boundary_ids = if publishes_boundary {
+    let boundary_ids = if !surfaces.is_empty() {
         let return_shapes = boundary_return_shapes_for_callable_surfaces(world, ty, surfaces, facts);
         publish_boundaries_for_callable(
             world,
@@ -1992,7 +2312,7 @@ fn generic_callable_shape(
     } else {
         Vec::new()
     };
-    facts.record_callable(callable, Vec::new(), direct_surfaces, Vec::new(), boundary_ids);
+    facts.record_callable(callable, Vec::new(), Vec::new(), boundary_ids);
     world
         .transport_mut()
         .interners_mut()
@@ -2028,6 +2348,7 @@ fn publish_boundaries_for_callable(
     {
         let return_ty = boundary_return_ty_for_surface(world, callable_ty, surface);
         let return_lanes = boundary_lanes_for_shape(world, return_shape, return_ty).into_boxed_slice();
+        let published_value_lane = value_lane(world, callable_ty);
         let arg_lanes = arg_shapes
             .iter()
             .copied()
@@ -2037,6 +2358,7 @@ fn publish_boundaries_for_callable(
         let boundary = world.transport_mut().interners_mut().intern_boundary(BoundaryDescr {
             callable,
             surface_arg_shapes: arg_shapes.clone(),
+            published_value_lane,
             published_capture_lanes: capture_lanes.to_vec().into_boxed_slice(),
             published_arg_lanes: arg_lanes.into_boxed_slice(),
             published_return_shape: return_shape,
@@ -2048,6 +2370,21 @@ fn publish_boundaries_for_callable(
         boundary_ids.push(boundary);
     }
     boundary_ids
+}
+
+fn capture_lanes_for_callable_descriptor(
+    world: &mut World<'_>,
+    shape: ShapeId,
+    ty: Ty,
+    demand: &RuntimeDemand,
+) -> Vec<LaneId> {
+    if matches!(demand, RuntimeDemand::Callable(callable) if callable.opaque || callable.escape) {
+        return vec![value_lane(world, ty)];
+    }
+    lanes_for_codegen_seam_shape(world, shape)
+        .into_iter()
+        .map(|(_, lane)| lane)
+        .collect()
 }
 
 fn boundary_return_shape_for_ty(world: &mut World<'_>, ret_ty: Ty, facts: &mut TransportFactsBuilder) -> ShapeId {

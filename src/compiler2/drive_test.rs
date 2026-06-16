@@ -2751,7 +2751,6 @@ fn main(), do: make()
 }
 
 #[test]
-#[ignore = "fz-hwn.19.2.4 WIP: downstream native lowering waits on the transport-backed artifact handoff; fz-hwn.19.2.6 covers this as a pure transport contract"]
 fn compiler2_abi_ready_matches_direct_callable_captures_by_canonical_activation_key() {
     let tel = ConfiguredTelemetry::new();
     let functions = FunctionCapture::new();
@@ -4050,7 +4049,6 @@ fn compiler2_native_program_matches_tuple_field_call_continuations_to_the_callee
 }
 
 #[test]
-#[ignore = "fz-hwn.19.2.4 WIP: downstream native-program inventory waits on the transport-backed artifact handoff"]
 fn compiler2_native_program_keeps_direct_only_enum_reduce_out_of_callable_inventory() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
@@ -4119,7 +4117,6 @@ fn compiler2_native_program_keeps_direct_only_enum_reduce_out_of_callable_invent
 }
 
 #[test]
-#[ignore = "fz-hwn.19.2.4 WIP: downstream native-program inventory waits on the transport-backed artifact handoff"]
 fn compiler2_native_program_keeps_distinct_direct_callable_executables_for_same_surface_when_capture_identity_differs()
 {
     let tel = ConfiguredTelemetry::new();
@@ -4204,7 +4201,6 @@ end
 }
 
 #[test]
-#[ignore = "red-worklist: triage + re-enable"]
 fn compiler2_native_program_joins_callable_resume_before_materializing_closure_call() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
@@ -4575,7 +4571,6 @@ fn compiler2_native_codegen_brackets_every_phase_under_one_compile_span() {
 }
 
 #[test]
-#[ignore = "fz-hwn.19.2.4 WIP: downstream native execution waits on the transport-backed artifact handoff"]
 fn compiler2_native_program_jit_runs_spawn_then_receive_through_compiler2_codegen() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
@@ -4659,7 +4654,6 @@ fn compiler2_native_program_jit_runs_spawn_then_receive_through_compiler2_codege
 }
 
 #[test]
-#[ignore = "fz-hwn.19.2.4 WIP: downstream native execution waits on the transport-backed artifact handoff"]
 fn compiler2_native_program_jit_runs_spawn_receive_and_assert_through_compiler2_codegen() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
@@ -4704,7 +4698,6 @@ fn compiler2_native_program_jit_runs_spawn_receive_and_assert_through_compiler2_
 }
 
 #[test]
-#[ignore = "fz-hwn.19.2.4 WIP: downstream native execution waits on the transport-backed artifact handoff"]
 fn compiler2_native_program_jit_runs_enum_reduce_through_compiler2_codegen() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
@@ -4797,7 +4790,6 @@ fn compiler2_native_program_jit_runs_enum_map_reduce_with_direct_closure_targets
 }
 
 #[test]
-#[ignore = "fz-hwn.19.2.4 WIP: downstream native execution waits on the transport-backed artifact handoff"]
 fn compiler2_native_program_jit_runs_source_lambda_sugars_through_compiler2_codegen() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
@@ -4834,6 +4826,12 @@ fn compiler2_native_program_jit_runs_source_lambda_sugars_through_compiler2_code
     assert!(
         program.callable_boundaries.is_empty() && native_callable_boundary_uses(&program).is_empty(),
         "direct-only lambda sugars should stay out of native callable-boundary inventory when they never escape",
+    );
+    assert!(
+        native_closure_call_targets(&program)
+            .into_iter()
+            .all(|target| target.is_some()),
+        "direct-only lambda sugars should lower every closure call with an exact direct target before codegen",
     );
     let compiled = jit_compile_native_program(&mut compiler, &program);
     let _ = compiled.run(&tel, program.entry);
@@ -5255,7 +5253,6 @@ fn compiler2_interp_runs_quicksort_from_backend_artifacts() {
 }
 
 #[test]
-#[ignore = "fz-hwn.19.2.4 WIP: downstream backend interpreter execution waits on the transport-backed artifact handoff"]
 fn compiler2_interp_runs_enum_reduce_from_backend_artifacts() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
@@ -7574,7 +7571,6 @@ fn compiler2_lowering_routes_nontail_if_join_flow_through_delivered_resume() {
 }
 
 #[test]
-#[ignore = "fz-hwn.19.2.4 WIP: downstream native-program inventory waits on the transport-backed artifact handoff"]
 fn compiler2_native_program_routes_nontail_if_join_flow_through_continuation_entries() {
     let tel = ConfiguredTelemetry::new();
     let native = NativeProgramCapture::new();
@@ -8072,7 +8068,6 @@ end
 }
 
 #[test]
-#[ignore = "fz-hwn.19.2.4 WIP: downstream native execution waits on the transport-backed artifact handoff"]
 fn compiler2_native_program_jit_runs_nontail_if_join_flow_through_compiler2_codegen() {
     let tel = ConfiguredTelemetry::new();
     let dbg = DbgCapture::new();

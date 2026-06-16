@@ -20,6 +20,7 @@ use super::super::body::{
 use super::super::contract::FunctionContract;
 use super::super::drive::{FactKey, Job, JobEffects, current_uses};
 use super::super::identity::{ActivationKey, ExecutableNeed, FunctionId, ModuleId, function_id_of_closure_target};
+use super::super::protocol::ProtocolCallbackImpl;
 use super::super::scheduler::FatalError;
 use super::super::semantic::{ActivationAnalysis, CallSiteKey, CallSiteSummary, CallTargetSummary, SelectedCallee};
 use super::super::types::{ClosureTarget, Ty};
@@ -1266,6 +1267,7 @@ fn resolve_protocol_call(
         return Ok((None, Vec::new(), None));
     }
 
+    let matches = merge_protocol_matches_by_function(world, matches);
     let mut targets = Vec::new();
     let mut activations = Vec::new();
     let mut return_ty = None;
@@ -1312,6 +1314,24 @@ fn resolve_protocol_call(
         });
     }
     Ok((Some(CallSiteSummary { targets, return_ty }), activations, return_ty))
+}
+
+fn merge_protocol_matches_by_function(
+    world: &mut World<'_>,
+    matches: Vec<(ProtocolCallbackImpl, Ty)>,
+) -> Vec<(ProtocolCallbackImpl, Ty)> {
+    let mut merged = Vec::<(ProtocolCallbackImpl, Ty)>::new();
+    for (selected, overlap) in matches {
+        if let Some((_, existing_overlap)) = merged
+            .iter_mut()
+            .find(|(existing, _)| existing.function == selected.function)
+        {
+            *existing_overlap = world.types_mut().union(*existing_overlap, overlap);
+        } else {
+            merged.push((selected, overlap));
+        }
+    }
+    merged
 }
 
 fn resolve_closure_call(
@@ -1619,13 +1639,15 @@ fn merge_call_targets(
     for observed_target in observed {
         if let Some(current_target) = current
             .iter_mut()
-            .find(|target| target.callee == observed_target.callee && target.activation == observed_target.activation)
+            .find(|target| target.callee == observed_target.callee)
         {
             merge_summary_input_vec(
                 world,
                 &mut current_target.surface_inputs,
                 &observed_target.surface_inputs,
             );
+            current_target.activation =
+                merge_target_activation(world, current_target.activation.take(), observed_target.activation)?;
             current_target.return_ty = join_evidence(world, current_target.return_ty, observed_target.return_ty);
             continue;
         }
@@ -1635,6 +1657,24 @@ fn merge_call_targets(
         return Err(FatalError);
     }
     Ok(())
+}
+
+fn merge_target_activation(
+    world: &mut World<'_>,
+    current: Option<ActivationKey>,
+    observed: Option<ActivationKey>,
+) -> Result<Option<ActivationKey>, FatalError> {
+    match (current, observed) {
+        (Some(mut current), Some(observed)) => {
+            if current.root != observed.root || current.function != observed.function {
+                return Err(FatalError);
+            }
+            merge_summary_input_vec(world, &mut current.input, &observed.input);
+            Ok(Some(current))
+        }
+        (None, None) => Ok(None),
+        (Some(_), None) | (None, Some(_)) => Err(FatalError),
+    }
 }
 
 /// Published call-edge summaries live on the semantic/artifact plane, not the

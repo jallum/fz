@@ -36,7 +36,9 @@ use super::super::drive::{FactKey, Job, JobEffects, settled_uses};
 use super::super::identity::{FunctionId, RootId};
 use super::super::scheduler::FatalError;
 use super::super::semantic::RuntimeDemand;
-use super::super::transport::{CodegenLaneRepr, CodegenSeam, LaneId, ShapeDescr, ShapeId, TransportPosition};
+use super::super::transport::{
+    CallableId, CodegenLaneRepr, CodegenSeam, LaneId, ShapeDescr, ShapeId, TransportPosition,
+};
 use super::super::types::Ty;
 use super::super::world::World;
 
@@ -418,7 +420,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
         );
         let entry_tys = executable_input_tys(self.world, self.program, executable);
         let entry_vars = ctx.entry_params(entry_tys.as_slice());
-        let semantic_inputs = bind_executable_inputs(self.world, self.program, executable, &entry_vars)?;
+        let semantic_inputs = bind_executable_inputs(self.world, self.program, executable, &mut ctx, &entry_vars)?;
         let dispatch = executable
             .entry_dispatch
             .as_ref()
@@ -509,10 +511,10 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
         let mut env = ValueEnv::default();
         let entry_tys = executable_input_tys(self.world, self.program, executable);
         let entry_vars = ctx.entry_params(entry_tys.as_slice());
-        let semantic_inputs = bind_executable_inputs(self.world, self.program, executable, &entry_vars)?;
+        let semantic_inputs = bind_executable_inputs(self.world, self.program, executable, &mut ctx, &entry_vars)?;
         for (value, bound) in clause.params.iter().copied().zip(semantic_inputs) {
             if let Some(bound) = bound {
-                bind_local_value(self.world, &mut ctx, executable, &mut env, value, bound);
+                bind_local_value(&mut ctx, executable, &mut env, value, bound);
             }
         }
         self.lower_entry_steps(&mut ctx, executable, &mut env, &clause.projections)?;
@@ -607,8 +609,22 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
         self.mark_delivered_entry_semantics(&mut ctx, executable, entry, &entry_vars[..capture_offset])?;
         for (value, position) in entry.captures.iter().copied().zip(entry.capture_positions.iter()) {
             let shape = position_shape(self.program, position);
-            let bound = decode_runtime_value(self.world, &entry_vars, shape, &mut capture_offset)?;
-            bind_local_value(self.world, &mut ctx, executable, &mut env, value, bound);
+            let bound = decode_runtime_value(self.world, &mut ctx, &entry_vars, shape, &mut capture_offset).map_err(|_| {
+                incomplete_native_program(
+                    self.world,
+                    self.root_id,
+                    format!(
+                        "native entry {:?} failed to decode capture {} at position {:?} with shape {:?}; offset={} params={}",
+                        ctx.origin,
+                        value.as_u32(),
+                        position,
+                        self.world.transport().interners().shape(shape),
+                        capture_offset,
+                        entry_vars.len()
+                    ),
+                )
+            })?;
+            bind_local_value(&mut ctx, executable, &mut env, value, bound);
         }
         for (capture, physical_var) in entry
             .reusable_cons_captures
@@ -666,22 +682,34 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                     self.bind_runtime_value(ctx, executable, env, *value, var);
                 }
                 BackendStep::Tuple { value, items } => {
-                    let fields = env.values(items).ok_or_else(|| {
-                        incomplete_native_program(
-                            self.world,
-                            self.root_id,
-                            "native tuple build referenced an unbound value",
-                        )
-                    })?;
-                    let shape = value_shape(self.program, executable, *value);
-                    bind_local_value(
-                        self.world,
-                        ctx,
-                        executable,
-                        env,
-                        *value,
-                        TrashRealizedValue::tuple(shape, fields),
-                    );
+                    if let Some(shape) = maybe_value_shape(self.program, executable, *value)
+                        && let ShapeDescr::Tuple(fields) = self.world.transport().interners().shape(shape).clone()
+                    {
+                        if fields.len() != items.len() {
+                            return Err(FatalError);
+                        }
+                        let mut lanes = Vec::new();
+                        for (item, field_shape) in items.iter().copied().zip(fields) {
+                            self.encode_env_value_for_shape(ctx, executable, env, item, field_shape, &mut lanes)?;
+                        }
+                        bind_local_value(
+                            ctx,
+                            executable,
+                            env,
+                            *value,
+                            NativeBoundValue::Transport { shape, lanes },
+                        );
+                    } else {
+                        let fields = self.env_runtime_vars(ctx, executable, env, items).map_err(|_| {
+                            incomplete_native_program(
+                                self.world,
+                                self.root_id,
+                                "native tuple build referenced an unbound value",
+                            )
+                        })?;
+                        let (var, _) = ctx.emit_let(Prim::MakeTuple(fields));
+                        self.bind_runtime_value(ctx, executable, env, *value, var);
+                    }
                 }
                 BackendStep::List { value, items, tail } => {
                     let vars = self.env_runtime_vars(ctx, executable, env, items).map_err(|_| {
@@ -800,13 +828,17 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                     self.bind_runtime_value(ctx, executable, env, *value, var);
                 }
                 BackendStep::FunctionRef { value, function: _ } => {
+                    let shape = value_shape(self.program, executable, *value);
+                    callable_id_for_shape(self.world, shape)?;
                     bind_local_value(
-                        self.world,
                         ctx,
                         executable,
                         env,
                         *value,
-                        TrashRealizedValue::direct_callable(value_shape(self.program, executable, *value), Vec::new()),
+                        NativeBoundValue::Transport {
+                            shape,
+                            lanes: Vec::new(),
+                        },
                     );
                 }
                 BackendStep::Lambda {
@@ -814,23 +846,50 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                     function: _,
                     captures,
                 } => {
-                    let capture_values = env.values(captures).ok_or_else(|| {
-                        incomplete_native_program(
+                    let shape = value_shape(self.program, executable, *value);
+                    let callable = callable_id_for_shape(self.world, shape)?;
+                    let callable_descr = self.world.transport().interners().callable(callable).clone();
+                    let capture_shapes = callable_descr.capture_shapes.to_vec();
+                    if capture_shapes.len() != captures.len() {
+                        return Err(incomplete_native_program(
                             self.world,
                             self.root_id,
-                            "native direct callable build referenced an unbound capture",
-                        )
-                    })?;
+                            "native direct callable capture count did not match transport callable descriptor",
+                        ));
+                    }
+                    let mut capture_lanes = Vec::new();
+                    let mut descriptor_lane_index = 0;
+                    for (capture, shape) in captures.iter().copied().zip(capture_shapes) {
+                        let structural_width = shape_width(self.world, shape);
+                        if structural_width == 0 && descriptor_lane_index < callable_descr.capture_lanes.len() {
+                            let lane = callable_descr.capture_lanes[descriptor_lane_index];
+                            descriptor_lane_index += 1;
+                            let local = env
+                                .cloned_value(capture)
+                                .ok_or_else(|| missing_backend_value(self.root_id, capture))?;
+                            let ty = self.world.transport().interners().lane(lane).ty;
+                            capture_lanes.push(self.materialize_native_value(ctx, Some(ty), &local)?);
+                        } else {
+                            self.encode_env_value_for_shape(ctx, executable, env, capture, shape, &mut capture_lanes)?;
+                            descriptor_lane_index += structural_width;
+                        }
+                    }
+                    if descriptor_lane_index != callable_descr.capture_lanes.len() {
+                        return Err(incomplete_native_program(
+                            self.world,
+                            self.root_id,
+                            "native lambda capture lowering did not consume the callable descriptor capture lanes",
+                        ));
+                    }
                     bind_local_value(
-                        self.world,
                         ctx,
                         executable,
                         env,
                         *value,
-                        TrashRealizedValue::direct_callable(
-                            value_shape(self.program, executable, *value),
-                            capture_values,
-                        ),
+                        NativeBoundValue::Transport {
+                            shape,
+                            lanes: capture_lanes,
+                        },
                     );
                 }
                 BackendStep::BinaryOp { value, op, left, right } => {
@@ -900,32 +959,25 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                     let realized = env
                         .cloned_value(*source)
                         .ok_or_else(|| missing_backend_value(self.root_id, *source))?;
-                    let known_tuple = matches!(
-                        self.world.transport().interners().shape(realized.shape),
-                        ShapeDescr::Tuple(fields) if fields.len() == *arity
-                    );
-                    if !known_tuple {
-                        let source = self.materialize_native_value(ctx, None, &realized)?;
-                        let tuple_ty = RuntimeTypePredicate::tuple_arity(*arity);
-                        let (matches, _) = ctx.emit_let(Prim::RuntimeTypeTest(source, Box::new(tuple_ty)));
-                        ctx.assert_truthy(matches, self.atom_id("match_error"));
+                    if self.transport_tuple_arity(&realized) == Some(*arity) {
+                        continue;
                     }
+                    let source = self.materialize_native_value(ctx, None, &realized)?;
+                    let tuple_ty = RuntimeTypePredicate::tuple_arity(*arity);
+                    let (matches, _) = ctx.emit_let(Prim::RuntimeTypeTest(source, Box::new(tuple_ty)));
+                    ctx.assert_truthy(matches, self.atom_id("match_error"));
                 }
                 BackendStep::TupleField { value, source, index } => {
                     let realized = env
                         .cloned_value(*source)
                         .ok_or_else(|| missing_backend_value(self.root_id, *source))?;
-                    let field = if let Some(fields) = realized.tuple_fields(self.world) {
-                        fields
-                            .get(*index)
-                            .cloned()
-                            .ok_or_else(|| missing_backend_value(self.root_id, *source))?
+                    if let Some(field) = self.transport_tuple_field(&realized, *index)? {
+                        bind_local_value(ctx, executable, env, *value, field);
                     } else {
                         let tuple = self.materialize_native_value(ctx, None, &realized)?;
                         let (var, _) = ctx.emit_let(Prim::TupleField(tuple, *index as u32));
-                        TrashRealizedValue::runtime(var, value_shape(self.program, executable, *value))
-                    };
-                    bind_local_value(self.world, ctx, executable, env, *value, field);
+                        bind_local_value(ctx, executable, env, *value, NativeBoundValue::Runtime(var));
+                    }
                 }
                 BackendStep::AssertEmptyList { source } => {
                     let source = self
@@ -1018,23 +1070,38 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                     CallTarget::Local(callee) => {
                         let callee_executable = &self.program.executables[*callee];
                         let mut lanes = Vec::new();
-                        let input_shapes = executable_input_shapes(self.program, callee_executable);
-                        for (arg, (_, shape)) in args.iter().zip(input_shapes.iter().copied()) {
+                        let input_bindings = executable_input_bindings(self.program, callee_executable);
+                        for (arg, binding) in args.iter().zip(input_bindings.iter()) {
                             let local = env.cloned_value(arg.value).ok_or_else(|| {
                                 incomplete_native_program(
                                     self.world,
                                     self.root_id,
-                                    "native direct call referenced an unbound argument",
+                                    format!(
+                                        "native direct call in {:?} from {:?} to {:?} referenced unbound argument {}; bound values={:?}",
+                                        ctx.origin,
+                                        executable.key,
+                                        callee_executable.key,
+                                        arg.value.as_u32(),
+                                        env.bound_values(),
+                                    ),
                                 )
                             })?;
-                            self.encode_runtime_value(
-                                ctx,
-                                callee_executable,
-                                Some(arg.value),
-                                &local,
-                                shape,
-                                &mut lanes,
-                            )?;
+                            if binding.publication_lanes.is_empty() {
+                                self.encode_runtime_value(
+                                    ctx,
+                                    callee_executable,
+                                    Some(arg.value),
+                                    &local,
+                                    binding.shape,
+                                    &mut lanes,
+                                )?;
+                            } else {
+                                lanes.push(self.materialize_native_value(
+                                    ctx,
+                                    executable.value_types.get(&arg.value).copied(),
+                                    &local,
+                                )?);
+                            }
                         }
                         (DirectCallTarget::Local(self.executable_fns[*callee]), lanes)
                     }
@@ -1085,106 +1152,105 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                 dest,
                 ..
             } => {
-                match env
+                let callee_value = env
                     .cloned_value(*callee)
-                    .ok_or_else(|| missing_backend_value(self.root_id, *callee))?
-                {
-                    callee_value
-                        if matches!(
-                            self.world.transport().interners().shape(callee_value.shape),
-                            ShapeDescr::Callable(_)
-                        ) =>
-                    {
-                        let target = target.ok_or_else(|| {
-                            incomplete_native_program(
-                                self.world,
-                                self.root_id,
-                                "native direct-only closure call did not settle an exact local target",
-                            )
-                        })?;
-                        let callee_executable = &self.program.executables[target];
-                        // The realized direct-callable's lanes are already the flat ABI
-                        // lanes for the callee's leading capture inputs (that is how
-                        // capture layout was settled), so forward them directly. The
-                        // capture/arg split is the callee's own fact: total inputs minus
-                        // the explicit call args.
-                        let mut call_args = callee_value.lanes;
-                        let input_shapes = executable_input_shapes(self.program, callee_executable);
-                        let arg_inputs_start = input_shapes.len().checked_sub(args.len()).ok_or(FatalError)?;
-                        for (arg, (_, shape)) in args.iter().zip(input_shapes.iter().copied().skip(arg_inputs_start)) {
-                            let local = env.cloned_value(arg.value).ok_or(FatalError)?;
-                            self.encode_runtime_value(
-                                ctx,
-                                callee_executable,
-                                Some(arg.value),
-                                &local,
-                                shape,
-                                &mut call_args,
-                            )?;
-                        }
-                        let callee = DirectCallTarget::Local(self.executable_fns[target]);
-                        match dest {
-                            ControlDestination::Return => {
-                                ctx.set_term(Term::TailCall {
-                                    ident: CallsiteIdent::from_source(Span::DUMMY),
-                                    callee,
-                                    args: call_args,
-                                    is_back_edge: false,
-                                });
-                                Ok(())
-                            }
-                            ControlDestination::Deliver(entry_id) => {
-                                let continuation =
-                                    self.entry_continuation(ctx, executable, entries, entry_fns, *entry_id, env)?;
-                                ctx.set_term(Term::Call {
-                                    ident: CallsiteIdent::from_source(Span::DUMMY),
-                                    callee,
-                                    args: call_args,
-                                    continuation,
-                                });
-                                Ok(())
-                            }
-                        }
-                    }
-                    other => {
-                        let closure = self.materialize_native_value(ctx, None, &other)?;
-                        let call_args = self
-                            .env_runtime_vars(
-                                ctx,
-                                executable,
-                                env,
-                                &args.iter().map(|arg| arg.value).collect::<Vec<_>>(),
-                            )
-                            .map_err(|_| {
+                    .ok_or_else(|| missing_backend_value(self.root_id, *callee))?;
+                if let Some(capture_lanes) = self.direct_callable_lanes(&callee_value)? {
+                    let target = target.ok_or_else(|| {
+                        incomplete_native_program(
+                            self.world,
+                            self.root_id,
+                            "native direct-only closure call did not settle an exact local target",
+                        )
+                    })?;
+                    let callee_executable = &self.program.executables[target];
+                    let mut call_args = capture_lanes;
+                    let input_shapes = executable_input_shapes(self.program, callee_executable);
+                    let arg_inputs_start = input_shapes.len().checked_sub(args.len()).ok_or(FatalError)?;
+                    for (arg, (_, shape)) in args.iter().zip(input_shapes.iter().copied().skip(arg_inputs_start)) {
+                        let local = env.cloned_value(arg.value).ok_or_else(|| {
                                 incomplete_native_program(
                                     self.world,
                                     self.root_id,
-                                    "native closure call referenced an unbound argument",
+                                    format!(
+                                        "native direct closure call in {:?} to {:?} referenced unbound argument {}; bound values={:?}",
+                                        ctx.origin,
+                                        callee_executable.key,
+                                        arg.value.as_u32(),
+                                        env.bound_values(),
+                                    ),
                                 )
                             })?;
-                        let direct_target = target.map(|target| self.executable_fns[target]);
-                        match dest {
-                            ControlDestination::Return => {
-                                ctx.set_term(Term::TailCallClosure {
-                                    ident: CallsiteIdent::from_source(Span::DUMMY),
-                                    closure,
-                                    direct_target,
-                                    args: call_args,
-                                });
-                                Ok(())
-                            }
-                            ControlDestination::Deliver(entry_id) => {
-                                let continuation =
-                                    self.entry_continuation(ctx, executable, entries, entry_fns, *entry_id, env)?;
-                                ctx.set_term(Term::CallClosure {
-                                    ident: CallsiteIdent::from_source(Span::DUMMY),
-                                    closure,
-                                    direct_target,
-                                    args: call_args,
-                                    continuation,
-                                });
-                                Ok(())
-                            }
+                        self.encode_runtime_value(
+                            ctx,
+                            callee_executable,
+                            Some(arg.value),
+                            &local,
+                            shape,
+                            &mut call_args,
+                        )?;
+                    }
+                    let callee = DirectCallTarget::Local(self.executable_fns[target]);
+                    match dest {
+                        ControlDestination::Return => {
+                            ctx.set_term(Term::TailCall {
+                                ident: CallsiteIdent::from_source(Span::DUMMY),
+                                callee,
+                                args: call_args,
+                                is_back_edge: false,
+                            });
+                            Ok(())
+                        }
+                        ControlDestination::Deliver(entry_id) => {
+                            let continuation =
+                                self.entry_continuation(ctx, executable, entries, entry_fns, *entry_id, env)?;
+                            ctx.set_term(Term::Call {
+                                ident: CallsiteIdent::from_source(Span::DUMMY),
+                                callee,
+                                args: call_args,
+                                continuation,
+                            });
+                            Ok(())
+                        }
+                    }
+                } else {
+                    let closure = self.materialize_native_value(ctx, None, &callee_value)?;
+                    let call_args = self
+                        .env_runtime_vars(
+                            ctx,
+                            executable,
+                            env,
+                            &args.iter().map(|arg| arg.value).collect::<Vec<_>>(),
+                        )
+                        .map_err(|_| {
+                            incomplete_native_program(
+                                self.world,
+                                self.root_id,
+                                "native closure call referenced an unbound argument",
+                            )
+                        })?;
+                    let direct_target = target.map(|target| self.executable_fns[target]);
+                    match dest {
+                        ControlDestination::Return => {
+                            ctx.set_term(Term::TailCallClosure {
+                                ident: CallsiteIdent::from_source(Span::DUMMY),
+                                closure,
+                                direct_target,
+                                args: call_args,
+                            });
+                            Ok(())
+                        }
+                        ControlDestination::Deliver(entry_id) => {
+                            let continuation =
+                                self.entry_continuation(ctx, executable, entries, entry_fns, *entry_id, env)?;
+                            ctx.set_term(Term::CallClosure {
+                                ident: CallsiteIdent::from_source(Span::DUMMY),
+                                closure,
+                                direct_target,
+                                args: call_args,
+                                continuation,
+                            });
+                            Ok(())
                         }
                     }
                 }
@@ -1248,7 +1314,9 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                             "native local dispatch referenced an unbound pinned value",
                         )
                     })?;
-                let mut state = DispatchState::new(input_vars.clone(), input_vars, pinned_vars);
+                let forwarded_vars =
+                    self.control_dispatch_forwarded_args(ctx, executable, entries, &dispatch.arm_entries, env)?;
+                let mut state = DispatchState::new(input_vars, forwarded_vars, pinned_vars);
                 self.lower_control_dispatch_node(
                     ctx,
                     executable,
@@ -1485,8 +1553,18 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                     return Ok(0);
                 }
                 let mut lane_index = 0;
-                let bound = decode_runtime_value(self.world, entry_vars, shape, &mut lane_index)?;
-                bind_local_value(self.world, ctx, executable, env, *value, bound);
+                let publication_lanes =
+                    position_publication_lanes(self.program, |seam| continuation_seam_matches(position, seam));
+                let bound = decode_runtime_value_with_width(
+                    entry_vars,
+                    shape,
+                    position_width(self.world, shape, &publication_lanes),
+                    !publication_lanes.is_empty(),
+                    self.world,
+                    ctx,
+                    &mut lane_index,
+                )?;
+                bind_local_value(ctx, executable, env, *value, bound);
                 Ok(lane_index)
             }
         }
@@ -1503,8 +1581,17 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
             return Ok(());
         };
         let shape = position_shape(self.program, position);
+        let publication_lanes =
+            position_publication_lanes(self.program, |seam| continuation_seam_matches(position, seam));
         let mut lane_index = 0;
-        if let Some(demand) = executable.runtime_demand.value_demands.get(value) {
+        if !publication_lanes.is_empty() {
+            let demand = executable
+                .runtime_demand
+                .value_demands
+                .get(value)
+                .unwrap_or(&RuntimeDemand::Ignore);
+            mark_ignored_publication_lanes(&mut ctx.builder, input_vars, demand, &mut lane_index)?;
+        } else if let Some(demand) = executable.runtime_demand.value_demands.get(value) {
             mark_ignored_lanes_for_demand(self.world, &mut ctx.builder, input_vars, shape, demand, &mut lane_index)?;
         } else {
             mark_all_runtime_lanes_ignored(self.world, &mut ctx.builder, input_vars, shape, &mut lane_index)?;
@@ -1697,8 +1784,21 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
             BackendEntryOrigin::Clause | BackendEntryOrigin::Branch | BackendEntryOrigin::ReceiveOutcome => Vec::new(),
             BackendEntryOrigin::DeliveredResume { position, .. } => {
                 let mut lanes = Vec::new();
-                let shape = position_shape(self.program, position);
-                self.encode_env_value_for_shape(ctx, executable, env, value_id, shape, &mut lanes)?;
+                let publication_lanes =
+                    position_publication_lanes(self.program, |seam| continuation_seam_matches(position, seam));
+                if publication_lanes.is_empty() {
+                    let shape = position_shape(self.program, position);
+                    self.encode_env_value_for_shape(ctx, executable, env, value_id, shape, &mut lanes)?;
+                } else {
+                    let local = env
+                        .cloned_value(value_id)
+                        .ok_or_else(|| missing_backend_value(self.root_id, value_id))?;
+                    lanes.push(self.materialize_native_value(
+                        ctx,
+                        executable.value_types.get(&value_id).copied(),
+                        &local,
+                    )?);
+                }
                 lanes
             }
         };
@@ -1840,7 +1940,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                         format!("local dispatch arm {} is out of bounds", body_id),
                     )
                 })?;
-                let args = self.entry_capture_args(ctx, executable, entries, arm_entry, env)?;
+                let args = self.control_dispatch_entry_args(ctx, executable, entries, arm_entry, env, state)?;
                 ctx.set_term(Term::TailCall {
                     ident: CallsiteIdent::from_source(Span::DUMMY),
                     callee: DirectCallTarget::Local(
@@ -1897,6 +1997,73 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                 )
             }
         }
+    }
+
+    fn control_dispatch_forwarded_args(
+        &mut self,
+        ctx: &mut NativeFnCtx,
+        executable: &BackendExecutable,
+        entries: &[BackendEntry],
+        arm_entries: &[ControlEntryId],
+        env: &ValueEnv,
+    ) -> Result<Vec<Var>, FatalError> {
+        let Some(first_entry) = arm_entries.first().map(|entry_id| &entries[entry_id.as_u32() as usize]) else {
+            return Ok(Vec::new());
+        };
+        let params = first_entry.params.clone();
+        for entry_id in arm_entries.iter().copied().skip(1) {
+            let entry = &entries[entry_id.as_u32() as usize];
+            if entry.params != params {
+                return Err(incomplete_native_program(
+                    self.world,
+                    self.root_id,
+                    format!(
+                        "local dispatch arm entries disagree on forwarded params: entry {} has {:?}, expected {:?}",
+                        entry_id.as_u32(),
+                        entry.params,
+                        params
+                    ),
+                ));
+            }
+        }
+        self.env_runtime_vars(ctx, executable, env, &params).map_err(|_| {
+            incomplete_native_program(
+                self.world,
+                self.root_id,
+                "native local dispatch referenced an unbound forwarded arm parameter",
+            )
+        })
+    }
+
+    fn control_dispatch_entry_args(
+        &mut self,
+        ctx: &mut NativeFnCtx,
+        executable: &BackendExecutable,
+        entries: &[BackendEntry],
+        entry_id: ControlEntryId,
+        env: &ValueEnv,
+        state: &DispatchState,
+    ) -> Result<Vec<Var>, FatalError> {
+        let entry = &entries[entry_id.as_u32() as usize];
+        let param_count = entry.params.len();
+        let mut args = state
+            .forwarded_args
+            .get(..param_count)
+            .ok_or_else(|| {
+                incomplete_native_program(
+                    self.world,
+                    self.root_id,
+                    format!(
+                        "local dispatch arm entry {} needs {} forwarded params but dispatch carries {}",
+                        entry_id.as_u32(),
+                        param_count,
+                        state.forwarded_args.len()
+                    ),
+                )
+            })?
+            .to_vec();
+        args.extend(self.entry_capture_args(ctx, executable, entries, entry_id, env)?);
+        Ok(args)
     }
 
     fn lower_dispatch_region(
@@ -2306,64 +2473,23 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
         value: ValueId,
         var: Var,
     ) {
-        let shape = value_shape(self.program, executable, value);
-        bind_local_value(
-            self.world,
-            ctx,
-            executable,
-            env,
-            value,
-            TrashRealizedValue::runtime(var, shape),
-        );
+        bind_local_value(ctx, executable, env, value, NativeBoundValue::Runtime(var));
     }
 
-    /// Collapse a realized value into a single native `Var`, boxing structure as
-    /// needed (a tuple becomes one heap tuple; a direct callable becomes one
-    /// closure). An `Omitted` value occupies no lane and cannot become a `Var`.
+    /// Collapse a cached native value into one runtime `Var`.
+    ///
+    /// Transport shape is deliberately not consulted here. Shape-specific lane
+    /// projection happens in `encode_runtime_value` from the seam's shape.
     fn materialize_native_value(
         &mut self,
         ctx: &mut NativeFnCtx,
         ty: Option<Ty>,
-        value: &TrashRealizedValue,
+        value: &NativeBoundValue,
     ) -> Result<Var, FatalError> {
-        let var = match self.world.transport().interners().shape(value.shape) {
-            ShapeDescr::Nothing => return Err(FatalError),
-            ShapeDescr::Lane(_) => *value.lanes.first().ok_or(FatalError)?,
-            ShapeDescr::Tuple(_) => {
-                let fields = value.tuple_fields(self.world).ok_or(FatalError)?;
-                let vars = fields
-                    .iter()
-                    .map(|field| self.materialize_native_value(ctx, None, field))
-                    .collect::<Result<Vec<_>, _>>()?;
-                ctx.emit_let(Prim::MakeTuple(vars)).0
-            }
-            ShapeDescr::Callable(callable) => {
-                let callable = self.world.transport().interners().callable(*callable);
-                let function = callable.function.ok_or(FatalError)?;
-                let capture_count = callable.capture_lanes.len();
-                let capture_vars = value.lanes.clone();
-                let identity = self.callable_identity(function, capture_count);
-                let boundary = self
-                    .settled_callable_boundary(ctx, function, &capture_vars)?
-                    .ok_or_else(|| {
-                        incomplete_native_program(
-                            self.world,
-                            self.root_id,
-                            format!(
-                                "native callable materialization for {:?}/{} has no settled callable boundary in {:?}",
-                                function, capture_count, ctx.origin,
-                            ),
-                        )
-                    })?;
-                let prim = if capture_vars.is_empty() {
-                    Prim::MakeFnRef(ctx.fresh_callsite(), identity)
-                } else {
-                    Prim::MakeClosure(ctx.fresh_callsite(), identity, capture_vars)
-                };
-                let (var, _) = ctx.emit_let(prim);
-                ctx.callable_value_boundaries.insert(var, boundary);
-                var
-            }
+        let var = match value {
+            NativeBoundValue::Absent => return Err(FatalError),
+            NativeBoundValue::Runtime(var) => *var,
+            NativeBoundValue::Transport { shape, lanes } => self.materialize_transport_value(ctx, *shape, lanes)?,
         };
         if let Some(ty) = ty {
             ctx.value_types.insert(var, ty);
@@ -2371,27 +2497,160 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
         Ok(var)
     }
 
-    fn tuple_fields_for_shape(
+    fn materialize_transport_value(
         &mut self,
         ctx: &mut NativeFnCtx,
-        value: &TrashRealizedValue,
+        shape: ShapeId,
+        lanes: &[Var],
+    ) -> Result<Var, FatalError> {
+        match self.world.transport().interners().shape(shape).clone() {
+            ShapeDescr::Nothing => Err(FatalError),
+            ShapeDescr::Lane(_) => lanes.first().copied().ok_or(FatalError),
+            ShapeDescr::Tuple(fields) => {
+                let mut vars = Vec::with_capacity(fields.len());
+                for field in self.transport_field_views(shape, lanes, &fields)? {
+                    vars.push(self.materialize_native_value(ctx, None, &field)?);
+                }
+                Ok(ctx.emit_let(Prim::MakeTuple(vars)).0)
+            }
+            ShapeDescr::Callable(callable) => {
+                let descr = self.world.transport().interners().callable(callable);
+                if lanes.len() != descr.capture_lanes.len() {
+                    return Err(FatalError);
+                }
+                let function = descr.function.ok_or_else(|| {
+                    incomplete_native_program(
+                        self.world,
+                        self.root_id,
+                        format!(
+                            "native attempted to rematerialize generic callable shape {:?} in {:?}; first-class callable values must come from transport publication lanes",
+                            shape, ctx.origin,
+                        ),
+                    )
+                })?;
+                let capture_count = descr.capture_lanes.len();
+                let identity = self.callable_identity(function, capture_count);
+                let boundary = self.settled_callable_boundary(ctx, function, lanes)?.ok_or_else(|| {
+                    incomplete_native_program(
+                        self.world,
+                        self.root_id,
+                        format!(
+                            "native callable materialization for {:?}/{} has no settled callable boundary in {:?}",
+                            function, capture_count, ctx.origin,
+                        ),
+                    )
+                })?;
+                let prim = if lanes.is_empty() {
+                    Prim::MakeFnRef(ctx.fresh_callsite(), identity)
+                } else {
+                    Prim::MakeClosure(ctx.fresh_callsite(), identity, lanes.to_vec())
+                };
+                let (var, _) = ctx.emit_let(prim);
+                ctx.callable_value_boundaries.insert(var, boundary);
+                Ok(var)
+            }
+        }
+    }
+
+    fn transport_tuple_arity(&self, value: &NativeBoundValue) -> Option<usize> {
+        let NativeBoundValue::Transport { shape, .. } = value else {
+            return None;
+        };
+        match self.world.transport().interners().shape(*shape) {
+            ShapeDescr::Tuple(fields) => Some(fields.len()),
+            ShapeDescr::Nothing | ShapeDescr::Lane(_) | ShapeDescr::Callable(_) => None,
+        }
+    }
+
+    fn transport_tuple_field(
+        &self,
+        value: &NativeBoundValue,
+        index: usize,
+    ) -> Result<Option<NativeBoundValue>, FatalError> {
+        let NativeBoundValue::Transport { shape, lanes } = value else {
+            return Ok(None);
+        };
+        let ShapeDescr::Tuple(fields) = self.world.transport().interners().shape(*shape).clone() else {
+            return Ok(None);
+        };
+        Ok(Some(
+            self.transport_field_views(*shape, lanes, &fields)?
+                .get(index)
+                .cloned()
+                .ok_or(FatalError)?,
+        ))
+    }
+
+    fn direct_callable_lanes(&self, value: &NativeBoundValue) -> Result<Option<Vec<Var>>, FatalError> {
+        let NativeBoundValue::Transport { shape, lanes } = value else {
+            return Ok(None);
+        };
+        let ShapeDescr::Callable(callable) = self.world.transport().interners().shape(*shape) else {
+            return Ok(None);
+        };
+        let descr = self.world.transport().interners().callable(*callable);
+        if descr.function.is_none() {
+            return Ok(None);
+        }
+        if lanes.len() != descr.capture_lanes.len() {
+            return Err(FatalError);
+        }
+        Ok(Some(lanes.clone()))
+    }
+
+    fn tuple_field_values_for_shape(
+        &mut self,
+        ctx: &mut NativeFnCtx,
+        value: &NativeBoundValue,
+        shape: ShapeId,
         fields: &[ShapeId],
-    ) -> Result<Vec<TrashRealizedValue>, FatalError> {
-        if let Some(realized_fields) = value.tuple_fields(self.world)
-            && realized_fields.len() == fields.len()
+    ) -> Result<Vec<NativeBoundValue>, FatalError> {
+        if let NativeBoundValue::Transport {
+            shape: value_shape,
+            lanes,
+        } = value
+            && *value_shape == shape
         {
-            return Ok(realized_fields);
+            return self.transport_field_views(shape, lanes, fields);
         }
         let tuple = self.materialize_native_value(ctx, None, value)?;
         Ok(fields
             .iter()
-            .copied()
             .enumerate()
-            .map(|(index, shape)| {
+            .map(|(index, _)| {
                 let (var, _) = ctx.emit_let(Prim::TupleField(tuple, index as u32));
-                TrashRealizedValue::runtime(var, shape)
+                NativeBoundValue::Runtime(var)
             })
             .collect())
+    }
+
+    fn transport_field_views(
+        &self,
+        shape: ShapeId,
+        lanes: &[Var],
+        fields: &[ShapeId],
+    ) -> Result<Vec<NativeBoundValue>, FatalError> {
+        if lanes.len() != shape_width(self.world, shape) {
+            return Err(FatalError);
+        }
+        let mut offset = 0_usize;
+        let mut values = Vec::with_capacity(fields.len());
+        for field in fields.iter().copied() {
+            let width = shape_width(self.world, field);
+            let end = offset.checked_add(width).ok_or(FatalError)?;
+            let field_lanes = lanes.get(offset..end).ok_or(FatalError)?.to_vec();
+            let value = match self.world.transport().interners().shape(field) {
+                ShapeDescr::Nothing => NativeBoundValue::Absent,
+                ShapeDescr::Lane(_) => NativeBoundValue::Runtime(*field_lanes.first().ok_or(FatalError)?),
+                ShapeDescr::Tuple(_) | ShapeDescr::Callable(_) => NativeBoundValue::Transport {
+                    shape: field,
+                    lanes: field_lanes,
+                },
+            };
+            values.push(value);
+            offset = end;
+        }
+        Ok(values)
     }
 
     fn encode_runtime_value(
@@ -2399,10 +2658,19 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
         ctx: &mut NativeFnCtx,
         executable: &BackendExecutable,
         value_id: Option<ValueId>,
-        value: &TrashRealizedValue,
+        value: &NativeBoundValue,
         shape: ShapeId,
         lanes: &mut Vec<Var>,
     ) -> Result<(), FatalError> {
+        if let NativeBoundValue::Transport {
+            shape: value_shape,
+            lanes: value_lanes,
+        } = value
+            && *value_shape == shape
+        {
+            lanes.extend(value_lanes.iter().copied());
+            return Ok(());
+        }
         match self.world.transport().interners().shape(shape).clone() {
             ShapeDescr::Nothing => Ok(()),
             ShapeDescr::Lane(lane) => {
@@ -2413,20 +2681,23 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                 Ok(())
             }
             ShapeDescr::Tuple(fields) => {
-                let tuple_fields = self.tuple_fields_for_shape(ctx, value, &fields)?;
+                let tuple_fields = self.tuple_field_values_for_shape(ctx, value, shape, &fields)?;
                 for (field, field_shape) in tuple_fields.iter().zip(fields.iter().copied()) {
                     self.encode_runtime_value(ctx, executable, None, field, field_shape, lanes)?;
                 }
                 Ok(())
             }
-            ShapeDescr::Callable(callable) => {
-                let callable = self.world.transport().interners().callable(callable);
-                if value.shape != shape || value.lanes.len() != callable.capture_lanes.len() {
-                    return Err(FatalError);
-                }
-                lanes.extend(value.lanes.iter().copied());
-                Ok(())
-            }
+            ShapeDescr::Callable(callable) => Err(incomplete_native_program(
+                self.world,
+                self.root_id,
+                format!(
+                    "native attempted to encode callable shape {:?} ({:?}) for value {:?} from {:?}; callable values must be supplied by matching transport lanes or a published value seam",
+                    shape,
+                    self.world.transport().interners().callable(callable),
+                    value_id,
+                    value,
+                ),
+            )),
         }
     }
 
@@ -2735,89 +3006,54 @@ fn annotate_back_edges(module: &mut crate::fz_ir::Module) {
     }
 }
 
-/// A runtime value realized into native transport lanes.
+/// Native lowering cache for already-emitted IR artifacts.
 ///
-/// The structure is the interned transport `ShapeId`; `lanes` are the flat
-/// native vars that inhabit that shape in transport leaf order.
-#[derive(Clone)]
-struct TrashRealizedValue {
-    shape: ShapeId,
-    lanes: Vec<Var>,
+/// Shape and lane layout stay in `TransportPlan`; this cache only remembers
+/// whether a semantic value is already materialized as one runtime var, is a
+/// direct callable represented by its transport callable id plus capture lanes,
+/// or has no transported value.
+#[derive(Debug, Clone)]
+enum NativeBoundValue {
+    Absent,
+    Runtime(Var),
+    Transport { shape: ShapeId, lanes: Vec<Var> },
 }
 
-impl TrashRealizedValue {
-    fn runtime(var: Var, shape: ShapeId) -> Self {
-        Self {
-            shape,
-            lanes: vec![var],
-        }
-    }
-
-    fn tuple(shape: ShapeId, fields: Vec<TrashRealizedValue>) -> Self {
-        let mut lanes = Vec::new();
-        for field in fields {
-            lanes.extend(field.lanes);
-        }
-        Self { shape, lanes }
-    }
-
-    fn direct_callable(shape: ShapeId, captures: Vec<TrashRealizedValue>) -> Self {
-        let mut lanes = Vec::new();
-        for capture in captures {
-            lanes.extend(capture.lanes);
-        }
-        Self { shape, lanes }
-    }
-
-    fn tuple_fields(&self, world: &World<'_>) -> Option<Vec<TrashRealizedValue>> {
-        let ShapeDescr::Tuple(fields) = world.transport().interners().shape(self.shape) else {
-            return None;
-        };
-        let mut out = Vec::with_capacity(fields.len());
-        let mut offset = 0;
-        for field in fields.iter().copied() {
-            let width = shape_width(world, field);
-            out.push(TrashRealizedValue {
-                shape: field,
-                lanes: self.lanes[offset..offset + width].to_vec(),
-            });
-            offset += width;
-        }
-        Some(out)
-    }
-
-    fn as_runtime_var(&self, world: &World<'_>) -> Option<Var> {
-        match world.transport().interners().shape(self.shape) {
-            ShapeDescr::Lane(_) => self.lanes.first().copied(),
-            ShapeDescr::Nothing | ShapeDescr::Tuple(_) | ShapeDescr::Callable(_) => None,
+impl NativeBoundValue {
+    fn runtime_var(&self) -> Option<Var> {
+        match self {
+            Self::Runtime(var) => Some(*var),
+            Self::Absent | Self::Transport { .. } => None,
         }
     }
 }
 
 #[derive(Default, Clone)]
 struct ValueEnv {
-    values: HashMap<ValueId, TrashRealizedValue>,
+    values: HashMap<ValueId, NativeBoundValue>,
 }
 
 impl ValueEnv {
-    fn insert(&mut self, value: ValueId, bound: TrashRealizedValue) {
+    fn insert(&mut self, value: ValueId, bound: NativeBoundValue) {
         self.values.insert(value, bound);
     }
 
-    fn value(&self, value: ValueId) -> Option<&TrashRealizedValue> {
+    fn value(&self, value: ValueId) -> Option<&NativeBoundValue> {
         self.values.get(&value)
     }
 
-    fn cloned_value(&self, value: ValueId) -> Option<TrashRealizedValue> {
+    fn cloned_value(&self, value: ValueId) -> Option<NativeBoundValue> {
         self.value(value).cloned()
     }
 
-    fn values(&self, ids: &[ValueId]) -> Option<Vec<TrashRealizedValue>> {
-        ids.iter().map(|value| self.cloned_value(*value)).collect()
+    fn bound_values(&self) -> Vec<ValueId> {
+        let mut values = self.values.keys().copied().collect::<Vec<_>>();
+        values.sort_by_key(|value| value.as_u32());
+        values
     }
 
-    fn runtime_var(&self, world: &World<'_>, value: ValueId) -> Option<Var> {
-        self.value(value).and_then(|value| value.as_runtime_var(world))
+    fn runtime_var(&self, value: ValueId) -> Option<Var> {
+        self.value(value).and_then(NativeBoundValue::runtime_var)
     }
 }
 
@@ -2882,39 +3118,56 @@ fn continuation_result_entry(
     position: &TransportPosition,
 ) -> (Vec<Ty>, Vec<AbiValueRepr>) {
     let shape = position_shape(program, position);
-    let reprs = seam_reprs_for_position_shape(world, program, position, shape, |seam| {
-        matches!(
-            (position, seam),
-            (
-                TransportPosition::ResumePayload {
-                    executable: position_executable,
-                    callsite: Some(position_callsite),
-                    entry: position_entry,
-                },
-                CodegenSeam::ContinuationEntry {
-                    executable: seam_executable,
-                    callsite: seam_callsite,
-                    entry: seam_entry,
-                }
-            ) if position_executable == seam_executable
-                && position_callsite == seam_callsite
-                && position_entry == seam_entry
-        ) || matches!(
-            (position, seam),
-            (
-                TransportPosition::ResumePayload {
-                    executable: position_executable,
-                    callsite: None,
-                    entry: position_entry,
-                },
-                CodegenSeam::BlockParam {
-                    executable: seam_executable,
-                    entry: seam_entry,
-                }
-            ) if position_executable == seam_executable && position_entry == seam_entry
-        )
-    });
+    let seam_matches = |seam: &CodegenSeam| continuation_seam_matches(position, seam);
+    let publication_lanes = position_publication_lanes(program, seam_matches);
+    if !publication_lanes.is_empty() {
+        let tys = publication_lanes
+            .iter()
+            .copied()
+            .map(|lane| world.transport().interners().lane(lane).ty)
+            .collect();
+        let reprs = publication_lanes
+            .iter()
+            .copied()
+            .map(|lane| seam_repr_for_lane(program, &seam_matches, None, lane))
+            .collect();
+        return (tys, reprs);
+    }
+    let reprs = seam_reprs_for_position_shape(world, program, position, shape, seam_matches);
     (shape_lane_tys(world, shape), reprs)
+}
+
+fn continuation_seam_matches(position: &TransportPosition, seam: &CodegenSeam) -> bool {
+    matches!(
+        (position, seam),
+        (
+            TransportPosition::ResumePayload {
+                executable: position_executable,
+                callsite: Some(position_callsite),
+                entry: position_entry,
+            },
+            CodegenSeam::ContinuationEntry {
+                executable: seam_executable,
+                callsite: seam_callsite,
+                entry: seam_entry,
+            }
+        ) if position_executable == seam_executable
+            && position_callsite == seam_callsite
+            && position_entry == seam_entry
+    ) || matches!(
+        (position, seam),
+        (
+            TransportPosition::ResumePayload {
+                executable: position_executable,
+                callsite: None,
+                entry: position_entry,
+            },
+            CodegenSeam::BlockParam {
+                executable: seam_executable,
+                entry: seam_entry,
+            }
+        ) if position_executable == seam_executable && position_entry == seam_entry
+    )
 }
 
 fn seam_reprs_for_position_shape(
@@ -2947,6 +3200,40 @@ fn callable_boundary_reprs(
             )
         })
         .collect()
+}
+
+fn function_entry_publication_lanes(
+    program: &BackendProgram,
+    executable: &super::super::transport::ExecutableSymbol,
+    semantic_index: usize,
+) -> Vec<LaneId> {
+    position_publication_lanes(program, |seam| {
+        matches!(
+            seam,
+            CodegenSeam::FunctionEntry {
+                executable: candidate,
+                semantic_index: candidate_index,
+            } if candidate == executable && *candidate_index == semantic_index
+        )
+    })
+}
+
+fn position_publication_lanes(program: &BackendProgram, seam_matches: impl Fn(&CodegenSeam) -> bool) -> Vec<LaneId> {
+    program
+        .transport
+        .codegen_seam_facts
+        .iter()
+        .filter(|fact| fact.shape.is_none() && seam_matches(&fact.seam))
+        .map(|fact| fact.lane)
+        .collect()
+}
+
+fn position_width(world: &World<'_>, shape: ShapeId, publication_lanes: &[LaneId]) -> usize {
+    if publication_lanes.is_empty() {
+        shape_width(world, shape)
+    } else {
+        publication_lanes.len()
+    }
 }
 
 fn entry_capture_reprs(world: &World<'_>, program: &BackendProgram, entry: &BackendEntry) -> Vec<AbiValueRepr> {
@@ -3196,14 +3483,24 @@ impl NativeFnCtx {
     }
 }
 
-fn env_local_value(env: &ValueEnv, value: ValueId) -> Result<TrashRealizedValue, FatalError> {
+fn env_local_value(env: &ValueEnv, value: ValueId) -> Result<NativeBoundValue, FatalError> {
     env.cloned_value(value).ok_or(FatalError)
 }
 
 fn executable_input_tys(world: &World<'_>, program: &BackendProgram, executable: &BackendExecutable) -> Vec<Ty> {
-    executable_input_shapes(program, executable)
+    executable_input_bindings(program, executable)
         .into_iter()
-        .flat_map(|(_, shape)| shape_lane_tys(world, shape))
+        .flat_map(|binding| {
+            if binding.publication_lanes.is_empty() {
+                shape_lane_tys(world, binding.shape)
+            } else {
+                binding
+                    .publication_lanes
+                    .into_iter()
+                    .map(|lane| world.transport().interners().lane(lane).ty)
+                    .collect()
+            }
+        })
         .collect()
 }
 
@@ -3211,13 +3508,22 @@ fn bind_executable_inputs(
     world: &World<'_>,
     program: &BackendProgram,
     executable: &BackendExecutable,
+    ctx: &mut NativeFnCtx,
     params: &[Var],
-) -> Result<Vec<Option<TrashRealizedValue>>, FatalError> {
+) -> Result<Vec<Option<NativeBoundValue>>, FatalError> {
     let semantic_arity = executable.key.activation.input.len();
     let mut bound = vec![None; semantic_arity];
     let mut lane_index = 0;
-    for (semantic_index, shape) in executable_input_shapes(program, executable) {
-        bound[semantic_index] = Some(decode_runtime_value(world, params, shape, &mut lane_index)?);
+    for binding in executable_input_bindings(program, executable) {
+        bound[binding.semantic_index] = Some(decode_runtime_value_with_width(
+            params,
+            binding.shape,
+            binding.width(world),
+            !binding.publication_lanes.is_empty(),
+            world,
+            ctx,
+            &mut lane_index,
+        )?);
     }
     if lane_index != params.len() {
         return Err(FatalError);
@@ -3225,58 +3531,128 @@ fn bind_executable_inputs(
     Ok(bound)
 }
 
-fn executable_input_shapes(program: &BackendProgram, executable: &BackendExecutable) -> Vec<(usize, ShapeId)> {
+#[derive(Clone)]
+struct ExecutableInputBinding {
+    semantic_index: usize,
+    shape: ShapeId,
+    publication_lanes: Vec<LaneId>,
+}
+
+impl ExecutableInputBinding {
+    fn width(&self, world: &World<'_>) -> usize {
+        if self.publication_lanes.is_empty() {
+            shape_width(world, self.shape)
+        } else {
+            self.publication_lanes.len()
+        }
+    }
+}
+
+fn executable_input_bindings(program: &BackendProgram, executable: &BackendExecutable) -> Vec<ExecutableInputBinding> {
     let mut inputs = executable
         .transport
         .input_positions
         .iter()
         .filter_map(|position| {
-            let TransportPosition::ExecutableInput { semantic_index, .. } = position else {
+            let TransportPosition::ExecutableInput {
+                executable,
+                semantic_index,
+            } = position
+            else {
                 return None;
             };
-            Some((*semantic_index, position_shape(program, position)))
+            Some(ExecutableInputBinding {
+                semantic_index: *semantic_index,
+                shape: position_shape(program, position),
+                publication_lanes: function_entry_publication_lanes(program, executable, *semantic_index),
+            })
         })
         .collect::<Vec<_>>();
-    inputs.sort_by_key(|(semantic_index, _)| *semantic_index);
+    inputs.sort_by_key(|binding| binding.semantic_index);
+    inputs.dedup_by_key(|binding| binding.semantic_index);
     inputs
 }
 
-fn value_shape(program: &BackendProgram, executable: &BackendExecutable, value: ValueId) -> ShapeId {
-    let position = executable
-        .transport
-        .value_positions
-        .iter()
-        .find(|position| matches!(position, TransportPosition::Value { value: candidate, .. } if *candidate == value))
-        .unwrap_or_else(|| panic!("backend transport handoff should publish value position for {value:?}"));
-    position_shape(program, position)
+fn executable_input_shapes(program: &BackendProgram, executable: &BackendExecutable) -> Vec<(usize, ShapeId)> {
+    executable_input_bindings(program, executable)
+        .into_iter()
+        .map(|binding| (binding.semantic_index, binding.shape))
+        .collect()
 }
 
-/// Decode a value from its settled layout and a flat lane window. The realized
-/// value carries the layout verbatim and the exact `Var`s it spans; an `Omitted`
-/// layout spans zero lanes, so it decodes to an empty `TrashRealizedValue` with no
-/// special case.
+fn value_shape(program: &BackendProgram, executable: &BackendExecutable, value: ValueId) -> ShapeId {
+    maybe_value_shape(program, executable, value)
+        .unwrap_or_else(|| panic!("backend transport handoff should publish value position for {value:?}"))
+}
+
+fn maybe_value_shape(program: &BackendProgram, executable: &BackendExecutable, value: ValueId) -> Option<ShapeId> {
+    let position = executable.transport.value_positions.iter().find(
+        |position| matches!(position, TransportPosition::Value { value: candidate, .. } if *candidate == value),
+    )?;
+    Some(position_shape(program, position))
+}
+
+/// Decode one value from a transport seam. The seam shape is consumed here and
+/// not stored in the native value cache.
 fn decode_runtime_value(
     world: &World<'_>,
+    ctx: &mut NativeFnCtx,
     params: &[Var],
     shape: ShapeId,
     lane_index: &mut usize,
-) -> Result<TrashRealizedValue, FatalError> {
-    let width = shape_width(world, shape);
+) -> Result<NativeBoundValue, FatalError> {
+    decode_runtime_value_with_width(params, shape, shape_width(world, shape), false, world, ctx, lane_index)
+}
+
+fn decode_runtime_value_with_width(
+    params: &[Var],
+    shape: ShapeId,
+    width: usize,
+    published_value: bool,
+    world: &World<'_>,
+    ctx: &mut NativeFnCtx,
+    lane_index: &mut usize,
+) -> Result<NativeBoundValue, FatalError> {
     let end = lane_index.checked_add(width).ok_or(FatalError)?;
     let lanes = params.get(*lane_index..end).ok_or(FatalError)?.to_vec();
     *lane_index = end;
-    Ok(TrashRealizedValue { shape, lanes })
+    if published_value {
+        return lanes.first().copied().map(NativeBoundValue::Runtime).ok_or(FatalError);
+    }
+    decode_native_value_from_lanes(world, ctx, shape, lanes)
+}
+
+fn decode_native_value_from_lanes(
+    world: &World<'_>,
+    _ctx: &mut NativeFnCtx,
+    shape: ShapeId,
+    lanes: Vec<Var>,
+) -> Result<NativeBoundValue, FatalError> {
+    if lanes.len() != shape_width(world, shape) {
+        return Err(FatalError);
+    }
+    Ok(match world.transport().interners().shape(shape) {
+        ShapeDescr::Nothing => NativeBoundValue::Absent,
+        ShapeDescr::Lane(_) => NativeBoundValue::Runtime(*lanes.first().ok_or(FatalError)?),
+        ShapeDescr::Tuple(_) | ShapeDescr::Callable(_) => NativeBoundValue::Transport { shape, lanes },
+    })
+}
+
+fn callable_id_for_shape(world: &World<'_>, shape: ShapeId) -> Result<CallableId, FatalError> {
+    match world.transport().interners().shape(shape) {
+        ShapeDescr::Callable(callable) => Ok(*callable),
+        ShapeDescr::Nothing | ShapeDescr::Lane(_) | ShapeDescr::Tuple(_) => Err(FatalError),
+    }
 }
 
 fn bind_local_value(
-    world: &World<'_>,
     ctx: &mut NativeFnCtx,
     executable: &BackendExecutable,
     env: &mut ValueEnv,
     value: ValueId,
-    bound: TrashRealizedValue,
+    bound: NativeBoundValue,
 ) {
-    if let Some(var) = bound.as_runtime_var(world)
+    if let Some(var) = bound.runtime_var()
         && let Some(ty) = executable.value_types.get(&value).copied()
     {
         ctx.value_types.insert(var, ty);
@@ -3501,7 +3877,7 @@ fn atom_names(atom_ids: &HashMap<String, u32>) -> Vec<String> {
 }
 
 fn lower_bit_size_ir(
-    world: &World<'_>,
+    _world: &World<'_>,
     size: &Option<super::super::body::LoweredBitSize>,
     env: &ValueEnv,
 ) -> Result<Option<BitSizeIr>, FatalError> {
@@ -3509,7 +3885,7 @@ fn lower_bit_size_ir(
         None => None,
         Some(super::super::body::LoweredBitSize::Literal(value)) => Some(BitSizeIr::Literal(*value)),
         Some(super::super::body::LoweredBitSize::Value(value)) => {
-            Some(BitSizeIr::Var(env.runtime_var(world, *value).ok_or(FatalError)?))
+            Some(BitSizeIr::Var(env.runtime_var(*value).ok_or(FatalError)?))
         }
     })
 }
@@ -3581,6 +3957,21 @@ fn mark_ignored_lanes_for_demand(
             }
         }
     }
+}
+
+fn mark_ignored_publication_lanes(
+    builder: &mut FnBuilder,
+    vars: &[Var],
+    demand: &RuntimeDemand,
+    lane_index: &mut usize,
+) -> Result<(), FatalError> {
+    for _ in 0..vars.len() {
+        let var = next_runtime_lane(vars, lane_index)?;
+        if demand.is_ignore() {
+            builder.mark_param_ignored(var);
+        }
+    }
+    Ok(())
 }
 
 fn mark_all_runtime_lanes_ignored(

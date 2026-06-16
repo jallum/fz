@@ -1,8 +1,8 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 use super::super::body::{
-    CallArg, CallSiteId, ControlDestination, ControlEntryId, LoweredBody, LoweredEntry, LoweredStep, LoweredTail,
-    ValueId,
+    CallArg, CallSiteId, ControlDestination, ControlEntryId, DeliveredValueJoin, DeliveredValueSource, LoweredBody,
+    LoweredEntry, LoweredStep, LoweredTail, ValueId, delivered_value_joins,
 };
 use super::super::drive::{FactKey, Job};
 use super::super::identity::{ExecutableKey, ExecutableNeed, FunctionId};
@@ -22,6 +22,8 @@ struct ExecutableFacts {
     entry_dispatch_inputs: HashSet<usize>,
     callsites: HashMap<CallSiteId, CallSiteSummary>,
     callsite_needs: HashMap<CallSiteId, ExecutableNeed>,
+    delivered_value_joins: HashMap<ControlEntryId, DeliveredValueJoin>,
+    local_callable_producers: HashMap<ValueId, LocalCallableProducer>,
 }
 
 pub(super) struct RuntimeDemandClosure {
@@ -34,7 +36,7 @@ struct DerivedExecutableDemand {
     call_return_demands: HashMap<CallSiteId, RuntimeDemand>,
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct LocalCallableProducer {
     function: FunctionId,
     captures: Box<[ValueId]>,
@@ -124,6 +126,8 @@ fn collect_executable_facts(
                 .cloned()
                 .expect("settled semantic closure should have analysis for every executable");
             let body = world.lowered_body(executable.activation.function);
+            let delivered_value_joins = delivered_value_joins(&body);
+            let local_callable_producers = local_callable_producers(&body);
             let entry_dispatch_inputs = executable_dispatch_input_ordinals(
                 world,
                 executable.activation.function,
@@ -151,6 +155,8 @@ fn collect_executable_facts(
                     entry_dispatch_inputs,
                     callsites,
                     callsite_needs,
+                    delivered_value_joins,
+                    local_callable_producers,
                 },
             )
         })
@@ -275,13 +281,22 @@ fn derive_executable_runtime_demand(
     let mut call_return_demands = HashMap::new();
 
     let LoweredBody::Clauses { clauses, entries, .. } = &facts.body else {
-        out.input_demands = executable
-            .activation
-            .input
-            .iter()
-            .copied()
-            .map(|ty| boundary_runtime_demand(world, ty))
-            .collect();
+        out.input_demands = match &facts.body {
+            LoweredBody::Extern { signature } => executable
+                .activation
+                .input
+                .iter()
+                .enumerate()
+                .map(|(index, ty)| {
+                    signature
+                        .params
+                        .get(index)
+                        .map(|_| RuntimeDemand::Value)
+                        .unwrap_or_else(|| boundary_runtime_demand(world, *ty))
+                })
+                .collect(),
+            LoweredBody::Clauses { .. } => unreachable!(),
+        };
         return DerivedExecutableDemand {
             demand: out,
             call_return_demands,
@@ -359,6 +374,8 @@ fn collect_entry_external_demands(
     if let Some(value) = entry.origin.input_value()
         && let Some(demand) = live.remove(&value)
     {
+        let demand = upgrade_joined_delivered_callable_value_demand(facts, entry_id, value, demand);
+        join_map_demand(&mut out.value_demands, value, demand.clone());
         external.insert(value, demand);
     }
     let capture_demands = entry
@@ -636,6 +653,43 @@ fn destination_demands(
             (delivered_demand, external_demands)
         }
     }
+}
+
+fn upgrade_joined_delivered_callable_value_demand(
+    facts: &ExecutableFacts,
+    entry: ControlEntryId,
+    value: ValueId,
+    demand: RuntimeDemand,
+) -> RuntimeDemand {
+    let RuntimeDemand::Callable(mut callable) = demand else {
+        return demand;
+    };
+    if delivered_join_has_distinct_callable_producers(facts, entry, value) {
+        callable.escape = true;
+    }
+    RuntimeDemand::callable(callable)
+}
+
+fn delivered_join_has_distinct_callable_producers(
+    facts: &ExecutableFacts,
+    entry: ControlEntryId,
+    delivered: ValueId,
+) -> bool {
+    let Some(join) = facts.delivered_value_joins.get(&entry) else {
+        return false;
+    };
+    if join.value != delivered {
+        return false;
+    }
+    let producers = join
+        .sources
+        .iter()
+        .filter_map(|join_source| match join_source {
+            DeliveredValueSource::LocalValue(value) => facts.local_callable_producers.get(value),
+            DeliveredValueSource::CallsiteReturn(_) => None,
+        })
+        .collect::<HashSet<_>>();
+    producers.len() > 1
 }
 
 fn propagate_steps_reverse(
@@ -1051,19 +1105,41 @@ fn local_target_input_demands(
     demands: &HashMap<ExecutableKey, ExecutableRuntimeDemand>,
 ) -> Vec<RuntimeDemand> {
     match target.callee {
-        super::super::semantic::SelectedCallee::ProviderBoundary(_) => target
-            .surface_inputs
-            .iter()
-            .copied()
-            .map(|ty| boundary_runtime_demand(world, ty))
-            .collect(),
-        super::super::semantic::SelectedCallee::Function(function) => {
-            if matches!(world.lowered_body(function), LoweredBody::Extern { .. }) {
+        super::super::semantic::SelectedCallee::ProviderBoundary(function) => {
+            if let LoweredBody::Extern { signature } = world.lowered_body(function) {
                 return target
                     .surface_inputs
                     .iter()
-                    .copied()
-                    .map(|ty| boundary_runtime_demand(world, ty))
+                    .enumerate()
+                    .map(|(index, ty)| {
+                        signature
+                            .params
+                            .get(index)
+                            .map(|_| RuntimeDemand::Value)
+                            .unwrap_or_else(|| boundary_runtime_demand(world, *ty))
+                    })
+                    .collect();
+            }
+            target
+                .surface_inputs
+                .iter()
+                .copied()
+                .map(|ty| boundary_runtime_demand(world, ty))
+                .collect()
+        }
+        super::super::semantic::SelectedCallee::Function(function) => {
+            if let LoweredBody::Extern { signature } = world.lowered_body(function) {
+                return target
+                    .surface_inputs
+                    .iter()
+                    .enumerate()
+                    .map(|(index, ty)| {
+                        signature
+                            .params
+                            .get(index)
+                            .map(|_| RuntimeDemand::Value)
+                            .unwrap_or_else(|| boundary_runtime_demand(world, *ty))
+                    })
                     .collect();
             }
             let Some(activation) = target.activation.clone() else {
@@ -1141,7 +1217,7 @@ fn boundary_value_demand(
         return RuntimeDemand::Value;
     };
     if world.types_mut().callable_clauses(&ty).is_some() {
-        RuntimeDemand::callable(CallableDemand::escaped())
+        boundary_runtime_demand(world, ty)
     } else {
         RuntimeDemand::Value
     }
@@ -1176,6 +1252,15 @@ fn closure_callee_demand(
     let mut demand = CallableDemand::default();
     for target in &summary.targets {
         demand.join_assign(&CallableDemand::resolved(target.surface_inputs.clone()));
+    }
+    let exact_local_target = matches!(
+        summary.targets.as_slice(),
+        [target]
+            if matches!(target.callee, super::super::semantic::SelectedCallee::Function(_))
+                && target.activation.is_some()
+    );
+    if !exact_local_target {
+        demand.opaque = true;
     }
     demand
 }
@@ -1262,12 +1347,11 @@ fn derive_callable_flow_facts(
         let facts = facts
             .get(executable)
             .expect("runtime demand closure should have facts for every executable");
-        let producers = local_callable_producers(&facts.body);
         let demand = demands
             .get_mut(executable)
             .expect("runtime demand closure should produce a plan for every executable");
         demand.callable_flows.clear();
-        for (value, producer) in producers {
+        for (value, producer) in facts.local_callable_producers.clone() {
             let Some(RuntimeDemand::Callable(callable)) = demand.value_demands.get(&value) else {
                 continue;
             };

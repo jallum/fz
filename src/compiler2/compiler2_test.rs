@@ -363,7 +363,6 @@ struct NativeEntryCase<'a> {
 }
 
 #[test]
-#[ignore = "fz-hwn.19.2.4 WIP: downstream native front-door compilation waits on the transport-backed artifact handoff"]
 fn compiler2_compile_root_jit_consumes_native_program_without_legacy_prepare() {
     let quicksort = include_str!("../../fixtures2/00020_quicksort_jit_entry.fz").to_string();
     let cases = [
@@ -437,7 +436,6 @@ fn compiler2_compile_root_jit_consumes_native_program_without_legacy_prepare() {
 }
 
 #[test]
-#[ignore = "fz-hwn.19.2.4 WIP: downstream native front-door compilation waits on the transport-backed artifact handoff"]
 fn compiler2_compile_root_aot_consumes_native_program_without_legacy_prepare() {
     let cases = [
         (

@@ -1,8 +1,9 @@
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::time::Duration;
 
+use super::body::{DeliveredValueSource, delivered_value_joins};
 use super::{
     CallSiteKey, CallSiteSummary, CallableFlowFact, CodeSubmission, Compiler2, DriveOutcome, ExecutableKey,
     ExecutableNeed, ExecutableRuntimeDemand, FactKey, FunctionId, FunctionRef, Job, RootId, RootSubmission,
@@ -622,6 +623,119 @@ end
                 && flow.resolutions.len() == 1
         }),
         "the opaque-call argument should publish first-class callable-flow evidence before transport: {demand:?}",
+    );
+}
+
+#[test]
+fn compiler2_runtime_demand_marks_joined_function_refs_first_class_before_reduce_boundary() {
+    let tel = crate::telemetry::ConfiguredTelemetry::new();
+    let functions = FunctionCapture::new();
+    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    let runtime_demands = RuntimeDemandCapture::new();
+    tel.attach(
+        &["fz", "compiler2", "runtime_demand", "defined"],
+        runtime_demands.handler(),
+    );
+
+    let mut world = World::new(&tel);
+    world.submit_code(
+        Some("opaque_fn_value_join.fz".to_string()),
+        include_str!("../../fixtures2/behavior/opaque_fn_value_join.fz").to_string(),
+    );
+    let root_id = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    drive_until_semantic_closure(
+        &mut world,
+        root_id,
+        "joined zero-capture function refs should settle before transport",
+    );
+
+    let main = functions.id("main", 0);
+    let add_a = functions.id("add_a", 2);
+    let add_b = functions.id("add_b", 2);
+    let record = runtime_demands.last(root_id);
+    let (main_executable, demand) = runtime_demand_for_function(&record, main);
+    for function in [add_a, add_b] {
+        assert!(
+            demand.callable_flows.values().any(|flow| {
+                flow.function == function
+                    && flow.direct_surfaces.iter().any(|surface| surface.inputs.len() == 2)
+                    && flow
+                        .first_class_surfaces
+                        .iter()
+                        .any(|surface| surface.inputs.len() == 2)
+                    && flow.escape
+            }),
+            "a branch function ref that joins before Enum.reduce must remain directly callable and also publish a first-class runtime obligation: {demand:?}",
+        );
+    }
+
+    let body = world.lowered_body(main_executable.activation.function);
+    let joined_value = delivered_value_joins(&body)
+        .values()
+        .find_map(|join| {
+            let producer_functions = join
+                .sources
+                .iter()
+                .filter_map(|source| match source {
+                    DeliveredValueSource::LocalValue(value) => {
+                        demand.callable_flows.get(value).map(|flow| flow.function)
+                    }
+                    DeliveredValueSource::CallsiteReturn(_) => None,
+                })
+                .collect::<Vec<_>>();
+            (producer_functions.contains(&add_a) && producer_functions.contains(&add_b)).then_some(join.value)
+        })
+        .expect("main should have a delivered join fed by add_a/2 and add_b/2 function refs");
+    let RuntimeDemand::Callable(joined_callable) = demand
+        .value_demands
+        .get(&joined_value)
+        .unwrap_or_else(|| panic!("joined callable value {joined_value:?} should have runtime demand"))
+    else {
+        panic!("joined value {joined_value:?} should be callable-demanded: {demand:?}");
+    };
+    assert!(
+        joined_callable.escape && joined_callable.resolved.iter().any(|surface| surface.inputs.len() == 2),
+        "the delivered joined callable value itself must publish a first-class discriminator before downstream lowering: {joined_callable:?}",
+    );
+}
+
+#[test]
+fn compiler2_semantic_callsite_joins_duplicate_function_targets_before_artifact() {
+    let tel = crate::telemetry::ConfiguredTelemetry::new();
+    let functions = FunctionCapture::new();
+    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    let callsites = CallsiteCapture::new();
+    tel.attach(&["fz", "compiler2", "callsite", "defined"], callsites.handler());
+
+    let mut world = World::new(&tel);
+    world.submit_code(
+        Some("opaque_fn_value_join.fz".to_string()),
+        include_str!("../../fixtures2/behavior/opaque_fn_value_join.fz").to_string(),
+    );
+    let root_id = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    drive_until_semantic_closure(
+        &mut world,
+        root_id,
+        "joined reducer function refs should settle to one semantic call target before artifact",
+    );
+
+    let main = functions.id("main", 0);
+    let duplicate = callsites
+        .all()
+        .into_iter()
+        .filter(|record| record.key.activation.function == main)
+        .find(|record| {
+            let callees = record
+                .summary
+                .targets
+                .iter()
+                .map(|target| target.callee.clone())
+                .collect::<HashSet<_>>();
+            callees.len() < record.summary.targets.len()
+        });
+    assert!(
+        duplicate.is_none(),
+        "semantic callsite summaries must join repeated observations of the same callee instead of leaving artifact to dispatch by activation-key differences: {duplicate:#?}",
     );
 }
 

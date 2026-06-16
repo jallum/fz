@@ -4,6 +4,8 @@
 //! pattern/destructure steps, and compiler-generated lambda definitions, but
 //! it stops above old-world CPS IR and planner concerns.
 
+use std::collections::HashMap;
+
 use crate::ast::{BinOp, BitType, Endian, TypeExprBody, UnOp};
 use crate::compiler::source::Span;
 use crate::dispatch_matrix::pattern::PatternDispatchPlan;
@@ -156,6 +158,18 @@ pub enum ControlEntryOrigin {
     DeliveredResume { value: ValueId },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) enum DeliveredValueSource {
+    LocalValue(ValueId),
+    CallsiteReturn(CallSiteId),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DeliveredValueJoin {
+    pub value: ValueId,
+    pub sources: Vec<DeliveredValueSource>,
+}
+
 impl ControlEntryOrigin {
     pub fn input_value(&self) -> Option<ValueId> {
         match self {
@@ -163,6 +177,67 @@ impl ControlEntryOrigin {
             Self::DeliveredResume { value } => Some(*value),
         }
     }
+}
+
+pub(crate) fn delivered_value_joins(body: &LoweredBody) -> HashMap<ControlEntryId, DeliveredValueJoin> {
+    let LoweredBody::Clauses { entries, .. } = body else {
+        return HashMap::new();
+    };
+    let mut delivered_values = HashMap::new();
+    for (entry_index, entry) in entries.iter().enumerate() {
+        if let ControlEntryOrigin::DeliveredResume { value } = entry.origin {
+            delivered_values.insert(ControlEntryId::from_u32(entry_index as u32), value);
+        }
+    }
+    let mut sources = HashMap::<ControlEntryId, Vec<DeliveredValueSource>>::new();
+    for entry in entries {
+        collect_tail_deliveries(&entry.tail, &delivered_values, &mut sources);
+    }
+    sources
+        .into_iter()
+        .filter_map(|(entry, mut sources)| {
+            let value = delivered_values.get(&entry).copied()?;
+            sources.sort_by_key(delivered_value_source_sort_key);
+            sources.dedup();
+            Some((entry, DeliveredValueJoin { value, sources }))
+        })
+        .collect()
+}
+
+fn collect_tail_deliveries(
+    tail: &LoweredTail,
+    delivered_values: &HashMap<ControlEntryId, ValueId>,
+    out: &mut HashMap<ControlEntryId, Vec<DeliveredValueSource>>,
+) {
+    match tail {
+        LoweredTail::Value {
+            value,
+            dest: ControlDestination::Deliver(entry),
+        } if delivered_values.contains_key(entry) => {
+            out.entry(*entry)
+                .or_default()
+                .push(DeliveredValueSource::LocalValue(*value));
+        }
+        LoweredTail::DirectCall {
+            callsite,
+            dest: ControlDestination::Deliver(entry),
+            ..
+        }
+        | LoweredTail::ClosureCall {
+            callsite,
+            dest: ControlDestination::Deliver(entry),
+            ..
+        } if delivered_values.contains_key(entry) => {
+            out.entry(*entry)
+                .or_default()
+                .push(DeliveredValueSource::CallsiteReturn(*callsite));
+        }
+        _ => {}
+    }
+}
+
+fn delivered_value_source_sort_key(source: &DeliveredValueSource) -> String {
+    format!("{source:?}")
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

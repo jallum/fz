@@ -194,8 +194,11 @@ id the descriptor graph or `TransportPlan` already holds:
 - a `Lane`'s settled type and stable transport class — computed once from the
   settled type/fact evidence, then stored as facts and read, never recomputed per
   consumer
-- a `Callable`'s direct surfaces, ordered flat capture lanes, and published
-  boundary ids — columns keyed by `CallableId`
+- a `Callable`'s direct surfaces and published boundary ids — root-scoped
+  columns keyed by `CallableId`
+- a `Callable`'s ordered flat capture lanes — descriptor-owned identity payload
+  keyed by `CallableId`, because one callable identity cannot have two payload
+  lane sequences
 - a boundary's published lane contract — columns keyed by `BoundaryId`
 - codegen lane representations — columns keyed by the lane plus the codegen seam
   that consumes it
@@ -341,8 +344,9 @@ Child ticket order:
 
 1. `fz-hwn.19.2.1` pins artifact-facing worked source tests. Producer return and
    delivered resume share one `ShapeId`; direct callable return/resume reads
-   `CallableId` target/capture facts; escaped callable publication reads
-   `BoundaryId`; ignored local use cannot mutate the received transport shape.
+   `CallableDescr` identity payload plus `CallableFacts` direct-call usage;
+   escaped callable publication reads `BoundaryId`; ignored local use cannot
+   mutate the received transport shape.
 2. `fz-hwn.19.2.2` changes `MaterializedProgram` to carry plan revision plus
    transport refs/facts, then deletes `MaterializeRoot`'s
    `derive_runtime_transports` writeback for inputs, returns, resumes, and entry
@@ -352,6 +356,23 @@ Child ticket order:
    layout derivation and `trash_boundary_return_abi`.
 4. `fz-hwn.19.2.4` carries the transport-backed artifact handoff through
    emission/backend records without `TrashRuntime*` or `TrashReturnAbi` fields.
+   The current WIP has banked the first removal slice; remaining `.4` work is
+   one output-contract ticket per disabled downstream test:
+   `fz-hwn.19.2.4.1` re-enables
+   `compiler2_interp_runs_spawned_children_from_backend_runtime_intrinsics`;
+   `fz-hwn.19.2.4.2` re-enables
+   `compiler2_interp_runs_spawn_opt_children_from_backend_runtime_intrinsics`;
+   `fz-hwn.19.2.4.3` re-enables
+   `compiler2_native_multi_relay_delivers_resume_values_through_continuation_abi`;
+   `fz-hwn.19.2.4.4` re-enables
+   `compiler2_interp_runs_resource_dtors_from_backend_runtime_intrinsics`;
+   `fz-hwn.19.2.4.5` re-enables
+   `compiler2_native_program_resource_fixture_shapes_callable_boundaries_explicitly`;
+   `fz-hwn.19.2.4.6` re-enables
+   `compiler2_run_root_jit_executes_resources_without_legacy_prepare`.
+   Each ticket starts by turning on its test, then fixes only the proven
+   transport/artifact seam violation. No downstream recomputation, fallback
+   layout derivation, compatibility adapter, or copied interner table is allowed.
 5. `fz-hwn.19.2.5` removes leftover artifact authority, updates docs/telemetry,
    and proves with `rg` that live artifact/materialization code no longer
    imports or constructs the trash-prefixed transport model.
@@ -429,6 +450,9 @@ S_int = Shape::Lane(L_int)
 C_direct = CallableId {
   target = E_add,
   capture_shapes = [S_int],
+  capture_lanes = [L_int],
+}
+C_direct facts = {
   direct_surfaces = [[S_int]],
   boundary_ids = [],
 }
@@ -439,6 +463,9 @@ S_pair_return = Shape::Tuple([S_int, S_direct_callable])
 C_pub = CallableId {
   target = E_add,
   capture_shapes = [S_int],
+  capture_lanes = [L_int],
+}
+C_pub facts = {
   direct_surfaces = [],
   boundary_ids = [B_pub],
 }
@@ -447,6 +474,7 @@ S_pub_callable = Shape::Callable(C_pub)
 B_pub = BoundaryId {
   callable = C_pub,
   surface_arg_shapes = [S_int],
+  published_value_lane = L_callable_ref,
   published_capture_lanes = [L_int],
   published_arg_lanes = [L_int],
   published_return_shape = S_int,
@@ -467,15 +495,17 @@ Pos(E_main.value(pub))        -> S_pub_callable
 ```
 
 `pair(41)` returns `S_pair_return`. The first child contributes one `L_int`
-lane. The second child is `Shape::Callable(C_direct)`, whose capture facts say
-it contributes one captured `L_int` lane. The physical return lanes are:
+lane. The second child is `Shape::Callable(C_direct)`, whose descriptor-owned
+capture lanes say it contributes one captured `L_int` lane. The physical return
+lanes are:
 
 ```
 [ L_int(n), L_int(captured n) ]
 ```
 
 No tuple object is required. No closure object is required. The tuple shape
-names the two fields; the callable fact names the target and capture lanes.
+names the two fields; the callable descriptor names the target and capture
+lanes, while callable facts name direct surfaces and boundary publications.
 
 `main` receives the result through the same `S_pair_return`:
 
@@ -519,7 +549,7 @@ This example covers the required cases:
 Ignore           -> Shape::Nothing
 Value int        -> Shape::Lane(L_int)
 Tuple fields     -> Shape::Tuple([...])
-Direct callable  -> Shape::Callable(C_direct) + callable facts
+Direct callable  -> Shape::Callable(C_direct) + descriptor capture lanes + callable facts
 Escaped callable -> Shape::Callable(C_pub) + BoundaryId contract
 Resume payload   -> same ShapeId as producing return
 Codegen repr     -> seam fact, not shape

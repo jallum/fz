@@ -185,7 +185,6 @@ pub struct CallableDescr {
 pub struct CallableFacts {
     pub resolutions: Box<[ExecutableSymbol]>,
     pub direct_surfaces: Box<[Box<[ShapeId]>]>,
-    pub capture_lanes: Box<[LaneId]>,
     pub boundary_ids: Box<[BoundaryId]>,
 }
 
@@ -193,6 +192,7 @@ pub struct CallableFacts {
 pub struct BoundaryDescr {
     pub callable: CallableId,
     pub surface_arg_shapes: Box<[ShapeId]>,
+    pub published_value_lane: LaneId,
     pub published_capture_lanes: Box<[LaneId]>,
     pub published_arg_lanes: Box<[LaneId]>,
     pub published_return_shape: ShapeId,
@@ -548,6 +548,7 @@ mod tests {
         let boundary = BoundaryDescr {
             callable,
             surface_arg_shapes: vec![shape].into_boxed_slice(),
+            published_value_lane: lane,
             published_capture_lanes: vec![lane].into_boxed_slice(),
             published_arg_lanes: vec![lane].into_boxed_slice(),
             published_return_shape: shape,

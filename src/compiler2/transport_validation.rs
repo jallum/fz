@@ -12,24 +12,24 @@ pub(crate) trait TransportPlanTestHandler {
 }
 
 pub(crate) fn default_transport_plan_test_handlers<'a>() -> Vec<Box<dyn TransportPlanTestHandler + 'a>> {
-    vec![Box::new(TransportPlanGraphValidator)]
+    vec![Box::new(TransportPlanContractValidator)]
 }
 
-struct TransportPlanGraphValidator;
+struct TransportPlanContractValidator;
 
-impl TransportPlanTestHandler for TransportPlanGraphValidator {
+impl TransportPlanTestHandler for TransportPlanContractValidator {
     fn transport_plan_defined(&self, world: &World<'_>, root: RootId) {
-        let errors = validate_transport_plan_graph(world, root);
+        let errors = validate_transport_plan_contract(world, root);
         assert!(
             errors.is_empty(),
-            "transport plan for root {} is not vertically closed:\n{}",
+            "transport plan for root {} violates the transport contract:\n{}",
             root.as_u32(),
             errors.join("\n")
         );
     }
 }
 
-fn validate_transport_plan_graph(world: &World<'_>, root: RootId) -> Vec<String> {
+fn validate_transport_plan_contract(world: &World<'_>, root: RootId) -> Vec<String> {
     let Some(plan) = world.transport().plans().get(root) else {
         return vec![format!("root {} has no committed transport plan", root.as_u32())];
     };
@@ -101,9 +101,6 @@ impl ValidationContext<'_, '_> {
                     self.validate_shape(shape, plan, "callable direct surface");
                 }
             }
-            for lane in facts.capture_lanes.iter().copied() {
-                self.validate_lane(lane, "callable fact capture lane");
-            }
             for boundary in facts.boundary_ids.iter().copied() {
                 self.validate_boundary(boundary, plan, "callable fact boundary");
             }
@@ -166,6 +163,7 @@ impl ValidationContext<'_, '_> {
     fn validate_callable_descr(&mut self, descr: &CallableDescr, plan: &TransportPlan) {
         for shape in descr.capture_shapes.iter().copied() {
             self.validate_shape(shape, plan, "callable descriptor capture shape");
+            self.validate_callable_capture_shape(shape, plan);
         }
         for lane in descr.capture_lanes.iter().copied() {
             self.validate_lane(lane, "callable descriptor capture lane");
@@ -174,6 +172,21 @@ impl ValidationContext<'_, '_> {
             for shape in surface.iter().copied() {
                 self.validate_shape(shape, plan, "callable descriptor contract surface");
             }
+        }
+    }
+
+    fn validate_callable_capture_shape(&mut self, shape: ShapeId, plan: &TransportPlan) {
+        let ShapeDescr::Callable(callable) = self.world.transport().interners().shape(shape) else {
+            return;
+        };
+        let Some(facts) = plan.callables.get(callable) else {
+            return;
+        };
+        if !facts.direct_surfaces.is_empty() && facts.resolutions.is_empty() && facts.boundary_ids.is_empty() {
+            self.errors.push(format!(
+                "callable descriptor capture shape {:?} references direct callable {:?} without executable resolution or boundary publication",
+                shape, callable
+            ));
         }
     }
 
@@ -195,6 +208,7 @@ impl ValidationContext<'_, '_> {
         for shape in descr.surface_arg_shapes.iter().copied() {
             self.validate_shape(shape, plan, "boundary descriptor surface arg shape");
         }
+        self.validate_lane(descr.published_value_lane, "boundary descriptor published value lane");
         for lane in descr.published_capture_lanes.iter().copied() {
             self.validate_lane(lane, "boundary descriptor published capture lane");
         }

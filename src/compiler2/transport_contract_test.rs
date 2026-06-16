@@ -2,6 +2,7 @@ use std::cell::RefCell;
 use std::collections::{BTreeSet, HashSet};
 use std::rc::Rc;
 
+use super::body::{DeliveredValueSource, delivered_value_joins};
 use super::semantic::{CallableFlowFact, CallableSurface};
 use super::transport::{ActivationSymbol, ExecutableSymbol};
 use super::transport::{
@@ -73,7 +74,7 @@ const CALLABLE_FACTS: &[(&str, &str)] = &[
 
 const BOUNDARY_FACTS: &[(&str, &str)] = &[(
     "B_pub",
-    "callable C_pub; surface_arg_shapes [S_int]; published_capture_lanes [L_int]; \
+    "callable C_pub; surface_arg_shapes [S_int]; published_value_lane L_int; published_capture_lanes [L_int]; \
      published_arg_lanes [L_int]; published_return_shape S_int; published_return_lanes [L_int]",
 )];
 
@@ -126,7 +127,7 @@ fn compiler2_transport_flow_contract_separates_shared_descriptors_from_root_plan
     assert_eq!(
         boundary("B_pub"),
         Some(
-            "callable C_pub; surface_arg_shapes [S_int]; published_capture_lanes [L_int]; \
+            "callable C_pub; surface_arg_shapes [S_int]; published_value_lane L_int; published_capture_lanes [L_int]; \
              published_arg_lanes [L_int]; published_return_shape S_int; published_return_lanes [L_int]"
         ),
         "boundary publication is contextual and points at shared lane/shape ids"
@@ -534,6 +535,102 @@ fn main(), do: fz_float_id(1.0)
 }
 
 #[test]
+fn compiler2_transport_flow_publishes_callable_value_lane_for_spawn_boundary_input() {
+    let source = r#"
+extern "C" fn fz_spawn(() -> any) :: pid
+fn spawn(fun), do: fz_spawn(fun)
+fn child(), do: 42
+fn main(), do: spawn(child)
+"#;
+
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new(&tel);
+    world.submit_code(
+        Some("transport_spawn_callable_boundary_input.fz".to_string()),
+        source.to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    assert_resolved(world.drive_for(None), "spawn boundary input fixture should settle");
+
+    let plan = transport_plan(&world, root);
+    let spawn = executable_for(&world, &plan, "spawn", 1);
+    let spawn_input = TransportPosition::ExecutableInput {
+        executable: spawn.clone(),
+        semantic_index: 0,
+    };
+    let boundary = plan
+        .boundaries
+        .iter()
+        .find_map(|(boundary, facts)| facts.publications.contains(&spawn_input).then_some(*boundary))
+        .unwrap_or_else(|| panic!("spawn/1 callable input should publish a boundary"));
+    let boundary_descr = world.transport().interners().boundary(boundary);
+    assert_seam_fact(
+        &plan,
+        |seam| matches!(seam, CodegenSeam::FunctionEntry { executable, semantic_index } if executable == &spawn && *semantic_index == 0),
+        None,
+        boundary_descr.published_value_lane,
+        CodegenLaneRepr::ValueRef,
+        "a callable executable input that crosses a boundary should publish its closure-ref entry lane",
+    );
+}
+
+#[test]
+fn compiler2_transport_flow_keeps_extern_value_input_boxed_when_argument_is_tuple() {
+    let source = r#"
+extern "C" fn fz_dbg(any) :: any
+fn dbg(x), do: fz_dbg(x)
+fn main(), do: dbg({:zero, :pos, :other})
+"#;
+
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new(&tel);
+    world.submit_code(
+        Some("transport_extern_tuple_value_input.fz".to_string()),
+        source.to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    assert_resolved(world.drive_for(None), "extern tuple value input fixture should settle");
+
+    let plan = transport_plan(&world, root);
+    let dbg_wrapper = executable_for(&world, &plan, "dbg", 1);
+    let dbg = executable_for(&world, &plan, "fz_dbg", 1);
+    let wrapper_input_shape = plan_shape_at(
+        &plan,
+        &TransportPosition::ExecutableInput {
+            executable: dbg_wrapper,
+            semantic_index: 0,
+        },
+    );
+    assert!(
+        matches!(shape_descr(&world, wrapper_input_shape), ShapeDescr::Lane(_)),
+        "a wrapper that forwards into an extern any boundary should also consume one boxed value lane",
+    );
+    let input_shape = plan_shape_at(
+        &plan,
+        &TransportPosition::ExecutableInput {
+            executable: dbg.clone(),
+            semantic_index: 0,
+        },
+    );
+    assert!(
+        matches!(shape_descr(&world, input_shape), ShapeDescr::Lane(_)),
+        "extern any input should consume one boxed value lane, not the tuple producer's field lanes",
+    );
+    let leaf_lanes = shape_leaf_lanes(&world, input_shape);
+    let [(leaf_shape, lane)] = leaf_lanes.as_slice() else {
+        panic!("extern any input should have exactly one boxed lane")
+    };
+    assert_seam_fact(
+        &plan,
+        |seam| matches!(seam, CodegenSeam::FunctionEntry { executable, semantic_index } if executable == &dbg && *semantic_index == 0),
+        Some(*leaf_shape),
+        *lane,
+        CodegenLaneRepr::ValueRef,
+        "extern any input should publish one ValueRef function-entry seam",
+    );
+}
+
+#[test]
 fn compiler2_transport_flow_publishes_tuple_codegen_seams_for_leaf_lanes() {
     let source = r#"
 fn pair(x, y), do: {x, y}
@@ -870,12 +967,9 @@ end
         .unwrap_or_else(|| panic!("returned direct callable should name its local producer"));
     let flow = upstream_callable_flow_for_producer(&world, root, producer_function);
     assert_callable_facts_match_upstream_flow(&world, &plan, *callable, &flow);
-    let facts = plan
-        .callables
-        .get(callable)
-        .unwrap_or_else(|| panic!("direct callable facts should be present for {callable:?}"));
-    let [capture_lane] = facts.capture_lanes.as_ref() else {
-        panic!("make_adder/1's returned callable should carry exactly one capture lane: {facts:?}")
+    let callable_descr = world.transport().interners().callable(*callable);
+    let [capture_lane] = callable_descr.capture_lanes.as_ref() else {
+        panic!("make_adder/1's returned callable should carry exactly one capture lane: {callable_descr:?}")
     };
     assert_seam_fact(
         &plan,
@@ -965,8 +1059,9 @@ end
         !callable_facts.direct_surfaces.is_empty(),
         "direct callable surfaces should be plan facts, not artifact-local recovery"
     );
-    let [capture_lane] = callable_facts.capture_lanes.as_ref() else {
-        panic!("make_adder/1 should publish one carried capture lane: {callable_facts:?}")
+    let callable_descr = world.transport().interners().callable(*pair_callable);
+    let [capture_lane] = callable_descr.capture_lanes.as_ref() else {
+        panic!("make_adder/1 should publish one carried capture lane: {callable_descr:?}")
     };
     assert_seam_fact(
         &plan,
@@ -1663,19 +1758,20 @@ fn main(), do: make(1, 2)
     let ShapeDescr::Callable(callable) = shape_descr(&world, returned) else {
         panic!("make/2 should return a callable shape")
     };
-    let facts = plan
-        .callables
-        .get(callable)
-        .unwrap_or_else(|| panic!("returned callable facts should be present"));
+    assert!(
+        plan.callables.contains_key(callable),
+        "returned callable facts should be present"
+    );
+    let callable_descr = world.transport().interners().callable(*callable);
     assert_eq!(
-        facts.capture_lanes.len(),
+        callable_descr.capture_lanes.len(),
         2,
         "two same-typed captures are two ordered payload lanes, not one deduplicated lane"
     );
     let boundary = single_boundary_descr(&world, &plan);
     assert_eq!(
         boundary.published_capture_lanes.as_ref(),
-        facts.capture_lanes.as_ref(),
+        callable_descr.capture_lanes.as_ref(),
         "published capture lanes must preserve the callable capture payload sequence exactly"
     );
 }
@@ -1929,7 +2025,30 @@ end
         shape_leaf_lanes(&world, returned)
             .iter()
             .all(|(_, lane)| world.types().is_integer(&world.transport().interners().lane(*lane).ty)),
-        "both reduce results should stay on integer transport lanes"
+        "both reduce results should stay on integer transport lanes; returned={:?}; leaves={:?}",
+        shape_descr(&world, returned),
+        shape_leaf_lanes(&world, returned)
+            .into_iter()
+            .map(|(shape, lane)| (shape, lane, world.transport().interners().lane(lane).ty))
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn compiler2_transport_plan_has_no_dangling_direct_enum_reduce_callable() {
+    let source = include_str!("../../fixtures2/00010_enum_reduce_main.fz");
+
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new(&tel);
+    world.submit_code(
+        Some("transport_enum_reduce_no_dangling_direct_callable.fz".to_string()),
+        source.to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    drive_until_transport_plan(
+        &mut world,
+        root,
+        "Enum.reduce lambda fixture should produce a transport plan",
     );
 }
 
@@ -2009,6 +2128,142 @@ end
             })
         }),
         "the joined reducer should retain a direct two-argument callable surface without becoming a boundary"
+    );
+}
+
+#[test]
+fn compiler2_transport_plan_publishes_joined_callable_value_position_before_native_capture() {
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new(&tel);
+    world.submit_code(
+        Some("opaque_fn_value_join.fz".to_string()),
+        include_str!("../../fixtures2/behavior/opaque_fn_value_join.fz").to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    drive_until_transport_plan(
+        &mut world,
+        root,
+        "opaque joined function value fixture should produce a transport plan",
+    );
+
+    let plan = transport_plan(&world, root);
+    let main = executable_for(&world, &plan, "main", 0);
+    let closure = world.semantic_closure(root);
+    let main_demand = closure
+        .runtime_demands
+        .iter()
+        .find_map(|(executable, demand)| (executable.activation.function == main.activation.function).then_some(demand))
+        .expect("main runtime demand should be present");
+    let add_a = executable_for(&world, &plan, "add_a", 2).activation.function;
+    let add_b = executable_for(&world, &plan, "add_b", 2).activation.function;
+    let joined_value = delivered_value_joins(&world.lowered_body(main.activation.function))
+        .values()
+        .find_map(|join| {
+            let producer_functions = join
+                .sources
+                .iter()
+                .filter_map(|source| match source {
+                    DeliveredValueSource::LocalValue(value) => {
+                        main_demand.callable_flows.get(value).map(|flow| flow.function)
+                    }
+                    DeliveredValueSource::CallsiteReturn(_) => None,
+                })
+                .collect::<Vec<_>>();
+            (producer_functions.contains(&add_a) && producer_functions.contains(&add_b)).then_some(join.value)
+        })
+        .expect("main should deliver a joined add_a/add_b callable value");
+    let joined_position = TransportPosition::Value {
+        executable: main,
+        value: joined_value,
+    };
+    let joined_shape = plan_shape_at(&plan, &joined_position);
+    let ShapeDescr::Callable(joined_callable) = shape_descr(&world, joined_shape) else {
+        panic!("joined callable value position should remain callable-shaped: {joined_shape:?}");
+    };
+    let joined_descr = world.transport().interners().callable(*joined_callable);
+    assert_eq!(
+        joined_descr.function, None,
+        "a joined runtime callable value must not pretend to be one concrete zero-capture function"
+    );
+
+    let published_boundaries = plan
+        .boundaries
+        .iter()
+        .filter_map(|(boundary, facts)| facts.publications.contains(&joined_position).then_some(*boundary))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        published_boundaries.len(),
+        1,
+        "the joined callable value position should publish exactly one boundary discriminator: {:?}",
+        plan.boundaries
+    );
+    assert!(
+        plan.codegen_seam_facts.iter().any(|fact| {
+            matches!(fact.seam, CodegenSeam::FirstClassPublication { boundary } if boundary == published_boundaries[0])
+                && fact.shape.is_none()
+        }),
+        "transport should publish a first-class codegen lane for the joined callable boundary"
+    );
+}
+
+#[test]
+fn compiler2_transport_plan_gives_lambda_capture_lane_for_published_callable_capture() {
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new(&tel);
+    world.submit_code(
+        Some("opaque_fn_value_join.fz".to_string()),
+        include_str!("../../fixtures2/behavior/opaque_fn_value_join.fz").to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    drive_until_transport_plan(
+        &mut world,
+        root,
+        "opaque joined function value fixture should produce a transport plan",
+    );
+
+    let plan = transport_plan(&world, root);
+    let lambda_capturing_published_callable = plan.callables.keys().find_map(|callable| {
+        let descr = world.transport().interners().callable(*callable);
+        let [capture_shape] = descr.capture_shapes.as_ref() else {
+            return None;
+        };
+        let ShapeDescr::Callable(captured) = shape_descr(&world, *capture_shape) else {
+            return None;
+        };
+        let captured_descr = world.transport().interners().callable(*captured);
+        let captured_facts = plan.callables.get(captured)?;
+        (descr.function.is_some() && captured_descr.function.is_none() && !captured_facts.boundary_ids.is_empty())
+            .then_some((*callable, *capture_shape))
+    });
+    let (callable, capture_shape) = lambda_capturing_published_callable
+        .expect("Enum.reduce's generated loop lambda should capture the published joined reducer value");
+    let descr = world.transport().interners().callable(callable);
+    assert_eq!(
+        descr.capture_lanes.len(),
+        1,
+        "a lambda that captures a first-class callable value must carry that runtime value in a physical capture lane, not recurse into the captured callable's zero structural lanes: {descr:?}; capture_shape={capture_shape:?}",
+    );
+    let facts = plan
+        .callables
+        .get(&callable)
+        .unwrap_or_else(|| panic!("callable facts should exist for generated lambda {callable:?}"));
+    let lane = descr.capture_lanes[0];
+    assert!(
+        facts.resolutions.iter().any(|executable| {
+            plan.codegen_seam_facts.iter().any(|fact| {
+                matches!(
+                    &fact.seam,
+                    CodegenSeam::FunctionEntry {
+                        executable: seam_executable,
+                        semantic_index: 0,
+                    } if seam_executable == executable
+                ) && fact.shape.is_none()
+                    && fact.lane == lane
+                    && fact.repr == CodegenLaneRepr::ValueRef
+            })
+        }),
+        "the generated lambda executable must receive its first-class callable capture through the descriptor capture lane, not by re-decoding the captured callable shape: lane={lane:?}; facts={:?}",
+        plan.codegen_seam_facts,
     );
 }
 

@@ -171,26 +171,13 @@ impl<'a, 'tel> BackendLowerer<'a, 'tel> {
         entry: &LoweredEntry,
     ) -> Result<BackendEntry, FatalError> {
         let entry_id = original_entry_id(executable, entry_index);
+        let capture_positions = self.capture_positions_for_entry(executable, entry_id, entry)?;
         Ok(BackendEntry {
             span: entry.span,
             origin: lower_entry_origin(executable, entry_index, entry),
             params: entry.params.clone(),
             captures: entry.captures.clone(),
-            capture_positions: executable
-                .transport
-                .entry_capture_positions
-                .iter()
-                .filter(|position| {
-                    matches!(
-                        position,
-                        super::super::transport::TransportPosition::EntryCapture {
-                            entry: captured_entry,
-                            ..
-                        } if *captured_entry == entry_id
-                    )
-                })
-                .cloned()
-                .collect(),
+            capture_positions,
             reusable_cons_captures: entry
                 .reusable_cons_captures
                 .iter()
@@ -206,6 +193,42 @@ impl<'a, 'tel> BackendLowerer<'a, 'tel> {
                 .collect::<Result<Vec<_>, _>>()?,
             tail: self.lower_tail(executable, &entry.tail)?,
         })
+    }
+
+    fn capture_positions_for_entry(
+        &mut self,
+        executable: &super::super::artifact::EmissionReadyExecutable,
+        entry_id: ControlEntryId,
+        entry: &LoweredEntry,
+    ) -> Result<Vec<super::super::transport::TransportPosition>, FatalError> {
+        let positions = executable
+            .transport
+            .entry_capture_positions
+            .iter()
+            .filter(|position| {
+                matches!(
+                    position,
+                    super::super::transport::TransportPosition::EntryCapture {
+                        entry: captured_entry,
+                        ..
+                    } if *captured_entry == entry_id
+                )
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        if positions.len() != entry.captures.len() {
+            return Err(incomplete_backend_program(
+                self.world,
+                self.root_id,
+                format!(
+                    "entry {} has {} captures but {} transport capture positions",
+                    entry_id.as_u32(),
+                    entry.captures.len(),
+                    positions.len()
+                ),
+            ));
+        }
+        Ok(positions)
     }
 
     fn lower_step(
