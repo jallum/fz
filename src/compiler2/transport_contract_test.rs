@@ -1784,8 +1784,9 @@ end
         source.to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
-    assert_resolved(
-        world.drive_for(None),
+    drive_until_transport_plan(
+        &mut world,
+        root,
         "surface-specific boundary-return fixture should settle",
     );
 

@@ -33,7 +33,10 @@ use super::super::drive::{FactKey, Job, JobEffects, settled_uses};
 use super::super::identity::{ActivationKey, ExecutableKey, ExecutableNeed, FunctionId, RootId};
 use super::super::scheduler::FatalError;
 use super::super::semantic::{ActivationAnalysis, CallSiteKey, CallTargetSummary, SelectedCallee};
-use super::super::transport::{ActivationSymbol, ExecutableSymbol, TransportPlan, TransportPosition};
+use super::super::transport::{
+    ActivationSymbol, CodegenLaneRepr, CodegenSeam, ExecutableSymbol, LaneId, ShapeDescr, ShapeId, TransportPlan,
+    TransportPosition,
+};
 use super::super::types::Ty;
 use super::super::world::World;
 use super::semantic::executable_callsite_needs;
@@ -173,6 +176,12 @@ pub(super) fn derive_abi_ready(world: &mut World<'_>, root_id: RootId) -> Result
 
     let reads = settled_uses([materialized_fact]);
     let materialized = world.materialized_program(root_id);
+    let transport_plan = world
+        .transport()
+        .plans()
+        .get(root_id)
+        .cloned()
+        .expect("materialized program should name a readable transport plan");
     let original_entry_ids = materialized
         .executables
         .iter()
@@ -185,14 +194,7 @@ pub(super) fn derive_abi_ready(world: &mut World<'_>, root_id: RootId) -> Result
         .map(|(key, executable)| {
             (
                 key.clone(),
-                build_executable_abi_plan(
-                    world,
-                    key,
-                    executable,
-                    runtime_transports
-                        .get(key)
-                        .expect("runtime transport should exist for every materialized executable"),
-                ),
+                build_executable_abi_plan(world, key, executable, &transport_plan),
             )
         })
         .collect::<HashMap<_, _>>();
@@ -214,7 +216,7 @@ pub(super) fn derive_abi_ready(world: &mut World<'_>, root_id: RootId) -> Result
             ))
         })
         .collect::<Result<HashMap<_, _>, FatalError>>()?;
-    let callable_entries = derive_callable_entries(world, root_id, &executables)?;
+    let callable_entries = derive_callable_entries(world, root_id, &materialized, &executables)?;
     let program = AbiReadyProgram {
         materialized_revision,
         entry: materialized.entry,
@@ -2352,19 +2354,87 @@ fn build_executable_abi_plan(
     world: &mut World<'_>,
     _key: &ExecutableKey,
     executable: &MaterializedExecutable,
-    transport: &ExecutableRuntimeTransport,
+    transport_plan: &TransportPlan,
 ) -> ExecutableAbiPlan {
-    let runtime_params = transport.runtime_params.clone();
-    let param_reprs = runtime_params.abi_reprs();
+    let param_reprs = executable
+        .transport
+        .input_positions
+        .iter()
+        .flat_map(|position| {
+            let TransportPosition::ExecutableInput {
+                executable: symbol,
+                semantic_index,
+            } = position
+            else {
+                return Vec::new();
+            };
+            let shape = *transport_plan
+                .positions
+                .get(position)
+                .unwrap_or_else(|| panic!("transport plan should publish materialized input position {position:?}"));
+            shape_leaf_lanes_for_artifact(world, shape)
+                .into_iter()
+                .map(|(leaf_shape, lane)| {
+                    seam_repr_for_lane(
+                        &transport_plan.codegen_seam_facts,
+                        |seam| {
+                            matches!(
+                                seam,
+                                CodegenSeam::FunctionEntry {
+                                    executable,
+                                    semantic_index: index
+                                } if executable == symbol && index == semantic_index
+                            )
+                        },
+                        Some(leaf_shape),
+                        lane,
+                    )
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
     let mut value_reprs = HashMap::new();
     if let LoweredBody::Clauses { clauses, entries, .. } = &executable.body {
         for clause in clauses {
             for (index, value) in clause.params.iter().copied().enumerate() {
-                let Some(layout) = runtime_params.semantic_input(index) else {
+                let Some(position) = executable.transport.input_positions.iter().find(|position| {
+                    matches!(
+                        position,
+                        TransportPosition::ExecutableInput {
+                            semantic_index,
+                            ..
+                        } if *semantic_index == index
+                    )
+                }) else {
                     continue;
                 };
-                if let TrashRuntimeValueLayout::Value { repr, .. } = layout.value_layout() {
-                    value_reprs.insert(value, *repr);
+                let shape = *transport_plan.positions.get(position).unwrap_or_else(|| {
+                    panic!("transport plan should publish materialized input position {position:?}")
+                });
+                let leaf_lanes = shape_leaf_lanes_for_artifact(world, shape);
+                if let [(leaf_shape, lane)] = leaf_lanes.as_slice() {
+                    let TransportPosition::ExecutableInput {
+                        executable: symbol,
+                        semantic_index,
+                    } = position
+                    else {
+                        continue;
+                    };
+                    let repr = seam_repr_for_lane(
+                        &transport_plan.codegen_seam_facts,
+                        |seam| {
+                            matches!(
+                                seam,
+                                CodegenSeam::FunctionEntry {
+                                    executable,
+                                    semantic_index: index
+                                } if executable == symbol && index == semantic_index
+                            )
+                        },
+                        Some(*leaf_shape),
+                        *lane,
+                    );
+                    value_reprs.insert(value, repr);
                 }
             }
         }
@@ -2408,8 +2478,6 @@ fn derive_abi_ready_executable(
         runtime_demand: executable.runtime_demand.clone(),
         runtime_params: transport.runtime_params.clone(),
         return_layout: transport.return_layout.clone(),
-        // Temporary fz-hwn.19.2.3 removal target: ABI-ready still receives the
-        // old recursive transport until it reads TransportPlan seam facts.
         resume_layouts: transport.resume_layouts.clone(),
         entry_capture_layouts: transport.entry_capture_layouts.clone(),
         value_types: executable.value_types.clone(),
@@ -2418,6 +2486,49 @@ fn derive_abi_ready_executable(
         body: executable.body.clone(),
         call_edges,
     })
+}
+
+fn shape_leaf_lanes_for_artifact(world: &World<'_>, shape: ShapeId) -> Vec<(ShapeId, LaneId)> {
+    match world.transport().interners().shape(shape) {
+        ShapeDescr::Nothing => Vec::new(),
+        ShapeDescr::Lane(lane) => vec![(shape, *lane)],
+        ShapeDescr::Tuple(items) => items
+            .iter()
+            .copied()
+            .flat_map(|item| shape_leaf_lanes_for_artifact(world, item))
+            .collect(),
+        ShapeDescr::Callable(callable) => world
+            .transport()
+            .interners()
+            .callable(*callable)
+            .capture_lanes
+            .iter()
+            .copied()
+            .map(|lane| (shape, lane))
+            .collect(),
+    }
+}
+
+fn seam_repr_for_lane(
+    facts: &[super::super::transport::CodegenSeamFact],
+    seam_matches: impl Fn(&CodegenSeam) -> bool,
+    shape: Option<ShapeId>,
+    lane: LaneId,
+) -> AbiValueRepr {
+    let fact = facts
+        .iter()
+        .find(|fact| seam_matches(&fact.seam) && fact.shape == shape && fact.lane == lane)
+        .unwrap_or_else(|| panic!("transport plan should publish a codegen seam fact for {shape:?} {lane:?}"));
+    abi_repr_from_codegen(fact.repr)
+}
+
+fn abi_repr_from_codegen(repr: CodegenLaneRepr) -> AbiValueRepr {
+    match repr {
+        CodegenLaneRepr::ValueRef => AbiValueRepr::ValueRef,
+        CodegenLaneRepr::RawInt => AbiValueRepr::RawInt,
+        CodegenLaneRepr::RawF64 => AbiValueRepr::RawF64,
+        CodegenLaneRepr::RawAtom => AbiValueRepr::RawAtom,
+    }
 }
 
 fn record_step_reprs(
@@ -2594,114 +2705,119 @@ fn derive_emission_ready_executable(
 fn derive_callable_entries(
     world: &mut World<'_>,
     root_id: RootId,
+    materialized: &MaterializedProgram,
     executables: &HashMap<ExecutableKey, AbiReadyExecutable>,
 ) -> Result<Vec<CallableEntry>, FatalError> {
     let mut entries = Vec::new();
-    for executable in executables.values() {
-        for flow in executable.runtime_demand.callable_flows.values() {
-            if !flow.escape && !flow.opaque {
-                continue;
-            }
-            let capture_tys = flow
-                .captures
-                .iter()
-                .copied()
-                .map(|capture| {
-                    executable.value_types.get(&capture).copied().ok_or_else(|| {
-                        incomplete_semantic_plan(
-                            world,
-                            root_id,
-                            format!(
-                                "ABI-ready executable is missing the settled type for runtime callable capture {}",
-                                capture.as_u32()
-                            ),
-                        )
-                    })
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            for target in &flow.resolutions {
-                if target.activation.function != flow.function || target.need != ExecutableNeed::Value {
-                    let function_ref = world.function_ref(flow.function);
-                    return Err(incomplete_semantic_plan(
-                        world,
-                        root_id,
-                        format!(
-                            "callable flow for `{}/{}` published mismatched target {:?}",
-                            function_ref.name, function_ref.arity, target
-                        ),
-                    ));
-                }
-                if target.activation.input.len() < capture_tys.len() {
-                    let function_ref = world.function_ref(flow.function);
-                    return Err(incomplete_semantic_plan(
-                        world,
-                        root_id,
-                        format!(
-                            "callable flow for `{}/{}` published target with fewer inputs than captures",
-                            function_ref.name, function_ref.arity
-                        ),
-                    ));
-                }
-                let target_executable = executables.get(target).ok_or_else(|| {
-                    let function_ref = world.function_ref(flow.function);
-                    incomplete_semantic_plan(
-                        world,
-                        root_id,
-                        format!(
-                            "callable flow target `{}/{}` is missing from the ABI-ready executable frontier",
-                            function_ref.name, function_ref.arity
-                        ),
-                    )
-                })?;
-                let capture_count = capture_tys.len();
-                let capture_reprs = capture_tys
-                    .iter()
-                    .copied()
-                    .map(|capture_ty| abi_value_repr(world, capture_ty))
-                    .collect::<Vec<_>>();
-                let arg_reprs = target.activation.input[capture_count..]
-                    .iter()
-                    .copied()
-                    .map(|arg_ty| abi_value_repr(world, arg_ty))
-                    .collect::<Vec<_>>();
-                entries.push(CallableEntry {
-                    target: target.clone(),
-                    capture_count,
-                    capture_reprs,
-                    arg_reprs,
-                    return_ty: target_executable.return_ty,
-                    return_abi: trash_boundary_return_abi(
-                        world,
-                        target_executable.return_ty,
-                        &target_executable.return_layout,
-                    ),
-                });
-            }
+    let transport_plan = world
+        .transport()
+        .plans()
+        .get(root_id)
+        .expect("ABI-ready callable inventory should read the settled transport plan");
+    for boundary in &materialized.transport.boundary_ids {
+        let boundary_descr = world.transport().interners().boundary(*boundary);
+        let callable_descr = world.transport().interners().callable(boundary_descr.callable);
+        let callable_facts = transport_plan
+            .callables
+            .get(&boundary_descr.callable)
+            .unwrap_or_else(|| {
+                panic!(
+                    "transport plan should publish callable facts for {:?}",
+                    boundary_descr.callable
+                )
+            });
+        let capture_count = callable_descr.capture_shapes.len();
+        let capture_reprs = boundary_lanes_reprs_from_transport(
+            &materialized.transport.codegen_seam_facts,
+            *boundary,
+            boundary_descr.published_capture_lanes.as_ref(),
+        );
+        let arg_reprs = boundary_lanes_reprs_from_transport(
+            &materialized.transport.codegen_seam_facts,
+            *boundary,
+            boundary_descr.published_arg_lanes.as_ref(),
+        );
+        for target_symbol in callable_facts.resolutions.iter() {
+            let target = executable_key_for_symbol(materialized, target_symbol).ok_or_else(|| {
+                incomplete_semantic_plan(
+                    world,
+                    root_id,
+                    format!("transport callable boundary target is missing from artifact inventory: {target_symbol:?}"),
+                )
+            })?;
+            let target_executable = executables.get(&target).ok_or_else(|| {
+                incomplete_semantic_plan(
+                    world,
+                    root_id,
+                    format!("transport callable boundary target is missing from ABI-ready inventory: {target:?}"),
+                )
+            })?;
+            entries.push(CallableEntry {
+                target,
+                capture_count,
+                capture_reprs: capture_reprs.clone(),
+                arg_reprs: arg_reprs.clone(),
+                return_ty: target_executable.return_ty,
+                return_abi: boundary_return_abi_from_transport(
+                    world,
+                    &materialized.transport.codegen_seam_facts,
+                    *boundary,
+                    boundary_descr.published_return_shape,
+                    boundary_descr.published_return_lanes.as_ref(),
+                ),
+            });
         }
     }
     entries.sort_by(compare_callable_entries);
-    entries.dedup_by(|left, right| left.target == right.target && left.capture_count == right.capture_count);
+    entries.dedup();
     Ok(entries)
 }
 
-/// Projects a true callable boundary's return ABI from the target's settled
-/// return transport. This is the only place TrashReturnAbi is produced: a boundary
-/// is a publication contract for a first-class callable, so a structural return
-/// (tuple fields, direct callable) boxes to one ValueRef at the boundary, and a
-/// diverging target (empty return type) never returns.
-fn trash_boundary_return_abi(
-    world: &mut World<'_>,
-    return_ty: Ty,
-    return_layout: &TrashRuntimeValueLayout,
+fn executable_key_for_symbol(materialized: &MaterializedProgram, symbol: &ExecutableSymbol) -> Option<ExecutableKey> {
+    materialized
+        .executables
+        .keys()
+        .find(|key| {
+            key.need == symbol.need
+                && key.activation.function == symbol.activation.function
+                && key.activation.input.as_slice() == symbol.activation.input.as_ref()
+        })
+        .cloned()
+}
+
+fn boundary_lanes_reprs_from_transport(
+    facts: &[super::super::transport::CodegenSeamFact],
+    boundary: super::super::transport::BoundaryId,
+    lanes: &[LaneId],
+) -> Vec<AbiValueRepr> {
+    lanes
+        .iter()
+        .copied()
+        .map(|lane| {
+            seam_repr_for_lane(
+                facts,
+                |seam| matches!(seam, CodegenSeam::CallableBoundary { boundary: candidate } if *candidate == boundary),
+                None,
+                lane,
+            )
+        })
+        .collect()
+}
+
+fn boundary_return_abi_from_transport(
+    world: &World<'_>,
+    facts: &[super::super::transport::CodegenSeamFact],
+    boundary: super::super::transport::BoundaryId,
+    return_shape: ShapeId,
+    return_lanes: &[LaneId],
 ) -> TrashReturnAbi {
-    if world.types().is_empty(&return_ty) {
-        return TrashReturnAbi::Never;
-    }
-    match return_layout {
-        TrashRuntimeValueLayout::Value { repr, .. } => TrashReturnAbi::Value(*repr),
-        TrashRuntimeValueLayout::Omitted
-        | TrashRuntimeValueLayout::TupleFields { .. }
-        | TrashRuntimeValueLayout::DirectCallable { .. } => TrashReturnAbi::Value(AbiValueRepr::ValueRef),
+    let reprs = boundary_lanes_reprs_from_transport(facts, boundary, return_lanes);
+    match world.transport().interners().shape(return_shape) {
+        ShapeDescr::Nothing => TrashReturnAbi::Never,
+        ShapeDescr::Tuple(_) => TrashReturnAbi::TupleFields(reprs),
+        ShapeDescr::Lane(_) | ShapeDescr::Callable(_) => {
+            TrashReturnAbi::Value(reprs.first().copied().unwrap_or(AbiValueRepr::ValueRef))
+        }
     }
 }
 
@@ -2713,6 +2829,10 @@ fn compare_callable_entries(left: &CallableEntry, right: &CallableEntry) -> std:
         .cmp(&right.target.activation.function.as_u32())
         .then_with(|| left.capture_count.cmp(&right.capture_count))
         .then_with(|| left.target.activation.input.cmp(&right.target.activation.input))
+        .then_with(|| left.capture_reprs.cmp(&right.capture_reprs))
+        .then_with(|| left.arg_reprs.cmp(&right.arg_reprs))
+        .then_with(|| left.return_ty.cmp(&right.return_ty))
+        .then_with(|| left.return_abi.cmp(&right.return_abi))
 }
 
 fn compare_executable_keys(left: &ExecutableKey, right: &ExecutableKey) -> std::cmp::Ordering {

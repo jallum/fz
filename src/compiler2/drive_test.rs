@@ -2677,9 +2677,13 @@ fn compiler2_abi_ready_keeps_returned_suspend_continuation_callable_entry() {
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/enum_reduce_suspend_callable_frontier.fz".to_string()),
         text: r#"
-fn main() do
-  Enumerable.reduce([1, 2, 3], {:suspend, 0}, fn (x, acc) -> {:cont, acc + x} end)
+fn make() do
+  fn () ->
+    Enumerable.reduce([1, 2, 3], {:suspend, 0}, fn (x, acc) -> {:cont, acc + x} end)
+  end
 end
+
+fn main(), do: make()
 "#
         .to_string(),
     });
@@ -2778,9 +2782,10 @@ end
 
     let program = abi_ready.last(root_id).program;
     let (_, reduce_plain_executable) = abi_ready_executable(&program, reduce_plain_id);
-    assert!(
-        reduce_plain_executable.param_reprs == vec![AbiValueRepr::ValueRef, AbiValueRepr::RawInt],
-        "reduce_plain/3 should keep only its list and narrowed acc lanes in flat param_reprs while transporting the reducer capture structurally in runtime_params",
+    assert_eq!(
+        reduce_plain_executable.param_reprs,
+        vec![AbiValueRepr::ValueRef, AbiValueRepr::RawInt],
+        "reduce_plain/3 should keep only its list and narrowed acc lanes in flat param_reprs",
     );
     assert_eq!(reduce_plain_executable.runtime_params.inputs.len(), 3);
     // The caller's view of the reducer is one-level only: the reducer's exact
@@ -3020,6 +3025,113 @@ fn main(), do: apply(make_adder(1))
     assert!(
         program.callable_entries.is_empty(),
         "a direct-only callable path should not publish first-class callable-entry inventory",
+    );
+}
+
+#[test]
+fn compiler2_abi_ready_callable_entries_read_boundary_seam_facts() {
+    let tel = ConfiguredTelemetry::new();
+    let abi_ready = AbiReadyProgramCapture::new();
+    tel.attach(
+        &["fz", "compiler2", "abi_ready_program", "defined"],
+        abi_ready.handler(),
+    );
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/callable_entry_boundary_seam_facts.fz".to_string()),
+        text: r#"
+fn make_adder(a), do: fn (x) -> x + a end
+fn main() do
+  f = make_adder(10)
+  f.(1)
+  f
+end
+"#
+        .to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    assert_resolved(
+        compiler.drive(),
+        "ABI-ready callable entries should read transport boundary seam facts",
+    );
+
+    let program = abi_ready.last(root_id).program;
+    let [entry] = program.callable_entries.as_slice() else {
+        panic!(
+            "escaped make_adder/1 should publish exactly one callable entry: {:?}",
+            program.callable_entries
+        )
+    };
+    assert_eq!(entry.capture_count, 1);
+    assert_eq!(
+        entry.capture_reprs,
+        vec![AbiValueRepr::ValueRef],
+        "published callable captures cross the callable boundary with the transport seam repr, not the raw capture type"
+    );
+    assert_eq!(
+        entry.arg_reprs,
+        vec![AbiValueRepr::ValueRef],
+        "published callable args cross the callable boundary with the transport seam repr, not ArgRepr-from-type"
+    );
+    assert_eq!(
+        entry.return_abi,
+        TrashReturnAbi::Value(AbiValueRepr::ValueRef),
+        "published callable returns read the BoundaryId contract seam facts"
+    );
+}
+
+#[test]
+fn compiler2_abi_ready_callable_entry_preserves_tuple_boundary_return_lanes() {
+    let tel = ConfiguredTelemetry::new();
+    let abi_ready = AbiReadyProgramCapture::new();
+    tel.attach(
+        &["fz", "compiler2", "abi_ready_program", "defined"],
+        abi_ready.handler(),
+    );
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/callable_entry_tuple_boundary_return.fz".to_string()),
+        text: r#"
+fn make_pairer(), do: fn (_x) -> {{1, 2}, 3} end
+fn main(), do: make_pairer()
+"#
+        .to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    assert_resolved(
+        compiler.drive(),
+        "ABI-ready callable entries should preserve tuple boundary return contracts",
+    );
+
+    let program = abi_ready.last(root_id).program;
+    let [entry] = program.callable_entries.as_slice() else {
+        panic!(
+            "escaped pairer should publish exactly one callable entry: {:?}",
+            program.callable_entries
+        )
+    };
+    assert_eq!(
+        entry.return_abi,
+        TrashReturnAbi::TupleFields(vec![
+            AbiValueRepr::ValueRef,
+            AbiValueRepr::ValueRef,
+            AbiValueRepr::ValueRef,
+        ]),
+        "tuple callable returns preserve the boundary return lane contract instead of local layout boxing"
     );
 }
 

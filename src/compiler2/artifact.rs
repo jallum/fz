@@ -783,7 +783,7 @@ pub enum BackendStep {
     },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum AbiValueRepr {
     ValueRef,
     RawInt,
@@ -791,7 +791,7 @@ pub enum AbiValueRepr {
     RawAtom,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum TrashReturnAbi {
     Never,
     Value(AbiValueRepr),
