@@ -1,7 +1,8 @@
 {
   "assignee": "Jason Allum",
   "blocked_by": [
-    "fz-hwn.19.2.3"
+    "fz-hwn.19.2.3",
+    "fz-hwn.19.2.6"
   ],
   "blocks": [
     "fz-hwn.19.2.5"
@@ -15,5 +16,5 @@
   "status": "in_progress",
   "title": "Artifact seam: carry transport-backed handoff through emission and backend",
   "type": "task",
-  "updated_at": "2026-06-16T11:15:55Z"
+  "updated_at": "2026-06-16T12:27:45Z"
 }
