@@ -5770,7 +5770,6 @@ end
 }
 
 #[test]
-#[ignore = "fz-hwn.19.2.4 WIP: downstream native execution waits on the transport-backed artifact handoff"]
 fn compiler2_native_multi_relay_delivers_resume_values_through_continuation_abi() {
     let tel = ConfiguredTelemetry::new();
     let mut compiler = Compiler2::new(&tel);

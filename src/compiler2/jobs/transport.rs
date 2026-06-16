@@ -522,23 +522,41 @@ pub(super) fn derive_transport_plan(world: &mut World<'_>, root_id: RootId) -> R
         }
 
         for resume in &context.resume_entries {
-            let demand = resume_demand(context, *resume);
             let position = TransportPosition::ResumePayload {
                 executable: symbol.clone(),
                 callsite: resume.callsite,
                 entry: resume.entry,
             };
-            let shape = resume_shape(
-                world,
-                &contexts,
-                &mut facts,
-                executable,
-                context,
-                *resume,
-                &demand,
-                Some(position.clone()),
-            );
-            shape_graph.anchor(position, shape);
+            let demand = resume_demand(context, *resume);
+            // An ignored call result still arrives as the value the callee
+            // returns: a shared callee delivers its whole return regardless of
+            // this caller dropping it. Ignoring it must not mutate the
+            // transported shape, so union the resume with the callee return
+            // position instead of collapsing it to `Nothing`. The callee's own
+            // return anchor already carries divergence (`Nothing` when the
+            // callee never returns), so this stays correct for diverging calls.
+            // Demanded resumes keep their projection, which settles direct vs.
+            // first-class callable transport from the caller's use.
+            let shared_return = demand
+                .is_ignore()
+                .then_some(resume.callsite)
+                .flatten()
+                .and_then(|callsite| resume_callee_return_position(world, &contexts, executable, context, callsite));
+            if let Some(callee_return) = shared_return {
+                shape_graph.equal(position, callee_return);
+            } else {
+                let shape = resume_shape(
+                    world,
+                    &contexts,
+                    &mut facts,
+                    executable,
+                    context,
+                    *resume,
+                    &demand,
+                    Some(position.clone()),
+                );
+                shape_graph.anchor(position, shape);
+            }
         }
     }
 
@@ -952,6 +970,44 @@ fn callable_function_entry_publication_lanes(world: &World<'_>, descr: &Callable
         }
     }
     lanes
+}
+
+/// The `ExecutableReturn` position a call resume is delivered from, when the
+/// call settles to exactly one known callee executable. A delivered resume and
+/// the producing return are the same runtime value, so they share one
+/// `ShapeId`: the resume position is unioned with the callee return position
+/// rather than re-projected through the caller's (possibly `Ignore`) demand. A
+/// caller that ignores or narrows the result settles that locally; it never
+/// mutates the transported return shape.
+fn resume_callee_return_position(
+    world: &World<'_>,
+    contexts: &HashMap<ExecutableKey, ExecutableContext>,
+    executable: &ExecutableKey,
+    context: &ExecutableContext,
+    callsite: CallSiteId,
+) -> Option<TransportPosition> {
+    let summary = world.callsite_summary(&CallSiteKey {
+        activation: executable.activation.clone(),
+        callsite,
+    })?;
+    let [target] = summary.targets.as_slice() else {
+        return None;
+    };
+    let SelectedCallee::Function(_) = target.callee else {
+        return None;
+    };
+    let activation = target.activation.clone()?;
+    let need = context
+        .callsite_needs
+        .get(&callsite)
+        .copied()
+        .unwrap_or(ExecutableNeed::Value);
+    let callee = ExecutableKey { activation, need };
+    contexts
+        .contains_key(&callee)
+        .then(|| TransportPosition::ExecutableReturn {
+            executable: executable_symbol(&callee),
+        })
 }
 
 fn resume_callsite_for_entry(context: &ExecutableContext, entry: ControlEntryId) -> Option<CallSiteId> {
