@@ -238,6 +238,77 @@ fn assert_resolved(outcome: DriveOutcome<Job, FactKey>, message: &str) {
     assert!(matches!(outcome, DriveOutcome::Resolved), "{message}: {outcome:?}");
 }
 
+struct JobRunGuard {
+    counts: Rc<RefCell<HashMap<String, u32>>>,
+    limit: u32,
+}
+
+impl Handler for JobRunGuard {
+    fn handle(&self, ev: &Event<'_, '_, '_>) {
+        if ev.kind != EventKind::SpanStart || ev.name != ["fz", "compiler2", "job"] {
+            return;
+        }
+        let Some(job) = ev.metadata.get("job").and_then(|value| value.downcast_ref::<Job>()) else {
+            return;
+        };
+        let key = format!("{job:?}");
+        let mut counts = self.counts.borrow_mut();
+        let count = counts.entry(key.clone()).or_insert(0);
+        *count += 1;
+        assert!(
+            *count <= self.limit,
+            "semantic job re-ran more than {} times without converging — non-termination pinned here:\n  {key}",
+            self.limit,
+        );
+    }
+}
+
+/// fz-hwn.19.2.4.9 root pin: a callable captured by an escaped continuation that
+/// is produced through a *protocol-dispatched* method makes the semantic closure
+/// spin — `SealSemanticClosure` re-runs forever because the captured callable's
+/// activation is reached only through the opaque protocol-dispatch edge and never
+/// settles. The same shape with a direct (non-protocol) call settles cleanly.
+///
+/// The `JobRunGuard` telemetry handler fails the instant any one semantic job
+/// re-runs past a generous bound, pinning the non-termination at its driver
+/// (`SealSemanticClosure`) in milliseconds instead of a 10k-job timeout.
+#[test]
+#[ignore = "fz-hwn.19.2.4.9: protocol-dispatched escaped continuation never closes its captured callable activation"]
+fn compiler2_protocol_dispatched_escaped_continuation_closes_captured_callable() {
+    let tel = crate::telemetry::ConfiguredTelemetry::new();
+    let counts = Rc::new(RefCell::new(HashMap::new()));
+    tel.attach(&[], Box::new(JobRunGuard { counts, limit: 64 }));
+
+    let mut world = World::new(&tel);
+    world.submit_code(
+        Some("protocol_escaped_continuation.fz".to_string()),
+        r#"
+defprotocol Susp do
+  @spec run(t(a), (a) -> b) :: () -> b
+  fn run(coll, f)
+end
+
+defmodule Mini do
+  defimpl Susp, for: List do
+    fn run(_list, f), do: (fn () -> f.(1) end)
+  end
+end
+
+fn make(f), do: Susp.run([1, 2, 3], f)
+fn main(), do: make(fn x -> x + 1 end)
+"#
+        .to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+
+    world.demand(Job::SealSemanticClosure(root));
+    let _ = world.drive_for(Some(Duration::from_secs(5)));
+    assert!(
+        world.fact_is_settled(&FactKey::SemanticClosed(root)),
+        "protocol-dispatched escaped continuation should close its captured callable activation"
+    );
+}
+
 fn drive_until_semantic_closure(world: &mut World<'_>, root: RootId, message: &str) {
     world.demand(Job::SealSemanticClosure(root));
     let mut ran = 0;
