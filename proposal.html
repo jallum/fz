@@ -350,9 +350,25 @@ Replace with:
   seam-specific codegen facts
 </pre>
 
-<h3>8.4 Make callable materialization consume <code>CallableId</code> / <code>BoundaryId</code> facts</h3>
+<h3>8.3.1 Transport/artifact seam mini-epic</h3>
 
-<p>First-class callable entries, native boundaries, identity fns, capture lanes, boundary boxing, and direct-callable transport are all facts keyed by <code>CallableId</code>. Codegen never re-selects a boundary from function plus capture types.</p>
+<p>This is <code>fz-hwn.19.2</code>. Artifact becomes a consumer of <code>SemanticClosed(root)</code> plus <code>TransportPlan(root)</code>. It may freeze closed bodies, selected call edges, effects, extern marshal facts, stable inventory ids, and backend/native packaging. It must not calculate shapes, lanes, callable boundaries, resume payload layouts, return ABI, or codegen representations from <code>RuntimeDemand</code>, <code>TrashRuntimeValueLayout</code>, local types, or lowered-body walks.</p>
+
+<pre>
+SemanticClosed(root) + TransportPlan(root)
+  -> MaterializedProgram(root)
+  -> AbiReadyProgram(root)
+  -> EmissionReadyProgram(root)
+  -> BackendProgram(root)
+</pre>
+
+<p>The child order is the artifact-side Output Contract Loop: first pin worked source tests against <code>TransportPlan</code> facts, then replace <code>MaterializedProgram</code> transport trees with plan references, then derive ABI/callable inventory from seam facts and <code>CallableId</code>/<code>BoundaryId</code>, then carry the transport-backed handoff through emission/backend records, then delete artifact-side transport authority and document the boundary.</p>
+
+<p>The removal target includes <code>derive_runtime_transports</code>, <code>LocalCallableId</code>, local callable witness layout derivation, <code>trash_runtime_value_layout_from_demand</code>, <code>trash_runtime_input_layout_from_demand</code>, <code>trash_local_callable_layout</code>, layout-derived <code>param_reprs</code>, type-derived callable-entry boundary selection, and <code>trash_boundary_return_abi</code>. Downstream native/interpreter/codegen tickets consume the resulting artifact inventory; they do not reconstruct it.</p>
+
+<h3>8.4 Make downstream callable materialization consume artifact boundary inventory</h3>
+
+<p>After <code>fz-hwn.19.2</code>, first-class callable entries and published boundary contracts are artifact products backed by <code>CallableId</code> and <code>BoundaryId</code> facts. Downstream native/interpreter/codegen consumers materialize closures and boundaries only from that inventory. They never re-select a boundary from function plus capture types, capture count, or all callable-looking construction sites.</p>
 
 <h3>8.5 Collapse runtime values to shape refs plus lanes</h3>
 
@@ -415,11 +431,11 @@ rg -n "\b(TrashRuntimeValueLayout|TrashRuntimeInputLayout|TrashRuntimeParamLayou
   <tbody>
     <tr>
       <td><code>src/compiler2/artifact.rs</code>, <code>src/compiler2/jobs/artifact.rs</code>, and <code>src/compiler2/world.rs</code> still carry <code>TrashRuntimeValueLayout</code>, <code>TrashRuntimeInputLayout</code>, <code>TrashRuntimeParamLayout</code>, <code>TrashRuntimeLane</code>, and <code>TrashReturnAbi</code>.</td>
-      <td><code>fz-hwn.19.2</code>: read <code>TransportPosition -&gt; ShapeId</code>, lane facts, and executable membership from <code>TransportPlan</code>.</td>
+      <td><code>fz-hwn.19.2</code>: read <code>TransportPosition -&gt; ShapeId</code>, lane facts, executable membership, callable facts, boundary contracts, and seam facts from <code>TransportPlan</code>.</td>
     </tr>
     <tr>
       <td><code>src/compiler2/jobs/artifact.rs</code> still has <code>LocalCallableId</code>, local-callable layout memoization, <code>local_callable_layout</code>, and <code>boundary_return_abi</code>.</td>
-      <td><code>fz-hwn.19.3</code>: read <code>CallableId</code> facts for target/captures/direct surfaces and <code>BoundaryId</code> contracts for publication.</td>
+      <td><code>fz-hwn.19.2</code>: artifact-owned callable entries read <code>CallableId</code> facts and <code>BoundaryId</code> contracts; downstream tickets consume that inventory.</td>
     </tr>
     <tr>
       <td><code>src/ir_interp/backend.rs</code>, <code>src/ir_interp/mod.rs</code>, and <code>src/compiler2/jobs/native.rs</code> still carry recursive <code>TrashBackendValue</code> and <code>TrashRealizedValue</code> mirrors.</td>
@@ -544,8 +560,13 @@ metadata:
     <tr><td class="term"><code>fz-hwn.20.5</code></td><td>Publish seam-specific codegen facts without consuming them.</td></tr>
     <tr><td class="term"><code>fz-hwn.20.6</code></td><td>Prove independent authority and hand off the cutover inventory.</td></tr>
     <tr><td class="term"><code>fz-hwn.19.1</code></td><td>Accept the flow-graph handoff and pin consumer contracts.</td></tr>
-    <tr><td class="term"><code>fz-hwn.19.2</code></td><td>Replace recursive layout consumers with <code>TransportPlan</code> facts.</td></tr>
-    <tr><td class="term"><code>fz-hwn.19.3</code></td><td>Make callable materialization consume <code>CallableId</code> / <code>BoundaryId</code> facts.</td></tr>
+    <tr><td class="term"><code>fz-hwn.19.2</code></td><td>Transport/artifact seam epic: make artifact consume <code>TransportPlan</code> and stop calculating movement.</td></tr>
+    <tr><td class="term"><code>fz-hwn.19.2.1</code></td><td>Pin artifact-facing worked source tests against <code>TransportPlan</code> facts.</td></tr>
+    <tr><td class="term"><code>fz-hwn.19.2.2</code></td><td>Replace <code>MaterializedProgram</code> recursive transport trees with plan references/facts.</td></tr>
+    <tr><td class="term"><code>fz-hwn.19.2.3</code></td><td>Derive ABI-ready and callable-entry inventory from seam facts, <code>CallableId</code>, and <code>BoundaryId</code>.</td></tr>
+    <tr><td class="term"><code>fz-hwn.19.2.4</code></td><td>Carry the transport-backed handoff through emission/backend records without <code>TrashRuntime*</code> or <code>TrashReturnAbi</code>.</td></tr>
+    <tr><td class="term"><code>fz-hwn.19.2.5</code></td><td>Delete remaining artifact transport authority and document the new boundary.</td></tr>
+    <tr><td class="term"><code>fz-hwn.19.3</code></td><td>Make downstream callable materialization consume artifact <code>BoundaryId</code> inventory.</td></tr>
     <tr><td class="term"><code>fz-hwn.19.4</code></td><td>Collapse backend, interpreter, and native values to shape refs plus lane bundles.</td></tr>
     <tr><td class="term"><code>fz-hwn.19.5</code></td><td>Make native codegen consume <code>TransportPlan</code> seam facts.</td></tr>
     <tr><td class="term"><code>fz-hwn.19.6</code></td><td>Delete old vocabulary, update docs, and pin final telemetry.</td></tr>

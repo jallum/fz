@@ -251,6 +251,16 @@ carry only closed facts already proven by semantics:
 - effect summaries
 - frozen extern marshal classes
 
+Transport-spine cutover note: `fz-hwn.19.2` is the active mini-epic that changes
+the artifact seam from "derive transport inside the artifact ladder" to
+"consume `SemanticClosed(root)` plus `TransportPlan(root)`." During that cutover,
+artifact remains responsible for closed program packaging and stable downstream
+inventory, but transport owns `TransportPosition -> ShapeId`, lane facts,
+`CallableId` facts, `BoundaryId` contracts, and `CodegenSeamFact` rows. Current
+artifact code that walks `TrashRuntimeValueLayout`, `RuntimeDemand`, local
+types, or lowered bodies to derive another transport shape is removal inventory,
+not the target architecture.
+
 The next two rungs narrow the contract:
 
 - `AbiReadyProgram` derives ABI lanes, explicit return delivery, and

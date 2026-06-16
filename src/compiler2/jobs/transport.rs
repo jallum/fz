@@ -39,6 +39,7 @@ enum TransportSource {
     LocalValue(ValueId),
     CallsiteReturn(CallSiteId),
     TupleValue(Box<[ValueId]>),
+    TupleField { source: ValueId, index: usize },
     CallableValue(LocalCallableProducer),
 }
 
@@ -908,6 +909,15 @@ fn collect_step_origin(step: &LoweredStep, out: &mut HashMap<ValueId, TransportS
         LoweredStep::Tuple { value, items } => {
             out.insert(*value, TransportSource::TupleValue(items.clone().into_boxed_slice()));
         }
+        LoweredStep::TupleField { value, source, index } => {
+            out.insert(
+                *value,
+                TransportSource::TupleField {
+                    source: *source,
+                    index: *index,
+                },
+            );
+        }
         LoweredStep::FunctionRef { value, function } => {
             out.insert(
                 *value,
@@ -1238,6 +1248,9 @@ fn project_source(
         TransportSource::TupleValue(items) => project_tuple_value(
             world, contexts, facts, executable, context, ty, demand, &items, visiting,
         ),
+        TransportSource::TupleField { source, index } => project_tuple_field(
+            world, contexts, facts, executable, context, demand, source, index, visiting,
+        ),
         TransportSource::CallableValue(producer) => project_callable_value(
             world,
             contexts,
@@ -1353,6 +1366,47 @@ fn project_tuple_value(
             .interners_mut()
             .intern_shape(ShapeDescr::Tuple(item_shapes.into_boxed_slice())),
     )
+}
+
+fn project_tuple_field(
+    world: &mut World<'_>,
+    contexts: &HashMap<ExecutableKey, ExecutableContext>,
+    facts: &mut TransportFactsBuilder,
+    executable: &ExecutableKey,
+    context: &ExecutableContext,
+    demand: &RuntimeDemand,
+    source: ValueId,
+    index: usize,
+    visiting: &mut Vec<(ExecutableKey, TransportSource, RuntimeDemand)>,
+) -> SourceShape {
+    let Some(parent_ty) = context.analysis.value_types.get(&source).copied() else {
+        return SourceShape::Unknown;
+    };
+    let mut fields = vec![RuntimeDemand::Ignore; index + 1];
+    fields[index] = demand.clone();
+    let parent_demand = RuntimeDemand::tuple_fields(fields);
+    let parent_shape = match project_source(
+        world,
+        contexts,
+        facts,
+        executable,
+        context,
+        parent_ty,
+        &parent_demand,
+        TransportSource::LocalValue(source),
+        None,
+        visiting,
+    ) {
+        SourceShape::Exact(shape) => shape,
+        other => return other,
+    };
+    let ShapeDescr::Tuple(items) = world.transport().interners().shape(parent_shape) else {
+        return SourceShape::Unknown;
+    };
+    items
+        .get(index)
+        .copied()
+        .map_or(SourceShape::Unknown, SourceShape::Exact)
 }
 
 fn project_callable_value(

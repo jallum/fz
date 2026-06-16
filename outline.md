@@ -274,14 +274,16 @@ Cutover classification:
 - `src/compiler2/artifact.rs`, `src/compiler2/jobs/artifact.rs`, and
   `src/compiler2/world.rs` still carry `TrashRuntimeValueLayout`,
   `TrashRuntimeInputLayout`, `TrashRuntimeParamLayout`, `TrashRuntimeLane`, and
-  `TrashReturnAbi`. `fz-hwn.19.2` replaces these materialization handoff trees
-  with `TransportPosition -> ShapeId`, lane fact reads, and executable
-  membership from `TransportPlan`.
+  `TrashReturnAbi`. `fz-hwn.19.2` is now the focused transport/artifact seam
+  epic. It replaces materialization and artifact handoff trees with
+  `TransportPosition -> ShapeId`, lane fact reads, executable membership,
+  `CallableId` facts, `BoundaryId` contracts, and seam facts from
+  `TransportPlan`.
 - `src/compiler2/jobs/artifact.rs` still has `LocalCallableId`,
   local-callable layout memoization, `local_callable_layout`, and
-  `boundary_return_abi`. `fz-hwn.19.3` replaces local callable transport
-  authority with `CallableId` facts and first-class publication with
-  `BoundaryId` contracts.
+  `boundary_return_abi`. These are part of `fz-hwn.19.2` because callable
+  entries and published boundary contracts are produced by the artifact ladder;
+  downstream tickets consume the resulting inventory, they do not reconstruct it.
 - `src/ir_interp/backend.rs`, `src/ir_interp/mod.rs`, and
   `src/compiler2/jobs/native.rs` still carry recursive runtime-value mirrors:
   `TrashBackendValue` and `TrashRealizedValue`. `fz-hwn.19.4` replaces those
@@ -303,6 +305,54 @@ Cutover classification:
   They are either outside the compiler2 cutover or must be named by a separate
   legacy-codegen ticket before `fz-hwn.19.6` deletes the remaining old
   vocabulary.
+
+### `fz-hwn.19.2` Transport/Artifact Seam Epic
+
+Goal: make the artifact ladder consume `TransportPlan(root)` as settled input.
+Artifact may package closed bodies, call edges, effects, extern marshals, stable
+inventory ids, and backend/native handoff records. It must not calculate how
+values move.
+
+Seam input:
+
+```
+SemanticClosed(root) + TransportPlan(root)
+  -> MaterializedProgram(root)
+  -> AbiReadyProgram(root)
+  -> EmissionReadyProgram(root)
+  -> BackendProgram(root)
+```
+
+Transport owns `TransportPosition -> ShapeId`, `ShapeId` structure, lane facts,
+`CallableId` facts, `BoundaryId` contracts, and `CodegenSeamFact` rows. Artifact
+owns only stable projection and indexing over those facts. If artifact needs to
+know a runtime lane, callable target, boundary publication, resume payload, or
+codegen representation, it reads the plan/fact table. It does not walk
+`RuntimeDemand`, `TrashRuntimeValueLayout`, local types, or lowered bodies to
+re-derive the answer.
+
+Child ticket order:
+
+1. `fz-hwn.19.2.1` pins artifact-facing worked source tests. Producer return and
+   delivered resume share one `ShapeId`; direct callable return/resume reads
+   `CallableId` target/capture facts; escaped callable publication reads
+   `BoundaryId`; ignored local use cannot mutate the received transport shape.
+2. `fz-hwn.19.2.2` changes `MaterializedProgram` to carry plan revision plus
+   transport refs/facts, then deletes `MaterializeRoot`'s
+   `derive_runtime_transports` writeback for inputs, returns, resumes, and entry
+   captures.
+3. `fz-hwn.19.2.3` makes ABI-ready and callable-entry inventory read seam facts,
+   `CallableId`, and `BoundaryId` facts, then deletes local callable witness
+   layout derivation and `trash_boundary_return_abi`.
+4. `fz-hwn.19.2.4` carries the transport-backed artifact handoff through
+   emission/backend records without `TrashRuntime*` or `TrashReturnAbi` fields.
+5. `fz-hwn.19.2.5` removes leftover artifact authority, updates docs/telemetry,
+   and proves with `rg` that live artifact/materialization code no longer
+   imports or constructs the trash-prefixed transport model.
+
+This epic gates `fz-hwn.19.3` through `fz-hwn.19.5`. Those downstream tickets
+are not allowed to rediscover artifact facts; they consume the transport-backed
+artifact inventory produced here.
 
 ## Boundaries
 

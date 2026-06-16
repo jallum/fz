@@ -888,6 +888,148 @@ end
 }
 
 #[test]
+fn compiler2_transport_plan_is_the_artifact_handoff_contract() {
+    let source = r#"
+fn apply1(f, x), do: f.(x)
+fn make_adder(a), do: fn (x) -> x + a end
+fn pair(x), do: {x, make_adder(x)}
+fn escape(), do: make_adder(10)
+fn double(n), do: n + n
+
+fn main() do
+  {n, f} = pair(41)
+  y = apply1(f, n)
+
+  first = double(5)
+  assert(first == 10, "first")
+  assert(first == 10, "second")
+
+  {y, escape()}
+end
+"#;
+
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new(&tel);
+    world.submit_code(
+        Some("transport_artifact_handoff_contract.fz".to_string()),
+        source.to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::TupleFields(2));
+    assert_resolved(world.drive_for(None), "artifact handoff fixture should settle");
+
+    let plan = transport_plan(&world, root);
+    assert_plan_executable_references_are_root_scoped(&plan);
+
+    let pair = executable_for(&world, &plan, "pair", 1);
+    let main = executable_for(&world, &plan, "main", 0);
+    let pair_return = plan_shape_at(&plan, &TransportPosition::ExecutableReturn { executable: pair });
+    let pair_resume = resume_shapes_for(&plan, &main)
+        .into_iter()
+        .find(|shape| *shape == pair_return)
+        .unwrap_or_else(|| panic!("main/0 should resume pair/1's returned shape: {:?}", plan.positions));
+    assert_eq!(
+        pair_return, pair_resume,
+        "artifact must read the producer return ShapeId for delivered resumes instead of deriving a local layout"
+    );
+    let ShapeDescr::Tuple(pair_fields) = shape_descr(&world, pair_return) else {
+        panic!("pair/1 should publish a tuple transport shape")
+    };
+    let [n_shape, f_shape] = pair_fields.as_ref() else {
+        panic!("pair/1 should return the integer and direct callable fields")
+    };
+    assert!(
+        matches!(shape_descr(&world, *n_shape), ShapeDescr::Lane(_)),
+        "the scalar field should remain a lane shape"
+    );
+    let ShapeDescr::Callable(pair_callable) = shape_descr(&world, *f_shape) else {
+        panic!("the callable field should remain a CallableId shape")
+    };
+
+    let apply1 = executable_for(&world, &plan, "apply1", 2);
+    let apply1_callable_input = plan_shape_at(
+        &plan,
+        &TransportPosition::ExecutableInput {
+            executable: apply1.clone(),
+            semantic_index: 0,
+        },
+    );
+    assert_eq!(
+        *f_shape, apply1_callable_input,
+        "artifact must read the direct-callable executable input shape from TransportPlan"
+    );
+    let callable_facts = plan
+        .callables
+        .get(pair_callable)
+        .unwrap_or_else(|| panic!("direct callable facts should exist for {pair_callable:?}"));
+    assert!(
+        !callable_facts.direct_surfaces.is_empty(),
+        "direct callable surfaces should be plan facts, not artifact-local recovery"
+    );
+    let [capture_lane] = callable_facts.capture_lanes.as_ref() else {
+        panic!("make_adder/1 should publish one carried capture lane: {callable_facts:?}")
+    };
+    assert_seam_fact(
+        &plan,
+        |seam| matches!(seam, CodegenSeam::FunctionEntry { executable, semantic_index } if executable == &apply1 && *semantic_index == 0),
+        Some(apply1_callable_input),
+        *capture_lane,
+        CodegenLaneRepr::RawInt,
+        "artifact must consume direct-callable capture lane seam facts instead of walking layouts",
+    );
+
+    let escape = executable_for(&world, &plan, "escape", 0);
+    let escaped = plan_shape_at(&plan, &TransportPosition::ExecutableReturn { executable: escape });
+    let ShapeDescr::Callable(escaped_callable) = shape_descr(&world, escaped) else {
+        panic!("escape/0 should return a callable shape")
+    };
+    let escaped_facts = plan
+        .callables
+        .get(escaped_callable)
+        .unwrap_or_else(|| panic!("escaped callable facts should exist for {escaped_callable:?}"));
+    assert_eq!(
+        escaped_facts.boundary_ids.len(),
+        1,
+        "escaped callable publication should be a BoundaryId fact consumed by artifact"
+    );
+    let [boundary] = escaped_facts.boundary_ids.as_ref() else {
+        unreachable!("checked above")
+    };
+    let boundary_descr = world.transport().interners().boundary(*boundary);
+    assert_eq!(
+        boundary_descr.callable, *escaped_callable,
+        "BoundaryId should name the callable contract artifact publishes"
+    );
+    assert!(
+        plan.boundaries
+            .get(boundary)
+            .is_some_and(|facts| !facts.publications.is_empty()),
+        "first-class publication positions should be plan facts, not artifact-local boundary selection"
+    );
+
+    let double = executable_for(&world, &plan, "double", 1);
+    let double_return = plan_shape_at(&plan, &TransportPosition::ExecutableReturn { executable: double });
+    let double_resume = resume_shapes_for(&plan, &main)
+        .into_iter()
+        .find(|shape| *shape == double_return)
+        .unwrap_or_else(|| panic!("main/0 should resume double/1's returned shape even across ignored assert calls"));
+    assert_eq!(
+        double_return, double_resume,
+        "ignored later call results may be locally unused, but artifact must not shrink the received transport shape"
+    );
+    assert_seam_fact(
+        &plan,
+        |seam| matches!(seam, CodegenSeam::ContinuationEntry { executable, .. } if executable == &main),
+        Some(double_return),
+        shape_leaf_lanes(&world, double_return)
+            .first()
+            .map(|(_, lane)| *lane)
+            .expect("double/1 should return one lane"),
+        CodegenLaneRepr::RawInt,
+        "continuation entry representation should be a seam fact read by artifact/codegen consumers",
+    );
+}
+
+#[test]
 fn compiler2_transport_plan_keeps_unused_callable_construction_out_of_boundary_inventory() {
     let source = r#"
 fn make(), do: fn (x) -> x + 1 end
