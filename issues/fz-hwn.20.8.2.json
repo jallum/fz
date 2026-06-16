@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-hwn.20.8.4"
   ],
@@ -12,8 +12,8 @@
   "labels": [],
   "parent": "fz-hwn.20.8",
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "Transport authority: publish upstream callable-flow facts",
   "type": "task",
-  "updated_at": "2026-06-16T03:42:53Z"
+  "updated_at": "2026-06-16T03:45:48Z"
 }
