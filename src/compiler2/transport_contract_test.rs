@@ -1125,7 +1125,6 @@ end
 }
 
 #[test]
-#[ignore = "fz-hwn.19.2.4.7: unused callable constructors still reach native frontier"]
 fn compiler2_transport_plan_keeps_unused_callable_construction_out_of_boundary_inventory() {
     let source = r#"
 fn make(), do: fn (x) -> x + 1 end

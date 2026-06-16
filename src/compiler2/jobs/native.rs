@@ -829,17 +829,25 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                 }
                 BackendStep::FunctionRef { value, function: _ } => {
                     let shape = value_shape(self.program, executable, *value);
-                    callable_id_for_shape(self.world, shape)?;
-                    bind_local_value(
-                        ctx,
-                        executable,
-                        env,
-                        *value,
-                        NativeBoundValue::Transport {
-                            shape,
-                            lanes: Vec::new(),
-                        },
-                    );
+                    if matches!(self.world.transport().interners().shape(shape), ShapeDescr::Nothing) {
+                        // The transport plan settled this reference to Nothing: it is
+                        // never demanded as a runtime callable (passed only to an
+                        // ignoring boundary or discarded), so it carries no lanes.
+                        // Honor that proof and construct nothing.
+                        bind_local_value(ctx, executable, env, *value, NativeBoundValue::Absent);
+                    } else {
+                        callable_id_for_shape(self.world, shape)?;
+                        bind_local_value(
+                            ctx,
+                            executable,
+                            env,
+                            *value,
+                            NativeBoundValue::Transport {
+                                shape,
+                                lanes: Vec::new(),
+                            },
+                        );
+                    }
                 }
                 BackendStep::Lambda {
                     value,
@@ -847,6 +855,13 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                     captures,
                 } => {
                     let shape = value_shape(self.program, executable, *value);
+                    if matches!(self.world.transport().interners().shape(shape), ShapeDescr::Nothing) {
+                        // A settled-Nothing constructed callable is never demanded at
+                        // runtime, so its captures carry nothing. Honor the transport
+                        // plan's proof and construct nothing.
+                        bind_local_value(ctx, executable, env, *value, NativeBoundValue::Absent);
+                        continue;
+                    }
                     let callable = callable_id_for_shape(self.world, shape)?;
                     let callable_descr = self.world.transport().interners().callable(callable).clone();
                     let capture_shapes = callable_descr.capture_shapes.to_vec();

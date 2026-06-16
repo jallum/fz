@@ -2857,7 +2857,6 @@ end
 }
 
 #[test]
-#[ignore = "fz-hwn.19.2.4.7: unused callable constructors still reach native frontier"]
 fn compiler2_abi_ready_does_not_publish_unused_callable_constructors() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();

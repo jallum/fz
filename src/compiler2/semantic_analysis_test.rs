@@ -331,7 +331,6 @@ end
 }
 
 #[test]
-#[ignore = "fz-hwn.19.2.4.7: unused callable constructors still reach native frontier"]
 fn compiler2_runtime_demand_leaves_an_unused_callable_input_omitted() {
     let tel = crate::telemetry::ConfiguredTelemetry::new();
     let functions = FunctionCapture::new();
