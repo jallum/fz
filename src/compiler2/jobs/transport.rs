@@ -870,7 +870,7 @@ fn derive_codegen_seam_facts(
                 seam: CodegenSeam::CallableBoundary { boundary },
                 shape: None,
                 lane,
-                repr: CodegenLaneRepr::ValueRef,
+                repr: codegen_repr_for_lane(world, lane),
             });
         }
         if let Some(facts) = boundaries.get(&boundary)

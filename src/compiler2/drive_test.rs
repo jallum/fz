@@ -5912,7 +5912,6 @@ end
 }
 
 #[test]
-#[ignore = "fz-hwn.19.2.4 WIP: downstream native-program inventory waits on the transport-backed artifact handoff"]
 fn compiler2_native_program_resource_fixture_shapes_callable_boundaries_explicitly() {
     let _lock = tests_support_lock().lock().unwrap();
     tests_support_dtor_reset();
