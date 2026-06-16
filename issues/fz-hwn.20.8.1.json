@@ -6,14 +6,16 @@
   "blocks": [
     "fz-hwn.20.8.5"
   ],
+  "closed_at": "2026-06-16T04:56:06Z",
+  "close_reason": "Covered by landed strict-handoff commits through fz-hwn.20.8.9: transport now projects upstream callable-flow/surface facts; forbidden recovery helpers are absent; transport_contract_test and cargo check pass.",
   "created": "2026-06-16T03:42:18Z",
   "description": "Make transport consume upstream callable-flow facts for callable demand and surfaces. Remove transport's RuntimeDemand::Value + callable type -\u003e escaped upgrade, local callsite-arg surface recovery, and callable-type surface fallback for compiler-owned local callables. Transport may still render explicit opaque external callable contracts from upstream opaque facts, but it must not infer local direct or first-class surfaces from type. Tests must fail if callable_transport_demand or callable_surface_evidence can create a local CallableId fact not present upstream.",
   "id": "fz-hwn.20.8.1",
   "labels": [],
   "parent": "fz-hwn.20.8",
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "Transport authority: delete transport demand and surface recovery",
   "type": "task",
-  "updated_at": "2026-06-16T03:42:54Z"
+  "updated_at": "2026-06-16T04:56:06Z"
 }
