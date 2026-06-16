@@ -5866,6 +5866,56 @@ fn compiler2_interp_runs_resource_dtors_from_backend_runtime_intrinsics() {
 }
 
 #[test]
+fn compiler2_native_program_reads_continuation_reprs_from_transport_seams() {
+    let tel = ConfiguredTelemetry::new();
+    let native = NativeProgramCapture::new();
+    tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("native_float_resume_reads_transport_seam.fz".to_string()),
+        text: r#"
+fn inc(x), do: x + 1.0
+
+fn main() do
+  y = inc(1.0)
+  y + 2.0
+end
+"#
+        .to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    assert_resolved(
+        compiler.drive(),
+        "native float-resume fixture should settle through native lowering",
+    );
+
+    let program = native.last(root_id).program;
+    let continuation = program
+        .bodies
+        .iter()
+        .find(|body| matches!(body.origin, NativeBodyOrigin::Continuation { .. }))
+        .expect("the non-tail float call should lower through a delivered continuation");
+
+    assert_eq!(
+        continuation.entry_abi,
+        NativeEntryAbi::Continuation { extra_params: 1 },
+        "the delivered float resume payload should occupy one continuation lane",
+    );
+    assert_eq!(
+        continuation.param_reprs[0],
+        AbiValueRepr::ValueRef,
+        "native continuation metadata must read the transport ContinuationEntry seam repr; recomputing from float type would incorrectly produce RawF64",
+    );
+}
+
+#[test]
 #[ignore = "fz-hwn.19.2.4 WIP: downstream native-program inventory waits on the transport-backed artifact handoff"]
 fn compiler2_native_program_resource_fixture_shapes_callable_boundaries_explicitly() {
     let _lock = tests_support_lock().lock().unwrap();

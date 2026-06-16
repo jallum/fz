@@ -743,6 +743,32 @@ fn derive_codegen_seam_facts(
                         });
                     }
                 }
+                TransportPosition::EntryCapture { executable, entry, .. } => {
+                    let repr = block_param_codegen_repr_for_lane(world, lane);
+                    out.push(CodegenSeamFact {
+                        seam: CodegenSeam::BlockParam {
+                            executable: executable.clone(),
+                            entry: *entry,
+                        },
+                        shape: Some(leaf_shape),
+                        lane,
+                        repr,
+                    });
+                    if let Some(callsite) = executable_context_for_symbol(contexts, executable)
+                        .and_then(|context| resume_callsite_for_entry(context, *entry))
+                    {
+                        out.push(CodegenSeamFact {
+                            seam: CodegenSeam::ContinuationEntry {
+                                executable: executable.clone(),
+                                callsite,
+                                entry: *entry,
+                            },
+                            shape: Some(leaf_shape),
+                            lane,
+                            repr,
+                        });
+                    }
+                }
                 TransportPosition::CallArg {
                     executable, callsite, ..
                 } => {
@@ -796,6 +822,13 @@ fn derive_codegen_seam_facts(
     }
     out.sort_by_key(codegen_seam_fact_sort_key);
     out.into_boxed_slice()
+}
+
+fn resume_callsite_for_entry(context: &ExecutableContext, entry: ControlEntryId) -> Option<CallSiteId> {
+    context
+        .resume_entries
+        .iter()
+        .find_map(|resume| (resume.entry == entry).then_some(resume.callsite).flatten())
 }
 
 fn executable_context_for_symbol<'a>(
@@ -855,37 +888,44 @@ fn block_param_codegen_repr_for_lane(world: &World<'_>, lane: LaneId) -> Codegen
     }
 }
 
-fn codegen_seam_fact_sort_key(fact: &CodegenSeamFact) -> (u8, u32, u32, u32, usize, u32, u8) {
-    let (kind, function, boundary, entry, index) = match &fact.seam {
+type ExecutableSortKey = (u32, Vec<Ty>, u8, usize);
+type CodegenSeamFactSortKey = (u8, ExecutableSortKey, u32, u32, usize, u32, u8);
+
+fn empty_executable_sort_key() -> ExecutableSortKey {
+    (0, Vec::new(), 0, 0)
+}
+
+fn codegen_seam_fact_sort_key(fact: &CodegenSeamFact) -> CodegenSeamFactSortKey {
+    let (kind, executable, boundary, entry, index) = match &fact.seam {
         CodegenSeam::FunctionEntry {
             executable,
             semantic_index,
-        } => (0, executable.activation.function.as_u32(), 0, 0, *semantic_index),
+        } => (0, executable_symbol_sort_key(executable), 0, 0, *semantic_index),
         CodegenSeam::BlockParam { executable, entry } => {
-            (1, executable.activation.function.as_u32(), 0, entry.as_u32(), 0)
+            (1, executable_symbol_sort_key(executable), 0, entry.as_u32(), 0)
         }
-        CodegenSeam::ReturnDelivery { executable } => (2, executable.activation.function.as_u32(), 0, 0, 0),
+        CodegenSeam::ReturnDelivery { executable } => (2, executable_symbol_sort_key(executable), 0, 0, 0),
         CodegenSeam::ContinuationEntry {
             executable,
             callsite,
             entry,
         } => (
             3,
-            executable.activation.function.as_u32(),
+            executable_symbol_sort_key(executable),
             0,
             entry.as_u32(),
             callsite.as_u32() as usize,
         ),
         CodegenSeam::TailCall { executable, callsite } => (
             4,
-            executable.activation.function.as_u32(),
+            executable_symbol_sort_key(executable),
             0,
             0,
             callsite.as_u32() as usize,
         ),
-        CodegenSeam::CallableBoundary { boundary } => (5, 0, boundary.as_u32(), 0, 0),
-        CodegenSeam::ExternBoundary { executable } => (6, executable.activation.function.as_u32(), 0, 0, 0),
-        CodegenSeam::FirstClassPublication { boundary } => (7, 0, boundary.as_u32(), 0, 0),
+        CodegenSeam::CallableBoundary { boundary } => (5, empty_executable_sort_key(), boundary.as_u32(), 0, 0),
+        CodegenSeam::ExternBoundary { executable } => (6, executable_symbol_sort_key(executable), 0, 0, 0),
+        CodegenSeam::FirstClassPublication { boundary } => (7, empty_executable_sort_key(), boundary.as_u32(), 0, 0),
     };
     let repr = match fact.repr {
         CodegenLaneRepr::ValueRef => 0,
@@ -893,10 +933,10 @@ fn codegen_seam_fact_sort_key(fact: &CodegenSeamFact) -> (u8, u32, u32, u32, usi
         CodegenLaneRepr::RawF64 => 2,
         CodegenLaneRepr::RawAtom => 3,
     };
-    (kind, function, boundary, entry, index, fact.lane.as_u32(), repr)
+    (kind, executable, boundary, entry, index, fact.lane.as_u32(), repr)
 }
 
-fn executable_sort_key(executable: &ExecutableKey) -> (u32, Vec<Ty>, u8, usize) {
+fn executable_sort_key(executable: &ExecutableKey) -> ExecutableSortKey {
     let need = match executable.need {
         ExecutableNeed::Value => (0, 0),
         ExecutableNeed::TupleFields(arity) => (1, arity),
@@ -919,7 +959,7 @@ fn executable_symbol(executable: &ExecutableKey) -> ExecutableSymbol {
     }
 }
 
-fn executable_symbol_sort_key(symbol: &ExecutableSymbol) -> (u32, Vec<Ty>, u8, usize) {
+fn executable_symbol_sort_key(symbol: &ExecutableSymbol) -> ExecutableSortKey {
     let need = match symbol.need {
         ExecutableNeed::Value => (0, 0),
         ExecutableNeed::TupleFields(arity) => (1, arity),
@@ -2269,6 +2309,13 @@ mod tests {
         value_lane_shape(world, ty)
     }
 
+    fn lane_for_shape(world: &World<'_>, shape: ShapeId) -> LaneId {
+        let ShapeDescr::Lane(lane) = world.transport().interners().shape(shape) else {
+            panic!("test shape should be one lane")
+        };
+        *lane
+    }
+
     fn test_positions(world: &mut World<'_>) -> (TransportPosition, TransportPosition) {
         world.submit_code(None, "fn main(x), do: x".to_string());
         let root = world.submit_root(None, "main".to_string(), 1, ExecutableNeed::Value);
@@ -2334,5 +2381,55 @@ mod tests {
         graph.equal(a, b.clone());
         graph.anchor(b, right_shape);
         let _ = graph.solve();
+    }
+
+    #[test]
+    fn codegen_seam_sort_key_distinguishes_executable_symbol_identity() {
+        let tel = ConfiguredTelemetry::new();
+        let mut world = World::new(&tel);
+        world.submit_code(None, "fn main(x), do: x".to_string());
+        let root = world.submit_root(None, "main".to_string(), 1, ExecutableNeed::Value);
+        let function = world.root_entry(root).function;
+        let int = world.types_mut().int();
+        let any = world.types_mut().any();
+        let shape = value_lane_shape(&mut world, int);
+        let lane = lane_for_shape(&world, shape);
+
+        let value_symbol = ExecutableSymbol {
+            activation: ActivationSymbol {
+                function,
+                input: vec![int].into_boxed_slice(),
+            },
+            need: ExecutableNeed::Value,
+        };
+        let tuple_symbol = ExecutableSymbol {
+            activation: ActivationSymbol {
+                function,
+                input: vec![any].into_boxed_slice(),
+            },
+            need: ExecutableNeed::TupleFields(1),
+        };
+        let value_fact = CodegenSeamFact {
+            seam: CodegenSeam::ReturnDelivery {
+                executable: value_symbol,
+            },
+            shape: Some(shape),
+            lane,
+            repr: CodegenLaneRepr::ValueRef,
+        };
+        let tuple_fact = CodegenSeamFact {
+            seam: CodegenSeam::ReturnDelivery {
+                executable: tuple_symbol,
+            },
+            shape: Some(shape),
+            lane,
+            repr: CodegenLaneRepr::ValueRef,
+        };
+
+        assert_ne!(
+            codegen_seam_fact_sort_key(&value_fact),
+            codegen_seam_fact_sort_key(&tuple_fact),
+            "codegen seam fact ordering must be stable for multiple activations/needs of the same function"
+        );
     }
 }

@@ -328,20 +328,23 @@ fn sort_transport_positions(positions: &mut [TransportPosition]) {
     positions.sort_by_key(transport_position_sort_key);
 }
 
-fn transport_position_sort_key(position: &TransportPosition) -> (u8, u32, u32, u32, usize) {
+type TransportExecutableSortKey = (u32, Vec<Ty>, u8, usize);
+type TransportPositionSortKey = (u8, TransportExecutableSortKey, u32, u32, usize);
+
+fn transport_position_sort_key(position: &TransportPosition) -> TransportPositionSortKey {
     match position {
         TransportPosition::ExecutableInput {
             executable,
             semantic_index,
-        } => (0, executable.activation.function.as_u32(), 0, 0, *semantic_index),
-        TransportPosition::ExecutableReturn { executable } => (1, executable.activation.function.as_u32(), 0, 0, 0),
+        } => (0, transport_executable_sort_key(executable), 0, 0, *semantic_index),
+        TransportPosition::ExecutableReturn { executable } => (1, transport_executable_sort_key(executable), 0, 0, 0),
         TransportPosition::ResumePayload {
             executable,
             callsite,
             entry,
         } => (
             2,
-            executable.activation.function.as_u32(),
+            transport_executable_sort_key(executable),
             callsite.map(|callsite| callsite.as_u32()).unwrap_or(u32::MAX),
             entry.as_u32(),
             0,
@@ -352,7 +355,7 @@ fn transport_position_sort_key(position: &TransportPosition) -> (u8, u32, u32, u
             capture_index,
         } => (
             3,
-            executable.activation.function.as_u32(),
+            transport_executable_sort_key(executable),
             0,
             entry.as_u32(),
             *capture_index,
@@ -363,15 +366,28 @@ fn transport_position_sort_key(position: &TransportPosition) -> (u8, u32, u32, u
             semantic_index,
         } => (
             4,
-            executable.activation.function.as_u32(),
+            transport_executable_sort_key(executable),
             callsite.as_u32(),
             0,
             *semantic_index,
         ),
         TransportPosition::Value { executable, value } => {
-            (5, executable.activation.function.as_u32(), value.as_u32(), 0, 0)
+            (5, transport_executable_sort_key(executable), value.as_u32(), 0, 0)
         }
     }
+}
+
+fn transport_executable_sort_key(executable: &ExecutableSymbol) -> TransportExecutableSortKey {
+    let need = match executable.need {
+        ExecutableNeed::Value => (0, 0),
+        ExecutableNeed::TupleFields(arity) => (1, arity),
+    };
+    (
+        executable.activation.function.as_u32(),
+        executable.activation.input.to_vec(),
+        need.0,
+        need.1,
+    )
 }
 
 /// Derives one emission-ready inventory from one ABI-ready closed artifact.
@@ -1832,4 +1848,49 @@ fn incomplete_semantic_plan(world: &World<'_>, root_id: RootId, message: impl In
     );
     emit_through(world.tel(), None, std::slice::from_ref(&diagnostic));
     FatalError
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::telemetry::ConfiguredTelemetry;
+
+    #[test]
+    fn transport_position_sort_key_distinguishes_executable_symbol_identity() {
+        let tel = ConfiguredTelemetry::new();
+        let mut world = World::new(&tel);
+        world.submit_code(None, "fn main(x), do: x".to_string());
+        let root = world.submit_root(None, "main".to_string(), 1, ExecutableNeed::Value);
+        let function = world.root_entry(root).function;
+        let int = world.types_mut().int();
+        let any = world.types_mut().any();
+
+        let value_symbol = ExecutableSymbol {
+            activation: ActivationSymbol {
+                function,
+                input: vec![int].into_boxed_slice(),
+            },
+            need: ExecutableNeed::Value,
+        };
+        let tuple_symbol = ExecutableSymbol {
+            activation: ActivationSymbol {
+                function,
+                input: vec![any].into_boxed_slice(),
+            },
+            need: ExecutableNeed::TupleFields(1),
+        };
+
+        let value_position = TransportPosition::ExecutableReturn {
+            executable: value_symbol,
+        };
+        let tuple_position = TransportPosition::ExecutableReturn {
+            executable: tuple_symbol,
+        };
+
+        assert_ne!(
+            transport_position_sort_key(&value_position),
+            transport_position_sort_key(&tuple_position),
+            "artifact handoff ordering must be stable for multiple activations/needs of the same function"
+        );
+    }
 }

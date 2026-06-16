@@ -251,21 +251,22 @@ carry only closed facts already proven by semantics:
 - effect summaries
 - frozen extern marshal classes
 
-Transport-spine cutover note: `fz-hwn.19.2` is the active mini-epic that changes
-the artifact seam from "derive transport inside the artifact ladder" to
-"consume `SemanticClosed(root)` plus `TransportPlan(root)`." During that cutover,
-artifact remains responsible for closed program packaging and stable downstream
-inventory, but transport owns `TransportPosition -> ShapeId`, lane facts,
-`CallableId` facts, `BoundaryId` contracts, and `CodegenSeamFact` rows. Current
-artifact code that walks `TrashRuntimeValueLayout`, `RuntimeDemand`, local
-types, or lowered bodies to derive another transport shape is removal inventory,
-not the target architecture.
+Transport-spine cutover note: `fz-hwn.19.2` changes the artifact seam from
+"derive transport inside the artifact ladder" to "consume
+`SemanticClosed(root)` plus `TransportPlan(root)`." Artifact remains
+responsible for closed program packaging and stable downstream inventory, but
+transport owns `TransportPosition -> ShapeId`, lane facts, `CallableId` facts,
+`BoundaryId` contracts, and `CodegenSeamFact` rows. Live artifact code must not
+walk `TrashRuntimeValueLayout`, `RuntimeDemand`, local types, or lowered bodies
+to derive another transport shape.
 
 The next two rungs narrow the contract:
 
-- `AbiReadyProgram` derives ABI lanes, explicit return delivery, and
-  callable-boundary obligations from `MaterializedProgram` plus
-  `ExecutableNeed`.
+- `AbiReadyProgram` reads ABI lanes, explicit return delivery, and
+  callable-boundary obligations from the materialized transport handoff:
+  `TransportPosition -> ShapeId`, `CallableId`, `BoundaryId`, and
+  `CodegenSeamFact` rows. It does not derive movement from
+  `RuntimeDemand`, local type facts, or executable need.
 - `EmissionReadyProgram` assigns stable emission-local inventory over Compiler2
   ids and carries forward the settled clause-entry dispatch each reachable
   executable needs at runtime.
@@ -277,9 +278,11 @@ The next two rungs narrow the contract:
 - `NativeProgram` is the native-specific handoff above `BackendProgram`: a
   Compiler2-owned CPS/codegen-ready projection carrying direct executable
   bodies, clause helpers, continuations, callable-boundary refs on closure
-  values, and
-  extern-marshal facts instead of rebuilt `ModulePlan`, `PlannedProgram`, or
-  `AbiFacts`.
+  values, native body return contracts, and extern-marshal facts instead of
+  rebuilt `ModulePlan`, `PlannedProgram`, or `AbiFacts`. Native handoff metadata
+  reads plan-owned seam facts for executable returns, callable boundary returns,
+  delivered continuation payloads, and entry captures; it does not recover those
+  ABI reprs from lane type.
 
 Callable entry inventory is an artifact fact, not a native-codegen guess.
 `LowerBackendProgram` settles callable-boundary obligations from the closed

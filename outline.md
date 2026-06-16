@@ -114,14 +114,18 @@ sources prove the identity.
 Boundary publication facts only name real semantic positions; there is no
 synthetic boundary self-position. `DeriveTransportPlan(root)` is scheduled as a
 side-output of settled semantic closure and is also re-requested if the
-root-scoped plan is missing, but materialization, backend, native, and codegen
-do not wait on or consume it yet. Codegen seam facts are now plan-owned facts
-for the worked scalar, tuple-leaf, and boxed-lane seams. Function entry, return
-delivery, tail call, and extern boundary use raw lane reprs when settled type
-evidence proves `RawInt`, `RawF64`, or `RawAtom`; otherwise they publish
-`ValueRef`. Block parameter and continuation entry use `ValueRef` for float and
-boxed leaves and raw integer/atom reprs for integer/atom leaves. Callable
-boundary and first-class publication lanes use `ValueRef`. Executable input
+root-scoped plan is missing. Materialization now waits on `TransportPlan(root)`
+and carries plan-backed positions, callable ids, boundary ids, and seam facts
+through the artifact/backend handoff. Native handoff metadata reads seam facts
+for executable returns, callable boundary returns, delivered continuation
+payloads, and entry captures; it does not recover those ABI reprs from lane
+types. Codegen seam facts are now plan-owned facts for the worked scalar,
+tuple-leaf, and boxed-lane seams. Function entry, return delivery, tail call,
+and extern boundary use raw lane reprs when settled type evidence proves
+`RawInt`, `RawF64`, or `RawAtom`; otherwise they publish `ValueRef`. Block
+parameter and continuation entry use `ValueRef` for float and boxed leaves and
+raw integer/atom reprs for integer/atom leaves. Callable boundary and
+first-class publication lanes use `ValueRef`. Executable input
 positions are solved from shape anchors plus equality edges, not from repeated
 map overwrites. Shape anchors say one semantic position has one concrete
 `ShapeId`; equality edges say two `TransportPosition`s must share one `ShapeId`.
@@ -133,10 +137,9 @@ value positions therefore converge on one `ShapeId` by construction. There is no
 separate capture/input shape cache and no pass-order-dependent propagation loop.
 Callable-shaped seams publish their descriptor-owned capture lanes as codegen
 seam facts. These facts are derived from `TransportPlan` positions and boundary
-contracts only; no native/codegen consumer reads them yet. The transport
-calculator reads `RuntimeDemand` plus semantic `callable_flows`, not the old
-callable-materialization inventory, and no old `Trash*` layout is translated
-into descriptors.
+contracts only. The transport calculator reads `RuntimeDemand` plus semantic
+`callable_flows`, not the old callable-materialization inventory, and no old
+`Trash*` layout is translated into descriptors.
 
 ## Required First Move
 
@@ -278,19 +281,15 @@ rg -n "\b(TrashRuntimeValueLayout|TrashRuntimeInputLayout|TrashRuntimeParamLayou
 
 Cutover classification:
 
-- `src/compiler2/artifact.rs`, `src/compiler2/jobs/artifact.rs`, and
-  `src/compiler2/world.rs` still carry `TrashRuntimeValueLayout`,
-  `TrashRuntimeInputLayout`, `TrashRuntimeParamLayout`, `TrashRuntimeLane`, and
-  `TrashReturnAbi`. `fz-hwn.19.2` is now the focused transport/artifact seam
-  epic. It replaces materialization and artifact handoff trees with
-  `TransportPosition -> ShapeId`, lane fact reads, executable membership,
-  `CallableId` facts, `BoundaryId` contracts, and seam facts from
+- `src/compiler2/artifact.rs`, `src/compiler2/jobs/artifact.rs`,
+  `src/compiler2/jobs/backend.rs`, and `src/compiler2/world.rs` no longer carry
+  `TrashRuntimeValueLayout`, `TrashRuntimeInputLayout`,
+  `TrashRuntimeParamLayout`, `TrashRuntimeLane`, `TrashReturnAbi`,
+  `LocalCallableId`, local-callable layout memoization, `local_callable_layout`,
+  or `boundary_return_abi` as live artifact authority. The focused
+  transport/artifact seam now uses `TransportPosition -> ShapeId`, executable
+  membership, `CallableId` facts, `BoundaryId` contracts, and seam facts from
   `TransportPlan`.
-- `src/compiler2/jobs/artifact.rs` still has `LocalCallableId`,
-  local-callable layout memoization, `local_callable_layout`, and
-  `boundary_return_abi`. These are part of `fz-hwn.19.2` because callable
-  entries and published boundary contracts are produced by the artifact ladder;
-  downstream tickets consume the resulting inventory, they do not reconstruct it.
 - `src/ir_interp/backend.rs`, `src/ir_interp/mod.rs`, and
   `src/compiler2/jobs/native.rs` still carry recursive runtime-value mirrors:
   `TrashBackendValue` and `TrashRealizedValue`. `fz-hwn.19.4` replaces those

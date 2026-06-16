@@ -36,7 +36,7 @@ use super::super::drive::{FactKey, Job, JobEffects, settled_uses};
 use super::super::identity::{FunctionId, RootId};
 use super::super::scheduler::FatalError;
 use super::super::semantic::RuntimeDemand;
-use super::super::transport::{LaneId, ShapeDescr, ShapeId, TransportPosition};
+use super::super::transport::{CodegenLaneRepr, CodegenSeam, LaneId, ShapeDescr, ShapeId, TransportPosition};
 use super::super::types::Ty;
 use super::super::world::World;
 
@@ -231,15 +231,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                     return_ty: entry.return_ty,
                     return_shape: entry.return_shape,
                     return_lanes: entry.return_lanes.clone(),
-                    return_reprs: entry
-                        .return_lanes
-                        .iter()
-                        .copied()
-                        .map(|lane| {
-                            let ty = world.transport().interners().lane(lane).ty;
-                            abi_value_repr(world, ty)
-                        })
-                        .collect(),
+                    return_reprs: callable_boundary_reprs(program, entry.boundary, &entry.return_lanes),
                     return_tuple_arity: match world.transport().interners().shape(entry.return_shape) {
                         ShapeDescr::Tuple(fields) => Some(fields.len()),
                         ShapeDescr::Nothing | ShapeDescr::Lane(_) | ShapeDescr::Callable(_) => None,
@@ -1405,11 +1397,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
             .copied()
             .flat_map(|shape| shape_lane_tys(self.world, shape))
             .collect::<Vec<_>>();
-        let capture_lane_reprs = capture_shapes
-            .iter()
-            .copied()
-            .flat_map(|shape| shape_abi_reprs(self.world, shape))
-            .collect::<Vec<_>>();
+        let capture_lane_reprs = entry_capture_reprs(self.world, self.program, entry);
         let physical_capture_tys = reusable_cons_captures
             .iter()
             .map(|capture| {
@@ -1451,8 +1439,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                 (param_tys, param_reprs, NativeEntryAbi::Continuation { extra_params: 0 })
             }
             BackendEntryOrigin::DeliveredResume { value: _, position } => {
-                let shape = position_shape(self.program, &position);
-                let (mut entry_tys, mut param_reprs) = continuation_result_entry(self.world, shape);
+                let (mut entry_tys, mut param_reprs) = continuation_result_entry(self.world, self.program, &position);
                 let extra_params = param_reprs.len();
                 entry_tys.extend(param_tys.iter().copied());
                 param_reprs.extend(param_tys.iter().copied().map(|ty| abi_value_repr(self.world, ty)));
@@ -2858,13 +2845,6 @@ fn shape_lane_tys(world: &World<'_>, shape: ShapeId) -> Vec<Ty> {
         .collect()
 }
 
-fn shape_abi_reprs(world: &mut World<'_>, shape: ShapeId) -> Vec<AbiValueRepr> {
-    shape_lane_tys(world, shape)
-        .into_iter()
-        .map(|ty| abi_value_repr(world, ty))
-        .collect()
-}
-
 fn position_shape(program: &BackendProgram, position: &TransportPosition) -> ShapeId {
     program
         .transport
@@ -2875,17 +2855,191 @@ fn position_shape(program: &BackendProgram, position: &TransportPosition) -> Sha
 }
 
 fn native_return_contract(
-    world: &mut World<'_>,
+    world: &World<'_>,
     program: &BackendProgram,
     position: &TransportPosition,
 ) -> (Vec<AbiValueRepr>, Option<usize>) {
     let shape = position_shape(program, position);
-    let reprs = shape_abi_reprs(world, shape);
+    let reprs = seam_reprs_for_position_shape(world, program, position, shape, |seam| {
+        matches!(
+            (position, seam),
+            (
+                TransportPosition::ExecutableReturn { executable: position_executable },
+                CodegenSeam::ReturnDelivery { executable: seam_executable }
+            ) if position_executable == seam_executable
+        )
+    });
     let tuple_arity = match world.transport().interners().shape(shape) {
         ShapeDescr::Tuple(fields) => Some(fields.len()),
         ShapeDescr::Nothing | ShapeDescr::Lane(_) | ShapeDescr::Callable(_) => None,
     };
     (reprs, tuple_arity)
+}
+
+fn continuation_result_entry(
+    world: &World<'_>,
+    program: &BackendProgram,
+    position: &TransportPosition,
+) -> (Vec<Ty>, Vec<AbiValueRepr>) {
+    let shape = position_shape(program, position);
+    let reprs = seam_reprs_for_position_shape(world, program, position, shape, |seam| {
+        matches!(
+            (position, seam),
+            (
+                TransportPosition::ResumePayload {
+                    executable: position_executable,
+                    callsite: Some(position_callsite),
+                    entry: position_entry,
+                },
+                CodegenSeam::ContinuationEntry {
+                    executable: seam_executable,
+                    callsite: seam_callsite,
+                    entry: seam_entry,
+                }
+            ) if position_executable == seam_executable
+                && position_callsite == seam_callsite
+                && position_entry == seam_entry
+        ) || matches!(
+            (position, seam),
+            (
+                TransportPosition::ResumePayload {
+                    executable: position_executable,
+                    callsite: None,
+                    entry: position_entry,
+                },
+                CodegenSeam::BlockParam {
+                    executable: seam_executable,
+                    entry: seam_entry,
+                }
+            ) if position_executable == seam_executable && position_entry == seam_entry
+        )
+    });
+    (shape_lane_tys(world, shape), reprs)
+}
+
+fn seam_reprs_for_position_shape(
+    world: &World<'_>,
+    program: &BackendProgram,
+    _position: &TransportPosition,
+    shape: ShapeId,
+    seam_matches: impl Fn(&CodegenSeam) -> bool,
+) -> Vec<AbiValueRepr> {
+    shape_leaf_lanes(world, shape)
+        .into_iter()
+        .map(|(leaf_shape, lane)| seam_repr_for_lane(program, &seam_matches, Some(leaf_shape), lane))
+        .collect()
+}
+
+fn callable_boundary_reprs(
+    program: &BackendProgram,
+    boundary: super::super::transport::BoundaryId,
+    lanes: &[LaneId],
+) -> Vec<AbiValueRepr> {
+    lanes
+        .iter()
+        .copied()
+        .map(|lane| {
+            seam_repr_for_lane(
+                program,
+                &|seam| matches!(seam, CodegenSeam::CallableBoundary { boundary: candidate } if *candidate == boundary),
+                None,
+                lane,
+            )
+        })
+        .collect()
+}
+
+fn entry_capture_reprs(world: &World<'_>, program: &BackendProgram, entry: &BackendEntry) -> Vec<AbiValueRepr> {
+    entry
+        .capture_positions
+        .iter()
+        .flat_map(|position| {
+            let shape = position_shape(program, position);
+            seam_reprs_for_position_shape(world, program, position, shape, |seam| {
+                entry_capture_seam_matches(entry, position, seam)
+            })
+        })
+        .collect()
+}
+
+fn entry_capture_seam_matches(entry: &BackendEntry, position: &TransportPosition, seam: &CodegenSeam) -> bool {
+    let TransportPosition::EntryCapture {
+        executable,
+        entry: captured_entry,
+        ..
+    } = position
+    else {
+        return false;
+    };
+    if let BackendEntryOrigin::DeliveredResume {
+        position: TransportPosition::ResumePayload {
+            callsite: Some(callsite),
+            ..
+        },
+        ..
+    } = &entry.origin
+    {
+        return matches!(
+            seam,
+            CodegenSeam::ContinuationEntry {
+                executable: seam_executable,
+                callsite: seam_callsite,
+                entry: seam_entry,
+            } if seam_executable == executable && seam_callsite == callsite && seam_entry == captured_entry
+        );
+    }
+    matches!(
+        seam,
+        CodegenSeam::BlockParam {
+            executable: seam_executable,
+            entry: seam_entry,
+        } if seam_executable == executable && seam_entry == captured_entry
+    )
+}
+
+fn shape_leaf_lanes(world: &World<'_>, shape: ShapeId) -> Vec<(ShapeId, LaneId)> {
+    match world.transport().interners().shape(shape) {
+        ShapeDescr::Nothing => Vec::new(),
+        ShapeDescr::Lane(lane) => vec![(shape, *lane)],
+        ShapeDescr::Tuple(fields) => fields
+            .iter()
+            .copied()
+            .flat_map(|field| shape_leaf_lanes(world, field))
+            .collect(),
+        ShapeDescr::Callable(callable) => world
+            .transport()
+            .interners()
+            .callable(*callable)
+            .capture_lanes
+            .iter()
+            .copied()
+            .map(|lane| (shape, lane))
+            .collect(),
+    }
+}
+
+fn seam_repr_for_lane(
+    program: &BackendProgram,
+    seam_matches: &impl Fn(&CodegenSeam) -> bool,
+    shape: Option<ShapeId>,
+    lane: LaneId,
+) -> AbiValueRepr {
+    let fact = program
+        .transport
+        .codegen_seam_facts
+        .iter()
+        .find(|fact| seam_matches(&fact.seam) && fact.shape == shape && fact.lane == lane)
+        .unwrap_or_else(|| panic!("backend transport handoff should publish seam fact for {shape:?} {lane:?}"));
+    abi_repr_from_codegen(fact.repr)
+}
+
+fn abi_repr_from_codegen(repr: CodegenLaneRepr) -> AbiValueRepr {
+    match repr {
+        CodegenLaneRepr::ValueRef => AbiValueRepr::ValueRef,
+        CodegenLaneRepr::RawInt => AbiValueRepr::RawInt,
+        CodegenLaneRepr::RawF64 => AbiValueRepr::RawF64,
+        CodegenLaneRepr::RawAtom => AbiValueRepr::RawAtom,
+    }
 }
 
 #[derive(Clone)]
@@ -3373,13 +3527,6 @@ fn abi_value_repr(world: &mut World<'_>, ty: Ty) -> AbiValueRepr {
     } else {
         AbiValueRepr::ValueRef
     }
-}
-
-fn continuation_result_entry(world: &mut World<'_>, result_shape: ShapeId) -> (Vec<Ty>, Vec<AbiValueRepr>) {
-    (
-        shape_lane_tys(world, result_shape),
-        shape_abi_reprs(world, result_shape),
-    )
 }
 
 fn mark_ignored_lanes_for_demand(

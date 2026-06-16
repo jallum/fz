@@ -47,14 +47,35 @@ fn executable_return_position(executable: &ExecutableKey) -> TransportPosition {
     }
 }
 
-fn scalar_shape(ty: Ty) -> (ShapeId, LaneId) {
-    let mut transport = TransportStore::new();
-    let lane = transport.interners_mut().intern_lane(LaneDescr {
-        ty,
-        class: TransportClass::Value,
-    });
-    let shape = transport.interners_mut().intern_shape(ShapeDescr::Lane(lane));
-    (shape, lane)
+#[derive(Default)]
+struct TestTransportShapes {
+    transport: TransportStore,
+}
+
+impl TestTransportShapes {
+    fn scalar_shape(&mut self, ty: Ty) -> (ShapeId, LaneId) {
+        let lane = self.transport.interners_mut().intern_lane(LaneDescr {
+            ty,
+            class: TransportClass::Value,
+        });
+        let shape = self.transport.interners_mut().intern_shape(ShapeDescr::Lane(lane));
+        (shape, lane)
+    }
+}
+
+#[test]
+fn compiler2_native_program_contract_test_shapes_use_one_interner() {
+    let mut types = Types::new();
+    let int = types.int();
+    let float = types.float();
+    let mut shapes = TestTransportShapes::default();
+    let (int_shape, _) = shapes.scalar_shape(int);
+    let (float_shape, _) = shapes.scalar_shape(float);
+
+    assert_ne!(
+        int_shape, float_shape,
+        "contract fixtures must allocate transport ids from one interner; fresh stores can assign the same ShapeId to different descriptors",
+    );
 }
 
 #[test]
@@ -62,6 +83,8 @@ fn compiler2_native_program_contract_keeps_codegen_facts_on_body_records() {
     let mut types = Types::new();
     let int = types.int();
     let (_, _, activation) = stub_activation_key(&mut types, vec![int]);
+    let mut shapes = TestTransportShapes::default();
+    let (return_shape, return_lane) = shapes.scalar_shape(int);
     let executable = ExecutableKey {
         activation,
         need: ExecutableNeed::Value,
@@ -124,8 +147,8 @@ fn compiler2_native_program_contract_keeps_codegen_facts_on_body_records() {
             capture_reprs: Vec::new(),
             arg_reprs: vec![AbiValueRepr::RawInt],
             return_ty: int,
-            return_shape: scalar_shape(int).0,
-            return_lanes: vec![scalar_shape(int).1],
+            return_shape,
+            return_lanes: vec![return_lane],
             return_reprs: vec![AbiValueRepr::RawInt],
             return_tuple_arity: None,
         }],
@@ -169,6 +192,8 @@ fn compiler2_native_program_contract_maps_old_native_inputs_to_local_facts() {
     let mut types = Types::new();
     let int = types.int();
     let (_, _, activation) = stub_activation_key(&mut types, vec![int]);
+    let mut shapes = TestTransportShapes::default();
+    let (return_shape, return_lane) = shapes.scalar_shape(int);
     let executable = ExecutableKey {
         activation,
         need: ExecutableNeed::Value,
@@ -282,8 +307,8 @@ fn compiler2_native_program_contract_maps_old_native_inputs_to_local_facts() {
             capture_reprs: Vec::new(),
             arg_reprs: vec![AbiValueRepr::RawInt],
             return_ty: int,
-            return_shape: scalar_shape(int).0,
-            return_lanes: vec![scalar_shape(int).1],
+            return_shape,
+            return_lanes: vec![return_lane],
             return_reprs: vec![AbiValueRepr::RawInt],
             return_tuple_arity: None,
         }],
