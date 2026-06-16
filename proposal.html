@@ -85,7 +85,7 @@ Shape = Nothing | Lane(LaneId) | Tuple(Vec&lt;ShapeId&gt;) | Callable(CallableId
     </tr>
     <tr>
       <td class="term"><code>CallableId</code></td>
-      <td>A callable identity. Its descriptor may include immutable key material, but locality, direct surfaces, captures, and published boundary contracts are facts keyed by this id.</td>
+      <td>A callable identity. Its descriptor may include immutable key material. Locality, direct surfaces, and published boundary contracts are facts keyed by this id. Ordered capture lane payload is descriptor key material when it distinguishes callable identity, and is also exposed as a consumer fact.</td>
     </tr>
     <tr>
       <td class="term"><code>BoundaryId</code></td>
@@ -228,7 +228,7 @@ SemanticClosed(root)
 
 <p>The exact Rust names can differ. The important property is that shared structure lives in descriptor interners and root-specific validity/details live in plan tables.</p>
 
-<p>Implementation status after <code>fz-hwn.20.4</code>: <code>src/compiler2/transport.rs</code> defines the root-independent ids, descriptors, transport symbols, <code>TransportPosition</code>, <code>TransportInterners</code>, and <code>TransportStore</code>. <code>World</code> owns one <code>TransportStore</code>. <code>DeriveTransportPlan(root)</code> now populates root-scoped positions plus <code>CallableId</code> and <code>BoundaryId</code> fact tables from settled semantic evidence. Boundary contracts preserve callable leaves as one published value lane and tuple returns as tuple lane contracts. Direct-call surfaces and first-class boundary publication are independent facts, so one callable can have both. Codegen seam facts are deliberately empty until <code>fz-hwn.20.5</code>. No materialization, backend, native, or codegen consumer reads these ids yet, and no old <code>Trash*</code> layout is translated into descriptors.</p>
+<p>Implementation status after <code>fz-hwn.20.4</code>: <code>src/compiler2/transport.rs</code> defines the root-independent ids, descriptors, transport symbols, <code>TransportPosition</code>, <code>TransportInterners</code>, and <code>TransportStore</code>. <code>World</code> owns one <code>TransportStore</code>. <code>DeriveTransportPlan(root)</code> now populates root-scoped positions plus <code>CallableId</code> and <code>BoundaryId</code> fact tables from settled semantic evidence. Boundary contracts preserve callable leaves as one published value lane and tuple returns as recursive boundary-return contracts, not flat lane lists. Boundary returns are published per surface, so one callable used at two surfaces has two contracts when those return transports differ. Callable capture shapes read settled callee input demand when a resolution exists; boundary demand is only the fallback for unresolved or opaque capture obligations. Capture lane facts preserve payload order and duplicate lanes. Direct-call surfaces and first-class boundary publication are independent facts, so one callable can have both. <code>DeriveTransportPlan(root)</code> is scheduled as a side-output of settled semantic closure, but materialization, backend, native, and codegen do not wait on or consume it yet. Codegen seam facts are deliberately empty until <code>fz-hwn.20.5</code>. The transport calculator reads <code>RuntimeDemand</code>/<code>CallableDemand</code>, not the old callable-materialization inventory, and no old <code>Trash*</code> layout is translated into descriptors.</p>
 
 <pre>
 TransportStore {
@@ -279,7 +279,8 @@ BoundaryFacts {
   surface_arg_shapes: Vec&lt;ShapeId&gt;,
   published_capture_lanes: Vec&lt;LaneId&gt;,
   published_arg_lanes: Vec&lt;LaneId&gt;,
-  published_return: BoundaryReturn,
+  published_return_shape: ShapeId,
+  published_return_lanes: Vec&lt;LaneId&gt;,
 }
 </pre>
 
@@ -427,9 +428,9 @@ rg "TransportPlan\\(root\\)|root-scoped transport spine|codegen repr, not shape"
 
 <h3>10.3 Telemetry</h3>
 
-<p>Prefer event-level assertions over brittle dumps where the event expresses the invariant. <code>fz-hwn.20.3</code> turns on the production-boundary assertion in <code>src/compiler2/transport_contract_test.rs</code> and adds targeted fixtures for ignored returns, tuple return/resume sharing, and direct-callable return/resume sharing. <code>fz-hwn.20.4</code> adds worked source fixtures for callable/boundary facts: unused callable constructors publish no boundary, direct lambda calls stay direct-only, escaped lambdas publish exactly one first-class boundary, opaque callable inputs publish an explicit boundary, same-surface callables remain distinct when their capture obligations differ, callable arguments publish one boundary lane, tuple callable returns publish tuple return contracts, and a directly-called callable that also escapes keeps both direct surfaces and boundary ids.</p>
+<p>Prefer event-level assertions over brittle dumps where the event expresses the invariant. <code>fz-hwn.20.3</code> turns on the production-boundary assertion in <code>src/compiler2/transport_contract_test.rs</code> and adds targeted fixtures for ignored returns, tuple return/resume sharing, and direct-callable return/resume sharing. <code>fz-hwn.20.4</code> adds worked source fixtures for callable/boundary facts: unused callable constructors publish no boundary, direct lambda calls stay direct-only, escaped lambdas publish exactly one first-class boundary, opaque callable inputs publish an explicit boundary, same-surface callables remain distinct when their capture obligations differ, callable arguments publish one boundary lane, tuple callable returns publish recursive tuple return contracts, duplicate same-typed captures remain duplicate ordered payload lanes, multi-surface callable boundaries publish return contracts per surface, directly recursive tuple returns share return/resume shapes, a directly-called callable that also escapes keeps both direct surfaces and boundary ids, and a callable captured only for direct use is not upgraded into a first-class boundary.</p>
 
-<p>The landed derivation boundary is explicit: callable and boundary facts are derived by the new transport calculator from settled demand, lowered callable use sites, local callable producers, captures, callsite summaries, and settled type evidence. The old layout, native boundary inventories, and callable-entry materialization are not inputs to the transport plan.</p>
+<p>The landed derivation boundary is explicit: callable and boundary facts are derived by the new transport calculator from settled demand, lowered callable use sites, local callable producers, captures, callsite summaries, and settled type evidence. The old layout, native boundary inventories, and callable-entry materialization are not inputs to the transport plan; the new calculator does not read <code>CallableMaterialization</code>.</p>
 
 <pre>
 fz.compiler2.transport_flow.defined

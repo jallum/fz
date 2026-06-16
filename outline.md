@@ -34,8 +34,10 @@ Shape = Nothing | Lane(LaneId) | Tuple(Vec<ShapeId>) | Callable(CallableId)
 - `CallableId` names a callable identity. Its descriptor may contain any
   immutable key material that actually defines identity. Maximal sharing comes
   from keeping root-relative evidence out of the descriptor; locality, direct
-  surfaces, capture lanes, and published boundary obligations are facts about
-  that `CallableId`, not shape variants.
+  surfaces, and published boundary obligations are facts about that
+  `CallableId`, not shape variants. Ordered capture lane payload is descriptor
+  key material when it distinguishes callable identity; the same ordered payload
+  is also exposed as a fact for consumers.
 - `BoundaryId` names one published callable contract. A callable may have zero
   or more boundary contracts. Boundary publication is contextual and cannot be
   the identity of `CallableId` or `LaneId`.
@@ -88,11 +90,26 @@ defines the root-independent ids, descriptors, transport symbols,
 `TransportStore`. `DeriveTransportPlan(root)` now populates root-scoped
 positions plus `CallableId` and `BoundaryId` fact tables from settled semantic
 evidence. Boundary contracts preserve callable leaves as one published value
-lane and preserve tuple returns as tuple lane contracts. Direct-call surfaces
-and first-class boundary publication are independent facts, so one callable can
-have both. Codegen seam facts are still deliberately empty until
-`fz-hwn.20.5`. No materialization, backend, native, or codegen consumer reads
-these ids yet, and no old `Trash*` layout is translated into descriptors.
+lane and preserve tuple returns as recursive boundary-return contracts, not flat
+lane lists. Boundary returns are published per surface, so one callable used at
+two surfaces has two contracts when those return transports differ. Callable
+capture shapes read settled callee input demand when a resolution exists;
+boundary demand is only the fallback for unresolved or opaque capture
+obligations. Capture lane facts preserve payload order and duplicate lanes.
+Direct-call surfaces and first-class boundary publication are independent facts,
+so one callable can have both. Generic callable descriptors include stable
+contract-surface key material, so opaque callable contracts with different
+observed surfaces cannot merge into one `CallableId`. Recursive callsite return
+sources are treated as recursive shape constraints, not as a reason to fall back
+to generic callable shape when non-recursive sources prove the identity.
+Boundary publication facts only name real semantic positions; there is no
+synthetic boundary self-position. `DeriveTransportPlan(root)` is scheduled as a
+side-output of settled semantic closure and is also re-requested if the
+root-scoped plan is missing, but materialization, backend, native, and codegen
+do not wait on or consume it yet. Codegen seam facts are still deliberately
+empty until `fz-hwn.20.5`. The transport calculator reads `RuntimeDemand`/
+`CallableDemand`, not the old callable-materialization inventory, and no old
+`Trash*` layout is translated into descriptors.
 
 ## Required First Move
 
@@ -147,8 +164,8 @@ id the descriptor graph or `TransportPlan` already holds:
 - a `Lane`'s settled type and stable transport class — computed once from the
   settled type/fact evidence, then stored as facts and read, never recomputed per
   consumer
-- a `Callable`'s direct surfaces, flat capture lanes, and published boundary ids
-  — columns keyed by `CallableId`
+- a `Callable`'s direct surfaces, ordered flat capture lanes, and published
+  boundary ids — columns keyed by `CallableId`
 - a boundary's published lane contract — columns keyed by `BoundaryId`
 - codegen lane representations — columns keyed by the lane plus the codegen seam
   that consumes it
@@ -312,7 +329,8 @@ B_pub = BoundaryId {
   surface_arg_shapes = [S_int],
   published_capture_lanes = [L_int],
   published_arg_lanes = [L_int],
-  published_return = Value(L_int),
+  published_return_shape = S_int,
+  published_return_lanes = [L_int],
 }
 ```
 
@@ -397,13 +415,24 @@ direct-callable return/resume sharing. `fz-hwn.20.4` adds worked source
 fixtures for callable/boundary facts: unused callable constructors publish no
 boundary, direct lambda calls stay direct-only, escaped lambdas publish exactly
 one first-class boundary, opaque callable inputs publish an explicit boundary,
-and same-surface callables remain distinct when their capture obligations differ.
+same-surface callables remain distinct when their capture obligations differ,
+boundary tuple returns preserve recursive structure, duplicate same-typed
+captures remain duplicate ordered payload lanes, multi-surface callable
+boundaries publish return contracts per surface, directly recursive tuple
+returns share return/resume shapes, and callables captured for direct use are
+not upgraded into first-class boundaries. The gap-closing `.4` fixtures also pin
+that opaque callable contracts with different observed surfaces do not share one
+`CallableId`, recursive callable returns preserve the resolved local callable
+identity, missing side-product plans are regenerated even when the semantic
+closure itself is unchanged, and boundary publications never use a synthetic
+self-position.
 
 The landed derivation boundary is explicit: callable and boundary facts are
 derived by the new transport calculator from settled demand, lowered callable
 use sites, local callable producers, captures, callsite summaries, and settled
 type evidence. The old layout, native boundary inventories, and callable-entry
-materialization are not inputs to the transport plan.
+materialization are not inputs to the transport plan; the new calculator does
+not read `CallableMaterialization`.
 
 Plan construction emits exactly one output signal:
 

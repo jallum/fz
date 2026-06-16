@@ -7,12 +7,12 @@ use super::super::drive::{FactKey, Job, JobEffects, settled_uses};
 use super::super::identity::{ExecutableKey, ExecutableNeed, FunctionId, RootId};
 use super::super::scheduler::FatalError;
 use super::super::semantic::{
-    ActivationAnalysis, CallSiteKey, CallableDemand, CallableMaterialization, CallableSurface, ExecutableRuntimeDemand,
-    RuntimeDemand, SelectedCallee,
+    ActivationAnalysis, CallSiteKey, CallableDemand, CallableSurface, ExecutableRuntimeDemand, RuntimeDemand,
+    SelectedCallee,
 };
 use super::super::transport::{
-    ActivationSymbol, BoundaryDescr, BoundaryFacts, BoundaryId, BoundaryReturnDescr, CallableDescr, CallableFacts,
-    CallableId, ExecutableSymbol, LaneId, ShapeDescr, ShapeId, TransportClass, TransportPlan, TransportPosition,
+    ActivationSymbol, BoundaryDescr, BoundaryFacts, BoundaryId, CallableDescr, CallableFacts, CallableId,
+    ExecutableSymbol, LaneId, ShapeDescr, ShapeId, TransportClass, TransportPlan, TransportPosition,
 };
 use super::super::types::Ty;
 use super::super::world::World;
@@ -72,6 +72,22 @@ struct BoundaryFactsDraft {
     publications: Vec<TransportPosition>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SourceShape {
+    Exact(ShapeId),
+    Recursive,
+    Unknown,
+}
+
+impl SourceShape {
+    fn exact(self) -> Option<ShapeId> {
+        match self {
+            SourceShape::Exact(shape) => Some(shape),
+            SourceShape::Recursive | SourceShape::Unknown => None,
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 struct TransportFactsBuilder {
     callables: HashMap<CallableId, CallableFactsDraft>,
@@ -95,7 +111,14 @@ impl TransportFactsBuilder {
         });
         extend_unique(&mut entry.resolutions, resolutions);
         extend_unique(&mut entry.direct_surfaces, direct_surfaces);
-        extend_unique(&mut entry.capture_lanes, capture_lanes);
+        if entry.capture_lanes.is_empty() {
+            entry.capture_lanes = capture_lanes;
+        } else if !capture_lanes.is_empty() {
+            assert_eq!(
+                entry.capture_lanes, capture_lanes,
+                "one CallableId must have one ordered capture-lane payload"
+            );
+        }
         extend_unique(&mut entry.boundary_ids, boundary_ids);
     }
 
@@ -117,7 +140,6 @@ impl TransportFactsBuilder {
                 draft
                     .direct_surfaces
                     .sort_by_key(|surface| surface.iter().map(|shape| shape.as_u32()).collect::<Vec<_>>());
-                draft.capture_lanes.sort_by_key(|lane| lane.as_u32());
                 draft.boundary_ids.sort_by_key(|boundary| boundary.as_u32());
                 (
                     id,
@@ -918,7 +940,7 @@ fn shape_for_sources(
     }
     let mut exact = Vec::new();
     for source in sources {
-        let Some(shape) = exact_shape_for_source(
+        match exact_shape_for_source(
             world,
             contexts,
             return_shapes,
@@ -929,10 +951,11 @@ fn shape_for_sources(
             demand,
             *source,
             publication.clone(),
-        ) else {
-            return generic_shape_from_demand(world, ty, demand, facts, publication);
-        };
-        exact.push(shape);
+        ) {
+            SourceShape::Exact(shape) => exact.push(shape),
+            SourceShape::Recursive => {}
+            SourceShape::Unknown => return generic_shape_from_demand(world, ty, demand, facts, publication),
+        }
     }
     if exact.is_empty() {
         return generic_shape_from_demand(world, ty, demand, facts, publication);
@@ -955,7 +978,7 @@ fn exact_shape_for_source(
     demand: &RuntimeDemand,
     source: ProducedSource,
     publication: Option<TransportPosition>,
-) -> Option<ShapeId> {
+) -> SourceShape {
     match source {
         ProducedSource::LocalValue(value) => exact_shape_for_local_value(
             world,
@@ -968,9 +991,11 @@ fn exact_shape_for_source(
             ty,
             demand,
             publication,
-        ),
+        )
+        .map(SourceShape::Exact)
+        .unwrap_or(SourceShape::Unknown),
         ProducedSource::Callsite(callsite) => {
-            exact_shape_for_callsite(world, return_shapes, executable, context, callsite)
+            exact_shape_for_callsite(world, contexts, return_shapes, executable, context, callsite)
         }
     }
 }
@@ -991,19 +1016,11 @@ fn exact_shape_for_local_value(
         RuntimeDemand::Ignore => Some(world.transport_mut().interners_mut().intern_shape(ShapeDescr::Nothing)),
         RuntimeDemand::Value => match context.local_origins.get(&value) {
             Some(ValueOrigin::Callsite(callsite)) => {
-                exact_shape_for_callsite(world, return_shapes, executable, context, *callsite)
+                exact_shape_for_callsite(world, contexts, return_shapes, executable, context, *callsite).exact()
             }
             Some(ValueOrigin::Callable(producer)) => {
-                let materialization = context.runtime_demand.callable_materializations.get(&value)?;
-                let callable_demand =
-                    context
-                        .runtime_demand
-                        .value_demands
-                        .get(&value)
-                        .and_then(|demand| match demand {
-                            RuntimeDemand::Callable(callable) => Some(callable),
-                            _ => None,
-                        });
+                let precise_demand = context.runtime_demand.value_demands.get(&value);
+                let callable_demand = callable_transport_demand(world, ty, demand, precise_demand)?;
                 let callable = callable_for_producer(
                     world,
                     contexts,
@@ -1012,9 +1029,8 @@ fn exact_shape_for_local_value(
                     executable,
                     context,
                     producer,
-                    materialization,
                     ty,
-                    callable_demand,
+                    &callable_demand,
                     publication,
                 )?;
                 Some(
@@ -1077,16 +1093,8 @@ fn exact_shape_for_local_value(
         RuntimeDemand::Callable(_) => {
             let callable = match context.local_origins.get(&value)? {
                 ValueOrigin::Callable(producer) => {
-                    let materialization = context.runtime_demand.callable_materializations.get(&value)?;
-                    let callable_demand =
-                        context
-                            .runtime_demand
-                            .value_demands
-                            .get(&value)
-                            .and_then(|demand| match demand {
-                                RuntimeDemand::Callable(callable) => Some(callable),
-                                _ => None,
-                            });
+                    let precise_demand = context.runtime_demand.value_demands.get(&value);
+                    let callable_demand = callable_transport_demand(world, ty, demand, precise_demand)?;
                     callable_for_producer(
                         world,
                         contexts,
@@ -1095,14 +1103,14 @@ fn exact_shape_for_local_value(
                         executable,
                         context,
                         producer,
-                        materialization,
                         ty,
-                        callable_demand,
+                        &callable_demand,
                         publication,
                     )?
                 }
                 ValueOrigin::Callsite(callsite) => {
-                    return exact_shape_for_callsite(world, return_shapes, executable, context, *callsite);
+                    return exact_shape_for_callsite(world, contexts, return_shapes, executable, context, *callsite)
+                        .exact();
                 }
                 ValueOrigin::Tuple(_) => return None,
             };
@@ -1118,35 +1126,55 @@ fn exact_shape_for_local_value(
 
 fn exact_shape_for_callsite(
     world: &mut World<'_>,
+    contexts: &HashMap<ExecutableKey, ExecutableContext>,
     return_shapes: &HashMap<ExecutableKey, ShapeId>,
     executable: &ExecutableKey,
     context: &ExecutableContext,
     callsite: CallSiteId,
-) -> Option<ShapeId> {
+) -> SourceShape {
     let key = CallSiteKey {
         activation: executable.activation.clone(),
         callsite,
     };
-    let summary = world.callsite_summary(&key)?;
+    let Some(summary) = world.callsite_summary(&key) else {
+        return SourceShape::Unknown;
+    };
     let need = context
         .callsite_needs
         .get(&callsite)
         .copied()
         .unwrap_or(ExecutableNeed::Value);
     let mut shapes = Vec::new();
+    let mut recursive = false;
     for target in &summary.targets {
         match target.callee {
-            SelectedCallee::ProviderBoundary(_) => return None,
+            SelectedCallee::ProviderBoundary(_) => return SourceShape::Unknown,
             SelectedCallee::Function(_) => {
-                let activation = target.activation.clone()?;
-                shapes.push(*return_shapes.get(&ExecutableKey { activation, need })?);
+                let Some(activation) = target.activation.clone() else {
+                    return SourceShape::Unknown;
+                };
+                let target = ExecutableKey { activation, need };
+                if let Some(shape) = return_shapes.get(&target) {
+                    shapes.push(*shape);
+                } else if contexts.contains_key(&target) {
+                    recursive = true;
+                } else {
+                    return SourceShape::Unknown;
+                }
             }
         }
     }
-    if shapes.is_empty() || !shapes.windows(2).all(|pair| pair[0] == pair[1]) {
-        return None;
+    if shapes.is_empty() {
+        return if recursive {
+            SourceShape::Recursive
+        } else {
+            SourceShape::Unknown
+        };
     }
-    Some(shapes[0])
+    if !shapes.windows(2).all(|pair| pair[0] == pair[1]) {
+        return SourceShape::Unknown;
+    }
+    SourceShape::Exact(shapes[0])
 }
 
 fn callable_for_producer(
@@ -1157,9 +1185,8 @@ fn callable_for_producer(
     executable: &ExecutableKey,
     context: &ExecutableContext,
     producer: &LocalCallableProducer,
-    materialization: &CallableMaterialization,
     callable_ty: Ty,
-    callable_demand: Option<&CallableDemand>,
+    callable_demand: &CallableDemand,
     publication: Option<TransportPosition>,
 ) -> Option<super::super::transport::CallableId> {
     let capture_tys = producer
@@ -1168,13 +1195,21 @@ fn callable_for_producer(
         .copied()
         .map(|capture| context.analysis.value_types.get(&capture).copied())
         .collect::<Option<Vec<_>>>()?;
+    let surface_demands = callable_surface_evidence(world, context, callable_ty, callable_demand, &[]);
+    let surface_arg_shapes = surface_shapes(world, &surface_demands, facts);
+    let direct_surfaces = if callable_demand.resolved.is_empty() {
+        Vec::new()
+    } else {
+        surface_shapes(world, &callable_demand.resolved, facts)
+    };
+    let resolutions = callable_resolutions(world, context, producer, &surface_demands);
+    let capture_demands = capture_demands_for_resolutions(world, contexts, &capture_tys, &resolutions);
     let capture_shapes = producer
         .captures
         .iter()
         .copied()
-        .zip(capture_tys.iter().copied())
-        .map(|(capture, capture_ty)| {
-            let capture_demand = boundary_runtime_demand(world, capture_ty);
+        .zip(capture_tys.iter().copied().zip(capture_demands.iter()))
+        .map(|(capture, (capture_ty, capture_demand))| {
             Some(shape_for_local_value(
                 world,
                 contexts,
@@ -1184,7 +1219,7 @@ fn callable_for_producer(
                 context,
                 capture,
                 capture_ty,
-                &capture_demand,
+                capture_demand,
                 None,
             ))
         })
@@ -1195,50 +1230,92 @@ fn callable_for_producer(
         .zip(capture_tys.iter().copied())
         .flat_map(|(shape, ty)| boundary_lanes_for_shape(world, shape, ty))
         .collect::<Vec<_>>();
-    let materialization_surfaces = match materialization {
-        CallableMaterialization::DirectOnly { surfaces } | CallableMaterialization::FirstClass { surfaces } => surfaces,
-    };
-    let surface_demands = callable_demand
-        .map(|demand| callable_surface_evidence(world, context, callable_ty, demand, &[]))
-        .filter(|surfaces| !surfaces.is_empty())
-        .unwrap_or_else(|| {
-            if materialization_surfaces.is_empty() {
-                callable_type_surfaces(world, callable_ty)
-            } else {
-                materialization_surfaces.clone()
-            }
-        });
-    let surface_arg_shapes = surface_shapes(world, &surface_demands, facts);
-    let direct_surfaces = if materialization_surfaces.is_empty() {
-        Vec::new()
-    } else {
-        surface_shapes(world, materialization_surfaces, facts)
-    };
     let callable = world.transport_mut().interners_mut().intern_callable(CallableDescr {
         function: Some(producer.function),
         capture_shapes: capture_shapes.into_boxed_slice(),
+        capture_lanes: capture_lanes.clone().into_boxed_slice(),
+        contract_surfaces: Box::default(),
     });
-    let resolutions = callable_resolutions(world, context, producer, &surface_demands);
-    let boundary_ids = match materialization {
-        CallableMaterialization::DirectOnly { .. } => Vec::new(),
-        CallableMaterialization::FirstClass { .. } => {
-            let return_shape =
-                boundary_return_shape_for_resolutions(world, contexts, return_shapes, facts, &resolutions, callable_ty);
-            publish_boundaries_for_callable(
-                world,
-                facts,
-                callable,
-                &surface_demands,
-                &surface_arg_shapes,
-                &capture_lanes,
-                callable_ty,
-                return_shape,
-                publication,
-            )
-        }
+    let boundary_ids = if callable_demand.opaque || callable_demand.escape {
+        let boundary_return_shapes = boundary_return_shapes_for_resolutions(
+            world,
+            contexts,
+            return_shapes,
+            facts,
+            &resolutions,
+            callable_ty,
+            &surface_demands,
+        );
+        publish_boundaries_for_callable(
+            world,
+            facts,
+            callable,
+            &surface_demands,
+            &surface_arg_shapes,
+            &capture_lanes,
+            callable_ty,
+            &boundary_return_shapes,
+            publication,
+        )
+    } else {
+        Vec::new()
     };
     facts.record_callable(callable, resolutions, direct_surfaces, capture_lanes, boundary_ids);
     Some(callable)
+}
+
+fn callable_transport_demand(
+    world: &mut World<'_>,
+    ty: Ty,
+    demand: &RuntimeDemand,
+    precise_demand: Option<&RuntimeDemand>,
+) -> Option<CallableDemand> {
+    if let Some(RuntimeDemand::Callable(callable)) = precise_demand {
+        return Some(callable.clone());
+    }
+    match demand {
+        RuntimeDemand::Callable(callable) => Some(callable.clone()),
+        RuntimeDemand::Value if world.types_mut().callable_clauses(&ty).is_some() => Some(CallableDemand::escaped()),
+        _ => None,
+    }
+}
+
+fn capture_demands_for_resolutions(
+    world: &mut World<'_>,
+    contexts: &HashMap<ExecutableKey, ExecutableContext>,
+    capture_tys: &[Ty],
+    resolutions: &[ExecutableSymbol],
+) -> Vec<RuntimeDemand> {
+    let mut demands = vec![RuntimeDemand::Ignore; capture_tys.len()];
+    let mut matched = false;
+    for resolution in resolutions {
+        let Some((_, context)) = contexts.iter().find(|(candidate, _)| {
+            candidate.need == resolution.need
+                && candidate.activation.function == resolution.activation.function
+                && candidate.activation.input.as_slice() == resolution.activation.input.as_ref()
+        }) else {
+            continue;
+        };
+        if context.runtime_demand.input_demands.len() < capture_tys.len() {
+            continue;
+        }
+        matched = true;
+        for (slot, demand) in demands
+            .iter_mut()
+            .zip(context.runtime_demand.input_demands.iter().take(capture_tys.len()))
+        {
+            slot.join_assign(demand);
+        }
+    }
+    if matched {
+        demands
+    } else {
+        capture_tys
+            .iter()
+            .copied()
+            .map(|ty| boundary_runtime_demand(world, ty))
+            .collect()
+    }
 }
 
 fn surface_shapes(
@@ -1389,28 +1466,30 @@ fn generic_callable_shape(
     facts: &mut TransportFactsBuilder,
     publication: Option<TransportPosition>,
 ) -> ShapeId {
+    let published_surface_shapes = surface_shapes(world, surfaces, facts);
     let callable = world.transport_mut().interners_mut().intern_callable(CallableDescr {
         function: None,
         capture_shapes: Box::default(),
+        capture_lanes: Box::default(),
+        contract_surfaces: published_surface_shapes.clone().into_boxed_slice(),
     });
-    let surface_shapes = surface_shapes(world, surfaces, facts);
     let publishes_boundary = demand.opaque || demand.escape;
-    let direct_surfaces = if publishes_boundary {
+    let direct_surfaces = if demand.resolved.is_empty() {
         Vec::new()
     } else {
-        surface_shapes.clone()
+        surface_shapes(world, &demand.resolved, facts)
     };
     let boundary_ids = if publishes_boundary {
-        let return_shape = boundary_return_shape_for_callable(world, ty, facts);
+        let return_shapes = boundary_return_shapes_for_callable_surfaces(world, ty, surfaces, facts);
         publish_boundaries_for_callable(
             world,
             facts,
             callable,
             surfaces,
-            &surface_shapes,
+            &published_surface_shapes,
             &[],
             ty,
-            return_shape,
+            &return_shapes,
             publication,
         )
     } else {
@@ -1431,13 +1510,27 @@ fn publish_boundaries_for_callable(
     surface_shapes: &[Box<[ShapeId]>],
     capture_lanes: &[LaneId],
     callable_ty: Ty,
-    return_shape: ShapeId,
+    return_shapes: &[ShapeId],
     publication: Option<TransportPosition>,
 ) -> Vec<BoundaryId> {
-    let ret_ty = world.types_mut().arrow_join_return(&callable_ty);
-    let ret = boundary_return_for_shape(world, return_shape, ret_ty);
+    assert_eq!(
+        surfaces.len(),
+        surface_shapes.len(),
+        "boundary surface shapes must align with published surfaces"
+    );
+    assert_eq!(
+        surfaces.len(),
+        return_shapes.len(),
+        "boundary return shapes must align with published surfaces"
+    );
     let mut boundary_ids = Vec::new();
-    for (surface, arg_shapes) in surfaces.iter().zip(surface_shapes.iter()) {
+    for ((surface, arg_shapes), return_shape) in surfaces
+        .iter()
+        .zip(surface_shapes.iter())
+        .zip(return_shapes.iter().copied())
+    {
+        let return_ty = boundary_return_ty_for_surface(world, callable_ty, surface);
+        let return_lanes = boundary_lanes_for_shape(world, return_shape, return_ty).into_boxed_slice();
         let arg_lanes = arg_shapes
             .iter()
             .copied()
@@ -1449,24 +1542,18 @@ fn publish_boundaries_for_callable(
             surface_arg_shapes: arg_shapes.clone(),
             published_capture_lanes: capture_lanes.to_vec().into_boxed_slice(),
             published_arg_lanes: arg_lanes.into_boxed_slice(),
-            published_return: ret.clone(),
+            published_return_shape: return_shape,
+            published_return_lanes: return_lanes,
         });
         if let Some(position) = publication.clone() {
             facts.record_boundary(boundary, position);
-        } else {
-            facts.record_boundary(boundary, TransportPosition::Boundary { boundary });
         }
         boundary_ids.push(boundary);
     }
     boundary_ids
 }
 
-fn boundary_return_shape_for_callable(
-    world: &mut World<'_>,
-    callable_ty: Ty,
-    facts: &mut TransportFactsBuilder,
-) -> ShapeId {
-    let ret_ty = world.types_mut().arrow_join_return(&callable_ty);
+fn boundary_return_shape_for_ty(world: &mut World<'_>, ret_ty: Ty, facts: &mut TransportFactsBuilder) -> ShapeId {
     if world.types().is_empty(&ret_ty) {
         return world.transport_mut().interners_mut().intern_shape(ShapeDescr::Nothing);
     }
@@ -1487,60 +1574,118 @@ fn boundary_return_shape_for_callable(
     generic_shape_from_demand(world, ret_ty, &demand, facts, None)
 }
 
-fn boundary_return_shape_for_resolutions(
+fn boundary_return_shapes_for_resolutions(
     world: &mut World<'_>,
     contexts: &HashMap<ExecutableKey, ExecutableContext>,
     return_shapes: &HashMap<ExecutableKey, ShapeId>,
     facts: &mut TransportFactsBuilder,
     resolutions: &[ExecutableSymbol],
     callable_ty: Ty,
-) -> ShapeId {
-    let mut shapes = Vec::new();
-    for resolution in resolutions {
-        let Some((executable, context)) = contexts.iter().find(|(candidate, _)| {
-            candidate.need == resolution.need
-                && candidate.activation.function == resolution.activation.function
-                && candidate.activation.input.as_slice() == resolution.activation.input.as_ref()
-        }) else {
-            return boundary_return_shape_for_callable(world, callable_ty, facts);
-        };
-        let demand = boundary_runtime_demand(world, context.return_ty);
-        shapes.push(shape_for_sources(
-            world,
-            contexts,
-            return_shapes,
-            facts,
-            executable,
-            context,
-            context.return_ty,
-            &demand,
-            &context.return_sources,
-            None,
-        ));
-    }
-    if shapes.is_empty() || !shapes.windows(2).all(|pair| pair[0] == pair[1]) {
-        return boundary_return_shape_for_callable(world, callable_ty, facts);
-    }
-    shapes[0]
+    surfaces: &BTreeSet<CallableSurface>,
+) -> Vec<ShapeId> {
+    assert_eq!(
+        surfaces.len(),
+        resolutions.len(),
+        "callable resolutions must align with demanded callable surfaces"
+    );
+    surfaces
+        .iter()
+        .zip(resolutions.iter())
+        .map(|(surface, resolution)| {
+            boundary_return_shape_for_resolution(
+                world,
+                contexts,
+                return_shapes,
+                facts,
+                resolution,
+                callable_ty,
+                surface,
+            )
+        })
+        .collect()
 }
 
-fn boundary_return_for_shape(world: &mut World<'_>, shape: ShapeId, ty: Ty) -> BoundaryReturnDescr {
-    match world.transport().interners().shape(shape).clone() {
-        ShapeDescr::Nothing => BoundaryReturnDescr::Nothing,
-        ShapeDescr::Lane(lane) => BoundaryReturnDescr::Value(lane),
-        ShapeDescr::Tuple(_) => {
-            let lanes = boundary_lanes_for_shape(world, shape, ty);
-            if lanes.is_empty() {
-                BoundaryReturnDescr::Nothing
-            } else {
-                BoundaryReturnDescr::Tuple(lanes.into_boxed_slice())
-            }
+fn boundary_return_shape_for_resolution(
+    world: &mut World<'_>,
+    contexts: &HashMap<ExecutableKey, ExecutableContext>,
+    return_shapes: &HashMap<ExecutableKey, ShapeId>,
+    facts: &mut TransportFactsBuilder,
+    resolution: &ExecutableSymbol,
+    callable_ty: Ty,
+    surface: &CallableSurface,
+) -> ShapeId {
+    let Some((executable, context)) = contexts.iter().find(|(candidate, _)| {
+        candidate.need == resolution.need
+            && candidate.activation.function == resolution.activation.function
+            && candidate.activation.input.as_slice() == resolution.activation.input.as_ref()
+    }) else {
+        return boundary_return_shape_for_surface(world, callable_ty, surface, facts);
+    };
+    let demand = boundary_runtime_demand(world, context.return_ty);
+    shape_for_sources(
+        world,
+        contexts,
+        return_shapes,
+        facts,
+        executable,
+        context,
+        context.return_ty,
+        &demand,
+        &context.return_sources,
+        None,
+    )
+}
+
+fn boundary_return_shapes_for_callable_surfaces(
+    world: &mut World<'_>,
+    callable_ty: Ty,
+    surfaces: &BTreeSet<CallableSurface>,
+    facts: &mut TransportFactsBuilder,
+) -> Vec<ShapeId> {
+    surfaces
+        .iter()
+        .map(|surface| boundary_return_shape_for_surface(world, callable_ty, surface, facts))
+        .collect()
+}
+
+fn boundary_return_shape_for_surface(
+    world: &mut World<'_>,
+    callable_ty: Ty,
+    surface: &CallableSurface,
+    facts: &mut TransportFactsBuilder,
+) -> ShapeId {
+    let ret_ty = boundary_return_ty_for_surface(world, callable_ty, surface);
+    boundary_return_shape_for_ty(world, ret_ty, facts)
+}
+
+fn boundary_return_ty_for_surface(world: &mut World<'_>, callable_ty: Ty, surface: &CallableSurface) -> Ty {
+    let Some(clauses) = world.types_mut().callable_clauses(&callable_ty) else {
+        return world.types_mut().arrow_join_return(&callable_ty);
+    };
+    let mut matched = None;
+    for clause in clauses {
+        if clause.args.len() != surface.inputs.len() {
+            continue;
         }
-        ShapeDescr::Callable(_) => {
-            let lane = value_lane(world, ty);
-            BoundaryReturnDescr::Value(lane)
+        let overlaps =
+            clause
+                .args
+                .iter()
+                .copied()
+                .zip(surface.inputs.iter().copied())
+                .all(|(clause_arg, surface_arg)| {
+                    let overlap = world.types_mut().intersect(clause_arg, surface_arg);
+                    !world.types().is_empty(&overlap)
+                });
+        if !overlaps {
+            continue;
         }
+        matched = Some(match matched {
+            Some(current) => world.types_mut().union(current, clause.ret),
+            None => clause.ret,
+        });
     }
+    matched.unwrap_or_else(|| world.types_mut().arrow_join_return(&callable_ty))
 }
 
 fn boundary_lanes_for_shape(world: &mut World<'_>, shape: ShapeId, ty: Ty) -> Vec<LaneId> {
@@ -1687,18 +1832,20 @@ fn resume_shape(
         .get(&resume.value)
         .copied()
         .unwrap_or_else(|| world.types_mut().any());
-    exact_shape_for_callsite(world, return_shapes, executable, context, resume.callsite).unwrap_or_else(|| {
-        shape_for_sources(
-            world,
-            contexts,
-            return_shapes,
-            facts,
-            executable,
-            context,
-            value_ty,
-            demand,
-            &[ProducedSource::Callsite(resume.callsite)],
-            publication,
-        )
-    })
+    exact_shape_for_callsite(world, contexts, return_shapes, executable, context, resume.callsite)
+        .exact()
+        .unwrap_or_else(|| {
+            shape_for_sources(
+                world,
+                contexts,
+                return_shapes,
+                facts,
+                executable,
+                context,
+                value_ty,
+                demand,
+                &[ProducedSource::Callsite(resume.callsite)],
+                publication,
+            )
+        })
 }

@@ -1,7 +1,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use super::transport::{BoundaryDescr, BoundaryReturnDescr, ShapeDescr, ShapeId, TransportPlan, TransportPosition};
+use super::transport::{BoundaryDescr, ShapeDescr, ShapeId, TransportPlan, TransportPosition};
 use super::{DriveOutcome, ExecutableNeed, World};
 use crate::telemetry::{Capture, ConfiguredTelemetry, Value};
 
@@ -60,7 +60,7 @@ const CALLABLE_FACTS: &[(&str, &str)] = &[
 const BOUNDARY_FACTS: &[(&str, &str)] = &[(
     "B_pub",
     "callable C_pub; surface_arg_shapes [S_int]; published_capture_lanes [L_int]; \
-     published_arg_lanes [L_int]; published_return Value(L_int)",
+     published_arg_lanes [L_int]; published_return_shape S_int; published_return_lanes [L_int]",
 )];
 
 const ROOT_PLAN_MEMBERSHIP: &[&str] = &["E_main", "E_pair", "E_add"];
@@ -113,7 +113,7 @@ fn compiler2_transport_flow_contract_separates_shared_descriptors_from_root_plan
         boundary("B_pub"),
         Some(
             "callable C_pub; surface_arg_shapes [S_int]; published_capture_lanes [L_int]; \
-             published_arg_lanes [L_int]; published_return Value(L_int)"
+             published_arg_lanes [L_int]; published_return_shape S_int; published_return_lanes [L_int]"
         ),
         "boundary publication is contextual and points at shared lane/shape ids"
     );
@@ -446,6 +446,52 @@ fn compiler2_transport_plan_requires_a_boundary_for_an_opaque_callable_input() {
 }
 
 #[test]
+fn compiler2_transport_plan_keeps_opaque_callable_contracts_distinct_by_surface() {
+    let source = r#"
+fn main(f, g) do
+  f.(1)
+  g.({1, 2})
+end
+"#;
+
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new(&tel);
+    world.submit_code(
+        Some("transport_distinct_opaque_callable_surfaces.fz".to_string()),
+        source.to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 2, ExecutableNeed::Value);
+    assert_resolved(world.drive_for(None), "distinct opaque-callable fixture should settle");
+
+    let plan = transport_plan(&world, root);
+    let main = executable_for(&world, &plan, "main", 2);
+    let first = plan_shape_at(
+        &plan,
+        &TransportPosition::ExecutableInput {
+            executable: main.clone(),
+            semantic_index: 0,
+        },
+    );
+    let second = plan_shape_at(
+        &plan,
+        &TransportPosition::ExecutableInput {
+            executable: main,
+            semantic_index: 1,
+        },
+    );
+    let ShapeDescr::Callable(first_callable) = shape_descr(&world, first) else {
+        panic!("first opaque input should be callable-shaped")
+    };
+    let ShapeDescr::Callable(second_callable) = shape_descr(&world, second) else {
+        panic!("second opaque input should be callable-shaped")
+    };
+    assert_ne!(
+        first_callable, second_callable,
+        "opaque callable contracts with different observed surfaces must not merge into one CallableId"
+    );
+}
+
+#[test]
 fn compiler2_transport_plan_distinguishes_same_surface_callables_by_capture_obligation() {
     let source = r#"
 fn make1(a), do: fn (x) -> x + a end
@@ -525,7 +571,7 @@ end
 #[test]
 fn compiler2_transport_plan_preserves_tuple_return_contracts_at_boundaries() {
     let source = r#"
-fn make_pairer(), do: fn (x) -> {1, 2} end
+fn make_pairer(), do: fn (x) -> {{1, 2}, 3} end
 fn main(), do: make_pairer()
 "#;
 
@@ -540,16 +586,29 @@ fn main(), do: make_pairer()
 
     let plan = transport_plan(&world, root);
     let boundary = single_boundary_descr(&world, &plan);
-    let BoundaryReturnDescr::Tuple(lanes) = &boundary.published_return else {
+    let ShapeDescr::Tuple(items) = shape_descr(&world, boundary.published_return_shape) else {
         panic!(
-            "a callable returning a tuple should publish a tuple boundary return, got {:?}",
-            boundary.published_return
+            "a callable returning a tuple should publish the return ShapeId, got {:?}",
+            shape_descr(&world, boundary.published_return_shape)
         );
     };
+    let [left, right] = items.as_ref() else {
+        panic!("the boundary return should preserve the outer two-field tuple")
+    };
+    assert!(
+        matches!(shape_descr(&world, *left), ShapeDescr::Tuple(inner) if inner.len() == 2),
+        "the boundary return shape should preserve nested tuple structure instead of flattening lanes: {:?}",
+        shape_descr(&world, boundary.published_return_shape)
+    );
+    assert!(
+        matches!(shape_descr(&world, *right), ShapeDescr::Lane(_)),
+        "the second outer field should remain a scalar shape: {:?}",
+        shape_descr(&world, boundary.published_return_shape)
+    );
     assert_eq!(
-        lanes.len(),
-        2,
-        "the tuple boundary return should publish one lane per tuple field"
+        boundary.published_return_lanes.len(),
+        3,
+        "the separate lane fact should flatten the three scalar leaves without becoming the return structure"
     );
 }
 
@@ -595,12 +654,301 @@ end
     );
 }
 
+#[test]
+fn compiler2_transport_plan_shapes_callable_captures_from_settled_callable_demand() {
+    let source = r#"
+fn main() do
+  add1 = fn (x) -> x + 1 end
+  outer = fn (y) -> add1.(y) end
+  outer.(41)
+end
+"#;
+
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new(&tel);
+    world.submit_code(
+        Some("transport_callable_capture_demand.fz".to_string()),
+        source.to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    drive_until_transport_plan(&mut world, root, "callable capture-demand fixture should settle");
+
+    let plan = transport_plan(&world, root);
+    let captured_callable = plan
+        .callables
+        .iter()
+        .find_map(|(outer, _)| {
+            let outer_descr = world.transport().interners().callable(*outer);
+            let [capture_shape] = outer_descr.capture_shapes.as_ref() else {
+                return None;
+            };
+            let ShapeDescr::Callable(captured) = shape_descr(&world, *capture_shape) else {
+                return None;
+            };
+            Some(*captured)
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "outer direct callable should capture add1 as a callable shape: {:?}",
+                plan.callables
+            )
+        });
+    let captured_facts = plan
+        .callables
+        .get(&captured_callable)
+        .unwrap_or_else(|| panic!("captured callable facts should be present"));
+    assert!(
+        !captured_facts.direct_surfaces.is_empty(),
+        "the captured callable should keep its direct-call surface"
+    );
+    assert!(
+        captured_facts.boundary_ids.is_empty(),
+        "a callable captured for direct use must not be upgraded to a first-class boundary"
+    );
+}
+
+#[test]
+fn compiler2_transport_plan_preserves_recursive_callable_return_identity() {
+    let source = r#"
+fn make(0), do: fn (x) -> x + 1 end
+fn make(n), do: make(n - 1)
+
+fn main() do
+  f = make(2)
+  f.(41)
+end
+"#;
+
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new(&tel);
+    world.submit_code(
+        Some("transport_recursive_callable_return.fz".to_string()),
+        source.to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    drive_until_transport_plan(
+        &mut world,
+        root,
+        "recursive callable-return fixture should produce a transport plan",
+    );
+
+    let plan = transport_plan(&world, root);
+    let make = executable_for(&world, &plan, "make", 1);
+    let returned = plan_shape_at(&plan, &TransportPosition::ExecutableReturn { executable: make });
+    let ShapeDescr::Callable(callable) = shape_descr(&world, returned) else {
+        panic!("recursive make/1 should return a callable shape")
+    };
+    let facts = plan
+        .callables
+        .get(callable)
+        .unwrap_or_else(|| panic!("recursive callable return facts should be present"));
+    assert!(
+        !facts.resolutions.is_empty(),
+        "recursive callable return should keep the resolved local callable target instead of falling back to a generic opaque callable"
+    );
+}
+
+#[test]
+fn compiler2_transport_plan_preserves_capture_lane_order_and_duplicates() {
+    let source = r#"
+fn make(a, b), do: fn (x) -> a + b + x end
+fn main(), do: make(1, 2)
+"#;
+
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new(&tel);
+    world.submit_code(
+        Some("transport_duplicate_capture_lanes.fz".to_string()),
+        source.to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    assert_resolved(world.drive_for(None), "duplicate capture-lane fixture should settle");
+
+    let plan = transport_plan(&world, root);
+    let make = executable_for(&world, &plan, "make", 2);
+    let returned = plan_shape_at(&plan, &TransportPosition::ExecutableReturn { executable: make });
+    let ShapeDescr::Callable(callable) = shape_descr(&world, returned) else {
+        panic!("make/2 should return a callable shape")
+    };
+    let facts = plan
+        .callables
+        .get(callable)
+        .unwrap_or_else(|| panic!("returned callable facts should be present"));
+    assert_eq!(
+        facts.capture_lanes.len(),
+        2,
+        "two same-typed captures are two ordered payload lanes, not one deduplicated lane"
+    );
+    let boundary = single_boundary_descr(&world, &plan);
+    assert_eq!(
+        boundary.published_capture_lanes.as_ref(),
+        facts.capture_lanes.as_ref(),
+        "published capture lanes must preserve the callable capture payload sequence exactly"
+    );
+}
+
+#[test]
+fn compiler2_transport_plan_does_not_publish_synthetic_boundary_positions() {
+    let source = r#"
+fn main(f) do
+  g = fn (x) -> x + 1 end
+  f.(g)
+end
+"#;
+
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new(&tel);
+    world.submit_code(
+        Some("transport_no_synthetic_boundary_position.fz".to_string()),
+        source.to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 1, ExecutableNeed::Value);
+    drive_until_transport_plan(
+        &mut world,
+        root,
+        "callable boundary-arg fixture should produce a transport plan",
+    );
+
+    let plan = transport_plan(&world, root);
+    for facts in plan.boundaries.values() {
+        for publication in facts.publications.iter() {
+            assert!(
+                !matches!(publication, TransportPosition::Boundary { .. }),
+                "boundary publications must name semantic positions, not synthetic self-positions: {publication:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn compiler2_transport_plan_is_rederived_when_missing_after_unchanged_semantic_closure() {
+    let source = "fn main(), do: 41\n";
+
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new(&tel);
+    world.submit_code(
+        Some("transport_missing_plan_rederive.fz".to_string()),
+        source.to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    assert_resolved(world.drive_for(None), "missing-plan fixture should initially settle");
+    assert!(
+        world.transport().plans().get(root).is_some(),
+        "initial drive should produce a transport plan"
+    );
+
+    world.transport_mut().plans_mut().remove(root);
+    world.demand(super::Job::SealSemanticClosure(root));
+    assert_resolved(
+        world.drive_for(None),
+        "unchanged semantic closure should still rederive a missing transport plan",
+    );
+    assert!(
+        world.transport().plans().get(root).is_some(),
+        "transport plan should be restored even when SemanticClosed did not change"
+    );
+}
+
+#[test]
+fn compiler2_transport_plan_publishes_boundary_returns_per_surface() {
+    let source = r#"
+fn main() do
+  id = fn (x) -> x end
+  id.(1)
+  id.({1, 2})
+  id
+end
+"#;
+
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new(&tel);
+    world.submit_code(
+        Some("transport_surface_specific_boundary_returns.fz".to_string()),
+        source.to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    assert_resolved(
+        world.drive_for(None),
+        "surface-specific boundary-return fixture should settle",
+    );
+
+    let plan = transport_plan(&world, root);
+    assert_eq!(
+        plan.boundaries.len(),
+        2,
+        "one escaped callable used at two surfaces should publish one boundary contract per surface"
+    );
+    let mut has_scalar_return = false;
+    let mut has_tuple_return = false;
+    for boundary in boundary_descrs(&world, &plan) {
+        match shape_descr(&world, boundary.published_return_shape) {
+            ShapeDescr::Lane(_) => has_scalar_return = true,
+            ShapeDescr::Tuple(items) if items.len() == 2 => has_tuple_return = true,
+            other => panic!("unexpected boundary return shape for surface-specific fixture: {other:?}"),
+        }
+    }
+    assert!(
+        has_scalar_return && has_tuple_return,
+        "boundary return shape must follow each surface instead of joining all surfaces into one fallback"
+    );
+}
+
+#[test]
+fn compiler2_transport_plan_shares_recursive_return_and_resume_shapes() {
+    let source = r#"
+fn pair_down(0), do: {0, 1}
+fn pair_down(n) do
+  {left, right} = pair_down(n - 1)
+  {left, right}
+end
+
+fn main() do
+  {left, right} = pair_down(2)
+  left + right
+end
+"#;
+
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new(&tel);
+    world.submit_code(
+        Some("transport_recursive_tuple_return.fz".to_string()),
+        source.to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    assert_resolved(world.drive_for(None), "recursive tuple-return fixture should settle");
+
+    let plan = transport_plan(&world, root);
+    let pair_down = executable_for(&world, &plan, "pair_down", 1);
+    let returned = plan_shape_at(
+        &plan,
+        &TransportPosition::ExecutableReturn {
+            executable: pair_down.clone(),
+        },
+    );
+    let recursive_resume = resume_shapes_for(&plan, &pair_down)
+        .into_iter()
+        .find(|shape| *shape == returned)
+        .unwrap_or_else(|| panic!("recursive pair_down/1 call should resume the same shape it returns"));
+    assert_eq!(
+        returned, recursive_resume,
+        "recursive producer return and recursive consumer resume should share one ShapeId"
+    );
+    assert!(
+        matches!(shape_descr(&world, returned), ShapeDescr::Tuple(items) if items.len() == 2),
+        "settled recursive tuple demand should remain a tuple transport shape"
+    );
+}
+
 fn assert_resolved(outcome: DriveOutcome<super::Job, super::FactKey>, message: &str) {
     assert!(matches!(outcome, DriveOutcome::Resolved), "{message}: {outcome:?}");
 }
 
 fn drive_until_transport_plan(world: &mut World<'_>, root: super::RootId, message: &str) {
     let outcome = world.drive_for(None);
+    if world.transport().plans().get(root).is_none() {
+        world.demand(super::Job::DeriveTransportPlan(root));
+        let _ = world.drive_for(None);
+    }
     assert!(
         world.transport().plans().get(root).is_some(),
         "{message}; drive outcome was {outcome:?}"
@@ -682,6 +1030,13 @@ fn boundary_with_callable_arg<'a>(world: &'a World<'_>, plan: &TransportPlan) ->
                 plan.boundaries
             )
         })
+}
+
+fn boundary_descrs<'a>(world: &'a World<'_>, plan: &TransportPlan) -> Vec<&'a BoundaryDescr> {
+    plan.boundaries
+        .keys()
+        .map(|boundary| world.transport().interners().boundary(*boundary))
+        .collect()
 }
 
 fn shape(id: &str) -> Option<&'static str> {

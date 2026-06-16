@@ -128,6 +128,8 @@ pub struct ExecutableSymbol {
 pub struct CallableDescr {
     pub function: Option<FunctionId>,
     pub capture_shapes: Box<[ShapeId]>,
+    pub capture_lanes: Box<[LaneId]>,
+    pub contract_surfaces: Box<[Box<[ShapeId]>]>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -139,19 +141,13 @@ pub struct CallableFacts {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum BoundaryReturnDescr {
-    Nothing,
-    Value(LaneId),
-    Tuple(Box<[LaneId]>),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct BoundaryDescr {
     pub callable: CallableId,
     pub surface_arg_shapes: Box<[ShapeId]>,
     pub published_capture_lanes: Box<[LaneId]>,
     pub published_arg_lanes: Box<[LaneId]>,
-    pub published_return: BoundaryReturnDescr,
+    pub published_return_shape: ShapeId,
+    pub published_return_lanes: Box<[LaneId]>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -377,6 +373,10 @@ impl TransportPlanMap {
         self.slots.get(root.as_u32() as usize).and_then(|slot| slot.as_ref())
     }
 
+    pub fn remove(&mut self, root: RootId) -> Option<TransportPlan> {
+        self.slots.get_mut(root.as_u32() as usize).and_then(Option::take)
+    }
+
     fn ensure(&mut self, root: RootId) {
         let needed = root.as_u32() as usize + 1;
         if self.slots.len() < needed {
@@ -450,10 +450,14 @@ mod tests {
         let callable = interners.intern_callable(CallableDescr {
             function: Some(add),
             capture_shapes: vec![shape].into_boxed_slice(),
+            capture_lanes: vec![lane].into_boxed_slice(),
+            contract_surfaces: Box::default(),
         });
         let same_callable = interners.intern_callable(CallableDescr {
             function: Some(add),
             capture_shapes: vec![shape].into_boxed_slice(),
+            capture_lanes: vec![lane].into_boxed_slice(),
+            contract_surfaces: Box::default(),
         });
         let callable_shape = interners.intern_shape(ShapeDescr::Callable(callable));
         let same_callable_shape = interners.intern_shape(ShapeDescr::Callable(same_callable));
@@ -468,6 +472,8 @@ mod tests {
             &CallableDescr {
                 function: Some(add),
                 capture_shapes: vec![shape].into_boxed_slice(),
+                capture_lanes: vec![lane].into_boxed_slice(),
+                contract_surfaces: Box::default(),
             },
             "callable descriptors are independent of root-scoped positions"
         );
@@ -489,13 +495,16 @@ mod tests {
         let callable = interners.intern_callable(CallableDescr {
             function: Some(add),
             capture_shapes: vec![shape].into_boxed_slice(),
+            capture_lanes: vec![lane].into_boxed_slice(),
+            contract_surfaces: Box::default(),
         });
         let boundary = BoundaryDescr {
             callable,
             surface_arg_shapes: vec![shape].into_boxed_slice(),
             published_capture_lanes: vec![lane].into_boxed_slice(),
             published_arg_lanes: vec![lane].into_boxed_slice(),
-            published_return: BoundaryReturnDescr::Value(lane),
+            published_return_shape: shape,
+            published_return_lanes: vec![lane].into_boxed_slice(),
         };
 
         let first = interners.intern_boundary(boundary.clone());
@@ -504,5 +513,48 @@ mod tests {
         assert_eq!(first, second);
         assert_eq!(interners.boundary_count(), 1);
         assert_eq!(interners.boundary(first), &boundary);
+    }
+
+    #[test]
+    fn transport_callable_descriptors_include_ordered_capture_lane_payload() {
+        let mut types = Types::new();
+        let int = types.int();
+        let atom = types.atom();
+        let mut functions = FunctionMap::new();
+        let add = functions.reference(ModuleId::GLOBAL, "add", 2);
+        let mut interners = TransportInterners::default();
+
+        let int_lane = interners.intern_lane(LaneDescr {
+            ty: int,
+            class: TransportClass::Value,
+        });
+        let atom_lane = interners.intern_lane(LaneDescr {
+            ty: atom,
+            class: TransportClass::Value,
+        });
+        let shared_callable = interners.intern_callable(CallableDescr {
+            function: None,
+            capture_shapes: Box::default(),
+            capture_lanes: Box::default(),
+            contract_surfaces: Box::default(),
+        });
+        let shared_shape = interners.intern_shape(ShapeDescr::Callable(shared_callable));
+        let int_payload = interners.intern_callable(CallableDescr {
+            function: Some(add),
+            capture_shapes: vec![shared_shape].into_boxed_slice(),
+            capture_lanes: vec![int_lane].into_boxed_slice(),
+            contract_surfaces: Box::default(),
+        });
+        let atom_payload = interners.intern_callable(CallableDescr {
+            function: Some(add),
+            capture_shapes: vec![shared_shape].into_boxed_slice(),
+            capture_lanes: vec![atom_lane].into_boxed_slice(),
+            contract_surfaces: Box::default(),
+        });
+
+        assert_ne!(
+            int_payload, atom_payload,
+            "one CallableId cannot key two different ordered capture-lane payloads"
+        );
     }
 }

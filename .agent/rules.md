@@ -33,6 +33,7 @@
 - Have descriptions that explain in eli5 _style_ (no need to _say it) why we're making the change, what we've changed, and how it works -- with examples.
 
 ## Best Practices
+- Local correctness does not guarantee global architectural alignment.
 - Data-model -> up, so that the problem is correct-by-construction.
 - For semantic compiler bugs, use the strategy trigger in `.agent/strategies.md`.
 - Prefer short functions with crisp names over comments.
