@@ -1388,6 +1388,14 @@ end
         .callables
         .get(&captured_callable)
         .unwrap_or_else(|| panic!("captured callable facts should be present"));
+    let producer_function = world
+        .transport()
+        .interners()
+        .callable(captured_callable)
+        .function
+        .unwrap_or_else(|| panic!("captured callable should name its local producer"));
+    let flow = upstream_callable_flow_for_producer(&world, root, producer_function);
+    assert_callable_facts_match_upstream_flow(&world, &plan, captured_callable, &flow);
     assert!(
         !captured_facts.direct_surfaces.is_empty(),
         "the captured callable should keep its direct-call surface"

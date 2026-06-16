@@ -1430,7 +1430,7 @@ fn callable_for_producer(
     } else {
         surface_shapes(world, &direct_surface_demands, facts)
     };
-    let capture_demands = capture_demands_for_resolutions(world, contexts, &capture_tys, &resolution_symbols);
+    let capture_demands = capture_demands_for_resolutions(contexts, &capture_tys, &resolution_symbols);
     let capture_shapes = producer
         .captures
         .iter()
@@ -1502,25 +1502,23 @@ fn local_callable_transport_requested(demand: &RuntimeDemand, precise_demand: Op
 }
 
 fn capture_demands_for_resolutions(
-    world: &mut World<'_>,
     contexts: &HashMap<ExecutableKey, ExecutableContext>,
     capture_tys: &[Ty],
     resolutions: &[ExecutableSymbol],
 ) -> Vec<RuntimeDemand> {
     let mut demands = vec![RuntimeDemand::Ignore; capture_tys.len()];
-    let mut matched = false;
     for resolution in resolutions {
         let Some((_, context)) = contexts.iter().find(|(candidate, _)| {
             candidate.need == resolution.need
                 && candidate.activation.function == resolution.activation.function
                 && candidate.activation.input.as_slice() == resolution.activation.input.as_ref()
         }) else {
-            continue;
+            panic!("upstream callable-flow resolution is outside the transport root context: {resolution:?}");
         };
-        if context.runtime_demand.input_demands.len() < capture_tys.len() {
-            continue;
-        }
-        matched = true;
+        assert!(
+            context.runtime_demand.input_demands.len() >= capture_tys.len(),
+            "upstream callable-flow resolution input demand is missing capture slots: {resolution:?}"
+        );
         for (slot, demand) in demands
             .iter_mut()
             .zip(context.runtime_demand.input_demands.iter().take(capture_tys.len()))
@@ -1528,15 +1526,7 @@ fn capture_demands_for_resolutions(
             slot.join_assign(demand);
         }
     }
-    if matched {
-        demands
-    } else {
-        capture_tys
-            .iter()
-            .copied()
-            .map(|ty| boundary_runtime_demand(world, ty))
-            .collect()
-    }
+    demands
 }
 
 fn surface_shapes(
