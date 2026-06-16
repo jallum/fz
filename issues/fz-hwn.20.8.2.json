@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-hwn.20.8.4"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-hwn.20.8.3"
+  ],
   "created": "2026-06-16T03:42:18Z",
   "description": "Add an upstream callable-flow fact projection owned by semantic/runtime-demand closure. For each local callable producer that is demanded, publish canonical target function/executable evidence, ordered captures, direct surfaces, first-class boundary surfaces, escape, and opaque facts. The fact must distinguish unknown opaque surface from known direct surface and from first-class publication. It must not depend on transport descriptors or old Trash layout. Worked examples must prove the Enumerable suspend reducer has canonical reducer executables and direct two-arg surface upstream, and an opaque escaped callable with no known surface remains explicitly opaque/first-class. Update outline.md and proposal.html with the fact owner and exact product.",
   "id": "fz-hwn.20.8.2",
