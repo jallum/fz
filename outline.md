@@ -373,6 +373,15 @@ Child ticket order:
    Each ticket starts by turning on its test, then fixes only the proven
    transport/artifact seam violation. No downstream recomputation, fallback
    layout derivation, compatibility adapter, or copied interner table is allowed.
+   The same WIP left five red-test groups that must also close before
+   `fz-hwn.19.3`: `fz-hwn.19.2.4.7` keeps unused callable constructors out of
+   the native frontier; `fz-hwn.19.2.4.8` separates first-class callable
+   publication from direct surfaces; `fz-hwn.19.2.4.9` closes suspend
+   continuation callable frontiers before transport; `fz-hwn.19.2.4.10` keeps
+   provider-boundary imports body-free; `fz-hwn.19.2.4.11` preserves direct
+   reducer callable integer facts. These are not downstream cleanup licenses:
+   each starts at the earliest failing output contract and moves the proven fact
+   down through artifact/backend/native without re-derivation.
 5. `fz-hwn.19.2.5` removes leftover artifact authority, updates docs/telemetry,
    and proves with `rg` that live artifact/materialization code no longer
    imports or constructs the trash-prefixed transport model.

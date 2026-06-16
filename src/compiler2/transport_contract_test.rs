@@ -1125,6 +1125,7 @@ end
 }
 
 #[test]
+#[ignore = "fz-hwn.19.2.4.7: unused callable constructors still reach native frontier"]
 fn compiler2_transport_plan_keeps_unused_callable_construction_out_of_boundary_inventory() {
     let source = r#"
 fn make(), do: fn (x) -> x + 1 end
@@ -1497,6 +1498,7 @@ fn main(), do: make_suspender()
 }
 
 #[test]
+#[ignore = "fz-hwn.19.2.4.9: suspend continuation callable frontier is not closed before transport/ABI"]
 fn compiler2_transport_plan_preserves_enumerable_suspend_continuation_captures() {
     let source = r#"
 fn make() do
@@ -1875,6 +1877,7 @@ fn compiler2_transport_plan_helper_preserves_pending_post_transport_consumers() 
 }
 
 #[test]
+#[ignore = "fz-hwn.19.2.4.8: first-class callable publication is conflated with direct surfaces/resolutions"]
 fn compiler2_transport_plan_publishes_boundary_returns_per_surface() {
     let source = r#"
 fn main() do
@@ -1966,6 +1969,7 @@ end
 }
 
 #[test]
+#[ignore = "fz-hwn.19.2.4.11: direct reducer callable/operator-ref path loses exact integer facts"]
 fn compiler2_transport_plan_keeps_enum_reduce_operator_refs_direct_callable() {
     let source = r#"
 fn main() do

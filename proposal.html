@@ -577,6 +577,11 @@ metadata:
     <tr><td class="term"><code>fz-hwn.19.2.4.4</code></td><td>Re-enable <code>compiler2_interp_runs_resource_dtors_from_backend_runtime_intrinsics</code> by fixing the proven transport/artifact seam violation; no downstream recomputation or adapter.</td></tr>
     <tr><td class="term"><code>fz-hwn.19.2.4.5</code></td><td>Re-enable <code>compiler2_native_program_resource_fixture_shapes_callable_boundaries_explicitly</code> by fixing the proven transport/artifact seam violation; no downstream recomputation or adapter.</td></tr>
     <tr><td class="term"><code>fz-hwn.19.2.4.6</code></td><td>Re-enable <code>compiler2_run_root_jit_executes_resources_without_legacy_prepare</code> by fixing the proven transport/artifact seam violation; no downstream recomputation or adapter.</td></tr>
+    <tr><td class="term"><code>fz-hwn.19.2.4.7</code></td><td>Keep unused callable constructors out of the native frontier: omitted callable inputs publish no boundary and do not lower unused callable bodies.</td></tr>
+    <tr><td class="term"><code>fz-hwn.19.2.4.8</code></td><td>Separate first-class callable publication from direct surfaces so runtime demand, transport boundaries, and ABI-ready entries agree without de-dup adapters.</td></tr>
+    <tr><td class="term"><code>fz-hwn.19.2.4.9</code></td><td>Close suspend continuation callable frontiers before transport consumes the returned continuation shape.</td></tr>
+    <tr><td class="term"><code>fz-hwn.19.2.4.10</code></td><td>Keep provider-boundary imports body-free: interface-only provider calls must not read lowered provider bodies.</td></tr>
+    <tr><td class="term"><code>fz-hwn.19.2.4.11</code></td><td>Preserve direct reducer callable integer facts for Enum.reduce operator refs and captured closure folds.</td></tr>
     <tr><td class="term"><code>fz-hwn.19.2.5</code></td><td>Delete remaining artifact transport authority and document the new boundary.</td></tr>
     <tr><td class="term"><code>fz-hwn.19.3</code></td><td>Make downstream callable materialization consume artifact <code>BoundaryId</code> inventory.</td></tr>
     <tr><td class="term"><code>fz-hwn.19.4</code></td><td>Collapse backend, interpreter, and native values to shape refs plus lane bundles.</td></tr>

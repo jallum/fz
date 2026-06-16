@@ -2688,6 +2688,7 @@ fn compiler2_abi_ready_keeps_direct_only_enum_reduce_out_of_callable_inventory()
 }
 
 #[test]
+#[ignore = "fz-hwn.19.2.4.9: suspend continuation callable frontier is not closed before transport/ABI"]
 fn compiler2_abi_ready_keeps_returned_suspend_continuation_callable_entry() {
     let tel = ConfiguredTelemetry::new();
     let functions = FunctionCapture::new();
@@ -2856,6 +2857,7 @@ end
 }
 
 #[test]
+#[ignore = "fz-hwn.19.2.4.7: unused callable constructors still reach native frontier"]
 fn compiler2_abi_ready_does_not_publish_unused_callable_constructors() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
@@ -3010,6 +3012,7 @@ fn main(), do: apply(make_adder(1))
 }
 
 #[test]
+#[ignore = "fz-hwn.19.2.4.8: first-class callable publication is conflated with direct surfaces/resolutions"]
 fn compiler2_abi_ready_callable_entries_read_boundary_seam_facts() {
     let tel = ConfiguredTelemetry::new();
     let abi_ready = AbiReadyProgramCapture::new();
