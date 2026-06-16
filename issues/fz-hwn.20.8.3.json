@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-16T03:42:18Z",
+  "description": "Replace runtime-demand latent executable discovery that reconstructs local callable targets from callable type/materialization with upstream callable-flow facts. The closure expansion should request canonical activation keys from proven producer target/capture/surface facts, not from callable_value_clauses plus template fallback unless the callable is truly opaque external evidence. Tests must cover escaped lambdas, opaque callable arguments, Enumerable suspend reducers, and direct-only reducers. Remove or narrow the type-derived path so a compiler-owned local callable cannot mint an executable from type-only evidence.",
+  "id": "fz-hwn.20.8.3",
+  "labels": [],
+  "parent": "fz-hwn.20.8",
+  "priority": 1,
+  "status": "open",
+  "title": "Transport authority: derive latent callable executables from callable-flow facts",
+  "type": "task",
+  "updated_at": "2026-06-16T03:42:18Z"
+}
