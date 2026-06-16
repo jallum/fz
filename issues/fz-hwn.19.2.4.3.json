@@ -9,9 +9,15 @@
   "id": "fz-hwn.19.2.4.3",
   "labels": [],
   "parent": "fz-hwn.19.2.4",
+  "comments": [
+    {
+      "text": "Root-cause localized (not yet fixed). Symptom: run_root_jit on fixtures2/behavior/multi_relay.fz aborts in fz_closure_get_capture_ref: a continuation closure pointer is resumed with self carrying tag 0xD (TAG_KIND_INT) instead of 0x4 (CLOSURE) — a ValueRef/closure traveling a RawInt seam.\n\nMinimal repro (/tmp/mr2.fz style): two spawned tasks each `send(1, receive do x -\u003e x*2 end)` + main does two sequential receives feeding two sequential calls (dbg(a); dbg(b)). One worker passes; two is the minimal trigger because main needs a continuation chain with two sequential calls. The return-continuation closure between dbg(a) and dbg(b) is the corrupted self.\n\nConfirmed NOT GC (reproduces with gc_threshold_bytes forced to usize::MAX). So it is a static repr seam-fact mismatch, not a rooting bug. Tools used: fz2 --dump native/backend, fz2 --log-telemetry, plus targeted eprintln in exec/runtime.rs, sched.rs, ir_runtime.rs (all reverted).\n\nTrace map: main 2nd-receive outcome = [outer_cont, b(bound), a(capture)] builds resume_B=dbg(a);dbg(b); dbg(a) prints 20 then the next continuation self = 0x_d_00000... (heap closure addr, INT tag).\n\nNext step: --dump clif for the resume bodies to find the instruction that reads/stores a closure-carrying slot with a RawInt (closure_get_capture_i64 / push_binding_as_abi_arg RawInt) instead of ValueRef; the repr is being locally derived where the proven transport callable-lane fact says ValueRef. Likely in entry_signature/param_reprs or continuation tail-delivery repr selection (terminator.rs emit_native_continuation_tail_delivery / native.rs entry_signature).",
+      "timestamp": "2026-06-16T21:00:45Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "Artifact seam: re-enable native multi-relay continuation ABI execution",
   "type": "task",
-  "updated_at": "2026-06-16T20:12:04Z"
+  "updated_at": "2026-06-16T21:00:45Z"
 }
