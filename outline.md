@@ -87,7 +87,7 @@ SemanticClosed(root) + settled RuntimeDemand
 The plan answers "what runtime structure moves at this seam?" exactly once.
 Backends answer "how do I emit this seam?" by reading facts from the plan.
 
-Implementation status after `fz-hwn.20.6`: `src/compiler2/transport.rs`
+Implementation status after `fz-hwn.20.8.9`: `src/compiler2/transport.rs`
 defines the root-independent ids, descriptors, transport symbols,
 `TransportPosition`, `TransportInterners`, and `TransportStore`. `World` owns one
 `TransportStore`. `DeriveTransportPlan(root)` now populates root-scoped
@@ -95,16 +95,22 @@ positions plus `CallableId` and `BoundaryId` fact tables from settled semantic
 evidence. Boundary contracts preserve callable leaves as one published value
 lane and preserve tuple returns as recursive boundary-return contracts, not flat
 lane lists. Boundary returns are published per surface, so one callable used at
-two surfaces has two contracts when those return transports differ. Callable
-capture shapes read settled callee input demand when a resolution exists;
-boundary demand is only the fallback for unresolved or opaque capture
-obligations. Capture lane facts preserve payload order and duplicate lanes.
-Direct-call surfaces and first-class boundary publication are independent facts,
-so one callable can have both. Generic callable descriptors include stable
-contract-surface key material, so opaque callable contracts with different
-observed surfaces cannot merge into one `CallableId`. Recursive callsite return
-sources are treated as recursive shape constraints, not as a reason to fall back
-to generic callable shape when non-recursive sources prove the identity.
+two surfaces has two contracts when those return transports differ. Local
+callable projection now requires upstream `CallableFlowFact` evidence for the
+producer, captures, direct surfaces, first-class surfaces, canonical
+resolutions, and capture demands; missing evidence is an invariant failure, not
+a transport-side type fallback. Generic opaque callable descriptors project
+surfaces carried by upstream `RuntimeDemand::Callable`; transport no longer
+recovers missing callable surfaces from type. Recursive resume positions read
+the upstream value demand for the delivered resume value instead of recomputing
+that demand from callsite summaries. Capture lane facts preserve payload order
+and duplicate lanes. Direct-call surfaces and first-class boundary publication
+are independent facts, so one callable can have both. Generic callable
+descriptors include stable contract-surface key material, so opaque callable
+contracts with different observed surfaces cannot merge into one `CallableId`.
+Recursive callsite return sources are treated as recursive shape constraints,
+not as a reason to fall back to generic callable shape when non-recursive
+sources prove the identity.
 Boundary publication facts only name real semantic positions; there is no
 synthetic boundary self-position. `DeriveTransportPlan(root)` is scheduled as a
 side-output of settled semantic closure and is also re-requested if the
@@ -540,6 +546,13 @@ surfaces come from settled callable demand, or from the producer's settled type
 when a callable escapes without an observed call surface. This keeps "body
 exists for first-class publication" distinct from "body is directly invoked at
 this surface" before transport runs.
+After `fz-hwn.20.8.9`, the local callable handoff is strict. Boundary
+return demand, callable capture demand, boundary return resolutions, resume
+payload demand, and generic callable surfaces are proven upstream. Transport
+projects those facts into descriptors and plan positions; if a local callable
+flow cannot name the required surface, resolution, or root context, that is an
+invariant failure rather than a request for transport to recover the missing
+information from type or callsite shape.
 
 Test builds install a `World`-level `TransportPlanTestHandler` that receives
 `&World` and the committed `RootId` after each plan definition. The default
