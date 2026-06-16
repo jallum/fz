@@ -1124,6 +1124,14 @@ fn main(), do: make_pairer()
 
     let plan = transport_plan(&world, root);
     let boundary = single_boundary_descr(&world, &plan);
+    let producer_function = world
+        .transport()
+        .interners()
+        .callable(boundary.callable)
+        .function
+        .unwrap_or_else(|| panic!("tuple-return boundary callable should name its local producer"));
+    let flow = upstream_callable_flow_for_producer(&world, root, producer_function);
+    assert_callable_facts_match_upstream_flow(&world, &plan, boundary.callable, &flow);
     let ShapeDescr::Tuple(items) = shape_descr(&world, boundary.published_return_shape) else {
         panic!(
             "a callable returning a tuple should publish the return ShapeId, got {:?}",

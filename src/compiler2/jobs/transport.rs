@@ -1470,7 +1470,6 @@ fn callable_for_producer(
             facts,
             upstream_flow,
             &capture_tys,
-            callable_ty,
             &boundary_surface_demands,
         );
         publish_boundaries_for_callable(
@@ -1720,7 +1719,6 @@ fn boundary_return_shapes_for_flow_surfaces(
     facts: &mut TransportFactsBuilder,
     flow: &CallableFlowFact,
     capture_tys: &[Ty],
-    callable_ty: Ty,
     surfaces: &BTreeSet<CallableSurface>,
 ) -> Vec<ShapeId> {
     surfaces
@@ -1735,13 +1733,11 @@ fn boundary_return_shapes_for_flow_surfaces(
                     resolution.activation.function == flow.function
                         && resolution.activation.input.as_slice() == inputs.as_slice()
                 })
-                .map(executable_symbol);
-            match resolution {
-                Some(resolution) => {
-                    boundary_return_shape_for_resolution(world, contexts, facts, &resolution, callable_ty, surface)
-                }
-                None => boundary_return_shape_for_surface(world, callable_ty, surface, facts),
-            }
+                .map(executable_symbol)
+                .unwrap_or_else(|| {
+                    panic!("upstream callable-flow surface has no matching executable resolution: {surface:?}")
+                });
+            boundary_return_shape_for_resolution(world, contexts, facts, &resolution)
         })
         .collect()
 }
@@ -1751,15 +1747,13 @@ fn boundary_return_shape_for_resolution(
     contexts: &HashMap<ExecutableKey, ExecutableContext>,
     facts: &mut TransportFactsBuilder,
     resolution: &ExecutableSymbol,
-    callable_ty: Ty,
-    surface: &CallableSurface,
 ) -> ShapeId {
     let Some((executable, context)) = contexts.iter().find(|(candidate, _)| {
         candidate.need == resolution.need
             && candidate.activation.function == resolution.activation.function
             && candidate.activation.input.as_slice() == resolution.activation.input.as_ref()
     }) else {
-        return boundary_return_shape_for_surface(world, callable_ty, surface, facts);
+        panic!("upstream callable-flow resolution is outside the transport root context: {resolution:?}");
     };
     let demand = context.runtime_demand.return_demand.clone();
     shape_for_source(
