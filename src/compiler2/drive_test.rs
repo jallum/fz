@@ -8,7 +8,7 @@ use crate::compiler2::{
     CallSiteKey, CallSiteSummary, CallTarget, CallableEntry, ControlEntryOrigin, EmissionReadyProgram, ExecutableKey,
     FactKey, FactUse, FunctionId, FunctionRef, LoweredBody, LoweredStep, LoweredTail, MaterializedProgram, ModuleId,
     ModuleState, QuotedSourceHeap, QuotedSourceMetadata, SelectedCallee, SemanticClosure, Ty, TypeName, TypeVarId,
-    Types, ValueId, parse_quoted_program,
+    Types, ValueId, World, parse_quoted_program,
 };
 use crate::diag::codes;
 use crate::dispatch_matrix::Region;
@@ -570,9 +570,11 @@ fn compiler2_nested_defimpl_resolves_protocol_and_target_through_namespace() {
         "top-level scoping should bind nested definition macros before root demand",
     );
 
-    let _root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
-    assert_resolved(
-        world.drive(),
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    drive_until_fact(
+        &mut world,
+        FactKey::SemanticClosed(root),
+        Job::SealSemanticClosure(root),
         "main should settle when nested defimpl resolves against the declared protocol identity",
     );
 
@@ -2698,10 +2700,10 @@ fn compiler2_abi_ready_keeps_returned_suspend_continuation_callable_entry() {
         abi_ready.handler(),
     );
 
-    let mut compiler = Compiler2::new(&tel);
-    compiler.submit_code(CodeSubmission {
-        name: Some("fixtures/enum_reduce_suspend_callable_frontier.fz".to_string()),
-        text: r#"
+    let mut world = World::new(&tel);
+    world.submit_code(
+        Some("fixtures/enum_reduce_suspend_callable_frontier.fz".to_string()),
+        r#"
 fn make() do
   fn () ->
     Enumerable.reduce([1, 2, 3], {:suspend, 0}, fn (x, acc) -> {:cont, acc + x} end)
@@ -2711,16 +2713,13 @@ end
 fn main(), do: make()
 "#
         .to_string(),
-    });
-    let root_id = compiler.submit_root(RootSubmission {
-        module_name: None,
-        name: "main".to_string(),
-        arity: 0,
-        need: ExecutableNeed::Value,
-    });
+    );
+    let root_id = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
 
-    assert_resolved(
-        compiler.drive(),
+    drive_until_fact(
+        &mut world,
+        FactKey::AbiReadyProgram(root_id),
+        Job::DeriveAbiReady(root_id),
         "returned suspend continuations should be closed before ABI-ready callable inventory is derived",
     );
 
@@ -10994,6 +10993,49 @@ fn expr_has_binary_nested_input(expr: &PatternGuardExpr<Ty>) -> bool {
 
 pub(crate) fn assert_resolved(outcome: DriveOutcome<Job, FactKey>, message: &str) {
     assert!(matches!(outcome, DriveOutcome::Resolved), "{message}: {outcome:?}");
+}
+
+fn drive_until_fact(world: &mut World<'_>, fact: FactKey, demand: Job, message: &str) {
+    world.demand(demand);
+    let mut ran = 0;
+    let mut deferred = Vec::new();
+    while !world.fact_is_settled(&fact) && ran < 10_000 {
+        let Some(job) = world.work_graph.pop() else {
+            break;
+        };
+        if is_after_fact_consumer(&job, &fact) {
+            deferred.push(job);
+            continue;
+        }
+        let effects =
+            super::jobs::run(world, &job).unwrap_or_else(|_| panic!("{message}; prerequisite job failed: {job:?}"));
+        world.complete_job(job, effects);
+        ran += 1;
+    }
+    for job in deferred {
+        world.demand(job);
+    }
+    assert!(
+        world.fact_is_settled(&fact),
+        "{message}; fact {fact:?} was not settled after {ran} prerequisite jobs; pending={}; unresolved={:?}",
+        world.work_graph.pending_jobs(),
+        world.work_graph.unresolved()
+    );
+}
+
+fn is_after_fact_consumer(job: &Job, fact: &FactKey) -> bool {
+    matches!(
+        (job, fact),
+        (Job::DeriveEmissionReady(candidate), FactKey::AbiReadyProgram(root))
+            | (Job::LowerBackendProgram(candidate), FactKey::AbiReadyProgram(root))
+            | (Job::LowerNativeProgram(candidate), FactKey::AbiReadyProgram(root))
+            | (Job::MaterializeRoot(candidate), FactKey::SemanticClosed(root))
+            | (Job::DeriveAbiReady(candidate), FactKey::SemanticClosed(root))
+            | (Job::DeriveEmissionReady(candidate), FactKey::SemanticClosed(root))
+            | (Job::LowerBackendProgram(candidate), FactKey::SemanticClosed(root))
+            | (Job::LowerNativeProgram(candidate), FactKey::SemanticClosed(root))
+            if candidate == root
+    )
 }
 
 pub(crate) fn function_id(capture: &FunctionCapture, name: &str, arity: u64) -> FunctionId {

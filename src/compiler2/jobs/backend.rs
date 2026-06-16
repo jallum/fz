@@ -30,6 +30,8 @@ use super::super::scheduler::FatalError;
 use super::super::types::Ty;
 use super::super::world::World;
 
+const UNREACHABLE_CONTROL_ATOM: &str = "compiler2_unreachable_control";
+
 /// Lowers one emission-ready closed root into the shared backend handoff.
 ///
 /// The backend artifact consumes only `EmissionReadyProgram(root)` plus the
@@ -435,6 +437,9 @@ fn lower_entry_origin(
     entry_index: usize,
     entry: &LoweredEntry,
 ) -> BackendEntryOrigin {
+    if matches!(&entry.tail, LoweredTail::Halt { atom } if atom == UNREACHABLE_CONTROL_ATOM) {
+        return BackendEntryOrigin::Branch;
+    }
     let entry_id = original_entry_id(executable, entry_index);
     match entry.origin {
         ControlEntryOrigin::Clause => BackendEntryOrigin::Clause,

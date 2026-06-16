@@ -287,27 +287,22 @@ fn compiler2_semantic_analysis_does_not_reach_continuation_after_never_return() 
     let callsites = CallsiteCapture::new();
     tel.attach(&["fz", "compiler2", "callsite", "defined"], callsites.handler());
 
-    let mut compiler = Compiler2::new(&tel);
-    compiler.set_drive_timeout(Duration::from_millis(100));
-    compiler.submit_code(CodeSubmission {
-        name: Some("never_continuation.fz".to_string()),
-        text: r#"
+    let mut world = World::new(&tel);
+    world.submit_code(
+        Some("never_continuation.fz".to_string()),
+        r#"
 fn main() do
   panic("stop")
   |> dbg()
 end
 "#
         .to_string(),
-    });
-    let root_id = compiler.submit_root(RootSubmission {
-        module_name: None,
-        name: "main".to_string(),
-        arity: 0,
-        need: ExecutableNeed::Value,
-    });
+    );
+    let root_id = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
 
-    assert_resolved(
-        compiler.drive(),
+    drive_until_semantic_closure(
+        &mut world,
+        root_id,
         "a never-returning call should not keep its pipe continuation semantically live",
     );
 
@@ -540,18 +535,13 @@ fn compiler2_runtime_demand_makes_opaque_callable_use_explicit() {
         runtime_demands.handler(),
     );
 
-    let mut compiler = Compiler2::new(&tel);
-    compiler.submit_code(CodeSubmission {
-        name: Some("opaque_callable_use.fz".to_string()),
-        text: "fn main(f), do: f.(1)\n".to_string(),
-    });
-    let root_id = compiler.submit_root(RootSubmission {
-        module_name: None,
-        name: "main".to_string(),
-        arity: 1,
-        need: ExecutableNeed::Value,
-    });
-    assert_resolved(compiler.drive(), "opaque callable use should settle");
+    let mut world = World::new(&tel);
+    world.submit_code(
+        Some("opaque_callable_use.fz".to_string()),
+        "fn main(f), do: f.(1)\n".to_string(),
+    );
+    let root_id = world.submit_root(None, "main".to_string(), 1, ExecutableNeed::Value);
+    drive_until_semantic_closure(&mut world, root_id, "opaque callable use should settle");
 
     let main = functions.id("main", 1);
     let record = runtime_demands.last(root_id);
@@ -582,25 +572,21 @@ fn compiler2_runtime_demand_marks_callable_arguments_to_opaque_calls_first_class
         runtime_demands.handler(),
     );
 
-    let mut compiler = Compiler2::new(&tel);
-    compiler.submit_code(CodeSubmission {
-        name: Some("opaque_call_callable_argument.fz".to_string()),
-        text: r#"
+    let mut world = World::new(&tel);
+    world.submit_code(
+        Some("opaque_call_callable_argument.fz".to_string()),
+        r#"
 fn main(f) do
   g = fn (x) -> x + 1 end
   f.(g)
 end
 "#
         .to_string(),
-    });
-    let root_id = compiler.submit_root(RootSubmission {
-        module_name: None,
-        name: "main".to_string(),
-        arity: 1,
-        need: ExecutableNeed::Value,
-    });
-    assert_resolved(
-        compiler.drive(),
+    );
+    let root_id = world.submit_root(None, "main".to_string(), 1, ExecutableNeed::Value);
+    drive_until_semantic_closure(
+        &mut world,
+        root_id,
         "callable argument passed to an opaque closure call should settle",
     );
 

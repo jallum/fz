@@ -425,25 +425,35 @@ pub(super) fn derive_transport_plan(world: &mut World<'_>, root_id: RootId) -> R
             );
         }
 
-        let mut call_args = context.runtime_demand.call_arg_demands.iter().collect::<Vec<_>>();
-        call_args.sort_by_key(|(callsite, _)| callsite.as_u32());
-        for (&callsite, demands) in call_args {
-            let args = context.callsite_args.get(&callsite).cloned().unwrap_or_default();
-            for (semantic_index, demand) in demands.iter().cloned().enumerate() {
+        let mut callsite_args = context.callsite_args.iter().collect::<Vec<_>>();
+        callsite_args.sort_by_key(|(callsite, _)| callsite.as_u32());
+        for (&callsite, args) in callsite_args {
+            for (semantic_index, arg) in args.iter().enumerate() {
                 let position = TransportPosition::CallArg {
                     executable: symbol.clone(),
                     callsite,
                     semantic_index,
                 };
-                if let Some(arg) = args.get(semantic_index) {
-                    shape_graph.equal(
-                        position,
-                        TransportPosition::Value {
-                            executable: symbol.clone(),
-                            value: arg.value,
-                        },
-                    );
-                } else {
+                shape_graph.equal(
+                    position,
+                    TransportPosition::Value {
+                        executable: symbol.clone(),
+                        value: arg.value,
+                    },
+                );
+            }
+        }
+        let mut demanded_call_args = context.runtime_demand.call_arg_demands.iter().collect::<Vec<_>>();
+        demanded_call_args.sort_by_key(|(callsite, _)| callsite.as_u32());
+        for (&callsite, demands) in demanded_call_args {
+            let actual_arity = context.callsite_args.get(&callsite).map_or(0, Vec::len);
+            for (semantic_index, demand) in demands.iter().cloned().enumerate() {
+                if semantic_index >= actual_arity {
+                    let position = TransportPosition::CallArg {
+                        executable: symbol.clone(),
+                        callsite,
+                        semantic_index,
+                    };
                     let ty = world.types_mut().any();
                     let shape = generic_shape_from_demand(world, ty, &demand, &mut facts, Some(position.clone()));
                     shape_graph.anchor(position, shape);
@@ -501,9 +511,17 @@ pub(super) fn derive_transport_plan(world: &mut World<'_>, root_id: RootId) -> R
         }
     }
 
-    seed_callable_resolution_capture_inputs(world, &facts, &mut shape_graph);
-    collect_executable_input_constraints(world, &contexts, &mut facts, &executables, &mut shape_graph);
     collect_clause_parameter_equalities(&contexts, &executables, &mut shape_graph);
+    seed_callable_resolution_capture_inputs(world, &facts, &mut shape_graph);
+    let local_shapes = shape_graph.clone().solve();
+    collect_executable_input_constraints(
+        world,
+        &contexts,
+        &mut facts,
+        &executables,
+        &local_shapes,
+        &mut shape_graph,
+    );
     let positions = shape_graph.solve();
 
     let (callables, boundaries) = facts.finish();
@@ -559,6 +577,7 @@ fn collect_executable_input_constraints(
     contexts: &HashMap<ExecutableKey, ExecutableContext>,
     facts: &mut TransportFactsBuilder,
     executables: &[ExecutableKey],
+    local_shapes: &HashMap<TransportPosition, ShapeId>,
     shape_graph: &mut ShapeConstraintGraph,
 ) {
     for executable in executables {
@@ -578,8 +597,24 @@ fn collect_executable_input_constraints(
                 semantic_index,
             };
             if let Some(incoming) = incoming_executable_input_positions(world, contexts, executable, semantic_index) {
-                for call_arg in incoming {
-                    shape_graph.equal(position.clone(), call_arg);
+                let incoming_shapes = incoming
+                    .iter()
+                    .map(|call_arg| local_shapes.get(call_arg).copied())
+                    .collect::<Option<Vec<_>>>();
+                if let Some(incoming_shapes) = incoming_shapes {
+                    let first = incoming_shapes.first().copied();
+                    if first.is_some() && incoming_shapes.iter().all(|shape| Some(*shape) == first) {
+                        for call_arg in incoming {
+                            shape_graph.equal(position.clone(), call_arg);
+                        }
+                    } else if !shape_graph.has_anchor(&position) {
+                        let shape = shape_for_executable_input(world, ty, &demand, facts, Some(position.clone()));
+                        shape_graph.anchor(position, shape);
+                    }
+                } else {
+                    for call_arg in incoming {
+                        shape_graph.equal(position.clone(), call_arg);
+                    }
                 }
             } else if !shape_graph.has_anchor(&position) {
                 let shape = shape_for_executable_input(world, ty, &demand, facts, Some(position.clone()));
@@ -760,7 +795,6 @@ fn derive_codegen_seam_facts(
         }
     }
     out.sort_by_key(codegen_seam_fact_sort_key);
-    out.dedup();
     out.into_boxed_slice()
 }
 
