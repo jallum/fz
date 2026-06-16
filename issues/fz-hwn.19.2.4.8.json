@@ -4,14 +4,15 @@
   "blocks": [
     "fz-hwn.19.3"
   ],
+  "closed_at": "2026-06-16T22:32:11Z",
   "created": "2026-06-16T20:14:34Z",
   "description": "Covers the red tests compiler2_runtime_demand_marks_an_escaped_callable_first_class, compiler2_runtime_demand_marks_callable_arguments_to_opaque_calls_first_class, compiler2_transport_plan_publishes_boundary_returns_per_surface, and compiler2_abi_ready_callable_entries_read_boundary_seam_facts. Likely root cause: runtime demand/transport is conflating direct call surfaces, first-class publication surfaces, and canonical resolutions, causing escaped callables to retain direct surfaces and ABI-ready inventory to duplicate boundary entries across resolutions/surfaces. Fix the single upstream model so first-class publication facts are distinct from direct-use facts and ABI reads the resulting BoundaryId facts exactly once. No downstream de-dup adapter or type-derived boundary selection.",
   "id": "fz-hwn.19.2.4.8",
   "labels": [],
   "parent": "fz-hwn.19.2.4",
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "Artifact seam: separate first-class callable publication from direct surfaces",
   "type": "bug",
-  "updated_at": "2026-06-16T20:14:42Z"
+  "updated_at": "2026-06-16T22:32:11Z"
 }
