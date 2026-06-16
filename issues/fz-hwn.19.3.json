@@ -2,7 +2,8 @@
   "assignee": "",
   "blocked_by": [
     "fz-hwn.19.2",
-    "fz-hwn.19.2.4.1"
+    "fz-hwn.19.2.4.1",
+    "fz-hwn.19.2.4.2"
   ],
   "blocks": [
     "fz-hwn.19.4"
