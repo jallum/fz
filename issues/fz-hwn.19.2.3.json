@@ -6,14 +6,16 @@
   "blocks": [
     "fz-hwn.19.2.4"
   ],
+  "closed_at": "2026-06-16T11:08:10Z",
+  "close_reason": "Landed a647f77e0. AbiReady param reprs and CallableEntry inventory now read TransportPlan/CodegenSeamFact/BoundaryId facts instead of layout-derived ABI reprs, semantic_input probing, runtime_demand.callable_flows authority, or trash_boundary_return_abi. Added worked examples for callable boundary seam reprs and tuple boundary return lanes; kept the remaining LocalCallableId/CallableWitness/derive_runtime_transports compatibility solver as the explicit fz-hwn.19.2.4 atomic deletion target. Verified compiler2_abi_ready tests, transport_contract_test, cargo check --all-targets, and pre-commit fmt/check/clippy.",
   "created": "2026-06-16T05:15:00Z",
   "description": "Goal\nMake AbiReadyProgram's ABI lane facts and CallableEntry inventory consume TransportPlan facts instead of deriving those outputs from recursive layouts, local types, or runtime_demand.callable_flows.\n\nRequired change\nbuild_executable_abi_plan reads function-entry CodegenSeamFact rows in ShapeId leaf order for artifact-owned param_reprs and clause-param value reprs. CallableEntry inventory is projected from TransportPlan CallableId and BoundaryId facts: target identity, capture lanes, direct surfaces, first-class publication surfaces, boundary argument lanes, and published return contracts come from the plan. Artifact may preserve stable inventory order, but it may not select which callable surfaces exist.\n\nDeletion in this ticket\nRemove layout-derived param_reprs, semantic_input layout probing, type-derived capture_reprs/arg_reprs for callable entries, derive_callable_entries walking runtime_demand.callable_flows as authority, and trash_boundary_return_abi. Return ABI for a published callable boundary is projected from BoundaryId's published return shape and callable-boundary seam facts. Internal executable return transport remains ShapeId plus divergence bit; ReturnAbi remains only as the downstream boundary enum until later cutover.\n\nDiscovered dependency\nThe LocalCallableId / CallableWitness / derive_runtime_transports solver cannot be deleted in this ticket without also deleting the downstream TrashRuntime* payload fields consumed by EmissionReady, BackendProgram, and NativeProgram. That is the fz-hwn.19.2.4 atomic step. Do not close fz-hwn.19.2.4 while this solver remains.\n\nTests\nWorked examples assert AbiReadyProgram/CallableEntry facts match TransportPlan rows: direct-only callable producers publish no entry; escaped callable entries use ValueRef callable-boundary seam facts rather than raw type-derived reprs; tuple callable returns preserve the BoundaryId tuple return lane contract while boundary lanes flatten only at the boundary contract.\n\nChecks\nTargeted ABI-ready tests; transport_contract_test; cargo check --all-targets. rg must confirm trash_boundary_return_abi, runtime_params.abi_reprs(), semantic_input() layout probing, runtime_demand.callable_flows-based callable entry selection, and type-derived callable entry repr calculation are absent from artifact jobs. rg may still find LocalCallableId/CallableWitness/derive_runtime_transports only as the fz-hwn.19.2.4 downstream TrashRuntime* removal target.",
   "id": "fz-hwn.19.2.3",
   "labels": [],
   "parent": "fz-hwn.19.2",
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Artifact seam: derive ABI and callable inventory from transport facts",
   "type": "task",
-  "updated_at": "2026-06-16T11:00:48Z"
+  "updated_at": "2026-06-16T11:08:10Z"
 }
