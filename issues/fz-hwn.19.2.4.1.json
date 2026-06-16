@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-hwn.19.3"
+  ],
   "created": "2026-06-16T20:11:40Z",
   "description": "Re-enable compiler2_interp_runs_spawned_children_from_backend_runtime_intrinsics. Use the output-contract loop: first remove the ignore, run the test, identify the exact transport/artifact seam fact that is missing or mis-carried, then fix that seam. Do not add downstream recomputation, fallback layout derivation, compatibility adapters, copied interner tables, or old Trash* authority. The backend interpreter must consume the transport-backed artifact handoff facts already produced upstream.",
   "id": "fz-hwn.19.2.4.1",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Artifact seam: re-enable backend interp spawned-child intrinsic execution",
   "type": "task",
-  "updated_at": "2026-06-16T20:11:40Z"
+  "updated_at": "2026-06-16T20:12:04Z"
 }

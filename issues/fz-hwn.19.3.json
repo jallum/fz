@@ -1,7 +1,8 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-hwn.19.2"
+    "fz-hwn.19.2",
+    "fz-hwn.19.2.4.1"
   ],
   "blocks": [
     "fz-hwn.19.4"
@@ -15,5 +16,5 @@
   "status": "open",
   "title": "Transport cutover: make downstream callable materialization consume artifact BoundaryId inventory",
   "type": "task",
-  "updated_at": "2026-06-16T05:17:49Z"
+  "updated_at": "2026-06-16T20:12:04Z"
 }
