@@ -428,25 +428,14 @@ pub(super) fn derive_transport_plan(world: &mut World<'_>, root_id: RootId) -> R
         }
     }
 
-    for executable in &executables {
-        let symbol = executable_symbol(executable);
-        let context = contexts
-            .get(executable)
-            .expect("transport derivation requires one context per settled executable");
-        for (semantic_index, ty) in executable.activation.input.iter().copied().enumerate() {
-            let demand = context
-                .runtime_demand
-                .input_demands
-                .get(semantic_index)
-                .cloned()
-                .unwrap_or_default();
-            let position = TransportPosition::ExecutableInput {
-                executable: symbol.clone(),
-                semantic_index,
-            };
-            let shape = incoming_executable_input_shape(world, &contexts, &positions, executable, semantic_index)
-                .unwrap_or_else(|| shape_for_executable_input(world, ty, &demand, &mut facts, Some(position.clone())));
-            positions.insert(position, shape);
+    let max_shape_passes = executables.len().saturating_mul(2).max(4);
+    for _ in 0..max_shape_passes {
+        let changed = seed_callable_resolution_capture_inputs(world, &facts, &mut positions)
+            | propagate_executable_inputs(world, &contexts, &mut facts, &executables, &mut positions)
+            | propagate_clause_parameter_values(&contexts, &executables, &mut positions)
+            | propagate_call_arg_values(world, &contexts, &mut facts, &executables, &mut positions);
+        if !changed {
+            break;
         }
     }
 
@@ -471,6 +460,172 @@ pub(super) fn derive_transport_plan(world: &mut World<'_>, root_id: RootId) -> R
         changed: changed.then_some(FactKey::TransportPlan(root_id)).into_iter().collect(),
         ..JobEffects::default()
     })
+}
+
+fn seed_callable_resolution_capture_inputs(
+    world: &World<'_>,
+    facts: &TransportFactsBuilder,
+    positions: &mut HashMap<TransportPosition, ShapeId>,
+) -> bool {
+    let mut changed = false;
+    for (callable, draft) in &facts.callables {
+        let descr = world.transport().interners().callable(*callable);
+        for resolution in &draft.resolutions {
+            assert!(
+                resolution.activation.input.len() >= descr.capture_shapes.len(),
+                "upstream callable-flow resolution is missing capture-prefix inputs: {resolution:?}"
+            );
+            for (semantic_index, shape) in descr.capture_shapes.iter().copied().enumerate() {
+                changed |= insert_position_shape(
+                    positions,
+                    TransportPosition::ExecutableInput {
+                        executable: resolution.clone(),
+                        semantic_index,
+                    },
+                    shape,
+                );
+            }
+        }
+    }
+    changed
+}
+
+fn propagate_executable_inputs(
+    world: &mut World<'_>,
+    contexts: &HashMap<ExecutableKey, ExecutableContext>,
+    facts: &mut TransportFactsBuilder,
+    executables: &[ExecutableKey],
+    positions: &mut HashMap<TransportPosition, ShapeId>,
+) -> bool {
+    let mut changed = false;
+    for executable in executables {
+        let symbol = executable_symbol(executable);
+        let context = contexts
+            .get(executable)
+            .expect("transport derivation requires one context per settled executable");
+        for (semantic_index, ty) in executable.activation.input.iter().copied().enumerate() {
+            let demand = context
+                .runtime_demand
+                .input_demands
+                .get(semantic_index)
+                .cloned()
+                .unwrap_or_default();
+            let position = TransportPosition::ExecutableInput {
+                executable: symbol.clone(),
+                semantic_index,
+            };
+            let shape = incoming_executable_input_shape(world, contexts, positions, executable, semantic_index)
+                .or_else(|| positions.get(&position).copied())
+                .unwrap_or_else(|| shape_for_executable_input(world, ty, &demand, facts, Some(position.clone())));
+            changed |= insert_position_shape(positions, position, shape);
+        }
+    }
+    changed
+}
+
+fn propagate_clause_parameter_values(
+    contexts: &HashMap<ExecutableKey, ExecutableContext>,
+    executables: &[ExecutableKey],
+    positions: &mut HashMap<TransportPosition, ShapeId>,
+) -> bool {
+    let mut changed = false;
+    for executable in executables {
+        let symbol = executable_symbol(executable);
+        let context = contexts
+            .get(executable)
+            .expect("transport derivation requires one context per settled executable");
+        let LoweredBody::Clauses { clauses, .. } = &context.body else {
+            continue;
+        };
+        for clause in clauses {
+            for (semantic_index, value) in clause.params.iter().copied().enumerate() {
+                let input_position = TransportPosition::ExecutableInput {
+                    executable: symbol.clone(),
+                    semantic_index,
+                };
+                let Some(shape) = positions.get(&input_position).copied() else {
+                    continue;
+                };
+                changed |= insert_position_shape(
+                    positions,
+                    TransportPosition::Value {
+                        executable: symbol.clone(),
+                        value,
+                    },
+                    shape,
+                );
+            }
+        }
+    }
+    changed
+}
+
+fn propagate_call_arg_values(
+    world: &mut World<'_>,
+    contexts: &HashMap<ExecutableKey, ExecutableContext>,
+    facts: &mut TransportFactsBuilder,
+    executables: &[ExecutableKey],
+    positions: &mut HashMap<TransportPosition, ShapeId>,
+) -> bool {
+    let mut changed = false;
+    for executable in executables {
+        let symbol = executable_symbol(executable);
+        let context = contexts
+            .get(executable)
+            .expect("transport derivation requires one context per settled executable");
+        let mut call_args = context.runtime_demand.call_arg_demands.iter().collect::<Vec<_>>();
+        call_args.sort_by_key(|(callsite, _)| callsite.as_u32());
+        for (&callsite, demands) in call_args {
+            let args = context.callsite_args.get(&callsite).cloned().unwrap_or_default();
+            for (semantic_index, demand) in demands.iter().cloned().enumerate() {
+                let ty = args
+                    .get(semantic_index)
+                    .and_then(|arg| context.analysis.value_types.get(&arg.value).copied())
+                    .unwrap_or_else(|| world.types_mut().any());
+                let position = TransportPosition::CallArg {
+                    executable: symbol.clone(),
+                    callsite,
+                    semantic_index,
+                };
+                let shape = args
+                    .get(semantic_index)
+                    .map(|arg| {
+                        let value_position = TransportPosition::Value {
+                            executable: symbol.clone(),
+                            value: arg.value,
+                        };
+                        positions.get(&value_position).copied().unwrap_or_else(|| {
+                            shape_for_local_value(
+                                world,
+                                contexts,
+                                facts,
+                                executable,
+                                context,
+                                arg.value,
+                                ty,
+                                &demand,
+                                Some(position.clone()),
+                            )
+                        })
+                    })
+                    .unwrap_or_else(|| generic_shape_from_demand(world, ty, &demand, facts, Some(position.clone())));
+                changed |= insert_position_shape(positions, position, shape);
+            }
+        }
+    }
+    changed
+}
+
+fn insert_position_shape(
+    positions: &mut HashMap<TransportPosition, ShapeId>,
+    position: TransportPosition,
+    shape: ShapeId,
+) -> bool {
+    if positions.get(&position).copied() == Some(shape) {
+        return false;
+    }
+    positions.insert(position, shape);
+    true
 }
 
 fn derive_codegen_seam_facts(
@@ -1113,6 +1268,9 @@ fn incoming_executable_input_shape(
 ) -> Option<ShapeId> {
     let mut shapes = Vec::new();
     for (caller, context) in contexts {
+        if caller == executable {
+            continue;
+        }
         for (callsite, args) in &context.callsite_args {
             let key = CallSiteKey {
                 activation: caller.activation.clone(),

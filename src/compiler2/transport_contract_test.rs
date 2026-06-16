@@ -8,7 +8,7 @@ use super::transport::{
     BoundaryDescr, CodegenLaneRepr, CodegenSeam, LaneId, ShapeDescr, ShapeId, TransportPlan, TransportPosition,
 };
 use super::types::Ty;
-use super::{DriveOutcome, ExecutableNeed, RuntimeDemand, World};
+use super::{DriveOutcome, ExecutableNeed, LoweredBody, RuntimeDemand, World};
 use crate::telemetry::{Capture, ConfiguredTelemetry, Value};
 
 const EVENT_NAME: &[&str] = &["fz", "compiler2", "transport_flow", "defined"];
@@ -1130,7 +1130,11 @@ fn compiler2_transport_plan_requires_a_boundary_for_an_opaque_callable_input() {
         source.to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 1, ExecutableNeed::Value);
-    assert_resolved(world.drive_for(None), "opaque callable input fixture should settle");
+    drive_until_transport_plan(
+        &mut world,
+        root,
+        "opaque callable input fixture should produce a transport plan",
+    );
 
     let plan = transport_plan(&world, root);
     let main = executable_for(&world, &plan, "main", 1);
@@ -1173,7 +1177,11 @@ end
         source.to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 2, ExecutableNeed::Value);
-    assert_resolved(world.drive_for(None), "distinct opaque-callable fixture should settle");
+    drive_until_transport_plan(
+        &mut world,
+        root,
+        "distinct opaque-callable fixture should produce a transport plan",
+    );
 
     let plan = transport_plan(&world, root);
     let main = executable_for(&world, &plan, "main", 2);
@@ -1219,7 +1227,11 @@ fn main(), do: {make1(1), make2(1, 2)}
         source.to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::TupleFields(2));
-    assert_resolved(world.drive_for(None), "same-surface callable fixture should settle");
+    drive_until_transport_plan(
+        &mut world,
+        root,
+        "same-surface callable fixture should produce a transport plan",
+    );
 
     let plan = transport_plan(&world, root);
     let main = executable_for(&world, &plan, "main", 0);
@@ -1471,8 +1483,8 @@ fn main(), do: make()
     );
     assert_eq!(
         continuation_boundary.published_capture_lanes.len(),
-        3,
-        "the continuation boundary should publish list, accumulator, and reducer capture lanes"
+        2,
+        "the continuation boundary publishes only runtime payload lanes: list and accumulator carry lanes, while the reducer callable identity remains in the capture ShapeId"
     );
     assert_no_unreachable_callable_facts(&world, &plan);
 }
@@ -2040,14 +2052,30 @@ end
         let ShapeDescr::Callable(captured) = shape_descr(&world, *capture_shape) else {
             return None;
         };
-        (!facts.direct_surfaces.is_empty() && facts.capture_lanes.len() == 1).then_some(*captured)
+        (!facts.direct_surfaces.is_empty()).then_some((*captured, *capture_shape, facts.resolutions.clone()))
     });
-    let captured_callable =
+    let (captured_callable, captured_shape, reducer_resolutions) =
         captured_callable.unwrap_or_else(|| panic!("the reducer lambda should capture predicate as a callable shape"));
+    for resolution in reducer_resolutions {
+        let position = TransportPosition::ExecutableInput {
+            executable: resolution,
+            semantic_index: 0,
+        };
+        assert_eq!(
+            plan.positions.get(&position).copied(),
+            Some(captured_shape),
+            "the reducer executable capture-prefix input should read the producer capture ShapeId from callable-flow resolution evidence"
+        );
+    }
     let captured_facts = plan
         .callables
         .get(&captured_callable)
         .unwrap_or_else(|| panic!("captured predicate callable facts should be present"));
+    let captured_descr = world.transport().interners().callable(captured_callable);
+    assert!(
+        captured_descr.capture_lanes.is_empty(),
+        "the captured predicate is zero-capture, so the reducer carries its callable identity without payload lanes"
+    );
     assert!(
         captured_facts.direct_surfaces.iter().any(|surface| surface.len() == 1),
         "the captured predicate should retain its direct one-argument callable surface"
@@ -2056,6 +2084,135 @@ end
         captured_facts.boundary_ids.is_empty(),
         "a predicate captured for direct reducer use should not be upgraded to a first-class boundary"
     );
+}
+
+#[test]
+fn compiler2_transport_plan_publishes_direct_reducer_capture_prefix_shape() {
+    let source = r#"
+fn reduce_plain([], acc, _reducer), do: acc
+fn reduce_plain([head | tail], acc, reducer), do: reduce_plain(tail, reducer.(head, acc), reducer)
+
+fn main() do
+  predicate = fn x -> x > 2 end
+  reducer = fn (entry, acc) ->
+    if predicate.(entry), do: acc + 1, else: acc
+  end
+
+  reduce_plain([1, 2, 3, 4], 0, reducer)
+end
+"#;
+
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new(&tel);
+    world.submit_code(
+        Some("transport_direct_reducer_capture_prefix_shape.fz".to_string()),
+        source.to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    drive_until_transport_plan(
+        &mut world,
+        root,
+        "direct reducer callable-capture fixture should produce a transport plan",
+    );
+
+    let plan = transport_plan(&world, root);
+    let reducer = plan
+        .callables
+        .iter()
+        .find_map(|(callable, facts)| {
+            let descr = world.transport().interners().callable(*callable);
+            let [capture_shape] = descr.capture_shapes.as_ref() else {
+                return None;
+            };
+            let ShapeDescr::Callable(captured) = shape_descr(&world, *capture_shape) else {
+                return None;
+            };
+            let reducer_shape = plan.positions.values().copied().find(
+                |shape| matches!(shape_descr(&world, *shape), ShapeDescr::Callable(candidate) if candidate == callable),
+            )?;
+            (!facts.direct_surfaces.is_empty()).then_some((
+                reducer_shape,
+                *capture_shape,
+                *captured,
+                facts.resolutions.clone(),
+            ))
+        })
+        .unwrap_or_else(|| panic!("the direct reducer should capture the predicate as a callable shape"));
+    let (reducer_shape, predicate_shape, predicate_callable, reducer_resolutions) = reducer;
+    let reduce_plain_executables = plan
+        .executable_membership
+        .iter()
+        .filter(|symbol| function_is(&world, symbol.activation.function, "reduce_plain", 3))
+        .cloned()
+        .collect::<Vec<_>>();
+    assert!(
+        !reduce_plain_executables.is_empty(),
+        "the direct reducer fixture should reach reduce_plain/3"
+    );
+    for reduce_plain in reduce_plain_executables {
+        let reduce_plain_reducer_input = plan_shape_at(
+            &plan,
+            &TransportPosition::ExecutableInput {
+                executable: reduce_plain.clone(),
+                semantic_index: 2,
+            },
+        );
+        assert_eq!(
+            reduce_plain_reducer_input, reducer_shape,
+            "every reduce_plain/3 executable input for the direct reducer argument must share the producer callable ShapeId"
+        );
+        let reduce_plain_body = world.lowered_body(reduce_plain.activation.function);
+        let LoweredBody::Clauses { clauses, .. } = reduce_plain_body else {
+            panic!("reduce_plain/3 should lower to clauses");
+        };
+        for reducer_param in clauses.iter().filter_map(|clause| clause.params.get(2).copied()) {
+            assert_eq!(
+                plan.positions
+                    .get(&TransportPosition::Value {
+                        executable: reduce_plain.clone(),
+                        value: reducer_param,
+                    })
+                    .copied(),
+                Some(reducer_shape),
+                "reduce_plain/3 reducer parameter Value positions must share the executable input ShapeId"
+            );
+        }
+    }
+    let predicate_descr = world.transport().interners().callable(predicate_callable);
+    assert!(
+        predicate_descr.capture_lanes.is_empty(),
+        "the predicate lambda captures nothing, so the reducer capture-prefix input must carry no payload lanes"
+    );
+    for resolution in reducer_resolutions {
+        let body = world.lowered_body(resolution.activation.function);
+        let LoweredBody::Clauses { clauses, .. } = body else {
+            panic!("direct reducer resolution should lower to clauses");
+        };
+        let reducer_capture_param = clauses
+            .first()
+            .and_then(|clause| clause.params.first())
+            .copied()
+            .unwrap_or_else(|| panic!("direct reducer should bind its captured predicate as leading parameter"));
+        let position = TransportPosition::ExecutableInput {
+            executable: resolution.clone(),
+            semantic_index: 0,
+        };
+        assert_eq!(
+            plan.positions.get(&position).copied(),
+            Some(predicate_shape),
+            "the reducer executable capture-prefix input must use the exact predicate ShapeId produced by callable-flow capture evidence"
+        );
+        assert_eq!(
+            plan.positions
+                .get(&TransportPosition::Value {
+                    executable: resolution,
+                    value: reducer_capture_param,
+                })
+                .copied(),
+            Some(predicate_shape),
+            "the reducer capture parameter Value position must share the executable input ShapeId"
+        );
+    }
 }
 
 fn assert_resolved(outcome: DriveOutcome<super::Job, super::FactKey>, message: &str) {

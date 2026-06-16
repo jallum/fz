@@ -124,12 +124,16 @@ boxed leaves and raw integer/atom reprs for integer/atom leaves. Callable
 boundary and first-class publication lanes use `ValueRef`. Executable input
 positions read exact incoming call-arg shapes when the root has one proven
 incoming shape, so direct-callable parameters do not rebuild capture payloads
-downstream. Callable-shaped seams publish their descriptor-owned capture lanes as
-codegen seam facts. These facts are derived from `TransportPlan` positions and
-boundary contracts only; no native/codegen consumer reads them yet. The
-transport calculator reads `RuntimeDemand` plus semantic `callable_flows`, not
-the old callable-materialization inventory, and no old `Trash*` layout is
-translated into descriptors.
+downstream. Callable-flow capture facts seed the same root-scoped
+`TransportPosition -> ShapeId` map as every other seam: producer value, call
+argument, executable input, and clause parameter value positions converge on one
+`ShapeId`. There is no separate capture/input shape cache. Callable-shaped seams
+publish their descriptor-owned capture lanes as codegen seam facts. These facts
+are derived from `TransportPlan` positions and boundary contracts only; no
+native/codegen consumer reads them yet. The transport calculator reads
+`RuntimeDemand` plus semantic `callable_flows`, not the old
+callable-materialization inventory, and no old `Trash*` layout is translated
+into descriptors.
 
 ## Required First Move
 
