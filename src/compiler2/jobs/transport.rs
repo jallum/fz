@@ -82,6 +82,119 @@ struct TransportFactsBuilder {
     boundaries: HashMap<BoundaryId, BoundaryFactsDraft>,
 }
 
+#[derive(Debug, Clone, Default)]
+struct ShapeConstraintGraph {
+    anchors: Vec<(TransportPosition, ShapeId)>,
+    equalities: Vec<(TransportPosition, TransportPosition)>,
+}
+
+impl ShapeConstraintGraph {
+    fn anchor(&mut self, position: TransportPosition, shape: ShapeId) {
+        self.anchors.push((position, shape));
+    }
+
+    fn equal(&mut self, left: TransportPosition, right: TransportPosition) {
+        self.equalities.push((left, right));
+    }
+
+    fn has_anchor(&self, position: &TransportPosition) -> bool {
+        self.anchors.iter().any(|(anchored, _)| anchored == position)
+    }
+
+    fn solve(self) -> HashMap<TransportPosition, ShapeId> {
+        let mut union = PositionUnion::default();
+        for (position, _) in &self.anchors {
+            union.add(position.clone());
+        }
+        for (left, right) in &self.equalities {
+            union.union(left.clone(), right.clone());
+        }
+
+        let mut component_shapes = HashMap::<usize, ShapeId>::new();
+        for (position, shape) in &self.anchors {
+            let root = union.find_existing(position);
+            if let Some(existing) = component_shapes.insert(root, *shape) {
+                assert_eq!(
+                    existing, *shape,
+                    "transport shape anchors disagree for connected position component: {position:?}"
+                );
+            }
+        }
+
+        union
+            .positions()
+            .filter_map(|position| {
+                let root = union.find_existing(position);
+                component_shapes
+                    .get(&root)
+                    .copied()
+                    .map(|shape| (position.clone(), shape))
+            })
+            .collect()
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+struct PositionUnion {
+    positions: Vec<TransportPosition>,
+    indexes: HashMap<TransportPosition, usize>,
+    parents: Vec<usize>,
+}
+
+impl PositionUnion {
+    fn add(&mut self, position: TransportPosition) -> usize {
+        if let Some(index) = self.indexes.get(&position).copied() {
+            return index;
+        }
+        let index = self.positions.len();
+        self.positions.push(position.clone());
+        self.indexes.insert(position, index);
+        self.parents.push(index);
+        index
+    }
+
+    fn union(&mut self, left: TransportPosition, right: TransportPosition) {
+        let left = self.add(left);
+        let right = self.add(right);
+        let left_root = self.find_index(left);
+        let right_root = self.find_index(right);
+        if left_root != right_root {
+            self.parents[right_root] = left_root;
+        }
+    }
+
+    fn find_existing(&self, position: &TransportPosition) -> usize {
+        let index = self
+            .indexes
+            .get(position)
+            .copied()
+            .expect("shape constraint position must be registered before solving");
+        self.find_index_readonly(index)
+    }
+
+    fn find_index(&mut self, index: usize) -> usize {
+        let parent = self.parents[index];
+        if parent == index {
+            return index;
+        }
+        let root = self.find_index(parent);
+        self.parents[index] = root;
+        root
+    }
+
+    fn find_index_readonly(&self, index: usize) -> usize {
+        let mut cursor = index;
+        while self.parents[cursor] != cursor {
+            cursor = self.parents[cursor];
+        }
+        cursor
+    }
+
+    fn positions(&self) -> impl Iterator<Item = &TransportPosition> {
+        self.positions.iter()
+    }
+}
+
 impl TransportFactsBuilder {
     fn record_callable(
         &mut self,
@@ -253,12 +366,13 @@ pub(super) fn derive_transport_plan(world: &mut World<'_>, root_id: RootId) -> R
         .into_boxed_slice();
 
     let mut facts = TransportFactsBuilder::default();
-    let mut positions = HashMap::new();
+    let mut shape_graph = ShapeConstraintGraph::default();
     for executable in &executables {
         let symbol = executable_symbol(executable);
         let context = contexts
             .get(executable)
             .expect("transport derivation requires one context per settled executable");
+        let clause_params = clause_parameter_values(&context.body);
 
         let return_position = TransportPosition::ExecutableReturn {
             executable: symbol.clone(),
@@ -274,11 +388,14 @@ pub(super) fn derive_transport_plan(world: &mut World<'_>, root_id: RootId) -> R
             TransportSource::ExecutableReturn,
             Some(return_position.clone()),
         );
-        positions.insert(return_position, return_shape);
+        shape_graph.anchor(return_position, return_shape);
 
         let mut values = context.analysis.value_types.iter().collect::<Vec<_>>();
         values.sort_by_key(|(value, _)| value.as_u32());
         for (&value, &ty) in values {
+            if clause_params.contains(&value) {
+                continue;
+            }
             let demand = context
                 .runtime_demand
                 .value_demands
@@ -299,7 +416,7 @@ pub(super) fn derive_transport_plan(world: &mut World<'_>, root_id: RootId) -> R
                     value,
                 }),
             );
-            positions.insert(
+            shape_graph.anchor(
                 TransportPosition::Value {
                     executable: symbol.clone(),
                     value,
@@ -313,51 +430,24 @@ pub(super) fn derive_transport_plan(world: &mut World<'_>, root_id: RootId) -> R
         for (&callsite, demands) in call_args {
             let args = context.callsite_args.get(&callsite).cloned().unwrap_or_default();
             for (semantic_index, demand) in demands.iter().cloned().enumerate() {
-                let ty = args
-                    .get(semantic_index)
-                    .and_then(|arg| context.analysis.value_types.get(&arg.value))
-                    .copied()
-                    .unwrap_or_else(|| world.types_mut().any());
-                let shape = args
-                    .get(semantic_index)
-                    .map(|arg| {
-                        shape_for_local_value(
-                            world,
-                            &contexts,
-                            &mut facts,
-                            executable,
-                            context,
-                            arg.value,
-                            ty,
-                            &demand,
-                            Some(TransportPosition::CallArg {
-                                executable: symbol.clone(),
-                                callsite,
-                                semantic_index,
-                            }),
-                        )
-                    })
-                    .unwrap_or_else(|| {
-                        generic_shape_from_demand(
-                            world,
-                            ty,
-                            &demand,
-                            &mut facts,
-                            Some(TransportPosition::CallArg {
-                                executable: symbol.clone(),
-                                callsite,
-                                semantic_index,
-                            }),
-                        )
-                    });
-                positions.insert(
-                    TransportPosition::CallArg {
-                        executable: symbol.clone(),
-                        callsite,
-                        semantic_index,
-                    },
-                    shape,
-                );
+                let position = TransportPosition::CallArg {
+                    executable: symbol.clone(),
+                    callsite,
+                    semantic_index,
+                };
+                if let Some(arg) = args.get(semantic_index) {
+                    shape_graph.equal(
+                        position,
+                        TransportPosition::Value {
+                            executable: symbol.clone(),
+                            value: arg.value,
+                        },
+                    );
+                } else {
+                    let ty = world.types_mut().any();
+                    let shape = generic_shape_from_demand(world, ty, &demand, &mut facts, Some(position.clone()));
+                    shape_graph.anchor(position, shape);
+                }
             }
         }
 
@@ -375,34 +465,17 @@ pub(super) fn derive_transport_plan(world: &mut World<'_>, root_id: RootId) -> R
                 let Some(&capture) = captures.get(capture_index) else {
                     continue;
                 };
-                let ty = context
-                    .analysis
-                    .value_types
-                    .get(&capture)
-                    .copied()
-                    .unwrap_or_else(|| world.types_mut().any());
-                let shape = shape_for_local_value(
-                    world,
-                    &contexts,
-                    &mut facts,
-                    executable,
-                    context,
-                    capture,
-                    ty,
-                    &demand,
-                    Some(TransportPosition::EntryCapture {
-                        executable: symbol.clone(),
-                        entry,
-                        capture_index,
-                    }),
-                );
-                positions.insert(
+                let _ = demand;
+                shape_graph.equal(
                     TransportPosition::EntryCapture {
                         executable: symbol.clone(),
                         entry,
                         capture_index,
                     },
-                    shape,
+                    TransportPosition::Value {
+                        executable: symbol.clone(),
+                        value: capture,
+                    },
                 );
             }
         }
@@ -424,20 +497,14 @@ pub(super) fn derive_transport_plan(world: &mut World<'_>, root_id: RootId) -> R
                 &demand,
                 Some(position.clone()),
             );
-            positions.insert(position, shape);
+            shape_graph.anchor(position, shape);
         }
     }
 
-    let max_shape_passes = executables.len().saturating_mul(2).max(4);
-    for _ in 0..max_shape_passes {
-        let changed = seed_callable_resolution_capture_inputs(world, &facts, &mut positions)
-            | propagate_executable_inputs(world, &contexts, &mut facts, &executables, &mut positions)
-            | propagate_clause_parameter_values(&contexts, &executables, &mut positions)
-            | propagate_call_arg_values(world, &contexts, &mut facts, &executables, &mut positions);
-        if !changed {
-            break;
-        }
-    }
+    seed_callable_resolution_capture_inputs(world, &facts, &mut shape_graph);
+    collect_executable_input_constraints(world, &contexts, &mut facts, &executables, &mut shape_graph);
+    collect_clause_parameter_equalities(&contexts, &executables, &mut shape_graph);
+    let positions = shape_graph.solve();
 
     let (callables, boundaries) = facts.finish();
     let codegen_seam_facts = derive_codegen_seam_facts(world, &contexts, &positions, &boundaries);
@@ -465,9 +532,8 @@ pub(super) fn derive_transport_plan(world: &mut World<'_>, root_id: RootId) -> R
 fn seed_callable_resolution_capture_inputs(
     world: &World<'_>,
     facts: &TransportFactsBuilder,
-    positions: &mut HashMap<TransportPosition, ShapeId>,
-) -> bool {
-    let mut changed = false;
+    shape_graph: &mut ShapeConstraintGraph,
+) {
     for (callable, draft) in &facts.callables {
         let descr = world.transport().interners().callable(*callable);
         for resolution in &draft.resolutions {
@@ -476,8 +542,7 @@ fn seed_callable_resolution_capture_inputs(
                 "upstream callable-flow resolution is missing capture-prefix inputs: {resolution:?}"
             );
             for (semantic_index, shape) in descr.capture_shapes.iter().copied().enumerate() {
-                changed |= insert_position_shape(
-                    positions,
+                shape_graph.anchor(
                     TransportPosition::ExecutableInput {
                         executable: resolution.clone(),
                         semantic_index,
@@ -487,17 +552,15 @@ fn seed_callable_resolution_capture_inputs(
             }
         }
     }
-    changed
 }
 
-fn propagate_executable_inputs(
+fn collect_executable_input_constraints(
     world: &mut World<'_>,
     contexts: &HashMap<ExecutableKey, ExecutableContext>,
     facts: &mut TransportFactsBuilder,
     executables: &[ExecutableKey],
-    positions: &mut HashMap<TransportPosition, ShapeId>,
-) -> bool {
-    let mut changed = false;
+    shape_graph: &mut ShapeConstraintGraph,
+) {
     for executable in executables {
         let symbol = executable_symbol(executable);
         let context = contexts
@@ -514,21 +577,23 @@ fn propagate_executable_inputs(
                 executable: symbol.clone(),
                 semantic_index,
             };
-            let shape = incoming_executable_input_shape(world, contexts, positions, executable, semantic_index)
-                .or_else(|| positions.get(&position).copied())
-                .unwrap_or_else(|| shape_for_executable_input(world, ty, &demand, facts, Some(position.clone())));
-            changed |= insert_position_shape(positions, position, shape);
+            if let Some(incoming) = incoming_executable_input_positions(world, contexts, executable, semantic_index) {
+                for call_arg in incoming {
+                    shape_graph.equal(position.clone(), call_arg);
+                }
+            } else if !shape_graph.has_anchor(&position) {
+                let shape = shape_for_executable_input(world, ty, &demand, facts, Some(position.clone()));
+                shape_graph.anchor(position, shape);
+            }
         }
     }
-    changed
 }
 
-fn propagate_clause_parameter_values(
+fn collect_clause_parameter_equalities(
     contexts: &HashMap<ExecutableKey, ExecutableContext>,
     executables: &[ExecutableKey],
-    positions: &mut HashMap<TransportPosition, ShapeId>,
-) -> bool {
-    let mut changed = false;
+    shape_graph: &mut ShapeConstraintGraph,
+) {
     for executable in executables {
         let symbol = executable_symbol(executable);
         let context = contexts
@@ -543,89 +608,16 @@ fn propagate_clause_parameter_values(
                     executable: symbol.clone(),
                     semantic_index,
                 };
-                let Some(shape) = positions.get(&input_position).copied() else {
-                    continue;
-                };
-                changed |= insert_position_shape(
-                    positions,
+                shape_graph.equal(
+                    input_position,
                     TransportPosition::Value {
                         executable: symbol.clone(),
                         value,
                     },
-                    shape,
                 );
             }
         }
     }
-    changed
-}
-
-fn propagate_call_arg_values(
-    world: &mut World<'_>,
-    contexts: &HashMap<ExecutableKey, ExecutableContext>,
-    facts: &mut TransportFactsBuilder,
-    executables: &[ExecutableKey],
-    positions: &mut HashMap<TransportPosition, ShapeId>,
-) -> bool {
-    let mut changed = false;
-    for executable in executables {
-        let symbol = executable_symbol(executable);
-        let context = contexts
-            .get(executable)
-            .expect("transport derivation requires one context per settled executable");
-        let mut call_args = context.runtime_demand.call_arg_demands.iter().collect::<Vec<_>>();
-        call_args.sort_by_key(|(callsite, _)| callsite.as_u32());
-        for (&callsite, demands) in call_args {
-            let args = context.callsite_args.get(&callsite).cloned().unwrap_or_default();
-            for (semantic_index, demand) in demands.iter().cloned().enumerate() {
-                let ty = args
-                    .get(semantic_index)
-                    .and_then(|arg| context.analysis.value_types.get(&arg.value).copied())
-                    .unwrap_or_else(|| world.types_mut().any());
-                let position = TransportPosition::CallArg {
-                    executable: symbol.clone(),
-                    callsite,
-                    semantic_index,
-                };
-                let shape = args
-                    .get(semantic_index)
-                    .map(|arg| {
-                        let value_position = TransportPosition::Value {
-                            executable: symbol.clone(),
-                            value: arg.value,
-                        };
-                        positions.get(&value_position).copied().unwrap_or_else(|| {
-                            shape_for_local_value(
-                                world,
-                                contexts,
-                                facts,
-                                executable,
-                                context,
-                                arg.value,
-                                ty,
-                                &demand,
-                                Some(position.clone()),
-                            )
-                        })
-                    })
-                    .unwrap_or_else(|| generic_shape_from_demand(world, ty, &demand, facts, Some(position.clone())));
-                changed |= insert_position_shape(positions, position, shape);
-            }
-        }
-    }
-    changed
-}
-
-fn insert_position_shape(
-    positions: &mut HashMap<TransportPosition, ShapeId>,
-    position: TransportPosition,
-    shape: ShapeId,
-) -> bool {
-    if positions.get(&position).copied() == Some(shape) {
-        return false;
-    }
-    positions.insert(position, shape);
-    true
 }
 
 fn derive_codegen_seam_facts(
@@ -1221,6 +1213,16 @@ fn collect_resume_entries(body: &LoweredBody, analysis: &ActivationAnalysis) -> 
         .collect()
 }
 
+fn clause_parameter_values(body: &LoweredBody) -> HashSet<ValueId> {
+    let LoweredBody::Clauses { clauses, .. } = body else {
+        return HashSet::new();
+    };
+    clauses
+        .iter()
+        .flat_map(|clause| clause.params.iter().copied())
+        .collect()
+}
+
 fn shape_for_local_value(
     world: &mut World<'_>,
     contexts: &HashMap<ExecutableKey, ExecutableContext>,
@@ -1259,14 +1261,13 @@ fn shape_for_executable_input(
     generic_callable_shape(world, ty, callable, &surfaces, facts, publication)
 }
 
-fn incoming_executable_input_shape(
+fn incoming_executable_input_positions(
     world: &World<'_>,
     contexts: &HashMap<ExecutableKey, ExecutableContext>,
-    positions: &HashMap<TransportPosition, ShapeId>,
     executable: &ExecutableKey,
     semantic_index: usize,
-) -> Option<ShapeId> {
-    let mut shapes = Vec::new();
+) -> Option<Vec<TransportPosition>> {
+    let mut positions = Vec::new();
     for (caller, context) in contexts {
         if caller == executable {
             continue;
@@ -1304,11 +1305,10 @@ fn incoming_executable_input_shape(
                 callsite: *callsite,
                 semantic_index: arg_index,
             };
-            shapes.push(*positions.get(&position)?);
+            positions.push(position);
         }
     }
-    let first = shapes.first().copied()?;
-    shapes.iter().all(|shape| *shape == first).then_some(first)
+    (!positions.is_empty()).then_some(positions)
 }
 
 fn shape_for_source(
@@ -2223,4 +2223,82 @@ fn resume_shape(
             .unwrap_or(TransportSource::LocalValue(resume.value)),
         publication,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::telemetry::ConfiguredTelemetry;
+
+    fn intern_test_shape(world: &mut World<'_>) -> ShapeId {
+        let ty = world.types_mut().any();
+        value_lane_shape(world, ty)
+    }
+
+    fn test_positions(world: &mut World<'_>) -> (TransportPosition, TransportPosition) {
+        world.submit_code(None, "fn main(x), do: x".to_string());
+        let root = world.submit_root(None, "main".to_string(), 1, ExecutableNeed::Value);
+        let ty = world.types_mut().any();
+        let function = world.root_entry(root).function;
+        let executable = ExecutableSymbol {
+            activation: ActivationSymbol {
+                function,
+                input: vec![ty].into_boxed_slice(),
+            },
+            need: ExecutableNeed::Value,
+        };
+        (
+            TransportPosition::Value {
+                executable: executable.clone(),
+                value: ValueId::from_u32(1),
+            },
+            TransportPosition::Value {
+                executable,
+                value: ValueId::from_u32(2),
+            },
+        )
+    }
+
+    #[test]
+    fn shape_constraint_graph_solves_independent_of_insertion_order() {
+        let tel = ConfiguredTelemetry::new();
+        let mut left_world = World::new(&tel);
+        let (left_a, left_b) = test_positions(&mut left_world);
+        let left_shape = intern_test_shape(&mut left_world);
+        let mut left = ShapeConstraintGraph::default();
+        left.anchor(left_a.clone(), left_shape);
+        left.equal(left_a.clone(), left_b.clone());
+        let left_solved = left.solve();
+
+        let tel = ConfiguredTelemetry::new();
+        let mut right_world = World::new(&tel);
+        let (right_a, right_b) = test_positions(&mut right_world);
+        let right_shape = intern_test_shape(&mut right_world);
+        let mut right = ShapeConstraintGraph::default();
+        right.equal(right_b.clone(), right_a.clone());
+        right.anchor(right_b.clone(), right_shape);
+        let right_solved = right.solve();
+
+        assert_eq!(left_solved.get(&left_a), Some(&left_shape));
+        assert_eq!(left_solved.get(&left_b), Some(&left_shape));
+        assert_eq!(right_solved.get(&right_a), Some(&right_shape));
+        assert_eq!(right_solved.get(&right_b), Some(&right_shape));
+    }
+
+    #[test]
+    #[should_panic(expected = "transport shape anchors disagree")]
+    fn shape_constraint_graph_rejects_conflicting_anchors() {
+        let tel = ConfiguredTelemetry::new();
+        let mut world = World::new(&tel);
+        let (a, b) = test_positions(&mut world);
+        let left_shape = world.transport_mut().interners_mut().intern_shape(ShapeDescr::Nothing);
+        let right_shape = intern_test_shape(&mut world);
+        assert_ne!(left_shape, right_shape);
+
+        let mut graph = ShapeConstraintGraph::default();
+        graph.anchor(a.clone(), left_shape);
+        graph.equal(a, b.clone());
+        graph.anchor(b, right_shape);
+        let _ = graph.solve();
+    }
 }
