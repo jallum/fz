@@ -233,6 +233,8 @@ pub struct World<'a> {
     reported_warnings: HashSet<WarningDiagnosticKey>,
     warning_diagnostics: Vec<Diagnostic>,
     pub(crate) work_graph: WorkGraph,
+    #[cfg(test)]
+    transport_plan_test_handlers: Vec<Box<dyn super::transport_validation::TransportPlanTestHandler + 'a>>,
 }
 
 impl std::fmt::Debug for World<'_> {
@@ -294,6 +296,8 @@ impl<'a> World<'a> {
             reported_warnings: HashSet::new(),
             warning_diagnostics: Vec::new(),
             work_graph: WorkGraph::new(),
+            #[cfg(test)]
+            transport_plan_test_handlers: super::transport_validation::default_transport_plan_test_handlers(),
         };
         world.runtime_modules = runtime::bootstrap(&mut world.modules);
         world.runtime_prelude = world.code.define(
@@ -325,6 +329,14 @@ impl<'a> World<'a> {
 
     pub fn transport_mut(&mut self) -> &mut TransportStore {
         &mut self.transport
+    }
+
+    #[cfg(test)]
+    pub(crate) fn add_transport_plan_test_handler(
+        &mut self,
+        handler: Box<dyn super::transport_validation::TransportPlanTestHandler + 'a>,
+    ) {
+        self.transport_plan_test_handlers.push(handler);
     }
 
     pub fn submit_code(&mut self, name: Option<String>, text: String) -> CodeId {
@@ -915,6 +927,12 @@ impl<'a> World<'a> {
                 seam_facts: codegen_seam_facts,
             },
         );
+        #[cfg(test)]
+        {
+            for handler in &self.transport_plan_test_handlers {
+                handler.transport_plan_defined(self, root);
+            }
+        }
         changed
     }
 

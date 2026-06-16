@@ -1456,7 +1456,7 @@ fn callable_for_producer(
     } else {
         surface_shapes(world, &callable_demand.resolved, facts)
     };
-    let resolutions = callable_resolutions(world, context, producer, &surface_demands);
+    let resolutions = callable_resolutions(world, contexts, executable, context, producer, &surface_demands);
     let capture_demands = capture_demands_for_resolutions(world, contexts, &capture_tys, &resolutions);
     let capture_shapes = producer
         .captures
@@ -1636,6 +1636,8 @@ fn callable_type_surfaces(world: &mut World<'_>, callable_ty: Ty) -> BTreeSet<Ca
 
 fn callable_resolutions(
     world: &mut World<'_>,
+    contexts: &HashMap<ExecutableKey, ExecutableContext>,
+    executable: &ExecutableKey,
     context: &ExecutableContext,
     producer: &LocalCallableProducer,
     surfaces: &BTreeSet<CallableSurface>,
@@ -1655,16 +1657,15 @@ fn callable_resolutions(
         .collect::<Vec<_>>();
     surfaces
         .iter()
-        .map(|surface| {
+        .filter_map(|surface| {
             let mut input = capture_tys.clone();
             input.extend(surface.inputs.iter().copied());
-            ExecutableSymbol {
-                activation: ActivationSymbol {
-                    function: producer.function,
-                    input: input.into_boxed_slice(),
-                },
+            let activation = world.activation_key(executable.activation.root, producer.function, &input);
+            let key = ExecutableKey {
+                activation,
                 need: ExecutableNeed::Value,
-            }
+            };
+            contexts.contains_key(&key).then(|| executable_symbol(&key))
         })
         .collect()
 }

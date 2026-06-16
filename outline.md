@@ -520,6 +520,19 @@ use sites, local callable producers, captures, callsite summaries, and settled
 type evidence. The old layout, native boundary inventories, and callable-entry
 materialization are not inputs to the transport plan; the new calculator does
 not read `CallableMaterialization`.
+Call-boundary argument demand is settled upstream: when a direct or closure call
+argument falls back to whole-value demand, callable-typed values are upgraded by
+the same boundary rule used for returns and matcher boundaries. Transport does
+not recover that escape from type. Callable resolutions in `TransportPlan` are
+also gated through `world.activation_key(...)` and the settled semantic
+executable contexts, so a plan cannot publish a callable target that is outside
+the root's executable membership.
+
+Test builds install a `World`-level `TransportPlanTestHandler` that receives
+`&World` and the committed `RootId` after each plan definition. The default
+handler validates the reachable plan graph vertically from the final
+`TransportPlan(root)` roots without serializing extra telemetry or treating
+unreachable interned work-product as an error.
 
 Plan construction emits exactly one output signal:
 

@@ -202,6 +202,48 @@ fn compiler2_transport_flow_telemetry_contract_names_the_output_signal() {
 }
 
 #[test]
+fn compiler2_transport_flow_test_harness_runs_plan_handlers_after_commit() {
+    struct RecordingTransportPlanHandler {
+        roots: Rc<RefCell<Vec<super::RootId>>>,
+    }
+
+    impl super::transport_validation::TransportPlanTestHandler for RecordingTransportPlanHandler {
+        fn transport_plan_defined(&self, world: &World<'_>, root: super::RootId) {
+            assert!(
+                world.transport().plans().get(root).is_some(),
+                "transport-plan test handlers should inspect the committed world"
+            );
+            self.roots.borrow_mut().push(root);
+        }
+    }
+
+    let source = r#"
+fn main(), do: 41
+"#;
+
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new(&tel);
+    let roots = Rc::new(RefCell::new(Vec::new()));
+    world.add_transport_plan_test_handler(Box::new(RecordingTransportPlanHandler { roots: roots.clone() }));
+    world.submit_code(
+        Some("transport_plan_handler_after_commit.fz".to_string()),
+        source.to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+
+    drive_until_transport_plan(
+        &mut world,
+        root,
+        "test harness handler fixture should produce a transport plan",
+    );
+
+    assert!(
+        roots.borrow().contains(&root),
+        "transport-plan test handlers should include the requested root among committed plans"
+    );
+}
+
+#[test]
 fn compiler2_transport_flow_worked_example_is_emitted_by_the_production_boundary() {
     let source = r#"
 fn add(x), do: fn (y) -> x + y end
@@ -262,6 +304,7 @@ end
     }
 
     let plan = transport_plan(&world, root);
+    assert_plan_executable_references_are_root_scoped(&plan);
     let pair = executable_for(&world, &plan, "pair", 1);
     let main = executable_for(&world, &plan, "main", 0);
     let pair_return = plan_shape_at(&plan, &TransportPosition::ExecutableReturn { executable: pair });
@@ -1943,6 +1986,62 @@ fn assert_seam_fact(
         "{intent}: expected shape {shape:?}, lane {lane:?}, repr {repr:?}; facts: {:?}",
         plan.codegen_seam_facts
     );
+}
+
+fn assert_plan_executable_references_are_root_scoped(plan: &TransportPlan) {
+    let membership = plan.executable_membership.iter().collect::<HashSet<_>>();
+    assert!(
+        membership.contains(&plan.entry),
+        "the root plan entry must be part of executable membership: {:?}",
+        plan.executable_membership
+    );
+    for position in plan.positions.keys() {
+        let executable = position_executable(position);
+        assert!(
+            membership.contains(executable),
+            "transport position should reference only root-member executables: {position:?}"
+        );
+    }
+    for facts in plan.callables.values() {
+        for executable in facts.resolutions.iter() {
+            assert!(
+                membership.contains(executable),
+                "callable facts should resolve only to root-member executables: {executable:?}"
+            );
+        }
+    }
+    for fact in plan.codegen_seam_facts.iter() {
+        if let Some(executable) = seam_executable(&fact.seam) {
+            assert!(
+                membership.contains(executable),
+                "codegen seam facts should reference only root-member executables: {:?}",
+                fact.seam
+            );
+        }
+    }
+}
+
+fn position_executable(position: &TransportPosition) -> &super::transport::ExecutableSymbol {
+    match position {
+        TransportPosition::ExecutableInput { executable, .. }
+        | TransportPosition::ExecutableReturn { executable }
+        | TransportPosition::ResumePayload { executable, .. }
+        | TransportPosition::CallArg { executable, .. }
+        | TransportPosition::EntryCapture { executable, .. }
+        | TransportPosition::Value { executable, .. } => executable,
+    }
+}
+
+fn seam_executable(seam: &CodegenSeam) -> Option<&super::transport::ExecutableSymbol> {
+    match seam {
+        CodegenSeam::FunctionEntry { executable, .. }
+        | CodegenSeam::BlockParam { executable, .. }
+        | CodegenSeam::ReturnDelivery { executable }
+        | CodegenSeam::ContinuationEntry { executable, .. }
+        | CodegenSeam::TailCall { executable, .. }
+        | CodegenSeam::ExternBoundary { executable } => Some(executable),
+        CodegenSeam::CallableBoundary { .. } | CodegenSeam::FirstClassPublication { .. } => None,
+    }
 }
 
 fn transport_position_is_semantic(position: &TransportPosition) -> bool {

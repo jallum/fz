@@ -6,7 +6,7 @@ use std::time::Duration;
 use super::{
     CallSiteKey, CallSiteSummary, CallableMaterialization, CodeSubmission, Compiler2, DriveOutcome, ExecutableKey,
     ExecutableNeed, ExecutableRuntimeDemand, FactKey, FunctionId, FunctionRef, Job, RootId, RootSubmission,
-    RuntimeDemand, SelectedCallee,
+    RuntimeDemand, SelectedCallee, World,
 };
 use crate::telemetry::Value;
 use crate::telemetry::handler::{Event, EventKind, Handler};
@@ -239,6 +239,26 @@ impl Handler for RuntimeDemandCaptureHandler {
 
 fn assert_resolved(outcome: DriveOutcome<Job, FactKey>, message: &str) {
     assert!(matches!(outcome, DriveOutcome::Resolved), "{message}: {outcome:?}");
+}
+
+fn drive_until_semantic_closure(world: &mut World<'_>, root: RootId, message: &str) {
+    world.demand(Job::SealSemanticClosure(root));
+    let mut ran = 0;
+    while !world.fact_is_settled(&FactKey::SemanticClosed(root)) && ran < 10_000 {
+        let Some(job) = world.work_graph.pop() else {
+            break;
+        };
+        let effects = super::jobs::run(world, &job)
+            .unwrap_or_else(|_| panic!("{message}; prerequisite job failed before semantic closure: {job:?}"));
+        world.complete_job(job, effects);
+        ran += 1;
+    }
+    assert!(
+        world.fact_is_settled(&FactKey::SemanticClosed(root)),
+        "{message}; semantic closure was not settled after {ran} prerequisite jobs; pending={}; unresolved={:?}",
+        world.work_graph.pending_jobs(),
+        world.work_graph.unresolved()
+    );
 }
 
 fn summary_has_function(summary: &CallSiteSummary, function: FunctionId) -> bool {
@@ -551,6 +571,128 @@ fn compiler2_runtime_demand_makes_opaque_callable_use_explicit() {
     assert!(
         record.opaque_callable_demands >= 1,
         "runtime-demand telemetry should count opaque callable demands",
+    );
+}
+
+#[test]
+fn compiler2_runtime_demand_marks_callable_arguments_to_opaque_calls_first_class() {
+    let tel = crate::telemetry::ConfiguredTelemetry::new();
+    let functions = FunctionCapture::new();
+    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    let runtime_demands = RuntimeDemandCapture::new();
+    tel.attach(
+        &["fz", "compiler2", "runtime_demand", "defined"],
+        runtime_demands.handler(),
+    );
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("opaque_call_callable_argument.fz".to_string()),
+        text: r#"
+fn main(f) do
+  g = fn (x) -> x + 1 end
+  f.(g)
+end
+"#
+        .to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 1,
+        need: ExecutableNeed::Value,
+    });
+    assert_resolved(
+        compiler.drive(),
+        "callable argument passed to an opaque closure call should settle",
+    );
+
+    let main = functions.id("main", 1);
+    let record = runtime_demands.last(root_id);
+    let (_, demand) = runtime_demand_for_function(&record, main);
+    assert!(
+        demand.call_arg_demands.values().any(|demands| {
+            matches!(
+                demands.as_slice(),
+                [RuntimeDemand::Callable(callable)]
+                    if callable.escape && !callable.opaque && callable.resolved.is_empty()
+            )
+        }),
+        "opaque closure-call argument demand should preserve callable escape before transport runs: {demand:?}",
+    );
+    assert!(
+        has_callable_materialization(demand, |materialization| {
+            matches!(materialization, CallableMaterialization::FirstClass { surfaces } if surfaces.is_empty())
+        }),
+        "the local lambda passed through the opaque call should be a first-class runtime obligation: {demand:?}",
+    );
+}
+
+#[test]
+fn compiler2_runtime_demand_preserves_reducer_surface_when_suspend_continuation_escapes() {
+    let tel = crate::telemetry::ConfiguredTelemetry::new();
+    let runtime_demands = RuntimeDemandCapture::new();
+    tel.attach(
+        &["fz", "compiler2", "runtime_demand", "defined"],
+        runtime_demands.handler(),
+    );
+
+    let mut world = World::new(&tel);
+    world.submit_code(
+        Some("runtime_demand_enumerable_reduce_suspend_continuation.fz".to_string()),
+        r#"
+fn make() do
+  fn () ->
+    Enumerable.reduce([1, 2, 3], {:suspend, 0}, fn (x, acc) -> {:cont, acc + x} end)
+  end
+end
+
+fn main(), do: make()
+"#
+        .to_string(),
+    );
+    let root_id = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    drive_until_semantic_closure(
+        &mut world,
+        root_id,
+        "suspend-shaped Enumerable.reduce fixture should settle before transport",
+    );
+
+    let closure = world.semantic_closure(root_id);
+    let reducer_executables = closure
+        .executables
+        .iter()
+        .filter(|executable| {
+            let function_ref = world.function_ref(executable.activation.function);
+            function_ref.name.starts_with("#lambda:")
+                && function_ref.arity == 2
+                && executable.activation.input.len() == 2
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        !reducer_executables.is_empty(),
+        "semantic closure should include the user reducer lambda executable before transport"
+    );
+    assert!(
+        reducer_executables
+            .iter()
+            .all(|executable| executable.activation.input[0] == executable.activation.input[1]),
+        "semantic closure should hold canonical reducer activations, not type-template inputs: {reducer_executables:?}"
+    );
+
+    let record = runtime_demands.last(root_id);
+    assert!(
+        record.runtime_demands.values().any(|demand| {
+            has_callable_materialization(demand, |materialization| {
+                matches!(
+                    materialization,
+                    CallableMaterialization::DirectOnly { surfaces }
+                        if surfaces.iter().any(|surface| surface.inputs.len() == 2)
+                )
+            })
+        }),
+        "the reducer direct-call surface should be proven upstream before transport: {:?}",
+        record.runtime_demands
     );
 }
 

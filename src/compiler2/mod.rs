@@ -33,6 +33,8 @@ mod source_publish;
 mod source_sugar;
 mod token_payload;
 pub mod transport;
+#[cfg(test)]
+pub(crate) mod transport_validation;
 mod type_expr;
 mod typedef;
 mod types;

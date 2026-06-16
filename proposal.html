@@ -470,6 +470,10 @@ rg "TransportPlan\\(root\\)|root-scoped transport spine|codegen repr, not shape"
 
 <p>The landed derivation boundary is explicit: callable and boundary facts are derived by the new transport calculator from settled demand, lowered callable use sites, local callable producers, captures, callsite summaries, and settled type evidence. The old layout, native boundary inventories, and callable-entry materialization are not inputs to the transport plan; the new calculator does not read <code>CallableMaterialization</code>.</p>
 
+<p>Call-boundary argument demand is settled upstream: when a direct or closure call argument falls back to whole-value demand, callable-typed values are upgraded by the same boundary rule used for returns and matcher boundaries. Transport does not recover that escape from type. Callable resolutions in <code>TransportPlan</code> are also gated through <code>world.activation_key(...)</code> and the settled semantic executable contexts, so a plan cannot publish a callable target that is outside the root's executable membership.</p>
+
+<p>Test builds install a <code>World</code>-level <code>TransportPlanTestHandler</code> that receives <code>&amp;World</code> and the committed <code>RootId</code> after each plan definition. The default handler validates the reachable plan graph vertically from the final <code>TransportPlan(root)</code> roots without serializing extra telemetry or treating unreachable interned work-product as an error.</p>
+
 <pre>
 fz.compiler2.transport_flow.defined
 

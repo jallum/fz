@@ -958,7 +958,7 @@ fn direct_call_arg_demands(
     facts: &ExecutableFacts,
     demands: &HashMap<ExecutableKey, ExecutableRuntimeDemand>,
 ) -> Vec<RuntimeDemand> {
-    arg_demands_for_summary(world, executable, callsite, args.len(), 0, facts, demands)
+    arg_demands_for_summary(world, executable, callsite, args, 0, facts, demands)
 }
 
 fn closure_call_arg_demands(
@@ -969,21 +969,25 @@ fn closure_call_arg_demands(
     facts: &ExecutableFacts,
     demands: &HashMap<ExecutableKey, ExecutableRuntimeDemand>,
 ) -> Vec<RuntimeDemand> {
-    arg_demands_for_summary(world, executable, callsite, args.len(), 0, facts, demands)
+    arg_demands_for_summary(world, executable, callsite, args, 0, facts, demands)
 }
 
 fn arg_demands_for_summary(
     world: &mut World<'_>,
     _executable: &ExecutableKey,
     callsite: CallSiteId,
-    arity: usize,
+    args: &[CallArg],
     default_offset: usize,
     facts: &ExecutableFacts,
     demands: &HashMap<ExecutableKey, ExecutableRuntimeDemand>,
 ) -> Vec<RuntimeDemand> {
+    let arity = args.len();
     let mut out = vec![RuntimeDemand::Ignore; arity];
     let Some(summary) = facts.callsites.get(&callsite) else {
-        return vec![RuntimeDemand::Value; arity];
+        return args
+            .iter()
+            .map(|arg| boundary_value_demand(world, facts, arg.value, RuntimeDemand::Value))
+            .collect();
     };
     let need = facts
         .callsite_needs
@@ -997,7 +1001,7 @@ fn arg_demands_for_summary(
             .as_ref()
             .map(|activation| activation.input.len().saturating_sub(target.surface_inputs.len()))
             .unwrap_or(default_offset);
-        for (index, slot) in out.iter_mut().enumerate().take(arity) {
+        for (index, (arg, slot)) in args.iter().zip(out.iter_mut()).enumerate().take(arity) {
             let fallback_ty = target
                 .surface_inputs
                 .get(index)
@@ -1007,6 +1011,7 @@ fn arg_demands_for_summary(
                 .get(offset + index)
                 .cloned()
                 .unwrap_or_else(|| boundary_runtime_demand(world, fallback_ty));
+            let observed = boundary_value_demand(world, facts, arg.value, observed);
             slot.join_assign(&observed);
         }
     }
