@@ -5812,7 +5812,6 @@ fn compiler2_native_actor_ring_delivers_resume_values_through_continuation_abi()
 }
 
 #[test]
-#[ignore = "fz-hwn.19.2.4 WIP: downstream backend-runtime intrinsic execution waits on the transport-backed artifact handoff"]
 fn compiler2_interp_runs_resource_dtors_from_backend_runtime_intrinsics() {
     let _lock = tests_support_lock().lock().unwrap();
     tests_support_dtor_reset();
