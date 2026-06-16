@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-16T02:09:58Z",
+  "description": "Goal: unblock fz-hwn.20.7 callable boundary contracts for suspend-shaped boundary returns whose resume closure captures accumulator state. Source fixture: make_suspender/0 returns fn (acc) -\u003e {:suspended, acc, fn () -\u003e {:cont, acc + 1} end} end; main/0 returns make_suspender(). Failure: root never reached TransportPlan(root) because SealSemanticClosure published runtime-demand latent ActivationInputs for the outer lambda and captured resume lambda, then a later partial wait-free pass omitted the resume activation and retracted its inputs. Signal: the worked transport contract test must be unignored and must prove the boundary return shape is Tuple([tag lane, acc lane, callable resume child]) with three published boundary lanes. Strategy: fix semantic closure authority, not transport and not the old model; SealSemanticClosure may process activations it publishes in the current pass while preserving settled gates for facts owned by other jobs.",
+  "id": "fz-rh2.26",
+  "labels": [],
+  "parent": "fz-rh2",
+  "priority": 1,
+  "status": "open",
+  "title": "Compiler2 transport: fix captured resume semantic closure authority",
+  "type": "bug",
+  "updated_at": "2026-06-16T02:09:58Z"
+}
