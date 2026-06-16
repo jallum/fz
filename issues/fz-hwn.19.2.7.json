@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [
     "fz-hwn.19.2.4"
@@ -10,7 +10,7 @@
   "labels": [],
   "parent": "fz-hwn.19.2",
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "Transport plan: solve position shapes from anchors and equalities",
   "type": "task",
   "updated_at": "2026-06-16T13:44:56Z"
