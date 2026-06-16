@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-16T20:14:34Z",
+  "description": "Covers the red tests compiler2_runtime_demand_leaves_an_unused_callable_input_omitted, compiler2_transport_plan_keeps_unused_callable_construction_out_of_boundary_inventory, and compiler2_abi_ready_does_not_publish_unused_callable_constructors. Likely root cause: an ignored callable value/input still causes the callable body or boundary inventory to reach downstream native lowering, so full drive dies in LowerNativeProgram even though semantic/runtime demand should omit the input and TransportPlan should publish no boundary. Use the output-contract loop: first pin the earliest failing contract, then correct the upstream handoff so ignored callable constructors remain represented only as omitted transport positions. Do not add native fallbacks, layout recomputation, or Trash* adapters.",
+  "id": "fz-hwn.19.2.4.7",
+  "labels": [],
+  "parent": "fz-hwn.19.2.4",
+  "priority": 1,
+  "status": "open",
+  "title": "Artifact seam: keep unused callable constructors out of native frontier",
+  "type": "bug",
+  "updated_at": "2026-06-16T20:14:34Z"
+}
