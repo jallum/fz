@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-hwn.20.4",
     "fz-hwn.20.7"
@@ -13,8 +13,8 @@
   "labels": [],
   "parent": "fz-hwn.20",
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "Transport flow graph: publish seam-specific codegen facts without consuming them",
   "type": "task",
-  "updated_at": "2026-06-15T22:57:57Z"
+  "updated_at": "2026-06-16T00:56:18Z"
 }
