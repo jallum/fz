@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-hwn.20.8.1"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-hwn.20.8.6"
+  ],
   "created": "2026-06-16T03:42:39Z",
   "description": "Remove transport fallbacks that hide missing local callable evidence. For compiler-owned callable resolutions, capture demand must come from the resolved executable context's input_demands and boundary return shape must come from the resolved executable return evidence. Missing local resolution/context is a test failure, not a boundary_runtime_demand or type-return fallback. Preserve an explicit path only for genuinely opaque external callable contracts that have no compiler-owned target. Worked examples: suspend continuation captures reducer structurally, tuple callable returns publish recursive boundary contracts, opaque external callable inputs still publish an explicit boundary.",
   "id": "fz-hwn.20.8.5",
@@ -13,5 +15,5 @@
   "status": "open",
   "title": "Transport authority: delete local capture and return fallbacks",
   "type": "task",
-  "updated_at": "2026-06-16T03:42:53Z"
+  "updated_at": "2026-06-16T03:43:05Z"
 }
