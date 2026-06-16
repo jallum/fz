@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-hwn.20.8.5"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-hwn.20.6"
+  ],
   "created": "2026-06-16T03:42:39Z",
   "description": "Finish the authority-boundary mini-epic. Strengthen tests/validation so transport plans cannot contain facts absent from upstream callable-flow evidence, and docs identify exactly which helpers were removed or narrowed. Re-run runtime_demand, transport_, and any newly relevant worked fixtures. Update outline.md, proposal.html, and ticket descriptions if the final model differs from the plan. Exit when transport only projects settled semantic/runtime-demand facts into descriptor ids and root-scoped fact tables, with opaque external callable behavior explicitly named as the only allowed type-based boundary contract case.",
   "id": "fz-hwn.20.8.6",
