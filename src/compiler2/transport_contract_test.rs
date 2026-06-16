@@ -832,13 +832,25 @@ end
     assert_resolved(world.drive_for(None), "direct-callable fixture should settle");
 
     let plan = transport_plan(&world, root);
+    let apply1 = executable_for(&world, &plan, "apply1", 2);
     let make_adder = executable_for(&world, &plan, "make_adder", 1);
     let main = executable_for(&world, &plan, "main", 0);
     let returned = plan_shape_at(&plan, &TransportPosition::ExecutableReturn { executable: make_adder });
+    let applied = plan_shape_at(
+        &plan,
+        &TransportPosition::ExecutableInput {
+            executable: apply1.clone(),
+            semantic_index: 0,
+        },
+    );
     let resumed = resume_shapes_for(&plan, &main)
         .into_iter()
         .find(|shape| *shape == returned)
         .unwrap_or_else(|| panic!("main should resume the direct callable returned by make_adder/1"));
+    assert_eq!(
+        applied, returned,
+        "the direct callable input consumed by apply1/2 should read the same ShapeId that make_adder/1 returned"
+    );
     assert_eq!(
         returned, resumed,
         "direct callable return and resume positions should share one ShapeId"
@@ -858,6 +870,21 @@ end
         .unwrap_or_else(|| panic!("returned direct callable should name its local producer"));
     let flow = upstream_callable_flow_for_producer(&world, root, producer_function);
     assert_callable_facts_match_upstream_flow(&world, &plan, *callable, &flow);
+    let facts = plan
+        .callables
+        .get(callable)
+        .unwrap_or_else(|| panic!("direct callable facts should be present for {callable:?}"));
+    let [capture_lane] = facts.capture_lanes.as_ref() else {
+        panic!("make_adder/1's returned callable should carry exactly one capture lane: {facts:?}")
+    };
+    assert_seam_fact(
+        &plan,
+        |seam| matches!(seam, CodegenSeam::FunctionEntry { executable, semantic_index } if executable == &apply1 && *semantic_index == 0),
+        Some(returned),
+        *capture_lane,
+        CodegenLaneRepr::RawInt,
+        "direct callable executable inputs should publish codegen facts for their carried capture lanes",
+    );
 }
 
 #[test]

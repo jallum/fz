@@ -257,21 +257,6 @@ pub(super) fn derive_transport_plan(world: &mut World<'_>, root_id: RootId) -> R
             .get(executable)
             .expect("transport derivation requires one context per settled executable");
 
-        for (semantic_index, ty) in executable.activation.input.iter().copied().enumerate() {
-            let demand = context
-                .runtime_demand
-                .input_demands
-                .get(semantic_index)
-                .cloned()
-                .unwrap_or_default();
-            let position = TransportPosition::ExecutableInput {
-                executable: symbol.clone(),
-                semantic_index,
-            };
-            let shape = shape_for_executable_input(world, ty, &demand, &mut facts, Some(position.clone()));
-            positions.insert(position, shape);
-        }
-
         let return_position = TransportPosition::ExecutableReturn {
             executable: symbol.clone(),
         };
@@ -439,6 +424,29 @@ pub(super) fn derive_transport_plan(world: &mut World<'_>, root_id: RootId) -> R
             positions.insert(position, shape);
         }
     }
+
+    for executable in &executables {
+        let symbol = executable_symbol(executable);
+        let context = contexts
+            .get(executable)
+            .expect("transport derivation requires one context per settled executable");
+        for (semantic_index, ty) in executable.activation.input.iter().copied().enumerate() {
+            let demand = context
+                .runtime_demand
+                .input_demands
+                .get(semantic_index)
+                .cloned()
+                .unwrap_or_default();
+            let position = TransportPosition::ExecutableInput {
+                executable: symbol.clone(),
+                semantic_index,
+            };
+            let shape = incoming_executable_input_shape(world, &contexts, &positions, executable, semantic_index)
+                .unwrap_or_else(|| shape_for_executable_input(world, ty, &demand, &mut facts, Some(position.clone())));
+            positions.insert(position, shape);
+        }
+    }
+
     let (callables, boundaries) = facts.finish();
     let codegen_seam_facts = derive_codegen_seam_facts(world, &contexts, &positions, &boundaries);
 
@@ -616,8 +624,17 @@ fn executable_context_for_symbol<'a>(
 
 fn lanes_for_codegen_seam_shape(world: &World<'_>, shape: ShapeId) -> Vec<(ShapeId, LaneId)> {
     match world.transport().interners().shape(shape) {
-        ShapeDescr::Nothing | ShapeDescr::Callable(_) => Vec::new(),
+        ShapeDescr::Nothing => Vec::new(),
         ShapeDescr::Lane(lane) => vec![(shape, *lane)],
+        ShapeDescr::Callable(callable) => world
+            .transport()
+            .interners()
+            .callable(*callable)
+            .capture_lanes
+            .iter()
+            .copied()
+            .map(|lane| (shape, lane))
+            .collect(),
         ShapeDescr::Tuple(items) => items
             .iter()
             .copied()
@@ -766,6 +783,9 @@ fn collect_tail_call_dests(
     match &entry.tail {
         LoweredTail::DirectCall { callsite, dest, .. } | LoweredTail::ClosureCall { callsite, dest, .. } => {
             out.insert(*callsite, dest.clone());
+            if let ControlDestination::Deliver(target) = dest {
+                collect_tail_call_dests(target, entries, out);
+            }
         }
         LoweredTail::If {
             then_entry, else_entry, ..
@@ -806,8 +826,16 @@ fn collect_tail_call_args(
 ) {
     let entry = &entries[entry_id.as_u32() as usize];
     match &entry.tail {
-        LoweredTail::DirectCall { callsite, args, .. } | LoweredTail::ClosureCall { callsite, args, .. } => {
+        LoweredTail::DirectCall {
+            callsite, args, dest, ..
+        }
+        | LoweredTail::ClosureCall {
+            callsite, args, dest, ..
+        } => {
             out.insert(*callsite, args.clone());
+            if let ControlDestination::Deliver(target) = dest {
+                collect_tail_call_args(target, entries, out);
+            }
         }
         LoweredTail::If {
             then_entry, else_entry, ..
@@ -1058,6 +1086,55 @@ fn shape_for_executable_input(
     };
     let surfaces = callable.resolved.clone();
     generic_callable_shape(world, ty, callable, &surfaces, facts, publication)
+}
+
+fn incoming_executable_input_shape(
+    world: &World<'_>,
+    contexts: &HashMap<ExecutableKey, ExecutableContext>,
+    positions: &HashMap<TransportPosition, ShapeId>,
+    executable: &ExecutableKey,
+    semantic_index: usize,
+) -> Option<ShapeId> {
+    let mut shapes = Vec::new();
+    for (caller, context) in contexts {
+        for (callsite, args) in &context.callsite_args {
+            let key = CallSiteKey {
+                activation: caller.activation.clone(),
+                callsite: *callsite,
+            };
+            let Some(summary) = world.callsite_summary(&key) else {
+                continue;
+            };
+            if !summary.targets.iter().any(|target| {
+                target.activation.as_ref().is_some_and(|activation| {
+                    activation.function == executable.activation.function
+                        && activation.input == executable.activation.input
+                        && context
+                            .callsite_needs
+                            .get(callsite)
+                            .copied()
+                            .unwrap_or(ExecutableNeed::Value)
+                            == executable.need
+                })
+            }) {
+                continue;
+            }
+
+            let capture_prefix = executable.activation.input.len().checked_sub(args.len())?;
+            if semantic_index < capture_prefix {
+                return None;
+            }
+            let arg_index = semantic_index - capture_prefix;
+            let position = TransportPosition::CallArg {
+                executable: executable_symbol(caller),
+                callsite: *callsite,
+                semantic_index: arg_index,
+            };
+            shapes.push(*positions.get(&position)?);
+        }
+    }
+    let first = shapes.first().copied()?;
+    shapes.iter().all(|shape| *shape == first).then_some(first)
 }
 
 fn shape_for_source(
