@@ -27,9 +27,7 @@ struct ExecutableContext {
     runtime_demand: ExecutableRuntimeDemand,
     callsite_needs: HashMap<CallSiteId, ExecutableNeed>,
     callsite_args: HashMap<CallSiteId, Vec<CallArg>>,
-    input_values: Vec<Box<[ValueId]>>,
     local_sources: HashMap<ValueId, TransportSource>,
-    callable_uses: HashMap<ValueId, Vec<CallSiteId>>,
     callsite_dests: HashMap<CallSiteId, ControlDestination>,
     return_sources: Vec<TransportSource>,
     resume_entries: Vec<ResumeEntry>,
@@ -220,9 +218,7 @@ pub(super) fn derive_transport_plan(world: &mut World<'_>, root_id: RootId) -> R
             ExecutableContext {
                 callsite_args: collect_callsite_args(&body),
                 callsite_dests: collect_callsite_dests(&body),
-                input_values: collect_input_values(&body),
                 local_sources,
-                callable_uses: collect_callable_uses(&body),
                 return_sources: collect_return_sources(&body, &analysis),
                 resume_entries,
                 analysis,
@@ -272,20 +268,7 @@ pub(super) fn derive_transport_plan(world: &mut World<'_>, root_id: RootId) -> R
                 executable: symbol.clone(),
                 semantic_index,
             };
-            let input_values = context
-                .input_values
-                .get(semantic_index)
-                .map(|values| values.as_ref())
-                .unwrap_or(&[]);
-            let shape = shape_for_executable_input(
-                world,
-                context,
-                ty,
-                &demand,
-                input_values,
-                &mut facts,
-                Some(position.clone()),
-            );
+            let shape = shape_for_executable_input(world, ty, &demand, &mut facts, Some(position.clone()));
             positions.insert(position, shape);
         }
 
@@ -874,36 +857,6 @@ fn collect_callsite_result_origins(body: &LoweredBody) -> HashMap<ValueId, CallS
     out
 }
 
-fn collect_input_values(body: &LoweredBody) -> Vec<Box<[ValueId]>> {
-    let LoweredBody::Clauses { clauses, .. } = body else {
-        return Vec::new();
-    };
-    let arity = clauses.iter().map(|clause| clause.params.len()).max().unwrap_or(0);
-    let mut out = vec![Vec::new(); arity];
-    for clause in clauses {
-        for (index, value) in clause.params.iter().copied().enumerate() {
-            if !out[index].contains(&value) {
-                out[index].push(value);
-            }
-        }
-    }
-    out.into_iter().map(Vec::into_boxed_slice).collect()
-}
-
-fn collect_callable_uses(body: &LoweredBody) -> HashMap<ValueId, Vec<CallSiteId>> {
-    let mut out = HashMap::new();
-    let LoweredBody::Clauses { entries, .. } = body else {
-        return out;
-    };
-    for entry in entries {
-        let LoweredTail::ClosureCall { callee, callsite, .. } = &entry.tail else {
-            continue;
-        };
-        out.entry(*callee).or_insert_with(Vec::new).push(*callsite);
-    }
-    out
-}
-
 fn collect_value_sources(body: &LoweredBody) -> HashMap<ValueId, TransportSource> {
     let mut out = HashMap::new();
     let LoweredBody::Clauses { clauses, entries, .. } = body else {
@@ -1095,17 +1048,19 @@ fn shape_for_local_value(
 
 fn shape_for_executable_input(
     world: &mut World<'_>,
-    context: &ExecutableContext,
     ty: Ty,
     demand: &RuntimeDemand,
-    input_values: &[ValueId],
     facts: &mut TransportFactsBuilder,
     publication: Option<TransportPosition>,
 ) -> ShapeId {
     let RuntimeDemand::Callable(callable) = demand else {
         return generic_shape_from_demand(world, ty, demand, facts, publication);
     };
-    let surfaces = callable_surface_evidence(world, context, ty, callable, input_values);
+    let surfaces = if callable.resolved.is_empty() {
+        callable_type_surfaces(world, ty)
+    } else {
+        callable.resolved.clone()
+    };
     generic_callable_shape(world, ty, callable, &surfaces, facts, publication)
 }
 
@@ -1608,42 +1563,6 @@ fn surface_shapes(
     rendered
 }
 
-fn callable_surface_evidence(
-    world: &mut World<'_>,
-    context: &ExecutableContext,
-    callable_ty: Ty,
-    demand: &CallableDemand,
-    values: &[ValueId],
-) -> BTreeSet<CallableSurface> {
-    let mut surfaces = demand.resolved.clone();
-    for value in values {
-        let Some(callsites) = context.callable_uses.get(value) else {
-            continue;
-        };
-        for callsite in callsites {
-            let Some(args) = context.callsite_args.get(callsite) else {
-                continue;
-            };
-            surfaces.insert(CallableSurface::new(
-                args.iter()
-                    .map(|arg| {
-                        context
-                            .analysis
-                            .value_types
-                            .get(&arg.value)
-                            .copied()
-                            .unwrap_or_else(|| world.types_mut().any())
-                    })
-                    .collect(),
-            ));
-        }
-    }
-    if surfaces.is_empty() {
-        surfaces = callable_type_surfaces(world, callable_ty);
-    }
-    surfaces
-}
-
 fn callable_type_surfaces(world: &mut World<'_>, callable_ty: Ty) -> BTreeSet<CallableSurface> {
     world
         .types_mut()
@@ -1852,7 +1771,7 @@ fn boundary_return_shape_for_resolution(
     }) else {
         return boundary_return_shape_for_surface(world, callable_ty, surface, facts);
     };
-    let demand = boundary_runtime_demand(world, context.return_ty);
+    let demand = context.runtime_demand.return_demand.clone();
     shape_for_source(
         world,
         contexts,

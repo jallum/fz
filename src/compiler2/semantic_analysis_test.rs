@@ -560,8 +560,10 @@ fn compiler2_runtime_demand_makes_opaque_callable_use_explicit() {
         matches!(
             demand.input_demands.as_slice(),
             [RuntimeDemand::Callable(callable)] if callable.opaque
+                && callable.resolved.len() == 1
+                && callable.resolved.iter().any(|surface| surface.inputs.len() == 1)
         ),
-        "an unresolved closure call should keep opaque callable demand explicit: {demand:?}",
+        "an unresolved closure call should keep opaque callable demand and its observed surface explicit: {demand:?}",
     );
     assert!(
         record.opaque_callable_demands >= 1,
@@ -634,6 +636,48 @@ end
                 && flow.resolutions.len() == 1
         }),
         "the opaque-call argument should publish first-class callable-flow evidence before transport: {demand:?}",
+    );
+}
+
+#[test]
+fn compiler2_runtime_demand_preserves_tuple_return_shape_for_escaped_callable_boundaries() {
+    let tel = crate::telemetry::ConfiguredTelemetry::new();
+    let mut world = World::new(&tel);
+    world.submit_code(
+        Some("runtime_demand_boundary_tuple_return.fz".to_string()),
+        r#"
+fn make_pairer(), do: fn (x) -> {{1, 2}, 3} end
+fn main(), do: make_pairer()
+"#
+        .to_string(),
+    );
+    let root_id = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    drive_until_semantic_closure(
+        &mut world,
+        root_id,
+        "escaped callable tuple-return fixture should settle before transport",
+    );
+
+    let closure = world.semantic_closure(root_id);
+    let tuple_return_demands = closure
+        .runtime_demands
+        .iter()
+        .filter_map(|(executable, demand)| {
+            let function_ref = world.function_ref(executable.activation.function);
+            (function_ref.name.starts_with("#lambda:") && function_ref.arity == 1).then_some(&demand.return_demand)
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        tuple_return_demands.iter().any(|demand| {
+            matches!(
+                demand,
+                RuntimeDemand::TupleFields(fields)
+                    if fields.len() == 2
+                        && matches!(&fields[0], RuntimeDemand::TupleFields(inner) if inner.len() == 2)
+                        && matches!(&fields[1], RuntimeDemand::Value)
+            )
+        }),
+        "escaped callable boundary return demand should preserve recursive tuple fields upstream: {tuple_return_demands:?}"
     );
 }
 

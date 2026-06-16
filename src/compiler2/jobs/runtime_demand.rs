@@ -56,7 +56,7 @@ pub(super) fn settle_runtime_demands(
             (
                 executable.clone(),
                 ExecutableRuntimeDemand {
-                    return_demand: base_return_demand(executable, entry, &locally_called),
+                    return_demand: base_return_demand(world, executable, entry, &locally_called),
                     input_demands: vec![RuntimeDemand::Ignore; executable.activation.input.len()],
                     ..ExecutableRuntimeDemand::default()
                 },
@@ -65,40 +65,46 @@ pub(super) fn settle_runtime_demands(
         .collect::<HashMap<_, _>>();
 
     loop {
-        let mut next = HashMap::new();
-        let mut observed_call_returns = HashMap::new();
-        for executable in executables {
-            let facts = facts
-                .get(executable)
-                .expect("runtime demand closure should have facts for every executable");
-            let derived = derive_executable_runtime_demand(world, executable, facts, &demands);
-            next.insert(executable.clone(), derived.demand);
-            observed_call_returns.insert(executable.clone(), derived.call_return_demands);
+        loop {
+            let mut next = HashMap::new();
+            let mut observed_call_returns = HashMap::new();
+            for executable in executables {
+                let facts = facts
+                    .get(executable)
+                    .expect("runtime demand closure should have facts for every executable");
+                let derived = derive_executable_runtime_demand(world, executable, facts, &demands);
+                next.insert(executable.clone(), derived.demand);
+                observed_call_returns.insert(executable.clone(), derived.call_return_demands);
+            }
+            propagate_call_return_demands(&facts, &observed_call_returns, &mut next);
+            let changed = executables
+                .iter()
+                .any(|executable| demands.get(executable) != next.get(executable));
+            demands = next;
+            if !changed {
+                break;
+            }
         }
-        propagate_call_return_demands(&facts, &observed_call_returns, &mut next);
-        let changed = executables
-            .iter()
-            .any(|executable| demands.get(executable) != next.get(executable));
-        demands = next;
-        if !changed {
+
+        derive_callable_flow_facts(
+            world,
+            executables,
+            &locally_called,
+            &facts,
+            &mut demands,
+            reads,
+            waits,
+            follow_up,
+        )?;
+        if !waits.is_empty() {
+            return Ok(None);
+        }
+        if !apply_callable_boundary_return_demands(world, &mut demands) {
             break;
         }
     }
 
-    derive_callable_flow_facts(
-        world,
-        executables,
-        &locally_called,
-        &facts,
-        &mut demands,
-        reads,
-        waits,
-        follow_up,
-    )?;
     let latent_executables = demanded_callable_executables(executables, &demands);
-    if !waits.is_empty() {
-        return Ok(None);
-    }
 
     Ok(Some(RuntimeDemandClosure {
         demands,
@@ -167,12 +173,18 @@ fn locally_called_executables(facts: &HashMap<ExecutableKey, ExecutableFacts>) -
 }
 
 fn base_return_demand(
+    world: &mut World<'_>,
     executable: &ExecutableKey,
     entry: &ExecutableKey,
     locally_called: &HashSet<ExecutableKey>,
 ) -> RuntimeDemand {
-    if executable == entry || !locally_called.contains(executable) {
+    if executable == entry {
         runtime_demand_for_executable_need(executable.need)
+    } else if !locally_called.contains(executable) {
+        let return_ty = world
+            .activation_return(&executable.activation)
+            .unwrap_or_else(|| world.types_mut().none());
+        boundary_runtime_demand(world, return_ty)
     } else {
         RuntimeDemand::Ignore
     }
@@ -448,13 +460,13 @@ fn collect_entry_live_demands(
             note_live_demand(world, out, &mut live, *value, demand.clone());
             record_call_return_demand(call_return_demands, *callsite, demand);
             merge_live_demands(&mut live, external_demands);
-            note_live_demand(
+            let callee_demand = RuntimeDemand::callable(closure_callee_demand(
                 world,
-                out,
-                &mut live,
-                *callee,
-                RuntimeDemand::callable(closure_callee_demand(facts.callsites.get(callsite))),
-            );
+                facts,
+                args.as_slice(),
+                facts.callsites.get(callsite),
+            ));
+            note_live_demand(world, out, &mut live, *callee, callee_demand);
             let arg_demands = closure_call_arg_demands(world, executable, *callsite, args.as_slice(), facts, demands);
             record_call_arg_demands(out, *callsite, arg_demands.as_slice());
             for (arg, demand) in args.iter().zip(arg_demands) {
@@ -1072,6 +1084,14 @@ fn local_target_input_demands(
 
 fn boundary_runtime_demand(world: &mut World<'_>, ty: Ty) -> RuntimeDemand {
     let Some(clauses) = world.types_mut().callable_clauses(&ty) else {
+        if let Some(fields) = exact_tuple_field_tys(world, ty) {
+            return RuntimeDemand::tuple_fields(
+                fields
+                    .into_iter()
+                    .map(|field_ty| boundary_runtime_demand(world, field_ty))
+                    .collect(),
+            );
+        }
         return RuntimeDemand::Value;
     };
     // A callable crossing a boundary escapes as a first-class value. Carry the
@@ -1086,6 +1106,26 @@ fn boundary_runtime_demand(world: &mut World<'_>, ty: Ty) -> RuntimeDemand {
         opaque: false,
         escape: true,
     })
+}
+
+fn exact_tuple_field_tys(world: &mut World<'_>, ty: Ty) -> Option<Vec<Ty>> {
+    let predicate = world.types().runtime_type_predicate(&ty);
+    if predicate.tuple_arities.cofinite || predicate.tuple_arities.values.len() != 1 {
+        return None;
+    }
+    let arity = *predicate.tuple_arities.values.iter().next()?;
+    Some(tuple_field_tys(world, ty, arity))
+}
+
+fn tuple_field_tys(world: &mut World<'_>, ty: Ty, arity: usize) -> Vec<Ty> {
+    let any = world.types_mut().any();
+    let mut fields = world.types_mut().tuple_projections(&ty, arity);
+    if fields.len() < arity {
+        fields.resize(arity, any);
+    } else if fields.len() > arity {
+        fields.truncate(arity);
+    }
+    fields
 }
 
 fn boundary_value_demand(
@@ -1107,13 +1147,31 @@ fn boundary_value_demand(
     }
 }
 
-fn closure_callee_demand(summary: Option<&CallSiteSummary>) -> CallableDemand {
+fn closure_callee_demand(
+    world: &mut World<'_>,
+    facts: &ExecutableFacts,
+    args: &[CallArg],
+    summary: Option<&CallSiteSummary>,
+) -> CallableDemand {
     let Some(summary) = summary else {
-        return CallableDemand {
+        let mut demand = CallableDemand {
             resolved: Default::default(),
             opaque: true,
             escape: false,
         };
+        demand.resolved.insert(CallableSurface::new(
+            args.iter()
+                .map(|arg| {
+                    facts
+                        .analysis
+                        .value_types
+                        .get(&arg.value)
+                        .copied()
+                        .unwrap_or_else(|| world.types_mut().any())
+                })
+                .collect(),
+        ));
+        return demand;
     };
     let mut demand = CallableDemand::default();
     for target in &summary.targets {
@@ -1146,6 +1204,48 @@ fn demanded_callable_executables(
         }
     }
     latent
+}
+
+fn apply_callable_boundary_return_demands(
+    world: &mut World<'_>,
+    demands: &mut HashMap<ExecutableKey, ExecutableRuntimeDemand>,
+) -> bool {
+    let mut required = Vec::new();
+    for demand in demands.values() {
+        for flow in demand.callable_flows.values() {
+            if flow.first_class_surfaces.is_empty() {
+                continue;
+            }
+            for surface in &flow.first_class_surfaces {
+                for resolution in &flow.resolutions {
+                    if resolution.activation.function != flow.function
+                        || resolution.activation.input.len() < surface.inputs.len()
+                    {
+                        continue;
+                    }
+                    let offset = resolution.activation.input.len() - surface.inputs.len();
+                    if resolution.activation.input[offset..] != surface.inputs {
+                        continue;
+                    }
+                    let return_ty = world
+                        .activation_return(&resolution.activation)
+                        .unwrap_or_else(|| world.types_mut().none());
+                    required.push((resolution.clone(), boundary_runtime_demand(world, return_ty)));
+                }
+            }
+        }
+    }
+
+    let mut changed = false;
+    for (executable, demand) in required {
+        let Some(target) = demands.get_mut(&executable) else {
+            continue;
+        };
+        let before = target.return_demand.clone();
+        target.return_demand.join_assign(&demand);
+        changed |= target.return_demand != before;
+    }
+    changed
 }
 
 fn derive_callable_flow_facts(
