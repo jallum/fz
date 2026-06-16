@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-16T20:14:35Z",
+  "description": "Covers the red tests compiler2_transport_plan_keeps_enum_reduce_operator_refs_direct_callable, fixpoint_leaves_no_reached_fn_unknown_fold_capture_closure, and corpus_folds_settle_myreduce_to_int_fold_capture_closure. Likely root cause: direct reducer callable transport for operator refs and captured closure folds is not carrying the exact settled integer result/callable surface facts into transport/native, producing Ty(0) transport lanes or a LowerNativeProgram fatal. Start with the transport contract for Enum.reduce operator refs, then drive the fold_capture_closure tests through the same proven facts. Do not recover reducer ABI from native types or old callable layout machinery.",
+  "id": "fz-hwn.19.2.4.11",
+  "labels": [],
+  "parent": "fz-hwn.19.2.4",
+  "priority": 1,
+  "status": "open",
+  "title": "Artifact seam: preserve direct reducer callable integer facts",
+  "type": "bug",
+  "updated_at": "2026-06-16T20:14:35Z"
+}
