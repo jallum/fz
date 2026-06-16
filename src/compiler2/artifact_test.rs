@@ -1,14 +1,16 @@
 use std::collections::HashMap;
 
 use super::identity::{FunctionMap, ModuleId, RootEntry, RootKind, RootMap};
-use super::{
-    AbiValueRepr, ActivationKey, ExecutableKey, ExecutableNeed, FunctionId, RootId, TrashReturnAbi,
-    TrashRuntimeValueLayout, Types,
-};
+use super::{AbiValueRepr, ActivationKey, ExecutableKey, ExecutableNeed, FunctionId, RootId, Types};
 use crate::compiler2::artifact::{
     EffectSummary, NativeBody, NativeBodyOrigin, NativeCallableBoundary, NativeCallableBoundaryId, NativeEntryAbi,
     NativeProgram,
 };
+use crate::compiler2::transport::{
+    ActivationSymbol, ExecutableSymbol, LaneDescr, LaneId, ShapeDescr, ShapeId, TransportClass, TransportPosition,
+    TransportStore,
+};
+use crate::compiler2::types::Ty;
 use crate::fz_ir::{
     Block, BlockId, ExternDecl, ExternId, ExternMarshalSite, ExternTy, FnCategory, FnId, FnIr, Module, Term, Var,
 };
@@ -27,6 +29,32 @@ fn stub_activation_key(_types: &mut Types, input: Vec<super::types::Ty>) -> (Roo
     });
     let activation = ActivationKey { root, function, input };
     (root, function, activation)
+}
+
+fn executable_symbol(executable: &ExecutableKey) -> ExecutableSymbol {
+    ExecutableSymbol {
+        activation: ActivationSymbol {
+            function: executable.activation.function,
+            input: executable.activation.input.clone().into_boxed_slice(),
+        },
+        need: executable.need,
+    }
+}
+
+fn executable_return_position(executable: &ExecutableKey) -> TransportPosition {
+    TransportPosition::ExecutableReturn {
+        executable: executable_symbol(executable),
+    }
+}
+
+fn scalar_shape(ty: Ty) -> (ShapeId, LaneId) {
+    let mut transport = TransportStore::new();
+    let lane = transport.interners_mut().intern_lane(LaneDescr {
+        ty,
+        class: TransportClass::Value,
+    });
+    let shape = transport.interners_mut().intern_shape(ShapeDescr::Lane(lane));
+    (shape, lane)
 }
 
 #[test]
@@ -79,10 +107,9 @@ fn compiler2_native_program_contract_keeps_codegen_facts_on_body_records() {
             entry_abi: NativeEntryAbi::Direct,
             param_reprs: vec![AbiValueRepr::RawInt],
             return_ty: int,
-            return_layout: TrashRuntimeValueLayout::Value {
-                ty: int,
-                repr: AbiValueRepr::RawInt,
-            },
+            return_position: executable_return_position(&executable),
+            return_reprs: vec![AbiValueRepr::RawInt],
+            return_tuple_arity: None,
             value_types: HashMap::from([(Var(0), int)]),
             callable_value_boundaries: HashMap::from([(Var(0), NativeCallableBoundaryId(0))]),
             extern_marshals: marshals.clone(),
@@ -97,7 +124,10 @@ fn compiler2_native_program_contract_keeps_codegen_facts_on_body_records() {
             capture_reprs: Vec::new(),
             arg_reprs: vec![AbiValueRepr::RawInt],
             return_ty: int,
-            return_abi: TrashReturnAbi::Value(AbiValueRepr::RawInt),
+            return_shape: scalar_shape(int).0,
+            return_lanes: vec![scalar_shape(int).1],
+            return_reprs: vec![AbiValueRepr::RawInt],
+            return_tuple_arity: None,
         }],
     };
 
@@ -217,10 +247,9 @@ fn compiler2_native_program_contract_maps_old_native_inputs_to_local_facts() {
                 entry_abi: NativeEntryAbi::Direct,
                 param_reprs: vec![AbiValueRepr::RawInt],
                 return_ty: int,
-                return_layout: TrashRuntimeValueLayout::Value {
-                    ty: int,
-                    repr: AbiValueRepr::RawInt,
-                },
+                return_position: executable_return_position(&executable),
+                return_reprs: vec![AbiValueRepr::RawInt],
+                return_tuple_arity: None,
                 value_types: HashMap::from([(Var(0), int)]),
                 callable_value_boundaries: HashMap::from([(Var(0), NativeCallableBoundaryId(0))]),
                 extern_marshals: HashMap::from([(extern_site, ExternTy::CString)]),
@@ -235,10 +264,9 @@ fn compiler2_native_program_contract_maps_old_native_inputs_to_local_facts() {
                 entry_abi: NativeEntryAbi::Continuation { extra_params: 1 },
                 param_reprs: vec![AbiValueRepr::ValueRef],
                 return_ty: int,
-                return_layout: TrashRuntimeValueLayout::Value {
-                    ty: int,
-                    repr: AbiValueRepr::ValueRef,
-                },
+                return_position: executable_return_position(&executable),
+                return_reprs: vec![AbiValueRepr::ValueRef],
+                return_tuple_arity: None,
                 value_types: HashMap::from([(Var(1), int)]),
                 callable_value_boundaries: HashMap::new(),
                 extern_marshals: HashMap::new(),
@@ -254,7 +282,10 @@ fn compiler2_native_program_contract_maps_old_native_inputs_to_local_facts() {
             capture_reprs: Vec::new(),
             arg_reprs: vec![AbiValueRepr::RawInt],
             return_ty: int,
-            return_abi: TrashReturnAbi::Value(AbiValueRepr::RawInt),
+            return_shape: scalar_shape(int).0,
+            return_lanes: vec![scalar_shape(int).1],
+            return_reprs: vec![AbiValueRepr::RawInt],
+            return_tuple_arity: None,
         }],
     };
 
@@ -272,12 +303,9 @@ fn compiler2_native_program_contract_maps_old_native_inputs_to_local_facts() {
         "native codegen should read effective return types from NativeBody.return_ty instead of ModulePlan.effective_returns",
     );
     assert_eq!(
-        program.bodies[0].return_layout,
-        TrashRuntimeValueLayout::Value {
-            ty: int,
-            repr: AbiValueRepr::RawInt
-        },
-        "native codegen should read return transport from NativeBody.return_layout instead of re-deriving it through planner state",
+        program.bodies[0].return_reprs,
+        vec![AbiValueRepr::RawInt],
+        "native codegen should read return lane reprs from NativeBody instead of re-deriving them through planner state",
     );
     assert_eq!(
         program.bodies[0].value_types.get(&Var(0)),
@@ -322,6 +350,10 @@ fn compiler2_native_program_contract_treats_old_extern_semantics_as_cleanup_not_
     let mut types = Types::new();
     let int = types.int();
     let (_, _, stub_activation) = stub_activation_key(&mut types, vec![int]);
+    let executable = ExecutableKey {
+        activation: stub_activation,
+        need: ExecutableNeed::Value,
+    };
     let entry_fn = FnId(0);
 
     let mut legacy_types = crate::types::new();
@@ -371,17 +403,13 @@ fn compiler2_native_program_contract_treats_old_extern_semantics_as_cleanup_not_
         module,
         bodies: vec![NativeBody {
             fn_id: entry_fn,
-            origin: NativeBodyOrigin::Executable(ExecutableKey {
-                activation: stub_activation,
-                need: ExecutableNeed::Value,
-            }),
+            origin: NativeBodyOrigin::Executable(executable.clone()),
             entry_abi: NativeEntryAbi::Direct,
             param_reprs: vec![AbiValueRepr::RawInt],
             return_ty: int,
-            return_layout: TrashRuntimeValueLayout::Value {
-                ty: int,
-                repr: AbiValueRepr::RawInt,
-            },
+            return_position: executable_return_position(&executable),
+            return_reprs: vec![AbiValueRepr::RawInt],
+            return_tuple_arity: None,
             value_types: HashMap::from([(Var(0), int)]),
             callable_value_boundaries: HashMap::new(),
             extern_marshals: HashMap::from([(marshal_site, ExternTy::CString)]),

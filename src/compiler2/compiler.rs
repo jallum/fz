@@ -152,7 +152,8 @@ impl<'a> Compiler2<'a> {
         self.drive_root_to(root, Job::LowerBackendProgram(root))?;
         let program = self.world.backend_program(root);
         let tel = self.world.tel();
-        crate::ir_interp::run_backend_main(self.world.types_mut(), tel, &program)
+        let (types, transport) = self.world.types_mut_and_transport();
+        crate::ir_interp::run_backend_main(types, transport, tel, &program)
     }
 
     /// Drives one root to `NativeProgram` and JIT-compiles it through the

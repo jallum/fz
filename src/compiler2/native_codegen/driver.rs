@@ -1062,11 +1062,9 @@ fn build_codegen_return_repr(body: &crate::compiler2::NativeBody) -> ArgRepr {
     // A single scalar value lane returns in its own repr; every other shape
     // (omitted, tuple fields, direct-callable lanes) returns through the ref
     // register. Divergence does not change the register repr.
-    match &body.return_layout {
-        crate::compiler2::TrashRuntimeValueLayout::Value { repr, .. } => arg_repr_from_compiler2(*repr),
-        crate::compiler2::TrashRuntimeValueLayout::Omitted
-        | crate::compiler2::TrashRuntimeValueLayout::TupleFields { .. }
-        | crate::compiler2::TrashRuntimeValueLayout::DirectCallable { .. } => ArgRepr::ValueRef,
+    match body.return_reprs.as_slice() {
+        [repr] if body.return_tuple_arity.is_none() => arg_repr_from_compiler2(*repr),
+        _ => ArgRepr::ValueRef,
     }
 }
 
@@ -1107,7 +1105,11 @@ fn build_codegen_callable_boundaries<T: Types<Ty = Ty> + ClosureTypes>(
                 .copied()
                 .map(arg_repr_from_compiler2)
                 .collect(),
-            return_shape: trash_delivered_shape_from_return_abi(&boundary.return_abi),
+            return_shape: trash_delivered_shape_from_return_contract(
+                t.is_empty(&boundary.return_ty),
+                &boundary.return_reprs,
+                boundary.return_tuple_arity,
+            ),
         };
         if let Some(previous) = boundaries.insert(boundary_id, next.clone()) {
             debug_assert_eq!(previous, next);
@@ -1305,7 +1307,11 @@ fn prepare_native_codegen_surface_from_native_program<'a>(
         });
         param_reprs[codegen_id] = body.param_reprs.iter().copied().map(arg_repr_from_compiler2).collect();
         return_reprs[codegen_id] = build_codegen_return_repr(body);
-        return_shapes[codegen_id] = trash_delivered_shape_from_layout(t.is_empty(&body.return_ty), &body.return_layout);
+        return_shapes[codegen_id] = trash_delivered_shape_from_return_contract(
+            t.is_empty(&body.return_ty),
+            &body.return_reprs,
+            body.return_tuple_arity,
+        );
     }
 
     let callable_boundaries = build_codegen_callable_boundaries(t, program);
@@ -1531,15 +1537,6 @@ pub(crate) fn compile_with_backend_surface<
                 &crate::metadata! {
                     entry: crate::telemetry::opaque(&entry),
                 },
-            );
-        }
-        #[cfg(test)]
-        if matches!(body_slot.fn_id.0, 1 | 6 | 39 | 41 | 56 | 57 | 58 | 59) {
-            eprintln!(
-                "clif fn {} {}:\n{}",
-                body_slot.fn_id.0,
-                display_name,
-                ctx.func.display()
             );
         }
         cranelift_codegen::verifier::verify_function(&ctx.func, verifier_isa.as_ref()).map_err(|e| {

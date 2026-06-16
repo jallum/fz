@@ -215,7 +215,7 @@ pub enum TransportPosition {
     },
     ResumePayload {
         executable: ExecutableSymbol,
-        callsite: CallSiteId,
+        callsite: Option<CallSiteId>,
         entry: ControlEntryId,
     },
     CallArg {

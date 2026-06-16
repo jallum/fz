@@ -20,7 +20,8 @@ use super::super::artifact::{
     BackendExecutable, BackendProgram, BackendStep, BackendTail,
 };
 use super::super::body::{
-    CallArg, CallSiteId, ControlEntryOrigin, LoweredBody, LoweredClause, LoweredEntry, LoweredStep, LoweredTail,
+    CallArg, CallSiteId, ControlEntryId, ControlEntryOrigin, LoweredBody, LoweredClause, LoweredEntry, LoweredStep,
+    LoweredTail,
 };
 use super::super::drive::{FactKey, Job, JobEffects, settled_uses};
 use super::super::identity::RootId;
@@ -54,17 +55,21 @@ pub(super) fn lower_backend_program(world: &mut World<'_>, root_id: RootId) -> R
         .callable_entries
         .iter()
         .map(|entry| BackendCallableEntry {
+            boundary: entry.boundary,
             target: entry.target,
             capture_count: entry.capture_count,
             capture_reprs: entry.capture_reprs.clone(),
             arg_reprs: entry.arg_reprs.clone(),
             return_ty: entry.return_ty,
-            return_abi: entry.return_abi.clone(),
+            return_shape: entry.return_shape,
+            return_lanes: entry.return_lanes.clone(),
         })
         .collect();
     let program = BackendProgram {
         emission_ready_revision,
+        transport_revision: emission_ready.transport_revision,
         entry: emission_ready.entry,
+        transport: emission_ready.transport,
         atom_names: collect_backend_atom_names(lowerer.world, &executables),
         struct_schemas: lowerer.world.struct_schemas(),
         executables,
@@ -105,10 +110,7 @@ impl<'a, 'tel> BackendLowerer<'a, 'tel> {
             return_ty: executable.return_ty,
             param_reprs: executable.param_reprs.clone(),
             runtime_demand: executable.runtime_demand.clone(),
-            runtime_params: executable.runtime_params.clone(),
-            return_layout: executable.return_layout.clone(),
-            resume_layouts: executable.resume_layouts.clone(),
-            entry_capture_layouts: executable.entry_capture_layouts.clone(),
+            transport: executable.transport.clone(),
             value_types: executable.value_types.clone(),
             value_reprs: executable.value_reprs.clone(),
             effects: executable.effects,
@@ -166,12 +168,27 @@ impl<'a, 'tel> BackendLowerer<'a, 'tel> {
         entry_index: usize,
         entry: &LoweredEntry,
     ) -> Result<BackendEntry, FatalError> {
+        let entry_id = original_entry_id(executable, entry_index);
         Ok(BackendEntry {
             span: entry.span,
             origin: lower_entry_origin(executable, entry_index, entry),
             params: entry.params.clone(),
             captures: entry.captures.clone(),
-            capture_layouts: executable.entry_capture_layouts[entry_index].clone(),
+            capture_positions: executable
+                .transport
+                .entry_capture_positions
+                .iter()
+                .filter(|position| {
+                    matches!(
+                        position,
+                        super::super::transport::TransportPosition::EntryCapture {
+                            entry: captured_entry,
+                            ..
+                        } if *captured_entry == entry_id
+                    )
+                })
+                .cloned()
+                .collect(),
             reusable_cons_captures: entry
                 .reusable_cons_captures
                 .iter()
@@ -418,17 +435,43 @@ fn lower_entry_origin(
     entry_index: usize,
     entry: &LoweredEntry,
 ) -> BackendEntryOrigin {
+    let entry_id = original_entry_id(executable, entry_index);
     match entry.origin {
         ControlEntryOrigin::Clause => BackendEntryOrigin::Clause,
         ControlEntryOrigin::Branch => BackendEntryOrigin::Branch,
         ControlEntryOrigin::ReceiveOutcome => BackendEntryOrigin::ReceiveOutcome,
         ControlEntryOrigin::DeliveredResume { value } => BackendEntryOrigin::DeliveredResume {
             value,
-            layout: executable.resume_layouts[entry_index]
-                .clone()
-                .unwrap_or_else(|| panic!("resume entry {entry_index} should have a settled input layout: {entry:?}")),
+            position: executable
+                .transport
+                .resume_positions
+                .iter()
+                .find(|position| {
+                    matches!(
+                        position,
+                        super::super::transport::TransportPosition::ResumePayload {
+                            entry: resume_entry,
+                            ..
+                        } if *resume_entry == entry_id
+                    )
+                })
+                .cloned()
+                .unwrap_or_else(|| {
+                    panic!("resume entry {entry_index} should have a settled transport position: {entry:?}")
+                }),
         },
     }
+}
+
+fn original_entry_id(
+    executable: &super::super::artifact::EmissionReadyExecutable,
+    entry_index: usize,
+) -> ControlEntryId {
+    executable
+        .original_entry_ids
+        .get(entry_index)
+        .copied()
+        .unwrap_or_else(|| ControlEntryId::from_u32(entry_index as u32))
 }
 
 fn call_edge(

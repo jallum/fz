@@ -323,6 +323,10 @@ impl<'a> World<'a> {
         &mut self.types
     }
 
+    pub(crate) fn types_mut_and_transport(&mut self) -> (&mut Types, &TransportStore) {
+        (&mut self.types, &self.transport)
+    }
+
     pub fn transport(&self) -> &TransportStore {
         &self.transport
     }
@@ -962,15 +966,17 @@ impl<'a> World<'a> {
         let omitted_inputs = program
             .executables
             .values()
-            .map(|executable| {
-                executable
-                    .runtime_params
-                    .inputs
-                    .iter()
-                    .filter(|input| matches!(input.layout, super::artifact::TrashRuntimeValueLayout::Omitted))
-                    .count() as u64
+            .flat_map(|executable| executable.transport.input_positions.iter())
+            .filter(|position| {
+                program.transport.position_shapes.iter().any(|(candidate, shape)| {
+                    candidate == *position
+                        && matches!(
+                            self.transport.interners().shape(*shape),
+                            super::transport::ShapeDescr::Nothing
+                        )
+                })
             })
-            .sum::<u64>();
+            .count() as u64;
         self.tel.execute(
             &["fz", "compiler2", "abi_ready_program", "defined"],
             &measurements! {
@@ -1127,6 +1133,7 @@ impl<'a> World<'a> {
         let value = source.lend_process(|process| {
             crate::ir_interp::run_backend_entry_on_process(
                 &mut self.types,
+                &self.transport,
                 self.tel,
                 &executable.program,
                 process,

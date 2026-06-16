@@ -48,7 +48,7 @@ pub use artifact::{
     BackendProgram, BackendProgramMap, BackendReceive, BackendStep, BackendTail, CallTarget, CallableEntry,
     EmissionReadyCallEdge, EmissionReadyCallableEntry, EmissionReadyExecutable, EmissionReadyProgram,
     EmissionReadyProgramMap, ExecutableDispatch, MaterializedCallEdge, MaterializedExecutable, MaterializedProgram,
-    MaterializedProgramMap, TrashReturnAbi, TrashRuntimeInputLayout, TrashRuntimeParamLayout, TrashRuntimeValueLayout,
+    MaterializedProgramMap,
 };
 pub(crate) use artifact::{NativeBody, NativeProgram};
 pub use body::{

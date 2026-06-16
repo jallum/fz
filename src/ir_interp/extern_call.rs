@@ -218,6 +218,7 @@ fn call_variadic_extern(
 pub(super) fn call_lowered_extern(
     runtime: &mut IrInterpRuntime,
     types: &mut crate::compiler2::Types,
+    transport: &crate::compiler2::transport::TransportStore,
     tel: &dyn Telemetry,
     program: &crate::compiler2::BackendProgram,
     module: &Module,
@@ -313,7 +314,7 @@ pub(super) fn call_lowered_extern(
                 return Err(format!("fz_send/2 got {} args", args.len()));
             }
             let receiver = args[0].as_i64().ok_or_else(|| "send/2: pid must be Int".to_string())? as u32;
-            runtime.send_opaque(types, tel, program, module, receiver, args[1])?;
+            runtime.send_opaque(types, transport, tel, program, module, receiver, args[1])?;
             return Ok(args[1]);
         }
         "fz_make_resource" => {

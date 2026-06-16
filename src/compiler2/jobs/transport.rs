@@ -53,7 +53,7 @@ struct LocalCallableProducer {
 struct ResumeEntry {
     entry: ControlEntryId,
     value: ValueId,
-    callsite: CallSiteId,
+    callsite: Option<CallSiteId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -212,7 +212,9 @@ pub(super) fn derive_transport_plan(world: &mut World<'_>, root_id: RootId) -> R
             local_sources.insert(value, TransportSource::CallsiteReturn(callsite));
         }
         for resume in &resume_entries {
-            local_sources.insert(resume.value, TransportSource::CallsiteReturn(resume.callsite));
+            if let Some(callsite) = resume.callsite {
+                local_sources.insert(resume.value, TransportSource::CallsiteReturn(callsite));
+            }
         }
         contexts.insert(
             executable.clone(),
@@ -542,7 +544,11 @@ fn derive_codegen_seam_facts(
                         lane,
                         repr,
                     });
-                    if let TransportPosition::ResumePayload { callsite, .. } = position {
+                    if let TransportPosition::ResumePayload {
+                        callsite: Some(callsite),
+                        ..
+                    } = position
+                    {
                         out.push(CodegenSeamFact {
                             seam: CodegenSeam::ContinuationEntry {
                                 executable: executable.clone(),
@@ -1054,7 +1060,7 @@ fn collect_resume_entries(body: &LoweredBody, analysis: &ActivationAnalysis) -> 
             Some(ResumeEntry {
                 entry: entry_id,
                 value,
-                callsite: *deliver_callsites.get(&entry_id)?,
+                callsite: deliver_callsites.get(&entry_id).copied(),
             })
         })
         .collect()
@@ -1580,8 +1586,11 @@ fn callable_for_producer(
     let capture_lanes = capture_shapes
         .iter()
         .copied()
-        .zip(capture_tys.iter().copied())
-        .flat_map(|(shape, ty)| boundary_lanes_for_shape(world, shape, ty))
+        .flat_map(|shape| {
+            lanes_for_codegen_seam_shape(world, shape)
+                .into_iter()
+                .map(|(_, lane)| lane)
+        })
         .collect::<Vec<_>>();
     let callable = world.transport_mut().interners_mut().intern_callable(CallableDescr {
         function: Some(producer.function),
@@ -2050,7 +2059,10 @@ fn resume_shape(
         context,
         value_ty,
         demand,
-        TransportSource::CallsiteReturn(resume.callsite),
+        resume
+            .callsite
+            .map(TransportSource::CallsiteReturn)
+            .unwrap_or(TransportSource::LocalValue(resume.value)),
         publication,
     )
 }

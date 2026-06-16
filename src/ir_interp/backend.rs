@@ -10,9 +10,10 @@ use super::value::{
     interp_struct_field_from_tagged_bits, interp_value_from_ref_word, with_value_ref,
 };
 use super::*;
+use crate::compiler2::transport::{ShapeDescr, ShapeId, TransportPosition, TransportStore};
 use crate::compiler2::{
     BackendBody, BackendEntry, BackendExecutable, BackendProgram, BackendStep as ProgramStep, BackendTail, CallTarget,
-    ControlDestination, ExecutableDispatch, TrashRuntimeValueLayout, ValueId,
+    ControlDestination, ExecutableDispatch, ValueId,
 };
 use crate::compiler2::{ExecutableNeed, FunctionId};
 use crate::exec::runtime::output_hook_thunk;
@@ -63,6 +64,7 @@ type DispatchMatch = (u32, Vec<(String, AnyValue)>);
 /// runtime without reopening planner or type-resolution work.
 pub(crate) fn run_backend_main(
     types: &mut crate::compiler2::Types,
+    transport: &TransportStore,
     tel: &dyn Telemetry,
     program: &BackendProgram,
 ) -> Result<i64, String> {
@@ -73,7 +75,7 @@ pub(crate) fn run_backend_main(
         ..Module::default()
     };
     runtime.enqueue_backend_entry(1, program.entry, Vec::new())?;
-    let completions = drive_backend_until_idle(&mut runtime, types, tel, program, &module, None)?;
+    let completions = drive_backend_until_idle(&mut runtime, types, transport, tel, program, &module, None)?;
     let halt_val = completions
         .iter()
         .rev()
@@ -91,6 +93,7 @@ pub(crate) fn run_backend_main(
 
 pub(crate) fn run_backend_entry_on_process(
     types: &mut crate::compiler2::Types,
+    transport: &TransportStore,
     tel: &dyn Telemetry,
     program: &BackendProgram,
     process: Process,
@@ -109,7 +112,7 @@ pub(crate) fn run_backend_entry_on_process(
     };
     let result = (|| {
         runtime.enqueue_backend_entry(1, program.entry, args)?;
-        let completions = drive_backend_until_idle(&mut runtime, types, tel, program, &module, Some(1))?;
+        let completions = drive_backend_until_idle(&mut runtime, types, transport, tel, program, &module, Some(1))?;
         completions
             .into_iter()
             .rev()
@@ -200,6 +203,7 @@ impl IrInterpRuntime {
     pub(super) fn send_opaque(
         &mut self,
         types: &mut crate::compiler2::Types,
+        transport: &TransportStore,
         tel: &dyn Telemetry,
         program: &BackendProgram,
         module: &Module,
@@ -232,7 +236,16 @@ impl IrInterpRuntime {
                     .clauses
                     .get(clause_index)
                     .ok_or_else(|| format!("backend parked receive clause {} is out of bounds", clause_index))?;
-                let env = delivered_env(self, entries, &park.env, clause.entry, None, &bound_values)?;
+                let env = delivered_env(
+                    self,
+                    transport,
+                    program,
+                    entries,
+                    &park.env,
+                    clause.entry,
+                    None,
+                    &bound_values,
+                )?;
                 self.enqueue_backend_local_entry(receiver_pid, park.executable, clause.entry, env, park.continuations)?;
                 return Ok(());
             }
@@ -257,6 +270,7 @@ impl IrInterpRuntime {
 fn drive_backend_until_idle(
     runtime: &mut IrInterpRuntime,
     types: &mut crate::compiler2::Types,
+    transport: &TransportStore,
     tel: &dyn Telemetry,
     program: &BackendProgram,
     module: &Module,
@@ -285,7 +299,7 @@ fn drive_backend_until_idle(
             (*proc_ptr).attach_heap_owner();
         }
         runtime.current_proc = proc_ptr;
-        match run_backend_resume(runtime, types, tel, program, module, resume)? {
+        match run_backend_resume(runtime, types, transport, tel, program, module, resume)? {
             BackendRunStep::Done(value) => {
                 completions.push((pid, value));
                 if keepalive_pid == Some(pid) {
@@ -295,7 +309,7 @@ fn drive_backend_until_idle(
                 unsafe {
                     mso_drop_all_deferred(&mut (*proc_ptr).heap);
                 }
-                if let Err(e) = drain_pending_dtors_backend(runtime, types, tel, program, module) {
+                if let Err(e) = drain_pending_dtors_backend(runtime, types, transport, tel, program, module) {
                     tel.event(&["fz", "runtime", "dtor_drain_failed"], crate::metadata! { error: e });
                 }
                 unsafe {
@@ -316,6 +330,7 @@ fn drive_backend_until_idle(
 fn run_backend_resume(
     runtime: &mut IrInterpRuntime,
     types: &mut crate::compiler2::Types,
+    transport: &TransportStore,
     tel: &dyn Telemetry,
     program: &BackendProgram,
     module: &Module,
@@ -350,7 +365,17 @@ fn run_backend_resume(
                 executable,
                 args,
                 continuations,
-            } => step_backend_executable(runtime, types, tel, program, module, executable, args, continuations)?,
+            } => step_backend_executable(
+                runtime,
+                types,
+                transport,
+                tel,
+                program,
+                module,
+                executable,
+                args,
+                continuations,
+            )?,
             BackendEvalState::Entry {
                 executable,
                 entry,
@@ -367,6 +392,7 @@ fn run_backend_resume(
                 step_eval_entry(
                     runtime,
                     types,
+                    transport,
                     tel,
                     program,
                     module,
@@ -389,6 +415,7 @@ fn run_backend_resume(
 
 fn continue_backend_value(
     runtime: &mut IrInterpRuntime,
+    transport: &TransportStore,
     program: &BackendProgram,
     value: TrashBackendValue,
     mut continuations: Vec<BackendContinuation>,
@@ -412,7 +439,16 @@ fn continue_backend_value(
     Ok(BackendEvalTransition::Next(BackendEvalState::Entry {
         executable: frame.executable,
         entry: frame.entry,
-        env: delivered_env(runtime, entries, &frame.env, frame.entry, Some(value), &[])?,
+        env: delivered_env(
+            runtime,
+            transport,
+            program,
+            entries,
+            &frame.env,
+            frame.entry,
+            Some(value),
+            &[],
+        )?,
         continuations,
     }))
 }
@@ -420,6 +456,7 @@ fn continue_backend_value(
 fn step_backend_executable(
     runtime: &mut IrInterpRuntime,
     types: &mut crate::compiler2::Types,
+    transport: &TransportStore,
     tel: &dyn Telemetry,
     program: &BackendProgram,
     module: &Module,
@@ -433,11 +470,17 @@ fn step_backend_executable(
         .ok_or_else(|| format!("backend executable {} is out of bounds", executable_index))?;
     match &executable.body {
         BackendBody::Extern { signature } => {
-            let value = call_lowered_extern(runtime, types, tel, program, module, signature, None, &args)?;
-            continue_backend_value(runtime, program, TrashBackendValue::Runtime(value), continuations)
+            let value = call_lowered_extern(runtime, types, transport, tel, program, module, signature, None, &args)?;
+            continue_backend_value(
+                runtime,
+                transport,
+                program,
+                TrashBackendValue::Runtime(value),
+                continuations,
+            )
         }
         BackendBody::Clauses { clauses, entries, .. } => {
-            let semantic_inputs = bind_executable_inputs(executable, &args)?;
+            let semantic_inputs = bind_executable_inputs(transport, program, executable, &args)?;
             let clause_index = if clauses.len() == 1 {
                 0
             } else {
@@ -502,6 +545,7 @@ fn step_backend_executable(
             step_eval_entry(
                 runtime,
                 types,
+                transport,
                 tel,
                 program,
                 module,
@@ -588,6 +632,7 @@ fn select_dispatch_match(
 fn step_eval_entry(
     runtime: &mut IrInterpRuntime,
     types: &mut crate::compiler2::Types,
+    transport: &TransportStore,
     tel: &dyn Telemetry,
     program: &BackendProgram,
     module: &Module,
@@ -629,11 +674,13 @@ fn step_eval_entry(
         BackendTail::Value { value, dest } => {
             let result = env_get_value(&env, *value)?;
             match dest {
-                ControlDestination::Return => continue_backend_value(runtime, program, result, continuations),
+                ControlDestination::Return => {
+                    continue_backend_value(runtime, transport, program, result, continuations)
+                }
                 ControlDestination::Deliver(target) => Ok(BackendEvalTransition::Next(BackendEvalState::Entry {
                     executable: executable_index,
                     entry: *target,
-                    env: delivered_env(runtime, entries, &env, *target, Some(result), &[])?,
+                    env: delivered_env(runtime, transport, program, entries, &env, *target, Some(result), &[])?,
                     continuations,
                 })),
             }
@@ -648,6 +695,7 @@ fn step_eval_entry(
             CallTarget::Local(callee) => eval_direct_call(
                 runtime,
                 types,
+                transport,
                 tel,
                 program,
                 module,
@@ -713,9 +761,7 @@ fn step_eval_entry(
             // Capture lanes are already the flat ABI lanes for the callee's leading
             // capture inputs; forward them directly. The capture/arg split is the
             // callee's fact: total inputs minus the explicit call args.
-            let arg_inputs_start = callee_executable
-                .runtime_params
-                .inputs
+            let arg_inputs_start = executable_input_shapes(program, callee_executable)?
                 .len()
                 .checked_sub(args.len())
                 .ok_or_else(|| {
@@ -729,6 +775,8 @@ fn step_eval_entry(
                 flatten_backend_value_to_lanes(runtime.cur_proc(), capture, &mut call_args)?;
             }
             call_args.extend(encode_call_args(
+                transport,
+                program,
                 runtime,
                 callee_executable,
                 &env,
@@ -766,7 +814,7 @@ fn step_eval_entry(
             Ok(BackendEvalTransition::Next(BackendEvalState::Entry {
                 executable: executable_index,
                 entry: target,
-                env: delivered_env(runtime, entries, &env, target, None, &[])?,
+                env: delivered_env(runtime, transport, program, entries, &env, target, None, &[])?,
                 continuations,
             }))
         }
@@ -788,7 +836,7 @@ fn step_eval_entry(
             Ok(BackendEvalTransition::Next(BackendEvalState::Entry {
                 executable: executable_index,
                 entry: target,
-                env: delivered_env(runtime, entries, &env, target, None, &[])?,
+                env: delivered_env(runtime, transport, program, entries, &env, target, None, &[])?,
                 continuations,
             }))
         }
@@ -819,7 +867,16 @@ fn step_eval_entry(
                 return Ok(BackendEvalTransition::Next(BackendEvalState::Entry {
                     executable: executable_index,
                     entry: clause.entry,
-                    env: delivered_env(runtime, entries, &env, clause.entry, None, &bound_values)?,
+                    env: delivered_env(
+                        runtime,
+                        transport,
+                        program,
+                        entries,
+                        &env,
+                        clause.entry,
+                        None,
+                        &bound_values,
+                    )?,
                     continuations,
                 }));
             }
@@ -829,7 +886,7 @@ fn step_eval_entry(
                 return Ok(BackendEvalTransition::Next(BackendEvalState::Entry {
                     executable: executable_index,
                     entry: after.entry,
-                    env: delivered_env(runtime, entries, &env, after.entry, None, &[])?,
+                    env: delivered_env(runtime, transport, program, entries, &env, after.entry, None, &[])?,
                     continuations,
                 }));
             }
@@ -1268,6 +1325,8 @@ fn rebuild_backend_list_from_source(
 
 fn delivered_env(
     runtime: &mut IrInterpRuntime,
+    transport: &TransportStore,
+    program: &BackendProgram,
     entries: &[BackendEntry],
     env: &HashMap<ValueId, TrashBackendValue>,
     entry_id: crate::compiler2::ControlEntryId,
@@ -1293,8 +1352,9 @@ fn delivered_env(
         crate::compiler2::BackendEntryOrigin::Clause
         | crate::compiler2::BackendEntryOrigin::Branch
         | crate::compiler2::BackendEntryOrigin::ReceiveOutcome => {}
-        crate::compiler2::BackendEntryOrigin::DeliveredResume { value, layout } => {
-            let bound = bind_delivered_value(runtime.cur_proc(), entry_id, delivered.as_ref(), layout)?;
+        crate::compiler2::BackendEntryOrigin::DeliveredResume { value, position } => {
+            let shape = position_shape(program, position)?;
+            let bound = bind_delivered_value(transport, runtime.cur_proc(), entry_id, delivered.as_ref(), shape)?;
             if let Some(bound) = bound {
                 next.insert(*value, bound);
             }
@@ -1312,6 +1372,7 @@ fn delivered_env(
 fn eval_direct_call(
     runtime: &mut IrInterpRuntime,
     types: &mut crate::compiler2::Types,
+    transport: &TransportStore,
     tel: &dyn Telemetry,
     program: &BackendProgram,
     module: &Module,
@@ -1327,7 +1388,7 @@ fn eval_direct_call(
         .executables
         .get(callee)
         .ok_or_else(|| format!("backend direct callee {} is out of bounds", callee))?;
-    let call_args = encode_call_args(runtime, executable, &env, args, 0)?;
+    let call_args = encode_call_args(transport, program, runtime, executable, &env, args, 0)?;
     let continuations = match dest {
         ControlDestination::Return => continuations,
         ControlDestination::Deliver(target) => {
@@ -1349,6 +1410,7 @@ fn eval_direct_call(
         BackendBody::Extern { signature } => call_lowered_extern(
             runtime,
             types,
+            transport,
             tel,
             program,
             module,
@@ -1356,7 +1418,15 @@ fn eval_direct_call(
             extern_marshals,
             &call_args,
         )
-        .and_then(|value| continue_backend_value(runtime, program, TrashBackendValue::Runtime(value), continuations)),
+        .and_then(|value| {
+            continue_backend_value(
+                runtime,
+                transport,
+                program,
+                TrashBackendValue::Runtime(value),
+                continuations,
+            )
+        }),
         BackendBody::Clauses { .. } => Ok(BackendEvalTransition::Next(BackendEvalState::Executable {
             executable: callee,
             args: call_args,
@@ -1469,15 +1539,16 @@ fn env_get_value(env: &HashMap<ValueId, TrashBackendValue>, value: ValueId) -> R
 }
 
 fn bind_executable_inputs(
+    transport: &TransportStore,
+    program: &BackendProgram,
     executable: &BackendExecutable,
     args: &[AnyValue],
 ) -> Result<Vec<Option<TrashBackendValue>>, String> {
     let semantic_arity = executable.key.activation.input.len();
     let mut bound = vec![None; semantic_arity];
     let mut lane_index = 0;
-    for input in &executable.runtime_params.inputs {
-        let semantic_index = input.semantic_index();
-        let value = decode_runtime_input(executable, args, input.value_layout(), &mut lane_index)?;
+    for (semantic_index, shape) in executable_input_shapes(program, executable)? {
+        let value = decode_runtime_input(transport, executable, args, shape, &mut lane_index)?;
         bound[semantic_index] = value;
     }
     if lane_index != args.len() {
@@ -1489,6 +1560,34 @@ fn bind_executable_inputs(
         ));
     }
     Ok(bound)
+}
+
+fn position_shape(program: &BackendProgram, position: &TransportPosition) -> Result<ShapeId, String> {
+    program
+        .transport
+        .position_shapes
+        .iter()
+        .find_map(|(candidate, shape)| (candidate == position).then_some(*shape))
+        .ok_or_else(|| format!("backend transport handoff did not publish shape for {position:?}"))
+}
+
+fn executable_input_shapes(
+    program: &BackendProgram,
+    executable: &BackendExecutable,
+) -> Result<Vec<(usize, ShapeId)>, String> {
+    let mut inputs = executable
+        .transport
+        .input_positions
+        .iter()
+        .filter_map(|position| {
+            let TransportPosition::ExecutableInput { semantic_index, .. } = position else {
+                return None;
+            };
+            Some(position_shape(program, position).map(|shape| (*semantic_index, shape)))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    inputs.sort_by_key(|(semantic_index, _)| *semantic_index);
+    Ok(inputs)
 }
 
 fn materialize_backend_value(proc: *mut Process, value: &TrashBackendValue) -> Result<AnyValue, String> {
@@ -1525,6 +1624,8 @@ fn materialize_call_args(
 }
 
 fn encode_call_args(
+    transport: &TransportStore,
+    program: &BackendProgram,
     runtime: &mut IrInterpRuntime,
     executable: &BackendExecutable,
     env: &HashMap<ValueId, TrashBackendValue>,
@@ -1541,24 +1642,26 @@ fn encode_call_args(
         ));
     }
     let mut lanes = Vec::new();
-    for (arg, layout) in args
-        .iter()
-        .zip(executable.runtime_params.inputs.iter().skip(semantic_start))
-    {
+    for (arg, (_, shape)) in args.iter().zip(
+        executable_input_shapes(program, executable)?
+            .into_iter()
+            .skip(semantic_start),
+    ) {
         let value = env_get_value(env, arg.value)?;
-        encode_runtime_value(runtime.cur_proc(), &value, layout.value_layout(), &mut lanes)?;
+        encode_runtime_value(transport, runtime.cur_proc(), &value, shape, &mut lanes)?;
     }
     Ok(lanes)
 }
 
 fn bind_delivered_value(
+    transport: &TransportStore,
     proc: *mut Process,
     entry_id: crate::compiler2::ControlEntryId,
     delivered: Option<&TrashBackendValue>,
-    layout: &TrashRuntimeValueLayout,
+    shape: ShapeId,
 ) -> Result<Option<TrashBackendValue>, String> {
-    match layout {
-        TrashRuntimeValueLayout::Omitted => Ok(None),
+    match transport.interners().shape(shape) {
+        ShapeDescr::Nothing => Ok(None),
         _ => {
             let delivered = delivered.ok_or_else(|| {
                 format!(
@@ -1566,32 +1669,34 @@ fn bind_delivered_value(
                     entry_id.as_u32()
                 )
             })?;
-            Ok(Some(project_backend_value(proc, delivered, layout)?))
+            Ok(Some(project_backend_value(transport, proc, delivered, shape)?))
         }
     }
 }
 
 fn decode_runtime_input(
+    transport: &TransportStore,
     executable: &BackendExecutable,
     args: &[AnyValue],
-    layout: &TrashRuntimeValueLayout,
+    shape: ShapeId,
     lane_index: &mut usize,
 ) -> Result<Option<TrashBackendValue>, String> {
-    match layout {
-        TrashRuntimeValueLayout::Omitted => Ok(None),
-        _ => decode_runtime_value(executable, args, layout, lane_index).map(Some),
+    match transport.interners().shape(shape) {
+        ShapeDescr::Nothing => Ok(None),
+        _ => decode_runtime_value(transport, executable, args, shape, lane_index).map(Some),
     }
 }
 
 fn decode_runtime_value(
+    transport: &TransportStore,
     executable: &BackendExecutable,
     args: &[AnyValue],
-    layout: &TrashRuntimeValueLayout,
+    shape: ShapeId,
     lane_index: &mut usize,
 ) -> Result<TrashBackendValue, String> {
-    match layout {
-        TrashRuntimeValueLayout::Omitted => Ok(TrashBackendValue::Omitted),
-        TrashRuntimeValueLayout::Value { .. } => {
+    match transport.interners().shape(shape) {
+        ShapeDescr::Nothing => Ok(TrashBackendValue::Omitted),
+        ShapeDescr::Lane(_) => {
             let value = *args.get(*lane_index).ok_or_else(|| {
                 format!(
                     "backend executable {} expected runtime lane {}",
@@ -1602,21 +1707,23 @@ fn decode_runtime_value(
             *lane_index += 1;
             Ok(TrashBackendValue::Runtime(value))
         }
-        TrashRuntimeValueLayout::TupleFields { fields } => Ok(TrashBackendValue::TupleFields(
+        ShapeDescr::Tuple(fields) => Ok(TrashBackendValue::TupleFields(
             fields
                 .iter()
-                .map(|field| decode_runtime_value(executable, args, field, lane_index))
+                .copied()
+                .map(|field| decode_runtime_value(transport, executable, args, field, lane_index))
                 .collect::<Result<Vec<_>, _>>()?,
         )),
-        TrashRuntimeValueLayout::DirectCallable {
-            function,
-            capture_lanes,
-        } => {
+        ShapeDescr::Callable(callable) => {
+            let callable = transport.interners().callable(*callable);
+            let function = callable.function.ok_or_else(|| {
+                "backend interpreter cannot decode generic callable shape as direct callable".to_string()
+            })?;
             // Direct-only callable arrives as flat transport lanes. Bind flat
             // raw-lane leaves; the captured structure is the callee's own fact,
             // not reconstructed here.
-            let mut captures = Vec::with_capacity(capture_lanes.len());
-            for _ in capture_lanes {
+            let mut captures = Vec::with_capacity(callable.capture_lanes.len());
+            for _ in callable.capture_lanes.iter() {
                 let value = *args.get(*lane_index).ok_or_else(|| {
                     format!(
                         "backend executable {} expected runtime lane {}",
@@ -1627,39 +1734,38 @@ fn decode_runtime_value(
                 *lane_index += 1;
                 captures.push(TrashBackendValue::Runtime(value));
             }
-            Ok(TrashBackendValue::DirectCallable {
-                function: *function,
-                captures,
-            })
+            Ok(TrashBackendValue::DirectCallable { function, captures })
         }
     }
 }
 
 fn project_backend_value(
+    transport: &TransportStore,
     proc: *mut Process,
     value: &TrashBackendValue,
-    layout: &TrashRuntimeValueLayout,
+    shape: ShapeId,
 ) -> Result<TrashBackendValue, String> {
-    match layout {
-        TrashRuntimeValueLayout::Omitted => Ok(TrashBackendValue::Omitted),
-        TrashRuntimeValueLayout::Value { .. } => Ok(materialize_runtime_projection(proc, value)?),
-        TrashRuntimeValueLayout::TupleFields { fields } => {
+    match transport.interners().shape(shape) {
+        ShapeDescr::Nothing => Ok(TrashBackendValue::Omitted),
+        ShapeDescr::Lane(_) => Ok(materialize_runtime_projection(proc, value)?),
+        ShapeDescr::Tuple(fields) => {
             let tuple_fields = tuple_fields_for_layout(proc, value, fields.len())?;
             Ok(TrashBackendValue::TupleFields(
                 tuple_fields
                     .iter()
-                    .zip(fields.iter())
-                    .map(|(field_value, field_layout)| project_backend_value(proc, field_value, field_layout))
+                    .zip(fields.iter().copied())
+                    .map(|(field_value, field_shape)| project_backend_value(transport, proc, field_value, field_shape))
                     .collect::<Result<Vec<_>, _>>()?,
             ))
         }
-        TrashRuntimeValueLayout::DirectCallable {
-            function,
-            capture_lanes,
-        } => {
-            let lanes = direct_callable_capture_lanes(proc, value, *function, capture_lanes.len())?;
+        ShapeDescr::Callable(callable) => {
+            let callable = transport.interners().callable(*callable);
+            let function = callable.function.ok_or_else(|| {
+                "backend interpreter cannot project generic callable shape as direct callable".to_string()
+            })?;
+            let lanes = direct_callable_capture_lanes(proc, value, function, callable.capture_lanes.len())?;
             Ok(TrashBackendValue::DirectCallable {
-                function: *function,
+                function,
                 captures: lanes.into_iter().map(TrashBackendValue::Runtime).collect(),
             })
         }
@@ -1779,29 +1885,31 @@ fn flatten_backend_value_to_lanes(
 }
 
 fn encode_runtime_value(
+    transport: &TransportStore,
     proc: *mut Process,
     value: &TrashBackendValue,
-    layout: &TrashRuntimeValueLayout,
+    shape: ShapeId,
     lanes: &mut Vec<AnyValue>,
 ) -> Result<(), String> {
-    match layout {
-        TrashRuntimeValueLayout::Omitted => Ok(()),
-        TrashRuntimeValueLayout::Value { .. } => {
+    match transport.interners().shape(shape) {
+        ShapeDescr::Nothing => Ok(()),
+        ShapeDescr::Lane(_) => {
             lanes.push(materialize_backend_value(proc, value)?);
             Ok(())
         }
-        TrashRuntimeValueLayout::TupleFields { fields } => {
+        ShapeDescr::Tuple(fields) => {
             let tuple_fields = tuple_fields_for_layout(proc, value, fields.len())?;
-            for (field_value, field_layout) in tuple_fields.iter().zip(fields.iter()) {
-                encode_runtime_value(proc, field_value, field_layout, lanes)?;
+            for (field_value, field_shape) in tuple_fields.iter().zip(fields.iter().copied()) {
+                encode_runtime_value(transport, proc, field_value, field_shape, lanes)?;
             }
             Ok(())
         }
-        TrashRuntimeValueLayout::DirectCallable {
-            function,
-            capture_lanes,
-        } => {
-            let extracted = direct_callable_capture_lanes(proc, value, *function, capture_lanes.len())?;
+        ShapeDescr::Callable(callable) => {
+            let callable = transport.interners().callable(*callable);
+            let function = callable.function.ok_or_else(|| {
+                "backend interpreter cannot encode generic callable shape as direct callable".to_string()
+            })?;
+            let extracted = direct_callable_capture_lanes(proc, value, function, callable.capture_lanes.len())?;
             lanes.extend(extracted);
             Ok(())
         }
@@ -1874,6 +1982,7 @@ fn make_closure(runtime: &mut IrInterpRuntime, code: u32, captures: Vec<AnyValue
 fn drain_pending_dtors_backend(
     runtime: &mut IrInterpRuntime,
     types: &mut crate::compiler2::Types,
+    transport: &TransportStore,
     tel: &dyn Telemetry,
     program: &BackendProgram,
     module: &Module,
@@ -1909,6 +2018,7 @@ fn drain_pending_dtors_backend(
         let _ = run_backend_resume(
             runtime,
             types,
+            transport,
             tel,
             program,
             module,
