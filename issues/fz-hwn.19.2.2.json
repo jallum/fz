@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-hwn.19.2.1"
+  ],
   "blocks": [],
   "created": "2026-06-16T05:14:49Z",
   "description": "Goal\nChange the first artifact rung so MaterializedProgram is a closed program snapshot plus references into TransportPlan(root), not a carrier of recursive TrashRuntime* layout trees.\n\nRequired change\nMaterializeRoot waits for settled SemanticClosed(root) and TransportPlan(root). It records the transport plan revision and the stable transport references/fact ids needed by later artifact rungs: executable membership, function-entry positions, return positions, resume payload positions, entry-capture positions, call-arg positions, callable ids, boundary ids, and seam-fact lookup keys. It must not copy ShapeDescr trees into artifact as a new authority; it may hold ShapeId/TransportPosition/CallableId/BoundaryId and already-published fact rows when that is the artifact handoff contract.\n\nDeletion in the same commit\nRemove MaterializeRoot's dummy TrashRuntimeParamLayout/TrashRuntimeValueLayout initialization and the derive_runtime_transports writeback for inputs, returns, resumes, and entry captures. Delete the portions of derive_runtime_transports that only exist to populate MaterializedExecutable runtime_params, return_layout, resume_layouts, and entry_capture_layouts. If any part cannot be deleted because a later rung still consumes it, that later rung belongs in this same ticket or must be named explicitly by the next child ticket before this closes.\n\nNo bridge rule\nDo not build TrashRuntimeValueLayout from ShapeId to keep old fields alive. Do not build ShapeId from TrashRuntimeValueLayout. The artifact data model changes at the seam.\n\nTests\nThe fz-hwn.19.2.1 worked examples must pass through MaterializedProgram without artifact calculating a layout. Add focused assertions that MaterializedProgram has plan-backed transport references and lacks recursive transport-tree fields for the migrated seam.\n\nChecks\ncargo test for the targeted artifact/transport tests; cargo check --all-targets; rg confirms MaterializeRoot no longer calls derive_runtime_transports or constructs TrashRuntimeParamLayout/TrashRuntimeValueLayout.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Artifact seam: replace MaterializedProgram transport trees with plan references",
   "type": "task",
-  "updated_at": "2026-06-16T05:14:49Z"
+  "updated_at": "2026-06-16T05:15:33Z"
 }
