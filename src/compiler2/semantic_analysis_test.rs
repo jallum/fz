@@ -476,6 +476,12 @@ fn main(), do: make()
         "a callable that escapes should be first-class at runtime: {demand:?}",
     );
     assert!(
+        demand.callable_flows.values().any(|flow| {
+            flow.escape && !flow.opaque && flow.direct_surfaces.is_empty() && flow.first_class_surfaces.is_empty()
+        }),
+        "an escaped callable with no known call surface should publish an explicit first-class upstream flow: {demand:?}",
+    );
+    assert!(
         record.first_class_callable_materializations >= 1,
         "runtime-demand telemetry should count first-class callable materialization",
     );
@@ -626,6 +632,12 @@ end
         }),
         "the local lambda passed through the opaque call should be a first-class runtime obligation: {demand:?}",
     );
+    assert!(
+        demand.callable_flows.values().any(|flow| {
+            flow.escape && !flow.opaque && flow.direct_surfaces.is_empty() && flow.first_class_surfaces.is_empty()
+        }),
+        "the opaque-call argument should publish first-class callable-flow evidence before transport: {demand:?}",
+    );
 }
 
 #[test]
@@ -692,6 +704,20 @@ fn main(), do: make()
             })
         }),
         "the reducer direct-call surface should be proven upstream before transport: {:?}",
+        record.runtime_demands
+    );
+    assert!(
+        record.runtime_demands.values().any(|demand| {
+            demand.callable_flows.values().any(|flow| {
+                flow.direct_surfaces.iter().any(|surface| surface.inputs.len() == 2)
+                    && !flow.resolutions.is_empty()
+                    && flow.resolutions.iter().all(|resolution| {
+                        resolution.activation.input.len() == 2
+                            && resolution.activation.input[0] == resolution.activation.input[1]
+                    })
+            })
+        }),
+        "the reducer callable-flow fact should carry direct surfaces and canonical executable resolutions upstream: {:?}",
         record.runtime_demands
     );
 }

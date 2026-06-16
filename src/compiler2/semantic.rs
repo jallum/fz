@@ -265,6 +265,46 @@ impl CallableMaterialization {
     }
 }
 
+/// Upstream callable-flow evidence for one local callable producer.
+///
+/// Transport may project these facts, but it must not rediscover them from
+/// callable type or lowered callsites.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CallableFlowFact {
+    pub function: FunctionId,
+    pub captures: Box<[ValueId]>,
+    pub direct_surfaces: BTreeSet<CallableSurface>,
+    pub first_class_surfaces: BTreeSet<CallableSurface>,
+    pub opaque: bool,
+    pub escape: bool,
+    pub resolutions: Vec<ExecutableKey>,
+}
+
+impl CallableFlowFact {
+    pub(crate) fn alpha_normalize(&mut self, types: &mut Types) {
+        self.direct_surfaces = alpha_normalized_surfaces(types, &self.direct_surfaces);
+        self.first_class_surfaces = alpha_normalized_surfaces(types, &self.first_class_surfaces);
+        for resolution in &mut self.resolutions {
+            resolution.activation.input = resolution
+                .activation
+                .input
+                .iter()
+                .copied()
+                .map(|ty| types.alpha_normalize_vars(&ty))
+                .collect();
+        }
+    }
+}
+
+fn alpha_normalized_surfaces(types: &mut Types, surfaces: &BTreeSet<CallableSurface>) -> BTreeSet<CallableSurface> {
+    let mut normalized = BTreeSet::new();
+    for mut surface in surfaces.clone() {
+        surface.alpha_normalize(types);
+        normalized.insert(surface);
+    }
+    normalized
+}
+
 /// The full runtime-demand projection for one analyzed executable.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ExecutableRuntimeDemand {
@@ -274,6 +314,7 @@ pub struct ExecutableRuntimeDemand {
     pub entry_capture_demands: HashMap<ControlEntryId, Vec<RuntimeDemand>>,
     pub call_arg_demands: HashMap<CallSiteId, Vec<RuntimeDemand>>,
     pub callable_materializations: HashMap<ValueId, CallableMaterialization>,
+    pub callable_flows: HashMap<ValueId, CallableFlowFact>,
 }
 
 impl ExecutableRuntimeDemand {
@@ -297,6 +338,9 @@ impl ExecutableRuntimeDemand {
         }
         for materialization in self.callable_materializations.values_mut() {
             materialization.alpha_normalize(types);
+        }
+        for flow in self.callable_flows.values_mut() {
+            flow.alpha_normalize(types);
         }
     }
 }

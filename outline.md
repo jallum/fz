@@ -62,6 +62,9 @@ The source data is semantic evidence, not layout:
 - demand evidence: `RuntimeDemand`, including `Ignore`, whole value,
   tuple-field demand, and callable demand with exact surfaces, escape, and
   opaque facts
+- callable-flow evidence: per local callable producer target function, ordered
+  captures, direct surfaces, first-class boundary surfaces, opaque/escape bits,
+  and canonical executable resolutions when the callable is directly reached
 - flow evidence: lowered control edges, call summaries, resume destinations,
   entry captures, and local callable producers
 - boundary evidence: which callable values actually escape or publish a
@@ -527,6 +530,14 @@ not recover that escape from type. Callable resolutions in `TransportPlan` are
 also gated through `world.activation_key(...)` and the settled semantic
 executable contexts, so a plan cannot publish a callable target that is outside
 the root's executable membership.
+After `fz-hwn.20.8.2`, `ExecutableRuntimeDemand` also carries
+`callable_flows`: upstream facts keyed by local callable producer `ValueId`.
+Each flow names the producer target, ordered captures, direct surfaces,
+first-class publication surfaces, opaque/escape bits, and canonical direct
+resolutions. Direct surfaces are linked from locally called executable
+membership, not from every latent first-class body. This keeps "body exists for
+first-class publication" distinct from "body is directly invoked at this
+surface" before transport runs.
 
 Test builds install a `World`-level `TransportPlanTestHandler` that receives
 `&World` and the committed `RootId` after each plan definition. The default

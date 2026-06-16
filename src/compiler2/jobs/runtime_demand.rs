@@ -8,8 +8,8 @@ use super::super::drive::{FactKey, Job};
 use super::super::identity::{ExecutableKey, ExecutableNeed, FunctionId, function_id_of_closure_target};
 use super::super::scheduler::FatalError;
 use super::super::semantic::{
-    ActivationAnalysis, CallSiteKey, CallSiteSummary, CallableDemand, CallableMaterialization, CallableSurface,
-    ExecutableRuntimeDemand, RuntimeDemand,
+    ActivationAnalysis, CallSiteKey, CallSiteSummary, CallableDemand, CallableFlowFact, CallableMaterialization,
+    CallableSurface, ExecutableRuntimeDemand, RuntimeDemand,
 };
 use super::super::types::Ty;
 use super::super::world::World;
@@ -32,6 +32,12 @@ pub(super) struct RuntimeDemandClosure {
 struct DerivedExecutableDemand {
     demand: ExecutableRuntimeDemand,
     call_return_demands: HashMap<CallSiteId, RuntimeDemand>,
+}
+
+#[derive(Clone)]
+struct LocalCallableProducer {
+    function: FunctionId,
+    captures: Box<[ValueId]>,
 }
 
 pub(super) fn settle_runtime_demands(
@@ -79,6 +85,16 @@ pub(super) fn settle_runtime_demands(
         }
     }
 
+    derive_callable_flow_facts(
+        world,
+        executables,
+        &locally_called,
+        &facts,
+        &mut demands,
+        reads,
+        waits,
+        follow_up,
+    )?;
     let latent_executables =
         demanded_callable_executables(world, executables, &facts, &demands, reads, waits, follow_up)?;
     if !waits.is_empty() {
@@ -1154,31 +1170,204 @@ fn demanded_callable_executables(
     Ok(latent)
 }
 
-fn local_callable_producer_values(body: &LoweredBody) -> HashSet<ValueId> {
-    let mut values = HashSet::new();
+fn derive_callable_flow_facts(
+    world: &mut World<'_>,
+    executables: &HashSet<ExecutableKey>,
+    locally_called: &HashSet<ExecutableKey>,
+    facts: &HashMap<ExecutableKey, ExecutableFacts>,
+    demands: &mut HashMap<ExecutableKey, ExecutableRuntimeDemand>,
+    reads: &mut Vec<FactKey>,
+    waits: &mut HashSet<FactKey>,
+    follow_up: &mut HashSet<Job>,
+) -> Result<(), FatalError> {
+    for executable in executables {
+        let facts = facts
+            .get(executable)
+            .expect("runtime demand closure should have facts for every executable");
+        let producers = local_callable_producers(&facts.body);
+        let demand = demands
+            .get_mut(executable)
+            .expect("runtime demand closure should produce a plan for every executable");
+        demand.callable_flows.clear();
+        for (value, producer) in producers {
+            let Some(RuntimeDemand::Callable(callable)) = demand.value_demands.get(&value) else {
+                continue;
+            };
+            let closed = closed_callable_resolutions(world, locally_called, executables, facts, &producer);
+            let mut direct_surfaces = callable.resolved.clone();
+            direct_surfaces.extend(closed.iter().map(|(_, surface)| surface.clone()));
+            let first_class_surfaces = if callable.opaque || callable.escape {
+                callable.resolved.clone()
+            } else {
+                BTreeSet::new()
+            };
+            let mut resolutions = closed.into_iter().map(|(resolution, _)| resolution).collect::<Vec<_>>();
+            extend_unique(
+                &mut resolutions,
+                callable_flow_resolutions(world, executable, facts, &producer, callable, reads, waits, follow_up),
+            );
+            demand.callable_flows.insert(
+                value,
+                CallableFlowFact {
+                    function: producer.function,
+                    captures: producer.captures,
+                    direct_surfaces,
+                    first_class_surfaces,
+                    opaque: callable.opaque,
+                    escape: callable.escape,
+                    resolutions,
+                },
+            );
+        }
+    }
+    Ok(())
+}
+
+fn closed_callable_resolutions(
+    world: &mut World<'_>,
+    locally_called: &HashSet<ExecutableKey>,
+    executables: &HashSet<ExecutableKey>,
+    facts: &ExecutableFacts,
+    producer: &LocalCallableProducer,
+) -> Vec<(ExecutableKey, CallableSurface)> {
+    let Some(capture_tys) = producer
+        .captures
+        .iter()
+        .copied()
+        .map(|capture| facts.analysis.value_types.get(&capture).copied())
+        .collect::<Option<Vec<_>>>()
+    else {
+        return Vec::new();
+    };
+    let mut out = executables
+        .iter()
+        .filter(|candidate| {
+            locally_called.contains(candidate)
+                && candidate.need == ExecutableNeed::Value
+                && candidate.activation.function == producer.function
+                && candidate.activation.input.starts_with(capture_tys.as_slice())
+                && candidate.activation.input.len() >= capture_tys.len()
+        })
+        .map(|candidate| {
+            let inputs = candidate.activation.input[capture_tys.len()..]
+                .iter()
+                .copied()
+                .map(|ty| world.types_mut().alpha_normalize_vars(&ty))
+                .collect();
+            (candidate.clone(), CallableSurface::new(inputs))
+        })
+        .collect::<Vec<_>>();
+    out.sort_by_key(|(key, _)| executable_sort_key(key));
+    out.dedup_by(|(left_key, _), (right_key, _)| left_key == right_key);
+    out
+}
+
+fn callable_flow_resolutions(
+    world: &mut World<'_>,
+    executable: &ExecutableKey,
+    facts: &ExecutableFacts,
+    producer: &LocalCallableProducer,
+    callable: &CallableDemand,
+    reads: &mut Vec<FactKey>,
+    waits: &mut HashSet<FactKey>,
+    follow_up: &mut HashSet<Job>,
+) -> Vec<ExecutableKey> {
+    if callable.resolved.is_empty() {
+        return Vec::new();
+    }
+    if !world.require_activation_key_facts(producer.function, reads, waits, follow_up) {
+        return Vec::new();
+    }
+    let Some(capture_tys) = producer
+        .captures
+        .iter()
+        .copied()
+        .map(|capture| facts.analysis.value_types.get(&capture).copied())
+        .collect::<Option<Vec<_>>>()
+    else {
+        return Vec::new();
+    };
+    callable
+        .resolved
+        .iter()
+        .map(|surface| {
+            let mut inputs = capture_tys.clone();
+            inputs.extend(surface.inputs.iter().copied());
+            ExecutableKey {
+                activation: world.activation_key(executable.activation.root, producer.function, &inputs),
+                need: ExecutableNeed::Value,
+            }
+        })
+        .collect()
+}
+
+fn executable_sort_key(executable: &ExecutableKey) -> (u32, Vec<Ty>, u8, usize) {
+    let need = match executable.need {
+        ExecutableNeed::Value => (0, 0),
+        ExecutableNeed::TupleFields(arity) => (1, arity),
+    };
+    (
+        executable.activation.function.as_u32(),
+        executable.activation.input.clone(),
+        need.0,
+        need.1,
+    )
+}
+
+fn extend_unique<T: PartialEq>(target: &mut Vec<T>, values: Vec<T>) {
+    for value in values {
+        if !target.contains(&value) {
+            target.push(value);
+        }
+    }
+}
+
+fn local_callable_producers(body: &LoweredBody) -> HashMap<ValueId, LocalCallableProducer> {
+    let mut producers = HashMap::new();
     let LoweredBody::Clauses { clauses, entries, .. } = body else {
-        return values;
+        return producers;
     };
     for clause in clauses {
         for step in &clause.projections {
-            if let Some(value) = step_local_callable_value(step) {
-                values.insert(value);
+            if let Some((value, producer)) = step_local_callable_producer(step) {
+                producers.insert(value, producer);
             }
         }
     }
     for entry in entries {
         for step in &entry.steps {
-            if let Some(value) = step_local_callable_value(step) {
-                values.insert(value);
+            if let Some((value, producer)) = step_local_callable_producer(step) {
+                producers.insert(value, producer);
             }
         }
     }
-    values
+    producers
 }
 
-fn step_local_callable_value(step: &LoweredStep) -> Option<ValueId> {
+fn local_callable_producer_values(body: &LoweredBody) -> HashSet<ValueId> {
+    local_callable_producers(body).into_keys().collect()
+}
+
+fn step_local_callable_producer(step: &LoweredStep) -> Option<(ValueId, LocalCallableProducer)> {
     match step {
-        LoweredStep::FunctionRef { value, .. } | LoweredStep::Lambda { value, .. } => Some(*value),
+        LoweredStep::FunctionRef { value, function } => Some((
+            *value,
+            LocalCallableProducer {
+                function: *function,
+                captures: Box::default(),
+            },
+        )),
+        LoweredStep::Lambda {
+            value,
+            function,
+            captures,
+        } => Some((
+            *value,
+            LocalCallableProducer {
+                function: *function,
+                captures: captures.clone().into_boxed_slice(),
+            },
+        )),
         _ => None,
     }
 }
