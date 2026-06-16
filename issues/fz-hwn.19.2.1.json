@@ -4,14 +4,16 @@
   "blocks": [
     "fz-hwn.19.2.2"
   ],
+  "closed_at": "2026-06-16T10:43:21Z",
+  "close_reason": "Committed f216cea95: artifact-facing worked source test pins TransportPlan handoff facts; transport tuple-field provenance preserves callable ShapeId through tuple projection; docs/proposal record the mini-epic. Verified transport_contract_test, cargo check, and pre-commit fmt/check/clippy.",
   "created": "2026-06-16T05:14:37Z",
   "description": "Goal\nWrite the artifact-facing output contract before changing artifact code. The test must prove that TransportPlan already contains every fact artifact needs, and that the artifact seam must consume those facts rather than recalculating them.\n\nWorked examples\nUse real source programs, not synthetic fixtures without source intent. Cover at least:\n- tuple-field return whose delivered resume consumes the producer return ShapeId unchanged;\n- direct callable returned/resumed and later directly invoked, proving CallableId target/capture facts and capture lane CodegenSeamFact rows exist;\n- escaped callable publication, proving BoundaryId contract facts exist and are not selected by artifact from type/capture guesses;\n- ignored local use after a call, proving local use may drop emitted lanes later but cannot mutate the transport shape received by the continuation.\n\nRequired assertions\nTests must assert TransportPlan(root), TransportPosition -\u003e ShapeId, lane facts, CallableId facts, BoundaryId facts, and CodegenSeamFact rows directly. Add artifact-facing assertions only where they name the intended handoff contract, not the old Trash* structures. If a needed fact is missing from TransportPlan, stop and fix transport/semantic first; do not compensate in artifact.\n\nRemoval inventory\nAdd or update rg-backed assertions/documented checks that identify the exact live artifact authority leaks: TrashRuntime* imports, TrashReturnAbi, LocalCallableId/witness solver, derive_runtime_transports, trash_runtime_*_layout_from_demand, trash_local_callable_layout, and trash_boundary_return_abi.\n\nChecks\nRun the targeted transport/artifact contract tests. They should fail only where artifact has not yet been cut over, not because the source example is unrepresented by TransportPlan.",
   "id": "fz-hwn.19.2.1",
   "labels": [],
   "parent": "fz-hwn.19.2",
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Artifact seam: pin TransportPlan handoff with worked source tests",
   "type": "task",
-  "updated_at": "2026-06-16T10:38:22Z"
+  "updated_at": "2026-06-16T10:43:21Z"
 }
