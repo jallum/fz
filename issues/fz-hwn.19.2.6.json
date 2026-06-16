@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-16T12:27:27Z",
+  "description": "Goal\nMake TransportPlan publish executable input shapes for callable resolution capture-prefix slots from upstream callable-flow facts, so downstream consumers do not recover callable capture shapes from generic input demand, lowered callsite walks, or native/backend adaptation.\n\nProblem\nDuring fz-hwn.19.2.4, removing artifact-local runtime layouts exposed a fact gap. A direct callable value can have a precise CallableId shape from CallableFlowFact, but the resolved executable's leading capture inputs are currently shaped independently through generic executable input demand. When a capture itself is callable-shaped, that can mint a different CallableId for the callee capture input than the actual callable value being passed. Native then correctly rejects the mismatch instead of adapting it.\n\nRequired change\nExtend the upstream transport data model so callable-flow resolutions explicitly connect each resolved ExecutableSymbol's capture-prefix inputs to the producer's capture ShapeIds. This must be proven from existing CallableFlowFact / resolution evidence, not rediscovered from lowered call tails or reconstructed in artifact/backend/native. TransportPosition::ExecutableInput for those capture slots should read that fact directly. Ordinary call arguments may continue to read their already-published CallArg shapes, but capture-prefix slots must not fall back to generic callable shape derivation.\n\nTests\nAdd or update a worked source test where a reducer lambda captures a zero-capture predicate lambda and is invoked directly: the reducer executable's leading predicate input must have the same ShapeId/CallableId as the captured predicate value, with zero capture lanes. Assert the plan fact, not native behavior. Keep the existing enum/direct-callable worked examples as regression coverage.\n\nChecks\nTargeted transport contract test; cargo check --all-targets. rg should show no new lowered-body scanner or native/backend compatibility path for this fact.",
+  "id": "fz-hwn.19.2.6",
+  "labels": [],
+  "parent": "fz-hwn.19.2",
+  "priority": 1,
+  "status": "open",
+  "title": "Transport plan: publish executable capture-input shapes from callable-flow resolutions",
+  "type": "task",
+  "updated_at": "2026-06-16T12:27:27Z"
+}
