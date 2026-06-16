@@ -4,14 +4,15 @@
   "blocks": [
     "fz-hwn.20.8.2"
   ],
+  "closed_at": "2026-06-16T03:44:33Z",
   "created": "2026-06-16T03:42:19Z",
   "description": "Land the current guardrail and first data-flow correction. Add the test-only TransportPlan validator that runs after plan commit and rejects any position, seam, callable resolution, boundary, lane, callable, or shape reference outside the committed reachable graph. Fix call-boundary argument demand upstream so callable-typed arguments to opaque closure calls become first-class runtime obligations before transport. Make transport callable resolutions canonical by passing through world.activation_key(...) and requiring the resulting ExecutableKey to exist in the settled semantic contexts. Worked examples: opaque callable argument fn main(f) { g = fn(x)-\u003ex+1; f.(g) } and Enumerable.reduce suspend continuation. Checks: cargo test runtime_demand -- --nocapture; cargo test transport_ -- --nocapture; cargo fmt --check; git diff --check.",
   "id": "fz-hwn.20.8.4",
   "labels": [],
   "parent": "fz-hwn.20.8",
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Transport authority: validate root-scoped callable executable facts",
   "type": "task",
-  "updated_at": "2026-06-16T03:44:00Z"
+  "updated_at": "2026-06-16T03:44:33Z"
 }
