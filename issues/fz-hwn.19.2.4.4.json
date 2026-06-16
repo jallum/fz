@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-16T20:11:40Z",
+  "description": "Re-enable compiler2_interp_runs_resource_dtors_from_backend_runtime_intrinsics. Use the output-contract loop: first remove the ignore, run the test, identify the exact transport/artifact seam fact that is missing or mis-carried, then fix that seam. Do not add downstream recomputation, fallback layout derivation, compatibility adapters, copied interner tables, or old Trash* authority. Resource destructor execution must consume the transport-backed artifact handoff facts already produced upstream.",
+  "id": "fz-hwn.19.2.4.4",
+  "labels": [],
+  "parent": "fz-hwn.19.2.4",
+  "priority": 1,
+  "status": "open",
+  "title": "Artifact seam: re-enable backend interp resource destructor intrinsics",
+  "type": "task",
+  "updated_at": "2026-06-16T20:11:40Z"
+}
