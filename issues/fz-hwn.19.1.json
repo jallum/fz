@@ -7,14 +7,16 @@
   "blocks": [
     "fz-hwn.19.2"
   ],
+  "closed_at": "2026-06-16T04:56:28Z",
+  "close_reason": "Transport handoff contract is pinned by transport_contract_test: positions, producer/resume shape sharing, entry captures, value shapes, lane facts, CallableId/BoundaryId facts, and CodegenSeam facts are asserted. Remaining Trash* consumers are inventoried on fz-hwn.19.2-.5.",
   "created": "2026-06-15T19:27:13Z",
   "description": "Goal\nBefore cutting consumers over, verify the fz-hwn.20 TransportPlan handoff is complete at the consumer seams that fz-hwn.19 will touch. This ticket does not design the model; it proves the existing plan facts are sufficient to replace old consumer-local authorities.\n\nRequired contract\nConsumer-facing tests must read or observe TransportPlan facts for: executable inputs, returns, delivered resumes, entry captures, body values, continuation payloads, lane facts, CallableId facts, BoundaryId contracts, and seam-specific codegen facts. Producer return and consumer resume must share one ShapeId. Codegen repr must be asserted as a seam fact, not shape.\n\nWorked-example contract\nThe worked example from outline.md remains the proof target: a tuple-field return containing a direct callable is transported without tuple or heap closure allocation; the producer return and consumer resume use the same ShapeId; direct callable invocation reads CallableId target/capture facts; an escaped callable publishes a BoundaryId contract; codegen repr is a seam fact.\n\nRemoval inventory\nUse the fz-hwn.20.6 inventory to identify which Trash* helpers and recursive mirrors each consumer seam will lose. Do not add compatibility helpers. Tests that still assert TrashRuntimeValueLayout, TrashDeliveredShape, TrashNativeDemandAbi, local ArgRepr derivation, or boundary-return projection as authority must be rewritten or deleted before the seam cutover begins.\n\nChecks\nTargeted compiler2 transport tests pass against the independent TransportPlan. rg inventory shows remaining old-world assertions are either removed or explicitly tied to a later fz-hwn.19 cutover ticket.",
   "id": "fz-hwn.19.1",
   "labels": [],
   "parent": "fz-hwn.19",
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "Transport cutover: accept the flow-graph handoff and pin consumer contracts",
   "type": "task",
-  "updated_at": "2026-06-15T20:56:29Z"
+  "updated_at": "2026-06-16T04:56:28Z"
 }
