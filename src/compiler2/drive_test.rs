@@ -3011,7 +3011,6 @@ fn main(), do: apply(make_adder(1))
 }
 
 #[test]
-#[ignore = "fz-hwn.19.2.4.8: first-class callable publication is conflated with direct surfaces/resolutions"]
 fn compiler2_abi_ready_callable_entries_read_boundary_seam_facts() {
     let tel = ConfiguredTelemetry::new();
     let abi_ready = AbiReadyProgramCapture::new();

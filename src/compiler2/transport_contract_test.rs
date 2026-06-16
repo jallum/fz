@@ -1876,7 +1876,6 @@ fn compiler2_transport_plan_helper_preserves_pending_post_transport_consumers() 
 }
 
 #[test]
-#[ignore = "fz-hwn.19.2.4.8: first-class callable publication is conflated with direct surfaces/resolutions"]
 fn compiler2_transport_plan_publishes_boundary_returns_per_surface() {
     let source = r#"
 fn main() do

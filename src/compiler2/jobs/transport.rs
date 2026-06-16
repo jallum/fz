@@ -859,6 +859,13 @@ fn derive_codegen_seam_facts(
     }
     for boundary in boundaries.keys().copied() {
         let descr = world.transport().interners().boundary(boundary);
+        // A boundary the callable reaches by escaping into fz value space (a
+        // return, an fz parameter, a resume payload, a captured value) is
+        // invoked through the generic boxed closure-apply ABI, so every lane
+        // crosses as a boxed `ValueRef`. A boundary reached only as a grounded
+        // provider callback (an extern call argument) is invoked at its settled
+        // surface, so its lanes carry their own grounded repr.
+        let boxed_first_class = boundary_escapes_into_fz_space(boundaries.get(&boundary));
         for lane in descr
             .published_capture_lanes
             .iter()
@@ -870,7 +877,11 @@ fn derive_codegen_seam_facts(
                 seam: CodegenSeam::CallableBoundary { boundary },
                 shape: None,
                 lane,
-                repr: codegen_repr_for_lane(world, lane),
+                repr: if boxed_first_class {
+                    CodegenLaneRepr::ValueRef
+                } else {
+                    codegen_repr_for_lane(world, lane)
+                },
             });
         }
         if let Some(facts) = boundaries.get(&boundary)
@@ -1065,6 +1076,25 @@ fn raw_codegen_repr_for_lane(world: &World<'_>, lane: LaneId) -> Option<CodegenL
 
 fn codegen_repr_for_lane(world: &World<'_>, lane: LaneId) -> CodegenLaneRepr {
     raw_codegen_repr_for_lane(world, lane).unwrap_or(CodegenLaneRepr::ValueRef)
+}
+
+/// Whether a callable boundary is reached by the callable escaping into fz
+/// value space — returned, bound to an fz parameter, delivered as a resume
+/// payload, or captured. Such a boundary is invoked through the generic boxed
+/// closure-apply ABI. A boundary reached only as a grounded provider callback
+/// (an extern call argument, or merely the local construction value) is not.
+fn boundary_escapes_into_fz_space(facts: Option<&super::super::transport::BoundaryFacts>) -> bool {
+    facts.is_some_and(|facts| {
+        facts.publications.iter().any(|position| {
+            matches!(
+                position,
+                TransportPosition::ExecutableReturn { .. }
+                    | TransportPosition::ExecutableInput { .. }
+                    | TransportPosition::ResumePayload { .. }
+                    | TransportPosition::EntryCapture { .. }
+            )
+        })
+    })
 }
 
 fn block_param_codegen_repr_for_lane(world: &World<'_>, lane: LaneId) -> CodegenLaneRepr {

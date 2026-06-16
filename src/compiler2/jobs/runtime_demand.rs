@@ -422,7 +422,7 @@ fn collect_entry_live_demands(
                 out,
                 call_return_demands,
             );
-            let demand = boundary_value_demand(world, facts, *value, boundary_demand);
+            let demand = destination_boundary_demand(world, facts, *value, boundary_demand);
             note_live_demand(world, out, &mut live, *value, demand);
             merge_live_demands(&mut live, external_demands);
         }
@@ -444,7 +444,7 @@ fn collect_entry_live_demands(
                 out,
                 call_return_demands,
             );
-            let demand = boundary_value_demand(world, facts, *value, boundary_demand);
+            let demand = destination_boundary_demand(world, facts, *value, boundary_demand);
             note_live_demand(world, out, &mut live, *value, demand.clone());
             record_call_return_demand(call_return_demands, *callsite, demand);
             merge_live_demands(&mut live, external_demands);
@@ -473,7 +473,7 @@ fn collect_entry_live_demands(
                 out,
                 call_return_demands,
             );
-            let demand = boundary_value_demand(world, facts, *value, boundary_demand);
+            let demand = destination_boundary_demand(world, facts, *value, boundary_demand);
             note_live_demand(world, out, &mut live, *value, demand.clone());
             record_call_return_demand(call_return_demands, *callsite, demand);
             merge_live_demands(&mut live, external_demands);
@@ -1066,7 +1066,7 @@ fn arg_demands_for_summary(
     let Some(summary) = facts.callsites.get(&callsite) else {
         return args
             .iter()
-            .map(|arg| boundary_value_demand(world, facts, arg.value, RuntimeDemand::Value))
+            .map(|arg| opaque_call_arg_demand(world, facts, arg.value))
             .collect();
     };
     let need = facts
@@ -1202,6 +1202,58 @@ fn tuple_field_tys(world: &mut World<'_>, ty: Ty, arity: usize) -> Vec<Ty> {
         fields.truncate(arity);
     }
     fields
+}
+
+fn value_is_callable(world: &mut World<'_>, facts: &ExecutableFacts, value: ValueId) -> bool {
+    facts
+        .analysis
+        .value_types
+        .get(&value)
+        .copied()
+        .is_some_and(|ty| world.types_mut().callable_clauses(&ty).is_some())
+}
+
+/// A callable that crosses a boundary with no callee contract to ground it.
+///
+/// `resolved` records *direct-call* surfaces grounded by a known callee. A
+/// callable that merely escapes — returned, or passed into an opaque call —
+/// has no such contract, so it escapes first-class with an empty `resolved`.
+/// The first-class surface it obliges is recovered downstream from the
+/// surfaces it is actually used at, falling back to its own type clauses.
+fn ungrounded_first_class_escape() -> RuntimeDemand {
+    RuntimeDemand::callable(CallableDemand {
+        resolved: BTreeSet::new(),
+        opaque: false,
+        escape: true,
+    })
+}
+
+/// The runtime demand on an argument passed to an *opaque* closure call.
+///
+/// The callee is unresolved, so we cannot know which surface it invokes the
+/// argument at. A callable argument therefore escapes ungrounded; other
+/// arguments carry their ordinary boundary value demand.
+fn opaque_call_arg_demand(world: &mut World<'_>, facts: &ExecutableFacts, value: ValueId) -> RuntimeDemand {
+    if value_is_callable(world, facts, value) {
+        return ungrounded_first_class_escape();
+    }
+    boundary_value_demand(world, facts, value, RuntimeDemand::Value)
+}
+
+/// The runtime demand on a value delivered to a destination boundary (a return
+/// or call result). A callable delivered under a plain value demand escapes
+/// ungrounded — no callee contract applies. A richer incoming demand (a
+/// downstream surface, tuple fields) is honored as-is.
+fn destination_boundary_demand(
+    world: &mut World<'_>,
+    facts: &ExecutableFacts,
+    value: ValueId,
+    boundary_demand: RuntimeDemand,
+) -> RuntimeDemand {
+    if matches!(boundary_demand, RuntimeDemand::Value) && value_is_callable(world, facts, value) {
+        return ungrounded_first_class_escape();
+    }
+    boundary_value_demand(world, facts, value, boundary_demand)
 }
 
 fn boundary_value_demand(
@@ -1356,7 +1408,16 @@ fn derive_callable_flow_facts(
                 continue;
             };
             let closed = closed_callable_resolutions(world, locally_called, executables, facts, &producer);
-            let mut direct_surfaces = callable.resolved.clone();
+            // `resolved` carries every observed surface. When the callable is
+            // first-class (escaped/opaque), those surfaces are first-class
+            // obligations, not direct calls — the genuinely-direct surfaces are
+            // exactly the locally-called resolutions (`closed`). Only when the
+            // callable is never first-class does `resolved` describe direct use.
+            let mut direct_surfaces = if callable.opaque || callable.escape {
+                BTreeSet::new()
+            } else {
+                callable.resolved.clone()
+            };
             direct_surfaces.extend(closed.iter().map(|(_, surface)| surface.clone()));
             let first_class_surfaces = first_class_surfaces_for_flow(world, facts, value, callable);
             let mut resolutions = closed.into_iter().map(|(resolution, _)| resolution).collect::<Vec<_>>();
