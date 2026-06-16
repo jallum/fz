@@ -682,6 +682,51 @@ fn main(), do: make_pairer()
 }
 
 #[test]
+fn compiler2_runtime_demand_records_recursive_tuple_resume_value_demand() {
+    let tel = crate::telemetry::ConfiguredTelemetry::new();
+    let mut world = World::new(&tel);
+    world.submit_code(
+        Some("runtime_demand_recursive_tuple_resume.fz".to_string()),
+        r#"
+fn pair_down(0), do: {0, 1}
+fn pair_down(n) do
+  {left, right} = pair_down(n - 1)
+  {left, right}
+end
+
+fn main() do
+  {left, right} = pair_down(2)
+  left + right
+end
+"#
+        .to_string(),
+    );
+    let root_id = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    drive_until_semantic_closure(
+        &mut world,
+        root_id,
+        "recursive tuple resume fixture should settle before transport",
+    );
+
+    let closure = world.semantic_closure(root_id);
+    let resume_demands = closure
+        .runtime_demands
+        .iter()
+        .filter_map(|(executable, demand)| {
+            let function_ref = world.function_ref(executable.activation.function);
+            (function_ref.name == "pair_down" && function_ref.arity == 1).then_some(&demand.value_demands)
+        })
+        .flat_map(|demands| demands.values())
+        .collect::<Vec<_>>();
+    assert!(
+        resume_demands
+            .iter()
+            .any(|demand| matches!(demand, RuntimeDemand::TupleFields(fields) if fields.len() == 2)),
+        "recursive call resume value should carry tuple-field demand upstream: {resume_demands:?}"
+    );
+}
+
+#[test]
 fn compiler2_runtime_demand_preserves_reducer_surface_when_suspend_continuation_escapes() {
     let tel = crate::telemetry::ConfiguredTelemetry::new();
     let runtime_demands = RuntimeDemandCapture::new();

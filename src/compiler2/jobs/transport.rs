@@ -420,7 +420,7 @@ pub(super) fn derive_transport_plan(world: &mut World<'_>, root_id: RootId) -> R
         }
 
         for resume in &context.resume_entries {
-            let demand = resume_demand(world, &contexts, executable, context, *resume);
+            let demand = resume_demand(context, *resume);
             let position = TransportPosition::ResumePayload {
                 executable: symbol.clone(),
                 callsite: resume.callsite,
@@ -1900,52 +1900,13 @@ fn boundary_runtime_demand(world: &mut World<'_>, ty: Ty) -> RuntimeDemand {
     })
 }
 
-fn runtime_demand_for_executable_need(need: ExecutableNeed) -> RuntimeDemand {
-    match need {
-        ExecutableNeed::Value => RuntimeDemand::Value,
-        ExecutableNeed::TupleFields(arity) => RuntimeDemand::tuple_fields(vec![RuntimeDemand::Value; arity]),
-    }
-}
-
-fn resume_demand(
-    world: &mut World<'_>,
-    contexts: &HashMap<ExecutableKey, ExecutableContext>,
-    executable: &ExecutableKey,
-    context: &ExecutableContext,
-    resume: ResumeEntry,
-) -> RuntimeDemand {
-    let key = CallSiteKey {
-        activation: executable.activation.clone(),
-        callsite: resume.callsite,
-    };
-    let Some(summary) = world.callsite_summary(&key) else {
-        return context
-            .runtime_demand
-            .value_demands
-            .get(&resume.value)
-            .cloned()
-            .unwrap_or_default();
-    };
-    if summary
-        .targets
-        .iter()
-        .any(|target| matches!(target.callee, SelectedCallee::ProviderBoundary(_)))
-    {
-        return RuntimeDemand::Value;
-    }
-    let need = context
-        .callsite_needs
-        .get(&resume.callsite)
-        .copied()
-        .unwrap_or(ExecutableNeed::Value);
-    if summary.targets.len() == 1
-        && let Some(target) = summary.targets.first()
-        && let Some(activation) = target.activation.clone()
-        && let Some(callee) = contexts.get(&ExecutableKey { activation, need })
-    {
-        return callee.runtime_demand.return_demand.clone();
-    }
-    runtime_demand_for_executable_need(need)
+fn resume_demand(context: &ExecutableContext, resume: ResumeEntry) -> RuntimeDemand {
+    context
+        .runtime_demand
+        .value_demands
+        .get(&resume.value)
+        .cloned()
+        .unwrap_or_default()
 }
 
 fn resume_shape(
