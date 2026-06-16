@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-hwn.19.3"
+  ],
   "created": "2026-06-16T20:14:34Z",
   "description": "Covers the red test import_from_external_interface_carries_provider_boundary_call_without_provider_body. Likely root cause: the runtime-demand or artifact handoff path reads world.lowered_body for a provider-boundary function whose module is interface-only. Provider-boundary calls must use interface/extern boundary facts and must not require a lowered provider body. Fix the seam where the body read occurs; do not synthesize provider bodies or add compatibility stubs.",
   "id": "fz-hwn.19.2.4.10",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Artifact seam: keep provider-boundary imports body-free",
   "type": "bug",
-  "updated_at": "2026-06-16T20:14:34Z"
+  "updated_at": "2026-06-16T20:14:42Z"
 }
