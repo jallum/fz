@@ -4,14 +4,15 @@
   "blocks": [
     "fz-hwn.19.3"
   ],
+  "closed_at": "2026-06-17T01:37:52Z",
   "created": "2026-06-16T20:14:34Z",
   "description": "Covers the red tests compiler2_runtime_demand_preserves_reducer_surface_when_suspend_continuation_escapes, compiler2_transport_plan_preserves_enumerable_suspend_continuation_captures, and compiler2_abi_ready_keeps_returned_suspend_continuation_callable_entry. Likely root cause: the semantic closure for a returned Enumerable.reduce suspend continuation does not close the required reducer/continuation activation before runtime demand, transport, and ABI-ready inventory consume it. The unresolved frontier waits on an activation like FunctionId(67) with reducer-shaped inputs. Fix at the earliest semantic/transport contract that proves the missing activation; do not compensate in ABI/native by inventing callable entries.",
   "id": "fz-hwn.19.2.4.9",
   "labels": [],
   "parent": "fz-hwn.19.2.4",
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Artifact seam: close suspend continuation callable frontier before transport",
   "type": "bug",
-  "updated_at": "2026-06-17T01:37:29Z"
+  "updated_at": "2026-06-17T01:37:52Z"
 }
