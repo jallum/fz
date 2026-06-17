@@ -7,9 +7,15 @@
   "id": "fz-rh2.28",
   "labels": [],
   "parent": "fz-rh2",
+  "comments": [
+    {
+      "text": "Child ordering: the second step (phase vs origin) is fz-s00, adopted in place of a deleted fz-rh2.28.2 because fz-s00 already carries the deeper, correct framing (one source read; def-head structure emerges from the define pipeline, not a mode-gated re-parse). DAG: fz-rh2.28.1 -\u003e fz-s00 -\u003e fz-rh2.28.3 -\u003e fz-rh2.28.4 -\u003e fz-rh2.28.5.",
+      "timestamp": "2026-06-17T17:55:56Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "Compiler2 definition lifecycle: bootstrap is the only exception, carry the definition env, separate phase from origin",
   "type": "epic",
-  "updated_at": "2026-06-17T17:53:17Z"
+  "updated_at": "2026-06-17T17:55:56Z"
 }
