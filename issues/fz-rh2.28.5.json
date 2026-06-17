@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-rh2.28.4"
+  ],
   "blocks": [],
   "created": "2026-06-17T17:53:01Z",
   "description": "Goal: document the settled definition lifecycle and remove construction scaffolding. Update .agent/docs/modules.md and pipeline.md: the bootstrap is the only canonical-text exception; index takes stock and stashes raw AST; the define tier expands module-scope macros (use and definition-generators) down to the Compiler.define boundary and notes members raw; bodies expand on reference, recursively, stopping at each Compiler.define unless referenced; a definition carries its env (Elixir cache_env) and __ENV__ is bound with function rebound prior to body expansion. Map the model to Elixir def/store_definition and the northstar laziness ladder.\n\nGrounding: the lifecycle is coherent only after .1 through .4 land; docs must state provable current-state facts only.\n\nSignal: docs reflect code; re-run the tiny + fixture with --log-telemetry and confirm index/stock-take broad, expansion narrow, env carried not discarded; no remaining FunctionEnvSource, ScopeSurfaceMode, or runtime/prelude synonym debt; full lib green with zero warnings.\n\nStrategy: docs and verify. Depends on fz-rh2.28.4.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Compiler2 definition lifecycle: docs, scaffolding removal, signal",
   "type": "task",
-  "updated_at": "2026-06-17T17:53:01Z"
+  "updated_at": "2026-06-17T17:53:06Z"
 }
