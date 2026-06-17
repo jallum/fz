@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-s00.2"
+  ],
   "blocks": [],
   "created": "2026-06-17T18:07:38Z",
   "description": "Goal: make build_form always yield MacroCall for scope-definition heads and remove the Source/CompilerFragment branch (quoted_surface.rs:354-366). Delete ScopeSurfaceMode and the mode parameter on read_scope_surface_with_mode, read_do_body_surface_with_mode, flush_function_groups, build_form. Collapse read_scope_surface and read_compiler_fragment_surface to one user-surface reader. discover_modules keeps only the MacroCall arm for user code; the typed arms are served by the extractor via the bootstrap/define-tier paths from fz-s00.2.\n\nWhy: one read; def-head structure comes from the define pipeline. ScopeSurfaceMode was the symptom of fusing phase (pre vs post expansion) with origin (bootstrap vs user).\n\nSignal: ScopeSurfaceMode and read_compiler_fragment_surface as a source def-head reader are gone; a def-head is read once as a MacroCall; full lib green, zero warnings; behavior invariant. Depends on fz-s00.2.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Delete ScopeSurfaceMode; user reader yields MacroCall for def-heads",
   "type": "task",
-  "updated_at": "2026-06-17T18:07:38Z"
+  "updated_at": "2026-06-17T18:07:39Z"
 }
