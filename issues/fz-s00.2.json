@@ -6,14 +6,15 @@
   "blocks": [
     "fz-s00.3"
   ],
+  "closed_at": "2026-06-17T18:18:45Z",
   "created": "2026-06-17T18:07:38Z",
   "description": "Goal: route every consumer that needs a typed def-head form to build_definition_form directly, instead of through a mode-gated surface read: apply_compiler_define (the Fz.Compiler.define payload), read_protocol_body_surface / read_protocol_impl_body_surface (callbacks), discover_modules typed and MacroCall+reread arms, and the bootstrap entry (is_bootstrap). The bootstrap stays the one origin whose def-heads reach the extractor directly with no macro bounce.\n\nWhy: structure emerges from the define pipeline, not from a CompilerFragment source read. After this, no consumer depends on CompilerFragment-mode reading to obtain typed forms.\n\nSignal: all typed-form consumers call build_definition_form; the only remaining CompilerFragment reader use is the about-to-be-deleted build_form arm; full lib green, zero warnings; behavior-preserving. Depends on fz-s00.1. Blocks fz-s00.3.",
   "id": "fz-s00.2",
   "labels": [],
   "parent": "fz-s00",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "Feed define tier, bootstrap, protocol, discovery from the typed extractor",
   "type": "task",
-  "updated_at": "2026-06-17T18:07:39Z"
+  "updated_at": "2026-06-17T18:18:45Z"
 }
