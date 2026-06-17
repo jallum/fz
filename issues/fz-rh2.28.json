@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-17T15:58:28Z",
+  "description": "Goal: make runtime module publication member-demanded instead of module-surface-demanded where the source model can support it. The fz-rh2.27 source/root ownership fix removed repeated prelude/user source publication, but the direct-lambda fz2 telemetry still shows that using `+` notes the whole Kernel source surface once: process intrinsics, arithmetic wrappers for unused operators, comparison/equality wrappers, `panic`, `dbg`, `assert`, `spawn`, `range`, and other unrelated functions/operators.\n\nGrounding:\n- Fresh fz2 telemetry after fz-rh2.27 shows the six prelude macro sources are now each noted once instead of four times, and the direct-lambda first drive dropped from 166 to 144 jobs.\n- The remaining broad work is not a root-submission replay anymore; it is module-granularity runtime publication. `Kernel.+/2` and the add wrappers are reached, but the whole Kernel interface is noted when the Kernel module source is scoped.\n\nSignal:\n- A tiny program using only `+` should not emit `function.source.noted` for unrelated Kernel members such as `spawn`, `send`, `range`, `panic`, subtraction/multiplication/division/remainder wrappers, or comparison wrappers.\n- Runtime module pull-through remains ordinary code and facts; no special runtime mode, no compatibility bridge.\n- Tests assert presence and absence from telemetry: `Kernel.+/2` and required add extern wrappers are present; unrelated Kernel functions stay cold at source-publication, definition, lowering, activation, and transport/artifact tiers.\n\nStrategy:\n- First identify whether the right split is module-interface/member facts, exact import/require callable placeholders, or smaller runtime source contributions.\n- Move the data-model boundary so a demanded runtime callable can publish the smallest needed surface without walking the whole runtime module.\n- Update northstar-facing agent docs if the runtime module lifecycle gets a sharper member-publication tier.",
+  "id": "fz-rh2.28",
+  "labels": [],
+  "parent": "fz-rh2",
+  "priority": 2,
+  "status": "open",
+  "title": "Compiler2 runtime Kernel publication should be member-demanded",
+  "type": "task",
+  "updated_at": "2026-06-17T15:58:28Z"
+}
