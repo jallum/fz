@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-rh2.28.3"
   ],
@@ -12,8 +12,8 @@
   "labels": [],
   "parent": "fz-rh2.28",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "Compiler2 expansion: bind def-site __ENV__ with function rebound",
   "type": "task",
-  "updated_at": "2026-06-17T17:53:06Z"
+  "updated_at": "2026-06-17T18:35:42Z"
 }
