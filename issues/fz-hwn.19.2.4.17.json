@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-17T03:53:29Z",
+  "description": "build_form switches on ScopeSurfaceMode: in Source mode a def-head (defmodule/defprotocol/defimpl/fn) becomes a MacroCall that expands via a runtime macro re-emitting the same quoted node, which is then read in CompilerFragment mode to parse directly. The mode flag exists only to stop that round-trip from recursing. The macro expansion of a def-head is a no-op identity round-trip. Investigate collapsing the two modes — source should be source; a def-head should parse once without a mode-gated macro bounce. Flagged during fz-hwn.19.2.4.16 (Elixir-aligned protocol dispatch).",
+  "id": "fz-hwn.19.2.4.17",
+  "labels": [],
+  "parent": "fz-hwn.19.2.4",
+  "priority": 3,
+  "status": "open",
+  "title": "Source-form 'modes' (ScopeSurfaceMode::Source vs CompilerFragment) are a smell",
+  "type": "task",
+  "updated_at": "2026-06-17T03:53:29Z"
+}
