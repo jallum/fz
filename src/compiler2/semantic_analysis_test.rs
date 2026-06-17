@@ -15,6 +15,7 @@ use crate::telemetry::handler::{Event, EventKind, Handler};
 type FunctionDefs = Rc<RefCell<Vec<FunctionDef>>>;
 type CallsiteDefs = Rc<RefCell<Vec<CallsiteDef>>>;
 type RuntimeDemandDefs = Rc<RefCell<Vec<RuntimeDemandRecord>>>;
+type JobStarts = Rc<RefCell<u64>>;
 
 #[derive(Debug, Clone)]
 struct FunctionDef {
@@ -49,6 +50,10 @@ struct CallsiteCapture {
 
 struct RuntimeDemandCapture {
     defs: RuntimeDemandDefs,
+}
+
+struct JobStartCapture {
+    starts: JobStarts,
 }
 
 impl FunctionCapture {
@@ -117,6 +122,24 @@ impl RuntimeDemandCapture {
     }
 }
 
+impl JobStartCapture {
+    fn new() -> Self {
+        Self {
+            starts: Rc::new(RefCell::new(0)),
+        }
+    }
+
+    fn handler(&self) -> Box<dyn Handler> {
+        Box::new(JobStartCaptureHandler {
+            starts: self.starts.clone(),
+        })
+    }
+
+    fn count(&self) -> u64 {
+        *self.starts.borrow()
+    }
+}
+
 struct FunctionCaptureHandler {
     defs: FunctionDefs,
 }
@@ -127,6 +150,10 @@ struct CallsiteCaptureHandler {
 
 struct RuntimeDemandCaptureHandler {
     defs: RuntimeDemandDefs,
+}
+
+struct JobStartCaptureHandler {
+    starts: JobStarts,
 }
 
 impl Handler for FunctionCaptureHandler {
@@ -234,8 +261,30 @@ impl Handler for RuntimeDemandCaptureHandler {
     }
 }
 
+impl Handler for JobStartCaptureHandler {
+    fn handle(&self, event: &Event<'_, '_, '_>) {
+        if event.name == ["fz", "compiler2", "job"] && event.kind == EventKind::SpanStart {
+            *self.starts.borrow_mut() += 1;
+        }
+    }
+}
+
 fn assert_resolved(outcome: DriveOutcome<Job, FactKey>, message: &str) {
     assert!(matches!(outcome, DriveOutcome::Resolved), "{message}: {outcome:?}");
+}
+
+fn assert_resolved_under_job_budget(
+    outcome: DriveOutcome<Job, FactKey>,
+    jobs: &JobStartCapture,
+    budget: u64,
+    message: &str,
+) {
+    assert_resolved(outcome, message);
+    assert!(
+        jobs.count() < budget,
+        "{message}: expected fewer than {budget} jobs, ran {}",
+        jobs.count(),
+    );
 }
 
 /// fz-hwn.19.2.4.12: a `defimpl` nested in a module the program never reaches by
@@ -582,9 +631,10 @@ fn compiler2_runtime_demand_leaves_an_unused_callable_input_omitted() {
         &["fz", "compiler2", "runtime_demand", "defined"],
         runtime_demands.handler(),
     );
+    let jobs = JobStartCapture::new();
+    tel.attach(&["fz", "compiler2", "job"], jobs.handler());
 
     let mut compiler = Compiler2::new(&tel);
-    compiler.set_drive_timeout(Duration::from_millis(100));
     compiler.submit_code(CodeSubmission {
         name: Some("unused_callable_input.fz".to_string()),
         text: r#"
@@ -602,7 +652,12 @@ end
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    assert_resolved(compiler.drive(), "unused callable input program should settle");
+    assert_resolved_under_job_budget(
+        compiler.drive(),
+        &jobs,
+        1_000,
+        "unused callable input program should settle",
+    );
 
     let ignore = functions.id("ignore", 1);
     let record = runtime_demands.last(root_id);
@@ -619,7 +674,6 @@ end
 }
 
 #[test]
-#[ignore = "fz-eak: times out under CI llvm-cov; investigate callable-surface runtime-demand work with fz2 telemetry/dumps"]
 fn compiler2_runtime_demand_records_the_exact_surface_for_a_direct_lambda_call() {
     let tel = crate::telemetry::ConfiguredTelemetry::new();
     let runtime_demands = RuntimeDemandCapture::new();
@@ -627,9 +681,10 @@ fn compiler2_runtime_demand_records_the_exact_surface_for_a_direct_lambda_call()
         &["fz", "compiler2", "runtime_demand", "defined"],
         runtime_demands.handler(),
     );
+    let jobs = JobStartCapture::new();
+    tel.attach(&["fz", "compiler2", "job"], jobs.handler());
 
     let mut compiler = Compiler2::new(&tel);
-    compiler.set_drive_timeout(Duration::from_millis(100));
     compiler.submit_code(CodeSubmission {
         name: Some("direct_lambda_call.fz".to_string()),
         text: r#"
@@ -646,7 +701,7 @@ end
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    assert_resolved(compiler.drive(), "direct lambda call should settle");
+    assert_resolved_under_job_budget(compiler.drive(), &jobs, 1_000, "direct lambda call should settle");
 
     let record = runtime_demands.last(root_id);
     assert!(
@@ -664,7 +719,6 @@ end
 }
 
 #[test]
-#[ignore = "fz-eak: times out under CI llvm-cov; investigate callable-surface runtime-demand work with fz2 telemetry/dumps"]
 fn compiler2_runtime_demand_marks_an_escaped_callable_first_class() {
     let tel = crate::telemetry::ConfiguredTelemetry::new();
     let functions = FunctionCapture::new();
@@ -674,9 +728,10 @@ fn compiler2_runtime_demand_marks_an_escaped_callable_first_class() {
         &["fz", "compiler2", "runtime_demand", "defined"],
         runtime_demands.handler(),
     );
+    let jobs = JobStartCapture::new();
+    tel.attach(&["fz", "compiler2", "job"], jobs.handler());
 
     let mut compiler = Compiler2::new(&tel);
-    compiler.set_drive_timeout(Duration::from_millis(100));
     compiler.submit_code(CodeSubmission {
         name: Some("escaped_callable.fz".to_string()),
         text: r#"
@@ -693,7 +748,7 @@ fn main(), do: make()
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    assert_resolved(compiler.drive(), "escaped callable program should settle");
+    assert_resolved_under_job_budget(compiler.drive(), &jobs, 1_000, "escaped callable program should settle");
 
     let make = functions.id("make", 0);
     let record = runtime_demands.last(root_id);
@@ -719,7 +774,6 @@ fn main(), do: make()
 }
 
 #[test]
-#[ignore = "fz-eak: times out under CI llvm-cov; re-enable after fixing runtime-demand convergence/budget"]
 fn compiler2_runtime_demand_keeps_a_returned_direct_callable_out_of_first_class_inventory() {
     let tel = crate::telemetry::ConfiguredTelemetry::new();
     let functions = FunctionCapture::new();
@@ -729,9 +783,10 @@ fn compiler2_runtime_demand_keeps_a_returned_direct_callable_out_of_first_class_
         &["fz", "compiler2", "runtime_demand", "defined"],
         runtime_demands.handler(),
     );
+    let jobs = JobStartCapture::new();
+    tel.attach(&["fz", "compiler2", "job"], jobs.handler());
 
     let mut compiler = Compiler2::new(&tel);
-    compiler.set_drive_timeout(Duration::from_millis(100));
     compiler.submit_code(CodeSubmission {
         name: Some("returned_direct_callable_transport.fz".to_string()),
         text: r#"
@@ -750,8 +805,10 @@ fn main(), do: apply(make_adder(1))
         need: ExecutableNeed::Value,
     });
 
-    assert_resolved(
+    assert_resolved_under_job_budget(
         compiler.drive(),
+        &jobs,
+        1_000,
         "a returned callable that is only ever called directly should stay out of first-class runtime inventory",
     );
 
