@@ -338,6 +338,50 @@ fn main(), do: Greet.hello([1, 2, 3])
     );
 }
 
+/// fz-hwn.19.2.4.16.3: a `defimpl` co-located with its `defprotocol` at file root
+/// (no enclosing module) registers as `Protocol.Target` when the file is scoped —
+/// the same path a runtime protocol file takes when its protocol is referenced.
+/// This is what lets a built-in impl ride in on its protocol's reference (T4),
+/// dissolving the "scan the receiver type's module" convention.
+#[test]
+fn compiler2_root_colocated_protocol_impl_registers_on_scope() {
+    let tel = crate::telemetry::ConfiguredTelemetry::new();
+    let mut world = World::new(&tel);
+    world.submit_code(
+        Some("colocated_impl.fz".to_string()),
+        r#"
+defprotocol Greet do
+  @spec hello(t(a)) :: a
+  fn hello(x)
+end
+
+defimpl Greet, for: List do
+  fn hello(list), do: list
+end
+
+fn main(), do: Greet.hello([1, 2, 3])
+"#
+        .to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+
+    drive_until_semantic_closure(
+        &mut world,
+        root,
+        "co-located defimpl should resolve via its concat module",
+    );
+    assert!(
+        world.fact_is_settled(&FactKey::SemanticClosed(root)),
+        "semantic closure should settle"
+    );
+
+    let impl_module = world.reference_module("Greet.List".to_string());
+    assert!(
+        world.fact_is_settled(&FactKey::ModuleDefined(impl_module)),
+        "a defimpl co-located with its protocol should register as `Greet.List` and resolve the call"
+    );
+}
+
 /// fz-hwn.19.2.4.11 (semantic root): a closure call to a *captured* callable
 /// must return the callable's resolved result type, not blanket `any`.
 ///
