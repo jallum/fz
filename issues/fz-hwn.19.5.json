@@ -11,9 +11,15 @@
   "id": "fz-hwn.19.5",
   "labels": [],
   "parent": "fz-hwn.19",
+  "comments": [
+    {
+      "text": "Concrete findings surfaced while doing fz-hwn.19.3 (record so they are not lost; both are TrashDeliveredShape/ArgRepr-domain, i.e. 19.5 scope):\n1. ESCAPED/MULTI-SURFACE BOUNDARY SELECTION. An escaped callable used at multiple surfaces (e.g. 'id = fn(x)-\u003ex end; id.(1); id.({1,2}); id') publishes MULTIPLE boundaries (one per surface) but is materialized as a STATIC CLOSURE SINGLETON via the codegen driver (native_codegen/driver.rs emit_callable_boundary_bodies / fetch_static_closure), NOT via jobs/native.rs materialize_transport_value. That static-singleton path must select which boundary the singleton carries by SURFACE (not capture types). 19.3 left native.rs::settled_callable_boundary correct-by-construction: it errors loudly if a CallableId fact names \u003e1 boundary at the rematerialization site (unreachable today), pointing here.\n2. TUPLE-FIELD RETURN JIT PANIC. fixtures2/behavior/closure_typed_captures.fz lowers to a native program fine but PANICS in cranelift codegen at native_codegen/terminator.rs:680 ('native tuple-field return must cache returned fields') on the TrashDeliveredShape::TupleFields return path. This blocks JIT execution of that fixture (it was red-worklisted). The 19.3 test for it now asserts only the native-program invariant (direct dispatch) and documents this JIT blocker.",
+      "timestamp": "2026-06-17T11:05:11Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "Transport cutover: make native codegen consume TransportPlan seam facts",
   "type": "task",
-  "updated_at": "2026-06-15T20:57:06Z"
+  "updated_at": "2026-06-17T11:05:11Z"
 }
