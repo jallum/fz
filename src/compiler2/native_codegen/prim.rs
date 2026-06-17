@@ -998,9 +998,6 @@ pub(crate) fn lower_prim<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
     stmt_idx: usize,
     block_env: Option<&HashMap<Var, Ty>>,
 ) -> Result<LowerOut, CodegenError> {
-    if body.cache.skipped_tuple_return_vars.contains(&dest_var.0) {
-        return Ok(LowerOut::DeadUnit);
-    }
     let runtime = env.runtime;
     let value_types = env.active_value_types();
     // Helper: every consumer site below that wants one-word ValueRef uses
@@ -2512,12 +2509,12 @@ fn emit_capturing_closure<M: cranelift_module::Module>(
     })?;
     let fid_v = body.b.ins().iconst(types::I32, fn_id.0 as i64);
     let nc_v = body.b.ins().iconst(types::I32, n_caps as i64);
-    let halt_repr = match &boundary.return_shape {
-        TrashDeliveredShape::Never => ArgRepr::ValueRef,
-        TrashDeliveredShape::Omitted => ArgRepr::ValueRef,
-        TrashDeliveredShape::Value(repr) => *repr,
-        TrashDeliveredShape::TupleFields(_) => ArgRepr::ValueRef,
-    };
+    let halt_repr = single_scalar_return_repr(
+        boundary.return_diverges,
+        &boundary.return_reprs,
+        boundary.return_tuple_arity,
+    )
+    .unwrap_or(ArgRepr::ValueRef);
     let hk_v = body.b.ins().iconst(types::I32, halt_repr.halt_kind() as i64);
     let body_addr = fn_addr(body.jmod, body_func_id, body.b);
     let cl_ptr = body.alloc_closure(fid_v, nc_v, hk_v, body_addr);

@@ -195,6 +195,11 @@ fn collect_term_vars(t: &Term, used: &mut HashSet<Var>) {
         Term::Return(a) | Term::Halt(a) => {
             used.insert(*a);
         }
+        Term::ReturnLanes(lanes) => {
+            for v in lanes {
+                used.insert(*v);
+            }
+        }
         // fz-yxs — Vars referenced by ReceiveMatched: pinned and captures
         // are live (passed to matcher / clause-body fns), as is the
         // computed timeout Var if there's an after clause.

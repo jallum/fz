@@ -391,6 +391,15 @@ pub(super) fn run_fn_typed<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(
                     continue 'tail;
                 }
                 Term::Return(v) => return Ok(InterpStep::Done(env_get(&env, *v)?)),
+                Term::ReturnLanes(lanes) => match lanes.as_slice() {
+                    [lane] => return Ok(InterpStep::Done(env_get(&env, *lane)?)),
+                    _ => {
+                        return Err(format!(
+                            "ReturnLanes with {} lane(s) is native-codegen-only and cannot run in ir_interp",
+                            lanes.len()
+                        ));
+                    }
+                },
                 Term::Halt(v) => return Ok(InterpStep::Halt(env_get(&env, *v)?)),
                 // fz-yxs/fz-2v3 — selective receive. Walk the mailbox
                 // head-to-tail trying each clause in order; first match

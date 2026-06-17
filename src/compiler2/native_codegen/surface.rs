@@ -7,7 +7,7 @@
 //! `NativeCodegenSurface` owns that handoff so planner-owned wrappers stay
 //! outside compiler2 native codegen.
 
-use super::{ArgRepr, MidFlightArgShape, TrashDeliveredShape};
+use super::{ArgRepr, MidFlightArgShape};
 use crate::compiler2::NativeBody;
 use crate::compiler2::artifact::NativeCallableBoundaryId;
 use crate::diag::Diagnostics;
@@ -23,7 +23,9 @@ pub(crate) struct NativeCallableBoundarySurface {
     pub capture_key: Vec<crate::types::KeySlot<crate::compiler2::Ty>>,
     pub capture_reprs: Vec<ArgRepr>,
     pub arg_reprs: Vec<ArgRepr>,
-    pub return_shape: TrashDeliveredShape,
+    pub return_diverges: bool,
+    pub return_reprs: Vec<ArgRepr>,
+    pub return_tuple_arity: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -31,7 +33,6 @@ pub(crate) struct NativeClosureTargetSurface {
     pub capture_count: usize,
     pub capture_reprs: Vec<ArgRepr>,
     pub arg_reprs: Vec<ArgRepr>,
-    pub return_shape: TrashDeliveredShape,
 }
 
 pub(crate) struct NativeCodegenSurface<'a> {
@@ -46,10 +47,8 @@ pub(crate) struct NativeCodegenSurface<'a> {
     pub closure_targets: HashMap<FnId, NativeClosureTargetSurface>,
     pub mid_flight_cont_keys: Vec<(u32, Vec<MidFlightArgShape>)>,
     pub param_reprs: Vec<Vec<ArgRepr>>,
-    pub return_reprs: Vec<ArgRepr>,
-    /// Settled delivered return shape per body slot. Decided once here, where
-    /// types are available, and consumed verbatim by codegen.
-    pub return_shapes: Vec<TrashDeliveredShape>,
+    pub halt_reprs: Vec<ArgRepr>,
+    pub return_diverges: Vec<bool>,
     pub native_abi_fns: HashSet<FnId>,
     pub cont_target_fns: HashSet<FnId>,
     pub cont_fns: HashSet<FnId>,

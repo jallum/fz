@@ -223,6 +223,7 @@ pub(crate) fn subst_term(t: &Term, subst: &HashMap<Var, Var>) -> Term {
             args: args.iter().map(|x| sv(*x)).collect(),
         },
         Term::Return(a) => Term::Return(sv(*a)),
+        Term::ReturnLanes(lanes) => Term::ReturnLanes(lanes.iter().map(|v| sv(*v)).collect()),
         Term::Halt(a) => Term::Halt(sv(*a)),
         // fz-yxs — pinned/captures Vars are substituted; the timeout Var
         // (if present on an after clause) is substituted too. Clause and

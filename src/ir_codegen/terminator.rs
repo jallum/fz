@@ -336,6 +336,9 @@ pub(crate) fn emit_terminator<M: cranelift_module::Module, T: Types<Ty = Ty> + C
             cond, then_b, else_b, ..
         } => emit_if(body, var_env, block_map, caller_fn_id, blk.id, cond, then_b, else_b),
         Term::Halt(v) => emit_halt(body, var_env, is_native, host_ctx, v),
+        Term::ReturnLanes(_) => Err(CodegenError::new(
+            "ReturnLanes is a compiler2 native-codegen terminator; legacy ir_codegen cannot lower it",
+        )),
         Term::Return(v) => emit_return_term(
             body,
             t,

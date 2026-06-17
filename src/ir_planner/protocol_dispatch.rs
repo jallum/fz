@@ -244,6 +244,7 @@ fn max_var_in_term(term: &Term) -> u32 {
     match term {
         Term::Goto(_, args) | Term::TailCall { args, .. } => args.iter().for_each(|arg| visit(*arg)),
         Term::If { cond, .. } | Term::Return(cond) | Term::Halt(cond) => visit(*cond),
+        Term::ReturnLanes(lanes) => lanes.iter().for_each(|lane| visit(*lane)),
         Term::Call { args, continuation, .. } | Term::CallClosure { args, continuation, .. } => {
             args.iter().for_each(|arg| visit(*arg));
             continuation.captured.iter().for_each(|capture| visit(*capture));

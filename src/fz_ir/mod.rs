@@ -763,6 +763,9 @@ pub enum Term {
         args: Vec<Var>,
     },
     Return(Var),
+    /// Native/codegen-facing return whose payload is already split into the
+    /// transport lanes required by the current function's return seam.
+    ReturnLanes(Vec<Var>),
     Halt(Var),
     /// fz-yxs — selective `receive do … after … end`. The cached dispatch
     /// plan is the executable route. Clause bodies receive bound pattern vars
@@ -1042,6 +1045,11 @@ pub(crate) fn visit_term_vars(term: &Term, mut visit: impl FnMut(Var)) {
             }
         }
         Term::If { cond, .. } | Term::Return(cond) | Term::Halt(cond) => visit(*cond),
+        Term::ReturnLanes(lanes) => {
+            for v in lanes {
+                visit(*v);
+            }
+        }
         Term::Call { args, continuation, .. } | Term::CallClosure { args, continuation, .. } => {
             for v in args {
                 visit(*v);
@@ -1537,6 +1545,7 @@ impl Module {
                     | Term::If { .. }
                     | Term::TailCallClosure { .. }
                     | Term::Return(_)
+                    | Term::ReturnLanes(_)
                     | Term::Halt(_) => {}
                 }
             }
@@ -2151,6 +2160,7 @@ impl fmt::Display for Term {
                 write!(f, "tail_call_closure {}([{}])", closure, fmt_var_list(args))
             }
             Term::Return(v) => write!(f, "return {}", v),
+            Term::ReturnLanes(lanes) => write!(f, "return_lanes [{}]", fmt_var_list(lanes)),
             Term::Halt(v) => write!(f, "halt {}", v),
             Term::ReceiveMatched {
                 clauses,

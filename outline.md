@@ -300,17 +300,15 @@ Cutover classification:
   direct callables read `CallableId` descriptor/fact payloads, and runtime
   materialization is a boundary operation that indexes `TransportPlan` facts
   instead of rebuilding a recursive value tree.
-- `src/compiler2/native_codegen/demand.rs`,
-  `src/compiler2/native_codegen/driver.rs`,
-  `src/compiler2/native_codegen/entry.rs`,
-  `src/compiler2/native_codegen/function.rs`,
-  `src/compiler2/native_codegen/terminator.rs`, and
-  `src/compiler2/native_codegen/prim.rs` still carry `TrashDeliveredShape`,
-  `TrashNativeDemandAbi`, `trash_delivered_shape_from_layout`,
-  `trash_delivered_shape_from_return_abi`, continuation-shape recovery, and
-  compiler2-local `ArgRepr` decisions. `fz-hwn.19.5` replaces those with
-  `CodegenSeamFact` reads keyed by `LaneId` plus `CodegenSeam`; low-level
-  `ArgRepr` may remain only as an emission enum filled from those facts.
+- `src/compiler2/native_codegen/*` no longer carries `TrashDeliveredShape`,
+  `TrashNativeDemandAbi`, delivered-shape recovery helpers, return-shape
+  conversion functions, tuple-return rediscovery, or compiler2-local `ArgRepr`
+  decisions.
+  `fz-hwn.19.5` moved native block-param reprs into `NativeBody`, added
+  `Term::ReturnLanes(Vec<Var>)` so native lowering hands return transport
+  lanes directly to codegen, lowers non-empty mismatched direct tail returns
+  through generated `ReturnLanes` continuations, and left `ArgRepr` as an
+  emission enum filled from native handoff facts.
 - `src/ir_codegen/*` still has non-compiler2 legacy `ArgRepr::from_ty` and
   `for_block_param_ty` paths. They are not inputs to the new transport plan.
   They are either outside the compiler2 cutover or must be named by a separate

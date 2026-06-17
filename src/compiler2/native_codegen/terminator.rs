@@ -99,22 +99,10 @@ fn spec_is_native(env: &CodegenEnv<'_>, sid: u32) -> bool {
     callee_is_native(env, spec_fn_id(env, sid).0)
 }
 
-fn continuation_input_shape(env: &CodegenEnv<'_>, cont_sid: u32) -> TrashDeliveredShape {
-    let demand_abi = TrashNativeDemandAbi::new(env.body_native(cont_sid));
-    let extras = demand_abi.continuation_entry_extras();
+fn continuation_entry_reprs(env: &CodegenEnv<'_>, cont_sid: u32) -> Vec<ArgRepr> {
+    let extras = continuation_entry_extra_count(env.body_native(cont_sid));
     let reprs = &env.param_reprs[cont_sid as usize];
-    match extras {
-        0 => TrashDeliveredShape::Omitted,
-        1 => TrashDeliveredShape::Value(reprs.first().copied().unwrap_or(ArgRepr::ValueRef)),
-        _ => TrashDeliveredShape::TupleFields(
-            reprs
-                .iter()
-                .copied()
-                .take(extras)
-                .collect::<Vec<_>>()
-                .into_boxed_slice(),
-        ),
-    }
+    reprs.iter().copied().take(extras).collect()
 }
 
 fn push_direct_closure_args<M: cranelift_module::Module>(
@@ -194,7 +182,7 @@ fn emit_native_continuation_tail_delivery<M: cranelift_module::Module>(
     let self_arg = ContinuationPlan::heap_closure(payload).emit_value(
         body,
         runtime,
-        env.return_reprs,
+        env.halt_reprs,
         is_cont_fn,
         cont_param,
         frame_ptr,
@@ -224,27 +212,20 @@ fn emit_native_continuation_tail_delivery<M: cranelift_module::Module>(
     }
 }
 
-fn adapt_direct_closure_cont<M: cranelift_module::Module>(
-    body: &mut CodegenFn<'_, '_, '_, M>,
-    env: &CodegenEnv<'_>,
-    source_shape: TrashDeliveredShape,
+fn direct_closure_cont_for_exact_return(
+    source_diverges: bool,
+    source_reprs: &[ArgRepr],
     passthrough_cont: ir::Value,
-    expected_shape: TrashDeliveredShape,
+    expected_reprs: &[ArgRepr],
     seam: &'static str,
 ) -> ir::Value {
-    match (source_shape, expected_shape) {
-        (TrashDeliveredShape::Never, _) => passthrough_cont,
-        (left, right) if left == right => passthrough_cont,
-        (TrashDeliveredShape::Value(callee_ret_repr), TrashDeliveredShape::Value(expected_repr)) => {
-            build_boundary_return_adapter_cont(body, env, passthrough_cont, callee_ret_repr, expected_repr)
-        }
-        (callee_shape, expected_shape) => {
-            panic!(
-                "{seam} requires structural delivery agreement or a value-lane adapter: callee={:?}, expected={:?}",
-                callee_shape, expected_shape
-            );
-        }
+    if source_diverges || source_reprs == expected_reprs {
+        return passthrough_cont;
     }
+    panic!(
+        "{seam} requires exact transport return-lane agreement: callee={:?}, expected={:?}",
+        source_reprs, expected_reprs
+    );
 }
 
 enum ContinuationPlan {
@@ -285,8 +266,7 @@ impl ContinuationPayload {
         cont_sid: u32,
         captures: &[Var],
     ) -> Self {
-        let demand_abi = TrashNativeDemandAbi::new(env.body_native(cont_sid));
-        let extras_count = demand_abi.continuation_entry_extras();
+        let extras_count = continuation_entry_extra_count(env.body_native(cont_sid));
         let cap_bindings = captures
             .iter()
             .enumerate()
@@ -393,32 +373,22 @@ fn native_call_result_value<M: cranelift_module::Module>(
     }
 }
 
-fn build_boundary_return_adapter_cont<M: cranelift_module::Module>(
-    body: &mut CodegenFn<'_, '_, '_, M>,
-    env: &CodegenEnv<'_>,
-    outer_cont: ir::Value,
-    source: ArgRepr,
-    dest: ArgRepr,
-) -> ir::Value {
-    let adapter_id = env.boundary_return_adapters.id_for(source, dest).unwrap_or_else(|| {
-        panic!(
-            "missing boundary return adapter for {} -> {}",
-            source.as_str(),
-            dest.as_str()
-        )
-    });
-    let adapter_addr = fn_addr(body.jmod, adapter_id, body.b);
-    let adapter_schema = body.b.ins().iconst(types::I32, 0);
-    let captured_count = body.b.ins().iconst(types::I32, 1);
-    let halt_kind = body.b.ins().iconst(types::I32, 0);
-    let adapter_cont = body.alloc_closure(adapter_schema, captured_count, halt_kind, adapter_addr);
-    let outer_cont = body.materialize_cont(outer_cont);
-    body.store_closure_capture_ref_word(adapter_cont, 0, outer_cont);
-    adapter_cont
+fn return_diverges(env: &CodegenEnv<'_>, body_sid: u32) -> bool {
+    env.return_diverges[body_sid as usize]
 }
 
-fn returned_shape(env: &CodegenEnv<'_>, body_sid: u32) -> TrashDeliveredShape {
-    env.return_shapes[body_sid as usize].clone()
+fn scalar_body_return_repr(env: &CodegenEnv<'_>, body_sid: u32) -> Option<ArgRepr> {
+    let native_body = env.body_native(body_sid);
+    let reprs = env.body_return_reprs(body_sid);
+    single_scalar_return_repr(return_diverges(env, body_sid), &reprs, native_body.return_tuple_arity)
+}
+
+fn scalar_or_never_body_return_halt_repr(env: &CodegenEnv<'_>, body_sid: u32) -> Option<ArgRepr> {
+    if return_diverges(env, body_sid) {
+        Some(ArgRepr::ValueRef)
+    } else {
+        scalar_body_return_repr(env, body_sid)
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -447,6 +417,16 @@ pub(crate) fn emit_terminator<M: cranelift_module::Module, T: Types<Ty = Ty> + C
             cond, then_b, else_b, ..
         } => emit_if(body, var_env, block_map, caller_fn_id, blk.id, cond, then_b, else_b),
         Term::Halt(v) => emit_halt(body, var_env, is_native, host_ctx, v),
+        Term::ReturnLanes(lanes) => emit_return_lanes(
+            body,
+            env,
+            var_env,
+            is_native,
+            is_cont_fn,
+            this_spec_id,
+            cont_param,
+            lanes,
+        ),
         Term::Return(v) => emit_return_term(
             body,
             t,
@@ -638,6 +618,57 @@ fn emit_halt<M: cranelift_module::Module>(
     Ok(())
 }
 
+fn emit_return_lanes<M: cranelift_module::Module>(
+    body: &mut CodegenFn<'_, '_, '_, M>,
+    env: &CodegenEnv<'_>,
+    var_env: &HashMap<u32, CodegenValue>,
+    is_native: bool,
+    is_cont_fn: bool,
+    this_spec_id: u32,
+    cont_param: Option<ir::Value>,
+    lanes: &[Var],
+) -> Result<(), CodegenError> {
+    if !is_native {
+        return Err(CodegenError::new(format!(
+            "ReturnLanes reached non-native body {}",
+            env.active_body_name
+        )));
+    }
+    if return_diverges(env, this_spec_id) {
+        body.b.ins().trap(TrapCode::user(1).unwrap());
+        return Ok(());
+    }
+    let return_reprs = env.body_return_reprs(this_spec_id);
+    if lanes.len() != return_reprs.len() {
+        return Err(CodegenError::new(format!(
+            "ReturnLanes arity mismatch in {}: lanes={}, return_reprs={}",
+            env.active_body_name,
+            lanes.len(),
+            return_reprs.len()
+        )));
+    }
+    let cont_val = if is_cont_fn {
+        let self_val = cont_param.expect("cont fn binds self via cont_param");
+        body.outer_cont_ref(self_val)
+    } else {
+        cont_param.expect("non-cont native fn has cont_param")
+    };
+    let code = body.closure_code_ref(cont_val);
+    let mut sig = Signature::new(CallConv::Tail);
+    let mut cont_args = Vec::with_capacity(lanes.len() + 1);
+    for (lane, repr) in lanes.iter().copied().zip(return_reprs.iter().copied()) {
+        let binding = *var_env.get(&lane.0).expect("unbound return lane");
+        push_repr_param(&mut sig, repr);
+        body.push_binding_as_abi_arg(&mut cont_args, binding, repr);
+    }
+    sig.params.push(AbiParam::new(types::I64));
+    sig.returns.push(AbiParam::new(types::I64));
+    let sigref = body.b.import_signature(sig);
+    cont_args.push(cont_val);
+    body.b.ins().return_call_indirect(sigref, code, &cont_args);
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 fn emit_return_term<M: cranelift_module::Module, T: Types<Ty = Ty> + ClosureTypes>(
     body: &mut CodegenFn<'_, '_, '_, M>,
@@ -663,55 +694,35 @@ fn emit_return_term<M: cranelift_module::Module, T: Types<Ty = Ty> + ClosureType
             } else {
                 cont_param.expect("non-cont native fn has cont_param")
             };
-            match returned_shape(env, this_spec_id) {
-                TrashDeliveredShape::Never => {
-                    body.b.ins().trap(TrapCode::user(1).unwrap());
-                }
-                TrashDeliveredShape::Omitted => {
-                    let code = body.closure_code_ref(cont_val);
-                    let mut sig = Signature::new(CallConv::Tail);
-                    sig.params.push(AbiParam::new(types::I64));
-                    sig.returns.push(AbiParam::new(types::I64));
-                    let sigref = body.b.import_signature(sig);
-                    body.b.ins().return_call_indirect(sigref, code, &[cont_val]);
-                }
-                TrashDeliveredShape::TupleFields(fields) => {
-                    let Some(cached_fields) = body.cache.tuple_return_fields.get(&v.0) else {
-                        panic!(
-                            "native tuple-field return must cache returned fields: spec={} value={}",
-                            this_spec_id, v.0
-                        );
-                    };
-                    let cached_fields = cached_fields.clone();
-                    debug_assert_eq!(cached_fields.len(), fields.len());
-                    let code = body.closure_code_ref(cont_val);
-                    let mut sig = Signature::new(CallConv::Tail);
-                    let mut cont_args = Vec::with_capacity(cached_fields.len() + 1);
-                    for (field, repr) in cached_fields.into_iter().zip(fields.iter().copied()) {
-                        let binding = *var_env.get(&field.0).expect("unbound tuple return field");
-                        push_repr_param(&mut sig, repr);
-                        body.push_binding_as_abi_arg(&mut cont_args, binding, repr);
-                    }
-                    sig.params.push(AbiParam::new(types::I64));
-                    sig.returns.push(AbiParam::new(types::I64));
-                    let sigref = body.b.import_signature(sig);
-                    cont_args.push(cont_val);
-                    body.b.ins().return_call_indirect(sigref, code, &cont_args);
-                }
-                TrashDeliveredShape::Value(my_return_repr) => {
-                    let _ = caller_fn_id;
-                    let binding = *var_env.get(&v.0).expect("unbound return val");
-                    let code = body.closure_code_ref(cont_val);
-                    let mut sig = Signature::new(CallConv::Tail);
-                    push_repr_param(&mut sig, my_return_repr);
-                    sig.params.push(AbiParam::new(types::I64));
-                    sig.returns.push(AbiParam::new(types::I64));
-                    let sigref = body.b.import_signature(sig);
-                    let mut cont_args = Vec::with_capacity(2);
-                    body.push_binding_as_abi_arg(&mut cont_args, binding, my_return_repr);
-                    cont_args.push(cont_val);
-                    body.b.ins().return_call_indirect(sigref, code, &cont_args);
-                }
+            let return_reprs = env.body_return_reprs(this_spec_id);
+            if return_diverges(env, this_spec_id) {
+                body.b.ins().trap(TrapCode::user(1).unwrap());
+            } else if return_reprs.is_empty() {
+                let code = body.closure_code_ref(cont_val);
+                let mut sig = Signature::new(CallConv::Tail);
+                sig.params.push(AbiParam::new(types::I64));
+                sig.returns.push(AbiParam::new(types::I64));
+                let sigref = body.b.import_signature(sig);
+                body.b.ins().return_call_indirect(sigref, code, &[cont_val]);
+            } else if let [my_return_repr] = return_reprs.as_slice() {
+                let _ = caller_fn_id;
+                let binding = *var_env.get(&v.0).expect("unbound return val");
+                let code = body.closure_code_ref(cont_val);
+                let mut sig = Signature::new(CallConv::Tail);
+                push_repr_param(&mut sig, *my_return_repr);
+                sig.params.push(AbiParam::new(types::I64));
+                sig.returns.push(AbiParam::new(types::I64));
+                let sigref = body.b.import_signature(sig);
+                let mut cont_args = Vec::with_capacity(2);
+                body.push_binding_as_abi_arg(&mut cont_args, binding, *my_return_repr);
+                cont_args.push(cont_val);
+                body.b.ins().return_call_indirect(sigref, code, &cont_args);
+            } else {
+                panic!(
+                    "native multi-lane return must lower as Term::ReturnLanes, got {} lane(s) through scalar v{}",
+                    return_reprs.len(),
+                    v.0
+                );
             }
         } else if cont_ptr_known_null {
             let value = *var_env.get(&v.0).expect("unbound return val");
@@ -842,7 +853,7 @@ fn emit_native_call_with_cont<M: cranelift_module::Module>(
     };
     let cont_value_opt = continuation_plan
         .as_ref()
-        .map(|plan| plan.emit_value(body, runtime, env.return_reprs, is_cont_fn, cont_param, frame_ptr));
+        .map(|plan| plan.emit_value(body, runtime, env.halt_reprs, is_cont_fn, cont_param, frame_ptr));
     // cont arg passed to the callee: cl_ptr for native cont,
     // else cont_param fallback. When the cont-fn is uniform
     // (rare; only main's halt-style cont after the
@@ -861,11 +872,9 @@ fn emit_native_call_with_cont<M: cranelift_module::Module>(
             Some(c) => c,
             None => {
                 synth_halt_cont = true;
-                match returned_shape(env, callee_sid) {
-                    TrashDeliveredShape::Never => synthesize_halt_cont(body, runtime, ArgRepr::ValueRef),
-                    TrashDeliveredShape::Value(callee_ret_repr) => synthesize_halt_cont(body, runtime, callee_ret_repr),
-                    shape => panic!("synthesized halt continuation requires one delivered value lane, got {shape:?}"),
-                }
+                let callee_ret_repr = scalar_or_never_body_return_halt_repr(env, callee_sid)
+                    .expect("synthesized halt continuation requires one delivered value lane");
+                synthesize_halt_cont(body, runtime, callee_ret_repr)
             }
         }
     };
@@ -917,8 +926,7 @@ fn emit_native_call_with_cont<M: cranelift_module::Module>(
         // Result + captures are written into the cont's
         // typed entry slots. Native result already has an
         // ABI repr; captured vars come from var_env.
-        let callee_ret_repr = matches!(returned_shape(env, callee_sid), TrashDeliveredShape::Value(_))
-            .then_some(env.return_reprs[callee_sid as usize])
+        let callee_ret_repr = scalar_body_return_repr(env, callee_sid)
             .expect("uniform continuation write-back requires one delivered value lane");
         let mut payload: Vec<(ir::Value, ArgRepr)> = Vec::with_capacity(continuation.captured.len() + 1);
         payload.push((result, callee_ret_repr));
@@ -1018,8 +1026,8 @@ fn emit_native_tail_call<M: cranelift_module::Module>(
     let callee_param_reprs = &param_reprs[callee_sid as usize];
     let callee_fid = *fn_ids.get(&callee_sid).expect("callee fn_id missing");
     let callee_fref = body.jmod.declare_func_in_func(callee_fid, body.b.func);
-    let callee_shape = returned_shape(env, callee_sid);
-    let caller_shape = returned_shape(env, this_spec_id);
+    let callee_return_reprs = env.body_return_reprs(callee_sid);
+    let caller_return_reprs = env.body_return_reprs(this_spec_id);
     let mut native_args = Vec::with_capacity(callee_param_reprs.iter().map(ArgRepr::abi_arity).sum());
     let mut mid_flight_arg_shapes: Vec<MidFlightArgShape> = Vec::with_capacity(callee_param_reprs.len() + 2);
     for (i, av) in args.iter().enumerate() {
@@ -1059,26 +1067,19 @@ fn emit_native_tail_call<M: cranelift_module::Module>(
             Some(c) => c,
             None => {
                 synth_halt_cont = true;
-                match caller_shape {
-                    TrashDeliveredShape::Never => synthesize_halt_cont(body, runtime, ArgRepr::ValueRef),
-                    TrashDeliveredShape::Value(caller_ret_repr) => synthesize_halt_cont(body, runtime, caller_ret_repr),
-                    shape => panic!("top-level native tail delivery must end in one value lane, got {shape:?}"),
-                }
+                let caller_ret_repr = scalar_or_never_body_return_halt_repr(env, this_spec_id)
+                    .expect("top-level native tail delivery must end in one value lane");
+                synthesize_halt_cont(body, runtime, caller_ret_repr)
             }
         }
     };
-    let tail_cont_arg = match (&callee_shape, &caller_shape) {
-        (TrashDeliveredShape::Never, _) => caller_outer_cont,
-        (left, right) if left == right => caller_outer_cont,
-        (TrashDeliveredShape::Value(callee_ret_repr), TrashDeliveredShape::Value(caller_ret_repr)) => {
-            build_boundary_return_adapter_cont(body, env, caller_outer_cont, *callee_ret_repr, *caller_ret_repr)
-        }
-        _ => {
-            panic!(
-                "native tail delivery mismatch requires structural agreement or a value-lane adapter: callee={:?}, caller={:?}",
-                callee_shape, caller_shape
-            );
-        }
+    let tail_cont_arg = if return_diverges(env, callee_sid) || callee_return_reprs == caller_return_reprs {
+        caller_outer_cont
+    } else {
+        panic!(
+            "native tail delivery requires exact transport return-lane agreement: callee={:?}, caller={:?}",
+            callee_return_reprs, caller_return_reprs
+        );
     };
     native_args.push(tail_cont_arg);
     mid_flight_arg_shapes.push(MidFlightArgShape::HeapRef);
@@ -1130,47 +1131,37 @@ fn emit_native_tail_call<M: cranelift_module::Module>(
         body.b.switch_to_block(halt_blk);
         body.b.seal_block(halt_blk);
         let _ = host_ctx;
-        match callee_shape {
-            TrashDeliveredShape::Never => {
-                body.b.ins().trap(TrapCode::user(1).unwrap());
-            }
-            TrashDeliveredShape::Omitted => {
-                let nil_value = strict_const_value(body.b, AnyValue::nil_atom());
-                emit_halt_from_codegen_value(body, nil_value);
-            }
-            TrashDeliveredShape::Value(callee_ret_repr) => {
-                let result_value = native_call_result_value(body, result, callee_ret_repr);
-                emit_halt_from_codegen_value(body, result_value);
-            }
-            TrashDeliveredShape::TupleFields(_) => {
-                panic!(
-                    "uniform native tail call halt path requires a scalar delivered value, got {:?}",
-                    callee_shape
-                )
-            }
+        if return_diverges(env, callee_sid) {
+            body.b.ins().trap(TrapCode::user(1).unwrap());
+        } else if callee_return_reprs.is_empty() {
+            let nil_value = strict_const_value(body.b, AnyValue::nil_atom());
+            emit_halt_from_codegen_value(body, nil_value);
+        } else if let Some(callee_ret_repr) = scalar_body_return_repr(env, callee_sid) {
+            let result_value = native_call_result_value(body, result, callee_ret_repr);
+            emit_halt_from_codegen_value(body, result_value);
+        } else {
+            panic!(
+                "uniform native tail call halt path requires a scalar delivered value, got {:?}",
+                callee_return_reprs
+            )
         }
         let null = body.b.ins().iconst(types::I64, 0);
         body.b.ins().return_(&[null]);
         body.b.switch_to_block(invoke_blk);
         body.b.seal_block(invoke_blk);
-        match callee_shape {
-            TrashDeliveredShape::Never => {
-                body.b.ins().trap(TrapCode::user(1).unwrap());
-            }
-            TrashDeliveredShape::Omitted => {
-                body.b.ins().return_(&[my_cont]);
-            }
-            TrashDeliveredShape::Value(callee_ret_repr) => {
-                let result_value = native_call_result_value(body, result, callee_ret_repr);
-                body.store_frame_value_dynamic(my_cont, SLOT_BYTES as u32, result_value);
-                body.b.ins().return_(&[my_cont]);
-            }
-            TrashDeliveredShape::TupleFields(_) => {
-                panic!(
-                    "uniform native tail call write-back requires a scalar delivered value, got {:?}",
-                    callee_shape
-                )
-            }
+        if return_diverges(env, callee_sid) {
+            body.b.ins().trap(TrapCode::user(1).unwrap());
+        } else if callee_return_reprs.is_empty() {
+            body.b.ins().return_(&[my_cont]);
+        } else if let Some(callee_ret_repr) = scalar_body_return_repr(env, callee_sid) {
+            let result_value = native_call_result_value(body, result, callee_ret_repr);
+            body.store_frame_value_dynamic(my_cont, SLOT_BYTES as u32, result_value);
+            body.b.ins().return_(&[my_cont]);
+        } else {
+            panic!(
+                "uniform native tail call write-back requires a scalar delivered value, got {:?}",
+                callee_return_reprs
+            )
         }
     }
 }
@@ -1305,7 +1296,7 @@ fn emit_call_closure<M: cranelift_module::Module>(
         let cont_payload = ContinuationPayload::from_capture_vars(body, env, var_env, cont_sid, &continuation.captured);
         let can_use_lazy_cont = false;
         let continuation_plan = plan_closure_shaped_continuation(cont_payload, can_use_lazy_cont);
-        let cf = continuation_plan.emit_value(body, runtime, env.return_reprs, is_cont_fn, cont_param, frame_ptr);
+        let cf = continuation_plan.emit_value(body, runtime, env.halt_reprs, is_cont_fn, cont_param, frame_ptr);
         let continuation_storage = if continuation_plan.uses_lazy_descriptor() {
             "lazy_descriptor"
         } else {
@@ -1329,12 +1320,11 @@ fn emit_call_closure<M: cranelift_module::Module>(
         if let Some((body_sid, body_fid, _target_fn, target)) = lit_resolved {
             let body_fref = body.jmod.declare_func_in_func(body_fid, body.b.func);
             let mut direct_args = push_direct_closure_args(body, var_env, args, target, cl_val);
-            let direct_cont = adapt_direct_closure_cont(
-                body,
-                env,
-                returned_shape(env, body_sid),
+            let direct_cont = direct_closure_cont_for_exact_return(
+                return_diverges(env, body_sid),
+                &env.body_return_reprs(body_sid),
                 cf,
-                continuation_input_shape(env, cont_sid),
+                &continuation_entry_reprs(env, cont_sid),
                 "direct closure call",
             );
             direct_args.push(direct_cont);
@@ -1461,12 +1451,11 @@ fn emit_tail_call_closure<M: cranelift_module::Module>(
         if let Some((body_sid, body_fid, _target_fn, target)) = lit_resolved {
             let body_fref = body.jmod.declare_func_in_func(body_fid, body.b.func);
             let mut direct_args = push_direct_closure_args(body, var_env, args, target, cl_val);
-            let direct_cont = adapt_direct_closure_cont(
-                body,
-                env,
-                returned_shape(env, body_sid),
+            let direct_cont = direct_closure_cont_for_exact_return(
+                return_diverges(env, body_sid),
+                &env.body_return_reprs(body_sid),
                 my_cont,
-                returned_shape(env, env.active_spec_id),
+                &env.body_return_reprs(env.active_spec_id),
                 "direct tail closure call",
             );
             direct_args.push(direct_cont);
@@ -1651,7 +1640,7 @@ fn build_park_record<M: cranelift_module::Module>(
         let cl_ptr = ContinuationPlan::heap_closure(payload).emit_value(
             body,
             runtime,
-            env.return_reprs,
+            env.halt_reprs,
             is_cont_fn,
             cont_param,
             frame_ptr,
@@ -1678,7 +1667,7 @@ fn build_park_record<M: cranelift_module::Module>(
             let cl_ptr = ContinuationPlan::heap_closure(payload).emit_value(
                 body,
                 runtime,
-                env.return_reprs,
+                env.halt_reprs,
                 is_cont_fn,
                 cont_param,
                 frame_ptr,

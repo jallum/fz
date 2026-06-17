@@ -204,6 +204,7 @@ fn term_uses_var(term: &Term, v: Var) -> bool {
         } => *closure == v || args.contains(&v) || continuation.captured.contains(&v),
         Term::TailCallClosure { closure, args, .. } => *closure == v || args.contains(&v),
         Term::Return(r) | Term::Halt(r) => *r == v,
+        Term::ReturnLanes(lanes) => lanes.contains(&v),
         Term::ReceiveMatched { .. } => true,
     }
 }

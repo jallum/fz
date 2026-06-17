@@ -448,8 +448,8 @@ rg -n "\b(TrashRuntimeValueLayout|TrashRuntimeInputLayout|TrashRuntimeParamLayou
       <td><code>fz-hwn.19.4</code>: tuple fields are child-shape lane-span views, direct callables read <code>CallableId</code> descriptor/fact payloads, and runtime materialization is a boundary operation that indexes <code>TransportPlan</code> facts instead of rebuilding a recursive value tree.</td>
     </tr>
     <tr>
-      <td><code>src/compiler2/native_codegen/*</code> still carries <code>TrashDeliveredShape</code>, <code>TrashNativeDemandAbi</code>, delivered-shape recovery helpers, continuation-shape recovery, and compiler2-local repr decisions.</td>
-      <td><code>fz-hwn.19.5</code>: read <code>CodegenSeamFact</code> keyed by <code>LaneId</code> plus <code>CodegenSeam</code>; low-level <code>ArgRepr</code> may remain only as an emission enum filled from facts.</td>
+      <td><code>src/compiler2/native_codegen/*</code> no longer carries <code>TrashDeliveredShape</code>, <code>TrashNativeDemandAbi</code>, delivered-shape recovery helpers, return-shape conversion functions, tuple-return rediscovery, or compiler2-local repr decisions.</td>
+      <td><code>fz-hwn.19.5</code>: native block-param reprs live on <code>NativeBody</code>, native lowering emits <code>Term::ReturnLanes(Vec&lt;Var&gt;)</code> for transport return lanes, lowers non-empty mismatched direct tail returns through generated <code>ReturnLanes</code> continuations, and <code>ArgRepr</code> remains only as a low-level emission enum filled from native handoff facts.</td>
     </tr>
     <tr>
       <td><code>src/ir_codegen/*</code> still has non-compiler2 legacy <code>ArgRepr::from_ty</code> and <code>for_block_param_ty</code> paths.</td>

@@ -81,7 +81,7 @@ pub(crate) fn term_effects(term: &Term) -> EffectSummary {
             halts: true,
             ..EffectSummary::default()
         },
-        Term::Return(_) | Term::Goto(_, _) => EffectSummary::default(),
+        Term::Return(_) | Term::ReturnLanes(_) | Term::Goto(_, _) => EffectSummary::default(),
         Term::If { .. } => EffectSummary::default(),
     }
 }

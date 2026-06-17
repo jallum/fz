@@ -1395,6 +1395,11 @@ impl<'m> Solver<'m> {
         }
         match &block.terminator {
             Term::Return(v) => env.get(v).cloned().unwrap_or(Info::Pending),
+            Term::ReturnLanes(lanes) => lanes
+                .iter()
+                .map(|lane| env.get(lane).cloned().unwrap_or(Info::Pending))
+                .reduce(|left, right| left.join(t, &right))
+                .unwrap_or(Info::Unknown),
             // A halt path adds no value to the caller's return type, so it
             // contributes the control-flow join identity. That identity is
             // `NoReturn`, not `Unknown` and not `Known(none)`: `Unknown` is a

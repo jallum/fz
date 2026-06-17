@@ -351,6 +351,7 @@ fn propagate_successors<T: Types<Ty = Ty>>(
         | Term::CallClosure { .. }
         | Term::TailCallClosure { .. }
         | Term::Return(_)
+        | Term::ReturnLanes(_)
         | Term::Halt(_)
         | Term::ReceiveMatched { .. } => false,
     }

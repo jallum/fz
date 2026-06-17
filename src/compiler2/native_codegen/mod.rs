@@ -23,7 +23,7 @@ pub(crate) use crate::types::{ClosureTypes, LiteralTypes, RenderTypes, Types, Vi
 mod call;
 mod clif;
 pub(crate) mod closure;
-mod demand;
+mod delivery;
 pub(crate) mod driver;
 pub(crate) mod dump;
 pub(crate) mod entry;
@@ -44,7 +44,7 @@ mod value;
 pub(crate) use call::*;
 pub(crate) use clif::*;
 pub(crate) use closure::*;
-pub(crate) use demand::*;
+pub(crate) use delivery::*;
 pub(crate) use dump::*;
 pub(crate) use entry::*;
 pub(crate) use env::*;

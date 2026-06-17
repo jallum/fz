@@ -140,7 +140,9 @@ impl AbiFacts {
                         return true;
                     }
                     match &block.terminator {
-                        Term::Return(_) | Term::Halt(_) | Term::Goto(_, _) | Term::If { .. } => true,
+                        Term::Return(_) | Term::ReturnLanes(_) | Term::Halt(_) | Term::Goto(_, _) | Term::If { .. } => {
+                            true
+                        }
                         Term::Call { ident, .. } => {
                             native_fns.contains(&local_target_fn_id(
                                 plan,

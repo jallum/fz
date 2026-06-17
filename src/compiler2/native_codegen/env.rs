@@ -1,6 +1,5 @@
 //! CodegenEnv (immutable per-module ctx) and CodegenCache (per-fn caches).
 
-use super::driver::BoundaryReturnAdapters;
 use super::*;
 use crate::compiler2::NativeBody;
 use crate::fz_ir::{BlockId, ExternId, FnId, Module, Var};
@@ -21,7 +20,6 @@ pub(crate) struct CodegenEnv<'a> {
     pub(super) active_body_name: &'a str,
     pub(super) fn_ids: &'a HashMap<u32, FuncId>,
     pub(super) callable_boundary_fn_ids: &'a HashMap<u32, FuncId>,
-    pub(super) boundary_return_adapters: &'a BoundaryReturnAdapters,
     pub(super) mid_flight_cont_tail_fn_ids: &'a HashMap<(u32, Vec<MidFlightArgShape>), FuncId>,
     pub(super) tuple_schema_ids: &'a HashMap<usize, u32>,
     pub(super) named_schema_ids: &'a HashMap<String, u32>,
@@ -30,8 +28,8 @@ pub(crate) struct CodegenEnv<'a> {
     /// `SharedBin` symbol in `.data`.
     pub(super) bs_const_data: &'a RefCell<HashMap<Vec<u8>, BsConstSyms>>,
     pub(super) param_reprs: &'a [Vec<ArgRepr>],
-    pub(super) return_reprs: &'a [ArgRepr],
-    pub(super) return_shapes: &'a [TrashDeliveredShape],
+    pub(super) halt_reprs: &'a [ArgRepr],
+    pub(super) return_diverges: &'a [bool],
     pub(super) native_abi_fns: &'a HashSet<FnId>,
     pub(super) cont_target_fns: &'a HashSet<FnId>,
     pub(super) cont_fns: &'a HashSet<FnId>,
@@ -57,6 +55,10 @@ impl<'a> CodegenEnv<'a> {
 
     pub(super) fn active_native_body(&self) -> &NativeBody {
         self.body_native(self.active_spec_id)
+    }
+
+    pub(super) fn body_return_reprs(&self, codegen_id: u32) -> Vec<ArgRepr> {
+        arg_reprs_from_compiler2(&self.body_native(codegen_id).return_reprs)
     }
 
     pub(super) fn active_value_types(&self) -> &HashMap<Var, crate::compiler2::Ty> {
@@ -132,12 +134,6 @@ pub(crate) struct CodegenCache {
     /// tuple Var and field index, so ordinary TupleField lowering can read
     /// the already-delivered value.
     pub(super) tuple_field_params: HashMap<(u32, u32), CodegenValue>,
-    /// Destination tuple vars whose allocation/fill/freeze chain is replaced
-    /// by field delivery at Term::Return in this spec.
-    pub(super) skipped_tuple_return_vars: HashSet<u32>,
-    /// Return var -> field vars for TupleFields(N) specs whose returned tuple
-    /// can be delivered to the continuation without materializing a struct.
-    pub(super) tuple_return_fields: HashMap<u32, Vec<Var>>,
     /// Rebuilt head Var -> source cons Var facts for reusable-cons attempts.
     pub(super) reusable_cons_sources: HashMap<u32, Var>,
     /// Potential head+tail list construction sites that could consume a

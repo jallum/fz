@@ -664,7 +664,12 @@ fn remap_term(term: &mut Term, fn_map: &BTreeMap<FnId, FnId>) {
                 remap_receive_after(after, fn_map);
             }
         }
-        Term::Goto(_, _) | Term::If { .. } | Term::TailCallClosure { .. } | Term::Return(_) | Term::Halt(_) => {}
+        Term::Goto(_, _)
+        | Term::If { .. }
+        | Term::TailCallClosure { .. }
+        | Term::Return(_)
+        | Term::ReturnLanes(_)
+        | Term::Halt(_) => {}
     }
 }
 

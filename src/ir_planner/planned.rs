@@ -534,6 +534,9 @@ fn inlineable_direct_return_graph(module: &Module, f: &FnIr, plan: &SpecPlan) ->
             Term::Return(_) => {
                 saw_return = true;
             }
+            Term::ReturnLanes(_) => {
+                saw_return = true;
+            }
             Term::Call { .. }
             | Term::TailCall { .. }
             | Term::CallClosure { .. }

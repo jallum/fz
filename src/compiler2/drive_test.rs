@@ -5786,6 +5786,70 @@ fn compiler2_native_multi_relay_delivers_resume_values_through_continuation_abi(
 }
 
 #[test]
+fn compiler2_native_lowering_routes_mismatched_tail_returns_through_return_lanes() {
+    let tel = ConfiguredTelemetry::new();
+    let native = NativeProgramCapture::new();
+    tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures2/behavior/multi_relay.fz".to_string()),
+        text: include_str!("../../fixtures2/behavior/multi_relay.fz").to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    compiler.demand(Job::LowerNativeProgram(root_id));
+    assert_resolved(
+        compiler.drive(),
+        "multi_relay native handoff should settle before checking return-lane continuations",
+    );
+    let program = native.last(root_id).program;
+    let body_by_fn = program
+        .bodies
+        .iter()
+        .map(|body| (body.fn_id, body))
+        .collect::<HashMap<_, _>>();
+    let mut saw_return_lanes_continuation = false;
+
+    for body in &program.bodies {
+        let function = program.module.fn_by_id(body.fn_id);
+        if matches!(body.origin, NativeBodyOrigin::Continuation { .. })
+            && function
+                .blocks
+                .iter()
+                .any(|block| matches!(block.terminator, IrTerm::ReturnLanes(_)))
+        {
+            saw_return_lanes_continuation = true;
+        }
+        for block in &function.blocks {
+            if let IrTerm::TailCall {
+                callee: crate::fz_ir::DirectCallTarget::Local(callee),
+                ..
+            } = &block.terminator
+            {
+                let callee_body = body_by_fn
+                    .get(callee)
+                    .unwrap_or_else(|| panic!("native TailCall target {:?} should have a NativeBody", callee));
+                assert!(
+                    callee_body.return_reprs.is_empty() || body.return_reprs == callee_body.return_reprs,
+                    "native TailCall must only forward an already-matching return ABI; mismatched returns need a ReturnLanes continuation"
+                );
+            }
+        }
+    }
+
+    assert!(
+        saw_return_lanes_continuation,
+        "multi_relay should contain at least one generated continuation that returns callee lanes through the caller return ABI"
+    );
+}
+
+#[test]
 #[ignore = "red-worklist: triage + re-enable"]
 fn compiler2_native_actor_ring_delivers_resume_values_through_continuation_abi() {
     let tel = ConfiguredTelemetry::new();
@@ -6079,8 +6143,8 @@ fn escaping_destructor_keys_its_activation_at_the_grounded_boundary_surface() {
 /// callable-boundary *selection* this red-worklist entry was reaching for is the
 /// rematerialization path, now covered by
 /// `compiler2_native_callable_materialization_selects_the_callableid_fact_boundary`.
-/// The escaped/multi-surface static-singleton boundary path lives in
-/// fz-hwn.19.5 (it is steeped in the `TrashDeliveredShape`/`ArgRepr` vocabulary).
+/// fz-hwn.19.5 removed the native-codegen return-shape vocabulary that kept
+/// this fixture from reaching JIT execution.
 #[test]
 fn compiler2_native_codegen_dispatches_typed_capture_closure_directly_without_a_published_boundary() {
     let tel = ConfiguredTelemetry::new();
@@ -6110,11 +6174,12 @@ fn compiler2_native_codegen_dispatches_typed_capture_closure_directly_without_a_
         "a typed-capture closure resolved to a known target must dispatch directly, not publish an opaque first-class callable boundary; got {:?}",
         program.callable_boundaries,
     );
-    // NB: this fixture's *JIT* lowering is independently blocked by a tuple-field
-    // return codegen issue (`TrashDeliveredShape::TupleFields`, native_codegen
-    // terminator) -- fz-hwn.19.5 vocabulary -- so execution is not asserted here.
-    // The 19.3 invariant (no opaque boundary; direct dispatch) is fully proven by
-    // the native callable-boundary inventory above.
+    let compiled = jit_compile_native_program(&mut compiler, &program);
+    let halt = compiled.run(&tel, program.entry);
+    assert_eq!(
+        halt, 0,
+        "closure_typed_captures should execute through JIT and halt with nil"
+    );
 }
 
 #[test]
@@ -10848,6 +10913,7 @@ fn native_terms_match(left: &IrTerm, right: &IrTerm) -> bool {
         (IrTerm::Return(left_var), IrTerm::Return(right_var)) | (IrTerm::Halt(left_var), IrTerm::Halt(right_var)) => {
             left_var == right_var
         }
+        (IrTerm::ReturnLanes(left_lanes), IrTerm::ReturnLanes(right_lanes)) => left_lanes == right_lanes,
         (
             IrTerm::ReceiveMatched {
                 ident: left_ident,

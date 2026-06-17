@@ -180,6 +180,10 @@ fn render_terminator_exit<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(
                 t.display(d)
             ));
         }
+        Term::ReturnLanes(lanes) => {
+            let lane_vars = vars_str(lanes);
+            out.push_str(&format!(";     blk{} ReturnLanes [{}]\n", bid, lane_vars.join(", ")));
+        }
         Term::Halt(v) => {
             let d = ft.vars.get(v).unwrap_or(any_ty);
             out.push_str(&format!(

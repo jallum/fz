@@ -56,6 +56,7 @@ pub(crate) fn module_plan_stats(m: &Module, mt: &ModulePlan) -> ModulePlanStats 
                 | Term::CallClosure { .. }
                 | Term::TailCallClosure { .. }
                 | Term::Return(_)
+                | Term::ReturnLanes(_)
                 | Term::Halt(_) => {}
             }
         }
@@ -701,7 +702,12 @@ pub fn check_matcher_purity(module: &Module) -> Vec<Diagnostic> {
                     reason = Some("matcher fn body contains a `receive`".into());
                     break;
                 }
-                Term::Goto(..) | Term::If { .. } | Term::TailCall { .. } | Term::Halt(_) | Term::Return(_) => {}
+                Term::Goto(..)
+                | Term::If { .. }
+                | Term::TailCall { .. }
+                | Term::Halt(_)
+                | Term::Return(_)
+                | Term::ReturnLanes(_) => {}
             }
         }
         if let Some(msg) = reason {

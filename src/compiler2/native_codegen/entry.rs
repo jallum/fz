@@ -44,7 +44,7 @@ pub(crate) fn build_entry_harness<M: ClModule>(
     // the Option panics loudly at codegen if any future path violates
     // the invariant. `cont_param` is the trailing i64 in the native-tier
     // signature.
-    let demand_abi = TrashNativeDemandAbi::new(env.body_native(this_spec_id));
+    let continuation_extra_count = continuation_entry_extra_count(env.body_native(this_spec_id));
     let (frame_ptr, host_ctx, cont_param): (Option<ir::Value>, Option<ir::Value>, Option<ir::Value>) = if is_native {
         let params: Vec<ir::Value> = body.b.block_params(entry_cl).to_vec();
         let my_param_reprs = &param_reprs[this_spec_id as usize];
@@ -54,7 +54,7 @@ pub(crate) fn build_entry_harness<M: ClModule>(
                 entry_blk,
                 &params,
                 my_param_reprs,
-                &demand_abi,
+                continuation_extra_count,
                 &mut var_env,
                 &mut tuple_field_params,
             )
@@ -128,11 +128,10 @@ fn harness_cont_fn<M: ClModule>(
     entry_blk: &crate::fz_ir::Block,
     params: &[ir::Value],
     my_param_reprs: &[ArgRepr],
-    demand_abi: &TrashNativeDemandAbi<'_>,
+    extras_count: usize,
     var_env: &mut HashMap<u32, CodegenValue>,
     _tuple_field_params: &mut HashMap<(u32, u32), CodegenValue>,
 ) -> (Option<ir::Value>, Option<ir::Value>, Option<ir::Value>) {
-    let extras_count = demand_abi.continuation_entry_extras();
     let mut param_cursor = 0;
     for (i, p) in entry_blk.params.iter().take(extras_count).enumerate() {
         let repr = my_param_reprs[i];

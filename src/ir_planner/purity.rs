@@ -102,7 +102,7 @@ pub fn check_pure_codegen(stmts: &[Stmt]) -> Result<(), ImpureError> {
 pub fn check_pure_term(term: &Term) -> Result<(), ImpureError> {
     use Term::*;
     match term {
-        Goto(_, _) | If { .. } | Return(_) => Ok(()),
+        Goto(_, _) | If { .. } | Return(_) | ReturnLanes(_) => Ok(()),
         Call { .. } | TailCall { .. } | CallClosure { .. } | TailCallClosure { .. } => {
             Err(ImpureError::Term(ImpureTerm::Call))
         }

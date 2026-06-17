@@ -344,6 +344,9 @@ fn collect_term_vars(term: &Term, used: &mut HashSet<Var>) {
         Term::Return(value) | Term::Halt(value) => {
             used.insert(*value);
         }
+        Term::ReturnLanes(lanes) => {
+            used.extend(lanes.iter().copied());
+        }
         Term::ReceiveMatched {
             pinned,
             captures,

@@ -155,6 +155,7 @@ struct NativeLowerer<'a, 'tel> {
     extern_marshals: HashMap<usize, Vec<ExternTy>>,
     extern_decls: Vec<ExternDecl>,
     native_bodies: Vec<NativeBody>,
+    return_continuation_count: u32,
 }
 
 impl<'a, 'tel> NativeLowerer<'a, 'tel> {
@@ -257,6 +258,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
             extern_marshals,
             extern_decls,
             native_bodies: Vec::new(),
+            return_continuation_count: 0,
         })
     }
 
@@ -527,6 +529,10 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
 
     fn finish_native_fn(&mut self, ctx: NativeFnCtx) {
         let (fn_ir, body) = ctx.finish();
+        let body = NativeBody {
+            block_param_reprs: native_block_param_reprs(self.world, &fn_ir, &body.value_types),
+            ..body
+        };
         self.module.add_fn(fn_ir);
         self.native_bodies.push(body);
     }
@@ -1083,7 +1089,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                 self.lower_value_destination(ctx, executable, entries, entry_fns, env, *value, dest)
             }
             BackendTail::DirectCall { callee, args, dest, .. } => {
-                let (callee, call_args) = match callee {
+                let (callee, call_args, local_callee_index) = match callee {
                     CallTarget::Local(callee) => {
                         let callee_executable = &self.program.executables[*callee];
                         let mut lanes = Vec::new();
@@ -1120,7 +1126,11 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                                 )?);
                             }
                         }
-                        (DirectCallTarget::Local(self.executable_fns[*callee]), lanes)
+                        (
+                            DirectCallTarget::Local(self.executable_fns[*callee]),
+                            lanes,
+                            Some(*callee),
+                        )
                     }
                     CallTarget::ProviderBoundary(function) => (
                         DirectCallTarget::ProviderBoundary(self.world.function_mfa(*function)),
@@ -1137,16 +1147,32 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                                 "native direct call referenced an unbound argument",
                             )
                         })?,
+                        None,
                     ),
                 };
                 match dest {
                     ControlDestination::Return => {
-                        ctx.set_term(Term::TailCall {
-                            ident: CallsiteIdent::from_source(Span::DUMMY),
-                            callee,
-                            args: call_args,
-                            is_back_edge: false,
-                        });
+                        if let Some(continuation) = local_callee_index
+                            .map(|callee_index| {
+                                self.return_lane_continuation_for_local_callee(ctx, executable, callee_index)
+                            })
+                            .transpose()?
+                            .flatten()
+                        {
+                            ctx.set_term(Term::Call {
+                                ident: CallsiteIdent::from_source(Span::DUMMY),
+                                callee,
+                                args: call_args,
+                                continuation,
+                            });
+                        } else {
+                            ctx.set_term(Term::TailCall {
+                                ident: CallsiteIdent::from_source(Span::DUMMY),
+                                callee,
+                                args: call_args,
+                                is_back_edge: false,
+                            });
+                        }
                         Ok(())
                     }
                     ControlDestination::Deliver(entry_id) => {
@@ -1210,12 +1236,23 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                     let callee = DirectCallTarget::Local(self.executable_fns[target]);
                     match dest {
                         ControlDestination::Return => {
-                            ctx.set_term(Term::TailCall {
-                                ident: CallsiteIdent::from_source(Span::DUMMY),
-                                callee,
-                                args: call_args,
-                                is_back_edge: false,
-                            });
+                            if let Some(continuation) =
+                                self.return_lane_continuation_for_local_callee(ctx, executable, target)?
+                            {
+                                ctx.set_term(Term::Call {
+                                    ident: CallsiteIdent::from_source(Span::DUMMY),
+                                    callee,
+                                    args: call_args,
+                                    continuation,
+                                });
+                            } else {
+                                ctx.set_term(Term::TailCall {
+                                    ident: CallsiteIdent::from_source(Span::DUMMY),
+                                    callee,
+                                    args: call_args,
+                                    is_back_edge: false,
+                                });
+                            }
                             Ok(())
                         }
                         ControlDestination::Deliver(entry_id) => {
@@ -1419,8 +1456,8 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
     ) -> Result<(), FatalError> {
         match dest {
             ControlDestination::Return => {
-                let value_var = self.return_carrier_var(ctx, executable, env, value_id)?;
-                ctx.set_term(Term::Return(value_var));
+                let lanes = self.return_lane_vars(ctx, executable, env, value_id)?;
+                ctx.set_term(Term::ReturnLanes(lanes));
                 Ok(())
             }
             ControlDestination::Deliver(entry_id) => {
@@ -1438,21 +1475,17 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
         }
     }
 
-    fn return_carrier_var(
+    fn return_lane_vars(
         &mut self,
         ctx: &mut NativeFnCtx,
         executable: &BackendExecutable,
         env: &ValueEnv,
         value_id: ValueId,
-    ) -> Result<Var, FatalError> {
+    ) -> Result<Vec<Var>, FatalError> {
         let mut lanes = Vec::new();
         let return_shape = position_shape(self.program, &executable.transport.return_position);
         self.encode_env_value_for_shape(ctx, executable, env, value_id, return_shape, &mut lanes)?;
-        match lanes.len() {
-            0 => Ok(ctx.emit_let(Prim::MakeTuple(Vec::new())).0),
-            1 => Ok(lanes[0]),
-            _ => Ok(ctx.emit_let(Prim::MakeTuple(lanes)).0),
-        }
+        Ok(lanes)
     }
 
     fn entry_signature(
@@ -1652,6 +1685,65 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
             fn_id: *entry_fns.get(&entry_id).expect("resume entry should have a helper fn"),
             captured: self.entry_capture_args(ctx, executable, entries, entry_id, env)?,
         })
+    }
+
+    fn return_lane_continuation_for_local_callee(
+        &mut self,
+        ctx: &NativeFnCtx,
+        executable: &BackendExecutable,
+        callee_index: usize,
+    ) -> Result<Option<Cont>, FatalError> {
+        let callee = &self.program.executables[callee_index];
+        let (callee_return_reprs, _) =
+            native_return_contract(self.world, self.program, &callee.transport.return_position);
+        if callee_return_reprs == ctx.return_reprs || callee_return_reprs.is_empty() {
+            return Ok(None);
+        }
+
+        let callee_return_shape = position_shape(self.program, &callee.transport.return_position);
+        let param_tys = shape_lane_tys(self.world, callee_return_shape);
+        if param_tys.len() != callee_return_reprs.len() {
+            return Err(incomplete_native_program(
+                self.world,
+                self.root_id,
+                format!(
+                    "native return-lane continuation for {:?} expected {} callee return lane types, got {} reprs",
+                    callee.key,
+                    param_tys.len(),
+                    callee_return_reprs.len()
+                ),
+            ));
+        }
+
+        let fn_id = self.module.fresh_fn_id();
+        let index = self.return_continuation_count;
+        self.return_continuation_count += 1;
+        let name = format!("return_lanes__{}_{}", ctx.fn_id.0, index);
+        let mut cont_ctx = NativeFnCtx::new(
+            fn_id,
+            &name,
+            FnCategory::CpsCont,
+            NativeBodyOrigin::Continuation {
+                owner: ctx.fn_id,
+                index,
+            },
+            NativeEntryAbi::Continuation {
+                extra_params: callee_return_reprs.len(),
+            },
+            callee_return_reprs,
+            executable.return_ty,
+            executable.transport.return_position.clone(),
+            ctx.return_reprs.clone(),
+            ctx.return_tuple_arity,
+            executable.effects,
+        );
+        let lanes = cont_ctx.entry_params(param_tys.as_slice());
+        cont_ctx.set_term(Term::ReturnLanes(lanes));
+        self.finish_native_fn(cont_ctx);
+        Ok(Some(Cont {
+            fn_id,
+            captured: Vec::new(),
+        }))
     }
 
     fn entry_capture_args(
@@ -2808,7 +2900,12 @@ fn annotate_back_edges(module: &mut crate::fz_ir::Module) {
                         entry.insert(after.body);
                     }
                 }
-                Term::TailCallClosure { .. } | Term::Goto(..) | Term::If { .. } | Term::Return(_) | Term::Halt(_) => {}
+                Term::TailCallClosure { .. }
+                | Term::Goto(..)
+                | Term::If { .. }
+                | Term::Return(_)
+                | Term::ReturnLanes(_)
+                | Term::Halt(_) => {}
             }
         }
     }
@@ -2997,6 +3094,24 @@ fn native_return_contract(
         ShapeDescr::Nothing | ShapeDescr::Lane(_) | ShapeDescr::Callable(_) => None,
     };
     (reprs, tuple_arity)
+}
+
+fn native_block_param_reprs(
+    world: &mut World<'_>,
+    fn_ir: &crate::fz_ir::FnIr,
+    value_types: &HashMap<Var, Ty>,
+) -> HashMap<Var, AbiValueRepr> {
+    let mut reprs = HashMap::new();
+    for block in &fn_ir.blocks {
+        for param in &block.params {
+            let ty = value_types
+                .get(param)
+                .copied()
+                .unwrap_or_else(|| world.types_mut().any());
+            reprs.insert(*param, block_param_abi_value_repr(world, ty));
+        }
+    }
+    reprs
 }
 
 fn continuation_result_entry(
@@ -3343,6 +3458,7 @@ impl NativeFnCtx {
             return_position: self.return_position,
             return_reprs: self.return_reprs,
             return_tuple_arity: self.return_tuple_arity,
+            block_param_reprs: HashMap::new(),
             value_types: self.value_types,
             callable_value_boundaries: self.callable_value_boundaries,
             extern_marshals: self.extern_marshals,
@@ -3779,6 +3895,13 @@ fn abi_value_repr(world: &mut World<'_>, ty: Ty) -> AbiValueRepr {
         AbiValueRepr::RawAtom
     } else {
         AbiValueRepr::ValueRef
+    }
+}
+
+fn block_param_abi_value_repr(world: &mut World<'_>, ty: Ty) -> AbiValueRepr {
+    match abi_value_repr(world, ty) {
+        repr @ (AbiValueRepr::RawInt | AbiValueRepr::RawAtom) => repr,
+        AbiValueRepr::RawF64 | AbiValueRepr::ValueRef => AbiValueRepr::ValueRef,
     }
 }
 

@@ -201,6 +201,7 @@ pub(crate) struct NativeBody {
     pub return_position: TransportPosition,
     pub return_reprs: Vec<AbiValueRepr>,
     pub return_tuple_arity: Option<usize>,
+    pub block_param_reprs: HashMap<Var, AbiValueRepr>,
     /// Final per-value types after Compiler2 lowering into CPS/native form.
     pub value_types: HashMap<Var, Ty>,
     /// Closure-producing vars mapped to the settled callable boundary they
@@ -1142,6 +1143,7 @@ fn native_terms_equal(left: &IrTerm, right: &IrTerm) -> bool {
         (IrTerm::Return(left_var), IrTerm::Return(right_var)) | (IrTerm::Halt(left_var), IrTerm::Halt(right_var)) => {
             left_var == right_var
         }
+        (IrTerm::ReturnLanes(left_lanes), IrTerm::ReturnLanes(right_lanes)) => left_lanes == right_lanes,
         (
             IrTerm::ReceiveMatched {
                 ident: left_ident,

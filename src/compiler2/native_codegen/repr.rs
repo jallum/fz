@@ -1,7 +1,6 @@
 //! ArgRepr (per-spec ABI shape) and signature builders.
 
 use super::*;
-use crate::types::Types;
 use cranelift_codegen::ir::{self, AbiParam, Signature, types};
 use cranelift_codegen::isa::CallConv;
 use cranelift_frontend::FunctionBuilder;
@@ -13,9 +12,9 @@ use cranelift_frontend::FunctionBuilder;
 /// int payload as i64; `RawF64` is a raw f64; `RawAtom` is an atom-id
 /// payload as i64.
 ///
-/// Per-spec param/return reprs are derived from compiler2's settled types:
-/// float-only -> `RawF64`, int-only -> `RawInt`, atom-only -> `RawAtom`,
-/// else `ValueRef`.
+/// Per-spec param/return/block reprs are copied from compiler2's native
+/// handoff. Codegen chooses Cranelift ABI types from those facts; it does not
+/// re-derive transport representation from local type evidence.
 /// `build_fn_signature` picks the AbiParam type from the repr; `compile_fn`
 /// populates `raw_*_vars` to match; call sites coerce at the seam.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -41,31 +40,6 @@ impl ArgRepr {
         }
     }
 
-    pub(crate) fn from_ty<T: Types<Ty = Ty>>(t: &mut T, d: &Ty) -> ArgRepr {
-        if t.is_floating(d) {
-            ArgRepr::RawF64
-        } else if t.is_integer(d) {
-            ArgRepr::RawInt
-        } else {
-            let atom = t.atom();
-            if t.is_subtype(d, &atom) {
-                ArgRepr::RawAtom
-            } else {
-                ArgRepr::ValueRef
-            }
-        }
-    }
-
-    // CLIF block params are always declared as i64. RawF64 (an actual f64
-    // CLIF value) cannot cross a block-param boundary without a type error.
-    // At block edges, only integers benefit from repr narrowing; floats must
-    // remain in the generic ValueRef word across block params.
-    pub(crate) fn for_block_param_ty<T: Types<Ty = Ty>>(t: &mut T, d: &Ty) -> ArgRepr {
-        match Self::from_ty(t, d) {
-            r @ (ArgRepr::RawInt | ArgRepr::RawAtom) => r,
-            _ => ArgRepr::ValueRef,
-        }
-    }
     pub(crate) fn cl_type(&self) -> types::Type {
         match self {
             ArgRepr::RawF64 => types::F64,

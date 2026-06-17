@@ -2,8 +2,7 @@
 
 use super::*;
 use crate::compiler::source::Span;
-use crate::compiler2::NativeBody;
-use crate::fz_ir::{Block, FnIr, PhysicalCapability, Prim, SourceInfo, Stmt, Term, Var};
+use crate::fz_ir::{Block, FnIr, PhysicalCapability, SourceInfo, Stmt, Term, Var};
 use crate::ir_dce::classify_var_uses;
 use crate::types::{ClosureTypes, Types};
 use cranelift_codegen::{
@@ -12,7 +11,7 @@ use cranelift_codegen::{
 };
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use fz_runtime::heap::Schema;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct CodegenFnStats {
@@ -42,7 +41,6 @@ pub(crate) fn compile_fn<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
     let closure_target = (is_native && !is_cont_fn)
         .then(|| env.surface.closure_target(f.id))
         .flatten();
-    let demand_abi = TrashNativeDemandAbi::new(native_body);
     // When this fn is never invoked from any fz IR site (not a direct
     // callee, not a continuation, not a closure target), it can only
     // enter via the trampoline entry, which writes null into the frame's
@@ -74,7 +72,7 @@ pub(crate) fn compile_fn<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
             // one-result input shape via their settled continuation ABI: their bound
             // values and captures are loaded from the closure env, leaving
             // only `self` in the Tail-CC signature.
-            let extras_count = demand_abi.continuation_entry_extras();
+            let extras_count = continuation_entry_extra_count(native_body);
             for (i, r) in my_param_reprs[..extras_count].iter().enumerate() {
                 let _ = i;
                 append_block_param_for_repr(&mut b, entry_cl, *r);
@@ -137,12 +135,9 @@ pub(crate) fn compile_fn<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
 
     {
         let (if_only, all_used) = classify_var_uses(f);
-        let (tuple_return_fields, skipped_tuple_return_vars) = trash_tuple_return_delivery_plan(f, native_body);
         body.cache.if_only_conds = if_only.into_iter().map(|v| v.0).collect();
         body.cache.used_vars = all_used.into_iter().map(|v| v.0).collect();
         body.cache.tuple_field_params = tuple_field_params;
-        body.cache.skipped_tuple_return_vars = skipped_tuple_return_vars;
-        body.cache.tuple_return_fields = tuple_return_fields;
         body.cache.reusable_cons_sources = reusable_cons_sources(f);
     }
     // Walk blocks in declared order with entry first.
@@ -163,8 +158,12 @@ pub(crate) fn compile_fn<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
             let params: Vec<ir::Value> = body.b.block_params(cl_blk).to_vec();
             let mut param_cursor = 0;
             for p in &blk.params {
-                let param_ty = value_types.get(p).copied().unwrap_or_else(|| t.any());
-                let repr = ArgRepr::for_block_param_ty(t, &param_ty);
+                let repr = native_body
+                    .block_param_reprs
+                    .get(p)
+                    .copied()
+                    .map(arg_repr_from_compiler2)
+                    .unwrap_or(ArgRepr::ValueRef);
                 var_env.insert(p.0, take_param_binding(body.b, &params, &mut param_cursor, repr));
             }
         }
@@ -223,8 +222,12 @@ pub(crate) fn compile_fn<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
                 )));
             }
             for (param, arg) in f.block(*target).params.iter().zip(args.iter()) {
-                let param_ty = value_types.get(param).copied().unwrap_or_else(|| t.any());
-                let want = ArgRepr::for_block_param_ty(t, &param_ty);
+                let want = native_body
+                    .block_param_reprs
+                    .get(param)
+                    .copied()
+                    .map(arg_repr_from_compiler2)
+                    .unwrap_or(ArgRepr::ValueRef);
                 let vb = *var_env.get(&arg.0).expect("unbound goto arg");
                 if let Some(coerced) = body.coerce_goto_arg(vb, want) {
                     var_env.insert(arg.0, coerced);
@@ -274,74 +277,4 @@ fn reusable_cons_sources(f: &FnIr) -> HashMap<u32, Var> {
             PhysicalCapability::ReusableConsCell { rebuilt_head } => (rebuilt_head.0, fact.source),
         })
         .collect()
-}
-
-fn trash_tuple_return_delivery_plan(f: &FnIr, native_body: &NativeBody) -> (HashMap<u32, Vec<Var>>, HashSet<u32>) {
-    let arity = match TrashNativeDemandAbi::new(native_body).tuple_field_arity() {
-        Some(arity) => arity,
-        None => return (HashMap::new(), HashSet::new()),
-    };
-    let mut plans = HashMap::new();
-    let mut skipped = HashSet::new();
-    for blk in &f.blocks {
-        let Term::Return(ret) = &blk.terminator else {
-            continue;
-        };
-        if let Some((dest, fields, vars_to_skip)) = tuple_dest_chain_for_return(blk, *ret, arity) {
-            let _ = dest;
-            plans.insert(ret.0, fields);
-            skipped.extend(vars_to_skip);
-        } else if let Some(fields) = tuple_make_for_return(blk, *ret, arity) {
-            plans.insert(ret.0, fields);
-            skipped.insert(ret.0);
-        }
-    }
-    (plans, skipped)
-}
-
-fn tuple_make_for_return(blk: &Block, ret: Var, arity: usize) -> Option<Vec<Var>> {
-    for Stmt::Let(v, prim) in &blk.stmts {
-        if *v == ret
-            && let Prim::MakeTuple(fields) = prim
-            && fields.len() == arity
-        {
-            return Some(fields.clone());
-        }
-    }
-    None
-}
-
-fn tuple_dest_chain_for_return(blk: &Block, ret: Var, arity: usize) -> Option<(Var, Vec<Var>, HashSet<u32>)> {
-    let mut freeze_dest = None;
-    for Stmt::Let(v, prim) in &blk.stmts {
-        if *v == ret
-            && let Prim::DestFreeze { dest, .. } = prim
-        {
-            freeze_dest = Some(*dest);
-            break;
-        }
-    }
-    let dest = freeze_dest?;
-    let mut saw_begin = None;
-    let mut fields: Vec<Option<Var>> = vec![None; arity];
-    let mut skipped = HashSet::new();
-    skipped.insert(ret.0);
-    for Stmt::Let(v, prim) in &blk.stmts {
-        match prim {
-            Prim::DestTupleBegin { arity: a, .. } if *v == dest && *a == arity => {
-                saw_begin = Some(*v);
-                skipped.insert(v.0);
-            }
-            Prim::DestTupleSet {
-                dest: d, index, value, ..
-            } if *d == dest && (*index as usize) < arity => {
-                fields[*index as usize] = Some(*value);
-                skipped.insert(v.0);
-            }
-            _ => {}
-        }
-    }
-    saw_begin?;
-    let fields: Option<Vec<_>> = fields.into_iter().collect();
-    Some((dest, fields?, skipped))
 }

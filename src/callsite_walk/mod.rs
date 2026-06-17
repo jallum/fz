@@ -171,7 +171,7 @@ pub fn block_callsites<'a, T: Types<Ty = Ty> + ClosureTypes>(
         // slot-0 type is learned through those tail calls (already enumerated
         // when each body fn is visited). Nothing to yield here.
         Term::ReceiveMatched { .. } => {}
-        Term::If { .. } | Term::Goto(..) | Term::Return(..) | Term::Halt(..) => {}
+        Term::If { .. } | Term::Goto(..) | Term::Return(..) | Term::ReturnLanes(..) | Term::Halt(..) => {}
     }
     out
 }
