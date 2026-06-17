@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-17T02:49:48Z",
+  "description": "Remove world.runtime_impl_target_modules and the runtime fallback loop in resolve_protocol_call. The provider index + constructed Protocol.Target demands now cover every case incl. RTL. Signal: full lib + matrix green with the convention gone. Depends on T2 and T4.",
+  "id": "fz-hwn.19.2.4.16.5",
+  "labels": [],
+  "parent": "fz-hwn.19.2.4.16",
+  "priority": 2,
+  "status": "open",
+  "title": "Delete runtime_impl_target_modules and the convention branch in resolve_protocol_call",
+  "type": "task",
+  "updated_at": "2026-06-17T02:49:48Z"
+}
