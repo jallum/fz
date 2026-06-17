@@ -10,11 +10,15 @@
     {
       "text": "Expand scope to the runtime-demand callable-surface timeout cluster observed under CI llvm-cov: compiler2_runtime_demand_records_the_exact_surface_for_a_direct_lambda_call, compiler2_runtime_demand_marks_an_escaped_callable_first_class, and compiler2_runtime_demand_keeps_a_returned_direct_callable_out_of_first_class_inventory. Investigation should start from facts, not guesswork: build a fresh fz2 binary, run the smallest reproducing fixture/source through fz2 with --log-telemetry and staged --dump outputs, then look for duplicated or redundant compiler work before changing behavior.",
       "timestamp": "2026-06-17T14:42:50Z"
+    },
+    {
+      "text": "Fresh fz2 build plus --log-telemetry/--dump traces for the three callable-surface fixtures showed finite local drives: direct_lambda_call jobs_ran=166 with 21 SealSemanticClosure(root 0) starts; escaped_callable jobs_ran=164 with 18 seal starts; returned_direct_callable_transport jobs_ran=207 with 29 seal starts. Each had one root-0 runtime_demand.defined event with the expected callable-flow shape. Local cargo llvm-cov exact runs pass once selected by full path. Root cause of the CI-only timeout cluster was the tests' 100 ms wall-clock compiler drive timeout colliding with finite but chatty seal/frontier work under slower CI coverage, not a remaining non-termination. Replaced the wall-clock limit with a telemetry job-count guard (\u003c1000 jobs) and re-enabled the tests.",
+      "timestamp": "2026-06-17T14:55:45Z"
     }
   ],
   "priority": 2,
   "status": "open",
   "title": "Re-enable returned direct callable runtime-demand coverage test",
   "type": "task",
-  "updated_at": "2026-06-17T14:42:50Z"
+  "updated_at": "2026-06-17T14:55:45Z"
 }
