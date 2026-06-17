@@ -1756,10 +1756,6 @@ impl<'a> World<'a> {
         );
     }
 
-    pub(crate) fn protocol_impl(&self, protocol: ModuleId, target: ModuleId) -> Option<&ProtocolImpl> {
-        self.protocol_impls.impl_for(&ProtocolImplKey { protocol, target })
-    }
-
     pub(crate) fn protocol_impls_for(&self, protocol: ModuleId) -> Vec<(ProtocolImplKey, ProtocolImpl)> {
         self.protocol_impls
             .impls_for_protocol(protocol)
@@ -2516,19 +2512,6 @@ impl<'a> World<'a> {
             .expect("runtime module should still exist while recording its code id")
             .code_id = Some(code_id);
         Some(code_id)
-    }
-
-    pub(crate) fn runtime_impl_target_modules(&mut self, receiver_ty: &Ty) -> Vec<ModuleId> {
-        let mut modules = Vec::new();
-        let runtime_modules = self.runtime_modules.keys().copied().collect::<Vec<_>>();
-        for module in runtime_modules {
-            let target_ty = self.module_impl_target_ty(module);
-            if self.types.is_subtype(receiver_ty, &target_ty) {
-                modules.push(module);
-            }
-        }
-        modules.sort_by_key(|module| module.as_u32());
-        modules
     }
 
     pub(crate) fn module_impl_target_ty(&mut self, module: ModuleId) -> Ty {

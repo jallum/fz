@@ -1258,17 +1258,19 @@ fn resolve_protocol_call(
     }
 
     if matches.is_empty() {
-        // The dispatch holds no arm for this receiver yet. Demand the
-        // definition of any module whose source declares a matching `defimpl`
-        // — including impls that live in a module the program never otherwise
-        // reaches. The provider index is a settled surface fact, so this read
-        // re-wakes the call when a `defimpl` is discovered; the demand runs
-        // only here, when a concrete receiver actually needs the impl.
+        // The dispatch holds no arm for this receiver yet. Each `defimpl` is its
+        // own `Protocol.Target` module recorded in the provider index at scope
+        // time (including built-ins co-located with the protocol, and impls in a
+        // module the program never otherwise reaches by name). Demand the impl
+        // module whose target overlaps the receiver — the impl is the unit of
+        // demand. The index is a settled surface fact, so this read re-wakes the
+        // call when a `defimpl` is discovered; the demand runs only here, when a
+        // concrete receiver actually needs the impl. There is no receiver-type
+        // module-name scan: referencing the protocol is the single discovery path.
         let providers_fact = FactKey::ProtocolImplProviders(protocol);
         if world.has_fact(&providers_fact) {
             reads.push(providers_fact);
         }
-        let mut demanded_provider = false;
         for (target, provider) in world.protocol_impl_providers(protocol) {
             let target_ty = world.module_impl_target_ty(target);
             let overlap = world.types_mut().intersect(receiver_ty, target_ty);
@@ -1278,18 +1280,6 @@ fn resolve_protocol_call(
             if world.module_defined_revision(provider).is_none() {
                 waits.insert(FactKey::ModuleDefined(provider));
                 follow_up.insert(Job::DefineModule(provider));
-                demanded_provider = true;
-            }
-        }
-        // Fall back to the runtime-library convention (impl lives in the
-        // receiver type's own module) only when no user provider is pending,
-        // so a user impl never gets shadowed by a misdirected runtime wait.
-        if !demanded_provider {
-            for module in world.runtime_impl_target_modules(&receiver_ty) {
-                if world.protocol_impl(protocol, module).is_some() {
-                    continue;
-                }
-                wait_for_runtime_module(world, module, waits, follow_up);
             }
         }
         return Ok((None, Vec::new(), None));
@@ -1613,23 +1603,6 @@ fn prepare_function_call(
 /// register during its definition, so a receiver type implying an unloaded
 /// runtime module genuinely needs DefineModule — this is demand
 /// bootstrapping, not a ModuleInterface stand-in.
-fn wait_for_runtime_module(
-    world: &mut World<'_>,
-    module: ModuleId,
-    waits: &mut HashSet<FactKey>,
-    follow_up: &mut HashSet<Job>,
-) {
-    if let Some(code_id) = world.ensure_runtime_module(module) {
-        let indexed_fact = FactKey::CodeIndexed(code_id);
-        if !world.has_fact(&indexed_fact) {
-            waits.insert(indexed_fact);
-            follow_up.insert(Job::IndexCode(code_id));
-        }
-    }
-    waits.insert(FactKey::ModuleDefined(module));
-    follow_up.insert(Job::DefineModule(module));
-}
-
 fn wait_for_protocol_module(
     world: &mut World<'_>,
     protocol: ModuleId,
