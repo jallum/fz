@@ -85,52 +85,6 @@ end
     );
 }
 
-// DROP: old-world planner Cont dispatch edges for Enum; SpecKey/planner internals
-#[test]
-fn linked_runtime_graph_keeps_cont_dispatches_for_enum_take_drop_split() {
-    use crate::fz_ir::{CallsiteId, EmitSlot, Term};
-
-    let mut t = crate::types::new();
-    let tel = crate::telemetry::ConfiguredTelemetry::new();
-    let source = include_str!("../../fixtures2/behavior/enum_take_drop_split.fz");
-
-    let frontend = compile_source_with_types(
-        &mut t,
-        source.to_string(),
-        "enum_take_drop_split_input.fz".to_string(),
-        &tel,
-    );
-    let checked = checked_module_for_mode(&mut t, frontend, &tel, CompileMode::Normal)
-        .unwrap_or_else(|err| panic!("checked module: {err}"));
-    let graph = prepare_execution_graph(&mut t, checked, &tel, CompileMode::Normal)
-        .unwrap_or_else(|err| panic!("execution graph: {err}"));
-    let linked = graph.module;
-    let mt = graph.module_plan;
-
-    for (spec_key, spec) in &mt.specs {
-        let body = linked.fn_by_id(spec_key.fn_id);
-        for block in &body.blocks {
-            let Term::Call { ident, .. } = &block.terminator else {
-                continue;
-            };
-            let cont_callsite = CallsiteId::new(body.id, ident, EmitSlot::Cont);
-            let direct_callsite = CallsiteId::new(body.id, ident, EmitSlot::Direct);
-            let direct_target = spec.local_call_target(&direct_callsite);
-            assert!(
-                spec.local_call_target(&cont_callsite).is_some(),
-                "linked runtime graph missing Cont dispatch for {} spec {:?} at {:?}; direct target: {:?}; direct target body: {:?}; direct effective return: {:?}; available call_edges: {:?}",
-                body.name,
-                spec_key,
-                cont_callsite,
-                direct_target,
-                direct_target.map(|target| linked.fn_by_id(target.fn_id).name.clone()),
-                direct_target.and_then(|target| mt.effective_returns.get(&target.body_key())),
-                spec.call_edges.keys().collect::<Vec<_>>()
-            );
-        }
-    }
-}
-
 // DROP: old-world planner Cont dispatch edges for spawn; SpecKey/planner internals
 #[test]
 fn linked_runtime_graph_keeps_cont_dispatches_for_spawn_with_captures() {

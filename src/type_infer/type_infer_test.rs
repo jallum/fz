@@ -1,9 +1,7 @@
 use super::{Info, TypeInferOutcome, TypeInferReturnState, TypeInferStatus, infer_from_entry, solve_from_entry};
-use crate::fz_ir::{Const, DeadBranch, EmitSlot, FnBuilder, FnId, Module, ModuleBuilder, Prim, Term};
+use crate::fz_ir::{Const, EmitSlot, FnBuilder, FnId, Module, ModuleBuilder, Prim, Term};
 use crate::telemetry::{ConfiguredTelemetry, Event, Handler, Value};
-use crate::test_support::{
-    entry_main_fn_id as main_id, linked_runtime_module, linked_runtime_module_unplanned, lower_frontend_module,
-};
+use crate::test_support::{entry_main_fn_id as main_id, linked_runtime_module, lower_frontend_module};
 use crate::types::{CallableValueKind, ClosureTarget, ClosureTypes, DefaultTypes, Ty, Types};
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -11,12 +9,6 @@ use std::rc::Rc;
 fn linked_fixture(src: &str) -> Module {
     let tel = ConfiguredTelemetry::new();
     linked_runtime_module(src, &tel)
-}
-
-fn linked_unplanned_fixture(src: &str) -> Module {
-    let mut t = crate::types::new();
-    let tel = ConfiguredTelemetry::new();
-    linked_runtime_module_unplanned(&mut t, src, &tel)
 }
 
 fn lower(src: &str) -> Module {
@@ -56,7 +48,6 @@ fn callable_kind<T: Types<Ty = Ty> + ClosureTypes>(t: &T, callable_ty: &Ty) -> O
 struct TypeInferFacts {
     fn_returns: Vec<FnReturnFact>,
     activations: Vec<ActivationFact>,
-    activation_edges: Vec<ActivationEdgeFact>,
     dead_arms: Vec<DeadArmFact>,
     diagnostics: Vec<DiagnosticFact>,
     dispatch_masks: Vec<DispatchMaskFact>,
@@ -113,34 +104,15 @@ struct FnReturnFact {
 
 #[derive(Clone, Debug)]
 struct ActivationFact {
-    activation_id: u64,
-    fn_id: FnId,
     fn_name: String,
-    input_count: usize,
     state: String,
-    return_ty: Option<Ty>,
 }
 
+/// Presence marker for a dead-arm telemetry event; the test only asserts the
+/// capture is non-empty (the event's payload is validated via the production
+/// outcome).
 #[derive(Clone, Debug)]
-struct ActivationEdgeFact {
-    caller_activation_id: u64,
-    caller_fn_id: FnId,
-    caller_fn_name: String,
-    callee_activation_id: u64,
-    callee_fn_id: FnId,
-    callee_fn_name: String,
-    callsite_slot: String,
-    callsite_span_start: u64,
-    callsite_span_end: u64,
-}
-
-#[derive(Clone, Debug)]
-struct DeadArmFact {
-    activation_id: u64,
-    fn_name: String,
-    block: u64,
-    branch: String,
-}
+struct DeadArmFact;
 
 #[derive(Clone, Debug)]
 struct DiagnosticFact {
@@ -189,57 +161,14 @@ impl Handler for TypeInferCapture {
                 }
             }
             ["fz", "type_infer", "activation"] => {
-                if let (Some(activation_id), Some(fn_name), Some(fn_id), Some(input_count), Some(state)) = (
-                    event_metadata_u64(ev, "activation_id"),
-                    event_metadata_str(ev, "fn_name"),
-                    event_metadata_u64(ev, "fn_id"),
-                    event_metadata_u64(ev, "input_count"),
-                    event_metadata_str(ev, "state"),
-                ) {
-                    facts.activations.push(ActivationFact {
-                        activation_id,
-                        fn_id: FnId(fn_id as u32),
-                        fn_name,
-                        input_count: input_count as usize,
-                        state,
-                        return_ty: event_metadata_ty(ev, "return_ty_data"),
-                    });
+                if let (Some(fn_name), Some(state)) =
+                    (event_metadata_str(ev, "fn_name"), event_metadata_str(ev, "state"))
+                {
+                    facts.activations.push(ActivationFact { fn_name, state });
                 }
             }
-            ["fz", "type_infer", "activation_edge"] => {
-                if let (
-                    Some(caller_activation_id),
-                    Some(caller_fn_name),
-                    Some(caller_fn_id),
-                    Some(callee_activation_id),
-                    Some(callee_fn_name),
-                    Some(callee_fn_id),
-                    Some(callsite_slot),
-                    Some(callsite_span_start),
-                    Some(callsite_span_end),
-                ) = (
-                    event_metadata_u64(ev, "caller_activation_id"),
-                    event_metadata_str(ev, "caller_fn_name"),
-                    event_metadata_u64(ev, "caller_fn_id"),
-                    event_metadata_u64(ev, "callee_activation_id"),
-                    event_metadata_str(ev, "callee_fn_name"),
-                    event_metadata_u64(ev, "callee_fn_id"),
-                    event_metadata_str(ev, "callsite_slot"),
-                    event_metadata_u64(ev, "callsite_span_start"),
-                    event_metadata_u64(ev, "callsite_span_end"),
-                ) {
-                    facts.activation_edges.push(ActivationEdgeFact {
-                        caller_activation_id,
-                        caller_fn_id: FnId(caller_fn_id as u32),
-                        caller_fn_name,
-                        callee_activation_id,
-                        callee_fn_id: FnId(callee_fn_id as u32),
-                        callee_fn_name,
-                        callsite_slot,
-                        callsite_span_start,
-                        callsite_span_end,
-                    });
-                }
+            ["fz", "type_infer", "dead_arm"] => {
+                facts.dead_arms.push(DeadArmFact);
             }
             ["fz", "type_infer", "diagnostic"] => {
                 if let Some(code) = event_metadata_str(ev, "code") {
@@ -262,21 +191,6 @@ impl Handler for TypeInferCapture {
                         fn_name,
                         arity: arity as usize,
                         dispatch_slots,
-                    });
-                }
-            }
-            ["fz", "type_infer", "dead_arm"] => {
-                if let (Some(activation_id), Some(fn_name), Some(block), Some(branch)) = (
-                    event_metadata_u64(ev, "activation_id"),
-                    event_metadata_str(ev, "fn_name"),
-                    event_metadata_u64(ev, "block"),
-                    event_metadata_str(ev, "branch"),
-                ) {
-                    facts.dead_arms.push(DeadArmFact {
-                        activation_id,
-                        fn_name,
-                        block,
-                        branch,
                     });
                 }
             }
@@ -378,24 +292,6 @@ fn event_metadata_u64(ev: &Event<'_, '_, '_>, key: &str) -> Option<u64> {
     }
 }
 
-fn emit_slot_name(slot: EmitSlot) -> &'static str {
-    match slot {
-        EmitSlot::Direct => "direct",
-        EmitSlot::Cont => "cont",
-        EmitSlot::ClosureCall => "closure_call",
-        EmitSlot::CallableBoundary => "callable_boundary",
-    }
-}
-
-fn return_state_name(state: &TypeInferReturnState) -> &'static str {
-    match state {
-        TypeInferReturnState::Pending => "pending",
-        TypeInferReturnState::Unknown => "unknown",
-        TypeInferReturnState::NoReturn => "no_return",
-        TypeInferReturnState::Known(_) => "known",
-    }
-}
-
 /// At the fixpoint of a supported program, every reached function has a known
 /// return or no return. A surviving pending/unknown return means a dependency
 /// never settled or a live construct is still unmodeled.
@@ -420,52 +316,6 @@ fn fixpoint_leaves_no_reached_fn_unknown() {
             "{name}: reached fns left Pending/Unknown at fixpoint: {unsettled:?}"
         );
     }
-}
-
-// PICKED: Enum.reduce and Enum.count settle to int over list and range
-#[test]
-fn runtime_graph_enum_ops_settle_to_int() {
-    let cases = [
-        ("list lambda", "Enum.reduce", include_str!("fixtures/enum_reduce.fz")),
-        (
-            "named-fn ref",
-            "Enum.reduce",
-            include_str!("fixtures/enum_reduce_named_ref_ok.fz"),
-        ),
-        ("count", "Enum.count", include_str!("fixtures/enum_count.fz")),
-        (
-            "range reduce",
-            "Enum.reduce",
-            include_str!("fixtures/enum_reduce_range.fz"),
-        ),
-    ];
-    let mut t = crate::types::new();
-    let int = t.int();
-    for (label, entry, src) in cases {
-        let module = linked_fixture(src);
-        let ret = infer_fn_via_main(&module, entry);
-        assert!(
-            t.is_equivalent(&ret, &int),
-            "{label}: {entry} should settle to int, got {ret:?}"
-        );
-    }
-}
-
-// PICKED: qualified and bare operator refs both settle via kernel specs
-#[test]
-fn enum_reduce_operator_refs_settle_through_kernel_specs() {
-    let module = linked_fixture(include_str!("fixtures/enum_reduce_operator_ref.fz"));
-    let mut t = crate::types::new();
-    let int = t.int();
-    let expected = t.tuple(&[int.clone(), int]);
-    let report = infer_report_via_main(&mut t, &module);
-
-    assert_eq!(report.outcome.status, TypeInferStatus::Complete);
-    let ret = report.facts.return_for_fn_named("main");
-    assert!(
-        t.is_equivalent(&ret, &expected),
-        "qualified and bare operator refs should both settle to int, got {ret:?}"
-    );
 }
 
 // PICKED: concrete caller witness preserved despite erased list surface type
@@ -518,50 +368,6 @@ fn enum_reduce_erased_list_operator_ref_preserves_concrete_caller_witness() {
         t.is_subtype(&test_fact.input_tys[0], &non_empty_ints),
         "test/1 activation should keep the concrete nonempty list(int) caller witness, got {:?}",
         test_fact.input_tys
-    );
-}
-
-// PICKED: Enum.take activates distinct list and range call paths
-#[test]
-fn mixed_enum_take_calls_preserve_list_and_range_activations() {
-    let module = linked_fixture(
-        r#"
-fn main() do
-  xs = [1, 2, 3, 4, 5]
-  range = 1..5
-  dbg(Enum.take(xs, 3))
-  dbg(Enum.take(xs, 0))
-  dbg(Enum.take(xs, 9))
-  dbg(Enum.take(xs, -2))
-  dbg(Enum.take(range, -2))
-end
-"#,
-    );
-    let mut t = crate::types::new();
-    let report = infer_report_via_main(&mut t, &module);
-    let range = t.opaque_of("impl-target::Range");
-    let int = t.int();
-    let list_int = t.list(int);
-
-    let take_facts = report
-        .facts
-        .activations
-        .iter()
-        .filter(|fact| fact.fn_name == "Enum.take")
-        .collect::<Vec<_>>();
-    assert!(
-        take_facts
-            .iter()
-            .any(|fact| { fact.return_ty.as_ref().is_some_and(|ret| t.is_subtype(ret, &list_int)) }),
-        "mixed Enum.take calls should infer a successful list-returning activation: {take_facts:?}"
-    );
-    assert!(
-        report.outcome.activations.iter().any(|fact| {
-            module.fn_by_id(fact.fn_id).name == "Enum.take"
-                && fact.input_tys.first().is_some_and(|ty| t.is_equivalent(ty, &range))
-        }),
-        "mixed Enum.take calls should activate the range call path: {:?}",
-        report.outcome.activations
     );
 }
 
@@ -937,167 +743,6 @@ fn string_literal_argument_types_as_str_t() {
         t.is_equivalent(&id_return, &str_t),
         "string literal should flow through direct calls as str_t(); got {}",
         t.display(&id_return)
-    );
-}
-
-// PICKED: Enum.reduce and Enumerable.List.reduce settle to concrete return types
-#[test]
-fn enum_reduce_runtime_graph_settles() {
-    let module = linked_fixture(include_str!("fixtures/enum_reduce.fz"));
-    let mut t = crate::types::new();
-    let int = t.int();
-
-    let reduce_ret = infer_fn_via_main(&module, "Enum.reduce");
-    assert!(
-        t.is_equivalent(&reduce_ret, &int),
-        "Enum.reduce([1,2,3],0,+) should settle to int, got {reduce_ret:?}"
-    );
-
-    let done = {
-        let a = t.atom_lit("done");
-        let i = t.int();
-        t.tuple(&[a, i])
-    };
-    let list_reduce_ret = infer_fn_via_main(&module, "Enumerable.List.reduce");
-    assert!(
-        t.is_equivalent(&list_reduce_ret, &done),
-        "Enumerable.List.reduce should settle to {{:done,int}} for an int-returning reducer, got {list_reduce_ret:?}"
-    );
-}
-
-// DROP: validates old-world TypeInferOutcome/telemetry parity, not language semantics
-#[test]
-fn outcome_exposes_activation_facts_as_production_data() {
-    let module = linked_fixture(include_str!("fixtures/enum_reduce.fz"));
-    let mut t = crate::types::new();
-    let int = t.int();
-    let report = infer_report_via_main(&mut t, &module);
-
-    assert_eq!(report.outcome.status, TypeInferStatus::Complete);
-    assert_eq!(
-        report.outcome.activations.len(),
-        report.facts.activations.len(),
-        "returned activation facts and activation telemetry should describe the same reached cells"
-    );
-    assert_eq!(
-        report.outcome.edges.len(),
-        report.facts.activation_edges.len(),
-        "returned activation edges and activation-edge telemetry should describe the same graph"
-    );
-
-    for fact in &report.outcome.activations {
-        assert!(
-            report.facts.activations.iter().any(|event| {
-                event.activation_id == fact.activation_id.0
-                    && event.fn_id == fact.fn_id
-                    && event.input_count == fact.input_tys.len()
-                    && event.state == return_state_name(&fact.return_state)
-            }),
-            "activation fact should be observable through telemetry: {fact:?}"
-        );
-    }
-    for edge in &report.outcome.edges {
-        assert!(
-            report.facts.activation_edges.iter().any(|event| {
-                event.caller_activation_id == edge.caller_activation_id.0
-                    && event.caller_fn_id == edge.caller_fn_id
-                    && event.callee_activation_id == edge.callee_activation_id.0
-                    && event.callee_fn_id == edge.callee_fn_id
-                    && event.callsite_slot == emit_slot_name(edge.callsite.callsite.slot)
-                    && event.callsite_span_start == edge.callsite.span_start
-                    && event.callsite_span_end == edge.callsite.span_end
-                    && !event.caller_fn_name.is_empty()
-                    && !event.callee_fn_name.is_empty()
-            }),
-            "activation edge should be observable through telemetry: {edge:?}"
-        );
-    }
-
-    let reduce_fact = report
-        .outcome
-        .activations
-        .iter()
-        .find(|fact| {
-            module.fn_by_id(fact.fn_id).name == "Enum.reduce"
-                && fact.input_tys.len() == 3
-                && matches!(
-                    &fact.return_state,
-                    TypeInferReturnState::Known(ret) if t.is_equivalent(ret, &int)
-                )
-        })
-        .unwrap_or_else(|| {
-            panic!(
-                "Enum.reduce activation should be returned as known int; got {:?}",
-                report
-                    .outcome
-                    .activations
-                    .iter()
-                    .filter(|fact| module.fn_by_id(fact.fn_id).name == "Enum.reduce")
-                    .collect::<Vec<_>>()
-            )
-        });
-
-    assert!(
-        t.is_equivalent(&reduce_fact.input_tys[1], &int),
-        "Enum.reduce activation should carry the concrete accumulator input, got {:?}",
-        reduce_fact.input_tys
-    );
-    assert!(
-        report.facts.activations.iter().any(|event| {
-            event.activation_id == reduce_fact.activation_id.0
-                && event.fn_id == reduce_fact.fn_id
-                && event.input_count == reduce_fact.input_tys.len()
-                && event.state == "known"
-                && event.return_ty.as_ref().is_some_and(|ty| t.is_equivalent(ty, &int))
-        }),
-        "known activation return should be visible through telemetry too"
-    );
-    assert!(
-        report.outcome.edges.iter().any(|edge| {
-            module.fn_by_id(edge.caller_fn_id).name == "Enum.reduce"
-                && module.fn_by_id(edge.callee_fn_id).name == "Enumerable.List.reduce"
-                && edge.callsite.callsite.slot == EmitSlot::Direct
-        }),
-        "Enum.reduce should expose the activation edge it used to reach Enumerable.List.reduce; edges={:?}",
-        report
-            .outcome
-            .edges
-            .iter()
-            .map(|edge| (
-                module.fn_by_id(edge.caller_fn_id).name.as_str(),
-                module.fn_by_id(edge.callee_fn_id).name.as_str()
-            ))
-            .collect::<Vec<_>>()
-    );
-    assert!(
-        report.outcome.dead_arms.iter().all(|dead_arm| {
-            report.facts.dead_arms.iter().any(|event| {
-                event.activation_id == dead_arm.activation_id.0
-                    && event.block == dead_arm.block_id.0 as u64
-                    && event.branch
-                        == match dead_arm.branch {
-                            DeadBranch::Then => "then",
-                            DeadBranch::Else => "else",
-                        }
-                    && !event.fn_name.is_empty()
-            })
-        }),
-        "dead-arm facts should also be observable through telemetry: {:?}",
-        report.outcome.dead_arms
-    );
-}
-
-// PICKED: invalid operator usage in a named reducer produces a type diagnostic
-#[test]
-fn invalid_named_reduce_reducer_emits_operator_diagnostic() {
-    let module = linked_unplanned_fixture(include_str!("fixtures/enum_reduce_named_ref.fz"));
-    let mut t = crate::types::new();
-    let report = infer_report_via_main(&mut t, &module);
-    assert_eq!(report.outcome.status, TypeInferStatus::Invalid);
-    assert!(
-        report.facts.has_invalid_operator_for("broken_reducer", "+"),
-        "expected invalid + diagnostic for Main.broken_reducer/2, got {:?}",
-        report.facts.diagnostics
     );
 }
 

@@ -1,7 +1,7 @@
 use crate::fz_ir::{FnId, Module};
 use crate::ir_codegen::compile_planned;
 use crate::ir_planner::{ModulePlan, materialize_program, plan_module_with_role};
-use crate::modules::pipeline::{CompileMode, checked_module_for_mode, link_execution_module};
+use crate::modules::pipeline::CompileMode;
 use crate::telemetry::{Capture, Event, Handler, Telemetry};
 use crate::types::DefaultTypes;
 use std::cell::RefCell;
@@ -62,17 +62,6 @@ pub(crate) fn linked_runtime_graph(src: &str, tel: &dyn Telemetry) -> crate::com
 /// protocol impls, runtime helpers, and execution-graph rewrites are local.
 pub(crate) fn linked_runtime_module(src: &str, tel: &dyn Telemetry) -> Module {
     linked_runtime_graph(src, tel).linked_module().clone()
-}
-
-/// Compile through the production frontend/provider/link path and stop at the
-/// linked runtime module, without running the execution-graph planner.
-pub(crate) fn linked_runtime_module_unplanned(t: &mut DefaultTypes, src: &str, tel: &dyn Telemetry) -> Module {
-    let frontend = crate::frontend::compile_source_with_types(t, src.to_string(), "test_fixture.fz".to_string(), tel);
-    let mut checked =
-        checked_module_for_mode(t, frontend, tel, CompileMode::Normal).unwrap_or_else(|err| panic!("checked: {err}"));
-    link_execution_module(t, &mut checked, tel)
-        .unwrap_or_else(|err| panic!("linked runtime module: {err}"))
-        .module
 }
 
 /// Fixture tests enter through a top-level `main`.

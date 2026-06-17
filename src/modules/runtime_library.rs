@@ -471,33 +471,5 @@ fn runtime_source_name(name: impl AsRef<str>) -> String {
 }
 
 #[cfg(test)]
-pub fn primitive_contract_names(tel: &dyn Telemetry) -> Vec<String> {
-    let mut names = Vec::new();
-    collect_primitive_contract_names(&primitive_prelude_program(tel).items, &mut names);
-    for module in parsed_program(tel).items {
-        if let Item::Module(module) = &*module {
-            collect_primitive_contract_names(&module.items, &mut names);
-        }
-    }
-    names.sort();
-    names
-}
-
-#[cfg(test)]
-fn collect_primitive_contract_names(items: &[Rc<Item>], names: &mut Vec<String>) {
-    for item in items {
-        if let Item::Fn(def) = &**item
-            && def.extern_abi.is_some()
-        {
-            let arity = def.extern_param_tokens.len();
-            names.push(format!("{}/{}", def.name, arity));
-        }
-        if let Item::Module(module) = &**item {
-            collect_primitive_contract_names(&module.items, names);
-        }
-    }
-}
-
-#[cfg(test)]
 #[path = "runtime_library_test.rs"]
 mod runtime_library_test;

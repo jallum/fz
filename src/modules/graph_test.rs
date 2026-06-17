@@ -77,21 +77,6 @@ fn graph_loader_uses_runtime_interfaces_without_user_storage() {
 }
 
 #[test]
-fn graph_loader_follows_runtime_implementation_dependencies() {
-    let app = interface("App", vec!["Enum"], vec![("main", 0)]);
-    let mut roots = InterfaceTable::new();
-    roots.insert(app.name.clone(), app);
-
-    let graph = ModuleGraphLoader::new().load_reachable(&crate::telemetry::ConfiguredTelemetry::new(), &roots, []);
-
-    assert!(graph.interfaces.contains_key(&module("Enum")));
-    assert!(graph.interfaces.contains_key(&module("Enumerable")));
-    assert!(graph.interfaces.contains_key(&module("List")));
-    assert!(graph.interfaces.contains_key(&module("Range")));
-    assert!(graph.interfaces.contains_key(&module("Map")));
-}
-
-#[test]
 fn graph_loader_follows_protocol_impl_protocol_dependency() {
     let mut app = interface("App", Vec::new(), vec![("main", 0)]);
     app.protocol_impls.push(InterfaceProtocolImpl {

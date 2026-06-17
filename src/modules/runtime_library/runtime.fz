@@ -37,21 +37,14 @@ import Kernel, only: [
   spawn: 2
 ]
 
-defmacro fn(source) do
-  quote do: Fz.Compiler.define(unquote(source), unquote(__CALLER__))
-end
+defmacro fn(source), do: quote do: Fz.Compiler.define(unquote(source), unquote(__CALLER__))
 
-defmacro fnp(source) do
-  quote do: Fz.Compiler.define(unquote(source), unquote(__CALLER__))
-end
+defmacro fnp(source), do: quote do: Fz.Compiler.define(unquote(source), unquote(__CALLER__))
 
-defmacro defmacro(source) do
-  quote do: Fz.Compiler.define(unquote(source), unquote(__CALLER__))
-end
+defmacro defmacro(source), do: quote do: Fz.Compiler.define(unquote(source), unquote(__CALLER__))
 
 defmacro defmodule(name, kw) do
-  source = {:defmodule, %{}, [name, kw]}
-  quote do: Fz.Compiler.define(unquote(source), unquote(__CALLER__))
+  quote do: Fz.Compiler.define(unquote({:defmodule, %{}, [name, kw]}), unquote(__CALLER__))
 end
 
 defmacro defprotocol(name, kw) do

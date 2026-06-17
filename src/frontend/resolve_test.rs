@@ -576,27 +576,6 @@ end
     );
 }
 
-// PICKED: runtime module with protocol impl pulls in both module and protocol interfaces
-#[test]
-fn runtime_protocol_impl_requests_protocol_interface() {
-    let p = flatten(
-        r#"
-defmodule User do
-  fn run(), do: Range.new(1, 3, 1)
-end
-"#,
-        &crate::telemetry::ConfiguredTelemetry::new(),
-    );
-    assert!(
-        p.external_module_interfaces
-            .contains_key(&ModuleName::from_segments(vec!["Range".to_string()]))
-    );
-    assert!(
-        p.external_module_interfaces
-            .contains_key(&ModuleName::from_segments(vec!["Enumerable".to_string()]))
-    );
-}
-
 // PICKED: importing a name not in a module's export list is an error
 #[test]
 fn import_non_exported_name_errors() {

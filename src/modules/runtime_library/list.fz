@@ -53,11 +53,4 @@ defmodule List do
 
   fnp count([], acc), do: acc
   fnp count([_head | tail], acc), do: count(tail, acc + 1)
-
-  defimpl Enumerable, for: List do
-    fn reduce(list, acc, reducer), do: List.reduce(list, acc, reducer)
-    fn count(list), do: {:ok, List.count(list)}
-    fn member?(list, value), do: {:ok, List.member?(list, value)}
-    fn slice(_list), do: {:error, :unsupported}
-  end
 end

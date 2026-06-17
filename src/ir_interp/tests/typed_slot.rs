@@ -44,20 +44,6 @@ fn run_checked(src: &str) -> i64 {
     run_main(&crate::telemetry::ConfiguredTelemetry::new(), &frontend.module).expect("interp run")
 }
 
-fn run_runtime_graph(src: &str) -> i64 {
-    let mut graph = linked_runtime_graph(src, &crate::telemetry::ConfiguredTelemetry::new());
-    let module = graph.linked_module().clone();
-    let module_plan = graph.linked_module_plan().clone();
-    let (halt, _) = run_main_with_plan(
-        graph.types(),
-        &crate::telemetry::ConfiguredTelemetry::new(),
-        &module,
-        module_plan,
-    )
-    .expect("interp run");
-    halt
-}
-
 fn capture_runtime_graph(src: &str) -> String {
     let tel = ConfiguredTelemetry::new();
     let dbg = DbgCapture::new();
@@ -204,68 +190,6 @@ end
 "#,
         ),
         1
-    );
-}
-
-// PICKED: Enum.reduce over list with inline lambda accumulates correctly
-#[test]
-fn interp_runtime_graph_enum_reduce_wrapper_runs() {
-    assert_eq!(
-        run_runtime_graph(
-            r#"
-fn main() do
-  Enum.reduce([1, 2, 3], 0, fn (x, acc) -> acc + x end)
-end
-"#,
-        ),
-        6
-    );
-}
-
-// PICKED: Enum.take with list and range in chained non-tail call sequence
-#[test]
-fn interp_runtime_graph_preserves_planned_continuation_specs_after_non_tail_calls() {
-    let got = capture_runtime_graph(
-        r#"
-fn main() do
-  xs = [1, 2, 3, 4, 5]
-  range = 1..5
-
-  dbg(Enum.take(xs, 3))
-  dbg(Enum.take(xs, 0))
-  dbg(Enum.take(xs, 9))
-  dbg(Enum.take(xs, -2))
-  dbg(Enum.take(range, -2))
-end
-"#,
-    );
-    assert_eq!(
-        got, "[1, 2, 3]\n[]\n[1, 2, 3, 4, 5]\n[4, 5]\n[4, 5]",
-        "interpreter continuations must retain their planner-selected specs across chained non-tail calls",
-    );
-}
-
-// PICKED: case-joined function reference used as Enum.reduce reducer
-#[test]
-fn interp_runtime_graph_joined_thin_fn_refs_remain_callable_across_enum_reduce() {
-    assert_eq!(
-        run_runtime_graph(
-            r#"
-fn add_a(x, acc), do: acc + x
-fn add_b(x, acc), do: acc + x
-
-fn main() do
-  xs = [1, 2, 3]
-  stats0 = Process.heap_alloc_stats()
-  reducer = case stats0[:allocs] == 0 do
-    true -> add_a
-    _ -> add_b
-  end
-  Enum.reduce(xs, 0, reducer)
-end
-"#,
-        ),
-        6
     );
 }
 

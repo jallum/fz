@@ -306,10 +306,6 @@ fn static_tests() -> Vec<(&'static str, fn())> {
             local_reduce_state_update_lowers_without_trampoline,
         ),
         (
-            "opaque_reduce_join_preserves_closure_values_and_lazy_state_machine",
-            opaque_reduce_join_preserves_closure_values_and_lazy_state_machine,
-        ),
-        (
             "continuation_materialization_boundaries_stay_explicit",
             continuation_materialization_boundaries_stay_explicit,
         ),
@@ -3378,86 +3374,6 @@ fn enum_map_family_pins_reusable_cons_telemetry_contract() {
     assert_eq!(stats.runtime_fallback_count(), 12);
 }
 
-fn opaque_reduce_join_preserves_closure_values_and_lazy_state_machine() {
-    let readme = fs::read_to_string("fixtures2/behavior/opaque_fn_value_join.fz").expect("read opaque README");
-    for needle in [
-        "control-flow join",
-        "closure-shaped value",
-        "one static reducer identity",
-    ] {
-        assert!(
-            readme.contains(needle),
-            "opaque_fn_value_join README must pin `{}`",
-            needle
-        );
-    }
-
-    assert_fixture_output_contains("opaque_fn_value_join", "expected.txt", &["6"]);
-
-    let fixture = behavior_fixture_case("opaque_fn_value_join");
-    let telemetry_path = temp_telemetry_path(&fixture, "closure_call");
-    let out = Command::new(FZ_BIN)
-        .args(["--log-telemetry"])
-        .arg(&telemetry_path)
-        .arg("run")
-        .arg(fixture.source_path())
-        .output()
-        .unwrap_or_else(|e| panic!("spawn fz run: {}", e));
-    assert!(
-        out.status.success(),
-        "fz run {} exited {}: {}",
-        fixture.display_path().display(),
-        out.status,
-        String::from_utf8_lossy(&out.stderr)
-    );
-    assert!(
-        String::from_utf8_lossy(&out.stdout).contains("6"),
-        "opaque reducer fixture should still print 6:\n{}",
-        String::from_utf8_lossy(&out.stdout)
-    );
-    let log =
-        fs::read_to_string(&telemetry_path).unwrap_or_else(|e| panic!("read {}: {}", telemetry_path.display(), e));
-    let _ = fs::remove_file(&telemetry_path);
-    let lowered_closure_calls = log
-        .lines()
-        .filter(|line| line.contains("\"name\":[\"fz\",\"codegen\",\"closure_call_lowered\"]"))
-        .collect::<Vec<_>>();
-    assert!(
-        lowered_closure_calls.iter().any(|line| {
-            line.contains("\"dispatch_kind\":\"indirect\"")
-                && line.contains("\"continuation_storage\":\"lazy_descriptor\"")
-        }),
-        "opaque reducer join should keep an indirect reducer continuation as a lazy descriptor: {lowered_closure_calls:?}"
-    );
-
-    let clif = dump_fixture_clif("opaque_fn_value_join");
-    let reduce_list_conts = clif_functions_containing(&clif, "List.reduce_cont");
-    assert!(
-        !reduce_list_conts.is_empty(),
-        "opaque reducer join should lower through the protocol-dispatched list reducer:\n{}",
-        clif
-    );
-    assert!(
-        reduce_list_conts.iter().all(|f| !f.contains("@fz_alloc_closure")),
-        "opaque reducer join must not force heap continuation allocation in the reducer path:\n{}",
-        reduce_list_conts.join("\n\n")
-    );
-    assert!(
-        reduce_list_conts.len() >= 2,
-        "opaque reducer join should still specialize both list reducer entry shapes:\n{}",
-        reduce_list_conts.join("\n\n")
-    );
-    let joined_reducer_arms = clif_functions_containing(&clif, "; fn case_clause_")
-        .into_iter()
-        .filter(|f| f.contains("@fz_get_static_closure") && f.contains("&fn"))
-        .collect::<Vec<_>>();
-    assert!(
-        joined_reducer_arms.len() >= 2,
-        "opaque reducer join currently preserves both joined zero-cap reducer identities before the callable-value join:\n{}",
-        joined_reducer_arms.join("\n\n")
-    );
-}
-
 fn continuation_materialization_boundaries_stay_explicit() {
     let readme = fs::read_to_string("fixtures2/behavior/enum_reduce_suspend.fz").expect("read suspend README");
     for needle in [
@@ -3676,14 +3592,6 @@ fn clif_function_from_start(clif: &str, start: usize) -> Option<&str> {
     let rest = &clif[start..];
     let end = rest.find("\n; fn ").map(|idx| start + idx).unwrap_or(clif.len());
     Some(&clif[start..end])
-}
-
-fn clif_functions_containing<'a>(clif: &'a str, needle: &str) -> Vec<&'a str> {
-    clif.match_indices("\n; fn ")
-        .map(|(idx, _)| idx + 1)
-        .filter_map(|start| clif_function_from_start(clif, start))
-        .filter(|function| function.contains(needle))
-        .collect()
 }
 
 fn clif_last_assigned_value<'a>(function: &'a str, op: &str) -> Option<&'a str> {

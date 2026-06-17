@@ -74,14 +74,4 @@ defmodule Map do
 
   fnp reverse([], acc), do: acc
   fnp reverse([head | tail], acc), do: reverse(tail, [head | acc])
-
-  defimpl Enumerable, for: Map do
-    fn reduce(map, acc, reducer) do
-      Map.reduce(map, acc, reducer)
-    end
-
-    fn count(map), do: {:ok, Map.count(map)}
-    fn member?(map, pair), do: {:ok, Map.member?(map, pair)}
-    fn slice(map), do: Map.slice(map)
-  end
 end

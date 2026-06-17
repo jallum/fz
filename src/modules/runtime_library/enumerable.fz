@@ -11,3 +11,31 @@ defprotocol Enumerable do
   @spec slice(t(a)) :: {:ok, integer, any} | {:error, any}
   fn slice(enumerable)
 end
+
+# Built-in implementations live with their protocol: a protocol call always
+# names the protocol, so referencing it pulls these impls. Each `defimpl` is
+# hoisted to its own `Enumerable.<Type>` module and demanded directly by a
+# matching receiver — no "scan the receiver type's own module" convention.
+defimpl Enumerable, for: List do
+  fn reduce(list, acc, reducer), do: List.reduce(list, acc, reducer)
+  fn count(list), do: {:ok, List.count(list)}
+  fn member?(list, value), do: {:ok, List.member?(list, value)}
+  fn slice(_list), do: {:error, :unsupported}
+end
+
+defimpl Enumerable, for: Map do
+  fn reduce(map, acc, reducer), do: Map.reduce(map, acc, reducer)
+  fn count(map), do: {:ok, Map.count(map)}
+  fn member?(map, pair), do: {:ok, Map.member?(map, pair)}
+  fn slice(map), do: Map.slice(map)
+end
+
+defimpl Enumerable, for: Range do
+  fn reduce(%Range{first: first, last: last, step: step}, acc, reducer), do: Range.reduce(first, last, step, acc, reducer)
+  fn count(%Range{first: first, last: last, step: step}), do: {:ok, Range.count(first, last, step)}
+  fn member?(%Range{first: first, last: last, step: step}, value), do: {:ok, Range.member?(first, last, step, value)}
+
+  fn slice(%Range{first: first, last: last, step: step}) do
+    {:ok, Range.count(first, last, step), (fn (start, amount, stride) -> Range.slice(first, last, step, start, amount, stride) end)}
+  end
+end
