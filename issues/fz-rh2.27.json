@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-06-17T15:29:16Z",
@@ -8,8 +8,8 @@
   "labels": [],
   "parent": "fz-rh2",
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "Compiler2 source/root ownership: root submission must not scope every code contribution",
   "type": "bug",
-  "updated_at": "2026-06-17T15:29:16Z"
+  "updated_at": "2026-06-17T15:49:40Z"
 }
