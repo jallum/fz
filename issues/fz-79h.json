@@ -2,13 +2,14 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-06-17T22:49:20Z",
   "created": "2026-06-17T22:35:54Z",
   "description": "Goal: make GC/allocation pressure independent from scheduler fairness. Allocation may mark heap GC-needed and grow blocks, but it must not expire the process reduction budget or create allocation-pressure yields. Signal: allocation-heavy loops yield only by reduction count, while boundary GC still runs from heap pressure. Strategy: remove the heap owner/budget-expiry path, simplify yield accounting, update tests and runtime docs/guides.",
   "id": "fz-79h",
   "labels": [],
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Runtime GC pressure must not force scheduler yields",
   "type": "task",
-  "updated_at": "2026-06-17T22:36:00Z"
+  "updated_at": "2026-06-17T22:49:20Z"
 }
