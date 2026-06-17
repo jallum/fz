@@ -35,7 +35,7 @@ use super::super::body::{ControlDestination, ControlEntryId, Literal, LoweredExt
 use super::super::drive::{FactKey, Job, JobEffects, settled_uses};
 use super::super::identity::{FunctionId, RootId};
 use super::super::scheduler::FatalError;
-use super::super::semantic::RuntimeDemand;
+use super::super::semantic::{RuntimeDemand, ShapeDemand};
 use super::super::transport::{
     CallableId, CodegenLaneRepr, CodegenSeam, LaneId, ShapeDescr, ShapeId, TransportPosition,
 };
@@ -1600,11 +1600,8 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
             position_publication_lanes(self.program, |seam| continuation_seam_matches(position, seam));
         let mut lane_index = 0;
         if !publication_lanes.is_empty() {
-            let demand = executable
-                .runtime_demand
-                .value_demands
-                .get(value)
-                .unwrap_or(&RuntimeDemand::Ignore);
+            let ignore = RuntimeDemand::ignore();
+            let demand = executable.runtime_demand.value_demands.get(value).unwrap_or(&ignore);
             mark_ignored_publication_lanes(&mut ctx.builder, input_vars, demand, &mut lane_index)?;
         } else if let Some(demand) = executable.runtime_demand.value_demands.get(value) {
             mark_ignored_lanes_for_demand(self.world, &mut ctx.builder, input_vars, shape, demand, &mut lane_index)?;
@@ -3937,28 +3934,33 @@ fn mark_ignored_lanes_for_demand(
             }
             Ok(())
         }
-        ShapeDescr::Tuple(fields) => match demand {
-            RuntimeDemand::Ignore => {
-                for field in fields.iter().copied() {
-                    mark_all_runtime_lanes_ignored(world, builder, vars, field, lane_index)?;
-                }
-                Ok(())
+        ShapeDescr::Tuple(fields) => {
+            if demand.is_callable() {
+                return skip_runtime_lanes(world, vars, shape, lane_index);
             }
-            RuntimeDemand::TupleFields(demands) => {
-                if demands.len() > fields.len() {
-                    return Err(FatalError);
-                }
-                for (index, field) in fields.iter().copied().enumerate() {
-                    if let Some(field_demand) = demands.get(index) {
-                        mark_ignored_lanes_for_demand(world, builder, vars, field, field_demand, lane_index)?;
-                    } else {
+            match &demand.shape {
+                ShapeDemand::Ignore => {
+                    for field in fields.iter().copied() {
                         mark_all_runtime_lanes_ignored(world, builder, vars, field, lane_index)?;
                     }
+                    Ok(())
                 }
-                Ok(())
+                ShapeDemand::TupleFields(demands) => {
+                    if demands.len() > fields.len() {
+                        return Err(FatalError);
+                    }
+                    for (index, field) in fields.iter().copied().enumerate() {
+                        if let Some(field_demand) = demands.get(index) {
+                            mark_ignored_lanes_for_demand(world, builder, vars, field, field_demand, lane_index)?;
+                        } else {
+                            mark_all_runtime_lanes_ignored(world, builder, vars, field, lane_index)?;
+                        }
+                    }
+                    Ok(())
+                }
+                ShapeDemand::Whole => skip_runtime_lanes(world, vars, shape, lane_index),
             }
-            RuntimeDemand::Value | RuntimeDemand::Callable(_) => skip_runtime_lanes(world, vars, shape, lane_index),
-        },
+        }
         ShapeDescr::Callable(callable) => {
             let capture_lanes = world.transport().interners().callable(*callable).capture_lanes.len();
             if demand.is_ignore() {

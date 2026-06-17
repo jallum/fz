@@ -2590,9 +2590,10 @@ fn assert_generic_callable_shape_matches_upstream_demand(
     callable: super::transport::CallableId,
     demand: RuntimeDemand,
 ) {
-    let RuntimeDemand::Callable(demand) = demand else {
+    if demand.callable.is_empty() {
         panic!("expected upstream callable demand for generic callable shape, got {demand:?}")
-    };
+    }
+    let demand = demand.callable;
     let descr = world.transport().interners().callable(callable);
     assert_eq!(
         descr.contract_surfaces.len(),
