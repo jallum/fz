@@ -235,9 +235,57 @@ tests assert that:
   publishes `MacroExecutable(function)` without scheduling
   `LowerNativeProgram(macro_root)`
 
-So a backend adapter that asks semantic, type, or reachability questions after
-the artifact boundary is visible as the wrong `reads`/`waits` shape on the job
-span, not just as a vague architectural complaint.
+So backend code that asks semantic, type, or reachability questions after the
+artifact boundary is visible as the wrong `reads`/`waits` shape on the job span,
+not just as a vague architectural complaint.
+
+Transport plan construction emits `[fz, compiler2, transport_flow, defined]`.
+The event is the final runtime-transport authority signal: shared descriptor
+interners plus one root-scoped `TransportPlan(root)`. `RuntimeDemand` is
+pre-plan evidence; `TransportPosition -> ShapeId`, `CallableId` facts,
+`BoundaryId` contracts, and `CodegenSeamFact` rows are the settled product.
+
+The transport-flow measurements are:
+
+```
+root_id
+semantic_revision
+executable_count
+transport_position_count
+shape_descriptor_count
+lane_descriptor_count
+callable_descriptor_count
+boundary_descriptor_count
+nothing_shape_count
+tuple_shape_count
+callable_shape_count
+direct_callable_count
+first_class_callable_count
+boundary_publication_count
+omitted_position_count
+resume_payload_position_count
+return_payload_position_count
+call_result_payload_position_count
+codegen_seam_fact_count
+codegen_function_entry_seam_fact_count
+codegen_block_param_seam_fact_count
+codegen_return_delivery_seam_fact_count
+codegen_continuation_entry_seam_fact_count
+codegen_return_continuation_seam_fact_count
+codegen_tail_call_seam_fact_count
+codegen_callable_boundary_seam_fact_count
+codegen_extern_boundary_seam_fact_count
+codegen_first_class_publication_seam_fact_count
+```
+
+`omitted_position_count` counts root positions settled to `Shape::Nothing`.
+`resume_payload_position_count`, `return_payload_position_count`, and
+`call_result_payload_position_count` count named call result payload positions:
+`ResumePayload` for `Deliver(entry)` and `ReturnPayload` for `Return`. The
+metadata exposes the committed facts (`transport_positions`,
+`shape_descriptors`, `lane_descriptors`, `callable_facts`, `boundary_facts`,
+and `seam_facts`) for inspection; tests should assert ShapeId relationships
+from the plan when correctness depends on sharing.
 
 Macro executable readiness also emits
 `[fz, compiler2, macro_executable, defined]` with raw `function_id`,
@@ -372,9 +420,9 @@ fields and dies with that pipeline.
   `closure_var`, `continuation_spec_id`. Metadata: `body_name`, `call_kind`,
   `closure_binding_repr` (`ArgRepr::as_str`), `dispatch_kind` (`direct` when
   the body literal resolves, else `indirect`), and `continuation_storage`
-  (`lazy_descriptor` or `heap_closure`). Direct closure fast paths still use
-  boundary-return adapters when the exact body's delivered lane is narrower
-  than the caller or continuation seam.
+  (`lazy_descriptor` or `heap_closure`). Direct closure fast paths consume the
+  native call term selected by `CallReturnFlow`; narrowing return delivery is
+  represented by an explicit continuation before codegen.
 
 ## Telemetry In Tests
 

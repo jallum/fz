@@ -29,11 +29,16 @@ const MEASUREMENT_FIELDS: &[&str] = &[
     "direct_callable_count",
     "first_class_callable_count",
     "boundary_publication_count",
+    "omitted_position_count",
+    "resume_payload_position_count",
+    "return_payload_position_count",
+    "call_result_payload_position_count",
     "codegen_seam_fact_count",
     "codegen_function_entry_seam_fact_count",
     "codegen_block_param_seam_fact_count",
     "codegen_return_delivery_seam_fact_count",
     "codegen_continuation_entry_seam_fact_count",
+    "codegen_return_continuation_seam_fact_count",
     "codegen_tail_call_seam_fact_count",
     "codegen_callable_boundary_seam_fact_count",
     "codegen_extern_boundary_seam_fact_count",
@@ -169,11 +174,16 @@ fn compiler2_transport_flow_telemetry_contract_names_the_output_signal() {
             "direct_callable_count",
             "first_class_callable_count",
             "boundary_publication_count",
+            "omitted_position_count",
+            "resume_payload_position_count",
+            "return_payload_position_count",
+            "call_result_payload_position_count",
             "codegen_seam_fact_count",
             "codegen_function_entry_seam_fact_count",
             "codegen_block_param_seam_fact_count",
             "codegen_return_delivery_seam_fact_count",
             "codegen_continuation_entry_seam_fact_count",
+            "codegen_return_continuation_seam_fact_count",
             "codegen_tail_call_seam_fact_count",
             "codegen_callable_boundary_seam_fact_count",
             "codegen_extern_boundary_seam_fact_count",
@@ -308,6 +318,41 @@ end
     }
 
     let plan = transport_plan(&world, root);
+    let resume_payload_positions = plan
+        .positions
+        .keys()
+        .filter(|position| matches!(position, TransportPosition::ResumePayload { .. }))
+        .count() as u64;
+    let return_payload_positions = plan
+        .positions
+        .keys()
+        .filter(|position| matches!(position, TransportPosition::ReturnPayload { .. }))
+        .count() as u64;
+    let omitted_positions = plan
+        .positions
+        .values()
+        .filter(|shape| matches!(shape_descr(&world, **shape), ShapeDescr::Nothing))
+        .count() as u64;
+    assert_eq!(
+        measurement_u64(&event, "resume_payload_position_count"),
+        resume_payload_positions,
+        "telemetry should count ResumePayload positions from the committed TransportPlan"
+    );
+    assert_eq!(
+        measurement_u64(&event, "return_payload_position_count"),
+        return_payload_positions,
+        "telemetry should count ReturnPayload positions from the committed TransportPlan"
+    );
+    assert_eq!(
+        measurement_u64(&event, "call_result_payload_position_count"),
+        resume_payload_positions + return_payload_positions,
+        "telemetry should count all named call result payload positions"
+    );
+    assert_eq!(
+        measurement_u64(&event, "omitted_position_count"),
+        omitted_positions,
+        "telemetry should count root positions settled to Shape::Nothing"
+    );
     assert_plan_executable_references_are_root_scoped(&plan);
     let pair = executable_for(&world, &plan, "pair", 1);
     let main = executable_for(&world, &plan, "main", 0);
@@ -3218,6 +3263,13 @@ fn assert_no_trash_authority(facts: Vec<&str>) {
             "the pure transport contract must not depend on old layout or repr authority: {fact}"
         );
     }
+}
+
+fn measurement_u64(event: &crate::telemetry::capture::OwnedEvent, key: &str) -> u64 {
+    let Some(Value::U64(value)) = event.measurements.get(key) else {
+        panic!("expected u64 measurement {key} in {:?}", event.measurements)
+    };
+    *value
 }
 
 fn all_contract_strings() -> Vec<&'static str> {

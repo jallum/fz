@@ -850,6 +850,22 @@ impl<'a> World<'a> {
             .values()
             .filter(|facts| !facts.boundary_ids.is_empty())
             .count() as u64;
+        let omitted_position_count = plan
+            .positions
+            .values()
+            .filter(|shape| matches!(interners.shape(**shape), super::transport::ShapeDescr::Nothing))
+            .count() as u64;
+        let resume_payload_position_count = plan
+            .positions
+            .keys()
+            .filter(|position| matches!(position, super::transport::TransportPosition::ResumePayload { .. }))
+            .count() as u64;
+        let return_payload_position_count = plan
+            .positions
+            .keys()
+            .filter(|position| matches!(position, super::transport::TransportPosition::ReturnPayload { .. }))
+            .count() as u64;
+        let call_result_payload_position_count = resume_payload_position_count + return_payload_position_count;
         let codegen_seam_facts = plan
             .codegen_seam_facts
             .iter()
@@ -917,6 +933,10 @@ impl<'a> World<'a> {
                 direct_callable_count: direct_callable_count,
                 first_class_callable_count: first_class_callable_count,
                 boundary_publication_count: plan.boundaries.len() as u64,
+                omitted_position_count: omitted_position_count,
+                resume_payload_position_count: resume_payload_position_count,
+                return_payload_position_count: return_payload_position_count,
+                call_result_payload_position_count: call_result_payload_position_count,
                 codegen_seam_fact_count: plan.codegen_seam_facts.len() as u64,
                 codegen_function_entry_seam_fact_count: codegen_function_entry_seam_fact_count,
                 codegen_block_param_seam_fact_count: codegen_block_param_seam_fact_count,

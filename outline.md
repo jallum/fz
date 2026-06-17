@@ -87,7 +87,7 @@ SemanticClosed(root) + settled RuntimeDemand
 The plan answers "what runtime structure moves at this seam?" exactly once.
 Backends answer "how do I emit this seam?" by reading facts from the plan.
 
-Implementation status after `fz-hwn.20.8.9`: `src/compiler2/transport.rs`
+Current implementation status after `fz-hwn.19.10`: `src/compiler2/transport.rs`
 defines the root-independent ids, descriptors, transport symbols,
 `TransportPosition`, `TransportInterners`, and `TransportStore`. `World` owns one
 `TransportStore`. `DeriveTransportPlan(root)` now populates root-scoped
@@ -118,8 +118,12 @@ root-scoped plan is missing. Materialization now waits on `TransportPlan(root)`
 and carries plan-backed positions, callable ids, boundary ids, and seam facts
 through the artifact/backend handoff. Native handoff metadata reads seam facts
 for executable returns, callable boundary returns, delivered continuation
-payloads, and entry captures; it does not recover those ABI reprs from lane
-types. Codegen seam facts are now plan-owned facts for the worked scalar,
+payloads, `ReturnPayload` continuations, and entry captures; it does not recover
+those ABI reprs from lane types. Call result payloads are named
+`TransportPosition`s: `ResumePayload` for `Deliver(entry)` and `ReturnPayload`
+for `Return`. Artifact/backend records carry resolved `CallReturnFlow`, and
+native lowering consumes that fact directly. Codegen seam facts are now
+plan-owned facts for the worked scalar,
 tuple-leaf, and boxed-lane seams. Function entry, return delivery, tail call,
 and extern boundary use raw lane reprs when settled type evidence proves
 `RawInt`, `RawF64`, or `RawAtom`; otherwise they publish `ValueRef`. Block
@@ -141,11 +145,10 @@ contracts only. The transport calculator reads `RuntimeDemand` plus semantic
 `callable_flows`, not the old callable-materialization inventory, and no old
 `Trash*` layout is translated into descriptors.
 
-## Required First Move
+## Construction History
 
-Before any transport-spine or parallel-flow implementation work, rename the
-doomed vocabulary with an explicit trash marker. The prefix should make the code
-uncomfortable to wire back in:
+The first cutover guardrail renamed doomed vocabulary with an explicit trash
+marker:
 
 ```
 RuntimeValueLayout -> TrashRuntimeValueLayout
@@ -159,12 +162,10 @@ RealizedValue -> TrashRealizedValue
 BackendValue -> TrashBackendValue
 ```
 
-Do the same for recursive value mirrors and shape-translation helpers where they
-are transport authority. This is a guardrail commit, not the redesign: pure
-rename, no behavior work, no aliases, no bridge layer, and no `ShapeId` /
-`BoundaryId` / `TransportPlan` implementation. If a later change tries to add a
-dependency on `Trash*`, the name itself should force the "why am I wiring garbage
-back in?" moment.
+The rename was a guardrail commit, not the redesign: pure rename, no behavior
+work, no aliases, no translation layer, and no `ShapeId` / `BoundaryId` /
+`TransportPlan` implementation. The live compiler2 transport path no longer
+depends on `Trash*` vocabulary for shape or representation authority.
 
 ## Construction Strategy
 
@@ -172,16 +173,14 @@ Use the **Output Contract Loop** with parallel construction and independent
 authority.
 
 1. Work the output contract on paper and pin it with telemetry/tests.
-2. Build the clean `TransportPlan` beside the old path from the same semantic
-   evidence and settled demand.
-3. Let the old path continue to carry current behavior while the new model is
-   proven.
-4. Never translate old layout into new shape, or new shape back into old layout.
-   The old path is a behavior oracle and removal inventory only.
-5. Once the independent plan is proven, cut consumers over seam by seam and
+2. Build the clean `TransportPlan` from the same semantic evidence and settled
+   demand.
+3. Never translate old layout into new shape, or new shape back into old layout.
+   The old path was a behavior oracle and removal inventory only.
+4. Once the independent plan was proven, cut consumers over seam by seam and
    delete the trash-prefixed old authority at each seam.
 
-This is not a strangler adapter. The new fact store is independently derived
+This is not a strangler migration. The new fact store is independently derived
 from `SemanticClosed(root)`, `RuntimeDemand`, type evidence, lowered flow, and
 callsite/callable evidence. The cutover consumes that store; it does not ask the
 old layout code what the new facts mean.
@@ -317,9 +316,8 @@ Cutover classification:
   generated `ReturnLanes` continuation over the settled `ReturnPayload`.
 - `src/ir_codegen/*` still has non-compiler2 legacy `ArgRepr::from_ty` and
   `for_block_param_ty` paths. They are not inputs to the new transport plan.
-  They are either outside the compiler2 cutover or must be named by a separate
-  legacy-codegen ticket before `fz-hwn.19.6` deletes the remaining old
-  vocabulary.
+  These are non-compiler2 legacy-codegen paths and require a separate
+  legacy-codegen ticket if removed.
 
 ### `fz-hwn.19.2` Transport/Artifact Seam Epic
 
@@ -378,7 +376,7 @@ Child ticket order:
    `compiler2_run_root_jit_executes_resources_without_legacy_prepare`.
    Each ticket starts by turning on its test, then fixes only the proven
    transport/artifact seam violation. No downstream recomputation, fallback
-   layout derivation, compatibility adapter, or copied interner table is allowed.
+   layout derivation, compatibility translation, or copied interner table is allowed.
    The same WIP left five red-test groups that must also close before
    `fz-hwn.19.3`: `fz-hwn.19.2.4.7` keeps unused callable constructors out of
    the native frontier; `fz-hwn.19.2.4.8` separates first-class callable
@@ -688,11 +686,16 @@ callable_shape_count
 direct_callable_count
 first_class_callable_count
 boundary_publication_count
+omitted_position_count
+resume_payload_position_count
+return_payload_position_count
+call_result_payload_position_count
 codegen_seam_fact_count
 codegen_function_entry_seam_fact_count
 codegen_block_param_seam_fact_count
 codegen_return_delivery_seam_fact_count
 codegen_continuation_entry_seam_fact_count
+codegen_return_continuation_seam_fact_count
 codegen_tail_call_seam_fact_count
 codegen_callable_boundary_seam_fact_count
 codegen_extern_boundary_seam_fact_count
@@ -717,10 +720,13 @@ materialization. Descriptor metadata must not contain root-relative evidence
 such as `RootId`, `ValueId`, callsites, or resume points. Root-scoped evidence
 belongs in `TransportPlan` metadata: membership, positions, demand/use
 obligations, boundary publication, and seam facts. The event must not serialize
-`Trash*` layout facts or `ArgRepr`-from-type decisions as authority. After
-`fz-hwn.20.6`, `codegen_seam_fact_count` and per-kind seam counts report the
-plan-owned seam facts for raw and boxed leaves; `seam_facts` is non-empty only
-when a worked source-level example requires the fact.
+`Trash*` layout facts or `ArgRepr`-from-type decisions as authority.
+`omitted_position_count` counts root positions settled to `Shape::Nothing`.
+`resume_payload_position_count`, `return_payload_position_count`, and
+`call_result_payload_position_count` make call result payload positions visible
+without reading dumps. `codegen_seam_fact_count` and per-kind seam counts report
+the plan-owned seam facts for raw and boxed leaves; `seam_facts` is non-empty
+only when a worked source-level example requires the fact.
 
 The minimality check is mechanical:
 

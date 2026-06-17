@@ -18,13 +18,13 @@ body { max-width: 1080px; }
 <body>
 
 <h1>Compiler2 Runtime Transport Spine</h1>
-<p class="subtitle">The current plan for replacing runtime-layout translation with one pure transport information-flow authority.</p>
+<p class="subtitle">The compiler2 runtime transport authority: one root-scoped plan, shared descriptors, and downstream fact-table reads.</p>
 
 <div class="box yellow">
 <strong>Status:</strong> this document supersedes the older runtime-value-demand proposal that ended at
 <code>RuntimeParamLayout</code>, <code>RuntimeInputLayout</code>, and <code>RuntimeValueLayout</code>.
 Runtime demand is still the right pre-spine solver. Recursive runtime layout is not the destination.
-The implementation strategy is now explicit: first trash-prefix the doomed vocabulary, then build the clean flow graph independently beside the old path, then cut consumers over and delete the old path.
+The cutover now centers on the final architecture: shared descriptor interners plus root-scoped <code>TransportPlan</code> facts, named call result payload positions, and codegen seam facts.
 The short canonical statement is <a href="outline.md">outline.md</a>.
 </div>
 
@@ -55,7 +55,7 @@ The short canonical statement is <a href="outline.md">outline.md</a>.
   </div>
   <div class="card">
     <h3>Strategy</h3>
-    <p>Use the Output Contract Loop. Build the clean flow graph alongside the old path from semantic evidence only; use the old path as behavior oracle and removal inventory, never as an adapter. Then cut consumers over and delete the trash-prefixed authority.</p>
+    <p>Use the Output Contract Loop. Build the clean flow graph from semantic evidence only; the old path was a behavior oracle and removal inventory, never an input to the plan. Then cut consumers over and delete the trash-prefixed authority.</p>
   </div>
 </div>
 
@@ -124,7 +124,7 @@ BackendValue -> TrashBackendValue
 <p>Apply the same rule to shape-translation helpers where they are transport authority.</p>
 
 <div class="box red">
-<strong>Scope of the first ticket:</strong> pure rename plus required docs/test-name updates. No behavior work, no aliases, no compatibility layer, no bridge from the old names to the new model, and no <code>ShapeId</code> / <code>BoundaryId</code> / <code>TransportPlan</code> implementation. If something cannot be renamed cleanly, create a follow-up ticket before closing the guardrail ticket.
+<strong>Scope of the first ticket:</strong> pure rename plus required docs/test-name updates. No behavior work, no aliases, no compatibility layer, no translation from the old names to the new model, and no <code>ShapeId</code> / <code>BoundaryId</code> / <code>TransportPlan</code> implementation. If something cannot be renamed cleanly, create a follow-up ticket before closing the guardrail ticket.
 </div>
 
 <h2 id="current">4. Current disease</h2>
@@ -308,16 +308,12 @@ SealSemanticClosure
   -> closed executable frontier
   -> settled RuntimeDemandClosure
 
-DeriveTransportFlow (fz-hwn.20)
+DeriveTransportFlow
   -> shared descriptor ids
   -> TransportPlan(root)
   -> telemetry proving positions, callables, boundaries, and seam facts
 
-Old materialization path
-  -> continues to carry current behavior while the independent plan is proven
-  -> must not feed TransportPlan
-
-Consumer cutover (fz-hwn.19)
+Consumer cutover
   -> MaterializedProgram / backend / native carry plan refs
   -> trash-prefixed recursive layout authority is deleted seam by seam
 
@@ -325,19 +321,19 @@ Native codegen after cutover
   -> emits lanes from published seam facts
 </pre>
 
-<h2 id="changes">8. Required changes</h2>
+<h2 id="changes">8. Construction history</h2>
 
-<h3>8.1 Trash-prefix the doomed vocabulary before any other work</h3>
+<h3>8.1 Trash-prefix the doomed vocabulary</h3>
 
-<p>This is <code>fz-hwn.19.7</code>. It blocks the parallel flow-graph epic and the still-open symptom tickets that touch this vocabulary.</p>
+<p><code>fz-hwn.19.7</code> marked the old layout vocabulary as removal inventory before the new transport spine was wired into consumers.</p>
 
-<h3>8.2 Build the independent flow graph beside the old path</h3>
+<h3>8.2 Build the independent flow graph</h3>
 
-<p>This is <code>fz-hwn.20</code>. Use the Output Contract Loop: pin the worked example, introduce shared interners and symbols, derive <code>TransportPlan(root)</code> from semantic evidence only, publish callable/boundary facts, publish seam-specific codegen facts, then prove the plan with telemetry/tests. The old path can keep behavior running, but it must not feed the new plan.</p>
+<p>The <code>fz-hwn.20</code> series built the independent flow graph: pinned the worked example, introduced shared interners and symbols, derived <code>TransportPlan(root)</code> from semantic evidence only, published callable/boundary facts, published seam-specific codegen facts, then proved the plan with telemetry/tests. The old path never fed the new plan.</p>
 
 <h3>8.3 Accept the handoff and cut consumers over</h3>
 
-<p>This starts <code>fz-hwn.19</code>. If a consumer reads the new plan, the matching old authority must disappear from that seam in the same commit or remain behind an explicit later cutover ticket. No compatibility bridge is committed.</p>
+<p>The <code>fz-hwn.19</code> series accepted the handoff. If a consumer reads the new plan, the matching old authority disappears from that seam in the same commit or remains behind an explicit later cutover ticket. No compatibility translation is committed.</p>
 
 <pre>
 Remove:
@@ -433,15 +429,15 @@ rg -n "\b(TrashRuntimeValueLayout|TrashRuntimeInputLayout|TrashRuntimeParamLayou
 
 <table class="data">
   <thead>
-    <tr><th>Live old path</th><th>Cutover fact</th></tr>
+    <tr><th>Cutover area</th><th>Current fact</th></tr>
   </thead>
   <tbody>
     <tr>
-      <td><code>src/compiler2/artifact.rs</code>, <code>src/compiler2/jobs/artifact.rs</code>, and <code>src/compiler2/world.rs</code> still carry <code>TrashRuntimeValueLayout</code>, <code>TrashRuntimeInputLayout</code>, <code>TrashRuntimeParamLayout</code>, <code>TrashRuntimeLane</code>, and <code>TrashReturnAbi</code>.</td>
+      <td><code>src/compiler2/artifact.rs</code>, <code>src/compiler2/jobs/artifact.rs</code>, <code>src/compiler2/jobs/backend.rs</code>, and <code>src/compiler2/world.rs</code> no longer carry <code>TrashRuntimeValueLayout</code>, <code>TrashRuntimeInputLayout</code>, <code>TrashRuntimeParamLayout</code>, <code>TrashRuntimeLane</code>, or <code>TrashReturnAbi</code> as live artifact authority.</td>
       <td><code>fz-hwn.19.2</code>: read <code>TransportPosition -&gt; ShapeId</code>, lane facts, executable membership, callable facts, boundary contracts, and seam facts from <code>TransportPlan</code>.</td>
     </tr>
     <tr>
-      <td><code>src/compiler2/jobs/artifact.rs</code> still has <code>LocalCallableId</code>, local-callable layout memoization, <code>local_callable_layout</code>, and <code>boundary_return_abi</code>.</td>
+      <td><code>src/compiler2/jobs/artifact.rs</code> no longer has <code>LocalCallableId</code>, local-callable layout memoization, <code>local_callable_layout</code>, or <code>boundary_return_abi</code> as live artifact authority.</td>
       <td><code>fz-hwn.19.2</code>: artifact-owned callable entries read <code>CallableId</code> facts and <code>BoundaryId</code> contracts; downstream tickets consume that inventory.</td>
     </tr>
     <tr>
@@ -454,7 +450,7 @@ rg -n "\b(TrashRuntimeValueLayout|TrashRuntimeInputLayout|TrashRuntimeParamLayou
     </tr>
     <tr>
       <td><code>src/ir_codegen/*</code> still has non-compiler2 legacy <code>ArgRepr::from_ty</code> and <code>for_block_param_ty</code> paths.</td>
-      <td>Not an input to the new transport plan. Either outside the compiler2 cutover or named by a separate legacy-codegen ticket before <code>fz-hwn.19.6</code>.</td>
+      <td>Not an input to the new transport plan. These are non-compiler2 legacy-codegen paths and require a separate legacy-codegen ticket if removed.</td>
     </tr>
   </tbody>
 </table>
@@ -519,11 +515,16 @@ measurements:
   direct_callable_count
   first_class_callable_count
   boundary_publication_count
+  omitted_position_count
+  resume_payload_position_count
+  return_payload_position_count
+  call_result_payload_position_count
   codegen_seam_fact_count
   codegen_function_entry_seam_fact_count
   codegen_block_param_seam_fact_count
   codegen_return_delivery_seam_fact_count
   codegen_continuation_entry_seam_fact_count
+  codegen_return_continuation_seam_fact_count
   codegen_tail_call_seam_fact_count
   codegen_callable_boundary_seam_fact_count
   codegen_extern_boundary_seam_fact_count
@@ -542,7 +543,7 @@ metadata:
   seam_facts
 </pre>
 
-<p>The event is emitted by clean transport-flow derivation, not by old materialization. Descriptor metadata must not contain root-relative evidence such as <code>RootId</code>, <code>ValueId</code>, callsites, or resume points. Root-scoped evidence belongs in <code>TransportPlan</code> metadata: membership, positions, demand/use obligations, boundary publication, and seam facts. The event must not serialize <code>Trash*</code> layout facts or <code>ArgRepr</code>-from-type decisions as authority. After <code>fz-hwn.20.6</code>, <code>codegen_seam_fact_count</code> and per-kind seam counts report the plan-owned seam facts for raw and boxed leaves; <code>seam_facts</code> is non-empty only when a worked source-level example requires the fact.</p>
+<p>The event is emitted by clean transport-flow derivation, not by old materialization. Descriptor metadata must not contain root-relative evidence such as <code>RootId</code>, <code>ValueId</code>, callsites, or resume points. Root-scoped evidence belongs in <code>TransportPlan</code> metadata: membership, positions, demand/use obligations, boundary publication, and seam facts. The event must not serialize <code>Trash*</code> layout facts or <code>ArgRepr</code>-from-type decisions as authority. <code>omitted_position_count</code> counts root positions settled to <code>Shape::Nothing</code>. <code>resume_payload_position_count</code>, <code>return_payload_position_count</code>, and <code>call_result_payload_position_count</code> make call result payload positions visible without reading dumps. <code>codegen_seam_fact_count</code> and per-kind seam counts report the plan-owned seam facts for raw and boxed leaves; <code>seam_facts</code> is non-empty only when a worked source-level example requires the fact.</p>
 
 <h2 id="tickets">11. Ticket DAG</h2>
 
@@ -552,7 +553,7 @@ metadata:
   </thead>
   <tbody>
     <tr><td class="term"><code>fz-hwn.19.7</code></td><td>Trash-prefix doomed transport vocabulary before any other work.</td></tr>
-    <tr><td class="term"><code>fz-hwn.20</code></td><td>Build and prove the pure transport information-flow graph beside the old path.</td></tr>
+    <tr><td class="term"><code>fz-hwn.20</code></td><td>Build and prove the pure transport information-flow graph from semantic evidence.</td></tr>
     <tr><td class="term"><code>fz-hwn.20.1</code></td><td>Pin the output contract and worked-example telemetry/test signal.</td></tr>
     <tr><td class="term"><code>fz-hwn.20.2</code></td><td>Introduce shared descriptor interners and symbol types.</td></tr>
     <tr><td class="term"><code>fz-hwn.20.3</code></td><td>Derive and publish root <code>TransportPlan</code> facts from semantic evidence only, including real telemetry/tests.</td></tr>
@@ -572,14 +573,14 @@ metadata:
     <tr><td class="term"><code>fz-hwn.19.2.2</code></td><td>Replace <code>MaterializedProgram</code> recursive transport trees with plan references/facts.</td></tr>
     <tr><td class="term"><code>fz-hwn.19.2.3</code></td><td>Derive ABI-ready and callable-entry inventory from seam facts, <code>CallableId</code>, and <code>BoundaryId</code>.</td></tr>
     <tr><td class="term"><code>fz-hwn.19.2.4</code></td><td>Carry the transport-backed handoff through emission/backend records without <code>TrashRuntime*</code> or <code>TrashReturnAbi</code>.</td></tr>
-    <tr><td class="term"><code>fz-hwn.19.2.4.1</code></td><td>Re-enable <code>compiler2_interp_runs_spawned_children_from_backend_runtime_intrinsics</code> by fixing the proven transport/artifact seam violation; no downstream recomputation or adapter.</td></tr>
-    <tr><td class="term"><code>fz-hwn.19.2.4.2</code></td><td>Re-enable <code>compiler2_interp_runs_spawn_opt_children_from_backend_runtime_intrinsics</code> by fixing the proven transport/artifact seam violation; no downstream recomputation or adapter.</td></tr>
-    <tr><td class="term"><code>fz-hwn.19.2.4.3</code></td><td>Re-enable <code>compiler2_native_multi_relay_delivers_resume_values_through_continuation_abi</code> by fixing the proven transport/artifact seam violation; no downstream recomputation or adapter.</td></tr>
-    <tr><td class="term"><code>fz-hwn.19.2.4.4</code></td><td>Re-enable <code>compiler2_interp_runs_resource_dtors_from_backend_runtime_intrinsics</code> by fixing the proven transport/artifact seam violation; no downstream recomputation or adapter.</td></tr>
-    <tr><td class="term"><code>fz-hwn.19.2.4.5</code></td><td>Re-enable <code>compiler2_native_program_resource_fixture_shapes_callable_boundaries_explicitly</code> by fixing the proven transport/artifact seam violation; no downstream recomputation or adapter.</td></tr>
-    <tr><td class="term"><code>fz-hwn.19.2.4.6</code></td><td>Re-enable <code>compiler2_run_root_jit_executes_resources_without_legacy_prepare</code> by fixing the proven transport/artifact seam violation; no downstream recomputation or adapter.</td></tr>
+    <tr><td class="term"><code>fz-hwn.19.2.4.1</code></td><td>Re-enable <code>compiler2_interp_runs_spawned_children_from_backend_runtime_intrinsics</code> by fixing the proven transport/artifact seam violation; no downstream recomputation.</td></tr>
+    <tr><td class="term"><code>fz-hwn.19.2.4.2</code></td><td>Re-enable <code>compiler2_interp_runs_spawn_opt_children_from_backend_runtime_intrinsics</code> by fixing the proven transport/artifact seam violation; no downstream recomputation.</td></tr>
+    <tr><td class="term"><code>fz-hwn.19.2.4.3</code></td><td>Re-enable <code>compiler2_native_multi_relay_delivers_resume_values_through_continuation_abi</code> by fixing the proven transport/artifact seam violation; no downstream recomputation.</td></tr>
+    <tr><td class="term"><code>fz-hwn.19.2.4.4</code></td><td>Re-enable <code>compiler2_interp_runs_resource_dtors_from_backend_runtime_intrinsics</code> by fixing the proven transport/artifact seam violation; no downstream recomputation.</td></tr>
+    <tr><td class="term"><code>fz-hwn.19.2.4.5</code></td><td>Re-enable <code>compiler2_native_program_resource_fixture_shapes_callable_boundaries_explicitly</code> by fixing the proven transport/artifact seam violation; no downstream recomputation.</td></tr>
+    <tr><td class="term"><code>fz-hwn.19.2.4.6</code></td><td>Re-enable <code>compiler2_run_root_jit_executes_resources_without_legacy_prepare</code> by fixing the proven transport/artifact seam violation; no downstream recomputation.</td></tr>
     <tr><td class="term"><code>fz-hwn.19.2.4.7</code></td><td>Keep unused callable constructors out of the native frontier: omitted callable inputs publish no boundary and do not lower unused callable bodies.</td></tr>
-    <tr><td class="term"><code>fz-hwn.19.2.4.8</code></td><td>Separate first-class callable publication from direct surfaces so runtime demand, transport boundaries, and ABI-ready entries agree without de-dup adapters.</td></tr>
+    <tr><td class="term"><code>fz-hwn.19.2.4.8</code></td><td>Separate first-class callable publication from direct surfaces so runtime demand, transport boundaries, and ABI-ready entries agree without de-duplication.</td></tr>
     <tr><td class="term"><code>fz-hwn.19.2.4.9</code></td><td>Close suspend continuation callable frontiers before transport consumes the returned continuation shape.</td></tr>
     <tr><td class="term"><code>fz-hwn.19.2.4.10</code></td><td>Keep provider-boundary imports body-free: interface-only provider calls must not read lowered provider bodies.</td></tr>
     <tr><td class="term"><code>fz-hwn.19.2.4.11</code></td><td>Preserve direct reducer callable integer facts for Enum.reduce operator refs and captured closure folds.</td></tr>

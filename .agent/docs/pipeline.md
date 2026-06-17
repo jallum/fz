@@ -57,8 +57,8 @@ MaterializedProgram(root)
 
 Those rungs are derived mechanically from the closed artifact below them. They
 do not reopen semantic discovery. `NativeProgram(root)` is intentionally a
-separate lowering step above `BackendProgram(root)`, not an adapter-side query
-back into semantic or planner state.
+separate lowering step above `BackendProgram(root)`, not a side query back into
+semantic or planner state.
 
 `RootEntry.kind` decides where a root is allowed to go:
 
@@ -256,9 +256,10 @@ Transport-spine cutover note: `fz-hwn.19.2` changes the artifact seam from
 `SemanticClosed(root)` plus `TransportPlan(root)`." Artifact remains
 responsible for closed program packaging and stable downstream inventory, but
 transport owns `TransportPosition -> ShapeId`, lane facts, `CallableId` facts,
-`BoundaryId` contracts, and `CodegenSeamFact` rows. Live artifact code must not
-walk `TrashRuntimeValueLayout`, `RuntimeDemand`, local types, or lowered bodies
-to derive another transport shape.
+`BoundaryId` contracts, call result payload positions (`ResumePayload` for
+`Deliver(entry)`, `ReturnPayload` for `Return`), and `CodegenSeamFact` rows.
+Live artifact code must not walk `TrashRuntimeValueLayout`, `RuntimeDemand`,
+local types, or lowered bodies to derive another transport shape.
 
 The next two rungs narrow the contract:
 
@@ -397,12 +398,13 @@ authority for compiler2-native codegen after `NativeProgram(root)`. If the
 compiler2 backend still reads them, that is backend debt to remove, not part of
 the published handoff.
 
-The same rule applies to native return delivery. `NativeBody.return_abi` is the
-published result contract for a native body; codegen may derive boundary
-adapters from that authority when a producer and consumer disagree on a single
-value lane, and must pass tuple-field delivery through structurally when the
-contracts already match. It must not rediscover or improvise the contract at
-individual tailcall or callable-entry sites.
+The same rule applies to native return delivery. `NativeBody.return_reprs` is
+the published result contract for a native body. Native lowering consumes
+`CallReturnFlow`: `Tail` emits a native tail call, while `Continue` emits an
+ordinary call to a generated `ReturnLanes` continuation over the settled
+`ReturnPayload`. Codegen receives that explicit native term; it must not
+rediscover or improvise the contract at individual tailcall or callable-entry
+sites.
 
 The same two-layer split now applies on both sides of the migration seam:
 legacy lowering may still project legacy `Ty` handles into
