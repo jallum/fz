@@ -11,9 +11,15 @@
   "id": "fz-s00",
   "labels": [],
   "parent": "fz-rh2.28",
+  "comments": [
+    {
+      "text": "Adopted as the phase-vs-origin step of epic fz-rh2.28 (replaces the deleted fz-rh2.28.2). Reconciliation with the rest of the epic: (1) fz-rh2.28.1 names the bootstrap boundary first, so this ticket can route bootstrap-direct vs user-bounce cleanly; the bootstrap is the lone code whose def-heads cannot be MacroCalls (the macros are defined in it), so its def-heads reach the define tier DIRECTLY via the reserved_source_definition recognizer plus define-tier extraction, with no macro bounce. (2) fz-rh2.28.3 (carry the definition env) attaches env at the same define-tier seam where this ticket relocates structural extraction; user defs carry __CALLER__ via Fz.Compiler.define, bootstrap defs project env at the define tier. The two tickets touch one seam; do this one first (chain: .1 -\u003e fz-s00 -\u003e .3).",
+      "timestamp": "2026-06-17T17:55:43Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "fz/Elixir alignment: read source once; def-head structure emerges from the define pipeline, not a mode-gated re-parse",
   "type": "task",
-  "updated_at": "2026-06-17T17:55:35Z"
+  "updated_at": "2026-06-17T17:55:43Z"
 }
