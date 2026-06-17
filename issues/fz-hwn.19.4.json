@@ -6,14 +6,15 @@
   "blocks": [
     "fz-hwn.19.5"
   ],
+  "closed_at": "2026-06-17T11:32:28Z",
   "created": "2026-06-15T19:27:40Z",
   "description": "Goal\nRemove realized recursive value trees from backend/interpreter/native lowering. Runtime-carried values are ShapeId or TransportPosition references plus lane spans/bundles, interpreted through TransportPlan facts.\n\nRequired changes\nBackendValue and native RealizedValue stop carrying recursive TrashRuntimeValueLayout-like structure. Decode/encode routines take ShapeId or TransportPosition and read lane counts from TransportPlan. Tuple fields are views over child ShapeIds. DirectCallable values carry CallableId plus lane bundle; invocation reads callee/capture facts from CallableId. First-class callable publication reads BoundaryId contracts and does not mutate internal callable shape.\n\nResume rule\nA resume payload position uses the producing return ShapeId from TransportPlan. Local ignored-use facts may drop lanes later, but they do not change the received shape. This preserves the fz-hwn.20 producer/resume shared-shape invariant.\n\nRemoval target\nRealizedValue.layout tree, RealizedValue::tuple/direct_callable constructors that build layout, BackendValue recursive shape mirrors, encode_runtime_value/decode_runtime_value functions that match over old layout variants, tuple_fields_for_layout, direct callable reconstruction from nested captures, lane-count derivation by walking a local tree, and resume-shape derivation from local use demand.\n\nChecks\nBackend interpreter and native JIT agree on direct callable calls, tuple-field returns, resume delivery, reusable-cons flows, escaped callable boundaries, and ignored values. rg confirms no recursive runtime-value mirror remains in backend/native/interp.",
   "id": "fz-hwn.19.4",
   "labels": [],
   "parent": "fz-hwn.19",
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Transport cutover: collapse runtime values to shape refs plus lane bundles",
   "type": "task",
-  "updated_at": "2026-06-17T11:15:28Z"
+  "updated_at": "2026-06-17T11:32:28Z"
 }
