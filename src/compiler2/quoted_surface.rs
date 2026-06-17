@@ -31,12 +31,6 @@ pub struct ScopeSurface {
     pub forms: Vec<ScopeForm>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ScopeSurfaceMode {
-    Source,
-    CompilerFragment,
-}
-
 pub(crate) fn is_function_definition_head(head: &str) -> bool {
     matches!(head, "fn" | "fnp" | "defmacro")
 }
@@ -160,25 +154,57 @@ struct PendingFunctionGroup {
 type ImportFilterList = Vec<(String, usize)>;
 type ImportKeywordArgs = Vec<(String, ImportFilterList)>;
 
+/// Reads user surface: there is exactly one source read, and a def-head
+/// (`fn`/`fnp`/`defmacro`/`defmodule`/...) is just a macro call to be expanded
+/// later. Structure is never re-parsed from source here; it emerges from the
+/// expand -> `Fz.Compiler.define` -> define pipeline.
 pub fn read_scope_surface(
     source: &QuotedSourceRoot,
     ctx: &SurfaceSourceContext<'_>,
 ) -> Result<ScopeSurface, QuotedSourceError> {
-    read_scope_surface_with_mode(source, ctx, ScopeSurfaceMode::Source)
+    read_surface(source, ctx)
 }
 
+/// Reads canonical content — the bootstrap source and any post-expansion node
+/// (a `Fz.Compiler.define` payload, item-macro output, protocol/impl bodies).
+/// Identical to the user read, then every def-head the user read left as a
+/// `MacroCall` is extracted into its typed [`ScopeForm`] via
+/// [`build_definition_form`]: in canonical content a def-head is a definition to
+/// extract, not a macro to expand.
 pub fn read_compiler_fragment_surface(
     source: &QuotedSourceRoot,
     ctx: &SurfaceSourceContext<'_>,
 ) -> Result<ScopeSurface, QuotedSourceError> {
-    read_scope_surface_with_mode(source, ctx, ScopeSurfaceMode::CompilerFragment)
+    canonicalize_definitions(read_surface(source, ctx)?, ctx)
 }
 
-fn read_scope_surface_with_mode(
-    source: &QuotedSourceRoot,
+/// Extracts the typed definitions out of an already-read surface. A def-head
+/// that the user reader produced as a `MacroCall` becomes its typed form; every
+/// other form passes through unchanged.
+fn canonicalize_definitions(
+    surface: ScopeSurface,
     ctx: &SurfaceSourceContext<'_>,
-    mode: ScopeSurfaceMode,
 ) -> Result<ScopeSurface, QuotedSourceError> {
+    let ScopeSurface { attrs, forms } = surface;
+    let mut canonical = Vec::with_capacity(forms.len());
+    for form in forms {
+        match form {
+            ScopeForm::MacroCall(call) => match surface_head_name(&call.source).ok() {
+                Some(head) if is_scope_definition_head(&head) => {
+                    canonical.push(build_definition_form(call.source, ctx, &head)?);
+                }
+                _ => canonical.push(ScopeForm::MacroCall(call)),
+            },
+            other => canonical.push(other),
+        }
+    }
+    Ok(ScopeSurface {
+        attrs,
+        forms: canonical,
+    })
+}
+
+fn read_surface(source: &QuotedSourceRoot, ctx: &SurfaceSourceContext<'_>) -> Result<ScopeSurface, QuotedSourceError> {
     let quoted_items = source.cursor().list_items()?;
     let mut attrs = Vec::new();
     let mut forms = Vec::new();
@@ -193,9 +219,9 @@ fn read_scope_surface_with_mode(
         let head_name = match node.head.atom_name() {
             Ok(head_name) => head_name,
             Err(_) => {
-                flush_function_groups(source, ctx, mode, &mut forms, &mut group_order, &mut groups)?;
+                flush_function_groups(source, ctx, &mut forms, &mut group_order, &mut groups)?;
                 reject_dangling_function_attrs(source, &pending_function_attrs)?;
-                forms.push(build_form(source.subroot(quoted_item.root()), ctx, mode)?);
+                forms.push(build_form(source.subroot(quoted_item.root()), ctx)?);
                 continue;
             }
         };
@@ -229,21 +255,21 @@ fn read_scope_surface_with_mode(
                 entry.item_roots.push(quoted_item.root());
             }
             "extern" => {
-                flush_function_groups(source, ctx, mode, &mut forms, &mut group_order, &mut groups)?;
+                flush_function_groups(source, ctx, &mut forms, &mut group_order, &mut groups)?;
                 let mut item_roots = std::mem::take(&mut pending_function_attrs);
                 item_roots.push(quoted_item.root());
                 let grouped = source.interned_list_subroot(&item_roots)?;
-                forms.push(build_form(grouped, ctx, mode)?);
+                forms.push(build_form(grouped, ctx)?);
             }
             _ => {
-                flush_function_groups(source, ctx, mode, &mut forms, &mut group_order, &mut groups)?;
+                flush_function_groups(source, ctx, &mut forms, &mut group_order, &mut groups)?;
                 reject_dangling_function_attrs(source, &pending_function_attrs)?;
-                forms.push(build_form(source.subroot(quoted_item.root()), ctx, mode)?);
+                forms.push(build_form(source.subroot(quoted_item.root()), ctx)?);
             }
         }
     }
 
-    flush_function_groups(source, ctx, mode, &mut forms, &mut group_order, &mut groups)?;
+    flush_function_groups(source, ctx, &mut forms, &mut group_order, &mut groups)?;
     reject_dangling_function_attrs(source, &pending_function_attrs)?;
     Ok(ScopeSurface { attrs, forms })
 }
@@ -259,30 +285,22 @@ pub fn read_protocol_body_surface(
     form: &ProtocolForm,
     ctx: &SurfaceSourceContext<'_>,
 ) -> Result<ScopeSurface, QuotedSourceError> {
-    read_do_body_surface_with_mode(&form.source, ctx, ScopeSurfaceMode::CompilerFragment)
+    canonicalize_definitions(read_do_body_surface(&form.source, ctx)?, ctx)
 }
 
 pub fn read_protocol_impl_body_surface(
     form: &ProtocolImplForm,
     ctx: &SurfaceSourceContext<'_>,
 ) -> Result<ScopeSurface, QuotedSourceError> {
-    read_do_body_surface_with_mode(&form.source, ctx, ScopeSurfaceMode::CompilerFragment)
+    canonicalize_definitions(read_do_body_surface(&form.source, ctx)?, ctx)
 }
 
 fn read_do_body_surface(
     source: &QuotedSourceRoot,
     ctx: &SurfaceSourceContext<'_>,
 ) -> Result<ScopeSurface, QuotedSourceError> {
-    read_do_body_surface_with_mode(source, ctx, ScopeSurfaceMode::Source)
-}
-
-fn read_do_body_surface_with_mode(
-    source: &QuotedSourceRoot,
-    ctx: &SurfaceSourceContext<'_>,
-    mode: ScopeSurfaceMode,
-) -> Result<ScopeSurface, QuotedSourceError> {
     let body = extract_do_body_list_root(source)?;
-    read_scope_surface_with_mode(&body, ctx, mode)
+    read_surface(&body, ctx)
 }
 
 /// A pending `@doc`/`@spec` attaches to the NEXT function group (or extern).
@@ -314,7 +332,6 @@ fn reject_dangling_function_attrs(source: &QuotedSourceRoot, pending: &[AnyValue
 fn flush_function_groups(
     source: &QuotedSourceRoot,
     ctx: &SurfaceSourceContext<'_>,
-    mode: ScopeSurfaceMode,
     forms: &mut Vec<ScopeForm>,
     order: &mut Vec<FunctionGroupKey>,
     groups: &mut HashMap<FunctionGroupKey, PendingFunctionGroup>,
@@ -322,7 +339,7 @@ fn flush_function_groups(
     for key in order.drain(..) {
         if let Some(group) = groups.remove(&key) {
             let grouped = source.interned_list_subroot(&group.item_roots)?;
-            forms.push(build_form(grouped, ctx, mode)?);
+            forms.push(build_form(grouped, ctx)?);
         }
     }
     Ok(())
@@ -348,11 +365,7 @@ pub(crate) fn build_definition_form(
     })
 }
 
-fn build_form(
-    source: QuotedSourceRoot,
-    ctx: &SurfaceSourceContext<'_>,
-    mode: ScopeSurfaceMode,
-) -> Result<ScopeForm, QuotedSourceError> {
+fn build_form(source: QuotedSourceRoot, ctx: &SurfaceSourceContext<'_>) -> Result<ScopeForm, QuotedSourceError> {
     if let Some(service) = parse_compiler_service_form(source.clone(), ctx)? {
         return Ok(ScopeForm::CompilerService(service));
     }
@@ -371,13 +384,10 @@ fn build_form(
         "alias" => Ok(ScopeForm::Alias(parse_alias_form(source, ctx)?)),
         "import" => Ok(ScopeForm::Import(parse_import_form(source, ctx)?)),
         "require" => Ok(ScopeForm::Require(parse_import_form(source, ctx)?)),
-        head if is_scope_definition_head(head) => Ok(match mode {
-            ScopeSurfaceMode::Source => ScopeForm::MacroCall(MacroCallForm {
-                span: surface_span(&source, ctx)?,
-                source,
-            }),
-            ScopeSurfaceMode::CompilerFragment => build_definition_form(source, ctx, head)?,
-        }),
+        head if is_scope_definition_head(head) => Ok(ScopeForm::MacroCall(MacroCallForm {
+            span: surface_span(&source, ctx)?,
+            source,
+        })),
         "extern" => Ok(ScopeForm::Function(parse_function_form(source, ctx)?)),
         "defstruct" => Ok(ScopeForm::Struct(parse_struct_form(source, ctx)?)),
         _ => Ok(ScopeForm::MacroCall(MacroCallForm {
