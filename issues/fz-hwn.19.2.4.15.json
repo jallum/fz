@@ -2,14 +2,15 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-06-17T02:26:38Z",
   "created": "2026-06-17T01:36:28Z",
   "description": "After fz-hwn.19.2.4.9 (seal latent-activation seeding) and fz-hwn.19.2.4.12 (provider index), the semantic closure for a protocol-dispatched escaped continuation that captures a callable (e.g. defimpl Susp.run returning fn () -\u003e f.(1) end) settles. But driving on through transport trips PR #81's guard at transport.rs generic_callable_shape: 'generic callable transport requires upstream callable surfaces for opaque or escaped demand' — the captured f's call surface (it is invoked at f.(1)) is not proven upstream in the runtime-demand callable-flow facts for this shape.\n\nThe reduce-shaped case (fz-hwn.19.2.4.9, three tests) proves surfaces and passes; this simpler direct-protocol-dispatch shape does not. Repro: compiler2_protocol_dispatched_escaped_continuation_closes_captured_callable (currently scoped to semantic closure). Fix at the runtime-demand contract that proves the captured callable's direct-call surface for an escaped continuation reached through protocol dispatch; do not compensate in transport.",
   "id": "fz-hwn.19.2.4.15",
   "labels": [],
   "parent": "fz-hwn.19.2.4",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Protocol-dispatched escaped continuation: captured callable surface not proven at transport",
   "type": "bug",
-  "updated_at": "2026-06-17T02:16:59Z"
+  "updated_at": "2026-06-17T02:26:38Z"
 }
