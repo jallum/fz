@@ -216,6 +216,10 @@ pub(crate) struct NativeBody {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct NativeCallableBoundary {
     pub id: NativeCallableBoundaryId,
+    /// The transport `BoundaryId` this native boundary projects. Callable
+    /// materialization selects a boundary by the value's `CallableId` fact
+    /// (`CallableFacts.boundary_ids`), never by re-deriving from capture types.
+    pub boundary: BoundaryId,
     /// Synthetic callable identity used at `MakeFnRef` / `MakeClosure` sites.
     pub identity_fn: FnId,
     /// Direct executable-entry body the callable boundary ultimately reaches

@@ -7,8 +7,8 @@ use crate::compiler2::artifact::{
     NativeProgram,
 };
 use crate::compiler2::transport::{
-    ActivationSymbol, ExecutableSymbol, LaneDescr, LaneId, ShapeDescr, ShapeId, TransportClass, TransportPosition,
-    TransportStore,
+    ActivationSymbol, BoundaryDescr, BoundaryId, CallableDescr, ExecutableSymbol, LaneDescr, LaneId, ShapeDescr,
+    ShapeId, TransportClass, TransportPosition, TransportStore,
 };
 use crate::compiler2::types::Ty;
 use crate::fz_ir::{
@@ -60,6 +60,28 @@ impl TestTransportShapes {
         });
         let shape = self.transport.interners_mut().intern_shape(ShapeDescr::Lane(lane));
         (shape, lane)
+    }
+
+    /// Mint a `BoundaryId` for a hand-built native callable boundary fixture.
+    /// These contract tests exercise downstream consumption of the native
+    /// boundary inventory, not transport-plan selection, so the boundary's
+    /// published lanes are a minimal stand-in over the fixture's return shape.
+    fn boundary_id(&mut self, return_shape: ShapeId, return_lane: LaneId) -> BoundaryId {
+        let callable = self.transport.interners_mut().intern_callable(CallableDescr {
+            function: None,
+            capture_shapes: Box::default(),
+            capture_lanes: Box::default(),
+            contract_surfaces: Box::default(),
+        });
+        self.transport.interners_mut().intern_boundary(BoundaryDescr {
+            callable,
+            surface_arg_shapes: Box::default(),
+            published_value_lane: return_lane,
+            published_capture_lanes: Box::default(),
+            published_arg_lanes: Box::default(),
+            published_return_shape: return_shape,
+            published_return_lanes: Box::new([return_lane]),
+        })
     }
 }
 
@@ -140,6 +162,7 @@ fn compiler2_native_program_contract_keeps_codegen_facts_on_body_records() {
         }],
         callable_boundaries: vec![NativeCallableBoundary {
             id: NativeCallableBoundaryId(0),
+            boundary: shapes.boundary_id(return_shape, return_lane),
             identity_fn,
             target_fn: entry_fn,
             target: executable.clone(),
@@ -300,6 +323,7 @@ fn compiler2_native_program_contract_maps_old_native_inputs_to_local_facts() {
         ],
         callable_boundaries: vec![NativeCallableBoundary {
             id: NativeCallableBoundaryId(0),
+            boundary: shapes.boundary_id(return_shape, return_lane),
             identity_fn,
             target_fn: entry_fn,
             target: executable.clone(),

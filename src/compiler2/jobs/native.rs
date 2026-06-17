@@ -37,7 +37,7 @@ use super::super::identity::{FunctionId, RootId};
 use super::super::scheduler::FatalError;
 use super::super::semantic::{RuntimeDemand, ShapeDemand};
 use super::super::transport::{
-    CallableId, CodegenLaneRepr, CodegenSeam, LaneId, ShapeDescr, ShapeId, TransportPosition,
+    BoundaryId, CallableId, CodegenLaneRepr, CodegenSeam, LaneId, ShapeDescr, ShapeId, TransportPosition,
 };
 use super::super::types::Ty;
 use super::super::world::World;
@@ -224,6 +224,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                     .expect("callable identity should be predeclared");
                 NativeCallableBoundary {
                     id: NativeCallableBoundaryId(index as u32),
+                    boundary: entry.boundary,
                     identity_fn,
                     target_fn: executable_fns[entry.target],
                     target: executable.key.clone(),
@@ -2420,34 +2421,66 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
             .unwrap_or_else(|| panic!("callable identity for {function:?}/{capture_count}"))
     }
 
+    /// Select the callable boundary for a rematerialized callable value from the
+    /// value's `CallableId` fact, not from its capture types. The transport plan
+    /// names the published contracts for the callable (`CallableFacts.boundary_ids`);
+    /// the native boundary is the one projecting one of those ids for this target.
+    /// Capture-type subsumption is never consulted: the fact is the authority.
     fn settled_callable_boundary(
-        &mut self,
-        ctx: &NativeFnCtx,
+        &self,
+        callable: CallableId,
         function: FunctionId,
-        captures: &[Var],
-    ) -> Result<Option<NativeCallableBoundaryId>, FatalError> {
-        let capture_tys = captures
+        capture_count: usize,
+    ) -> Result<NativeCallableBoundaryId, FatalError> {
+        let boundary_ids: Vec<BoundaryId> = match self
+            .world
+            .transport()
+            .plans()
+            .get(self.root_id)
+            .and_then(|plan| plan.callables.get(&callable))
+        {
+            Some(facts) => facts.boundary_ids.to_vec(),
+            None => {
+                return Err(incomplete_native_program(
+                    self.world,
+                    self.root_id,
+                    format!(
+                        "native callable materialization for {function:?}/{capture_count} has no transport callable facts for {callable:?}",
+                    ),
+                ));
+            }
+        };
+        let matched = self
+            .callable_boundaries
             .iter()
-            .map(|capture| {
-                ctx.value_types.get(capture).copied().ok_or_else(|| {
-                    incomplete_native_program(
-                        self.world,
-                        self.root_id,
-                        format!(
-                            "native closure build referenced capture {:?} without a settled type",
-                            capture
-                        ),
-                    )
-                })
+            .filter(|boundary| {
+                boundary_ids.contains(&boundary.boundary)
+                    && boundary.target.activation.function == function
+                    && boundary.capture_count == capture_count
             })
-            .collect::<Result<Vec<_>, _>>()?;
-        select_settled_callable_boundary(
-            self.world.types_mut(),
-            &self.callable_boundaries,
-            function,
-            &capture_tys,
-        )
-        .map_err(|message| incomplete_native_program(self.world, self.root_id, message))
+            .map(NativeCallableBoundary::id)
+            .collect::<Vec<_>>();
+        match matched.as_slice() {
+            [boundary] => Ok(*boundary),
+            [] => Err(incomplete_native_program(
+                self.world,
+                self.root_id,
+                format!(
+                    "native callable materialization for {function:?}/{capture_count} found no published boundary among CallableId fact boundaries {boundary_ids:?}",
+                ),
+            )),
+            _ => Err(incomplete_native_program(
+                self.world,
+                self.root_id,
+                // A callable published at multiple surfaces names several
+                // boundary contracts; selecting which one a materialized value
+                // carries is surface disambiguation, owned by the escaped/
+                // static-singleton path in fz-hwn.19.5, and unreachable here.
+                format!(
+                    "native callable materialization for {function:?}/{capture_count} matched multiple published boundaries {matched:?} from CallableId fact {boundary_ids:?}",
+                ),
+            )),
+        }
     }
 
     fn env_runtime_var(
@@ -2542,16 +2575,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                 })?;
                 let capture_count = descr.capture_lanes.len();
                 let identity = self.callable_identity(function, capture_count);
-                let boundary = self.settled_callable_boundary(ctx, function, lanes)?.ok_or_else(|| {
-                    incomplete_native_program(
-                        self.world,
-                        self.root_id,
-                        format!(
-                            "native callable materialization for {:?}/{} has no settled callable boundary in {:?}",
-                            function, capture_count, ctx.origin,
-                        ),
-                    )
-                })?;
+                let boundary = self.settled_callable_boundary(callable, function, capture_count)?;
                 let prim = if lanes.is_empty() {
                     Prim::MakeFnRef(ctx.fresh_callsite(), identity)
                 } else {
@@ -2729,128 +2753,6 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
             .cloned_value(value_id)
             .ok_or_else(|| missing_backend_value(self.root_id, value_id))?;
         self.encode_runtime_value(ctx, executable, Some(value_id), &local, shape, lanes)
-    }
-}
-
-fn callable_abi_strictly_more_specific(lhs_args: &[AbiValueRepr], rhs_args: &[AbiValueRepr]) -> bool {
-    if lhs_args.len() != rhs_args.len() {
-        return false;
-    }
-    let mut saw_stricter_lane = false;
-    for (lhs, rhs) in lhs_args.iter().copied().zip(rhs_args.iter().copied()) {
-        match (lhs, rhs) {
-            (AbiValueRepr::ValueRef, AbiValueRepr::ValueRef) => {}
-            (AbiValueRepr::ValueRef, _) => return false,
-            (_, AbiValueRepr::ValueRef) => saw_stricter_lane = true,
-            _ if lhs == rhs => {}
-            _ => return false,
-        }
-    }
-    saw_stricter_lane
-}
-
-fn select_settled_callable_boundary(
-    types: &mut crate::compiler2::types::Types,
-    boundaries: &[NativeCallableBoundary],
-    function: FunctionId,
-    capture_tys: &[Ty],
-) -> Result<Option<NativeCallableBoundaryId>, String> {
-    let mut query = Vec::with_capacity(capture_tys.len());
-    for ty in capture_tys {
-        query.push(types.alpha_normalize_vars(ty));
-    }
-
-    let mut covers = boundaries
-        .iter()
-        .filter(|boundary| {
-            boundary.target.activation.function == function && boundary.capture_count == capture_tys.len()
-        })
-        .filter_map(|boundary| {
-            let capture_inputs = boundary
-                .target
-                .activation
-                .input
-                .iter()
-                .copied()
-                .take(boundary.capture_count)
-                .map(|ty| types.alpha_normalize_vars(&ty))
-                .collect::<Vec<_>>();
-            let capture_key = crate::types::key_slots_from_tys(capture_inputs);
-            let mut sigma = HashMap::new();
-            query
-                .iter()
-                .zip(capture_key.iter())
-                .all(|(query_ty, key_slot)| match key_slot {
-                    None => true,
-                    Some(key_ty) => types.key_subsumes_with(query_ty, key_ty, &mut sigma),
-                })
-                .then_some((
-                    boundary.id(),
-                    capture_key,
-                    boundary
-                        .target
-                        .activation
-                        .input
-                        .iter()
-                        .copied()
-                        .map(|ty| types.alpha_normalize_vars(&ty))
-                        .collect::<Vec<_>>(),
-                    &boundary.arg_reprs,
-                ))
-        })
-        .collect::<Vec<_>>();
-    if covers.is_empty() {
-        return Ok(None);
-    }
-
-    let min_var_count = covers
-        .iter()
-        .map(|(_, capture_key, _, _)| crate::types::key_slot_var_count(types, capture_key))
-        .min()
-        .unwrap_or(0);
-    covers.retain(|(_, capture_key, _, _)| crate::types::key_slot_var_count(types, capture_key) == min_var_count);
-    covers.sort_by_key(|(boundary_id, _, _, _)| boundary_id.as_u32());
-
-    let widest = covers
-        .iter()
-        .filter(|&(candidate_id, _, _, candidate_args)| {
-            !covers.iter().any(|(other_id, _, _, other_args)| {
-                other_id != candidate_id && callable_abi_strictly_more_specific(candidate_args, other_args)
-            })
-        })
-        .cloned()
-        .collect::<Vec<_>>();
-    let max_full_var_count = widest
-        .iter()
-        .map(|(_, _, full_key, _)| {
-            crate::types::key_slot_var_count(types, &crate::types::key_slots_from_tys(full_key.clone()))
-        })
-        .max()
-        .unwrap_or(0);
-    let widened = widest
-        .into_iter()
-        .filter(|(_, _, full_key, _)| {
-            crate::types::key_slot_var_count(types, &crate::types::key_slots_from_tys(full_key.clone()))
-                == max_full_var_count
-        })
-        .collect::<Vec<_>>();
-    match widened.as_slice() {
-        [] => Ok(None),
-        [(boundary_id, _, _, _)] => Ok(Some(*boundary_id)),
-        _ => Err(format!(
-            "ambiguous callable boundaries for {:?}/{} captures: candidates {:?}",
-            function,
-            capture_tys.len(),
-            widened
-                .iter()
-                .map(|(boundary_id, _, full_key, arg_reprs)| format!(
-                    "{}:{:?}:{:?}",
-                    boundary_id.as_u32(),
-                    full_key,
-                    arg_reprs,
-                ))
-                .collect::<Vec<_>>()
-        )),
     }
 }
 
