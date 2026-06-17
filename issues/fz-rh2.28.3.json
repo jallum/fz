@@ -6,6 +6,7 @@
   "blocks": [
     "fz-rh2.28.4"
   ],
+  "closed_at": "2026-06-17T18:28:59Z",
   "created": "2026-06-17T17:52:48Z",
   "description": "Goal: make a definition carry the lexical env it was created in. Add env to FunctionSource. The constructor supplies it: the canonical path projects env from the scope position (project_env_value Definition) and attaches it; the macro path carries the Fz.Compiler.define(source, __CALLER__) env. Delete FunctionEnvSource and the function_env field on FragmentPublicationContext; the publish path reads definition.env with no branch. Exclude env from source_same: it is a pure projection of {module, function, namespace} already compared there, a derived cache. Telemetry env_root_ref reads the stored env.\n\nGrounding: FunctionSource has no env field today; the projected env flows only to emit_compiler_service_define (env_root_ref, source_publish.rs:1459) and is then discarded. FunctionEnvSource::ProjectDefinition vs Fixed is the publication-mode branch (source_publish.rs:65-110, 705); its two arms are exactly canonical-projection vs macro-carry.\n\nSignal: FunctionEnvSource and the context mode field deleted; env stored on every FunctionSource; source_same surface unchanged (env excluded); env_root_ref telemetry still asserted (source_publish_test.rs:132); full lib green with zero warnings.\n\nStrategy: data-model up. Depends on fz-rh2.28.2 (canonical vs user origin is explicit). Blocks fz-rh2.28.4.",
   "id": "fz-rh2.28.3",
@@ -18,8 +19,8 @@
     }
   ],
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Compiler2 definition env: carry it on the definition",
   "type": "task",
-  "updated_at": "2026-06-17T18:20:49Z"
+  "updated_at": "2026-06-17T18:28:59Z"
 }
