@@ -572,11 +572,13 @@ fn compiler2_transport_flow_names_non_tail_return_payload_position() {
     );
     let Some((executable, callsite, payload_shape, _caller_return)) = return_payloads
         .iter()
-        .find(|(_, _, payload_shape, caller_return)| payload_shape != caller_return)
+        .find(|(_, _, payload_shape, caller_return)| {
+            payload_shape != caller_return && !shape_leaf_lanes(&world, *payload_shape).is_empty()
+        })
         .cloned()
     else {
         panic!(
-            "multi_relay should contain at least one callsite payload whose producer shape differs from the caller return contract: {return_payloads:?}"
+            "multi_relay should contain at least one non-empty callsite payload whose producer shape differs from the caller return contract: {return_payloads:?}"
         );
     };
     let leaf_lanes = shape_leaf_lanes(&world, payload_shape);

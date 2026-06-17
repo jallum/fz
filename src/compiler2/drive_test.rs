@@ -5898,7 +5898,7 @@ fn compiler2_native_multi_relay_delivers_resume_values_through_continuation_abi(
 }
 
 #[test]
-fn compiler2_native_lowering_routes_mismatched_tail_returns_through_return_lanes() {
+fn compiler2_native_lowering_consumes_return_payload_flow_through_return_lanes() {
     let tel = ConfiguredTelemetry::new();
     let native = NativeProgramCapture::new();
     tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
@@ -5918,7 +5918,7 @@ fn compiler2_native_lowering_routes_mismatched_tail_returns_through_return_lanes
     compiler.demand(Job::LowerNativeProgram(root_id));
     assert_resolved(
         compiler.drive(),
-        "multi_relay native handoff should settle before checking return-lane continuations",
+        "multi_relay native handoff should settle before checking ReturnPayload continuations",
     );
     let program = native.last(root_id).program;
     let body_by_fn = program
@@ -5949,7 +5949,7 @@ fn compiler2_native_lowering_routes_mismatched_tail_returns_through_return_lanes
                     .unwrap_or_else(|| panic!("native TailCall target {:?} should have a NativeBody", callee));
                 assert!(
                     callee_body.return_reprs.is_empty() || body.return_reprs == callee_body.return_reprs,
-                    "native TailCall must only forward an already-matching return ABI; mismatched returns need a ReturnLanes continuation"
+                    "native TailCall must only forward an already-matching return ABI; non-tail return flow is carried by ReturnPayload continuations"
                 );
             }
         }
@@ -5957,7 +5957,7 @@ fn compiler2_native_lowering_routes_mismatched_tail_returns_through_return_lanes
 
     assert!(
         saw_return_lanes_continuation,
-        "multi_relay should contain at least one generated continuation that returns callee lanes through the caller return ABI"
+        "multi_relay should contain at least one generated continuation that returns ReturnPayload lanes through the caller return ABI"
     );
 }
 

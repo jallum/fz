@@ -718,7 +718,9 @@ fn call_return_flow(
                     executable: transport_executable_symbol(callee),
                 };
                 let callee_shape = require_transport_position(world, root_id, transport_plan, &callee_return)?;
-                if caller_shape == callee_shape && payload_shape == callee_shape {
+                if matches!(world.transport().interners().shape(callee_shape), ShapeDescr::Nothing)
+                    || (caller_shape == callee_shape && payload_shape == callee_shape)
+                {
                     return Ok(CallReturnFlow::Tail {
                         callee_return,
                         caller_return,
