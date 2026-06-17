@@ -2,6 +2,7 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-06-17T02:50:00Z",
   "created": "2026-06-17T01:18:23Z",
   "description": "register_protocol_impl_providers resolves a defimpl's protocol/target against the enclosing scope's namespace at the point of the child defmodule. For deeply nested modules that re-declare or alias a protocol locally, that namespace is an approximation. Resolve each defimpl against its own lexical module's namespace for correctness in those cases.",
   "id": "fz-hwn.19.2.4.14",
@@ -14,7 +15,7 @@
     }
   ],
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "Namespace-accurate protocol-impl resolution for aliased/local refs in nested scopes",
   "type": "task",
   "updated_at": "2026-06-17T02:50:00Z"
