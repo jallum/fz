@@ -17,6 +17,8 @@
   "blocks": [
     "fz-hwn.19.4"
   ],
+  "closed_at": "2026-06-17T11:05:19Z",
+  "close_reason": "Re-scoped deliverable complete (see verification comment). Native callable rematerialization now selects its boundary from the CallableId fact (TransportPlan.callables[callable].boundary_ids), not capture-type subsumption; select_settled_callable_boundary + callable_abi_strictly_more_specific deleted; correct-by-construction (loud failure on 0/multi match). Behavior-invariant (whole-suite probe: capture-type selection already agreed with the fact everywhere), full lib suite green (2197/0), clippy clean, rg confirms the capture-type selector is gone. Corrected the stale red-worklist test to assert the provable invariant (direct dispatch, no opaque boundary). The escaped/multi-surface boundary selection (static-singleton driver path) and the closure_typed_captures tuple-return JIT panic are TrashDeliveredShape/ArgRepr-domain and recorded on fz-hwn.19.5.",
   "created": "2026-06-15T19:27:32Z",
   "description": "Goal\nAfter fz-hwn.19.2 has made artifact-owned callable entries and boundary contracts read TransportPlan facts, cut downstream callable materialization over to that inventory. Native/interpreter/backend consumers may materialize closures or callable boundaries only when the artifact handoff names the required CallableId or BoundaryId.\n\nWhy\nCallable entries and published boundary contracts are artifact products after the transport/artifact seam. Downstream code must not rediscover them from function plus capture types, all callable-looking producers, local shape evidence, or native closure-construction scans.\n\nRequired changes\nNative boundaries, identity fns, closure allocation, callable-boundary arguments, and first-class publication read the artifact/TransportPlan-backed CallableId and BoundaryId inventory produced by fz-hwn.19.2. Direct callable transport reads CallableId target and capture facts. First-class materialization reads the attached BoundaryId contract. Codegen/native lowering must never re-select a boundary from capture count, capture types, or all MakeClosure/MakeFnRef sites.\n\nRemoval target\nNative callable boundary selection from capture types as authority, broad callable-looking type recovery, settled_callable_boundary lookup by local shape, native callable identity collection from all callable producers, callable object materialization without a BoundaryId fact, and any downstream path that publishes a callable entry instead of consuming the artifact inventory.\n\nChecks\nUnused callable constructor publishes no downstream materialization; direct lambda call stays direct; direct callable crosses return/resume without heap closure; escaped lambda materializes exactly the BoundaryId named by artifact; opaque callable path has explicit BoundaryId contract. Any remaining fz-hwn.13 symptom must be blocked by a separate non-transport bug ticket with evidence.",
   "id": "fz-hwn.19.3",
@@ -29,8 +31,8 @@
     }
   ],
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Transport cutover: make downstream callable materialization consume artifact BoundaryId inventory",
   "type": "task",
-  "updated_at": "2026-06-17T10:55:47Z"
+  "updated_at": "2026-06-17T11:05:19Z"
 }
