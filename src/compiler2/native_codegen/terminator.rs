@@ -125,8 +125,9 @@ fn push_direct_closure_args<M: cranelift_module::Module>(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn emit_native_continuation_tail_delivery<M: cranelift_module::Module>(
+fn emit_native_continuation_tail_delivery<M: cranelift_module::Module, T: Types<Ty = Ty> + ClosureTypes>(
     body: &mut CodegenFn<'_, '_, '_, M>,
+    t: &mut T,
     env: &CodegenEnv<'_>,
     var_env: &HashMap<u32, CodegenValue>,
     is_native: bool,
@@ -172,14 +173,15 @@ fn emit_native_continuation_tail_delivery<M: cranelift_module::Module>(
         mid_flight_arg_shapes.push(MidFlightArgShape::Value(repr));
     }
 
-    let semantic_cap_bindings = args
+    let semantic_cap_vars = args.iter().skip(extra_params).copied().collect::<Vec<_>>();
+    let semantic_cap_bindings = semantic_cap_vars
         .iter()
-        .skip(extra_params)
         .enumerate()
         .map(|(i, arg)| closure_capture_for_var_as(body, var_env, arg.0, callee_param_reprs[extra_params + i]))
         .collect::<Vec<_>>();
+    let use_lazy = continuation_uses_lazy_descriptor(t, env, &semantic_cap_vars);
     let payload = ContinuationPayload::from_parts(env, callee_sid, semantic_cap_bindings, vec![], vec![]);
-    let self_arg = ContinuationPlan::heap_closure(payload).emit_value(
+    let self_arg = plan_closure_shaped_continuation(payload, is_native && use_lazy).emit_value(
         body,
         runtime,
         env.halt_reprs,
@@ -362,6 +364,48 @@ fn plan_closure_shaped_continuation(payload: ContinuationPayload, use_lazy: bool
     }
 }
 
+// FP² borrowing/uniqueness: a continuation is stack-resident (borrows its
+// captures) by default, so a destructively-matched cell it captures stays
+// unique and owned-cons reuse can fire. The one exception is a capture that is
+// itself a first-class closure value (a callable with a heap environment): a
+// stack descriptor is not a GC root, so a cont that *owns* such a value must be
+// a heap closure that the collector can trace. `match!`/known thin function
+// refs (zero-capture callable boundaries) do not force the heap.
+fn capture_forces_heap_continuation<T: Types<Ty = Ty> + ClosureTypes>(
+    t: &mut T,
+    env: &CodegenEnv<'_>,
+    cv: &Var,
+) -> bool {
+    let Some(ty) = env.active_value_types().get(cv) else {
+        return false;
+    };
+    if t.callable_clauses(ty).is_none() {
+        return false;
+    }
+    let native_body = env.active_native_body();
+    let Some(candidate) = native_body.callable_value_boundaries.get(cv) else {
+        return true;
+    };
+    env.surface
+        .callable_boundary(candidate.as_u32())
+        .is_none_or(|boundary| boundary.capture_count > 0)
+}
+
+// A newly-built continuation may live on the stack unless one of its captures
+// forces it onto the GC heap (see `capture_forces_heap_continuation`). The call
+// sites that build it all emit frame-persisting `call; return`, so the stack
+// descriptor is invoked within the creating frame's extent and the cooperative
+// yield spills it via `materialize_cont`.
+fn continuation_uses_lazy_descriptor<T: Types<Ty = Ty> + ClosureTypes>(
+    t: &mut T,
+    env: &CodegenEnv<'_>,
+    capture_vars: &[Var],
+) -> bool {
+    !capture_vars
+        .iter()
+        .any(|cv| capture_forces_heap_continuation(t, env, cv))
+}
+
 fn native_call_result_value<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, '_, M>,
     result: ir::Value,
@@ -450,6 +494,7 @@ pub(crate) fn emit_terminator<M: cranelift_module::Module, T: Types<Ty = Ty> + C
             continuation,
         } => emit_call_term(
             body,
+            t,
             env,
             schemas,
             var_env,
@@ -470,6 +515,7 @@ pub(crate) fn emit_terminator<M: cranelift_module::Module, T: Types<Ty = Ty> + C
             is_back_edge,
         } => emit_tail_call_term(
             body,
+            t,
             env,
             schemas,
             var_env,
@@ -492,6 +538,7 @@ pub(crate) fn emit_terminator<M: cranelift_module::Module, T: Types<Ty = Ty> + C
             continuation,
         } => emit_call_closure(
             body,
+            t,
             env,
             var_env,
             blk,
@@ -738,8 +785,9 @@ fn emit_return_term<M: cranelift_module::Module, T: Types<Ty = Ty> + ClosureType
 }
 
 #[allow(clippy::too_many_arguments)]
-fn emit_call_term<M: cranelift_module::Module>(
+fn emit_call_term<M: cranelift_module::Module, T: Types<Ty = Ty> + ClosureTypes>(
     body: &mut CodegenFn<'_, '_, '_, M>,
+    t: &mut T,
     env: &CodegenEnv<'_>,
     schemas: &[Schema],
     var_env: &HashMap<u32, CodegenValue>,
@@ -765,6 +813,7 @@ fn emit_call_term<M: cranelift_module::Module>(
         if spec_is_native(env, callee_sid) {
             emit_native_call_with_cont(
                 body,
+                t,
                 env,
                 schemas,
                 var_env,
@@ -805,8 +854,9 @@ fn emit_call_term<M: cranelift_module::Module>(
 // before the callee call so the callee's Term::Return can
 // indirect-call through it (docs/cps-in-clif.md §2.1).
 #[allow(clippy::too_many_arguments)]
-fn emit_native_call_with_cont<M: cranelift_module::Module>(
+fn emit_native_call_with_cont<M: cranelift_module::Module, T: Types<Ty = Ty> + ClosureTypes>(
     body: &mut CodegenFn<'_, '_, '_, M>,
+    t: &mut T,
     env: &CodegenEnv<'_>,
     schemas: &[Schema],
     var_env: &HashMap<u32, CodegenValue>,
@@ -841,7 +891,7 @@ fn emit_native_call_with_cont<M: cranelift_module::Module>(
         native_args.push(fetch_static_closure(body.jmod, body.b, runtime, callee_sid));
     }
     let cont_is_native = spec_is_native(env, cont_sid);
-    let cont_can_use_lazy_descriptor = false;
+    let cont_can_use_lazy_descriptor = continuation_uses_lazy_descriptor(t, env, &continuation.captured);
     let continuation_plan = if cont_is_native {
         let payload = ContinuationPayload::from_capture_vars(body, env, var_env, cont_sid, &continuation.captured);
         Some(plan_closure_shaped_continuation(
@@ -940,8 +990,9 @@ fn emit_native_call_with_cont<M: cranelift_module::Module>(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn emit_tail_call_term<M: cranelift_module::Module>(
+fn emit_tail_call_term<M: cranelift_module::Module, T: Types<Ty = Ty> + ClosureTypes>(
     body: &mut CodegenFn<'_, '_, '_, M>,
+    t: &mut T,
     env: &CodegenEnv<'_>,
     schemas: &[Schema],
     var_env: &HashMap<u32, CodegenValue>,
@@ -962,6 +1013,7 @@ fn emit_tail_call_term<M: cranelift_module::Module>(
         if spec_is_native(env, callee_sid) {
             emit_native_tail_call(
                 body,
+                t,
                 env,
                 var_env,
                 is_native,
@@ -989,8 +1041,9 @@ fn emit_tail_call_term<M: cranelift_module::Module>(
 // guarantee callee's return_repr matches mine, so
 // return_call is ABI-compatible.
 #[allow(clippy::too_many_arguments)]
-fn emit_native_tail_call<M: cranelift_module::Module>(
+fn emit_native_tail_call<M: cranelift_module::Module, T: Types<Ty = Ty> + ClosureTypes>(
     body: &mut CodegenFn<'_, '_, '_, M>,
+    t: &mut T,
     env: &CodegenEnv<'_>,
     var_env: &HashMap<u32, CodegenValue>,
     is_native: bool,
@@ -1010,6 +1063,7 @@ fn emit_native_tail_call<M: cranelift_module::Module>(
     if let NativeEntryAbi::Continuation { extra_params } = env.body_native(callee_sid).entry_abi {
         emit_native_continuation_tail_delivery(
             body,
+            t,
             env,
             var_env,
             is_native,
@@ -1254,8 +1308,9 @@ fn emit_back_edge_yield_check<M: cranelift_module::Module>(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn emit_call_closure<M: cranelift_module::Module>(
+fn emit_call_closure<M: cranelift_module::Module, T: Types<Ty = Ty> + ClosureTypes>(
     body: &mut CodegenFn<'_, '_, '_, M>,
+    t: &mut T,
     env: &CodegenEnv<'_>,
     var_env: &HashMap<u32, CodegenValue>,
     blk: &fz_ir::Block,
@@ -1294,7 +1349,7 @@ fn emit_call_closure<M: cranelift_module::Module>(
             (body_sid, body_fid, target_fn, target)
         });
         let cont_payload = ContinuationPayload::from_capture_vars(body, env, var_env, cont_sid, &continuation.captured);
-        let can_use_lazy_cont = false;
+        let can_use_lazy_cont = is_native && continuation_uses_lazy_descriptor(t, env, &continuation.captured);
         let continuation_plan = plan_closure_shaped_continuation(cont_payload, can_use_lazy_cont);
         let cf = continuation_plan.emit_value(body, runtime, env.halt_reprs, is_cont_fn, cont_param, frame_ptr);
         let continuation_storage = if continuation_plan.uses_lazy_descriptor() {

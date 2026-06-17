@@ -8146,7 +8146,12 @@ fn main(), do: rebuild([1, 2])
         .last(&["fz", "runtime", "process_exited"])
         .expect("runtime process exit telemetry");
     assert_eq!(measurement_u64(&exit, "reusable_cons_attempts"), 1);
-    assert_eq!(measurement_u64(&exit, "reusable_cons_reused"), 0);
+    assert_eq!(
+        measurement_u64(&exit, "reusable_cons_reused"),
+        1,
+        "the transported cell stays unique across the stack-resident continuation, so the \
+         rebuilt `[h | t]` reuses it in place instead of allocating a fresh cons",
+    );
 }
 
 #[test]
