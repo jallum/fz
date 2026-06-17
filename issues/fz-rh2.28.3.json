@@ -3,9 +3,7 @@
   "blocked_by": [
     "fz-s00"
   ],
-  "blocks": [
-    "fz-rh2.28.4"
-  ],
+  "blocks": [],
   "created": "2026-06-17T17:52:48Z",
   "description": "Goal: remove the definition-time env machinery that is telemetry-only dead weight, now that __ENV__ is projected at expansion via a namespace splice (fz-rh2.28.4) and the lexical context is carried by FunctionSource.namespace.\n\nPivot: the original goal (\"carry the definition env on FunctionSource\") was wrong and its commit was reverted. Investigation showed the definition-time env projection only ever fed the env_root_ref telemetry measurement; nothing functional consumed it. __ENV__ in a body is now a projection of the def scope, spliced at expansion. So the def-time env path is dead.\n\nScope (remove): FunctionEnvSource enum, the function_env resolution, the env param threaded through publish_function_source, and the env_root_ref telemetry (update source_publish_test.rs:132).\n\nKeep (Elixir-essential, do NOT remove): FunctionSource.namespace (the lexical context = cache_env); the __CALLER__ runtime-param mechanism; the __CALLER__ arg the def-head macros pass to Fz.Compiler.define (the Elixir-aligned def-site capture seam).\n\nSignal: FunctionEnvSource gone; no def-time env projection; full lib green; fixture_matrix unchanged (313/85 baseline); zero warnings. Behavior-preserving (telemetry-only removal).",
   "id": "fz-rh2.28.3",
@@ -25,5 +23,5 @@
   "status": "open",
   "title": "Compiler2: remove the telemetry-only definition-time env scaffolding",
   "type": "task",
-  "updated_at": "2026-06-17T19:11:12Z"
+  "updated_at": "2026-06-17T19:11:49Z"
 }
