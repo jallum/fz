@@ -11,9 +11,15 @@
   "id": "fz-hwn.19.2.4.16.2",
   "labels": [],
   "parent": "fz-hwn.19.2.4.16",
+  "comments": [
+    {
+      "text": "Merged into T1 (fz-hwn.19.2.4.16.1): registering a defimpl as an independent Protocol.Target module and having dispatch demand it directly are one atomic change — root-level defimpls break in the interim otherwise. Closing as merged.",
+      "timestamp": "2026-06-17T02:52:28Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "Dispatch demands the impl module Protocol.Target directly, not the host module",
   "type": "task",
-  "updated_at": "2026-06-17T02:49:59Z"
+  "updated_at": "2026-06-17T02:52:28Z"
 }
