@@ -328,6 +328,26 @@ fn flush_function_groups(
     Ok(())
 }
 
+/// Builds the typed [`ScopeForm`] for a recognized scope-definition head
+/// (`fn`/`fnp`/`defmacro`/`defmodule`/`defprotocol`/`defimpl`). This is the
+/// canonical structural extraction of a def-head — the analogue of Elixir
+/// `store_definition`/module compile — invoked by the define pipeline and the
+/// bootstrap. It does not depend on any surface-read mode: it always extracts a
+/// definition from a node already known to be a def-head.
+pub(crate) fn build_definition_form(
+    source: QuotedSourceRoot,
+    ctx: &SurfaceSourceContext<'_>,
+    head: &str,
+) -> Result<ScopeForm, QuotedSourceError> {
+    Ok(match head {
+        head if is_function_definition_head(head) => ScopeForm::Function(parse_function_form(source, ctx)?),
+        "defmodule" => ScopeForm::Module(parse_module_form(source, ctx)?),
+        "defprotocol" => ScopeForm::Protocol(parse_protocol_form(source, ctx)?),
+        "defimpl" => ScopeForm::ProtocolImpl(parse_protocol_impl_form(source, ctx)?),
+        _ => unreachable!("covered by is_scope_definition_head"),
+    })
+}
+
 fn build_form(
     source: QuotedSourceRoot,
     ctx: &SurfaceSourceContext<'_>,
@@ -356,13 +376,7 @@ fn build_form(
                 span: surface_span(&source, ctx)?,
                 source,
             }),
-            ScopeSurfaceMode::CompilerFragment => match head {
-                head if is_function_definition_head(head) => ScopeForm::Function(parse_function_form(source, ctx)?),
-                "defmodule" => ScopeForm::Module(parse_module_form(source, ctx)?),
-                "defprotocol" => ScopeForm::Protocol(parse_protocol_form(source, ctx)?),
-                "defimpl" => ScopeForm::ProtocolImpl(parse_protocol_impl_form(source, ctx)?),
-                _ => unreachable!("covered by is_scope_definition_head"),
-            },
+            ScopeSurfaceMode::CompilerFragment => build_definition_form(source, ctx, head)?,
         }),
         "extern" => Ok(ScopeForm::Function(parse_function_form(source, ctx)?)),
         "defstruct" => Ok(ScopeForm::Struct(parse_struct_form(source, ctx)?)),
