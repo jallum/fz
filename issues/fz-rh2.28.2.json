@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-rh2.28.1"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-rh2.28.3"
+  ],
   "created": "2026-06-17T17:52:48Z",
   "description": "Goal: remove ScopeSurfaceMode and the build_form mode branch (quoted_surface.rs:354-366). Replace the single moded reader with two single-purpose readers: a user-surface reader (scope-definition heads are macro-calls) and a canonical reader (scope-definition heads are direct definitions). Route the bootstrap entry (is_bootstrap) and every post-expansion site (item-macro output, Compiler.define payload, protocol/impl/module bodies) to the canonical reader; route user code to the user-surface reader.\n\nGrounding: mode is pure pass-through (read_scope_surface_with_mode and flush_function_groups only forward it); build_form:354 is its only behavioral branch. Source = pre-expansion user surface; CompilerFragment = bootstrap text OR post-expansion canonical. Canonical reading after a macro boundary is the normal next phase, not a special case; only the bootstrap parses canonical text with no preceding macro.\n\nSignal: ScopeSurfaceMode deleted; readers single-purpose; protocol/impl bodies parse identically; full lib green with zero warnings; behavior-preserving.\n\nStrategy: behavior-preserving refactor. Depends on fz-rh2.28.1 (is_bootstrap routes the bootstrap entry). Blocks fz-rh2.28.3.",
   "id": "fz-rh2.28.2",
