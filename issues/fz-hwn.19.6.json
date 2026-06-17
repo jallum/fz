@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-hwn.19.10",
     "fz-hwn.19.5"
@@ -11,8 +11,8 @@
   "labels": [],
   "parent": "fz-hwn.19",
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "Transport cutover: delete old vocabulary, update docs, and pin final telemetry",
   "type": "task",
-  "updated_at": "2026-06-17T13:42:17Z"
+  "updated_at": "2026-06-17T14:07:26Z"
 }
