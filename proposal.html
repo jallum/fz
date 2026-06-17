@@ -444,8 +444,8 @@ rg -n "\b(TrashRuntimeValueLayout|TrashRuntimeInputLayout|TrashRuntimeParamLayou
       <td><code>fz-hwn.19.2</code>: artifact-owned callable entries read <code>CallableId</code> facts and <code>BoundaryId</code> contracts; downstream tickets consume that inventory.</td>
     </tr>
     <tr>
-      <td><code>src/ir_interp/backend.rs</code>, <code>src/ir_interp/mod.rs</code>, and <code>src/compiler2/jobs/native.rs</code> still carry recursive <code>TrashBackendValue</code> and <code>TrashRealizedValue</code> mirrors.</td>
-      <td><code>fz-hwn.19.4</code>: carry <code>ShapeId</code> or <code>TransportPosition</code> plus lane bundles/spans; tuple fields are child shape views and direct callables carry <code>CallableId</code>.</td>
+      <td><code>src/ir_interp/backend.rs</code>, <code>src/ir_interp/mod.rs</code>, and <code>src/compiler2/jobs/native.rs</code> now share the non-recursive <code>TransportValue&lt;Lane&gt;</code> carrier: backend interpreter lanes are <code>AnyValue</code>, and native lowering lanes are <code>Var</code>.</td>
+      <td><code>fz-hwn.19.4</code>: tuple fields are child-shape lane-span views, direct callables read <code>CallableId</code> descriptor/fact payloads, and runtime materialization is a boundary operation that indexes <code>TransportPlan</code> facts instead of rebuilding a recursive value tree.</td>
     </tr>
     <tr>
       <td><code>src/compiler2/native_codegen/*</code> still carries <code>TrashDeliveredShape</code>, <code>TrashNativeDemandAbi</code>, delivered-shape recovery helpers, continuation-shape recovery, and compiler2-local repr decisions.</td>

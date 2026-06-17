@@ -23,6 +23,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
+use crate::compiler2::transport::TransportValue;
 use crate::exec::runtime::{ExitRecord, output_hook_thunk};
 use crate::fz_ir::{FnId, Module};
 use crate::ir_extern_marshal::resolve_module_types;
@@ -80,19 +81,10 @@ type ResumeEntry = (FnId, Vec<AnyValue>, Option<SpecKey>, Vec<InterpContinuation
 struct BackendContinuation {
     executable: usize,
     entry: crate::compiler2::ControlEntryId,
-    env: HashMap<crate::compiler2::ValueId, TrashBackendValue>,
+    env: HashMap<crate::compiler2::ValueId, BackendBoundValue>,
 }
 
-#[derive(Clone, Debug)]
-enum TrashBackendValue {
-    Omitted,
-    Runtime(AnyValue),
-    TupleFields(Vec<TrashBackendValue>),
-    DirectCallable {
-        function: crate::compiler2::FunctionId,
-        captures: Vec<TrashBackendValue>,
-    },
-}
+type BackendBoundValue = TransportValue<AnyValue>;
 
 enum BackendResumeEntry {
     Executable {
@@ -103,7 +95,7 @@ enum BackendResumeEntry {
     Entry {
         executable: usize,
         entry: crate::compiler2::ControlEntryId,
-        env: HashMap<crate::compiler2::ValueId, TrashBackendValue>,
+        env: HashMap<crate::compiler2::ValueId, BackendBoundValue>,
         continuations: Vec<BackendContinuation>,
     },
 }
@@ -116,7 +108,7 @@ struct BackendParkRecord {
     clauses: Vec<crate::compiler2::ReceiveClause>,
     dispatch: crate::dispatch_matrix::pattern::PatternDispatchPlan<crate::compiler2::Ty>,
     bindings: crate::compiler2::DispatchBindings,
-    env: HashMap<crate::compiler2::ValueId, TrashBackendValue>,
+    env: HashMap<crate::compiler2::ValueId, BackendBoundValue>,
     continuations: Vec<BackendContinuation>,
 }
 

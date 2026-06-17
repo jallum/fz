@@ -294,10 +294,12 @@ Cutover classification:
   membership, `CallableId` facts, `BoundaryId` contracts, and seam facts from
   `TransportPlan`.
 - `src/ir_interp/backend.rs`, `src/ir_interp/mod.rs`, and
-  `src/compiler2/jobs/native.rs` still carry recursive runtime-value mirrors:
-  `TrashBackendValue` and `TrashRealizedValue`. `fz-hwn.19.4` replaces those
-  mirrors with `ShapeId` or `TransportPosition` plus lane bundles/spans; tuple
-  fields are child shape views and direct callables carry `CallableId`.
+  `src/compiler2/jobs/native.rs` now share the non-recursive
+  `TransportValue<Lane>` carrier. Backend interpreter lanes are `AnyValue`;
+  native lowering lanes are `Var`. Tuple fields are child-shape lane-span views,
+  direct callables read `CallableId` descriptor/fact payloads, and runtime
+  materialization is a boundary operation that indexes `TransportPlan` facts
+  instead of rebuilding a recursive value tree.
 - `src/compiler2/native_codegen/demand.rs`,
   `src/compiler2/native_codegen/driver.rs`,
   `src/compiler2/native_codegen/entry.rs`,

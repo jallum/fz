@@ -7,6 +7,7 @@
 use std::collections::HashMap;
 use std::hash::Hash;
 use std::marker::PhantomData;
+use std::ops::Range;
 
 use super::body::{CallSiteId, ControlEntryId, ValueId};
 use super::identity::{ExecutableNeed, FunctionId, RootId};
@@ -99,6 +100,22 @@ pub enum ShapeDescr {
     Lane(LaneId),
     Tuple(Box<[ShapeId]>),
     Callable(CallableId),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TransportValue<Lane> {
+    Absent,
+    Runtime(Lane),
+    Transport { shape: ShapeId, lanes: Vec<Lane> },
+}
+
+impl<Lane: Copy> TransportValue<Lane> {
+    pub fn runtime_lane(&self) -> Option<Lane> {
+        match self {
+            Self::Runtime(lane) => Some(*lane),
+            Self::Absent | Self::Transport { .. } => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -287,6 +304,59 @@ impl TransportInterners {
 
     pub fn shape(&self, id: ShapeId) -> &ShapeDescr {
         self.shapes.get(id)
+    }
+
+    pub fn shape_width(&self, shape: ShapeId) -> usize {
+        self.shape_lane_ids(shape).len()
+    }
+
+    pub fn shape_lane_ids(&self, shape: ShapeId) -> Vec<LaneId> {
+        match self.shape(shape) {
+            ShapeDescr::Nothing => Vec::new(),
+            ShapeDescr::Lane(lane) => vec![*lane],
+            ShapeDescr::Tuple(fields) => fields
+                .iter()
+                .copied()
+                .flat_map(|field| self.shape_lane_ids(field))
+                .collect(),
+            ShapeDescr::Callable(callable) => self.callable(*callable).capture_lanes.to_vec(),
+        }
+    }
+
+    pub fn shape_leaf_lanes(&self, shape: ShapeId) -> Vec<(ShapeId, LaneId)> {
+        match self.shape(shape) {
+            ShapeDescr::Nothing => Vec::new(),
+            ShapeDescr::Lane(lane) => vec![(shape, *lane)],
+            ShapeDescr::Tuple(fields) => fields
+                .iter()
+                .copied()
+                .flat_map(|field| self.shape_leaf_lanes(field))
+                .collect(),
+            ShapeDescr::Callable(callable) => self
+                .callable(*callable)
+                .capture_lanes
+                .iter()
+                .copied()
+                .map(|lane| (shape, lane))
+                .collect(),
+        }
+    }
+
+    pub fn tuple_field_spans(&self, shape: ShapeId) -> Option<Vec<(ShapeId, Range<usize>)>> {
+        let ShapeDescr::Tuple(fields) = self.shape(shape) else {
+            return None;
+        };
+        let mut offset = 0_usize;
+        let mut spans = Vec::with_capacity(fields.len());
+        for field in fields.iter().copied() {
+            let width = self.shape_width(field);
+            let end = offset
+                .checked_add(width)
+                .expect("transport tuple field lane span overflow");
+            spans.push((field, offset..end));
+            offset = end;
+        }
+        Some(spans)
     }
 
     pub fn shape_count(&self) -> usize {

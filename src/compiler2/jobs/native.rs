@@ -38,6 +38,7 @@ use super::super::scheduler::FatalError;
 use super::super::semantic::{RuntimeDemand, ShapeDemand};
 use super::super::transport::{
     BoundaryId, CallableId, CodegenLaneRepr, CodegenSeam, LaneId, ShapeDescr, ShapeId, TransportPosition,
+    TransportValue,
 };
 use super::super::types::Ty;
 use super::super::world::World;
@@ -876,7 +877,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                     let mut capture_lanes = Vec::new();
                     let mut descriptor_lane_index = 0;
                     for (capture, shape) in captures.iter().copied().zip(capture_shapes) {
-                        let structural_width = shape_width(self.world, shape);
+                        let structural_width = self.world.transport().interners().shape_width(shape);
                         if structural_width == 0 && descriptor_lane_index < callable_descr.capture_lanes.len() {
                             let lane = callable_descr.capture_lanes[descriptor_lane_index];
                             descriptor_lane_index += 1;
@@ -2666,13 +2667,13 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
         lanes: &[Var],
         fields: &[ShapeId],
     ) -> Result<Vec<NativeBoundValue>, FatalError> {
-        if lanes.len() != shape_width(self.world, shape) {
+        if lanes.len() != self.world.transport().interners().shape_width(shape) {
             return Err(FatalError);
         }
         let mut offset = 0_usize;
         let mut values = Vec::with_capacity(fields.len());
         for field in fields.iter().copied() {
-            let width = shape_width(self.world, field);
+            let width = self.world.transport().interners().shape_width(field);
             let end = offset.checked_add(width).ok_or(FatalError)?;
             let field_lanes = lanes.get(offset..end).ok_or(FatalError)?.to_vec();
             let value = match self.world.transport().interners().shape(field) {
@@ -2926,21 +2927,7 @@ fn annotate_back_edges(module: &mut crate::fz_ir::Module) {
 /// whether a semantic value is already materialized as one runtime var, is a
 /// direct callable represented by its transport callable id plus capture lanes,
 /// or has no transported value.
-#[derive(Debug, Clone)]
-enum NativeBoundValue {
-    Absent,
-    Runtime(Var),
-    Transport { shape: ShapeId, lanes: Vec<Var> },
-}
-
-impl NativeBoundValue {
-    fn runtime_var(&self) -> Option<Var> {
-        match self {
-            Self::Runtime(var) => Some(*var),
-            Self::Absent | Self::Transport { .. } => None,
-        }
-    }
-}
+type NativeBoundValue = TransportValue<Var>;
 
 #[derive(Default, Clone)]
 struct ValueEnv {
@@ -2967,29 +2954,15 @@ impl ValueEnv {
     }
 
     fn runtime_var(&self, value: ValueId) -> Option<Var> {
-        self.value(value).and_then(NativeBoundValue::runtime_var)
-    }
-}
-
-fn shape_width(world: &World<'_>, shape: ShapeId) -> usize {
-    shape_lane_ids(world, shape).len()
-}
-
-fn shape_lane_ids(world: &World<'_>, shape: ShapeId) -> Vec<LaneId> {
-    match world.transport().interners().shape(shape) {
-        ShapeDescr::Nothing => Vec::new(),
-        ShapeDescr::Lane(lane) => vec![*lane],
-        ShapeDescr::Tuple(fields) => fields
-            .iter()
-            .copied()
-            .flat_map(|field| shape_lane_ids(world, field))
-            .collect(),
-        ShapeDescr::Callable(callable) => world.transport().interners().callable(*callable).capture_lanes.to_vec(),
+        self.value(value).and_then(TransportValue::runtime_lane)
     }
 }
 
 fn shape_lane_tys(world: &World<'_>, shape: ShapeId) -> Vec<Ty> {
-    shape_lane_ids(world, shape)
+    world
+        .transport()
+        .interners()
+        .shape_lane_ids(shape)
         .into_iter()
         .map(|lane| world.transport().interners().lane(lane).ty)
         .collect()
@@ -3091,7 +3064,10 @@ fn seam_reprs_for_position_shape(
     shape: ShapeId,
     seam_matches: impl Fn(&CodegenSeam) -> bool,
 ) -> Vec<AbiValueRepr> {
-    shape_leaf_lanes(world, shape)
+    world
+        .transport()
+        .interners()
+        .shape_leaf_lanes(shape)
         .into_iter()
         .map(|(leaf_shape, lane)| seam_repr_for_lane(program, &seam_matches, Some(leaf_shape), lane))
         .collect()
@@ -3144,7 +3120,7 @@ fn position_publication_lanes(program: &BackendProgram, seam_matches: impl Fn(&C
 
 fn position_width(world: &World<'_>, shape: ShapeId, publication_lanes: &[LaneId]) -> usize {
     if publication_lanes.is_empty() {
-        shape_width(world, shape)
+        world.transport().interners().shape_width(shape)
     } else {
         publication_lanes.len()
     }
@@ -3196,27 +3172,6 @@ fn entry_capture_seam_matches(entry: &BackendEntry, position: &TransportPosition
             entry: seam_entry,
         } if seam_executable == executable && seam_entry == captured_entry
     )
-}
-
-fn shape_leaf_lanes(world: &World<'_>, shape: ShapeId) -> Vec<(ShapeId, LaneId)> {
-    match world.transport().interners().shape(shape) {
-        ShapeDescr::Nothing => Vec::new(),
-        ShapeDescr::Lane(lane) => vec![(shape, *lane)],
-        ShapeDescr::Tuple(fields) => fields
-            .iter()
-            .copied()
-            .flat_map(|field| shape_leaf_lanes(world, field))
-            .collect(),
-        ShapeDescr::Callable(callable) => world
-            .transport()
-            .interners()
-            .callable(*callable)
-            .capture_lanes
-            .iter()
-            .copied()
-            .map(|lane| (shape, lane))
-            .collect(),
-    }
 }
 
 fn seam_repr_for_lane(
@@ -3455,7 +3410,7 @@ struct ExecutableInputBinding {
 impl ExecutableInputBinding {
     fn width(&self, world: &World<'_>) -> usize {
         if self.publication_lanes.is_empty() {
-            shape_width(world, self.shape)
+            world.transport().interners().shape_width(self.shape)
         } else {
             self.publication_lanes.len()
         }
@@ -3515,7 +3470,15 @@ fn decode_runtime_value(
     shape: ShapeId,
     lane_index: &mut usize,
 ) -> Result<NativeBoundValue, FatalError> {
-    decode_runtime_value_with_width(params, shape, shape_width(world, shape), false, world, ctx, lane_index)
+    decode_runtime_value_with_width(
+        params,
+        shape,
+        world.transport().interners().shape_width(shape),
+        false,
+        world,
+        ctx,
+        lane_index,
+    )
 }
 
 fn decode_runtime_value_with_width(
@@ -3542,7 +3505,7 @@ fn decode_native_value_from_lanes(
     shape: ShapeId,
     lanes: Vec<Var>,
 ) -> Result<NativeBoundValue, FatalError> {
-    if lanes.len() != shape_width(world, shape) {
+    if lanes.len() != world.transport().interners().shape_width(shape) {
         return Err(FatalError);
     }
     Ok(match world.transport().interners().shape(shape) {
@@ -3566,7 +3529,7 @@ fn bind_local_value(
     value: ValueId,
     bound: NativeBoundValue,
 ) {
-    if let Some(var) = bound.runtime_var()
+    if let Some(var) = bound.runtime_lane()
         && let Some(ty) = executable.value_types.get(&value).copied()
     {
         ctx.value_types.insert(var, ty);
