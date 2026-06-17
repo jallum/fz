@@ -2,14 +2,15 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-06-17T01:18:23Z",
   "created": "2026-06-17T01:17:20Z",
   "description": "A `defimpl P, for: T` nested in a module the program never reaches by name was silently dropped: DefineModule is demand-gated by reachability, nothing referenced the enclosing module, so its impl never registered into ProtocolDispatch(P). A subsequent P.foo(t) call then found an empty dispatch and waited forever on the *receiver type's* module (runtime_impl_target_modules assumes the impl lives in T's own module) — which never grows a P arm. AnalyzeActivation(caller), SealSemanticClosure, and DefineModule livelocked (true non-termination).\n\nFix: a scope-tier protocol-impl provider index. When the enclosing scope meets a child defmodule, each defimpl in its body is resolved (protocol/target names -\u003e ModuleIds via the available namespace) and recorded as (protocol, target) -\u003e provider module. resolve_protocol_call reads this settled surface fact and demands DefineModule(provider) for a matching receiver — pulling the real provider, not the receiver type's module. Demand-driven preserved: an unused defimpl records its mapping but never defines the protocol or provider (cold stays cold).\n\nTests: compiler2_protocol_dispatched_escaped_continuation_closes_captured_callable (was the fz-hwn.19.2.4.9 minimal repro; now closes), compiler2_unused_protocol_impl_stays_cold (absence/cold-stays-cold).\n\nFollow-ups: (a) collapse runtime_impl_target_modules into the provider index once runtime impls are index-discovered on ensure; (b) namespace-accurate resolution for aliased/same-module protocol references in nested scopes.",
   "id": "fz-hwn.19.2.4.12",
   "labels": [],
   "parent": "fz-hwn.19.2.4",
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Protocol impls in unreached modules are dropped",
   "type": "bug",
-  "updated_at": "2026-06-17T01:17:29Z"
+  "updated_at": "2026-06-17T01:18:23Z"
 }
