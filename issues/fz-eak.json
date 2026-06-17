@@ -2,6 +2,7 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-06-17T14:55:57Z",
   "created": "2026-06-17T14:26:39Z",
   "description": "CI cargo llvm-cov on branch fz-go4.1/frontdoor-cli-ownership times out in compiler2::semantic_analysis_test::compiler2_runtime_demand_keeps_a_returned_direct_callable_out_of_first_class_inventory with TimedOut { jobs_ran: 165, pending_jobs: 2 }, while local cargo test --lib passes. The test is being ignored to unblock CI. Re-enable it by resolving the Linux/coverage-mode progress budget or underlying runtime-demand convergence issue, then remove the ignore.",
   "id": "fz-eak",
@@ -17,8 +18,8 @@
     }
   ],
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "Re-enable returned direct callable runtime-demand coverage test",
   "type": "task",
-  "updated_at": "2026-06-17T14:55:45Z"
+  "updated_at": "2026-06-17T14:55:57Z"
 }
