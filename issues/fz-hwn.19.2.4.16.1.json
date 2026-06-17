@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-hwn.19.2.4.16.2"
+  ],
   "created": "2026-06-17T02:49:47Z",
   "description": "Discovery (register_protocol_impl_providers) records a provider POINTER to the enclosing module; the impl is defined only when that host module's body publishes. Change discovery so each defimpl gives module reference_protocol_impl_module(protocol,target) (= 'Enumerable.List') its own ModuleSourceKind::Body (the impl's forms), demandable via DefineModule(Protocol.Target) directly, independent of the host module. Resolve the defimpl's protocol/target against its OWN lexical namespace (folds in .14: namespace-accurate resolution for aliased/local refs in nested scopes). Keep existing dispatch working. Signal: a nested defimpl can be defined without defining its host module.",
   "id": "fz-hwn.19.2.4.16.1",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Register each defimpl as an independent Protocol.Target module body source",
   "type": "task",
-  "updated_at": "2026-06-17T02:49:47Z"
+  "updated_at": "2026-06-17T02:49:59Z"
 }
