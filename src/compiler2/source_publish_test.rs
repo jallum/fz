@@ -128,11 +128,6 @@ fn compiler_service_define_publishes_function_source_and_threads_namespace_forwa
             "fz_compiler",
             "all function source publication should use the Fz.Compiler authority",
         );
-        assert_ne!(
-            measurement_u64(&event, "env_root_ref"),
-            0,
-            "compiler-service publication should carry a real __ENV__ root",
-        );
     }
 
     let bar_source = world.function_source(bar_id).expect("bar source");

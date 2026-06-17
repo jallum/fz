@@ -33,9 +33,7 @@ use super::quoted_surface::{
 };
 use super::scheduler::FatalError;
 use super::scope::ScopeSnapshot;
-use super::source::{
-    QuotedLexicalContextKind, QuotedSourceError, QuotedSourceHeap, QuotedSourceMetadata, QuotedSourceRoot,
-};
+use super::source::{QuotedSourceError, QuotedSourceHeap, QuotedSourceMetadata};
 use super::type_expr::{NominalKind, TypeDefBody, TypeExpr, parse_type_def_body, parse_type_expr};
 use super::world::World;
 
@@ -61,12 +59,6 @@ struct PendingType {
     span: Span,
 }
 
-#[derive(Clone)]
-enum FunctionEnvSource {
-    ProjectDefinition,
-    Fixed(QuotedSourceRoot),
-}
-
 #[derive(Clone, Copy)]
 enum FragmentDiscovery {
     AlreadyIndexed,
@@ -77,7 +69,6 @@ enum FragmentDiscovery {
 struct FragmentPublicationContext {
     owner_module: ModuleId,
     export_public: bool,
-    function_env: FunctionEnvSource,
     discovery: FragmentDiscovery,
 }
 
@@ -86,7 +77,6 @@ impl FragmentPublicationContext {
         Self {
             owner_module: current_module,
             export_public: true,
-            function_env: FunctionEnvSource::ProjectDefinition,
             discovery: FragmentDiscovery::AlreadyIndexed,
         }
     }
@@ -95,16 +85,14 @@ impl FragmentPublicationContext {
         Self {
             owner_module: current_module,
             export_public: true,
-            function_env: FunctionEnvSource::ProjectDefinition,
             discovery: FragmentDiscovery::DiscoverNestedModules,
         }
     }
 
-    fn compiler_define(current_module: ModuleId, env: QuotedSourceRoot) -> Self {
+    fn compiler_define(current_module: ModuleId) -> Self {
         Self {
             owner_module: current_module,
             export_public: true,
-            function_env: FunctionEnvSource::Fixed(env),
             discovery: FragmentDiscovery::DiscoverNestedModules,
         }
     }
@@ -219,23 +207,7 @@ pub(crate) fn publish_protocol_surface(
         .map_err(|error| emit_surface_read_error(world, "protocol module info synthesis failed", &error))?;
     let function_id = world.reference_function(module_id, function.name.clone(), function.arity);
     scope = world.bind_namespace(scope, function.name.clone(), NamespaceSymbol::Function(function_id));
-    let function_scope = ScopeSnapshot::function(module_id, scope, function_id);
-    let builder = function.source.builder();
-    let env_root = world
-        .project_env_value(&builder, function_scope, QuotedLexicalContextKind::Definition)
-        .map_err(|error| emit_surface_read_error(world, "protocol __info__ env projection failed", &error))?;
-    let env = function.source.subroot(env_root);
-    let publication = publish_function_source(
-        world,
-        code_id,
-        module_id,
-        module_id,
-        scope,
-        &function,
-        true,
-        Vec::new(),
-        &env,
-    );
+    let publication = publish_function_source(world, code_id, module_id, module_id, scope, &function, true, Vec::new());
     outputs.push(publication.output.clone());
     if publication.changed {
         changed.push(publication.output);
@@ -673,7 +645,7 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
                 ),
             ));
         }
-        let context = FragmentPublicationContext::compiler_define(self.current_module, service.env.clone());
+        let context = FragmentPublicationContext::compiler_define(self.current_module);
         if let Some(blocked) = self.apply_surface_fragment(&surface, &context)? {
             return Err(emit_job_diagnostic(
                 self.world,
@@ -698,11 +670,6 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
         function: &FunctionForm,
         context: &FragmentPublicationContext,
     ) -> Result<FunctionPublication, FatalError> {
-        let function_id = self
-            .world
-            .reference_function(function_module, function.name.clone(), function.arity);
-        let function_scope = ScopeSnapshot::function(function_module, namespace, function_id);
-        let env = self.function_env(&function.source, function_scope, &context.function_env)?;
         Ok(publish_function_source(
             self.world,
             self.code_id,
@@ -712,29 +679,7 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
             function,
             context.export_public,
             required_remote_macro_list(&self.required_remote_macros),
-            &env,
         ))
-    }
-
-    fn function_env(
-        &self,
-        source: &QuotedSourceRoot,
-        scope: ScopeSnapshot,
-        env_source: &FunctionEnvSource,
-    ) -> Result<QuotedSourceRoot, FatalError> {
-        match env_source {
-            FunctionEnvSource::ProjectDefinition => {
-                let builder = source.builder();
-                let env = self
-                    .world
-                    .project_env_value(&builder, scope, QuotedLexicalContextKind::Definition)
-                    .map_err(|error| {
-                        emit_internal_surface_error(self.world, format!("__ENV__ projection failed: {error}"))
-                    })?;
-                Ok(source.subroot(env))
-            }
-            FunctionEnvSource::Fixed(env) => Ok(env.clone()),
-        }
     }
 
     fn apply_item_macro_call(&mut self, macro_call: &MacroCallForm) -> Result<Option<JobEffects>, FatalError> {
@@ -1243,7 +1188,6 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
         let context = FragmentPublicationContext {
             owner_module: impl_module,
             export_public: false,
-            function_env: FunctionEnvSource::ProjectDefinition,
             discovery: FragmentDiscovery::AlreadyIndexed,
         };
         let mut callbacks = HashMap::new();
@@ -1399,7 +1343,6 @@ fn publish_function_source(
     function: &FunctionForm,
     export_public: bool,
     required_remote_macros: Vec<FunctionId>,
-    env: &super::source::QuotedSourceRoot,
 ) -> FunctionPublication {
     let function_id = world.reference_function(function_module, function.name.clone(), function.arity);
     let revision = world.note_function_source(
@@ -1428,7 +1371,7 @@ fn publish_function_source(
     let source = world
         .function_source(function_id)
         .expect("function source should exist immediately after compiler service publication");
-    emit_compiler_service_define(world, function_id, &source, revision, env);
+    emit_compiler_service_define(world, function_id, &source, revision);
     FunctionPublication {
         function: function_id,
         output: FactKey::FunctionSource(function_id),
@@ -1437,13 +1380,7 @@ fn publish_function_source(
     }
 }
 
-fn emit_compiler_service_define(
-    world: &World<'_>,
-    function: FunctionId,
-    source: &FunctionSource,
-    changed: bool,
-    env: &super::source::QuotedSourceRoot,
-) {
+fn emit_compiler_service_define(world: &World<'_>, function: FunctionId, source: &FunctionSource, changed: bool) {
     let function_ref = world.function_ref(function);
     world.tel().execute(
         &["fz", "compiler2", "compiler_service", "define"],
@@ -1456,7 +1393,6 @@ fn emit_compiler_service_define(
             namespace: source.namespace.as_u32() as u64,
             source_heap_id: source.source.key().heap_id as u64,
             source_root_ref: source.source.root().raw_word(),
-            env_root_ref: env.root().raw_word(),
         },
         &metadata! {
             origin: "fz_compiler",
