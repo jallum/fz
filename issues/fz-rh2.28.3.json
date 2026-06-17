@@ -1,7 +1,8 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-rh2.28.2"
+    "fz-rh2.28.2",
+    "fz-s00"
   ],
   "blocks": [
     "fz-rh2.28.4"
@@ -15,5 +16,5 @@
   "status": "open",
   "title": "Compiler2 definition env: carry it on the definition",
   "type": "task",
-  "updated_at": "2026-06-17T17:53:05Z"
+  "updated_at": "2026-06-17T17:55:35Z"
 }
