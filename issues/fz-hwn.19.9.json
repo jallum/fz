@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-17T13:41:38Z",
+  "description": "Goal\nMake the artifact ladder classify call return flow from settled TransportPlan facts, then carry that classification through BackendProgram. Native lowering must not rediscover return-flow shape by comparing repr vectors.\n\nDesign\nAdd an explicit call-return-flow record to MaterializedCallEdge, AbiReadyCallEdge, EmissionReadyCallEdge, and BackendTail direct/closure calls. The record should distinguish Tail, Continue-through-ReturnPayload, and Deliver-through-ResumePayload using TransportPosition identities, not locally derived shapes.\n\nStrategy\nIn jobs/artifact.rs, resolve the flow once from ControlDestination plus TransportPlan positions: Deliver(entry) uses ResumePayload; Return uses ExecutableReturn for caller/callee and the new ReturnPayload position. Tail is allowed only when the settled contracts are identical by fact, not because a later stage can coerce them. Backend lowering copies the resolved flow unchanged.\n\nSignal\nArtifact/backend tests assert multi_relay carries a non-tail ReturnPayload flow before native lowering runs, and a simple same-contract call carries Tail. Tests must assert TransportPosition identity and ShapeId facts, not just AbiValueRepr equality.\n\nRequired edits\nsrc/compiler2/artifact.rs, src/compiler2/jobs/artifact.rs, src/compiler2/jobs/backend.rs, relevant drive tests, outline.md/proposal.html if terminology moves.\n\nRemoval target\nNo new compatibility mode. No adapter structs. No repr-vector comparison as the authority for choosing call return flow.\n\nChecks\nFocused artifact/backend tests, cargo check, and rg for the old mismatched-tail-return phrasing in live tests/docs.",
+  "id": "fz-hwn.19.9",
+  "labels": [],
+  "parent": "fz-hwn.19",
+  "priority": 1,
+  "status": "open",
+  "title": "Transport return-flow: carry resolved call return flow through artifact and backend",
+  "type": "task",
+  "updated_at": "2026-06-17T13:41:38Z"
+}
