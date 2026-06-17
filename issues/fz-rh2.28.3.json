@@ -11,9 +11,15 @@
   "id": "fz-rh2.28.3",
   "labels": [],
   "parent": "fz-rh2.28",
+  "comments": [
+    {
+      "text": "Dependency note: blocked by fz-s00 (the phase-vs-origin / read-source-once step), which replaced the deleted fz-rh2.28.2. Where the description says \"Depends on fz-rh2.28.2,\" read fz-s00.",
+      "timestamp": "2026-06-17T17:55:56Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "Compiler2 definition env: carry it on the definition",
   "type": "task",
-  "updated_at": "2026-06-17T17:55:35Z"
+  "updated_at": "2026-06-17T17:55:56Z"
 }
