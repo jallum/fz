@@ -167,6 +167,10 @@ pub enum CodegenSeam {
         callsite: CallSiteId,
         entry: ControlEntryId,
     },
+    ReturnContinuation {
+        executable: ExecutableSymbol,
+        callsite: CallSiteId,
+    },
     TailCall {
         executable: ExecutableSymbol,
         callsite: CallSiteId,
@@ -234,6 +238,10 @@ pub enum TransportPosition {
         executable: ExecutableSymbol,
         callsite: Option<CallSiteId>,
         entry: ControlEntryId,
+    },
+    ReturnPayload {
+        executable: ExecutableSymbol,
+        callsite: CallSiteId,
     },
     CallArg {
         executable: ExecutableSymbol,

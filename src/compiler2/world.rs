@@ -158,6 +158,13 @@ fn format_codegen_seam_fact(fact: &CodegenSeamFact) -> String {
                 entry.as_u32()
             )
         }
+        CodegenSeam::ReturnContinuation { executable, callsite } => {
+            format!(
+                "ReturnContinuation(function {}, callsite {})",
+                executable.activation.function.as_u32(),
+                callsite.as_u32()
+            )
+        }
         CodegenSeam::TailCall { executable, callsite } => {
             format!(
                 "TailCall(function {}, callsite {})",
@@ -868,6 +875,11 @@ impl<'a> World<'a> {
             .iter()
             .filter(|fact| matches!(fact.seam, CodegenSeam::ContinuationEntry { .. }))
             .count() as u64;
+        let codegen_return_continuation_seam_fact_count = plan
+            .codegen_seam_facts
+            .iter()
+            .filter(|fact| matches!(fact.seam, CodegenSeam::ReturnContinuation { .. }))
+            .count() as u64;
         let codegen_tail_call_seam_fact_count = plan
             .codegen_seam_facts
             .iter()
@@ -910,6 +922,7 @@ impl<'a> World<'a> {
                 codegen_block_param_seam_fact_count: codegen_block_param_seam_fact_count,
                 codegen_return_delivery_seam_fact_count: codegen_return_delivery_seam_fact_count,
                 codegen_continuation_entry_seam_fact_count: codegen_continuation_entry_seam_fact_count,
+                codegen_return_continuation_seam_fact_count: codegen_return_continuation_seam_fact_count,
                 codegen_tail_call_seam_fact_count: codegen_tail_call_seam_fact_count,
                 codegen_callable_boundary_seam_fact_count: codegen_callable_boundary_seam_fact_count,
                 codegen_extern_boundary_seam_fact_count: codegen_extern_boundary_seam_fact_count,

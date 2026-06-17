@@ -82,6 +82,7 @@ pub struct MaterializedExecutableTransport {
     pub input_positions: Vec<TransportPosition>,
     pub return_position: TransportPosition,
     pub resume_positions: Vec<TransportPosition>,
+    pub return_payload_positions: Vec<TransportPosition>,
     pub entry_capture_positions: Vec<TransportPosition>,
     pub call_arg_positions: Vec<TransportPosition>,
     pub value_positions: Vec<TransportPosition>,

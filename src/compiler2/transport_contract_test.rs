@@ -474,6 +474,136 @@ fn main(), do: inc(1.0)
 }
 
 #[test]
+fn compiler2_transport_flow_names_tail_return_payload_position() {
+    let source = r#"
+fn inc(x), do: x + 1.0
+fn main(), do: inc(1.0)
+"#;
+
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new(&tel);
+    world.submit_code(
+        Some("transport_tail_return_payload_position.fz".to_string()),
+        source.to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    assert_resolved(world.drive_for(None), "tail return-payload fixture should settle");
+
+    let plan = transport_plan(&world, root);
+    let main = executable_for(&world, &plan, "main", 0);
+    let inc = executable_for(&world, &plan, "inc", 1);
+    let main_return = plan_shape_at(
+        &plan,
+        &TransportPosition::ExecutableReturn {
+            executable: main.clone(),
+        },
+    );
+    let inc_return = plan_shape_at(&plan, &TransportPosition::ExecutableReturn { executable: inc });
+    let return_payloads = plan
+        .positions
+        .iter()
+        .filter_map(|(position, shape)| match position {
+            TransportPosition::ReturnPayload { executable, callsite } if executable == &main => {
+                Some((*callsite, *shape))
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let [(callsite, payload_shape)] = return_payloads.as_slice() else {
+        panic!("main/0 should publish exactly one callsite return payload: {return_payloads:?}");
+    };
+
+    assert_eq!(
+        *payload_shape, inc_return,
+        "the callsite return payload is the producer return shape"
+    );
+    assert_eq!(
+        *payload_shape, main_return,
+        "a true tail return shares the caller return contract shape"
+    );
+    let payload_lanes = shape_leaf_lanes(&world, *payload_shape);
+    let [(leaf_shape, lane)] = payload_lanes.as_slice() else {
+        panic!("inc/1 should return one leaf lane");
+    };
+    assert_seam_fact(
+        &plan,
+        |seam| {
+            matches!(seam, CodegenSeam::ReturnContinuation { executable, callsite: candidate }
+            if executable == &main && candidate == callsite)
+        },
+        Some(*leaf_shape),
+        *lane,
+        CodegenLaneRepr::RawF64,
+        "return payload lanes should publish callsite result seam facts",
+    );
+}
+
+#[test]
+fn compiler2_transport_flow_names_non_tail_return_payload_position() {
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new(&tel);
+    world.submit_code(
+        Some("fixtures2/behavior/multi_relay.fz".to_string()),
+        include_str!("../../fixtures2/behavior/multi_relay.fz").to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    drive_until_transport_plan(&mut world, root, "multi_relay return-payload fixture should settle");
+
+    let plan = transport_plan(&world, root);
+    let return_payloads = plan
+        .positions
+        .iter()
+        .filter_map(|(position, payload_shape)| match position {
+            TransportPosition::ReturnPayload { executable, callsite } => {
+                let caller_return = plan_shape_at(
+                    &plan,
+                    &TransportPosition::ExecutableReturn {
+                        executable: executable.clone(),
+                    },
+                );
+                Some((executable.clone(), *callsite, *payload_shape, caller_return))
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        !return_payloads.is_empty(),
+        "calls with dest=Return should publish callsite return payload positions"
+    );
+    let Some((executable, callsite, payload_shape, _caller_return)) = return_payloads
+        .iter()
+        .find(|(_, _, payload_shape, caller_return)| payload_shape != caller_return)
+        .cloned()
+    else {
+        panic!(
+            "multi_relay should contain at least one callsite payload whose producer shape differs from the caller return contract: {return_payloads:?}"
+        );
+    };
+    let leaf_lanes = shape_leaf_lanes(&world, payload_shape);
+    assert!(
+        !leaf_lanes.is_empty(),
+        "the non-tail return payload should still carry producer lanes"
+    );
+    for (leaf_shape, lane) in leaf_lanes {
+        assert!(
+            plan.codegen_seam_facts.iter().any(|fact| {
+                matches!(
+                    &fact.seam,
+                    CodegenSeam::ReturnContinuation {
+                        executable: candidate_executable,
+                        callsite: candidate_callsite,
+                    } if candidate_executable == &executable && *candidate_callsite == callsite
+                ) && fact.shape == Some(leaf_shape)
+                    && fact.lane == lane
+            }),
+            "return payload {executable:?} callsite {} should publish seam facts for lane {:?}",
+            callsite.as_u32(),
+            lane
+        );
+    }
+}
+
+#[test]
 fn compiler2_transport_flow_publishes_callable_boundary_codegen_seams() {
     let source = r#"
 fn make(), do: fn (x) -> x + 1.0 end
@@ -2873,6 +3003,7 @@ fn position_executable(position: &TransportPosition) -> &super::transport::Execu
         TransportPosition::ExecutableInput { executable, .. }
         | TransportPosition::ExecutableReturn { executable }
         | TransportPosition::ResumePayload { executable, .. }
+        | TransportPosition::ReturnPayload { executable, .. }
         | TransportPosition::CallArg { executable, .. }
         | TransportPosition::EntryCapture { executable, .. }
         | TransportPosition::Value { executable, .. } => executable,
@@ -2885,6 +3016,7 @@ fn seam_executable(seam: &CodegenSeam) -> Option<&super::transport::ExecutableSy
         | CodegenSeam::BlockParam { executable, .. }
         | CodegenSeam::ReturnDelivery { executable }
         | CodegenSeam::ContinuationEntry { executable, .. }
+        | CodegenSeam::ReturnContinuation { executable, .. }
         | CodegenSeam::TailCall { executable, .. }
         | CodegenSeam::ExternBoundary { executable } => Some(executable),
         CodegenSeam::CallableBoundary { .. } | CodegenSeam::FirstClassPublication { .. } => None,
@@ -2896,6 +3028,7 @@ fn transport_position_is_semantic(position: &TransportPosition) -> bool {
         TransportPosition::ExecutableInput { .. }
         | TransportPosition::ExecutableReturn { .. }
         | TransportPosition::ResumePayload { .. }
+        | TransportPosition::ReturnPayload { .. }
         | TransportPosition::CallArg { .. }
         | TransportPosition::EntryCapture { .. }
         | TransportPosition::Value { .. } => true,

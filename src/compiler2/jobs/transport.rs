@@ -492,6 +492,50 @@ pub(super) fn derive_transport_plan(world: &mut World<'_>, root_id: RootId) -> R
             }
         }
 
+        let mut return_callsites = context
+            .local_sources
+            .iter()
+            .filter_map(|(value, source)| {
+                let TransportSource::CallsiteReturn(callsite) = source else {
+                    return None;
+                };
+                matches!(context.callsite_dests.get(callsite), Some(ControlDestination::Return))
+                    .then_some((*callsite, *value))
+            })
+            .collect::<Vec<_>>();
+        return_callsites.sort_by_key(|(callsite, _)| callsite.as_u32());
+        return_callsites.dedup_by_key(|(callsite, _)| *callsite);
+        for (callsite, value) in return_callsites {
+            let position = TransportPosition::ReturnPayload {
+                executable: symbol.clone(),
+                callsite,
+            };
+            if let Some(callee_return) =
+                callsite_callee_return_position(world, &contexts, executable, context, callsite)
+            {
+                shape_graph.equal(position, callee_return);
+            } else {
+                let ty = context
+                    .analysis
+                    .value_types
+                    .get(&value)
+                    .copied()
+                    .unwrap_or_else(|| world.types_mut().any());
+                let shape = shape_for_source(
+                    world,
+                    &contexts,
+                    &mut facts,
+                    executable,
+                    context,
+                    ty,
+                    &context.runtime_demand.return_demand,
+                    TransportSource::CallsiteReturn(callsite),
+                    Some(position.clone()),
+                );
+                shape_graph.anchor(position, shape);
+            }
+        }
+
         let mut entry_captures = context.runtime_demand.entry_capture_demands.iter().collect::<Vec<_>>();
         entry_captures.sort_by_key(|(entry, _)| entry.as_u32());
         for (&entry, demands) in entry_captures {
@@ -541,7 +585,7 @@ pub(super) fn derive_transport_plan(world: &mut World<'_>, root_id: RootId) -> R
                 .is_ignore()
                 .then_some(resume.callsite)
                 .flatten()
-                .and_then(|callsite| resume_callee_return_position(world, &contexts, executable, context, callsite));
+                .and_then(|callsite| callsite_callee_return_position(world, &contexts, executable, context, callsite));
             if let Some(callee_return) = shared_return {
                 shape_graph.equal(position, callee_return);
             } else {
@@ -804,6 +848,18 @@ fn derive_codegen_seam_facts(
                         });
                     }
                 }
+                TransportPosition::ReturnPayload { executable, callsite } => {
+                    let repr = codegen_repr_for_lane(world, lane);
+                    out.push(CodegenSeamFact {
+                        seam: CodegenSeam::ReturnContinuation {
+                            executable: executable.clone(),
+                            callsite: *callsite,
+                        },
+                        shape: Some(leaf_shape),
+                        lane,
+                        repr,
+                    });
+                }
                 TransportPosition::EntryCapture { executable, entry, .. } => {
                     let repr = block_param_codegen_repr_for_lane(world, lane);
                     out.push(CodegenSeamFact {
@@ -921,6 +977,17 @@ fn derive_codegen_seam_facts(
                             repr: CodegenLaneRepr::ValueRef,
                         });
                     }
+                    TransportPosition::ReturnPayload { executable, callsite } => {
+                        out.push(CodegenSeamFact {
+                            seam: CodegenSeam::ReturnContinuation {
+                                executable: executable.clone(),
+                                callsite: *callsite,
+                            },
+                            shape: None,
+                            lane: descr.published_value_lane,
+                            repr: CodegenLaneRepr::ValueRef,
+                        });
+                    }
                     TransportPosition::ResumePayload {
                         executable,
                         callsite: None,
@@ -979,14 +1046,12 @@ fn callable_function_entry_publication_lanes(world: &World<'_>, descr: &Callable
     lanes
 }
 
-/// The `ExecutableReturn` position a call resume is delivered from, when the
-/// call settles to exactly one known callee executable. A delivered resume and
-/// the producing return are the same runtime value, so they share one
-/// `ShapeId`: the resume position is unioned with the callee return position
-/// rather than re-projected through the caller's (possibly `Ignore`) demand. A
-/// caller that ignores or narrows the result settles that locally; it never
-/// mutates the transported return shape.
-fn resume_callee_return_position(
+/// The `ExecutableReturn` position a call result is produced from, when the
+/// call settles to exactly one known callee executable. Resume payloads and
+/// return payloads are callsite result positions, so they share the producer
+/// return `ShapeId` instead of mutating that shape through the caller's local
+/// demand.
+fn callsite_callee_return_position(
     world: &World<'_>,
     contexts: &HashMap<ExecutableKey, ExecutableContext>,
     executable: &ExecutableKey,
@@ -1076,9 +1141,10 @@ fn codegen_repr_for_lane(world: &World<'_>, lane: LaneId) -> CodegenLaneRepr {
 
 /// Whether a callable boundary is reached by the callable escaping into fz
 /// value space — returned, bound to an fz parameter, delivered as a resume
-/// payload, or captured. Such a boundary is invoked through the generic boxed
-/// closure-apply ABI. A boundary reached only as a grounded provider callback
-/// (an extern call argument, or merely the local construction value) is not.
+/// payload, returned through a callsite result payload, or captured. Such a
+/// boundary is invoked through the generic boxed closure-apply ABI. A boundary
+/// reached only as a grounded provider callback (an extern call argument, or
+/// merely the local construction value) is not.
 fn boundary_escapes_into_fz_space(facts: Option<&super::super::transport::BoundaryFacts>) -> bool {
     facts.is_some_and(|facts| {
         facts.publications.iter().any(|position| {
@@ -1087,6 +1153,7 @@ fn boundary_escapes_into_fz_space(facts: Option<&super::super::transport::Bounda
                 TransportPosition::ExecutableReturn { .. }
                     | TransportPosition::ExecutableInput { .. }
                     | TransportPosition::ResumePayload { .. }
+                    | TransportPosition::ReturnPayload { .. }
                     | TransportPosition::EntryCapture { .. }
             )
         })
@@ -1128,16 +1195,23 @@ fn codegen_seam_fact_sort_key(fact: &CodegenSeamFact) -> CodegenSeamFactSortKey 
             entry.as_u32(),
             callsite.as_u32() as usize,
         ),
-        CodegenSeam::TailCall { executable, callsite } => (
+        CodegenSeam::ReturnContinuation { executable, callsite } => (
             4,
             executable_symbol_sort_key(executable),
             0,
             0,
             callsite.as_u32() as usize,
         ),
-        CodegenSeam::CallableBoundary { boundary } => (5, empty_executable_sort_key(), boundary.as_u32(), 0, 0),
-        CodegenSeam::ExternBoundary { executable } => (6, executable_symbol_sort_key(executable), 0, 0, 0),
-        CodegenSeam::FirstClassPublication { boundary } => (7, empty_executable_sort_key(), boundary.as_u32(), 0, 0),
+        CodegenSeam::TailCall { executable, callsite } => (
+            5,
+            executable_symbol_sort_key(executable),
+            0,
+            0,
+            callsite.as_u32() as usize,
+        ),
+        CodegenSeam::CallableBoundary { boundary } => (6, empty_executable_sort_key(), boundary.as_u32(), 0, 0),
+        CodegenSeam::ExternBoundary { executable } => (7, executable_symbol_sort_key(executable), 0, 0, 0),
+        CodegenSeam::FirstClassPublication { boundary } => (8, empty_executable_sort_key(), boundary.as_u32(), 0, 0),
     };
     let repr = match fact.repr {
         CodegenLaneRepr::ValueRef => 0,

@@ -253,6 +253,7 @@ fn materialized_executable_transport(
     let mut input_positions = Vec::new();
     let mut return_position = None;
     let mut resume_positions = Vec::new();
+    let mut return_payload_positions = Vec::new();
     let mut entry_capture_positions = Vec::new();
     let mut call_arg_positions = Vec::new();
     let mut value_positions = Vec::new();
@@ -264,6 +265,7 @@ fn materialized_executable_transport(
             TransportPosition::ExecutableInput { .. } => input_positions.push(position.clone()),
             TransportPosition::ExecutableReturn { .. } => return_position = Some(position.clone()),
             TransportPosition::ResumePayload { .. } => resume_positions.push(position.clone()),
+            TransportPosition::ReturnPayload { .. } => return_payload_positions.push(position.clone()),
             TransportPosition::EntryCapture { .. } => entry_capture_positions.push(position.clone()),
             TransportPosition::CallArg { .. } => call_arg_positions.push(position.clone()),
             TransportPosition::Value { .. } => value_positions.push(position.clone()),
@@ -271,6 +273,7 @@ fn materialized_executable_transport(
     }
     sort_transport_positions(&mut input_positions);
     sort_transport_positions(&mut resume_positions);
+    sort_transport_positions(&mut return_payload_positions);
     sort_transport_positions(&mut entry_capture_positions);
     sort_transport_positions(&mut call_arg_positions);
     sort_transport_positions(&mut value_positions);
@@ -281,6 +284,7 @@ fn materialized_executable_transport(
             panic!("transport plan should publish one return position for materialized executable {executable:?}")
         }),
         resume_positions,
+        return_payload_positions,
         entry_capture_positions,
         call_arg_positions,
         value_positions,
@@ -302,6 +306,7 @@ fn transport_position_executable(position: &TransportPosition) -> &ExecutableSym
         TransportPosition::ExecutableInput { executable, .. }
         | TransportPosition::ExecutableReturn { executable }
         | TransportPosition::ResumePayload { executable, .. }
+        | TransportPosition::ReturnPayload { executable, .. }
         | TransportPosition::CallArg { executable, .. }
         | TransportPosition::EntryCapture { executable, .. }
         | TransportPosition::Value { executable, .. } => executable,
@@ -333,12 +338,15 @@ fn transport_position_sort_key(position: &TransportPosition) -> TransportPositio
             entry.as_u32(),
             0,
         ),
+        TransportPosition::ReturnPayload { executable, callsite } => {
+            (3, transport_executable_sort_key(executable), callsite.as_u32(), 0, 0)
+        }
         TransportPosition::EntryCapture {
             executable,
             entry,
             capture_index,
         } => (
-            3,
+            4,
             transport_executable_sort_key(executable),
             0,
             entry.as_u32(),
@@ -349,14 +357,14 @@ fn transport_position_sort_key(position: &TransportPosition) -> TransportPositio
             callsite,
             semantic_index,
         } => (
-            4,
+            5,
             transport_executable_sort_key(executable),
             callsite.as_u32(),
             0,
             *semantic_index,
         ),
         TransportPosition::Value { executable, value } => {
-            (5, transport_executable_sort_key(executable), value.as_u32(), 0, 0)
+            (6, transport_executable_sort_key(executable), value.as_u32(), 0, 0)
         }
     }
 }

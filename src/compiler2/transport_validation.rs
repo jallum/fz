@@ -83,6 +83,7 @@ impl ValidationContext<'_, '_> {
                 | CodegenSeam::BlockParam { .. }
                 | CodegenSeam::ReturnDelivery { .. }
                 | CodegenSeam::ContinuationEntry { .. }
+                | CodegenSeam::ReturnContinuation { .. }
                 | CodegenSeam::TailCall { .. }
                 | CodegenSeam::ExternBoundary { .. } => {
                     if let Some(executable) = seam_executable(&fact.seam) {
@@ -257,6 +258,7 @@ fn position_executable(position: &TransportPosition) -> &ExecutableSymbol {
         TransportPosition::ExecutableInput { executable, .. }
         | TransportPosition::ExecutableReturn { executable }
         | TransportPosition::ResumePayload { executable, .. }
+        | TransportPosition::ReturnPayload { executable, .. }
         | TransportPosition::CallArg { executable, .. }
         | TransportPosition::EntryCapture { executable, .. }
         | TransportPosition::Value { executable, .. } => executable,
@@ -269,6 +271,7 @@ fn seam_executable(seam: &CodegenSeam) -> Option<&ExecutableSymbol> {
         | CodegenSeam::BlockParam { executable, .. }
         | CodegenSeam::ReturnDelivery { executable }
         | CodegenSeam::ContinuationEntry { executable, .. }
+        | CodegenSeam::ReturnContinuation { executable, .. }
         | CodegenSeam::TailCall { executable, .. }
         | CodegenSeam::ExternBoundary { executable } => Some(executable),
         CodegenSeam::CallableBoundary { .. } | CodegenSeam::FirstClassPublication { .. } => None,

@@ -183,6 +183,7 @@ SemanticClosed(root)
   -> TransportPlan(root)
        membership: executable symbols
        positions: TransportPosition -> ShapeId
+       call result payloads: ResumePayload for Deliver, ReturnPayload for Return
        lane facts: LaneId -> ty/transport class
        callable facts: CallableId -> direct surfaces/captures/boundary ids
        boundary facts: BoundaryId -> published contract
@@ -358,7 +359,7 @@ Replace with:
 
 <h3>8.3.1 Transport/artifact seam mini-epic</h3>
 
-<p>This is <code>fz-hwn.19.2</code>. Artifact becomes a consumer of <code>SemanticClosed(root)</code> plus <code>TransportPlan(root)</code>. It may freeze closed bodies, selected call edges, effects, extern marshal facts, stable inventory ids, and backend/native packaging. It must not calculate shapes, lanes, callable boundaries, resume payload layouts, return ABI, or codegen representations from <code>RuntimeDemand</code>, <code>TrashRuntimeValueLayout</code>, local types, or lowered-body walks.</p>
+<p>This is <code>fz-hwn.19.2</code>. Artifact becomes a consumer of <code>SemanticClosed(root)</code> plus <code>TransportPlan(root)</code>. It may freeze closed bodies, selected call edges, effects, extern marshal facts, stable inventory ids, and backend/native packaging. It must not calculate shapes, lanes, callable boundaries, resume payload layouts, return payload layouts, return ABI, or codegen representations from <code>RuntimeDemand</code>, <code>TrashRuntimeValueLayout</code>, local types, or lowered-body walks.</p>
 
 <pre>
 SemanticClosed(root) + TransportPlan(root)
@@ -416,8 +417,8 @@ SemanticClosed(root) + TransportPlan(root)
       <td>Codegen seam fact keyed by <code>LaneId</code> plus seam.</td>
     </tr>
     <tr>
-      <td class="term">Shape mismatch adapters caused by local projections</td>
-      <td>No adapter: both sides read the same <code>TransportPlan</code> facts.</td>
+      <td class="term">Local return-shape reconciliation</td>
+      <td><code>TransportPlan</code> names producer return, <code>ReturnPayload</code>, and caller return positions; artifact selects return flow from those facts.</td>
     </tr>
   </tbody>
 </table>
@@ -449,7 +450,7 @@ rg -n "\b(TrashRuntimeValueLayout|TrashRuntimeInputLayout|TrashRuntimeParamLayou
     </tr>
     <tr>
       <td><code>src/compiler2/native_codegen/*</code> no longer carries <code>TrashDeliveredShape</code>, <code>TrashNativeDemandAbi</code>, delivered-shape recovery helpers, return-shape conversion functions, tuple-return rediscovery, or compiler2-local repr decisions.</td>
-      <td><code>fz-hwn.19.5</code>: native block-param reprs live on <code>NativeBody</code>, native lowering emits <code>Term::ReturnLanes(Vec&lt;Var&gt;)</code> for transport return lanes, lowers non-empty mismatched direct tail returns through generated <code>ReturnLanes</code> continuations, and <code>ArgRepr</code> remains only as a low-level emission enum filled from native handoff facts.</td>
+      <td><code>fz-hwn.19.5</code>: native block-param reprs live on <code>NativeBody</code>, native lowering emits <code>Term::ReturnLanes(Vec&lt;Var&gt;)</code> for transport return lanes, and <code>ArgRepr</code> remains only as a low-level emission enum filled from native handoff facts. <code>fz-hwn.19.8</code> adds <code>ReturnPayload</code> positions so non-tail return flow is a settled transport edge rather than a native-local mismatch decision.</td>
     </tr>
     <tr>
       <td><code>src/ir_codegen/*</code> still has non-compiler2 legacy <code>ArgRepr::from_ty</code> and <code>for_block_param_ty</code> paths.</td>

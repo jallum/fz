@@ -65,8 +65,8 @@ The source data is semantic evidence, not layout:
 - callable-flow evidence: per local callable producer target function, ordered
   captures, direct surfaces, first-class boundary surfaces, opaque/escape bits,
   and canonical executable resolutions when the callable is directly reached
-- flow evidence: lowered control edges, call summaries, resume destinations,
-  entry captures, and local callable producers
+- flow evidence: lowered control edges, call summaries, resume/return
+  destinations, entry captures, and local callable producers
 - boundary evidence: which callable values actually escape or publish a
   first-class surface
 
@@ -292,7 +292,8 @@ Cutover classification:
   or `boundary_return_abi` as live artifact authority. The focused
   transport/artifact seam now uses `TransportPosition -> ShapeId`, executable
   membership, `CallableId` facts, `BoundaryId` contracts, and seam facts from
-  `TransportPlan`.
+  `TransportPlan`. Call result payloads are named positions too:
+  `ResumePayload` for `Deliver(entry)` and `ReturnPayload` for `Return`.
 - `src/ir_interp/backend.rs`, `src/ir_interp/mod.rs`, and
   `src/compiler2/jobs/native.rs` now share the non-recursive
   `TransportValue<Lane>` carrier. Backend interpreter lanes are `AnyValue`;
@@ -306,9 +307,10 @@ Cutover classification:
   decisions.
   `fz-hwn.19.5` moved native block-param reprs into `NativeBody`, added
   `Term::ReturnLanes(Vec<Var>)` so native lowering hands return transport
-  lanes directly to codegen, lowers non-empty mismatched direct tail returns
-  through generated `ReturnLanes` continuations, and left `ArgRepr` as an
-  emission enum filled from native handoff facts.
+  lanes directly to codegen, and left `ArgRepr` as an emission enum filled from
+  native handoff facts. `fz-hwn.19.8` adds `ReturnPayload` positions so
+  non-tail return flow is a settled transport edge rather than a native-local
+  mismatch decision.
 - `src/ir_codegen/*` still has non-compiler2 legacy `ArgRepr::from_ty` and
   `for_block_param_ty` paths. They are not inputs to the new transport plan.
   They are either outside the compiler2 cutover or must be named by a separate
@@ -335,8 +337,8 @@ SemanticClosed(root) + TransportPlan(root)
 Transport owns `TransportPosition -> ShapeId`, `ShapeId` structure, lane facts,
 `CallableId` facts, `BoundaryId` contracts, and `CodegenSeamFact` rows. Artifact
 owns only stable projection and indexing over those facts. If artifact needs to
-know a runtime lane, callable target, boundary publication, resume payload, or
-codegen representation, it reads the plan/fact table. It does not walk
+know a runtime lane, callable target, boundary publication, resume payload,
+return payload, or codegen representation, it reads the plan/fact table. It does not walk
 `RuntimeDemand`, `TrashRuntimeValueLayout`, local types, or lowered bodies to
 re-derive the answer.
 
@@ -561,6 +563,7 @@ Tuple fields     -> Shape::Tuple([...])
 Direct callable  -> Shape::Callable(C_direct) + descriptor capture lanes + callable facts
 Escaped callable -> Shape::Callable(C_pub) + BoundaryId contract
 Resume payload   -> same ShapeId as producing return
+Return payload   -> callsite result position for returning through caller contract
 Codegen repr     -> seam fact, not shape
 ```
 
