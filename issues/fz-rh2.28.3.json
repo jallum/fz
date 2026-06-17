@@ -15,6 +15,10 @@
     {
       "text": "Dependency note: blocked by fz-s00 (the phase-vs-origin / read-source-once step), which replaced the deleted fz-rh2.28.2. Where the description says \"Depends on fz-rh2.28.2,\" read fz-s00.",
       "timestamp": "2026-06-17T17:55:56Z"
+    },
+    {
+      "text": "Superseded approach: env is NOT carried. __ENV__ is projected from the def scope and spliced via NamespaceSymbol::Splice at expansion (landed in fz-rh2.28.4). This ticket now covers only the deletion of the leftover telemetry-only def-time env scaffolding.",
+      "timestamp": "2026-06-17T19:11:12Z"
     }
   ],
   "priority": 2,
