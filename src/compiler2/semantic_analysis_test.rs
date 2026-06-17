@@ -290,6 +290,61 @@ fn main(), do: make(fn x -> x + 1 end)
     );
 }
 
+/// fz-hwn.19.2.4.11 (semantic root): a closure call to a *captured* callable
+/// must return the callable's resolved result type, not blanket `any`.
+///
+/// `wrap(g)` returns `fn (a, b) -> g.(a, b) end`. Once captured, `g`'s type
+/// erases its closure identity to the bare arrow `(α0, α1) -> α2`. When the
+/// wrapper is later called with concrete `int` arguments, the closure call
+/// `g.(a, b)` *does* resolve to the captured lambda and its callsite summary
+/// settles to `int` — but `resolve_closure_call` discarded the resolved arrow's
+/// declared return and answered the earned-`any` dynamic edge for the surface
+/// clause. That stale `any` is the wrapper's return, and it cascades: `apply`
+/// returns `any`, then `main` returns `any`, and the whole reduce family
+/// (fold_capture_closure, operator-ref reduce) collapses to `Ty(any)` transport
+/// lanes / native fatals downstream.
+///
+/// This is the minimal, transport-free reproduction: at semantic closure the
+/// root activation's return must be `int`. The `--dump activations` view of this
+/// shape shows the contradiction directly — the wrapper's sole callsite reads
+/// `=> int` while its activation reads `return: any`.
+#[test]
+fn compiler2_captured_callable_closure_call_keeps_resolved_return() {
+    let tel = crate::telemetry::ConfiguredTelemetry::new();
+    let mut world = World::new(&tel);
+    world.submit_code(
+        Some("captured_callable_return.fz".to_string()),
+        r#"
+fn apply(f, x, y), do: f.(x, y)
+fn wrap(g), do: (fn (a, b) -> g.(a, b) end)
+fn main(), do: apply(wrap(fn (x, y) -> x + y end), 1, 2)
+"#
+        .to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+
+    drive_until_semantic_closure(
+        &mut world,
+        root,
+        "captured-callable closure call should close semantic analysis",
+    );
+
+    let main_activation = super::identity::ActivationKey {
+        root,
+        function: world.root_function(root),
+        input: Vec::new(),
+    };
+    let main_return = world
+        .activation_return(&main_activation)
+        .expect("main/0 should have a settled return type at semantic closure");
+    assert!(
+        world.types().is_integer(&main_return),
+        "a captured callable resolved to an int-returning lambda must keep its int \
+         result through the wrapper; main/0 returned `{}` instead of `int`",
+        world.types().display(&main_return),
+    );
+}
+
 /// The provider index is reference-not-pull: an unused `defimpl` records its
 /// provider mapping at scope time but must not drag the protocol or the
 /// providing module into the program. A root that never dispatches `Susp`

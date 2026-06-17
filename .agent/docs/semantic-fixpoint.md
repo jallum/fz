@@ -44,7 +44,14 @@ entry on it would suppress siblings of the one starved path. The empty type
 `none` only ever arrives as a proven fact, so the dead-call checks
 (`resolve_direct_call`'s empty-argument drop) are true statements, and `any`
 appears only where it is earned: provider boundaries, unresolvable callable
-values, mailbox binds, and the root's public inputs. Published outputs:
+values, mailbox binds, and the root's public inputs. "Unresolvable" is the
+narrow case — a closure call whose callee type carries *no* matching
+closure-shaped clause. A callee that does name a concrete closure target whose
+analysis is merely pending this round is absence of evidence (`None`), not a
+dynamic edge: `resolve_closure_call` returns `None` and stays subscribed rather
+than earning `any`, because `ReturnType` is cumulative and a stale `any` unioned
+in early would never retract once the target settled to its real type. Published
+outputs:
 
 ```text
 ActivationAnalyzed(a)

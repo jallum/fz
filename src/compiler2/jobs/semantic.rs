@@ -1388,6 +1388,12 @@ fn resolve_closure_call(
     let latent_executables = Vec::new();
     let mut return_ty = None;
 
+    // A closure-shaped clause whose arity matches names a concrete target. Its
+    // analysis may still be pending this round (no summary yet), which is
+    // *absence of evidence*, not proof of a dynamic edge. We must not manufacture
+    // `any` from that absence: the cumulative `ReturnType` join would union the
+    // stale `any` and never retract it once the target settles to its real type.
+    let mut named_concrete_target = false;
     for clause in clauses {
         let Some(closure) = clause.closure else {
             continue;
@@ -1395,6 +1401,7 @@ fn resolve_closure_call(
         if clause.args.len() != arg_types.len() {
             continue;
         }
+        named_concrete_target = true;
         let function = function_id_of_closure_target(closure.target);
 
         let refined_args = refine_contract_inputs(world, arg_types.clone(), std::iter::once(clause.args.as_slice()));
@@ -1423,8 +1430,14 @@ fn resolve_closure_call(
     }
 
     if selected_targets.is_empty() {
-        // No closure-shaped clause: a dynamic callable, the other earned-any
-        // edge.
+        // A matching closure clause names a concrete target whose analysis is
+        // still pending: report no evidence yet (the `reads`/`waits` registered
+        // above re-wake this call when the target settles), never the earned
+        // `any`. Only a callee with no matching closure-shaped clause is the
+        // genuine dynamic edge that earns `any`.
+        if named_concrete_target {
+            return Ok((None, return_ty));
+        }
         return Ok((None, Some(any_ty(world))));
     };
     Ok((

@@ -1966,7 +1966,6 @@ end
 }
 
 #[test]
-#[ignore = "fz-hwn.19.2.4.11: direct reducer callable/operator-ref path loses exact integer facts"]
 fn compiler2_transport_plan_keeps_enum_reduce_operator_refs_direct_callable() {
     let source = r#"
 fn main() do
