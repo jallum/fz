@@ -291,6 +291,53 @@ fn main(), do: make(fn x -> x + 1 end)
     );
 }
 
+/// fz-hwn.19.2.4.16.1: a `defimpl Susp, for: List` lexically nested in `Mini` is
+/// hoisted to its own module `Susp.List` (Elixir's `__concat__`). Dispatch on a
+/// `List` receiver demands exactly that impl — `DefineModule(Susp.List)` — and
+/// never the lexical host `Mini`. This is the B-model win: the impl is the unit
+/// of demand, not the arbitrarily-named module it happens to sit inside.
+#[test]
+fn compiler2_protocol_impl_resolves_to_concat_module_not_host() {
+    let tel = crate::telemetry::ConfiguredTelemetry::new();
+    let mut world = World::new(&tel);
+    world.submit_code(
+        Some("impl_concat_module.fz".to_string()),
+        r#"
+defprotocol Greet do
+  @spec hello(t(a)) :: a
+  fn hello(x)
+end
+
+defmodule Mini do
+  defimpl Greet, for: List do
+    fn hello(list), do: list
+  end
+end
+
+fn main(), do: Greet.hello([1, 2, 3])
+"#
+        .to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+
+    drive_until_semantic_closure(&mut world, root, "nested defimpl should resolve via its concat module");
+    assert!(
+        world.fact_is_settled(&FactKey::SemanticClosed(root)),
+        "semantic closure should settle"
+    );
+
+    let impl_module = world.reference_module("Greet.List".to_string());
+    let host_module = world.reference_module("Mini".to_string());
+    assert!(
+        world.fact_is_settled(&FactKey::ModuleDefined(impl_module)),
+        "the hoisted impl module `Greet.List` should be defined to resolve the call"
+    );
+    assert!(
+        !world.has_fact(&FactKey::ModuleDefined(host_module)),
+        "the lexical host `Mini` must never be defined — the impl is the unit of demand, not its host"
+    );
+}
+
 /// fz-hwn.19.2.4.11 (semantic root): a closure call to a *captured* callable
 /// must return the callable's resolved result type, not blanket `any`.
 ///

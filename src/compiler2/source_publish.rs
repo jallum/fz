@@ -18,7 +18,7 @@ use crate::{measurements, metadata};
 
 use super::code::CodeId;
 use super::drive::{FactKey, Job, JobEffects, current_uses};
-use super::identity::{FunctionId, FunctionSource, ModuleId, NotedTypeDecl, TypeName};
+use super::identity::{FunctionId, FunctionSource, ModuleId, NotedTypeDecl, ProtocolImplSource, TypeName};
 use super::module_interface::{InterfaceCallableKind, InterfaceRequester, ModuleInterface, ModuleInterfaceCallable};
 use super::namespace::{Namespace, NamespaceSymbol};
 use super::protocol::ProtocolCallbackImpl;
@@ -256,6 +256,18 @@ pub(crate) fn publish_protocol_surface(
         changed,
         interface: ModuleInterface::new(callables),
     })
+}
+
+pub(crate) fn publish_protocol_impl_surface(
+    world: &mut World<'_>,
+    code_id: CodeId,
+    impl_module: ModuleId,
+    namespace: Namespace,
+    source: &ProtocolImplSource,
+) -> Result<ScopePublication, FatalError> {
+    let mut session = ScopeSession::new(world, code_id, ScopeSnapshot::module(impl_module, namespace));
+    session.publish_resolved_protocol_impl(impl_module, source)?;
+    Ok(session.complete())
 }
 
 pub(crate) fn discover_modules(
@@ -578,7 +590,7 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
                         }
                         // A `defimpl` binds no local name; its provider mapping is
                         // resolved at scope time where the namespace is available.
-                        ReservedSourceDefinition::ProtocolImpl { .. } => {}
+                        ReservedSourceDefinition::ProtocolImpl => {}
                     }
                 }
             }
@@ -813,9 +825,9 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
                 Ok(None)
             }
             ScopeForm::ProtocolImpl(protocol_impl) => {
-                let (mut outputs, mut changed) = self.define_protocol_impl(protocol_impl)?;
-                self.outputs.append(&mut outputs);
-                self.changed.append(&mut changed);
+                let code_text = self.world.code_text(self.code_id).to_owned();
+                let ctx = SurfaceSourceContext::new(self.code_id, &code_text);
+                self.register_protocol_impl(protocol_impl, &ctx)?;
                 Ok(None)
             }
             ScopeForm::MacroCall(macro_call) => self.apply_item_macro_call(macro_call),
@@ -838,7 +850,7 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
         for form in &body.forms {
             match form {
                 ScopeForm::ProtocolImpl(impl_form) => {
-                    self.record_protocol_impl_provider(module, &impl_form.protocol, &impl_form.target);
+                    self.register_protocol_impl(impl_form, ctx)?;
                 }
                 ScopeForm::Module(child) => {
                     let child_id = self.world.reference_child_module(module, &child.name);
@@ -855,8 +867,17 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
                         continue;
                     };
                     match definition {
-                        ReservedSourceDefinition::ProtocolImpl { protocol, target } => {
-                            self.record_protocol_impl_provider(module, &protocol, &target);
+                        ReservedSourceDefinition::ProtocolImpl => {
+                            let fragment = read_compiler_fragment_root(
+                                self.world,
+                                self.code_id,
+                                &macro_call.source,
+                                "raw scope-definition fragment",
+                            )?;
+                            if let Some(ScopeForm::ProtocolImpl(impl_form)) = fragment.forms.first() {
+                                let impl_form = impl_form.clone();
+                                self.register_protocol_impl(&impl_form, ctx)?;
+                            }
                         }
                         ReservedSourceDefinition::Module { .. } => {
                             let fragment = read_compiler_fragment_root(
@@ -880,24 +901,6 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
             }
         }
         Ok(())
-    }
-
-    fn record_protocol_impl_provider(&mut self, provider: ModuleId, protocol: &ModuleName, target: &ModuleName) {
-        let (Some(protocol_id), Some(target_id)) = (
-            self.world
-                .resolve_module_name(self.current_module, self.namespace, protocol),
-            self.world
-                .resolve_module_name(self.current_module, self.namespace, target),
-        ) else {
-            return;
-        };
-        let grew = self
-            .world
-            .register_protocol_impl_provider(protocol_id, target_id, provider);
-        self.outputs.push(FactKey::ProtocolImplProviders(protocol_id));
-        if grew {
-            self.changed.push(FactKey::ProtocolImplProviders(protocol_id));
-        }
     }
 
     fn blocked_effects(&self, mut effects: JobEffects) -> JobEffects {
@@ -1143,28 +1146,73 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
             }
         }
     }
-    fn define_protocol_impl(&mut self, protocol_impl: &ProtocolImplForm) -> Result<(Outputs, Changed), FatalError> {
-        let protocol =
-            reference_impl_protocol_module(self.world, self.current_module, self.namespace, &protocol_impl.protocol);
-        let target =
-            reference_impl_target_module(self.world, self.current_module, self.namespace, &protocol_impl.target);
+    /// Hoist a `defimpl Protocol, for: Target` to its own independently-
+    /// demandable module `Protocol.Target` (Elixir's `__concat__`). Discovery
+    /// records the impl as a `ProtocolImpl` module source resolved
+    /// name-accurately at its lexical site; `DefineModule(Protocol.Target)`
+    /// later publishes it without defining its lexical host. The provider index
+    /// points at `Protocol.Target` so dispatch demands exactly the impl.
+    fn register_protocol_impl(
+        &mut self,
+        form: &ProtocolImplForm,
+        ctx: &SurfaceSourceContext<'_>,
+    ) -> Result<(), FatalError> {
+        let protocol = reference_impl_protocol_module(self.world, self.current_module, self.namespace, &form.protocol);
+        let target = reference_impl_target_module(self.world, self.current_module, self.namespace, &form.target);
         let impl_module = reference_protocol_impl_module(self.world, protocol, target);
-        let code_text = self.world.code_text(self.code_id).to_owned();
-        let ctx = SurfaceSourceContext::new(self.code_id, &code_text);
-        let body_surface = read_protocol_impl_body_surface(protocol_impl, &ctx).map_err(|error| {
+        let body = read_protocol_impl_body_surface(form, ctx).map_err(|error| {
             emit_internal_surface_error(self.world, format!("quoted protocol impl body read failed: {error}"))
         })?;
+        let impl_name = self
+            .world
+            .module_name(impl_module)
+            .expect("protocol impl modules should have reverse names")
+            .to_string();
+        // The hoisted impl module `Protocol.Target` is conceptually a child of the
+        // protocol (Elixir's `Enumerable.List`), not of its lexical host: that is
+        // the parent that reconstructs its qualified name and keeps it independent.
+        let revision = self.world.index_protocol_impl_module(
+            impl_module,
+            self.code_id,
+            protocol,
+            last_segment(&impl_name).to_string(),
+            form.source.clone(),
+            ProtocolImplSource { protocol, target, body },
+        );
+        self.world.scope_module(impl_module, self.namespace);
+        self.outputs.push(FactKey::ModuleIndexed(impl_module));
+        if revision {
+            self.changed.push(FactKey::ModuleIndexed(impl_module));
+        }
+        let grew = self
+            .world
+            .register_protocol_impl_provider(protocol, target, impl_module);
+        self.outputs.push(FactKey::ProtocolImplProviders(protocol));
+        if grew {
+            self.changed.push(FactKey::ProtocolImplProviders(protocol));
+        }
+        Ok(())
+    }
 
+    /// Publish a hoisted impl module from its settled `ProtocolImplSource`: define
+    /// each callback under the impl module, key them by the protocol's callback
+    /// identity, and refresh the protocol's dispatch. This is the define-tier
+    /// counterpart of `register_protocol_impl`, run by `DefineModule(Protocol.Target)`.
+    fn publish_resolved_protocol_impl(
+        &mut self,
+        impl_module: ModuleId,
+        source: &ProtocolImplSource,
+    ) -> Result<(), FatalError> {
         let mut impl_scope = self.namespace;
         let mut functions = Vec::new();
-        for form in &body_surface.forms {
+        for form in &source.body.forms {
             let ScopeForm::Function(function) = form else {
                 return Err(emit_job_diagnostic(
                     self.world,
                     Diagnostic::error(
                         codes::LOWER_UNSUPPORTED,
                         "compiler2 protocol implementations only support callback functions",
-                        protocol_impl.span,
+                        Span::DUMMY,
                     ),
                 ));
             };
@@ -1189,41 +1237,48 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
             functions.push(function.clone());
         }
 
-        let mut outputs = Vec::new();
-        let mut changed = Vec::new();
-        let mut callbacks = HashMap::new();
+        // The hoisted impl is its own module: its callbacks are owned by the
+        // impl module and resolve against the lexical namespace captured at the
+        // defimpl site — never the lexical host, which must not be pulled.
         let context = FragmentPublicationContext {
-            owner_module: self.current_module,
+            owner_module: impl_module,
             export_public: false,
             function_env: FunctionEnvSource::ProjectDefinition,
             discovery: FragmentDiscovery::AlreadyIndexed,
         };
+        let mut callbacks = HashMap::new();
         for function in functions {
-            let publication =
-                self.define_source_function(impl_module, self.current_module, impl_scope, &function, &context)?;
-            outputs.push(publication.output.clone());
+            let publication = self.define_source_function(impl_module, impl_module, impl_scope, &function, &context)?;
+            self.outputs.push(publication.output.clone());
             if publication.changed {
-                changed.push(publication.output);
+                self.changed.push(publication.output);
             }
             // Key by the protocol's callback identity — the same interned
             // FunctionId a callsite resolves to — not by (name, arity).
             let callback = self
                 .world
-                .reference_function(protocol, function.name.clone(), function.arity);
+                .reference_function(source.protocol, function.name.clone(), function.arity);
             callbacks.insert(
                 callback,
                 ProtocolCallbackImpl {
                     function: publication.function,
-                    owner_module: self.current_module,
+                    owner_module: impl_module,
                 },
             );
+            self.callables.push(ModuleInterfaceCallable {
+                function: publication.function,
+                reference: self.world.function_ref(publication.function).clone(),
+                kind: InterfaceCallableKind::PublicFunction,
+                variadic: false,
+            });
         }
-        self.world.define_protocol_impl(protocol, target, callbacks);
-        outputs.push(FactKey::ProtocolDispatch(protocol));
-        if self.world.refresh_protocol_dispatch(protocol) {
-            changed.push(FactKey::ProtocolDispatch(protocol));
+        self.world
+            .define_protocol_impl(source.protocol, source.target, callbacks);
+        self.outputs.push(FactKey::ProtocolDispatch(source.protocol));
+        if self.world.refresh_protocol_dispatch(source.protocol) {
+            self.changed.push(FactKey::ProtocolDispatch(source.protocol));
         }
-        Ok((outputs, changed))
+        Ok(())
     }
 
     fn complete(self) -> ScopePublication {

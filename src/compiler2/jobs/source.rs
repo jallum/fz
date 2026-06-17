@@ -135,6 +135,13 @@ pub(super) fn define_module(world: &mut World<'_>, module_id: ModuleId) -> Resul
             ModuleSourceKind::Protocol(surface) => {
                 source_publish::publish_protocol_surface(world, source.code, module_id, scope.namespace(), surface)?
             }
+            ModuleSourceKind::ProtocolImpl(impl_source) => source_publish::publish_protocol_impl_surface(
+                world,
+                source.code,
+                module_id,
+                scope.namespace(),
+                &impl_source.clone(),
+            )?,
         };
         return match result {
             ScopePublication::Complete {

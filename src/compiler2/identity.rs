@@ -154,6 +154,20 @@ pub struct ModuleSource {
 pub enum ModuleSourceKind {
     Body(ScopeSurface),
     Protocol(ScopeSurface),
+    /// A `defimpl Protocol, for: Target` hoisted to its own module named
+    /// `Protocol.Target` (Elixir's `__concat__`). It is independently
+    /// demandable via `DefineModule(Protocol.Target)`: the impl is defined
+    /// without defining its lexical host module. `protocol`/`target`/`owner`
+    /// are resolved name-accurately at the defimpl's lexical site; `owner` is
+    /// the enclosing module that supplies the callbacks' resolution context.
+    ProtocolImpl(ProtocolImplSource),
+}
+
+#[derive(Debug, Clone)]
+pub struct ProtocolImplSource {
+    pub protocol: ModuleId,
+    pub target: ModuleId,
+    pub body: ScopeSurface,
 }
 
 impl ModuleSource {
@@ -400,6 +414,29 @@ impl ModuleMap {
         update_if_changed(module, next)
     }
 
+    pub fn index_protocol_impl(
+        &mut self,
+        id: ModuleId,
+        code: CodeId,
+        parent: ModuleId,
+        local_name: String,
+        source: QuotedSourceRoot,
+        impl_source: ProtocolImplSource,
+    ) -> bool {
+        let module = &mut self.slots[id.0 as usize];
+        let next = ModuleState::Indexed {
+            source: ModuleSource {
+                code,
+                parent,
+                local_name,
+                source,
+                kind: ModuleSourceKind::ProtocolImpl(impl_source),
+            },
+            interface: module.interface().cloned(),
+        };
+        update_if_changed(module, next)
+    }
+
     pub fn define_anonymous(&mut self, code: CodeId, namespace: Namespace) -> ModuleId {
         let id = ModuleId(self.slots.len() as u32);
         self.slots.push(ModuleState::Defined {
@@ -440,7 +477,7 @@ impl ModuleMap {
                         ScopeForm::Struct(def) => Some(def.fields.clone()),
                         _ => None,
                     }),
-                    ModuleSourceKind::Protocol(_) => None,
+                    ModuleSourceKind::Protocol(_) | ModuleSourceKind::ProtocolImpl(_) => None,
                 },
             }) else {
                 continue;

@@ -1295,6 +1295,19 @@ impl<'a> World<'a> {
             .index_protocol(id, code, parent, local_name, source, surface)
     }
 
+    pub fn index_protocol_impl_module(
+        &mut self,
+        id: ModuleId,
+        code: CodeId,
+        parent: ModuleId,
+        local_name: String,
+        source: QuotedSourceRoot,
+        impl_source: super::identity::ProtocolImplSource,
+    ) -> bool {
+        self.modules
+            .index_protocol_impl(id, code, parent, local_name, source, impl_source)
+    }
+
     pub fn scope_module(&mut self, id: ModuleId, base_namespace: Namespace) {
         self.modules.scope(id, base_namespace);
     }
@@ -2025,7 +2038,7 @@ impl<'a> World<'a> {
             ModuleState::Indexed { source, .. }
             | ModuleState::Scoped { source, .. }
             | ModuleState::Defined { source, .. } => match &source.kind {
-                ModuleSourceKind::Protocol(_) => None,
+                ModuleSourceKind::Protocol(_) | ModuleSourceKind::ProtocolImpl(_) => None,
                 ModuleSourceKind::Body(body) => body.forms.iter().find_map(|form| match form {
                     super::quoted_surface::ScopeForm::Struct(def) => Some(def.fields.as_slice()),
                     _ => None,

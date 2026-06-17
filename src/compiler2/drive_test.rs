@@ -774,26 +774,34 @@ fn compiler2_protocol_domain_marker_stays_type_owned_while_dispatch_revises_when
         "protocol t/0 and t/1 should literally name the same interned marker type",
     );
 
+    // fz-hwn.19.2.4.16.1: the `defimpl Proof, for: List` nested in `Box` is
+    // hoisted to its own module `Proof.List`. The impl lands — and revises the
+    // dispatch — when *that* module is defined, never its lexical host `Box`.
+    let impl_module = world.reference_module("Proof.List".to_string());
     assert!(
-        world.demand(Job::DefineModule(owner)),
-        "defining the impl owner module should be demandable",
+        world.demand(Job::DefineModule(impl_module)),
+        "defining the hoisted impl module `Proof.List` should be demandable",
     );
     assert_resolved(
         world.drive(),
-        "defining the impl owner should revise the protocol facts",
+        "defining the impl module should revise the protocol facts",
     );
-    let owner_defined = outputs
-        .take(Job::DefineModule(owner))
-        .expect("DefineModule job effects for the impl owner");
+    let impl_defined = outputs
+        .take(Job::DefineModule(impl_module))
+        .expect("DefineModule job effects for the hoisted impl module");
     assert!(
-        owner_defined.contains(&presence(FactKey::ProtocolDispatch(protocol), true)),
-        "adding an impl should revise the dispatch fact",
+        impl_defined.contains(&presence(FactKey::ProtocolDispatch(protocol), true)),
+        "an impl landing should revise the dispatch fact",
     );
     assert!(
-        !owner_defined
+        !impl_defined
             .iter()
             .any(|(fact, _)| matches!(fact, FactKey::TypeDefined(name) if name == &t0 || name == &t1)),
-        "adding an impl should not revise protocol-domain type facts",
+        "an impl landing should not revise protocol-domain type facts",
+    );
+    assert!(
+        !world.has_fact(&FactKey::ModuleDefined(owner)),
+        "the impl lands without defining its lexical host `Box`",
     );
     assert_eq!(
         world.fact_revision(&FactKey::TypeDefined(t0.clone())),
@@ -1841,7 +1849,7 @@ fn compiler2_enum_reduce_selects_list_protocol_impl_and_callable_reducer() {
     let enum_reduce_id = function_id_in_module(&functions, &modules, "Enum", "reduce", 3);
     let enum_map_id = function_id_in_module(&functions, &modules, "Enum", "map", 2);
     let enum_reverse_id = function_id_in_module(&functions, &modules, "Enum", "reverse", 1);
-    let list_id = module_id(&modules, "List");
+    let enumerable_list_id = module_id(&modules, "Enumerable.List");
 
     let main_generated = generated_functions_owned_by(&functions, main_id);
     assert_eq!(
@@ -1864,10 +1872,7 @@ fn compiler2_enum_reduce_selects_list_protocol_impl_and_callable_reducer() {
         .cloned()
         .into_iter()
         .find(|record| {
-            record.function_ref.name == "reduce"
-                && record.arity == 3
-                && record.owner_module_id == Some(list_id)
-                && record.module_id != list_id
+            record.function_ref.name == "reduce" && record.arity == 3 && record.module_id == enumerable_list_id
         })
         .unwrap_or_else(|| panic!("function.defined for the selected List-backed protocol callback"));
     let list_impl_reduce_id = list_impl_reduce.function_id;
@@ -2004,15 +2009,12 @@ fn compiler2_enum_reduce_operator_ref_activates_kernel_plus() {
     let enum_reduce_id = function_id_in_module(&functions, &modules, "Enum", "reduce", 3);
     let enum_map_id = function_id_in_module(&functions, &modules, "Enum", "map", 2);
     let kernel_plus_id = function_id_in_module(&functions, &modules, "Kernel", "+", 2);
-    let list_id = module_id(&modules, "List");
+    let enumerable_list_id = module_id(&modules, "Enumerable.List");
     let list_impl_reduce = functions
         .all()
         .into_iter()
         .find(|record| {
-            record.function_ref.name == "reduce"
-                && record.arity == 3
-                && record.owner_module_id == Some(list_id)
-                && record.module_id != list_id
+            record.function_ref.name == "reduce" && record.arity == 3 && record.module_id == enumerable_list_id
         })
         .unwrap_or_else(|| panic!("function.defined for the selected List-backed protocol callback"));
     let list_impl_reduce_id = list_impl_reduce.function_id;
@@ -2406,7 +2408,7 @@ fn compiler2_materialization_freezes_only_the_selected_enum_reduce_path() {
     let enum_reduce_id = function_id_in_module(&functions, &modules, "Enum", "reduce", 3);
     let enum_map_id = function_id_in_module(&functions, &modules, "Enum", "map", 2);
     let enum_reverse_id = function_id_in_module(&functions, &modules, "Enum", "reverse", 1);
-    let list_id = module_id(&modules, "List");
+    let enumerable_list_id = module_id(&modules, "Enumerable.List");
     let main_generated = generated_functions_owned_by(&functions, main_id);
     let user_reducer_id = main_generated[0].function_id;
     let enum_generated = generated_functions_owned_by(&functions, enum_reduce_id);
@@ -2415,10 +2417,7 @@ fn compiler2_materialization_freezes_only_the_selected_enum_reduce_path() {
         .all()
         .into_iter()
         .find(|record| {
-            record.function_ref.name == "reduce"
-                && record.arity == 3
-                && record.owner_module_id == Some(list_id)
-                && record.module_id != list_id
+            record.function_ref.name == "reduce" && record.arity == 3 && record.module_id == enumerable_list_id
         })
         .unwrap_or_else(|| panic!("function.defined for the selected List-backed protocol callback"))
         .function_id;
@@ -9289,7 +9288,6 @@ struct JobSpanStop {
 struct FunctionDefinedRecord {
     function_id: FunctionId,
     module_id: ModuleId,
-    owner_module_id: Option<ModuleId>,
     arity: u64,
     clauses: u64,
     owner_function_id: Option<FunctionId>,
@@ -10026,11 +10024,6 @@ impl Handler for FunctionCaptureHandler {
         else {
             return;
         };
-        let owner_module_id = event
-            .metadata
-            .get("owner_module_id")
-            .and_then(|v| v.downcast_ref::<ModuleId>())
-            .copied();
         let Some(Value::U64(arity)) = event.measurements.get("arity") else {
             return;
         };
@@ -10058,7 +10051,6 @@ impl Handler for FunctionCaptureHandler {
             FunctionDefinedRecord {
                 function_id,
                 module_id,
-                owner_module_id,
                 arity: *arity,
                 clauses: *clauses,
                 owner_function_id,

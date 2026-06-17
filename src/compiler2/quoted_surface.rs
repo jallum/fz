@@ -142,7 +142,7 @@ pub(crate) enum ReservedSourceDefinition {
     Function { name: String, arity: usize, is_macro: bool },
     Module { local_name: String },
     Protocol { name: ModuleName },
-    ProtocolImpl { protocol: ModuleName, target: ModuleName },
+    ProtocolImpl,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -746,6 +746,9 @@ pub(crate) fn reserved_source_definition(
             })
         }
         "defimpl" => {
+            // Recognition only: a `defimpl` is hoisted to its own `Protocol.Target`
+            // module, parsed in full (`register_protocol_impl`) at scope time where
+            // the namespace resolves its protocol/target. Validate just the arity.
             let node = expect_surface_node(source)?;
             let args = node.tail.list_items()?;
             if args.len() != 2 {
@@ -753,19 +756,7 @@ pub(crate) fn reserved_source_definition(
                     "defimpl expects a protocol alias and keyword args",
                 ));
             }
-            let protocol = ModuleName::from_segments(parse_alias_segments(&args[0])?);
-            let target = args[1]
-                .list_items()?
-                .into_iter()
-                .find_map(|entry| {
-                    let tuple = entry.tuple_items().ok()?;
-                    if tuple.len() != 2 || tuple[0].atom_name().ok().as_deref() != Some("for") {
-                        return None;
-                    }
-                    parse_alias_segments(&tuple[1]).ok().map(ModuleName::from_segments)
-                })
-                .ok_or_else(|| QuotedSourceError::new("defimpl is missing `for:` target"))?;
-            Some(ReservedSourceDefinition::ProtocolImpl { protocol, target })
+            Some(ReservedSourceDefinition::ProtocolImpl)
         }
         _ => None,
     })
