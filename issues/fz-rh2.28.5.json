@@ -1,6 +1,7 @@
 {
   "assignee": "",
   "blocked_by": [
+    "fz-rh2.28.3",
     "fz-rh2.28.4"
   ],
   "blocks": [],
@@ -13,5 +14,5 @@
   "status": "open",
   "title": "Compiler2 definition lifecycle: docs, scaffolding removal, signal",
   "type": "task",
-  "updated_at": "2026-06-17T17:53:06Z"
+  "updated_at": "2026-06-17T19:11:50Z"
 }
