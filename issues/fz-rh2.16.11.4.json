@@ -10,9 +10,15 @@
   "id": "fz-rh2.16.11.4",
   "labels": [],
   "parent": "fz-rh2.16.11",
+  "comments": [
+    {
+      "text": "Reconciliation from fz-rh2.28: the conceptual goals of this ticket — one source read, the bootstrap reads honestly (same model as project code), def-head structure emerges from the define pipeline not a mode-gated re-parse, raw FunctionSource stays lazy behind demand — were delivered by the fz-rh2.28 arc on the current baseline: fz-s00 (delete ScopeSurfaceMode; one reader + canonicalize via build_definition_form), fz-rh2.28.1 (is_bootstrap: the bootstrap is the only canonical-read exception), and fz-rh2.28.3/.4 (env machinery is telemetry-only and removed; __ENV__ is a namespace splice at expansion). This ticket remains blocked by fz-rh2.16.11.5 (old-world ir_codegen/ir_planner rebase parity), which fz-rh2.28 did not touch. Recommend re-scoping fz-rh2.16.11.4 to only whatever direct-publication deletion is NOT already covered by fz-s00 on the rebased baseline, or closing it as superseded once fz-rh2.16.11.5 is resolved. Decision left to the arc owner.",
+      "timestamp": "2026-06-17T20:04:22Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "Compiler2 definition-macro closeout: delete direct publication, bootstrap honestly, and restate the invariants",
   "type": "task",
-  "updated_at": "2026-06-10T22:37:38Z"
+  "updated_at": "2026-06-17T20:04:22Z"
 }
