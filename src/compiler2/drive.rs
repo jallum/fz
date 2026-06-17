@@ -54,6 +54,7 @@ pub enum FactKey {
     ExpandedFunctionSource(FunctionId),
     TypeDefined(TypeName),
     ProtocolDispatch(ModuleId),
+    ProtocolImplProviders(ModuleId),
     FunctionDefined(FunctionId),
     FunctionContract(FunctionId),
     LoweredBody(FunctionId),

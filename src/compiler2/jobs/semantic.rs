@@ -1258,11 +1258,39 @@ fn resolve_protocol_call(
     }
 
     if matches.is_empty() {
-        for module in world.runtime_impl_target_modules(&receiver_ty) {
-            if world.protocol_impl(protocol, module).is_some() {
+        // The dispatch holds no arm for this receiver yet. Demand the
+        // definition of any module whose source declares a matching `defimpl`
+        // — including impls that live in a module the program never otherwise
+        // reaches. The provider index is a settled surface fact, so this read
+        // re-wakes the call when a `defimpl` is discovered; the demand runs
+        // only here, when a concrete receiver actually needs the impl.
+        let providers_fact = FactKey::ProtocolImplProviders(protocol);
+        if world.has_fact(&providers_fact) {
+            reads.push(providers_fact);
+        }
+        let mut demanded_provider = false;
+        for (target, provider) in world.protocol_impl_providers(protocol) {
+            let target_ty = world.module_impl_target_ty(target);
+            let overlap = world.types_mut().intersect(receiver_ty, target_ty);
+            if world.types().is_empty(&overlap) {
                 continue;
             }
-            wait_for_runtime_module(world, module, waits, follow_up);
+            if world.module_defined_revision(provider).is_none() {
+                waits.insert(FactKey::ModuleDefined(provider));
+                follow_up.insert(Job::DefineModule(provider));
+                demanded_provider = true;
+            }
+        }
+        // Fall back to the runtime-library convention (impl lives in the
+        // receiver type's own module) only when no user provider is pending,
+        // so a user impl never gets shadowed by a misdirected runtime wait.
+        if !demanded_provider {
+            for module in world.runtime_impl_target_modules(&receiver_ty) {
+                if world.protocol_impl(protocol, module).is_some() {
+                    continue;
+                }
+                wait_for_runtime_module(world, module, waits, follow_up);
+            }
         }
         return Ok((None, Vec::new(), None));
     }

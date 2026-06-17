@@ -42,7 +42,7 @@ use super::module_interface::{InterfaceCallableKind, InterfaceExpectation, Inter
 use super::namespace::{Namespace, NamespaceStore, NamespaceSymbol};
 use super::protocol::{
     ProtocolCallback, ProtocolCallbackImpl, ProtocolCallbackMap, ProtocolDispatch, ProtocolDispatchArm,
-    ProtocolDispatchMap, ProtocolImpl, ProtocolImplKey, ProtocolImplMap,
+    ProtocolDispatchMap, ProtocolImpl, ProtocolImplKey, ProtocolImplMap, ProtocolImplProviderMap,
 };
 use super::runtime::{self, RuntimeModuleCode};
 use super::scheduler::FatalError;
@@ -212,6 +212,7 @@ pub struct World<'a> {
     protocol_callbacks: ProtocolCallbackMap,
     protocol_impls: ProtocolImplMap,
     protocol_dispatches: ProtocolDispatchMap,
+    protocol_impl_providers: ProtocolImplProviderMap,
     activations: ActivationMap,
     activation_inputs: ActivationInputMap<Job>,
     callsites: CallSiteMap,
@@ -275,6 +276,7 @@ impl<'a> World<'a> {
             protocol_callbacks: ProtocolCallbackMap::new(),
             protocol_impls: ProtocolImplMap::new(),
             protocol_dispatches: ProtocolDispatchMap::new(),
+            protocol_impl_providers: ProtocolImplProviderMap::new(),
             activations: ActivationMap::new(),
             activation_inputs: ActivationInputMap::new(),
             callsites: CallSiteMap::new(),
@@ -1464,6 +1466,26 @@ impl<'a> World<'a> {
 
     pub(crate) fn protocol_dispatch(&self, protocol: ModuleId) -> Option<&ProtocolDispatch> {
         self.protocol_dispatches.get(protocol)
+    }
+
+    /// Records, from already-resolved ids, that `provider` declares the
+    /// `(protocol, target)` impl. Resolution of the `defimpl`'s names happens at
+    /// scope time where the namespace is available; this stores only ids.
+    pub(crate) fn register_protocol_impl_provider(
+        &mut self,
+        protocol: ModuleId,
+        target: ModuleId,
+        provider: ModuleId,
+    ) -> bool {
+        self.protocol_impl_providers
+            .register(ProtocolImplKey { protocol, target }, provider)
+    }
+
+    /// Every `(target, provider)` impl recorded for a protocol. The semantic
+    /// tier reads this to demand a provider's definition for a matching
+    /// receiver.
+    pub(crate) fn protocol_impl_providers(&self, protocol: ModuleId) -> Vec<(ModuleId, ModuleId)> {
+        self.protocol_impl_providers.providers_for_protocol(protocol)
     }
 
     fn is_protocol_domain_type(&self, name: &TypeName) -> bool {

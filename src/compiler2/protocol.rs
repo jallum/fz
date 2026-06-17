@@ -59,6 +59,49 @@ pub(crate) struct ProtocolDispatchMap {
     slots: HashMap<ModuleId, ProtocolDispatch>,
 }
 
+/// The closed implementation relation, discovered at scope time as resolved
+/// module ids: for one `(protocol, target)` it names the modules whose source
+/// declares the `defimpl`. The semantic tier reads this to demand a provider's
+/// definition when a concrete receiver flows to a protocol position — without
+/// it, an impl that lives in a module the program never otherwise reaches is
+/// invisible to dispatch.
+#[derive(Debug, Default)]
+pub(crate) struct ProtocolImplProviderMap {
+    slots: HashMap<ProtocolImplKey, Vec<ModuleId>>,
+}
+
+impl ProtocolImplProviderMap {
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+
+    /// Records `provider` as a source of the `(protocol, target)` impl. Returns
+    /// whether the provider set grew, so the caller can bump the fact revision.
+    pub(crate) fn register(&mut self, key: ProtocolImplKey, provider: ModuleId) -> bool {
+        let providers = self.slots.entry(key).or_default();
+        if providers.contains(&provider) {
+            return false;
+        }
+        providers.push(provider);
+        true
+    }
+
+    /// Every `(target, provider)` recorded for a protocol.
+    pub(crate) fn providers_for_protocol(&self, protocol: ModuleId) -> Vec<(ModuleId, ModuleId)> {
+        let mut out = Vec::new();
+        for (key, providers) in &self.slots {
+            if key.protocol != protocol {
+                continue;
+            }
+            for provider in providers {
+                out.push((key.target, *provider));
+            }
+        }
+        out.sort_by_key(|(target, provider)| (target.as_u32(), provider.as_u32()));
+        out
+    }
+}
+
 impl ProtocolCallbackMap {
     pub(crate) fn new() -> Self {
         Self::default()

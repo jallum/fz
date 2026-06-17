@@ -263,17 +263,19 @@ impl Handler for JobRunGuard {
     }
 }
 
-/// fz-hwn.19.2.4.9 root pin: a callable captured by an escaped continuation that
-/// is produced through a *protocol-dispatched* method makes the semantic closure
-/// spin — `SealSemanticClosure` re-runs forever because the captured callable's
-/// activation is reached only through the opaque protocol-dispatch edge and never
-/// settles. The same shape with a direct (non-protocol) call settles cleanly.
+/// fz-hwn.19.2.4.9: a `defimpl` nested in a module the program never reaches by
+/// name (`Mini`) used to be dropped — `DefineModule` is demand-gated, nothing
+/// referenced `Mini`, so its impl never registered into `Susp`'s dispatch. The
+/// `Susp.run([..])` call then found an empty dispatch and waited forever on the
+/// *receiver type's* module (`List`), which never grows a `Susp` arm. Three jobs
+/// (`SealSemanticClosure`, `AnalyzeActivation(make)`, `DefineModule`) livelocked.
 ///
-/// The `JobRunGuard` telemetry handler fails the instant any one semantic job
-/// re-runs past a generous bound, pinning the non-termination at its driver
-/// (`SealSemanticClosure`) in milliseconds instead of a 10k-job timeout.
+/// The provider index fixes this: scope time records "Mini provides Susp-for-List"
+/// as resolved ids, and the protocol call demands `DefineModule(Mini)` — the real
+/// provider — so the impl registers and the closure settles. The `JobRunGuard`
+/// telemetry handler fails the instant any one semantic job re-runs past a
+/// generous bound, so a regression re-pins the livelock in milliseconds.
 #[test]
-#[ignore = "fz-hwn.19.2.4.9: protocol-dispatched escaped continuation never closes its captured callable activation"]
 fn compiler2_protocol_dispatched_escaped_continuation_closes_captured_callable() {
     let tel = crate::telemetry::ConfiguredTelemetry::new();
     let counts = Rc::new(RefCell::new(HashMap::new()));
@@ -302,10 +304,56 @@ fn main(), do: make(fn x -> x + 1 end)
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
 
     world.demand(Job::SealSemanticClosure(root));
+    // Drive only the semantic closure: this ticket is the closure livelock.
+    // (Native lowering of a protocol-dispatched escaped continuation fatals for
+    // an unrelated reason, tracked separately — see fz-hwn.19.2.4 follow-up.)
     let _ = world.drive_for(Some(Duration::from_secs(5)));
     assert!(
         world.fact_is_settled(&FactKey::SemanticClosed(root)),
         "protocol-dispatched escaped continuation should close its captured callable activation"
+    );
+}
+
+/// The provider index is reference-not-pull: an unused `defimpl` records its
+/// provider mapping at scope time but must not drag the protocol or the
+/// providing module into the program. A root that never dispatches `Susp`
+/// closes, and neither `Mini` (the provider) nor the protocol impl is ever
+/// defined — cold stays cold.
+#[test]
+fn compiler2_unused_protocol_impl_stays_cold() {
+    let tel = crate::telemetry::ConfiguredTelemetry::new();
+    let mut world = World::new(&tel);
+    world.submit_code(
+        Some("unused_protocol_impl.fz".to_string()),
+        r#"
+defprotocol Susp do
+  @spec run(t(a)) :: integer
+  fn run(coll)
+end
+
+defmodule Mini do
+  defimpl Susp, for: List do
+    fn run(_list), do: 0
+  end
+end
+
+fn main(), do: 1
+"#
+        .to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+
+    world.demand(Job::SealSemanticClosure(root));
+    let outcome = world.drive_for(Some(Duration::from_secs(5)));
+    assert_resolved(outcome, "a program with an unused `defimpl` must still close");
+    assert!(
+        world.fact_is_settled(&FactKey::SemanticClosed(root)),
+        "the root that never dispatches the protocol should close"
+    );
+    let mini = world.reference_module("Mini".to_string());
+    assert!(
+        world.module_defined_revision(mini).is_none(),
+        "an unused `defimpl`'s provider module must stay cold — never defined"
     );
 }
 

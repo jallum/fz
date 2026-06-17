@@ -576,6 +576,9 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
                                 NamespaceSymbol::Module(protocol_id),
                             );
                         }
+                        // A `defimpl` binds no local name; its provider mapping is
+                        // resolved at scope time where the namespace is available.
+                        ReservedSourceDefinition::ProtocolImpl { .. } => {}
                     }
                 }
             }
@@ -797,6 +800,11 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
             ScopeForm::Module(module) => {
                 let module_id = self.world.reference_child_module(self.current_module, &module.name);
                 self.world.scope_module(module_id, self.namespace);
+                let code_text = self.world.code_text(self.code_id).to_owned();
+                let ctx = SurfaceSourceContext::new(self.code_id, &code_text);
+                let body = read_module_body_surface(module, &ctx)
+                    .map_err(|error| emit_surface_read_error(self.world, "module body read failed", &error))?;
+                self.register_protocol_impl_providers(module_id, &body, &ctx)?;
                 Ok(None)
             }
             ScopeForm::Protocol(protocol) => {
@@ -812,6 +820,83 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
             }
             ScopeForm::MacroCall(macro_call) => self.apply_item_macro_call(macro_call),
             ScopeForm::Struct(_) => Ok(None),
+        }
+    }
+
+    /// Resolves the `defimpl`s declared in a scoped module's body to ids and
+    /// records `module` as their provider. This is the one place the impl's
+    /// protocol/target names touch the namespace — semantics reads only ids.
+    /// It records the provider relation without defining the module: the
+    /// `defimpl` is pulled (its callbacks registered) only when a concrete
+    /// receiver later demands `DefineModule(provider)`.
+    fn register_protocol_impl_providers(
+        &mut self,
+        module: ModuleId,
+        body: &ScopeSurface,
+        ctx: &SurfaceSourceContext<'_>,
+    ) -> Result<(), FatalError> {
+        for form in &body.forms {
+            match form {
+                ScopeForm::ProtocolImpl(impl_form) => {
+                    self.record_protocol_impl_provider(module, &impl_form.protocol, &impl_form.target);
+                }
+                ScopeForm::Module(child) => {
+                    let child_id = self.world.reference_child_module(module, &child.name);
+                    let nested = read_module_body_surface(child, ctx).map_err(|error| {
+                        emit_surface_read_error(self.world, "nested module body read failed", &error)
+                    })?;
+                    self.register_protocol_impl_providers(child_id, &nested, ctx)?;
+                }
+                ScopeForm::MacroCall(macro_call) => {
+                    let Some(definition) = reserved_source_definition(&macro_call.source).map_err(|error| {
+                        emit_surface_read_error(self.world, "impl discovery reservation failed", &error)
+                    })?
+                    else {
+                        continue;
+                    };
+                    match definition {
+                        ReservedSourceDefinition::ProtocolImpl { protocol, target } => {
+                            self.record_protocol_impl_provider(module, &protocol, &target);
+                        }
+                        ReservedSourceDefinition::Module { .. } => {
+                            let fragment = read_compiler_fragment_root(
+                                self.world,
+                                self.code_id,
+                                &macro_call.source,
+                                "raw scope-definition fragment",
+                            )?;
+                            if let Some(ScopeForm::Module(child)) = fragment.forms.first() {
+                                let child_id = self.world.reference_child_module(module, &child.name);
+                                let nested = read_module_body_surface(child, ctx).map_err(|error| {
+                                    emit_surface_read_error(self.world, "nested module body read failed", &error)
+                                })?;
+                                self.register_protocol_impl_providers(child_id, &nested, ctx)?;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    fn record_protocol_impl_provider(&mut self, provider: ModuleId, protocol: &ModuleName, target: &ModuleName) {
+        let (Some(protocol_id), Some(target_id)) = (
+            self.world
+                .resolve_module_name(self.current_module, self.namespace, protocol),
+            self.world
+                .resolve_module_name(self.current_module, self.namespace, target),
+        ) else {
+            return;
+        };
+        let grew = self
+            .world
+            .register_protocol_impl_provider(protocol_id, target_id, provider);
+        self.outputs.push(FactKey::ProtocolImplProviders(protocol_id));
+        if grew {
+            self.changed.push(FactKey::ProtocolImplProviders(protocol_id));
         }
     }
 
