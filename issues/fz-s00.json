@@ -20,6 +20,6 @@
   "priority": 2,
   "status": "in_progress",
   "title": "fz/Elixir alignment: read source once; def-head structure emerges from the define pipeline, not a mode-gated re-parse",
-  "type": "task",
-  "updated_at": "2026-06-17T18:05:36Z"
+  "type": "epic",
+  "updated_at": "2026-06-17T18:07:38Z"
 }
