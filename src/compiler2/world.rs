@@ -1992,12 +1992,23 @@ impl<'a> World<'a> {
         self.runtime_prelude
     }
 
+    /// True only for *the* prelude source — the bootstrap code whose scope seeds
+    /// `prelude_head`, the base namespace every other submission is scoped
+    /// against. This is the namespace-base role, narrower than [`World::is_bootstrap`]:
+    /// origin (is this bootstrap code) is not the same question as role (is this
+    /// the namespace base).
     pub(crate) fn is_runtime_prelude(&self, code: CodeId) -> bool {
         code == self.runtime_prelude
     }
 
-    pub(crate) fn is_runtime_module_code(&self, code: CodeId) -> bool {
-        self.runtime_modules.values().any(|module| module.code_id == Some(code))
+    /// True for compiler-owned bootstrap code: the prelude and the runtime
+    /// library modules (Kernel, Enum, ...). Bootstrap code is parsed as canonical
+    /// source — def-heads are definitions, not macro calls — because the macros
+    /// that implement def-heads are themselves defined here. Every other
+    /// submission is user surface. This is the one origin boundary that deserves
+    /// special treatment.
+    pub(crate) fn is_bootstrap(&self, code: CodeId) -> bool {
+        self.is_runtime_prelude(code) || self.runtime_modules.values().any(|module| module.code_id == Some(code))
     }
 
     pub(crate) fn is_runtime_module(&self, module: ModuleId) -> bool {

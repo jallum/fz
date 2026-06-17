@@ -30,7 +30,7 @@ pub(super) fn index_code(world: &mut World<'_>, code_id: CodeId) -> Result<JobEf
     let quoted_root = parse_quoted_program(&source_name, &source_text, world.tel())
         .map_err(|error| emit_job_diagnostic(world, error.to_diagnostic()))?;
     let ctx = SurfaceSourceContext::new(code_id, &source_text);
-    let read_surface = if world.is_runtime_prelude(code_id) || world.is_runtime_module_code(code_id) {
+    let read_surface = if world.is_bootstrap(code_id) {
         read_compiler_fragment_surface
     } else {
         read_scope_surface
