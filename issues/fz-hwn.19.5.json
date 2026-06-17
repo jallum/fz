@@ -6,6 +6,7 @@
   "blocks": [
     "fz-hwn.19.6"
   ],
+  "closed_at": "2026-06-17T12:30:59Z",
   "created": "2026-06-15T19:27:49Z",
   "description": "Goal\nMake native codegen boring: it walks ShapeId structure and reads the seam-specific facts produced by fz-hwn.20. It does not derive shape, repr, delivery arity, or continuation result shape locally.\n\nRequired changes\nReplace TrashDeliveredShape/TrashNativeDemandAbi and codegen surface shape derivation with direct reads from TransportPlan seam facts. Function signatures, block params, continuation entries, closure targets, tail calls, call continuations, mid-flight continuations, callable boundaries, extern boundaries, and return terms all use published seam facts. If ArgRepr survives as a low-level enum, it is filled from facts and is not transport authority.\n\nSeam rule\nRepresentation may differ by seam. A lane can be RawF64 for a function ABI and ValueRef across a block-param seam without forking ShapeId or LaneId. True extern/callable/public boundaries read BoundaryId contract columns and still do not produce an internal delivery shape.\n\nRemoval target\nTrashDeliveredShape, delivered_shape_from_layout, delivered_shape_from_return_abi for internal flow, continuation_input_shape shape reconstruction, build_codegen_return_repr over body layout, ArgRepr::from_ty/for_block_param_ty use as compiler2 transport authority, tuple_return_delivery_plan raw-IR rediscovery, collect_codegen_mid_flight_cont_keys deriving shapes from params, and structural mismatch adapters caused by local projections.\n\nChecks\nNative codegen transport tests green; cargo clippy --all-targets -- -D warnings; rg confirms codegen no longer derives compiler2 transport reprs from types except for non-compiler2 legacy paths explicitly named and ticketed.",
   "id": "fz-hwn.19.5",
@@ -18,8 +19,8 @@
     }
   ],
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Transport cutover: make native codegen consume TransportPlan seam facts",
   "type": "task",
-  "updated_at": "2026-06-17T11:37:54Z"
+  "updated_at": "2026-06-17T12:30:59Z"
 }
