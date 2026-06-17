@@ -358,7 +358,6 @@ fn import_except_wrong_arity_is_error() {
 
 // Ported from src/frontend/resolve_test.rs: import resolves against provider interface without source body
 #[test]
-#[ignore = "fz-hwn.19.2.4.10: provider-boundary import path reads lowered provider bodies"]
 fn import_from_external_interface_carries_provider_boundary_call_without_provider_body() {
     let tel = ConfiguredTelemetry::new();
     let mut world = World::new(&tel);

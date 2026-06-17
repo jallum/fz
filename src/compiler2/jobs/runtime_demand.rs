@@ -1140,21 +1140,11 @@ fn local_target_input_demands(
     demands: &HashMap<ExecutableKey, ExecutableRuntimeDemand>,
 ) -> Vec<RuntimeDemand> {
     match target.callee {
-        super::super::semantic::SelectedCallee::ProviderBoundary(function) => {
-            if let LoweredBody::Extern { signature } = world.lowered_body(function) {
-                return target
-                    .surface_inputs
-                    .iter()
-                    .enumerate()
-                    .map(|(index, ty)| {
-                        signature
-                            .params
-                            .get(index)
-                            .map(|_| RuntimeDemand::whole())
-                            .unwrap_or_else(|| boundary_runtime_demand(world, *ty))
-                    })
-                    .collect();
-            }
+        super::super::semantic::SelectedCallee::ProviderBoundary(_function) => {
+            // A provider boundary is interface-only by construction: it has no
+            // defined function and no module body (`function_is_provider_boundary`),
+            // so there is no lowered body to consult. Every argument crosses the
+            // seam at its boundary demand; marshalling is the boundary fact's job.
             target
                 .surface_inputs
                 .iter()

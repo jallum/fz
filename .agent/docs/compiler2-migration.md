@@ -152,6 +152,12 @@ facts, dispatch masks, or local recursive graph expansion. They can contribute a
 call summary and raw provider-boundary import edge, but they do not synthesize a
 stub executable or a fake local body.
 
+Because a provider boundary has no local body, no consumer may read it. Runtime
+demand derivation crosses a `SelectedCallee::ProviderBoundary` target purely
+through its settled `surface_inputs`, delivering each argument at its boundary
+demand (`boundary_runtime_demand`); it never consults `lowered_body` to inspect
+an extern signature, which is interface-only territory the body cannot answer.
+
 ## Compiler2 Semantic Reachability Invariant
 
 Semantic analysis only follows control destinations that can actually receive a
