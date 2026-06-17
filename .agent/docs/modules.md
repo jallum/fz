@@ -73,7 +73,10 @@ Name resolution is an append-only chain. A `Namespace` is a `BindingId` — a
 savepoint into `NamespaceStore.bindings`. Binding a name pushes a
 `{ name, symbol, prev }` and returns the new head; lookup walks from a head
 backward and the first matching symbol wins. A `NamespaceSymbol` is a `Module`,
-`Function`, `Callable`, `Macro`, or `Type`.
+`Function`, `Callable`, `Macro`, `Type`, or `Splice`. A `Splice` binds a name to
+a quoted AST snippet that the macro expander substitutes in place when the name
+is referenced — a generic primitive whose only current use is `__ENV__` (see
+macro-expansion.md).
 
 ```text
 bind(head, "add", Function(f))  -> head'      (a new savepoint over head)
@@ -120,6 +123,12 @@ Runtime-library modules are not a special class. At construction the world
 **not** submit any source. The first real reference pulls the owning module's
 source through `ensure_runtime_module`, which `submit_code`s it as ordinary code;
 the same `index_code` / `scope_code` / `define_module` jobs handle it.
+
+The one place the bootstrap is special is *reading*: `is_bootstrap(code)` (the
+prelude plus the runtime modules) is read canonically — def-heads are parsed as
+definitions rather than macro calls — because the macros that implement def-heads
+are defined in the bootstrap and cannot be bounced through. Everything else is
+ordinary user source; see macro-expansion.md.
 
 The prelude (`runtime.fz`) is scoped first as ordinary code: when `scope_code`
 sees the prelude it scopes from an empty namespace and saves the resulting head

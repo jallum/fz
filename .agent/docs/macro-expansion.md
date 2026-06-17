@@ -44,18 +44,22 @@ item macro           changes surrounding scope     => eager
 body-local macro     changes only one function     => lazy
 ```
 
-There is one important sub-case inside the eager bucket:
+There is one important sub-case inside the eager bucket — and one origin
+exception:
 
-- `runtime.fz` defines compiler-owned top-level definition macros such as
-  `fn`, `fnp`, `defmacro`, `defmodule`, `defprotocol`, and `defimpl`
-- those names are treated as item-level source forms in
-  `quoted_surface.rs`, not as ordinary expression macros
-- the recursive body expander must therefore ignore those heads when it sees
-  anonymous-function syntax or rewritten body-local quoted AST
-
-That is why definition macros are resolved from grouped scope fragments, while
-ordinary expression-position macro calls still flow through
-`expand_ast_call(...)`.
+- `runtime.fz` defines the compiler-owned definition macros `fn`, `fnp`,
+  `defmacro`, `defmodule`, `defprotocol`, and `defimpl`.
+- In ordinary (user) source there is exactly one read: a def-head parses to a
+  `MacroCall` (`build_form` in `quoted_surface.rs`), and its structure emerges
+  from the expand -> `Fz.Compiler.define` -> define pipeline, never from a
+  second mode-gated source parse.
+- The bootstrap is the lone exception. `is_bootstrap(code)` source — the prelude
+  and the runtime library modules — is read canonically: the same one reader,
+  then `canonicalize_definitions` turns each def-head `MacroCall` into its typed
+  form via `build_definition_form`, because the macros that implement def-heads
+  are defined *in* the bootstrap and so cannot be bounced through. Post-expansion
+  content (a `Fz.Compiler.define` payload, item-macro output, protocol/impl
+  bodies) is canonical the same way.
 
 ## What Source Publication Owns
 
@@ -133,6 +137,31 @@ The shared recursive walk does three things:
 
 Expansion stops only when the returned tree contains no more source sugar and
 no more eligible macro calls.
+
+## `__ENV__` And `__CALLER__`
+
+Both are compile-time environment reflections, but they enter expansion
+differently because one is constant and one varies per call.
+
+`__ENV__` is the definition env — constant for a given definition. Just before a
+body is expanded, `FunctionSourceExpander::expand` projects it from the
+definition's own scope (`project_env_value(def_scope, Definition)`, so
+`__ENV__.function` is the definition itself, by construction) and binds it into
+the namespace as `NamespaceSymbol::Splice`. The expander resolves a reserved
+`__`-prefixed variable against the namespace and splices a `Splice` binding in
+place — generically: it knows about splice bindings, not about `__ENV__`. The
+binding is transient; it is never recorded on the function. The env is the lean
+`%{module, function, namespace}` reflection for now; grow it when a real need
+appears. (`decode_expr` decodes a raw map value as a map literal, alongside
+lists and tuples, so the spliced env map decodes as source.)
+
+`__CALLER__` varies per invocation and cannot be a compile-time splice: a macro
+is compiled once and executed many times, and the caller is unknown when the
+macro body is expanded. So it stays a runtime parameter — `lower_clause`
+prepends it, and `expand_macro_invocation` projects it from the call-site scope
+(`project_env_value(scope, Caller)`) and passes it as the macro's first
+argument. The def-head macros capture it as `Fz.Compiler.define(source,
+__CALLER__)`, the Elixir-aligned def-site env seam.
 
 ## How Remote Macros Stay Honest
 
