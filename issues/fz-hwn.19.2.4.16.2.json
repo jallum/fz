@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-hwn.19.2.4.16.1"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-hwn.19.2.4.16.5"
+  ],
   "created": "2026-06-17T02:49:48Z",
   "description": "resolve_protocol_call miss-path: for each (protocol,target) provider whose target overlaps the receiver, demand DefineModule(reference_protocol_impl_module(protocol,target)) instead of DefineModule(provider). Removes the 'define the whole host module' indirection. Signal: the Mini fixture (.12/.15) resolves by defining only Susp.List, not Mini. Depends on T1.",
   "id": "fz-hwn.19.2.4.16.2",
