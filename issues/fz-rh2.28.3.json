@@ -7,7 +7,7 @@
     "fz-rh2.28.4"
   ],
   "created": "2026-06-17T17:52:48Z",
-  "description": "Goal: make a definition carry the lexical env it was created in. Add env to FunctionSource. The constructor supplies it: the canonical path projects env from the scope position (project_env_value Definition) and attaches it; the macro path carries the Fz.Compiler.define(source, __CALLER__) env. Delete FunctionEnvSource and the function_env field on FragmentPublicationContext; the publish path reads definition.env with no branch. Exclude env from source_same: it is a pure projection of {module, function, namespace} already compared there, a derived cache. Telemetry env_root_ref reads the stored env.\n\nGrounding: FunctionSource has no env field today; the projected env flows only to emit_compiler_service_define (env_root_ref, source_publish.rs:1459) and is then discarded. FunctionEnvSource::ProjectDefinition vs Fixed is the publication-mode branch (source_publish.rs:65-110, 705); its two arms are exactly canonical-projection vs macro-carry.\n\nSignal: FunctionEnvSource and the context mode field deleted; env stored on every FunctionSource; source_same surface unchanged (env excluded); env_root_ref telemetry still asserted (source_publish_test.rs:132); full lib green with zero warnings.\n\nStrategy: data-model up. Depends on fz-rh2.28.2 (canonical vs user origin is explicit). Blocks fz-rh2.28.4.",
+  "description": "Goal: remove the definition-time env machinery that is telemetry-only dead weight, now that __ENV__ is projected at expansion via a namespace splice (fz-rh2.28.4) and the lexical context is carried by FunctionSource.namespace.\n\nPivot: the original goal (\"carry the definition env on FunctionSource\") was wrong and its commit was reverted. Investigation showed the definition-time env projection only ever fed the env_root_ref telemetry measurement; nothing functional consumed it. __ENV__ in a body is now a projection of the def scope, spliced at expansion. So the def-time env path is dead.\n\nScope (remove): FunctionEnvSource enum, the function_env resolution, the env param threaded through publish_function_source, and the env_root_ref telemetry (update source_publish_test.rs:132).\n\nKeep (Elixir-essential, do NOT remove): FunctionSource.namespace (the lexical context = cache_env); the __CALLER__ runtime-param mechanism; the __CALLER__ arg the def-head macros pass to Fz.Compiler.define (the Elixir-aligned def-site capture seam).\n\nSignal: FunctionEnvSource gone; no def-time env projection; full lib green; fixture_matrix unchanged (313/85 baseline); zero warnings. Behavior-preserving (telemetry-only removal).",
   "id": "fz-rh2.28.3",
   "labels": [],
   "parent": "fz-rh2.28",
@@ -19,7 +19,7 @@
   ],
   "priority": 2,
   "status": "open",
-  "title": "Compiler2 definition env: carry it on the definition",
+  "title": "Compiler2: remove the telemetry-only definition-time env scaffolding",
   "type": "task",
   "updated_at": "2026-06-17T19:11:12Z"
 }
