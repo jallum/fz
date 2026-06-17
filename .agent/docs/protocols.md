@@ -59,6 +59,12 @@ returns plain accumulator values.
 - **`ProtocolDispatchMap`** — `protocol -> ProtocolDispatch { arms }`, derived
   from the impl registry. Protocol definition publishes the empty dispatch fact;
   each `defimpl` revises this dispatch fact and only this dispatch fact.
+- **`ProtocolImplProviders`** — the scope-tier discovery surface:
+  `protocol -> [(target, Protocol.Target)]`. `register_protocol_impl` records an
+  entry per `defimpl` while scoping (no body defined yet). It is the *only* way
+  dispatch finds an unloaded impl: a receiver with no arm demands
+  `DefineModule(Protocol.Target)` for each overlapping target. A `defimpl` is
+  thus independently demandable — its lexical host is never the unit of demand.
 
 `protocol_callback(fn)` answers "is this function a protocol callback?". It reads
 the registry, and `derived_protocol_callback` covers two cases the registry does
@@ -95,19 +101,25 @@ for each registered (protocol, target) impl:
         collect it
 exactly one match  -> activate that impl callback as an ordinary call
                       (the protocol callsite becomes a direct call to the impl)
-no match           -> pull reachable runtime impl modules whose target the
-                      receiver is a subtype of, then stay unresolved (any) and retry
+no match           -> demand the impl module Protocol.Target (from the provider
+                      index) whose target overlaps the receiver, then retry
 many matches       -> unresolved (any): the receiver is open/ambiguous here
 ```
 
-Selection is lazy about runtime code: when no registered impl matches, the job
-asks `runtime_impl_target_modules(receiver)` for the runtime modules whose target
-the receiver fits and `wait_for_runtime_module`s each one, so the owning runtime
-source is pulled and indexed; the retry then finds the impl. A single match
-waits for the impl's `owner_module` to be defined, then activates
-`selected.function` through the ordinary call path — so a known list receiver at
-`Enumerable.reduce/3` resolves to `Enumerable.List.reduce/3` and the callsite
-summary names that concrete callee, no stub and no runtime lookup table.
+Selection is lazy about impl code, and there is a single discovery path: the
+**provider index** (`ProtocolImplProviders(protocol)`). Scope time records every
+`defimpl` as a `(protocol, target) -> Protocol.Target` entry — built-in impls
+co-located with the protocol's own source, and impls in a module the program
+never reaches by name alike. When no registered arm matches, the job reads that
+index and demands `DefineModule(Protocol.Target)` for each target the receiver
+overlaps; the impl is the unit of demand, not the arbitrarily-named module it
+sits inside, and its lexical host is never pulled. There is **no** receiver-type
+module-name scan: a protocol call always names the protocol, and that reference
+scopes its co-located `defimpl`s, so built-in impls ride in on the protocol. A
+single match activates `selected.function` through the ordinary call path — so a
+known list receiver at `Enumerable.reduce/3` resolves to `Enumerable.List.reduce/3`
+and the callsite summary names that concrete callee, no stub and no runtime
+lookup table.
 
 ## The domain type
 
@@ -137,19 +149,25 @@ not revised by `defimpl`.
 ## Where the facts live
 
 ```text
-jobs/source.rs   indexes defprotocol (define_protocol_surface ->
-                 define_protocol_callback) and defimpl (define_protocol_impl);
-                 reference_protocol_impl_module names the protocol.child(target) module
+jobs/source.rs       indexes defprotocol (define_protocol_surface ->
+                     define_protocol_callback)
+source_publish.rs    register_protocol_impl (scope tier) hoists each defimpl to a
+                     ModuleSourceKind::ProtocolImpl source named Protocol.Target
+                     (reference_protocol_impl_module) and records it in the
+                     provider index; publish_protocol_impl_surface (define tier,
+                     run by DefineModule(Protocol.Target)) lowers the callbacks
+                     and revises the dispatch fact
 compiler2/protocol.rs  the ProtocolCallback / ProtocolImpl fact shapes + maps
-world.rs         define/read protocol facts; impl_target_ty; runtime_impl_target_modules;
-                 protocol-domain tags for normal TypeDefined derivation
-jobs/semantic.rs resolve_protocol_call — the receiver-subtype selection above
+world.rs             define/read protocol facts; impl_target_ty;
+                     protocol_impl_providers (the discovery surface);
+                     protocol-domain tags for normal TypeDefined derivation
+jobs/semantic.rs     resolve_protocol_call — the receiver-subtype selection above
 ```
 
 ## Proof gates
 
 ```text
-cargo test --lib compiler2::drive_test::compiler2_enum_reduce_selects_list_protocol_impl_and_callable_reducer
-cargo test --lib compiler2::drive_test::compiler2_materialization_freezes_only_the_selected_enum_reduce_path
-cargo test --test fixture_matrix enumerable_protocol_dispatch
+cargo test --lib compiler2::semantic_analysis_test::compiler2_protocol_impl_resolves_to_concat_module_not_host
+cargo test --lib compiler2::semantic_analysis_test::compiler2_root_colocated_protocol_impl_registers_on_scope
+cargo test --lib compiler2::drive_test::compiler2_protocol_domain_marker_stays_type_owned_while_dispatch_revises_when_impls_land
 ```
