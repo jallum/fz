@@ -257,8 +257,8 @@ the `fz-rh2.11.7.*` arc.
   without a second scoped-expression representation.
 - Macro execution lends the owning `QuotedSourceHeap` process to the backend
   interpreter and restores it after the run. Before the process returns to the
-  quoted-source heap, runtime-owned pointers such as the allocation-pressure
-  owner backpointer and any transient `ExecCtx` are detached again. Macro
+  quoted-source heap, runtime-owned pointers such as any transient `ExecCtx` are
+  detached again. Macro
   arguments and returns are `AnyValueRef` roots in that same heap; the returned
   root becomes another
   `QuotedSourceRoot` over the same owner. There is no AST codec, copied scratch

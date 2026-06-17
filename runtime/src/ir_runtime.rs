@@ -146,12 +146,11 @@ pub extern "C" fn fz_process_heap_alloc_stats(process: *mut Process) -> u64 {
     let reductions_per_quantum = p.reductions_per_quantum;
     let reductions_executed = p.reductions_executed;
     let reduction_yields = p.reduction_yields;
-    let allocation_pressure_yields = p.allocation_pressure_yields;
     let yield_reasons = p.yield_reasons;
     let max_yield_continuation_bytes = p.max_yield_continuation_bytes;
     let min_yield_continuation_margin_before_bytes = p.min_yield_continuation_margin_before_bytes;
     let min_yield_continuation_margin_after_bytes = p.min_yield_continuation_margin_after_bytes;
-    let mut entries = Vec::with_capacity(33);
+    let mut entries = Vec::with_capacity(32);
     entries.push((
         AnyValue::atom(process_atom_id(process, "allocs")),
         AnyValue::int(snapshot.total.allocs as i64),
@@ -193,10 +192,6 @@ pub extern "C" fn fz_process_heap_alloc_stats(process: *mut Process) -> u64 {
     entries.push((
         AnyValue::atom(process_atom_id(process, "reduction_yields")),
         AnyValue::int(reduction_yields as i64),
-    ));
-    entries.push((
-        AnyValue::atom(process_atom_id(process, "allocation_pressure_yields")),
-        AnyValue::int(allocation_pressure_yields as i64),
     ));
     entries.push((
         AnyValue::atom(process_atom_id(process, "yield_reasons")),

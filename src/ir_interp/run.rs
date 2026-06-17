@@ -263,11 +263,6 @@ pub(super) fn run_fn_typed<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(
                             p.reductions_remaining -= 1;
                             (p.reductions_remaining <= 0, p.reductions_remaining)
                         };
-                        // Allocation pressure zeroes the budget on the Process
-                        // (`expire_current_budget`), so a pressured loop trips
-                        // `budget_exhausted` here too; its ALLOCATION_PRESSURE
-                        // bit already stands on `yield_reasons` and is folded in
-                        // by the scheduler-boundary `finish_yield_report`.
                         if budget_exhausted {
                             let resume_fn = selected_target
                                 .as_ref()

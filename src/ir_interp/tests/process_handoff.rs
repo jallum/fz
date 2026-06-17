@@ -14,7 +14,6 @@ fn take_process_detaches_scheduler_owned_pointers() {
     let mut exec_ctx = ExecCtx::empty();
     unsafe {
         (*proc_ptr).ctx = &mut exec_ctx;
-        (*proc_ptr).attach_heap_owner();
     }
     runtime.current_proc = proc_ptr;
 
@@ -29,9 +28,5 @@ fn take_process_detaches_scheduler_owned_pointers() {
     assert!(
         process.ctx.is_null(),
         "returned process must not keep a scheduler exec ctx"
-    );
-    assert!(
-        !process.heap.has_owner(),
-        "returned process must not keep an allocation-pressure owner backpointer"
     );
 }

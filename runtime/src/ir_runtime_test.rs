@@ -132,10 +132,6 @@ fn process_heap_alloc_stats_returns_pre_materialization_snapshot() {
     );
     assert_eq!(map_int_value_by_atom_name(process, stats_ref, "reductions_executed"), 0);
     assert_eq!(map_int_value_by_atom_name(process, stats_ref, "reduction_yields"), 0);
-    assert_eq!(
-        map_int_value_by_atom_name(process, stats_ref, "allocation_pressure_yields"),
-        0
-    );
     assert_eq!(map_int_value_by_atom_name(process, stats_ref, "yield_reasons"), 0);
     assert_eq!(
         map_int_value_by_atom_name(process, stats_ref, "max_yield_continuation_bytes"),

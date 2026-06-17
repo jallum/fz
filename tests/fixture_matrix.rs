@@ -3324,7 +3324,7 @@ fn local_reduce_state_update_lowers_without_trampoline() {
 }
 
 fn enum_sort_constant_sorter_erased_under_return_demand_specs() {
-    assert_fixture_output_contains("enum_sort", "expected.txt", &["{22, 352, 0, 0, 0, 0, 0, 0, 0}"]);
+    assert_fixture_output_contains("enum_sort", "expected.txt", &["{22, 352, 0, 0, 0, 0, 0, 0}"]);
 
     let readme = fs::read_to_string("fixtures2/behavior/enum_sort.fz").expect("read enum_sort README");
     for needle in [
@@ -3344,11 +3344,11 @@ fn enum_sort_constant_sorter_erased_under_return_demand_specs() {
             codegen_candidate_count: 15,
             codegen_consumed_count: 6,
             runtime_attempted_count: 55,
-            runtime_reused_count: 1,
+            runtime_reused_count: 55,
         },
         "enum_sort should make reusable-cons birth, transport, and consumption visible in compiler2 telemetry",
     );
-    assert_eq!(stats.runtime_fallback_count(), 54);
+    assert_eq!(stats.runtime_fallback_count(), 0);
 }
 
 fn enum_map_family_pins_reusable_cons_telemetry_contract() {

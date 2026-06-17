@@ -1127,7 +1127,7 @@ impl CompiledModule {
     /// (which the caller — typically the Runtime in src/exec/runtime.rs — must
     /// have set to a fresh entry frame or the saved continuation from a
     /// prior yield). The caller sets the pinned register to this process (and
-    /// `process.ctx` / `heap.owner`); we just trampoline. On halt the trampoline
+    /// `process.ctx`); we just trampoline. On halt the trampoline
     /// returns null; we write that back to process.next_frame so the
     /// caller can observe completion.
     pub(crate) fn run_quantum(&self, process: &mut Process) {

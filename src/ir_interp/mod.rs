@@ -436,7 +436,6 @@ impl IrInterpRuntime {
                 (*proc_ptr).state = ProcessState::Running;
                 (*proc_ptr).reset_reduction_budget();
                 (*proc_ptr).ctx = &mut exec_ctx;
-                (*proc_ptr).attach_heap_owner();
                 debug_assert!(!(*proc_ptr).ctx.is_null(), "interp ctx installed");
             };
             self.current_proc = proc_ptr;
@@ -707,7 +706,6 @@ where
     runtime.insert_task(1, task);
     let task_ptr = runtime.process_ptr(1).expect("run_test_fn installed pid 1");
     runtime.current_proc = task_ptr;
-    unsafe { (*task_ptr).attach_heap_owner() };
     let mut module_plan = module_plan.clone();
     let diagnostics = resolve_module_types(t, module, &mut module_plan);
     if let Some(diagnostic) = diagnostics.into_iter().next() {

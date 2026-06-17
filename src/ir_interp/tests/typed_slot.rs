@@ -8,7 +8,6 @@ use crate::telemetry::bus::ConfiguredTelemetry;
 use crate::test_support::linked_runtime_graph;
 use fz_runtime::any_value::ListCons;
 use fz_runtime::any_value::ValueKind;
-use std::ptr::null_mut;
 
 use crate::fz_ir::Module;
 
@@ -391,8 +390,6 @@ fn interp_reductions_yield_allocation_light_loops() {
         child.reduction_yields > 0,
         "child should yield on reduction budget exhaustion"
     );
-    assert_eq!(main.allocation_pressure_yields, 0);
-    assert_eq!(child.allocation_pressure_yields, 0);
     assert_eq!(main.interpreter_yields, 0, "test should be allocation-light");
     assert_eq!(child.interpreter_yields, 0, "test should be allocation-light");
 }
@@ -431,9 +428,9 @@ fn interp_quiet_quanta_moves_only_at_scheduler_boundaries() {
     assert_eq!(task.interpreter_yields, 0);
 }
 
-// DROP: old-world heap allocation-pressure yield counters, no compiler2 analogue
+// DROP: old-world scheduler/GC accounting, no compiler2 analogue
 #[test]
-fn interp_allocation_pressure_yields_before_budget_exhaustion() {
+fn interp_allocation_pressure_does_not_yield_before_budget_exhaustion() {
     let m = lower_src(
         r#"
         fn sum(0, acc, _), do: acc
@@ -449,7 +446,7 @@ fn interp_allocation_pressure_yields_before_budget_exhaustion() {
     {
         let task = runtime.task_mut(1).expect("main task");
         task.reductions_per_quantum = 1000;
-        task.heap.allocation_watermark = null_mut();
+        task.heap.gc_threshold_bytes = 16;
     }
 
     let completions = runtime.drive_until_idle(&mut t, &tel, None).expect("drive interp");
@@ -461,31 +458,13 @@ fn interp_allocation_pressure_yields_before_budget_exhaustion() {
 
     let task = runtime.task(1).expect("main task remains registered");
     assert_eq!(halt, 55);
-    assert!(
-        task.heap.gc_run_count > 0,
-        "allocation pressure should force scheduler-boundary GC"
-    );
     assert_eq!(
         task.reduction_yields, 0,
-        "allocation pressure should not be counted as ordinary reduction exhaustion"
+        "allocation pressure must not force a scheduler yield"
     );
-    assert!(
-        task.allocation_pressure_yields > 0,
-        "allocation pressure should have its own cause-specific counter"
-    );
-    // fz-mif: an allocation-pressure yield banks only the reductions genuinely
-    // burned before the budget was force-zeroed — never a phantom full quantum.
-    // This tiny program trips pressure once, early in the quantum, so the
-    // banked count is positive but strictly below a quantum. The pre-fz-mif
-    // over-count credited a whole quantum per pressure yield; these two bounds
-    // pin the honest accounting against regression in either direction.
-    assert!(
-        task.reductions_executed > 0,
-        "allocation pressure should still bank the reductions genuinely burned"
-    );
-    assert!(
-        task.reductions_executed < task.reductions_per_quantum as u64,
-        "allocation pressure must not credit a phantom full quantum"
+    assert_eq!(
+        task.reductions_executed, 0,
+        "no yield means no boundary reduction report"
     );
 }
 

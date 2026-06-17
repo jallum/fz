@@ -30,5 +30,5 @@ Read:
 - [charlists](docs/charlists.md) — fz has no charlist type; integer lists stay lists, text is a binary, and where rendering differs from Elixir.
 - [pinned process register](docs/pinned-process-register.md) — how compiled code carries the current `Process*` and spends its reduction budget.
 - [scheduler zero-arg closures](docs/scheduler-zero-arg-closures.md) — scheduler re-entry is one verb (run a closure): receive, timeout, spawn, and halt continuations.
-- [reduction yielding](docs/reduction-yielding.md) — the per-process reduction budget that drives scheduler fairness and allocation-pressure GC.
+- [reduction yielding](docs/reduction-yielding.md) — the per-process reduction budget that drives scheduler fairness while GC pressure stays heap-local until a natural boundary.
 - [fixtures](docs/fixtures.md) — the four-path fixture matrix: frontmatter, goldens, the Elixir oracle, and dump budgets.
