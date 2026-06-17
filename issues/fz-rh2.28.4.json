@@ -6,14 +6,15 @@
   "blocks": [
     "fz-rh2.28.5"
   ],
+  "closed_at": "2026-06-17T19:11:12Z",
   "created": "2026-06-17T17:53:01Z",
   "description": "Goal: bind __ENV__ and __CALLER__ into the namespace just prior to expanding a function body, so a body resolves them through the ordinary binding chain. __ENV__ is the carried definition env with its function field rebound to the definition being expanded (the Elixir env_for_expansion move E#{function := Tuple}); __CALLER__ remains the call-site projection (quoted_expander.rs:336).\n\nGrounding: today __CALLER__ is a runtime macro param bound at lowering (body.rs:991-994) and projected at the macro call site; __ENV__ has no binding anywhere, so a body referencing __ENV__ is unserved. The carried __CALLER__ env has its function set to the enclosing scope, not the defined function, so materialization must rebind function.\n\nSignal: failing test first: a macro-authored function asserting __ENV__.function is its own name and arity rather than the caller value. Then the binding lands and the test passes. Three-path parity (interp, JIT, AOT) since a body may read __ENV__ at runtime. Full lib green with zero warnings.\n\nStrategy: TDD, new capability. Depends on fz-rh2.28.3 (env on the definition). Blocks fz-rh2.28.5.",
   "id": "fz-rh2.28.4",
   "labels": [],
   "parent": "fz-rh2.28",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Compiler2 expansion: bind def-site __ENV__ with function rebound",
   "type": "task",
-  "updated_at": "2026-06-17T18:35:42Z"
+  "updated_at": "2026-06-17T19:11:12Z"
 }
