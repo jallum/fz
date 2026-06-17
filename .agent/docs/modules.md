@@ -127,6 +127,13 @@ as the prelude head; every other code contribution then scopes from that head
 (and waits on the prelude's `CodeScoped`). So default visibility is a saved
 namespace head, not a compiler phase.
 
+Root submission does not force that prelude work by sweeping all code. A root
+waits for its entry function facts; the function-source demand selects the
+indexed code surface that can publish that entry, and that code's `ScopeCode`
+is what pulls `CodeScoped(runtime_prelude)` if needed. The ownership chain is
+therefore root -> entry fact -> candidate source surface -> prelude namespace,
+never root -> every code contribution.
+
 There is no `.fzi`/`.fzo` store and no separate-compilation sidecar: a program's
 module world is the source it submits plus the runtime-library source pulled on
 demand. A user module is present only when its source was submitted.

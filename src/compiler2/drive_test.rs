@@ -36,6 +36,7 @@ type GuardDispatchMap = Rc<RefCell<HashMap<FunctionId, Vec<PatternGuardDispatch<
 type LoweredBodyDefs = Rc<RefCell<HashMap<FunctionId, Vec<LoweredBody>>>>;
 type SpanJobs = Rc<RefCell<HashMap<u64, Job>>>;
 type FunctionDefs = Rc<RefCell<HashMap<FunctionId, FunctionDefinedRecord>>>;
+type SourceNotes = Rc<RefCell<Vec<FunctionRef>>>;
 type ModuleDefs = Rc<RefCell<HashMap<ModuleId, Vec<ModuleState>>>>;
 type CallsiteDefs = Rc<RefCell<Vec<CallsiteDefinedRecord>>>;
 type SemanticClosedDefs = Rc<RefCell<Vec<SemanticClosedRecord>>>;
@@ -1235,6 +1236,133 @@ fn compiler2_submit_root_pulls_scope_and_seeds_entry_semantics_without_warming_f
         capture.find(&["fz", "type_infer"]).len(),
         0,
         "root seeding should not invoke the legacy type inference pipeline"
+    );
+}
+
+#[test]
+fn compiler2_root_scopes_only_the_code_that_can_publish_its_entry() {
+    let tel = ConfiguredTelemetry::new();
+    let source_notes = SourceNoteCapture::new();
+    tel.attach(
+        &["fz", "compiler2", "function", "source", "noted"],
+        source_notes.handler(),
+    );
+    let outputs = OutputCapture::new();
+    tel.attach(&["fz", "compiler2", "job"], outputs.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    let main_code = compiler.submit_code(CodeSubmission {
+        name: Some("main_only.fz".to_string()),
+        text: "fn main(), do: 1\n".to_string(),
+    });
+    let unrelated_code = compiler.submit_code(CodeSubmission {
+        name: Some("foo_only.fz".to_string()),
+        text: "fn foo(), do: 2\n".to_string(),
+    });
+    compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    assert_resolved(
+        compiler.drive(),
+        "root demand should scope the code that can publish main/0 without sweeping unrelated code",
+    );
+
+    assert!(
+        outputs
+            .stops_matching(|job| matches!(job, Job::ScopeCode(id) if *id == main_code))
+            .iter()
+            .any(|stop| {
+                stop.effects
+                    .as_ref()
+                    .is_some_and(|effects| effects.outputs.contains(&FactKey::CodeScoped(main_code)))
+            }),
+        "the root entry's code should publish its scoped source fact"
+    );
+    assert!(
+        outputs
+            .stops_matching(|job| matches!(job, Job::ScopeCode(id) if *id == unrelated_code))
+            .is_empty(),
+        "an unrelated submitted code contribution should stay unscoped when the root cannot reach it"
+    );
+    assert_eq!(
+        source_notes.count("main", 0),
+        1,
+        "the entry function source should be noted exactly once"
+    );
+    assert_eq!(
+        source_notes.count("foo", 0),
+        0,
+        "unrelated function source should not be noted merely because a root exists"
+    );
+}
+
+#[test]
+fn compiler2_root_source_publication_is_once_per_code_fact() {
+    let tel = ConfiguredTelemetry::new();
+    let source_notes = SourceNoteCapture::new();
+    tel.attach(
+        &["fz", "compiler2", "function", "source", "noted"],
+        source_notes.handler(),
+    );
+    let outputs = OutputCapture::new();
+    tel.attach(&["fz", "compiler2", "job"], outputs.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    let user_code = compiler.submit_code(CodeSubmission {
+        name: Some("no_runtime.fz".to_string()),
+        text: include_str!("../../fixtures2/00009_no_runtime.fz").to_string(),
+    });
+    compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    assert_resolved(
+        compiler.drive(),
+        "a tiny root should publish each required source surface once",
+    );
+
+    let prelude_code = crate::compiler2::CodeId::ZERO;
+    for code in [prelude_code, user_code] {
+        let published = outputs
+            .stops_matching(|job| matches!(job, Job::ScopeCode(id) if *id == code))
+            .into_iter()
+            .filter(|stop| {
+                stop.effects
+                    .as_ref()
+                    .is_some_and(|effects| effects.outputs.contains(&FactKey::CodeScoped(code)))
+            })
+            .count();
+        assert_eq!(
+            published, 1,
+            "CodeScoped({code:?}) should be published by exactly one ScopeCode completion"
+        );
+    }
+
+    for (name, arity) in [
+        ("fn", 1),
+        ("fnp", 1),
+        ("defmacro", 1),
+        ("defmodule", 2),
+        ("defprotocol", 2),
+        ("defimpl", 2),
+    ] {
+        assert_eq!(
+            source_notes.count(name, arity),
+            1,
+            "prelude macro source {name}/{arity} should be noted exactly once"
+        );
+    }
+    assert_eq!(
+        source_notes.count("main", 0),
+        1,
+        "user entry source should be noted exactly once"
     );
 }
 
@@ -9685,6 +9813,28 @@ impl FunctionCapture {
     }
 }
 
+impl SourceNoteCapture {
+    fn new() -> Self {
+        Self {
+            notes: Rc::new(RefCell::new(Vec::new())),
+        }
+    }
+
+    fn handler(&self) -> Box<dyn Handler> {
+        Box::new(SourceNoteCaptureHandler {
+            notes: self.notes.clone(),
+        })
+    }
+
+    fn count(&self, name: &str, arity: usize) -> usize {
+        self.notes
+            .borrow()
+            .iter()
+            .filter(|function_ref| function_ref.name == name && function_ref.arity == arity)
+            .count()
+    }
+}
+
 impl ModuleCapture {
     fn new() -> Self {
         Self {
@@ -10071,6 +10221,14 @@ struct FunctionCaptureHandler {
     defs: FunctionDefs,
 }
 
+struct SourceNoteCapture {
+    notes: SourceNotes,
+}
+
+struct SourceNoteCaptureHandler {
+    notes: SourceNotes,
+}
+
 struct ModuleCaptureHandler {
     defs: ModuleDefs,
 }
@@ -10237,6 +10395,22 @@ impl Handler for FunctionCaptureHandler {
                 function_ref: function_ref.clone(),
             },
         );
+    }
+}
+
+impl Handler for SourceNoteCaptureHandler {
+    fn handle(&self, event: &Event<'_, '_, '_>) {
+        if event.name != ["fz", "compiler2", "function", "source", "noted"] || event.kind != EventKind::Event {
+            return;
+        }
+        let Some(function_ref) = event
+            .metadata
+            .get("function_ref")
+            .and_then(|value| value.downcast_ref::<FunctionRef>())
+        else {
+            return;
+        };
+        self.notes.borrow_mut().push(function_ref.clone());
     }
 }
 

@@ -96,6 +96,15 @@ Each callee pulls its own `LowerFunction` / `PlanEntryDispatch` /
 `DeriveRecursive` / `DeriveDispatchMask` as the analysis needs them, so the
 strata interleave per function rather than running front-to-back.
 
+Root submission is not a source-publication phase. `submit_root` creates the
+root query and enqueues `SeedRoot(root)` only. If the entry function is not
+defined yet, `DefineFunction(entry)` waits on `FunctionSource(entry)` and
+demands the code contribution whose indexed source surface can actually publish
+that function. That source `ScopeCode` may wait on the runtime prelude's
+`CodeScoped` fact, but the root never broadcasts `ScopeCode` across every known
+code id. Unrelated submitted code therefore stays indexed-but-unscoped unless a
+root, explicit demand, or active late-code path actually asks for its surface.
+
 Macro executable readiness follows the same artifact ladder but with a hidden
 macro root:
 

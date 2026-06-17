@@ -27,15 +27,15 @@ use super::artifact::{
     NativeProgram, NativeProgramMap,
 };
 use super::body::{LoweredBody, LoweredBodyMap};
-use super::code::{CodeMap, QuotedCodeSource};
+use super::code::{CodeMap, CodeState, QuotedCodeSource};
 use super::contract::{FunctionContract, FunctionContractMap};
 use super::deps::UnresolvedWait;
 use super::dispatch::{EntryDispatchMap, GuardDispatchMap};
 use super::drive::{FactKey, Job, JobEffects, WorkGraph};
 use super::identity::{
-    ActivationKey, ExecutableNeed, ExpandedFunctionSourceMap, FunctionId, FunctionMap, FunctionSource, ModuleId,
-    ModuleMap, ModuleSourceKind, ModuleState, NotedTypeDecl, RootEntry, RootId, RootKind, RootMap, TypeDeclMap,
-    TypeName, TypeRefMap,
+    ActivationKey, ExecutableNeed, ExpandedFunctionSourceMap, FunctionId, FunctionMap, FunctionRef, FunctionSource,
+    ModuleId, ModuleMap, ModuleSourceKind, ModuleState, NotedTypeDecl, RootEntry, RootId, RootKind, RootMap,
+    TypeDeclMap, TypeName, TypeRefMap,
 };
 use super::keying::{DispatchMaskMap, RecursiveMap};
 use super::module_interface::{InterfaceCallableKind, InterfaceExpectation, InterfaceRequester, ModuleInterface};
@@ -44,6 +44,7 @@ use super::protocol::{
     ProtocolCallback, ProtocolCallbackImpl, ProtocolCallbackMap, ProtocolDispatch, ProtocolDispatchArm,
     ProtocolDispatchMap, ProtocolImpl, ProtocolImplKey, ProtocolImplMap, ProtocolImplProviderMap,
 };
+use super::quoted_surface::{ReservedSourceDefinition, ScopeForm, reserved_source_definition};
 use super::runtime::{self, RuntimeModuleCode};
 use super::scheduler::FatalError;
 use super::scope::ScopeSnapshot;
@@ -403,9 +404,6 @@ impl<'a> World<'a> {
             need,
             kind: RootKind::Runtime,
         });
-        for code_id in self.code.ids() {
-            self.work_graph.enqueue(Job::ScopeCode(code_id));
-        }
         self.work_graph.enqueue(Job::SeedRoot(root_id));
         let root = self.roots.get(root_id);
         let function_ref = self.functions.reference_for(function);
@@ -2194,7 +2192,19 @@ impl<'a> World<'a> {
     pub(crate) fn ensure_function_source(&mut self, function: FunctionId) -> Vec<Job> {
         let module = self.function_module(function);
         if module.is_global() {
-            return self.code.ids().into_iter().map(Job::ScopeCode).collect();
+            let function_ref = self.function_ref(function).clone();
+            return self
+                .code
+                .ids()
+                .into_iter()
+                .filter_map(|code_id| match self.code.get(code_id) {
+                    CodeState::Pending => None,
+                    CodeState::Indexed { source } if code_surface_can_publish_function(source, &function_ref) => {
+                        Some(Job::ScopeCode(code_id))
+                    }
+                    CodeState::Scoped { .. } | CodeState::Indexed { .. } => None,
+                })
+                .collect();
         }
         if self.module_has_source_state(module) || self.ensure_runtime_module(module).is_some() {
             return vec![Job::DefineModule(module)];
@@ -2767,6 +2777,29 @@ fn function_source_clause_count(source: &FunctionSource) -> u64 {
         clauses += 1;
     }
     clauses
+}
+
+fn code_surface_can_publish_function(source: &QuotedCodeSource, function_ref: &FunctionRef) -> bool {
+    source.surface.forms.iter().any(|form| match form {
+        ScopeForm::Function(function) => function.name == function_ref.name && function.arity == function_ref.arity,
+        ScopeForm::CompilerService(service) => source_definition_matches_function(&service.source, function_ref),
+        ScopeForm::MacroCall(macro_call) => source_definition_matches_function(&macro_call.source, function_ref),
+        ScopeForm::Alias(_)
+        | ScopeForm::Import(_)
+        | ScopeForm::Require(_)
+        | ScopeForm::Module(_)
+        | ScopeForm::Protocol(_)
+        | ScopeForm::ProtocolImpl(_)
+        | ScopeForm::Struct(_) => false,
+    })
+}
+
+fn source_definition_matches_function(source: &QuotedSourceRoot, function_ref: &FunctionRef) -> bool {
+    matches!(
+        reserved_source_definition(source).ok().flatten(),
+        Some(ReservedSourceDefinition::Function { name, arity, .. })
+            if name == function_ref.name && arity == function_ref.arity
+    )
 }
 
 /// A consumer's references are a set: the same type named twice (e.g. by both a
