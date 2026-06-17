@@ -9,7 +9,7 @@
   "parent": "fz-rh2",
   "priority": 2,
   "status": "open",
-  "title": "[EPIC] Compiler2 definition lifecycle: bootstrap is the only exception, carry the definition env, separate phase from origin",
+  "title": "Compiler2 definition lifecycle: bootstrap is the only exception, carry the definition env, separate phase from origin",
   "type": "epic",
-  "updated_at": "2026-06-17T17:52:31Z"
+  "updated_at": "2026-06-17T17:53:17Z"
 }
