@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-hwn.19.9"
+  ],
   "created": "2026-06-17T13:41:25Z",
   "description": "Goal\nAdd the missing transport concept for callsites whose result flows into the caller return contract. A call with ControlDestination::Return must not be represented downstream as an unlabelled repr mismatch; TransportPlan should name the callsite return payload position and publish seam facts for it.\n\nDesign\nIntroduce a TransportPosition for the callsite result payload, e.g. ReturnPayload { executable, callsite }. It is distinct from ExecutableReturn: ExecutableReturn is the caller body return contract; ReturnPayload is the produced call result at that callsite before it is returned through that contract. ResumePayload remains the analogous position for Deliver(entry).\n\nSignal\nTransport contract tests prove the multi_relay-style case has producer return position, callsite return payload position, and caller return position as explicit facts. At least one test must prove when the payload and caller return share a ShapeId, and at least one must prove when they are distinct and therefore require non-tail return flow.\n\nRequired edits\nsrc/compiler2/transport.rs, src/compiler2/jobs/transport.rs, src/compiler2/transport_contract_test.rs, outline.md, proposal.html. Update docs to say call result payloads are named TransportPositions, not native mismatches.\n\nChecks\nFocused transport contract tests plus cargo check. rg should not find new wording that describes this as an adapter, shim, bridge, or codegen-derived shape.",
   "id": "fz-hwn.19.8",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Transport return-flow: name callsite return payload positions in TransportPlan",
   "type": "task",
-  "updated_at": "2026-06-17T13:41:25Z"
+  "updated_at": "2026-06-17T13:42:02Z"
 }
