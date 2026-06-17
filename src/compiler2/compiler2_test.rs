@@ -661,3 +661,31 @@ fn env_in_function_body_resolves_via_namespace_splice() {
         "a function body referencing __ENV__ should resolve once __ENV__ is spliced from the namespace"
     );
 }
+
+#[test]
+fn compiler2_macro_ignoring_caller_runs_with_elided_caller_lane() {
+    // A macro whose body never uses __CALLER__ leaves that input Nothing-shaped,
+    // so the executable carries no runtime lane for it. The macro caller
+    // (run_macro_on_source) must honor that elision from the executable's lane
+    // layout rather than pass a fixed [__CALLER__, args] ABI; otherwise the entry
+    // is handed one lane too many ("expected 1 runtime lane(s), got 2").
+    let tel = ConfiguredTelemetry::new();
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("macro_caller_elision.fz".to_string()),
+        text: "defmacro inc(x) do\n  quote do: unquote(x) + 1\nend\n\nfn main(), do: inc(41)\n".to_string(),
+    });
+    let root = compiler.submit_root(super::RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: super::ExecutableNeed::Value,
+    });
+    assert_eq!(
+        compiler
+            .run_root_interp(root)
+            .expect("a macro ignoring __CALLER__ should expand and run"),
+        42,
+        "inc(41) should evaluate to 42 with the unused __CALLER__ lane elided",
+    );
+}

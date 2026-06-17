@@ -1163,9 +1163,16 @@ impl<'a> World<'a> {
             .macro_executable(function)
             .ok_or_else(|| format!("macro {} is not executable", function.as_u32()))?
             .clone();
-        let mut runtime_args = Vec::with_capacity(1 + args.len());
-        runtime_args.push(RuntimeValue::Ref(caller));
-        runtime_args.extend(args.iter().copied().map(RuntimeValue::Ref));
+        // Inputs by semantic role: __CALLER__ first, then the user args. The
+        // executable's lane layout — not a fixed ABI — decides what is actually
+        // passed, so a __CALLER__ the macro body never uses is elided like any
+        // other unused input, keeping the macro caller lane-consistent with the
+        // executable the same way a generated caller is.
+        let mut semantic_values = Vec::with_capacity(1 + args.len());
+        semantic_values.push(RuntimeValue::Ref(caller));
+        semantic_values.extend(args.iter().copied().map(RuntimeValue::Ref));
+        let runtime_args =
+            crate::ir_interp::encode_macro_entry_inputs(&executable.program, &self.transport, &semantic_values)?;
         let value = source.lend_process(|process| {
             crate::ir_interp::run_backend_entry_on_process(
                 &mut self.types,

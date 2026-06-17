@@ -51,7 +51,7 @@ mod value;
 #[cfg(test)]
 mod ir_interp_test;
 
-pub(crate) use backend::{run_backend_entry_on_process, run_backend_main};
+pub(crate) use backend::{encode_macro_entry_inputs, run_backend_entry_on_process, run_backend_main};
 use binop::*;
 use dispatch_exec::*;
 use extern_call::*;

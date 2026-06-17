@@ -1606,6 +1606,41 @@ fn bind_executable_inputs(
     Ok(bound)
 }
 
+/// Builds the entry executable's runtime lane vector from macro inputs given by
+/// semantic role — `semantic_values[0]` is `__CALLER__`, then the user args.
+///
+/// This is the inverse of [`bind_executable_inputs`] and honors input-lane
+/// elision: an input the executable left `Nothing`-shaped (e.g. a `__CALLER__`
+/// the macro body never uses) occupies no runtime lane and is skipped, exactly
+/// as `decode_runtime_input` consumes zero lanes for it. The macro invocation is
+/// thus lane-consistent with the executable the same way a generated caller is,
+/// instead of asserting a fixed `[__CALLER__, args]` ABI. Macro inputs are
+/// `Any` (one lane each); `bind_executable_inputs` validates the lane count.
+pub(crate) fn encode_macro_entry_inputs(
+    program: &BackendProgram,
+    transport: &TransportStore,
+    semantic_values: &[AnyValue],
+) -> Result<Vec<AnyValue>, String> {
+    let executable = program
+        .executables
+        .get(program.entry)
+        .ok_or_else(|| format!("macro entry executable {} is out of bounds", program.entry))?;
+    let mut lanes = Vec::new();
+    for (semantic_index, shape) in executable_input_shapes(program, executable)? {
+        if matches!(transport.interners().shape(shape), ShapeDescr::Nothing) {
+            continue;
+        }
+        let value = *semantic_values.get(semantic_index).ok_or_else(|| {
+            format!(
+                "macro entry expected a value for semantic input {semantic_index}, have {}",
+                semantic_values.len()
+            )
+        })?;
+        lanes.push(value);
+    }
+    Ok(lanes)
+}
+
 fn position_shape(program: &BackendProgram, position: &TransportPosition) -> Result<ShapeId, String> {
     program
         .transport
