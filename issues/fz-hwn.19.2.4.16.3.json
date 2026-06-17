@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-17T02:49:48Z",
+  "description": "publish_protocol_surface ignores all non-Function forms, so a defimpl co-located with defprotocol in the same file is never registered. Extend protocol indexing/publication so co-located root-level defimpls register their Protocol.Target sources (via T1's mechanism). This is what lets 'reference the protocol' make its built-in impls demandable. Signal: defining a protocol makes Protocol.\u003cbuiltin\u003e demandable without naming the type module. Depends on T1.",
+  "id": "fz-hwn.19.2.4.16.3",
+  "labels": [],
+  "parent": "fz-hwn.19.2.4.16",
+  "priority": 2,
+  "status": "open",
+  "title": "Protocol publication registers co-located root-level defimpl sources",
+  "type": "task",
+  "updated_at": "2026-06-17T02:49:48Z"
+}
