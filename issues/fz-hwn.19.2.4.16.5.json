@@ -1,7 +1,6 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-hwn.19.2.4.16.2",
     "fz-hwn.19.2.4.16.4"
   ],
   "blocks": [
@@ -16,5 +15,5 @@
   "status": "open",
   "title": "Delete runtime_impl_target_modules and the convention branch in resolve_protocol_call",
   "type": "task",
-  "updated_at": "2026-06-17T02:49:59Z"
+  "updated_at": "2026-06-17T02:52:29Z"
 }
