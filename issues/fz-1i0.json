@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-06-13T16:41:12Z",
@@ -7,8 +7,8 @@
   "id": "fz-1i0",
   "labels": [],
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "Compiler2 AOT root compile stack-overflows without legacy prepare",
   "type": "bug",
-  "updated_at": "2026-06-13T16:41:12Z"
+  "updated_at": "2026-06-17T20:09:18Z"
 }
