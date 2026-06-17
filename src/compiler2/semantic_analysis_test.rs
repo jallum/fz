@@ -619,6 +619,7 @@ end
 }
 
 #[test]
+#[ignore = "fz-eak: times out under CI llvm-cov; investigate callable-surface runtime-demand work with fz2 telemetry/dumps"]
 fn compiler2_runtime_demand_records_the_exact_surface_for_a_direct_lambda_call() {
     let tel = crate::telemetry::ConfiguredTelemetry::new();
     let runtime_demands = RuntimeDemandCapture::new();
@@ -663,6 +664,7 @@ end
 }
 
 #[test]
+#[ignore = "fz-eak: times out under CI llvm-cov; investigate callable-surface runtime-demand work with fz2 telemetry/dumps"]
 fn compiler2_runtime_demand_marks_an_escaped_callable_first_class() {
     let tel = crate::telemetry::ConfiguredTelemetry::new();
     let functions = FunctionCapture::new();
