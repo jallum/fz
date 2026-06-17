@@ -410,17 +410,19 @@ pub(super) fn resolve_guard_callee(
                 call.span,
             ),
         )),
-        Some(NamespaceSymbol::Module(_)) | Some(NamespaceSymbol::Type(_)) | None => Err(emit_job_diagnostic(
-            world,
-            Diagnostic::error(
-                codes::LOWER_UNBOUND,
-                format!(
-                    "compiler2 guard call `{}/{}` is unresolved in this namespace",
-                    call.name, call.arity
+        Some(NamespaceSymbol::Module(_)) | Some(NamespaceSymbol::Type(_)) | Some(NamespaceSymbol::Splice(_)) | None => {
+            Err(emit_job_diagnostic(
+                world,
+                Diagnostic::error(
+                    codes::LOWER_UNBOUND,
+                    format!(
+                        "compiler2 guard call `{}/{}` is unresolved in this namespace",
+                        call.name, call.arity
+                    ),
+                    call.span,
                 ),
-                call.span,
-            ),
-        )),
+            ))
+        }
     }
 }
 
@@ -435,7 +437,7 @@ pub(super) fn resolve_guard_callee_checked(
         Some(NamespaceSymbol::Macro(_)) => {
             panic!("guard analysis should reject macro calls before building dispatch artifacts")
         }
-        Some(NamespaceSymbol::Module(_)) | Some(NamespaceSymbol::Type(_)) | None => {
+        Some(NamespaceSymbol::Module(_)) | Some(NamespaceSymbol::Type(_)) | Some(NamespaceSymbol::Splice(_)) | None => {
             panic!("guard analysis should reject unresolved helper calls before building dispatch artifacts")
         }
     }

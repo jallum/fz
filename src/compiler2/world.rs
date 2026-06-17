@@ -2352,7 +2352,7 @@ impl<'a> World<'a> {
                 | NamespaceSymbol::Callable(function) => {
                     callable_match_score(self.function_arity(*function), self.function_variadic(*function), arity)
                 }
-                NamespaceSymbol::Module(_) | NamespaceSymbol::Type(_) => None,
+                NamespaceSymbol::Module(_) | NamespaceSymbol::Type(_) | NamespaceSymbol::Splice(_) => None,
             })
             .cloned()
             .map(|symbol| self.resolve_callable_symbol(symbol))
@@ -2433,7 +2433,7 @@ impl<'a> World<'a> {
                 NamespaceSymbol::Callable(_) => {
                     unreachable!("variadic lookup should not yield unresolved callable expectations")
                 }
-                NamespaceSymbol::Module(_) | NamespaceSymbol::Type(_) => {
+                NamespaceSymbol::Module(_) | NamespaceSymbol::Type(_) | NamespaceSymbol::Splice(_) => {
                     unreachable!("variadic lookup should not yield modules or types")
                 }
             })

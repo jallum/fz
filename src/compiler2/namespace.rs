@@ -1,4 +1,5 @@
 use super::identity::{FunctionId, ModuleId, TypeName};
+use super::source::QuotedSourceRoot;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct BindingId(u32);
@@ -27,6 +28,11 @@ pub enum NamespaceSymbol {
     /// reads it; value/callable lookups filter it out, so a type and a value
     /// of the same name never collide.
     Type(TypeName),
+    /// A name bound to a quoted AST snippet, spliced in place when the name is
+    /// referenced during macro expansion. The mechanism is generic; today the
+    /// only such binding is `__ENV__`, bound to the definition env just before a
+    /// body is expanded.
+    Splice(QuotedSourceRoot),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

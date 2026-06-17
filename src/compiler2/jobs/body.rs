@@ -775,7 +775,9 @@ impl<'a, 'w, 'tel, 'env, 'steps> QuoteLowerer<'a, 'w, 'tel, 'env, 'steps> {
             NamespaceSymbol::Function(function)
             | NamespaceSymbol::Macro(function)
             | NamespaceSymbol::Callable(function) => function,
-            NamespaceSymbol::Module(_) | NamespaceSymbol::Type(_) => return name.to_string(),
+            NamespaceSymbol::Module(_) | NamespaceSymbol::Type(_) | NamespaceSymbol::Splice(_) => {
+                return name.to_string();
+            }
         };
         let module = self.lowerer.world.function_module(function);
         if module.is_global() {
@@ -1097,16 +1099,17 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
                             expr.span,
                         ),
                     )),
-                    Some(NamespaceSymbol::Module(_)) | Some(NamespaceSymbol::Type(_)) | None => {
-                        Err(emit_job_diagnostic(
-                            self.world,
-                            Diagnostic::error(
-                                codes::LOWER_UNBOUND,
-                                format!("compiler2 lowering found unresolved value `{name}`"),
-                                expr.span,
-                            ),
-                        ))
-                    }
+                    Some(NamespaceSymbol::Module(_))
+                    | Some(NamespaceSymbol::Type(_))
+                    | Some(NamespaceSymbol::Splice(_))
+                    | None => Err(emit_job_diagnostic(
+                        self.world,
+                        Diagnostic::error(
+                            codes::LOWER_UNBOUND,
+                            format!("compiler2 lowering found unresolved value `{name}`"),
+                            expr.span,
+                        ),
+                    )),
                 }
             }
             Expr::FnRef { name, arity } => {
@@ -1392,7 +1395,10 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
                     span,
                 ),
             )),
-            Some(NamespaceSymbol::Module(_)) | Some(NamespaceSymbol::Type(_)) | None => {
+            Some(NamespaceSymbol::Module(_))
+            | Some(NamespaceSymbol::Type(_))
+            | Some(NamespaceSymbol::Splice(_))
+            | None => {
                 self.reject_too_few_variadic_args(name, arity, span)?;
                 Err(self.unbound_runtime_function(name, arity, span, context))
             }

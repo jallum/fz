@@ -360,6 +360,14 @@ fn decode_expr(
             let elems = decode_exprs(&items, ctx, Some(span))?;
             Ok(Spanned::new(Expr::Tuple(elems), span))
         }
+        fz_runtime::any_value::ValueKind::MAP => {
+            let entries = cursor
+                .map_entries()?
+                .iter()
+                .map(|(key, value)| Ok((decode_expr(key, ctx, Some(span))?, decode_expr(value, ctx, Some(span))?)))
+                .collect::<Result<Vec<_>, QuotedFunctionError>>()?;
+            Ok(Spanned::new(Expr::Map(entries), span))
+        }
         other => Err(QuotedFunctionError::new(format!(
             "unsupported quoted expression runtime kind {:?}",
             other

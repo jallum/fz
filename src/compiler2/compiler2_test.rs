@@ -637,3 +637,27 @@ impl Handler for JobCaptureHandler {
         }
     }
 }
+
+#[test]
+fn env_in_function_body_resolves_via_namespace_splice() {
+    // A function body that names __ENV__ must compile: just before the body is
+    // expanded, __ENV__ is bound in the namespace to the definition env (a map
+    // snippet) and the expander splices it in. Without that binding __ENV__ is
+    // an unbound variable and the drive cannot resolve.
+    let tel = ConfiguredTelemetry::new();
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("env_body.fz".to_string()),
+        text: "fn main(), do: __ENV__\n".to_string(),
+    });
+    let _root = compiler.submit_root(super::RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: super::ExecutableNeed::Value,
+    });
+    assert!(
+        matches!(compiler.drive(), DriveOutcome::Resolved),
+        "a function body referencing __ENV__ should resolve once __ENV__ is spliced from the namespace"
+    );
+}

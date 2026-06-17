@@ -510,6 +510,14 @@ impl PartialEq for QuotedSourceRoot {
 
 impl Eq for QuotedSourceRoot {}
 
+impl std::hash::Hash for QuotedSourceRoot {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        // Identity-hash by key, consistent with the key-based `PartialEq`.
+        self.key.heap_id.hash(state);
+        self.key.root.raw_word().hash(state);
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct QuotedSourceCursor {
     heap: Rc<QuotedSourceHeap>,

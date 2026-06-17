@@ -11,7 +11,7 @@ use super::super::quoted_expander::{
 use super::super::quoted_surface::{SurfaceSourceContext, read_compiler_fragment_surface, read_scope_surface};
 use super::super::scheduler::FatalError;
 use super::super::scope::ScopeSnapshot;
-use super::super::source::{QuotedSourceCursor, QuotedSourceRoot};
+use super::super::source::{QuotedLexicalContextKind, QuotedSourceCursor, QuotedSourceRoot};
 use super::super::source_publish::{self, ScopePublication};
 use super::super::world::World;
 use super::super::{QuotedCodeSource, parse_quoted_program};
@@ -357,7 +357,21 @@ impl<'world, 'tel> FunctionSourceExpander<'world, 'tel> {
     }
 
     fn expand(mut self, source: &FunctionSource) -> Result<FunctionSourceExpansion, FatalError> {
-        let scope = ScopeSnapshot::function(self.current_module, self.namespace, self.function);
+        // Bind __ENV__ for this body: the definition env, projected from the def
+        // scope (so its `function` is this definition) and added to the
+        // namespace as a splice. The expander resolves it where the body names
+        // __ENV__; it is transient — it is never recorded on the function.
+        let def_scope = ScopeSnapshot::function(self.current_module, self.namespace, self.function);
+        let builder = source.source.builder();
+        let env = self
+            .world
+            .project_env_value(&builder, def_scope, QuotedLexicalContextKind::Definition)
+            .map_err(|error| emit_internal_surface_error(self.world, format!("__ENV__ projection failed: {error}")))?;
+        let env = source.source.subroot(env);
+        let namespace = self
+            .world
+            .bind_namespace(self.namespace, "__ENV__", NamespaceSymbol::Splice(env));
+        let scope = ScopeSnapshot::function(self.current_module, namespace, self.function);
         let expanded = match self.expand_function_root(source.source.clone(), scope, 0)? {
             ExpandedRoot::Complete(expanded) => expanded,
             ExpandedRoot::Blocked(effects) => {

@@ -88,6 +88,11 @@ pub(crate) trait QuotedExpansionCtx<'tel> {
         if let Some(node) = cursor.ast_node().map_err(|error| {
             emit_internal_surface_error(self.world(), format!("quoted expansion read failed: {error}"))
         })? {
+            if let Some(name) = splice_candidate_name(&node)
+                && let Some(NamespaceSymbol::Splice(snippet)) = self.world().lookup_namespace(scope.namespace(), &name)
+            {
+                return Ok(ExpandedValue::Complete(snippet.root()));
+            }
             if let Some(rewritten) = rewrite_source_sugar(owner, &node).map_err(|error| {
                 emit_internal_surface_error(self.world(), format!("source sugar rewrite failed: {error}"))
             })? {
@@ -188,7 +193,10 @@ pub(crate) trait QuotedExpansionCtx<'tel> {
                     self.wait_for_callable_module_interface(function),
                 )));
             }
-            NamespaceSymbol::Function(_) | NamespaceSymbol::Module(_) | NamespaceSymbol::Type(_) => return Ok(None),
+            NamespaceSymbol::Function(_)
+            | NamespaceSymbol::Module(_)
+            | NamespaceSymbol::Type(_)
+            | NamespaceSymbol::Splice(_) => return Ok(None),
         };
         self.expand_macro_invocation(owner, cursor.root(), function, scope, depth, &args)
             .map(Some)
@@ -462,6 +470,16 @@ pub(crate) fn alias_path(cursor: &QuotedSourceCursor) -> Result<Vec<String>, Quo
 
 pub(crate) fn is_list_like(cursor: &QuotedSourceCursor) -> bool {
     cursor.root().is_empty_list() || cursor.root().tag() == ValueKind::LIST
+}
+
+/// The name of a splice-candidate variable: a compiler-reserved `__`-prefixed
+/// identifier (e.g. `__ENV__`), i.e. an AST node whose head atom starts with
+/// `__` and whose tail is the variable context, not a call's argument list. The
+/// `__` gate keeps this off the hot path for ordinary variables; a name that is
+/// not actually bound to a [`NamespaceSymbol::Splice`] is left untouched.
+fn splice_candidate_name(node: &QuotedAstNode) -> Option<String> {
+    let name = node.head.atom_name().ok()?;
+    (name.starts_with("__") && !is_list_like(&node.tail)).then_some(name)
 }
 
 pub(crate) fn expand_item_macro_fragment<'tel, C: QuotedExpansionCtx<'tel>>(
