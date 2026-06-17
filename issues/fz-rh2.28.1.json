@@ -2,7 +2,8 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [
-    "fz-rh2.28.2"
+    "fz-rh2.28.2",
+    "fz-s00"
   ],
   "created": "2026-06-17T17:52:47Z",
   "description": "Goal: collapse the runtime/prelude/preamble naming and the two predicates is_runtime_prelude and is_runtime_module_code (world.rs:1995, 1999) into one is_bootstrap(code) concept, used at the single decision site in index_code (jobs/source.rs:33). Keep the bootstrap-prelude-as-namespace-base role (the scope_code special-case that seeds prelude_head) as a separately named fact: origin is not role.\n\nGrounding: index_code selects the canonical surface reader via is_runtime_prelude(code) || is_runtime_module_code(code); the OR is the smell that two predicates name one concept. prelude/preamble/runtime appear as scattered synonyms across world.rs and friends.\n\nSignal: one predicate is_bootstrap; the namespace-base role retains its own distinct name; full lib green with zero warnings; no behavior change.\n\nStrategy: pure consolidation and rename, no logic change. Blocks fz-rh2.28.2.",
@@ -13,5 +14,5 @@
   "status": "open",
   "title": "Compiler2 bootstrap boundary: name it once",
   "type": "task",
-  "updated_at": "2026-06-17T17:53:05Z"
+  "updated_at": "2026-06-17T17:55:34Z"
 }
