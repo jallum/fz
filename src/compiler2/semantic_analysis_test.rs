@@ -7,7 +7,7 @@ use super::body::{DeliveredValueSource, delivered_value_joins};
 use super::{
     CallSiteKey, CallSiteSummary, CallableFlowFact, CodeSubmission, Compiler2, DriveOutcome, ExecutableKey,
     ExecutableNeed, ExecutableRuntimeDemand, FactKey, FunctionId, FunctionRef, Job, RootId, RootSubmission,
-    RuntimeDemand, SelectedCallee, World,
+    RuntimeDemand, SelectedCallee, ShapeDemand, World,
 };
 use crate::telemetry::Value;
 use crate::telemetry::handler::{Event, EventKind, Handler};
@@ -238,32 +238,7 @@ fn assert_resolved(outcome: DriveOutcome<Job, FactKey>, message: &str) {
     assert!(matches!(outcome, DriveOutcome::Resolved), "{message}: {outcome:?}");
 }
 
-struct JobRunGuard {
-    counts: Rc<RefCell<HashMap<String, u32>>>,
-    limit: u32,
-}
-
-impl Handler for JobRunGuard {
-    fn handle(&self, ev: &Event<'_, '_, '_>) {
-        if ev.kind != EventKind::SpanStart || ev.name != ["fz", "compiler2", "job"] {
-            return;
-        }
-        let Some(job) = ev.metadata.get("job").and_then(|value| value.downcast_ref::<Job>()) else {
-            return;
-        };
-        let key = format!("{job:?}");
-        let mut counts = self.counts.borrow_mut();
-        let count = counts.entry(key.clone()).or_insert(0);
-        *count += 1;
-        assert!(
-            *count <= self.limit,
-            "semantic job re-ran more than {} times without converging — non-termination pinned here:\n  {key}",
-            self.limit,
-        );
-    }
-}
-
-/// fz-hwn.19.2.4.9: a `defimpl` nested in a module the program never reaches by
+/// fz-hwn.19.2.4.12: a `defimpl` nested in a module the program never reaches by
 /// name (`Mini`) used to be dropped — `DefineModule` is demand-gated, nothing
 /// referenced `Mini`, so its impl never registered into `Susp`'s dispatch. The
 /// `Susp.run([..])` call then found an empty dispatch and waited forever on the
@@ -272,15 +247,14 @@ impl Handler for JobRunGuard {
 ///
 /// The provider index fixes this: scope time records "Mini provides Susp-for-List"
 /// as resolved ids, and the protocol call demands `DefineModule(Mini)` — the real
-/// provider — so the impl registers and the closure settles. The `JobRunGuard`
-/// telemetry handler fails the instant any one semantic job re-runs past a
-/// generous bound, so a regression re-pins the livelock in milliseconds.
+/// provider — so the impl registers and the closure settles.
+/// `drive_until_semantic_closure`'s bound trips if it ever spins again.
+///
+/// Scoped to the closure: transport of this escaped continuation still trips the
+/// "callable surfaces proven upstream" guard, which is the open fz-hwn.19.2.4.9.
 #[test]
 fn compiler2_protocol_dispatched_escaped_continuation_closes_captured_callable() {
     let tel = crate::telemetry::ConfiguredTelemetry::new();
-    let counts = Rc::new(RefCell::new(HashMap::new()));
-    tel.attach(&[], Box::new(JobRunGuard { counts, limit: 64 }));
-
     let mut world = World::new(&tel);
     world.submit_code(
         Some("protocol_escaped_continuation.fz".to_string()),
@@ -303,11 +277,11 @@ fn main(), do: make(fn x -> x + 1 end)
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
 
-    world.demand(Job::SealSemanticClosure(root));
-    // Drive only the semantic closure: this ticket is the closure livelock.
-    // (Native lowering of a protocol-dispatched escaped continuation fatals for
-    // an unrelated reason, tracked separately — see fz-hwn.19.2.4 follow-up.)
-    let _ = world.drive_for(Some(Duration::from_secs(5)));
+    drive_until_semantic_closure(
+        &mut world,
+        root,
+        "protocol-dispatched escaped continuation should close its captured callable activation",
+    );
     assert!(
         world.fact_is_settled(&FactKey::SemanticClosed(root)),
         "protocol-dispatched escaped continuation should close its captured callable activation"
@@ -486,7 +460,7 @@ end
     let (_, demand) = runtime_demand_for_function(&record, ignore);
     assert_eq!(
         demand.input_demands,
-        vec![RuntimeDemand::Ignore],
+        vec![RuntimeDemand::ignore()],
         "semantic inputs stay present, but an unused callable input should not claim runtime demand",
     );
     assert!(
@@ -669,9 +643,10 @@ fn compiler2_runtime_demand_makes_opaque_callable_use_explicit() {
     assert!(
         matches!(
             demand.input_demands.as_slice(),
-            [RuntimeDemand::Callable(callable)] if callable.opaque
-                && callable.resolved.len() == 1
-                && callable.resolved.iter().any(|surface| surface.inputs.len() == 1)
+            [input] if !input.callable.is_empty()
+                && input.callable.opaque
+                && input.callable.resolved.len() == 1
+                && input.callable.resolved.iter().any(|surface| surface.inputs.len() == 1)
         ),
         "an unresolved closure call should keep opaque callable demand and its observed surface explicit: {demand:?}",
     );
@@ -717,8 +692,8 @@ end
         demand.call_arg_demands.values().any(|demands| {
             matches!(
                 demands.as_slice(),
-                [RuntimeDemand::Callable(callable)]
-                    if callable.escape && !callable.opaque && callable.resolved.is_empty()
+                [arg] if !arg.callable.is_empty()
+                    && arg.callable.escape && !arg.callable.opaque && arg.callable.resolved.is_empty()
             )
         }),
         "opaque closure-call argument demand should preserve callable escape before transport runs: {demand:?}",
@@ -805,13 +780,14 @@ fn compiler2_runtime_demand_marks_joined_function_refs_first_class_before_reduce
             (producer_functions.contains(&add_a) && producer_functions.contains(&add_b)).then_some(join.value)
         })
         .expect("main should have a delivered join fed by add_a/2 and add_b/2 function refs");
-    let RuntimeDemand::Callable(joined_callable) = demand
+    let joined_demand = demand
         .value_demands
         .get(&joined_value)
-        .unwrap_or_else(|| panic!("joined callable value {joined_value:?} should have runtime demand"))
-    else {
+        .unwrap_or_else(|| panic!("joined callable value {joined_value:?} should have runtime demand"));
+    if joined_demand.callable.is_empty() {
         panic!("joined value {joined_value:?} should be callable-demanded: {demand:?}");
-    };
+    }
+    let joined_callable = &joined_demand.callable;
     assert!(
         joined_callable.escape && joined_callable.resolved.iter().any(|surface| surface.inputs.len() == 2),
         "the delivered joined callable value itself must publish a first-class discriminator before downstream lowering: {joined_callable:?}",
@@ -888,13 +864,16 @@ fn main(), do: make_pairer()
         .collect::<Vec<_>>();
     assert!(
         tuple_return_demands.iter().any(|demand| {
-            matches!(
-                demand,
-                RuntimeDemand::TupleFields(fields)
-                    if fields.len() == 2
-                        && matches!(&fields[0], RuntimeDemand::TupleFields(inner) if inner.len() == 2)
-                        && matches!(&fields[1], RuntimeDemand::Value)
-            )
+            demand.callable.is_empty()
+                && matches!(
+                    &demand.shape,
+                    ShapeDemand::TupleFields(fields)
+                        if fields.len() == 2
+                            && fields[0].callable.is_empty()
+                            && matches!(&fields[0].shape, ShapeDemand::TupleFields(inner) if inner.len() == 2)
+                            && fields[1].callable.is_empty()
+                            && matches!(&fields[1].shape, ShapeDemand::Whole)
+                )
         }),
         "escaped callable boundary return demand should preserve recursive tuple fields upstream: {tuple_return_demands:?}"
     );
@@ -938,9 +917,9 @@ end
         .flat_map(|demands| demands.values())
         .collect::<Vec<_>>();
     assert!(
-        resume_demands
-            .iter()
-            .any(|demand| matches!(demand, RuntimeDemand::TupleFields(fields) if fields.len() == 2)),
+        resume_demands.iter().any(|demand| {
+            demand.callable.is_empty() && matches!(&demand.shape, ShapeDemand::TupleFields(fields) if fields.len() == 2)
+        }),
         "recursive call resume value should carry tuple-field demand upstream: {resume_demands:?}"
     );
 }
@@ -1066,7 +1045,7 @@ end
     let (_, demand) = runtime_demand_for_function(&record, dbg);
     assert_eq!(
         demand.input_demands,
-        vec![RuntimeDemand::Value],
+        vec![RuntimeDemand::whole()],
         "Kernel.dbg/1 must still demand its input as a runtime value even when callers ignore the returned value",
     );
 
@@ -1076,7 +1055,97 @@ end
         main_demand
             .entry_capture_demands
             .values()
-            .any(|demands| demands.as_slice() == [RuntimeDemand::Value]),
+            .any(|demands| demands.as_slice() == [RuntimeDemand::whole()]),
         "the continuation after dbg(stats) must keep one captured runtime value live for the later field access: {main_demand:?}",
     );
+}
+
+/// Lattice-algebra properties of the split [`RuntimeDemand`] product.
+///
+/// These pin the single reason the data-shape axis and the callable-usage axis
+/// were split apart: the join must be a monotone join-semilattice so the demand
+/// fixpoint has a unique, schedule-independent least solution. In particular,
+/// the callable `opaque`/`escape` bits must only ever rise — the pre-split
+/// `Value ⊔ Callable → Value` collapse could erase them and a boundary
+/// re-grounding could then non-monotonically reintroduce `opaque:false`.
+mod demand_lattice {
+    use super::super::{CallableDemand, CallableSurface, RuntimeDemand, ShapeDemand};
+
+    fn product(shape: ShapeDemand, callable: CallableDemand) -> RuntimeDemand {
+        RuntimeDemand { shape, callable }
+    }
+
+    fn sample() -> Vec<RuntimeDemand> {
+        let mut surface_resolved = CallableDemand::default();
+        surface_resolved.resolved.insert(CallableSurface::new(vec![]));
+        vec![
+            RuntimeDemand::ignore(),
+            RuntimeDemand::whole(),
+            RuntimeDemand::tuple_fields(vec![RuntimeDemand::whole()]),
+            RuntimeDemand::tuple_fields(vec![RuntimeDemand::whole(), RuntimeDemand::whole()]),
+            RuntimeDemand::tuple_fields(vec![RuntimeDemand::ignore(), RuntimeDemand::whole()]),
+            RuntimeDemand::callable(CallableDemand::opaque()),
+            RuntimeDemand::callable(CallableDemand::escaped()),
+            RuntimeDemand::callable(surface_resolved),
+            product(ShapeDemand::Whole, CallableDemand::escaped()),
+            product(ShapeDemand::Whole, CallableDemand::opaque()),
+        ]
+    }
+
+    #[test]
+    fn join_is_commutative_idempotent_and_associative() {
+        let sample = sample();
+        for a in &sample {
+            assert_eq!(a.join(a), *a, "join is idempotent on normalized demands: {a:?}");
+            for b in &sample {
+                assert_eq!(a.join(b), b.join(a), "join is commutative: {a:?} vs {b:?}");
+                for c in &sample {
+                    assert_eq!(
+                        a.join(b).join(c),
+                        a.join(&b.join(c)),
+                        "join is associative: {a:?}, {b:?}, {c:?}",
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn callable_soundness_bits_only_rise_under_join() {
+        let sample = sample();
+        for a in &sample {
+            for b in &sample {
+                let joined = a.join(b);
+                assert!(
+                    joined.callable.opaque >= (a.callable.opaque || b.callable.opaque),
+                    "opaque must subsume both operands: {a:?} ⊔ {b:?} = {joined:?}",
+                );
+                assert!(
+                    joined.callable.escape >= (a.callable.escape || b.callable.escape),
+                    "escape must subsume both operands: {a:?} ⊔ {b:?} = {joined:?}",
+                );
+                assert!(
+                    a.callable.resolved.is_subset(&joined.callable.resolved)
+                        && b.callable.resolved.is_subset(&joined.callable.resolved),
+                    "resolved surfaces only grow: {a:?} ⊔ {b:?} = {joined:?}",
+                );
+            }
+        }
+    }
+
+    /// The exact regression the split exists to kill: a whole-representation
+    /// demand meeting an opaque-callable demand must keep the value's data shape
+    /// AND its callable obligation — the shape axis cannot erase the callable
+    /// axis, so `opaque` survives instead of being collapsed and later
+    /// re-grounded to `opaque:false`.
+    #[test]
+    fn whole_demand_never_erases_callable_opacity() {
+        let joined = RuntimeDemand::whole().join(&RuntimeDemand::callable(CallableDemand::opaque()));
+        assert_eq!(joined.shape, ShapeDemand::Whole, "shape axis is preserved: {joined:?}");
+        assert!(joined.callable.opaque, "callable opacity is preserved: {joined:?}");
+        assert!(
+            !joined.callable.is_empty(),
+            "the callable obligation survives: {joined:?}"
+        );
+    }
 }

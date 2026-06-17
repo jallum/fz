@@ -9,7 +9,7 @@ use super::super::identity::{ExecutableKey, ExecutableNeed, FunctionId, RootId};
 use super::super::scheduler::FatalError;
 use super::super::semantic::{
     ActivationAnalysis, CallSiteKey, CallableDemand, CallableFlowFact, CallableSurface, ExecutableRuntimeDemand,
-    RuntimeDemand, SelectedCallee,
+    RuntimeDemand, SelectedCallee, ShapeDemand,
 };
 use super::super::transport::{
     ActivationSymbol, BoundaryDescr, BoundaryFacts, BoundaryId, CallableDescr, CallableFacts, CallableId,
@@ -681,11 +681,7 @@ fn collect_executable_input_constraints(
 }
 
 fn executable_input_demand_requires_own_shape(demand: &RuntimeDemand) -> bool {
-    match demand {
-        RuntimeDemand::Ignore => false,
-        RuntimeDemand::Value | RuntimeDemand::TupleFields(_) => true,
-        RuntimeDemand::Callable(callable) => callable.opaque || callable.escape,
-    }
+    (!matches!(demand.shape, ShapeDemand::Ignore)) || demand.callable.is_first_class()
 }
 
 fn collect_clause_parameter_equalities(
@@ -1588,11 +1584,10 @@ fn shape_for_executable_input(
     facts: &mut TransportFactsBuilder,
     publication: Option<TransportPosition>,
 ) -> ShapeId {
-    let RuntimeDemand::Callable(callable) = demand else {
+    if !demand.is_callable() {
         return generic_shape_from_demand(world, ty, demand, facts, publication);
-    };
-    let surfaces = callable.resolved.clone();
-    generic_callable_shape(world, ty, callable, &surfaces, facts, publication)
+    }
+    generic_callable_shape(world, ty, &demand.callable, facts, publication)
 }
 
 fn incoming_executable_input_positions(
@@ -1826,7 +1821,7 @@ fn project_sources(
         *facts = staged;
         SourceShape::Exact(exact[0])
     } else {
-        if matches!(demand, RuntimeDemand::Callable(callable) if callable.opaque || callable.escape) {
+        if demand.callable.is_first_class() {
             *facts = staged;
         }
         SourceShape::Unknown
@@ -1894,7 +1889,7 @@ fn project_executable_input_source(
         SourceShape::Exact(generic_shape_from_demand(
             world,
             ty,
-            &RuntimeDemand::Ignore,
+            &RuntimeDemand::ignore(),
             facts,
             None,
         ))
@@ -1984,7 +1979,10 @@ fn project_tuple_value(
     items: &[ValueId],
     visiting: &mut Vec<(ExecutableKey, TransportSource, RuntimeDemand)>,
 ) -> SourceShape {
-    let RuntimeDemand::TupleFields(fields) = demand else {
+    if demand.is_callable() {
+        return SourceShape::Unknown;
+    }
+    let ShapeDemand::TupleFields(fields) = &demand.shape else {
         return SourceShape::Unknown;
     };
     if items.len() != fields.len() {
@@ -2038,7 +2036,7 @@ fn project_tuple_field(
     let Some(parent_ty) = context.analysis.value_types.get(&source).copied() else {
         return SourceShape::Unknown;
     };
-    let mut fields = vec![RuntimeDemand::Ignore; index + 1];
+    let mut fields = vec![RuntimeDemand::ignore(); index + 1];
     fields[index] = demand.clone();
     let parent_demand = RuntimeDemand::tuple_fields(fields);
     let parent_shape = match project_source(
@@ -2277,7 +2275,7 @@ fn callable_for_producer(
 }
 
 fn local_callable_transport_requested(demand: &RuntimeDemand, precise_demand: Option<&RuntimeDemand>) -> bool {
-    matches!(precise_demand, Some(RuntimeDemand::Callable(_))) || matches!(demand, RuntimeDemand::Callable(_))
+    precise_demand.is_some_and(RuntimeDemand::is_callable) || demand.is_callable()
 }
 
 fn capture_demands_for_resolutions(
@@ -2285,7 +2283,7 @@ fn capture_demands_for_resolutions(
     capture_tys: &[Ty],
     resolutions: &[ExecutableSymbol],
 ) -> Vec<RuntimeDemand> {
-    let mut demands = vec![RuntimeDemand::Ignore; capture_tys.len()];
+    let mut demands = vec![RuntimeDemand::ignore(); capture_tys.len()];
     for resolution in resolutions {
         let Some((_, context)) = contexts.iter().find(|(candidate, _)| {
             candidate.need == resolution.need
@@ -2342,10 +2340,13 @@ fn generic_shape_from_demand(
     if demand.is_ignore() || world.types().is_empty(&ty) {
         return world.transport_mut().interners_mut().intern_shape(ShapeDescr::Nothing);
     }
-    match demand {
-        RuntimeDemand::Ignore => world.transport_mut().interners_mut().intern_shape(ShapeDescr::Nothing),
-        RuntimeDemand::Value => value_lane_shape(world, ty),
-        RuntimeDemand::TupleFields(fields) => {
+    if demand.is_callable() {
+        return generic_callable_shape(world, ty, &demand.callable, facts, publication);
+    }
+    match &demand.shape {
+        ShapeDemand::Ignore => world.transport_mut().interners_mut().intern_shape(ShapeDescr::Nothing),
+        ShapeDemand::Whole => value_lane_shape(world, ty),
+        ShapeDemand::TupleFields(fields) => {
             let items = tuple_field_tys(world, ty, fields.len())
                 .into_iter()
                 .zip(fields.iter())
@@ -2356,10 +2357,6 @@ fn generic_shape_from_demand(
                 .interners_mut()
                 .intern_shape(ShapeDescr::Tuple(items.into_boxed_slice()))
         }
-        RuntimeDemand::Callable(callable) => {
-            let surfaces = callable.resolved.clone();
-            generic_callable_shape(world, ty, callable, &surfaces, facts, publication)
-        }
     }
 }
 
@@ -2367,12 +2364,12 @@ fn generic_callable_shape(
     world: &mut World<'_>,
     ty: Ty,
     demand: &CallableDemand,
-    surfaces: &BTreeSet<CallableSurface>,
     facts: &mut TransportFactsBuilder,
     publication: Option<TransportPosition>,
 ) -> ShapeId {
+    let surfaces = &demand.resolved;
     assert!(
-        !(demand.opaque || demand.escape) || !surfaces.is_empty(),
+        !demand.is_first_class() || !surfaces.is_empty(),
         "generic callable transport requires upstream callable surfaces for opaque or escaped demand"
     );
     let published_surface_shapes = surface_shapes(world, surfaces, facts);
@@ -2464,7 +2461,7 @@ fn capture_lanes_for_callable_descriptor(
     ty: Ty,
     demand: &RuntimeDemand,
 ) -> Vec<LaneId> {
-    if matches!(demand, RuntimeDemand::Callable(callable) if callable.opaque || callable.escape) {
+    if demand.callable.is_first_class() {
         return vec![value_lane(world, ty)];
     }
     lanes_for_codegen_seam_shape(world, shape)
@@ -2669,7 +2666,7 @@ fn boundary_runtime_demand(world: &mut World<'_>, ty: Ty) -> RuntimeDemand {
                     .collect(),
             );
         }
-        return RuntimeDemand::Value;
+        return RuntimeDemand::whole();
     };
     RuntimeDemand::callable(CallableDemand {
         resolved: clauses

@@ -126,6 +126,14 @@ impl CallableDemand {
         self.resolved.is_empty() && !self.opaque && !self.escape
     }
 
+    /// Whether the callable crosses a boundary that cannot carry a grounded
+    /// call contract — it escapes first-class, or reaches an unknown callee.
+    /// These are the cases a consumer must lower as a boxed first-class
+    /// callable rather than a grounded direct surface.
+    pub fn is_first_class(&self) -> bool {
+        self.opaque || self.escape
+    }
+
     pub fn join(&self, other: &Self) -> Self {
         let mut joined = self.clone();
         joined.join_assign(other);
@@ -148,99 +156,147 @@ impl CallableDemand {
     }
 }
 
-/// The runtime shape a consumer actually needs from one semantic value.
+/// AXIS 1 — how much of a value's *data representation* a consumer needs.
+///
+/// A pure join-semilattice: `Ignore` is bottom, `Whole` is the absorbing top,
+/// and a same-arity `TupleFields` joins pointwise while a mismatched arity joins
+/// up to `Whole`. Coarsening here is always correctness-safe — it only means
+/// "materialize the whole box." Each field is a full [`RuntimeDemand`], so a
+/// tuple of callables keeps each field's callable obligations.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub enum RuntimeDemand {
+pub enum ShapeDemand {
     #[default]
     Ignore,
-    Value,
+    Whole,
     TupleFields(Vec<RuntimeDemand>),
-    Callable(CallableDemand),
 }
 
-impl RuntimeDemand {
-    pub fn tuple_fields(fields: Vec<Self>) -> Self {
-        Self::TupleFields(fields).normalized()
-    }
-
-    pub fn callable(demand: CallableDemand) -> Self {
-        Self::Callable(demand).normalized()
-    }
-
+impl ShapeDemand {
     pub fn is_ignore(&self) -> bool {
         matches!(self, Self::Ignore)
-    }
-
-    pub fn join(&self, other: &Self) -> Self {
-        let mut joined = self.clone();
-        joined.join_assign(other);
-        joined
-    }
-
-    pub fn join_assign(&mut self, other: &Self) {
-        *self = join_runtime_demand(self.clone(), other.clone());
     }
 
     fn normalized(self) -> Self {
         match self {
             Self::TupleFields(fields) => {
-                let normalized = fields.into_iter().map(Self::normalized).collect::<Vec<_>>();
-                if normalized.iter().all(Self::is_ignore) {
+                let normalized = fields.into_iter().map(RuntimeDemand::normalized).collect::<Vec<_>>();
+                if normalized.iter().all(RuntimeDemand::is_ignore) {
                     Self::Ignore
                 } else {
                     Self::TupleFields(normalized)
-                }
-            }
-            Self::Callable(callable) => {
-                if callable.is_empty() {
-                    Self::Ignore
-                } else {
-                    Self::Callable(callable)
                 }
             }
             other => other,
         }
     }
 
-    pub(crate) fn alpha_normalize(&mut self, types: &mut Types) {
-        match self {
-            Self::Ignore | Self::Value => {}
-            Self::TupleFields(fields) => {
-                for field in fields {
-                    field.alpha_normalize(types);
+    fn join(self, other: Self) -> Self {
+        match (self.normalized(), other.normalized()) {
+            (Self::Ignore, other) | (other, Self::Ignore) => other,
+            (Self::Whole, _) | (_, Self::Whole) => Self::Whole,
+            (Self::TupleFields(left), Self::TupleFields(right)) => {
+                if left.len() != right.len() {
+                    return Self::Whole;
                 }
+                Self::TupleFields(
+                    left.into_iter()
+                        .zip(right)
+                        .map(|(left, right)| left.join(&right))
+                        .collect(),
+                )
+                .normalized()
             }
-            Self::Callable(callable) => callable.alpha_normalize(types),
         }
-        *self = self.clone().normalized();
+    }
+
+    pub(crate) fn alpha_normalize(&mut self, types: &mut Types) {
+        if let Self::TupleFields(fields) = self {
+            for field in fields {
+                field.alpha_normalize(types);
+            }
+        }
+        *self = std::mem::take(self).normalized();
     }
 }
 
-fn join_runtime_demand(left: RuntimeDemand, right: RuntimeDemand) -> RuntimeDemand {
-    match (left.normalized(), right.normalized()) {
-        (RuntimeDemand::Ignore, other) | (other, RuntimeDemand::Ignore) => other,
-        (RuntimeDemand::Value, RuntimeDemand::Value) => RuntimeDemand::Value,
-        // A plain whole-value demand is representation-agnostic. When a caller
-        // knows the whole value is callable, it must seed `Callable { escape }`
-        // instead so resolved surfaces are preserved rather than collapsed.
-        (RuntimeDemand::Value, RuntimeDemand::TupleFields(_))
-        | (RuntimeDemand::TupleFields(_), RuntimeDemand::Value)
-        | (RuntimeDemand::Value, RuntimeDemand::Callable(_))
-        | (RuntimeDemand::Callable(_), RuntimeDemand::Value)
-        | (RuntimeDemand::TupleFields(_), RuntimeDemand::Callable(_))
-        | (RuntimeDemand::Callable(_), RuntimeDemand::TupleFields(_)) => RuntimeDemand::Value,
-        (RuntimeDemand::TupleFields(left), RuntimeDemand::TupleFields(right)) => {
-            if left.len() != right.len() {
-                return RuntimeDemand::Value;
-            }
-            RuntimeDemand::tuple_fields(
-                left.into_iter()
-                    .zip(right)
-                    .map(|(left, right)| left.join(&right))
-                    .collect(),
-            )
+/// The runtime demand on one semantic value: the **product** of an independent
+/// data-shape axis and a callable-usage axis.
+///
+/// The two axes never share a representation, so coarsening the shape to `Whole`
+/// cannot erase callable obligations, and accumulating callable obligations
+/// cannot disturb the shape. This is what makes the join monotone — there is no
+/// arm where one axis collapses the other, so callable surfaces, `opaque`, and
+/// `escape` only ever grow. (Previously a `Value ⊔ Callable` join collapsed the
+/// callable axis to a representation-agnostic top, which then had to be
+/// non-monotonically *re-grounded* from the value's type at boundaries.)
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct RuntimeDemand {
+    pub shape: ShapeDemand,
+    pub callable: CallableDemand,
+}
+
+impl RuntimeDemand {
+    /// The bottom demand: no data shape needed, never used as a callable.
+    pub fn ignore() -> Self {
+        Self::default()
+    }
+
+    /// The whole data representation, with no callable obligation. A callable
+    /// value reaching a `whole` consumer escapes first-class — but that escape
+    /// is recorded explicitly on the callable axis at the boundary (see
+    /// `CallableDemand::escaped`), never inferred from `shape` being `Whole`.
+    pub fn whole() -> Self {
+        Self {
+            shape: ShapeDemand::Whole,
+            callable: CallableDemand::default(),
         }
-        (RuntimeDemand::Callable(left), RuntimeDemand::Callable(right)) => RuntimeDemand::callable(left.join(&right)),
+    }
+
+    pub fn tuple_fields(fields: Vec<RuntimeDemand>) -> Self {
+        Self {
+            shape: ShapeDemand::TupleFields(fields).normalized(),
+            callable: CallableDemand::default(),
+        }
+    }
+
+    pub fn callable(demand: CallableDemand) -> Self {
+        Self {
+            shape: ShapeDemand::Ignore,
+            callable: demand,
+        }
+    }
+
+    pub fn is_ignore(&self) -> bool {
+        self.shape.is_ignore() && self.callable.is_empty()
+    }
+
+    /// Whether this demand carries a callable obligation — its callable axis is
+    /// non-empty. The callable axis is populated only for values used as
+    /// callables, so consumers that lower a callable lane branch on this and
+    /// read `self.callable`, otherwise they read `self.shape`.
+    pub fn is_callable(&self) -> bool {
+        !self.callable.is_empty()
+    }
+
+    pub fn join(&self, other: &Self) -> Self {
+        Self {
+            shape: self.shape.clone().join(other.shape.clone()),
+            callable: self.callable.join(&other.callable),
+        }
+    }
+
+    pub fn join_assign(&mut self, other: &Self) {
+        *self = self.join(other);
+    }
+
+    fn normalized(mut self) -> Self {
+        self.shape = self.shape.normalized();
+        self
+    }
+
+    pub(crate) fn alpha_normalize(&mut self, types: &mut Types) {
+        self.shape.alpha_normalize(types);
+        self.callable.alpha_normalize(types);
     }
 }
 
@@ -780,7 +836,7 @@ mod tests {
         let mut world = World::new(&tel);
         let int = world.types_mut().int();
 
-        let joined = RuntimeDemand::Ignore.join(&RuntimeDemand::callable(resolved_surface(&[int])));
+        let joined = RuntimeDemand::ignore().join(&RuntimeDemand::callable(resolved_surface(&[int])));
 
         assert_eq!(
             joined,
@@ -811,10 +867,10 @@ mod tests {
 
     #[test]
     fn runtime_demand_tuple_fields_plus_whole_value_collapses_to_value() {
-        let joined =
-            RuntimeDemand::tuple_fields(vec![RuntimeDemand::Value, RuntimeDemand::Ignore]).join(&RuntimeDemand::Value);
+        let joined = RuntimeDemand::tuple_fields(vec![RuntimeDemand::whole(), RuntimeDemand::ignore()])
+            .join(&RuntimeDemand::whole());
 
-        assert_eq!(joined, RuntimeDemand::Value);
+        assert_eq!(joined, RuntimeDemand::whole());
     }
 
     #[test]

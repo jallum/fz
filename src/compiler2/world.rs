@@ -49,7 +49,7 @@ use super::scheduler::FatalError;
 use super::scope::ScopeSnapshot;
 use super::semantic::{
     ActivationAnalysis, ActivationInputMap, ActivationInputReplace, ActivationMap, CallSiteKey, CallSiteMap,
-    CallSiteSummary, RuntimeDemand, SemanticClosure, SemanticClosureMap,
+    CallSiteSummary, CallableDemand, RuntimeDemand, SemanticClosure, SemanticClosureMap, ShapeDemand,
 };
 use super::source::{
     QuotedLexicalContext, QuotedLexicalContextKind, QuotedSourceBuilder, QuotedSourceError, QuotedSourceMetadata,
@@ -97,28 +97,31 @@ enum CallableMatchScore {
 }
 
 fn count_tuple_field_demands(demand: &RuntimeDemand) -> u64 {
-    match demand {
-        RuntimeDemand::Ignore | RuntimeDemand::Value | RuntimeDemand::Callable(_) => 0,
-        RuntimeDemand::TupleFields(fields) => {
+    match &demand.shape {
+        ShapeDemand::Ignore | ShapeDemand::Whole => 0,
+        ShapeDemand::TupleFields(fields) => {
             fields.len() as u64 + fields.iter().map(count_tuple_field_demands).sum::<u64>()
         }
     }
 }
 
+/// Count, across a demand and every nested tuple-field demand, the callable
+/// axes for which `bit` holds (e.g. `opaque` or `escape`).
+fn count_callable_axis(demand: &RuntimeDemand, bit: fn(&CallableDemand) -> bool) -> u64 {
+    let here = bit(&demand.callable) as u64;
+    let nested = match &demand.shape {
+        ShapeDemand::Ignore | ShapeDemand::Whole => 0,
+        ShapeDemand::TupleFields(fields) => fields.iter().map(|field| count_callable_axis(field, bit)).sum(),
+    };
+    here + nested
+}
+
 fn count_opaque_callable_demands(demand: &RuntimeDemand) -> u64 {
-    match demand {
-        RuntimeDemand::Ignore | RuntimeDemand::Value => 0,
-        RuntimeDemand::TupleFields(fields) => fields.iter().map(count_opaque_callable_demands).sum(),
-        RuntimeDemand::Callable(callable) => callable.opaque as u64,
-    }
+    count_callable_axis(demand, |callable| callable.opaque)
 }
 
 fn count_escaped_callable_demands(demand: &RuntimeDemand) -> u64 {
-    match demand {
-        RuntimeDemand::Ignore | RuntimeDemand::Value => 0,
-        RuntimeDemand::TupleFields(fields) => fields.iter().map(count_escaped_callable_demands).sum(),
-        RuntimeDemand::Callable(callable) => callable.escape as u64,
-    }
+    count_callable_axis(demand, |callable| callable.escape)
 }
 
 fn format_codegen_seam_fact(fact: &CodegenSeamFact) -> String {
