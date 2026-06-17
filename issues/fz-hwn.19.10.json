@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-17T13:41:50Z",
+  "description": "Goal\nRemove the native-local repr-mismatch planner introduced during fz-hwn.19.5. Native lowering should consume the BackendTail call-return-flow fact and emit the corresponding IR form directly.\n\nDesign\nCallReturnFlow::Tail lowers to Term::TailCall and must already have exact caller/callee return contract equality. CallReturnFlow::Continue lowers to Term::Call with a generated continuation whose entry payload is the settled ReturnPayload position and whose body returns lanes through the caller ExecutableReturn position. CallReturnFlow::Deliver keeps the existing ResumePayload continuation path. Term::ReturnLanes remains the terminal for returning settled lanes through the body return position.\n\nRemoval target\nDelete return_lane_continuation_for_local_callee or collapse it into a dumb constructor that takes explicit ReturnPayload/caller-return positions. Remove tests and docs that say native lowering routes mismatched tail returns. Codegen must only enforce invariants; it must not choose between Tail and Continue.\n\nSignal\nUse fz2 after building the binary: target/debug/fz2 --log-telemetry ... run --dump types=... --dump activations=... --dump materialized=... --dump abi=... --dump backend=... --dump native=... --dump fnir=... fixtures2/behavior/multi_relay.fz. The dumps must show the ReturnPayload-backed continuation before codegen and no native TailCall whose caller/callee return contracts differ. Telemetry/tests must prove producer return, ReturnPayload, and caller return positions use the intended ShapeId relationships.\n\nRequired edits\nsrc/compiler2/jobs/native.rs, src/compiler2/native_codegen/* only where invariant messages/consumption need cleanup, src/compiler2/drive_test.rs, docs touched by fz-hwn.19.5.\n\nChecks\nFocused native tests, fz2 dump/telemetry fixture run, cargo fmt --all, cargo check --all-targets, cargo clippy --workspace --all-targets -- -D warnings, and cargo test --lib or the agreed compiler2 matrix.",
+  "id": "fz-hwn.19.10",
+  "labels": [],
+  "parent": "fz-hwn.19",
+  "priority": 1,
+  "status": "open",
+  "title": "Transport return-flow: make native lowering consume return-flow facts",
+  "type": "task",
+  "updated_at": "2026-06-17T13:41:50Z"
+}
