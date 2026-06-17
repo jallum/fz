@@ -6,14 +6,15 @@
   "blocks": [
     "fz-hwn.19.2.4.16.5"
   ],
+  "closed_at": "2026-06-17T03:48:10Z",
   "created": "2026-06-17T02:49:48Z",
   "description": "Move defimpl Enumerable,for:List/Map/Range out of list.fz/map.fz/range.fz into enumerable.fz, root-level beside defprotocol. Bodies are fully-qualified delegators (List.reduce, Map.count, Range.member?), so they relocate without namespace change. Signal: Enum.reduce([1,2,3],...) resolves with list.fz never scoped. Depends on T3.",
   "id": "fz-hwn.19.2.4.16.4",
   "labels": [],
   "parent": "fz-hwn.19.2.4.16",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Move RTL Enumerable impls into enumerable.fz at root level",
   "type": "task",
-  "updated_at": "2026-06-17T03:19:38Z"
+  "updated_at": "2026-06-17T03:48:10Z"
 }
