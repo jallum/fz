@@ -4,14 +4,15 @@
     "fz-hwn.19.2.4.16.5"
   ],
   "blocks": [],
+  "closed_at": "2026-06-17T03:53:04Z",
   "created": "2026-06-17T02:49:48Z",
   "description": "Settle the provider index's residual role (scope-tier (protocol,target)-\u003esource registry vs retire). Update .agent docs (compiler2-migration, protocols) and the user protocols guide to the B model: impl module is Protocol.For, dispatch constructs/demands it, no type-name scan. All statements provable against code. Close out .12/.13/.14 framing. Depends on T5.",
   "id": "fz-hwn.19.2.4.16.6",
   "labels": [],
   "parent": "fz-hwn.19.2.4.16",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Reconcile provider index role; update protocols guide + agent docs",
   "type": "task",
-  "updated_at": "2026-06-17T03:50:52Z"
+  "updated_at": "2026-06-17T03:53:04Z"
 }
