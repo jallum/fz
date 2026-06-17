@@ -9,8 +9,8 @@ engine distinguishes two notions of fact readiness:
 - `Settled(fact)`: every current publisher is clean, so downstream work may
   consume it as complete for now.
 
-Three jobs shape the frontier: `SeedRoot`, `AnalyzeActivation`, and
-`SealSemanticClosure`.
+Four jobs shape the frontier: `SeedRoot`, `SeedActivation`,
+`AnalyzeActivation`, and `SealSemanticClosure`.
 
 ## What an activation is today
 
@@ -79,6 +79,19 @@ no manual revision polling.
 
 That means artifact work can simply wait on `Settled(SemanticClosed(root))`
 instead of trying to infer freshness from presence plus a stored revision set.
+
+The seal never publishes activation facts. The entry activation is seeded by
+`SeedRoot`; a direct callee's activation is published by its caller's
+concluding `AnalyzeActivation`. A **latent executable** — a callable reached
+only through the runtime-demand frontier, never a direct call edge (an escaped
+or opaque callable, like a reducer captured by a returned suspend
+continuation) — has no such concluding publisher, so the seal demands a
+`SeedActivation(key)` for it and gates on `Settled(Activation(key))` like any
+other callee. `SeedActivation` publishes `Activation` + `ActivationInputs` and
+follow-ups `AnalyzeActivation`, and **concludes**. The seal must not seed these
+itself: a *blocked* publisher's claims are marked dirty and never settle, so a
+seal that both published a latent activation and waited on its settledness
+would wait on its own perpetually-dirty output forever.
 
 ## Current vs settled is the key boundary
 

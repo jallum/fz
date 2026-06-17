@@ -7,7 +7,7 @@ use crate::diag::codes;
 use crate::diag::driver::emit_through;
 
 use super::super::drive::{FactKey, Job, JobEffects, settled_uses};
-use super::super::identity::{ExecutableKey, RootId, RootKind};
+use super::super::identity::{ActivationKey, ExecutableKey, RootId, RootKind};
 use super::super::scheduler::FatalError;
 use super::super::semantic::{CallSiteKey, SelectedCallee, SemanticClosure};
 use super::super::world::World;
@@ -87,6 +87,30 @@ pub(super) fn seed_root(world: &mut World<'_>, root_id: RootId) -> Result<JobEff
     })
 }
 
+/// Seeds the existence facts for a latent executable's activation — one reached
+/// only through the runtime-demand frontier (an escaped or opaque callable, like
+/// a reducer captured by a returned suspend continuation), never through a
+/// direct call edge that an `analyze_activation` would publish.
+///
+/// This concludes (no waits), so `Activation` and `ActivationInputs` settle and
+/// `SealSemanticClosure` can walk the executable as an ordinary settled callee.
+/// Seeding belongs here, in a concluding job, and not in the seal: the seal is a
+/// frontier walker, and a *blocked* publisher's claims never settle — a seal
+/// that both published and gated on a latent activation waited on its own
+/// perpetually-dirty output forever.
+pub(super) fn seed_activation(world: &mut World<'_>, activation: &ActivationKey) -> Result<JobEffects, FatalError> {
+    let _ = world;
+    Ok(JobEffects {
+        outputs: vec![
+            FactKey::Activation(activation.clone()),
+            FactKey::ActivationInputs(activation.clone()),
+        ],
+        activation_input_contributions: vec![(activation.clone(), activation.input.clone())],
+        follow_up: vec![Job::AnalyzeActivation(activation.clone())],
+        ..JobEffects::default()
+    })
+}
+
 fn emit_root_error(world: &World<'_>, span: Span, message: impl Into<String>) -> FatalError {
     let diagnostic = Diagnostic::error(codes::LOWER_UNSUPPORTED, message.into(), span);
     emit_through(world.tel(), None, std::slice::from_ref(&diagnostic));
@@ -106,8 +130,6 @@ pub(super) fn seal_semantic_closure(world: &mut World<'_>, root_id: RootId) -> R
     let mut follow_up = HashSet::new();
     let mut outputs = Vec::new();
     let mut changed = Vec::new();
-    let mut activation_input_contributions = Vec::new();
-    let mut locally_published_activations = HashSet::new();
 
     let root_fact = FactKey::RootEntry(root_id);
     if world.fact_is_settled(&root_fact) {
@@ -167,12 +189,12 @@ pub(super) fn seal_semantic_closure(world: &mut World<'_>, root_id: RootId) -> R
         while let Some(executable) = pending.pop_front() {
             let activation = executable.activation.clone();
             let activation_fact = FactKey::Activation(activation.clone());
-            let activation_ready = if locally_published_activations.contains(&activation) {
-                true
-            } else {
-                read_fact(world, activation_fact, &mut reads, &mut waits)
-            };
-            if !activation_ready {
+            // Every executable — entry, direct callee, or latent runtime-demand
+            // callable — gates on a SETTLED activation published by a concluding
+            // job (`SeedRoot`, the caller's `analyze_activation`, or
+            // `SeedActivation`). The seal never publishes activations itself.
+            if !read_fact(world, activation_fact, &mut reads, &mut waits) {
+                follow_up.insert(Job::SeedActivation(activation.clone()));
                 continue;
             }
             if !executables.insert(executable.clone()) {
@@ -276,16 +298,15 @@ pub(super) fn seal_semantic_closure(world: &mut World<'_>, root_id: RootId) -> R
         };
         runtime_demands = runtime_closure.demands;
 
+        // Latent executables — callables reached only through the runtime-demand
+        // frontier — re-enter the walk. Their activation facts are seeded by the
+        // concluding `SeedActivation` the drain demands, never published here:
+        // the seal must not be a blocked publisher of what it gates on.
         let mut added = false;
         for latent in runtime_closure.latent_executables {
             if executables.contains(&latent) {
                 continue;
             }
-            outputs.push(FactKey::Activation(latent.activation.clone()));
-            outputs.push(FactKey::ActivationInputs(latent.activation.clone()));
-            outputs.push(FactKey::Executable(latent.clone()));
-            activation_input_contributions.push((latent.activation.clone(), latent.activation.input.clone()));
-            locally_published_activations.insert(latent.activation.clone());
             pending.push_back(latent);
             added = true;
         }
@@ -324,8 +345,8 @@ pub(super) fn seal_semantic_closure(world: &mut World<'_>, root_id: RootId) -> R
         waits: settled_uses(waits),
         outputs,
         changed,
-        activation_input_contributions,
         follow_up: follow_up.into_iter().collect(),
+        ..JobEffects::default()
     })
 }
 

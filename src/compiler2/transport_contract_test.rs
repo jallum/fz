@@ -1497,7 +1497,6 @@ fn main(), do: make_suspender()
 }
 
 #[test]
-#[ignore = "fz-hwn.19.2.4.9: suspend continuation callable frontier is not closed before transport/ABI"]
 fn compiler2_transport_plan_preserves_enumerable_suspend_continuation_captures() {
     let source = r#"
 fn make() do

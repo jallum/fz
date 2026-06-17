@@ -42,6 +42,7 @@ pub(crate) fn run(world: &mut World<'_>, job: &Job) -> Result<JobEffects, FatalE
         Job::DeriveRecursive(function_id) => keying::derive_recursive(world, *function_id),
         Job::DeriveDispatchMask(function_id) => keying::derive_dispatch_mask(world, *function_id),
         Job::SeedRoot(root_id) => root::seed_root(world, *root_id),
+        Job::SeedActivation(activation) => root::seed_activation(world, activation),
         Job::AnalyzeActivation(activation) => semantic::analyze_activation(world, activation),
         Job::SealSemanticClosure(root_id) => root::seal_semantic_closure(world, *root_id),
         Job::DeriveTransportPlan(root_id) => transport::derive_transport_plan(world, *root_id),

@@ -33,6 +33,7 @@ pub enum Job {
     DeriveRecursive(FunctionId),
     DeriveDispatchMask(FunctionId),
     SeedRoot(RootId),
+    SeedActivation(ActivationKey),
     AnalyzeActivation(ActivationKey),
     SealSemanticClosure(RootId),
     DeriveTransportPlan(RootId),
