@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-17T02:49:30Z",
+  "description": "North star (B): protocol dispatch correct-by-construction. Impl modules are already named Protocol.Target (reference_protocol_impl_module). Make each defimpl an independently-demandable Protocol.Target module body source; dispatch demands it directly from (protocol, receiver-type) with no scan; co-locate RTL built-in impls with their protocol so a protocol reference makes them demandable; delete runtime_impl_target_modules (the type-name convention). Supersedes the discovery half of .12, all of .13, and folds .14's namespace-accurate resolution into T1. Root-level defimpl already parses/defines/dispatches (verified); lazy module bodies register via index_body. Reference: elixir/lib/elixir/lib/protocol.ex __concat__/__impl__/impl_for.",
+  "id": "fz-hwn.19.2.4.16",
+  "labels": [],
+  "parent": "fz-hwn.19.2.4",
+  "priority": 2,
+  "status": "open",
+  "title": "Elixir-aligned protocol dispatch: impl module is Protocol.For, dispatch constructs it, retire the type-name scan",
+  "type": "task",
+  "updated_at": "2026-06-17T02:49:30Z"
+}
