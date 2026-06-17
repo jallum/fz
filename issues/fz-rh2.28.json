@@ -2,6 +2,7 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-06-17T20:04:29Z",
   "created": "2026-06-17T15:58:28Z",
   "description": "Goal: move the definition lifecycle onto a clearer arrangement of responsibilities. The bootstrap (runtime.fz and the runtime library modules) is the only code that deserves special treatment. Everything else follows one model: index a submission, define a module by expanding module-scope macros down to the Compiler.define boundary (use and other definition-generators run here, at define time), note members as raw unexpanded sources, then expand a body only when it is referenced. A definition carries the lexical env it was created in, the same way Elixir caches env at def time.\n\nWhy now: investigation under this epic proved the apparent over-broad Kernel source publication is correct stock-taking, not waste. The real defects are two model conflations. FunctionEnvSource threads projected-vs-carried env where the boundary is bootstrap-vs-macro-origin. ScopeSurfaceMode threads source-vs-fragment where the boundary is pre-vs-post-expansion with the bootstrap as the lone exception. We project an __ENV__ at definition and discard it after one telemetry read; nothing makes def-site __ENV__ available to a body. Patching either mode in isolation deepens the conflation; moving the responsibilities dissolves both.\n\nGrounded findings:\n- Tiny x + 1 notes all 58 Kernel members (function.source.noted) but expands only 6 (function.source.expanded); define/lower/activate are equally narrow. The broad tier is correct raw-AST stock-taking.\n- ensure_function_source for a non-global module demands DefineModule(module), which publishes the whole module surface. This is the intended scope-defines-all behavior (northstar worked example), not a bug.\n- semantically_eq ignores namespace-ids; source_same already compares the namespace BindingId field, so namespace stability is an existing idempotency invariant. The captured env is a pure projection of {module, function, namespace} already in FunctionSource, so it is a derived cache and must be excluded from source_same.\n- project_env_value and project_module_value are \u0026self and force nothing; eager env capture leaks no laziness.\n- build_form (quoted_surface.rs:354) is the only mode-dependent branch: Source treats fn/fnp/defmacro/defmodule/defprotocol/defimpl heads as macro-calls; CompilerFragment treats them as direct definitions. Protocol and impl bodies read as fragments because they are post-expansion.\n- runtime.fz defmacro fn/fnp/defmacro/defmodule/defprotocol/defimpl all expand to Fz.Compiler.define(source, __CALLER__); user defs are genuinely macro-driven, while the bootstrap is parsed canonically.\n\nOutcome: delete FunctionEnvSource, ScopeSurfaceMode, the throwaway env projection, and the is_runtime_prelude/is_runtime_module_code synonym sprawl. Add env to FunctionSource (derived cache) and a def-site __ENV__ binding at expansion. The remove column outweighs the add.\n\nDecomposed into fz-rh2.28.1 through fz-rh2.28.5, executed in dependency order.",
   "id": "fz-rh2.28",
@@ -14,8 +15,8 @@
     }
   ],
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "Compiler2 definition lifecycle: bootstrap is the only exception, carry the definition env, separate phase from origin",
   "type": "epic",
-  "updated_at": "2026-06-17T17:55:56Z"
+  "updated_at": "2026-06-17T20:04:29Z"
 }
