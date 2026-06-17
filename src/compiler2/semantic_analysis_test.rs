@@ -250,10 +250,11 @@ fn assert_resolved(outcome: DriveOutcome<Job, FactKey>, message: &str) {
 /// provider — so the impl registers and the closure settles.
 /// `drive_until_semantic_closure`'s bound trips if it ever spins again.
 ///
-/// Scoped to the closure. Driving this shape on through transport still trips the
-/// "callable surfaces proven upstream" guard — the captured `f`'s call surface is
-/// not proven for a protocol-dispatched escaped continuation. That residual is
-/// tracked as fz-hwn.19.2.4.15, distinct from the reduce-shaped fz-hwn.19.2.4.9.
+/// Scoped to the closure. fz-hwn.19.2.4.15 proves this shape drives on through
+/// transport: the captured `f`'s direct-call surface is now propagated to `run`'s
+/// runtime demand (see
+/// `compiler2_transport_plan_proves_protocol_dispatched_escaped_continuation_capture_surface`),
+/// distinct from the reduce-shaped fz-hwn.19.2.4.9.
 #[test]
 fn compiler2_protocol_dispatched_escaped_continuation_closes_captured_callable() {
     let tel = crate::telemetry::ConfiguredTelemetry::new();

@@ -1584,6 +1584,77 @@ fn main(), do: make()
     assert_no_unreachable_callable_facts(&world, &plan);
 }
 
+/// fz-hwn.19.2.4.15: a protocol-dispatched `defimpl` that returns an escaped
+/// continuation capturing a callable used to reach transport with that callable's
+/// direct-call surface erased.
+///
+/// `Susp.run(_list, f)` returns `fn () -> f.(1) end`. The continuation never calls
+/// `f` in `run`'s own body — it captures `f` and escapes by return — so `run`'s
+/// runtime demand for `f` was a surface-less first-class (escaped) callable.
+/// Transport's `generic_callable_shape` guard then tripped: "generic callable
+/// transport requires upstream callable surfaces for opaque or escaped demand".
+///
+/// The fix proves the surface in the runtime-demand contract, not in transport:
+/// the continuation's own executable already knows it invokes `f` at `(int)`
+/// (from `f.(1)`), and capture propagation reads that demand off the producer
+/// executable by capture-type prefix — no longer gated on the escaped closure
+/// carrying a (nonexistent) direct-call surface of its own. So `run`'s `f` input
+/// demand carries the proven `(int)` surface, and the plan derives cleanly.
+#[test]
+fn compiler2_transport_plan_proves_protocol_dispatched_escaped_continuation_capture_surface() {
+    let source = r#"
+defprotocol Susp do
+  @spec run(t(a), (a) -> b) :: () -> b
+  fn run(coll, f)
+end
+
+defmodule Mini do
+  defimpl Susp, for: List do
+    fn run(_list, f), do: (fn () -> f.(1) end)
+  end
+end
+
+fn make(f), do: Susp.run([1, 2, 3], f)
+fn main(), do: make(fn x -> x + 1 end)
+"#;
+
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new(&tel);
+    world.submit_code(
+        Some("transport_protocol_escaped_continuation.fz".to_string()),
+        source.to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    drive_until_transport_plan(
+        &mut world,
+        root,
+        "protocol-dispatched escaped continuation should derive a transport plan",
+    );
+
+    let captured_demand = upstream_input_demand_for_function(&world, root, "run", 2, 1);
+    assert!(
+        captured_demand.is_callable(),
+        "the impl's captured callable parameter `f` should carry a callable demand, got {captured_demand:?}"
+    );
+    let surfaces = &captured_demand.callable.resolved;
+    assert!(
+        !surfaces.is_empty(),
+        "the escaped continuation's body proves it invokes `f` at one argument; \
+         `run`'s demand for `f` must carry that direct-call surface, got {captured_demand:?}"
+    );
+    assert!(
+        surfaces.iter().all(|surface| surface.inputs.len() == 1),
+        "`f` is invoked at exactly one argument (`f.(1)`); every proven surface should be arity-1, got {surfaces:?}"
+    );
+    assert!(
+        surfaces
+            .iter()
+            .flat_map(|surface| surface.inputs.iter())
+            .all(|ty| world.types().is_integer(ty)),
+        "`f` is invoked with the integer literal `1`; its proven argument surface should be int, got {surfaces:?}"
+    );
+}
+
 #[test]
 fn compiler2_transport_plan_keeps_direct_surfaces_when_a_callable_also_escapes() {
     let source = r#"

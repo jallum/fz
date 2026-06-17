@@ -982,34 +982,47 @@ fn propagate_lambda_capture_demands(
         .iter()
         .map(|capture| facts.analysis.value_types.get(capture).copied())
         .collect::<Option<Vec<_>>>();
-    if capture_types.is_none() || callable.resolved.is_empty() {
+    let Some(capture_types) = capture_types else {
         for capture in captures {
             let demand = closure_capture_boundary_demand(world, facts, *capture, RuntimeDemand::whole(), &callable);
             note_live_demand(world, out, live, *capture, demand);
         }
         return;
-    }
-    let capture_types = capture_types.expect("checked above");
+    };
+    // The captured values' demands live in the producer's own executable, in the
+    // input-demand prefix that precedes its parameters. The closure's call
+    // surfaces only select *which* specialization to read: a directly-called
+    // closure restricts to the invoked surfaces, but an escaped closure — one
+    // returned or stored rather than called here — carries no direct surface
+    // (`resolved` is empty) even though its body still proves how it invokes each
+    // capture (e.g. a returned `fn () -> f.(1) end` calls `f` at `(int)`). Reading
+    // the producer executable by capture-type prefix recovers that proven surface;
+    // gating on a non-empty `resolved` would discard it and let `f` reach
+    // transport as a surface-less first-class demand.
     let mut matched = false;
-    for surface in &callable.resolved {
-        for (callee, callee_demand) in all_demands {
-            if callee.activation.root != executable.activation.root || callee.activation.function != function {
-                continue;
-            }
-            if callee.activation.input.len() != capture_types.len() + surface.inputs.len() {
-                continue;
-            }
-            if &callee.activation.input[..capture_types.len()] != capture_types.as_slice() {
-                continue;
-            }
-            if &callee.activation.input[capture_types.len()..] != surface.inputs.as_slice() {
-                continue;
-            }
-            matched = true;
-            for (capture, demand) in captures.iter().zip(callee_demand.input_demands.iter()) {
-                let demand = closure_capture_boundary_demand(world, facts, *capture, demand.clone(), &callable);
-                note_live_demand(world, out, live, *capture, demand);
-            }
+    for (callee, callee_demand) in all_demands {
+        if callee.activation.root != executable.activation.root || callee.activation.function != function {
+            continue;
+        }
+        if callee.activation.input.len() < capture_types.len() {
+            continue;
+        }
+        if &callee.activation.input[..capture_types.len()] != capture_types.as_slice() {
+            continue;
+        }
+        let own_params = &callee.activation.input[capture_types.len()..];
+        if !callable.resolved.is_empty()
+            && !callable
+                .resolved
+                .iter()
+                .any(|surface| surface.inputs.as_slice() == own_params)
+        {
+            continue;
+        }
+        matched = true;
+        for (capture, demand) in captures.iter().zip(callee_demand.input_demands.iter()) {
+            let demand = closure_capture_boundary_demand(world, facts, *capture, demand.clone(), &callable);
+            note_live_demand(world, out, live, *capture, demand);
         }
     }
     if !matched {

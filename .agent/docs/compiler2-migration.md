@@ -158,6 +158,24 @@ through its settled `surface_inputs`, delivering each argument at its boundary
 demand (`boundary_runtime_demand`); it never consults `lowered_body` to inspect
 an extern signature, which is interface-only territory the body cannot answer.
 
+## Captured-callable surface flows from the producer, not the closure value
+
+When a clause builds a local closure that captures a callable, the captured
+callable's runtime demand lives in the *producer's own executable*, in the
+input-demand prefix that precedes the closure's parameters. `run(_list, f), do:
+(fn () -> f.(1) end)` captures `f` into a returned continuation that invokes it
+at `(int)`; the continuation executable already proves that surface, and
+`propagate_lambda_capture_demands` reads it back off the producer by matching the
+capture-type prefix. The closure value's *own* call surface only selects which
+specialization to read — a directly-called closure restricts to its invoked
+surfaces, but an **escaped** closure (returned or stored, never called here)
+carries no direct surface of its own, so the prefix match must not be gated on
+the closure value's `resolved` being non-empty. Gating on it dropped the proven
+capture surface and let `f` reach transport as a surface-less first-class demand,
+tripping `generic_callable_shape`'s "callable surfaces proven upstream" guard.
+The surface is proven in the runtime-demand contract; transport never recovers
+it from a type.
+
 ## Compiler2 Semantic Reachability Invariant
 
 Semantic analysis only follows control destinations that can actually receive a
