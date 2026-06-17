@@ -6,9 +6,15 @@
   "description": "CI cargo llvm-cov on branch fz-go4.1/frontdoor-cli-ownership times out in compiler2::semantic_analysis_test::compiler2_runtime_demand_keeps_a_returned_direct_callable_out_of_first_class_inventory with TimedOut { jobs_ran: 165, pending_jobs: 2 }, while local cargo test --lib passes. The test is being ignored to unblock CI. Re-enable it by resolving the Linux/coverage-mode progress budget or underlying runtime-demand convergence issue, then remove the ignore.",
   "id": "fz-eak",
   "labels": [],
+  "comments": [
+    {
+      "text": "Expand scope to the runtime-demand callable-surface timeout cluster observed under CI llvm-cov: compiler2_runtime_demand_records_the_exact_surface_for_a_direct_lambda_call, compiler2_runtime_demand_marks_an_escaped_callable_first_class, and compiler2_runtime_demand_keeps_a_returned_direct_callable_out_of_first_class_inventory. Investigation should start from facts, not guesswork: build a fresh fz2 binary, run the smallest reproducing fixture/source through fz2 with --log-telemetry and staged --dump outputs, then look for duplicated or redundant compiler work before changing behavior.",
+      "timestamp": "2026-06-17T14:42:50Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "Re-enable returned direct callable runtime-demand coverage test",
   "type": "task",
-  "updated_at": "2026-06-17T14:26:39Z"
+  "updated_at": "2026-06-17T14:42:50Z"
 }
