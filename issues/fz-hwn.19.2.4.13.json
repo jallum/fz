@@ -2,6 +2,7 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-06-17T02:50:00Z",
   "created": "2026-06-17T01:18:23Z",
   "description": "resolve_protocol_call keeps two impl-discovery mechanisms: the new scope-tier provider index (user modules) and runtime_impl_target_modules (the 'impl lives in the receiver type's own module' name convention, for lazily-submitted runtime modules). Once runtime modules' defimpls are index/scope-discovered on ensure, the convention can retire and the provider index becomes the single source of truth. Needs care around lazy runtime submission ordering.",
   "id": "fz-hwn.19.2.4.13",
@@ -14,7 +15,7 @@
     }
   ],
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Collapse runtime_impl_target_modules into the scope-tier provider index",
   "type": "task",
   "updated_at": "2026-06-17T02:50:00Z"
