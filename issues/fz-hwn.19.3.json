@@ -22,9 +22,15 @@
   "id": "fz-hwn.19.3",
   "labels": [],
   "parent": "fz-hwn.19",
+  "comments": [
+    {
+      "text": "VERIFIED AGAINST HEAD (ticket partly stale). Findings:\n1. Designated contract test compiler2_native_codegen_materializes_the_settled_callable_boundary_for_opaque_closures pins a PROVABLY WRONG invariant: its fixture (closure_typed_captures.fz) is a DIRECT callable (transport: direct=1, boundary_pub=0), not an opaque boundary. compiler2 resolves f.(x) directly. The test must be repointed to assert direct dispatch (proposal §10.1).\n2. native_codegen/prim.rs::settled_callable_boundary_id is NOT a disease site — it only READS the pre-tagged callable_value_boundaries. No capture-type selection there.\n3. The ONLY capture-type-selection disease is jobs/native.rs::select_settled_callable_boundary, called once at materialize_transport_value (the rematerialize-callable-from-lanes site). Empirically (whole-suite probe) it is BEHAVIOR-INVARIANT: every reachable materialized callable has exactly ONE boundary_id and capture-type selection already equals the CallableId fact. Its widest/min-var tie-break is dead in practice.\n4. The aggravating multi-surface case (one callable, two surfaces, escaped) produces multiple boundaries but does NOT reach that site — escaped 0-cap callables materialize as static closure singletons in the codegen driver (emit_callable_boundary_bodies/fetch_static_closure), a path steeped in TrashDeliveredShape/ArgRepr = fz-hwn.19.5 territory.\n\nRE-SCOPE: (a) cut materialize_transport_value over to read the CallableId-\u003eboundary_ids fact and DELETE select_settled_callable_boundary (correct-by-construction, removes the latent mis-pick surface; behavior-invariant today). (b) Fix the old-world test to assert direct dispatch. (c) The escaped/multi-surface boundary selection (static-singleton driver path) is fz-hwn.19.5 scope — recorded so it is not done out-of-layer.",
+      "timestamp": "2026-06-17T10:55:47Z"
+    }
+  ],
   "priority": 1,
   "status": "in_progress",
   "title": "Transport cutover: make downstream callable materialization consume artifact BoundaryId inventory",
   "type": "task",
-  "updated_at": "2026-06-17T10:36:53Z"
+  "updated_at": "2026-06-17T10:55:47Z"
 }
