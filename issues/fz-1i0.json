@@ -6,9 +6,15 @@
   "description": "Discovered while verifying fz-go4.13.1 with cargo test --workspace. compiler2::compiler2_test::compiler2_compile_root_aot_consumes_native_program_without_legacy_prepare aborts with stack overflow under cargo test -p fz --lib. This happens after the unrelated ABI-ready callable-entry failure in the workspace run. Determine whether the overflow is a preexisting native/AOT recursion issue or a branch regression, then fix it so workspace verification can complete cleanly.",
   "id": "fz-1i0",
   "labels": [],
+  "comments": [
+    {
+      "text": "Resolved — root-caused as a preexisting native/AOT recursion bug, fixed by the fz-hwn.19.x transport-spine cutover (not a branch regression, and no new fix needed).\n\nEvidence:\n- compiler2_compile_root_aot_consumes_native_program_without_legacy_prepare now passes reliably (3x isolated; part of the green lib suite, 2205/0). The exact ticket command cargo test -p fz --lib no longer aborts.\n- It passes even at RUST_MIN_STACK=524288 (512K), so there is no deep recursion left — the original overflow-to-abort was unbounded recursion, now eliminated, not merely a deep-but-bounded stack.\n- The recursion lived in the pre-transport native return-flow recovery. Between the 2026-06-13 filing (during fz-go4.13.1) and now, the fz-hwn.19.x arc rebuilt that path: a8340685b cut native codegen to transport seam facts, and a0774397e / d54d619ad lower native return flow from explicit transport facts instead of recovering it recursively. That removed the loop by construction.\n\nThe functional test exercises compile_root_aot -\u003e NativeProgram and is active (not ignored), so it guards against regression. Workspace verification is no longer blocked by this overflow; the remaining cargo test --workspace red is the fixture_matrix 85 (fz-vn5), a separate concern.",
+      "timestamp": "2026-06-17T20:11:23Z"
+    }
+  ],
   "priority": 2,
   "status": "in_progress",
   "title": "Compiler2 AOT root compile stack-overflows without legacy prepare",
   "type": "bug",
-  "updated_at": "2026-06-17T20:09:18Z"
+  "updated_at": "2026-06-17T20:11:23Z"
 }
