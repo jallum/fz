@@ -395,6 +395,7 @@ impl<'a, 'tel> BackendLowerer<'a, 'tel> {
                     callee: edge.callee,
                     args: self.lower_call_args(executable, *callsite, None, args)?,
                     dest: dest.clone(),
+                    return_flow: edge.return_flow.clone(),
                     extern_marshals: edge.extern_marshals.clone(),
                 }
             }
@@ -413,6 +414,7 @@ impl<'a, 'tel> BackendLowerer<'a, 'tel> {
                     target: edge.and_then(|edge| edge.callee.copied_local()),
                     args: self.lower_call_args(executable, *callsite, Some(*callee), args)?,
                     dest: dest.clone(),
+                    return_flow: edge.map(|edge| edge.return_flow.clone()),
                 }
             }
             LoweredTail::If {

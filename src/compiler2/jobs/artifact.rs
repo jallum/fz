@@ -14,13 +14,14 @@ use crate::ir_lower::extern_ty_from_name;
 use crate::parser::lexer::Tok;
 
 use super::super::artifact::{
-    AbiReadyCallEdge, AbiReadyExecutable, AbiReadyProgram, AbiValueRepr, CallTarget, CallableEntry, EffectSummary,
-    EmissionReadyCallEdge, EmissionReadyCallableEntry, EmissionReadyExecutable, EmissionReadyProgram,
+    AbiReadyCallEdge, AbiReadyExecutable, AbiReadyProgram, AbiValueRepr, CallReturnFlow, CallTarget, CallableEntry,
+    EffectSummary, EmissionReadyCallEdge, EmissionReadyCallableEntry, EmissionReadyExecutable, EmissionReadyProgram,
     ExecutableDispatch, MaterializedCallEdge, MaterializedExecutable, MaterializedExecutableTransport,
     MaterializedProgram, MaterializedTransportPlan,
 };
 use super::super::body::{
-    CallArg, CallSiteId, ControlEntryId, Literal, LoweredBody, LoweredEntry, LoweredStep, LoweredTail, ValueId,
+    CallArg, CallSiteId, ControlDestination, ControlEntryId, Literal, LoweredBody, LoweredEntry, LoweredStep,
+    LoweredTail, ValueId,
 };
 use super::super::drive::{FactKey, Job, JobEffects, settled_uses};
 use super::super::identity::{ExecutableKey, ExecutableNeed, RootId};
@@ -94,7 +95,15 @@ pub(super) fn materialize_root(world: &mut World<'_>, root_id: RootId) -> Result
         );
         let body = pruned.body;
         let callsite_args = collect_callsite_args(&body);
-        let Some(call_edges) = materialize_call_edges(world, root_id, executable, &analysis, &body, &callsite_args)?
+        let Some(call_edges) = materialize_call_edges(
+            world,
+            root_id,
+            &transport_plan,
+            executable,
+            &analysis,
+            &body,
+            &callsite_args,
+        )?
         else {
             return Err(incomplete_semantic_plan(
                 world,
@@ -477,6 +486,7 @@ pub(super) fn derive_emission_ready(world: &mut World<'_>, root_id: RootId) -> R
 fn materialize_call_edges(
     world: &mut World<'_>,
     root_id: RootId,
+    transport_plan: &TransportPlan,
     executable: &ExecutableKey,
     analysis: &ActivationAnalysis,
     body: &LoweredBody,
@@ -489,14 +499,16 @@ fn materialize_call_edges(
     };
     for entry in entries {
         match &entry.tail {
-            LoweredTail::DirectCall { callsite, .. } => {
+            LoweredTail::DirectCall { callsite, dest, .. } => {
                 let Some(edge) = materialize_direct_call_edge(
                     world,
                     root_id,
+                    transport_plan,
                     executable,
                     analysis,
                     callsite_needs.get(callsite).copied().unwrap_or(ExecutableNeed::Value),
                     *callsite,
+                    dest,
                     callsite_args,
                 )?
                 else {
@@ -504,14 +516,16 @@ fn materialize_call_edges(
                 };
                 call_edges.insert(*callsite, edge);
             }
-            LoweredTail::ClosureCall { callsite, .. } => {
+            LoweredTail::ClosureCall { callsite, dest, .. } => {
                 if let Some(edge) = materialize_closure_call_edge(
                     world,
                     root_id,
+                    transport_plan,
                     executable,
                     analysis,
                     callsite_needs.get(callsite).copied().unwrap_or(ExecutableNeed::Value),
                     *callsite,
+                    dest,
                     callsite_args,
                 )? {
                     call_edges.insert(*callsite, edge);
@@ -530,10 +544,12 @@ fn materialize_call_edges(
 fn materialize_direct_call_edge(
     world: &mut World<'_>,
     root_id: RootId,
+    transport_plan: &TransportPlan,
     executable: &ExecutableKey,
     analysis: &ActivationAnalysis,
     need: ExecutableNeed,
     callsite: CallSiteId,
+    dest: &ControlDestination,
     callsite_args: &HashMap<CallSiteId, Vec<CallArg>>,
 ) -> Result<Option<MaterializedCallEdge>, FatalError> {
     let key = CallSiteKey {
@@ -556,16 +572,30 @@ fn materialize_direct_call_edge(
             ),
         ));
     };
-    lower_materialized_call_target(world, root_id, analysis, need, callsite, callsite_args, target).map(Some)
+    lower_materialized_call_target(
+        world,
+        root_id,
+        transport_plan,
+        executable,
+        analysis,
+        need,
+        callsite,
+        dest,
+        callsite_args,
+        target,
+    )
+    .map(Some)
 }
 
 fn materialize_closure_call_edge(
     world: &mut World<'_>,
     root_id: RootId,
+    transport_plan: &TransportPlan,
     executable: &ExecutableKey,
     analysis: &ActivationAnalysis,
     need: ExecutableNeed,
     callsite: CallSiteId,
+    dest: &ControlDestination,
     callsite_args: &HashMap<CallSiteId, Vec<CallArg>>,
 ) -> Result<Option<MaterializedCallEdge>, FatalError> {
     let key = CallSiteKey {
@@ -578,15 +608,30 @@ fn materialize_closure_call_edge(
     let Some(target) = summary.single_target().cloned() else {
         return Ok(None);
     };
-    lower_materialized_call_target(world, root_id, analysis, need, callsite, callsite_args, target).map(Some)
+    lower_materialized_call_target(
+        world,
+        root_id,
+        transport_plan,
+        executable,
+        analysis,
+        need,
+        callsite,
+        dest,
+        callsite_args,
+        target,
+    )
+    .map(Some)
 }
 
 fn lower_materialized_call_target(
     world: &mut World<'_>,
     root_id: RootId,
+    transport_plan: &TransportPlan,
+    executable: &ExecutableKey,
     analysis: &ActivationAnalysis,
     need: ExecutableNeed,
     callsite: CallSiteId,
+    dest: &ControlDestination,
     callsite_args: &HashMap<CallSiteId, Vec<CallArg>>,
     target: CallTargetSummary,
 ) -> Result<MaterializedCallEdge, FatalError> {
@@ -630,10 +675,73 @@ fn lower_materialized_call_target(
         }
         SelectedCallee::ProviderBoundary(function) => (CallTarget::ProviderBoundary(function), None),
     };
+    let return_flow = call_return_flow(world, root_id, transport_plan, executable, &callee, callsite, dest)?;
     Ok(MaterializedCallEdge {
         callee,
         return_ty: target.settled_return(world.types_mut()),
+        return_flow,
         extern_marshals,
+    })
+}
+
+fn call_return_flow(
+    world: &World<'_>,
+    root_id: RootId,
+    transport_plan: &TransportPlan,
+    executable: &ExecutableKey,
+    callee: &CallTarget<ExecutableKey>,
+    callsite: CallSiteId,
+    dest: &ControlDestination,
+) -> Result<CallReturnFlow, FatalError> {
+    let caller_symbol = transport_executable_symbol(executable);
+    match dest {
+        ControlDestination::Deliver(entry) => {
+            let payload = TransportPosition::ResumePayload {
+                executable: caller_symbol,
+                callsite: Some(callsite),
+                entry: *entry,
+            };
+            Ok(CallReturnFlow::Deliver { payload, entry: *entry })
+        }
+        ControlDestination::Return => {
+            let caller_return = TransportPosition::ExecutableReturn {
+                executable: caller_symbol.clone(),
+            };
+            let payload = TransportPosition::ReturnPayload {
+                executable: caller_symbol,
+                callsite,
+            };
+            let caller_shape = require_transport_position(world, root_id, transport_plan, &caller_return)?;
+            let payload_shape = require_transport_position(world, root_id, transport_plan, &payload)?;
+            if let CallTarget::Local(callee) = callee {
+                let callee_return = TransportPosition::ExecutableReturn {
+                    executable: transport_executable_symbol(callee),
+                };
+                let callee_shape = require_transport_position(world, root_id, transport_plan, &callee_return)?;
+                if caller_shape == callee_shape && payload_shape == callee_shape {
+                    return Ok(CallReturnFlow::Tail {
+                        callee_return,
+                        caller_return,
+                    });
+                }
+            }
+            Ok(CallReturnFlow::Continue { payload, caller_return })
+        }
+    }
+}
+
+fn require_transport_position(
+    world: &World<'_>,
+    root_id: RootId,
+    transport_plan: &TransportPlan,
+    position: &TransportPosition,
+) -> Result<ShapeId, FatalError> {
+    transport_plan.positions.get(position).copied().ok_or_else(|| {
+        incomplete_semantic_plan(
+            world,
+            root_id,
+            format!("transport plan is missing required call return-flow position {position:?}"),
+        )
     })
 }
 
@@ -1192,6 +1300,7 @@ fn derive_abi_ready_executable(
                 AbiReadyCallEdge {
                     callee: edge.callee.clone(),
                     return_ty: edge.return_ty,
+                    return_flow: edge.return_flow.clone(),
                     extern_marshals: edge.extern_marshals.clone(),
                 },
             )
@@ -1372,6 +1481,7 @@ fn derive_emission_ready_executable(
                     }
                     CallTarget::ProviderBoundary(function) => CallTarget::ProviderBoundary(*function),
                 },
+                return_flow: edge.return_flow.clone(),
                 extern_marshals: edge.extern_marshals.clone(),
             })
         })

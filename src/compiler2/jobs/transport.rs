@@ -493,19 +493,13 @@ pub(super) fn derive_transport_plan(world: &mut World<'_>, root_id: RootId) -> R
         }
 
         let mut return_callsites = context
-            .local_sources
+            .callsite_dests
             .iter()
-            .filter_map(|(value, source)| {
-                let TransportSource::CallsiteReturn(callsite) = source else {
-                    return None;
-                };
-                matches!(context.callsite_dests.get(callsite), Some(ControlDestination::Return))
-                    .then_some((*callsite, *value))
-            })
+            .filter_map(|(callsite, dest)| matches!(dest, ControlDestination::Return).then_some(*callsite))
             .collect::<Vec<_>>();
-        return_callsites.sort_by_key(|(callsite, _)| callsite.as_u32());
-        return_callsites.dedup_by_key(|(callsite, _)| *callsite);
-        for (callsite, value) in return_callsites {
+        return_callsites.sort_by_key(|callsite| callsite.as_u32());
+        return_callsites.dedup();
+        for callsite in return_callsites {
             let position = TransportPosition::ReturnPayload {
                 executable: symbol.clone(),
                 callsite,
@@ -515,19 +509,13 @@ pub(super) fn derive_transport_plan(world: &mut World<'_>, root_id: RootId) -> R
             {
                 shape_graph.equal(position, callee_return);
             } else {
-                let ty = context
-                    .analysis
-                    .value_types
-                    .get(&value)
-                    .copied()
-                    .unwrap_or_else(|| world.types_mut().any());
                 let shape = shape_for_source(
                     world,
                     &contexts,
                     &mut facts,
                     executable,
                     context,
-                    ty,
+                    context.return_ty,
                     &context.runtime_demand.return_demand,
                     TransportSource::CallsiteReturn(callsite),
                     Some(position.clone()),

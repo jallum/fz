@@ -310,7 +310,8 @@ Cutover classification:
   lanes directly to codegen, and left `ArgRepr` as an emission enum filled from
   native handoff facts. `fz-hwn.19.8` adds `ReturnPayload` positions so
   non-tail return flow is a settled transport edge rather than a native-local
-  mismatch decision.
+  mismatch decision. `fz-hwn.19.9` carries the resulting `CallReturnFlow`
+  through materialized, ABI-ready, emission-ready, and backend records.
 - `src/ir_codegen/*` still has non-compiler2 legacy `ArgRepr::from_ty` and
   `for_block_param_ty` paths. They are not inputs to the new transport plan.
   They are either outside the compiler2 cutover or must be named by a separate

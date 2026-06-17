@@ -450,7 +450,7 @@ rg -n "\b(TrashRuntimeValueLayout|TrashRuntimeInputLayout|TrashRuntimeParamLayou
     </tr>
     <tr>
       <td><code>src/compiler2/native_codegen/*</code> no longer carries <code>TrashDeliveredShape</code>, <code>TrashNativeDemandAbi</code>, delivered-shape recovery helpers, return-shape conversion functions, tuple-return rediscovery, or compiler2-local repr decisions.</td>
-      <td><code>fz-hwn.19.5</code>: native block-param reprs live on <code>NativeBody</code>, native lowering emits <code>Term::ReturnLanes(Vec&lt;Var&gt;)</code> for transport return lanes, and <code>ArgRepr</code> remains only as a low-level emission enum filled from native handoff facts. <code>fz-hwn.19.8</code> adds <code>ReturnPayload</code> positions so non-tail return flow is a settled transport edge rather than a native-local mismatch decision.</td>
+      <td><code>fz-hwn.19.5</code>: native block-param reprs live on <code>NativeBody</code>, native lowering emits <code>Term::ReturnLanes(Vec&lt;Var&gt;)</code> for transport return lanes, and <code>ArgRepr</code> remains only as a low-level emission enum filled from native handoff facts. <code>fz-hwn.19.8</code> adds <code>ReturnPayload</code> positions so non-tail return flow is a settled transport edge rather than a native-local mismatch decision. <code>fz-hwn.19.9</code> carries the resulting <code>CallReturnFlow</code> through materialized, ABI-ready, emission-ready, and backend records.</td>
     </tr>
     <tr>
       <td><code>src/ir_codegen/*</code> still has non-compiler2 legacy <code>ArgRepr::from_ty</code> and <code>for_block_param_ty</code> paths.</td>

@@ -105,7 +105,24 @@ pub struct MaterializedExecutable {
 pub struct MaterializedCallEdge {
     pub callee: CallTarget<ExecutableKey>,
     pub return_ty: Ty,
+    pub return_flow: CallReturnFlow,
     pub extern_marshals: Option<Vec<ExternTy>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CallReturnFlow {
+    Tail {
+        callee_return: TransportPosition,
+        caller_return: TransportPosition,
+    },
+    Continue {
+        payload: TransportPosition,
+        caller_return: TransportPosition,
+    },
+    Deliver {
+        payload: TransportPosition,
+        entry: ControlEntryId,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -266,6 +283,7 @@ pub struct AbiReadyExecutable {
 pub struct AbiReadyCallEdge {
     pub callee: CallTarget<ExecutableKey>,
     pub return_ty: Ty,
+    pub return_flow: CallReturnFlow,
     pub extern_marshals: Option<Vec<ExternTy>>,
 }
 
@@ -301,6 +319,7 @@ pub struct EmissionReadyExecutable {
 pub struct EmissionReadyCallEdge {
     pub callsite: CallSiteId,
     pub callee: CallTarget<usize>,
+    pub return_flow: CallReturnFlow,
     pub extern_marshals: Option<Vec<ExternTy>>,
 }
 
@@ -559,6 +578,7 @@ pub enum BackendTail {
         callee: CallTarget<usize>,
         args: Vec<BackendCallArg>,
         dest: ControlDestination,
+        return_flow: CallReturnFlow,
         extern_marshals: Option<Vec<ExternTy>>,
     },
     ClosureCall {
@@ -568,6 +588,7 @@ pub enum BackendTail {
         target: Option<usize>,
         args: Vec<BackendCallArg>,
         dest: ControlDestination,
+        return_flow: Option<CallReturnFlow>,
     },
     If {
         cond: ValueId,

@@ -1,5 +1,5 @@
 use super::{AppliedStep, CodeSubmission, Compiler2, DriveOutcome, ExecutableNeed, Job, RootSubmission};
-use crate::compiler2::artifact::{BackendEntry, BackendTail, MaterializedTransportPlan};
+use crate::compiler2::artifact::{BackendEntry, BackendTail, CallReturnFlow, MaterializedTransportPlan};
 use crate::compiler2::artifact::{NativeBodyOrigin, NativeCallableBoundaryId, NativeEntryAbi, NativeProgram};
 use crate::compiler2::drive::JobEffects;
 use crate::compiler2::transport::{CodegenLaneRepr, CodegenSeam, ExecutableSymbol, ShapeId, TransportPosition};
@@ -3733,6 +3733,118 @@ fn compiler2_backend_program_keeps_only_the_closed_quicksort_inventory() {
             .into_iter()
             .all(|event| event.metadata.len() == 0),
         "generic capture should not durable-copy opaque backend-program metadata",
+    );
+}
+
+#[test]
+fn compiler2_backend_program_carries_tail_return_flow_from_transport_facts() {
+    let tel = ConfiguredTelemetry::new();
+    let functions = FunctionCapture::new();
+    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    let backend = BackendProgramCapture::new();
+    tel.attach(&["fz", "compiler2", "backend_program", "defined"], backend.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("backend_tail_return_flow.fz".to_string()),
+        text: r#"
+fn inc(x), do: x + 1
+fn main(), do: inc(41)
+"#
+        .to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    assert_resolved(
+        compiler.drive(),
+        "backend lowering should carry settled tail return-flow facts",
+    );
+
+    let program = backend.last(root_id).program;
+    let main_id = function_id(&functions, "main", 0);
+    let inc_id = function_id(&functions, "inc", 1);
+    let (_, main_exec) = backend_executable(&program, main_id);
+    let call = backend_direct_call(main_exec, &program, inc_id);
+    let BackendTail::DirectCall { return_flow, .. } = call else {
+        panic!("main/0 should tail-call inc/1, got {call:?}");
+    };
+    let CallReturnFlow::Tail {
+        callee_return,
+        caller_return,
+    } = return_flow
+    else {
+        panic!("same-contract direct return should be classified as Tail, got {return_flow:?}");
+    };
+    assert_eq!(
+        transport_position_shape(&program.transport, callee_return),
+        transport_position_shape(&program.transport, caller_return),
+        "tail return flow must carry equal settled return contract shapes",
+    );
+}
+
+#[test]
+fn compiler2_backend_program_carries_return_payload_flow_before_native_lowering() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&[], capture.handler());
+    let backend = BackendProgramCapture::new();
+    tel.attach(&["fz", "compiler2", "backend_program", "defined"], backend.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures2/behavior/multi_relay.fz".to_string()),
+        text: include_str!("../../fixtures2/behavior/multi_relay.fz").to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    let drive = compiler.drive();
+    if !matches!(drive, DriveOutcome::Resolved) {
+        let diagnostic = capture
+            .last(&["fz", "diag", "error"])
+            .map(|event| metadata_str(&event, "message").to_string())
+            .unwrap_or_else(|| "<missing diagnostic>".to_string());
+        panic!(
+            "backend lowering should classify multi_relay return flow before native lowering: {drive:?}; diagnostic={diagnostic}"
+        );
+    }
+
+    let program = backend.last(root_id).program;
+    let mut saw_return_payload_flow = false;
+    for executable in &program.executables {
+        let crate::compiler2::BackendBody::Clauses { entries, .. } = &executable.body else {
+            continue;
+        };
+        for entry in entries {
+            match &entry.tail {
+                BackendTail::DirectCall { return_flow, .. } => {
+                    if return_flow_is_distinct_return_payload(&program.transport, return_flow) {
+                        saw_return_payload_flow = true;
+                    }
+                }
+                BackendTail::ClosureCall {
+                    return_flow: Some(return_flow),
+                    ..
+                } if return_flow_is_distinct_return_payload(&program.transport, return_flow) => {
+                    saw_return_payload_flow = true;
+                }
+                _ => {}
+            }
+        }
+    }
+
+    assert!(
+        saw_return_payload_flow,
+        "multi_relay should carry at least one non-tail ReturnPayload flow in BackendProgram"
     );
 }
 
@@ -10629,6 +10741,23 @@ fn backend_direct_call_in_entry<'a>(
             .or_else(|| backend_direct_call_in_entry(entries, *else_entry, program, callee)),
         _ => None,
     }
+}
+
+fn transport_position_shape(plan: &MaterializedTransportPlan, position: &TransportPosition) -> ShapeId {
+    plan.position_shapes
+        .iter()
+        .find_map(|(candidate, shape)| (candidate == position).then_some(*shape))
+        .unwrap_or_else(|| panic!("transport position should have a materialized shape: {position:?}"))
+}
+
+fn return_flow_is_distinct_return_payload(plan: &MaterializedTransportPlan, flow: &CallReturnFlow) -> bool {
+    let CallReturnFlow::Continue { payload, caller_return } = flow else {
+        return false;
+    };
+    if !matches!(payload, TransportPosition::ReturnPayload { .. }) {
+        return false;
+    }
+    transport_position_shape(plan, payload) != transport_position_shape(plan, caller_return)
 }
 
 fn native_executable_functions(program: &NativeProgram) -> HashSet<FunctionId> {
