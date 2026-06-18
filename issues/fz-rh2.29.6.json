@@ -4,14 +4,16 @@
   "blocks": [
     "fz-rh2.29.3"
   ],
+  "closed_at": "2026-06-18T14:51:34Z",
+  "close_reason": "Runtime demand now carries callable surface-to-resolution edges into transport boundary facts, and ABI/native consume the boundary-owned target relation.",
   "created": "2026-06-18T14:28:23Z",
   "description": "## Goal\nMake callable-flow handoff precise enough that ABI/native consumers do not reconstruct callable boundary targets from flattened sets. Runtime demand should preserve the semantic relation between each observed callable surface and the executable activation it resolves to; transport should project that relation onto the BoundaryId values it mints.\n\n## Why\nThe runtime-demand fact cutover exposed a downstream ambiguity: CallableFacts currently carries parallel sets (`resolutions`, `direct_surfaces`, `boundary_ids`). ABI-ready expands `boundary_ids x resolutions`, and native later tries to select by `(function, capture_count)`. That is no longer valid once a callable can have direct surfaces, first-class surfaces, multiple concrete resolutions, and multiple published boundary contracts at the same time.\n\n## Change\n1. Extend `CallableFlowFact` so runtime-demand projection preserves surface-to-resolution edges, separated by direct vs first-class use.\n2. Extend the transport handoff so each published `BoundaryId` records the executable resolution(s) for that boundary surface.\n3. Update ABI-ready callable-entry derivation to consume boundary-owned resolution facts instead of pairing every boundary with every callable resolution.\n4. Update native callable materialization to consume the exact boundary relation, not infer by function id, capture count, lowered body, or callable type.\n\n## Constraints\n- RuntimeDemandMap owns semantic callable-flow edges.\n- Transport owns BoundaryId projection because BoundaryId is minted there.\n- ABI/native must be dumb consumers of transport facts.\n- Do not reintroduce whole-closure scans or transport-local callable recovery.\n\n## Check\nFocused tests should include the currently red native/ABI symptoms from `fz-rh2.29.3`: mixed direct+escaped make_adder, direct-only Enum.reduce reducers, same-surface reducer identities with different captures, and opaque joined callable values. When this lands, `fz-rh2.29.3` should be able to resume with the per-executable runtime-demand cutover rather than patching consumers one by one.",
   "id": "fz-rh2.29.6",
   "labels": [],
   "parent": "fz-rh2.29",
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Callable flow: carry surface-to-resolution edges into transport boundary facts",
   "type": "task",
-  "updated_at": "2026-06-18T14:40:33Z"
+  "updated_at": "2026-06-18T14:51:34Z"
 }
