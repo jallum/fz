@@ -25,6 +25,9 @@ mod source_test;
 mod transport;
 mod types;
 
+#[cfg(test)]
+pub(crate) use transport::transport_plan_for_runtime_demands_for_test;
+
 pub(crate) fn run(world: &mut World<'_>, job: &Job) -> Result<JobEffects, FatalError> {
     match job {
         Job::IndexCode(code_id) => source::index_code(world, *code_id),

@@ -699,20 +699,33 @@ fn compiler2_runtime_demand_shadow_facts_answer_transport_questions_for_quicksor
         record.runtime_demands.len() > 1,
         "quicksort should exercise a nontrivial executable frontier",
     );
-    for (executable, monolith_demand) in &record.runtime_demands {
+    for executable in record.runtime_demands.keys() {
         let fact = FactKey::RuntimeDemand(executable.clone());
         assert!(
             world.fact_is_settled(&fact),
             "shadow runtime-demand fact should be settled for {executable:?}",
         );
-        let fact_demand = world
-            .runtime_demand(executable)
-            .unwrap_or_else(|| panic!("shadow runtime-demand payload for {executable:?}"));
-        assert_eq!(
-            fact_demand, monolith_demand,
-            "shadow RuntimeDemand(E) must answer the same transport-facing questions as closure.runtime_demands[E] for {executable:?}",
-        );
     }
+    let monolith_plan =
+        super::jobs::transport_plan_for_runtime_demands_for_test(&mut world, root_id, &record.runtime_demands);
+    let shadow_demands = record
+        .runtime_demands
+        .keys()
+        .map(|executable| {
+            (
+                executable.clone(),
+                world
+                    .runtime_demand(executable)
+                    .cloned()
+                    .unwrap_or_else(|| panic!("shadow runtime-demand payload for {executable:?}")),
+            )
+        })
+        .collect::<HashMap<_, _>>();
+    let shadow_plan = super::jobs::transport_plan_for_runtime_demands_for_test(&mut world, root_id, &shadow_demands);
+    assert_eq!(
+        shadow_plan, monolith_plan,
+        "shadow RuntimeDemand(E) facts must answer the same transport-facing questions as closure.runtime_demands",
+    );
 }
 
 #[test]

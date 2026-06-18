@@ -9,7 +9,7 @@ use super::super::identity::{ExecutableKey, ExecutableNeed, FunctionId, RootId};
 use super::super::scheduler::FatalError;
 use super::super::semantic::{
     ActivationAnalysis, CallSiteKey, CallableDemand, CallableFlowFact, CallableSurface, ExecutableRuntimeDemand,
-    RuntimeDemand, SelectedCallee, ShapeDemand,
+    RuntimeDemand, SelectedCallee, SemanticClosure, ShapeDemand,
 };
 use super::super::transport::{
     ActivationSymbol, BoundaryDescr, BoundaryFacts, BoundaryId, CallableDescr, CallableFacts, CallableId,
@@ -311,8 +311,40 @@ pub(super) fn derive_transport_plan(world: &mut World<'_>, root_id: RootId) -> R
     let closure = world.semantic_closure(root_id);
     let mut reads = vec![closed_fact];
     let mut wait_facts = HashSet::new();
-    let mut contexts = HashMap::new();
+    let contexts = collect_transport_contexts(world, &closure, &closure.runtime_demands, &mut reads, &mut wait_facts);
 
+    if !wait_facts.is_empty() {
+        return Ok(JobEffects {
+            reads: settled_uses(reads),
+            waits: settled_uses(wait_facts),
+            follow_up: vec![Job::DeriveTransportPlan(root_id)],
+            ..JobEffects::default()
+        });
+    }
+
+    let mut executables = closure.executables.iter().cloned().collect::<Vec<_>>();
+    executables.sort_by_key(executable_sort_key);
+
+    let plan = project_transport_plan(world, &closure.entry, &executables, &contexts);
+
+    let changed = world.define_transport_plan(root_id, plan);
+
+    Ok(JobEffects {
+        reads: settled_uses(reads),
+        outputs: vec![FactKey::TransportPlan(root_id)],
+        changed: changed.then_some(FactKey::TransportPlan(root_id)).into_iter().collect(),
+        ..JobEffects::default()
+    })
+}
+
+fn collect_transport_contexts(
+    world: &mut World<'_>,
+    closure: &SemanticClosure,
+    runtime_demands: &HashMap<ExecutableKey, ExecutableRuntimeDemand>,
+    reads: &mut Vec<FactKey>,
+    wait_facts: &mut HashSet<FactKey>,
+) -> HashMap<ExecutableKey, ExecutableContext> {
+    let mut contexts = HashMap::new();
     for executable in &closure.executables {
         let activation_fact = FactKey::ActivationAnalyzed(executable.activation.clone());
         if !world.fact_is_settled(&activation_fact) {
@@ -336,7 +368,7 @@ pub(super) fn derive_transport_plan(world: &mut World<'_>, root_id: RootId) -> R
             .activation_return(&executable.activation)
             .unwrap_or_else(|| world.types_mut().none());
         let body = world.lowered_body(executable.activation.function);
-        let runtime_demand = closure.runtime_demands.get(executable).cloned().unwrap_or_default();
+        let runtime_demand = runtime_demands.get(executable).cloned().unwrap_or_default();
         let callsite_needs = executable_callsite_needs(&body, &analysis.reachable_clauses, executable.need);
         for callsite in &analysis.callsites {
             let fact = FactKey::CallSiteSummary(CallSiteKey {
@@ -376,20 +408,35 @@ pub(super) fn derive_transport_plan(world: &mut World<'_>, root_id: RootId) -> R
             },
         );
     }
+    contexts
+}
 
-    if !wait_facts.is_empty() {
-        return Ok(JobEffects {
-            reads: settled_uses(reads),
-            waits: settled_uses(wait_facts),
-            follow_up: vec![Job::DeriveTransportPlan(root_id)],
-            ..JobEffects::default()
-        });
-    }
-
-    let mut executables = closure.executables.into_iter().collect::<Vec<_>>();
+#[cfg(test)]
+pub(crate) fn transport_plan_for_runtime_demands_for_test(
+    world: &mut World<'_>,
+    root_id: RootId,
+    runtime_demands: &HashMap<ExecutableKey, ExecutableRuntimeDemand>,
+) -> TransportPlan {
+    let closure = world.semantic_closure(root_id);
+    let mut reads = Vec::new();
+    let mut wait_facts = HashSet::new();
+    let contexts = collect_transport_contexts(world, &closure, runtime_demands, &mut reads, &mut wait_facts);
+    assert!(
+        wait_facts.is_empty(),
+        "transport projection test requires settled prerequisite facts: {wait_facts:?}",
+    );
+    let mut executables = closure.executables.iter().cloned().collect::<Vec<_>>();
     executables.sort_by_key(executable_sort_key);
+    project_transport_plan(world, &closure.entry, &executables, &contexts)
+}
 
-    let entry = executable_symbol(&closure.entry);
+fn project_transport_plan(
+    world: &mut World<'_>,
+    entry_executable: &ExecutableKey,
+    executables: &[ExecutableKey],
+    contexts: &HashMap<ExecutableKey, ExecutableContext>,
+) -> TransportPlan {
+    let entry = executable_symbol(entry_executable);
     let executable_membership = executables
         .iter()
         .map(executable_symbol)
@@ -398,7 +445,7 @@ pub(super) fn derive_transport_plan(world: &mut World<'_>, root_id: RootId) -> R
 
     let mut facts = TransportFactsBuilder::default();
     let mut shape_graph = ShapeConstraintGraph::default();
-    for executable in &executables {
+    for executable in executables {
         let symbol = executable_symbol(executable);
         let context = contexts
             .get(executable)
@@ -410,7 +457,7 @@ pub(super) fn derive_transport_plan(world: &mut World<'_>, root_id: RootId) -> R
         };
         let return_shape = shape_for_source(
             world,
-            &contexts,
+            contexts,
             &mut facts,
             executable,
             context,
@@ -435,7 +482,7 @@ pub(super) fn derive_transport_plan(world: &mut World<'_>, root_id: RootId) -> R
                 .unwrap_or_default();
             let shape = shape_for_local_value(
                 world,
-                &contexts,
+                contexts,
                 &mut facts,
                 executable,
                 context,
@@ -504,14 +551,13 @@ pub(super) fn derive_transport_plan(world: &mut World<'_>, root_id: RootId) -> R
                 executable: symbol.clone(),
                 callsite,
             };
-            if let Some(callee_return) =
-                callsite_callee_return_position(world, &contexts, executable, context, callsite)
+            if let Some(callee_return) = callsite_callee_return_position(world, contexts, executable, context, callsite)
             {
                 shape_graph.equal(position, callee_return);
             } else {
                 let shape = shape_for_source(
                     world,
-                    &contexts,
+                    contexts,
                     &mut facts,
                     executable,
                     context,
@@ -573,13 +619,13 @@ pub(super) fn derive_transport_plan(world: &mut World<'_>, root_id: RootId) -> R
                 .is_ignore()
                 .then_some(resume.callsite)
                 .flatten()
-                .and_then(|callsite| callsite_callee_return_position(world, &contexts, executable, context, callsite));
+                .and_then(|callsite| callsite_callee_return_position(world, contexts, executable, context, callsite));
             if let Some(callee_return) = shared_return {
                 shape_graph.equal(position, callee_return);
             } else {
                 let shape = resume_shape(
                     world,
-                    &contexts,
+                    contexts,
                     &mut facts,
                     executable,
                     context,
@@ -592,14 +638,14 @@ pub(super) fn derive_transport_plan(world: &mut World<'_>, root_id: RootId) -> R
         }
     }
 
-    collect_clause_parameter_equalities(&contexts, &executables, &mut shape_graph);
+    collect_clause_parameter_equalities(contexts, executables, &mut shape_graph);
     seed_callable_resolution_capture_inputs(world, &facts, &mut shape_graph);
     let local_shapes = shape_graph.clone().solve();
     collect_executable_input_constraints(
         world,
-        &contexts,
+        contexts,
         &mut facts,
-        &executables,
+        executables,
         &local_shapes,
         &mut shape_graph,
     );
@@ -608,26 +654,16 @@ pub(super) fn derive_transport_plan(world: &mut World<'_>, root_id: RootId) -> R
     facts.expand_boundary_publications(&equivalents);
 
     let (callables, boundaries) = facts.finish();
-    let codegen_seam_facts = derive_codegen_seam_facts(world, &contexts, &positions, &callables, &boundaries);
+    let codegen_seam_facts = derive_codegen_seam_facts(world, contexts, &positions, &callables, &boundaries);
 
-    let changed = world.define_transport_plan(
-        root_id,
-        TransportPlan {
-            entry,
-            executable_membership,
-            positions,
-            callables,
-            boundaries,
-            codegen_seam_facts,
-        },
-    );
-
-    Ok(JobEffects {
-        reads: settled_uses(reads),
-        outputs: vec![FactKey::TransportPlan(root_id)],
-        changed: changed.then_some(FactKey::TransportPlan(root_id)).into_iter().collect(),
-        ..JobEffects::default()
-    })
+    TransportPlan {
+        entry,
+        executable_membership,
+        positions,
+        callables,
+        boundaries,
+        codegen_seam_facts,
+    }
 }
 
 fn seed_callable_resolution_capture_inputs(
