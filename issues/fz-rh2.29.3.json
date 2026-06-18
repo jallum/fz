@@ -2,7 +2,8 @@
   "assignee": "Jason Allum",
   "blocked_by": [
     "fz-rh2.29.2",
-    "fz-rh2.29.5"
+    "fz-rh2.29.5",
+    "fz-rh2.29.6"
   ],
   "blocks": [
     "fz-rh2.29.4"
@@ -16,5 +17,5 @@
   "status": "in_progress",
   "title": "Runtime demand: cut the seal over to the facts and strangle the monolith",
   "type": "task",
-  "updated_at": "2026-06-18T13:22:11Z"
+  "updated_at": "2026-06-18T14:28:29Z"
 }
