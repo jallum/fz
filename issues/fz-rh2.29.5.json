@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-18T12:28:51Z",
+  "description": "Before `fz-rh2.29.3` cuts the seal over from the monolith to `RuntimeDemand(E)` facts, prove equivalence at the consumer boundary instead of comparing raw internal demand maps.\n\n## Fear\nRaw `ExecutableRuntimeDemand` equality is the wrong assertion: it pressures `DeriveRuntimeDemand(E)` to imitate the monolith trace, including local value/call-arg provenance and scheduling artifacts. But simply checking fact presence is not enough for cutover; the fact path could be complete and still project a different transport plan.\n\n## Goal\nAdd a transport-projection equivalence check that derives the transport-facing obligations from both sources and proves they match where codegen/materialization consumes them.\n\n## Strategy\n- Keep `settle_runtime_demands` authoritative until this proof exists.\n- Build or extract a projection helper that can compare monolith runtime demands with shadow `RuntimeDemand(E)` facts at the transport plan/shape/callable-publication boundary.\n- Treat conservative internal provenance differences as acceptable only when the projected transport obligations are identical or intentionally equivalent by a documented relation.\n- Do not add root-wide runtime-demand scans or a mini monolith inside `DeriveRuntimeDemand(E)`.\n\n## Check\nFocused runtime-demand tests and the compiler2/fixture matrix pass with the transport-boundary equivalence check enabled. `fz-rh2.29.3` remains blocked until this passes.",
+  "id": "fz-rh2.29.5",
+  "labels": [],
+  "parent": "fz-rh2.29",
+  "priority": 1,
+  "status": "open",
+  "title": "Runtime demand: prove shadow fact equivalence at transport projection",
+  "type": "task",
+  "updated_at": "2026-06-18T12:28:51Z"
+}
