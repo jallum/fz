@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-18T03:40:59Z",
+  "description": "Fixtures that should emit (or fail on) a non-exhaustiveness diagnostic no longer do. Regression of the closed fz-rh2.11.8 (emit type/no-matching-clause for partial case/with). Verified pre-existing vs parent commit ca703c6b7 — independent of the fz-vn5 cons-reuse arc.\n\nFixtures / signals (fixtures2/behavior):\n- spec_violation (run/interp/build): matrix reports 'expected diagnostic (nonzero exit) but the program succeeded' — fz2 exits 0 where it must halt.\n- tree: lost its 'warning[type/no-matching-clause]: fn clauses don't cover every input' (the inc_tree tuple clause). Golden tree.expected.diagnostics still holds the warning.\n- case_tuple_pattern_sequential: lost its 'case_clause' fall-through diagnostics.\n\nRecover the exhaustiveness/clause-coverage diagnostics across fn clauses and case/with so these fixtures fail (spec_violation) or warn (tree, case_tuple) as their goldens require. References: closed fz-rh2.11.8; golden disposition tracked in fz-rh2.16.2.",
+  "id": "fz-9i4.7.1",
+  "labels": [],
+  "parent": "fz-9i4.7",
+  "priority": 2,
+  "status": "open",
+  "title": "[BUG] Compiler2 lost exhaustiveness/spec diagnostics regressed",
+  "type": "bug",
+  "updated_at": "2026-06-18T03:40:59Z"
+}
