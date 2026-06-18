@@ -6,9 +6,15 @@
   "description": "",
   "id": "fz-566",
   "labels": [],
+  "comments": [
+    {
+      "text": "Created report.html with measured quicksort vs enum_take_drop_split release fz2 timings, telemetry hot spots, transport-plan scale, late multi-target protocol dispatch failure analysis, and recommended follow-up work.",
+      "timestamp": "2026-06-18T03:46:41Z"
+    }
+  ],
   "priority": 2,
   "status": "in_progress",
   "title": "Investigate fz2 quicksort vs enum_take_drop_split compile-time gap",
   "type": "task",
-  "updated_at": "2026-06-18T03:36:43Z"
+  "updated_at": "2026-06-18T03:46:41Z"
 }
