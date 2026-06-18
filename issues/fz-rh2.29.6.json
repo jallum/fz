@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [
     "fz-rh2.29.3"
@@ -10,8 +10,8 @@
   "labels": [],
   "parent": "fz-rh2.29",
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "Callable flow: carry surface-to-resolution edges into transport boundary facts",
   "type": "task",
-  "updated_at": "2026-06-18T14:28:29Z"
+  "updated_at": "2026-06-18T14:40:33Z"
 }
