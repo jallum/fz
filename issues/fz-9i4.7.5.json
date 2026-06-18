@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-18T03:41:18Z",
+  "description": "Resource/file fixtures abort at native struct field access with a kind mismatch:\n- resource_lifecycle (run): runtime/src/ir_runtime.rs:1642 'fz_struct_get_named_field_ref: ExpectedTag { expected: ValueKind(3), found: ValueKind(7) }' — a named-field read expects one kind (3) but the value is another (7).\n- file_resource_lifecycle, a-resource_aot_dtor (build): resource destructor / AOT dtor legs fail.\n- file_handle: fails its matrix leg (golden/output mismatch — confirm vs this struct-field issue).\n\nReconcile the struct schema/field-kind the resource lifecycle path lowers against the runtime value it produces, so named-field reads see the expected kind. Sits under the fz-go4 ownership-boundary work since resource handles cross the native boundary.",
+  "id": "fz-9i4.7.5",
+  "labels": [],
+  "parent": "fz-9i4.7",
+  "priority": 2,
+  "status": "open",
+  "title": "[BUG] Resource-lifecycle native struct field access kind mismatch",
+  "type": "bug",
+  "updated_at": "2026-06-18T03:41:18Z"
+}
