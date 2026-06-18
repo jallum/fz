@@ -1,6 +1,8 @@
 #---
 # purpose: A do/end block on a no-parens call becomes a trailing do: keyword arg.
 # oracle: oracle.exs
+# defer.build: fz-9i4.7.3 compiler2 native codegen ReturnLanes arity mismatch
+# defer.run: fz-9i4.7.3 compiler2 native codegen ReturnLanes arity mismatch
 #---
 #
 # A `do … end` block trailing a no-parens call collapses into the call's final

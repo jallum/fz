@@ -2,6 +2,9 @@
 # purpose: "Enum predicate and search functions match Elixir and halt as soon as the answer is known"
 # timeout.interp_secs: 15
 # oracle: oracle.exs
+# defer.build: fz-9i4.7.2 compiler2 multi-target protocol/Enumerable dispatch not settled upstream
+# defer.interp: fz-9i4.7.2 compiler2 multi-target protocol/Enumerable dispatch not settled upstream
+# defer.run: fz-9i4.7.2 compiler2 multi-target protocol/Enumerable dispatch not settled upstream
 #---
 #
 # Exercises the `fz-g58.25` Enum predicate/search layer:

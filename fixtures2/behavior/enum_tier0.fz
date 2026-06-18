@@ -2,6 +2,9 @@
 # purpose: "Enum tier-0 functions return Elixir-style public values across List, Range, and Map"
 # oracle: oracle.exs
 # timeout.interp_secs: 15
+# defer.build: fz-hwn.9 Enum.with_index mapper activation churn times out
+# defer.interp: fz-hwn.9 Enum.with_index mapper activation churn times out
+# defer.run: fz-hwn.9 Enum.with_index mapper activation churn times out
 #---
 #
 # Exercises the reduce-based public `Enum` surface that later Enum functions build

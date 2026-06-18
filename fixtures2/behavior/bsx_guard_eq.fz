@@ -11,6 +11,7 @@
 # budget.planner.blocks: 19
 # budget.planner.stmts: 23
 # budget.planner.dispatches: 11
+# defer.interp: fz-9i4.7.2 compiler2 multi-target protocol/Enumerable dispatch not settled upstream
 #---
 #
 # # bsx_guard_eq

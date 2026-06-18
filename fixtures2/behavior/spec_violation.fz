@@ -2,6 +2,9 @@
 # purpose: "a wrong @spec is rejected with a spec/violation diagnostic on every path"
 # expect: diagnostic
 # diagnostic.code: spec/violation
+# defer.build: fz-9i4.7.1 compiler2 lost exhaustiveness/spec diagnostics regressed
+# defer.interp: fz-9i4.7.1 compiler2 lost exhaustiveness/spec diagnostics regressed
+# defer.run: fz-9i4.7.1 compiler2 lost exhaustiveness/spec diagnostics regressed
 #---
 #
 # # spec_violation

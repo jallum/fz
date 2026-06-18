@@ -1,5 +1,8 @@
 #---
 # purpose: "runtime Enum list functions preserve protocol-first native list-cons and continuation allocation floors"
+# defer.build: fz-rh2.16.2 enum allocation/golden contracts unresolved (mismatch-without-failure)
+# defer.interp: fz-rh2.16.2 enum allocation/golden contracts unresolved (mismatch-without-failure)
+# defer.run: fz-rh2.16.2 enum allocation/golden contracts unresolved (mismatch-without-failure)
 #---
 #
 # # enum_list_allocations

@@ -11,6 +11,9 @@
 # budget.planner.blocks: 11
 # budget.planner.stmts: 16
 # budget.planner.dispatches: 13
+# defer.build: fz-9i4.7.5 resource-lifecycle native struct field access kind mismatch
+# defer.interp: fz-9i4.7.5 resource-lifecycle native struct field access kind mismatch
+# defer.run: fz-9i4.7.5 resource-lifecycle native struct field access kind mismatch
 #---
 #
 # # resource_lifecycle

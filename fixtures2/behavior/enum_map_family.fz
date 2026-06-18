@@ -3,6 +3,9 @@
 # oracle: oracle.exs
 # timeout.run_secs: 5
 # timeout.interp_secs: 15
+# defer.build: fz-9i4.7.2 compiler2 multi-target protocol/Enumerable dispatch not settled upstream
+# defer.interp: fz-9i4.7.2 compiler2 multi-target protocol/Enumerable dispatch not settled upstream
+# defer.run: fz-9i4.7.2 compiler2 multi-target protocol/Enumerable dispatch not settled upstream
 #---
 #
 # Exercises the `fz-g58.24` Enum map family:

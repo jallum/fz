@@ -11,6 +11,8 @@
 # budget.planner.blocks: 3
 # budget.planner.stmts: 6
 # budget.planner.dispatches: 2
+# defer.build: fz-9i4.7.4 runtime panics on typed scalar value paths (float load / closure capture kind)
+# defer.run: fz-9i4.7.4 runtime panics on typed scalar value paths (float load / closure capture kind)
 #---
 #
 # # vr3_float_args

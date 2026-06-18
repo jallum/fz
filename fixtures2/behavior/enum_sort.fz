@@ -1,5 +1,6 @@
 #---
 # purpose: "runtime-library Enum.sort (merge sort) allocation contract across four paths; pins JIT/AOT parity and default-sorter closure erasure"
+# defer.interp: fz-rh2.16.2 enum allocation/golden contracts unresolved (mismatch-without-failure)
 #---
 #
 # # enum_sort

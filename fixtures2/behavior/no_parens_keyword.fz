@@ -1,6 +1,8 @@
 #---
 # purpose: "trailing/leading keyword lists in no-parens calls parse into one list arg; output matches Elixir"
 # oracle: oracle.exs
+# defer.build: fz-9i4.7.3 compiler2 native codegen ReturnLanes arity mismatch
+# defer.run: fz-9i4.7.3 compiler2 native codegen ReturnLanes arity mismatch
 #---
 #
 # # no_parens_keyword

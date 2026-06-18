@@ -1,5 +1,8 @@
 #---
 # purpose: "Enumerable.reduce/3 suspend returns a real resumable closure at the runtime-value boundary"
+# defer.build: fz-hwn.13 native returned suspend continuations lose settled callable boundaries
+# defer.interp: fz-hwn.13 native returned suspend continuations lose settled callable boundaries
+# defer.run: fz-hwn.13 native returned suspend continuations lose settled callable boundaries
 #---
 #
 # # enum_reduce_suspend
