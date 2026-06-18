@@ -33,12 +33,11 @@
 # - `closure_allocs = 0`
 # - `scalar_box_allocs = 0`
 # - `heap_bytes = 352`
-# - `allocation_pressure_yields = 0`
 #
 # The interpreter and REPL legs are direct-IR baselines: they do not run native
 # `ReturnDemand` / reusable-cons lowering, so they allocate more cons cells
 # (`154`), ten protocol/control structs, and three small closures. They share
-# the same growable heap and each reports one allocation-pressure yield.
+# the same growable heap.
 #
 # ## The default sorter is erased from native frames
 #
@@ -54,7 +53,9 @@
 # The native count is now lower than quicksort because this merge sort reuses the
 # input cons cells differently after splitting/reversing. This fixture pins the
 # post-capability contract so that any change in either direction shows up
-# loudly.
+# loudly. GC pressure no longer forces a scheduler yield, so native execution
+# also keeps the reusable-cons ownership path uninterrupted: all runtime reuse
+# attempts currently succeed.
 fn main() do
   sorted = Enum.sort([3, 1, 4, 1, 5, 9, 2, 6, 5, 3, 5])
   dbg(sorted)
@@ -68,8 +69,7 @@ fn main() do
     stats[:closure_allocs],
     stats[:closure_bytes],
     stats[:scalar_box_allocs],
-    stats[:scalar_box_bytes],
-    stats[:allocation_pressure_yields]
+    stats[:scalar_box_bytes]
   })
   heap_bytes = stats[:list_cons_bytes] + stats[:struct_bytes] + stats[:map_bytes]
   dbg(heap_bytes)

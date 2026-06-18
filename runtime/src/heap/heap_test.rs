@@ -8,7 +8,7 @@ use crate::any_value::{
     map_entry, map_size_for_count, object_size, procbin_addr_from_tagged, struct_addr_from_tagged, struct_flags,
     struct_schema_id, struct_size_for_payload,
 };
-use crate::process::{AlignedClosureStorage, Process, YIELD_REASON_ALLOCATION_PRESSURE};
+use crate::process::AlignedClosureStorage;
 use crate::resource::ResourceStub;
 use crate::sync::Ordering;
 use std::cell::RefCell;
@@ -1228,31 +1228,14 @@ fn gc_updates_last_gc_live_bytes() {
     assert_eq!(h.size_class, 0, "tiny live set stays at smallest class");
 }
 
-/// Allocation watermark leaves the explicit yield-continuation reserve.
 #[test]
-fn allocation_watermark_leaves_continuation_reserve() {
-    let h = Heap::new(SIZE_TABLE[0], empty_registry());
-    let expected = unsafe { h.block_end.sub(YIELD_CONTINUATION_RESERVE_BYTES) };
-    assert_eq!(h.allocation_watermark, expected);
-}
+fn allocation_pressure_marks_gc_without_spending_reductions() {
+    let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
+    h.gc_threshold_bytes = 16;
 
-#[test]
-fn allocation_watermark_expires_reduction_budget() {
-    let mut process = Process::new(empty_registry());
-    process.reductions_remaining = 7;
-    process.yield_reasons = 0;
-    // Force the very next allocation across the watermark.
-    process.heap.allocation_watermark = process.heap.block_start;
-    let owner: *mut Process = &mut process;
-    process.heap.set_owner(owner);
+    let _ = h.alloc_list_cons_slot(AnyValue::nil_atom(), EMPTY_LIST);
 
-    let _ = process.heap.alloc_list_cons_slot(AnyValue::nil_atom(), EMPTY_LIST);
-
-    assert_eq!(process.reductions_remaining, 0);
-    assert_eq!(
-        process.yield_reasons & YIELD_REASON_ALLOCATION_PRESSURE,
-        YIELD_REASON_ALLOCATION_PRESSURE
-    );
+    assert!(h.should_gc(), "allocation pressure should request boundary GC");
 }
 
 /// Large struct (200-byte payload, well past the old 64-byte cap)

@@ -29,9 +29,9 @@ fn force_reduction_yield(task: &mut Process) {
     task.reductions_per_quantum = 1;
 }
 
-fn force_allocation_pressure_yield(task: &mut Process) {
+fn force_reduction_yield_with_boundary_gc(task: &mut Process) {
     task.reductions_per_quantum = 1;
-    task.heap.allocation_watermark = null_mut();
+    task.heap.gc_threshold_bytes = 16;
 }
 
 fn test_int_ref(value: i64) -> AnyValueRef {
@@ -600,11 +600,11 @@ fn park_time_gc_preserves_selective_receive_roots() {
 // ----- fz-02r.8: mid-flight back-edge GC integration -----
 
 /// A recursive function that allocates a cons cell per iteration runs to
-/// completion with the correct integer result even when allocation
-/// pressure expires the reduction budget mid-loop.
+/// completion with the correct integer result even when allocation pressure
+/// requests boundary GC before the reduction budget is exhausted.
 #[test]
-fn mid_flight_gc_fires_and_result_is_correct() {
-    // sum(n, acc, _) allocates [n] per iteration so the watermark trips.
+fn allocation_pressure_does_not_force_yield_before_budget_exhaustion() {
+    // sum(n, acc, _) allocates [n] per iteration so the pressure flag trips.
     // sum(10, 0, nil) = 55 = 10+9+...+1.
     let src = "\
 fn sum(0, acc, _), do: acc
@@ -617,14 +617,17 @@ fn main(), do: sum(10, 0, nil)";
     {
         let task = rt.tasks.get_mut(&pid).unwrap();
         task.reductions_per_quantum = 1000;
-        task.heap.allocation_watermark = null_mut();
+        task.heap.gc_threshold_bytes = 16;
     }
     rt.run_until_idle();
     let task = rt.task(pid).unwrap();
     assert_eq!(task.state, ProcessState::Exited);
     assert_eq!(task.halt_value, 55, "sum(10,0,nil) should be 55");
     assert_eq!(task.reduction_yields, 0);
-    assert!(task.allocation_pressure_yields > 0);
+    assert!(
+        task.heap.gc_run_count >= 1,
+        "allocation pressure should be collected at the natural boundary"
+    );
 }
 
 #[test]
@@ -637,7 +640,7 @@ fn main(), do: sumf(4, 0.0, nil)";
     let tel = ConfiguredTelemetry::new();
     let mut rt = Runtime::new(&compiled, 1, &tel);
     let pid = rt.spawn(entry);
-    force_allocation_pressure_yield(rt.tasks.get_mut(&pid).unwrap());
+    force_reduction_yield_with_boundary_gc(rt.tasks.get_mut(&pid).unwrap());
     rt.run_until_idle();
     let task = rt.task(pid).unwrap();
     assert_eq!(task.state, ProcessState::Exited);
@@ -655,7 +658,7 @@ fn mid_flight_gc_preserves_destination_built_tuple_arg() {
     let tel = ConfiguredTelemetry::new();
     let mut rt = Runtime::new(&compiled, 1, &tel);
     let pid = rt.spawn(entry);
-    force_allocation_pressure_yield(rt.tasks.get_mut(&pid).unwrap());
+    force_reduction_yield_with_boundary_gc(rt.tasks.get_mut(&pid).unwrap());
     rt.run_until_idle();
     let task = rt.task(pid).unwrap();
     assert_eq!(task.state, ProcessState::Exited);
@@ -677,7 +680,7 @@ fn mid_flight_gc_preserves_destination_built_list_arg() {
     let tel = ConfiguredTelemetry::new();
     let mut rt = Runtime::new(&compiled, 1, &tel);
     let pid = rt.spawn(entry);
-    force_allocation_pressure_yield(rt.tasks.get_mut(&pid).unwrap());
+    force_reduction_yield_with_boundary_gc(rt.tasks.get_mut(&pid).unwrap());
     rt.run_until_idle();
     let task = rt.task(pid).unwrap();
     assert_eq!(task.state, ProcessState::Exited);
@@ -699,7 +702,7 @@ fn mid_flight_gc_preserves_destination_built_map_arg() {
     let tel = ConfiguredTelemetry::new();
     let mut rt = Runtime::new(&compiled, 1, &tel);
     let pid = rt.spawn(entry);
-    force_allocation_pressure_yield(rt.tasks.get_mut(&pid).unwrap());
+    force_reduction_yield_with_boundary_gc(rt.tasks.get_mut(&pid).unwrap());
     rt.run_until_idle();
     let task = rt.task(pid).unwrap();
     assert_eq!(task.state, ProcessState::Exited);
@@ -722,7 +725,7 @@ fn main(), do: sum(10, 0, nil)";
     let tel = ConfiguredTelemetry::new();
     let mut rt = Runtime::new(&compiled, 1, &tel);
     let pid = rt.spawn(entry);
-    force_allocation_pressure_yield(rt.tasks.get_mut(&pid).unwrap());
+    force_reduction_yield_with_boundary_gc(rt.tasks.get_mut(&pid).unwrap());
     rt.run_until_idle();
     let task = rt.task(pid).unwrap();
     assert!(
@@ -744,8 +747,8 @@ fn main(), do: sum(8, 0, nil)";
     let mut rt = Runtime::new(&compiled, 1, &tel);
     let pa = rt.spawn(entry);
     let pb = rt.spawn(entry);
-    force_allocation_pressure_yield(rt.tasks.get_mut(&pa).unwrap());
-    force_allocation_pressure_yield(rt.tasks.get_mut(&pb).unwrap());
+    force_reduction_yield_with_boundary_gc(rt.tasks.get_mut(&pa).unwrap());
+    force_reduction_yield_with_boundary_gc(rt.tasks.get_mut(&pb).unwrap());
     rt.run_until_idle();
     // sum(8,0,nil) = 8+7+...+1 = 36
     assert_eq!(rt.task(pa).unwrap().halt_value, 36);
@@ -773,8 +776,6 @@ fn compiled_reductions_yield_allocation_light_loops() {
     assert_eq!(b.halt_value, 5000);
     assert!(a.reduction_yields > 0);
     assert!(b.reduction_yields > 0);
-    assert_eq!(a.allocation_pressure_yields, 0);
-    assert_eq!(b.allocation_pressure_yields, 0);
     assert_eq!(a.interpreter_yields, 0);
     assert_eq!(b.interpreter_yields, 0);
 }
@@ -835,7 +836,7 @@ fn main(), do: sum(10, 0, nil)";
     let tel = ConfiguredTelemetry::new();
     let mut rt = Runtime::new(&compiled, 1, &tel);
     let pid = rt.spawn(entry);
-    force_allocation_pressure_yield(rt.tasks.get_mut(&pid).unwrap());
+    force_reduction_yield_with_boundary_gc(rt.tasks.get_mut(&pid).unwrap());
     rt.run_until_idle();
     // After mid-flight GC fires, quiet_quanta is reset to 0 by the
     // scheduler, then incremented by 1 in the final (halting) quantum.

@@ -297,7 +297,6 @@ fn drive_backend_until_idle(
             (*proc_ptr).state = ProcessState::Running;
             (*proc_ptr).reset_reduction_budget();
             (*proc_ptr).ctx = &mut exec_ctx;
-            (*proc_ptr).attach_heap_owner();
         }
         runtime.current_proc = proc_ptr;
         match run_backend_resume(runtime, types, transport, tel, program, module, resume)? {

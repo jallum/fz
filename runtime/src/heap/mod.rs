@@ -8,11 +8,11 @@
 //! then freed.
 //!
 //! GC is *not* synchronous on allocation. `note_alloc_pressure` sets a flag
-//! when occupancy crosses `gc_threshold_bytes`; the scheduler reads the flag
-//! at park-time (next quantum boundary) and calls GC over process roots.
-//! All SSA values are gone (Cranelift's Tail CC popped them), so only
-//! scheduler-owned closures, mailbox roots, and interpreter-owned explicit
-//! roots are traced.
+//! when occupancy crosses `gc_threshold_bytes`; the scheduler reads the flag at
+//! the next natural boundary and calls GC over process roots. The flag never
+//! expires the reduction budget. All SSA values are gone (Cranelift's Tail CC
+//! popped them), so only scheduler-owned closures, mailbox roots, and
+//! interpreter-owned explicit roots are traced.
 //!
 //! Forwarding marker: a copied from-space object gets `(to_addr & !0xF) |
 //! TAG_FWD` written into word 0. Strict pointer tags carry the object kind.
@@ -31,7 +31,6 @@ mod stats;
 mod heap_test;
 
 use self::fragment::Fragment;
-use crate::process::Process;
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::rc::Rc;
@@ -51,7 +50,6 @@ pub use self::stats::{AllocStat, GcStats, HeapAllocKind, HeapAllocStats};
 /// stub) instead of being inlined on the per-process heap. Matches
 /// BEAM's refc-binary threshold.
 pub const SHARED_BIN_THRESHOLD_BYTES: usize = 64;
-pub const YIELD_CONTINUATION_RESERVE_BYTES: usize = 256;
 
 pub struct Heap {
     block_start: *mut u8,
@@ -61,10 +59,6 @@ pub struct Heap {
     /// Index into SIZE_TABLE (§6.3, wired in fz-siu.9). Tracked here so
     /// proactive shrinkage can read/adjust it without growing the API.
     pub size_class: u8,
-    /// Allocation pressure watermark. Crossing this pointer in `alloc()`
-    /// expires the current process's reductions budget so the next back-edge
-    /// yields through the normal scheduler path.
-    pub allocation_watermark: *mut u8,
     /// Exact live bytes after the most recent GC. Zero until the first GC.
     /// Used by proactive shrinkage to size the to-space and detect low-live
     /// quiet periods.
@@ -114,10 +108,4 @@ pub struct Heap {
     /// backed singletons. GC marks them via the `mark` bit; survivors
     /// stay put across collections, dead fragments are freed.
     fragments: Vec<Fragment>,
-    /// Back-pointer to the owning Process, set per quantum at scheduler entry
-    /// (alongside `Process.ctx`). Crossing `allocation_watermark` in `alloc()`
-    /// expires this process's reduction budget directly through it — per
-    /// process, not via an ambient thread-local, so two schedulers can be live
-    /// at once. Null outside a quantum (the cross is then a no-op).
-    pub(crate) owner: *mut Process,
 }

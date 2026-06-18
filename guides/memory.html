@@ -298,12 +298,12 @@ is a pointer bump — two comparisons and an increment on the fast path.</p>
 <pre>
   Process heap (one block, contiguous):
 
-  block_start                allocation_watermark          block_end
-      │                              │                         │
-      ▼                              ▼                         ▼
-      ┌─────────────────────────────┬─────────────────────────┐
-      │ allocated objects ← bump_top│ continuation reserve    │
-      └─────────────────────────────┴─────────────────────────┘
+  block_start                                             block_end
+      │                                                       │
+      ▼                                                       ▼
+      ┌───────────────────────────────────────────────────────┐
+      │ allocated objects ← bump_top                          │
+      └───────────────────────────────────────────────────────┘
                             ▲
                          bump_top
 </pre>
@@ -366,30 +366,35 @@ their off-heap payload. See
 </div>
 
 <!-- ─────────────────────────────── 3. PRESSURE ─────────────────────────────── -->
-<h2 id="pressure">3. Reductions, allocation pressure, and back-edge yield</h2>
+<h2 id="pressure">3. Reductions, allocation pressure, and boundary GC</h2>
 
 <p>Processes run on a reduction budget. Every compiled or interpreted loop
 back-edge spends budget. When the budget reaches zero, the process materializes
-a scheduler-owned continuation closure and yields. Allocation pressure uses the
-same mechanism: crossing the allocation watermark expires the budget and marks
-the process as needing GC at the next scheduler boundary.</p>
+a scheduler-owned continuation closure and yields. Allocation pressure is
+separate: it marks the heap as needing GC, but it does not spend reductions and
+does not force a yield.</p>
 
-<h3>allocation_watermark</h3>
+<h3>gc_threshold_bytes</h3>
 
-<p>Set to <code>block_end - YIELD_CONTINUATION_RESERVE_BYTES</code> whenever a
-new block is created. Every <code>Heap::alloc()</code> call keeps the hot path
-to a bump and one precomputed watermark compare:</p>
+<p>Every <code>Heap::alloc()</code> call keeps the hot path to a bump plus a
+pressure check. Crossing <code>gc_threshold_bytes</code> sets the heap pressure
+flag. If an allocation no longer fits in the current block, the heap allocates a
+larger block and parks the old one in <code>abandoned_blocks</code> for the
+next Cheney pass.</p>
 
 <pre>
-  if bump_top >= allocation_watermark {
-      reductions_remaining = 0
-      yield_reasons |= NEEDS_GC
+  bump_top += size
+  if bytes_used >= gc_threshold_bytes {
+      heap.should_gc = true
+  }
+  if bump_top would cross block_end {
+      grow to a larger block
+      abandoned_blocks.push(old_block)
   }
 </pre>
 
-<p>The reserved band is a soft emergency margin so the process can still build
-the scheduler continuation it must hand back. Compiled yield telemetry samples
-the margin before and after the slow path, so
+<p>Compiled yield telemetry still samples the margin before and after the
+reduction-yield slow path, so
 <code>max_yield_continuation_bytes</code> includes the continuation closure,
 scalar boxes, and materialized continuation state observed while yielding.</p>
 
@@ -492,7 +497,6 @@ passed to the next iteration, plus the current continuation.</p>
     runnable_closure:      *mut u8,       <span class="note">// tagged closure to run next; null = none</span>
     quiet_quanta:          u8,            <span class="note">// non-yielding quanta since last GC</span>
     reduction_yields:      u64,           <span class="note">// ordinary budget exhaustion</span>
-    allocation_pressure_yields: u64,      <span class="note">// allocation pressure expired budget</span>
   }
 </pre>
 
@@ -599,7 +603,7 @@ stub still on the chain.</p>
 
 <pre>
   1. if runnable_closure != null:
-       if NEEDS_GC or heap pressure:
+       if heap.should_gc:
          gc_process_roots(runnable_closure, mailbox)
          quiet_quanta = 0
        re-enqueue process
@@ -631,10 +635,10 @@ to <code>0</code> whenever a mid-flight GC runs:</p>
 
 <p>The intent: a process that allocated a lot, GC'd down to a small live
 set, and is now allocating very little shouldn't keep hogging a large
-block. The counter is the signal a future scheduler pass can use to
-proactively expire the process reduction budget and let the next back-edge
-move the process onto a smaller block through process-root GC. The counter exists and is
-maintained; the heuristic that consumes it isn't wired yet.</p>
+block. The counter is the signal a future scheduler pass can use to choose a
+natural boundary for shrinkage; it must not force an early yield just to run
+GC. The counter exists and is maintained; the heuristic that consumes it isn't
+wired yet.</p>
 
 <!-- ─────────────────────────────── 8. MESSAGES ─────────────────────────────── -->
 <h2 id="messages">8. Message passing — copy, self-send, share</h2>

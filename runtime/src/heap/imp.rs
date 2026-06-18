@@ -8,8 +8,8 @@ use super::gc::{
 };
 use super::key_cmp::{map_key_cmp_any, map_key_cmp_refs, same_any_value, same_value_ref};
 use super::ref_io::{
-    allocation_watermark_for, any_value_ref_from_storage, list_tail_bits_from_ref, map_entry_refs,
-    reject_scalar_ref_write, write_any_value_to_storage, write_ref_to_storage,
+    any_value_ref_from_storage, list_tail_bits_from_ref, map_entry_refs, reject_scalar_ref_write,
+    write_any_value_to_storage, write_ref_to_storage,
 };
 use super::schema::{Schema, SchemaRegistry};
 use super::stats::GcStats;
@@ -24,7 +24,6 @@ use crate::any_value::{
     struct_field_raw_slot, struct_schema_id, struct_size_for_payload,
 };
 use crate::procbin::{SharedBinHandle, alloc_procbin, mso_drop_all, mso_sweep};
-use crate::process::{Process, YIELD_REASON_ALLOCATION_PRESSURE};
 use std::alloc::{Layout, alloc_zeroed, dealloc};
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -83,7 +82,6 @@ impl Heap {
             block_end,
             block_size,
             size_class,
-            allocation_watermark: allocation_watermark_for(block_start, block_size),
             last_gc_live_bytes: 0,
             last_gc_stats: GcStats::default(),
             abandoned_blocks: Vec::new(),
@@ -98,22 +96,7 @@ impl Heap {
             mso_head: 0,
             pending_dtors: VecDeque::new(),
             fragments: Vec::new(),
-            owner: null_mut(),
         }
-    }
-
-    /// Install the owning process for allocation-pressure budget expiry.
-    /// Called per quantum at scheduler entry (alongside `Process.ctx`).
-    pub fn set_owner(&mut self, owner: *mut Process) {
-        self.owner = owner;
-    }
-
-    pub fn clear_owner(&mut self) {
-        self.owner = null_mut();
-    }
-
-    pub fn has_owner(&self) -> bool {
-        !self.owner.is_null()
     }
 
     pub fn should_gc(&self) -> bool {
@@ -179,22 +162,11 @@ impl Heap {
             self.block_end = unsafe { new_block.add(new_size) };
             self.block_size = new_size;
             self.size_class = new_class;
-            self.allocation_watermark = allocation_watermark_for(new_block, new_size);
         }
         let p = self.bump_top;
         self.bump_top = unsafe { self.bump_top.add(size) };
         self.alloc_count += 1;
         self.note_alloc_pressure();
-        if self.bump_top >= self.allocation_watermark && !self.owner.is_null() {
-            // Expire the owning process's reduction budget so the next back-edge
-            // yields through the normal scheduler path. Reached via the per-quantum
-            // owner back-pointer — no ambient current-process. Routes through
-            // `expire_budget` (not a hand-rolled zero) so the reductions burned
-            // before the watermark cross are banked into `reductions_executed`
-            // exactly once; `finish_yield_report` depends on this invariant.
-            let owner = unsafe { &mut *self.owner };
-            owner.expire_budget(YIELD_REASON_ALLOCATION_PRESSURE);
-        }
         p
     }
 
@@ -1009,18 +981,17 @@ impl Heap {
         // collection, a copy GC here costs a scheduler yield, so frequent
         // collection is expensive and oscillation is worth avoiding:
         //
-        //   GROW   — this GC fired under allocation pressure (the from-space
-        //            reached the watermark, or we abandoned a block and grew
-        //            mid-quantum). The heap can't hold the allocation rate;
+        //   GROW   — this GC fired after the heap crossed its pressure
+        //            threshold, or after allocation abandoned a block and grew
+        //            mid-quantum. The heap can't hold the allocation rate;
         //            refitting to 2x *live* would just thrash. Size to hold
         //            this cycle's realized footprint (live + garbage since the
         //            last GC), doubled for headroom, jumping as many classes
-        //            as needed and never less than one class up. Self-bounding:
-        //            once a quantum of allocation fits below the watermark, GCs
-        //            go back to reduction-driven and the pressure clears.
+        //            as needed and never less than one class up.
         //   SHRINK — live has fallen to <=25% of the heap; refit to ~50%.
         //   KEEP   — live sits in the 25%–75% dead zone; hold the current size.
-        let was_pressured = !self.abandoned_blocks.is_empty() || self.bump_top >= self.allocation_watermark;
+        let occupied_before_gc = self.bytes_used().saturating_sub(fragment_bytes);
+        let was_pressured = !self.abandoned_blocks.is_empty() || occupied_before_gc >= self.gc_threshold_bytes;
         let target_bytes = if was_pressured {
             let footprint = self.bytes_used().saturating_sub(fragment_bytes);
             fit_to_live.max(footprint.saturating_mul(2))
@@ -1285,7 +1256,6 @@ impl Heap {
         self.alloc_count = live_count;
         self.gc_run_count += 1;
         self.gc_threshold_bytes = to_size / 2;
-        self.allocation_watermark = allocation_watermark_for(to_start, to_size);
         self.last_gc_live_bytes = unsafe { free.offset_from(to_start) } as usize;
         stats.fragment_survivors = live_count.saturating_sub(copied_objects.len() as u64);
         stats.fragment_live_bytes = fragment_live_bytes as u64;

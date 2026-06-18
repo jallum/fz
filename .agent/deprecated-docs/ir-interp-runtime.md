@@ -126,7 +126,7 @@ points every dispatched process's `ctx` at it, then loops:
 while run_queue has a pid:
   load pid's CodeImage (module + module_plan)
   take pid's resume entry (fn_id, args, spec, after)
-  set current_proc; mark Running; reset the reduction budget; set heap owner
+  set current_proc; mark Running; reset the reduction budget
   step = run_fn_typed(...)
   loop on step:
     Done(val) | Halt(val):
