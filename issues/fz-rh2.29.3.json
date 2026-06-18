@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-rh2.29.2"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-rh2.29.4"
+  ],
   "created": "2026-06-18T10:41:02Z",
   "description": "Flip the barrier's demand source from the monolith to the facts, and delete the monolith. Safe because T2's shadow assert already proved all six ExecutableRuntimeDemand fields — including callable_flows, from which latent executables are derived — byte-identical corpus-wide.\n\n## Change\n1. Seal gathers `closure.runtime_demands` from the settled `RuntimeDemand(E)` facts (drop the shadow assert and the settle_runtime_demands call).\n2. Seal sources latent executables from the gathered `RuntimeDemand(E).callable_flows` (the same demanded_callable_executables rule, now over facts) for its frontier re-entry. Discovery orchestration stays in the seal (deferred to a later epic); only the demand dataflow has moved.\n\n## Why\nThis is the actual win: the seal stops re-running a whole-closure dataflow on every wake; per-executable jobs re-derive only on neighbor ascent. The barrier stays byte-identical, so transport/materialize/abi/... are untouched.\n\n## Rip out (verified single-caller, all in jobs/runtime_demand.rs)\n- `settle_runtime_demands` (the two nested loops)\n- `base_return_demand` (re-expressed as contributions in T2)\n- `propagate_call_return_demands` (now the per-E ReturnDemand contribution)\n- `apply_callable_boundary_return_demands` (now the per-E boundary-return contribution)\n- the shadow `assert_eq!` and any shadow-only plumbing\nThe three transfer functions (derive_executable_runtime_demand, collect_executable_facts, derive_callable_flow_facts) STAY — now called only by DeriveRuntimeDemand(E).\n\n## Check\n`cargo test --lib` + `tests/fixture_matrix.rs` green (barrier unchanged → goldens unchanged). Seal-run telemetry on enum_take_drop_split drops from ~538 to single digits; no whole-closure clone per wake. Update the relevant .agent/docs and northstar/seal narrative to describe demand as per-executable facts. Zero warnings; no scaffolding left behind.",
   "id": "fz-rh2.29.3",
@@ -13,5 +15,5 @@
   "status": "open",
   "title": "Runtime demand: cut the seal over to the facts and strangle the monolith",
   "type": "task",
-  "updated_at": "2026-06-18T10:41:08Z"
+  "updated_at": "2026-06-18T10:41:09Z"
 }
