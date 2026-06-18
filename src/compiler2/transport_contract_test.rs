@@ -1880,6 +1880,41 @@ end
         !facts.boundary_ids.is_empty(),
         "the escaped callable should still publish a first-class boundary"
     );
+    for boundary in facts.boundary_ids.iter().copied() {
+        let boundary_descr = world.transport().interners().boundary(boundary);
+        let boundary_facts = plan
+            .boundaries
+            .get(&boundary)
+            .unwrap_or_else(|| panic!("boundary facts should exist for {boundary:?}"));
+        let target_demands = boundary_facts
+            .resolutions
+            .iter()
+            .map(|resolution| {
+                let demand = world
+                    .semantic_closure(root)
+                    .runtime_demands
+                    .iter()
+                    .find(|(executable, _)| {
+                        executable.need == resolution.need
+                            && executable.activation.function == resolution.activation.function
+                            && executable.activation.input.as_slice() == resolution.activation.input.as_ref()
+                    })
+                    .map(|(_, demand)| demand.return_demand.clone());
+                (resolution.clone(), demand)
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            !matches!(
+                shape_descr(&world, boundary_descr.published_return_shape),
+                ShapeDescr::Nothing
+            ),
+            "an escaped callable boundary should publish the target return shape, got {:?}",
+            (
+                shape_descr(&world, boundary_descr.published_return_shape),
+                target_demands
+            )
+        );
+    }
 }
 
 #[test]
@@ -2464,6 +2499,19 @@ fn compiler2_transport_plan_publishes_joined_callable_value_position_before_nati
         published_boundaries.len(),
         1,
         "the joined callable value position should publish exactly one boundary discriminator: {:?}",
+        plan.boundaries
+    );
+    let published_resolutions = plan
+        .boundaries
+        .get(&published_boundaries[0])
+        .expect("published boundary facts should be present")
+        .resolutions
+        .iter()
+        .map(|resolution| resolution.activation.function)
+        .collect::<HashSet<_>>();
+    assert!(
+        published_resolutions.contains(&add_a) && published_resolutions.contains(&add_b),
+        "the joined callable publication boundary should carry the concrete callable resolutions needed by backend/native: {:?}",
         plan.boundaries
     );
     assert!(

@@ -774,6 +774,61 @@ end
 }
 
 #[test]
+fn compiler2_runtime_demand_delivers_boundary_return_demand_to_escaped_callable_target() {
+    let tel = crate::telemetry::ConfiguredTelemetry::new();
+    let runtime_demands = RuntimeDemandCapture::new();
+    tel.attach(
+        &["fz", "compiler2", "runtime_demand", "defined"],
+        runtime_demands.handler(),
+    );
+    let jobs = JobStartCapture::new();
+    tel.attach(&["fz", "compiler2", "job"], jobs.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("escaped_callable_boundary_return.fz".to_string()),
+        text: r#"
+fn make_adder(a), do: fn (x) -> x + a end
+fn main() do
+  f = make_adder(10)
+  f.(1)
+  f
+end
+"#
+        .to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    assert_resolved_under_job_budget(
+        compiler.drive(),
+        &jobs,
+        1_000,
+        "escaped callable boundary-return fixture should settle",
+    );
+
+    let record = runtime_demands.last(root_id);
+    let target = record
+        .runtime_demands
+        .values()
+        .flat_map(|demand| demand.callable_flows.values())
+        .flat_map(|flow| flow.first_class_edges.iter())
+        .map(|edge| edge.resolution.clone())
+        .next()
+        .expect("escaped callable should publish a first-class executable target");
+    let target_demand = record.runtime_demands.get(&target).unwrap_or_else(|| {
+        panic!("first-class callable target should be part of the sealed runtime frontier: {target:?}")
+    });
+    assert!(
+        !target_demand.return_demand.is_ignore(),
+        "callable boundary return demand should reach the escaped callable target before transport: {target:?} -> {target_demand:?}",
+    );
+}
+
+#[test]
 fn compiler2_runtime_demand_marks_an_escaped_callable_first_class() {
     let tel = crate::telemetry::ConfiguredTelemetry::new();
     let functions = FunctionCapture::new();
@@ -1126,6 +1181,17 @@ fn main(), do: make_pairer()
             (function_ref.name.starts_with("#lambda:") && function_ref.arity == 1).then_some(&demand.return_demand)
         })
         .collect::<Vec<_>>();
+    let lambda_return_predicates = closure
+        .runtime_demands
+        .keys()
+        .filter_map(|executable| {
+            let function_ref = world.function_ref(executable.activation.function);
+            (function_ref.name.starts_with("#lambda:") && function_ref.arity == 1)
+                .then(|| world.activation_return(&executable.activation))
+                .flatten()
+        })
+        .map(|ty| world.types().runtime_type_predicate(&ty))
+        .collect::<Vec<_>>();
     assert!(
         tuple_return_demands.iter().any(|demand| {
             demand.callable.is_empty()
@@ -1139,7 +1205,8 @@ fn main(), do: make_pairer()
                             && matches!(&fields[1].shape, ShapeDemand::Whole)
                 )
         }),
-        "escaped callable boundary return demand should preserve recursive tuple fields upstream: {tuple_return_demands:?}"
+        "escaped callable boundary return demand should preserve recursive tuple fields upstream: {:?}",
+        (tuple_return_demands, lambda_return_predicates)
     );
 }
 

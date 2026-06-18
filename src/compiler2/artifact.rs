@@ -73,7 +73,34 @@ pub struct MaterializedTransportPlan {
     pub position_shapes: Vec<(TransportPosition, ShapeId)>,
     pub callable_ids: Vec<CallableId>,
     pub boundary_ids: Vec<BoundaryId>,
+    pub publication_boundaries: Vec<(TransportPosition, BoundaryId)>,
     pub codegen_seam_facts: Box<[CodegenSeamFact]>,
+}
+
+impl MaterializedTransportPlan {
+    pub fn shape_at(&self, position: &TransportPosition) -> Option<ShapeId> {
+        self.position_shapes
+            .iter()
+            .find_map(|(candidate, shape)| (candidate == position).then_some(*shape))
+    }
+
+    pub fn executable_value_shape(
+        &self,
+        executable: &MaterializedExecutableTransport,
+        value: ValueId,
+    ) -> Option<ShapeId> {
+        let mut positions = executable.value_positions.iter().filter(
+            |position| matches!(position, TransportPosition::Value { value: candidate, .. } if *candidate == value),
+        );
+        let position = positions.next()?;
+        assert!(
+            positions.next().is_none(),
+            "transport should publish one local value position for {:?} in {:?}",
+            value,
+            executable.executable
+        );
+        self.shape_at(position)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -608,6 +635,9 @@ pub enum BackendTail {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum BackendStep {
+    Omitted {
+        value: ValueId,
+    },
     Const {
         value: ValueId,
         literal: Literal,

@@ -244,12 +244,23 @@ fn materialized_transport_plan(plan: &TransportPlan) -> MaterializedTransportPla
     callable_ids.sort_by_key(|callable| callable.as_u32());
     let mut boundary_ids = plan.boundaries.keys().copied().collect::<Vec<_>>();
     boundary_ids.sort_by_key(|boundary| boundary.as_u32());
+    let mut publication_boundaries = plan
+        .boundaries
+        .iter()
+        .flat_map(|(boundary, facts)| facts.publications.iter().cloned().map(|position| (position, *boundary)))
+        .collect::<Vec<_>>();
+    publication_boundaries.sort_by(|left, right| {
+        transport_position_sort_key(&left.0)
+            .cmp(&transport_position_sort_key(&right.0))
+            .then_with(|| left.1.as_u32().cmp(&right.1.as_u32()))
+    });
     MaterializedTransportPlan {
         entry: plan.entry.clone(),
         executable_membership: plan.executable_membership.clone(),
         position_shapes,
         callable_ids,
         boundary_ids,
+        publication_boundaries,
         codegen_seam_facts: plan.codegen_seam_facts.clone(),
     }
 }

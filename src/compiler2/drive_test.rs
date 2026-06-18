@@ -2,7 +2,9 @@ use super::{AppliedStep, CodeSubmission, Compiler2, DriveOutcome, ExecutableNeed
 use crate::compiler2::artifact::{BackendEntry, BackendTail, CallReturnFlow, MaterializedTransportPlan};
 use crate::compiler2::artifact::{NativeBodyOrigin, NativeCallableBoundaryId, NativeEntryAbi, NativeProgram};
 use crate::compiler2::drive::JobEffects;
-use crate::compiler2::transport::{CodegenLaneRepr, CodegenSeam, ExecutableSymbol, ShapeId, TransportPosition};
+use crate::compiler2::transport::{
+    CodegenLaneRepr, CodegenSeam, ExecutableSymbol, ShapeDescr, ShapeId, TransportPosition,
+};
 use crate::compiler2::{
     AbiReadyProgram, AbiValueRepr, ActivationKey, BackendEntryOrigin, BackendProgram, BackendStep, CallSiteId,
     CallSiteKey, CallSiteSummary, CallTarget, CallableEntry, ControlEntryOrigin, EmissionReadyProgram, ExecutableKey,
@@ -85,9 +87,7 @@ fn output_facts(effects: &JobEffects) -> OutputFacts {
 }
 
 fn handoff_shape_at(plan: &MaterializedTransportPlan, position: &TransportPosition) -> ShapeId {
-    plan.position_shapes
-        .iter()
-        .find_map(|(candidate, shape)| (candidate == position).then_some(*shape))
+    plan.shape_at(position)
         .unwrap_or_else(|| panic!("transport handoff should include shape for {position:?}"))
 }
 
@@ -4029,6 +4029,130 @@ fn compiler2_backend_program_keeps_direct_only_enum_reduce_out_of_callable_inven
     assert!(
         executable_functions.is_superset(&HashSet::from([user_reducer_id, bridge_reducer_id])),
         "the user reducer and bridge reducer should still survive in the backend executable inventory",
+    );
+}
+
+#[test]
+fn compiler2_backend_program_routes_call_deliveries_to_delivered_resume_entries() {
+    let tel = ConfiguredTelemetry::new();
+    let backend = BackendProgramCapture::new();
+    tel.attach(&["fz", "compiler2", "backend_program", "defined"], backend.handler());
+    let emission_ready = EmissionReadyProgramCapture::new();
+    tel.attach(
+        &["fz", "compiler2", "emission_ready_program", "defined"],
+        emission_ready.handler(),
+    );
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/enum_reduce_runtime_graph.fz".to_string()),
+        text: include_str!("../../fixtures2/00010_enum_reduce_main.fz").to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    compiler.demand(Job::LowerBackendProgram(root_id));
+    assert_resolved(
+        compiler.drive(),
+        "backend lowering should settle before call-delivery invariant inspection",
+    );
+
+    let emission_ready = emission_ready.last(root_id).program;
+    let program = backend.last(root_id).program;
+    assert_call_deliveries_target_resume_entries(&program, &emission_ready);
+}
+
+#[test]
+fn compiler2_native_program_does_not_fabricate_nil_for_zero_width_resume_payloads() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&[], capture.handler());
+    let native = NativeProgramCapture::new();
+    tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/enum_reduce_runtime_graph.fz".to_string()),
+        text: include_str!("../../fixtures2/00010_enum_reduce_main.fz").to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    let outcome = compiler.drive();
+    if !matches!(outcome, DriveOutcome::Resolved) {
+        let message = capture
+            .last(&["fz", "diag", "error"])
+            .map(|event| metadata_str(&event, "message").to_string())
+            .unwrap_or_else(|| "<missing diagnostic>".to_string());
+        panic!(
+            "native lowering should settle before inspecting zero-width resume payloads: {outcome:?}; diagnostic={message}"
+        );
+    }
+
+    let program = native.last(root_id).program;
+    let zero_width_continuations = program
+        .bodies
+        .iter()
+        .filter(|body| body.entry_abi == NativeEntryAbi::Continuation { extra_params: 0 })
+        .collect::<Vec<_>>();
+    assert!(
+        !zero_width_continuations.is_empty(),
+        "enum_reduce should expose at least one structurally retained zero-width continuation"
+    );
+    let fabricated_nil_continuations = zero_width_continuations
+        .iter()
+        .filter(|body| native_function_contains_nil_const(&program, body.fn_id))
+        .collect::<Vec<_>>();
+    assert!(
+        fabricated_nil_continuations.is_empty(),
+        "zero-width resume payloads are absent by construction; native must not fabricate nil values for them: {:?}",
+        fabricated_nil_continuations
+            .iter()
+            .map(|body| (&body.origin, program.module.fn_by_id(body.fn_id)))
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn compiler2_backend_program_omits_fact_proven_absent_tuple_builds() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&[], capture.handler());
+
+    let mut world = World::new(&tel);
+    world.submit_code(
+        Some("fixtures2/00278_enum_count_predicate.fz".to_string()),
+        include_str!("../../fixtures2/00278_enum_count_predicate.fz").to_string(),
+    );
+    let root_id = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+
+    world.demand(Job::LowerBackendProgram(root_id));
+    let outcome = world.drive();
+    if !matches!(outcome, DriveOutcome::Resolved) {
+        let message = capture
+            .last(&["fz", "diag", "error"])
+            .map(|event| metadata_str(&event, "message").to_string())
+            .unwrap_or_else(|| "<missing diagnostic>".to_string());
+        panic!(
+            "Enum.count predicate source should settle through native lowering before tuple omission inspection: {outcome:?}; diagnostic={message}"
+        );
+    }
+
+    let program = world.backend_program(root_id);
+    let emission_ready = world.emission_ready_program(root_id);
+    let unbound_tuple_builds =
+        assert_omitted_steps_are_fact_proven_absent_tuple_builds(&world, &program, &emission_ready);
+    assert!(
+        !unbound_tuple_builds.is_empty(),
+        "fixture should aggravate tuple omission with a real source program and backend should make absence explicit"
     );
 }
 
@@ -10922,10 +11046,309 @@ fn backend_direct_call_in_entry<'a>(
     }
 }
 
+fn assert_call_deliveries_target_resume_entries(program: &BackendProgram, emission_ready: &EmissionReadyProgram) {
+    let mut structurally_retained_halt_resume_targets = Vec::new();
+    for executable in &program.executables {
+        let crate::compiler2::BackendBody::Clauses { entries, .. } = &executable.body else {
+            continue;
+        };
+        let emission_executable = emission_ready
+            .executables
+            .iter()
+            .find(|candidate| candidate.key == executable.key);
+        for (entry_index, entry) in entries.iter().enumerate() {
+            let (callsite, dest) = match &entry.tail {
+                BackendTail::DirectCall { callsite, dest, .. } | BackendTail::ClosureCall { callsite, dest, .. } => {
+                    (*callsite, dest)
+                }
+                _ => continue,
+            };
+            let crate::compiler2::ControlDestination::Deliver(target) = dest else {
+                continue;
+            };
+            let target_entry = &entries[target.as_u32() as usize];
+            let emission_target = emission_executable.map(|emission_executable| {
+                let target_index = target.as_u32() as usize;
+                let original = emission_executable.original_entry_ids.get(target_index).copied();
+                let body_entry = match &emission_executable.body {
+                    crate::compiler2::LoweredBody::Clauses { entries, .. } => entries.get(target_index),
+                    crate::compiler2::LoweredBody::Extern { .. } => None,
+                };
+                (original, body_entry)
+            });
+            assert!(
+                matches!(target_entry.origin, BackendEntryOrigin::DeliveredResume { .. }),
+                "backend call continuation should target a delivered-resume entry: executable={:?} entry={} callsite={:?} target={} target_origin={:?} params={} captures={} target_tail={:?} emission_target={:?}",
+                executable.key,
+                entry_index,
+                callsite,
+                target.as_u32(),
+                target_entry.origin,
+                target_entry.params.len(),
+                target_entry.captures.len(),
+                target_entry.tail,
+                emission_target,
+            );
+            if matches!(target_entry.origin, BackendEntryOrigin::DeliveredResume { .. })
+                && matches!(target_entry.tail, BackendTail::Halt { .. })
+            {
+                structurally_retained_halt_resume_targets.push((executable.key.clone(), entry_index, target));
+            }
+        }
+    }
+    assert!(
+        !structurally_retained_halt_resume_targets.is_empty(),
+        "fixture should prove the exact regression: a call target whose body was specialized to Halt must still keep DeliveredResume origin"
+    );
+}
+
+fn native_function_contains_nil_const(program: &NativeProgram, fn_id: FnId) -> bool {
+    program.module.fn_by_id(fn_id).blocks.iter().any(|block| {
+        block
+            .stmts
+            .iter()
+            .any(|stmt| matches!(stmt, IrStmt::Let(_, IrPrim::Const(crate::fz_ir::Const::Nil))))
+    })
+}
+
+fn assert_omitted_steps_are_fact_proven_absent_tuple_builds(
+    world: &World<'_>,
+    program: &BackendProgram,
+    emission_ready: &EmissionReadyProgram,
+) -> Vec<String> {
+    let mut out = Vec::new();
+    for executable in &program.executables {
+        let crate::compiler2::BackendBody::Clauses { entries, .. } = &executable.body else {
+            continue;
+        };
+        let emission_executable = emission_ready
+            .executables
+            .iter()
+            .find(|candidate| candidate.key == executable.key)
+            .unwrap_or_else(|| {
+                panic!(
+                    "backend executable should have emission-ready source: {:?}",
+                    executable.key
+                )
+            });
+        let LoweredBody::Clauses {
+            entries: lowered_entries,
+            ..
+        } = &emission_executable.body
+        else {
+            continue;
+        };
+        for (entry_index, entry) in entries.iter().enumerate() {
+            for step in &entry.steps {
+                if let BackendStep::Omitted { value } = step {
+                    let lowered_entry = lowered_entries.get(entry_index).unwrap_or_else(|| {
+                        panic!(
+                            "backend omitted step should map to an emission-ready entry: executable={:?} entry={}",
+                            executable.key, entry_index
+                        )
+                    });
+                    assert!(
+                        lowered_entry
+                            .steps
+                            .iter()
+                            .any(|step| matches!(step, LoweredStep::Tuple { value: tuple, .. } if tuple == value)),
+                        "backend should only omit lowered tuple builds: executable={:?} entry={} value={:?} lowered_steps={:?}",
+                        executable.key,
+                        entry_index,
+                        value,
+                        lowered_entry.steps
+                    );
+                    assert!(
+                        emission_ready_value_is_settled_transport_absent(
+                            world,
+                            &emission_ready.transport,
+                            emission_executable,
+                            *value
+                        ),
+                        "backend omitted tuple should be proven absent by emission-ready facts: executable={:?} entry={} value={:?} demand={:?} shape={:?}",
+                        executable.key,
+                        entry_index,
+                        value,
+                        emission_executable.runtime_demand.value_demands.get(value),
+                        emission_ready
+                            .transport
+                            .executable_value_shape(&emission_executable.transport, *value)
+                    );
+                    let consumers = backend_runtime_consumers_of_value(world, program, executable, entries, *value);
+                    assert!(
+                        consumers.is_empty(),
+                        "backend omitted tuple must not be consumed as a runtime value: executable={:?} entry={} value={:?} consumers={:?}",
+                        executable.key,
+                        entry_index,
+                        value,
+                        consumers
+                    );
+                    out.push(format!(
+                        "executable={:?} entry={} omitted_value={:?}",
+                        executable.key, entry_index, value
+                    ));
+                }
+            }
+        }
+    }
+    out
+}
+
+fn backend_runtime_consumers_of_value(
+    world: &World<'_>,
+    program: &BackendProgram,
+    executable: &crate::compiler2::BackendExecutable,
+    entries: &[BackendEntry],
+    value: ValueId,
+) -> Vec<String> {
+    let mut consumers = Vec::new();
+    for (entry_index, entry) in entries.iter().enumerate() {
+        for (step_index, step) in entry.steps.iter().enumerate() {
+            if backend_step_runtime_inputs(step).contains(&value) {
+                consumers.push(format!("entry={entry_index} step={step_index} {step:?}"));
+            }
+        }
+        if backend_tail_runtime_inputs(world, program, executable, entries, &entry.tail).contains(&value) {
+            consumers.push(format!("entry={entry_index} tail={:?}", entry.tail));
+        }
+        for capture in &entry.reusable_cons_captures {
+            if capture.head == value || capture.source == value {
+                consumers.push(format!("entry={entry_index} reusable_cons_capture={capture:?}"));
+            }
+        }
+        for capture in &entry.captures {
+            if *capture == value {
+                consumers.push(format!("entry={entry_index} capture={capture:?}"));
+            }
+        }
+    }
+    consumers
+}
+
+fn backend_step_runtime_inputs(step: &BackendStep) -> Vec<ValueId> {
+    match step {
+        BackendStep::Omitted { .. } | BackendStep::Const { .. } | BackendStep::FunctionRef { .. } => Vec::new(),
+        BackendStep::Tuple { items, .. } | BackendStep::List { items, tail: None, .. } => items.clone(),
+        BackendStep::List {
+            items,
+            tail: Some(tail),
+            ..
+        } => items.iter().copied().chain([*tail]).collect(),
+        BackendStep::Map { entries, .. } => entries.iter().flat_map(|(key, value)| [*key, *value]).collect(),
+        BackendStep::MapUpdate { base, entries, .. } => std::iter::once(*base)
+            .chain(entries.iter().flat_map(|(key, value)| [*key, *value]))
+            .collect(),
+        BackendStep::Struct { fields, .. } => fields.iter().map(|(_, value)| *value).collect(),
+        BackendStep::Bitstring { fields, .. } => fields
+            .iter()
+            .flat_map(|field| {
+                std::iter::once(field.value).chain(field.spec.size.iter().filter_map(|size| match size {
+                    crate::compiler2::LoweredBitSize::Literal(_) => None,
+                    crate::compiler2::LoweredBitSize::Value(value) => Some(*value),
+                }))
+            })
+            .collect(),
+        BackendStep::Lambda { captures, .. } => captures.clone(),
+        BackendStep::BinaryOp { left, right, .. } => vec![*left, *right],
+        BackendStep::UnaryOp { input, .. } => vec![*input],
+        BackendStep::MapIndex { base, key, .. } => vec![*base, *key],
+        BackendStep::FieldAccess { base, .. } => vec![*base],
+        BackendStep::AssertLiteral { source, .. }
+        | BackendStep::AssertStruct { source, .. }
+        | BackendStep::RequireMapValue { source, .. }
+        | BackendStep::AssertTuple { source, .. }
+        | BackendStep::TupleField { source, .. }
+        | BackendStep::AssertEmptyList { source }
+        | BackendStep::SplitList { source, .. }
+        | BackendStep::BitstringInit { source, .. } => vec![*source],
+        BackendStep::AssertSame { source, value } => vec![*source, *value],
+        BackendStep::BitstringRead { reader, spec, .. } => std::iter::once(*reader)
+            .chain(spec.size.iter().filter_map(|size| match size {
+                crate::compiler2::LoweredBitSize::Literal(_) => None,
+                crate::compiler2::LoweredBitSize::Value(value) => Some(*value),
+            }))
+            .collect(),
+        BackendStep::AssertBitstringDone { reader } => vec![*reader],
+    }
+}
+
+fn backend_tail_runtime_inputs(
+    world: &World<'_>,
+    program: &BackendProgram,
+    executable: &crate::compiler2::BackendExecutable,
+    entries: &[BackendEntry],
+    tail: &BackendTail,
+) -> Vec<ValueId> {
+    match tail {
+        BackendTail::Value { value, dest } => {
+            if value_destination_is_runtime_absent(world, program, executable, entries, dest) {
+                Vec::new()
+            } else {
+                vec![*value]
+            }
+        }
+        BackendTail::DirectCall { args, .. } => args.iter().map(|arg| arg.value).collect(),
+        BackendTail::ClosureCall { callee, args, .. } => std::iter::once(*callee)
+            .chain(args.iter().map(|arg| arg.value))
+            .collect(),
+        BackendTail::If { cond, .. } => vec![*cond],
+        BackendTail::Dispatch { inputs, bindings, .. } => inputs
+            .iter()
+            .chain(bindings.pinned.iter())
+            .chain(bindings.prepared.iter())
+            .copied()
+            .collect(),
+        BackendTail::Receive(receive) => receive
+            .bindings
+            .pinned
+            .iter()
+            .chain(receive.bindings.prepared.iter())
+            .chain(receive.after.iter().map(|after| &after.timeout))
+            .copied()
+            .collect(),
+        BackendTail::Halt { .. } => Vec::new(),
+    }
+}
+
+fn value_destination_is_runtime_absent(
+    world: &World<'_>,
+    program: &BackendProgram,
+    executable: &crate::compiler2::BackendExecutable,
+    entries: &[BackendEntry],
+    dest: &crate::compiler2::ControlDestination,
+) -> bool {
+    let position = match dest {
+        crate::compiler2::ControlDestination::Return => &executable.transport.return_position,
+        crate::compiler2::ControlDestination::Deliver(entry) => {
+            let BackendEntryOrigin::DeliveredResume { position, .. } = &entries[entry.as_u32() as usize].origin else {
+                return false;
+            };
+            position
+        }
+    };
+    matches!(
+        world.transport().interners().shape(
+            program
+                .transport
+                .shape_at(position)
+                .expect("backend destination should have a settled transport shape")
+        ),
+        ShapeDescr::Nothing
+    )
+}
+
+fn emission_ready_value_is_settled_transport_absent(
+    world: &World<'_>,
+    plan: &MaterializedTransportPlan,
+    executable: &crate::compiler2::EmissionReadyExecutable,
+    value: ValueId,
+) -> bool {
+    plan.executable_value_shape(&executable.transport, value)
+        .is_some_and(|shape| matches!(world.transport().interners().shape(shape), ShapeDescr::Nothing))
+}
+
 fn transport_position_shape(plan: &MaterializedTransportPlan, position: &TransportPosition) -> ShapeId {
-    plan.position_shapes
-        .iter()
-        .find_map(|(candidate, shape)| (candidate == position).then_some(*shape))
+    plan.shape_at(position)
         .unwrap_or_else(|| panic!("transport position should have a materialized shape: {position:?}"))
 }
 

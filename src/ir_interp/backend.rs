@@ -965,6 +965,9 @@ fn eval_steps(
 ) -> Result<(), String> {
     for step in steps {
         match step {
+            ProgramStep::Omitted { value } => {
+                env.insert(*value, BackendBoundValue::Absent);
+            }
             ProgramStep::Const { value, literal } => {
                 env.insert(*value, BackendBoundValue::Runtime(literal_value(runtime, literal)?));
             }

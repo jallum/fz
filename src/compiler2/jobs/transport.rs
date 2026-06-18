@@ -83,6 +83,8 @@ enum SourceShape {
 struct TransportFactsBuilder {
     callables: HashMap<CallableId, CallableFactsDraft>,
     boundaries: HashMap<BoundaryId, BoundaryFactsDraft>,
+    publication_source_shapes: HashMap<TransportPosition, Vec<ShapeId>>,
+    publication_source_positions: HashMap<TransportPosition, Vec<TransportPosition>>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -258,6 +260,16 @@ impl TransportFactsBuilder {
         extend_unique(&mut entry.resolutions, resolutions);
     }
 
+    fn record_publication_source_shapes(&mut self, publication: TransportPosition, shapes: Vec<ShapeId>) {
+        let entry = self.publication_source_shapes.entry(publication).or_default();
+        extend_unique(entry, shapes);
+    }
+
+    fn record_publication_source_positions(&mut self, publication: TransportPosition, sources: Vec<TransportPosition>) {
+        let entry = self.publication_source_positions.entry(publication).or_default();
+        extend_unique(entry, sources);
+    }
+
     fn expand_boundary_publications(&mut self, equivalents: &HashMap<TransportPosition, Vec<TransportPosition>>) {
         for draft in self.boundaries.values_mut() {
             let publications = draft.publications.clone();
@@ -270,6 +282,50 @@ impl TransportFactsBuilder {
                     }
                 }
             }
+        }
+    }
+
+    fn resolve_publication_source_boundaries(&mut self, world: &World<'_>) {
+        let boundary_ids = self.boundaries.keys().copied().collect::<Vec<_>>();
+        let mut derived = Vec::new();
+        for boundary in boundary_ids {
+            let Some(draft) = self.boundaries.get(&boundary) else {
+                continue;
+            };
+            let boundary_descr = world.transport().interners().boundary(boundary);
+            let mut resolutions = Vec::new();
+            for publication in &draft.publications {
+                if let Some(source_shapes) = self.publication_source_shapes.get(publication) {
+                    extend_unique(
+                        &mut resolutions,
+                        resolution_symbols_for_callable_source_surface(
+                            world,
+                            self,
+                            source_shapes,
+                            &boundary_descr.surface_arg_shapes,
+                            boundary_descr.published_return_shape,
+                        ),
+                    );
+                }
+                if let Some(source_positions) = self.publication_source_positions.get(publication) {
+                    extend_unique(
+                        &mut resolutions,
+                        resolution_symbols_for_source_publications(
+                            world,
+                            self,
+                            source_positions,
+                            &boundary_descr.surface_arg_shapes,
+                            boundary_descr.published_return_shape,
+                        ),
+                    );
+                }
+            }
+            if !resolutions.is_empty() {
+                derived.push((boundary, resolutions));
+            }
+        }
+        for (boundary, resolutions) in derived {
+            self.record_boundary_resolutions(boundary, resolutions);
         }
     }
 
@@ -664,6 +720,7 @@ fn project_transport_plan(
     let equivalents = shape_graph.equivalent_positions();
     let positions = shape_graph.solve();
     facts.expand_boundary_publications(&equivalents);
+    facts.resolve_publication_source_boundaries(world);
 
     let (callables, boundaries) = facts.finish();
     let codegen_seam_facts = derive_codegen_seam_facts(world, contexts, &positions, &callables, &boundaries);
@@ -1620,7 +1677,11 @@ fn collect_resume_entries(body: &LoweredBody, analysis: &ActivationAnalysis) -> 
     };
     let reachable_entries = analysis.reachable_entries.iter().copied().collect::<HashSet<_>>();
     let mut deliver_callsites = HashMap::new();
-    for entry in entries {
+    for (entry_index, entry) in entries.iter().enumerate() {
+        let source_entry = ControlEntryId::from_u32(entry_index as u32);
+        if !reachable_entries.contains(&source_entry) {
+            continue;
+        }
         let callsite = match entry.tail {
             LoweredTail::DirectCall { callsite, .. } | LoweredTail::ClosureCall { callsite, .. } => Some(callsite),
             _ => None,
@@ -1638,7 +1699,7 @@ fn collect_resume_entries(body: &LoweredBody, analysis: &ActivationAnalysis) -> 
         .enumerate()
         .filter_map(|(index, entry)| {
             let entry_id = ControlEntryId::from_u32(index as u32);
-            if !reachable_entries.contains(&entry_id) {
+            if !reachable_entries.contains(&entry_id) && !deliver_callsites.contains_key(&entry_id) {
                 return None;
             }
             let super::super::body::ControlEntryOrigin::DeliveredResume { value } = entry.origin else {
@@ -1674,6 +1735,23 @@ fn shape_for_local_value(
     demand: &RuntimeDemand,
     publication: Option<TransportPosition>,
 ) -> ShapeId {
+    if let (Some(TransportSource::Join(sources)), Some(publication)) =
+        (context.local_sources.get(&value), publication.clone())
+    {
+        let source_positions = sources
+            .iter()
+            .filter_map(|source| match source {
+                TransportSource::LocalValue(source) => Some(TransportPosition::Value {
+                    executable: executable_symbol(executable),
+                    value: *source,
+                }),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        if !source_positions.is_empty() {
+            facts.record_publication_source_positions(publication, source_positions);
+        }
+    }
     shape_for_source(
         world,
         contexts,
@@ -1931,7 +2009,10 @@ fn project_sources(
         *facts = staged;
         SourceShape::Exact(exact[0])
     } else {
-        if demand.callable.is_first_class() {
+        if demand.is_callable() {
+            if let Some(publication) = publication {
+                staged.record_publication_source_shapes(publication, exact);
+            }
             *facts = staged;
         }
         SourceShape::Unknown
@@ -2363,6 +2444,7 @@ fn callable_for_producer(
             contexts,
             facts,
             upstream_flow,
+            callable_ty,
             &capture_tys,
             &boundary_surface_demands,
         );
@@ -2480,6 +2562,16 @@ fn generic_callable_shape(
     facts: &mut TransportFactsBuilder,
     publication: Option<TransportPosition>,
 ) -> ShapeId {
+    generic_callable_shape_with_resolutions(world, ty, demand, facts, publication)
+}
+
+fn generic_callable_shape_with_resolutions(
+    world: &mut World<'_>,
+    ty: Ty,
+    demand: &CallableDemand,
+    facts: &mut TransportFactsBuilder,
+    publication: Option<TransportPosition>,
+) -> ShapeId {
     let surfaces = &demand.resolved;
     assert!(
         !demand.is_first_class() || !surfaces.is_empty(),
@@ -2493,8 +2585,38 @@ fn generic_callable_shape(
         contract_surfaces: published_surface_shapes.clone().into_boxed_slice(),
     });
     let boundary_ids = if !surfaces.is_empty() {
-        let return_shapes = boundary_return_shapes_for_callable_surfaces(world, ty, surfaces, facts);
-        let empty_resolution_symbols = vec![Vec::new(); surfaces.len()];
+        let return_shapes = publication
+            .as_ref()
+            .and_then(|position| {
+                boundary_return_shapes_for_publication_sources(world, facts, position, &published_surface_shapes)
+            })
+            .unwrap_or_else(|| boundary_return_shapes_for_callable_surfaces(world, ty, surfaces, facts));
+        let resolution_symbols = publication
+            .as_ref()
+            .map(|position| {
+                facts
+                    .publication_source_shapes
+                    .get(position)
+                    .map(|shapes| {
+                        resolution_symbols_for_callable_source_surfaces(
+                            world,
+                            facts,
+                            shapes,
+                            &published_surface_shapes,
+                            &return_shapes,
+                        )
+                    })
+                    .unwrap_or_else(|| {
+                        resolution_symbols_for_published_surfaces(
+                            world,
+                            facts,
+                            position,
+                            &published_surface_shapes,
+                            &return_shapes,
+                        )
+                    })
+            })
+            .unwrap_or_else(|| vec![Vec::new(); surfaces.len()]);
         publish_boundaries_for_callable(
             world,
             facts,
@@ -2504,7 +2626,7 @@ fn generic_callable_shape(
             &[],
             ty,
             &return_shapes,
-            &empty_resolution_symbols,
+            &resolution_symbols,
             publication,
         )
     } else {
@@ -2515,6 +2637,189 @@ fn generic_callable_shape(
         .transport_mut()
         .interners_mut()
         .intern_shape(ShapeDescr::Callable(callable))
+}
+
+fn resolution_symbols_for_callable_source_surfaces(
+    world: &World<'_>,
+    facts: &TransportFactsBuilder,
+    source_shapes: &[ShapeId],
+    surface_shapes: &[Box<[ShapeId]>],
+    return_shapes: &[ShapeId],
+) -> Vec<Vec<ExecutableSymbol>> {
+    assert_eq!(
+        surface_shapes.len(),
+        return_shapes.len(),
+        "callable source surface and return-shape contracts should have the same length"
+    );
+    surface_shapes
+        .iter()
+        .zip(return_shapes.iter().copied())
+        .map(|(arg_shapes, return_shape)| {
+            resolution_symbols_for_callable_source_surface(world, facts, source_shapes, arg_shapes, return_shape)
+        })
+        .collect()
+}
+
+fn resolution_symbols_for_callable_source_surface(
+    world: &World<'_>,
+    facts: &TransportFactsBuilder,
+    source_shapes: &[ShapeId],
+    arg_shapes: &[ShapeId],
+    return_shape: ShapeId,
+) -> Vec<ExecutableSymbol> {
+    let mut resolutions = Vec::new();
+    for shape in source_shapes {
+        let ShapeDescr::Callable(callable) = world.transport().interners().shape(*shape) else {
+            continue;
+        };
+        let Some(callable_facts) = facts.callables.get(callable) else {
+            continue;
+        };
+        for boundary in callable_facts.boundary_ids.iter().copied() {
+            let boundary_descr = world.transport().interners().boundary(boundary);
+            if boundary_descr.surface_arg_shapes.as_ref() != arg_shapes
+                || boundary_descr.published_return_shape != return_shape
+            {
+                continue;
+            }
+            if let Some(boundary_facts) = facts.boundaries.get(&boundary) {
+                extend_unique(&mut resolutions, boundary_facts.resolutions.clone());
+            }
+        }
+    }
+    resolutions
+}
+
+fn resolution_symbols_for_source_publications(
+    world: &World<'_>,
+    facts: &TransportFactsBuilder,
+    source_positions: &[TransportPosition],
+    arg_shapes: &[ShapeId],
+    return_shape: ShapeId,
+) -> Vec<ExecutableSymbol> {
+    let mut resolutions = Vec::new();
+    for source in source_positions {
+        for (boundary, draft) in &facts.boundaries {
+            if !draft.publications.contains(source) {
+                continue;
+            }
+            let boundary_descr = world.transport().interners().boundary(*boundary);
+            if boundary_descr.surface_arg_shapes.as_ref() != arg_shapes
+                || boundary_descr.published_return_shape != return_shape
+            {
+                continue;
+            }
+            extend_unique(&mut resolutions, draft.resolutions.clone());
+        }
+    }
+    resolutions
+}
+
+fn boundary_return_shapes_for_publication_sources(
+    world: &World<'_>,
+    facts: &TransportFactsBuilder,
+    publication: &TransportPosition,
+    surface_shapes: &[Box<[ShapeId]>],
+) -> Option<Vec<ShapeId>> {
+    surface_shapes
+        .iter()
+        .map(|arg_shapes| {
+            let mut return_shapes = Vec::new();
+            if let Some(source_shapes) = facts.publication_source_shapes.get(publication) {
+                extend_unique(
+                    &mut return_shapes,
+                    boundary_return_shapes_for_callable_source_surface(world, facts, source_shapes, arg_shapes),
+                );
+            }
+            if let Some(source_positions) = facts.publication_source_positions.get(publication) {
+                extend_unique(
+                    &mut return_shapes,
+                    boundary_return_shapes_for_source_publications(world, facts, source_positions, arg_shapes),
+                );
+            }
+            match return_shapes.as_slice() {
+                [shape] => Some(*shape),
+                _ => None,
+            }
+        })
+        .collect()
+}
+
+fn boundary_return_shapes_for_callable_source_surface(
+    world: &World<'_>,
+    facts: &TransportFactsBuilder,
+    source_shapes: &[ShapeId],
+    arg_shapes: &[ShapeId],
+) -> Vec<ShapeId> {
+    let mut return_shapes = Vec::new();
+    for shape in source_shapes {
+        let ShapeDescr::Callable(callable) = world.transport().interners().shape(*shape) else {
+            continue;
+        };
+        let Some(callable_facts) = facts.callables.get(callable) else {
+            continue;
+        };
+        for boundary in callable_facts.boundary_ids.iter().copied() {
+            let boundary_descr = world.transport().interners().boundary(boundary);
+            if boundary_descr.surface_arg_shapes.as_ref() == arg_shapes
+                && !return_shapes.contains(&boundary_descr.published_return_shape)
+            {
+                return_shapes.push(boundary_descr.published_return_shape);
+            }
+        }
+    }
+    return_shapes
+}
+
+fn boundary_return_shapes_for_source_publications(
+    world: &World<'_>,
+    facts: &TransportFactsBuilder,
+    source_positions: &[TransportPosition],
+    arg_shapes: &[ShapeId],
+) -> Vec<ShapeId> {
+    let mut return_shapes = Vec::new();
+    for source in source_positions {
+        for (boundary, draft) in &facts.boundaries {
+            if !draft.publications.contains(source) {
+                continue;
+            }
+            let boundary_descr = world.transport().interners().boundary(*boundary);
+            if boundary_descr.surface_arg_shapes.as_ref() == arg_shapes
+                && !return_shapes.contains(&boundary_descr.published_return_shape)
+            {
+                return_shapes.push(boundary_descr.published_return_shape);
+            }
+        }
+    }
+    return_shapes
+}
+
+fn resolution_symbols_for_published_surfaces(
+    world: &World<'_>,
+    facts: &TransportFactsBuilder,
+    publication: &TransportPosition,
+    surface_shapes: &[Box<[ShapeId]>],
+    return_shapes: &[ShapeId],
+) -> Vec<Vec<ExecutableSymbol>> {
+    surface_shapes
+        .iter()
+        .zip(return_shapes.iter().copied())
+        .map(|(arg_shapes, return_shape)| {
+            let mut resolutions = Vec::new();
+            for (boundary, draft) in &facts.boundaries {
+                if !draft.publications.contains(publication) {
+                    continue;
+                }
+                let boundary_descr = world.transport().interners().boundary(*boundary);
+                if boundary_descr.surface_arg_shapes.as_ref() == arg_shapes.as_ref()
+                    && boundary_descr.published_return_shape == return_shape
+                {
+                    extend_unique(&mut resolutions, draft.resolutions.clone());
+                }
+            }
+            resolutions
+        })
+        .collect()
 }
 
 fn publish_boundaries_for_callable(
@@ -2619,6 +2924,7 @@ fn boundary_return_shapes_for_flow_surfaces(
     contexts: &HashMap<ExecutableKey, ExecutableContext>,
     facts: &mut TransportFactsBuilder,
     flow: &CallableFlowFact,
+    callable_ty: Ty,
     capture_tys: &[Ty],
     surfaces: &BTreeSet<CallableSurface>,
 ) -> Vec<ShapeId> {
@@ -2638,7 +2944,11 @@ fn boundary_return_shapes_for_flow_surfaces(
                 .unwrap_or_else(|| {
                     panic!("upstream callable-flow surface has no matching executable resolution: {surface:?}")
                 });
-            boundary_return_shape_for_resolution(world, contexts, facts, &resolution)
+            let mut boundary_return_ty = boundary_return_ty_for_surface(world, callable_ty, surface);
+            if world.types().is_empty(&boundary_return_ty) {
+                boundary_return_ty = world.types_mut().any();
+            }
+            boundary_return_shape_for_resolution(world, contexts, facts, &resolution, boundary_return_ty)
         })
         .collect()
 }
@@ -2664,6 +2974,7 @@ fn boundary_return_shape_for_resolution(
     contexts: &HashMap<ExecutableKey, ExecutableContext>,
     facts: &mut TransportFactsBuilder,
     resolution: &ExecutableSymbol,
+    fallback_return_ty: Ty,
 ) -> ShapeId {
     let Some((executable, context)) = contexts.iter().find(|(candidate, _)| {
         candidate.need == resolution.need
@@ -2673,17 +2984,27 @@ fn boundary_return_shape_for_resolution(
         panic!("upstream callable-flow resolution is outside the transport root context: {resolution:?}");
     };
     let demand = context.runtime_demand.return_demand.clone();
-    shape_for_source(
+    let return_ty = if world.types().is_empty(&context.return_ty) {
+        fallback_return_ty
+    } else {
+        context.return_ty
+    };
+    let shape = shape_for_source(
         world,
         contexts,
         facts,
         executable,
         context,
-        context.return_ty,
+        return_ty,
         &demand,
         TransportSource::ExecutableReturn,
         None,
-    )
+    );
+    if !demand.is_ignore() && matches!(world.transport().interners().shape(shape), ShapeDescr::Nothing) {
+        generic_shape_from_demand(world, return_ty, &demand, facts, None)
+    } else {
+        shape
+    }
 }
 
 fn boundary_return_shapes_for_callable_surfaces(
@@ -2709,7 +3030,7 @@ fn boundary_return_shape_for_surface(
 }
 
 fn boundary_return_ty_for_surface(world: &mut World<'_>, callable_ty: Ty, surface: &CallableSurface) -> Ty {
-    let Some(clauses) = world.types_mut().callable_clauses(&callable_ty) else {
+    let Some(clauses) = world.types_mut().callable_value_clauses(&callable_ty) else {
         return world.types_mut().arrow_join_return(&callable_ty);
     };
     let mut matched = None;

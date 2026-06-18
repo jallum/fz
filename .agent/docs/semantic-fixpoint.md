@@ -100,6 +100,16 @@ itself: a *blocked* publisher's claims are marked dirty and never settle, so a
 seal that both published a latent activation and waited on its settledness
 would wait on its own perpetually-dirty output forever.
 
+Runtime demand follows the same boundary. `DeriveRuntimeDemand(executable)`
+owns one `RuntimeDemand(executable)` fact; the seal no longer computes a
+root-wide runtime-demand monolith. During sealing, `SealSemanticClosure(root)`
+waits on each member executable's settled runtime-demand fact, reads the
+settled payloads, and discovers the next latent executable frontier from those
+facts. The derivation may read current runtime-demand facts for executable
+dependencies it can name cheaply from the executable's own body or prior
+callable-flow facts, but it must not scan the whole semantic closure to rebuild
+a global demand map.
+
 ## Current vs settled is the key boundary
 
 Semantic jobs iterate on **current** evidence. Artifact/backend jobs consume

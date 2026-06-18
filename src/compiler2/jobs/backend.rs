@@ -17,7 +17,7 @@ use crate::dispatch_matrix::{ComparisonValue, DispatchConst, DispatchNode, Proje
 
 use super::super::artifact::{
     BackendBody, BackendCallArg, BackendCallableEntry, BackendClause, BackendEntry, BackendEntryOrigin,
-    BackendExecutable, BackendProgram, BackendStep, BackendTail,
+    BackendExecutable, BackendProgram, BackendStep, BackendTail, MaterializedTransportPlan,
 };
 use super::super::body::{
     CallArg, CallSiteId, ControlEntryId, ControlEntryOrigin, LoweredBody, LoweredClause, LoweredEntry, LoweredStep,
@@ -27,6 +27,7 @@ use super::super::drive::{FactKey, Job, JobEffects, settled_uses};
 use super::super::identity::RootId;
 use super::super::identity::RootKind;
 use super::super::scheduler::FatalError;
+use super::super::transport::ShapeDescr;
 use super::super::types::Ty;
 use super::super::world::World;
 
@@ -47,12 +48,14 @@ pub(super) fn lower_backend_program(world: &mut World<'_>, root_id: RootId) -> R
     };
 
     let emission_ready = world.emission_ready_program(root_id);
-    let mut lowerer = BackendLowerer::new(world, root_id);
-    let executables = emission_ready
-        .executables
-        .iter()
-        .map(|executable| lowerer.lower_executable(executable))
-        .collect::<Result<Vec<_>, _>>()?;
+    let executables = {
+        let mut lowerer = BackendLowerer::new(world, root_id, &emission_ready.transport);
+        emission_ready
+            .executables
+            .iter()
+            .map(|executable| lowerer.lower_executable(executable))
+            .collect::<Result<Vec<_>, _>>()?
+    };
     let callable_entries = emission_ready
         .callable_entries
         .iter()
@@ -72,8 +75,8 @@ pub(super) fn lower_backend_program(world: &mut World<'_>, root_id: RootId) -> R
         transport_revision: emission_ready.transport_revision,
         entry: emission_ready.entry,
         transport: emission_ready.transport,
-        atom_names: collect_backend_atom_names(lowerer.world, &executables),
-        struct_schemas: lowerer.world.struct_schemas(),
+        atom_names: collect_backend_atom_names(world, &executables),
+        struct_schemas: world.struct_schemas(),
         executables,
         callable_entries,
     };
@@ -92,14 +95,19 @@ pub(super) fn lower_backend_program(world: &mut World<'_>, root_id: RootId) -> R
     })
 }
 
-struct BackendLowerer<'a, 'tel> {
+struct BackendLowerer<'a, 'plan, 'tel> {
     world: &'a mut World<'tel>,
     root_id: RootId,
+    transport: &'plan MaterializedTransportPlan,
 }
 
-impl<'a, 'tel> BackendLowerer<'a, 'tel> {
-    fn new(world: &'a mut World<'tel>, root_id: RootId) -> Self {
-        Self { world, root_id }
+impl<'a, 'plan, 'tel> BackendLowerer<'a, 'plan, 'tel> {
+    fn new(world: &'a mut World<'tel>, root_id: RootId, transport: &'plan MaterializedTransportPlan) -> Self {
+        Self {
+            world,
+            root_id,
+            transport,
+        }
     }
 
     fn lower_executable(
@@ -233,7 +241,7 @@ impl<'a, 'tel> BackendLowerer<'a, 'tel> {
 
     fn lower_step(
         &mut self,
-        _executable: &super::super::artifact::EmissionReadyExecutable,
+        executable: &super::super::artifact::EmissionReadyExecutable,
         step: &LoweredStep,
     ) -> Result<BackendStep, FatalError> {
         Ok(match step {
@@ -241,10 +249,16 @@ impl<'a, 'tel> BackendLowerer<'a, 'tel> {
                 value: *value,
                 literal: literal.clone(),
             },
-            LoweredStep::Tuple { value, items } => BackendStep::Tuple {
-                value: *value,
-                items: items.clone(),
-            },
+            LoweredStep::Tuple { value, items } => {
+                if self.tuple_build_is_proven_runtime_absent(executable, *value) {
+                    BackendStep::Omitted { value: *value }
+                } else {
+                    BackendStep::Tuple {
+                        value: *value,
+                        items: items.clone(),
+                    }
+                }
+            }
             LoweredStep::List { value, items, tail } => BackendStep::List {
                 value: *value,
                 items: items.clone(),
@@ -365,6 +379,16 @@ impl<'a, 'tel> BackendLowerer<'a, 'tel> {
         })
     }
 
+    fn tuple_build_is_proven_runtime_absent(
+        &self,
+        executable: &super::super::artifact::EmissionReadyExecutable,
+        value: super::super::body::ValueId,
+    ) -> bool {
+        self.transport
+            .executable_value_shape(&executable.transport, value)
+            .is_some_and(|shape| matches!(self.world.transport().interners().shape(shape), ShapeDescr::Nothing))
+    }
+
     fn lower_tail(
         &mut self,
         executable: &super::super::artifact::EmissionReadyExecutable,
@@ -462,34 +486,38 @@ fn lower_entry_origin(
     entry_index: usize,
     entry: &LoweredEntry,
 ) -> BackendEntryOrigin {
+    let entry_id = original_entry_id(executable, entry_index);
+    if let ControlEntryOrigin::DeliveredResume { value } = entry.origin {
+        if let Some(position) = executable
+            .transport
+            .resume_positions
+            .iter()
+            .find(|position| {
+                matches!(
+                    position,
+                    super::super::transport::TransportPosition::ResumePayload {
+                        entry: resume_entry,
+                        ..
+                    } if *resume_entry == entry_id
+                )
+            })
+            .cloned()
+        {
+            return BackendEntryOrigin::DeliveredResume { value, position };
+        }
+        if matches!(&entry.tail, LoweredTail::Halt { atom } if atom == UNREACHABLE_CONTROL_ATOM) {
+            return BackendEntryOrigin::Branch;
+        }
+        panic!("resume entry {entry_index} should have a settled transport position: {entry:?}");
+    }
     if matches!(&entry.tail, LoweredTail::Halt { atom } if atom == UNREACHABLE_CONTROL_ATOM) {
         return BackendEntryOrigin::Branch;
     }
-    let entry_id = original_entry_id(executable, entry_index);
     match entry.origin {
         ControlEntryOrigin::Clause => BackendEntryOrigin::Clause,
         ControlEntryOrigin::Branch => BackendEntryOrigin::Branch,
         ControlEntryOrigin::ReceiveOutcome => BackendEntryOrigin::ReceiveOutcome,
-        ControlEntryOrigin::DeliveredResume { value } => BackendEntryOrigin::DeliveredResume {
-            value,
-            position: executable
-                .transport
-                .resume_positions
-                .iter()
-                .find(|position| {
-                    matches!(
-                        position,
-                        super::super::transport::TransportPosition::ResumePayload {
-                            entry: resume_entry,
-                            ..
-                        } if *resume_entry == entry_id
-                    )
-                })
-                .cloned()
-                .unwrap_or_else(|| {
-                    panic!("resume entry {entry_index} should have a settled transport position: {entry:?}")
-                }),
-        },
+        ControlEntryOrigin::DeliveredResume { .. } => unreachable!("delivered resumes return before branch fallback"),
     }
 }
 
@@ -574,7 +602,8 @@ fn collect_step_atoms(
             BackendStep::RequireMapValue { key, .. } => {
                 collect_literal_atoms(key, seen, atoms);
             }
-            BackendStep::Tuple { .. }
+            BackendStep::Omitted { .. }
+            | BackendStep::Tuple { .. }
             | BackendStep::List { .. }
             | BackendStep::Map { .. }
             | BackendStep::MapUpdate { .. }

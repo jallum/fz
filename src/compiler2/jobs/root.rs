@@ -11,7 +11,7 @@ use super::super::identity::{ActivationKey, ExecutableKey, ExecutableNeed, RootI
 use super::super::scheduler::FatalError;
 use super::super::semantic::{CallSiteKey, RuntimeDemand, SelectedCallee, SemanticClosure};
 use super::super::world::World;
-use super::runtime_demand::settle_runtime_demands;
+use super::runtime_demand::demanded_callable_executables;
 use super::semantic::executable_callsite_needs;
 
 /// Seeds one semantic root once its entry definition exists.
@@ -300,12 +300,7 @@ pub(super) fn seal_semantic_closure(world: &mut World<'_>, root_id: RootId) -> R
             break;
         }
 
-        let Some(runtime_closure) =
-            settle_runtime_demands(world, &entry, &executables, &mut reads, &mut waits, &mut follow_up)?
-        else {
-            break;
-        };
-        runtime_demands = runtime_closure.demands;
+        runtime_demands.clear();
         for executable in &executables {
             if !read_fact(
                 world,
@@ -314,7 +309,13 @@ pub(super) fn seal_semantic_closure(world: &mut World<'_>, root_id: RootId) -> R
                 &mut waits,
             ) {
                 follow_up.insert(Job::DeriveRuntimeDemand(executable.clone()));
+                continue;
             }
+            let demand = world
+                .runtime_demand(executable)
+                .cloned()
+                .expect("settled runtime-demand fact should have a readable payload");
+            runtime_demands.insert(executable.clone(), demand);
         }
         if !waits.is_empty() {
             break;
@@ -325,7 +326,7 @@ pub(super) fn seal_semantic_closure(world: &mut World<'_>, root_id: RootId) -> R
         // concluding `SeedActivation` the drain demands, never published here:
         // the seal must not be a blocked publisher of what it gates on.
         let mut added = false;
-        for latent in runtime_closure.latent_executables {
+        for latent in demanded_callable_executables(&executables, &runtime_demands) {
             if executables.contains(&latent) {
                 continue;
             }

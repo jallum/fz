@@ -197,6 +197,11 @@ That makes local control explicit instead of positional.
   delivery seam resumes local work. Non-tail calls use it, and so does
   post-`receive` work once an outcome closure hands a value back into the entry
   graph.
+  A delivered-resume entry can be structurally required by a reachable native
+  call even when its lowered body is specialized away. Transport still publishes
+  the resume payload ABI for that call target; backend may specialize the body
+  to `Halt`, but it preserves the delivered-resume origin so native can build a
+  well-typed continuation descriptor.
 - `ControlEntryOrigin::LocalResume { value }` is where local control like
   `if` or `dispatch` delivers a value without creating a callable
   continuation boundary.
@@ -328,6 +333,14 @@ Opaque closure construction materializes the settled callable boundary published
 by native lowering; singleton-known closure calls bypass that boundary only
 through an explicit `direct_target`, and direct paths still adapt the return
 lane through the same return-shape machinery as any other native seam.
+When a concrete callable is materialized while crossing a first-class
+publication seam, native lowering uses the publication position as the first
+boundary discriminator. If that position is a generic publication rather than a
+native callable entry, native falls back to the callable's transport facts and
+narrows same-function candidates by the callable value's semantic surface.
+Joined callable publications carry concrete resolutions only from source
+positions/shapes recorded while projecting the join; transport must not recover
+them later by scanning unrelated same-surface boundaries.
 That constructor obligation is use-driven: a callable value earns a runtime
 callable boundary when it crosses an explicit callable-boundary argument seam,
 escapes as a value, or is reused opaquely / at multiple visible closure-call
