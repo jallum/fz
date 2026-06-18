@@ -6,9 +6,15 @@
   "description": "cargo test --workspace on fz-go4.1/frontdoor-cli-ownership after fz-hwn.19.6 transport cleanup reached tests/fixture_matrix.rs and failed 85 fixture-matrix cases while cargo test --lib, cargo check --all-targets, clippy, and the fz2 multi_relay dump/telemetry transport signal passed. Representative failures: continuation_materialization_boundaries_stay_explicit reports native callable materialization for FunctionId(65)/0 matched multiple published boundaries; enum_map_family times out its fz2 drive; multiple run/build fixture legs panic in runtime float/closure paths. This is outside the focused transport cutover matrix but should be triaged before treating cargo test --workspace as a required green gate.",
   "id": "fz-vn5",
   "labels": [],
+  "comments": [
+    {
+      "text": "Progress on fz-go4.1/frontdoor-cli-ownership; fixture_matrix red 85-\u003e64.\n\nLanded the owned-cons reuse arc — quicksort now allocates exactly its 11 input cells, 0 structs, 0 closures (the documented FP2 target):\n- ec8c4e3bc: stack-resident continuations restore FP2 borrow/uniqueness (closures-\u003e0).\n- ca703c6b7: canonicalize list value lanes so destination-passed tuples fold instead of re-materializing (structs-\u003e0; 47-\u003e37 cons).\n- 417d4c2b0: a list split refines its source to non-empty, unlocking typed head projection + the reuse it gates (37-\u003e11 cons). Also fixed enum_sort run/build.\n- e391791d5: refreshed 6 goldens (append/filter/reverse/quicksort) that drifted only in scheduler counters or a dropped alloc count.\n\nRemaining 64 are pre-existing and outside cons-reuse — bucketed in fz-9i4.7: callable/dispatch errors (fz-9i4.5, fz-hwn.13), Enum semantic-churn timeouts (fz-hwn.9), allocation/golden contracts (fz-rh2.16.2), and a lost-exhaustiveness-diagnostics regression (tree/case_tuple/spec_violation) that currently has no ticket and needs one.",
+      "timestamp": "2026-06-18T03:30:17Z"
+    }
+  ],
   "priority": 2,
   "status": "in_progress",
   "title": "Track workspace fixture_matrix red outside transport cutover",
   "type": "task",
-  "updated_at": "2026-06-17T20:18:42Z"
+  "updated_at": "2026-06-18T03:30:17Z"
 }
