@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-18T03:41:18Z",
+  "description": "fixtures2/behavior/keyword_lists fails run+interp+build with 'error[lower/unbound]: compiler2 lowering found unresolved d...' — lowering reaches an unresolved/unbound demand for the keyword-list construction. Single-fixture frontend/lowering gap; resolve the unbound reference so keyword_lists lowers.",
+  "id": "fz-9i4.7.6",
+  "labels": [],
+  "parent": "fz-9i4.7",
+  "priority": 2,
+  "status": "open",
+  "title": "[BUG] Compiler2 lowering finds unbound demand on keyword_lists",
+  "type": "bug",
+  "updated_at": "2026-06-18T03:41:18Z"
+}
