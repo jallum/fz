@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-18T03:40:59Z",
+  "description": "Native JIT/AOT codegen aborts with 'ReturnLanes arity mismatch in return_lanes__N_M: lanes=N, return_reprs=M' — the lowered ReturnLanes node disagrees with the function's settled return-repr count.\n\nFixtures (fixtures2/behavior):\n- no_parens_do (build/AOT): 'ReturnLanes arity mismatch in return_lanes__13_1: lanes=1, return_reprs=0'.\n- no_parens_keyword (build/AOT): same shape.\n- map_enumerable (build): 'AOT compile failed: codegen: verify main__...' — verify failure in the same return-lanes lowering area.\n\nReconcile the ReturnLanes lane count with the return-repr inventory in native codegen.",
+  "id": "fz-9i4.7.3",
+  "labels": [],
+  "parent": "fz-9i4.7",
+  "priority": 2,
+  "status": "open",
+  "title": "[BUG] Compiler2 native codegen ReturnLanes arity mismatch",
+  "type": "bug",
+  "updated_at": "2026-06-18T03:40:59Z"
+}
