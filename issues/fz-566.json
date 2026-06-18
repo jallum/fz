@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-18T03:36:40Z",
+  "description": "",
+  "id": "fz-566",
+  "labels": [],
+  "priority": 2,
+  "status": "open",
+  "title": "Investigate fz2 quicksort vs enum_take_drop_split compile-time gap",
+  "type": "task",
+  "updated_at": "2026-06-18T03:36:40Z"
+}
