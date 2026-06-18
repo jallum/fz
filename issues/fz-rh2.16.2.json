@@ -9,9 +9,15 @@
   "id": "fz-rh2.16.2",
   "labels": [],
   "parent": "fz-rh2.16",
+  "comments": [
+    {
+      "text": "Golden pass on fz-go4.1/frontdoor-cli-ownership (commits 417d4c2b0, e391791d5).\n\nRESOLVED (goldens refreshed, verified field-by-field — program output byte-identical, no heap field increased):\n- append, filter, reverse, quicksort: diffs were stale scheduler counters (reductions_remaining + yield counters; confirmed deterministic across repeated runs) plus reverse-interp cons_allocs 10-\u003e5 (owned-cons reuse improvement landing in the interpreter's measured output). quicksort additionally hit its 11-cons native target (417d4c2b0) and now has the canonical expected.txt.\n\nRECLASSIFIED — NOT golden choices; real behavior regressions, must NOT be blessed (proven pre-existing vs parent commit ca703c6b7, so not caused by the cons-reuse arc):\n- tree: scalar_box_allocs 0-\u003e14, allocs 3-\u003e17, AND lost its type/no-matching-clause warning (the diagnostic that closed fz-rh2.11.8).\n- case_tuple_pattern_sequential: lost its case_clause fall-through diagnostics.\n- enum_list_allocations: an allocation slot increased (3-\u003e15).\nThese belong with the lost-exhaustiveness-diagnostics regression tracked under fz-9i4.7, not a golden decision.\n\nSTILL OPEN here:\n- bsx_guard_eq: interp selects a different branch (matches this ticket's existing note) — semantic check still needed.\n- enum_sort: telemetry pin is now stale-LOW (runtime reuse 1-\u003e132 after 417d4c2b0) and interp mismatches; pin needs updating to the improved numbers.",
+      "timestamp": "2026-06-18T03:29:54Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "Decide fz2 goldens for mismatch-without-failure fixtures",
   "type": "task",
-  "updated_at": "2026-06-10T08:22:32Z"
+  "updated_at": "2026-06-18T03:29:54Z"
 }
