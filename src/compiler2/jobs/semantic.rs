@@ -508,6 +508,16 @@ fn apply_step(
             };
             let elem = world.types_mut().list_element_type(&source_ty);
             let rest = world.types_mut().list(elem);
+            // A successful split proves the source is a non-empty list. Record
+            // that refinement on the source, mirroring how `AssertEmptyList`
+            // refines its source to the empty list: the proof a clause was
+            // entered must reach the source's type, or typed head/tail
+            // projection (and the owned-cons reuse it unlocks) is left on the
+            // table for any list whose static type is the proper `[T] | []`.
+            let any = world.types_mut().any();
+            let non_empty = world.types_mut().non_empty_list(any);
+            let refined_source = world.types_mut().intersect(source_ty, non_empty);
+            values.insert(*source, refined_source);
             values.insert(*head, elem);
             values.insert(*tail, rest);
         }
