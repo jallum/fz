@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-18T10:40:39Z",
+  "description": "First, isolated, fully-tested brick. No producer/consumer wiring yet — exercised only by its own unit tests so the tree stays green with zero dead-code warnings.\n\n## Change\nAdd `ReturnDemandMap\u003cP\u003e` to semantic.rs, a structural clone of `ActivationInputMap\u003cP\u003e` (semantic.rs:430-668): per-key `contributors: HashMap\u003cP, RuntimeDemand\u003e` + `joined: RuntimeDemand`, `output_keys: HashMap\u003cP, HashSet\u003cExecutableKey\u003e\u003e`, with `conclude` (replacing arm) and `extend` (blocked-publisher arm). Key = `ExecutableKey`, value = `RuntimeDemand`.\n\n## Why\n`ReturnDemand(E)` is the backward dual of activation inputs: many publishers (callers), joined by lattice lub, revision bumps only when the join moves. The join op is `RuntimeDemand::join_assign` (semantic.rs:288) — the lattice already exists and is documented-monotone. The conclude/extend split is load-bearing: a blocked publisher must EXTEND (recant nothing), exactly as analyze_activation does for inputs.\n\n## Rip out\nNothing yet.\n\n## Check\nUnit tests in semantic.rs (or a sibling test module): (a) two publishers' contributions join by lub; (b) retracting one publisher recomputes the join and reports the key changed only if the aggregate moved; (c) extend never lowers a standing contribution; (d) empty join == RuntimeDemand::ignore (bottom). `cargo test --lib` green, zero warnings.",
+  "id": "fz-rh2.29.1",
+  "labels": [],
+  "parent": "fz-rh2.29",
+  "priority": 1,
+  "status": "open",
+  "title": "Runtime demand: ReturnDemand contribution store mirroring ActivationInputMap",
+  "type": "task",
+  "updated_at": "2026-06-18T10:40:39Z"
+}
