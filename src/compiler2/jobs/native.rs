@@ -2353,16 +2353,22 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
             .unwrap_or_else(|| panic!("callable identity for {function:?}/{capture_count}"))
     }
 
-    /// Select the callable boundary for a rematerialized callable value from
-    /// transport facts. Publication positions name the exact boundary when the
-    /// value crosses a first-class seam; otherwise the value's `CallableId`
-    /// fact must already identify one concrete native boundary.
-    fn settled_callable_boundary(
-        &self,
-        callable: CallableId,
-        function: FunctionId,
-        capture_count: usize,
-    ) -> Result<NativeCallableBoundaryId, FatalError> {
+    /// Select the callable boundary a rematerialized callable value carries.
+    ///
+    /// This is a *policy read*, not a decision: transport mints the boundary
+    /// contracts and records, on the value's `CallableId` fact, exactly which
+    /// `BoundaryId`s it carries. Native translates those settled boundaries to
+    /// their native ids and trusts the count. It does not re-derive the choice
+    /// by re-matching function id, capture count, or resolution against the
+    /// boundary table — that is the consumer recomputing a decision already
+    /// made upstream.
+    ///
+    /// A value that reaches here carries a single boundary by construction: a
+    /// callable used at more than one ground surface must arrive through a
+    /// publication position that names its surface (`first_class_publication_
+    /// boundary`). More than one boundary here therefore means policy did not
+    /// preselect, which is a transport/abi fact gap, not a choice for native.
+    fn settled_callable_boundary(&self, callable: CallableId) -> Result<NativeCallableBoundaryId, FatalError> {
         let plan = self.world.transport().plans().get(self.root_id);
         let boundary_ids: Vec<BoundaryId> = match plan.and_then(|plan| plan.callables.get(&callable)) {
             Some(facts) => facts.boundary_ids.to_vec(),
@@ -2370,28 +2376,14 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                 return Err(incomplete_native_program(
                     self.world,
                     self.root_id,
-                    format!(
-                        "native callable materialization for {function:?}/{capture_count} has no transport callable facts for {callable:?}",
-                    ),
+                    format!("native callable materialization has no transport callable facts for {callable:?}"),
                 ));
             }
         };
         let matched = self
             .callable_boundaries
             .iter()
-            .filter(|boundary| {
-                let Some(boundary_facts) = plan.and_then(|plan| plan.boundaries.get(&boundary.boundary)) else {
-                    return false;
-                };
-                boundary_ids.contains(&boundary.boundary)
-                    && boundary_facts.resolutions.iter().any(|resolution| {
-                        resolution.need == boundary.target.need
-                            && resolution.activation.function == boundary.target.activation.function
-                            && resolution.activation.input.as_ref() == boundary.target.activation.input.as_slice()
-                    })
-                    && boundary.target.activation.function == function
-                    && boundary.capture_count == capture_count
-            })
+            .filter(|boundary| boundary_ids.contains(&boundary.boundary))
             .map(NativeCallableBoundary::id)
             .collect::<Vec<_>>();
         match matched.as_slice() {
@@ -2400,18 +2392,14 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                 self.world,
                 self.root_id,
                 format!(
-                    "native callable materialization for {function:?}/{capture_count} found no published boundary among CallableId fact boundaries {boundary_ids:?}",
+                    "native callable materialization found no native boundary among CallableId fact boundaries {boundary_ids:?} for {callable:?}"
                 ),
             )),
             _ => Err(incomplete_native_program(
                 self.world,
                 self.root_id,
-                // A callable published at multiple surfaces names several
-                // boundary contracts; selecting which one a materialized value
-                // carries is surface disambiguation, owned by the escaped/
-                // static-singleton path in fz-hwn.19.5, and unreachable here.
                 format!(
-                    "native callable materialization for {function:?}/{capture_count} matched multiple published boundaries {matched:?} from CallableId fact {boundary_ids:?}",
+                    "native callable materialization for {callable:?} names multiple boundaries {matched:?}; a multi-surface callable value must arrive through a publication position",
                 ),
             )),
         }
@@ -2616,7 +2604,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                 let identity = self.callable_identity(function, capture_count);
                 let boundary = match boundary {
                     Some(boundary) => boundary,
-                    None => self.settled_callable_boundary(callable, function, capture_count)?,
+                    None => self.settled_callable_boundary(callable)?,
                 };
                 let prim = if lanes.is_empty() {
                     Prim::MakeFnRef(ctx.fresh_callsite(), identity)

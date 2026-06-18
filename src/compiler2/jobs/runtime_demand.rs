@@ -186,6 +186,24 @@ fn fold_direct_surfaces_into_first_class_publication(
     first_class_surfaces
 }
 
+/// Keep only the most-specific surfaces, dropping any that a strictly
+/// more-specific sibling subsumes. This removes a polymorphic template surface
+/// when the concrete surface a real call instantiates it to is also present,
+/// while leaving a genuinely polymorphic escape (no concrete sibling) untouched.
+fn retain_most_specific_surfaces(world: &World<'_>, surfaces: BTreeSet<CallableSurface>) -> BTreeSet<CallableSurface> {
+    let candidates = surfaces.iter().cloned().collect::<Vec<_>>();
+    surfaces
+        .into_iter()
+        .filter(|surface| {
+            !candidates.iter().any(|other| {
+                other != surface
+                    && callable_surface_subsumes(world, surface, other)
+                    && !callable_surface_subsumes(world, other, surface)
+            })
+        })
+        .collect()
+}
+
 fn callable_surface_subsumes(
     world: &World<'_>,
     broader_surface: &CallableSurface,
@@ -457,8 +475,19 @@ fn derive_callable_flow_facts_for_executable(
         if !value_demand.is_callable() {
             continue;
         }
+        // A `CallableFlowFact` is a runtime fact: every first-class surface it
+        // carries names a published boundary contract. When a callable escapes
+        // through a generic parameter slot (e.g. `Enum.reduce`'s reducer) *and*
+        // a concrete call instantiates it, analysis collects both the
+        // polymorphic template surface and its grounded sibling. The template is
+        // not a distinct runtime dispatch site — the concrete sibling is what
+        // the runtime invokes — so keeping it mints a phantom resolution that
+        // collapses onto the sibling after type erasure and forces an impossible
+        // boundary choice in native. Drop a surface only when a strictly
+        // more-specific sibling subsumes it; a genuinely polymorphic escape with
+        // no concrete sibling keeps its template surface and its boundary.
         let direct_surfaces = callable_flows.direct_surfaces(value);
-        let mut first_class_surfaces = callable_flows.first_class_surfaces(value);
+        let mut first_class_surfaces = retain_most_specific_surfaces(world, callable_flows.first_class_surfaces(value));
         if !first_class_surfaces.is_empty() {
             first_class_surfaces =
                 fold_direct_surfaces_into_first_class_publication(world, first_class_surfaces, &direct_surfaces);
