@@ -42,6 +42,9 @@ jobs:
       - run: cargo audit
       - run: cargo test --workspace --doc
       - run: |
+          # .coverage-threshold is temporarily lowered (84) while fz-9i4.7
+          # defers the broad red compiler2 fixtures; fz-9i4.7.8 restores it to
+          # 87 as those fixtures re-enable. Keep it a bare number — it is cat'd.
           cargo llvm-cov \
             --all-features \
             --workspace \
