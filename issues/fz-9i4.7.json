@@ -7,9 +7,15 @@
   "id": "fz-9i4.7",
   "labels": [],
   "parent": "fz-9i4",
+  "comments": [
+    {
+      "text": "Re-triaged the broad matrix red on fz-go4.1/frontdoor-cli-ownership; down to 64 fixture-matrix failures. Bucketed by cause (each maps to an existing ticket except the last):\n\n- 17x 'unresolved multi-target direct callsite; dispatch must be settled upstream' (membership_operator, map_enumerable, range_enumerable, enumerable_protocol_dispatch, enum_take_drop_split, ...) — dispatch not settled. Same-arity tuple slice is fz-9i4.5.\n- 5x 'matched multiple published boundaries' + 2x 'verify main' — callable boundary materialization; overlaps fz-hwn.13.\n- 5x 'lower/unbound' (keyword_lists, ...).\n- 4x 'ReturnLanes arity mismatch' (no_parens_do, no_parens_keyword, map_enumerable AOT).\n- ~5x drive-limit / 3s timeouts (enum_tier0, enum_map_family) — overlaps fz-hwn.9.\n- Golden-only / allocation-contract mismatches: see fz-rh2.16.2 (append/filter/reverse/quicksort now resolved there).\n\nUNCOVERED bucket needing a dedicated ticket:\n- 3x spec_violation 'expected diagnostic (nonzero exit) but the program succeeded', plus tree losing type/no-matching-clause and case_tuple_pattern_sequential losing case_clause fall-through. These are LOST exhaustiveness/spec diagnostics — a regression of the closed fz-rh2.11.8. Verified pre-existing vs parent commit ca703c6b7 (independent of the cons-reuse work). No open ticket covers this; recommend filing one.",
+      "timestamp": "2026-06-18T03:30:05Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "Fixture matrix currently fails outside targeted transport boundary work",
   "type": "bug",
-  "updated_at": "2026-06-15T23:11:27Z"
+  "updated_at": "2026-06-18T03:30:05Z"
 }
