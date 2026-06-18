@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-18T08:51:04Z",
+  "description": "",
+  "id": "fz-g3e",
+  "labels": [],
+  "priority": 1,
+  "status": "open",
+  "title": "Explain disproportionate enum semantic closure cost",
+  "type": "task",
+  "updated_at": "2026-06-18T08:51:04Z"
+}
