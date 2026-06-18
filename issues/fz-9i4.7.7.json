@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-18T09:53:01Z",
+  "description": "Observed signal\nCI's test job (cargo llvm-cov, run 27749142451) fails matrix::tail_recursion::interp with 'fz2 exceeded 3s'. The same trial passes in ~instant time locally (the whole tail_recursion group runs in ~2.7s without coverage). The fixture drives count(100000, 0) — 100k-deep self-recursion that must TCO — through the interpreter; coverage instrumentation slows the per-step interpreter loop enough to blow the 3s path budget.\n\nThis is the same family as the enum_tier0/enum_map_family 'drive limit' CI timeouts: instrumentation overhead masquerading as a logic failure.\n\nDisable\nDeferred via 'defer.interp' frontmatter on fixtures2/behavior/tail_recursion.fz, rationale names this ticket. Other modes (run/build) stay live.\n\nFix — pick the right place, not a per-fixture timeout bump\nDecide whether this is pure instrumentation overhead or a real interpreter perf cliff on deep recursion:\n- If pure overhead: the holistic fix is to scale the matrix path wall-clock/drive budgets by a coverage factor (detect cfg(coverage)/LLVM_PROFILE_FILE in the harness) so instrumentation can never be read as failure — this also covers enum_tier0/enum_map_family timeout legs.\n- If a real cliff: fix the interpreter hot path so 100k TCO iterations stay within budget even instrumented.\n\nRe-enable\nRemove the defer.interp line; confirm matrix::tail_recursion::interp is green under both a plain run and cargo llvm-cov.",
+  "id": "fz-9i4.7.7",
+  "labels": [],
+  "parent": "fz-9i4.7",
+  "priority": 2,
+  "status": "open",
+  "title": "[BUG] tail_recursion::interp exceeds 3s wall-clock only under llvm-cov",
+  "type": "bug",
+  "updated_at": "2026-06-18T09:53:01Z"
+}
