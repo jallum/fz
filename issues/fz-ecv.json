@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-18T21:07:47Z",
+  "description": "Audit signal:\n- `cargo rustc -p fz --lib -- -D unreachable_pub` reports 655 unreachable public items; reduced to 357 function/method candidates.\n- `cargo rustc -p fz-runtime --lib -- -D unreachable_pub` reports 17 function candidates, all under runtime/src/heap/gc.\n\nGoal:\nRestrict functions and methods that are not part of an exported crate API from `pub` to the narrowest correct visibility, usually `pub(crate)` and sometimes `pub(super)` where rustc suggests it.\n\nStrategy:\nWork subsystem by subsystem, preserving current behavior. After each slice, run the relevant targeted tests plus the lint command for that crate. Do not touch exported API in src/lib.rs (`run`, `FunctionSurface`, `compiler2`, `types`) or runtime C ABI/no_mangle functions unless separately justified.\n\nAcceptance signal:\nThe function/method subset of unreachable_pub is gone for the touched subsystem, and normal tests still pass.",
+  "id": "fz-ecv",
+  "labels": [],
+  "priority": 2,
+  "status": "open",
+  "title": "Restrict unreachable public functions to crate visibility",
+  "type": "task",
+  "updated_at": "2026-06-18T21:07:47Z"
+}
