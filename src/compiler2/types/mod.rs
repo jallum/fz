@@ -44,6 +44,9 @@ pub struct Ty(u32);
 pub struct Types {
     interner: TypeInterner,
     comparisons: RefCell<ComparisonCache>,
+    /// Memoized `value_lane_repr`: the transport-lane representative of a type.
+    /// A derived fact about each type, computed once rather than on every lane.
+    value_lane_reprs: HashMap<Ty, Ty>,
 }
 
 #[derive(Default)]
@@ -171,6 +174,29 @@ impl Types {
 
     fn symmetric_key(kind: fn(Ty, Ty) -> ComparisonKey, a: Ty, b: Ty) -> ComparisonKey {
         if a <= b { kind(a, b) } else { kind(b, a) }
+    }
+
+    /// The transport-lane representative of `ty`. A `Value` lane is one boxed
+    /// reference word, so a list's empty/non-empty refinement and element type
+    /// do not change its representation: every list-shaped type shares one lane
+    /// (the precise type still lives in `value_types` for codegen). Returning
+    /// one canonical lane is what lets a clause whose return is a narrower list
+    /// (`[int]`) than the function's joined return (`[int] | []`) deliver into
+    /// the same lane, so destination-passing folds instead of re-materializing.
+    /// Memoized — a derived fact about the type, not recomputed per lane.
+    pub fn value_lane_repr(&mut self, ty: Ty) -> Ty {
+        if let Some(&cached) = self.value_lane_reprs.get(&ty) {
+            return cached;
+        }
+        let any = self.any();
+        let list_top = self.list(any);
+        let repr = if !self.is_empty(&ty) && self.is_subtype(&ty, &list_top) {
+            list_top
+        } else {
+            ty
+        };
+        self.value_lane_reprs.insert(ty, repr);
+        repr
     }
 
     #[cfg(test)]
@@ -383,8 +409,7 @@ impl Types {
     }
 
     pub fn refine_widen(&mut self, a: &Ty, b: &Ty) -> Ty {
-        let d = refine_widen(self, *a, *b);
-        self.intern(d)
+        refine_widen(self, *a, *b)
     }
 
     pub fn convergence_class(&mut self, a: &Ty) -> Ty {
@@ -1505,7 +1530,10 @@ fn erase_closure_identity(t: &mut Types, a: Ty) -> Descr {
     map_recursive_inputs(t, base, erase_closure_identity).without_closure_lits()
 }
 
-fn refine_widen(t: &mut Types, a: Ty, b: Ty) -> Descr {
+/// Returns an interned `Ty`: every result is canonically interned in `Types`,
+/// so a widened type is never an un-interned `Descr` that a caller might compare
+/// or store without canonicalization.
+fn refine_widen(t: &mut Types, a: Ty, b: Ty) -> Ty {
     let lhs = t.descr(&a).clone();
     let rhs = t.descr(&b).clone();
     if let (Some(l), Some(r)) = (lhs.pure_tuple().cloned(), rhs.pure_tuple().cloned())
@@ -1515,35 +1543,30 @@ fn refine_widen(t: &mut Types, a: Ty, b: Ty) -> Descr {
             .elems
             .iter()
             .zip(r.elems.iter())
-            .map(|(l, r)| {
-                let d = refine_widen(t, *l, *r);
-                t.intern(d)
-            })
+            .map(|(l, r)| refine_widen(t, *l, *r))
             .collect();
-        return Descr::tuple_of(elems);
+        return t.intern(Descr::tuple_of(elems));
     }
     if let (Some(l), Some(r)) = (lhs.as_pure_list(t.ctx()).cloned(), rhs.as_pure_list(t.ctx()).cloned()) {
         let elem = match (l.elem, r.elem) {
-            (Some(l), Some(r)) => {
-                let d = refine_widen(t, l, r);
-                Some(t.intern(d))
-            }
+            (Some(l), Some(r)) => Some(refine_widen(t, l, r)),
             (Some(l), None) => Some(l),
             (None, Some(r)) => Some(r),
             (None, None) => None,
         };
-        return match elem {
+        let d = match elem {
             Some(elem) => Descr::list_sig(ListSig {
                 empty: l.empty || r.empty,
                 elem: Some(elem),
             }),
             None => Descr::empty_list(),
         };
+        return t.intern(d);
     }
     if let (Some(l), Some(r)) = (lhs.pure_resource().cloned(), rhs.pure_resource().cloned()) {
-        let d = refine_widen(t, l.payload, r.payload);
-        let payload = t.intern(d);
-        return Descr::resource_of(t.ctx(), payload);
+        let payload = refine_widen(t, l.payload, r.payload);
+        let d = Descr::resource_of(t.ctx(), payload);
+        return t.intern(d);
     }
     if let (Some(l), Some(r)) = (lhs.pure_arrow().cloned(), rhs.pure_arrow().cloned())
         && l.args.len() == r.args.len()
@@ -1564,10 +1587,7 @@ fn refine_widen(t: &mut Types, a: Ty, b: Ty) -> Descr {
                     .clone()
                     .into_iter()
                     .zip(rhs_lit.captures.clone())
-                    .map(|(lhs_capture, rhs_capture)| {
-                        let widened = refine_widen(t, lhs_capture, rhs_capture);
-                        t.intern(widened)
-                    })
+                    .map(|(lhs_capture, rhs_capture)| refine_widen(t, lhs_capture, rhs_capture))
                     .collect();
                 Some(Some(ClosureLit {
                     kind: lhs_lit.kind,
@@ -1579,29 +1599,26 @@ fn refine_widen(t: &mut Types, a: Ty, b: Ty) -> Descr {
         };
         if let Some(lit) = merged_lit {
             let args: Vec<Ty> = l.args.iter().zip(r.args.iter()).map(|(l, r)| t.union(*l, *r)).collect();
-            let d = refine_widen(t, l.ret, r.ret);
-            let ret = t.intern(d);
-            return Descr {
+            let ret = refine_widen(t, l.ret, r.ret);
+            return t.intern(Descr {
                 funcs: vec![Conj::pos_of(ArrowSig { args, ret, lit })],
                 ..Descr::none()
-            };
+            });
         }
     }
     if let (Some(l), Some(r)) = (lhs.pure_map().cloned(), rhs.pure_map().cloned()) {
         let mut fields = l.fields;
         for (key, rv) in &r.fields {
             if let Some(lv) = fields.get_mut(key) {
-                let d = refine_widen(t, *lv, *rv);
-                *lv = t.intern(d);
+                *lv = refine_widen(t, *lv, *rv);
             } else {
                 fields.insert(key.clone(), *rv);
             }
         }
-        return Descr::map_of(fields);
+        return t.intern(Descr::map_of(fields));
     }
 
-    let u = t.union(a, b);
-    t.descr(&u).clone()
+    t.union(a, b)
 }
 
 fn alpha_normalize_vars(t: &mut Types, a: Ty) -> Descr {

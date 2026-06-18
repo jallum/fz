@@ -280,6 +280,30 @@ macro_rules! seam_helper_conformance_tests {
             }
 
             #[test]
+            fn value_lane_repr_collapses_every_list_shape_to_one_lane() {
+                // A `Value` lane is one boxed reference word: a list's
+                // empty/non-empty refinement and element type do not change its
+                // representation. So a clause returning a narrow `[int]` and a
+                // function whose joined return is `[int] | []` must share one
+                // lane, or destination-passing can't fold the result.
+                let mut t = $ctor;
+                let int = t.int();
+                let non_empty = t.non_empty_list(int.clone()); // [int]
+                let proper = t.list(int.clone()); // [int] | []
+                let empty = t.empty_list(); // []
+                let float = t.float();
+                let float_list = t.list(float);
+
+                let canon = t.value_lane_repr(non_empty);
+                assert_eq!(t.value_lane_repr(proper), canon, "[int] and [int]|[] share a lane");
+                assert_eq!(t.value_lane_repr(empty), canon, "[] shares the list lane");
+                assert_eq!(t.value_lane_repr(float_list), canon, "element type does not split the lane");
+
+                // Non-list values keep their own representation.
+                assert_eq!(t.value_lane_repr(int), int, "a scalar is its own lane");
+            }
+
+            #[test]
             fn tuple_projections_project_tuple_shape() {
                 let mut t = $ctor;
                 let one = t.int_lit(1);
