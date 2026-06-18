@@ -3,7 +3,7 @@
   "blocked_by": [],
   "blocks": [],
   "created": "2026-06-18T21:56:16Z",
-  "description": "",
+  "description": "Two correct-by-construction fixes uncovered while completing the runtime-demand cutover for the opaque joined-callable case (fixtures2/behavior/opaque_fn_value_join.fz). Both stand on their own merits; they make the previously-red native test green. The deeper boxed-return obligation (boxed first-class boundary target must present a boxed return) is tracked separately.\n\n## Change\n1. runtime_demand.rs `derive_callable_flow_facts_for_executable`: a `CallableFlowFact` now carries only most-specific surfaces (`retain_most_specific_surfaces`). When an escaped callable is observed at both a concrete surface and the polymorphic template it instantiates, the template surface is dropped — it would otherwise mint a phantom resolution that collapses onto its grounded sibling after type erasure and force an impossible boundary choice. A genuinely polymorphic escape (no concrete sibling) keeps its surface.\n2. native.rs `settled_callable_boundary`: now a pure policy read of the value's CallableId boundary_ids (translated to native boundary ids), deleting the (function, capture_count, resolution) reverse-search. Native trusts transport's minted boundary policy; multiple boundaries here is a defensive error meaning the value should have arrived via a publication position.\n\n## Check\n`cargo test --lib` green (2216/0), zero warnings. The native test compiler2_native_program_joins_callable_resume_before_materializing_closure_call passes. Matrix opaque_fn_value_join remains red at AOT codegen (fault: boxed first-class boundary target return repr) — pre-existing, tracked under fz-rh2.29.",
   "id": "fz-rh2.29.7",
   "labels": [],
   "parent": "fz-rh2.29",
@@ -11,5 +11,5 @@
   "status": "open",
   "title": "Opaque joined callable: drop phantom polymorphic surfaces and read native boundary policy",
   "type": "task",
-  "updated_at": "2026-06-18T21:56:16Z"
+  "updated_at": "2026-06-18T21:56:28Z"
 }
