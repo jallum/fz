@@ -19,11 +19,32 @@ fn run_fz2(args: &[&OsStr]) -> Output {
 }
 
 fn fixture_expected_stdout(path: &str) -> String {
-    let expected = Path::new(path).with_file_name("expected.txt");
+    // Goldens are stem-scoped sidecars (`<stem>.expected.txt`), the same naming
+    // `fixture_matrix` resolves via `sidecar_path`. The earlier `expected.txt`
+    // sibling never existed, so every output-bearing fixture silently compared
+    // against the empty string; fixtures that print nothing matched by accident.
+    let fixture = Path::new(path);
+    let stem = fixture
+        .file_stem()
+        .and_then(OsStr::to_str)
+        .unwrap_or_else(|| panic!("fixture path has no stem: {path}"));
+    let expected = fixture.with_file_name(format!("{stem}.expected.txt"));
     if expected.exists() {
         read_to_string(&expected).unwrap_or_else(|error| panic!("read {}: {error}", expected.display()))
     } else {
         String::new()
+    }
+}
+
+/// Trailing-newline normalization, identical to `fixture_matrix`'s `normalize`:
+/// a golden and a program's stdout that differ only by a final newline are the
+/// same observation. Keeping this in step with the matrix means the two harnesses
+/// judge fixture output by one rule instead of drifting apart.
+fn normalize_stdout(s: &str) -> String {
+    if s.is_empty() || s.ends_with('\n') {
+        s.to_string()
+    } else {
+        format!("{s}\n")
     }
 }
 
@@ -35,8 +56,8 @@ fn assert_successful_stdout(out: &Output, expected: &str, context: &str) {
         String::from_utf8_lossy(&out.stderr)
     );
     assert_eq!(
-        String::from_utf8(out.stdout.clone()).expect("stdout is utf-8"),
-        expected,
+        normalize_stdout(&String::from_utf8(out.stdout.clone()).expect("stdout is utf-8")),
+        normalize_stdout(expected),
         "{context} should print the expected stdout"
     );
     assert!(
