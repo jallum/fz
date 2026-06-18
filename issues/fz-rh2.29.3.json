@@ -1,7 +1,8 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-rh2.29.2"
+    "fz-rh2.29.2",
+    "fz-rh2.29.5"
   ],
   "blocks": [
     "fz-rh2.29.4"
@@ -15,5 +16,5 @@
   "status": "open",
   "title": "Runtime demand: cut the seal over to the facts and strangle the monolith",
   "type": "task",
-  "updated_at": "2026-06-18T10:52:31Z"
+  "updated_at": "2026-06-18T12:28:57Z"
 }
