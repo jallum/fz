@@ -223,6 +223,7 @@ pub struct BoundaryDescr {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BoundaryFacts {
     pub publications: Box<[TransportPosition]>,
+    pub resolutions: Box<[ExecutableSymbol]>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

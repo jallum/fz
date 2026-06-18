@@ -1,5 +1,5 @@
 use std::cell::RefCell;
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::rc::Rc;
 
 use super::body::{DeliveredValueSource, delivered_value_joins};
@@ -2161,6 +2161,27 @@ end
             other => panic!("unexpected boundary return shape for surface-specific fixture: {other:?}"),
         }
     }
+    for (boundary, facts) in &plan.boundaries {
+        let boundary_descr = world.transport().interners().boundary(*boundary);
+        let [target] = facts.resolutions.as_ref() else {
+            panic!("each callable boundary should name its exact executable target: {boundary:?} -> {facts:?}")
+        };
+        assert_eq!(
+            target.activation.input.len(),
+            boundary_descr.surface_arg_shapes.len(),
+            "boundary target arity should match the boundary's published surface"
+        );
+        assert_eq!(
+            plan_shape_at(
+                &plan,
+                &TransportPosition::ExecutableReturn {
+                    executable: target.clone(),
+                },
+            ),
+            boundary_descr.published_return_shape,
+            "boundary target should be the executable whose return shape backs that boundary contract"
+        );
+    }
     assert!(
         has_scalar_return && has_tuple_return,
         "boundary return shape must follow each surface instead of joining all surfaces into one fallback"
@@ -2878,6 +2899,7 @@ fn assert_callable_facts_match_upstream_flow(
         flow.first_class_surfaces.len(),
         "transport boundary ids should be published exactly for upstream first-class surfaces"
     );
+    assert_boundary_resolutions_match_upstream_flow(world, plan, facts, flow);
 }
 
 fn flow_resolution_symbols(flow: &CallableFlowFact) -> Vec<ExecutableSymbol> {
@@ -2894,6 +2916,51 @@ fn flow_resolution_symbols(flow: &CallableFlowFact) -> Vec<ExecutableSymbol> {
         .collect::<Vec<_>>();
     symbols.sort_by_key(executable_symbol_test_key);
     symbols
+}
+
+fn assert_boundary_resolutions_match_upstream_flow(
+    world: &World<'_>,
+    plan: &TransportPlan,
+    facts: &super::transport::CallableFacts,
+    flow: &CallableFlowFact,
+) {
+    let mut expected_by_surface = BTreeMap::<Vec<Ty>, Vec<ExecutableSymbol>>::new();
+    for edge in &flow.first_class_edges {
+        expected_by_surface
+            .entry(edge.surface.inputs.clone())
+            .or_default()
+            .push(ExecutableSymbol {
+                activation: ActivationSymbol {
+                    function: edge.resolution.activation.function,
+                    input: edge.resolution.activation.input.clone().into_boxed_slice(),
+                },
+                need: edge.resolution.need,
+            });
+    }
+    for symbols in expected_by_surface.values_mut() {
+        symbols.sort_by_key(executable_symbol_test_key);
+    }
+
+    for boundary in facts.boundary_ids.iter().copied() {
+        let boundary_descr = world.transport().interners().boundary(boundary);
+        let surface_inputs = boundary_descr
+            .surface_arg_shapes
+            .iter()
+            .map(|shape| surface_input_ty(world, *shape))
+            .collect::<Vec<_>>();
+        let expected = expected_by_surface
+            .get(&surface_inputs)
+            .unwrap_or_else(|| panic!("boundary {boundary:?} should have upstream first-class edge evidence"));
+        let boundary_facts = plan
+            .boundaries
+            .get(&boundary)
+            .unwrap_or_else(|| panic!("boundary facts should exist for {boundary:?}"));
+        assert_eq!(
+            sorted_executable_symbols(boundary_facts.resolutions.as_ref()),
+            *expected,
+            "boundary facts should carry exactly the executable resolutions for their published surface"
+        );
+    }
 }
 
 fn sorted_executable_symbols(symbols: &[ExecutableSymbol]) -> Vec<ExecutableSymbol> {

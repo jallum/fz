@@ -1520,15 +1520,10 @@ fn derive_callable_entries(
     for boundary in &materialized.transport.boundary_ids {
         let boundary_descr = world.transport().interners().boundary(*boundary);
         let callable_descr = world.transport().interners().callable(boundary_descr.callable);
-        let callable_facts = transport_plan
-            .callables
-            .get(&boundary_descr.callable)
-            .unwrap_or_else(|| {
-                panic!(
-                    "transport plan should publish callable facts for {:?}",
-                    boundary_descr.callable
-                )
-            });
+        let boundary_facts = transport_plan
+            .boundaries
+            .get(boundary)
+            .unwrap_or_else(|| panic!("transport plan should publish boundary facts for {boundary:?}"));
         let capture_count = callable_descr.capture_shapes.len();
         let capture_reprs = boundary_lanes_reprs_from_transport(
             &materialized.transport.codegen_seam_facts,
@@ -1540,7 +1535,7 @@ fn derive_callable_entries(
             *boundary,
             boundary_descr.published_arg_lanes.as_ref(),
         );
-        for target_symbol in callable_facts.resolutions.iter() {
+        for target_symbol in boundary_facts.resolutions.iter() {
             let target = executable_key_for_symbol(materialized, target_symbol).ok_or_else(|| {
                 incomplete_semantic_plan(
                     world,

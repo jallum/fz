@@ -310,15 +310,34 @@ pub struct CallableFlowFact {
     pub captures: Box<[ValueId]>,
     pub direct_surfaces: BTreeSet<CallableSurface>,
     pub first_class_surfaces: BTreeSet<CallableSurface>,
+    pub direct_edges: Vec<CallableFlowEdge>,
+    pub first_class_edges: Vec<CallableFlowEdge>,
     pub opaque: bool,
     pub escape: bool,
     pub resolutions: Vec<ExecutableKey>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CallableFlowEdge {
+    pub surface: CallableSurface,
+    pub resolution: ExecutableKey,
 }
 
 impl CallableFlowFact {
     pub(crate) fn alpha_normalize(&mut self, types: &mut Types) {
         self.direct_surfaces = alpha_normalized_surfaces(types, &self.direct_surfaces);
         self.first_class_surfaces = alpha_normalized_surfaces(types, &self.first_class_surfaces);
+        for edge in self.direct_edges.iter_mut().chain(self.first_class_edges.iter_mut()) {
+            edge.surface.alpha_normalize(types);
+            edge.resolution.activation.input = edge
+                .resolution
+                .activation
+                .input
+                .iter()
+                .copied()
+                .map(|ty| types.alpha_normalize_vars(&ty))
+                .collect();
+        }
         for resolution in &mut self.resolutions {
             resolution.activation.input = resolution
                 .activation

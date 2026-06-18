@@ -270,6 +270,15 @@ transport owns `TransportPosition -> ShapeId`, lane facts, `CallableId` facts,
 Live artifact code must not walk `TrashRuntimeValueLayout`, `RuntimeDemand`,
 local types, or lowered bodies to derive another transport shape.
 
+Callable-flow target identity is part of that output contract. Runtime demand
+owns the semantic edge from each callable surface to the executable activation
+that satisfies it. Transport projects the first-class edges onto the
+`BoundaryId` values it mints, so `BoundaryFacts.resolutions` is the authority
+for the executable targets of a published callable boundary. ABI-ready,
+backend, and native consumers must read that boundary-owned relation; they must
+not pair every callable boundary with every callable resolution or recover
+targets from function id, capture count, lowered bodies, or type shape.
+
 The next two rungs narrow the contract:
 
 - `AbiReadyProgram` reads ABI lanes, explicit return delivery, and

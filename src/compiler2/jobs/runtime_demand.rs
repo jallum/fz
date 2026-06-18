@@ -8,8 +8,8 @@ use super::super::drive::{FactKey, Job, JobEffects, current_uses};
 use super::super::identity::{ExecutableKey, ExecutableNeed, FunctionId};
 use super::super::scheduler::FatalError;
 use super::super::semantic::{
-    ActivationAnalysis, CallSiteKey, CallSiteSummary, CallableDemand, CallableFlowFact, CallableSurface,
-    ExecutableRuntimeDemand, RuntimeDemand, ShapeDemand,
+    ActivationAnalysis, CallSiteKey, CallSiteSummary, CallableDemand, CallableFlowEdge, CallableFlowFact,
+    CallableSurface, ExecutableRuntimeDemand, RuntimeDemand, ShapeDemand,
 };
 use super::super::types::Ty;
 use super::super::world::World;
@@ -1621,19 +1621,34 @@ fn derive_callable_flow_facts(
             };
             direct_surfaces.extend(closed.iter().map(|(_, surface)| surface.clone()));
             let first_class_surfaces = first_class_surfaces_for_flow(world, facts, value, callable);
-            let mut resolutions = closed.into_iter().map(|(resolution, _)| resolution).collect::<Vec<_>>();
+            let direct_edges = callable_flow_resolution_edges(
+                world,
+                executable,
+                facts,
+                &producer,
+                &direct_surfaces,
+                reads,
+                waits,
+                follow_up,
+            );
+            let first_class_edges = callable_flow_resolution_edges(
+                world,
+                executable,
+                facts,
+                &producer,
+                &first_class_surfaces,
+                reads,
+                waits,
+                follow_up,
+            );
+            let mut resolutions = Vec::new();
             extend_unique(
                 &mut resolutions,
-                callable_flow_resolutions(
-                    world,
-                    executable,
-                    facts,
-                    &producer,
-                    &first_class_surfaces,
-                    reads,
-                    waits,
-                    follow_up,
-                ),
+                direct_edges
+                    .iter()
+                    .chain(first_class_edges.iter())
+                    .map(|edge| edge.resolution.clone())
+                    .collect(),
             );
             demand.callable_flows.insert(
                 value,
@@ -1642,6 +1657,8 @@ fn derive_callable_flow_facts(
                     captures: producer.captures,
                     direct_surfaces,
                     first_class_surfaces,
+                    direct_edges,
+                    first_class_edges,
                     opaque: callable.opaque,
                     escape: callable.escape,
                     resolutions,
@@ -1749,6 +1766,25 @@ fn callable_flow_resolutions(
                 need: ExecutableNeed::Value,
             }
         })
+        .collect()
+}
+
+fn callable_flow_resolution_edges(
+    world: &mut World<'_>,
+    executable: &ExecutableKey,
+    facts: &ExecutableFacts,
+    producer: &LocalCallableProducer,
+    surfaces: &BTreeSet<CallableSurface>,
+    reads: &mut Vec<FactKey>,
+    waits: &mut HashSet<FactKey>,
+    follow_up: &mut HashSet<Job>,
+) -> Vec<CallableFlowEdge> {
+    let resolutions = callable_flow_resolutions(world, executable, facts, producer, surfaces, reads, waits, follow_up);
+    surfaces
+        .iter()
+        .cloned()
+        .zip(resolutions)
+        .map(|(surface, resolution)| CallableFlowEdge { surface, resolution })
         .collect()
 }
 

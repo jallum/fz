@@ -2547,13 +2547,8 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
         function: FunctionId,
         capture_count: usize,
     ) -> Result<NativeCallableBoundaryId, FatalError> {
-        let boundary_ids: Vec<BoundaryId> = match self
-            .world
-            .transport()
-            .plans()
-            .get(self.root_id)
-            .and_then(|plan| plan.callables.get(&callable))
-        {
+        let plan = self.world.transport().plans().get(self.root_id);
+        let boundary_ids: Vec<BoundaryId> = match plan.and_then(|plan| plan.callables.get(&callable)) {
             Some(facts) => facts.boundary_ids.to_vec(),
             None => {
                 return Err(incomplete_native_program(
@@ -2569,7 +2564,15 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
             .callable_boundaries
             .iter()
             .filter(|boundary| {
+                let Some(boundary_facts) = plan.and_then(|plan| plan.boundaries.get(&boundary.boundary)) else {
+                    return false;
+                };
                 boundary_ids.contains(&boundary.boundary)
+                    && boundary_facts.resolutions.iter().any(|resolution| {
+                        resolution.need == boundary.target.need
+                            && resolution.activation.function == boundary.target.activation.function
+                            && resolution.activation.input.as_ref() == boundary.target.activation.input.as_slice()
+                    })
                     && boundary.target.activation.function == function
                     && boundary.capture_count == capture_count
             })

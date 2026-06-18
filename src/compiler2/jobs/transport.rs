@@ -69,6 +69,7 @@ struct CallableFactsDraft {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct BoundaryFactsDraft {
     publications: Vec<TransportPosition>,
+    resolutions: Vec<ExecutableSymbol>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -242,10 +243,19 @@ impl TransportFactsBuilder {
     fn record_boundary(&mut self, boundary: BoundaryId, publication: TransportPosition) {
         let entry = self.boundaries.entry(boundary).or_insert_with(|| BoundaryFactsDraft {
             publications: Vec::new(),
+            resolutions: Vec::new(),
         });
         if !entry.publications.contains(&publication) {
             entry.publications.push(publication);
         }
+    }
+
+    fn record_boundary_resolutions(&mut self, boundary: BoundaryId, resolutions: Vec<ExecutableSymbol>) {
+        let entry = self.boundaries.entry(boundary).or_insert_with(|| BoundaryFactsDraft {
+            publications: Vec::new(),
+            resolutions: Vec::new(),
+        });
+        extend_unique(&mut entry.resolutions, resolutions);
     }
 
     fn expand_boundary_publications(&mut self, equivalents: &HashMap<TransportPosition, Vec<TransportPosition>>) {
@@ -286,11 +296,13 @@ impl TransportFactsBuilder {
         let boundaries = self
             .boundaries
             .into_iter()
-            .map(|(id, draft)| {
+            .map(|(id, mut draft)| {
+                draft.resolutions.sort_by_key(executable_symbol_sort_key);
                 (
                     id,
                     BoundaryFacts {
                         publications: draft.publications.into_boxed_slice(),
+                        resolutions: draft.resolutions.into_boxed_slice(),
                     },
                 )
             })
@@ -2354,6 +2366,8 @@ fn callable_for_producer(
             &capture_tys,
             &boundary_surface_demands,
         );
+        let boundary_resolution_symbols =
+            boundary_resolution_symbols_for_flow_surfaces(upstream_flow, &boundary_surface_demands);
         publish_boundaries_for_callable(
             world,
             facts,
@@ -2363,6 +2377,7 @@ fn callable_for_producer(
             &capture_lanes,
             callable_ty,
             &boundary_return_shapes,
+            &boundary_resolution_symbols,
             publication,
         )
     } else {
@@ -2479,6 +2494,7 @@ fn generic_callable_shape(
     });
     let boundary_ids = if !surfaces.is_empty() {
         let return_shapes = boundary_return_shapes_for_callable_surfaces(world, ty, surfaces, facts);
+        let empty_resolution_symbols = vec![Vec::new(); surfaces.len()];
         publish_boundaries_for_callable(
             world,
             facts,
@@ -2488,6 +2504,7 @@ fn generic_callable_shape(
             &[],
             ty,
             &return_shapes,
+            &empty_resolution_symbols,
             publication,
         )
     } else {
@@ -2509,6 +2526,7 @@ fn publish_boundaries_for_callable(
     capture_lanes: &[LaneId],
     callable_ty: Ty,
     return_shapes: &[ShapeId],
+    resolution_symbols: &[Vec<ExecutableSymbol>],
     publication: Option<TransportPosition>,
 ) -> Vec<BoundaryId> {
     assert_eq!(
@@ -2521,11 +2539,17 @@ fn publish_boundaries_for_callable(
         return_shapes.len(),
         "boundary return shapes must align with published surfaces"
     );
+    assert_eq!(
+        surfaces.len(),
+        resolution_symbols.len(),
+        "boundary resolution symbols must align with published surfaces"
+    );
     let mut boundary_ids = Vec::new();
-    for ((surface, arg_shapes), return_shape) in surfaces
+    for (((surface, arg_shapes), return_shape), resolutions) in surfaces
         .iter()
         .zip(surface_shapes.iter())
         .zip(return_shapes.iter().copied())
+        .zip(resolution_symbols.iter())
     {
         let return_ty = boundary_return_ty_for_surface(world, callable_ty, surface);
         let return_lanes = boundary_lanes_for_shape(world, return_shape, return_ty).into_boxed_slice();
@@ -2548,6 +2572,7 @@ fn publish_boundaries_for_callable(
         if let Some(position) = publication.clone() {
             facts.record_boundary(boundary, position);
         }
+        facts.record_boundary_resolutions(boundary, resolutions.clone());
         boundary_ids.push(boundary);
     }
     boundary_ids
@@ -2614,6 +2639,22 @@ fn boundary_return_shapes_for_flow_surfaces(
                     panic!("upstream callable-flow surface has no matching executable resolution: {surface:?}")
                 });
             boundary_return_shape_for_resolution(world, contexts, facts, &resolution)
+        })
+        .collect()
+}
+
+fn boundary_resolution_symbols_for_flow_surfaces(
+    flow: &CallableFlowFact,
+    surfaces: &BTreeSet<CallableSurface>,
+) -> Vec<Vec<ExecutableSymbol>> {
+    surfaces
+        .iter()
+        .map(|surface| {
+            flow.first_class_edges
+                .iter()
+                .filter(|edge| &edge.surface == surface)
+                .map(|edge| executable_symbol(&edge.resolution))
+                .collect::<Vec<_>>()
         })
         .collect()
 }
