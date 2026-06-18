@@ -7,9 +7,9 @@ use crate::diag::codes;
 use crate::diag::driver::emit_through;
 
 use super::super::drive::{FactKey, Job, JobEffects, settled_uses};
-use super::super::identity::{ActivationKey, ExecutableKey, RootId, RootKind};
+use super::super::identity::{ActivationKey, ExecutableKey, ExecutableNeed, RootId, RootKind};
 use super::super::scheduler::FatalError;
-use super::super::semantic::{CallSiteKey, SelectedCallee, SemanticClosure};
+use super::super::semantic::{CallSiteKey, RuntimeDemand, SelectedCallee, SemanticClosure};
 use super::super::world::World;
 use super::runtime_demand::settle_runtime_demands;
 use super::semantic::executable_callsite_needs;
@@ -70,10 +70,11 @@ pub(super) fn seed_root(world: &mut World<'_>, root_id: RootId) -> Result<JobEff
     let activation_fact = FactKey::Activation(entry_activation.clone());
     outputs.push(activation_fact);
     outputs.push(FactKey::ActivationInputs(entry_activation.clone()));
-    outputs.push(FactKey::Executable(ExecutableKey {
+    let entry_executable = ExecutableKey {
         activation: entry_activation.clone(),
         need: root.need,
-    }));
+    };
+    outputs.push(FactKey::Executable(entry_executable.clone()));
     follow_up.push(Job::LowerFunction(root.function));
     follow_up.push(Job::PlanEntryDispatch(root.function));
     follow_up.push(Job::AnalyzeActivation(entry_activation.clone()));
@@ -82,9 +83,17 @@ pub(super) fn seed_root(world: &mut World<'_>, root_id: RootId) -> Result<JobEff
         reads: settled_uses(reads),
         outputs,
         activation_input_contributions: vec![(entry_activation, root.input.clone())],
+        return_demand_contributions: vec![(entry_executable, runtime_demand_for_need(root.need))],
         follow_up,
         ..JobEffects::default()
     })
+}
+
+fn runtime_demand_for_need(need: ExecutableNeed) -> RuntimeDemand {
+    match need {
+        ExecutableNeed::Value => RuntimeDemand::whole(),
+        ExecutableNeed::TupleFields(arity) => RuntimeDemand::tuple_fields(vec![RuntimeDemand::whole(); arity]),
+    }
 }
 
 /// Seeds the existence facts for a latent executable's activation — one reached
@@ -297,6 +306,19 @@ pub(super) fn seal_semantic_closure(world: &mut World<'_>, root_id: RootId) -> R
             break;
         };
         runtime_demands = runtime_closure.demands;
+        for executable in &executables {
+            if !read_fact(
+                world,
+                FactKey::RuntimeDemand(executable.clone()),
+                &mut reads,
+                &mut waits,
+            ) {
+                follow_up.insert(Job::DeriveRuntimeDemand(executable.clone()));
+            }
+        }
+        if !waits.is_empty() {
+            break;
+        }
 
         // Latent executables — callables reached only through the runtime-demand
         // frontier — re-enter the walk. Their activation facts are seeded by the

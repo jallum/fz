@@ -74,6 +74,10 @@ where
         &self.facts
     }
 
+    pub fn output_keys(&self, job: &J) -> HashSet<F> {
+        self.deps.output_keys(job)
+    }
+
     pub fn has_unresolved(&self) -> bool {
         self.deps.has_unresolved()
     }

@@ -24,6 +24,7 @@ mod quoted_function;
 mod quoted_surface;
 mod resolve;
 mod runtime;
+mod runtime_demand_facts;
 mod scheduler;
 mod scope;
 mod semantic;

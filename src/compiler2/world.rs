@@ -33,9 +33,9 @@ use super::deps::UnresolvedWait;
 use super::dispatch::{EntryDispatchMap, GuardDispatchMap};
 use super::drive::{FactKey, Job, JobEffects, WorkGraph};
 use super::identity::{
-    ActivationKey, ExecutableNeed, ExpandedFunctionSourceMap, FunctionId, FunctionMap, FunctionRef, FunctionSource,
-    ModuleId, ModuleMap, ModuleSourceKind, ModuleState, NotedTypeDecl, RootEntry, RootId, RootKind, RootMap,
-    TypeDeclMap, TypeName, TypeRefMap,
+    ActivationKey, ExecutableKey, ExecutableNeed, ExpandedFunctionSourceMap, FunctionId, FunctionMap, FunctionRef,
+    FunctionSource, ModuleId, ModuleMap, ModuleSourceKind, ModuleState, NotedTypeDecl, RootEntry, RootId, RootKind,
+    RootMap, TypeDeclMap, TypeName, TypeRefMap,
 };
 use super::keying::{DispatchMaskMap, RecursiveMap};
 use super::module_interface::{InterfaceCallableKind, InterfaceExpectation, InterfaceRequester, ModuleInterface};
@@ -46,11 +46,13 @@ use super::protocol::{
 };
 use super::quoted_surface::{ReservedSourceDefinition, ScopeForm, reserved_source_definition};
 use super::runtime::{self, RuntimeModuleCode};
+use super::runtime_demand_facts::RuntimeDemandMap;
 use super::scheduler::FatalError;
 use super::scope::ScopeSnapshot;
 use super::semantic::{
     ActivationAnalysis, ActivationInputMap, ActivationInputReplace, ActivationMap, CallSiteKey, CallSiteMap,
-    CallSiteSummary, CallableDemand, RuntimeDemand, SemanticClosure, SemanticClosureMap, ShapeDemand,
+    CallSiteSummary, CallableDemand, ExecutableRuntimeDemand, ReturnDemandMap, ReturnDemandReplace, RuntimeDemand,
+    SemanticClosure, SemanticClosureMap, ShapeDemand,
 };
 use super::source::{
     QuotedLexicalContext, QuotedLexicalContextKind, QuotedSourceBuilder, QuotedSourceError, QuotedSourceMetadata,
@@ -226,6 +228,8 @@ pub struct World<'a> {
     protocol_impl_providers: ProtocolImplProviderMap,
     activations: ActivationMap,
     activation_inputs: ActivationInputMap<Job>,
+    return_demands: ReturnDemandMap<Job>,
+    runtime_demands: RuntimeDemandMap,
     callsites: CallSiteMap,
     semantic_closures: SemanticClosureMap,
     artifacts: MaterializedProgramMap,
@@ -290,6 +294,8 @@ impl<'a> World<'a> {
             protocol_impl_providers: ProtocolImplProviderMap::new(),
             activations: ActivationMap::new(),
             activation_inputs: ActivationInputMap::new(),
+            return_demands: ReturnDemandMap::new(),
+            runtime_demands: RuntimeDemandMap::new(),
             callsites: CallSiteMap::new(),
             semantic_closures: SemanticClosureMap::new(),
             artifacts: MaterializedProgramMap::new(),
@@ -433,6 +439,15 @@ impl<'a> World<'a> {
         // values join unless the publisher's ground shifted (rebase), which
         // is the only path by which contributed inputs may narrow.
         let rebased = self.work_graph.rebased(&job);
+        let previous_return_demand_outputs = self
+            .work_graph
+            .output_keys(&job)
+            .into_iter()
+            .filter_map(|fact| match fact {
+                FactKey::ReturnDemand(executable) => Some(executable),
+                _ => None,
+            })
+            .collect::<HashSet<_>>();
         let ActivationInputReplace {
             output_keys: activation_input_outputs,
             changed_keys: activation_input_changed,
@@ -441,11 +456,35 @@ impl<'a> World<'a> {
         } else {
             self.extend_activation_input_contributions(&job, effects.activation_input_contributions)
         };
+        let ReturnDemandReplace {
+            output_keys: return_demand_outputs,
+            changed_keys: return_demand_changed,
+        } = if waits.is_empty() {
+            self.conclude_return_demand_contributions(
+                &job,
+                previous_return_demand_outputs,
+                effects.return_demand_contributions,
+                rebased,
+            )
+        } else {
+            self.extend_return_demand_contributions(&job, effects.return_demand_contributions)
+        };
         let mut outputs = effects.outputs;
         outputs.extend(activation_input_outputs.into_iter().map(FactKey::ActivationInputs));
+        outputs.extend(return_demand_outputs.into_iter().map(FactKey::ReturnDemand));
+        let mut runtime_demand_changed = Vec::new();
+        for (executable, demand) in effects.runtime_demands {
+            let changed = self.define_runtime_demand(executable.clone(), demand);
+            outputs.push(FactKey::RuntimeDemand(executable.clone()));
+            if changed {
+                runtime_demand_changed.push(FactKey::RuntimeDemand(executable));
+            }
+        }
         let outputs = dedupe_job_facts(outputs);
         let mut changed = effects.changed;
         changed.extend(activation_input_changed.into_iter().map(FactKey::ActivationInputs));
+        changed.extend(return_demand_changed.into_iter().map(FactKey::ReturnDemand));
+        changed.extend(runtime_demand_changed);
         let changed = dedupe_job_facts(changed);
         let step = self
             .work_graph
@@ -637,6 +676,54 @@ impl<'a> World<'a> {
             }
         }
         next
+    }
+
+    fn conclude_return_demand_contributions(
+        &mut self,
+        job: &Job,
+        previous_output_keys: HashSet<ExecutableKey>,
+        contributions: Vec<(ExecutableKey, RuntimeDemand)>,
+        rebased: bool,
+    ) -> ReturnDemandReplace {
+        let next = self.normalize_return_demand_contributions(contributions);
+        self.return_demands
+            .conclude(job.clone(), previous_output_keys, next, rebased)
+    }
+
+    fn extend_return_demand_contributions(
+        &mut self,
+        job: &Job,
+        contributions: Vec<(ExecutableKey, RuntimeDemand)>,
+    ) -> ReturnDemandReplace {
+        let next = self.normalize_return_demand_contributions(contributions);
+        self.return_demands.extend(job.clone(), next)
+    }
+
+    fn normalize_return_demand_contributions(
+        &mut self,
+        contributions: Vec<(ExecutableKey, RuntimeDemand)>,
+    ) -> HashMap<ExecutableKey, RuntimeDemand> {
+        let mut next = HashMap::<ExecutableKey, RuntimeDemand>::new();
+        for (executable, mut demand) in contributions {
+            demand.alpha_normalize(&mut self.types);
+            next.entry(executable)
+                .and_modify(|current| current.join_assign(&demand))
+                .or_insert(demand);
+        }
+        next
+    }
+
+    pub(crate) fn return_demand(&self, key: &ExecutableKey) -> RuntimeDemand {
+        self.return_demands.get(key)
+    }
+
+    pub(crate) fn define_runtime_demand(&mut self, key: ExecutableKey, demand: ExecutableRuntimeDemand) -> bool {
+        self.runtime_demands.define(&mut self.types, key, demand)
+    }
+
+    pub(crate) fn runtime_demand(&self, key: &ExecutableKey) -> Option<&ExecutableRuntimeDemand> {
+        self.fact_revision(&FactKey::RuntimeDemand(key.clone()))?;
+        self.runtime_demands.get(key)
     }
 
     pub fn define_activation_return(&mut self, key: &ActivationKey, evidence: Option<Ty>) -> bool {

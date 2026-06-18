@@ -4,7 +4,7 @@ use super::super::body::{
     CallArg, CallSiteId, ControlDestination, ControlEntryId, DeliveredValueJoin, DeliveredValueSource, LoweredBody,
     LoweredEntry, LoweredStep, LoweredTail, ValueId, delivered_value_joins,
 };
-use super::super::drive::{FactKey, Job};
+use super::super::drive::{FactKey, Job, JobEffects, current_uses};
 use super::super::identity::{ExecutableKey, ExecutableNeed, FunctionId};
 use super::super::scheduler::FatalError;
 use super::super::semantic::{
@@ -40,6 +40,188 @@ struct DerivedExecutableDemand {
 struct LocalCallableProducer {
     function: FunctionId,
     captures: Box<[ValueId]>,
+}
+
+pub(super) fn derive_runtime_demand(
+    world: &mut World<'_>,
+    executable: &ExecutableKey,
+) -> Result<JobEffects, FatalError> {
+    let mut reads = Vec::new();
+    let mut follow_up = HashSet::new();
+
+    let executable_fact = FactKey::Executable(executable.clone());
+    if world.has_fact(&executable_fact) {
+        reads.push(executable_fact);
+    } else {
+        reads.push(executable_fact);
+        return Ok(JobEffects {
+            reads: current_uses(reads),
+            ..JobEffects::default()
+        });
+    }
+
+    let Some(facts) = collect_one_executable_facts(world, executable, &mut reads, &mut follow_up) else {
+        return Ok(JobEffects {
+            reads: current_uses(reads),
+            follow_up: follow_up.into_iter().collect(),
+            ..JobEffects::default()
+        });
+    };
+
+    let return_demand_fact = FactKey::ReturnDemand(executable.clone());
+    reads.push(return_demand_fact);
+    let mut demands = HashMap::new();
+    let mut self_demand = world
+        .runtime_demand(executable)
+        .cloned()
+        .unwrap_or_else(|| empty_runtime_demand(executable));
+    self_demand.return_demand = world.return_demand(executable);
+    demands.insert(executable.clone(), self_demand);
+
+    for target in direct_local_targets(&facts) {
+        reads.push(FactKey::RuntimeDemand(target.clone()));
+        demands.entry(target.clone()).or_insert_with(|| {
+            world
+                .runtime_demand(&target)
+                .cloned()
+                .unwrap_or_else(|| empty_runtime_demand(&target))
+        });
+    }
+
+    let derived = derive_executable_runtime_demand(world, executable, &facts, &demands);
+    let return_demand_contributions = call_return_demand_contributions(&facts, derived.call_return_demands);
+    Ok(JobEffects {
+        reads: current_uses(reads),
+        runtime_demands: vec![(executable.clone(), derived.demand)],
+        return_demand_contributions,
+        follow_up: follow_up.into_iter().collect(),
+        ..JobEffects::default()
+    })
+}
+
+fn collect_one_executable_facts(
+    world: &mut World<'_>,
+    executable: &ExecutableKey,
+    reads: &mut Vec<FactKey>,
+    follow_up: &mut HashSet<Job>,
+) -> Option<ExecutableFacts> {
+    let activation = &executable.activation;
+    let analyzed_fact = FactKey::ActivationAnalyzed(activation.clone());
+    if !read_settled(world, analyzed_fact, reads) {
+        follow_up.insert(Job::AnalyzeActivation(activation.clone()));
+        return None;
+    }
+    let lowered_fact = FactKey::LoweredBody(activation.function);
+    if !read_settled(world, lowered_fact, reads) {
+        follow_up.insert(Job::LowerFunction(activation.function));
+        return None;
+    }
+    let return_fact = FactKey::ReturnType(activation.clone());
+    if !read_settled(world, return_fact, reads) {
+        follow_up.insert(Job::AnalyzeActivation(activation.clone()));
+        return None;
+    }
+
+    let analysis = world
+        .activation_analysis(activation)
+        .expect("settled activation analysis fact should have analysis")
+        .clone();
+    let body = world.lowered_body(activation.function);
+    let mut callsites = HashMap::new();
+    for callsite in &analysis.callsites {
+        let key = CallSiteKey {
+            activation: activation.clone(),
+            callsite: *callsite,
+        };
+        let callsite_fact = FactKey::CallSiteSummary(key.clone());
+        if !read_settled(world, callsite_fact, reads) {
+            follow_up.insert(Job::AnalyzeActivation(activation.clone()));
+            continue;
+        }
+        if let Some(summary) = world.callsite_summary(&key).cloned() {
+            callsites.insert(*callsite, summary);
+        }
+    }
+    if callsites.len() != analysis.callsites.len() {
+        return None;
+    }
+
+    let delivered_value_joins = delivered_value_joins(&body);
+    let local_callable_producers = local_callable_producers(&body);
+    let entry_dispatch_inputs =
+        executable_dispatch_input_ordinals(world, activation.function, analysis.reachable_clauses.clone());
+    let callsite_needs = executable_callsite_needs(&body, &analysis.reachable_clauses, executable.need);
+    Some(ExecutableFacts {
+        analysis,
+        body,
+        entry_dispatch_inputs,
+        callsites,
+        callsite_needs,
+        delivered_value_joins,
+        local_callable_producers,
+    })
+}
+
+fn read_settled(world: &World<'_>, fact: FactKey, reads: &mut Vec<FactKey>) -> bool {
+    if world.fact_is_settled(&fact) {
+        reads.push(fact);
+        true
+    } else {
+        reads.push(fact);
+        false
+    }
+}
+
+fn empty_runtime_demand(executable: &ExecutableKey) -> ExecutableRuntimeDemand {
+    ExecutableRuntimeDemand {
+        input_demands: vec![RuntimeDemand::ignore(); executable.activation.input.len()],
+        ..ExecutableRuntimeDemand::default()
+    }
+}
+
+fn direct_local_targets(facts: &ExecutableFacts) -> HashSet<ExecutableKey> {
+    let mut targets = HashSet::new();
+    for (callsite, summary) in &facts.callsites {
+        let need = facts
+            .callsite_needs
+            .get(callsite)
+            .copied()
+            .unwrap_or(ExecutableNeed::Value);
+        targets.extend(local_call_targets(summary, need));
+    }
+    targets
+}
+
+fn call_return_demand_contributions(
+    facts: &ExecutableFacts,
+    observed_returns: HashMap<CallSiteId, RuntimeDemand>,
+) -> Vec<(ExecutableKey, RuntimeDemand)> {
+    let mut out = Vec::new();
+    for (callsite, observed) in observed_returns {
+        let need = facts
+            .callsite_needs
+            .get(&callsite)
+            .copied()
+            .unwrap_or(ExecutableNeed::Value);
+        let delivered = match need {
+            ExecutableNeed::TupleFields(_) => runtime_demand_for_executable_need(need),
+            ExecutableNeed::Value => {
+                if observed.is_ignore() {
+                    continue;
+                }
+                observed
+            }
+        };
+        let Some(summary) = facts.callsites.get(&callsite) else {
+            continue;
+        };
+        out.extend(
+            local_call_targets(summary, need)
+                .into_iter()
+                .map(|target| (target, delivered.clone())),
+        );
+    }
+    out
 }
 
 pub(super) fn settle_runtime_demands(

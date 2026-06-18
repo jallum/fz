@@ -44,6 +44,7 @@ pub(crate) fn run(world: &mut World<'_>, job: &Job) -> Result<JobEffects, FatalE
         Job::SeedRoot(root_id) => root::seed_root(world, *root_id),
         Job::SeedActivation(activation) => root::seed_activation(world, activation),
         Job::AnalyzeActivation(activation) => semantic::analyze_activation(world, activation),
+        Job::DeriveRuntimeDemand(executable) => runtime_demand::derive_runtime_demand(world, executable),
         Job::SealSemanticClosure(root_id) => root::seal_semantic_closure(world, *root_id),
         Job::DeriveTransportPlan(root_id) => transport::derive_transport_plan(world, *root_id),
         Job::MaterializeRoot(root_id) => artifact::materialize_root(world, *root_id),

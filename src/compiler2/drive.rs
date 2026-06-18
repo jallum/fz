@@ -35,6 +35,7 @@ pub enum Job {
     SeedRoot(RootId),
     SeedActivation(ActivationKey),
     AnalyzeActivation(ActivationKey),
+    DeriveRuntimeDemand(ExecutableKey),
     SealSemanticClosure(RootId),
     DeriveTransportPlan(RootId),
     MaterializeRoot(RootId),
@@ -71,6 +72,8 @@ pub enum FactKey {
     ReturnType(ActivationKey),
     CallSiteSummary(CallSiteKey),
     Executable(ExecutableKey),
+    ReturnDemand(ExecutableKey),
+    RuntimeDemand(ExecutableKey),
     SemanticClosed(RootId),
     TransportPlan(RootId),
     MaterializedProgram(RootId),
@@ -86,7 +89,10 @@ impl ClaimShape for FactKey {
     /// and its body-input evidence ascends by the cross-publisher widen
     /// (`ActivationInputMap`). Every other fact's content overwrites.
     fn is_cumulative(&self) -> bool {
-        matches!(self, FactKey::ReturnType(_) | FactKey::ActivationInputs(_))
+        matches!(
+            self,
+            FactKey::ReturnType(_) | FactKey::ActivationInputs(_) | FactKey::ReturnDemand(_)
+        )
     }
 }
 
@@ -99,6 +105,8 @@ pub(crate) struct JobEffects {
     pub(crate) outputs: Vec<FactKey>,
     pub(crate) changed: Vec<FactKey>,
     pub(crate) activation_input_contributions: Vec<(ActivationKey, Vec<super::types::Ty>)>,
+    pub(crate) return_demand_contributions: Vec<(ExecutableKey, super::semantic::RuntimeDemand)>,
+    pub(crate) runtime_demands: Vec<(ExecutableKey, super::semantic::ExecutableRuntimeDemand)>,
     pub(crate) follow_up: Vec<Job>,
 }
 

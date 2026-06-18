@@ -674,6 +674,48 @@ end
 }
 
 #[test]
+fn compiler2_runtime_demand_shadow_facts_answer_transport_questions_for_quicksort() {
+    let tel = crate::telemetry::ConfiguredTelemetry::new();
+    let runtime_demands = RuntimeDemandCapture::new();
+    tel.attach(
+        &["fz", "compiler2", "runtime_demand", "defined"],
+        runtime_demands.handler(),
+    );
+
+    let mut world = World::new(&tel);
+    world.submit_code(
+        Some("quicksort_plus_foo.fz".to_string()),
+        include_str!("../../fixtures2/00001_quicksort_plus_foo.fz").to_string(),
+    );
+    let root_id = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    drive_until_semantic_closure(
+        &mut world,
+        root_id,
+        "quicksort runtime-demand shadow facts should settle before transport",
+    );
+
+    let record = runtime_demands.last(root_id);
+    assert!(
+        record.runtime_demands.len() > 1,
+        "quicksort should exercise a nontrivial executable frontier",
+    );
+    for (executable, monolith_demand) in &record.runtime_demands {
+        let fact = FactKey::RuntimeDemand(executable.clone());
+        assert!(
+            world.fact_is_settled(&fact),
+            "shadow runtime-demand fact should be settled for {executable:?}",
+        );
+        let fact_demand = world
+            .runtime_demand(executable)
+            .unwrap_or_else(|| panic!("shadow runtime-demand payload for {executable:?}"));
+        assert_eq!(
+            fact_demand, monolith_demand,
+            "shadow RuntimeDemand(E) must answer the same transport-facing questions as closure.runtime_demands[E] for {executable:?}",
+        );
+    }
+}
+
+#[test]
 fn compiler2_runtime_demand_records_the_exact_surface_for_a_direct_lambda_call() {
     let tel = crate::telemetry::ConfiguredTelemetry::new();
     let runtime_demands = RuntimeDemandCapture::new();
