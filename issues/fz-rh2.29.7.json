@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-18T21:56:16Z",
+  "description": "",
+  "id": "fz-rh2.29.7",
+  "labels": [],
+  "parent": "fz-rh2.29",
+  "priority": 2,
+  "status": "open",
+  "title": "Opaque joined callable: drop phantom polymorphic surfaces and read native boundary policy",
+  "type": "task",
+  "updated_at": "2026-06-18T21:56:16Z"
+}
