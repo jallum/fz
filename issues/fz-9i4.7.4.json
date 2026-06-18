@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-18T03:41:17Z",
+  "description": "Native runtime aborts decoding typed scalar values:\n- vr2_float_arith (run): runtime/src/ir_runtime.rs:68 'fz_ref_load_float: invalid any value ref 0x...: UnknownTag(8)' — a value-ref word reaches the float loader with a tag it can't decode.\n- vr5b_typed_print (run): same fz_ref_load_float UnknownTag panic.\n- vr3_float_args (run): runtime/src/heap/imp.rs:66 'closure capture kind' — a closure capture carries an unexpected kind on a float-arg path.\n\nAll three are typed-scalar (float) lowering/runtime mismatches: the compiler hands the runtime a ref word whose tag/kind doesn't match the typed-scalar contract. Fix the float value-ref tagging + closure-capture kind on these paths so the typed loaders accept them. fz-vn5's original triage noted 'run/build legs panic in runtime float/closure paths' — this is that bucket.",
+  "id": "fz-9i4.7.4",
+  "labels": [],
+  "parent": "fz-9i4.7",
+  "priority": 2,
+  "status": "open",
+  "title": "[BUG] Runtime panics on typed scalar value paths (float load, closure capture kind)",
+  "type": "bug",
+  "updated_at": "2026-06-18T03:41:17Z"
+}
