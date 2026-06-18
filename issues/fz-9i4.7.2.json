@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-18T03:40:59Z",
+  "description": "Enumerable/protocol-dispatch fixtures fail materialization with 'error[artifact/incomplete-semantic-plan]: materialization reached unresolved multi-target direct callsite N; dispatch must be settled upstream' (and a sibling transport assertion). The planner leaves a protocol/multi-target callsite unmonomorphized.\n\nFixtures (fixtures2/behavior), run+interp+build unless noted:\n- membership_operator, range_enumerable, enumerable_protocol_dispatch, enum_take_drop_split, enum_map_family — 'unresolved multi-target direct callsite'.\n- enum_predicate_search — surfaces instead as a compiler assertion at src/compiler2/jobs/transport.rs:119 (likely same root: dispatch not settled before transport).\n- bsx_guard_eq — interp selects a different branch (also noted in fz-rh2.16.2).\n\nSettle protocol/multi-target dispatch upstream so these callsites monomorphize. Related: fz-9i4.5 (same-arity tuple selective receive — different surface, same 'dispatch must be settled' family).",
+  "id": "fz-9i4.7.2",
+  "labels": [],
+  "parent": "fz-9i4.7",
+  "priority": 2,
+  "status": "open",
+  "title": "[BUG] Compiler2 multi-target protocol/Enumerable dispatch not settled upstream",
+  "type": "bug",
+  "updated_at": "2026-06-18T03:40:59Z"
+}
