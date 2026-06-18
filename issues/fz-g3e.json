@@ -6,9 +6,15 @@
   "description": "",
   "id": "fz-g3e",
   "labels": [],
+  "comments": [
+    {
+      "text": "Expanded report.html to explain the disproportionate SealSemanticClosure cost: per-job seal timings, effect payload sizes, final closure/runtime-demand shape, telemetry vs plain timing, and source-level causes in root sealing and runtime-demand fixed-point solving.",
+      "timestamp": "2026-06-18T08:58:46Z"
+    }
+  ],
   "priority": 1,
   "status": "in_progress",
   "title": "Explain disproportionate enum semantic closure cost",
   "type": "task",
-  "updated_at": "2026-06-18T08:51:14Z"
+  "updated_at": "2026-06-18T08:58:46Z"
 }
