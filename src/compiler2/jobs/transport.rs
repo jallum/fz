@@ -2698,6 +2698,7 @@ fn value_lane_shape(world: &mut World<'_>, ty: Ty) -> ShapeId {
 }
 
 fn value_lane(world: &mut World<'_>, ty: Ty) -> LaneId {
+    let ty = world.types_mut().value_lane_repr(ty);
     world
         .transport_mut()
         .interners_mut()
