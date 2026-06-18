@@ -3342,9 +3342,9 @@ fn enum_sort_constant_sorter_erased_under_return_demand_specs() {
             birth_count: 15,
             transport_count: 21,
             codegen_candidate_count: 15,
-            codegen_consumed_count: 6,
-            runtime_attempted_count: 55,
-            runtime_reused_count: 55,
+            codegen_consumed_count: 15,
+            runtime_attempted_count: 132,
+            runtime_reused_count: 132,
         },
         "enum_sort should make reusable-cons birth, transport, and consumption visible in compiler2 telemetry",
     );
