@@ -2,6 +2,7 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-06-18T03:48:03Z",
   "created": "2026-06-18T03:36:40Z",
   "description": "",
   "id": "fz-566",
@@ -13,8 +14,8 @@
     }
   ],
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Investigate fz2 quicksort vs enum_take_drop_split compile-time gap",
   "type": "task",
-  "updated_at": "2026-06-18T03:46:41Z"
+  "updated_at": "2026-06-18T03:48:03Z"
 }
