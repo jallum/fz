@@ -11,9 +11,15 @@
   "id": "fz-9i4.4.3",
   "labels": [],
   "parent": "fz-9i4.4",
+  "comments": [
+    {
+      "text": "AUDIT 2026-06-19 vs HEAD: core landed but NOT complete. The arg/capture ABI split is done (mixed capture-prefix slicing deleted; split = callee.inputs.len()-args.len()) and all 3 acceptance fixtures pass live (closure_typed_captures 4/4, curried_add 3/3, multi_caller_spec_divergent 3/3). REMAINING: the telemetry clause is only partially met — closure_call_lowered reports dispatch_kind (direct/indirect) but NOT boundary id or exact target as the acceptance requires (terminator.rs:1367). Finish the telemetry payload before closing.",
+      "timestamp": "2026-06-19T14:40:57Z"
+    }
+  ],
   "priority": 2,
   "status": "in_progress",
   "title": "Rewrite compiler2 native codegen around callable boundaries and split arg/capture ABI",
   "type": "task",
-  "updated_at": "2026-06-13T02:33:29Z"
+  "updated_at": "2026-06-19T14:40:57Z"
 }
