@@ -4,14 +4,16 @@
   "blocks": [
     "fz-hwn.7"
   ],
+  "closed_at": "2026-06-19T14:42:33Z",
+  "close_reason": "All children done. Consumers cut over to the transport flow-graph authority; old layout authority deleted (ReturnAbi/return_layout gone, return transport now ShapeId/LaneId/CodegenSeamFact — verified during the fz-hwn.16 audit). Unblocks fz-hwn.7.",
   "created": "2026-06-15T19:26:35Z",
   "description": "Goal\nAfter fz-hwn.20 has built and proven the independent transport-flow fact store, cut compiler2 consumers over to that authority and delete the trash-prefixed recursive layout path. This epic no longer invents the model during ripout; it consumes TransportPlan facts, switches seams, and removes obsolete authority.\n\nPrerequisites\nfz-hwn.19.7 remains the required first step before any transport-spine or related symptom work: trash-prefix doomed vocabulary so future agents cannot accidentally wire it back in. fz-hwn.20 then builds the pure information-flow model alongside the old path from semantic evidence only. fz-hwn.19.1 may not start until the fz-hwn.20 handoff proves ShapeId/LaneId/CallableId/BoundaryId descriptors, TransportPosition -\u003e ShapeId, BoundaryId contracts, and seam-specific codegen facts.\n\nSignal\nNo stage below TransportPlan construction walks one transport vocabulary to emit another. Materialization, backend/interpreter, native lowering, and native codegen read TransportPlan facts instead of TrashRuntimeValueLayout, TrashDeliveredShape, TrashNativeDemandAbi, ReturnAbi recovery, RealizedValue layout mirrors, or local ArgRepr-from-type decisions. The worked-example shape remains represented by the independent plan: tuple-field return and resume share the same ShapeId; direct callable transport uses CallableId plus capture facts; escaped callable publication uses BoundaryId; codegen repr is a seam fact.\n\nStrategy\nUse the fz-hwn.20 proof as the data-model authority. Switch one consumer seam at a time, but each seam change deletes the old model from that seam in the same commit. No compatibility bridge is committed. Old code is allowed only as removal inventory and behavior oracle. When a consumer reads the new plan, the corresponding trash-prefixed old helper/type must either disappear in that commit or be isolated behind an explicit remaining cutover ticket.\n\nDesign rule\nThe only runtime shape authority after demand settles is TransportPlan plus shared descriptor interners. Descriptor ids are immutable and may be shared beyond a root; root-scoped plans own membership, use/publication facts, and seam facts. Divergence is is_empty(return_ty), not a shape. ExecutableNeed is the coarse pre-spine seed. RuntimeDemand::Ignore becomes Shape::Nothing exactly once during fz-hwn.20 plan construction. CallableId is callable identity; BoundaryId is published callable contract identity. Boundary and codegen representations are contextual facts, not LaneId or Shape variants.",
   "id": "fz-hwn.19",
   "labels": [],
   "parent": "fz-hwn",
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "Compiler2 transport spine: cut consumers over to the independent flow graph and delete old layout authority",
   "type": "epic",
-  "updated_at": "2026-06-15T20:56:19Z"
+  "updated_at": "2026-06-19T14:42:33Z"
 }
