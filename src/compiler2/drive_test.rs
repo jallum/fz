@@ -3180,13 +3180,13 @@ end
     assert_eq!(entry.capture_count, 1);
     assert_eq!(
         entry.capture_reprs,
-        vec![AbiValueRepr::ValueRef],
-        "published callable captures cross the callable boundary with the transport seam repr, not the raw capture type"
+        vec![AbiValueRepr::RawInt],
+        "published callable captures cross the boundary at the target body's grounded repr; the boxed apply wrapper unboxes each capture from `self` to that repr"
     );
     assert_eq!(
         entry.arg_reprs,
-        vec![AbiValueRepr::ValueRef],
-        "published callable args cross the callable boundary with the transport seam repr, not ArgRepr-from-type"
+        vec![AbiValueRepr::RawInt],
+        "published callable args cross the boundary at the target body's grounded repr; the boxed apply wrapper unboxes each arg before tail-calling the body"
     );
     assert_eq!(
         entry.return_lanes.len(),

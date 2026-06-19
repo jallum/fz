@@ -329,6 +329,16 @@ published surfaces:
   `capture_reprs` describe the environment lanes loaded from `self`
   `arg_reprs` describe the exact executable-body entry lanes
 
+Callable-boundary lanes carry the target body's own grounded repr — never a
+forced `ValueRef`. The boxed closure-apply wrapper is the sole boxing seam: it
+accepts the uniform `i64` closure-apply ABI from any first-class caller and
+unboxes each capture/arg lane to the body's repr before tail-calling it. Because
+the wrapper tail-calls it cannot rebox the return, and it does not need to — the
+continuation that consumes the result is itself derived from the body's grounded
+return repr (`ReturnDelivery` / `ReturnContinuation`). Forcing boundary lanes to
+`ValueRef` would only desynchronize the wrapper's declared return from the body's
+actual return, so the lanes stay grounded and the wrapper does the bridging.
+
 Opaque closure construction materializes the settled callable boundary published
 by native lowering; singleton-known closure calls bypass that boundary only
 through an explicit `direct_target`, and direct paths still adapt the return
