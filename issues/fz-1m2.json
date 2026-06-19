@@ -6,9 +6,15 @@
   "description": "EPIC. A first-class callable value is a closure (code pointer + captures-in-self). How it is CALLED must follow its calling convention (a property of its surface/type), not how many static identities it has. Today the compiler has exactly two bins: a single static closure_lit -\u003e direct typed call; ANYTHING else -\u003e the uniform all-ValueRef boxed seam. The entire typed-but-multi-identity middle (a phi of same-signature function references) is wrongly dumped into the boxed bin, forcing heap boxing of args and returns that a typed indirect call would not need. Witness: fixtures2/behavior/opaque_fn_value_join.fz and fixtures2/00231 (reducer = case ... -\u003e add_a; _ -\u003e add_b, passed to Enum.reduce). Goal: representation follows convention, uniformly, the same way a scalar is RawInt unless a consumer erases its type to ValueRef. A first-class callable with a concrete uniform surface is dispatched by a typed call_indirect through its body entry; only a surfaceless/opaque callable is boxed. Correct-by-construction; no shims/adapters; rip out the boxed_first_class blanket.",
   "id": "fz-1m2",
   "labels": [],
+  "comments": [
+    {
+      "text": "SUPERSEDED by fz-8ge. The typed-dispatch premise was empirically falsified: the phi reducer is called from the GENERIC Enumerable.reduce protocol lambda via boxed_indirect, which has no boundary mapping and cannot dispatch typed -- so a typed call_indirect at the body entry is unreachable at the real call site. The actual root cause (fault 4) is that boxed_first_class over-boxed the boundary RETURN lane to ValueRef while the boxed apply wrapper tail-calls the body and the continuation already consumes the body's grounded return. Fix = remove the over-boxing (fz-8ge), not add typed dispatch. fz-1m2.1's classifier was reset out of the tree.",
+      "timestamp": "2026-06-19T12:49:00Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "First-class callables dispatch by calling convention, not identity count",
   "type": "task",
-  "updated_at": "2026-06-19T11:28:03Z"
+  "updated_at": "2026-06-19T12:49:00Z"
 }
