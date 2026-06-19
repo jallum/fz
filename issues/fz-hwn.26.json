@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-19T20:48:25Z",
+  "description": "",
+  "id": "fz-hwn.26",
+  "labels": [],
+  "parent": "fz-hwn",
+  "priority": 2,
+  "status": "open",
+  "title": "World owns transport interning: gateway methods + hide interners() (Demeter/contract enforcement)",
+  "type": "task",
+  "updated_at": "2026-06-19T20:48:25Z"
+}
