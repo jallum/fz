@@ -6,14 +6,16 @@
   "blocks": [
     "fz-1m2.4"
   ],
+  "closed_at": "2026-06-19T12:49:01Z",
+  "close_reason": "Superseded by fz-8ge (boxed_first_class over-boxing removal)",
   "created": "2026-06-19T11:28:53Z",
   "description": "CLEANUP. After fz-1m2.2, the boxed machinery for Typed callables is dead. Remove it; do not leave scaffolding.\n\nWHAT STAYS: closure-value boxing (publication seams box published_value_lane -- a closure is a heap pointer; correct for both conventions). The boxed wrapper + boxed_first_class override + boxed dispatch all remain for genuinely Boxed callables (heterogeneous arms, opaque escape) -- legitimate ABI bridge, not a shim.\n\nRIP OUT (verify orphaned via rg, then delete):\n- Boxed wrapper (callable_boundary_b) emission for Typed callables (declare/emit only for Boxed).\n- Any boxed_first_class / boundary_escapes_into_fz_space remnants left after fz-1m2.2.\n- The fault-3 positional return-grounding helpers in transport (boundary_return_shapes_for_publication_sources and friends) IF the convention's grounded resolution return makes them redundant for Boxed too -- re-verify; keep only what genuine Boxed callables still need.\n- Confirm retain_most_specific_surfaces (fz-rh2.29.7) now lives at its canonical home as the convention classifier's input (fz-1m2.1); collapse any duplication.\n\nCHECK: rg confirms each deleted construct has zero remaining callers; full lib + matrix green; zero warnings; behavior identical to end of fz-1m2.2.",
   "id": "fz-1m2.3",
   "labels": [],
   "parent": "fz-1m2",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "Rip out the dead boxed-first-class path and orphaned compensations",
   "type": "task",
-  "updated_at": "2026-06-19T11:39:48Z"
+  "updated_at": "2026-06-19T12:49:01Z"
 }
