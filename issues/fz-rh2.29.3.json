@@ -8,14 +8,16 @@
   "blocks": [
     "fz-rh2.29.4"
   ],
+  "closed_at": "2026-06-19T13:13:44Z",
+  "close_reason": "Already satisfied at HEAD (8bf3dde0f). Cutover landed across the fz-rh2.29.x series + unticketed acc494fd1: settle_runtime_demands monolith deleted; base_return_demand/locally_called global prepass gone; seal gathers closure.runtime_demands from settled RuntimeDemand(E) facts (root.rs:303-318) and sources latent executables per-executable via demanded_callable_executables over callable_flows (Sharp Edge satisfied -- no hidden whole-closure base-demand); shadow plumbing + equivalence asserts removed; semantic-fixpoint.md:103-111 documents the per-executable model. Verified: rg shows monolith gone; lib 2216/0; matrix 337/0; clippy clean.",
   "created": "2026-06-18T10:41:02Z",
   "description": "Cut the seal over from the monolith to settled `RuntimeDemand(E)` facts, and delete the monolith path. This is blocked until `fz-rh2.29.5` proves equivalence at the transport projection boundary; raw `ExecutableRuntimeDemand` byte identity is not the right proof obligation.\n\n## Change\n1. Seal gathers `closure.runtime_demands` from settled `RuntimeDemand(E)` facts instead of `settle_runtime_demands`.\n2. Seal sources latent executables from gathered `RuntimeDemand(E).callable_flows` using the existing demanded-callable executable rule. Discovery orchestration stays in the seal for now; only demand dataflow moves.\n3. Remove shadow-only plumbing once the fact path is authoritative.\n\n## Why\nThis is the actual runtime-demand win: the seal stops re-running whole-closure demand dataflow on every wake. Per-executable jobs re-derive from explicit fact dependencies. The cutover is safe only after the consumer-boundary projection proof exists, because internal value/call-arg provenance can differ without necessarily changing transport/codegen obligations.\n\n## Sharp Edge Carried From T2\nBefore deleting the monolith, verify the authoritative fact path did not retain a hidden whole-closure base-demand decision. `base_return_demand` and `locally_called_executables` may disappear only because entry, caller, and boundary `ReturnDemand` contributions cover the same cases. If the cutover still needs a global locally-called set to decide whether an executable gets boundary demand, the fixpoint has not actually been dissolved.\n\n## Rip Out\n- `settle_runtime_demands` whole-closure driver.\n- `base_return_demand`, re-expressed as contributions.\n- monolith-only call-return and callable-boundary propagation once their contribution facts are authoritative.\n- seal shadow-readiness checks that only existed while monolith output remained authoritative.\n\nThe reusable transfer helpers may stay if `DeriveRuntimeDemand(E)` is their sole caller.\n\n## Check\n`fz-rh2.29.5` is closed first. Then `cargo test --lib` and the fixture matrix pass with runtime demand sourced from facts. `rg` confirms the old monolith driver and global locally-called base-demand prepass are gone rather than orphaned. Update `.agent` docs and user-facing guides/northstar seal narrative to describe runtime demand as per-executable facts. Zero warnings; no scaffolding left behind.",
   "id": "fz-rh2.29.3",
   "labels": [],
   "parent": "fz-rh2.29",
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Runtime demand: cut the seal over to the facts and strangle the monolith",
   "type": "task",
-  "updated_at": "2026-06-18T14:52:13Z"
+  "updated_at": "2026-06-19T13:13:44Z"
 }
