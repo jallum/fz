@@ -10,9 +10,15 @@
   "id": "fz-hwn.9",
   "labels": [],
   "parent": "fz-hwn",
+  "comments": [
+    {
+      "text": "Re-scoped: the activation-churn TIMEOUT premise is stale -- the landed runtime-demand epic already eliminated the churn (repro completes semantic closure in ~155 activation events, no 5000ms timeout). The remaining work to re-enable the test splits into two unmasked bugs: fz-hwn.21 (phantom polymorphic surfaces publish multiple boundaries -- landed) and fz-hwn.22 (first-class callable captured by a non-tail-recursive continuation gets a 0-lane contract shape). This ticket now tracks the test re-enablement and is blocked on fz-hwn.22.",
+      "timestamp": "2026-06-19T17:46:22Z"
+    }
+  ],
   "priority": 2,
   "status": "in_progress",
   "title": "Compiler2 semantic analysis: Enum.with_index mapper activation churn times out",
   "type": "bug",
-  "updated_at": "2026-06-19T17:46:11Z"
+  "updated_at": "2026-06-19T17:46:22Z"
 }
