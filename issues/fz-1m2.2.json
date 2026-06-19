@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-1m2.1"
   ],
@@ -12,8 +12,8 @@
   "labels": [],
   "parent": "fz-1m2",
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "Honor the calling convention: typed construction, lane reprs, and dispatch (atomic)",
   "type": "task",
-  "updated_at": "2026-06-19T11:39:29Z"
+  "updated_at": "2026-06-19T12:01:46Z"
 }
