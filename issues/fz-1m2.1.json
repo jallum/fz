@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-1m2.2"
+  ],
   "created": "2026-06-19T11:28:34Z",
   "description": "FOUNDATION. Derive, for every first-class callable value, a CallConvention: Typed(arg_reprs, return_repr) when the value has a single concrete uniform surface (all join arms share one arg/return representation), or Boxed otherwise (heterogeneous arms, or the value flows to a position whose type erases the convention to any/ValueRef). Record it on the callable's transport facts. This is the discriminator the whole epic turns on; it must be exactly right.\n\nWHY: representation must follow convention. A phi of same-signature fn-refs has a known convention even though it has no single identity; the surface IS the convention. The surfaces are already propagated by the callable-flow (CallableFlowFact); this ticket reads them and classifies.\n\nWHAT: a derivation over the per-executable callable-flow facts + the apply-site surfaces. Typed iff exactly one concrete surface (arity + grounded arg/return reprs) covers all arms; Boxed iff surfaces diverge or are absent/opaque. Subsumes the phantom-surface concern (fz-rh2.29.7): a Typed convention requires ONE concrete surface, so a polymorphic template surface alongside a concrete sibling must already be gone (retain_most_specific is the same rule, now load-bearing for classification). The surface's RETURN must be the grounded concrete return (this is where the old fault-3 'boundary return is polymorphic' dissolves -- the convention carries int, not alpha).\n\nNO BEHAVIOR CHANGE yet. Pure fact + telemetry.\n\nCHECK: a focused test asserts the convention fact for the corpus -- reducer in opaque_fn_value_join -\u003e Typed[(RawInt,RawInt)-\u003eRawInt]; a genuinely opaque/heterogeneous callable -\u003e Boxed; the single-ref reducer (00178) -\u003e Typed; grounded provider callbacks (destructors) unaffected. cargo test --lib green, zero warnings.",
   "id": "fz-1m2.1",
