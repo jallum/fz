@@ -169,11 +169,6 @@ impl ValidationContext<'_, '_> {
         for lane in descr.capture_lanes.iter().copied() {
             self.validate_lane(lane, "callable descriptor capture lane");
         }
-        for surface in descr.contract_surfaces.iter() {
-            for shape in surface.iter().copied() {
-                self.validate_shape(shape, plan, "callable descriptor contract surface");
-            }
-        }
     }
 
     fn validate_callable_capture_shape(&mut self, shape: ShapeId, plan: &TransportPlan) {

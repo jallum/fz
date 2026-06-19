@@ -2413,7 +2413,6 @@ fn callable_for_producer(
         function: Some(producer.function),
         capture_shapes: capture_shapes.into_boxed_slice(),
         capture_lanes: capture_lanes.clone().into_boxed_slice(),
-        contract_surfaces: Box::default(),
     });
     let boundary_ids = if !boundary_surface_demands.is_empty() {
         let surface_arg_shapes = surface_shapes(world, &boundary_surface_demands, facts);
@@ -2563,7 +2562,7 @@ fn generic_callable_shape_with_resolutions(
     // invocation contract (the observed surfaces) is NOT part of the value's
     // identity: it projects into the published boundaries below (and the call
     // site's argument encoding), so two boxed callables of the same value-lane
-    // repr share one shape regardless of surface. Folding `contract_surfaces`
+    // repr share one shape regardless of surface. Folding the invocation contract
     // into the value identity instead fragments layout-identical pointers and
     // forces out-of-band lane patching at every carrier.
     let boxed_value_lane = value_lane(world, ty);
@@ -2571,7 +2570,6 @@ fn generic_callable_shape_with_resolutions(
         function: None,
         capture_shapes: Box::default(),
         capture_lanes: Box::from([boxed_value_lane]),
-        contract_surfaces: Box::default(),
     });
     let boundary_ids = if !surfaces.is_empty() {
         let return_shapes = publication

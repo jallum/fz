@@ -2980,18 +2980,14 @@ fn assert_generic_callable_shape_matches_upstream_demand(
     let demand = demand.callable;
     let descr = world.transport().interners().callable(callable);
     // A boxed first-class callable's VALUE shape is a pure layout fact: one boxed
-    // value lane, `function: None`, and no contract surfaces. The invocation
-    // contract (the observed surfaces) projects into the published BOUNDARIES,
-    // not the value's identity — asserted below.
+    // value lane and `function: None`. The invocation contract (the observed
+    // surfaces) projects into the published BOUNDARIES, not the value's identity
+    // — asserted below.
     assert_eq!(descr.function, None, "an opaque callable value is boxed: function None");
     assert_eq!(
         descr.capture_lanes.len(),
         1,
         "a boxed callable value occupies exactly one value lane: {descr:?}"
-    );
-    assert!(
-        descr.contract_surfaces.is_empty(),
-        "a boxed callable VALUE shape carries no contract surfaces; the contract lives on its boundaries: {descr:?}"
     );
     let facts = plan
         .callables

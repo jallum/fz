@@ -199,7 +199,6 @@ pub struct CallableDescr {
     pub function: Option<FunctionId>,
     pub capture_shapes: Box<[ShapeId]>,
     pub capture_lanes: Box<[LaneId]>,
-    pub contract_surfaces: Box<[Box<[ShapeId]>]>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -577,13 +576,11 @@ mod tests {
             function: Some(add),
             capture_shapes: vec![shape].into_boxed_slice(),
             capture_lanes: vec![lane].into_boxed_slice(),
-            contract_surfaces: Box::default(),
         });
         let same_callable = interners.intern_callable(CallableDescr {
             function: Some(add),
             capture_shapes: vec![shape].into_boxed_slice(),
             capture_lanes: vec![lane].into_boxed_slice(),
-            contract_surfaces: Box::default(),
         });
         let callable_shape = interners.intern_shape(ShapeDescr::Callable(callable));
         let same_callable_shape = interners.intern_shape(ShapeDescr::Callable(same_callable));
@@ -599,7 +596,6 @@ mod tests {
                 function: Some(add),
                 capture_shapes: vec![shape].into_boxed_slice(),
                 capture_lanes: vec![lane].into_boxed_slice(),
-                contract_surfaces: Box::default(),
             },
             "callable descriptors are independent of root-scoped positions"
         );
@@ -622,7 +618,6 @@ mod tests {
             function: Some(add),
             capture_shapes: vec![shape].into_boxed_slice(),
             capture_lanes: vec![lane].into_boxed_slice(),
-            contract_surfaces: Box::default(),
         });
         let boundary = BoundaryDescr {
             callable,
@@ -663,20 +658,17 @@ mod tests {
             function: None,
             capture_shapes: Box::default(),
             capture_lanes: Box::default(),
-            contract_surfaces: Box::default(),
         });
         let shared_shape = interners.intern_shape(ShapeDescr::Callable(shared_callable));
         let int_payload = interners.intern_callable(CallableDescr {
             function: Some(add),
             capture_shapes: vec![shared_shape].into_boxed_slice(),
             capture_lanes: vec![int_lane].into_boxed_slice(),
-            contract_surfaces: Box::default(),
         });
         let atom_payload = interners.intern_callable(CallableDescr {
             function: Some(add),
             capture_shapes: vec![shared_shape].into_boxed_slice(),
             capture_lanes: vec![atom_lane].into_boxed_slice(),
-            contract_surfaces: Box::default(),
         });
 
         assert_ne!(

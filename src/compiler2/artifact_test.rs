@@ -71,7 +71,6 @@ impl TestTransportShapes {
             function: None,
             capture_shapes: Box::default(),
             capture_lanes: Box::default(),
-            contract_surfaces: Box::default(),
         });
         self.transport.interners_mut().intern_boundary(BoundaryDescr {
             callable,
