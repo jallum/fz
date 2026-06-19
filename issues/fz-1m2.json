@@ -2,6 +2,8 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-06-19T12:49:01Z",
+  "close_reason": "Superseded by fz-8ge (boxed_first_class over-boxing removal)",
   "created": "2026-06-19T11:28:03Z",
   "description": "EPIC. A first-class callable value is a closure (code pointer + captures-in-self). How it is CALLED must follow its calling convention (a property of its surface/type), not how many static identities it has. Today the compiler has exactly two bins: a single static closure_lit -\u003e direct typed call; ANYTHING else -\u003e the uniform all-ValueRef boxed seam. The entire typed-but-multi-identity middle (a phi of same-signature function references) is wrongly dumped into the boxed bin, forcing heap boxing of args and returns that a typed indirect call would not need. Witness: fixtures2/behavior/opaque_fn_value_join.fz and fixtures2/00231 (reducer = case ... -\u003e add_a; _ -\u003e add_b, passed to Enum.reduce). Goal: representation follows convention, uniformly, the same way a scalar is RawInt unless a consumer erases its type to ValueRef. A first-class callable with a concrete uniform surface is dispatched by a typed call_indirect through its body entry; only a surfaceless/opaque callable is boxed. Correct-by-construction; no shims/adapters; rip out the boxed_first_class blanket.",
   "id": "fz-1m2",
@@ -13,8 +15,8 @@
     }
   ],
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "First-class callables dispatch by calling convention, not identity count",
   "type": "task",
-  "updated_at": "2026-06-19T12:49:00Z"
+  "updated_at": "2026-06-19T12:49:01Z"
 }
