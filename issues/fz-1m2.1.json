@@ -4,14 +4,15 @@
   "blocks": [
     "fz-1m2.2"
   ],
+  "closed_at": "2026-06-19T11:56:23Z",
   "created": "2026-06-19T11:28:34Z",
   "description": "FOUNDATION (fact only, no behavior change). Classify every first-class callable value's CallConvention: Typed(arg_reprs, return_repr) when its RESOLUTIONS share one grounded uniform signature, else Boxed.\n\nDE-RISKED: the convention comes from the RESOLUTIONS, not the value's stored type. The reducer's type is polymorphic (alpha,alpha)-\u003ealpha#31|#32, but its resolutions are concrete add_a@[int,int], add_b@[int,int] (already in CallableFlowFact.resolutions). Map each resolution to (arg reprs from its activation input types, return repr from its settled return type) via codegen_repr_for_lane semantics (int-\u003eRawInt, atom-\u003eRawAtom, float-\u003eRawF64, else-\u003eValueRef). Typed iff all resolutions yield one identical (arg_reprs, return_repr); Boxed iff they diverge, or there are no concrete resolutions (genuinely opaque). This subsumes the phantom-surface concern from fz-rh2.29.7 (a Typed convention needs one concrete surface; retain_most_specific is its canonical input) AND the fault-3 'polymorphic return' concern (the convention's return is the resolution's grounded int, never alpha).\n\nRecord the convention on the callable's transport facts. PURE DERIVATION + telemetry; nothing consumes it yet.\n\nCHECK: a focused test asserts the convention across the corpus -- reducer in opaque_fn_value_join and 00231 -\u003e Typed[(RawInt,RawInt)-\u003eRawInt]; single-ref 00178 -\u003e Typed; operator-ref 00181/00405 -\u003e Typed; a genuinely heterogeneous/opaque callable -\u003e Boxed; resource-destructor/provider-callback callables unaffected. cargo test --lib green, zero warnings.",
   "id": "fz-1m2.1",
   "labels": [],
   "parent": "fz-1m2",
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Classify each first-class callable's calling convention as a transport fact",
   "type": "task",
-  "updated_at": "2026-06-19T11:41:15Z"
+  "updated_at": "2026-06-19T11:56:23Z"
 }
