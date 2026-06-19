@@ -723,7 +723,7 @@ fn project_transport_plan(
     facts.resolve_publication_source_boundaries(world);
 
     let (callables, boundaries) = facts.finish();
-    let codegen_seam_facts = derive_codegen_seam_facts(world, contexts, &positions, &callables, &boundaries);
+    let codegen_seam_facts = derive_codegen_seam_facts(world, contexts, &positions, &boundaries);
 
     TransportPlan {
         entry,
@@ -856,7 +856,6 @@ fn derive_codegen_seam_facts(
     world: &World<'_>,
     contexts: &HashMap<ExecutableKey, ExecutableContext>,
     positions: &HashMap<TransportPosition, ShapeId>,
-    callables: &HashMap<CallableId, CallableFacts>,
     boundaries: &HashMap<BoundaryId, BoundaryFacts>,
 ) -> Box<[CodegenSeamFact]> {
     let mut out = Vec::new();
@@ -1103,39 +1102,8 @@ fn derive_codegen_seam_facts(
             }
         }
     }
-    for (callable, facts) in callables {
-        let descr = world.transport().interners().callable(*callable);
-        for (semantic_index, lane) in callable_function_entry_publication_lanes(world, descr) {
-            for executable in facts.resolutions.iter() {
-                out.push(CodegenSeamFact {
-                    seam: CodegenSeam::FunctionEntry {
-                        executable: executable.clone(),
-                        semantic_index,
-                    },
-                    shape: None,
-                    lane,
-                    repr: CodegenLaneRepr::ValueRef,
-                });
-            }
-        }
-    }
     out.sort_by_key(codegen_seam_fact_sort_key);
     out.into_boxed_slice()
-}
-
-fn callable_function_entry_publication_lanes(world: &World<'_>, descr: &CallableDescr) -> Vec<(usize, LaneId)> {
-    let mut lane_index = 0;
-    let mut lanes = Vec::new();
-    for (semantic_index, shape) in descr.capture_shapes.iter().copied().enumerate() {
-        let structural_width = lanes_for_codegen_seam_shape(world, shape).len();
-        if structural_width == 0 && lane_index < descr.capture_lanes.len() {
-            lanes.push((semantic_index, descr.capture_lanes[lane_index]));
-            lane_index += 1;
-        } else {
-            lane_index += structural_width;
-        }
-    }
-    lanes
 }
 
 /// The `ExecutableReturn` position a call result is produced from, when the
