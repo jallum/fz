@@ -1,6 +1,7 @@
 {
   "assignee": "Jason Allum",
   "blocked_by": [
+    "fz-hwn.22",
     "fz-hwn.7"
   ],
   "blocks": [],
@@ -13,5 +14,5 @@
   "status": "in_progress",
   "title": "Compiler2 semantic analysis: Enum.with_index mapper activation churn times out",
   "type": "bug",
-  "updated_at": "2026-06-19T15:39:42Z"
+  "updated_at": "2026-06-19T17:46:11Z"
 }
