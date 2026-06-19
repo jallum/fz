@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-19T20:05:35Z",
+  "description": "",
+  "id": "fz-hwn.25",
+  "labels": [],
+  "parent": "fz-hwn",
+  "priority": 2,
+  "status": "open",
+  "title": "Collapse the redundant FirstClassPublication value-lane machinery now that the shape carries the boxed lane",
+  "type": "task",
+  "updated_at": "2026-06-19T20:05:35Z"
+}
