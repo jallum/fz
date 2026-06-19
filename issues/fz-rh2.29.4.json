@@ -4,14 +4,16 @@
     "fz-rh2.29.3"
   ],
   "blocks": [],
+  "closed_at": "2026-06-19T14:01:00Z",
+  "close_reason": "Landed in d4a2339e1. ContributionMap\u003cK,P,V\u003e + JoinContribution trait + ContributionReplace\u003cK\u003e unify ActivationInputMap and ReturnDemandMap (now type aliases). Both divergences dissolved against the authoritative engine: self-owned output_keys deleted (work graph is the single source of truth, identical accumulate/replace per scheduler::complete); changed-on-withdrawal unified on record-then-drop (FactTable neutralizes the difference for fully-retracted facts). Pure refactor: T1 + activation tests + lib 2216/0 + matrix 337/0 + integration bins green, zero warnings, no golden movement.",
   "created": "2026-06-18T10:41:02Z",
   "description": "Pay down the duplication the strangler deliberately incurred. Done LAST, after ReturnDemand is proven, so the refactor has three green cumulative facts as oracle and never destabilizes the type fixpoint mid-migration. This is the \"take the pain to make it right\" close-out, not an afterthought.\n\n## Change\nExtract `ContributionMap\u003cK, V: JoinSemilattice\u003e` capturing the shared structure of `ActivationInputMap` and `ReturnDemandMap`: per-key contributors + joined aggregate, output_keys, conclude/extend with identical changed-key semantics. The two existing maps become instances differing only in (K, V, join op). Define a small `JoinSemilattice` trait (join_assign + bottom) implemented by the input-vector join (refine_widen pointwise) and RuntimeDemand.\n\n## Why\nAfter T3 there are three cumulative facts (ReturnType, ActivationInputs, ReturnDemand); two share a near-identical multi-publisher store. Two instances did not justify a generic; three do. One store, one set of conclude/extend invariants to reason about — fewer places for the contribution semantics to drift.\n\n## Rip out\nThe duplicated body of ReturnDemandMap (and the bespoke ActivationInputMap internals) collapse into the generic. ActivationInputReplace/return-demand-replace converge to one `ContributionReplace\u003cK\u003e`.\n\n## Check\nPure refactor: existing activation-input tests (unchanged behavior) + T1's demand-store tests + full `tests/fixture_matrix.rs` all green. No telemetry/golden movement — if anything moves, the refactor changed behavior and is wrong. Zero warnings.",
   "id": "fz-rh2.29.4",
   "labels": [],
   "parent": "fz-rh2.29",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Runtime demand: unify ActivationInputMap and ReturnDemandMap into a generic ContributionMap",
   "type": "task",
-  "updated_at": "2026-06-19T13:14:01Z"
+  "updated_at": "2026-06-19T14:01:00Z"
 }
