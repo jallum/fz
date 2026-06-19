@@ -4,6 +4,7 @@
     "fz-hwn.24"
   ],
   "blocks": [],
+  "closed_at": "2026-06-19T20:36:12Z",
   "created": "2026-06-19T20:05:35Z",
   "description": "fz-hwn.22 made a boxed first-class callable's VALUE shape carry its single value lane (capture_lanes=[value_lane]). The out-of-band FirstClassPublication seam machinery still bolts the SAME value_lane onto each carrier position (published_value_lane), so the two now duplicate: the maplist+phi plan shows FirstClassPublication seams coexisting with shape-driven lanes (one is picked via position_width's publication preference).\n\nInvestigate retiring the redundant path so carrier lanes derive uniformly from the shape:\n- position_publication_lanes / function_entry_publication_lanes\n- the published_value decode branches (bind_executable_inputs, bind_entry_input)\n- position_width's publication preference\n- the FirstClassPublication seam emission (jobs/transport.rs ~1031-1104)\n\nCaveat: not every publication use is the boxed-value case (ResumePayload, ReturnPayload, ExternBoundary). Verify each before deleting; this is an investigation + simplification, not a blind removal. Proven by full lib+matrix green with the machinery gone or provably reduced. Depends on fz-hwn.24.",
   "id": "fz-hwn.25",
@@ -16,7 +17,7 @@
     }
   ],
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Collapse the redundant FirstClassPublication value-lane machinery now that the shape carries the boxed lane",
   "type": "task",
   "updated_at": "2026-06-19T20:36:12Z"
