@@ -50,9 +50,9 @@ use super::runtime_demand_facts::RuntimeDemandMap;
 use super::scheduler::FatalError;
 use super::scope::ScopeSnapshot;
 use super::semantic::{
-    ActivationAnalysis, ActivationInputMap, ActivationInputReplace, ActivationMap, CallSiteKey, CallSiteMap,
-    CallSiteSummary, CallableDemand, ExecutableRuntimeDemand, ReturnDemandMap, ReturnDemandReplace, RuntimeDemand,
-    SemanticClosure, SemanticClosureMap, ShapeDemand,
+    ActivationAnalysis, ActivationInputMap, ActivationMap, CallSiteKey, CallSiteMap, CallSiteSummary, CallableDemand,
+    ContributionReplace, ExecutableRuntimeDemand, ReturnDemandMap, RuntimeDemand, SemanticClosure, SemanticClosureMap,
+    ShapeDemand,
 };
 use super::source::{
     QuotedLexicalContext, QuotedLexicalContextKind, QuotedSourceBuilder, QuotedSourceError, QuotedSourceMetadata,
@@ -439,24 +439,39 @@ impl<'a> World<'a> {
         // values join unless the publisher's ground shifted (rebase), which
         // is the only path by which contributed inputs may narrow.
         let rebased = self.work_graph.rebased(&job);
-        let previous_return_demand_outputs = self
-            .work_graph
-            .output_keys(&job)
+        // The work graph is the single source of truth for each publisher's
+        // prior output frontier (it tracks every job's facts under the identical
+        // accumulate-on-extend / replace-on-conclude rule). Both contribution
+        // stores read their retraction frontier from it, filtered to their fact.
+        let previous_output_keys = self.work_graph.output_keys(&job);
+        let previous_activation_input_outputs = previous_output_keys
+            .iter()
+            .filter_map(|fact| match fact {
+                FactKey::ActivationInputs(key) => Some(key.clone()),
+                _ => None,
+            })
+            .collect::<HashSet<_>>();
+        let previous_return_demand_outputs = previous_output_keys
             .into_iter()
             .filter_map(|fact| match fact {
                 FactKey::ReturnDemand(executable) => Some(executable),
                 _ => None,
             })
             .collect::<HashSet<_>>();
-        let ActivationInputReplace {
+        let ContributionReplace {
             output_keys: activation_input_outputs,
             changed_keys: activation_input_changed,
         } = if waits.is_empty() {
-            self.conclude_activation_input_contributions(&job, effects.activation_input_contributions, rebased)
+            self.conclude_activation_input_contributions(
+                &job,
+                previous_activation_input_outputs,
+                effects.activation_input_contributions,
+                rebased,
+            )
         } else {
             self.extend_activation_input_contributions(&job, effects.activation_input_contributions)
         };
-        let ReturnDemandReplace {
+        let ContributionReplace {
             output_keys: return_demand_outputs,
             changed_keys: return_demand_changed,
         } = if waits.is_empty() {
@@ -580,7 +595,7 @@ impl<'a> World<'a> {
     /// in the separate `ActivationInputs(key)` fact.
     pub(crate) fn activation_inputs(&self, key: &ActivationKey) -> Option<Vec<Ty>> {
         self.fact_revision(&FactKey::ActivationInputs(key.clone()))?;
-        Some(self.activation_inputs.get(key)?.to_vec())
+        Some(self.activation_inputs.get(key)?.clone())
     }
 
     pub fn activation_analysis(&self, key: &ActivationKey) -> Option<&ActivationAnalysis> {
@@ -627,19 +642,20 @@ impl<'a> World<'a> {
     fn conclude_activation_input_contributions(
         &mut self,
         job: &Job,
+        previous_output_keys: HashSet<ActivationKey>,
         contributions: Vec<(ActivationKey, Vec<Ty>)>,
         rebased: bool,
-    ) -> ActivationInputReplace {
+    ) -> ContributionReplace<ActivationKey> {
         let next = self.normalize_contributions(contributions);
         self.activation_inputs
-            .conclude(&mut self.types, job.clone(), next, rebased)
+            .conclude(&mut self.types, job.clone(), previous_output_keys, next, rebased)
     }
 
     fn extend_activation_input_contributions(
         &mut self,
         job: &Job,
         contributions: Vec<(ActivationKey, Vec<Ty>)>,
-    ) -> ActivationInputReplace {
+    ) -> ContributionReplace<ActivationKey> {
         let next = self.normalize_contributions(contributions);
         self.activation_inputs.extend(&mut self.types, job.clone(), next)
     }
@@ -684,19 +700,19 @@ impl<'a> World<'a> {
         previous_output_keys: HashSet<ExecutableKey>,
         contributions: Vec<(ExecutableKey, RuntimeDemand)>,
         rebased: bool,
-    ) -> ReturnDemandReplace {
+    ) -> ContributionReplace<ExecutableKey> {
         let next = self.normalize_return_demand_contributions(contributions);
         self.return_demands
-            .conclude(job.clone(), previous_output_keys, next, rebased)
+            .conclude(&mut (), job.clone(), previous_output_keys, next, rebased)
     }
 
     fn extend_return_demand_contributions(
         &mut self,
         job: &Job,
         contributions: Vec<(ExecutableKey, RuntimeDemand)>,
-    ) -> ReturnDemandReplace {
+    ) -> ContributionReplace<ExecutableKey> {
         let next = self.normalize_return_demand_contributions(contributions);
-        self.return_demands.extend(job.clone(), next)
+        self.return_demands.extend(&mut (), job.clone(), next)
     }
 
     fn normalize_return_demand_contributions(
@@ -714,7 +730,10 @@ impl<'a> World<'a> {
     }
 
     pub(crate) fn return_demand(&self, key: &ExecutableKey) -> RuntimeDemand {
-        self.return_demands.get(key)
+        self.return_demands
+            .get(key)
+            .cloned()
+            .unwrap_or_else(RuntimeDemand::ignore)
     }
 
     pub(crate) fn define_runtime_demand(&mut self, key: ExecutableKey, demand: ExecutableRuntimeDemand) -> bool {

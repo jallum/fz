@@ -446,19 +446,73 @@ pub struct ActivationMap {
     slots: HashMap<ActivationKey, ActivationSlot>,
 }
 
-pub struct ActivationInputMap<P> {
-    slots: HashMap<ActivationKey, ActivationInputSlot<P>>,
-    output_keys: HashMap<P, HashSet<ActivationKey>>,
+/// A value that composes by monotone join within a context. The contribution
+/// store joins every publisher's entry for one key into a single aggregate;
+/// `Ctx` carries whatever the join needs — the type store for input vectors,
+/// nothing for runtime demand.
+pub trait JoinContribution: Clone + PartialEq {
+    type Ctx;
+    /// The empty aggregate: the join of zero contributors (lattice bottom).
+    fn bottom() -> Self;
+    /// Monotone join: `self ⊔= other`.
+    fn join_assign(&mut self, other: &Self, ctx: &mut Self::Ctx);
 }
 
-pub struct ReturnDemandMap<P> {
-    slots: HashMap<ExecutableKey, ReturnDemandSlot<P>>,
+/// One key's per-publisher contributions and their joined aggregate.
+#[derive(Debug, Clone)]
+struct ContributionSlot<P, V> {
+    contributors: HashMap<P, V>,
+    joined: V,
 }
 
-impl<P> Default for ReturnDemandMap<P> {
+/// A multi-publisher contribution store: each key's value is the join over
+/// every publisher's contribution. `ActivationInputMap` and `ReturnDemandMap`
+/// are its two instances, differing only in (key, value, join context).
+///
+/// The store does NOT own a per-publisher output-key index. The scheduler's
+/// work graph already tracks every job's published facts under the identical
+/// accumulate-on-extend / replace-on-conclude rule, so it is the single source
+/// of truth for a publisher's frontier; `conclude` takes that frontier as
+/// `previous_output_keys`.
+pub struct ContributionMap<K, P, V> {
+    slots: HashMap<K, ContributionSlot<P, V>>,
+}
+
+impl<K, P, V> Default for ContributionMap<K, P, V> {
     fn default() -> Self {
         Self { slots: HashMap::new() }
     }
+}
+
+/// A conclusion/extension's effect: the publisher's new output-key frontier and
+/// the keys whose joined aggregate moved.
+#[derive(Debug)]
+pub struct ContributionReplace<K> {
+    pub output_keys: HashSet<K>,
+    pub changed_keys: HashSet<K>,
+}
+
+impl<K> Default for ContributionReplace<K> {
+    fn default() -> Self {
+        Self {
+            output_keys: HashSet::new(),
+            changed_keys: HashSet::new(),
+        }
+    }
+}
+
+/// The activation-input contribution store: per-publisher body input evidence,
+/// joined pointwise by `refine_widen` over the shared type store.
+pub type ActivationInputMap<P> = ContributionMap<ActivationKey, P, Vec<Ty>>;
+
+/// The return-demand contribution store: per-caller `ReturnDemand(E)` evidence,
+/// joined by the demand lattice's least upper bound.
+pub type ReturnDemandMap<P> = ContributionMap<ExecutableKey, P, RuntimeDemand>;
+
+/// One publisher's entry for a key in a conclusion's `next` map.
+enum SlotEntry<V> {
+    Upsert(V),
+    Withdraw,
 }
 
 #[derive(Debug, Default)]
@@ -474,30 +528,6 @@ pub struct SemanticClosureSlot {
 #[derive(Debug, Default)]
 pub struct SemanticClosureMap {
     slots: Vec<Option<SemanticClosureSlot>>,
-}
-
-#[derive(Debug, Clone)]
-struct ActivationInputSlot<P> {
-    contributors: HashMap<P, Vec<Ty>>,
-    joined: Vec<Ty>,
-}
-
-#[derive(Debug, Clone)]
-struct ReturnDemandSlot<P> {
-    contributors: HashMap<P, RuntimeDemand>,
-    joined: RuntimeDemand,
-}
-
-#[derive(Debug, Default)]
-pub struct ActivationInputReplace {
-    pub output_keys: HashSet<ActivationKey>,
-    pub changed_keys: HashSet<ActivationKey>,
-}
-
-#[derive(Debug, Default)]
-pub struct ReturnDemandReplace {
-    pub output_keys: HashSet<ExecutableKey>,
-    pub changed_keys: HashSet<ExecutableKey>,
 }
 
 impl ActivationMap {
@@ -595,144 +625,37 @@ impl ActivationMap {
     }
 }
 
-impl<P> ActivationInputMap<P>
+impl<K, P, V> ContributionMap<K, P, V>
 where
+    K: Clone + Eq + Hash,
     P: Clone + Eq + Hash,
-{
-    pub fn new() -> Self {
-        Self {
-            slots: HashMap::new(),
-            output_keys: HashMap::new(),
-        }
-    }
-
-    pub fn get(&self, key: &ActivationKey) -> Option<&[Ty]> {
-        self.slots.get(key).map(|slot| slot.joined.as_slice())
-    }
-
-    /// The concluding-completion arm: the publisher's contribution key set is
-    /// replaced (dropping a key withdraws demand — final, and the only path
-    /// by which a sole-publisher activation retracts), while entry values
-    /// JOIN with the publisher's prior entry unless its ground shifted
-    /// (`rebased`) — the only path by which contributed inputs may narrow.
-    pub fn conclude(
-        &mut self,
-        types: &mut Types,
-        publisher: P,
-        next: HashMap<ActivationKey, Vec<Ty>>,
-        rebased: bool,
-    ) -> ActivationInputReplace {
-        let next_output_keys = next.keys().cloned().collect::<HashSet<_>>();
-        let previous_output_keys = if next_output_keys.is_empty() {
-            self.output_keys.remove(&publisher).unwrap_or_default()
-        } else {
-            self.output_keys
-                .insert(publisher.clone(), next_output_keys.clone())
-                .unwrap_or_default()
-        };
-        let touched = previous_output_keys
-            .iter()
-            .cloned()
-            .chain(next_output_keys.iter().cloned())
-            .collect::<HashSet<_>>();
-        let mut changed_keys = HashSet::new();
-
-        for key in touched {
-            let mut slot = self.slots.remove(&key).unwrap_or_else(ActivationInputSlot::new);
-            let old_joined = (!slot.contributors.is_empty()).then(|| slot.joined.clone());
-
-            match next.get(&key) {
-                Some(inputs) => {
-                    upsert_contribution(types, &mut slot, &publisher, inputs.clone(), !rebased);
-                }
-                None => {
-                    slot.contributors.remove(&publisher);
-                }
-            }
-
-            if slot.contributors.is_empty() {
-                continue;
-            }
-
-            let joined = join_activation_inputs(types, slot.contributors.values());
-            if old_joined.as_ref() != Some(&joined) {
-                changed_keys.insert(key.clone());
-            }
-            slot.joined = joined;
-            self.slots.insert(key, slot);
-        }
-
-        ActivationInputReplace {
-            output_keys: next_output_keys,
-            changed_keys,
-        }
-    }
-
-    /// The waiting-completion arm: listed keys gain (or widen) this
-    /// publisher's entry, unlisted keys it previously contributed stand
-    /// untouched. A blocked publisher recants nothing.
-    pub fn extend(
-        &mut self,
-        types: &mut Types,
-        publisher: P,
-        next: HashMap<ActivationKey, Vec<Ty>>,
-    ) -> ActivationInputReplace {
-        if next.is_empty() {
-            return ActivationInputReplace::default();
-        }
-        let next_output_keys = next.keys().cloned().collect::<HashSet<_>>();
-        self.output_keys
-            .entry(publisher.clone())
-            .or_default()
-            .extend(next_output_keys.iter().cloned());
-        let mut changed_keys = HashSet::new();
-
-        for (key, inputs) in next {
-            let mut slot = self.slots.remove(&key).unwrap_or_else(ActivationInputSlot::new);
-            let old_joined = (!slot.contributors.is_empty()).then(|| slot.joined.clone());
-
-            upsert_contribution(types, &mut slot, &publisher, inputs, true);
-
-            let joined = join_activation_inputs(types, slot.contributors.values());
-            if old_joined.as_ref() != Some(&joined) {
-                changed_keys.insert(key.clone());
-            }
-            slot.joined = joined;
-            self.slots.insert(key, slot);
-        }
-
-        ActivationInputReplace {
-            output_keys: next_output_keys,
-            changed_keys,
-        }
-    }
-}
-
-impl<P> ReturnDemandMap<P>
-where
-    P: Clone + Eq + Hash,
+    V: JoinContribution,
 {
     pub fn new() -> Self {
         Self::default()
     }
 
-    pub fn get(&self, key: &ExecutableKey) -> RuntimeDemand {
-        self.slots
-            .get(key)
-            .map(|slot| slot.joined.clone())
-            .unwrap_or_else(RuntimeDemand::ignore)
+    /// The joined aggregate for a key, or `None` before any publisher
+    /// contributes. Read a bottom-defaulting value with
+    /// `get(key).cloned().unwrap_or_else(V::bottom)`.
+    pub fn get(&self, key: &K) -> Option<&V> {
+        self.slots.get(key).map(|slot| &slot.joined)
     }
 
-    /// The fact engine owns the publisher's output-key set. The demand store
-    /// only uses that set to know which contribution entries a conclusion must
-    /// retract from the joined payload.
+    /// The concluding-completion arm: the publisher's contribution key set is
+    /// replaced — dropping a key withdraws that contribution, the only path by
+    /// which a sole publisher retracts — while entry values JOIN with the
+    /// publisher's prior entry unless its ground shifted (`rebased`), the only
+    /// path by which contributed values may narrow. `previous_output_keys` is
+    /// the publisher's prior frontier, owned by the work graph.
     pub fn conclude(
         &mut self,
+        ctx: &mut V::Ctx,
         publisher: P,
-        previous_output_keys: HashSet<ExecutableKey>,
-        next: HashMap<ExecutableKey, RuntimeDemand>,
+        previous_output_keys: HashSet<K>,
+        next: HashMap<K, V>,
         rebased: bool,
-    ) -> ReturnDemandReplace {
+    ) -> ContributionReplace<K> {
         let next_output_keys = next.keys().cloned().collect::<HashSet<_>>();
         let touched = previous_output_keys
             .iter()
@@ -740,62 +663,67 @@ where
             .chain(next_output_keys.iter().cloned())
             .collect::<HashSet<_>>();
         let mut changed_keys = HashSet::new();
-
         for key in touched {
-            let mut slot = self.slots.remove(&key).unwrap_or_else(ReturnDemandSlot::new);
-            let old_joined = slot.joined.clone();
-
-            match next.get(&key) {
-                Some(demand) => {
-                    upsert_return_demand_contribution(&mut slot, &publisher, demand.clone(), !rebased);
-                }
-                None => {
-                    slot.contributors.remove(&publisher);
-                }
+            let entry = match next.get(&key) {
+                Some(value) => SlotEntry::Upsert(value.clone()),
+                None => SlotEntry::Withdraw,
+            };
+            if self.apply(ctx, &key, &publisher, entry, !rebased) {
+                changed_keys.insert(key);
             }
-
-            let joined = join_return_demands(slot.contributors.values());
-            if old_joined != joined {
-                changed_keys.insert(key.clone());
-            }
-            if slot.contributors.is_empty() {
-                continue;
-            }
-            slot.joined = joined;
-            self.slots.insert(key, slot);
         }
-
-        ReturnDemandReplace {
+        ContributionReplace {
             output_keys: next_output_keys,
             changed_keys,
         }
     }
 
-    pub fn extend(&mut self, publisher: P, next: HashMap<ExecutableKey, RuntimeDemand>) -> ReturnDemandReplace {
+    /// The waiting-completion arm: listed keys gain (or widen) this publisher's
+    /// entry; unlisted keys it previously contributed stand untouched. A blocked
+    /// publisher recants nothing.
+    pub fn extend(&mut self, ctx: &mut V::Ctx, publisher: P, next: HashMap<K, V>) -> ContributionReplace<K> {
         if next.is_empty() {
-            return ReturnDemandReplace::default();
+            return ContributionReplace::default();
         }
         let next_output_keys = next.keys().cloned().collect::<HashSet<_>>();
         let mut changed_keys = HashSet::new();
-
-        for (key, demand) in next {
-            let mut slot = self.slots.remove(&key).unwrap_or_else(ReturnDemandSlot::new);
-            let old_joined = slot.joined.clone();
-
-            upsert_return_demand_contribution(&mut slot, &publisher, demand, true);
-
-            let joined = join_return_demands(slot.contributors.values());
-            if old_joined != joined {
-                changed_keys.insert(key.clone());
+        for (key, value) in next {
+            if self.apply(ctx, &key, &publisher, SlotEntry::Upsert(value), true) {
+                changed_keys.insert(key);
             }
-            slot.joined = joined;
-            self.slots.insert(key, slot);
         }
-
-        ReturnDemandReplace {
+        ContributionReplace {
             output_keys: next_output_keys,
             changed_keys,
         }
+    }
+
+    /// Apply one publisher's entry (or withdrawal) to one key and report whether
+    /// the joined aggregate moved. An emptied slot is dropped, and its move to
+    /// bottom is reported so a multi-publisher retraction is observed; a sole
+    /// publisher's retraction is reported too, though the fact table neutralizes
+    /// it through the vanished publisher set.
+    fn apply(&mut self, ctx: &mut V::Ctx, key: &K, publisher: &P, entry: SlotEntry<V>, join: bool) -> bool {
+        let mut slot = self.slots.remove(key).unwrap_or_else(|| ContributionSlot {
+            contributors: HashMap::new(),
+            joined: V::bottom(),
+        });
+        let old_joined = (!slot.contributors.is_empty()).then(|| slot.joined.clone());
+        match entry {
+            SlotEntry::Upsert(value) => {
+                upsert_contribution(ctx, &mut slot.contributors, publisher, value, join);
+            }
+            SlotEntry::Withdraw => {
+                slot.contributors.remove(publisher);
+            }
+        }
+        let joined = join_contributions(ctx, slot.contributors.values());
+        let moved = old_joined.as_ref() != Some(&joined);
+        if !slot.contributors.is_empty() {
+            slot.joined = joined;
+            self.slots.insert(key.clone(), slot);
+        }
+        moved
     }
 }
 
@@ -872,109 +800,81 @@ impl SemanticClosureMap {
     }
 }
 
-impl<P> ActivationInputSlot<P> {
-    fn new() -> Self {
-        Self {
-            contributors: HashMap::new(),
-            joined: Vec::new(),
-        }
-    }
-}
-
-impl<P> ReturnDemandSlot<P> {
-    fn new() -> Self {
-        Self {
-            contributors: HashMap::new(),
-            joined: RuntimeDemand::ignore(),
-        }
-    }
-}
-
-/// Install one publisher's contribution into a slot. `join` widens slot-wise
-/// with the publisher's prior entry (the within-epoch ascent); without it the
+/// Install one publisher's contribution into a key's contributor table. `join`
+/// widens the publisher's prior entry (the within-epoch ascent); without it the
 /// entry replaces (the rebase path).
-fn upsert_contribution<P: Clone + Eq + Hash>(
-    types: &mut Types,
-    slot: &mut ActivationInputSlot<P>,
-    publisher: &P,
-    inputs: Vec<Ty>,
-    join: bool,
-) {
-    match slot.contributors.entry(publisher.clone()) {
+fn upsert_contribution<P, V>(ctx: &mut V::Ctx, contributors: &mut HashMap<P, V>, publisher: &P, value: V, join: bool)
+where
+    P: Clone + Eq + Hash,
+    V: JoinContribution,
+{
+    match contributors.entry(publisher.clone()) {
         std::collections::hash_map::Entry::Vacant(entry) => {
-            entry.insert(inputs);
+            entry.insert(value);
         }
         std::collections::hash_map::Entry::Occupied(mut entry) => {
-            if !join {
-                entry.insert(inputs);
-                return;
-            }
-            let current = entry.get_mut();
-            assert_eq!(
-                current.len(),
-                inputs.len(),
-                "one activation input fact cannot receive differing arities from one publisher",
-            );
-            for (current_input, next_input) in current.iter_mut().zip(inputs) {
-                *current_input = if *current_input == next_input {
-                    *current_input
-                } else {
-                    types.refine_widen(current_input, &next_input)
-                };
+            if join {
+                entry.get_mut().join_assign(&value, ctx);
+            } else {
+                entry.insert(value);
             }
         }
     }
 }
 
-fn join_activation_inputs<'a>(types: &mut Types, contributors: impl Iterator<Item = &'a Vec<Ty>>) -> Vec<Ty> {
-    let mut contributors = contributors;
-    let Some(first) = contributors.next() else {
-        return Vec::new();
-    };
-    let mut joined = first.clone();
-    for inputs in contributors {
+/// Join every contributor into the key's aggregate. The join of zero
+/// contributors is `V::bottom`.
+fn join_contributions<'a, V>(ctx: &mut V::Ctx, contributors: impl Iterator<Item = &'a V>) -> V
+where
+    V: JoinContribution + 'a,
+{
+    let mut joined = V::bottom();
+    for value in contributors {
+        joined.join_assign(value, ctx);
+    }
+    joined
+}
+
+impl JoinContribution for Vec<Ty> {
+    type Ctx = Types;
+
+    fn bottom() -> Self {
+        Vec::new()
+    }
+
+    /// Pointwise `refine_widen` over a shared arity. Bottom (the empty vector)
+    /// seeds from the first contributor; thereafter every contributor carries
+    /// the same arity.
+    fn join_assign(&mut self, other: &Self, types: &mut Types) {
+        if self.is_empty() {
+            self.clone_from(other);
+            return;
+        }
         assert_eq!(
-            joined.len(),
-            inputs.len(),
+            self.len(),
+            other.len(),
             "one activation cannot receive contributions with different arities",
         );
-        for (joined_ty, input_ty) in joined.iter_mut().zip(inputs.iter().copied()) {
-            *joined_ty = if *joined_ty == input_ty {
-                *joined_ty
+        for (current, next) in self.iter_mut().zip(other.iter()) {
+            *current = if *current == *next {
+                *current
             } else {
-                types.refine_widen(joined_ty, &input_ty)
+                types.refine_widen(current, next)
             };
         }
     }
-    joined
 }
 
-fn upsert_return_demand_contribution<P: Clone + Eq + Hash>(
-    slot: &mut ReturnDemandSlot<P>,
-    publisher: &P,
-    demand: RuntimeDemand,
-    join: bool,
-) {
-    match slot.contributors.entry(publisher.clone()) {
-        std::collections::hash_map::Entry::Vacant(entry) => {
-            entry.insert(demand);
-        }
-        std::collections::hash_map::Entry::Occupied(mut entry) => {
-            if !join {
-                entry.insert(demand);
-            } else {
-                entry.get_mut().join_assign(&demand);
-            }
-        }
-    }
-}
+impl JoinContribution for RuntimeDemand {
+    type Ctx = ();
 
-fn join_return_demands<'a>(contributors: impl Iterator<Item = &'a RuntimeDemand>) -> RuntimeDemand {
-    let mut joined = RuntimeDemand::ignore();
-    for demand in contributors {
-        joined.join_assign(demand);
+    fn bottom() -> Self {
+        RuntimeDemand::ignore()
     }
-    joined
+
+    fn join_assign(&mut self, other: &Self, _ctx: &mut ()) {
+        *self = RuntimeDemand::join(self, other);
+    }
 }
 
 #[cfg(test)]
@@ -1089,6 +989,7 @@ mod tests {
         let callable_demand = RuntimeDemand::callable(resolved_surface(&[int]));
 
         let first = demands.conclude(
+            &mut (),
             "caller_a",
             HashSet::new(),
             HashMap::from([(executable.clone(), shape_demand.clone())]),
@@ -1100,6 +1001,7 @@ mod tests {
         );
 
         let second = demands.conclude(
+            &mut (),
             "caller_b",
             HashSet::new(),
             HashMap::from([(executable.clone(), callable_demand.clone())]),
@@ -1111,7 +1013,7 @@ mod tests {
             "a second publisher's independent callable axis must move the joined demand",
         );
         assert_eq!(
-            demands.get(&executable),
+            demands.get(&executable).cloned().unwrap_or_else(RuntimeDemand::ignore),
             shape_demand.join(&callable_demand),
             "ReturnDemand(E) is the lub over every caller contribution",
         );
@@ -1125,32 +1027,37 @@ mod tests {
         let executable = test_executable(&mut world, "retract");
 
         let caller_a = demands.conclude(
+            &mut (),
             "caller_a",
             HashSet::new(),
             HashMap::from([(executable.clone(), RuntimeDemand::whole())]),
             false,
         );
         let caller_b = demands.conclude(
+            &mut (),
             "caller_b",
             HashSet::new(),
             HashMap::from([(executable.clone(), RuntimeDemand::whole())]),
             false,
         );
 
-        let redundant_retract = demands.conclude("caller_b", caller_b.output_keys, HashMap::new(), false);
+        let redundant_retract = demands.conclude(&mut (), "caller_b", caller_b.output_keys, HashMap::new(), false);
         assert!(
             !redundant_retract.changed_keys.contains(&executable),
             "removing one of two equal top contributions leaves the aggregate unchanged",
         );
-        assert_eq!(demands.get(&executable), RuntimeDemand::whole());
+        assert_eq!(
+            demands.get(&executable).cloned().unwrap_or_else(RuntimeDemand::ignore),
+            RuntimeDemand::whole()
+        );
 
-        let final_retract = demands.conclude("caller_a", caller_a.output_keys, HashMap::new(), false);
+        let final_retract = demands.conclude(&mut (), "caller_a", caller_a.output_keys, HashMap::new(), false);
         assert!(
             final_retract.changed_keys.contains(&executable),
             "removing the final publisher moves the aggregate to bottom",
         );
         assert_eq!(
-            demands.get(&executable),
+            demands.get(&executable).cloned().unwrap_or_else(RuntimeDemand::ignore),
             RuntimeDemand::ignore(),
             "empty ReturnDemand join is bottom",
         );
@@ -1164,10 +1071,12 @@ mod tests {
         let executable = test_executable(&mut world, "extend");
 
         demands.extend(
+            &mut (),
             "blocked_caller",
             HashMap::from([(executable.clone(), RuntimeDemand::whole())]),
         );
         let lowered = demands.extend(
+            &mut (),
             "blocked_caller",
             HashMap::from([(executable.clone(), RuntimeDemand::ignore())]),
         );
@@ -1176,7 +1085,10 @@ mod tests {
             !lowered.changed_keys.contains(&executable),
             "a waiting publisher extends by join and cannot recant an existing demand",
         );
-        assert_eq!(demands.get(&executable), RuntimeDemand::whole());
+        assert_eq!(
+            demands.get(&executable).cloned().unwrap_or_else(RuntimeDemand::ignore),
+            RuntimeDemand::whole()
+        );
     }
 
     #[test]
@@ -1187,7 +1099,7 @@ mod tests {
         let executable = test_executable(&mut world, "bottom");
 
         assert_eq!(
-            demands.get(&executable),
+            demands.get(&executable).cloned().unwrap_or_else(RuntimeDemand::ignore),
             RuntimeDemand::ignore(),
             "ReturnDemand(E) starts at the lattice bottom before any caller contributes",
         );
