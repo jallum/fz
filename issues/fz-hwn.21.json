@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-19T17:45:06Z",
+  "description": "",
+  "id": "fz-hwn.21",
+  "labels": [],
+  "parent": "fz-hwn",
+  "priority": 2,
+  "status": "open",
+  "title": "Ground first-class callable publication surfaces (phantom polymorphic surface leak)",
+  "type": "task",
+  "updated_at": "2026-06-19T17:45:06Z"
+}
