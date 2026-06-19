@@ -1457,29 +1457,39 @@ end
 
     let plan = transport_plan(&world, root);
     let main = executable_for(&world, &plan, "main", 2);
-    let first = plan_shape_at(
-        &plan,
-        &TransportPosition::ExecutableInput {
-            executable: main.clone(),
-            semantic_index: 0,
-        },
-    );
-    let second = plan_shape_at(
-        &plan,
-        &TransportPosition::ExecutableInput {
-            executable: main,
-            semantic_index: 1,
-        },
-    );
-    let ShapeDescr::Callable(first_callable) = shape_descr(&world, first) else {
-        panic!("first opaque input should be callable-shaped")
-    };
-    let ShapeDescr::Callable(second_callable) = shape_descr(&world, second) else {
-        panic!("second opaque input should be callable-shaped")
-    };
-    assert_ne!(
-        first_callable, second_callable,
-        "opaque callable contracts with different observed surfaces must not merge into one CallableId"
+    // Both opaque inputs are boxed callables, so their VALUE shapes are pure
+    // layout (one boxed value lane) and may coincide. The surface contract is
+    // not part of the value identity any more — it lives on the boundaries.
+    for semantic_index in [0, 1] {
+        let shape = plan_shape_at(
+            &plan,
+            &TransportPosition::ExecutableInput {
+                executable: main.clone(),
+                semantic_index,
+            },
+        );
+        assert!(
+            matches!(shape_descr(&world, shape), ShapeDescr::Callable(_)),
+            "opaque input {semantic_index} should be callable-shaped"
+        );
+    }
+    // The distinction with different observed surfaces (`f.(1)` vs `g.({1, 2})`)
+    // survives where it belongs: as two distinct published boundary contracts.
+    let surface_contracts = plan
+        .boundaries
+        .keys()
+        .map(|boundary| {
+            world
+                .transport()
+                .interners()
+                .boundary(*boundary)
+                .surface_arg_shapes
+                .to_vec()
+        })
+        .collect::<BTreeSet<_>>();
+    assert!(
+        surface_contracts.len() >= 2,
+        "opaque callables with different observed surfaces must publish distinct boundary contracts, even when their boxed value shapes coincide: {surface_contracts:?}"
     );
 }
 
@@ -2574,14 +2584,73 @@ fn compiler2_transport_plan_gives_lambda_capture_lane_for_published_callable_cap
                         executable: seam_executable,
                         semantic_index: 0,
                     } if seam_executable == executable
-                ) && fact.shape.is_none()
+                ) && fact.shape.is_some()
                     && fact.lane == lane
                     && fact.repr == CodegenLaneRepr::ValueRef
             })
         }),
-        "the generated lambda executable must receive its first-class callable capture through the descriptor capture lane, not by re-decoding the captured callable shape: lane={lane:?}; facts={:?}",
+        // The captured boxed callable's value lane now rides its own (one-lane)
+        // value shape, so the lambda receives the capture as a physical ValueRef
+        // lane carried by the shape — not bolted on out-of-band. That is the
+        // data-model fix: a boxed callable's lane is a fact OF its shape.
+        "the generated lambda executable must receive its first-class callable capture as one physical ValueRef lane carried by the captured callable's value shape: lane={lane:?}; facts={:?}",
         plan.codegen_seam_facts,
     );
+}
+
+#[test]
+fn compiler2_transport_plan_gives_a_continuation_captured_first_class_callable_a_boxed_value_lane() {
+    // `maplist` is non-tail recursive (`[f.(h) | maplist(t, f)]`), so its
+    // recursion is captured in a continuation that closes over `f`. The phi of
+    // two lambdas forces `f` to be a genuine first-class (boxed, function:None)
+    // callable. A boxed callable value occupies exactly one lane (the pointer);
+    // a continuation capture shaped as a zero-lane generic-callable contract
+    // would drop the box and is unmaterializable downstream.
+    let source = r#"
+fn maplist([], _f), do: []
+fn maplist([h | t], f), do: [f.(h) | maplist(t, f)]
+
+fn main() do
+  g = if true, do: (fn x -> x + 1 end), else: (fn x -> x + 2 end)
+  maplist([1, 2], g)
+end
+"#;
+
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new(&tel);
+    world.submit_code(
+        Some("transport_first_class_callable_continuation_capture.fz".to_string()),
+        source.to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    drive_until_transport_plan(
+        &mut world,
+        root,
+        "first-class callable continuation-capture fixture should produce a transport plan",
+    );
+
+    let plan = transport_plan(&world, root);
+    let captured_first_class = plan
+        .positions
+        .iter()
+        .filter(|(position, _)| matches!(position, TransportPosition::EntryCapture { .. }))
+        .filter_map(|(position, shape)| match shape_descr(&world, *shape) {
+            ShapeDescr::Callable(callable) => Some((position.clone(), *shape, *callable)),
+            _ => None,
+        })
+        .filter(|(_, _, callable)| world.transport().interners().callable(*callable).function.is_none())
+        .collect::<Vec<_>>();
+    assert!(
+        !captured_first_class.is_empty(),
+        "maplist's non-tail recursion must capture the first-class callable `f` in a continuation as a generic (boxed) callable shape",
+    );
+    for (position, shape, _) in captured_first_class {
+        assert_eq!(
+            world.transport().interners().shape_width(shape),
+            1,
+            "a first-class callable captured by a continuation must occupy exactly one boxed value lane, not a zero-lane contract: {position:?}",
+        );
+    }
 }
 
 #[test]
@@ -2910,10 +2979,19 @@ fn assert_generic_callable_shape_matches_upstream_demand(
     }
     let demand = demand.callable;
     let descr = world.transport().interners().callable(callable);
+    // A boxed first-class callable's VALUE shape is a pure layout fact: one boxed
+    // value lane, `function: None`, and no contract surfaces. The invocation
+    // contract (the observed surfaces) projects into the published BOUNDARIES,
+    // not the value's identity — asserted below.
+    assert_eq!(descr.function, None, "an opaque callable value is boxed: function None");
     assert_eq!(
-        descr.contract_surfaces.len(),
-        demand.resolved.len(),
-        "generic callable descriptor surfaces should project upstream callable demand, not recover from type"
+        descr.capture_lanes.len(),
+        1,
+        "a boxed callable value occupies exactly one value lane: {descr:?}"
+    );
+    assert!(
+        descr.contract_surfaces.is_empty(),
+        "a boxed callable VALUE shape carries no contract surfaces; the contract lives on its boundaries: {descr:?}"
     );
     let facts = plan
         .callables

@@ -2556,11 +2556,22 @@ fn generic_callable_shape_with_resolutions(
         "generic callable transport requires upstream callable surfaces for opaque or escaped demand"
     );
     let published_surface_shapes = surface_shapes(world, surfaces, facts);
+    // A boxed first-class callable's VALUE shape is a pure layout fact: the value
+    // is one `ValueRef` lane (the boxed pointer), full stop. Its width is a
+    // single stable fact, so every carrier — function entry, closure capture,
+    // continuation capture — reads the lane straight from the shape. The
+    // invocation contract (the observed surfaces) is NOT part of the value's
+    // identity: it projects into the published boundaries below (and the call
+    // site's argument encoding), so two boxed callables of the same value-lane
+    // repr share one shape regardless of surface. Folding `contract_surfaces`
+    // into the value identity instead fragments layout-identical pointers and
+    // forces out-of-band lane patching at every carrier.
+    let boxed_value_lane = value_lane(world, ty);
     let callable = world.transport_mut().interners_mut().intern_callable(CallableDescr {
         function: None,
         capture_shapes: Box::default(),
-        capture_lanes: Box::default(),
-        contract_surfaces: published_surface_shapes.clone().into_boxed_slice(),
+        capture_lanes: Box::from([boxed_value_lane]),
+        contract_surfaces: Box::default(),
     });
     let boundary_ids = if !surfaces.is_empty() {
         let return_shapes = publication

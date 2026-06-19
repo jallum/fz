@@ -297,6 +297,19 @@ five distinctions this model keeps separate — omitted lanes, tuple-field
 transport, direct-callable transport, first-class materialization, and
 callable-entry publication — stay individually observable across the seam.
 
+A transport `ShapeId` is a faithful, total description of *physical runtime
+layout* and nothing else. A boxed first-class callable's VALUE shape is
+therefore one `ValueRef` value lane — the boxed pointer — and its width is a
+single stable fact read identically by every carrier (function entry, closure
+capture, continuation capture). The invocation contract (the observed surfaces)
+is a property of the BOUNDARY the value is published through, not of the value's
+identity: it lives on `BoundaryId` facts, not on the value shape, so two boxed
+callables of the same value-lane repr share one shape regardless of surface and
+dispatch by position + type. Fusing the contract into the value identity instead
+fragments layout-identical pointers and forces out-of-band lane patching at each
+carrier — the defect class behind a first-class callable captured by a non-tail
+continuation arriving with zero lanes.
+
 ## Artifact ladder and fact taxonomy
 
 `MaterializedProgram` is the first backend-owned snapshot. It is allowed to

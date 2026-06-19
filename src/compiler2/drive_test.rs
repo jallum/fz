@@ -5647,7 +5647,95 @@ fn compiler2_interp_runs_enum_reduce_from_backend_artifacts() {
 }
 
 #[test]
-#[ignore = "fz-hwn.22: first-class mapper captured by with_index_list's non-tail continuation gets a 0-lane contract shape (the multi-boundary publication leak is fixed in fz-hwn.21)"]
+fn compiler2_interp_runs_first_class_callable_captured_by_a_non_tail_continuation() {
+    // The minimal shape of fz-hwn.22, free of the Enum stdlib: `maplist` is
+    // non-tail recursive (`[f.(h) | maplist(t, f)]`), so its recursion is
+    // captured in a continuation that closes over `f`. A phi of two lambdas
+    // forces `f` to be a genuine first-class (boxed) callable rather than a
+    // direct one. The boxed value must reach the continuation through a single
+    // value lane; a zero-lane generic-callable contract drops the box and is
+    // unmaterializable.
+    let tel = ConfiguredTelemetry::new();
+    let dbg = DbgCapture::new();
+    tel.attach(&[], dbg.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/first_class_callable_non_tail_continuation.fz".to_string()),
+        text: r#"
+fn maplist([], _f), do: []
+fn maplist([h | t], f), do: [f.(h) | maplist(t, f)]
+
+fn main() do
+  g = if true, do: (fn x -> x + 1 end), else: (fn x -> x + 2 end)
+  dbg(maplist([1, 2], g))
+end
+"#
+        .to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    compiler.run_root_interp(root_id).unwrap_or_else(|error| {
+        panic!("Compiler2 backend interpreter should run a first-class callable captured by a non-tail continuation: {error}");
+    });
+
+    assert_eq!(
+        dbg.lines().as_slice(),
+        ["[2, 3]"],
+        "a boxed first-class callable carried through a continuation capture must still apply to each element",
+    );
+}
+
+#[test]
+fn compiler2_interp_runs_distinct_surface_boxed_callables() {
+    // Two opaque (boxed) callables with DIFFERENT invocation surfaces -- `(int)`
+    // and `({int, int})`. Under the pure-layout shape model their boxed value
+    // shapes may coincide (both are one ValueRef lane); the surface contract
+    // lives on their distinct boundaries and the call-site arg encoding. Each
+    // must still dispatch to its own body with the right argument shape.
+    let tel = ConfiguredTelemetry::new();
+    let dbg = DbgCapture::new();
+    tel.attach(&[], dbg.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/distinct_surface_boxed_callables.fz".to_string()),
+        text: r#"
+fn apply_int(f), do: f.(10)
+fn apply_tuple(g), do: g.({3, 4})
+
+fn main() do
+  a = if true, do: (fn x -> x + 1 end), else: (fn x -> x + 2 end)
+  b = if true, do: (fn ({x, y}) -> x + y end), else: (fn ({x, y}) -> x * y end)
+  dbg(apply_int(a))
+  dbg(apply_tuple(b))
+end
+"#
+        .to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    compiler.run_root_interp(root_id).unwrap_or_else(|error| {
+        panic!("Compiler2 backend interpreter should run distinct-surface boxed callables: {error}");
+    });
+
+    assert_eq!(
+        dbg.lines().as_slice(),
+        ["11", "7"],
+        "boxed callables sharing a value shape must still dispatch to their own bodies at their own surfaces",
+    );
+}
+
+#[test]
+#[ignore = "fz-hwn.23: with_index clears the continuation-capture bug (fz-hwn.22) but then hits the phantom (a0,a0) polymorphic backend activation"]
 fn compiler2_interp_runs_enum_with_index_mapper_from_backend_artifacts() {
     let tel = ConfiguredTelemetry::new();
     let dbg = DbgCapture::new();
