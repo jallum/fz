@@ -2,14 +2,16 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-06-19T14:41:51Z",
+  "close_reason": "Fixed at HEAD. fixtures2/behavior/receive_shared_tuple_arity.fz passes live (3/3: run+interp+build, no defer) — same-arity tuple selective-receive clauses now select the correct arm. Verified vs HEAD.",
   "created": "2026-06-13T01:22:23Z",
   "description": "receive_shared_tuple_arity now asserts directly and exposes a real compiler2 semantic failure: same-arity tuple selective receive clauses collapse to the wrong arm under fz2-run/build.",
   "id": "fz-9i4.5",
   "labels": [],
   "parent": "fz-9i4",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "Fix compiler2 selective receive same-arity tuple dispatch",
   "type": "bug",
-  "updated_at": "2026-06-13T01:22:23Z"
+  "updated_at": "2026-06-19T14:41:51Z"
 }
