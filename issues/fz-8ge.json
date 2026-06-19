@@ -2,13 +2,15 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-06-19T12:50:53Z",
+  "close_reason": "Landed in 8bf3dde0f. Removed boxed_first_class over-boxing; boundary lanes = body grounded repr; boxed apply wrapper is the sole boxing seam. opaque_fn_value_join green all routes; matrix 337/0; lib 2216/0.",
   "created": "2026-06-19T12:48:47Z",
   "description": "ROOT CAUSE of opaque_fn_value_join build/run failure (fault 4). derive_codegen_seam_facts forced every lane of a callable boundary that escapes into fz value space to ValueRef (boxed_first_class / boundary_escapes_into_fz_space). But the boxed closure-apply wrapper TAIL-CALLS the target body, so it cannot rebox the return; the continuation that consumes the result is already derived from the body's grounded return repr (ReturnDelivery / ReturnContinuation = codegen_repr_for_lane). Forcing the return lane to ValueRef desynchronized the wrapper's declared return ([ValueRef]) from the body's actual return ([RawInt]) -\u003e 'callable boundary N return lanes must match target body lanes exactly'.\n\nFIX (correct-by-construction removal): a callable-boundary lane carries the target body's grounded repr (codegen_repr_for_lane), always. The boxed apply wrapper is the SOLE boxing seam: it accepts the uniform i64 closure-apply ABI from any first-class caller and unboxes each capture/arg lane to the body's repr before tail-calling it. The generic caller never needs to know the convention -- the wrapper bridges. Deleted boxed_first_class + boundary_escapes_into_fz_space (dead).\n\nSUPERSEDES the fz-1m2 typed-dispatch epic: empirically a phi of same-signature callables is called from the GENERIC Enumerable.reduce protocol lambda via boxed_indirect; that caller has no boundary mapping and cannot dispatch typed, so a typed call_indirect at the body entry is unreachable there. Removing the over-boxing fixes the bug with no new machinery.\n\nVERIFY: opaque_fn_value_join build+run+interp green (no per-step heap alloc); fixture matrix 337/0; lib 2216/0; clippy clean. Updated compiler2_abi_ready_callable_entries_read_boundary_seam_facts to the grounded-repr model; updated .agent/docs/pipeline.md.",
   "id": "fz-8ge",
   "labels": [],
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Callable-boundary lanes carry the body's grounded repr; boxed apply wrapper is the sole boxing seam",
   "type": "bug",
-  "updated_at": "2026-06-19T12:49:00Z"
+  "updated_at": "2026-06-19T12:50:53Z"
 }
