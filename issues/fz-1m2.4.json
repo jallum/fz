@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-1m2.3"
+  ],
   "blocks": [],
   "created": "2026-06-19T11:28:53Z",
   "description": "VERIFY + DOCS. \n\nVERIFY: opaque_fn_value_join and 00231 green in build AND run with correct reduced output; no per-step heap allocation (Process.heap_alloc_stats oracle); the single-ref (00178), operator-ref (00181/00405), lambda (00229), and range/erased-list reduce fixtures stay green; resource-destructor and provider-callback boundary tests stay green; full fixture matrix green; zero warnings from a fresh uniquely-marked run.\n\nDOCS: update .agent docs and the northstar/seal narrative to describe first-class callable representation as convention-driven (Typed vs Boxed), the typed-indirect dispatch, and that the boxed wrapper is the callable analog of scalar ValueRef boxing -- reserved for surfaceless/opaque callables. Remove the now-stale 'first-class always boxes' framing. Close the fz-rh2.29.7 note about opaque_fn_value_join staying red.",

@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-1m2.4"
+  ],
   "created": "2026-06-19T11:28:53Z",
   "description": "CLEANUP. Once Typed callables dispatch typed (fz-1m2.2), the machinery that only existed to box them is dead. Remove it -- do not leave it as scaffolding.\n\nRIP OUT (verify orphaned, then delete):\n- The boxed wrapper (callable_boundary_b) emission for callables that are now Typed-only (declare/emit_callable_boundary_bodies should mint wrappers ONLY for Boxed callables).\n- Any remaining boxed_first_class / boundary_escapes_into_fz_space remnants not removed in fz-1m2.2.\n- The fault-3 positional return-grounding compensations in transport (boundary_return_shapes_for_publication_sources etc.) IF the convention's grounded surface return makes them redundant -- re-verify before deleting; keep whatever Boxed callables still legitimately need.\n- Re-evaluate whether fz-rh2.29.7's retain_most_specific_surfaces should move into the convention classifier (fz-1m2.1) as its canonical home rather than living in derive_callable_flow_facts_for_executable.\n\nCHECK: rg confirms each removed construct has no remaining callers; full lib + matrix green; zero warnings; no behavior change vs end of fz-1m2.2.",
   "id": "fz-1m2.3",
