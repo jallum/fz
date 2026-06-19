@@ -224,7 +224,7 @@ fn compiler2_transport_flow_test_harness_runs_plan_handlers_after_commit() {
     impl super::transport_validation::TransportPlanTestHandler for RecordingTransportPlanHandler {
         fn transport_plan_defined(&self, world: &World<'_>, root: super::RootId) {
             assert!(
-                world.transport().plans().get(root).is_some(),
+                world.transport_plan(root).is_some(),
                 "transport-plan test handlers should inspect the committed world"
             );
             self.roots.borrow_mut().push(root);
@@ -740,7 +740,7 @@ fn main(), do: spawn(child)
         .iter()
         .find_map(|(boundary, facts)| facts.publications.contains(&spawn_input).then_some(*boundary))
         .unwrap_or_else(|| panic!("spawn/1 callable input should publish a boundary"));
-    let boundary_descr = world.transport().interners().boundary(boundary);
+    let boundary_descr = world.boundary(boundary);
     assert_seam_fact(
         &plan,
         |seam| matches!(seam, CodegenSeam::FunctionEntry { executable, semantic_index } if executable == &spawn && *semantic_index == 0),
@@ -1137,14 +1137,12 @@ end
         unreachable!("checked above")
     };
     let producer_function = world
-        .transport()
-        .interners()
         .callable(*callable)
         .function
         .unwrap_or_else(|| panic!("returned direct callable should name its local producer"));
     let flow = upstream_callable_flow_for_producer(&world, root, producer_function);
     assert_callable_facts_match_upstream_flow(&world, &plan, *callable, &flow);
-    let callable_descr = world.transport().interners().callable(*callable);
+    let callable_descr = world.callable(*callable);
     let [capture_lane] = callable_descr.capture_lanes.as_ref() else {
         panic!("make_adder/1's returned callable should carry exactly one capture lane: {callable_descr:?}")
     };
@@ -1236,7 +1234,7 @@ end
         !callable_facts.direct_surfaces.is_empty(),
         "direct callable surfaces should be plan facts, not artifact-local recovery"
     );
-    let callable_descr = world.transport().interners().callable(*pair_callable);
+    let callable_descr = world.callable(*pair_callable);
     let [capture_lane] = callable_descr.capture_lanes.as_ref() else {
         panic!("make_adder/1 should publish one carried capture lane: {callable_descr:?}")
     };
@@ -1266,7 +1264,7 @@ end
     let [boundary] = escaped_facts.boundary_ids.as_ref() else {
         unreachable!("checked above")
     };
-    let boundary_descr = world.transport().interners().boundary(*boundary);
+    let boundary_descr = world.boundary(*boundary);
     assert_eq!(
         boundary_descr.callable, *escaped_callable,
         "BoundaryId should name the callable contract artifact publishes"
@@ -1478,14 +1476,7 @@ end
     let surface_contracts = plan
         .boundaries
         .keys()
-        .map(|boundary| {
-            world
-                .transport()
-                .interners()
-                .boundary(*boundary)
-                .surface_arg_shapes
-                .to_vec()
-        })
+        .map(|boundary| world.boundary(*boundary).surface_arg_shapes.to_vec())
         .collect::<BTreeSet<_>>();
     assert!(
         surface_contracts.len() >= 2,
@@ -1593,8 +1584,6 @@ fn main(), do: make_pairer()
     let plan = transport_plan(&world, root);
     let boundary = single_boundary_descr(&world, &plan);
     let producer_function = world
-        .transport()
-        .interners()
         .callable(boundary.callable)
         .function
         .unwrap_or_else(|| panic!("tuple-return boundary callable should name its local producer"));
@@ -1735,7 +1724,7 @@ fn main(), do: make()
             shape_descr(&world, *continuation_shape)
         )
     };
-    let continuation_descr = world.transport().interners().callable(*continuation);
+    let continuation_descr = world.callable(*continuation);
     assert_eq!(
         continuation_descr.capture_shapes.len(),
         3,
@@ -1871,8 +1860,6 @@ end
         panic!("main/0 should return the callable value it also invoked directly")
     };
     let producer_function = world
-        .transport()
-        .interners()
         .callable(*callable)
         .function
         .unwrap_or_else(|| panic!("returned direct-and-escaped callable should name its local producer"));
@@ -1891,7 +1878,7 @@ end
         "the escaped callable should still publish a first-class boundary"
     );
     for boundary in facts.boundary_ids.iter().copied() {
-        let boundary_descr = world.transport().interners().boundary(boundary);
+        let boundary_descr = world.boundary(boundary);
         let boundary_facts = plan
             .boundaries
             .get(&boundary)
@@ -1951,7 +1938,7 @@ end
         .callables
         .iter()
         .find_map(|(outer, _)| {
-            let outer_descr = world.transport().interners().callable(*outer);
+            let outer_descr = world.callable(*outer);
             let [capture_shape] = outer_descr.capture_shapes.as_ref() else {
                 return None;
             };
@@ -1971,8 +1958,6 @@ end
         .get(&captured_callable)
         .unwrap_or_else(|| panic!("captured callable facts should be present"));
     let producer_function = world
-        .transport()
-        .interners()
         .callable(captured_callable)
         .function
         .unwrap_or_else(|| panic!("captured callable should name its local producer"));
@@ -2055,7 +2040,7 @@ fn main(), do: make(1, 2)
         plan.callables.contains_key(callable),
         "returned callable facts should be present"
     );
-    let callable_descr = world.transport().interners().callable(*callable);
+    let callable_descr = world.callable(*callable);
     assert_eq!(
         callable_descr.capture_lanes.len(),
         2,
@@ -2115,18 +2100,18 @@ fn compiler2_transport_plan_is_rederived_when_missing_after_unchanged_semantic_c
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
     assert_resolved(world.drive_for(None), "missing-plan fixture should initially settle");
     assert!(
-        world.transport().plans().get(root).is_some(),
+        world.transport_plan(root).is_some(),
         "initial drive should produce a transport plan"
     );
 
-    world.transport_mut().plans_mut().remove(root);
+    world.remove_transport_plan(root);
     world.demand(super::Job::SealSemanticClosure(root));
     assert_resolved(
         world.drive_for(None),
         "unchanged semantic closure should still rederive a missing transport plan",
     );
     assert!(
-        world.transport().plans().get(root).is_some(),
+        world.transport_plan(root).is_some(),
         "transport plan should be restored even when SemanticClosed did not change"
     );
 }
@@ -2146,7 +2131,7 @@ fn compiler2_transport_plan_helper_preserves_pending_post_transport_consumers() 
         world.drive_for(None),
         "helper preservation fixture should initially settle",
     );
-    world.transport_mut().plans_mut().remove(root);
+    world.remove_transport_plan(root);
 
     let consumer = super::Job::MaterializeRoot(root);
     world.demand(consumer.clone());
@@ -2207,7 +2192,7 @@ end
         }
     }
     for (boundary, facts) in &plan.boundaries {
-        let boundary_descr = world.transport().interners().boundary(*boundary);
+        let boundary_descr = world.boundary(*boundary);
         let [target] = facts.resolutions.as_ref() else {
             panic!("each callable boundary should name its exact executable target: {boundary:?} -> {facts:?}")
         };
@@ -2338,12 +2323,12 @@ end
     assert!(
         shape_leaf_lanes(&world, returned)
             .iter()
-            .all(|(_, lane)| world.types().is_integer(&world.transport().interners().lane(*lane).ty)),
+            .all(|(_, lane)| world.types().is_integer(&world.lane(*lane).ty)),
         "both reduce results should stay on integer transport lanes; returned={:?}; leaves={:?}",
         shape_descr(&world, returned),
         shape_leaf_lanes(&world, returned)
             .into_iter()
-            .map(|(shape, lane)| (shape, lane, world.transport().interners().lane(lane).ty))
+            .map(|(shape, lane)| (shape, lane, world.lane(lane).ty))
             .collect::<Vec<_>>()
     );
 }
@@ -2494,7 +2479,7 @@ fn compiler2_transport_plan_publishes_joined_callable_value_position_before_nati
     let ShapeDescr::Callable(joined_callable) = shape_descr(&world, joined_shape) else {
         panic!("joined callable value position should remain callable-shaped: {joined_shape:?}");
     };
-    let joined_descr = world.transport().interners().callable(*joined_callable);
+    let joined_descr = world.callable(*joined_callable);
     assert_eq!(
         joined_descr.function, None,
         "a joined runtime callable value must not pretend to be one concrete zero-capture function"
@@ -2550,21 +2535,21 @@ fn compiler2_transport_plan_gives_lambda_capture_lane_for_published_callable_cap
 
     let plan = transport_plan(&world, root);
     let lambda_capturing_published_callable = plan.callables.keys().find_map(|callable| {
-        let descr = world.transport().interners().callable(*callable);
+        let descr = world.callable(*callable);
         let [capture_shape] = descr.capture_shapes.as_ref() else {
             return None;
         };
         let ShapeDescr::Callable(captured) = shape_descr(&world, *capture_shape) else {
             return None;
         };
-        let captured_descr = world.transport().interners().callable(*captured);
+        let captured_descr = world.callable(*captured);
         let captured_facts = plan.callables.get(captured)?;
         (descr.function.is_some() && captured_descr.function.is_none() && !captured_facts.boundary_ids.is_empty())
             .then_some((*callable, *capture_shape))
     });
     let (callable, capture_shape) = lambda_capturing_published_callable
         .expect("Enum.reduce's generated loop lambda should capture the published joined reducer value");
-    let descr = world.transport().interners().callable(callable);
+    let descr = world.callable(callable);
     assert_eq!(
         descr.capture_lanes.len(),
         1,
@@ -2638,7 +2623,7 @@ end
             ShapeDescr::Callable(callable) => Some((position.clone(), *shape, *callable)),
             _ => None,
         })
-        .filter(|(_, _, callable)| world.transport().interners().callable(*callable).function.is_none())
+        .filter(|(_, _, callable)| world.callable(*callable).function.is_none())
         .collect::<Vec<_>>();
     assert!(
         !captured_first_class.is_empty(),
@@ -2646,7 +2631,7 @@ end
     );
     for (position, shape, _) in captured_first_class {
         assert_eq!(
-            world.transport().interners().shape_width(shape),
+            world.shape_width(shape),
             1,
             "a first-class callable captured by a continuation must occupy exactly one boxed value lane, not a zero-lane contract: {position:?}",
         );
@@ -2686,7 +2671,7 @@ end
 
     let plan = transport_plan(&world, root);
     let captured_callable = plan.callables.iter().find_map(|(outer, facts)| {
-        let outer_descr = world.transport().interners().callable(*outer);
+        let outer_descr = world.callable(*outer);
         let [capture_shape] = outer_descr.capture_shapes.as_ref() else {
             return None;
         };
@@ -2712,7 +2697,7 @@ end
         .callables
         .get(&captured_callable)
         .unwrap_or_else(|| panic!("captured predicate callable facts should be present"));
-    let captured_descr = world.transport().interners().callable(captured_callable);
+    let captured_descr = world.callable(captured_callable);
     assert!(
         captured_descr.capture_lanes.is_empty(),
         "the captured predicate is zero-capture, so the reducer carries its callable identity without payload lanes"
@@ -2761,7 +2746,7 @@ end
         .callables
         .iter()
         .find_map(|(callable, facts)| {
-            let descr = world.transport().interners().callable(*callable);
+            let descr = world.callable(*callable);
             let [capture_shape] = descr.capture_shapes.as_ref() else {
                 return None;
             };
@@ -2819,7 +2804,7 @@ end
             );
         }
     }
-    let predicate_descr = world.transport().interners().callable(predicate_callable);
+    let predicate_descr = world.callable(predicate_callable);
     assert!(
         predicate_descr.capture_lanes.is_empty(),
         "the predicate lambda captures nothing, so the reducer capture-prefix input must carry no payload lanes"
@@ -2864,7 +2849,7 @@ fn drive_until_transport_plan(world: &mut World<'_>, root: super::RootId, messag
     world.demand(super::Job::DeriveTransportPlan(root));
     let mut ran = 0;
     let mut deferred = Vec::new();
-    while world.transport().plans().get(root).is_none() && ran < 10_000 {
+    while world.transport_plan(root).is_none() && ran < 10_000 {
         let Some(job) = world.work_graph.pop() else {
             break;
         };
@@ -2882,7 +2867,7 @@ fn drive_until_transport_plan(world: &mut World<'_>, root: super::RootId, messag
         world.demand(job);
     }
     assert!(
-        world.transport().plans().get(root).is_some(),
+        world.transport_plan(root).is_some(),
         "{message}; transport plan was not produced after {ran} prerequisite jobs; pending={}; unresolved={:?}",
         world.work_graph.pending_jobs(),
         world.work_graph.unresolved()
@@ -2926,7 +2911,7 @@ fn callable_facts_for_function<'a>(
     plan.callables
         .iter()
         .filter_map(|(callable, facts)| {
-            let descr = world.transport().interners().callable(*callable);
+            let descr = world.callable(*callable);
             let function = descr.function?;
             function_is(world, function, name, arity).then_some((*callable, facts))
         })
@@ -2978,7 +2963,7 @@ fn assert_generic_callable_shape_matches_upstream_demand(
         panic!("expected upstream callable demand for generic callable shape, got {demand:?}")
     }
     let demand = demand.callable;
-    let descr = world.transport().interners().callable(callable);
+    let descr = world.callable(callable);
     // A boxed first-class callable's VALUE shape is a pure layout fact: one boxed
     // value lane and `function: None`. The invocation contract (the observed
     // surfaces) projects into the published BOUNDARIES, not the value's identity
@@ -3064,7 +3049,7 @@ fn assert_boundary_resolutions_match_upstream_flow(
     }
 
     for boundary in facts.boundary_ids.iter().copied() {
-        let boundary_descr = world.transport().interners().boundary(boundary);
+        let boundary_descr = world.boundary(boundary);
         let surface_inputs = boundary_descr
             .surface_arg_shapes
             .iter()
@@ -3130,7 +3115,7 @@ fn assert_transport_surfaces_match_upstream(
 
 fn surface_input_ty(world: &World<'_>, shape: ShapeId) -> Ty {
     match shape_descr(world, shape) {
-        ShapeDescr::Lane(lane) => world.transport().interners().lane(*lane).ty,
+        ShapeDescr::Lane(lane) => world.lane(*lane).ty,
         other => panic!("worked callable surface inputs should project to lane shapes, got {other:?}"),
     }
 }
@@ -3142,9 +3127,7 @@ fn function_is(world: &World<'_>, function: super::FunctionId, name: &str, arity
 
 fn transport_plan(world: &World<'_>, root: super::RootId) -> TransportPlan {
     world
-        .transport()
-        .plans()
-        .get(root)
+        .transport_plan(root)
         .cloned()
         .unwrap_or_else(|| panic!("transport plan for root {}", root.as_u32()))
 }
@@ -3169,7 +3152,7 @@ fn plan_shape_at(plan: &TransportPlan, position: &TransportPosition) -> ShapeId 
 }
 
 fn shape_descr<'a>(world: &'a World<'_>, shape: ShapeId) -> &'a ShapeDescr {
-    world.transport().interners().shape(shape)
+    world.shape(shape)
 }
 
 fn shape_leaf_lanes(world: &World<'_>, shape: ShapeId) -> Vec<(ShapeId, LaneId)> {
@@ -3279,13 +3262,13 @@ fn single_boundary_descr<'a>(world: &'a World<'_>, plan: &TransportPlan) -> &'a 
             plan.boundaries
         )
     };
-    world.transport().interners().boundary(*boundary)
+    world.boundary(*boundary)
 }
 
 fn boundary_with_callable_arg<'a>(world: &'a World<'_>, plan: &TransportPlan) -> &'a BoundaryDescr {
     plan.boundaries
         .keys()
-        .map(|boundary| world.transport().interners().boundary(*boundary))
+        .map(|boundary| world.boundary(*boundary))
         .find(|boundary| {
             boundary
                 .surface_arg_shapes
@@ -3324,7 +3307,7 @@ fn boundary_with_callable_return<'a>(
         .get(&callable)
         .into_iter()
         .flat_map(|facts| facts.boundary_ids.iter())
-        .map(|boundary| world.transport().interners().boundary(*boundary))
+        .map(|boundary| world.boundary(*boundary))
         .find(|boundary| {
             boundary.callable == callable && shape_contains_callable(world, boundary.published_return_shape)
         })
@@ -3345,7 +3328,7 @@ fn continuation_boundary_descr<'a>(
         .get(&callable)
         .into_iter()
         .flat_map(|facts| facts.boundary_ids.iter())
-        .map(|boundary| world.transport().interners().boundary(*boundary))
+        .map(|boundary| world.boundary(*boundary))
         .find(|boundary| boundary.callable == callable)
         .unwrap_or_else(|| {
             panic!(
@@ -3383,7 +3366,7 @@ fn collect_callable_shapes(world: &World<'_>, shape: ShapeId, out: &mut HashSet<
     match shape_descr(world, shape) {
         ShapeDescr::Callable(callable) => {
             out.insert(*callable);
-            let descr = world.transport().interners().callable(*callable);
+            let descr = world.callable(*callable);
             for capture in descr.capture_shapes.iter().copied() {
                 collect_callable_shapes(world, capture, out);
             }
@@ -3400,7 +3383,7 @@ fn collect_callable_shapes(world: &World<'_>, shape: ShapeId, out: &mut HashSet<
 fn boundary_descrs<'a>(world: &'a World<'_>, plan: &TransportPlan) -> Vec<&'a BoundaryDescr> {
     plan.boundaries
         .keys()
-        .map(|boundary| world.transport().interners().boundary(*boundary))
+        .map(|boundary| world.boundary(*boundary))
         .collect()
 }
 

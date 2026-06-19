@@ -68,9 +68,7 @@ pub(super) fn materialize_root(world: &mut World<'_>, root_id: RootId) -> Result
         .fact_revision(&transport_fact)
         .expect("settled transport plan should have a revision");
     let transport_plan = world
-        .transport()
-        .plans()
-        .get(root_id)
+        .transport_plan(root_id)
         .cloned()
         .expect("settled transport plan should be readable");
     let closure = world.semantic_closure(root_id);
@@ -169,9 +167,7 @@ pub(super) fn derive_abi_ready(world: &mut World<'_>, root_id: RootId) -> Result
     let reads = settled_uses([materialized_fact]);
     let materialized = world.materialized_program(root_id);
     let transport_plan = world
-        .transport()
-        .plans()
-        .get(root_id)
+        .transport_plan(root_id)
         .cloned()
         .expect("materialized program should name a readable transport plan");
     let plans = materialized
@@ -729,7 +725,7 @@ fn call_return_flow(
                     executable: transport_executable_symbol(callee),
                 };
                 let callee_shape = require_transport_position(world, root_id, transport_plan, &callee_return)?;
-                if matches!(world.transport().interners().shape(callee_shape), ShapeDescr::Nothing)
+                if matches!(world.shape(callee_shape), ShapeDescr::Nothing)
                     || (caller_shape == callee_shape && payload_shape == callee_shape)
                 {
                     return Ok(CallReturnFlow::Tail {
@@ -1356,7 +1352,7 @@ fn function_entry_publication_reprs(
 }
 
 fn shape_leaf_lanes_for_artifact(world: &World<'_>, shape: ShapeId) -> Vec<(ShapeId, LaneId)> {
-    match world.transport().interners().shape(shape) {
+    match world.shape(shape) {
         ShapeDescr::Nothing => Vec::new(),
         ShapeDescr::Lane(lane) => vec![(shape, *lane)],
         ShapeDescr::Tuple(items) => items
@@ -1365,8 +1361,6 @@ fn shape_leaf_lanes_for_artifact(world: &World<'_>, shape: ShapeId) -> Vec<(Shap
             .flat_map(|item| shape_leaf_lanes_for_artifact(world, item))
             .collect(),
         ShapeDescr::Callable(callable) => world
-            .transport()
-            .interners()
             .callable(*callable)
             .capture_lanes
             .iter()
@@ -1524,13 +1518,11 @@ fn derive_callable_entries(
 ) -> Result<Vec<CallableEntry>, FatalError> {
     let mut entries = Vec::new();
     let transport_plan = world
-        .transport()
-        .plans()
-        .get(root_id)
+        .transport_plan(root_id)
         .expect("ABI-ready callable inventory should read the settled transport plan");
     for boundary in &materialized.transport.boundary_ids {
-        let boundary_descr = world.transport().interners().boundary(*boundary);
-        let callable_descr = world.transport().interners().callable(boundary_descr.callable);
+        let boundary_descr = world.boundary(*boundary);
+        let callable_descr = world.callable(boundary_descr.callable);
         let boundary_facts = transport_plan
             .boundaries
             .get(boundary)

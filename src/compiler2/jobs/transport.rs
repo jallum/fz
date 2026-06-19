@@ -292,7 +292,7 @@ impl TransportFactsBuilder {
             let Some(draft) = self.boundaries.get(&boundary) else {
                 continue;
             };
-            let boundary_descr = world.transport().interners().boundary(boundary);
+            let boundary_descr = world.boundary(boundary);
             let mut resolutions = Vec::new();
             for publication in &draft.publications {
                 if let Some(source_shapes) = self.publication_source_shapes.get(publication) {
@@ -741,7 +741,7 @@ fn seed_callable_resolution_capture_inputs(
     shape_graph: &mut ShapeConstraintGraph,
 ) {
     for (callable, draft) in &facts.callables {
-        let descr = world.transport().interners().callable(*callable);
+        let descr = world.callable(*callable);
         for resolution in &draft.resolutions {
             assert!(
                 resolution.activation.input.len() >= descr.capture_shapes.len(),
@@ -1002,7 +1002,7 @@ fn derive_codegen_seam_facts(
         }
     }
     for boundary in boundaries.keys().copied() {
-        let descr = world.transport().interners().boundary(boundary);
+        let descr = world.boundary(boundary);
         // A callable-boundary lane carries the target body's own grounded repr.
         // The boxed closure-apply wrapper is the sole boxing seam: it accepts the
         // uniform `i64` closure-apply ABI from any first-class caller and unboxes
@@ -1162,12 +1162,10 @@ fn executable_context_for_symbol<'a>(
 }
 
 fn lanes_for_codegen_seam_shape(world: &World<'_>, shape: ShapeId) -> Vec<(ShapeId, LaneId)> {
-    match world.transport().interners().shape(shape) {
+    match world.shape(shape) {
         ShapeDescr::Nothing => Vec::new(),
         ShapeDescr::Lane(lane) => vec![(shape, *lane)],
         ShapeDescr::Callable(callable) => world
-            .transport()
-            .interners()
             .callable(*callable)
             .capture_lanes
             .iter()
@@ -1183,7 +1181,7 @@ fn lanes_for_codegen_seam_shape(world: &World<'_>, shape: ShapeId) -> Vec<(Shape
 }
 
 fn raw_codegen_repr_for_lane(world: &World<'_>, lane: LaneId) -> Option<CodegenLaneRepr> {
-    let ty = world.transport().interners().lane(lane).ty;
+    let ty = world.lane(lane).ty;
     if world.types().is_floating(&ty) {
         Some(CodegenLaneRepr::RawF64)
     } else if world.types().is_integer(&ty) {
@@ -1821,7 +1819,7 @@ fn project_source(
     visiting: &mut Vec<(ExecutableKey, TransportSource, RuntimeDemand)>,
 ) -> SourceShape {
     if demand.is_ignore() || world.types().is_empty(&ty) {
-        return SourceShape::Exact(world.transport_mut().interners_mut().intern_shape(ShapeDescr::Nothing));
+        return SourceShape::Exact(world.intern_shape(ShapeDescr::Nothing));
     }
     let frame = (executable.clone(), source.clone(), demand.clone());
     if visiting.contains(&frame) {
@@ -2021,7 +2019,7 @@ fn project_executable_input_source(
         SourceShape::Exact(exact[0])
     } else if exact
         .iter()
-        .all(|shape| matches!(world.transport().interners().shape(*shape), ShapeDescr::Nothing))
+        .all(|shape| matches!(world.shape(*shape), ShapeDescr::Nothing))
     {
         SourceShape::Exact(generic_shape_from_demand(
             world,
@@ -2151,12 +2149,7 @@ fn project_tuple_value(
         };
         item_shapes.push(shape);
     }
-    SourceShape::Exact(
-        world
-            .transport_mut()
-            .interners_mut()
-            .intern_shape(ShapeDescr::Tuple(item_shapes.into_boxed_slice())),
-    )
+    SourceShape::Exact(world.intern_shape(ShapeDescr::Tuple(item_shapes.into_boxed_slice())))
 }
 
 fn project_tuple_field(
@@ -2191,7 +2184,7 @@ fn project_tuple_field(
         SourceShape::Exact(shape) => shape,
         other => return other,
     };
-    let ShapeDescr::Tuple(items) = world.transport().interners().shape(parent_shape) else {
+    let ShapeDescr::Tuple(items) = world.shape(parent_shape) else {
         return SourceShape::Unknown;
     };
     items
@@ -2232,12 +2225,7 @@ fn project_callable_value(
     ) else {
         return SourceShape::Unknown;
     };
-    SourceShape::Exact(
-        world
-            .transport_mut()
-            .interners_mut()
-            .intern_shape(ShapeDescr::Callable(callable)),
-    )
+    SourceShape::Exact(world.intern_shape(ShapeDescr::Callable(callable)))
 }
 
 fn project_callsite_return(
@@ -2377,7 +2365,7 @@ fn callable_for_producer(
             capture_lanes_for_callable_descriptor(world, shape, capture_ty, demand)
         })
         .collect::<Vec<_>>();
-    let callable = world.transport_mut().interners_mut().intern_callable(CallableDescr {
+    let callable = world.intern_callable(CallableDescr {
         function: Some(producer.function),
         capture_shapes: capture_shapes.into_boxed_slice(),
         capture_lanes: capture_lanes.clone().into_boxed_slice(),
@@ -2478,13 +2466,13 @@ fn generic_shape_from_demand(
     publication: Option<TransportPosition>,
 ) -> ShapeId {
     if demand.is_ignore() || world.types().is_empty(&ty) {
-        return world.transport_mut().interners_mut().intern_shape(ShapeDescr::Nothing);
+        return world.intern_shape(ShapeDescr::Nothing);
     }
     if demand.is_callable() {
         return generic_callable_shape(world, ty, &demand.callable, facts, publication);
     }
     match &demand.shape {
-        ShapeDemand::Ignore => world.transport_mut().interners_mut().intern_shape(ShapeDescr::Nothing),
+        ShapeDemand::Ignore => world.intern_shape(ShapeDescr::Nothing),
         ShapeDemand::Whole => value_lane_shape(world, ty),
         ShapeDemand::TupleFields(fields) => {
             let items = tuple_field_tys(world, ty, fields.len())
@@ -2492,10 +2480,7 @@ fn generic_shape_from_demand(
                 .zip(fields.iter())
                 .map(|(field_ty, field_demand)| generic_shape_from_demand(world, field_ty, field_demand, facts, None))
                 .collect::<Vec<_>>();
-            world
-                .transport_mut()
-                .interners_mut()
-                .intern_shape(ShapeDescr::Tuple(items.into_boxed_slice()))
+            world.intern_shape(ShapeDescr::Tuple(items.into_boxed_slice()))
         }
     }
 }
@@ -2534,7 +2519,7 @@ fn generic_callable_shape_with_resolutions(
     // into the value identity instead fragments layout-identical pointers and
     // forces out-of-band lane patching at every carrier.
     let boxed_value_lane = value_lane(world, ty);
-    let callable = world.transport_mut().interners_mut().intern_callable(CallableDescr {
+    let callable = world.intern_callable(CallableDescr {
         function: None,
         capture_shapes: Box::default(),
         capture_lanes: Box::from([boxed_value_lane]),
@@ -2588,10 +2573,7 @@ fn generic_callable_shape_with_resolutions(
         Vec::new()
     };
     facts.record_callable(callable, Vec::new(), Vec::new(), boundary_ids);
-    world
-        .transport_mut()
-        .interners_mut()
-        .intern_shape(ShapeDescr::Callable(callable))
+    world.intern_shape(ShapeDescr::Callable(callable))
 }
 
 fn resolution_symbols_for_callable_source_surfaces(
@@ -2624,14 +2606,14 @@ fn resolution_symbols_for_callable_source_surface(
 ) -> Vec<ExecutableSymbol> {
     let mut resolutions = Vec::new();
     for shape in source_shapes {
-        let ShapeDescr::Callable(callable) = world.transport().interners().shape(*shape) else {
+        let ShapeDescr::Callable(callable) = world.shape(*shape) else {
             continue;
         };
         let Some(callable_facts) = facts.callables.get(callable) else {
             continue;
         };
         for boundary in callable_facts.boundary_ids.iter().copied() {
-            let boundary_descr = world.transport().interners().boundary(boundary);
+            let boundary_descr = world.boundary(boundary);
             if boundary_descr.surface_arg_shapes.as_ref() != arg_shapes
                 || boundary_descr.published_return_shape != return_shape
             {
@@ -2658,7 +2640,7 @@ fn resolution_symbols_for_source_publications(
             if !draft.publications.contains(source) {
                 continue;
             }
-            let boundary_descr = world.transport().interners().boundary(*boundary);
+            let boundary_descr = world.boundary(*boundary);
             if boundary_descr.surface_arg_shapes.as_ref() != arg_shapes
                 || boundary_descr.published_return_shape != return_shape
             {
@@ -2708,14 +2690,14 @@ fn boundary_return_shapes_for_callable_source_surface(
 ) -> Vec<ShapeId> {
     let mut return_shapes = Vec::new();
     for shape in source_shapes {
-        let ShapeDescr::Callable(callable) = world.transport().interners().shape(*shape) else {
+        let ShapeDescr::Callable(callable) = world.shape(*shape) else {
             continue;
         };
         let Some(callable_facts) = facts.callables.get(callable) else {
             continue;
         };
         for boundary in callable_facts.boundary_ids.iter().copied() {
-            let boundary_descr = world.transport().interners().boundary(boundary);
+            let boundary_descr = world.boundary(boundary);
             if boundary_descr.surface_arg_shapes.as_ref() == arg_shapes
                 && !return_shapes.contains(&boundary_descr.published_return_shape)
             {
@@ -2738,7 +2720,7 @@ fn boundary_return_shapes_for_source_publications(
             if !draft.publications.contains(source) {
                 continue;
             }
-            let boundary_descr = world.transport().interners().boundary(*boundary);
+            let boundary_descr = world.boundary(*boundary);
             if boundary_descr.surface_arg_shapes.as_ref() == arg_shapes
                 && !return_shapes.contains(&boundary_descr.published_return_shape)
             {
@@ -2765,7 +2747,7 @@ fn resolution_symbols_for_published_surfaces(
                 if !draft.publications.contains(publication) {
                     continue;
                 }
-                let boundary_descr = world.transport().interners().boundary(*boundary);
+                let boundary_descr = world.boundary(*boundary);
                 if boundary_descr.surface_arg_shapes.as_ref() == arg_shapes.as_ref()
                     && boundary_descr.published_return_shape == return_shape
                 {
@@ -2820,7 +2802,7 @@ fn publish_boundaries_for_callable(
             .zip(surface.inputs.iter().copied())
             .flat_map(|(shape, ty)| boundary_lanes_for_shape(world, shape, ty))
             .collect::<Vec<_>>();
-        let boundary = world.transport_mut().interners_mut().intern_boundary(BoundaryDescr {
+        let boundary = world.intern_boundary(BoundaryDescr {
             callable,
             surface_arg_shapes: arg_shapes.clone(),
             published_value_lane,
@@ -2855,7 +2837,7 @@ fn capture_lanes_for_callable_descriptor(
 
 fn boundary_return_shape_for_ty(world: &mut World<'_>, ret_ty: Ty, facts: &mut TransportFactsBuilder) -> ShapeId {
     if world.types().is_empty(&ret_ty) {
-        return world.transport_mut().interners_mut().intern_shape(ShapeDescr::Nothing);
+        return world.intern_shape(ShapeDescr::Nothing);
     }
     if let Some(fields) = exact_tuple_field_tys(world, ret_ty) {
         let field_shapes = fields
@@ -2865,10 +2847,7 @@ fn boundary_return_shape_for_ty(world: &mut World<'_>, ret_ty: Ty, facts: &mut T
                 generic_shape_from_demand(world, field_ty, &demand, facts, None)
             })
             .collect::<Vec<_>>();
-        return world
-            .transport_mut()
-            .interners_mut()
-            .intern_shape(ShapeDescr::Tuple(field_shapes.into_boxed_slice()));
+        return world.intern_shape(ShapeDescr::Tuple(field_shapes.into_boxed_slice()));
     }
     let demand = boundary_runtime_demand(world, ret_ty);
     generic_shape_from_demand(world, ret_ty, &demand, facts, None)
@@ -2955,7 +2934,7 @@ fn boundary_return_shape_for_resolution(
         TransportSource::ExecutableReturn,
         None,
     );
-    if !demand.is_ignore() && matches!(world.transport().interners().shape(shape), ShapeDescr::Nothing) {
+    if !demand.is_ignore() && matches!(world.shape(shape), ShapeDescr::Nothing) {
         generic_shape_from_demand(world, return_ty, &demand, facts, None)
     } else {
         shape
@@ -3015,7 +2994,7 @@ fn boundary_return_ty_for_surface(world: &mut World<'_>, callable_ty: Ty, surfac
 }
 
 fn boundary_lanes_for_shape(world: &mut World<'_>, shape: ShapeId, ty: Ty) -> Vec<LaneId> {
-    match world.transport().interners().shape(shape).clone() {
+    match world.shape(shape).clone() {
         ShapeDescr::Nothing => Vec::new(),
         ShapeDescr::Lane(lane) => vec![lane],
         ShapeDescr::Tuple(items) => {
@@ -3044,21 +3023,15 @@ fn exact_tuple_field_tys(world: &mut World<'_>, ty: Ty) -> Option<Vec<Ty>> {
 
 fn value_lane_shape(world: &mut World<'_>, ty: Ty) -> ShapeId {
     let lane = value_lane(world, ty);
-    world
-        .transport_mut()
-        .interners_mut()
-        .intern_shape(ShapeDescr::Lane(lane))
+    world.intern_shape(ShapeDescr::Lane(lane))
 }
 
 fn value_lane(world: &mut World<'_>, ty: Ty) -> LaneId {
     let ty = world.types_mut().value_lane_repr(ty);
-    world
-        .transport_mut()
-        .interners_mut()
-        .intern_lane(super::super::transport::LaneDescr {
-            ty,
-            class: TransportClass::Value,
-        })
+    world.intern_lane(super::super::transport::LaneDescr {
+        ty,
+        class: TransportClass::Value,
+    })
 }
 
 fn tuple_field_tys(world: &mut World<'_>, ty: Ty, arity: usize) -> Vec<Ty> {
@@ -3146,7 +3119,7 @@ mod tests {
     }
 
     fn lane_for_shape(world: &World<'_>, shape: ShapeId) -> LaneId {
-        let ShapeDescr::Lane(lane) = world.transport().interners().shape(shape) else {
+        let ShapeDescr::Lane(lane) = world.shape(shape) else {
             panic!("test shape should be one lane")
         };
         *lane
@@ -3208,7 +3181,7 @@ mod tests {
         let tel = ConfiguredTelemetry::new();
         let mut world = World::new(&tel);
         let (a, b) = test_positions(&mut world);
-        let left_shape = world.transport_mut().interners_mut().intern_shape(ShapeDescr::Nothing);
+        let left_shape = world.intern_shape(ShapeDescr::Nothing);
         let right_shape = intern_test_shape(&mut world);
         assert_ne!(left_shape, right_shape);
 

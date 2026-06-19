@@ -238,7 +238,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                     return_shape: entry.return_shape,
                     return_lanes: entry.return_lanes.clone(),
                     return_reprs: callable_boundary_reprs(program, entry.boundary, &entry.return_lanes),
-                    return_tuple_arity: match world.transport().interners().shape(entry.return_shape) {
+                    return_tuple_arity: match world.shape(entry.return_shape) {
                         ShapeDescr::Tuple(fields) => Some(fields.len()),
                         ShapeDescr::Nothing | ShapeDescr::Lane(_) | ShapeDescr::Callable(_) => None,
                     },
@@ -627,7 +627,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                         ctx.origin,
                         value.as_u32(),
                         position,
-                        self.world.transport().interners().shape(shape),
+                        self.world.shape(shape),
                         capture_offset,
                         entry_vars.len()
                     ),
@@ -683,7 +683,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                 }
                 BackendStep::Tuple { value, items } => {
                     if let Some(shape) = maybe_value_shape(self.program, executable, *value)
-                        && let ShapeDescr::Tuple(fields) = self.world.transport().interners().shape(shape).clone()
+                        && let ShapeDescr::Tuple(fields) = self.world.shape(shape).clone()
                     {
                         if fields.len() != items.len() {
                             return Err(FatalError);
@@ -792,7 +792,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                 }
                 BackendStep::FunctionRef { value, function: _ } => {
                     let shape = value_shape(self.program, executable, *value);
-                    if matches!(self.world.transport().interners().shape(shape), ShapeDescr::Nothing) {
+                    if matches!(self.world.shape(shape), ShapeDescr::Nothing) {
                         // The transport plan settled this reference to Nothing: it is
                         // never demanded as a runtime callable (passed only to an
                         // ignoring boundary or discarded), so it carries no lanes.
@@ -818,7 +818,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                     captures,
                 } => {
                     let shape = value_shape(self.program, executable, *value);
-                    if matches!(self.world.transport().interners().shape(shape), ShapeDescr::Nothing) {
+                    if matches!(self.world.shape(shape), ShapeDescr::Nothing) {
                         // A settled-Nothing constructed callable is never demanded at
                         // runtime, so its captures carry nothing. Honor the transport
                         // plan's proof and construct nothing.
@@ -826,7 +826,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                         continue;
                     }
                     let callable = callable_id_for_shape(self.world, shape)?;
-                    let callable_descr = self.world.transport().interners().callable(callable).clone();
+                    let callable_descr = self.world.callable(callable).clone();
                     let capture_shapes = callable_descr.capture_shapes.to_vec();
                     if capture_shapes.len() != captures.len() {
                         return Err(incomplete_native_program(
@@ -838,12 +838,12 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                     let mut capture_lanes = Vec::new();
                     let mut descriptor_lane_index = 0;
                     for (capture, shape) in captures.iter().copied().zip(capture_shapes) {
-                        let structural_width = self.world.transport().interners().shape_width(shape);
+                        let structural_width = self.world.shape_width(shape);
                         if structural_width == 0 && descriptor_lane_index < callable_descr.capture_lanes.len() {
                             let lane = callable_descr.capture_lanes[descriptor_lane_index];
                             descriptor_lane_index += 1;
                             let local = env_local_value(env, capture)?;
-                            let ty = self.world.transport().interners().lane(lane).ty;
+                            let ty = self.world.lane(lane).ty;
                             capture_lanes.push(self.materialize_native_value(ctx, Some(ty), &local)?);
                         } else {
                             self.encode_env_value_for_shape(ctx, executable, env, capture, shape, &mut capture_lanes)?;
@@ -1645,7 +1645,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
 
     fn resume_payload_is_runtime_absent(&self, position: &TransportPosition) -> bool {
         let shape = position_shape(self.program, position);
-        matches!(self.world.transport().interners().shape(shape), ShapeDescr::Nothing)
+        matches!(self.world.shape(shape), ShapeDescr::Nothing)
     }
 
     fn receive_pinned_vars(
@@ -2369,7 +2369,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
     /// boundary`). More than one boundary here therefore means policy did not
     /// preselect, which is a transport/abi fact gap, not a choice for native.
     fn settled_callable_boundary(&self, callable: CallableId) -> Result<NativeCallableBoundaryId, FatalError> {
-        let plan = self.world.transport().plans().get(self.root_id);
+        let plan = self.world.transport_plan(self.root_id);
         let boundary_ids: Vec<BoundaryId> = match plan.and_then(|plan| plan.callables.get(&callable)) {
             Some(facts) => facts.boundary_ids.to_vec(),
             None => {
@@ -2527,9 +2527,9 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
         position: &TransportPosition,
     ) -> Result<Var, FatalError> {
         let boundary = match value {
-            NativeBoundValue::Transport { shape, lanes } => match self.world.transport().interners().shape(*shape) {
+            NativeBoundValue::Transport { shape, lanes } => match self.world.shape(*shape) {
                 ShapeDescr::Callable(callable) => {
-                    let descr = self.world.transport().interners().callable(*callable);
+                    let descr = self.world.callable(*callable);
                     if lanes.len() == descr.capture_lanes.len()
                         && let Some(function) = descr.function
                     {
@@ -2572,7 +2572,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
         lanes: &[Var],
         boundary: Option<NativeCallableBoundaryId>,
     ) -> Result<Var, FatalError> {
-        match self.world.transport().interners().shape(shape).clone() {
+        match self.world.shape(shape).clone() {
             ShapeDescr::Nothing => Err(FatalError),
             ShapeDescr::Lane(_) => lanes.first().copied().ok_or(FatalError),
             ShapeDescr::Tuple(fields) => {
@@ -2583,7 +2583,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                 Ok(ctx.emit_let(Prim::MakeTuple(vars)).0)
             }
             ShapeDescr::Callable(callable) => {
-                let descr = self.world.transport().interners().callable(callable);
+                let descr = self.world.callable(callable);
                 if descr.function.is_none() && lanes.len() == 1 {
                     return Ok(lanes[0]);
                 }
@@ -2622,7 +2622,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
         let NativeBoundValue::Transport { shape, .. } = value else {
             return None;
         };
-        match self.world.transport().interners().shape(*shape) {
+        match self.world.shape(*shape) {
             ShapeDescr::Tuple(fields) => Some(fields.len()),
             ShapeDescr::Nothing | ShapeDescr::Lane(_) | ShapeDescr::Callable(_) => None,
         }
@@ -2636,7 +2636,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
         let NativeBoundValue::Transport { shape, lanes } = value else {
             return Ok(None);
         };
-        let ShapeDescr::Tuple(fields) = self.world.transport().interners().shape(*shape).clone() else {
+        let ShapeDescr::Tuple(fields) = self.world.shape(*shape).clone() else {
             return Ok(None);
         };
         Ok(Some(
@@ -2651,10 +2651,10 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
         let NativeBoundValue::Transport { shape, lanes } = value else {
             return Ok(None);
         };
-        let ShapeDescr::Callable(callable) = self.world.transport().interners().shape(*shape) else {
+        let ShapeDescr::Callable(callable) = self.world.shape(*shape) else {
             return Ok(None);
         };
-        let descr = self.world.transport().interners().callable(*callable);
+        let descr = self.world.callable(*callable);
         if descr.function.is_none() {
             return Ok(None);
         }
@@ -2696,16 +2696,16 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
         lanes: &[Var],
         fields: &[ShapeId],
     ) -> Result<Vec<NativeBoundValue>, FatalError> {
-        if lanes.len() != self.world.transport().interners().shape_width(shape) {
+        if lanes.len() != self.world.shape_width(shape) {
             return Err(FatalError);
         }
         let mut offset = 0_usize;
         let mut values = Vec::with_capacity(fields.len());
         for field in fields.iter().copied() {
-            let width = self.world.transport().interners().shape_width(field);
+            let width = self.world.shape_width(field);
             let end = offset.checked_add(width).ok_or(FatalError)?;
             let field_lanes = lanes.get(offset..end).ok_or(FatalError)?.to_vec();
-            let value = match self.world.transport().interners().shape(field) {
+            let value = match self.world.shape(field) {
                 ShapeDescr::Nothing => NativeBoundValue::Absent,
                 ShapeDescr::Lane(_) => NativeBoundValue::Runtime(*field_lanes.first().ok_or(FatalError)?),
                 ShapeDescr::Tuple(_) | ShapeDescr::Callable(_) => NativeBoundValue::Transport {
@@ -2737,12 +2737,12 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
             lanes.extend(value_lanes.iter().copied());
             return Ok(());
         }
-        match self.world.transport().interners().shape(shape).clone() {
+        match self.world.shape(shape).clone() {
             ShapeDescr::Nothing => Ok(()),
             ShapeDescr::Lane(lane) => {
                 let ty = value_id
                     .and_then(|value_id| executable.value_types.get(&value_id).copied())
-                    .unwrap_or_else(|| self.world.transport().interners().lane(lane).ty);
+                    .unwrap_or_else(|| self.world.lane(lane).ty);
                 lanes.push(self.materialize_native_value(ctx, Some(ty), value)?);
                 Ok(())
             }
@@ -2759,7 +2759,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                 format!(
                     "native attempted to encode callable shape {:?} ({:?}) for value {:?} from {:?}; callable values must be supplied by matching transport lanes or a published value seam",
                     shape,
-                    self.world.transport().interners().callable(callable),
+                    self.world.callable(callable),
                     value_id,
                     value,
                 ),
@@ -2776,7 +2776,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
         shape: ShapeId,
         lanes: &mut Vec<Var>,
     ) -> Result<(), FatalError> {
-        if matches!(self.world.transport().interners().shape(shape), ShapeDescr::Nothing) {
+        if matches!(self.world.shape(shape), ShapeDescr::Nothing) {
             return Ok(());
         }
         let local = env
@@ -2988,11 +2988,9 @@ impl ValueEnv {
 
 fn shape_lane_tys(world: &World<'_>, shape: ShapeId) -> Vec<Ty> {
     world
-        .transport()
-        .interners()
         .shape_lane_ids(shape)
         .into_iter()
-        .map(|lane| world.transport().interners().lane(lane).ty)
+        .map(|lane| world.lane(lane).ty)
         .collect()
 }
 
@@ -3020,7 +3018,7 @@ fn native_return_contract(
             ) if position_executable == seam_executable
         )
     });
-    let tuple_arity = match world.transport().interners().shape(shape) {
+    let tuple_arity = match world.shape(shape) {
         ShapeDescr::Tuple(fields) => Some(fields.len()),
         ShapeDescr::Nothing | ShapeDescr::Lane(_) | ShapeDescr::Callable(_) => None,
     };
@@ -3057,7 +3055,7 @@ fn continuation_result_entry(
         let tys = publication_lanes
             .iter()
             .copied()
-            .map(|lane| world.transport().interners().lane(lane).ty)
+            .map(|lane| world.lane(lane).ty)
             .collect();
         let reprs = publication_lanes
             .iter()
@@ -3082,7 +3080,7 @@ fn return_payload_entry(
         let tys = publication_lanes
             .iter()
             .copied()
-            .map(|lane| world.transport().interners().lane(lane).ty)
+            .map(|lane| world.lane(lane).ty)
             .collect();
         let reprs = publication_lanes
             .iter()
@@ -3152,8 +3150,6 @@ fn seam_reprs_for_position_shape(
     seam_matches: impl Fn(&CodegenSeam) -> bool,
 ) -> Vec<AbiValueRepr> {
     world
-        .transport()
-        .interners()
         .shape_leaf_lanes(shape)
         .into_iter()
         .map(|(leaf_shape, lane)| seam_repr_for_lane(program, &seam_matches, Some(leaf_shape), lane))
@@ -3207,7 +3203,7 @@ fn position_publication_lanes(program: &BackendProgram, seam_matches: impl Fn(&C
 
 fn position_width(world: &World<'_>, shape: ShapeId, publication_lanes: &[LaneId]) -> usize {
     if publication_lanes.is_empty() {
-        world.transport().interners().shape_width(shape)
+        world.shape_width(shape)
     } else {
         publication_lanes.len()
     }
@@ -3454,7 +3450,7 @@ fn executable_input_tys(world: &World<'_>, program: &BackendProgram, executable:
                 binding
                     .publication_lanes
                     .into_iter()
-                    .map(|lane| world.transport().interners().lane(lane).ty)
+                    .map(|lane| world.lane(lane).ty)
                     .collect()
             }
         })
@@ -3499,7 +3495,7 @@ struct ExecutableInputBinding {
 impl ExecutableInputBinding {
     fn width(&self, world: &World<'_>) -> usize {
         if self.publication_lanes.is_empty() {
-            world.transport().interners().shape_width(self.shape)
+            world.shape_width(self.shape)
         } else {
             self.publication_lanes.len()
         }
@@ -3560,15 +3556,7 @@ fn decode_runtime_value(
     shape: ShapeId,
     lane_index: &mut usize,
 ) -> Result<NativeBoundValue, FatalError> {
-    decode_runtime_value_with_width(
-        params,
-        shape,
-        world.transport().interners().shape_width(shape),
-        false,
-        world,
-        ctx,
-        lane_index,
-    )
+    decode_runtime_value_with_width(params, shape, world.shape_width(shape), false, world, ctx, lane_index)
 }
 
 fn decode_runtime_value_with_width(
@@ -3598,10 +3586,10 @@ fn decode_native_value_from_lanes(
     shape: ShapeId,
     lanes: Vec<Var>,
 ) -> Result<NativeBoundValue, FatalError> {
-    if lanes.len() != world.transport().interners().shape_width(shape) {
+    if lanes.len() != world.shape_width(shape) {
         return Err(FatalError);
     }
-    Ok(match world.transport().interners().shape(shape) {
+    Ok(match world.shape(shape) {
         ShapeDescr::Nothing => NativeBoundValue::Absent,
         ShapeDescr::Lane(_) => NativeBoundValue::Runtime(*lanes.first().ok_or(FatalError)?),
         ShapeDescr::Tuple(_) | ShapeDescr::Callable(_) => NativeBoundValue::Transport { shape, lanes },
@@ -3609,7 +3597,7 @@ fn decode_native_value_from_lanes(
 }
 
 fn callable_id_for_shape(world: &World<'_>, shape: ShapeId) -> Result<CallableId, FatalError> {
-    match world.transport().interners().shape(shape) {
+    match world.shape(shape) {
         ShapeDescr::Callable(callable) => Ok(*callable),
         ShapeDescr::Nothing | ShapeDescr::Lane(_) | ShapeDescr::Tuple(_) => Err(FatalError),
     }
@@ -3890,7 +3878,7 @@ fn mark_ignored_lanes_for_demand(
     demand: &RuntimeDemand,
     lane_index: &mut usize,
 ) -> Result<(), FatalError> {
-    match world.transport().interners().shape(shape) {
+    match world.shape(shape) {
         ShapeDescr::Nothing => Ok(()),
         ShapeDescr::Lane(_) => {
             let var = next_runtime_lane(vars, lane_index)?;
@@ -3927,7 +3915,7 @@ fn mark_ignored_lanes_for_demand(
             }
         }
         ShapeDescr::Callable(callable) => {
-            let capture_lanes = world.transport().interners().callable(*callable).capture_lanes.len();
+            let capture_lanes = world.callable(*callable).capture_lanes.len();
             if demand.is_ignore() {
                 for _ in 0..capture_lanes {
                     let var = next_runtime_lane(vars, lane_index)?;
@@ -3963,7 +3951,7 @@ fn mark_all_runtime_lanes_ignored(
     shape: ShapeId,
     lane_index: &mut usize,
 ) -> Result<(), FatalError> {
-    match world.transport().interners().shape(shape) {
+    match world.shape(shape) {
         ShapeDescr::Nothing => Ok(()),
         ShapeDescr::Lane(_) => {
             let var = next_runtime_lane(vars, lane_index)?;
@@ -3977,7 +3965,7 @@ fn mark_all_runtime_lanes_ignored(
             Ok(())
         }
         ShapeDescr::Callable(callable) => {
-            for _ in 0..world.transport().interners().callable(*callable).capture_lanes.len() {
+            for _ in 0..world.callable(*callable).capture_lanes.len() {
                 let var = next_runtime_lane(vars, lane_index)?;
                 builder.mark_param_ignored(var);
             }
@@ -3992,7 +3980,7 @@ fn skip_runtime_lanes(
     shape: ShapeId,
     lane_index: &mut usize,
 ) -> Result<(), FatalError> {
-    match world.transport().interners().shape(shape) {
+    match world.shape(shape) {
         ShapeDescr::Nothing => Ok(()),
         ShapeDescr::Lane(_) => {
             next_runtime_lane(vars, lane_index)?;
@@ -4005,7 +3993,7 @@ fn skip_runtime_lanes(
             Ok(())
         }
         ShapeDescr::Callable(callable) => {
-            for _ in 0..world.transport().interners().callable(*callable).capture_lanes.len() {
+            for _ in 0..world.callable(*callable).capture_lanes.len() {
                 next_runtime_lane(vars, lane_index)?;
             }
             Ok(())

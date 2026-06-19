@@ -30,16 +30,15 @@ impl TransportPlanTestHandler for TransportPlanContractValidator {
 }
 
 fn validate_transport_plan_contract(world: &World<'_>, root: RootId) -> Vec<String> {
-    let Some(plan) = world.transport().plans().get(root) else {
+    let Some(plan) = world.transport_plan(root) else {
         return vec![format!("root {} has no committed transport plan", root.as_u32())];
     };
-    let interners = world.transport().interners();
     let mut cx = ValidationContext {
         world,
-        shape_ids: interners.shapes().map(|(id, _)| id).collect(),
-        lane_ids: interners.lanes().map(|(id, _)| id).collect(),
-        callable_ids: interners.callables().map(|(id, _)| id).collect(),
-        boundary_ids: interners.boundaries().map(|(id, _)| id).collect(),
+        shape_ids: world.shapes().map(|(id, _)| id).collect(),
+        lane_ids: world.lanes().map(|(id, _)| id).collect(),
+        callable_ids: world.callables().map(|(id, _)| id).collect(),
+        boundary_ids: world.boundaries().map(|(id, _)| id).collect(),
         executable_membership: plan.executable_membership.iter().cloned().collect(),
         visited_shapes: HashSet::new(),
         visited_callables: HashSet::new(),
@@ -130,7 +129,7 @@ impl ValidationContext<'_, '_> {
         if !self.visited_shapes.insert(shape) {
             return;
         }
-        match self.world.transport().interners().shape(shape) {
+        match self.world.shape(shape) {
             ShapeDescr::Nothing => {}
             ShapeDescr::Lane(lane) => self.validate_lane(*lane, "shape lane"),
             ShapeDescr::Tuple(items) => {
@@ -157,7 +156,7 @@ impl ValidationContext<'_, '_> {
         if !self.visited_callables.insert(callable) {
             return;
         }
-        let descr = self.world.transport().interners().callable(callable);
+        let descr = self.world.callable(callable);
         self.validate_callable_descr(descr, plan);
     }
 
@@ -172,7 +171,7 @@ impl ValidationContext<'_, '_> {
     }
 
     fn validate_callable_capture_shape(&mut self, shape: ShapeId, plan: &TransportPlan) {
-        let ShapeDescr::Callable(callable) = self.world.transport().interners().shape(shape) else {
+        let ShapeDescr::Callable(callable) = self.world.shape(shape) else {
             return;
         };
         let Some(facts) = plan.callables.get(callable) else {
@@ -195,7 +194,7 @@ impl ValidationContext<'_, '_> {
         if !self.visited_boundaries.insert(boundary) {
             return;
         }
-        let descr = self.world.transport().interners().boundary(boundary);
+        let descr = self.world.boundary(boundary);
         self.validate_boundary_descr(boundary, descr, plan);
     }
 

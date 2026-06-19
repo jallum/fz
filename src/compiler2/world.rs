@@ -58,7 +58,10 @@ use super::source::{
     QuotedLexicalContext, QuotedLexicalContextKind, QuotedSourceBuilder, QuotedSourceError, QuotedSourceMetadata,
     QuotedSourceRoot,
 };
-use super::transport::{CodegenLaneRepr, CodegenSeam, CodegenSeamFact, TransportPlan, TransportStore};
+use super::transport::{
+    BoundaryDescr, BoundaryId, CallableDescr, CallableId, CodegenLaneRepr, CodegenSeam, CodegenSeamFact, LaneDescr,
+    LaneId, ShapeDescr, ShapeId, TransportPlan, TransportStore,
+};
 use super::typedef::{TypeDef, TypeDefMap};
 use super::types::{ClosureTarget, MapKey, Ty, Types};
 use crate::ir_interp::AnyValue as RuntimeValue;
@@ -342,16 +345,112 @@ impl<'a> World<'a> {
         &mut self.types
     }
 
+    /// The runtime boundary: hand the backend interpreter the types and the
+    /// transport store together. This is the *only* place the whole store leaves
+    /// World — every compiler-internal access goes through the interning gateway
+    /// below, never the raw interners.
     pub(crate) fn types_mut_and_transport(&mut self) -> (&mut Types, &TransportStore) {
         (&mut self.types, &self.transport)
     }
 
-    pub fn transport(&self) -> &TransportStore {
-        &self.transport
+    // ---- Transport interning gateway ------------------------------------
+    //
+    // World is the sole owner of the transport interners. A transport id
+    // (`ShapeId`/`LaneId`/`CallableId`/`BoundaryId`) is only ever minted by an
+    // `intern_*` method here, which *guarantees* the descriptor is interned, and
+    // is only ever resolved by the matching lookup here. The interning mechanism
+    // (`TransportStore::interners`) is never exposed, so no caller can fabricate
+    // an id or reach a descriptor without going through this contract.
+
+    pub fn intern_shape(&mut self, descr: ShapeDescr) -> ShapeId {
+        self.transport.interners_mut().intern_shape(descr)
     }
 
-    pub fn transport_mut(&mut self) -> &mut TransportStore {
-        &mut self.transport
+    pub fn shape(&self, id: ShapeId) -> &ShapeDescr {
+        self.transport.interners().shape(id)
+    }
+
+    pub fn shape_width(&self, shape: ShapeId) -> usize {
+        self.transport.interners().shape_width(shape)
+    }
+
+    pub fn shape_lane_ids(&self, shape: ShapeId) -> Vec<LaneId> {
+        self.transport.interners().shape_lane_ids(shape)
+    }
+
+    pub fn shape_leaf_lanes(&self, shape: ShapeId) -> Vec<(ShapeId, LaneId)> {
+        self.transport.interners().shape_leaf_lanes(shape)
+    }
+
+    pub fn tuple_field_spans(&self, shape: ShapeId) -> Option<Vec<(ShapeId, std::ops::Range<usize>)>> {
+        self.transport.interners().tuple_field_spans(shape)
+    }
+
+    pub fn shape_count(&self) -> usize {
+        self.transport.interners().shape_count()
+    }
+
+    pub fn intern_lane(&mut self, descr: LaneDescr) -> LaneId {
+        self.transport.interners_mut().intern_lane(descr)
+    }
+
+    pub fn lane(&self, id: LaneId) -> &LaneDescr {
+        self.transport.interners().lane(id)
+    }
+
+    pub fn lane_count(&self) -> usize {
+        self.transport.interners().lane_count()
+    }
+
+    pub fn intern_callable(&mut self, descr: CallableDescr) -> CallableId {
+        self.transport.interners_mut().intern_callable(descr)
+    }
+
+    pub fn callable(&self, id: CallableId) -> &CallableDescr {
+        self.transport.interners().callable(id)
+    }
+
+    pub fn callable_count(&self) -> usize {
+        self.transport.interners().callable_count()
+    }
+
+    pub fn intern_boundary(&mut self, descr: BoundaryDescr) -> BoundaryId {
+        self.transport.interners_mut().intern_boundary(descr)
+    }
+
+    pub fn boundary(&self, id: BoundaryId) -> &BoundaryDescr {
+        self.transport.interners().boundary(id)
+    }
+
+    pub fn boundary_count(&self) -> usize {
+        self.transport.interners().boundary_count()
+    }
+
+    pub fn shapes(&self) -> impl Iterator<Item = (ShapeId, &ShapeDescr)> + '_ {
+        self.transport.interners().shapes()
+    }
+
+    pub fn lanes(&self) -> impl Iterator<Item = (LaneId, &LaneDescr)> + '_ {
+        self.transport.interners().lanes()
+    }
+
+    pub fn callables(&self) -> impl Iterator<Item = (CallableId, &CallableDescr)> + '_ {
+        self.transport.interners().callables()
+    }
+
+    pub fn boundaries(&self) -> impl Iterator<Item = (BoundaryId, &BoundaryDescr)> + '_ {
+        self.transport.interners().boundaries()
+    }
+
+    // ---- Transport plan access ------------------------------------------
+
+    pub fn transport_plan(&self, root: RootId) -> Option<&TransportPlan> {
+        self.transport.plans().get(root)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn remove_transport_plan(&mut self, root: RootId) {
+        self.transport.plans_mut().remove(root);
     }
 
     #[cfg(test)]

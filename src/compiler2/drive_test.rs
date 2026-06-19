@@ -11415,7 +11415,7 @@ fn value_destination_is_runtime_absent(
         }
     };
     matches!(
-        world.transport().interners().shape(
+        world.shape(
             program
                 .transport
                 .shape_at(position)
@@ -11432,7 +11432,7 @@ fn emission_ready_value_is_settled_transport_absent(
     value: ValueId,
 ) -> bool {
     plan.executable_value_shape(&executable.transport, value)
-        .is_some_and(|shape| matches!(world.transport().interners().shape(shape), ShapeDescr::Nothing))
+        .is_some_and(|shape| matches!(world.shape(shape), ShapeDescr::Nothing))
 }
 
 fn transport_position_shape(plan: &MaterializedTransportPlan, position: &TransportPosition) -> ShapeId {

@@ -355,7 +355,7 @@ pub(super) fn seal_semantic_closure(world: &mut World<'_>, root_id: RootId) -> R
         if closure_changed {
             changed.push(semantic_closed_fact);
         }
-        if closure_changed || world.transport().plans().get(root_id).is_none() {
+        if closure_changed || world.transport_plan(root_id).is_none() {
             follow_up.insert(Job::DeriveTransportPlan(root_id));
         }
         if closure_changed {

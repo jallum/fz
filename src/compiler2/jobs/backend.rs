@@ -386,7 +386,7 @@ impl<'a, 'plan, 'tel> BackendLowerer<'a, 'plan, 'tel> {
     ) -> bool {
         self.transport
             .executable_value_shape(&executable.transport, value)
-            .is_some_and(|shape| matches!(self.world.transport().interners().shape(shape), ShapeDescr::Nothing))
+            .is_some_and(|shape| matches!(self.world.shape(shape), ShapeDescr::Nothing))
     }
 
     fn lower_tail(
