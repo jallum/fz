@@ -2,14 +2,15 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-06-19T20:57:57Z",
   "created": "2026-06-19T20:48:25Z",
   "description": "",
   "id": "fz-hwn.26",
   "labels": [],
   "parent": "fz-hwn",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "World owns transport interning: gateway methods + hide interners() (Demeter/contract enforcement)",
   "type": "task",
-  "updated_at": "2026-06-19T20:48:33Z"
+  "updated_at": "2026-06-19T20:57:57Z"
 }
