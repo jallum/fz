@@ -2,14 +2,16 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-06-19T14:39:09Z",
+  "close_reason": "Done at HEAD. value_slot/value_slots vocabulary is gone from the entire repo (src/, guides/, .agent/); the production_and_guides_have_no_old_value_format_gate_names gate test passes (fixture_matrix). Renamed to current lane/position vocabulary by the transport-flow-graph work.",
   "created": "2026-06-16T04:09:47Z",
   "description": "Full cargo test currently trips production_and_guides_have_no_old_value_format_gate_names because src/compiler2/jobs/artifact.rs still contains the pre-existing value_slot/value_slots vocabulary. Rename the artifact projection terms to the current lane/position vocabulary and update any affected docs/tests. This is unrelated to callable-flow collapse but blocks a clean full-suite signal.",
   "id": "fz-hwn.20.8.7",
   "labels": [],
   "parent": "fz-hwn.20.8",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "Compiler2 cleanup: remove stale value_slot artifact vocabulary",
   "type": "task",
-  "updated_at": "2026-06-16T04:09:47Z"
+  "updated_at": "2026-06-19T14:39:09Z"
 }
