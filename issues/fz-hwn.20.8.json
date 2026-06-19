@@ -2,14 +2,16 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-06-19T14:42:19Z",
+  "close_reason": "All children done (P1 transport-authority work .8.1-.8.6 + .8.7 value_slot cleanup). Semantic/runtime-demand facts own callable demand/surfaces/boundaries; transport projects them — recovery paths deleted.",
   "created": "2026-06-16T03:41:58Z",
   "description": "Goal: return to the current transport-flow handoff with semantic/runtime-demand facts owning callable demand, direct surfaces, boundary publication, and executable membership, while transport only projects those settled facts into ShapeId/CallableId/BoundaryId tables. Signal: worked source tests prove opaque callable arguments, Enumerable suspend reducers, direct callable captures, local callable returns, and opaque external callable contracts without transport inventing demand, surfaces, executable targets, capture demand, or return evidence. Strategy: land the current vertical-closure guardrail first, then move missing callable-flow facts upstream, then delete transport recovery paths one authority leak at a time. Removal target: callable_transport_demand Value+type upgrade, callable_surface_evidence type/local-use recovery, callable_type_surfaces as local authority, capture_demands_for_resolutions boundary fallback for local callables, boundary_return_shape_for_resolution type fallback for local resolutions, and latent executable derivation that reconstructs local callable targets from type instead of upstream facts.",
   "id": "fz-hwn.20.8",
   "labels": [],
   "parent": "fz-hwn.20",
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "Compiler2 transport authority boundary: make semantic and transport stay in their lanes",
   "type": "epic",
-  "updated_at": "2026-06-16T03:41:58Z"
+  "updated_at": "2026-06-19T14:42:19Z"
 }
