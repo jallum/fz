@@ -9,9 +9,15 @@
   "id": "fz-hwn.25",
   "labels": [],
   "parent": "fz-hwn",
+  "comments": [
+    {
+      "text": "Premise DISPROVEN. Collapsing the FirstClassPublication value-lane machinery is not viable: removing the emission breaks 45 tests across spawn/extern/resources/return-payloads and first-class captures. The publication value lane is the load-bearing marshaling interface for fz\u003c-\u003eextern boundaries and the path the native decode consumes for carriers; it is NOT redundant with the shape carrying the lane (they are not interchangeable). Salvaged the one genuinely-dead piece: callable_function_entry_publication_lanes (the zero-width-capture arm, never fires post-fz-hwn.22) -- removed in commit 7699794ca.",
+      "timestamp": "2026-06-19T20:36:12Z"
+    }
+  ],
   "priority": 2,
   "status": "in_progress",
   "title": "Collapse the redundant FirstClassPublication value-lane machinery now that the shape carries the boxed lane",
   "type": "task",
-  "updated_at": "2026-06-19T20:19:10Z"
+  "updated_at": "2026-06-19T20:36:12Z"
 }
