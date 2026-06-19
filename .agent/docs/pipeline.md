@@ -254,6 +254,32 @@ type question or discover a new callee.
 So semantics close, then artifacts consume; growth across that line is an error,
 not a feature.
 
+Runtime demand is what makes that line precise for *representation*. A semantic
+closure fact — an activation, a callsite summary, an exact callable surface — is
+evidence about what the program *means*; it is never an obligation to
+materialize a runtime value. Representation is derived only after semantic
+closure settles, from `RuntimeDemand(executable)`: a value earns an ABI lane, a
+tuple earns field lanes, and a callable earns a first-class boundary *only* when
+a settled demand asks for one. One shared boundary-transport model governs every
+runtime-carried value — inputs, executable returns, delivered resumes, and
+closure captures all draw their shape from the same demand-derived recursive
+layout family, so a return can never collapse to a narrower vocabulary than an
+input.
+
+The exact callable surfaces demand reads from live in
+`CallSiteSummary.targets[*].surface_inputs`: that is the authority for which
+callable shape a call actually uses, and it is small and executable-origin-aware
+by construction — it names the surfaces a body proves, not every surface a type
+permits. Recursive transport (nested captures, tuple fields, direct-callable
+producers) is not stored on that witness; it is derived downstream from settled
+demand into the transport plan's `ShapeId` / `LaneId` facts. The demand signal
+`fz.compiler2.runtime_demand.defined` and its representation twin
+`fz.compiler2.transport_flow.defined` each carry a drift-guarded field contract
+(pinned in `semantic_analysis_test.rs` and `transport_contract_test.rs`), so the
+five distinctions this model keeps separate — omitted lanes, tuple-field
+transport, direct-callable transport, first-class materialization, and
+callable-entry publication — stay individually observable across the seam.
+
 ## Artifact ladder and fact taxonomy
 
 `MaterializedProgram` is the first backend-owned snapshot. It is allowed to

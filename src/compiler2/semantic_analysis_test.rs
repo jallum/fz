@@ -621,6 +621,152 @@ end
     );
 }
 
+/// The stable name of the runtime-demand output signal. Runtime demand is the
+/// semantic-demand half of the demand -> representation pipeline; its
+/// representation half is pinned by `transport_flow.defined` in
+/// `transport_contract_test.rs`. Both halves carry a drift-guarded field
+/// contract so that the five distinctions the runtime-demand model exists to
+/// keep separate stay individually observable.
+const RUNTIME_DEMAND_EVENT_NAME: &[&str] = &["fz", "compiler2", "runtime_demand", "defined"];
+
+/// Every measurement the runtime-demand signal publishes. Pinned so a field can
+/// neither vanish (a distinction silently stops being observable) nor appear
+/// unpinned (a count nobody contracted for). The five distinctions the ticket
+/// requires map here: omitted lanes -> `omitted_inputs`; tuple-field transport
+/// -> `tuple_field_demands`; direct-callable transport -> `direct_callable_flows`;
+/// first-class materialization -> `first_class_callable_flows`; callable-entry
+/// publication is a representation fact and lives on the transport twin.
+const RUNTIME_DEMAND_MEASUREMENT_FIELDS: &[&str] = &[
+    "root_id",
+    "executables",
+    "demanded_inputs",
+    "omitted_inputs",
+    "demanded_values",
+    "tuple_field_demands",
+    "direct_callable_flows",
+    "first_class_callable_flows",
+    "opaque_callable_demands",
+    "escaped_callable_demands",
+];
+
+/// The metadata the runtime-demand signal carries: the root identity and the
+/// settled per-executable demand map. Tests read inspectable facts from here,
+/// never a reconstructed layout tree.
+const RUNTIME_DEMAND_METADATA_FIELDS: &[&str] = &["root_id", "runtime_demands"];
+
+#[test]
+fn compiler2_runtime_demand_telemetry_contract_names_the_demand_signal() {
+    assert_eq!(
+        RUNTIME_DEMAND_EVENT_NAME.join("."),
+        "fz.compiler2.runtime_demand.defined",
+        "runtime-demand closure should emit one demand-defined signal",
+    );
+    assert_eq!(
+        RUNTIME_DEMAND_MEASUREMENT_FIELDS,
+        [
+            "root_id",
+            "executables",
+            "demanded_inputs",
+            "omitted_inputs",
+            "demanded_values",
+            "tuple_field_demands",
+            "direct_callable_flows",
+            "first_class_callable_flows",
+            "opaque_callable_demands",
+            "escaped_callable_demands",
+        ],
+        "measurements should keep omitted lanes, tuple-field transport, direct-callable transport, \
+         and first-class materialization individually observable",
+    );
+    assert_eq!(
+        RUNTIME_DEMAND_METADATA_FIELDS,
+        ["root_id", "runtime_demands"],
+        "metadata should carry the settled demand facts, not a reconstructed layout tree",
+    );
+}
+
+#[test]
+fn compiler2_runtime_demand_telemetry_contract_is_emitted_with_exactly_the_pinned_fields() {
+    // A worked example that exercises three of the distinctions at once: an
+    // unused callable input (`ignore(id)` -> omitted), a directly-called lambda
+    // (`add1.(1)` -> direct), and an escaped lambda (`make()` -> first-class).
+    let tel = crate::telemetry::ConfiguredTelemetry::new();
+    let capture = crate::telemetry::Capture::new();
+    tel.attach(RUNTIME_DEMAND_EVENT_NAME, capture.handler());
+    // The demand facts are emitted as opaque debug values, so the durable
+    // `OwnedEvent` cannot retain them — capture the metadata key set live at
+    // emission, the way the transport-flow contract test does.
+    let metadata_keys = Rc::new(RefCell::new(Vec::<Vec<&'static str>>::new()));
+    let metadata_keys_in = metadata_keys.clone();
+    tel.attach(
+        RUNTIME_DEMAND_EVENT_NAME,
+        Box::new(move |event: &Event<'_, '_, '_>| {
+            metadata_keys_in
+                .borrow_mut()
+                .push(event.metadata.iter().map(|(key, _)| *key).collect::<Vec<_>>());
+        }),
+    );
+
+    let mut world = World::new(&tel);
+    world.submit_code(
+        Some("runtime_demand_contract.fz".to_string()),
+        r#"
+fn ignore(f), do: 1
+fn make(), do: fn x -> x + 1 end
+fn main() do
+  id = fn x -> x end
+  ignore(id)
+  add1 = fn x -> x + 1 end
+  add1.(1)
+  make()
+end
+"#
+        .to_string(),
+    );
+    let root_id = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    drive_until_semantic_closure(&mut world, root_id, "runtime-demand contract example should settle");
+
+    let event = capture
+        .last(RUNTIME_DEMAND_EVENT_NAME)
+        .unwrap_or_else(|| panic!("{} should be emitted", RUNTIME_DEMAND_EVENT_NAME.join(".")));
+    assert_eq!(
+        event.name, RUNTIME_DEMAND_EVENT_NAME,
+        "the worked example should emit the production runtime-demand signal",
+    );
+
+    let mut seen_measurements = event.measurements.iter().map(|(key, _)| *key).collect::<Vec<_>>();
+    seen_measurements.sort_unstable();
+    let mut pinned_measurements = RUNTIME_DEMAND_MEASUREMENT_FIELDS.to_vec();
+    pinned_measurements.sort_unstable();
+    assert_eq!(
+        seen_measurements, pinned_measurements,
+        "the emitted measurement fields must match the pinned demand contract exactly — no field may vanish or appear unpinned",
+    );
+
+    let mut seen_metadata = metadata_keys
+        .borrow()
+        .last()
+        .cloned()
+        .expect("worked example should record one runtime-demand event");
+    seen_metadata.sort_unstable();
+    let mut pinned_metadata = RUNTIME_DEMAND_METADATA_FIELDS.to_vec();
+    pinned_metadata.sort_unstable();
+    assert_eq!(
+        seen_metadata, pinned_metadata,
+        "the emitted metadata fields must match the pinned demand contract exactly",
+    );
+
+    // The three distinctions the example deliberately exercises must register on
+    // the signal — the contract is observable, not merely shaped.
+    for field in ["omitted_inputs", "direct_callable_flows", "first_class_callable_flows"] {
+        assert!(
+            matches!(event.measurements.get(field), Some(Value::U64(count)) if *count >= 1),
+            "worked example should report at least one {field}: {:?}",
+            event.measurements,
+        );
+    }
+}
+
 #[test]
 fn compiler2_runtime_demand_leaves_an_unused_callable_input_omitted() {
     let tel = crate::telemetry::ConfiguredTelemetry::new();
