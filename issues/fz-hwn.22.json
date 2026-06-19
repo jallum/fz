@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-19T17:45:12Z",
+  "description": "",
+  "id": "fz-hwn.22",
+  "labels": [],
+  "parent": "fz-hwn",
+  "priority": 2,
+  "status": "open",
+  "title": "First-class callable captured by non-tail-recursive continuation gets a 0-lane contract shape",
+  "type": "task",
+  "updated_at": "2026-06-19T17:45:12Z"
+}
