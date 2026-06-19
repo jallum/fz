@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [
     "fz-hwn.25"
@@ -10,7 +10,7 @@
   "labels": [],
   "parent": "fz-hwn",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "Remove dead CallableDescr.contract_surfaces (always empty since fz-hwn.22)",
   "type": "task",
   "updated_at": "2026-06-19T20:05:47Z"
