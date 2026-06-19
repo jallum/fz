@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-06-18T21:07:47Z",
@@ -7,8 +7,8 @@
   "id": "fz-ecv",
   "labels": [],
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "Restrict unreachable public functions to crate visibility",
   "type": "task",
-  "updated_at": "2026-06-18T21:07:47Z"
+  "updated_at": "2026-06-19T14:27:10Z"
 }
