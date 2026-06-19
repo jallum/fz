@@ -9,7 +9,7 @@ use super::super::identity::{ExecutableKey, ExecutableNeed, FunctionId};
 use super::super::scheduler::FatalError;
 use super::super::semantic::{
     ActivationAnalysis, CallSiteKey, CallSiteSummary, CallableDemand, CallableFlowEdge, CallableFlowFact,
-    CallableSurface, ExecutableRuntimeDemand, RuntimeDemand, ShapeDemand,
+    CallableSurface, ExecutableRuntimeDemand, RuntimeDemand, ShapeDemand, ground_dispatch_surfaces,
 };
 use super::super::types::Ty;
 use super::super::world::World;
@@ -152,73 +152,6 @@ impl CallableFlowBuilder {
     }
 }
 
-fn fold_direct_surfaces_into_first_class_publication(
-    world: &World<'_>,
-    mut first_class_surfaces: BTreeSet<CallableSurface>,
-    direct_surfaces: &BTreeSet<CallableSurface>,
-) -> BTreeSet<CallableSurface> {
-    if first_class_surfaces.is_empty() {
-        return direct_surfaces.clone();
-    }
-    let less_specific_seeds = first_class_surfaces
-        .iter()
-        .filter(|first_class_surface| {
-            direct_surfaces
-                .iter()
-                .any(|direct_surface| callable_surface_subsumes(world, first_class_surface, direct_surface))
-        })
-        .cloned()
-        .collect::<BTreeSet<_>>();
-    if less_specific_seeds.is_empty() {
-        return first_class_surfaces;
-    }
-    first_class_surfaces.retain(|surface| !less_specific_seeds.contains(surface));
-    first_class_surfaces.extend(
-        direct_surfaces
-            .iter()
-            .filter(|direct_surface| {
-                less_specific_seeds
-                    .iter()
-                    .any(|seed| callable_surface_subsumes(world, seed, direct_surface))
-            })
-            .cloned(),
-    );
-    first_class_surfaces
-}
-
-/// Keep only the most-specific surfaces, dropping any that a strictly
-/// more-specific sibling subsumes. This removes a polymorphic template surface
-/// when the concrete surface a real call instantiates it to is also present,
-/// while leaving a genuinely polymorphic escape (no concrete sibling) untouched.
-fn retain_most_specific_surfaces(world: &World<'_>, surfaces: BTreeSet<CallableSurface>) -> BTreeSet<CallableSurface> {
-    let candidates = surfaces.iter().cloned().collect::<Vec<_>>();
-    surfaces
-        .into_iter()
-        .filter(|surface| {
-            !candidates.iter().any(|other| {
-                other != surface
-                    && callable_surface_subsumes(world, surface, other)
-                    && !callable_surface_subsumes(world, other, surface)
-            })
-        })
-        .collect()
-}
-
-fn callable_surface_subsumes(
-    world: &World<'_>,
-    broader_surface: &CallableSurface,
-    narrower_surface: &CallableSurface,
-) -> bool {
-    broader_surface.inputs.len() == narrower_surface.inputs.len()
-        && narrower_surface
-            .inputs
-            .iter()
-            .zip(broader_surface.inputs.iter())
-            .all(|(narrower, broader)| {
-                world.types().is_subtype(narrower, broader) || world.types().key_var_count(&[*broader]) > 0
-            })
-}
-
 pub(super) fn derive_runtime_demand(
     world: &mut World<'_>,
     executable: &ExecutableKey,
@@ -310,6 +243,11 @@ pub(super) fn derive_runtime_demand(
             ..JobEffects::default()
         });
     }
+    // Seal the published demand to ground dispatch surfaces. Reverse propagation
+    // and type-derived boundaries can leave a phantom polymorphic template beside
+    // the concrete surface a real call instantiates; a consumer that published a
+    // boundary per surface would put several boundaries on one boxed value.
+    derived.demand.ground_callable_surfaces(world.types());
     Ok(JobEffects {
         reads: current_uses(reads),
         runtime_demands: vec![(executable.clone(), derived.demand)],
@@ -476,22 +414,15 @@ fn derive_callable_flow_facts_for_executable(
             continue;
         }
         // A `CallableFlowFact` is a runtime fact: every first-class surface it
-        // carries names a published boundary contract. When a callable escapes
-        // through a generic parameter slot (e.g. `Enum.reduce`'s reducer) *and*
-        // a concrete call instantiates it, analysis collects both the
-        // polymorphic template surface and its grounded sibling. The template is
-        // not a distinct runtime dispatch site — the concrete sibling is what
-        // the runtime invokes — so keeping it mints a phantom resolution that
-        // collapses onto the sibling after type erasure and forces an impossible
-        // boundary choice in native. Drop a surface only when a strictly
-        // more-specific sibling subsumes it; a genuinely polymorphic escape with
-        // no concrete sibling keeps its template surface and its boundary.
+        // carries names a published boundary contract, so the publication
+        // surfaces are grounded to the concrete dispatch shapes the runtime
+        // actually invokes (see `ground_dispatch_surfaces`).
         let direct_surfaces = callable_flows.direct_surfaces(value);
-        let mut first_class_surfaces = retain_most_specific_surfaces(world, callable_flows.first_class_surfaces(value));
-        if !first_class_surfaces.is_empty() {
-            first_class_surfaces =
-                fold_direct_surfaces_into_first_class_publication(world, first_class_surfaces, &direct_surfaces);
-        }
+        let first_class_surfaces = ground_dispatch_surfaces(
+            world.types(),
+            &callable_flows.first_class_surfaces(value),
+            &direct_surfaces,
+        );
         let direct_edges = callable_flow_resolution_edges(
             world,
             executable,
@@ -1893,11 +1824,10 @@ fn record_first_class_boundary_demand(
             ground_first_class_callable_surface(world, &mut recorded, ty);
         }
         if boundary_ty.is_none() {
-            recorded.callable.resolved = fold_direct_surfaces_into_first_class_publication(
-                world,
-                recorded.callable.resolved,
-                &callable_flows.direct_surfaces(value),
-            );
+            // No boundary type to ground against: seed the escaping surfaces from
+            // the value's concrete call shapes. The publication surfaces are
+            // grounded once, downstream, in `ground_dispatch_surfaces`.
+            recorded.callable.resolved.extend(callable_flows.direct_surfaces(value));
         }
         callable_flows.record_first_class_demand(facts, value, &recorded);
     }

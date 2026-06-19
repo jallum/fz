@@ -298,6 +298,21 @@ impl RuntimeDemand {
         self.shape.alpha_normalize(types);
         self.callable.alpha_normalize(types);
     }
+
+    /// Ground this demand's callable dispatch surfaces (and those of any tuple
+    /// fields) to the concrete runtime shapes, dropping phantom polymorphic
+    /// templates that a grounded sibling already covers. See
+    /// [`ground_dispatch_surfaces`].
+    pub(crate) fn ground_callable_surfaces(&mut self, types: &Types) {
+        if !self.callable.resolved.is_empty() {
+            self.callable.resolved = ground_dispatch_surfaces(types, &self.callable.resolved, &self.callable.resolved);
+        }
+        if let ShapeDemand::TupleFields(fields) = &mut self.shape {
+            for field in fields {
+                field.ground_callable_surfaces(types);
+            }
+        }
+    }
 }
 
 /// Upstream callable-flow evidence for one local callable producer.
@@ -350,6 +365,59 @@ impl CallableFlowFact {
     }
 }
 
+/// Resolve callable `surfaces` to the ground runtime dispatch shapes the program
+/// actually invokes, drawing concrete instantiations from `ground_source`.
+///
+/// A callable surface that publishes a transport boundary names a runtime
+/// dispatch site, so it must be ground. When a callable escapes through a
+/// generic parameter slot (e.g. `Enum.reduce`'s reducer) analysis collects both
+/// the polymorphic template that slot is typed at and the concrete surfaces a
+/// real call instantiates it to. The template is not a distinct dispatch site —
+/// the grounded sibling is what the runtime invokes — so keeping it mints a
+/// phantom boundary that collapses onto the sibling after type erasure and
+/// forces an impossible multi-boundary publication in native (one boxed value
+/// has exactly one entry).
+///
+/// Each surface is therefore grounded: a ground surface is kept, and a template
+/// is replaced by the ground surfaces — from `surfaces` itself or `ground_source`
+/// — that instantiate it under one consistent substitution
+/// ([`Types::key_list_subsumes`]). When the callable is invoked at any ground
+/// shape, every template is an inference artifact, so only ground dispatch
+/// shapes are published. A callable with no ground surface anywhere is a
+/// genuinely polymorphic escape — it has no concrete runtime shape of its own —
+/// so its templates are kept verbatim.
+pub(crate) fn ground_dispatch_surfaces(
+    types: &Types,
+    surfaces: &BTreeSet<CallableSurface>,
+    ground_source: &BTreeSet<CallableSurface>,
+) -> BTreeSet<CallableSurface> {
+    let ground_candidates = surfaces
+        .iter()
+        .chain(ground_source.iter())
+        .filter(|surface| !types.key_has_vars(&surface.inputs))
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let mut grounded = BTreeSet::new();
+    for surface in surfaces {
+        if !types.key_has_vars(&surface.inputs) {
+            grounded.insert(surface.clone());
+            continue;
+        }
+        grounded.extend(
+            ground_candidates
+                .iter()
+                .filter(|candidate| types.key_list_subsumes(&candidate.inputs, &surface.inputs))
+                .cloned(),
+        );
+    }
+    if grounded.is_empty() {
+        // No ground dispatch shape exists: a genuinely polymorphic escape. Keep
+        // its templates — they are the only surfaces the callable is published at.
+        return surfaces.clone();
+    }
+    grounded
+}
+
 fn alpha_normalized_surfaces(types: &mut Types, surfaces: &BTreeSet<CallableSurface>) -> BTreeSet<CallableSurface> {
     let mut normalized = BTreeSet::new();
     for mut surface in surfaces.clone() {
@@ -391,6 +459,32 @@ impl ExecutableRuntimeDemand {
         }
         for flow in self.callable_flows.values_mut() {
             flow.alpha_normalize(types);
+        }
+    }
+
+    /// Ground every callable dispatch surface this demand carries to the concrete
+    /// runtime shapes the program invokes. A boundary published from a surface is
+    /// a runtime dispatch site, so a phantom polymorphic template that a grounded
+    /// sibling already covers must not survive into representation. The
+    /// `callable_flows` are grounded at construction (against their direct
+    /// surfaces); this seals the remaining axes a consumer publishes from.
+    pub(crate) fn ground_callable_surfaces(&mut self, types: &Types) {
+        self.return_demand.ground_callable_surfaces(types);
+        for demand in &mut self.input_demands {
+            demand.ground_callable_surfaces(types);
+        }
+        for demand in self.value_demands.values_mut() {
+            demand.ground_callable_surfaces(types);
+        }
+        for demands in self.entry_capture_demands.values_mut() {
+            for demand in demands {
+                demand.ground_callable_surfaces(types);
+            }
+        }
+        for demands in self.call_arg_demands.values_mut() {
+            for demand in demands {
+                demand.ground_callable_surfaces(types);
+            }
         }
     }
 }
@@ -909,6 +1003,73 @@ mod tests {
 
     fn resolved_surface(tys: &[Ty]) -> CallableDemand {
         CallableDemand::resolved(tys.to_vec())
+    }
+
+    use super::super::types::TypeVarId;
+
+    fn surface(tys: &[Ty]) -> CallableSurface {
+        CallableSurface::new(tys.to_vec())
+    }
+
+    #[test]
+    fn ground_dispatch_surfaces_resolves_a_publication_template_to_its_ground_dispatch() {
+        // The Enum.with_index shape: a first-class publication template `(a0, a1)`
+        // whose only real runtime dispatch is the ground sibling `(atom, int)`
+        // collected among the direct surfaces, alongside phantom templates the
+        // mapper picked up flowing through generic recursive code.
+        let tel = ConfiguredTelemetry::new();
+        let mut world = World::new(&tel);
+        let int = world.types_mut().int();
+        let atom = world.types_mut().atom();
+        let a0 = world.types_mut().type_var(TypeVarId(0));
+        let a1 = world.types_mut().type_var(TypeVarId(1));
+
+        let first_class = BTreeSet::from([surface(&[a0, a1])]);
+        let direct = BTreeSet::from([surface(&[atom, int]), surface(&[a0, a0]), surface(&[a0, a1])]);
+
+        assert_eq!(
+            ground_dispatch_surfaces(world.types(), &first_class, &direct),
+            BTreeSet::from([surface(&[atom, int])]),
+            "a polymorphic publication template resolves to its single ground dispatch shape; the phantom templates publish no boundary",
+        );
+    }
+
+    #[test]
+    fn ground_dispatch_surfaces_drops_a_recurring_var_phantom_beside_a_ground_shape() {
+        // A self-grounding demand set: `(atom, int)` is the real dispatch and
+        // `(a0, a0)` is a phantom no distinct-argument ground pair instantiates.
+        let tel = ConfiguredTelemetry::new();
+        let mut world = World::new(&tel);
+        let int = world.types_mut().int();
+        let atom = world.types_mut().atom();
+        let a0 = world.types_mut().type_var(TypeVarId(0));
+
+        let resolved = BTreeSet::from([surface(&[atom, int]), surface(&[a0, a0])]);
+
+        assert_eq!(
+            ground_dispatch_surfaces(world.types(), &resolved, &resolved),
+            BTreeSet::from([surface(&[atom, int])]),
+            "a ground dispatch shape exists, so the recurring-var phantom is dropped rather than published as its own boundary",
+        );
+    }
+
+    #[test]
+    fn ground_dispatch_surfaces_keeps_a_genuinely_polymorphic_escape() {
+        // No ground sibling anywhere: a callable passed through but never invoked
+        // at a concrete shape keeps its template — it is the only surface it is
+        // ever published at.
+        let tel = ConfiguredTelemetry::new();
+        let mut world = World::new(&tel);
+        let a0 = world.types_mut().type_var(TypeVarId(0));
+        let a1 = world.types_mut().type_var(TypeVarId(1));
+
+        let template = BTreeSet::from([surface(&[a0, a1])]);
+
+        assert_eq!(
+            ground_dispatch_surfaces(world.types(), &template, &template),
+            template,
+            "an escape with no ground instantiation keeps its template verbatim",
+        );
     }
 
     #[test]

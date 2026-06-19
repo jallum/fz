@@ -525,6 +525,32 @@ impl Types {
         qd.is_subtype(cx, kd)
     }
 
+    /// True when the polymorphic argument list `template` subsumes `candidate`
+    /// under one consistent variable substitution — i.e. `candidate` is an
+    /// instantiation of `template`. A single substitution is threaded across
+    /// every position, so a template variable that recurs (e.g. `[α, α]`) is
+    /// instantiated only by argument lists whose corresponding positions are
+    /// type-equivalent. This is the authoritative surface-subsumption fact;
+    /// callers must not approximate it by checking each position in isolation,
+    /// which would treat the two `α`s as independent and accept `[binary, int]`.
+    pub fn key_list_subsumes(&self, candidate: &[Ty], template: &[Ty]) -> bool {
+        if candidate.len() != template.len() {
+            return false;
+        }
+        let mut sigma = Sigma::default();
+        candidate
+            .iter()
+            .zip(template.iter())
+            .all(|(query, key)| self.key_subsumes_with(query, key, &mut sigma))
+    }
+
+    /// True when any argument in `key` carries a (possibly nested) type variable.
+    /// A ground argument list names a real runtime dispatch shape; a list with
+    /// variables is an inference template, not a runtime fact.
+    pub fn key_has_vars(&self, key: &[Ty]) -> bool {
+        key.iter().any(|ty| self.has_vars(ty))
+    }
+
     pub fn is_equivalent(&self, a: &Ty, b: &Ty) -> bool {
         if a == b {
             return true;

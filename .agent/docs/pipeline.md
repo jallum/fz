@@ -272,7 +272,24 @@ callable shape a call actually uses, and it is small and executable-origin-aware
 by construction — it names the surfaces a body proves, not every surface a type
 permits. Recursive transport (nested captures, tuple fields, direct-callable
 producers) is not stored on that witness; it is derived downstream from settled
-demand into the transport plan's `ShapeId` / `LaneId` facts. The demand signal
+demand into the transport plan's `ShapeId` / `LaneId` facts.
+
+A callable surface that publishes a transport boundary names a runtime dispatch
+site, so it must be **ground**: type variables are an inference-phase concept and
+never reach a boundary. A first-class callable that escapes through a generic
+parameter slot (e.g. `Enum.reduce`'s reducer, or the `Enum.with_index` mapper
+threading through the recursive `with_index_list/3`) is analyzed against the
+polymorphic template that slot is typed at *and* the concrete arrow a real call
+instantiates — the template is not a distinct dispatch, so publishing a boundary
+per surface would put several boundaries on one boxed value, which has exactly one
+entry. `semantic::ground_dispatch_surfaces` resolves each surface to the ground
+shapes the runtime invokes (templates replaced by their consistent-substitution
+instantiations via `Types::key_list_subsumes`; a genuinely polymorphic escape
+with no ground sibling keeps its template). It is the authoritative surface-set
+operation, applied at the demand→representation seam — `CallableFlowFact`
+first-class surfaces at construction and every callable axis at demand
+finalization (`ExecutableRuntimeDemand::ground_callable_surfaces`) — so transport
+never re-derives or relitigates the choice. The demand signal
 `fz.compiler2.runtime_demand.defined` and its representation twin
 `fz.compiler2.transport_flow.defined` each carry a drift-guarded field contract
 (pinned in `semantic_analysis_test.rs` and `transport_contract_test.rs`), so the

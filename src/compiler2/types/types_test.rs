@@ -169,6 +169,40 @@ macro_rules! key_helper_conformance_tests {
             }
 
             #[test]
+            fn key_list_subsumes_threads_one_substitution_across_positions() {
+                let mut t = $ctor;
+                let int = t.int();
+                let atom = t.atom();
+                let alpha = t.type_var(TypeVarId(0));
+                let beta = t.type_var(TypeVarId(1));
+
+                // Distinct template vars are instantiated by any ground pair.
+                assert!(t.key_list_subsumes(&[int, atom], &[alpha, beta]));
+                // A recurring template var binds once and must agree everywhere:
+                // `[α, α]` is instantiated only when both positions match.
+                assert!(t.key_list_subsumes(&[int, int], &[alpha, alpha]));
+                assert!(
+                    !t.key_list_subsumes(&[int, atom], &[alpha, alpha]),
+                    "a recurring template var must not accept disagreeing positions",
+                );
+                // A ground template names one runtime shape — only itself instantiates it.
+                assert!(t.key_list_subsumes(&[int, atom], &[int, atom]));
+                assert!(!t.key_list_subsumes(&[atom, int], &[int, atom]));
+                // Arity must match.
+                assert!(!t.key_list_subsumes(&[int], &[alpha, beta]));
+            }
+
+            #[test]
+            fn key_has_vars_distinguishes_ground_lists_from_templates() {
+                let mut t = $ctor;
+                let int = t.int();
+                let atom = t.atom();
+                let alpha = t.type_var(TypeVarId(0));
+                assert!(!t.key_has_vars(&[int, atom]));
+                assert!(t.key_has_vars(&[int, alpha]));
+            }
+
+            #[test]
             fn key_subsumes_with_leaves_sigma_empty_for_non_pure_var_keys() {
                 let mut t = $ctor;
                 let mut sigma = HashMap::new();

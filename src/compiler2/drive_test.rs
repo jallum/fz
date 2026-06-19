@@ -5647,7 +5647,7 @@ fn compiler2_interp_runs_enum_reduce_from_backend_artifacts() {
 }
 
 #[test]
-#[ignore = "fz-hwn.9: Enum.with_index mapper activation churn times out in semantic analysis"]
+#[ignore = "fz-hwn.22: first-class mapper captured by with_index_list's non-tail continuation gets a 0-lane contract shape (the multi-boundary publication leak is fixed in fz-hwn.21)"]
 fn compiler2_interp_runs_enum_with_index_mapper_from_backend_artifacts() {
     let tel = ConfiguredTelemetry::new();
     let dbg = DbgCapture::new();
