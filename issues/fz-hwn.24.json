@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-19T20:05:35Z",
+  "description": "",
+  "id": "fz-hwn.24",
+  "labels": [],
+  "parent": "fz-hwn",
+  "priority": 2,
+  "status": "open",
+  "title": "Remove dead CallableDescr.contract_surfaces (always empty since fz-hwn.22)",
+  "type": "task",
+  "updated_at": "2026-06-19T20:05:35Z"
+}
