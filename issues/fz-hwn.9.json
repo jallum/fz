@@ -17,7 +17,7 @@
     }
   ],
   "priority": 2,
-  "status": "in_progress",
+  "status": "open",
   "title": "Compiler2 semantic analysis: Enum.with_index mapper activation churn times out",
   "type": "bug",
   "updated_at": "2026-06-19T17:46:22Z"
