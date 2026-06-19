@@ -11,9 +11,15 @@
   "id": "fz-hwn.22",
   "labels": [],
   "parent": "fz-hwn",
+  "comments": [
+    {
+      "text": "Fixed by making a boxed callable's value shape a pure layout fact (one ValueRef lane; contract on the boundary, not the value identity) -- commit 3db8d5b73. The continuation-capture bug is resolved and proven by the minimal maplist-phi and distinct-surface drive tests plus a transport-contract test. The end-to-end Enum.with_index re-enable is delegated to fz-hwn.23 (the phantom (a0,a0) polymorphic backend activation that this fix unmasked); fz-hwn.23 blocks fz-hwn.9.",
+      "timestamp": "2026-06-19T19:50:53Z"
+    }
+  ],
   "priority": 2,
   "status": "in_progress",
   "title": "First-class callable captured by non-tail-recursive continuation gets a 0-lane contract shape",
   "type": "bug",
-  "updated_at": "2026-06-19T18:00:12Z"
+  "updated_at": "2026-06-19T19:50:53Z"
 }
