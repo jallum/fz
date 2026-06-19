@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-rh2.29.3"
   ],
@@ -10,8 +10,8 @@
   "labels": [],
   "parent": "fz-rh2.29",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "Runtime demand: unify ActivationInputMap and ReturnDemandMap into a generic ContributionMap",
   "type": "task",
-  "updated_at": "2026-06-18T10:41:09Z"
+  "updated_at": "2026-06-19T13:14:01Z"
 }
