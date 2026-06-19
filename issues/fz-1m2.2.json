@@ -6,14 +6,16 @@
   "blocks": [
     "fz-1m2.3"
   ],
+  "closed_at": "2026-06-19T12:49:01Z",
+  "close_reason": "Superseded by fz-8ge (boxed_first_class over-boxing removal)",
   "created": "2026-06-19T11:28:34Z",
   "description": "CRUX, ATOMIC. For Typed callables, stop boxing the apply and dispatch straight to the body. Three changes that are a matched set and must land together (repr and dispatch must agree).\n\nDE-RISKED SCOPE -- what does NOT change: the closure VALUE stays a heap pointer (publication seams box published_value_lane correctly, typed or boxed). The result path is ALREADY RawInt -- ReturnDelivery (body) and ReturnContinuation (the {:cont,int} continuation) are both codegen_repr_for_lane; the {:cont,int} tuple field is RawInt. The body ABI (typed_args, self, cont) is unchanged. So none of those move.\n\nWHAT MOVES (all three, atomically, gated on CallConvention=Typed):\n1. CallableBoundary seam (derive_codegen_seam_facts ~1025): drop the boxed_first_class override for Typed -\u003e the apply's arg/return lanes become RawInt (type-driven), matching the body. This alone makes the codegen body==boundary check pass; fault 4 dissolves at the source.\n2. Construction (collect_static_closure_targets / MakeClosure): a Typed closure's code slot = the BODY entry (fn_ids[body_sid], already computed and discarded as _body_sid), not the boxed wrapper. Key the static closure by (function, capture_count, convention) so a function used at both conventions gets distinct closures.\n3. Dispatch (emit_call_closure indirect path): split on convention -- Typed builds a typed signature (raw args, self, cont)-\u003eraw ret and call_indirects the body pointer read from the closure; Boxed keeps the all-ValueRef path. This is LITERALLY the boxed wrapper's body-call (return_call body, [args, self, cont]) issued from the apply site minus the unboxing -- proven correct by the wrapper's existence. self is the closure pointer (unused by a zero-capture body). The single-lit direct fast path stays (Typed convention with known identity, by-name).\n\nNO SHIMS: no wrapper is minted for Typed callables; the body is called at its native ABI.\n\nOPEN (resolve here): a Typed callable needs a structure to carry (body code ptr, convention reprs) for construction+dispatch -- decide whether that is a convention-tagged 'callable entry' or the existing boundary fact stripped of its boxed parts. Pick the one that lets Boxed and Typed share the resolution machinery without a parallel ledger.\n\nCHECK: opaque_fn_value_join + 00231 build AND run with correct reduced output; reducer.() dispatches typed-indirect (telemetry); add_a body return repr == RawInt == boundary repr; NO per-step heap allocation (Process.heap_alloc_stats oracle, already sampled by the fixture). Full lib + matrix green, zero warnings; destructor/provider-callback/escaped-lambda/single-ref/lambda/range reduce tests unmoved.",
   "id": "fz-1m2.2",
   "labels": [],
   "parent": "fz-1m2",
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Honor the calling convention: typed construction, lane reprs, and dispatch (atomic)",
   "type": "task",
-  "updated_at": "2026-06-19T12:01:46Z"
+  "updated_at": "2026-06-19T12:49:01Z"
 }
