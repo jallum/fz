@@ -12,9 +12,15 @@
   "id": "fz-hwn.27.4",
   "labels": [],
   "parent": "fz-hwn.27",
+  "comments": [
+    {
+      "text": "Refined boundary (no-duplication, verified vs HEAD): warnings-are-errors forbids leaving a dead duplicate 'beside' the trash_ engine. So 27.4 RELOCATES the trichotomy/substitution engine OUT of contract.rs (deletes the trash_ free-fns: trash_collect_*_subst, trash_instantiate_match, trash_overlapping_witnesses, trash_contract_witness, trash_surface_sigma, trash_merge_sigma, trash_instantiated_match, trash_collect_ambiguous_empty_list_vars, trash_is_exact_empty_list, TrashWitness, TrashSchemeMatch/Instantiation enums) INTO a Types submodule (types/arrow_match.rs) as the calculator, exposing Types::match_arrow -\u003e ArrowMatch{Known|Underconstrained|Invalid}. contract.rs::apply calls it. The trash_ SURFACE TYPES (TrashContractArrow/TrashAppliedContractArrow) REMAIN until 27.9 (their restructure needs the arrow re-key). Direct calculator unit tests cover the 5 behaviors. contract_test.rs stays green = behavior-preserving move.",
+      "timestamp": "2026-06-20T00:36:21Z"
+    }
+  ],
   "priority": 1,
   "status": "in_progress",
   "title": "Extend the Types calculator: trichotomy, union-rebind, structural-mismatch, map/tuple arity, empty-list",
   "type": "task",
-  "updated_at": "2026-06-20T00:33:52Z"
+  "updated_at": "2026-06-20T00:36:21Z"
 }
