@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-hwn.27.1"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-hwn.27.3"
+  ],
   "created": "2026-06-20T00:07:38Z",
   "description": "STEP 1 (build beside the old). The construction machinery. Touches nothing that exists; fully unit-tested.\n\nModel (proposal.html sec.1-3): a type variable is a structural ADDRESS. param i -\u003e a{i}; result -\u003e r0; component j of the slot at address P -\u003e P_j (param 1 field 0 -\u003e a1_0); nesting extends the path. A name maps to the address of its FIRST occurrence; repeats reuse it. Interned ALL THE WAY DOWN: every address is its own interned Ty, every composite (tuple/list/map/arrow) is its own interned Ty, and the arrow sits on top. Addressing canonicalizes variable identity at the binder; interning (hash-consing) canonicalizes structure; together = one integer per alpha-equivalence class, by construction.\n\nDeliver: addressed-var constructors (param_alpha(i)-\u003ea{i}, result_alpha-\u003er0, child address P_j), the addressed-arrow builder over Types, interned leaf + composite + arrow.\n\nAcceptance (unit tests, proposal Adoption step 1):\n- (a,b) and (a,a) are DISTINCT interned arrows (this is the conflation defeated by construction).\n- flibble(t,t)::t builds (a0,a0)-\u003ea0; foo(a,{b,c},d) builds (a0,{a1_0,a1_1},a2)-\u003er0.\n- input\u003c-\u003eresult identity preserved: (a,b)-\u003eb stays (a,b)-\u003eb, never (a,b)-\u003ea.\n- Address, not sequence: in foo(a,{b,c},d), d is a2 regardless of how many fields the tuple has; adding a tuple field never renumbers d.\n- Repeated name unifies across depth: g(t,{t,u}) -\u003e (a0,{a0,a1_1})-\u003er0.\n\nChecks: cargo test --lib for the new module; zero warnings.",
   "id": "fz-hwn.27.2",
