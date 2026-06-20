@@ -11,9 +11,15 @@
   "id": "fz-hwn.27.3",
   "labels": [],
   "parent": "fz-hwn.27",
+  "comments": [
+    {
+      "text": "Carries its own Trash mark: rename ResolvedSpecDecl{params,result,constraints} with the trash_ trigger as it is superseded by ResolvedArrow (deferred here from fz-hwn.27.1 -- trait/field coupling, see 27.1 comment).",
+      "timestamp": "2026-06-20T00:16:32Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "resolve.rs emits ResolvedArrow{arrow,names,bounds}; keep+address the discarded shape shadow",
   "type": "task",
-  "updated_at": "2026-06-20T00:09:26Z"
+  "updated_at": "2026-06-20T00:16:32Z"
 }
