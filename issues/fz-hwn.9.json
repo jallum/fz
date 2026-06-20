@@ -17,11 +17,15 @@
     {
       "text": "Re-scoped: the activation-churn TIMEOUT premise is stale -- the landed runtime-demand epic already eliminated the churn (repro completes semantic closure in ~155 activation events, no 5000ms timeout). The remaining work to re-enable the test splits into two unmasked bugs: fz-hwn.21 (phantom polymorphic surfaces publish multiple boundaries -- landed) and fz-hwn.22 (first-class callable captured by a non-tail-recursive continuation gets a 0-lane contract shape). This ticket now tracks the test re-enablement and is blocked on fz-hwn.22.",
       "timestamp": "2026-06-19T17:46:22Z"
+    },
+    {
+      "text": "Resolved. The churn/timeout was already gone (runtime-demand epic); the remaining blocker was the phantom value-template activation, fixed in fz-hwn.23 (c1f1b55fb, cross-activation surface grounding). compiler2_interp_runs_enum_with_index_mapper_from_backend_artifacts is re-enabled and green (asserts [\"a!\",\"b!\"]). CLI check: fz2 --log-telemetry interp completes in 1.34s, no drive-limit; telemetry shows 151 bounded activation_analysis events (no retraction storm), down from the ~155 baseline because grounding drops the redundant generic activations.",
+      "timestamp": "2026-06-20T20:11:09Z"
     }
   ],
   "priority": 2,
   "status": "open",
   "title": "Compiler2 semantic analysis: Enum.with_index mapper activation churn times out",
   "type": "bug",
-  "updated_at": "2026-06-20T00:09:29Z"
+  "updated_at": "2026-06-20T20:11:09Z"
 }
