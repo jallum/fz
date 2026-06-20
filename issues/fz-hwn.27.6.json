@@ -5,6 +5,7 @@
     "fz-hwn.27.4"
   ],
   "blocks": [
+    "fz-hwn.23",
     "fz-hwn.27.7",
     "fz-hwn.27.8"
   ],
@@ -17,5 +18,5 @@
   "status": "open",
   "title": "Re-key ActivationKey on the arrow: arrow: Ty (result explicit), whole-scope canonicalization at the single mint",
   "type": "task",
-  "updated_at": "2026-06-20T00:09:27Z"
+  "updated_at": "2026-06-20T00:09:28Z"
 }
