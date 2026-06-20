@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-20T00:07:10Z",
+  "description": "Design reference: proposal.html (The Addressed Arrow).\n\nOne interned, structurally-addressed arrow type -- (a0, {a1_0, a1_1}, a2) -\u003e r0 -- becomes the single language for every function surface in compiler2: activation keys, callable surfaces, and source contracts. A type variable is its STRUCTURAL ADDRESS in a signature (param i -\u003e a{i}, result -\u003e r0, component j of slot P -\u003e P_j; a name's id is the address of its first occurrence). Names and bounds are surface syntax that resolve to addresses and then fall away. Only the interned arrow crosses into keying, transport, and the backend.\n\nTwo rules govern the whole arc:\n1. A type variable is its structural address; canonicalization happens at CONSTRUCTION (the binder), so the hash-consing interner becomes alpha-complete from the inside and is the canonical form.\n2. Canonicalization serves exactly one purpose: the hashable dispatch key. Every COMPATIBILITY question is a subsumption decision on interned types (key_subsumes_with / key_list_subsumes), never a comparison of normalized forms. Normalize the key; ask the calculator everywhere else.\n\nThe defect this dissolves\ncanonical_activation_key (world.rs:2709) runs alpha_normalize_vars PER POSITION with a fresh substitution each call, so [Ty27,Ty28] (a genuine (a,b)) collapses to [Ty27,Ty27] (a fabricated (a,a)). That phantom (a0,a0) template activation reaches native lowering and panics: backend value must be runtime-materializable. The same per-position map is replicated across 13 self-consistent sites; a one-site fix de-synchronizes them. Root cause: there is NO canonical form at construction. Fix: canonicalize at the binder.\n\nPrior art: Elixir (semantic equality, no type vars, dynamic()), Castagna et al. (mvar meaningful-variables as the backend-boundary backstop; up-to-renaming = addresses; tallying = the named cross-scope exit). All three agree on where to STOP normalizing: at the key, nowhere else.\n\nAdoption strangles top-down in three steps -- (1) build addressed-arrow machinery + extended calculator beside the old, fully unit-tested; (2) re-key ActivationKey on the arrow, captures as leading addressed slots, key = convergence_collapse(arrow, mask); (3) collapse contract.rs matchers onto the calculator. The migration is greppable: doomed concepts are renamed with a Trash / trash_ trigger first (intro ticket) and the epic is not done until grep -rn \"Trash\\|trash_\" src/ returns nothing (outro ticket).\n\nThis arc dissolves fz-hwn.23 (phantom (a0,a0) reaches backend) and fz-hwn.9 (Enum.with_index activation churn) as leaves rather than independent fixes.",
+  "id": "fz-hwn.27",
+  "labels": [],
+  "parent": "fz-hwn",
+  "priority": 1,
+  "status": "open",
+  "title": "[EPIC] The Addressed Arrow: one interned language for function surfaces",
+  "type": "task",
+  "updated_at": "2026-06-20T00:07:10Z"
+}
