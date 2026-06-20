@@ -27,11 +27,15 @@
     {
       "text": "RESCOPED as STEP 2b (the swing), now blocked by the half-step fz-hwn.27.11 which threads arrow: Ty with a none() sentinel result and projects the input side everywhere. This ticket becomes a PURELY SEMANTIC diff: replace the construction with whole-scope address_arrow(collapsed_inputs, fresh) -\u003e (a0,a1,..) -\u003e r0 (real r0 replaces the none() sentinel); switch the capture-prefix (runtime_demand.rs:1431), offset (1590), evidence (normalize_contributions world.rs:768), and callsite (define_callsite_summary world.rs:893) sites to ADDRESSED comparison -- relying on the left-to-right property address(full)[..k]==address(captures). Route matching through match_arrow; delete per-position normalizers; ~30 tests/snapshots move; fz-hwn.23 phantom (a0,a0) falls out. Folds 27.7 (convergence_collapse) + 27.8 (captures-as-addressed-slots) into this swing per the established atomicity finding.",
       "timestamp": "2026-06-20T10:16:30Z"
+    },
+    {
+      "text": "A LANDED (uncommitted, lib 2240/0 GREEN, zero warnings). Chose path A (contained whole-scope addressing in compiler2 + DELETE the conflation engine; B = resolver construction root deferred, documented in proposal.html new section 'Two seams to canonical-by-construction'). What landed: (1) CallableSurface canonical-by-construction — CallableSurface::new(inputs, types) addresses whole-scope at birth; (2) key mint canonical — from_inputs uses Types::address_inputs (whole-scope, one shared sigma) + none() placeholder result (NOT r0: a key has no result to preserve identity against; r0 is a B/contract concern and empirically broke the boxing seam); (3) DELETED the entire alpha_normalize tree (CallableDemand/ShapeDemand/RuntimeDemand/CallableFlowFact/ExecutableRuntimeDemand::alpha_normalize + alpha_normalized_surfaces + all call sites incl world.rs define_semantic_closure/RuntimeDemandFacts::define) — it existed ONLY to normalize surfaces, now canonical by construction; (4) normalize_contributions + define_callsite_summary surface_inputs -\u003e address_inputs (whole-scope, was per-input conflation); (5) capture/surface matching at runtime_demand (capture-prefix 1432, offset 491) + transport (boundary_return_shapes 2876) rewritten to the addressed frame via the left-to-right property address(cap++surf)[..k]==address(cap) and own-suffix re-addressed standalone == canonical surface; (6) fz-hwn.23 reducer ghost FIXED: phantom_resolution_keys drops value-template resolutions with a ground sibling (mirrors ground_dispatch_surfaces, keyed on new Types::is_value_template/key_is_value_template). ground_dispatch_surfaces KEPT (it's the surface grounding, not conflation). REMAINING: fz-hwn.27.12 (opaque_fn_value_join boxing-seam, matrix only). NOT committed (matrix not green). Tree builds clean; only proposal.html untracked + uncommitted src edits.",
+      "timestamp": "2026-06-20T13:14:48Z"
     }
   ],
   "priority": 1,
   "status": "in_progress",
   "title": "Re-key ActivationKey on the arrow: arrow: Ty (result explicit), whole-scope canonicalization at the single mint",
   "type": "task",
-  "updated_at": "2026-06-20T10:16:30Z"
+  "updated_at": "2026-06-20T13:14:48Z"
 }
