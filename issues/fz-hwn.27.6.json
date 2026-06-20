@@ -1,6 +1,7 @@
 {
   "assignee": "Jason Allum",
   "blocked_by": [
+    "fz-hwn.27.11",
     "fz-hwn.27.3",
     "fz-hwn.27.4"
   ],
@@ -28,5 +29,5 @@
   "status": "in_progress",
   "title": "Re-key ActivationKey on the arrow: arrow: Ty (result explicit), whole-scope canonicalization at the single mint",
   "type": "task",
-  "updated_at": "2026-06-20T00:54:42Z"
+  "updated_at": "2026-06-20T10:16:29Z"
 }
