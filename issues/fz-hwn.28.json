@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-20T17:33:45Z",
+  "description": "Path B (fz-hwn.23) prunes value-template executables at the seal's admission point by reading settled activation facts for a ground sibling. That is an INTERIM mechanism: it scans the activation map directly, and its order-independence rests on the ground-sibling activation FACT existing by the time the seal fires. This ticket realizes the northstar version.\n\nPer ../semantic-closed-proposal.html (\"Strangling the Seal\"), SemanticClosure is being dissolved: the seal stops computing and becomes a gatherer of per-executable facts, then its fields are carved off until it is deleted. The proposal explicitly DEFERS discovery (A) and names its obligation: \"when an activation's inputs widen, its key changes, so a narrow executable is SUPERSEDED rather than merely added. That is 'monotone with retraction.'\"\n\nThe phantom prune IS that obligation in miniature: a value-template executable is SUPERSEDED by its ground sibling. Realize it natively:\n- A GroundActivationInputs(function, need) contribution-joined fact accumulating ground input vectors per (function, need) as ground executables are discovered.\n- The phantom decision reads that fact instead of scanning the activation map. When a covering ground sibling appears later, the fact bumps and re-fires subscribers, retracting the now-superseded value-template via the existing replace_outputs retraction path.\n- This unifies the THREE enforcement sites of the one invariant (\"a value-template covered by a ground sibling is not a runtime fact\") onto a single fact-driven predicate, order-independent and incremental:\n    1. ground_dispatch_surfaces (surfaces)\n    2. phantom_resolution_keys (flow-edge resolutions)  -- currently flow-LOCAL, which is why fz-hwn.23 escaped it\n    3. the fz-hwn.23 admission guard (executables) -- removes its interim activation-map scan\n- The flow-local limitation of (2) is dissolved: the fact carries the GLOBAL ground siblings, so a value-template that has no ground sibling in its own flow but does globally is correctly pruned.\n\nNeeds its own small retraction-correctness proof (monotone-with-retraction over a finite lattice) before it earns full scope, per the proposal. Part of the seal-strangling arc; sequence after the runtime-demand incrementalization step the proposal makes first.",
+  "id": "fz-hwn.28",
+  "labels": [],
+  "parent": "fz-hwn",
+  "priority": 2,
+  "status": "open",
+  "title": "Phantom prune as discovery-with-retraction: GroundSiblings fact supersedes value-template executables",
+  "type": "task",
+  "updated_at": "2026-06-20T17:33:45Z"
+}
