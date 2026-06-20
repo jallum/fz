@@ -31,7 +31,7 @@ use super::super::transport::{
     ActivationSymbol, CodegenLaneRepr, CodegenSeam, ExecutableSymbol, LaneId, ShapeDescr, ShapeId, TransportPlan,
     TransportPosition,
 };
-use super::super::types::Ty;
+use super::super::types::{Ty, Types};
 use super::super::world::World;
 use super::semantic::executable_callsite_needs;
 
@@ -120,7 +120,7 @@ pub(super) fn materialize_root(world: &mut World<'_>, root_id: RootId) -> Result
                     .get(executable)
                     .cloned()
                     .expect("settled semantic closure should have runtime demand for every executable"),
-                transport: materialized_executable_transport(&transport_plan, executable),
+                transport: materialized_executable_transport(&transport_plan, executable, world.types()),
                 original_entry_ids: pruned.original_entry_ids,
                 value_types: analysis.value_types,
                 effects,
@@ -264,8 +264,9 @@ fn materialized_transport_plan(plan: &TransportPlan) -> MaterializedTransportPla
 fn materialized_executable_transport(
     plan: &TransportPlan,
     executable: &ExecutableKey,
+    types: &Types,
 ) -> MaterializedExecutableTransport {
-    let symbol = transport_executable_symbol(executable);
+    let symbol = transport_executable_symbol(executable, types);
     let mut input_positions = Vec::new();
     let mut return_position = None;
     let mut resume_positions = Vec::new();
@@ -307,11 +308,11 @@ fn materialized_executable_transport(
     }
 }
 
-fn transport_executable_symbol(executable: &ExecutableKey) -> ExecutableSymbol {
+fn transport_executable_symbol(executable: &ExecutableKey, types: &Types) -> ExecutableSymbol {
     ExecutableSymbol {
         activation: ActivationSymbol {
             function: executable.activation.function,
-            input: executable.activation.input.clone().into_boxed_slice(),
+            input: executable.activation.inputs(types).into_boxed_slice(),
         },
         need: executable.need,
     }
@@ -417,7 +418,7 @@ pub(super) fn derive_emission_ready(world: &mut World<'_>, root_id: RootId) -> R
     let abi_ready = world.abi_ready_program(root_id);
 
     let mut executable_keys = abi_ready.executables.keys().cloned().collect::<Vec<_>>();
-    executable_keys.sort_by(compare_executable_keys);
+    executable_keys.sort_by(|left, right| compare_executable_keys(left, right, world.types()));
 
     let executable_index = executable_keys
         .iter()
@@ -700,7 +701,7 @@ fn call_return_flow(
     callsite: CallSiteId,
     dest: &ControlDestination,
 ) -> Result<CallReturnFlow, FatalError> {
-    let caller_symbol = transport_executable_symbol(executable);
+    let caller_symbol = transport_executable_symbol(executable, world.types());
     match dest {
         ControlDestination::Deliver(entry) => {
             let payload = TransportPosition::ResumePayload {
@@ -722,7 +723,7 @@ fn call_return_flow(
             let payload_shape = require_transport_position(world, root_id, transport_plan, &payload)?;
             if let CallTarget::Local(callee) = callee {
                 let callee_return = TransportPosition::ExecutableReturn {
-                    executable: transport_executable_symbol(callee),
+                    executable: transport_executable_symbol(callee, world.types()),
                 };
                 let callee_shape = require_transport_position(world, root_id, transport_plan, &callee_return)?;
                 if matches!(world.shape(callee_shape), ShapeDescr::Nothing)
@@ -1539,7 +1540,7 @@ fn derive_callable_entries(
             boundary_descr.published_arg_lanes.as_ref(),
         );
         for target_symbol in boundary_facts.resolutions.iter() {
-            let target = executable_key_for_symbol(materialized, target_symbol).ok_or_else(|| {
+            let target = executable_key_for_symbol(materialized, target_symbol, world.types()).ok_or_else(|| {
                 incomplete_semantic_plan(
                     world,
                     root_id,
@@ -1565,19 +1566,23 @@ fn derive_callable_entries(
             });
         }
     }
-    entries.sort_by(compare_callable_entries);
+    entries.sort_by(|left, right| compare_callable_entries(left, right, world.types()));
     entries.dedup();
     Ok(entries)
 }
 
-fn executable_key_for_symbol(materialized: &MaterializedProgram, symbol: &ExecutableSymbol) -> Option<ExecutableKey> {
+fn executable_key_for_symbol(
+    materialized: &MaterializedProgram,
+    symbol: &ExecutableSymbol,
+    types: &Types,
+) -> Option<ExecutableKey> {
     materialized
         .executables
         .keys()
         .find(|key| {
             key.need == symbol.need
                 && key.activation.function == symbol.activation.function
-                && key.activation.input.as_slice() == symbol.activation.input.as_ref()
+                && key.activation.inputs(types).as_slice() == symbol.activation.input.as_ref()
         })
         .cloned()
 }
@@ -1601,7 +1606,7 @@ fn boundary_lanes_reprs_from_transport(
         .collect()
 }
 
-fn compare_callable_entries(left: &CallableEntry, right: &CallableEntry) -> std::cmp::Ordering {
+fn compare_callable_entries(left: &CallableEntry, right: &CallableEntry, types: &Types) -> std::cmp::Ordering {
     left.boundary
         .as_u32()
         .cmp(&right.boundary.as_u32())
@@ -1613,7 +1618,12 @@ fn compare_callable_entries(left: &CallableEntry, right: &CallableEntry) -> std:
                 .cmp(&right.target.activation.function.as_u32())
         })
         .then_with(|| left.capture_count.cmp(&right.capture_count))
-        .then_with(|| left.target.activation.input.cmp(&right.target.activation.input))
+        .then_with(|| {
+            left.target
+                .activation
+                .inputs(types)
+                .cmp(&right.target.activation.inputs(types))
+        })
         .then_with(|| left.capture_reprs.cmp(&right.capture_reprs))
         .then_with(|| left.arg_reprs.cmp(&right.arg_reprs))
         .then_with(|| left.return_ty.cmp(&right.return_ty))
@@ -1621,7 +1631,7 @@ fn compare_callable_entries(left: &CallableEntry, right: &CallableEntry) -> std:
         .then_with(|| left.return_lanes.cmp(&right.return_lanes))
 }
 
-fn compare_executable_keys(left: &ExecutableKey, right: &ExecutableKey) -> std::cmp::Ordering {
+fn compare_executable_keys(left: &ExecutableKey, right: &ExecutableKey, types: &Types) -> std::cmp::Ordering {
     left.activation
         .root
         .as_u32()
@@ -1632,7 +1642,7 @@ fn compare_executable_keys(left: &ExecutableKey, right: &ExecutableKey) -> std::
                 .as_u32()
                 .cmp(&right.activation.function.as_u32())
         })
-        .then_with(|| left.activation.input.cmp(&right.activation.input))
+        .then_with(|| left.activation.inputs(types).cmp(&right.activation.inputs(types)))
         .then_with(|| compare_executable_needs(left.need, right.need))
 }
 

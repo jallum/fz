@@ -14,8 +14,12 @@ Four jobs shape the frontier: `SeedRoot`, `SeedActivation`,
 
 ## What an activation is today
 
-An **activation** is `ActivationKey { root, function, input: Vec<Ty> }`: one
-function specialized for one root at one canonical input shape. Demand and
+An **activation** is `ActivationKey { root, function, arrow: Ty }`: one
+function specialized for one root at one canonical input shape. The canonical
+inputs are the parameter side of an interned arrow type (`arrow_params`); the
+result side is a `none()` sentinel today and becomes the addressed result `r0`
+in fz-hwn.27.6. Read the inputs with `key.inputs(types)` / `key.input_len(types)`
+and build a key from raw inputs with `ActivationKey::from_inputs`. Demand and
 evidence are separate facts:
 
 ```text

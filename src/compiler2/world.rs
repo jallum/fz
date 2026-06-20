@@ -890,12 +890,7 @@ impl<'a> World<'a> {
                 .map(|input| self.types.alpha_normalize_vars(&input))
                 .collect();
             if let Some(activation) = &mut target.activation {
-                activation.input = activation
-                    .input
-                    .iter()
-                    .copied()
-                    .map(|input| self.types.alpha_normalize_vars(&input))
-                    .collect();
+                activation.realpha_inputs(&mut self.types);
             }
             target.return_ty = target.return_ty.map(|ty| self.types.alpha_normalize_vars(&ty));
         }
@@ -2734,15 +2729,17 @@ impl<'a> World<'a> {
                 }
             })
             .collect::<Vec<_>>();
-        let key_inputs = key_inputs
+        let key_inputs: Vec<Ty> = key_inputs
             .into_iter()
             .map(|input| self.types.alpha_normalize_vars(&input))
             .collect();
-        super::identity::ActivationKey {
-            root,
-            function,
-            input: key_inputs,
-        }
+        // Half-step (fz-hwn.27.11): carry the canonical inputs as the params of
+        // an interned arrow so the key speaks the one arrow type language. The
+        // result side is a `none()` sentinel — collision-free (no vars) and read
+        // by no consumer — until fz-hwn.27.6 swaps construction to whole-scope
+        // `address_arrow` with the real addressed result `r0`. Arrow interning
+        // is injective in its params, so identity classes are bit-identical.
+        super::identity::ActivationKey::from_inputs(root, function, &key_inputs, &mut self.types)
     }
 
     pub(crate) fn closure_ty(&mut self, function: FunctionId, captures: Vec<Ty>) -> Ty {

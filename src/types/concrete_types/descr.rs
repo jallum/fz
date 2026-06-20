@@ -1263,6 +1263,18 @@ impl Descr {
         acc
     }
 
+    pub(crate) fn arrow_params(&self) -> Vec<Descr> {
+        for c in &self.funcs {
+            if !c.neg.is_empty() {
+                continue;
+            }
+            if let [sig] = c.pos.as_slice() {
+                return sig.args.clone();
+            }
+        }
+        Vec::new()
+    }
+
     pub(crate) fn looks_full(&self) -> bool {
         self.basic == BasicBits::ALL
             && self.atoms.is_any()

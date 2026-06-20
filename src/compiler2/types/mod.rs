@@ -290,6 +290,24 @@ impl Types {
         self.intern(Descr::arrow(args.iter().copied(), ret))
     }
 
+    /// Project the parameter (input) side of an arrow type immutably. This is
+    /// the read path for `ActivationKey::inputs`: the key stores its canonical
+    /// inputs as the params of an interned arrow, and consumers recover them
+    /// here without needing `&mut` on the interner.
+    pub fn arrow_params(&self, arrow: &Ty) -> Vec<Ty> {
+        self.descr(arrow)
+            .pure_arrow()
+            .map(|sig| sig.args.clone())
+            .unwrap_or_default()
+    }
+
+    /// Arity of an arrow's parameter side without cloning — the read path for
+    /// `ActivationKey::input_len` at the many call sites that need only the
+    /// input count.
+    pub fn arrow_arity(&self, arrow: &Ty) -> usize {
+        self.descr(arrow).pure_arrow().map_or(0, |sig| sig.args.len())
+    }
+
     pub fn tuple(&mut self, elems: &[Ty]) -> Ty {
         self.intern(Descr::tuple_of(elems.iter().copied()))
     }
@@ -1061,6 +1079,10 @@ impl SharedTypes for Types {
 
     fn arrow_join_return(&mut self, a: &Self::Ty) -> Self::Ty {
         Types::arrow_join_return(self, a)
+    }
+
+    fn arrow_params(&self, a: &Self::Ty) -> Vec<Self::Ty> {
+        Types::arrow_params(self, a)
     }
 
     #[cfg(test)]

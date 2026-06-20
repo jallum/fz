@@ -11,7 +11,7 @@ use super::super::semantic::{
     ActivationAnalysis, CallSiteKey, CallSiteSummary, CallableDemand, CallableFlowEdge, CallableFlowFact,
     CallableSurface, ExecutableRuntimeDemand, RuntimeDemand, ShapeDemand, ground_dispatch_surfaces,
 };
-use super::super::types::Ty;
+use super::super::types::{Ty, Types};
 use super::super::world::World;
 use super::semantic::executable_callsite_needs;
 
@@ -185,7 +185,7 @@ pub(super) fn derive_runtime_demand(
     let mut self_demand = world
         .runtime_demand(executable)
         .cloned()
-        .unwrap_or_else(|| empty_runtime_demand(executable));
+        .unwrap_or_else(|| empty_runtime_demand(executable, world.types()));
     self_demand.return_demand = world.return_demand(executable);
     demands.insert(executable.clone(), self_demand);
 
@@ -195,7 +195,7 @@ pub(super) fn derive_runtime_demand(
             world
                 .runtime_demand(&target)
                 .cloned()
-                .unwrap_or_else(|| empty_runtime_demand(&target))
+                .unwrap_or_else(|| empty_runtime_demand(&target, world.types()))
         });
     }
     if let Some(current) = demands.get(executable).cloned() {
@@ -210,7 +210,7 @@ pub(super) fn derive_runtime_demand(
                 world
                     .runtime_demand(&target)
                     .cloned()
-                    .unwrap_or_else(|| empty_runtime_demand(&target))
+                    .unwrap_or_else(|| empty_runtime_demand(&target, world.types()))
             });
         }
     }
@@ -330,9 +330,9 @@ fn read_settled(world: &World<'_>, fact: FactKey, reads: &mut Vec<FactKey>) -> b
     }
 }
 
-fn empty_runtime_demand(executable: &ExecutableKey) -> ExecutableRuntimeDemand {
+fn empty_runtime_demand(executable: &ExecutableKey, types: &Types) -> ExecutableRuntimeDemand {
     ExecutableRuntimeDemand {
-        input_demands: vec![RuntimeDemand::ignore(); executable.activation.input.len()],
+        input_demands: vec![RuntimeDemand::ignore(); executable.activation.input_len(types)],
         ..ExecutableRuntimeDemand::default()
     }
 }
@@ -483,13 +483,12 @@ fn callable_boundary_return_demand_contributions(
         }
         for surface in &flow.first_class_surfaces {
             for resolution in &flow.resolutions {
-                if resolution.activation.function != flow.function
-                    || resolution.activation.input.len() < surface.inputs.len()
-                {
+                let resolution_inputs = resolution.activation.inputs(world.types());
+                if resolution.activation.function != flow.function || resolution_inputs.len() < surface.inputs.len() {
                     continue;
                 }
-                let offset = resolution.activation.input.len() - surface.inputs.len();
-                if resolution.activation.input[offset..] != surface.inputs {
+                let offset = resolution_inputs.len() - surface.inputs.len();
+                if resolution_inputs[offset..] != surface.inputs {
                     continue;
                 }
                 let surface_return_ty = callable_surface_return_ty(world, facts, *value, surface);
@@ -601,7 +600,7 @@ fn derive_executable_runtime_demand(
             .get(executable)
             .map(|demand| demand.return_demand.clone())
             .unwrap_or_default(),
-        input_demands: vec![RuntimeDemand::ignore(); executable.activation.input.len()],
+        input_demands: vec![RuntimeDemand::ignore(); executable.activation.input_len(world.types())],
         ..ExecutableRuntimeDemand::default()
     };
     let mut call_return_demands = HashMap::new();
@@ -610,7 +609,7 @@ fn derive_executable_runtime_demand(
         out.input_demands = match &facts.body {
             LoweredBody::Extern { signature } => executable
                 .activation
-                .input
+                .inputs(world.types())
                 .iter()
                 .enumerate()
                 .map(|(index, ty)| {
@@ -662,8 +661,9 @@ fn derive_executable_runtime_demand(
         }
     }
 
+    let activation_inputs = executable.activation.inputs(world.types());
     for &semantic_index in &facts.entry_dispatch_inputs {
-        let Some(&ty) = executable.activation.input.get(semantic_index) else {
+        let Some(&ty) = activation_inputs.get(semantic_index) else {
             continue;
         };
         let demand = boundary_runtime_demand(world, ty);
@@ -1425,13 +1425,14 @@ fn propagate_lambda_capture_demands(
         if callee.activation.root != executable.activation.root || callee.activation.function != function {
             continue;
         }
-        if callee.activation.input.len() < capture_types.len() {
+        let callee_inputs = callee.activation.inputs(world.types());
+        if callee_inputs.len() < capture_types.len() {
             continue;
         }
-        if &callee.activation.input[..capture_types.len()] != capture_types.as_slice() {
+        if &callee_inputs[..capture_types.len()] != capture_types.as_slice() {
             continue;
         }
-        let own_params = &callee.activation.input[capture_types.len()..];
+        let own_params = &callee_inputs[capture_types.len()..];
         if !callable.resolved.is_empty()
             && !callable
                 .resolved
@@ -1587,7 +1588,11 @@ fn arg_demands_for_summary(
         let offset = target
             .activation
             .as_ref()
-            .map(|activation| activation.input.len().saturating_sub(target.surface_inputs.len()))
+            .map(|activation| {
+                activation
+                    .input_len(world.types())
+                    .saturating_sub(target.surface_inputs.len())
+            })
             .unwrap_or(default_offset);
         for (index, (arg, slot)) in args.iter().zip(out.iter_mut()).enumerate().take(arity) {
             let fallback_ty = target
@@ -1700,7 +1705,7 @@ fn local_target_input_demands(
                 .get(&ExecutableKey { activation, need })
                 .map(|demand| demand.input_demands.clone())
                 .unwrap_or_else(|| {
-                    vec![RuntimeDemand::ignore(); target.activation.as_ref().map_or(0, |a| a.input.len())]
+                    vec![RuntimeDemand::ignore(); target.activation.as_ref().map_or(0, |a| a.input_len(world.types()))]
                 })
         }
     }

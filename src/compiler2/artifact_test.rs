@@ -27,23 +27,23 @@ fn stub_activation_key(_types: &mut Types, input: Vec<super::types::Ty>) -> (Roo
         need: ExecutableNeed::Value,
         kind: RootKind::Runtime,
     });
-    let activation = ActivationKey { root, function, input };
+    let activation = ActivationKey::from_inputs(root, function, &input, _types);
     (root, function, activation)
 }
 
-fn executable_symbol(executable: &ExecutableKey) -> ExecutableSymbol {
+fn executable_symbol(executable: &ExecutableKey, types: &Types) -> ExecutableSymbol {
     ExecutableSymbol {
         activation: ActivationSymbol {
             function: executable.activation.function,
-            input: executable.activation.input.clone().into_boxed_slice(),
+            input: executable.activation.inputs(types).into_boxed_slice(),
         },
         need: executable.need,
     }
 }
 
-fn executable_return_position(executable: &ExecutableKey) -> TransportPosition {
+fn executable_return_position(executable: &ExecutableKey, types: &Types) -> TransportPosition {
     TransportPosition::ExecutableReturn {
-        executable: executable_symbol(executable),
+        executable: executable_symbol(executable, types),
     }
 }
 
@@ -151,7 +151,7 @@ fn compiler2_native_program_contract_keeps_codegen_facts_on_body_records() {
             entry_abi: NativeEntryAbi::Direct,
             param_reprs: vec![AbiValueRepr::RawInt],
             return_ty: int,
-            return_position: executable_return_position(&executable),
+            return_position: executable_return_position(&executable, &types),
             return_reprs: vec![AbiValueRepr::RawInt],
             return_tuple_arity: None,
             block_param_reprs: HashMap::new(),
@@ -295,7 +295,7 @@ fn compiler2_native_program_contract_maps_old_native_inputs_to_local_facts() {
                 entry_abi: NativeEntryAbi::Direct,
                 param_reprs: vec![AbiValueRepr::RawInt],
                 return_ty: int,
-                return_position: executable_return_position(&executable),
+                return_position: executable_return_position(&executable, &types),
                 return_reprs: vec![AbiValueRepr::RawInt],
                 return_tuple_arity: None,
                 block_param_reprs: HashMap::new(),
@@ -313,7 +313,7 @@ fn compiler2_native_program_contract_maps_old_native_inputs_to_local_facts() {
                 entry_abi: NativeEntryAbi::Continuation { extra_params: 1 },
                 param_reprs: vec![AbiValueRepr::ValueRef],
                 return_ty: int,
-                return_position: executable_return_position(&executable),
+                return_position: executable_return_position(&executable, &types),
                 return_reprs: vec![AbiValueRepr::ValueRef],
                 return_tuple_arity: None,
                 block_param_reprs: HashMap::new(),
@@ -458,7 +458,7 @@ fn compiler2_native_program_contract_treats_old_extern_semantics_as_cleanup_not_
             entry_abi: NativeEntryAbi::Direct,
             param_reprs: vec![AbiValueRepr::RawInt],
             return_ty: int,
-            return_position: executable_return_position(&executable),
+            return_position: executable_return_position(&executable, &types),
             return_reprs: vec![AbiValueRepr::RawInt],
             return_tuple_arity: None,
             block_param_reprs: HashMap::new(),

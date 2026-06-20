@@ -16,7 +16,7 @@ use super::super::transport::{
     CodegenLaneRepr, CodegenSeam, CodegenSeamFact, ExecutableSymbol, LaneId, ShapeDescr, ShapeId, TransportClass,
     TransportPlan, TransportPosition,
 };
-use super::super::types::Ty;
+use super::super::types::{Ty, Types};
 use super::super::world::World;
 use super::semantic::executable_callsite_needs;
 
@@ -391,7 +391,7 @@ pub(super) fn derive_transport_plan(world: &mut World<'_>, root_id: RootId) -> R
     }
 
     let mut executables = closure.executables.iter().cloned().collect::<Vec<_>>();
-    executables.sort_by_key(executable_sort_key);
+    executables.sort_by_key(|e| executable_sort_key(e, world.types()));
 
     let plan = project_transport_plan(world, &closure.entry, &executables, &contexts);
 
@@ -494,7 +494,7 @@ pub(crate) fn transport_plan_for_runtime_demands_for_test(
         "transport projection test requires settled prerequisite facts: {wait_facts:?}",
     );
     let mut executables = closure.executables.iter().cloned().collect::<Vec<_>>();
-    executables.sort_by_key(executable_sort_key);
+    executables.sort_by_key(|e| executable_sort_key(e, world.types()));
     project_transport_plan(world, &closure.entry, &executables, &contexts)
 }
 
@@ -504,17 +504,17 @@ fn project_transport_plan(
     executables: &[ExecutableKey],
     contexts: &HashMap<ExecutableKey, ExecutableContext>,
 ) -> TransportPlan {
-    let entry = executable_symbol(entry_executable);
+    let entry = executable_symbol(entry_executable, world.types());
     let executable_membership = executables
         .iter()
-        .map(executable_symbol)
+        .map(|e| executable_symbol(e, world.types()))
         .collect::<Vec<_>>()
         .into_boxed_slice();
 
     let mut facts = TransportFactsBuilder::default();
     let mut shape_graph = ShapeConstraintGraph::default();
     for executable in executables {
-        let symbol = executable_symbol(executable);
+        let symbol = executable_symbol(executable, world.types());
         let context = contexts
             .get(executable)
             .expect("transport derivation requires one context per settled executable");
@@ -706,7 +706,7 @@ fn project_transport_plan(
         }
     }
 
-    collect_clause_parameter_equalities(contexts, executables, &mut shape_graph);
+    collect_clause_parameter_equalities(contexts, executables, &mut shape_graph, world.types());
     seed_callable_resolution_capture_inputs(world, &facts, &mut shape_graph);
     let local_shapes = shape_graph.clone().solve();
     collect_executable_input_constraints(
@@ -769,11 +769,11 @@ fn collect_executable_input_constraints(
     shape_graph: &mut ShapeConstraintGraph,
 ) {
     for executable in executables {
-        let symbol = executable_symbol(executable);
+        let symbol = executable_symbol(executable, world.types());
         let context = contexts
             .get(executable)
             .expect("transport derivation requires one context per settled executable");
-        for (semantic_index, ty) in executable.activation.input.iter().copied().enumerate() {
+        for (semantic_index, ty) in executable.activation.inputs(world.types()).into_iter().enumerate() {
             let demand = context
                 .runtime_demand
                 .input_demands
@@ -825,9 +825,10 @@ fn collect_clause_parameter_equalities(
     contexts: &HashMap<ExecutableKey, ExecutableContext>,
     executables: &[ExecutableKey],
     shape_graph: &mut ShapeConstraintGraph,
+    types: &Types,
 ) {
     for executable in executables {
-        let symbol = executable_symbol(executable);
+        let symbol = executable_symbol(executable, types);
         let context = contexts
             .get(executable)
             .expect("transport derivation requires one context per settled executable");
@@ -876,7 +877,7 @@ fn derive_codegen_seam_facts(
                         lane,
                         repr,
                     });
-                    if executable_context_for_symbol(contexts, executable)
+                    if executable_context_for_symbol(contexts, executable, world.types())
                         .is_some_and(|context| matches!(context.body, LoweredBody::Extern { .. }))
                     {
                         out.push(CodegenSeamFact {
@@ -899,7 +900,7 @@ fn derive_codegen_seam_facts(
                         lane,
                         repr,
                     });
-                    if executable_context_for_symbol(contexts, executable)
+                    if executable_context_for_symbol(contexts, executable, world.types())
                         .is_some_and(|context| matches!(context.body, LoweredBody::Extern { .. }))
                     {
                         out.push(CodegenSeamFact {
@@ -963,7 +964,7 @@ fn derive_codegen_seam_facts(
                         lane,
                         repr,
                     });
-                    if let Some(callsite) = executable_context_for_symbol(contexts, executable)
+                    if let Some(callsite) = executable_context_for_symbol(contexts, executable, world.types())
                         .and_then(|context| resume_callsite_for_entry(context, *entry))
                     {
                         out.push(CodegenSeamFact {
@@ -982,7 +983,7 @@ fn derive_codegen_seam_facts(
                     executable, callsite, ..
                 } => {
                     let repr = codegen_repr_for_lane(world, lane);
-                    if executable_context_for_symbol(contexts, executable)
+                    if executable_context_for_symbol(contexts, executable, world.types())
                         .and_then(|context| context.callsite_dests.get(callsite))
                         .is_some_and(|dest| matches!(dest, ControlDestination::Return))
                     {
@@ -1138,7 +1139,7 @@ fn callsite_callee_return_position(
     contexts
         .contains_key(&callee)
         .then(|| TransportPosition::ExecutableReturn {
-            executable: executable_symbol(&callee),
+            executable: executable_symbol(&callee, world.types()),
         })
 }
 
@@ -1152,11 +1153,12 @@ fn resume_callsite_for_entry(context: &ExecutableContext, entry: ControlEntryId)
 fn executable_context_for_symbol<'a>(
     contexts: &'a HashMap<ExecutableKey, ExecutableContext>,
     symbol: &ExecutableSymbol,
+    types: &Types,
 ) -> Option<&'a ExecutableContext> {
     contexts.iter().find_map(|(candidate, context)| {
         (candidate.need == symbol.need
             && candidate.activation.function == symbol.activation.function
-            && candidate.activation.input.as_slice() == symbol.activation.input.as_ref())
+            && candidate.activation.inputs(types).as_slice() == symbol.activation.input.as_ref())
         .then_some(context)
     })
 }
@@ -1259,24 +1261,24 @@ fn codegen_seam_fact_sort_key(fact: &CodegenSeamFact) -> CodegenSeamFactSortKey 
     (kind, executable, boundary, entry, index, fact.lane.as_u32(), repr)
 }
 
-fn executable_sort_key(executable: &ExecutableKey) -> ExecutableSortKey {
+fn executable_sort_key(executable: &ExecutableKey, types: &Types) -> ExecutableSortKey {
     let need = match executable.need {
         ExecutableNeed::Value => (0, 0),
         ExecutableNeed::TupleFields(arity) => (1, arity),
     };
     (
         executable.activation.function.as_u32(),
-        executable.activation.input.clone(),
+        executable.activation.inputs(types),
         need.0,
         need.1,
     )
 }
 
-fn executable_symbol(executable: &ExecutableKey) -> ExecutableSymbol {
+fn executable_symbol(executable: &ExecutableKey, types: &Types) -> ExecutableSymbol {
     ExecutableSymbol {
         activation: ActivationSymbol {
             function: executable.activation.function,
-            input: executable.activation.input.clone().into_boxed_slice(),
+            input: executable.activation.inputs(types).into_boxed_slice(),
         },
         need: executable.need,
     }
@@ -1686,7 +1688,7 @@ fn shape_for_local_value(
             .iter()
             .filter_map(|source| match source {
                 TransportSource::LocalValue(source) => Some(TransportPosition::Value {
-                    executable: executable_symbol(executable),
+                    executable: executable_symbol(executable, world.types()),
                     value: *source,
                 }),
                 _ => None,
@@ -1744,7 +1746,7 @@ fn incoming_executable_input_positions(
             if !summary.targets.iter().any(|target| {
                 target.activation.as_ref().is_some_and(|activation| {
                     activation.function == executable.activation.function
-                        && activation.input == executable.activation.input
+                        && activation.arrow == executable.activation.arrow
                         && context
                             .callsite_needs
                             .get(callsite)
@@ -1756,13 +1758,13 @@ fn incoming_executable_input_positions(
                 continue;
             }
 
-            let capture_prefix = executable.activation.input.len().checked_sub(args.len())?;
+            let capture_prefix = executable.activation.input_len(world.types()).checked_sub(args.len())?;
             if semantic_index < capture_prefix {
                 return None;
             }
             let arg_index = semantic_index - capture_prefix;
             let position = TransportPosition::CallArg {
-                executable: executable_symbol(caller),
+                executable: executable_symbol(caller, world.types()),
                 callsite: *callsite,
                 semantic_index: arg_index,
             };
@@ -2045,7 +2047,7 @@ fn collect_call_arg_input_sources(
             continue;
         }
         for (callsite, args) in &context.callsite_args {
-            let Some(capture_prefix) = executable.activation.input.len().checked_sub(args.len()) else {
+            let Some(capture_prefix) = executable.activation.input_len(world.types()).checked_sub(args.len()) else {
                 continue;
             };
             if semantic_index < capture_prefix {
@@ -2074,7 +2076,7 @@ fn collect_call_arg_input_sources(
             if !summary.targets.iter().any(|target| {
                 target.activation.as_ref().is_some_and(|activation| {
                     activation.function == executable.activation.function
-                        && activation.input == executable.activation.input
+                        && activation.arrow == executable.activation.arrow
                 })
             }) {
                 continue;
@@ -2329,14 +2331,14 @@ fn callable_for_producer(
     let resolution_symbols = upstream_flow
         .resolutions
         .iter()
-        .map(executable_symbol)
+        .map(|e| executable_symbol(e, world.types()))
         .collect::<Vec<_>>();
     let direct_surfaces = if direct_surface_demands.is_empty() {
         Vec::new()
     } else {
         surface_shapes(world, &direct_surface_demands, facts)
     };
-    let capture_demands = capture_demands_for_resolutions(contexts, &capture_tys, &resolution_symbols);
+    let capture_demands = capture_demands_for_resolutions(contexts, &capture_tys, &resolution_symbols, world.types());
     let capture_shapes = producer
         .captures
         .iter()
@@ -2382,7 +2384,7 @@ fn callable_for_producer(
             &boundary_surface_demands,
         );
         let boundary_resolution_symbols =
-            boundary_resolution_symbols_for_flow_surfaces(upstream_flow, &boundary_surface_demands);
+            boundary_resolution_symbols_for_flow_surfaces(upstream_flow, &boundary_surface_demands, world.types());
         publish_boundaries_for_callable(
             world,
             facts,
@@ -2410,13 +2412,14 @@ fn capture_demands_for_resolutions(
     contexts: &HashMap<ExecutableKey, ExecutableContext>,
     capture_tys: &[Ty],
     resolutions: &[ExecutableSymbol],
+    types: &Types,
 ) -> Vec<RuntimeDemand> {
     let mut demands = vec![RuntimeDemand::ignore(); capture_tys.len()];
     for resolution in resolutions {
         let Some((_, context)) = contexts.iter().find(|(candidate, _)| {
             candidate.need == resolution.need
                 && candidate.activation.function == resolution.activation.function
-                && candidate.activation.input.as_slice() == resolution.activation.input.as_ref()
+                && candidate.activation.inputs(types).as_slice() == resolution.activation.input.as_ref()
         }) else {
             panic!("upstream callable-flow resolution is outside the transport root context: {resolution:?}");
         };
@@ -2872,9 +2875,9 @@ fn boundary_return_shapes_for_flow_surfaces(
                 .iter()
                 .find(|resolution| {
                     resolution.activation.function == flow.function
-                        && resolution.activation.input.as_slice() == inputs.as_slice()
+                        && resolution.activation.inputs(world.types()).as_slice() == inputs.as_slice()
                 })
-                .map(executable_symbol)
+                .map(|resolution| executable_symbol(resolution, world.types()))
                 .unwrap_or_else(|| {
                     panic!("upstream callable-flow surface has no matching executable resolution: {surface:?}")
                 });
@@ -2890,6 +2893,7 @@ fn boundary_return_shapes_for_flow_surfaces(
 fn boundary_resolution_symbols_for_flow_surfaces(
     flow: &CallableFlowFact,
     surfaces: &BTreeSet<CallableSurface>,
+    types: &Types,
 ) -> Vec<Vec<ExecutableSymbol>> {
     surfaces
         .iter()
@@ -2897,7 +2901,7 @@ fn boundary_resolution_symbols_for_flow_surfaces(
             flow.first_class_edges
                 .iter()
                 .filter(|edge| &edge.surface == surface)
-                .map(|edge| executable_symbol(&edge.resolution))
+                .map(|edge| executable_symbol(&edge.resolution, types))
                 .collect::<Vec<_>>()
         })
         .collect()
@@ -2913,7 +2917,7 @@ fn boundary_return_shape_for_resolution(
     let Some((executable, context)) = contexts.iter().find(|(candidate, _)| {
         candidate.need == resolution.need
             && candidate.activation.function == resolution.activation.function
-            && candidate.activation.input.as_slice() == resolution.activation.input.as_ref()
+            && candidate.activation.inputs(world.types()).as_slice() == resolution.activation.input.as_ref()
     }) else {
         panic!("upstream callable-flow resolution is outside the transport root context: {resolution:?}");
     };

@@ -1894,7 +1894,8 @@ end
                     .find(|(executable, _)| {
                         executable.need == resolution.need
                             && executable.activation.function == resolution.activation.function
-                            && executable.activation.input.as_slice() == resolution.activation.input.as_ref()
+                            && executable.activation.inputs(world.types()).as_slice()
+                                == resolution.activation.input.as_ref()
                     })
                     .map(|(_, demand)| demand.return_demand.clone());
                 (resolution.clone(), demand)
@@ -2997,7 +2998,7 @@ fn assert_callable_facts_match_upstream_flow(
         .unwrap_or_else(|| panic!("callable facts should exist for {callable:?}"));
     assert_eq!(
         sorted_executable_symbols(facts.resolutions.as_ref()),
-        flow_resolution_symbols(flow),
+        flow_resolution_symbols(world, flow),
         "transport callable resolutions should exactly project upstream callable-flow evidence"
     );
     assert_transport_surfaces_match_upstream(world, &facts.direct_surfaces, &flow.direct_surfaces);
@@ -3009,14 +3010,14 @@ fn assert_callable_facts_match_upstream_flow(
     assert_boundary_resolutions_match_upstream_flow(world, plan, facts, flow);
 }
 
-fn flow_resolution_symbols(flow: &CallableFlowFact) -> Vec<ExecutableSymbol> {
+fn flow_resolution_symbols(world: &World<'_>, flow: &CallableFlowFact) -> Vec<ExecutableSymbol> {
     let mut symbols = flow
         .resolutions
         .iter()
         .map(|resolution| ExecutableSymbol {
             activation: ActivationSymbol {
                 function: resolution.activation.function,
-                input: resolution.activation.input.clone().into_boxed_slice(),
+                input: resolution.activation.inputs(world.types()).into_boxed_slice(),
             },
             need: resolution.need,
         })
@@ -3039,7 +3040,7 @@ fn assert_boundary_resolutions_match_upstream_flow(
             .push(ExecutableSymbol {
                 activation: ActivationSymbol {
                     function: edge.resolution.activation.function,
-                    input: edge.resolution.activation.input.clone().into_boxed_slice(),
+                    input: edge.resolution.activation.inputs(world.types()).into_boxed_slice(),
                 },
                 need: edge.resolution.need,
             });

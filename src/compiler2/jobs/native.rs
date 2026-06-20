@@ -354,7 +354,8 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
             return_tuple_arity,
             executable.effects,
         );
-        let params = ctx.entry_params(executable.key.activation.input.as_slice());
+        let activation_inputs = executable.key.activation.inputs(self.world.types());
+        let params = ctx.entry_params(activation_inputs.as_slice());
         let mut extern_args = Vec::with_capacity(params.len());
         for (arg_index, param) in params.iter().copied().enumerate() {
             let arg = if arg_index < signature.params.len() {
@@ -431,16 +432,15 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
             .as_ref()
             .expect("clause dispatch lowering requires a settled entry dispatch");
         let required_inputs = dispatch.required_input_ordinals();
+        let activation_inputs = executable.key.activation.inputs(self.world.types());
         let inputs = semantic_inputs
             .iter()
             .enumerate()
             .map(
                 |(semantic_index, value)| match (required_inputs.contains(&semantic_index), value) {
-                    (true, Some(value)) => self.materialize_native_value(
-                        &mut ctx,
-                        executable.key.activation.input.get(semantic_index).copied(),
-                        value,
-                    ),
+                    (true, Some(value)) => {
+                        self.materialize_native_value(&mut ctx, activation_inputs.get(semantic_index).copied(), value)
+                    }
                     (true, None) => Err(incomplete_native_program(
                         self.world,
                         self.root_id,
@@ -3464,7 +3464,7 @@ fn bind_executable_inputs(
     ctx: &mut NativeFnCtx,
     params: &[Var],
 ) -> Result<Vec<Option<NativeBoundValue>>, FatalError> {
-    let semantic_arity = executable.key.activation.input.len();
+    let semantic_arity = executable.key.activation.input_len(world.types());
     let mut bound = vec![None; semantic_arity];
     let mut lane_index = 0;
     for binding in executable_input_bindings(program, executable) {

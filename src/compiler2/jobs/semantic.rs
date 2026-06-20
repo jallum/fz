@@ -1694,7 +1694,11 @@ fn merge_target_activation(
             if current.root != observed.root || current.function != observed.function {
                 return Err(FatalError);
             }
-            merge_summary_input_vec(world, &mut current.input, &observed.input);
+            let mut current_inputs = current.inputs(world.types());
+            let observed_inputs = observed.inputs(world.types());
+            merge_summary_input_vec(world, &mut current_inputs, &observed_inputs);
+            let sentinel = world.types_mut().none();
+            current.arrow = world.types_mut().arrow(&current_inputs, sentinel);
             Ok(Some(current))
         }
         (None, None) => Ok(None),

@@ -64,7 +64,49 @@ impl RootId {
 pub struct ActivationKey {
     pub root: RootId,
     pub function: FunctionId,
-    pub input: Vec<Ty>,
+    /// The canonical activation signature as an interned arrow. The dispatch
+    /// identity is the params (input) side; the result side is currently a
+    /// `none()` sentinel (fz-hwn.27.11 half-step) and is replaced by the real
+    /// addressed result `r0` in fz-hwn.27.6. Read the inputs via `inputs`.
+    pub arrow: Ty,
+}
+
+impl ActivationKey {
+    /// Construct a key from its canonical input vector, interning the half-step
+    /// arrow with the `none()` sentinel result. This is the single container
+    /// step shared by `World::canonical_activation_key` and every other site
+    /// that mints a key from raw inputs (fz-hwn.27.6 swaps the body to a
+    /// whole-scope `address_arrow`).
+    pub fn from_inputs(root: RootId, function: FunctionId, inputs: &[Ty], types: &mut super::types::Types) -> Self {
+        let sentinel = types.none();
+        let arrow = types.arrow(inputs, sentinel);
+        Self { root, function, arrow }
+    }
+
+    /// The canonical input vector — the params side of `arrow`. This is the
+    /// dispatch identity that every consumer reads; the field is an arrow only
+    /// to keep the key in the single arrow type language.
+    pub fn inputs(&self, types: &super::types::Types) -> Vec<Ty> {
+        types.arrow_params(&self.arrow)
+    }
+
+    /// Input arity without cloning the param vector.
+    pub fn input_len(&self, types: &super::types::Types) -> usize {
+        types.arrow_arity(&self.arrow)
+    }
+
+    /// Re-alpha-normalize each input independently and rebuild the arrow with
+    /// the sentinel result. Preserves the per-input normalization of the
+    /// half-step; fz-hwn.27.6 replaces this with whole-scope canonicalization.
+    pub fn realpha_inputs(&mut self, types: &mut super::types::Types) {
+        let params: Vec<Ty> = types
+            .arrow_params(&self.arrow)
+            .iter()
+            .map(|ty| types.alpha_normalize_vars(ty))
+            .collect();
+        let sentinel = types.none();
+        self.arrow = types.arrow(&params, sentinel);
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

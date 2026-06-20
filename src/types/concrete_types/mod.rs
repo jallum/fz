@@ -323,6 +323,9 @@ impl Types for ConcreteTypes {
     fn arrow_join_return(&mut self, a: &Ty) -> Ty {
         ty_from_descr(ty_descr(a).arrow_join_return())
     }
+    fn arrow_params(&self, a: &Ty) -> Vec<Ty> {
+        ty_descr(a).arrow_params().into_iter().map(ty_from_descr).collect()
+    }
     #[cfg(test)]
     fn tuple_lit_elems(&self, a: &Ty) -> Option<Vec<Ty>> {
         concrete_tuple_lit_elems(a)

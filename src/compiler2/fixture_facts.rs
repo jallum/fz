@@ -178,7 +178,11 @@ fn activation_sort_key(
 ) -> (String, Vec<String>) {
     (
         canonical_function_label(world, activation.function, labels),
-        activation.input.iter().map(|ty| world.types().display(ty)).collect(),
+        activation
+            .inputs(world.types())
+            .iter()
+            .map(|ty| world.types().display(ty))
+            .collect(),
     )
 }
 
@@ -187,7 +191,7 @@ fn activation_label(world: &World<'_>, activation: &ActivationKey, labels: &mut 
         "{}[{}]",
         canonical_function_label(world, activation.function, labels),
         activation
-            .input
+            .inputs(world.types())
             .iter()
             .map(|ty| stable_type_text(world.types().display(ty)))
             .collect::<Vec<_>>()

@@ -354,6 +354,11 @@ pub trait Types {
     /// Join the return side of a callable type.
     fn arrow_join_return(&mut self, a: &Self::Ty) -> Self::Ty;
 
+    /// Project the parameter side of a single-clause callable type. The dual of
+    /// `arrow_join_return`: returns the positive clause's argument types, or an
+    /// empty vector when `a` is not a pure single-clause arrow.
+    fn arrow_params(&self, a: &Self::Ty) -> Vec<Self::Ty>;
+
     // ---- substitution --------------------------------------------------
 
     fn instantiate(&mut self, a: &Self::Ty, sigma: &Sigma<Self::Ty>) -> Self::Ty;

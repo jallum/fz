@@ -344,23 +344,10 @@ impl CallableFlowFact {
         self.first_class_surfaces = alpha_normalized_surfaces(types, &self.first_class_surfaces);
         for edge in self.direct_edges.iter_mut().chain(self.first_class_edges.iter_mut()) {
             edge.surface.alpha_normalize(types);
-            edge.resolution.activation.input = edge
-                .resolution
-                .activation
-                .input
-                .iter()
-                .copied()
-                .map(|ty| types.alpha_normalize_vars(&ty))
-                .collect();
+            edge.resolution.activation.realpha_inputs(types);
         }
         for resolution in &mut self.resolutions {
-            resolution.activation.input = resolution
-                .activation
-                .input
-                .iter()
-                .copied()
-                .map(|ty| types.alpha_normalize_vars(&ty))
-                .collect();
+            resolution.activation.realpha_inputs(types);
         }
     }
 }
@@ -982,21 +969,15 @@ mod tests {
     fn test_key(world: &mut World<'_>) -> ActivationKey {
         let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
         let any = world.types_mut().any();
-        ActivationKey {
-            root,
-            function: world.root_function(root),
-            input: vec![any, any],
-        }
+        let function = world.root_function(root);
+        ActivationKey::from_inputs(root, function, &[any, any], world.types_mut())
     }
 
     fn test_executable(world: &mut World<'_>, name: &str) -> ExecutableKey {
         let root = world.submit_root(None, name.to_string(), 0, ExecutableNeed::Value);
+        let function = world.root_function(root);
         ExecutableKey {
-            activation: ActivationKey {
-                root,
-                function: world.root_function(root),
-                input: Vec::new(),
-            },
+            activation: ActivationKey::from_inputs(root, function, &[], world.types_mut()),
             need: ExecutableNeed::Value,
         }
     }

@@ -1114,6 +1114,7 @@ fn compiler2_submit_root_pulls_scope_and_seeds_entry_semantics_without_warming_f
     );
 
     let seed_outputs = outputs.take(Job::SeedRoot(root_id)).expect("SeedRoot job effects");
+    let entry_activation = ActivationKey::from_inputs(root_id, main_id, &[], compiler.types_mut_for_test());
     assert!(
         seed_outputs
             .iter()
@@ -1121,36 +1122,22 @@ fn compiler2_submit_root_pulls_scope_and_seeds_entry_semantics_without_warming_f
         "SeedRoot should publish the root entry fact"
     );
     assert!(
-        seed_outputs.iter().any(|(fact, _)| {
-            *fact
-                == FactKey::Activation(ActivationKey {
-                    root: root_id,
-                    function: main_id,
-                    input: Vec::new(),
-                })
-        }),
+        seed_outputs
+            .iter()
+            .any(|(fact, _)| *fact == FactKey::Activation(entry_activation.clone())),
         "SeedRoot should publish the entry activation"
     );
     assert!(
-        seed_outputs.iter().any(|(fact, _)| {
-            *fact
-                == FactKey::ActivationInputs(ActivationKey {
-                    root: root_id,
-                    function: main_id,
-                    input: Vec::new(),
-                })
-        }),
+        seed_outputs
+            .iter()
+            .any(|(fact, _)| *fact == FactKey::ActivationInputs(entry_activation.clone())),
         "SeedRoot should publish the entry activation-input evidence fact",
     );
     assert!(
         seed_outputs.iter().any(|(fact, _)| {
             *fact
                 == FactKey::Executable(ExecutableKey {
-                    activation: ActivationKey {
-                        root: root_id,
-                        function: main_id,
-                        input: Vec::new(),
-                    },
+                    activation: entry_activation.clone(),
                     need: ExecutableNeed::Value,
                 })
         }),
@@ -1841,11 +1828,7 @@ fn compiler2_analyze_activation_publishes_one_whole_callsite_fact_per_call() {
     );
 
     let main_id = function_id(&functions, "main", 0);
-    let activation = ActivationKey {
-        root: root_id,
-        function: main_id,
-        input: Vec::new(),
-    };
+    let activation = ActivationKey::from_inputs(root_id, main_id, &[], compiler.types_mut_for_test());
     let activation_job = Job::AnalyzeActivation(activation.clone());
     let effects = outputs.effects(activation_job.clone());
     let outputs = outputs
@@ -2963,7 +2946,7 @@ end
         .find(|key| key.activation.function == reducer_id)
         .expect("the reducer body should resolve to a canonical closed executable key");
     assert_eq!(
-        reducer_key.activation.input.len(),
+        reducer_key.activation.input_len(compiler.types_mut_for_test()),
         3,
         "the reducer keeps its full semantic arity: one captured predicate plus two call args",
     );
@@ -4547,14 +4530,17 @@ end
             _ => None,
         })
         .collect::<Vec<_>>();
+    let types = compiler.types_for_test();
     assert!(
-        reducer_executables.iter().all(|key| !key.activation.input.is_empty()),
+        reducer_executables
+            .iter()
+            .all(|key| key.activation.input_len(types) != 0),
         "the reducer executable should still carry a captured predicate identity lane",
     );
 
     let capture_identities = reducer_executables
         .iter()
-        .map(|key| key.activation.input[..1].to_vec())
+        .map(|key| key.activation.inputs(types)[..1].to_vec())
         .collect::<HashSet<_>>();
     assert_eq!(
         capture_identities.len(),
@@ -6567,7 +6553,7 @@ fn escaping_destructor_keys_its_activation_at_the_grounded_boundary_surface() {
         panic!("the destructor lambda should lower to a top-level executable body");
     };
     assert_eq!(
-        key.activation.input,
+        key.activation.inputs(compiler.types_for_test()),
         vec![int_ty],
         "the escaping destructor keys its activation at the grounded payload type carried by make_resource's boundary surface, not its own (t) template",
     );
@@ -7165,12 +7151,10 @@ fn compiler2_quicksort_root_closes_with_a_finite_recursive_frontier() {
     let closed = semantic.last(root_id);
     let activations = closed.activations.iter().cloned().collect::<HashSet<_>>();
 
+    let entry_activation = ActivationKey::from_inputs(root_id, main_id, &[], compiler.types_mut_for_test());
+    let types = compiler.types_for_test();
     assert!(
-        activations.contains(&ActivationKey {
-            root: root_id,
-            function: main_id,
-            input: Vec::new(),
-        }),
+        activations.contains(&entry_activation),
         "root closure should keep the entry activation in the settled frontier"
     );
     let qsort_activations = activations
@@ -7183,7 +7167,7 @@ fn compiler2_quicksort_root_closes_with_a_finite_recursive_frontier() {
         "root closure should keep the narrow and widened qsort/1 recursive activations"
     );
     assert!(
-        qsort_activations[0].input != qsort_activations[1].input,
+        qsort_activations[0].arrow != qsort_activations[1].arrow,
         "the two qsort/1 recursive activations should remain distinct after canonical keying"
     );
     let mut partition_activations = activations
@@ -7191,7 +7175,7 @@ fn compiler2_quicksort_root_closes_with_a_finite_recursive_frontier() {
         .filter(|activation| activation.function == partition_id)
         .cloned()
         .collect::<Vec<_>>();
-    partition_activations.sort_by(|left, right| left.input.cmp(&right.input));
+    partition_activations.sort_by_key(|activation| activation.inputs(types));
     // Both qsort activations call partition with the same canonical
     // (pivot, rest) — hd/tl of a non-empty and a general list coincide — so
     // ONE partition activation is the tight answer. The historical second
@@ -7205,11 +7189,12 @@ fn compiler2_quicksort_root_closes_with_a_finite_recursive_frontier() {
     assert!(
         partition_activations
             .iter()
-            .all(|activation| activation.input.len() == 4),
+            .all(|activation| activation.input_len(types) == 4),
         "partition/4 should stay keyed on its four inputs"
     );
+    let partition_inputs = partition_activations[0].inputs(types);
     assert_eq!(
-        partition_activations[0].input[2], partition_activations[0].input[3],
+        partition_inputs[2], partition_inputs[3],
         "partition/4's recursive accumulator slots share one convergence class"
     );
     let append_activations = activations
@@ -7222,11 +7207,13 @@ fn compiler2_quicksort_root_closes_with_a_finite_recursive_frontier() {
         "root closure should keep the narrow and widened append/2 recursive activations that hang off qsort/1"
     );
     assert!(
-        append_activations.iter().all(|activation| activation.input.len() == 2),
+        append_activations
+            .iter()
+            .all(|activation| activation.input_len(types) == 2),
         "append/2 should stay keyed on its two inputs"
     );
     assert!(
-        append_activations[0].input != append_activations[1].input,
+        append_activations[0].arrow != append_activations[1].arrow,
         "the two append/2 recursive activations should remain distinct after canonical keying"
     );
     // Honest argument evidence keys non-recursive runtime helpers
@@ -7807,7 +7794,7 @@ fn compiler2_recursive_keying_sees_recursion_through_generated_lambdas() {
     );
 
     assert!(
-        !build_activations[0].input.is_empty(),
+        build_activations[0].input_len(compiler.types_for_test()) != 0,
         "the collapsed build/2 activation should still carry the recursive accumulator slot",
     );
 }

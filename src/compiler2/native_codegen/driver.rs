@@ -892,12 +892,9 @@ fn build_codegen_callable_boundaries<T: Types<Ty = Ty> + ClosureTypes>(
     let mut boundaries = BTreeMap::new();
     for boundary in &program.callable_boundaries {
         let boundary_id = boundary.id().as_u32();
-        let full_tys = boundary
-            .target
-            .activation
-            .input
-            .iter()
-            .copied()
+        let full_tys = t
+            .arrow_params(&boundary.target.activation.arrow)
+            .into_iter()
             .map(|ty| {
                 let erased = t.erase_closure_identity(&ty);
                 t.alpha_normalize_vars(&erased)

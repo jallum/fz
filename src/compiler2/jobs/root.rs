@@ -108,13 +108,12 @@ fn runtime_demand_for_need(need: ExecutableNeed) -> RuntimeDemand {
 /// that both published and gated on a latent activation waited on its own
 /// perpetually-dirty output forever.
 pub(super) fn seed_activation(world: &mut World<'_>, activation: &ActivationKey) -> Result<JobEffects, FatalError> {
-    let _ = world;
     Ok(JobEffects {
         outputs: vec![
             FactKey::Activation(activation.clone()),
             FactKey::ActivationInputs(activation.clone()),
         ],
-        activation_input_contributions: vec![(activation.clone(), activation.input.clone())],
+        activation_input_contributions: vec![(activation.clone(), activation.inputs(world.types()))],
         follow_up: vec![Job::AnalyzeActivation(activation.clone())],
         ..JobEffects::default()
     })

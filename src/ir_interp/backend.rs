@@ -481,7 +481,7 @@ fn step_backend_executable(
             )
         }
         BackendBody::Clauses { clauses, entries, .. } => {
-            let semantic_inputs = bind_executable_inputs(transport, program, executable, &args)?;
+            let semantic_inputs = bind_executable_inputs(transport, program, types, executable, &args)?;
             let clause_index = if clauses.len() == 1 {
                 0
             } else {
@@ -790,6 +790,7 @@ fn step_eval_entry(
             call_args.extend(encode_call_args(
                 transport,
                 program,
+                types,
                 runtime,
                 callee_executable,
                 &env,
@@ -1436,7 +1437,7 @@ fn eval_direct_call(
         .executables
         .get(callee)
         .ok_or_else(|| format!("backend direct callee {} is out of bounds", callee))?;
-    let call_args = encode_call_args(transport, program, runtime, executable, &env, args, 0)?;
+    let call_args = encode_call_args(transport, program, types, runtime, executable, &env, args, 0)?;
     let continuations = match dest {
         ControlDestination::Return => continuations,
         ControlDestination::Deliver(target) => {
@@ -1587,10 +1588,11 @@ fn env_get_value(env: &HashMap<ValueId, BackendBoundValue>, value: ValueId) -> R
 fn bind_executable_inputs(
     transport: &TransportStore,
     program: &BackendProgram,
+    types: &crate::compiler2::Types,
     executable: &BackendExecutable,
     args: &[AnyValue],
 ) -> Result<Vec<Option<BackendBoundValue>>, String> {
-    let semantic_arity = executable.key.activation.input.len();
+    let semantic_arity = executable.key.activation.input_len(types);
     let mut bound = vec![None; semantic_arity];
     let mut lane_index = 0;
     for (semantic_index, shape) in executable_input_shapes(program, executable)? {
@@ -1805,13 +1807,18 @@ fn materialize_call_args(
 fn encode_call_args(
     transport: &TransportStore,
     program: &BackendProgram,
+    types: &crate::compiler2::Types,
     runtime: &mut IrInterpRuntime,
     executable: &BackendExecutable,
     env: &HashMap<ValueId, BackendBoundValue>,
     args: &[crate::compiler2::BackendCallArg],
     semantic_start: usize,
 ) -> Result<Vec<AnyValue>, String> {
-    let expected = executable.key.activation.input.len().saturating_sub(semantic_start);
+    let expected = executable
+        .key
+        .activation
+        .input_len(types)
+        .saturating_sub(semantic_start);
     if args.len() != expected {
         return Err(format!(
             "backend executable {} expected {} semantic call arg(s), got {}",
@@ -2290,7 +2297,7 @@ pub(super) fn resolve_backend_callable_executable(
             (executable.key.need == ExecutableNeed::Value
                 && executable.key.activation.function == FunctionId::from_fn_id(fn_id)
                 && entry.capture_count == captures.len()
-                && executable.key.activation.input.len() == captures.len() + args.len())
+                && executable.key.activation.input_len(types) == captures.len() + args.len())
             .then_some(entry.target)
         })
         .collect::<Vec<_>>();
@@ -2308,9 +2315,10 @@ pub(super) fn resolve_backend_callable_executable(
         .into_iter()
         .filter(|target| {
             let executable = &program.executables[*target];
+            let expected_inputs = executable.key.activation.inputs(types);
             actual_types
                 .iter()
-                .zip(executable.key.activation.input.iter())
+                .zip(expected_inputs.iter())
                 .all(|(&actual, &expected)| {
                     let overlap = types.intersect(actual, expected);
                     !types.is_empty(&overlap)

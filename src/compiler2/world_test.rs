@@ -273,7 +273,7 @@ fn compiler2_activation_inputs_are_distinct_from_the_canonical_activation_key() 
     let int = world.types_mut().int();
     let raw_input = world.types_mut().list(int);
     let key = world.activation_key(root, function, &[raw_input]);
-    let canonical_input = key.input[0];
+    let canonical_input = key.inputs(world.types())[0];
 
     world.complete_job(
         Job::SeedRoot(root),

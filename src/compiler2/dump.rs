@@ -386,7 +386,11 @@ fn render_callsite_summary(world: &World<'_>, summary: &super::semantic::CallSit
 fn activation_sort_key(world: &World<'_>, activation: &ActivationKey) -> (String, Vec<String>) {
     (
         function_label(world, activation.function),
-        activation.input.iter().map(|ty| world.types().display(ty)).collect(),
+        activation
+            .inputs(world.types())
+            .iter()
+            .map(|ty| world.types().display(ty))
+            .collect(),
     )
 }
 
@@ -395,7 +399,7 @@ fn executable_sort_key(world: &World<'_>, executable: &ExecutableKey) -> (String
         function_label(world, executable.activation.function),
         executable
             .activation
-            .input
+            .inputs(world.types())
             .iter()
             .map(|ty| world.types().display(ty))
             .collect(),
@@ -405,7 +409,7 @@ fn executable_sort_key(world: &World<'_>, executable: &ExecutableKey) -> (String
 
 fn activation_label(world: &World<'_>, activation: &ActivationKey) -> String {
     let inputs = activation
-        .input
+        .inputs(world.types())
         .iter()
         .map(|ty| world.types().display(ty))
         .collect::<Vec<_>>()

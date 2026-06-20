@@ -222,6 +222,16 @@ impl<'a> Compiler2<'a> {
         self.world.types().display(&ty)
     }
 
+    #[cfg(test)]
+    pub(crate) fn types_mut_for_test(&mut self) -> &mut super::types::Types {
+        self.world.types_mut()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn types_for_test(&self) -> &super::types::Types {
+        self.world.types()
+    }
+
     /// Drives one root to `NativeProgram` and emits an AOT object through the
     /// shared native backend.
     pub fn compile_root_aot(&mut self, root: RootId, obj_name: &str) -> Result<crate::ir_codegen::AotArtifact, String> {

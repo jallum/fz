@@ -470,11 +470,8 @@ fn main(), do: apply(wrap(fn (x, y) -> x + y end), 1, 2)
         "captured-callable closure call should close semantic analysis",
     );
 
-    let main_activation = super::identity::ActivationKey {
-        root,
-        function: world.root_function(root),
-        input: Vec::new(),
-    };
+    let main_function = world.root_function(root);
+    let main_activation = super::identity::ActivationKey::from_inputs(root, main_function, &[], world.types_mut());
     let main_return = world
         .activation_return(&main_activation)
         .expect("main/0 should have a settled return type at semantic closure");
@@ -1439,7 +1436,7 @@ fn main(), do: make()
             let function_ref = world.function_ref(executable.activation.function);
             function_ref.name.starts_with("#lambda:")
                 && function_ref.arity == 2
-                && executable.activation.input.len() == 2
+                && executable.activation.input_len(world.types()) == 2
         })
         .collect::<Vec<_>>();
     assert!(
@@ -1447,9 +1444,10 @@ fn main(), do: make()
         "semantic closure should include the user reducer lambda executable before transport"
     );
     assert!(
-        reducer_executables
-            .iter()
-            .all(|executable| executable.activation.input[0] == executable.activation.input[1]),
+        reducer_executables.iter().all(|executable| {
+            let inputs = executable.activation.inputs(world.types());
+            inputs[0] == inputs[1]
+        }),
         "semantic closure should hold canonical reducer activations, not type-template inputs: {reducer_executables:?}"
     );
 
@@ -1469,8 +1467,8 @@ fn main(), do: make()
                 flow.direct_surfaces.iter().any(|surface| surface.inputs.len() == 2)
                     && !flow.resolutions.is_empty()
                     && flow.resolutions.iter().all(|resolution| {
-                        resolution.activation.input.len() == 2
-                            && resolution.activation.input[0] == resolution.activation.input[1]
+                        let inputs = resolution.activation.inputs(world.types());
+                        inputs.len() == 2 && inputs[0] == inputs[1]
                     })
             })
         }),
