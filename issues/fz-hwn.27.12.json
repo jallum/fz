@@ -7,9 +7,15 @@
   "id": "fz-hwn.27.12",
   "labels": [],
   "parent": "fz-hwn.27",
+  "comments": [
+    {
+      "text": "Exposed by fz-hwn.27.6 (A). A joined OPAQUE POLYMORPHIC callable — ty (a0,a1)-\u003ea2#add_a | (a0,a1)-\u003ea2#add_b — boxes correctly at its definition (shape_for_local_value sees is_callable=true -\u003e boxed CallableDescr{function:None, capture_lanes:[value_lane]}) but is SUPPLIED scalar downstream: native.rs:2756 encode_runtime_value errors 'attempted to encode callable shape ShapeId(24) for value ValueId(2) from Transport{shape:17, lanes:[Var(2)]}'. The transport plan assigned value 2 inconsistent shapes across producer (boxed 24) and the bound value (scalar Lane 17). Fixture comment documents prior identical regression: 'joined value reached the reducer loop as a scalar word'. VERIFIED independent of phantom_resolution_keys (disabling the ghost filter does not change it) -\u003e it is the core whole-scope addressing of the joined callable's two same-shape/different-tag clauses interacting with the boxing seam (fz-hwn.22 subsystem / [[fz_callable_boxing_seam]]). Lib is 2240/0 green; ONLY this fixture (matrix opaque_fn_value_join build/run/interp) fails. Next: trace where value 2 is bound scalar (transport input vs local-value vs join source position) and unify it to the boxed shape. Repro: target/debug/fz2 build fixtures2/behavior/opaque_fn_value_join.fz -o /tmp/o.o",
+      "timestamp": "2026-06-20T13:14:32Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "Boxed-callable-join value-representation: opaque_fn_value_join supplied scalar",
   "type": "task",
-  "updated_at": "2026-06-20T13:14:20Z"
+  "updated_at": "2026-06-20T13:14:32Z"
 }
