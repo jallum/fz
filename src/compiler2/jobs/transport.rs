@@ -2868,15 +2868,30 @@ fn boundary_return_shapes_for_flow_surfaces(
     surfaces
         .iter()
         .map(|surface| {
-            let mut inputs = capture_tys.to_vec();
-            inputs.extend(surface.inputs.iter().copied());
-            let resolution = flow
-                .resolutions
-                .iter()
-                .find(|resolution| {
-                    resolution.activation.function == flow.function
-                        && resolution.activation.inputs(world.types()).as_slice() == inputs.as_slice()
-                })
+            // The resolution key is the addressed arrow of `capture_tys ++
+            // own_surface`. Match in the addressed frame (fz-hwn.27.6, A): the
+            // capture prefix is the captures addressed alone, and the own-surface
+            // suffix re-addressed standalone is the canonical surface.
+            let addressed_captures = world.types_mut().address_inputs(capture_tys);
+            let mut found = None;
+            for resolution in &flow.resolutions {
+                if resolution.activation.function != flow.function {
+                    continue;
+                }
+                let inputs = resolution.activation.inputs(world.types());
+                if inputs.len() != addressed_captures.len() + surface.inputs.len() {
+                    continue;
+                }
+                if inputs[..addressed_captures.len()] != addressed_captures[..] {
+                    continue;
+                }
+                let own = world.types_mut().address_inputs(&inputs[addressed_captures.len()..]);
+                if own == surface.inputs {
+                    found = Some(resolution);
+                    break;
+                }
+            }
+            let resolution = found
                 .map(|resolution| executable_symbol(resolution, world.types()))
                 .unwrap_or_else(|| {
                     panic!("upstream callable-flow surface has no matching executable resolution: {surface:?}")
@@ -3064,7 +3079,7 @@ fn boundary_runtime_demand(world: &mut World<'_>, ty: Ty) -> RuntimeDemand {
     RuntimeDemand::callable(CallableDemand {
         resolved: clauses
             .into_iter()
-            .map(|clause| CallableSurface::new(clause.args))
+            .map(|clause| CallableSurface::new(clause.args, world.types_mut()))
             .collect::<BTreeSet<_>>(),
         opaque: false,
         escape: true,

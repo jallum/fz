@@ -72,14 +72,21 @@ pub struct ActivationKey {
 }
 
 impl ActivationKey {
-    /// Construct a key from its canonical input vector, interning the half-step
-    /// arrow with the `none()` sentinel result. This is the single container
-    /// step shared by `World::canonical_activation_key` and every other site
-    /// that mints a key from raw inputs (fz-hwn.27.6 swaps the body to a
-    /// whole-scope `address_arrow`).
+    /// Construct a key from a raw input vector by whole-scope addressing: the
+    /// inputs map into the param-address space `(a0, a1, …)` in one shared pass
+    /// (distinct positions stay distinct, repeats share). The arrow is canonical
+    /// the moment it is built, so the interner is the canonical form — there is
+    /// no separate normalization pass. The result side is a constant placeholder:
+    /// a key is minted from inputs ONLY, so there is no result to preserve
+    /// input↔result identity against (that is a source-contract concern — the
+    /// resolver seam, B). Dispatch is on the inputs and nothing keys on the
+    /// result; the activation's real pending return is the `ReturnType` fact
+    /// (`Option`, unknown ≠ `none`). This is the single mint shared by
+    /// `World::canonical_activation_key` and every other key-construction site.
     pub fn from_inputs(root: RootId, function: FunctionId, inputs: &[Ty], types: &mut super::types::Types) -> Self {
-        let sentinel = types.none();
-        let arrow = types.arrow(inputs, sentinel);
+        let addressed = types.address_inputs(inputs);
+        let placeholder_result = types.none();
+        let arrow = types.arrow(&addressed, placeholder_result);
         Self { root, function, arrow }
     }
 
@@ -95,17 +102,12 @@ impl ActivationKey {
         types.arrow_arity(&self.arrow)
     }
 
-    /// Re-alpha-normalize each input independently and rebuild the arrow with
-    /// the sentinel result. Preserves the per-input normalization of the
-    /// half-step; fz-hwn.27.6 replaces this with whole-scope canonicalization.
+    /// Re-canonicalize the key by whole-scope re-addressing of its inputs.
+    /// Idempotent on an already-addressed arrow; carries a key minted elsewhere
+    /// (a flow edge, a cloned summary) back onto the canonical addresses.
     pub fn realpha_inputs(&mut self, types: &mut super::types::Types) {
-        let params: Vec<Ty> = types
-            .arrow_params(&self.arrow)
-            .iter()
-            .map(|ty| types.alpha_normalize_vars(ty))
-            .collect();
-        let sentinel = types.none();
-        self.arrow = types.arrow(&params, sentinel);
+        let params = types.arrow_params(&self.arrow);
+        *self = Self::from_inputs(self.root, self.function, &params, types);
     }
 }
 

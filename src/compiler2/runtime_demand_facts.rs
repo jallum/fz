@@ -2,7 +2,6 @@ use std::collections::HashMap;
 
 use super::identity::ExecutableKey;
 use super::semantic::ExecutableRuntimeDemand;
-use super::types::Types;
 
 #[derive(Debug, Default)]
 pub(crate) struct RuntimeDemandMap {
@@ -18,13 +17,7 @@ impl RuntimeDemandMap {
         self.slots.get(key)
     }
 
-    pub(crate) fn define(
-        &mut self,
-        types: &mut Types,
-        key: ExecutableKey,
-        mut demand: ExecutableRuntimeDemand,
-    ) -> bool {
-        demand.alpha_normalize(types);
+    pub(crate) fn define(&mut self, key: ExecutableKey, demand: ExecutableRuntimeDemand) -> bool {
         let changed = self.slots.get(&key) != Some(&demand);
         self.slots.insert(key, demand);
         changed

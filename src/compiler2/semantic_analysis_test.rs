@@ -1550,8 +1550,12 @@ mod demand_lattice {
     }
 
     fn sample() -> Vec<RuntimeDemand> {
+        let tel = crate::telemetry::ConfiguredTelemetry::new();
+        let mut world = crate::compiler2::World::new(&tel);
         let mut surface_resolved = CallableDemand::default();
-        surface_resolved.resolved.insert(CallableSurface::new(vec![]));
+        surface_resolved
+            .resolved
+            .insert(CallableSurface::new(vec![], world.types_mut()));
         vec![
             RuntimeDemand::ignore(),
             RuntimeDemand::whole(),

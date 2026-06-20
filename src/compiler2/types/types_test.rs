@@ -338,6 +338,32 @@ macro_rules! seam_helper_conformance_tests {
             }
 
             #[test]
+            fn value_lane_repr_collapses_every_callable_to_one_lane() {
+                // A callable value is one word — a code pointer or a closure ref —
+                // regardless of signature, arity, identity, or captures. So every
+                // callable shares one `Value` lane, exactly as every list does.
+                // This is what keeps an opaque join of same-signature functions
+                // (`add_a | add_b`) from splitting across lanes (fz-hwn.27.12).
+                let mut t = $ctor;
+                let int = t.int();
+                let a0 = t.type_var(TypeVarId(0));
+                let a1 = t.type_var(TypeVarId(1));
+
+                let unary = t.arrow(&[int], int); // (int) -> int
+                let binary = t.arrow(&[int, int], int); // (int, int) -> int
+                let poly = t.arrow(&[a0, a1], a0); // (a0, a1) -> a0
+                let join = t.union(unary, binary); // (int)->int | (int,int)->int
+
+                let canon = t.value_lane_repr(unary);
+                assert_eq!(t.value_lane_repr(binary), canon, "arity does not split the callable lane");
+                assert_eq!(t.value_lane_repr(poly), canon, "signature/vars do not split the lane");
+                assert_eq!(t.value_lane_repr(join), canon, "an opaque join shares the one callable lane");
+
+                // A callable lane is its own class, distinct from a scalar.
+                assert_ne!(canon, t.value_lane_repr(int), "callables do not share the scalar lane");
+            }
+
+            #[test]
             fn tuple_projections_project_tuple_shape() {
                 let mut t = $ctor;
                 let one = t.int_lit(1);

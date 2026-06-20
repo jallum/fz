@@ -89,6 +89,16 @@ impl Descr {
         d
     }
 
+    /// The top of the function axis — "any callable", with no other axis. The
+    /// canonical value-lane representative for every callable value: a callable's
+    /// runtime layout is one word (a code pointer or a closure ref) regardless of
+    /// signature or identity, so every callable shares this one lane.
+    pub(super) fn fun_top() -> Self {
+        let mut d = Self::none();
+        d.funcs = vec![Conj::top()];
+        d
+    }
+
     pub(super) fn atom_lit(name: impl Into<String>) -> Self {
         let mut d = Self::none();
         d.atoms = AtomSet::lit(name.into());
@@ -305,6 +315,20 @@ impl Descr {
             .filter(|_| {
                 self.tuples.is_empty() && self.lists.is_empty() && self.resources.is_empty() && self.maps.is_empty()
             })
+    }
+
+    /// True when this type is purely a callable — one or more function clauses
+    /// and nothing on any other axis. Unlike [`pure_arrow`] it admits a UNION of
+    /// clauses (an opaque join of functions). `any` is excluded: it is not
+    /// `axis_free`. This is the layout test for "this value is a callable word"
+    /// driving the value-lane collapse.
+    pub(super) fn is_pure_callable(&self) -> bool {
+        self.axis_free()
+            && !self.funcs.is_empty()
+            && self.tuples.is_empty()
+            && self.lists.is_empty()
+            && self.resources.is_empty()
+            && self.maps.is_empty()
     }
 
     pub(super) fn pure_map(&self) -> Option<&MapSig> {

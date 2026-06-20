@@ -103,6 +103,24 @@ impl Types {
         self.address_arrow_with_env(params, result).0
     }
 
+    /// Address an input vector among ITSELF — params left-to-right, sharing one
+    /// substitution so a variable that recurs across inputs reuses its
+    /// first-occurrence param address. No result slot participates, so the
+    /// inputs map into the param-address space (`a0`, `a1`, …), disjoint from the
+    /// result address `r0`. This is the activation-key / surface canonicalizer:
+    /// the inputs are canonical by construction (whole-scope, one pass), and the
+    /// interner folds two same-shape vectors to one identity — no separate
+    /// normalization pass exists. The key's `r0` result is appended by the
+    /// caller and cannot collide with an input address.
+    pub fn address_inputs(&mut self, inputs: &[Ty]) -> Vec<Ty> {
+        let mut map: HashMap<TypeVarId, TypeVarId> = HashMap::new();
+        inputs
+            .iter()
+            .enumerate()
+            .map(|(i, &p)| self.address_remap(p, &[AddrStep::Param(i as u16)], &mut map))
+            .collect()
+    }
+
     /// As [`address_arrow`](Self::address_arrow), but also returns the
     /// original-id -> address-id map. Callers re-key sidecars (variable bounds,
     /// human names) onto addresses through this map so they stay aligned with

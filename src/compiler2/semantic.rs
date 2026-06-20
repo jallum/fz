@@ -71,17 +71,13 @@ pub struct CallableSurface {
 }
 
 impl CallableSurface {
-    pub fn new(inputs: Vec<Ty>) -> Self {
-        Self { inputs }
-    }
-
-    pub(crate) fn alpha_normalize(&mut self, types: &mut Types) {
-        self.inputs = self
-            .inputs
-            .iter()
-            .copied()
-            .map(|ty| types.alpha_normalize_vars(&ty))
-            .collect();
+    /// A surface is canonical by construction: its inputs are addressed
+    /// whole-scope the moment it is built, so two same-shape surfaces intern to
+    /// one identity and no separate normalization pass exists (fz-hwn.27.6, A).
+    pub fn new(inputs: Vec<Ty>, types: &mut Types) -> Self {
+        Self {
+            inputs: types.address_inputs(&inputs),
+        }
     }
 }
 
@@ -96,9 +92,9 @@ pub struct CallableDemand {
 }
 
 impl CallableDemand {
-    pub fn resolved(inputs: Vec<Ty>) -> Self {
+    pub fn resolved(inputs: Vec<Ty>, types: &mut Types) -> Self {
         let mut resolved = BTreeSet::new();
-        resolved.insert(CallableSurface::new(inputs));
+        resolved.insert(CallableSurface::new(inputs, types));
         Self {
             resolved,
             opaque: false,
@@ -144,15 +140,6 @@ impl CallableDemand {
         self.resolved.extend(other.resolved.iter().cloned());
         self.opaque |= other.opaque;
         self.escape |= other.escape;
-    }
-
-    pub(crate) fn alpha_normalize(&mut self, types: &mut Types) {
-        let mut normalized = BTreeSet::new();
-        for mut surface in self.resolved.clone() {
-            surface.alpha_normalize(types);
-            normalized.insert(surface);
-        }
-        self.resolved = normalized;
     }
 }
 
@@ -207,15 +194,6 @@ impl ShapeDemand {
                 .normalized()
             }
         }
-    }
-
-    pub(crate) fn alpha_normalize(&mut self, types: &mut Types) {
-        if let Self::TupleFields(fields) = self {
-            for field in fields {
-                field.alpha_normalize(types);
-            }
-        }
-        *self = std::mem::take(self).normalized();
     }
 }
 
@@ -294,11 +272,6 @@ impl RuntimeDemand {
         self
     }
 
-    pub(crate) fn alpha_normalize(&mut self, types: &mut Types) {
-        self.shape.alpha_normalize(types);
-        self.callable.alpha_normalize(types);
-    }
-
     /// Ground this demand's callable dispatch surfaces (and those of any tuple
     /// fields) to the concrete runtime shapes, dropping phantom polymorphic
     /// templates that a grounded sibling already covers. See
@@ -336,20 +309,6 @@ pub struct CallableFlowFact {
 pub struct CallableFlowEdge {
     pub surface: CallableSurface,
     pub resolution: ExecutableKey,
-}
-
-impl CallableFlowFact {
-    pub(crate) fn alpha_normalize(&mut self, types: &mut Types) {
-        self.direct_surfaces = alpha_normalized_surfaces(types, &self.direct_surfaces);
-        self.first_class_surfaces = alpha_normalized_surfaces(types, &self.first_class_surfaces);
-        for edge in self.direct_edges.iter_mut().chain(self.first_class_edges.iter_mut()) {
-            edge.surface.alpha_normalize(types);
-            edge.resolution.activation.realpha_inputs(types);
-        }
-        for resolution in &mut self.resolutions {
-            resolution.activation.realpha_inputs(types);
-        }
-    }
 }
 
 /// Resolve callable `surfaces` to the ground runtime dispatch shapes the program
@@ -405,15 +364,6 @@ pub(crate) fn ground_dispatch_surfaces(
     grounded
 }
 
-fn alpha_normalized_surfaces(types: &mut Types, surfaces: &BTreeSet<CallableSurface>) -> BTreeSet<CallableSurface> {
-    let mut normalized = BTreeSet::new();
-    for mut surface in surfaces.clone() {
-        surface.alpha_normalize(types);
-        normalized.insert(surface);
-    }
-    normalized
-}
-
 /// The full runtime-demand projection for one analyzed executable.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ExecutableRuntimeDemand {
@@ -426,29 +376,6 @@ pub struct ExecutableRuntimeDemand {
 }
 
 impl ExecutableRuntimeDemand {
-    pub(crate) fn alpha_normalize(&mut self, types: &mut Types) {
-        self.return_demand.alpha_normalize(types);
-        for demand in &mut self.input_demands {
-            demand.alpha_normalize(types);
-        }
-        for demand in self.value_demands.values_mut() {
-            demand.alpha_normalize(types);
-        }
-        for demands in self.entry_capture_demands.values_mut() {
-            for demand in demands {
-                demand.alpha_normalize(types);
-            }
-        }
-        for demands in self.call_arg_demands.values_mut() {
-            for demand in demands {
-                demand.alpha_normalize(types);
-            }
-        }
-        for flow in self.callable_flows.values_mut() {
-            flow.alpha_normalize(types);
-        }
-    }
-
     /// Ground every callable dispatch surface this demand carries to the concrete
     /// runtime shapes the program invokes. A boundary published from a surface is
     /// a runtime dispatch site, so a phantom polymorphic template that a grounded
@@ -982,14 +909,14 @@ mod tests {
         }
     }
 
-    fn resolved_surface(tys: &[Ty]) -> CallableDemand {
-        CallableDemand::resolved(tys.to_vec())
+    fn resolved_surface(tys: &[Ty], types: &mut Types) -> CallableDemand {
+        CallableDemand::resolved(tys.to_vec(), types)
     }
 
     use super::super::types::TypeVarId;
 
-    fn surface(tys: &[Ty]) -> CallableSurface {
-        CallableSurface::new(tys.to_vec())
+    fn surface(tys: &[Ty], types: &mut Types) -> CallableSurface {
+        CallableSurface::new(tys.to_vec(), types)
     }
 
     #[test]
@@ -1005,12 +932,17 @@ mod tests {
         let a0 = world.types_mut().type_var(TypeVarId(0));
         let a1 = world.types_mut().type_var(TypeVarId(1));
 
-        let first_class = BTreeSet::from([surface(&[a0, a1])]);
-        let direct = BTreeSet::from([surface(&[atom, int]), surface(&[a0, a0]), surface(&[a0, a1])]);
+        let first_class = BTreeSet::from([surface(&[a0, a1], world.types_mut())]);
+        let direct = BTreeSet::from([
+            surface(&[atom, int], world.types_mut()),
+            surface(&[a0, a0], world.types_mut()),
+            surface(&[a0, a1], world.types_mut()),
+        ]);
+        let expected = BTreeSet::from([surface(&[atom, int], world.types_mut())]);
 
         assert_eq!(
             ground_dispatch_surfaces(world.types(), &first_class, &direct),
-            BTreeSet::from([surface(&[atom, int])]),
+            expected,
             "a polymorphic publication template resolves to its single ground dispatch shape; the phantom templates publish no boundary",
         );
     }
@@ -1025,11 +957,15 @@ mod tests {
         let atom = world.types_mut().atom();
         let a0 = world.types_mut().type_var(TypeVarId(0));
 
-        let resolved = BTreeSet::from([surface(&[atom, int]), surface(&[a0, a0])]);
+        let resolved = BTreeSet::from([
+            surface(&[atom, int], world.types_mut()),
+            surface(&[a0, a0], world.types_mut()),
+        ]);
+        let expected = BTreeSet::from([surface(&[atom, int], world.types_mut())]);
 
         assert_eq!(
             ground_dispatch_surfaces(world.types(), &resolved, &resolved),
-            BTreeSet::from([surface(&[atom, int])]),
+            expected,
             "a ground dispatch shape exists, so the recurring-var phantom is dropped rather than published as its own boundary",
         );
     }
@@ -1044,7 +980,7 @@ mod tests {
         let a0 = world.types_mut().type_var(TypeVarId(0));
         let a1 = world.types_mut().type_var(TypeVarId(1));
 
-        let template = BTreeSet::from([surface(&[a0, a1])]);
+        let template = BTreeSet::from([surface(&[a0, a1], world.types_mut())]);
 
         assert_eq!(
             ground_dispatch_surfaces(world.types(), &template, &template),
@@ -1059,11 +995,12 @@ mod tests {
         let mut world = World::new(&tel);
         let int = world.types_mut().int();
 
-        let joined = RuntimeDemand::ignore().join(&RuntimeDemand::callable(resolved_surface(&[int])));
+        let joined =
+            RuntimeDemand::ignore().join(&RuntimeDemand::callable(resolved_surface(&[int], world.types_mut())));
 
         assert_eq!(
             joined,
-            RuntimeDemand::callable(CallableDemand::resolved(vec![int])),
+            RuntimeDemand::callable(CallableDemand::resolved(vec![int], world.types_mut())),
             "bottom must contribute nothing to callable demand",
         );
     }
@@ -1074,13 +1011,13 @@ mod tests {
         let mut world = World::new(&tel);
         let int = world.types_mut().int();
 
-        let joined =
-            RuntimeDemand::callable(resolved_surface(&[int])).join(&RuntimeDemand::callable(CallableDemand::escaped()));
+        let joined = RuntimeDemand::callable(resolved_surface(&[int], world.types_mut()))
+            .join(&RuntimeDemand::callable(CallableDemand::escaped()));
 
         assert_eq!(
             joined,
             RuntimeDemand::callable(CallableDemand {
-                resolved: BTreeSet::from([CallableSurface::new(vec![int])]),
+                resolved: BTreeSet::from([CallableSurface::new(vec![int], world.types_mut())]),
                 opaque: false,
                 escape: true,
             }),
@@ -1103,16 +1040,22 @@ mod tests {
         let int = world.types_mut().int();
         let atom = world.types_mut().atom();
 
-        let joined = RuntimeDemand::callable(resolved_surface(&[int])).join(&RuntimeDemand::callable(CallableDemand {
-            resolved: BTreeSet::from([CallableSurface::new(vec![atom])]),
+        let left = RuntimeDemand::callable(resolved_surface(&[int], world.types_mut()));
+        let right = RuntimeDemand::callable(CallableDemand {
+            resolved: BTreeSet::from([CallableSurface::new(vec![atom], world.types_mut())]),
             opaque: false,
             escape: true,
-        }));
+        });
+        let joined = left.join(&right);
 
+        let expected_resolved = BTreeSet::from([
+            CallableSurface::new(vec![atom], world.types_mut()),
+            CallableSurface::new(vec![int], world.types_mut()),
+        ]);
         assert_eq!(
             joined,
             RuntimeDemand::callable(CallableDemand {
-                resolved: BTreeSet::from([CallableSurface::new(vec![atom]), CallableSurface::new(vec![int]),]),
+                resolved: expected_resolved,
                 opaque: false,
                 escape: true,
             }),
@@ -1128,7 +1071,7 @@ mod tests {
         let executable = test_executable(&mut world, "joined");
         let int = world.types_mut().int();
         let shape_demand = RuntimeDemand::tuple_fields(vec![RuntimeDemand::whole(), RuntimeDemand::ignore()]);
-        let callable_demand = RuntimeDemand::callable(resolved_surface(&[int]));
+        let callable_demand = RuntimeDemand::callable(resolved_surface(&[int], world.types_mut()));
 
         let first = demands.conclude(
             &mut (),

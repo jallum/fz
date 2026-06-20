@@ -200,6 +200,14 @@ impl Types {
         let list_top = self.list(any);
         let repr = if !self.is_empty(&ty) && self.is_subtype(&ty, &list_top) {
             list_top
+        } else if self.descr(&ty).is_pure_callable() {
+            // A callable value is one word — a code pointer or a closure ref —
+            // regardless of its signature, identity, or captures. Collapse every
+            // callable to one lane, exactly as lists collapse to `list(any)`, so
+            // two representations of the same callable (e.g. an opaque join of
+            // same-signature functions, addressed vs not) never split across
+            // lanes (fz-hwn.27.12). The contract stays out-of-band in boundaries.
+            self.intern(Descr::fun_top())
         } else {
             ty
         };
@@ -575,6 +583,31 @@ impl Types {
     /// variables is an inference template, not a runtime fact.
     pub fn key_has_vars(&self, key: &[Ty]) -> bool {
         key.iter().any(|ty| self.has_vars(ty))
+    }
+
+    /// True when this type is a *value template* — a position whose runtime value
+    /// has no concrete representation: a bare type variable, or a tuple one of
+    /// whose fields is a bare type variable. Narrower than `has_vars`: a callable
+    /// `(a)->a` or a `list(a)` is a representable value (a pointer / a list), so
+    /// inner variables do not make the value itself a template. The cheap, sound,
+    /// syntactic approximation of meaningful-variable groundness — the
+    /// calculator's authority on "can this be a runtime value" (fz-hwn.23).
+    pub fn is_value_template(&self, ty: &Ty) -> bool {
+        let d = self.descr(ty);
+        if pure_var_ids(d).is_some() {
+            return true;
+        }
+        match d.pure_tuple() {
+            Some(tuple) => tuple.elems.iter().any(|elem| pure_var_ids(self.descr(elem)).is_some()),
+            None => false,
+        }
+    }
+
+    /// True when any input position of `key` is a value template — the key names
+    /// an activation that cannot become a runtime/backend executable because an
+    /// argument would carry an unrepresentable bare-variable value.
+    pub fn key_is_value_template(&self, key: &[Ty]) -> bool {
+        key.iter().any(|ty| self.is_value_template(ty))
     }
 
     pub fn is_equivalent(&self, a: &Ty, b: &Ty) -> bool {

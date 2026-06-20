@@ -765,10 +765,11 @@ impl<'a> World<'a> {
     ) -> HashMap<ActivationKey, Vec<Ty>> {
         let mut next = HashMap::<ActivationKey, Vec<Ty>>::new();
         for (activation, inputs) in contributions {
-            let normalized = inputs
-                .into_iter()
-                .map(|input| self.types.alpha_normalize_vars(&input))
-                .collect::<Vec<_>>();
+            // Canonicalize the input evidence the same whole-scope way the key is
+            // built (fz-hwn.27.6, A): one shared addressing pass, so distinct
+            // observed vars stay distinct and the evidence shares the key's
+            // canonical form. Idempotent on already-addressed contributions.
+            let normalized = self.types.address_inputs(&inputs);
             match next.entry(activation) {
                 std::collections::hash_map::Entry::Vacant(entry) => {
                     entry.insert(normalized);
@@ -819,8 +820,7 @@ impl<'a> World<'a> {
         contributions: Vec<(ExecutableKey, RuntimeDemand)>,
     ) -> HashMap<ExecutableKey, RuntimeDemand> {
         let mut next = HashMap::<ExecutableKey, RuntimeDemand>::new();
-        for (executable, mut demand) in contributions {
-            demand.alpha_normalize(&mut self.types);
+        for (executable, demand) in contributions {
             next.entry(executable)
                 .and_modify(|current| current.join_assign(&demand))
                 .or_insert(demand);
@@ -836,7 +836,7 @@ impl<'a> World<'a> {
     }
 
     pub(crate) fn define_runtime_demand(&mut self, key: ExecutableKey, demand: ExecutableRuntimeDemand) -> bool {
-        self.runtime_demands.define(&mut self.types, key, demand)
+        self.runtime_demands.define(key, demand)
     }
 
     pub(crate) fn runtime_demand(&self, key: &ExecutableKey) -> Option<&ExecutableRuntimeDemand> {
@@ -883,12 +883,9 @@ impl<'a> World<'a> {
 
     pub fn define_callsite_summary(&mut self, key: CallSiteKey, mut summary: CallSiteSummary) -> bool {
         for target in &mut summary.targets {
-            target.surface_inputs = target
-                .surface_inputs
-                .iter()
-                .copied()
-                .map(|input| self.types.alpha_normalize_vars(&input))
-                .collect();
+            // Whole-scope addressing, matching the key and surfaces (fz-hwn.27.6,
+            // A): one shared pass over the surface inputs, not per-position.
+            target.surface_inputs = self.types.address_inputs(&target.surface_inputs);
             if let Some(activation) = &mut target.activation {
                 activation.realpha_inputs(&mut self.types);
             }
@@ -922,10 +919,7 @@ impl<'a> World<'a> {
         self.callsites.get(key)
     }
 
-    pub(crate) fn define_semantic_closure(&mut self, root: RootId, mut closure: SemanticClosure) -> bool {
-        for demand in closure.runtime_demands.values_mut() {
-            demand.alpha_normalize(&mut self.types);
-        }
+    pub(crate) fn define_semantic_closure(&mut self, root: RootId, closure: SemanticClosure) -> bool {
         let changed = self.semantic_closures.define(root, closure);
         let closure = self
             .semantic_closures
@@ -2715,10 +2709,13 @@ impl<'a> World<'a> {
             .recursive
             .get(function)
             .expect("activation keying should wait for recursive facts before activation");
-        // Numeric literals no longer exist in the lattice, so inputs arrive
-        // already kind-typed; canonicalization is keying + normalization.
-        let canonical = inputs.to_vec();
-        let key_inputs = canonical
+        // Bounded specialization (fz-y6w): widen recursive non-dispatch slots to
+        // their convergence class so the ascent settles. The per-input alpha
+        // pass is GONE — `from_inputs` addresses the whole input vector in one
+        // pass, so two distinct inference vars `[Ty27,Ty28]` address to distinct
+        // `[a0,a1]` and never collapse to the phantom `[a0,a0]`. Numeric literals
+        // already left the lattice, so inputs arrive kind-typed.
+        let key_inputs = inputs
             .iter()
             .enumerate()
             .map(|(slot, input)| {
@@ -2729,16 +2726,6 @@ impl<'a> World<'a> {
                 }
             })
             .collect::<Vec<_>>();
-        let key_inputs: Vec<Ty> = key_inputs
-            .into_iter()
-            .map(|input| self.types.alpha_normalize_vars(&input))
-            .collect();
-        // Half-step (fz-hwn.27.11): carry the canonical inputs as the params of
-        // an interned arrow so the key speaks the one arrow type language. The
-        // result side is a `none()` sentinel — collision-free (no vars) and read
-        // by no consumer — until fz-hwn.27.6 swaps construction to whole-scope
-        // `address_arrow` with the real addressed result `r0`. Arrow interning
-        // is injective in its params, so identity classes are bit-identical.
         super::identity::ActivationKey::from_inputs(root, function, &key_inputs, &mut self.types)
     }
 

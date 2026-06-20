@@ -423,7 +423,7 @@ fn derive_callable_flow_facts_for_executable(
             &callable_flows.first_class_surfaces(value),
             &direct_surfaces,
         );
-        let direct_edges = callable_flow_resolution_edges(
+        let mut direct_edges = callable_flow_resolution_edges(
             world,
             executable,
             facts,
@@ -433,7 +433,7 @@ fn derive_callable_flow_facts_for_executable(
             waits,
             follow_up,
         );
-        let first_class_edges = callable_flow_resolution_edges(
+        let mut first_class_edges = callable_flow_resolution_edges(
             world,
             executable,
             facts,
@@ -443,6 +443,16 @@ fn derive_callable_flow_facts_for_executable(
             waits,
             follow_up,
         );
+        // A resolution that is a value-template phantom — a bare-variable
+        // activation that a ground sibling resolution already covers — is not a
+        // real runtime target (fz-hwn.23), exactly as `ground_dispatch_surfaces`
+        // drops a phantom surface beside its ground dispatch. A genuinely
+        // polymorphic escape (no ground sibling) is kept: it is boxed, not
+        // monomorphized. Drop the phantom so it is never demanded as a latent
+        // executable and never reaches the backend.
+        let phantoms = phantom_resolution_keys(world, direct_edges.iter().chain(first_class_edges.iter()));
+        direct_edges.retain(|edge| !phantoms.contains(&edge.resolution));
+        first_class_edges.retain(|edge| !phantoms.contains(&edge.resolution));
         let mut resolutions = Vec::new();
         extend_unique(
             &mut resolutions,
@@ -487,8 +497,12 @@ fn callable_boundary_return_demand_contributions(
                 if resolution.activation.function != flow.function || resolution_inputs.len() < surface.inputs.len() {
                     continue;
                 }
+                // Match `surface` as the own-surface suffix in the addressed
+                // frame: re-address the suffix standalone and compare to the
+                // canonical surface (fz-hwn.27.6, A).
                 let offset = resolution_inputs.len() - surface.inputs.len();
-                if resolution_inputs[offset..] != surface.inputs {
+                let own_surface = world.types_mut().address_inputs(&resolution_inputs[offset..]);
+                if own_surface != surface.inputs {
                     continue;
                 }
                 let surface_return_ty = callable_surface_return_ty(world, facts, *value, surface);
@@ -1420,25 +1434,28 @@ fn propagate_lambda_capture_demands(
     // the producer executable by capture-type prefix recovers that proven surface;
     // gating on a non-empty `resolved` would discard it and let `f` reach
     // transport as a surface-less first-class demand.
+    // A callee activation key is the whole-scope addressed arrow of
+    // `capture_tys ++ own_surface`. Match in that addressed frame (fz-hwn.27.6,
+    // A): by the left-to-right property the addressed capture prefix is just the
+    // captures addressed alone, and re-addressing the own-surface suffix
+    // standalone yields the same canonical surface the resolved set carries.
+    let addressed_captures = world.types_mut().address_inputs(&capture_types);
     let mut matched = false;
     for (callee, callee_demand) in all_demands {
         if callee.activation.root != executable.activation.root || callee.activation.function != function {
             continue;
         }
         let callee_inputs = callee.activation.inputs(world.types());
-        if callee_inputs.len() < capture_types.len() {
+        if callee_inputs.len() < addressed_captures.len() {
             continue;
         }
-        if &callee_inputs[..capture_types.len()] != capture_types.as_slice() {
+        if callee_inputs[..addressed_captures.len()] != addressed_captures[..] {
             continue;
         }
-        let own_params = &callee_inputs[capture_types.len()..];
-        if !callable.resolved.is_empty()
-            && !callable
-                .resolved
-                .iter()
-                .any(|surface| surface.inputs.as_slice() == own_params)
-        {
+        let own_params = world
+            .types_mut()
+            .address_inputs(&callee_inputs[addressed_captures.len()..]);
+        if !callable.resolved.is_empty() && !callable.resolved.iter().any(|surface| surface.inputs == own_params) {
             continue;
         }
         matched = true;
@@ -1496,7 +1513,7 @@ fn callable_value_type_demand(world: &mut World<'_>, facts: &ExecutableFacts, va
     let ty = facts.analysis.value_types.get(&value).copied()?;
     let mut callable = CallableDemand::default();
     for clause in world.types_mut().callable_value_clauses(&ty)? {
-        callable.join_assign(&CallableDemand::resolved(clause.args));
+        callable.join_assign(&CallableDemand::resolved(clause.args, world.types_mut()));
     }
     (!callable.resolved.is_empty()).then(|| RuntimeDemand::callable(callable))
 }
@@ -1643,18 +1660,18 @@ fn ground_first_class_callable_surface(world: &mut World<'_>, demand: &mut Runti
     let Some(clauses) = world.types_mut().callable_clauses(&boundary_ty) else {
         return;
     };
-    demand
-        .callable
-        .resolved
-        .extend(clauses.into_iter().map(|clause| CallableSurface::new(clause.args)));
+    demand.callable.resolved.extend(
+        clauses
+            .into_iter()
+            .map(|clause| CallableSurface::new(clause.args, world.types_mut())),
+    );
 }
 
 fn callable_surfaces_for_ty(world: &mut World<'_>, ty: Ty) -> Option<BTreeSet<CallableSurface>> {
-    let surfaces = world
-        .types_mut()
-        .callable_clauses(&ty)?
+    let clauses = world.types_mut().callable_clauses(&ty)?;
+    let surfaces = clauses
         .into_iter()
-        .map(|clause| CallableSurface::new(clause.args))
+        .map(|clause| CallableSurface::new(clause.args, world.types_mut()))
         .collect::<BTreeSet<_>>();
     (!surfaces.is_empty()).then_some(surfaces)
 }
@@ -1728,7 +1745,7 @@ fn boundary_runtime_demand(world: &mut World<'_>, ty: Ty) -> RuntimeDemand {
     // body at those exact argument lanes.
     let resolved = clauses
         .into_iter()
-        .map(|clause| CallableSurface::new(clause.args))
+        .map(|clause| CallableSurface::new(clause.args, world.types_mut()))
         .collect::<BTreeSet<_>>();
     RuntimeDemand::callable(CallableDemand {
         resolved,
@@ -1851,23 +1868,26 @@ fn closure_callee_demand(
             opaque: true,
             escape: false,
         };
-        demand.resolved.insert(CallableSurface::new(
-            args.iter()
-                .map(|arg| {
-                    facts
-                        .analysis
-                        .value_types
-                        .get(&arg.value)
-                        .copied()
-                        .unwrap_or_else(|| world.types_mut().any())
-                })
-                .collect(),
-        ));
+        let inputs: Vec<Ty> = args
+            .iter()
+            .map(|arg| {
+                facts
+                    .analysis
+                    .value_types
+                    .get(&arg.value)
+                    .copied()
+                    .unwrap_or_else(|| world.types_mut().any())
+            })
+            .collect();
+        demand.resolved.insert(CallableSurface::new(inputs, world.types_mut()));
         return demand;
     };
     let mut demand = CallableDemand::default();
     for target in &summary.targets {
-        demand.join_assign(&CallableDemand::resolved(target.surface_inputs.clone()));
+        demand.join_assign(&CallableDemand::resolved(
+            target.surface_inputs.clone(),
+            world.types_mut(),
+        ));
     }
     let exact_local_target = matches!(
         summary.targets.as_slice(),
@@ -1961,6 +1981,42 @@ fn callable_flow_resolution_edges(
         .cloned()
         .zip(resolutions)
         .map(|(surface, resolution)| CallableFlowEdge { surface, resolution })
+        .collect()
+}
+
+/// Value-template resolutions that a ground sibling already covers — phantoms in
+/// the sense of [`ground_dispatch_surfaces`], lifted to the executable level. A
+/// resolution whose activation carries a bare-variable argument is a runtime
+/// non-fact when another resolution of the same function and need has concrete
+/// inputs that instantiate it; the boxed call resolves to the ground sibling, so
+/// the template must not be demanded as a latent executable (fz-hwn.23). With no
+/// ground sibling the template is a genuinely polymorphic escape and stays.
+fn phantom_resolution_keys<'a>(
+    world: &World<'_>,
+    edges: impl Iterator<Item = &'a CallableFlowEdge>,
+) -> HashSet<ExecutableKey> {
+    let types = world.types();
+    let resolutions: Vec<(ExecutableKey, Vec<Ty>)> = edges
+        .map(|edge| {
+            let inputs = edge.resolution.activation.inputs(types);
+            (edge.resolution.clone(), inputs)
+        })
+        .collect();
+    let ground: Vec<&(ExecutableKey, Vec<Ty>)> = resolutions
+        .iter()
+        .filter(|(_, inputs)| !types.key_has_vars(inputs))
+        .collect();
+    resolutions
+        .iter()
+        .filter(|(key, inputs)| {
+            types.key_is_value_template(inputs)
+                && ground.iter().any(|(candidate, candidate_inputs)| {
+                    candidate.need == key.need
+                        && candidate.activation.function == key.activation.function
+                        && types.key_list_subsumes(candidate_inputs, inputs)
+                })
+        })
+        .map(|(key, _)| key.clone())
         .collect()
 }
 
