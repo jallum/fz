@@ -1,7 +1,8 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-hwn.27.4"
+    "fz-hwn.27.4",
+    "fz-hwn.27.7"
   ],
   "blocks": [],
   "created": "2026-06-20T00:08:51Z",
@@ -13,5 +14,5 @@
   "status": "open",
   "title": "Collapse contract.rs witness/substitution walk onto the extended Types calculator",
   "type": "task",
-  "updated_at": "2026-06-20T00:09:27Z"
+  "updated_at": "2026-06-20T00:09:28Z"
 }
