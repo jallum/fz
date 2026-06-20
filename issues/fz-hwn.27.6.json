@@ -23,11 +23,15 @@
     {
       "text": "EMPIRICAL FINDING (probe at HEAD, reverted): applying whole-scope address_inputs at canonical_activation_key alone (the documented conflation site) cascades to ~30+ failing tests across closures, enum_reduce, native codegen, and fixture-fact SNAPSHOTS -- confirming the proposal's 'self-consistent wrongness / one-site fix de-synchronizes.' Decisive structural result: compiler2_abi_ready_matches_direct_callable_captures_by_canonical_activation_key and the enum_reduce/native failures are tied to CAPTURE IDENTITY. Since activation key inputs ARE capture_tys ++ surface.inputs (runtime_demand.rs:1428), re-keying inputs without the capture-slot model breaks capture matching. Therefore 27.6 (re-key) + 27.7 (convergence_collapse) + 27.8 (captures-as-addressed-slots) are ONE ATOMIC COMMIT (CLAUDE.md: 'if two steps cannot be performed atomically they are one step'), and that commit must also: switch every comparable normalization site together (CallableSurface::alpha_normalize + the 6 delegating sites + normalize_contributions), and update ~30 tests/snapshots. The address_inputs primitive (whole-scope canonicalization) is trivial (5 lines, in the 27.6 probe) and ready to re-add when the atomic swing is executed. Machinery (27.1-27.4) is complete and green; this is the integration swing.",
       "timestamp": "2026-06-20T00:54:42Z"
+    },
+    {
+      "text": "RESCOPED as STEP 2b (the swing), now blocked by the half-step fz-hwn.27.11 which threads arrow: Ty with a none() sentinel result and projects the input side everywhere. This ticket becomes a PURELY SEMANTIC diff: replace the construction with whole-scope address_arrow(collapsed_inputs, fresh) -\u003e (a0,a1,..) -\u003e r0 (real r0 replaces the none() sentinel); switch the capture-prefix (runtime_demand.rs:1431), offset (1590), evidence (normalize_contributions world.rs:768), and callsite (define_callsite_summary world.rs:893) sites to ADDRESSED comparison -- relying on the left-to-right property address(full)[..k]==address(captures). Route matching through match_arrow; delete per-position normalizers; ~30 tests/snapshots move; fz-hwn.23 phantom (a0,a0) falls out. Folds 27.7 (convergence_collapse) + 27.8 (captures-as-addressed-slots) into this swing per the established atomicity finding.",
+      "timestamp": "2026-06-20T10:16:30Z"
     }
   ],
   "priority": 1,
   "status": "in_progress",
   "title": "Re-key ActivationKey on the arrow: arrow: Ty (result explicit), whole-scope canonicalization at the single mint",
   "type": "task",
-  "updated_at": "2026-06-20T10:16:29Z"
+  "updated_at": "2026-06-20T10:16:30Z"
 }
