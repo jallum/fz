@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-20T21:09:12Z",
+  "description": "Remove the legacy fz compiler entrypoint and old frontend/planner/codegen compiler surface now that compiler2 owns the public CLI path. Keep shared neutral infrastructure only where compiler2 still depends on it; update tests and docs so stale old-world guidance is gone.",
+  "id": "fz-jmi",
+  "labels": [],
+  "priority": 1,
+  "status": "open",
+  "title": "Delete old-world compiler",
+  "type": "task",
+  "updated_at": "2026-06-20T21:09:12Z"
+}
