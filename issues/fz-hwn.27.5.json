@@ -11,9 +11,15 @@
   "id": "fz-hwn.27.5",
   "labels": [],
   "parent": "fz-hwn.27",
+  "comments": [
+    {
+      "text": "Predicate question SETTLED against real lowering (probe): the non-materializable value is α0 (bare var), is_value_template=true; key inputs are bare vars, key_is_value_template=true. The cheap SYNTACTIC is_value_template suffices; mvar NOT required — the only types whose representation depends on a ground var are exactly what it catches (bare var = whole value; tuple w/ bare-var field). list(α) is a pointer, (α)-\u003eα is one word (fz-hwn.27.12) — inner vars representation-irrelevant. Scope here = pin the predicate (flag). The CURE (frame unification) is retargeted onto fz-hwn.27.8. Display smell filed as fz-hwn.27.13.",
+      "timestamp": "2026-06-20T16:13:30Z"
+    }
+  ],
   "priority": 1,
   "status": "in_progress",
   "title": "Pin the backend-boundary value-template predicate by test (is_value_template vs mvar)",
   "type": "task",
-  "updated_at": "2026-06-20T15:24:04Z"
+  "updated_at": "2026-06-20T16:13:30Z"
 }
