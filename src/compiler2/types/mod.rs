@@ -470,6 +470,39 @@ impl Types {
         }
     }
 
+    /// Derive a recursive activation's dispatch KEY from its precise evidence
+    /// arrow by widening every NON-DISPATCH parameter slot (`mask[i] == false`)
+    /// to its convergence class, so the recursive ascent settles (fz-y6w bounded
+    /// specialization: `list(int)` and `list(any)` share one recursive key).
+    /// Dispatch slots and the result are preserved exactly.
+    ///
+    /// This is ONE whole-arrow operation on the interned arrow (fz-hwn.27.7) — it
+    /// replaces a per-input `convergence_class` pre-pass run before the inputs
+    /// were addressed. The two agree because `convergence_class` only collapses
+    /// pure lists (`list(τ) -> list(any)`), which is invariant under the
+    /// variable-addressing `from_inputs` applies. The arrow remains the PRECISE
+    /// evidence surface (carried by `ActivationInputs`); the collapse is a derived
+    /// dispatch key, and key != evidence is intentional.
+    pub fn convergence_collapse(&mut self, arrow: Ty, mask: &[bool]) -> Ty {
+        let Some(sig) = self.descr(&arrow).pure_arrow() else {
+            return arrow;
+        };
+        let params = sig.args.clone();
+        let ret = sig.ret;
+        let collapsed = params
+            .iter()
+            .enumerate()
+            .map(|(slot, param)| {
+                if mask.get(slot).copied().unwrap_or(true) {
+                    *param
+                } else {
+                    self.convergence_class(param)
+                }
+            })
+            .collect::<Vec<_>>();
+        self.arrow(&collapsed, ret)
+    }
+
     pub fn union(&mut self, a: Ty, b: Ty) -> Ty {
         let d = {
             let cx = self.ctx();

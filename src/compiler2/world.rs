@@ -2768,29 +2768,25 @@ impl<'a> World<'a> {
         let mask = self
             .dispatch_masks
             .get(function)
-            .expect("activation keying should wait for dispatch mask facts before activation");
+            .expect("activation keying should wait for dispatch mask facts before activation")
+            .clone();
         let recursive = *self
             .recursive
             .get(function)
             .expect("activation keying should wait for recursive facts before activation");
-        // Bounded specialization (fz-y6w): widen recursive non-dispatch slots to
-        // their convergence class so the ascent settles. The per-input alpha
-        // pass is GONE — `from_inputs` addresses the whole input vector in one
-        // pass, so two distinct inference vars `[Ty27,Ty28]` address to distinct
-        // `[a0,a1]` and never collapse to the phantom `[a0,a0]`. Numeric literals
-        // already left the lattice, so inputs arrive kind-typed.
-        let key_inputs = inputs
-            .iter()
-            .enumerate()
-            .map(|(slot, input)| {
-                if recursive && !mask.get(slot).copied().unwrap_or(true) {
-                    self.types.convergence_class(input)
-                } else {
-                    *input
-                }
-            })
-            .collect::<Vec<_>>();
-        super::identity::ActivationKey::from_inputs(root, function, &key_inputs, &mut self.types)
+        // The arrow is the PRECISE evidence: address the whole input vector in one
+        // pass (fz-hwn.27.6), so two distinct inference vars `[Ty27,Ty28]` address
+        // to distinct `[a0,a1]` and never collapse to the phantom `[a0,a0]`.
+        let key = super::identity::ActivationKey::from_inputs(root, function, inputs, &mut self.types);
+        if !recursive {
+            return key;
+        }
+        // Bounded specialization (fz-y6w): the dispatch KEY is a whole-arrow
+        // convergence collapse of that evidence — recursive non-dispatch slots
+        // widen to their convergence class so the ascent settles. Key != evidence
+        // is intentional; the precise arrow stays in `ActivationInputs`.
+        let arrow = self.types.convergence_collapse(key.arrow, &mask);
+        super::identity::ActivationKey { arrow, ..key }
     }
 
     pub(crate) fn closure_ty(&mut self, function: FunctionId, captures: Vec<Ty>) -> Ty {

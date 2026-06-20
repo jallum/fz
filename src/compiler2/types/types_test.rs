@@ -833,6 +833,26 @@ macro_rules! semantic_helper_conformance_tests {
             }
 
             #[test]
+            fn convergence_collapse_widens_only_non_dispatch_slots_of_the_arrow() {
+                // The dispatch KEY of a recursive activation is a whole-arrow
+                // collapse of its precise evidence arrow (fz-hwn.27.7): a
+                // non-dispatch list slot widens to its convergence class so the
+                // recursive ascent settles, while dispatch slots and the result
+                // are preserved exactly. Here slot 0 dispatches and slot 1 does
+                // not, so only slot 1's `list(int)` collapses to `list(any)`.
+                let mut t = $ctor;
+                let int = t.int();
+                let list_int = t.list(int.clone());
+                let arrow = t.arrow(&[list_int.clone(), list_int.clone()], int.clone());
+                let collapsed = t.convergence_collapse(arrow, &[true, false]);
+
+                let any = t.any();
+                let list_any = t.list(any);
+                let expected = t.arrow(&[list_int, list_any], int);
+                assert!(t.is_equivalent(&collapsed, &expected));
+            }
+
+            #[test]
             fn refine_widen_recurses_into_tuple_fields() {
                 let mut t = $ctor;
                 let empty = t.empty_list();
