@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-20T00:08:33Z",
+  "description": "STEP 2 (re-key on the arrow). Code-review finding 2. Captures (capture_tys ++ surface.inputs) are NOT part of the source arrow; ~50 sites slice .input positionally (capture/param split at runtime_demand.rs:1428-1434, callable_flow_resolutions builds inputs = capture_tys ++ surface.inputs at 1905-1941).\n\nModel captures as LEADING addressed slots: a closure activation surface is (cap0..capK, param0..) -\u003e r0, minted where the closure forms; the source contract arrow is the param SUFFIX. Replace every positional .input[i] / .input[..k] / .input[k..] consumer (~50, including the capture/param split) with structural projection BY ADDRESS (slot 1 \u003c-\u003e slot 1, no positional zip; addresses align the slots).\n\nRe-verify the ~50 count and exact sites against HEAD before starting (runtime_demand.rs has moved since proposal authoring).\n\nDepends on: re-key ActivationKey (fz-hwn.27.6).\nChecks: closure/capture fixtures (Enum.reduce, nested direct-callable captures) stay green; capture/param split reads by address; no raw positional slice of .input survives. Lib + matrix green, zero warnings.",
+  "id": "fz-hwn.27.8",
+  "labels": [],
+  "parent": "fz-hwn.27",
+  "priority": 1,
+  "status": "open",
+  "title": "Captures as leading addressed slots: replace positional .input slicing with structural projection",
+  "type": "task",
+  "updated_at": "2026-06-20T00:08:33Z"
+}
