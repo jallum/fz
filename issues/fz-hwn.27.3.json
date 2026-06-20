@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-20T00:08:06Z",
+  "description": "STEP 1 (build beside the old). Wire the construction root to emit the canonical arrow.\n\nCode-review finding (proposal \"Where it is built\"): resolve.rs already does the one traversal. resolve_pair threads vars: HashMap\u003cString,TypeVarId\u003e and ALREADY builds a structural shadow beside every Ty (a ResolvedTypeShape: Var(id)/Arrow{params,result}/Tuple, recursing into arrows) \"so their variable numbering can never drift apart\" -- and resolve_spec_decl DISCARDS it (resolve.rs:189). Numbering today is deterministic first-occurrence (TypeVarId(vars.len()), vars.entry(name).or_insert(next)), NOT arbitrary. So the construction root is half-built: it computes positional structure and throws it away.\n\nWork: number the shadow by ADDRESS (not by encounter), keep it, and emit:\n  resolve_spec_decl(spec) -\u003e ResolvedArrow { arrow: Ty (interned canonical), names: Map\u003cAddress,Name\u003e (ephemeral, diagnostics), bounds: Map\u003cAddress,Ty\u003e (ephemeral, contract application) }\n\nCode-review finding 5 (must be honored): TWO resolvers feed ResolvedSpecDecl -- compiler2/resolve.rs AND legacy type_expr/env.rs -- and 6+ consumers (extern + ir_lower included) destructure {params,result,constraints}. Unify on the kept shadow; account for BOTH resolvers and every consumer. Moderate-to-high blast radius, not localized.\n\nNames and bounds resolve THROUGH the name-\u003eaddress map and stop at the semantics boundary; they never enter the interned type.\n\nDepends on: addressed-arrow machinery (fz-hwn.27.2).\nChecks: spec-resolution unit tests assert the emitted arrow + name/bound sidecars for the proposal examples; both resolver paths covered; lib green, zero warnings.",
+  "id": "fz-hwn.27.3",
+  "labels": [],
+  "parent": "fz-hwn.27",
+  "priority": 1,
+  "status": "open",
+  "title": "resolve.rs emits ResolvedArrow{arrow,names,bounds}; keep+address the discarded shape shadow",
+  "type": "task",
+  "updated_at": "2026-06-20T00:08:06Z"
+}
