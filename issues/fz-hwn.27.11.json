@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-hwn.27.4"
   ],
@@ -12,8 +12,8 @@
   "labels": [],
   "parent": "fz-hwn.27",
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "ActivationKey carries arrow: Ty (half-step: thread the arrow, project the input side)",
   "type": "task",
-  "updated_at": "2026-06-20T10:16:29Z"
+  "updated_at": "2026-06-20T10:16:34Z"
 }
