@@ -1952,13 +1952,27 @@ fn callable_flow_resolutions(
     else {
         return Vec::new();
     };
+    let root = executable.activation.root;
+    let captures_len = capture_tys.len();
     surfaces
         .iter()
         .map(|surface| {
+            // A boxed callable resolves at runtime to its GROUND instances, never
+            // to the dead generic activation whose body cannot materialize an
+            // unrepresentable parameter (fz-hwn.23). When this call surface grounds
+            // to a representable sibling elsewhere in the root, point the resolution
+            // at that real instance; the local flow has no ground evidence (the
+            // generic activation never sees a concrete element), so the sibling
+            // search is whole-root. Captures are threaded through unchanged — they
+            // carry the callable's identity. A genuine escape with no ground
+            // sibling keeps its template and is lowered boxed.
+            let surface_inputs = world
+                .ground_surface_for_template(root, producer.function, captures_len, &surface.inputs)
+                .unwrap_or_else(|| surface.inputs.clone());
             let mut inputs = capture_tys.clone();
-            inputs.extend(surface.inputs.iter().copied());
+            inputs.extend(surface_inputs);
             ExecutableKey {
-                activation: world.activation_key(executable.activation.root, producer.function, &inputs),
+                activation: world.activation_key(root, producer.function, &inputs),
                 need: ExecutableNeed::Value,
             }
         })

@@ -547,6 +547,13 @@ impl ActivationMap {
         self.slots.get(key)
     }
 
+    /// Every activation key the map holds. The grounding seam reads this to find
+    /// a value-template activation's representable ground sibling across the
+    /// whole root, not just within one callable flow (fz-hwn.23).
+    pub fn keys(&self) -> impl Iterator<Item = &ActivationKey> {
+        self.slots.keys()
+    }
+
     /// Install one round's return evidence — the single join point of the
     /// fixpoint. `None` is the ascent's bottom: no evidence adds nothing and
     /// never erases standing evidence. `Some` evidence JOINS by union (which

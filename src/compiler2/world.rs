@@ -701,6 +701,59 @@ impl<'a> World<'a> {
         self.activations.get(key).and_then(|slot| slot.analysis())
     }
 
+    /// The representable GROUND SIBLING SURFACE for a value-template call surface:
+    /// the same function's activation whose surface (its inputs past the leading
+    /// `captures_len` capture slots) grounds every unrepresentable position of
+    /// `template_surface` while keeping every other position identical. Returns
+    /// that grounded surface, so a boxed callable's resolution can point at the
+    /// real runtime instance instead of the dead generic one whose body cannot be
+    /// materialized (fz-hwn.23).
+    ///
+    /// Only the surface is matched; the CAPTURES are preserved by the caller. A
+    /// capture carries the boxed callable's closure identity, which refines across
+    /// activations (`(α,α)->α` generic vs `(binary,int)->binary` at a ground call),
+    /// so it is neither equal nor safely subsumable — the caller threads its own
+    /// captures through unchanged. `None` when `template_surface` is already
+    /// representable, or is a genuine polymorphic escape with no ground instance.
+    pub(crate) fn ground_surface_for_template(
+        &self,
+        root: RootId,
+        function: FunctionId,
+        captures_len: usize,
+        template_surface: &[Ty],
+    ) -> Option<Vec<Ty>> {
+        if !self.types.key_is_value_template(template_surface) {
+            return None;
+        }
+        self.activations
+            .keys()
+            .filter(|key| key.root == root && key.function == function)
+            .filter_map(|key| {
+                let inputs = key.inputs(&self.types);
+                (inputs.len() >= captures_len).then(|| inputs[captures_len..].to_vec())
+            })
+            .find(|sibling_surface| self.is_ground_instance_of_template(sibling_surface, template_surface))
+    }
+
+    /// True when `sibling` is the SAME activation as `template` with its
+    /// unrepresentable positions grounded. A value-template position (a bare
+    /// scalar / tuple-with-bare-field) may be grounded to any representable type;
+    /// every OTHER position must be IDENTICAL. Identity, not subsumption, on
+    /// representable positions: a captured callable carries its closure-target
+    /// identity, and a sibling with a different capture is a distinct runtime
+    /// callable, not a grounding.
+    fn is_ground_instance_of_template(&self, sibling: &[Ty], template: &[Ty]) -> bool {
+        sibling.len() == template.len()
+            && !self.types.key_is_value_template(sibling)
+            && sibling.iter().zip(template).all(|(&s, &t)| {
+                if self.types.is_value_template(&t) {
+                    !self.types.is_value_template(&s)
+                } else {
+                    s == t
+                }
+            })
+    }
+
     /// The activation's current return EVIDENCE. `None` means the claim is
     /// retracted or no path has produced a value yet — the ascent's bottom,
     /// never the type `none`. Behind the settled gate, a still-`None` read
