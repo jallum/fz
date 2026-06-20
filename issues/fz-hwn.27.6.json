@@ -5,7 +5,8 @@
     "fz-hwn.27.4"
   ],
   "blocks": [
-    "fz-hwn.27.7"
+    "fz-hwn.27.7",
+    "fz-hwn.27.8"
   ],
   "created": "2026-06-20T00:08:32Z",
   "description": "STEP 2 (re-key on the arrow). Code-review note: activation inputs come from INFERENCE (arbitrary unification ids), not the resolver -- so the 13 scattered per-position passes collapse to ONE whole-scope canonicalization at the single key-mint site (the step that assigns addresses to those inference vars). They do not all vanish; they fold into one correct pass.\n\nWork:\n- ActivationKey carries arrow: Ty (the evidence surface; the RESULT is now explicit, no longer implied). Mark the old ActivationKey.input as Trash in the intro; replace its producer with the canonical-arrow mint.\n- At the single mint, run ONE whole-scope canonicalization assigning addresses (a{i}/r0/P_j) to inference vars, then intern. Two alpha-equivalent activations are now interned-identical (pointer equality, zero comparison) -- intra-scope identity is free; cross-scope stays consistent-Sigma subsumption (key_subsumes_with / key_list_subsumes).\n- Each per-position normalizer (semantic.rs 7x alpha_normalize, alpha_normalized_surfaces, normalize_contributions, the alpha loop in canonical_activation_key) is DELETED as its producer emits canonical arrows. Leave convergence keying to the next ticket.\n\nDepends on: resolve emitter (fz-hwn.27.3), calculator extension (fz-hwn.27.4).\nChecks: an activation key built from inference [Ty27,Ty28] interns DISTINCT from [Ty27,Ty27] (conflation gone); alpha-equivalent activations are one object; (a,b)-\u003eb key keeps b in result. Lib + matrix green, zero warnings.",
