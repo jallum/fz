@@ -10,9 +10,15 @@
   "id": "fz-hwn.27.10",
   "labels": [],
   "parent": "fz-hwn.27",
+  "comments": [
+    {
+      "text": "Acceptance scoping (found at HEAD): grep -rn 'Trash\\|trash_' src/ has PRE-EXISTING hits NOT owned by fz-hwn.27: (1) ir_codegen/function.rs trash_tuple_return_delivery_plan (a stale marker from a prior cleanup -- candidate for its own removal ticket), (2) transport_contract_test.rs assert_no_trash_authority + a fact.contains(\"Trash\") guard (a different, legitimate 'Trash authority' check). The outro grep must EXCLUDE these (scope to the fz-hwn.27 kill-list: contract.rs Trash* surface types + any addressed-arrow markers), or they will falsely fail the criterion. As of 27.4, the fz-hwn.27-owned markers are only the contract.rs Trash* SURFACE types (TrashContractArrow/TrashAppliedContractArrow) + their uses in contract_test.rs, removed by 27.9; plus a doc-comment reference in resolve.rs. The contract.rs witness/substitution ENGINE markers were already removed (relocated to Types in 27.4).",
+      "timestamp": "2026-06-20T00:56:12Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "Remove every Trash/trash_ trigger; prove the conflation is gone and the suite is green",
   "type": "task",
-  "updated_at": "2026-06-20T00:09:29Z"
+  "updated_at": "2026-06-20T00:56:12Z"
 }
