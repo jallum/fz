@@ -6,6 +6,7 @@
 //! `Types` instance.
 
 mod addressed;
+mod arrow_match;
 mod bits;
 mod conj;
 mod descr;
@@ -31,6 +32,8 @@ pub use crate::types::{
     CallableClause, CallableValueKind, ClosureLitInfo, ClosureTarget, MapKey, Nominals, OpaqueVisibilityError, Sigma,
     TypeVarId,
 };
+
+pub use arrow_match::ArrowMatch;
 
 use conj::Conj;
 use descr::Descr;
