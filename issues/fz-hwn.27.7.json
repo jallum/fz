@@ -11,9 +11,15 @@
   "id": "fz-hwn.27.7",
   "labels": [],
   "parent": "fz-hwn.27",
+  "comments": [
+    {
+      "text": "Co-landing: not separable from 27.6. The convergence widening already lives inside canonical_activation_key (per-masked-slot convergence_class before normalization); it must become a whole-arrow convergence_collapse in the SAME commit that switches normalization to whole-scope addressing. See 27.6 finding.",
+      "timestamp": "2026-06-20T00:54:42Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "key = convergence_collapse(arrow, dispatch_mask): preserve fz-y6w bounded specialization \u0026 key-vs-evidence split",
   "type": "task",
-  "updated_at": "2026-06-20T00:09:28Z"
+  "updated_at": "2026-06-20T00:54:42Z"
 }
