@@ -15,11 +15,15 @@
     {
       "text": "Co-landing: not separable from 27.6 (proven empirically). Activation key inputs = capture_tys ++ surface.inputs, so the capture-slot model and the input re-key are the same change -- abi_ready_matches_direct_callable_captures_by_canonical_activation_key fails the moment inputs are re-keyed without it. See 27.6 finding.",
       "timestamp": "2026-06-20T00:54:43Z"
+    },
+    {
+      "text": "fz-hwn.27.5 probe finding — RETARGET this ticket at the real root cause.\n\nThe phantom's activation KEY is correctly addressed (proved: re-addressing key.inputs is a no-op, changed=false). The divergence is in VALUE_TYPES, not the key. Same logical first param of FunctionId(164):\n  - key input:  address a0  (addressed path, canonical)\n  - value_type: α0          (alpha_normalize_vars via world.rs:716, the OLD path)\nOne logical variable, TWO canonical frames. This is almost certainly why phantom_resolution_keys cannot match the value-template against a ground sibling to prune it (frames don't line up), so the phantom reaches the backend.\n\nScope: address an activation's value_types (at least param/capture-bound ones) in the SAME scope as its key — params/captures as addressed slots — and DELETE the frame-divergent alpha_normalize_vars survivors: world.rs:716 (define_activation_analysis value_types), :848 (define_activation_return evidence), :892/:894 (callsite summary return_ty). These are NOT benign standalone canonicalization; they produce a frame that diverges from the addressed key. This is the cure for fz-hwn.23; the .27.5 predicate is the flag, not the cure.",
+      "timestamp": "2026-06-20T16:13:20Z"
     }
   ],
   "priority": 1,
   "status": "open",
   "title": "Captures as leading addressed slots: replace positional .input slicing with structural projection",
   "type": "task",
-  "updated_at": "2026-06-20T00:54:43Z"
+  "updated_at": "2026-06-20T16:13:20Z"
 }
