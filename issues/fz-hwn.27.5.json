@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-hwn.27.2"
   ],
@@ -12,8 +12,8 @@
   "labels": [],
   "parent": "fz-hwn.27",
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "Pin the backend-boundary value-template predicate by test (is_value_template vs mvar)",
   "type": "task",
-  "updated_at": "2026-06-20T00:09:28Z"
+  "updated_at": "2026-06-20T15:24:04Z"
 }
