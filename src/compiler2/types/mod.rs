@@ -5,6 +5,7 @@
 //! structural child is a `Ty` allocated by the owning
 //! `Types` instance.
 
+mod addressed;
 mod bits;
 mod conj;
 mod descr;
@@ -47,6 +48,10 @@ pub struct Types {
     /// Memoized `value_lane_repr`: the transport-lane representative of a type.
     /// A derived fact about each type, computed once rather than on every lane.
     value_lane_reprs: HashMap<Ty, Ty>,
+    /// Interned structural addresses (`a0`, `a1_0`, `r0`, ...). Keyed by the
+    /// address path so the same address always yields the same `TypeVarId`,
+    /// making the addressed arrow canonical by construction. See `addressed`.
+    address_vars: HashMap<Vec<addressed::AddrStep>, TypeVarId>,
 }
 
 #[derive(Default)]
