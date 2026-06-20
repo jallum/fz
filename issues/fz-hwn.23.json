@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-hwn.27.5"
+  ],
   "blocks": [
     "fz-hwn.9"
   ],
@@ -13,5 +15,5 @@
   "status": "open",
   "title": "Phantom polymorphic activation reaches the backend (FunctionId[a0,a0] not runtime-materializable)",
   "type": "bug",
-  "updated_at": "2026-06-19T19:44:57Z"
+  "updated_at": "2026-06-20T00:09:28Z"
 }
