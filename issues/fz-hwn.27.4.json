@@ -7,6 +7,7 @@
     "fz-hwn.27.6",
     "fz-hwn.27.9"
   ],
+  "closed_at": "2026-06-20T00:43:30Z",
   "created": "2026-06-20T00:08:06Z",
   "description": "STEP 1 sub-phase (build beside the old). GATES the contract.rs collapse (Step 3). Code-review finding 4.\n\nThe contract.rs collapse is NOT a freebie: the existing calculator (key_subsumes_with / collect_instantiation_subst) is boolean and first-binding-wins. contract.rs needs five behaviors with no calculator equivalent today. Grow them on the calculator (memoized Types methods, per feedback_types_is_the_calculator), additively, beside the boolean API:\n\n1. Known / Underconstrained / Invalid TRICHOTOMY (not a bool). Underconstrained = a witness left some addressed leaf free (e.g. foo(x,y,z) vs foo(a,{b,c},d): y subsumes the interned {a1_0,a1_1}, binds the tuple, leaves a1_0/a1_1 free -\u003e Underconstrained). The verdict is \"did the witness ground every addressed leaf.\"\n2. Union-on-rebind when a var binds multiple witnesses (merge_sigma semantics), vs or_insert first-binding-wins.\n3. Structural-mismatch -\u003e Invalid for arrow-arity.\n4. Same for map-key-presence and tuple-arity.\n5. Ambiguous empty-list var handling (collect_ambiguous_empty_list_vars equivalent).\n\nThese are additive calculator tickets that MUST land before any contract.rs trigger is removed.\n\nDepends on: addressed-arrow machinery (fz-hwn.27.2).\nChecks: calculator unit tests for each of the 5 behaviors against interned addressed arrows; consistent-Sigma keyed (feedback_single_concretetypes_instance: one ConcreteTypes/Types instance threaded, never re-inlined); lib green, zero warnings.",
   "id": "fz-hwn.27.4",
@@ -19,8 +20,8 @@
     }
   ],
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Extend the Types calculator: trichotomy, union-rebind, structural-mismatch, map/tuple arity, empty-list",
   "type": "task",
-  "updated_at": "2026-06-20T00:36:21Z"
+  "updated_at": "2026-06-20T00:43:30Z"
 }
