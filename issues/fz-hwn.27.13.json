@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-20T16:13:20Z",
+  "description": "Addresses and inference vars share the TypeVarId space (the collision noted in proposal.html 'WHY split was forced'). So an addressed param a0 can intern as TypeVarId(10) and DISPLAY as 'α10' — visually indistinguishable from a free inference var, and addresses are interned by global first-encounter so the numbers are non-positional (a0 can read as α10, a1 as α9, descending). This cost real debugging time in fz-hwn.27.5 (a canonical key looked like an un-addressed leak). Make display render addressed vars structurally (a0, a1_0, r0) and free vars as αN, so 'is this canonical?' is legible at a glance. Pure diagnostics; never enters a hard type.",
+  "id": "fz-hwn.27.13",
+  "labels": [],
+  "parent": "fz-hwn.27",
+  "priority": 3,
+  "status": "open",
+  "title": "Display/representation: distinguish addressed vars (a0/r0) from free inference vars (αN)",
+  "type": "task",
+  "updated_at": "2026-06-20T16:13:20Z"
+}
