@@ -4,6 +4,7 @@
   "blocks": [
     "fz-hwn.27.2"
   ],
+  "closed_at": "2026-06-20T00:21:20Z",
   "created": "2026-06-20T00:07:37Z",
   "description": "INTRO ticket for fz-hwn.27. Pure, behavior-preserving rename that makes the migration greppable. No logic changes; build stays green.\n\nRename every doomed concept on the proposal.html hit list with a Trash / trash_ trigger so the strangler boundary is visible and the outro ticket has a precise removal target. The trigger means \"this is dead, a caller still leans on it.\"\n\nThree groups to mark (proposal.html \"Kill with fire\"):\n\nA. Separable surface containers -\u003e become the addressed arrow:\n- ActivationKey.input: Vec\u003cTy\u003e                              identity.rs:64\n- CallableSurface { inputs }                                semantic.rs:69\n- ContractArrow { params, result, constraints }            contract.rs:15\n- FunctionContract { arrows: Vec\u003cContractArrow\u003e }          contract.rs:22\n- AppliedContractArrow { params, result }                  contract.rs:27\n- SchemeMatch\u003cT\u003e { params, result }                        contract.rs:115\n- ResolvedSpecDecl { params, result, constraints }         type_expr/mod.rs:73\n\nB. Per-position normalization (the conflation engine):\n- Types::alpha_normalize_vars / alpha_normalize_vars / alpha_normalize_go   types/mod.rs:406,1650,1656\n- 7x alpha_normalize (CallableSurface, CallableDemand, ShapeDemand, RuntimeDemand, CallableFlowFact, ExecutableRuntimeDemand)  semantic.rs:78,149,212,297,342,442\n- alpha_normalized_surfaces                                 semantic.rs:421\n- normalize_contributions                                  world.rs:762\n- canonical_activation_key                                 world.rs:2709\n\nC. Hand-rolled substitution / witness walk -\u003e the Types calculator:\n- instantiate_matching_arrow, overlapping_witnesses, contract_witness   contract.rs:137,158,173\n- instantiate_match, instantiated_match, surface_sigma, merge_sigma     contract.rs:182,232,239,477\n- collect_contract_subst + collect_{var,tuple,list,resource,map,arrow}_subst   contract.rs:247-475\n- collect_ambiguous_empty_list_vars                        contract.rs:321\n- enum Witness, enum SchemeInstantiation                   contract.rs:108,121\n\nNOTE: line numbers are from proposal.html at authoring time; re-verify against HEAD before renaming (resolve.rs/world.rs have moved). Mark, do not delete -- replacements land in later tickets; removal is the outro (fz-hwn.27 acceptance: grep -rn \"Trash\\|trash_\" src/ returns nothing).\n\nChecks\n- Pure rename: lib + fixture matrix green, zero warnings, from a fresh uniquely-marked run.\n- Every hit-list symbol above carries the Trash / trash_ trigger; grep -rn \"Trash\\|trash_\" src/ enumerates exactly the kill-list.",
   "id": "fz-hwn.27.1",
@@ -16,8 +17,8 @@
     }
   ],
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Mark the kill-list: rename doomed surface/normalize/witness concepts with the Trash trigger",
   "type": "task",
-  "updated_at": "2026-06-20T00:16:32Z"
+  "updated_at": "2026-06-20T00:21:20Z"
 }
