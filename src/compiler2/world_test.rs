@@ -170,6 +170,44 @@ fn compiler2_resolve_spec_resolves_types_shapes_and_constraints_against_the_capt
         expect.display(&list_int),
         "tkf_box(tkf_elem) instantiates to a list of integer",
     );
+
+    // The very same spec resolves to its canonical addressed arrow: the free
+    // result variable `x` addresses to r0, and its `when`-bound and name are
+    // re-keyed onto that address.
+    let arrow = world
+        .resolve_arrow(source.namespace, &spec)
+        .expect("the spec resolves to an addressed arrow");
+    let clauses = world
+        .types_mut()
+        .callable_clauses(&arrow.arrow)
+        .expect("the resolved arrow is callable-shaped");
+    assert_eq!(clauses.len(), 1, "one arrow clause");
+    let clause = &clauses[0];
+    assert_eq!(clause.args.len(), 2, "two addressed parameters");
+    assert_eq!(
+        world.types_mut().display(&clause.args[0]),
+        expect.display(&list_float),
+        "parameter 0 keeps its concrete list(float)",
+    );
+    let ret = clause.ret;
+    let r0 = world.types_mut().result_alpha();
+    assert_eq!(ret, r0, "the free result variable x addresses to r0");
+    let r0_id = world.types_mut().result_alpha_id();
+    let addressed_bound = arrow
+        .bounds
+        .get(&r0_id)
+        .copied()
+        .expect("x's when-bound is re-keyed onto r0");
+    assert_eq!(
+        world.types_mut().display(&addressed_bound),
+        expect.display(&list_int),
+        "x's bound list(integer) is re-keyed onto r0",
+    );
+    assert_eq!(
+        arrow.names.get(&r0_id).map(String::as_str),
+        Some("x"),
+        "the r0 address keeps the declared name x",
+    );
 }
 
 #[test]

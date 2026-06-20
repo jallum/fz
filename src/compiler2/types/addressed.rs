@@ -77,9 +77,21 @@ impl Types {
         self.address_var(&[AddrStep::Param(i as u16)])
     }
 
+    /// The `TypeVarId` of `a{i}` — the key consumers use to read a parameter
+    /// slot's bound out of a [`ResolvedArrow`](crate::compiler2::resolve)'s
+    /// bounds map without naming the `AddrStep` path.
+    pub fn param_alpha_id(&mut self, i: usize) -> TypeVarId {
+        self.address_id(&[AddrStep::Param(i as u16)])
+    }
+
     /// `r0` — the variable at the result slot.
     pub fn result_alpha(&mut self) -> Ty {
         self.address_var(&[AddrStep::Result])
+    }
+
+    /// The `TypeVarId` of `r0` — the result slot's address key.
+    pub fn result_alpha_id(&mut self) -> TypeVarId {
+        self.address_id(&[AddrStep::Result])
     }
 
     /// Build the canonical addressed arrow for a signature. Each original
@@ -88,6 +100,14 @@ impl Types {
     /// Concrete structure (tuples, lists, brands, refinements) is preserved
     /// exactly — only variable identity is canonicalized.
     pub fn address_arrow(&mut self, params: &[Ty], result: Ty) -> Ty {
+        self.address_arrow_with_env(params, result).0
+    }
+
+    /// As [`address_arrow`](Self::address_arrow), but also returns the
+    /// original-id -> address-id map. Callers re-key sidecars (variable bounds,
+    /// human names) onto addresses through this map so they stay aligned with
+    /// the canonical arrow.
+    pub fn address_arrow_with_env(&mut self, params: &[Ty], result: Ty) -> (Ty, HashMap<TypeVarId, TypeVarId>) {
         let mut map: HashMap<TypeVarId, TypeVarId> = HashMap::new();
         let params: Vec<Ty> = params
             .iter()
@@ -95,7 +115,8 @@ impl Types {
             .map(|(i, &p)| self.address_remap(p, &[AddrStep::Param(i as u16)], &mut map))
             .collect();
         let result = self.address_remap(result, &[AddrStep::Result], &mut map);
-        self.arrow(&params, result)
+        let arrow = self.arrow(&params, result);
+        (arrow, map)
     }
 
     /// Rewrite every variable in `ty` to its first-occurrence address, threading

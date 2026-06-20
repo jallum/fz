@@ -51,6 +51,28 @@ pub(crate) struct ResolvedSpec {
     pub(crate) result: Ty,
     pub(crate) result_shape: ResolvedTypeShape,
     pub(crate) constraints: HashMap<TypeVarId, Ty>,
+    /// The declared name of each free variable (`%{0: "t"}`), inverted from the
+    /// resolution environment. Ephemeral: diagnostics and the addressed-arrow
+    /// name sidecar; never part of a hard type.
+    pub(crate) var_names: HashMap<TypeVarId, String>,
+}
+
+/// An `@spec` resolved to the canonical **addressed arrow** plus its ephemeral
+/// sidecars. The arrow is the single interned language for the function's type
+/// surface (parameter variables addressed `a{i}`, the result `r0`, components
+/// `P_j`); `names` and `bounds` are keyed by the same address ids and live only
+/// as long as diagnostics and contract application need them. This is the
+/// canonical form [`World::resolve_spec_decl`]'s separable
+/// `{params, result, constraints}` surface (the `Trash*` contract types)
+/// collapses onto in fz-hwn.27.9.
+// Consumed by the contract restructure (fz-hwn.27.9); landed ahead and
+// exercised by this ticket's resolver test, mirroring `ResolvedSpec`.
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
+pub(crate) struct ResolvedArrow {
+    pub(crate) arrow: Ty,
+    pub(crate) names: HashMap<TypeVarId, String>,
+    pub(crate) bounds: HashMap<TypeVarId, Ty>,
 }
 
 /// How a name in type position classifies once measured against the namespace.
@@ -155,13 +177,48 @@ impl World<'_> {
             let bound = self.resolve_ty(namespace, &expr, &mut vars)?;
             constraints.insert(id, bound);
         }
+        let var_names = vars.into_iter().map(|(name, id)| (id, name)).collect();
         Ok(ResolvedSpec {
             params,
             param_shapes,
             result,
             result_shape,
             constraints,
+            var_names,
         })
+    }
+
+    /// Resolves one spec to its canonical [`ResolvedArrow`]: the addressed arrow
+    /// plus name/bound sidecars re-keyed onto addresses. Every variable is
+    /// canonicalized to its structural address at construction, so the arrow is
+    /// the canonical form by construction — no after-the-fact normalization.
+    #[allow(dead_code)]
+    pub(crate) fn resolve_arrow(
+        &mut self,
+        namespace: Namespace,
+        spec: &SpecDecl,
+    ) -> Result<ResolvedArrow, TypeExprError> {
+        let resolved = self.resolve_spec(namespace, spec)?;
+        let types = self.types_mut();
+        let (arrow, env) = types.address_arrow_with_env(&resolved.params, resolved.result);
+        let mut sigma: HashMap<TypeVarId, Ty> = HashMap::new();
+        for (&original, &address) in &env {
+            let var = types.type_var(address);
+            sigma.insert(original, var);
+        }
+        let mut bounds = HashMap::new();
+        for (original, bound) in &resolved.constraints {
+            if let Some(&address) = env.get(original) {
+                let bound = types.instantiate(bound, &sigma);
+                bounds.insert(address, bound);
+            }
+        }
+        let names = resolved
+            .var_names
+            .iter()
+            .filter_map(|(original, name)| env.get(original).map(|&address| (address, name.clone())))
+            .collect();
+        Ok(ResolvedArrow { arrow, names, bounds })
     }
 
     /// Resolves a source `TypeExprBody` directly against a captured namespace.
