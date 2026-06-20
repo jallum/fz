@@ -4,7 +4,9 @@
     "fz-hwn.27.4",
     "fz-hwn.27.7"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-hwn.27.10"
+  ],
   "created": "2026-06-20T00:08:51Z",
   "description": "STEP 3 (collapse the matchers). Once the calculator carries the trichotomy and structural-mismatch verdicts (fz-hwn.27.4), contract.rs's bespoke witness/substitution walk is replaced by it -- and the hand-rolled machinery marked Trash in the intro is deleted.\n\nRemove (proposal \"Kill with fire\", group C):\n- instantiate_matching_arrow, overlapping_witnesses, contract_witness   (contract.rs:137,158,173)\n- instantiate_match, instantiated_match, surface_sigma, merge_sigma     (contract.rs:182,232,239,477)\n- collect_contract_subst + collect_{var,tuple,list,resource,map,arrow}_subst   (contract.rs:247-475)\n- collect_ambiguous_empty_list_vars                                     (contract.rs:321)\n- enum Witness, enum SchemeInstantiation                                (contract.rs:108,121)\nReplace ContractArrow/AppliedContractArrow/SchemeMatch/FunctionContract surface containers with the addressed arrow Ty + bounds sidecar (group A).\n\nAll matching becomes a calculator decision on interned addressed arrows; contract application instantiates the arrow via the bounds sidecar.\n\nDepends on: calculator extension (fz-hwn.27.4), convergence key-derivation (fz-hwn.27.7).\nChecks: contract/overload-resolution fixtures green via the calculator (no bespoke witness walk); the group-A/group-C Trash symbols in contract.rs are gone. Lib + matrix green, zero warnings.",
   "id": "fz-hwn.27.9",
@@ -14,5 +16,5 @@
   "status": "open",
   "title": "Collapse contract.rs witness/substitution walk onto the extended Types calculator",
   "type": "task",
-  "updated_at": "2026-06-20T00:09:28Z"
+  "updated_at": "2026-06-20T00:09:29Z"
 }
