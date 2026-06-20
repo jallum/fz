@@ -5754,6 +5754,50 @@ end
     );
 }
 
+// fz-hwn.27.5 — pin the value-template predicate against REAL lowering.
+//
+// The ignored repro above fails because a polymorphic mapper activation with
+// bare-variable inputs reaches the backend, where its value binds `Absent` and
+// the native materialize invariant panics. This test pins, at that real lowering
+// site, that the failure IS the value-template condition: the panic message names
+// `is_value_template` (see `env_runtime_var` in jobs/native.rs).
+//
+// Empirically (fz-hwn.27.5 probe) the phantom's first value has type `α0` and
+// `is_value_template(α0) == true`, so the cheap syntactic predicate is sound here
+// and `mvar` is not required — see the unit pin
+// `value_template_predicate_flags_unrepresentable_positions_only`.
+//
+// This is a TOMBSTONE: it passes today by catching the phantom's panic. The cure
+// is frame unification — value_types addressed in the activation scope
+// (fz-hwn.27.8) — which lets the phantom gate prune it. When fz-hwn.23 lands the
+// panic stops, this test fails, and whoever closes 23 must delete it and
+// re-enable the ignored repro above.
+#[test]
+#[should_panic(expected = "predicate is_value_template")]
+fn compiler2_value_template_phantom_panics_at_lowering_until_fz_hwn_23() {
+    let tel = ConfiguredTelemetry::new();
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/enum_with_index_mapper_value_template.fz".to_string()),
+        text: r#"
+fn main() do
+  dbg(Enum.with_index(["a", "b"], fn (x, _index) -> x <> "!" end))
+end
+"#
+        .to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    // Drives the real pipeline into native lowering, where the value-template
+    // activation cannot be materialized and the predicate-named invariant fires.
+    let _ = compiler.run_root_interp(root_id);
+}
+
 #[test]
 fn compiler2_interp_runs_variadic_extern_from_backend_artifacts() {
     let tel = ConfiguredTelemetry::new();

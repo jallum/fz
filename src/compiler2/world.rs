@@ -713,6 +713,10 @@ impl<'a> World<'a> {
 
     pub fn define_activation_analysis(&mut self, key: &ActivationKey, mut analysis: ActivationAnalysis) -> bool {
         for ty in analysis.value_types.values_mut() {
+            // fz-hwn.27.8 DOOMED (frame-divergent): value_types canonicalized by
+            // the OLD encounter-order frame, which diverges from the addressed key
+            // (fz-hwn.27.5). To converge on whole-activation-scope addressing; see
+            // `Types::alpha_normalize_vars`.
             *ty = self.types.alpha_normalize_vars(ty);
         }
         let changed = self.activations.define_analysis(key, analysis);
@@ -845,6 +849,9 @@ impl<'a> World<'a> {
     }
 
     pub fn define_activation_return(&mut self, key: &ActivationKey, evidence: Option<Ty>) -> bool {
+        // fz-hwn.27.8 DOOMED (frame-divergent): return evidence canonicalized by
+        // the OLD encounter-order frame; converge on whole-activation-scope
+        // addressing. See `Types::alpha_normalize_vars`.
         let evidence = evidence.map(|ty| self.types.alpha_normalize_vars(&ty));
         // The publisher of a ReturnType claim is, by construction, the
         // activation's own analysis job — its rebase state selects join
@@ -889,6 +896,10 @@ impl<'a> World<'a> {
             if let Some(activation) = &mut target.activation {
                 activation.realpha_inputs(&mut self.types);
             }
+            // fz-hwn.27.8 DOOMED (frame-divergent): inputs/surfaces above are
+            // addressed, but return_ty is still canonicalized by the OLD
+            // encounter-order frame. Converge both return_ty sites on
+            // whole-activation-scope addressing. See `Types::alpha_normalize_vars`.
             target.return_ty = target.return_ty.map(|ty| self.types.alpha_normalize_vars(&ty));
         }
         summary.return_ty = summary.return_ty.map(|ty| self.types.alpha_normalize_vars(&ty));

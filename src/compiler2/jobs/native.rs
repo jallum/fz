@@ -2473,6 +2473,21 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
         });
         let ty = executable.value_types.get(&value_id).copied();
         self.materialize_native_value(ctx, ty, &value).unwrap_or_else(|_| {
+            // fz-hwn.27.5 — name the predicate at the failure site. A bare-variable
+            // (value-template) value has no runtime representation, so it binds
+            // `Absent` and cannot be materialized. When that is the cause, this is
+            // the fz-hwn.23 phantom: a value-template activation reached the
+            // backend. `is_value_template` is the discriminator; the cure is
+            // grounding/pruning the activation before lowering (fz-hwn.27.8).
+            if ty.is_some_and(|ty| self.world.types().is_value_template(&ty)) {
+                let shown = ty.map(|ty| self.world.types().display(&ty)).unwrap_or_default();
+                panic!(
+                    "native lowering invariant failed: backend value {:?} in executable {:?} is a \
+                     value-template ({shown}) — a value-template activation reached the backend and \
+                     cannot be materialized (fz-hwn.23; predicate is_value_template)",
+                    value_id, executable.key,
+                )
+            }
             panic!(
                 "native lowering invariant failed: backend value {:?} in executable {:?} must be runtime-materializable",
                 value_id, executable.key

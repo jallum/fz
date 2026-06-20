@@ -29,6 +29,72 @@ fn structural_children_are_interned_handles() {
     assert_eq!(d.tuples[0].pos[0].elems, vec![elem]);
 }
 
+// fz-hwn.27.5 — the backend-boundary value-template predicate.
+//
+// `is_value_template` is the calculator's authority on "can this position hold a
+// runtime value?" An activation whose input is a value template cannot become a
+// backend executable: the bare-variable value has no representation and
+// materializes as `Absent`, panicking on use (the fz-hwn.23 phantom).
+//
+// These pins establish that the cheap SYNTACTIC predicate — bare var, or tuple
+// with a bare-var field — is exactly the materializability boundary, so the
+// semantic `mvar` groundness (Castagna; a var is meaningful iff `t[0/α] ≠ t`) is
+// NOT needed. The reason: the only types whose runtime representation depends on
+// an inner variable being ground are the two the predicate catches. Everything
+// else has a representation independent of its inner vars — `list(α)` is a
+// pointer, `(α)->α` is one word (fz-hwn.27.12) — so those inner vars are
+// representation-irrelevant, exactly as `mvar` would conclude, but decided
+// syntactically without an emptiness probe.
+#[test]
+fn value_template_predicate_flags_unrepresentable_positions_only() {
+    let mut t = Types::new();
+    let a = t.type_var(TypeVarId(0));
+    let b = t.type_var(TypeVarId(1));
+    let int = t.int();
+
+    // A bare variable IS the whole value: no representation → template.
+    assert!(t.is_value_template(&a), "a bare variable has no runtime representation");
+
+    // A tuple with a bare-variable field cannot be laid out → template.
+    let tuple_with_var = t.tuple(&[a, int]);
+    assert!(
+        t.is_value_template(&tuple_with_var),
+        "a tuple with a bare-variable field cannot be laid out",
+    );
+
+    // Representable values — inner vars are representation-irrelevant (this is the
+    // mvar boundary, decided syntactically). These must NOT be templates, or
+    // genuine polymorphic values (lists, callables) would be wrongly pruned.
+    let list_of_var = t.list(a); // a list is a pointer regardless of element type
+    assert!(!t.is_value_template(&list_of_var), "list(α) is a representable pointer");
+
+    let poly_callable = t.arrow(&[a], a); // (α)->α is one word — fz-hwn.27.12
+    assert!(!t.is_value_template(&poly_callable), "(α)->α is one representable word");
+
+    let tuple_of_representable = t.tuple(&[list_of_var, int]);
+    assert!(
+        !t.is_value_template(&tuple_of_representable),
+        "a tuple of representable fields is representable",
+    );
+
+    // Ground values are never templates.
+    assert!(!t.is_value_template(&int), "a ground scalar is representable");
+    let ground_tuple = t.tuple(&[int, int]);
+    assert!(!t.is_value_template(&ground_tuple), "a ground tuple is representable");
+
+    // `key_is_value_template` lifts the predicate to an activation's input vector:
+    // a key is unrepresentable iff ANY input position is a template. This is the
+    // shape of the real fz-hwn.23 phantom — distinct bare-var inputs `(a0, a1)`.
+    assert!(
+        t.key_is_value_template(&[a, b]),
+        "an activation with bare-variable inputs is the fz-hwn.23 phantom",
+    );
+    assert!(
+        !t.key_is_value_template(&[list_of_var, int]),
+        "an activation of representable inputs is a real backend executable",
+    );
+}
+
 #[test]
 fn repeated_subtype_comparisons_are_memoized_by_type_id() {
     let mut t = Types::new();

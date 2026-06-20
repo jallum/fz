@@ -437,6 +437,21 @@ impl Types {
         *a
     }
 
+    /// Canonicalize a STANDALONE type's variable names by encounter order, for
+    /// fact-equality. This is the OLD, frame-divergent canonicalizer — NOT the
+    /// way to canonicalize a function surface or activation key.
+    ///
+    /// For an arrow / surface / activation input vector use the addressed builders
+    /// (`address_arrow`, `address_inputs`): a variable's canonical id is its
+    /// structural address, so the interner is the canonical form by construction
+    /// and two surfaces in one scope share identity (fz-hwn.27). Encounter-order
+    /// normalization restarts numbering and therefore produces a DIFFERENT frame
+    /// than addressing — the divergence proved in fz-hwn.27.5, where one
+    /// activation's first parameter is address `a0` in the key but `α0` as a
+    /// value_type. The remaining compiler2 callers (value_type / return evidence,
+    /// `world.rs`) are slated to converge on addressing the activation's whole
+    /// type-environment in one scope; that is fz-hwn.27.8. Do NOT add callers on
+    /// surface/key/input data.
     pub fn alpha_normalize_vars(&mut self, a: &Ty) -> Ty {
         let d = alpha_normalize_vars(self, *a);
         self.intern(d)
