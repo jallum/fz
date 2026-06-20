@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use super::contract::ContractArrow;
+use super::contract::TrashContractArrow;
 use super::{CallableValueKind, ClosureTarget, FunctionContract, TypeVarId, Types};
 
 #[test]
@@ -9,7 +9,7 @@ fn function_contract_application_refines_callable_params_from_outer_bindings() {
     let t = types.type_var(TypeVarId(0));
     let nil = types.nil();
     let contract = FunctionContract {
-        arrows: vec![ContractArrow {
+        arrows: vec![TrashContractArrow {
             params: vec![t, types.arrow(&[t], nil)],
             result: types.resource(t),
             constraints: HashMap::new(),
@@ -65,7 +65,7 @@ fn function_contract_application_refines_reduce_style_callable_from_list_and_acc
     let elem = types.type_var(TypeVarId(0));
     let acc = types.type_var(TypeVarId(1));
     let contract = FunctionContract {
-        arrows: vec![ContractArrow {
+        arrows: vec![TrashContractArrow {
             params: vec![types.list(elem), acc, types.arrow(&[elem, acc], acc)],
             result: acc,
             constraints: HashMap::new(),
@@ -131,7 +131,7 @@ fn function_contract_application_treats_empty_list_witness_as_underconstrained()
     let elem = types.type_var(TypeVarId(0));
     let acc = types.type_var(TypeVarId(1));
     let contract = FunctionContract {
-        arrows: vec![ContractArrow {
+        arrows: vec![TrashContractArrow {
             params: vec![types.list(elem), acc, types.arrow(&[elem, acc], acc)],
             result: acc,
             constraints: HashMap::new(),
@@ -183,7 +183,7 @@ fn function_contract_application_does_not_publish_underconstrained_result_eviden
     let mut types = Types::new();
     let t = types.type_var(TypeVarId(0));
     let contract = FunctionContract {
-        arrows: vec![ContractArrow {
+        arrows: vec![TrashContractArrow {
             params: vec![types.arrow(&[t], t)],
             result: t,
             constraints: HashMap::new(),
@@ -205,7 +205,7 @@ fn function_contract_application_does_not_recurse_through_concrete_any_inputs() 
     let mut types = Types::new();
     let any = types.any();
     let contract = FunctionContract {
-        arrows: vec![ContractArrow {
+        arrows: vec![TrashContractArrow {
             params: vec![any],
             result: any,
             constraints: HashMap::new(),
