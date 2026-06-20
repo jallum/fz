@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-hwn.27.6"
+  ],
   "blocks": [],
   "created": "2026-06-20T00:08:33Z",
   "description": "STEP 2 (re-key on the arrow). Code-review finding 3. convergence_class / dispatch_mask keying is LOAD-BEARING fz-y6w bounded-specialization control -- NOT alpha-normalization -- and the dispatch KEY is deliberately distinct from precise input EVIDENCE (world_test.rs:222). Do not lose this when re-keying.\n\nToday canonical_activation_key (world.rs:2709) applies convergence_class(input) per masked recursive slot to widen recursive non-dispatch slots (list(int) -\u003e list(any)) so specialization stays bounded. Re-express this as a single WHOLE-ARROW operation at the mint:\n  key = convergence_collapse(arrow, dispatch_mask)\noperating on the interned arrow (one op, not per-input), preserving: (i) recursive non-dispatch slots widen to their convergence class; (ii) the key is a DERIVED collapse, the arrow remains the precise evidence surface (ActivationKey keeps both: arrow = evidence, key = collapse). Key != evidence is intentional.\n\nDepends on: re-key ActivationKey (fz-hwn.27.6).\nChecks: fz-y6w bounded-specialization tests stay green (e.g. quicksort spec count does not regress); world_test.rs:222 key-vs-evidence intent preserved; recursive slot widening still occurs. Lib + matrix green, zero warnings.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "key = convergence_collapse(arrow, dispatch_mask): preserve fz-y6w bounded specialization \u0026 key-vs-evidence split",
   "type": "task",
-  "updated_at": "2026-06-20T00:08:33Z"
+  "updated_at": "2026-06-20T00:09:27Z"
 }
