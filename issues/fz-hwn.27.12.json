@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-20T13:14:20Z",
+  "description": "",
+  "id": "fz-hwn.27.12",
+  "labels": [],
+  "parent": "fz-hwn.27",
+  "priority": 1,
+  "status": "open",
+  "title": "Boxed-callable-join value-representation: opaque_fn_value_join supplied scalar",
+  "type": "task",
+  "updated_at": "2026-06-20T13:14:20Z"
+}
