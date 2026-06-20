@@ -14,9 +14,15 @@
   "id": "fz-hwn.27.6",
   "labels": [],
   "parent": "fz-hwn.27",
+  "comments": [
+    {
+      "text": "Carries its own Trash marks (deferred from 27.1): (a) the SharedTypes-trait-coupled alpha_normalize family + alpha_normalized_surfaces + normalize_contributions, and (b) ActivationKey.input / CallableSurface.inputs field-level items -- all marked here as they are superseded by the arrow re-key.",
+      "timestamp": "2026-06-20T00:16:33Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "Re-key ActivationKey on the arrow: arrow: Ty (result explicit), whole-scope canonicalization at the single mint",
   "type": "task",
-  "updated_at": "2026-06-20T00:09:28Z"
+  "updated_at": "2026-06-20T00:16:33Z"
 }
