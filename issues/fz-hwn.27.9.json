@@ -16,11 +16,15 @@
     {
       "text": "Carries its own Trash mark (deferred from 27.1): FunctionContract.arrows field-shape (Vec\u003cContractArrow\u003e -\u003e Vec\u003cTy\u003e+bounds) marked as restructured here.",
       "timestamp": "2026-06-20T00:16:33Z"
+    },
+    {
+      "text": "Refined boundary: the trichotomy ENGINE was relocated to Types::match_arrow in 27.4 (group-C function markers removed there). 27.9's remaining work is the SURFACE restructure: TrashContractArrow{params,result,constraints} + TrashAppliedContractArrow -\u003e the addressed arrow Ty + bounds sidecar (now that 27.6/27.7 provide the arrow), and FunctionContract.arrows: Vec\u003cTy\u003e. Remove the remaining Trash* type markers.",
+      "timestamp": "2026-06-20T00:36:22Z"
     }
   ],
   "priority": 1,
   "status": "open",
   "title": "Collapse contract.rs witness/substitution walk onto the extended Types calculator",
   "type": "task",
-  "updated_at": "2026-06-20T00:16:33Z"
+  "updated_at": "2026-06-20T00:36:22Z"
 }
