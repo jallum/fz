@@ -4,6 +4,7 @@
   "blocks": [
     "fz-hwn.27.6"
   ],
+  "closed_at": "2026-06-20T14:42:35Z",
   "created": "2026-06-20T13:14:20Z",
   "description": "",
   "id": "fz-hwn.27.12",
@@ -28,8 +29,8 @@
     }
   ],
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "Boxed-callable-join value-representation: opaque_fn_value_join supplied scalar",
   "type": "task",
-  "updated_at": "2026-06-20T13:38:57Z"
+  "updated_at": "2026-06-20T14:42:35Z"
 }
