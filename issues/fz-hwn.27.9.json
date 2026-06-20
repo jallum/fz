@@ -12,9 +12,15 @@
   "id": "fz-hwn.27.9",
   "labels": [],
   "parent": "fz-hwn.27",
+  "comments": [
+    {
+      "text": "Carries its own Trash mark (deferred from 27.1): FunctionContract.arrows field-shape (Vec\u003cContractArrow\u003e -\u003e Vec\u003cTy\u003e+bounds) marked as restructured here.",
+      "timestamp": "2026-06-20T00:16:33Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "Collapse contract.rs witness/substitution walk onto the extended Types calculator",
   "type": "task",
-  "updated_at": "2026-06-20T00:09:29Z"
+  "updated_at": "2026-06-20T00:16:33Z"
 }
