@@ -9,9 +9,15 @@
   "id": "fz-hwn.27.1",
   "labels": [],
   "parent": "fz-hwn.27",
+  "comments": [
+    {
+      "text": "Code-review correction (verified vs HEAD): a literal big-bang rename of the whole hit-list is entangled and is NOT done here. (1) Group-B normalization (alpha_normalize_vars etc.) is a SharedTypes TRAIT method (compiler2/types/mod.rs:823,967 delegating to :406) shared with the parallel src/types/ system -- renaming ripples outside compiler2; it is marked at fz-hwn.27.6 where canonical_activation_key is rewritten in context. (2) Field-level group-A items (ActivationKey.input, CallableSurface.inputs, FunctionContract.arrows shape, ResolvedSpecDecl) cannot be trigger-renamed without performing the restructure -- marked at their superseding tickets (27.3 ResolvedSpecDecl, 27.6 ActivationKey.input/CallableSurface.inputs, 27.9 FunctionContract field). THIS ticket marks the one cleanly file-local, wholesale-removed unit: the contract.rs hand-rolled witness/substitution apparatus + its private types/enums (group C + ContractArrow/AppliedContractArrow/SchemeMatch). The epic-level outro (grep -rn Trash|trash_ returns nothing) is unchanged; marking is progressive per the proposal's 'as each concept is superseded it is renamed' intent.",
+      "timestamp": "2026-06-20T00:16:32Z"
+    }
+  ],
   "priority": 1,
   "status": "in_progress",
   "title": "Mark the kill-list: rename doomed surface/normalize/witness concepts with the Trash trigger",
   "type": "task",
-  "updated_at": "2026-06-20T00:11:57Z"
+  "updated_at": "2026-06-20T00:16:32Z"
 }
