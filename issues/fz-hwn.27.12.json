@@ -17,11 +17,15 @@
     {
       "text": "CORRECTION: NON-DETERMINISTIC. The lib test compiler2_native_program_joins_callable_resume_before_materializing_closure_call is FLAKY (observed FAIL/ok/FAIL/FAIL across 4 runs) — SAME bug as the matrix opaque_fn_value_join (which fails consistently, larger path). So lib is NOT cleanly green: it is 2239-2240/0-1 depending on run. The flakiness =\u003e a HashMap (unordered) iteration in the shape-derivation / boxing-seam path makes value 2's producer-vs-consumer shape sometimes align (pass) sometimes not (fail). STRONG LEAD: find the unordered iteration in transport shape derivation for the joined opaque callable (generic_callable_shape_with_resolutions / boundary publication / value_lane) and make it ordered (BTreeMap or sort) — likely fixes both deterministically. Repro flaky: loop 'cargo test --lib compiler2::drive_test::compiler2_native_program_joins_callable_resume_before_materializing_closure_call'.",
       "timestamp": "2026-06-20T13:17:10Z"
+    },
+    {
+      "text": "ROOT CAUSE (traced to ground). add_a/add_b have IDENTICAL signatures (x,acc)-\u003eacc+x; reducer = add_a|add_b is a join of two same-arrow functions distinguished only by ClosureLit fn tag (#31/#32). The SAME reducer value is represented TWO inconsistent ways: value 10 (local case-join in main, built from closure_lit, alpha'd separately, NOT re-addressed) = (a0,a1)-\u003ea2#31 | (a3,a4)-\u003ea5#32 (DISTINCT-arrow clauses); value 2 (same reducer as the Enum.reduce arg, re-addressed by address_inputs as a key input under Param(2)) = (a0,a1)-\u003ea2#31 | (a0,a1)-\u003ea2#32 (IDENTICAL-arrow clauses). MECHANISM: address_remap_children addresses by structural PATH; both clauses of a func-union sit at the SAME path (funcs axis at Param(2)), so clause-#31.arg0 and clause-#32.arg0 get the SAME address =\u003e the two arrows COLLAPSE to identical (only the ClosureLit tag survives). So the same value has a distinct-arrow type at its producer and a same-arrow type at its consumer =\u003e shape mismatch (encode boxed shape 24 from scalar 17). MASKED at HEAD because conflation gave EVERY position spuriously-distinct arrows, so producer/consumer happened to agree. The non-determinism (lib flaky) falls out: identical-arrow-different-tag clauses make any downstream order/select keyed on the arrow ambiguous between #31/#32 =\u003e order-dependent; fz2 build (fuller path) deterministically hits the bad pairing. FIX (not a defect in A — A is correct): canonicalize closure/fn-ref VALUE types the SAME way at every position so value 10 == value 2 byte-identical. Either (a) extend canonical-by-construction to closure value types (local join already addressed), or (b) stop address_inputs collapsing a function-VALUE arg's internal arrows. Principled = consistency. Repro deterministic: target/debug/fz2 build fixtures2/behavior/opaque_fn_value_join.fz -o /tmp/o.o",
+      "timestamp": "2026-06-20T13:30:20Z"
     }
   ],
   "priority": 1,
   "status": "open",
   "title": "Boxed-callable-join value-representation: opaque_fn_value_join supplied scalar",
   "type": "task",
-  "updated_at": "2026-06-20T13:17:10Z"
+  "updated_at": "2026-06-20T13:30:20Z"
 }
