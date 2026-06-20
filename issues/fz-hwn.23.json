@@ -13,9 +13,15 @@
   "id": "fz-hwn.23",
   "labels": [],
   "parent": "fz-hwn",
+  "comments": [
+    {
+      "text": "Root cause refined (fz-hwn.27.5 probe): the key IS addressed; the phantom survives because value_types use the OLD alpha_normalize_vars frame (α0) while the key uses addressing (a0), so phantom_resolution_keys can't match it to a ground sibling to prune. Cure = value_types addressed in activation scope (retargeted onto fz-hwn.27.8). Predicate to flag it = fz-hwn.27.5.",
+      "timestamp": "2026-06-20T16:13:31Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "Phantom polymorphic activation reaches the backend (FunctionId[a0,a0] not runtime-materializable)",
   "type": "bug",
-  "updated_at": "2026-06-20T00:09:29Z"
+  "updated_at": "2026-06-20T16:13:31Z"
 }
