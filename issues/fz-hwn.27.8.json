@@ -11,9 +11,15 @@
   "id": "fz-hwn.27.8",
   "labels": [],
   "parent": "fz-hwn.27",
+  "comments": [
+    {
+      "text": "Co-landing: not separable from 27.6 (proven empirically). Activation key inputs = capture_tys ++ surface.inputs, so the capture-slot model and the input re-key are the same change -- abi_ready_matches_direct_callable_captures_by_canonical_activation_key fails the moment inputs are re-keyed without it. See 27.6 finding.",
+      "timestamp": "2026-06-20T00:54:43Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "Captures as leading addressed slots: replace positional .input slicing with structural projection",
   "type": "task",
-  "updated_at": "2026-06-20T00:09:29Z"
+  "updated_at": "2026-06-20T00:54:43Z"
 }
