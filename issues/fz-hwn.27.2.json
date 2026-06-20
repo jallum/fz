@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-hwn.27.1"
   ],
@@ -14,8 +14,8 @@
   "labels": [],
   "parent": "fz-hwn.27",
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "Addressed type-variable + addressed-arrow interning (constructors + builder)",
   "type": "task",
-  "updated_at": "2026-06-20T00:09:26Z"
+  "updated_at": "2026-06-20T00:21:35Z"
 }
