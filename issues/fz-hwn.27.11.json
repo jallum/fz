@@ -6,14 +6,15 @@
   "blocks": [
     "fz-hwn.27.6"
   ],
+  "closed_at": "2026-06-20T10:56:22Z",
   "created": "2026-06-20T10:16:18Z",
   "description": "STEP 2a (the de-risking half-step, behavior-preserving, stays GREEN).\n\nWHY split: alpha_normalize_vars mints TypeVarId(0,1,2..) from one counter; address_id mints TypeVarId(0,1,2..) from a SEPARATE counter into the SAME TypeVarId space. They collide WITHIN one constructed type. So arrow(old_alpha_inputs, r0_address) is unsafe in one shot -- the result address can equal an input's alpha id and conflate. That coupling is why the one-shot 27.6 probe cascaded to ~30 failures. Splitting container-swap from canonicalization-change dissolves it.\n\nWork (mechanical, identity-preserving):\n- ActivationKey { root, function, input: Vec\u003cTy\u003e } -\u003e { root, function, arrow: Ty }.\n- Build it as types.arrow(\u0026current_canonical_inputs, SENTINEL) -- SAME inputs as today (per-input alpha + per-slot convergence_class), so key identity classes are bit-identical (arrow interning is injective in args; constant result suffix changes nothing). Tests stay green.\n- SENTINEL result = none(): collision-free (no vars), UNUSED (no consumer reads the result side yet), explicitly scaffolding. 27.6b replaces it with real r0 via address_arrow.\n- Add immutable Types::arrow_params(\u0026self, \u0026Ty) -\u003e Vec\u003cTy\u003e (via descr().pure_arrow().args) and ActivationKey::inputs(\u0026self, \u0026Types) -\u003e Vec\u003cTy\u003e.\n- Rewrite every .input consumer (~12 prod sites incl world.rs activation_inputs/normalize_contributions read paths, root.rs:117, native.rs:357/441/3467, transport.rs:747/776, artifact.rs:314/395, fixture_facts.rs:181, semantic.rs:347/357 + tests) to .inputs(types)/arrow_params.\n\nOutcome: arrow: Ty threaded through the whole system; direct Vec\u003cTy\u003e field dependence severed; lib+matrix green, zero warnings. Sets up 27.6b to be a purely SEMANTIC diff (swap construction to whole-scope address_arrow).",
   "id": "fz-hwn.27.11",
   "labels": [],
   "parent": "fz-hwn.27",
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "ActivationKey carries arrow: Ty (half-step: thread the arrow, project the input side)",
   "type": "task",
-  "updated_at": "2026-06-20T10:16:34Z"
+  "updated_at": "2026-06-20T10:56:22Z"
 }
