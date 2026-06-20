@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-hwn.27.2"
   ],
@@ -13,8 +13,8 @@
   "labels": [],
   "parent": "fz-hwn.27",
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "Extend the Types calculator: trichotomy, union-rebind, structural-mismatch, map/tuple arity, empty-list",
   "type": "task",
-  "updated_at": "2026-06-20T00:09:27Z"
+  "updated_at": "2026-06-20T00:33:52Z"
 }
