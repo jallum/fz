@@ -6,6 +6,7 @@
   "blocks": [
     "fz-hwn.23"
   ],
+  "closed_at": "2026-06-20T16:31:18Z",
   "created": "2026-06-20T00:08:07Z",
   "description": "STEP 1 (build beside the old). Code-review finding 1. This is the heart of fz-hwn.23.\n\nThe backend-boundary predicate is OPEN WORK, not a settled fact. A polymorphic template activation reaches the backend and its bare-var value materializes as NativeBoundValue::Absent and panics on use. BUT the exact mechanism is NOT \"bare var =\u003e empty type\": code review verified is_empty requires self.vars.is_none() (descr.rs:412), so a bare var is NOT is_empty. The earlier \"bare var =\u003e unrepresentable\" story is wrong; do not assume the syntactic predicate is correct until a test pins it.\n\nWork: characterize, against REAL native lowering, the exact predicate that excludes precisely the activations that cannot become backend executables.\nCandidates:\n- is_value_template (a pure var, or a tuple with a bare-var field) -- the cheap, sound, SYNTACTIC approximation (types/mod.rs value_lane_repr returns the bare var unchanged).\n- meaningful-variable groundness: mvar(t) = { a in var(t) | t[0/a] != t } -- Castagna, the principled semantic target; escalate to it if the syntactic predicate proves too coarse. Belongs on the calculator side, never the key.\n\nDeliverable: a test that pins which predicate correctly classifies the FunctionId(164)[a0,a0] phantom and its siblings as non-materializable, so re-keying (Step 2) can ground-or-prune exactly those activations.\n\nDepends on: addressed-arrow machinery (fz-hwn.27.2).\nChecks: a lowering-level test asserts the predicate against the with_index repro phantom; documents whether is_value_template suffices or mvar is required. Lib green, zero warnings.",
   "id": "fz-hwn.27.5",
@@ -18,8 +19,8 @@
     }
   ],
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Pin the backend-boundary value-template predicate by test (is_value_template vs mvar)",
   "type": "task",
-  "updated_at": "2026-06-20T16:13:30Z"
+  "updated_at": "2026-06-20T16:31:18Z"
 }
