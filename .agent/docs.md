@@ -16,6 +16,7 @@ Read:
 - [type naming](docs/type-naming.md) — source type names resolve through namespaces to `TypeName` identities, then to hard `Ty` through `TypeDefined` facts.
 - [quoted source](docs/quoted-source.md) — compiler2's Fz-shaped quoted-source substrate: `{heap, root}` keys, fast-fail `semantically_eq` comparison with `Horizon` depth, Elixir-shaped AST tuples, private metadata keys, and `ScopeSnapshot`-based `__MODULE__` / `__ENV__` projection.
 - [set-theoretic types](docs/set-theoretic-types.md) — types as sets of values: axes/DNF, the two `Types` implementations behind one trait, schemes, brands/opaques, and the typing-vs-runtime predicate split.
+- [addressed arrow](docs/addressed-arrow.md) — the one interned arrow language for every function surface: variables as structural addresses, addressing+interning as canonical-by-construction, the two binders, the dispatch-key collapse vs. evidence split, and the `match_arrow` trichotomy calculator.
 - [type specialization](docs/type-specialization.md) — how compiler2 types one activation (value-flow over lowered steps, return as a union over reachable clauses) and why specialization stays finite.
 - [specs](docs/specs.md) — the `@spec` contract engine: overload sets, scheme matching, application with overlap witnesses, higher-order callback evidence, and the upper-bound coverage check.
 - [protocols](docs/protocols.md) — protocols as owned facts: callback surface + domain type, impl registration, and receiver-subtype dispatch (`resolve_protocol_call`) with lazy runtime-impl loading.
