@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-21T23:36:44Z",
+  "description": "Behavior-preserving prep for fz-bin.5. Native lowering currently handles BackendTail::DirectCall inline inside NativeLowerer::lower_entry_tail (src/compiler2/jobs/native.rs around the DirectCall arm), including callee resolution, arg lane encoding, return-flow routing, and continuation construction. Multi-target call edges need to emit that same direct-call body once per dispatch arm. Extract the single-target lowering into small helpers first, with no artifact shape changes and no behavior changes, so fz-bin.5 can call the helper from each selected arm instead of duplicating the inline block. Verify cargo check/test coverage stays green and direct-call backend/native shape tests still pass.",
+  "id": "fz-bin.6",
+  "labels": [],
+  "parent": "fz-bin",
+  "priority": 1,
+  "status": "open",
+  "title": "Compiler2 native: extract direct-call tail lowering before multi-target call edges",
+  "type": "task",
+  "updated_at": "2026-06-21T23:36:44Z"
+}
