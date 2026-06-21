@@ -314,6 +314,14 @@ impl Types {
         self.descr(arrow).pure_arrow().map_or(0, |sig| sig.args.len())
     }
 
+    /// Project the result side of an arrow immutably. `None` when `arrow` is not
+    /// a pure arrow. Pairs with `arrow_params` to decompose an interned arrow back
+    /// into its (params, result) — the read path for `ResolvedSpec` after the
+    /// resolver addresses a spec scope whole (fz-hwn.27.14).
+    pub fn arrow_result(&self, arrow: &Ty) -> Option<Ty> {
+        self.descr(arrow).pure_arrow().map(|sig| sig.ret)
+    }
+
     pub fn tuple(&mut self, elems: &[Ty]) -> Ty {
         self.intern(Descr::tuple_of(elems.iter().copied()))
     }

@@ -138,10 +138,33 @@ impl World<'_> {
             let bound = self.resolve_ty(namespace, &expr, &mut vars)?;
             constraints.insert(id, bound);
         }
+        // fz-hwn.27.14 — address the whole spec scope at the binder. The
+        // resolver's first-occurrence ids are raw material; a variable's
+        // canonical identity is its STRUCTURAL ADDRESS (param i -> a{i}, result
+        // -> r0, nested by path), assigned here in one whole-scope pass so two
+        // alpha-equivalent specs intern byte-identical. Names and bounds re-key
+        // through the env, never escaping un-addressed (addressing > encounter).
+        let (arrow, env) = self.types_mut().address_arrow_with_env(&params, result);
+        let params = self.types_mut().arrow_params(&arrow);
+        let result = self
+            .types_mut()
+            .arrow_result(&arrow)
+            .expect("an addressed spec arrow has a result slot");
+        let mut sigma: HashMap<TypeVarId, Ty> = HashMap::with_capacity(env.len());
+        for (&original, &address) in &env {
+            let addressed_var = self.types_mut().type_var(address);
+            sigma.insert(original, addressed_var);
+        }
+        let mut addressed_constraints = HashMap::with_capacity(constraints.len());
+        for (var, bound) in constraints {
+            let address = env.get(&var).copied().unwrap_or(var);
+            let bound = self.types_mut().instantiate(&bound, &sigma);
+            addressed_constraints.insert(address, bound);
+        }
         Ok(ResolvedSpec {
             params,
             result,
-            constraints,
+            constraints: addressed_constraints,
         })
     }
 

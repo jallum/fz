@@ -137,17 +137,28 @@ fn compiler2_resolve_spec_resolves_types_shapes_and_constraints_against_the_capt
     assert_eq!(
         world.types_mut().display(&resolved.result),
         expect.display(&var0),
-        "the result is the free variable `x`, bound to id 0 on first sight",
+        "the result is the free variable `x`",
+    );
+    // fz-hwn.27.14: `resolve_spec` addresses the whole spec scope at the binder,
+    // so the result variable is the RESULT-SLOT ADDRESS r0 — not an encounter
+    // ordinal. (Here r0 also interns as id 0 only because this spec has no
+    // param-position variables; the identity that matters is the address.)
+    let r0 = world.types_mut().result_alpha();
+    assert_eq!(
+        resolved.result, r0,
+        "the spec result is addressed to r0 by construction"
     );
 
     // The `when x: tkf_box(tkf_elem)` bound resolves to list(integer), keyed by
-    // the very variable the result names.
+    // the variable the result names — re-keyed onto its address r0 through the
+    // resolver's name→address env.
     assert_eq!(resolved.constraints.len(), 1, "one when-clause bound");
+    let r0_id = world.types_mut().result_alpha_id();
     let bound = resolved
         .constraints
-        .get(&TypeVarId(0))
+        .get(&r0_id)
         .copied()
-        .expect("x is constrained");
+        .expect("x is constrained, keyed by its address r0");
     assert_eq!(
         world.types_mut().display(&bound),
         expect.display(&list_int),
