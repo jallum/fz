@@ -1,5 +1,5 @@
 {
-  "assignee": "Jason Allum",
+  "assignee": "",
   "blocked_by": [],
   "blocks": [
     "fz-bin.3"
@@ -28,8 +28,8 @@
     }
   ],
   "priority": 1,
-  "status": "in_progress",
+  "status": "open",
   "title": "Multi-target dispatch call-edge through materialize+codegen (all return flows)",
   "type": "task",
-  "updated_at": "2026-06-21T20:53:19Z"
+  "updated_at": "2026-06-21T20:54:00Z"
 }
