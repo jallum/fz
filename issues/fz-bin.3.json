@@ -1,7 +1,8 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-bin.5"
+    "fz-bin.5",
+    "fz-bin.7"
   ],
   "blocks": [],
   "created": "2026-06-21T18:23:26Z",
@@ -13,5 +14,5 @@
   "status": "open",
   "title": "Re-enable fz-9i4.7.2 fixtures that now compile; verify matrix green",
   "type": "task",
-  "updated_at": "2026-06-21T20:57:28Z"
+  "updated_at": "2026-06-21T23:37:10Z"
 }
