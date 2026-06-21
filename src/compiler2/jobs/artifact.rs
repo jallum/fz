@@ -571,6 +571,16 @@ fn materialize_direct_call_edge(
         return Ok(None);
     };
     let Some(target) = summary.single_target().cloned() else {
+        super::super::callsite_dispatch::dispatch_from_callsite_summary(&summary).map_err(|error| {
+            incomplete_semantic_plan(
+                world,
+                root_id,
+                format!(
+                    "materialization could not build dispatch for multi-target direct callsite {}: {error:?}",
+                    callsite.as_u32()
+                ),
+            )
+        })?;
         return Err(incomplete_semantic_plan(
             world,
             root_id,

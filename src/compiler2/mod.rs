@@ -1,6 +1,7 @@
 mod agenda;
 mod artifact;
 mod body;
+pub(crate) mod callsite_dispatch;
 mod cli;
 mod code;
 mod compiler;
