@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-21T13:53:03Z",
+  "description": "QuotedFunctionError (quoted_function.rs, 165 uses, one file) is a strict subset of QuotedSourceError: just { message: String }, no diagnostic code. Its From\u003cQuotedSourceError\u003e DISCARDS the user/internal  classification. It is a redundant parallel error in the same quoted-decoding domain — the QuotedSourceSpan pattern (a lossier copy of a richer canonical type).\n\nConsequence (not just dedup): derive_function_surface returns QuotedFunctionError, and jobs/source.rs:252 maps EVERY such error to emit_internal_surface_error. So a USER source error during function decode is misclassified as INTERNAL, because QuotedFunctionError cannot carry a user DiagCode. This is the mechanism behind fz-gwo (list-literal-ending-in-a-call surfaced as internal/post-resolution-leftover instead of a user diagnostic).\n\nFix: delete QuotedFunctionError; use QuotedSourceError throughout quoted_function.rs (it is strictly richer — carries Option\u003cDiagCode\u003e via ::user). Then function-decode user errors can classify properly, and the From-that-loses-code dies. Re-verify whether fz-gwo then reports as a user diagnostic.\n\nFound while auditing the Quoted* family after QuotedSourceSpan was retired (fz-hyj). Substrate types (Heap/Builder/Cursor/Root/LexicalContext/Metadata) are NOT redundant — they are the macro 'code as runtime values' substrate. The deeper question (dual heap+decoded representation per code unit) is tracked separately.",
+  "id": "fz-bkx",
+  "labels": [],
+  "priority": 2,
+  "status": "open",
+  "title": "Collapse QuotedFunctionError into QuotedSourceError (redundant + drops user diag codes)",
+  "type": "task",
+  "updated_at": "2026-06-21T13:53:03Z"
+}
