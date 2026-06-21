@@ -2,14 +2,15 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-06-21T11:26:24Z",
   "created": "2026-06-21T11:26:10Z",
   "description": "Retire alpha_normalize_vars — the last encounter-order canonicalizer. The frame-unification half of fz-hwn.27.8 (the .27.5-flagged survivors), separable from the captures-as-addressed-slots half.\n\nalpha_normalize_vars recovered a canonical form AFTER the fact by re-numbering a standalone type's variables in encounter order — the doomed attempt to make a hash-consing interner alpha-complete from the outside. With both binders now addressing (the compiler2 key-mint, fz-hwn.27.6; the resolver, fz-hwn.27.14), every type flowing into its callers is ALREADY addressed at its binder, so the re-normalization did not canonicalize them — it CORRUPTED them back into a divergent encounter frame (the a0-vs-alpha0 split proved in fz-hwn.27.5, the value_types side of the fz-hwn.23 root cause).\n\nRemoved (all 5 callers + the primitive):\n- world.rs define_activation_analysis (value_types), define_activation_return (evidence), define_callsite_summary (2x return_ty) — types born in the activation's addressed frame; deletion, not re-addressing.\n- native_codegen/driver.rs build_codegen_callable_boundaries — params from the addressed activation arrow; erase_closure_identity alone leaves them canonical.\n- Types::alpha_normalize_vars (inherent + Types-trait method + trait decl in src/types) + the alpha_normalize_vars/alpha_normalize_go free fns + 2 unit tests (the alpha-equivalence behavior they pinned is covered by addressed.rs's address tests).\n\nVerified: grep alpha_normalize -\u003e nothing in src/; lib 1034/0 (2 deleted tests), matrix 305/0, zero warnings, no drive-timeout (the fixpoint settles without the canonicalizer because the frames already agree).",
   "id": "fz-hwn.27.15",
   "labels": [],
   "parent": "fz-hwn.27",
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "Retire alpha_normalize_vars (the last encounter-order canonicalizer)",
   "type": "task",
-  "updated_at": "2026-06-21T11:26:10Z"
+  "updated_at": "2026-06-21T11:26:24Z"
 }
