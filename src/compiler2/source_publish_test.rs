@@ -396,7 +396,6 @@ fn main(), do: answer()
 }
 
 #[test]
-#[ignore = "red-worklist: triage + re-enable"]
 fn source_publication_accepts_raw_compiler_fragments_from_item_macros() {
     let tel = ConfiguredTelemetry::new();
     let mut world = World::new(&tel);
@@ -433,7 +432,6 @@ fn main(), do: answer()
 }
 
 #[test]
-#[ignore = "red-worklist: triage + re-enable"]
 fn source_publication_defers_local_macro_expansion_until_function_demand() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();

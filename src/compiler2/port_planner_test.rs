@@ -62,7 +62,6 @@ fn typetest_guard_folds_dead_branch_for_concrete_int() {
 
 // Ported from src/ir_planner/ir_planner_test.rs: closure with captures registers typed callable entry at materialization
 #[test]
-#[ignore = "red-worklist: triage + re-enable"]
 fn closure_with_captures_registers_typed_callable_entry() {
     let tel = ConfiguredTelemetry::new();
     let mut compiler = Compiler2::new(&tel);
@@ -465,7 +464,6 @@ fn enum_reduce_with_closure_converges_to_concrete_int() {
 
 // Ported from src/ir_planner/ir_planner_test.rs: Enum.reduce with &Kernel.+/2 operator ref propagates int accumulator type
 #[test]
-#[ignore = "red-worklist: triage + re-enable"]
 fn enum_reduce_with_operator_ref_propagates_int_type() {
     let tel = ConfiguredTelemetry::new();
     let mut compiler = Compiler2::new(&tel);
@@ -822,7 +820,6 @@ fn enum_take_on_mixed_inputs_specializes_for_each_type() {
 
 // Ported from src/ir_planner/ir_planner_test.rs: Enum.reduce with runtime-graph reducer returns non-empty type
 #[test]
-#[ignore = "red-worklist: triage + re-enable"]
 fn enum_reduce_runtime_graph_reducer_returns_non_empty_type() {
     let tel = ConfiguredTelemetry::new();
     let mut compiler = Compiler2::new(&tel);
@@ -842,7 +839,6 @@ fn enum_reduce_runtime_graph_reducer_returns_non_empty_type() {
 
 // Ported from src/ir_planner/ir_planner_test.rs: Enum.take_positive uses reduce_while with typed callback return
 #[test]
-#[ignore = "red-worklist: triage + re-enable"]
 fn take_positive_reduce_while_has_typed_callback_return() {
     let tel = ConfiguredTelemetry::new();
     let mut compiler = Compiler2::new(&tel);
@@ -1001,7 +997,6 @@ fn closed_union_dispatch_matrix_has_no_fallback() {
 
 // Ported from src/ir_planner/ir_planner_test.rs: single-impl protocol receiver is not transformed into multi-arm cascade
 #[test]
-#[ignore = "red-worklist: triage + re-enable"]
 fn single_impl_protocol_receiver_not_rewritten_to_cascade() {
     let tel = ConfiguredTelemetry::new();
     let mut compiler = Compiler2::new(&tel);
@@ -1021,7 +1016,6 @@ fn single_impl_protocol_receiver_not_rewritten_to_cascade() {
 
 // Ported from src/ir_planner/ir_planner_test.rs: single-impl protocol receiver selects StaticDirect dispatch without matrix
 #[test]
-#[ignore = "red-worklist: triage + re-enable"]
 fn single_impl_protocol_receiver_selects_static_direct_dispatch() {
     let tel = ConfiguredTelemetry::new();
     let mut compiler = Compiler2::new(&tel);

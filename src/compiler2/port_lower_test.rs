@@ -296,7 +296,6 @@ fn empty_case_expression_is_compile_error() {
 
 // Ported from src/ir_lower/ir_lower_test.rs: guard and binding share a single tuple field projection, not two
 #[test]
-#[ignore = "red-worklist: triage + re-enable"]
 fn guard_and_binding_reuse_single_tuple_field_projection() {
     let tel = ConfiguredTelemetry::new();
     let mut compiler = Compiler2::new(&tel);
@@ -471,7 +470,6 @@ fn guarded_list_cons_clause_dispatches_correctly() {
 
 // Ported from src/ir_lower/ir_lower_test.rs: pinned variable in receive pattern resolves from outer scope
 #[test]
-#[ignore = "red-worklist: triage + re-enable"]
 fn receive_pinned_variable_resolves_from_outer_scope() {
     let tel = ConfiguredTelemetry::new();
     let mut compiler = Compiler2::new(&tel);

@@ -112,7 +112,6 @@ fn fixpoint_leaves_no_reached_fn_unknown_fold_capture_closure() {
 
 // Ported from src/type_infer/type_infer_test.rs: type inference converges to known returns for fold and arithmetic programs
 #[test]
-#[ignore = "red-worklist: triage + re-enable"]
 fn fixpoint_leaves_no_reached_fn_unknown_fold_state_machine() {
     let tel = ConfiguredTelemetry::new();
     let mut compiler = Compiler2::new(&tel);
@@ -212,7 +211,6 @@ fn enum_reduce_range_settles_to_int() {
 
 // Ported from src/type_infer/type_infer_test.rs: qualified and bare operator refs both settle via kernel specs
 #[test]
-#[ignore = "red-worklist: triage + re-enable"]
 fn enum_reduce_operator_refs_settle_through_kernel_specs() {
     let tel = ConfiguredTelemetry::new();
     let mut compiler = Compiler2::new(&tel);
@@ -912,7 +910,6 @@ fn corpus_folds_settle_myreduce_to_int_fold_capture_closure() {
 
 // Ported from src/type_infer/type_infer_test.rs: tail-call, non-tail, capture-int, capture-closure, state-machine folds all settle to int
 #[test]
-#[ignore = "red-worklist: triage + re-enable"]
 fn corpus_folds_settle_myreduce_to_int_fold_state_machine() {
     let tel = ConfiguredTelemetry::new();
     let mut compiler = Compiler2::new(&tel);

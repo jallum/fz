@@ -5,7 +5,6 @@ use crate::telemetry::ConfiguredTelemetry;
 
 // Ported from src/frontend/macros_test.rs: macro quote+unquote expands arithmetic at compile time
 #[test]
-#[ignore = "red-worklist: triage + re-enable"]
 fn macro_quote_unquote_arithmetic() {
     let tel = ConfiguredTelemetry::new();
     let mut compiler = Compiler2::new(&tel);
@@ -25,7 +24,6 @@ fn macro_quote_unquote_arithmetic() {
 
 // Ported from src/frontend/macros_test.rs: macro called multiple times inside a fn body
 #[test]
-#[ignore = "red-worklist: triage + re-enable"]
 fn macro_called_multiple_times_in_body() {
     let tel = ConfiguredTelemetry::new();
     let mut compiler = Compiler2::new(&tel);
@@ -45,7 +43,6 @@ fn macro_called_multiple_times_in_body() {
 
 // Ported from src/frontend/macros_test.rs: macro expansion splices a call to a regular function
 #[test]
-#[ignore = "red-worklist: triage + re-enable"]
 fn macro_expansion_splices_regular_fn_call() {
     let tel = ConfiguredTelemetry::new();
     let mut compiler = Compiler2::new(&tel);
@@ -65,7 +62,6 @@ fn macro_expansion_splices_regular_fn_call() {
 
 // Ported from src/frontend/macros_test.rs: nested macro wraps inner macro and expander re-expands result
 #[test]
-#[ignore = "red-worklist: triage + re-enable"]
 fn nested_macro_expander_re_expands_result() {
     let tel = ConfiguredTelemetry::new();
     let mut compiler = Compiler2::new(&tel);
@@ -85,7 +81,6 @@ fn nested_macro_expander_re_expands_result() {
 
 // Ported from src/frontend/macros_test.rs: macro args are passed as quoted AST, not pre-evaluated
 #[test]
-#[ignore = "red-worklist: triage + re-enable"]
 fn macro_args_received_as_quoted_ast() {
     let tel = ConfiguredTelemetry::new();
     let mut compiler = Compiler2::new(&tel);
@@ -124,7 +119,6 @@ fn runaway_macro_hits_depth_limit() {
 
 // Ported from src/frontend/macros_test.rs: macro-introduced binding does not capture caller's variable
 #[test]
-#[ignore = "red-worklist: triage + re-enable"]
 fn macro_hygiene_local_does_not_shadow_caller() {
     let tel = ConfiguredTelemetry::new();
     let mut compiler = Compiler2::new(&tel);
@@ -144,7 +138,6 @@ fn macro_hygiene_local_does_not_shadow_caller() {
 
 // Ported from src/frontend/macros_test.rs: unquoted variable splices caller's value into macro expansion
 #[test]
-#[ignore = "red-worklist: triage + re-enable"]
 fn macro_hygiene_unquoted_var_splices_caller_value() {
     let tel = ConfiguredTelemetry::new();
     let mut compiler = Compiler2::new(&tel);
@@ -164,7 +157,6 @@ fn macro_hygiene_unquoted_var_splices_caller_value() {
 
 // Ported from src/frontend/macros_test.rs: same macro-introduced name maps to one gensym within an invocation
 #[test]
-#[ignore = "red-worklist: triage + re-enable"]
 fn macro_hygiene_consistent_gensym_within_invocation() {
     let tel = ConfiguredTelemetry::new();
     let mut compiler = Compiler2::new(&tel);
@@ -187,7 +179,6 @@ fn macro_hygiene_consistent_gensym_within_invocation() {
 
 // Ported from src/frontend/macros_test.rs: cross-module macro expansion qualifies bare names against home module
 #[test]
-#[ignore = "red-worklist: triage + re-enable"]
 fn cross_module_macro_qualifies_names_against_home_module() {
     let tel = ConfiguredTelemetry::new();
     let mut compiler = Compiler2::new(&tel);
@@ -210,7 +201,6 @@ fn cross_module_macro_qualifies_names_against_home_module() {
 
 // Ported from src/frontend/macros_test.rs: imported macro is callable unqualified in importing module
 #[test]
-#[ignore = "red-worklist: triage + re-enable"]
 fn imported_macro_callable_unqualified() {
     let tel = ConfiguredTelemetry::new();
     let mut compiler = Compiler2::new(&tel);
@@ -230,7 +220,6 @@ fn imported_macro_callable_unqualified() {
 
 // Ported coverage: item-level macro returns compiler-shaped fn AST splicing a callable function
 #[test]
-#[ignore = "red-worklist: triage + re-enable"]
 fn item_macro_compiler_ast_splices_callable_fn() {
     let tel = ConfiguredTelemetry::new();
     let mut compiler = Compiler2::new(&tel);
@@ -253,7 +242,6 @@ fn item_macro_compiler_ast_splices_callable_fn() {
 
 // Ported coverage: item macro returning a list of compiler-shaped fn AST items splices multiple fns
 #[test]
-#[ignore = "red-worklist: triage + re-enable"]
 fn item_macro_list_of_compiler_ast_functions_splices_multiple_fns() {
     let tel = ConfiguredTelemetry::new();
     let mut compiler = Compiler2::new(&tel);
@@ -276,7 +264,6 @@ fn item_macro_list_of_compiler_ast_functions_splices_multiple_fns() {
 
 // Ported coverage: item macro inside defmodule qualifies compiler-shaped fn AST with module path
 #[test]
-#[ignore = "red-worklist: triage + re-enable"]
 fn item_macro_in_module_qualifies_spliced_fn_names() {
     let tel = ConfiguredTelemetry::new();
     let mut compiler = Compiler2::new(&tel);
@@ -359,7 +346,6 @@ fn operator_sugars_desugar_to_stdlib_calls() {
 
 // Ported from src/frontend/macros_test.rs: `in` and `not in` desugar to Enum.member? at expansion time
 #[test]
-#[ignore = "red-worklist: triage + re-enable"]
 fn membership_operators_desugar_to_enum_member() {
     let tel = ConfiguredTelemetry::new();
     let mut compiler = Compiler2::new(&tel);

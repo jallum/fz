@@ -366,7 +366,6 @@ fn multiline_do_end_body_with_local_binding() {
 
 // Ported from src/cli/repl_test.rs: defmacro defined in one chunk is expandable in a later expression
 #[test]
-#[ignore = "red-worklist: triage + re-enable"]
 fn defmacro_expands_in_subsequent_expression() {
     let tel = ConfiguredTelemetry::new();
     let mut compiler = Compiler2::new(&tel);

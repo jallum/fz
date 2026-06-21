@@ -1352,7 +1352,6 @@ fn compiler2_root_source_publication_is_once_per_code_fact() {
 }
 
 #[test]
-#[ignore = "red-worklist: triage + re-enable"]
 fn compiler2_macro_executable_runs_quote_unquote_on_the_source_heap() {
     let tel = ConfiguredTelemetry::new();
     let outputs = OutputCapture::new();
@@ -1899,7 +1898,6 @@ fn compiler2_unused_runtime_library_stays_cold() {
 }
 
 #[test]
-#[ignore = "red-worklist: triage + re-enable"]
 fn compiler2_enum_reduce_selects_list_protocol_impl_and_callable_reducer() {
     let tel = ConfiguredTelemetry::new();
     let outputs = OutputCapture::new();
@@ -2083,7 +2081,6 @@ fn compiler2_enum_reduce_selects_list_protocol_impl_and_callable_reducer() {
 }
 
 #[test]
-#[ignore = "red-worklist: triage + re-enable"]
 fn compiler2_enum_reduce_operator_ref_activates_kernel_plus() {
     let tel = ConfiguredTelemetry::new();
     let functions = FunctionCapture::new();
@@ -5047,7 +5044,6 @@ fn compiler2_native_program_jit_runs_enum_reduce_through_compiler2_codegen() {
 }
 
 #[test]
-#[ignore = "red-worklist: triage + re-enable"]
 fn compiler2_native_program_jit_runs_enum_map_reduce_with_direct_closure_targets() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
@@ -5889,7 +5885,6 @@ fn compiler2_interp_runs_spawn_opt_children_from_backend_runtime_intrinsics() {
 }
 
 #[test]
-#[ignore = "red-worklist: triage + re-enable"]
 fn compiler2_interp_runs_selective_receive_with_make_ref_from_backend_artifacts() {
     let tel = ConfiguredTelemetry::new();
     let dbg = DbgCapture::new();
@@ -6251,7 +6246,6 @@ fn compiler2_native_lowering_consumes_return_payload_flow_through_return_lanes()
 }
 
 #[test]
-#[ignore = "red-worklist: triage + re-enable"]
 fn compiler2_native_actor_ring_delivers_resume_values_through_continuation_abi() {
     let tel = ConfiguredTelemetry::new();
     let mut compiler = Compiler2::new(&tel);
@@ -9332,7 +9326,6 @@ fn compiler2_import_only_keeps_provider_lazy_until_a_body_needs_it() {
 }
 
 #[test]
-#[ignore = "red-worklist: triage + re-enable"]
 fn compiler2_imported_macro_expands_in_provider_definition_namespace() {
     let tel = ConfiguredTelemetry::new();
     let functions = FunctionCapture::new();
@@ -9389,7 +9382,6 @@ end
 }
 
 #[test]
-#[ignore = "red-worklist: triage + re-enable"]
 fn compiler2_require_except_selects_remote_macro_set() {
     let tel = ConfiguredTelemetry::new();
     let functions = FunctionCapture::new();
@@ -9515,7 +9507,6 @@ end
 }
 
 #[test]
-#[ignore = "red-worklist: triage + re-enable"]
 fn compiler2_require_remote_macro_waits_executable_and_expands() {
     let tel = ConfiguredTelemetry::new();
     let functions = FunctionCapture::new();
@@ -11796,7 +11787,6 @@ fn compiler2_never_returning_function_settles_with_empty_evidence() {
 }
 
 #[test]
-#[ignore = "red-worklist: triage + re-enable"]
 fn compiler2_unproductive_deepening_settles_at_bottom_without_widening() {
     // fn deep(x), do: [deep(x)] — the inner call must produce a value before
     // the list ever exists, so this function NEVER returns: its least
@@ -11981,7 +11971,6 @@ fn compiler2_corpus_never_engages_return_widening_shard_1() {
 }
 
 #[test]
-#[ignore = "red-worklist: triage + re-enable"]
 fn compiler2_corpus_never_engages_return_widening_shard_2() {
     sweep_corpus_for_return_widening(2, 4);
 }
@@ -12252,7 +12241,6 @@ fn compiler2_numeric_literal_in_type_position_widens_with_a_warning() {
     assert_eq!(digit, "int", "the literal type means its kind");
 }
 #[test]
-#[ignore = "red-worklist: triage + re-enable"]
 fn compiler2_native_program_jit_adapts_callable_raw_returns_back_to_value_refs() {
     let tel = ConfiguredTelemetry::new();
     let dbg = DbgCapture::new();
