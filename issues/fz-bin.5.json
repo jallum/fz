@@ -13,9 +13,15 @@
   "id": "fz-bin.5",
   "labels": [],
   "parent": "fz-bin",
+  "comments": [
+    {
+      "text": "Research note 2026-06-21: runtime_demand and transport already iterate CallSiteSummary.targets for argument demand/source tracing; the remaining single-target collapse is materialized/ABI/emission/backend/native call edges. Materialized effects, backend extern marshal collection, backend interp evaluation, and native lowering all currently pattern-match a single BackendTail::DirectCall callee. fz-bin.6 now blocks this ticket to extract native single-target direct-call lowering before emitting that body once per dispatch arm.",
+      "timestamp": "2026-06-21T23:37:09Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "Multi-target dispatch call-edge through materialize+codegen (all return flows)",
   "type": "task",
-  "updated_at": "2026-06-21T23:36:52Z"
+  "updated_at": "2026-06-21T23:37:09Z"
 }
