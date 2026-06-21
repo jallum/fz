@@ -890,10 +890,10 @@ fn build_codegen_callable_boundaries<T: Types<Ty = Ty> + ClosureTypes>(
         let full_tys = t
             .arrow_params(&boundary.target.activation.arrow)
             .into_iter()
-            .map(|ty| {
-                let erased = t.erase_closure_identity(&ty);
-                t.alpha_normalize_vars(&erased)
-            })
+            // The activation arrow is already addressed (canonical), so erasing the
+            // closure identity leaves a canonical type — no encounter re-normalization
+            // (fz-hwn.27.8).
+            .map(|ty| t.erase_closure_identity(&ty))
             .collect::<Vec<_>>();
         let capture_key = crate::types::key_slots_from_tys(full_tys.iter().copied().take(boundary.capture_count));
         let next = NativeCallableBoundarySurface {

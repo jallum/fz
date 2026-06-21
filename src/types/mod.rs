@@ -195,11 +195,6 @@ pub trait Types {
     /// implementation owns the concrete widening transform.
     fn widen_for_recursive_spec_key(&mut self, a: &Self::Ty) -> Self::Ty;
 
-    /// Canonicalize named type-variable ids up to alpha-equivalence while
-    /// preserving their equality structure. Used when public specialization
-    /// keys should not fork on fresh-id accidents alone.
-    fn alpha_normalize_vars(&mut self, a: &Self::Ty) -> Self::Ty;
-
     /// Binary least-upper-bound in the **refinement lattice** — the
     /// finite-height widening join the specialization worklist uses to settle a
     /// recursive slot (`.agent/docs/type-specialization.md`). Distinct from

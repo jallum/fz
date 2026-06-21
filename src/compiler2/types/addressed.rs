@@ -13,9 +13,10 @@
 //! of its **first occurrence** (pre-order: params left-to-right, result last);
 //! repeats reuse it. Because the address is the structural path, `d` in `foo`
 //! is `a2` regardless of how many fields the second parameter's tuple holds —
-//! adding a field never renumbers `d`. This is what
-//! [`Types::alpha_normalize_vars`] cannot express: it numbers by encounter
-//! order, so `d` would be `a3` and would drift when the tuple grows.
+//! adding a field never renumbers `d`. This is what encounter-order numbering
+//! cannot express — it would call `d` `a3` and drift when the tuple grows — and
+//! is why the addressed arrow replaced it outright (fz-hwn.27.8 retired the last
+//! encounter canonicalizer, `alpha_normalize_vars`).
 //!
 //! Addresses are interned ([`Types::address_id`]) so that
 //! [`Types::param_alpha`]`(0)` always yields the same `a0`: structurally
