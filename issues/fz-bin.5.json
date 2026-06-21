@@ -1,6 +1,7 @@
 {
   "assignee": "",
   "blocked_by": [
+    "fz-bin.2",
     "fz-bin.4"
   ],
   "blocks": [],
