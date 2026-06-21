@@ -4,6 +4,7 @@
   "blocks": [
     "fz-bin.5"
   ],
+  "closed_at": "2026-06-21T23:48:34Z",
   "created": "2026-06-21T18:23:26Z",
   "description": "Remove the abandoned synthesized-dispatcher WIP. The β design (epic) needs NO synthesized callback function, so the α prototype is dead and must not coexist with the new path.\n\nREMOVE:\n- src/compiler2/jobs/protocol_dispatch.rs (whole module: callback_arms / synthesize_callback_entry_dispatch / dispatcher_row / struct_module_name). NOTE: before deleting, lift the arm-row construction (dispatcher_row + the (impl, receiver_ty) + struct-before-map ordering) into fz-bin.2's matrix builder -- it transplants almost verbatim. So: do fz-bin.2 FIRST harvesting from this file, then delete the file here. (If sequencing is awkward, fz-bin.2 may just copy and this ticket deletes.)\n- src/compiler2/jobs/mod.rs: the `mod protocol_dispatch;` registration.\n- src/compiler2/jobs/dispatch.rs: the plan_entry_dispatch protocol-callback interception (the `if let Some(callback) = world.protocol_callback(function) { return plan_protocol_callback_entry_dispatch(...) }` branch) and the plan_protocol_callback_entry_dispatch fn. Protocol callbacks no longer get a synthesized EntryDispatch.\n\nVERIFY: lib + matrix green after removal (the WIP was inert -- nothing demanded a callback's EntryDispatch -- so removal is behavior-preserving on its own). Zero warnings.",
   "id": "fz-bin.4",
@@ -20,8 +21,8 @@
     }
   ],
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Remove the abandoned synthesized-dispatcher WIP (protocol_dispatch.rs + plan_entry_dispatch interception)",
   "type": "task",
-  "updated_at": "2026-06-21T23:47:27Z"
+  "updated_at": "2026-06-21T23:48:34Z"
 }
