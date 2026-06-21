@@ -974,84 +974,17 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                 dest,
                 return_flow,
                 ..
-            } => {
-                let (callee, call_args) = match callee {
-                    CallTarget::Local(callee) => {
-                        let callee_executable = &self.program.executables[*callee];
-                        let mut lanes = Vec::new();
-                        let input_bindings = executable_input_bindings(self.program, callee_executable);
-                        for (arg, binding) in args.iter().zip(input_bindings.iter()) {
-                            let local = env_local_value(env, arg.value)?;
-                            if binding.publication_lanes.is_empty() {
-                                self.encode_runtime_value(
-                                    ctx,
-                                    callee_executable,
-                                    Some(arg.value),
-                                    &local,
-                                    binding.shape,
-                                    &mut lanes,
-                                )?;
-                            } else {
-                                lanes.push(self.materialize_native_value_for_publication(
-                                    ctx,
-                                    executable.value_types.get(&arg.value).copied(),
-                                    &local,
-                                    &binding.position,
-                                )?);
-                            }
-                        }
-                        (DirectCallTarget::Local(self.executable_fns[*callee]), lanes)
-                    }
-                    CallTarget::ProviderBoundary(function) => (
-                        DirectCallTarget::ProviderBoundary(self.world.function_mfa(*function)),
-                        self.env_runtime_vars(
-                            ctx,
-                            executable,
-                            env,
-                            &args.iter().map(|arg| arg.value).collect::<Vec<_>>(),
-                        ),
-                    ),
-                };
-                match dest {
-                    ControlDestination::Return => match return_flow {
-                        CallReturnFlow::Tail { .. } => {
-                            ctx.set_term(Term::TailCall {
-                                ident: CallsiteIdent::from_source(Span::DUMMY),
-                                callee,
-                                args: call_args,
-                                is_back_edge: false,
-                            });
-                            Ok(())
-                        }
-                        CallReturnFlow::Continue { payload, .. } => {
-                            let continuation = self.return_lane_continuation_for_payload(ctx, executable, payload)?;
-                            ctx.set_term(Term::Call {
-                                ident: CallsiteIdent::from_source(Span::DUMMY),
-                                callee,
-                                args: call_args,
-                                continuation,
-                            });
-                            Ok(())
-                        }
-                        CallReturnFlow::Deliver { .. } => Err(incomplete_native_program(
-                            self.world,
-                            self.root_id,
-                            "native direct call with Return destination carried Deliver return-flow",
-                        )),
-                    },
-                    ControlDestination::Deliver(entry_id) => {
-                        let continuation =
-                            self.entry_continuation(ctx, executable, entries, entry_fns, *entry_id, env)?;
-                        ctx.set_term(Term::Call {
-                            ident: CallsiteIdent::from_source(Span::DUMMY),
-                            callee,
-                            args: call_args,
-                            continuation,
-                        });
-                        Ok(())
-                    }
-                }
-            }
+            } => self.lower_direct_call_tail(
+                ctx,
+                executable,
+                entries,
+                entry_fns,
+                env,
+                callee,
+                args,
+                dest,
+                return_flow,
+            ),
             BackendTail::ClosureCall {
                 callee,
                 target,
@@ -1285,6 +1218,133 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
             }
             BackendTail::Halt { atom } => {
                 ctx.halt_with_atom(self.atom_id(atom));
+                Ok(())
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn lower_direct_call_tail(
+        &mut self,
+        ctx: &mut NativeFnCtx,
+        executable: &BackendExecutable,
+        entries: &[BackendEntry],
+        entry_fns: &HashMap<ControlEntryId, FnId>,
+        env: &ValueEnv,
+        callee: &CallTarget<usize>,
+        args: &[super::super::artifact::BackendCallArg],
+        dest: &ControlDestination,
+        return_flow: &CallReturnFlow,
+    ) -> Result<(), FatalError> {
+        let (callee, call_args) = self.native_direct_call_target_and_args(ctx, executable, env, callee, args)?;
+        self.emit_native_direct_call_tail(
+            ctx,
+            executable,
+            entries,
+            entry_fns,
+            env,
+            callee,
+            call_args,
+            dest,
+            return_flow,
+        )
+    }
+
+    fn native_direct_call_target_and_args(
+        &mut self,
+        ctx: &mut NativeFnCtx,
+        executable: &BackendExecutable,
+        env: &ValueEnv,
+        callee: &CallTarget<usize>,
+        args: &[super::super::artifact::BackendCallArg],
+    ) -> Result<(DirectCallTarget, Vec<Var>), FatalError> {
+        match callee {
+            CallTarget::Local(callee) => {
+                let callee_executable = &self.program.executables[*callee];
+                let mut lanes = Vec::new();
+                let input_bindings = executable_input_bindings(self.program, callee_executable);
+                for (arg, binding) in args.iter().zip(input_bindings.iter()) {
+                    let local = env_local_value(env, arg.value)?;
+                    if binding.publication_lanes.is_empty() {
+                        self.encode_runtime_value(
+                            ctx,
+                            callee_executable,
+                            Some(arg.value),
+                            &local,
+                            binding.shape,
+                            &mut lanes,
+                        )?;
+                    } else {
+                        lanes.push(self.materialize_native_value_for_publication(
+                            ctx,
+                            executable.value_types.get(&arg.value).copied(),
+                            &local,
+                            &binding.position,
+                        )?);
+                    }
+                }
+                Ok((DirectCallTarget::Local(self.executable_fns[*callee]), lanes))
+            }
+            CallTarget::ProviderBoundary(function) => Ok((
+                DirectCallTarget::ProviderBoundary(self.world.function_mfa(*function)),
+                self.env_runtime_vars(
+                    ctx,
+                    executable,
+                    env,
+                    &args.iter().map(|arg| arg.value).collect::<Vec<_>>(),
+                ),
+            )),
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn emit_native_direct_call_tail(
+        &mut self,
+        ctx: &mut NativeFnCtx,
+        executable: &BackendExecutable,
+        entries: &[BackendEntry],
+        entry_fns: &HashMap<ControlEntryId, FnId>,
+        env: &ValueEnv,
+        callee: DirectCallTarget,
+        call_args: Vec<Var>,
+        dest: &ControlDestination,
+        return_flow: &CallReturnFlow,
+    ) -> Result<(), FatalError> {
+        match dest {
+            ControlDestination::Return => match return_flow {
+                CallReturnFlow::Tail { .. } => {
+                    ctx.set_term(Term::TailCall {
+                        ident: CallsiteIdent::from_source(Span::DUMMY),
+                        callee,
+                        args: call_args,
+                        is_back_edge: false,
+                    });
+                    Ok(())
+                }
+                CallReturnFlow::Continue { payload, .. } => {
+                    let continuation = self.return_lane_continuation_for_payload(ctx, executable, payload)?;
+                    ctx.set_term(Term::Call {
+                        ident: CallsiteIdent::from_source(Span::DUMMY),
+                        callee,
+                        args: call_args,
+                        continuation,
+                    });
+                    Ok(())
+                }
+                CallReturnFlow::Deliver { .. } => Err(incomplete_native_program(
+                    self.world,
+                    self.root_id,
+                    "native direct call with Return destination carried Deliver return-flow",
+                )),
+            },
+            ControlDestination::Deliver(entry_id) => {
+                let continuation = self.entry_continuation(ctx, executable, entries, entry_fns, *entry_id, env)?;
+                ctx.set_term(Term::Call {
+                    ident: CallsiteIdent::from_source(Span::DUMMY),
+                    callee,
+                    args: call_args,
+                    continuation,
+                });
                 Ok(())
             }
         }
