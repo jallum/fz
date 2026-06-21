@@ -13,11 +13,15 @@
     {
       "text": "TREE STATE: the α WIP is uncommitted and currently emits one unused-field warning (CallbackArm.impl_function in protocol_dispatch.rs) -- it was the marker for the never-written forwarding body. Harvest (fz-bin.2) + deletion (this ticket) resolve it. Until then the tree fails the -D warnings gate, so fz-bin.2/.4 must land before any commit that runs the clippy gate.",
       "timestamp": "2026-06-21T20:54:23Z"
+    },
+    {
+      "text": "Research note 2026-06-21: cargo check -q on the current dirty tree confirms the alpha WIP emits warning: field CallbackArm.impl_function is never read in src/compiler2/jobs/protocol_dispatch.rs:33. Because warnings we control are errors by repo policy, this cleanup must land before any commit in the arc that expects a clean check/clippy gate.",
+      "timestamp": "2026-06-21T23:37:18Z"
     }
   ],
   "priority": 2,
   "status": "open",
   "title": "Remove the abandoned synthesized-dispatcher WIP (protocol_dispatch.rs + plan_entry_dispatch interception)",
   "type": "task",
-  "updated_at": "2026-06-21T20:56:51Z"
+  "updated_at": "2026-06-21T23:37:18Z"
 }
