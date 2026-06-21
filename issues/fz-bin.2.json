@@ -7,9 +7,15 @@
   "id": "fz-bin.2",
   "labels": [],
   "parent": "fz-bin",
+  "comments": [
+    {
+      "text": "Harvest dispatcher_row / struct-vs-builtin / struct-before-map / struct_module_name from the α WIP jobs/protocol_dispatch.rs (see fz-bin.4). Change the arm source from ProtocolDispatch arms to CallSiteSummary targets; discriminant Ty = target.surface_inputs[0], not module_impl_target_ty.",
+      "timestamp": "2026-06-21T20:54:01Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "Build the callsite dispatch matrix from a multi-target CallSiteSummary (pure)",
   "type": "task",
-  "updated_at": "2026-06-21T20:53:19Z"
+  "updated_at": "2026-06-21T20:54:01Z"
 }
