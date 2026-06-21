@@ -13,11 +13,15 @@
     {
       "text": "Harvest dispatcher_row / struct-vs-builtin / struct-before-map / struct_module_name from the α WIP jobs/protocol_dispatch.rs (see fz-bin.4). Change the arm source from ProtocolDispatch arms to CallSiteSummary targets; discriminant Ty = target.surface_inputs[0], not module_impl_target_ty.",
       "timestamp": "2026-06-21T20:54:01Z"
+    },
+    {
+      "text": "Research note 2026-06-21: CallTargetSummary does not carry ProtocolDispatchArm.target; it carries callee + refined surface_inputs. Do not re-read ProtocolDispatch at artifact time just to recover target modules. For the immediate list/range path, build the dispatch rows from target.surface_inputs[0] directly as receiver type preconditions. Runtime type predicates project list shapes and named structs from Ty; map+struct unsoundness remains fz-bv3 and should stay gated. Also note: Pattern::Struct currently does not test the module in pattern_dispatch_from_source; it only descends into fields, so using Pattern::Struct as a nominal dispatch gate is not valid until fz-bv3 changes the dispatch vocabulary.",
+      "timestamp": "2026-06-21T23:37:09Z"
     }
   ],
   "priority": 1,
   "status": "open",
   "title": "Build the callsite dispatch matrix from a multi-target CallSiteSummary (pure)",
   "type": "task",
-  "updated_at": "2026-06-21T20:57:27Z"
+  "updated_at": "2026-06-21T23:37:09Z"
 }
