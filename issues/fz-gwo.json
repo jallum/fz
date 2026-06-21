@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-21T13:42:50Z",
+  "description": "compiler2 fails to decode a list literal whose LAST element is a function call.\n\nMinimal repro:\n  fn main(), do: dbg([Enum.reverse([1,2,3])])              -\u003e ERROR\n  fn main(), do: dbg([1, Enum.reverse([1,2,3])])           -\u003e ERROR\n  fn main(), do: dbg([Enum.reverse([1,2,3]), 9])           -\u003e OK ([[3,2,1], 9])\n  fn main(), do: dbg([Enum.reverse([1,2,3]), Enum.reverse([4,5])]) -\u003e ERROR\n\nError: error[internal/post-resolution-leftover]: quoted function decode failed: invalid any value ref: ExpectedTag { expected: ValueKind(15), found: ValueKind(3) }\n\nTrigger is precise: a list literal whose FINAL element is a call (not a literal). A trailing literal element works; a trailing call element fails. Likely a frontdoor/quote encoding bug where a call in tail position of a list is mis-encoded (no-parens / trailing-do ambiguity at the list close, or the list-element terminator after a call). ValueKind(15) expected vs ValueKind(3) found points at a tag mismatch in quoted_function/quoted_surface decode.\n\nFound incidentally while profiling fz-hyj (amplified-stdlib repro). NOT blocking. Independent of the span/QuotedSourceSpan work.",
+  "id": "fz-gwo",
+  "labels": [],
+  "priority": 2,
+  "status": "open",
+  "title": "[BUG] List literal ending in a function call fails to decode",
+  "type": "task",
+  "updated_at": "2026-06-21T13:42:50Z"
+}
