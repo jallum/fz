@@ -8,7 +8,7 @@
     "fz-bin.4"
   ],
   "created": "2026-06-21T18:23:26Z",
-  "description": "Make resolve_function_call treat a protocol callback as an ordinary function once it has a dispatcher body (bypass/retire the resolve_protocol_call multi-target emission), so a call to the callback resolves to ONE target (the dispatcher). Keep resolve_protocol_call's impl-MODULE demand (it drives discovery of defimpls whose target overlaps the receiver) or re-home that demand into the dispatcher derivation. Acceptance: /tmp/listrange.fz (Enum.take on list AND range) COMPILES with no 'multi-target direct callsite' error. Verify lib+matrix green. Depends on C1.",
+  "description": "Route protocol-callback calls to the synthesized dispatcher so multi-target collapses to single-target. Remove the resolve_function_call protocol_callback interception (jobs/semantic.rs:1161) so a protocol callback resolves as an ordinary function (one target = the dispatcher activation). Move any still-needed impl-module demand out of resolve_protocol_call into the dispatcher synthesis (depend on ProtocolDispatch(protocol); all built-in impls are co-located so they load with the protocol). ACCEPTANCE: /tmp/listrange.fz (Enum.take on a list AND a range) compiles with no 'multi-target direct callsite' error; concrete-receiver programs still monomorphize (one reachable arm). lib+matrix green. Depends on fz-bin.1.",
   "id": "fz-bin.2",
   "labels": [],
   "parent": "fz-bin",
@@ -16,5 +16,5 @@
   "status": "open",
   "title": "Route protocol callback calls to the dispatcher (collapse multi-target)",
   "type": "task",
-  "updated_at": "2026-06-21T18:23:28Z"
+  "updated_at": "2026-06-21T18:47:19Z"
 }
