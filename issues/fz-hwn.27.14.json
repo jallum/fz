@@ -4,14 +4,15 @@
   "blocks": [
     "fz-hwn.27.9"
   ],
+  "closed_at": "2026-06-21T11:14:41Z",
   "created": "2026-06-21T11:04:49Z",
   "description": "[CONSTRUCTION ROOT] Address source-contract variables AT the resolver binder — number by structural address, never by encounter.\n\nThe proposal's missing DAG node (code-review finding \"unify on the kept shadow\"), and the root of the whole conflation: resolve.rs numbers type variables by ENCOUNTER (resolve.rs: `TypeVarId(vars.len())` in name classification), so `@spec foo(a, {b,c}, d)` gives a=0,b=1,c=2,d=3 — but d's ADDRESS is a2 (parameter 2, independent of the tuple's field count). Every downstream frame (value_types alpha_normalize, per-position passes, the contract bounds re-key) exists only to recover the canonical form the binder failed to assign.\n\nPRINCIPLE: the binder assigns the address; nothing downstream recovers it. Two binders only — the resolver (source vars) and the compiler2 key-mint (inference vars, already addressed whole-scope, 27.6). Both must address.\n\nFIX (approach A — address at first occurrence; bounds resolve through the map, no re-key):\n- Thread a structural address path (\u0026[AddrStep]) through resolve_ty: param i -\u003e [Param(i)], result -\u003e [Result], recursing List-\u003eElem, Tuple field j-\u003eField(j), Arrow param/result, Map-\u003eMapField, Resource-\u003ePayload.\n- In name classification, a free type var's id becomes `address_id(path)` (first occurrence; repeats reuse via the vars map), NOT `TypeVarId(vars.len())`.\n- `when`-clause bounds resolve via resolve_ty using the SAME vars map (names already mapped to addresses), so a bound `a: number` is `a0: number` by construction — no substitution, no re-key (this is exactly the friction I hit trying to do it downstream in contract.rs).\n- Only one resolver remains (compiler2/resolve.rs); the legacy type_expr resolver is gone. resolve_ty has non-spec callers (resolve_type_expr_body, resolve_type_def) that also share the var-numbering site; give them a root path so they thread cleanly.\n\nSCOPE: this ticket fixes the NUMBERING (resolve.rs). ResolvedSpecDecl keeps {params, result, constraints} shape but its vars are now ADDRESSED (a0, a1, r0; constraints keyed by addresses). The ResolvedSpecDecl -\u003e ResolvedArrow{arrow, names, bounds} restructure + contract.rs projection is fz-hwn.27.9, which now has addressed inputs to project.\n\nCHECKS: lib + fixture matrix green, zero warnings; spec/contract/overload fixtures resolve identically (00049, 00083-00090, 00278, etc.); the resolver emits addressed vars (a0/a1/r0), verified by a unit test on resolve_spec. blocks fz-hwn.27.9.",
   "id": "fz-hwn.27.14",
   "labels": [],
   "parent": "fz-hwn.27",
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "[CONSTRUCTION ROOT] Address source-contract variables at the resolver binder (address, not encounter)",
   "type": "task",
-  "updated_at": "2026-06-21T11:04:50Z"
+  "updated_at": "2026-06-21T11:14:41Z"
 }
