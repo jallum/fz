@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-bin.2"
+  ],
   "created": "2026-06-21T18:23:25Z",
   "description": "Give each protocol callback (e.g. Enumerable.reduce) a dispatching body derived from ProtocolDispatch(protocol). First step: decide source-vs-IR by testing whether a source annotation ':: \u003cModule\u003e.t' resolves to the same Ty as world.module_impl_target_ty(target) for List/Map/Range. If equivalent, synthesize quoted FunctionSource (one typed clause per arm forwarding to the impl FunctionId, reusing build_module_info_function's builder pattern). If not (likely for the Range struct), build the EntryDispatch (PatternDispatchPlan) directly with module_impl_target_ty(target) as Region::Type per arm and a synthesized LoweredBody of N tail-call clauses. Derived from ProtocolDispatch, re-derived on change. Not yet routed into resolution -- prove the dispatcher lowers + plans entry dispatch for Enumerable.reduce via a test. Verify lib+matrix stay green.",
   "id": "fz-bin.1",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Synthesize a protocol-callback dispatcher from ProtocolDispatch arms",
   "type": "task",
-  "updated_at": "2026-06-21T18:23:25Z"
+  "updated_at": "2026-06-21T18:23:27Z"
 }
