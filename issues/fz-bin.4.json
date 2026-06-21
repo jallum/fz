@@ -5,7 +5,7 @@
   ],
   "blocks": [],
   "created": "2026-06-21T18:23:26Z",
-  "description": "After routing, delete the now-dead semantic multi-target resolution in resolve_protocol_call (keeping only any demand-driver still needed). Add the matrix-doc 'residual fallback': a receiver typed 'any' (or whose static type cannot bound the impl set) must dispatch by the value's runtime type tag (a true vtable arm) rather than erroring. Scope-check whether this is needed by current fixtures or can stay a follow-on. Depends on C2.",
+  "description": "Retire the now-dead semantic multi-target resolution in resolve_protocol_call (keep only demand still required). Add the matrix-doc 'residual fallback': a receiver typed 'any' (or whose static type cannot bound the impl set) must dispatch on the value's runtime type tag (a real vtable arm) rather than error/miss. Scope-check whether current fixtures need it now or it can be a follow-on. Depends on fz-bin.2.",
   "id": "fz-bin.4",
   "labels": [],
   "parent": "fz-bin",
@@ -13,5 +13,5 @@
   "status": "open",
   "title": "Retire dead resolve_protocol_call multi-target path; residual any-receiver fallback",
   "type": "task",
-  "updated_at": "2026-06-21T18:23:28Z"
+  "updated_at": "2026-06-21T18:47:20Z"
 }
