@@ -38,9 +38,8 @@ impl From<QuotedSourceError> for QuotedFunctionError {
     }
 }
 
-struct DecodeCtx<'a> {
+struct DecodeCtx {
     code_id: CodeId,
-    code_text: &'a str,
 }
 
 type DecodedFnHead = (
@@ -57,10 +56,9 @@ pub(crate) fn derive_function_surface(
     root: &QuotedSourceRoot,
     code_id: CodeId,
     _code_name: Option<&str>,
-    code_text: &str,
     _tel: &dyn crate::telemetry::Telemetry,
 ) -> Result<FunctionSurface, QuotedFunctionError> {
-    let ctx = DecodeCtx { code_id, code_text };
+    let ctx = DecodeCtx { code_id };
     let mut attrs = Vec::new();
     let mut forms = Vec::new();
     for item in root.cursor().list_items()? {
@@ -175,7 +173,7 @@ fn decode_attribute(cursor: &QuotedSourceCursor) -> Result<Attribute, QuotedFunc
 fn decode_extern_fn(
     node: &QuotedAstNode,
     attrs: Vec<Attribute>,
-    ctx: &DecodeCtx<'_>,
+    ctx: &DecodeCtx,
 ) -> Result<FunctionSurface, QuotedFunctionError> {
     let args = node.tail.list_items()?;
     if args.len() != 2 {
@@ -218,7 +216,7 @@ fn decode_extern_fn(
 
 fn decode_function_clause(
     node: &QuotedAstNode,
-    ctx: &DecodeCtx<'_>,
+    ctx: &DecodeCtx,
 ) -> Result<(String, FnClause, Span), QuotedFunctionError> {
     let span = span_from_meta(&node.meta, ctx).unwrap_or(Span::DUMMY);
     let args = node.tail.list_items()?;
@@ -244,7 +242,7 @@ fn decode_function_clause(
 
 fn decode_function_head(
     cursor: &QuotedSourceCursor,
-    ctx: &DecodeCtx<'_>,
+    ctx: &DecodeCtx,
     fallback_span: Option<Span>,
 ) -> Result<DecodedFnHead, QuotedFunctionError> {
     let node = expect_ast_node(cursor, "function head")?;
@@ -284,7 +282,7 @@ fn decode_function_head(
 
 fn decode_do_body(
     cursor: &QuotedSourceCursor,
-    ctx: &DecodeCtx<'_>,
+    ctx: &DecodeCtx,
     fallback_span: Option<Span>,
 ) -> Result<Spanned<Expr>, QuotedFunctionError> {
     let entries = decode_keyword_entries(cursor)?;
@@ -298,7 +296,7 @@ fn decode_do_body(
 
 fn decode_expr(
     cursor: &QuotedSourceCursor,
-    ctx: &DecodeCtx<'_>,
+    ctx: &DecodeCtx,
     fallback_span: Option<Span>,
 ) -> Result<Spanned<Expr>, QuotedFunctionError> {
     if let Some(node) = cursor.ast_node()? {
@@ -378,7 +376,7 @@ fn decode_expr(
 fn decode_named_expr(
     name: String,
     args: &[QuotedSourceCursor],
-    ctx: &DecodeCtx<'_>,
+    ctx: &DecodeCtx,
     span: Span,
 ) -> Result<Spanned<Expr>, QuotedFunctionError> {
     if name == "%" && args.len() == 2 && is_alias(&args[0]) {
@@ -442,7 +440,7 @@ fn decode_named_expr(
 
 fn decode_pattern(
     cursor: &QuotedSourceCursor,
-    ctx: &DecodeCtx<'_>,
+    ctx: &DecodeCtx,
     fallback_span: Option<Span>,
 ) -> Result<Spanned<Pattern>, QuotedFunctionError> {
     if let Some(node) = cursor.ast_node()? {
@@ -530,11 +528,7 @@ fn decode_pattern(
     }
 }
 
-fn decode_if(
-    args: &[QuotedSourceCursor],
-    ctx: &DecodeCtx<'_>,
-    span: Span,
-) -> Result<Spanned<Expr>, QuotedFunctionError> {
+fn decode_if(args: &[QuotedSourceCursor], ctx: &DecodeCtx, span: Span) -> Result<Spanned<Expr>, QuotedFunctionError> {
     let cond = decode_expr(&args[0], ctx, Some(span))?;
     let entries = decode_keyword_entries(&args[1])?;
     let mut then_branch = None;
@@ -560,11 +554,7 @@ fn decode_if(
     ))
 }
 
-fn decode_case(
-    args: &[QuotedSourceCursor],
-    ctx: &DecodeCtx<'_>,
-    span: Span,
-) -> Result<Spanned<Expr>, QuotedFunctionError> {
+fn decode_case(args: &[QuotedSourceCursor], ctx: &DecodeCtx, span: Span) -> Result<Spanned<Expr>, QuotedFunctionError> {
     let (subject, kw_cursor) = match args {
         [kw] => (None, kw),
         [subject, kw] => (Some(decode_expr(subject, ctx, Some(span))?), kw),
@@ -586,11 +576,7 @@ fn decode_case(
     Ok(Spanned::new(Expr::Case(subject.map(Box::new), clauses), span))
 }
 
-fn decode_cond(
-    args: &[QuotedSourceCursor],
-    ctx: &DecodeCtx<'_>,
-    span: Span,
-) -> Result<Spanned<Expr>, QuotedFunctionError> {
+fn decode_cond(args: &[QuotedSourceCursor], ctx: &DecodeCtx, span: Span) -> Result<Spanned<Expr>, QuotedFunctionError> {
     let entries = decode_keyword_entries(&args[0])?;
     let Some((_, body)) = entries.into_iter().find(|(key, _)| key == "do") else {
         return Err(QuotedFunctionError::new("quoted `cond` is missing `do` clauses"));
@@ -619,11 +605,7 @@ fn decode_cond(
     Ok(Spanned::new(Expr::Cond(clauses), span))
 }
 
-fn decode_with(
-    args: &[QuotedSourceCursor],
-    ctx: &DecodeCtx<'_>,
-    span: Span,
-) -> Result<Spanned<Expr>, QuotedFunctionError> {
+fn decode_with(args: &[QuotedSourceCursor], ctx: &DecodeCtx, span: Span) -> Result<Spanned<Expr>, QuotedFunctionError> {
     let Some((kw_cursor, binding_args)) = args.split_last() else {
         return Err(QuotedFunctionError::new("quoted `with` expects bindings and a body"));
     };
@@ -680,7 +662,7 @@ fn decode_with(
 
 fn decode_receive(
     args: &[QuotedSourceCursor],
-    ctx: &DecodeCtx<'_>,
+    ctx: &DecodeCtx,
     span: Span,
 ) -> Result<Spanned<Expr>, QuotedFunctionError> {
     let entries = decode_keyword_entries(&args[0])?;
@@ -714,7 +696,7 @@ fn decode_receive(
 
 fn decode_lambda(
     args: &[QuotedSourceCursor],
-    ctx: &DecodeCtx<'_>,
+    ctx: &DecodeCtx,
     span: Span,
 ) -> Result<Spanned<Expr>, QuotedFunctionError> {
     let clauses = args
@@ -726,7 +708,7 @@ fn decode_lambda(
 
 fn decode_quote(
     args: &[QuotedSourceCursor],
-    ctx: &DecodeCtx<'_>,
+    ctx: &DecodeCtx,
     span: Span,
 ) -> Result<Spanned<Expr>, QuotedFunctionError> {
     let entries = decode_keyword_entries(&args[0])?;
@@ -741,7 +723,7 @@ fn decode_quote(
 
 fn decode_map_expr(
     args: &[QuotedSourceCursor],
-    ctx: &DecodeCtx<'_>,
+    ctx: &DecodeCtx,
     span: Span,
 ) -> Result<Spanned<Expr>, QuotedFunctionError> {
     if args.len() == 1
@@ -768,7 +750,7 @@ fn decode_map_expr(
 
 fn decode_struct_expr(
     args: &[QuotedSourceCursor],
-    ctx: &DecodeCtx<'_>,
+    ctx: &DecodeCtx,
     span: Span,
 ) -> Result<Spanned<Expr>, QuotedFunctionError> {
     let module = decode_module_name(&args[0])?;
@@ -789,7 +771,7 @@ fn decode_struct_expr(
 
 fn decode_bitstring_expr(
     args: &[QuotedSourceCursor],
-    ctx: &DecodeCtx<'_>,
+    ctx: &DecodeCtx,
     span: Span,
 ) -> Result<Spanned<Expr>, QuotedFunctionError> {
     let mut fields = Vec::new();
@@ -819,7 +801,7 @@ fn decode_bitstring_expr(
 
 fn decode_fn_ref_expr(
     cursor: &QuotedSourceCursor,
-    ctx: &DecodeCtx<'_>,
+    ctx: &DecodeCtx,
     span: Span,
 ) -> Result<Spanned<Expr>, QuotedFunctionError> {
     let node = expect_ast_node(cursor, "function reference payload")?;
@@ -839,7 +821,7 @@ fn decode_fn_ref_expr(
 
 fn decode_match_clause(
     cursor: &QuotedSourceCursor,
-    ctx: &DecodeCtx<'_>,
+    ctx: &DecodeCtx,
     fallback_span: Option<Span>,
 ) -> Result<MatchClause, QuotedFunctionError> {
     let node = expect_ast_node(cursor, "match clause")?;
@@ -881,7 +863,7 @@ fn decode_match_clause(
 
 fn decode_after_clause(
     cursor: &QuotedSourceCursor,
-    ctx: &DecodeCtx<'_>,
+    ctx: &DecodeCtx,
     fallback_span: Option<Span>,
 ) -> Result<AfterClause, QuotedFunctionError> {
     let node = expect_ast_node(cursor, "after clause")?;
@@ -910,7 +892,7 @@ fn decode_after_clause(
 
 fn decode_lambda_clause(
     cursor: &QuotedSourceCursor,
-    ctx: &DecodeCtx<'_>,
+    ctx: &DecodeCtx,
     fallback_span: Option<Span>,
 ) -> Result<LambdaClause, QuotedFunctionError> {
     let node = expect_ast_node(cursor, "lambda clause")?;
@@ -965,7 +947,7 @@ fn decode_lambda_clause(
 
 fn decode_map_pattern(
     args: &[QuotedSourceCursor],
-    ctx: &DecodeCtx<'_>,
+    ctx: &DecodeCtx,
     span: Span,
 ) -> Result<Spanned<Pattern>, QuotedFunctionError> {
     let entries = args
@@ -977,7 +959,7 @@ fn decode_map_pattern(
 
 fn decode_struct_pattern(
     args: &[QuotedSourceCursor],
-    ctx: &DecodeCtx<'_>,
+    ctx: &DecodeCtx,
     span: Span,
 ) -> Result<Spanned<Pattern>, QuotedFunctionError> {
     let module = decode_module_name(&args[0])?;
@@ -998,7 +980,7 @@ fn decode_struct_pattern(
 
 fn decode_bitstring_pattern(
     args: &[QuotedSourceCursor],
-    ctx: &DecodeCtx<'_>,
+    ctx: &DecodeCtx,
     span: Span,
 ) -> Result<Spanned<Pattern>, QuotedFunctionError> {
     let mut fields = Vec::new();
@@ -1028,7 +1010,7 @@ fn decode_bitstring_pattern(
 
 fn decode_negative_pattern(
     cursor: &QuotedSourceCursor,
-    ctx: &DecodeCtx<'_>,
+    ctx: &DecodeCtx,
     span: Span,
 ) -> Result<Spanned<Pattern>, QuotedFunctionError> {
     let decoded = decode_pattern(cursor, ctx, Some(span))?;
@@ -1044,7 +1026,7 @@ fn decode_negative_pattern(
 
 fn decode_list_expr(
     cursor: &QuotedSourceCursor,
-    ctx: &DecodeCtx<'_>,
+    ctx: &DecodeCtx,
     span: Span,
 ) -> Result<Spanned<Expr>, QuotedFunctionError> {
     let items = cursor.list_items()?;
@@ -1057,7 +1039,7 @@ fn decode_list_expr(
 
 fn decode_list_pattern(
     cursor: &QuotedSourceCursor,
-    ctx: &DecodeCtx<'_>,
+    ctx: &DecodeCtx,
     span: Span,
 ) -> Result<Spanned<Pattern>, QuotedFunctionError> {
     let items = cursor.list_items()?;
@@ -1076,7 +1058,7 @@ fn decode_list_pattern(
 
 fn split_improper_list(
     items: Vec<QuotedSourceCursor>,
-    ctx: &DecodeCtx<'_>,
+    ctx: &DecodeCtx,
     span: Span,
 ) -> Result<(Vec<QuotedSourceCursor>, Option<Spanned<Expr>>), QuotedFunctionError> {
     let Some((last, prefix)) = items.split_last() else {
@@ -1100,7 +1082,7 @@ fn split_improper_list(
 
 fn split_improper_pattern_list(
     items: Vec<QuotedSourceCursor>,
-    ctx: &DecodeCtx<'_>,
+    ctx: &DecodeCtx,
     span: Span,
 ) -> Result<(Vec<QuotedSourceCursor>, Option<Spanned<Pattern>>), QuotedFunctionError> {
     let Some((last, prefix)) = items.split_last() else {
@@ -1124,7 +1106,7 @@ fn split_improper_pattern_list(
 
 fn decode_exprs(
     args: &[QuotedSourceCursor],
-    ctx: &DecodeCtx<'_>,
+    ctx: &DecodeCtx,
     fallback_span: Option<Span>,
 ) -> Result<Vec<Spanned<Expr>>, QuotedFunctionError> {
     args.iter()
@@ -1134,7 +1116,7 @@ fn decode_exprs(
 
 fn decode_expr_pair(
     cursor: &QuotedSourceCursor,
-    ctx: &DecodeCtx<'_>,
+    ctx: &DecodeCtx,
     fallback_span: Option<Span>,
 ) -> Result<(Spanned<Expr>, Spanned<Expr>), QuotedFunctionError> {
     let items = cursor.tuple_items()?;
@@ -1149,7 +1131,7 @@ fn decode_expr_pair(
 
 fn decode_pattern_pair(
     cursor: &QuotedSourceCursor,
-    ctx: &DecodeCtx<'_>,
+    ctx: &DecodeCtx,
     fallback_span: Option<Span>,
 ) -> Result<(Spanned<Pattern>, Spanned<Pattern>), QuotedFunctionError> {
     let items = cursor.tuple_items()?;
@@ -1164,7 +1146,7 @@ fn decode_pattern_pair(
 
 fn decode_expr_keyword_pairs(
     cursor: &QuotedSourceCursor,
-    ctx: &DecodeCtx<'_>,
+    ctx: &DecodeCtx,
     fallback_span: Option<Span>,
 ) -> Result<Vec<ExprPair>, QuotedFunctionError> {
     cursor
@@ -1202,7 +1184,7 @@ fn decode_module_name(cursor: &QuotedSourceCursor) -> Result<ModuleName, QuotedF
 
 fn decode_fn_ref_name(
     cursor: &QuotedSourceCursor,
-    ctx: &DecodeCtx<'_>,
+    ctx: &DecodeCtx,
     fallback_span: Option<Span>,
 ) -> Result<String, QuotedFunctionError> {
     if let Some(node) = cursor.ast_node()? {
@@ -1228,7 +1210,7 @@ fn decode_fn_ref_name(
 
 fn pattern_var_name(
     cursor: &QuotedSourceCursor,
-    ctx: &DecodeCtx<'_>,
+    ctx: &DecodeCtx,
     fallback_span: Option<Span>,
 ) -> Result<Option<String>, QuotedFunctionError> {
     let decoded = decode_pattern(cursor, ctx, fallback_span)?;
@@ -1681,53 +1663,23 @@ fn is_list_like(cursor: &QuotedSourceCursor) -> bool {
     cursor.root().tag() == fz_runtime::any_value::ValueKind::LIST
 }
 
-fn span_from_meta(meta: &QuotedSourceCursor, ctx: &DecodeCtx<'_>) -> Result<Span, QuotedFunctionError> {
+fn span_from_meta(meta: &QuotedSourceCursor, ctx: &DecodeCtx) -> Result<Span, QuotedFunctionError> {
     let Some(span_map) = meta.map_value(META_SPAN_KEY)? else {
         return Ok(Span::DUMMY);
     };
-    let line = span_map
-        .map_value("line")?
-        .ok_or_else(|| QuotedFunctionError::new("quoted span is missing `line`"))?
-        .int_value()? as u32;
-    let column = span_map
-        .map_value("column")?
-        .ok_or_else(|| QuotedFunctionError::new("quoted span is missing `column`"))?
+    let start = span_map
+        .map_value("start")?
+        .ok_or_else(|| QuotedFunctionError::new("quoted span is missing `start`"))?
         .int_value()? as u32;
     let length = span_map
         .map_value("length")?
         .ok_or_else(|| QuotedFunctionError::new("quoted span is missing `length`"))?
         .int_value()? as u32;
-    let start = byte_offset_from_line_col(ctx.code_text, line, column)?;
     Ok(Span::new(
         SourceId(ctx.code_id.as_u32()),
         start,
         start.saturating_add(length),
     ))
-}
-
-fn byte_offset_from_line_col(source: &str, line: u32, column: u32) -> Result<u32, QuotedFunctionError> {
-    if line == 0 || column == 0 {
-        return Err(QuotedFunctionError::new("quoted span line/column must be 1-based"));
-    }
-    let mut current_line = 1_u32;
-    let mut current_col = 1_u32;
-    for (index, byte) in source.as_bytes().iter().copied().enumerate() {
-        if current_line == line && current_col == column {
-            return Ok(index as u32);
-        }
-        if byte == b'\n' {
-            current_line += 1;
-            current_col = 1;
-        } else {
-            current_col += 1;
-        }
-    }
-    if current_line == line && current_col == column {
-        return Ok(source.len() as u32);
-    }
-    Err(QuotedFunctionError::new(format!(
-        "quoted span line {line} column {column} does not exist in source"
-    )))
 }
 
 fn binop_from_name(name: &str) -> Option<BinOp> {

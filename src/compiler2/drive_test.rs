@@ -1539,12 +1539,6 @@ fn subtract(left, [item | rest]), do: subtract(delete_first(left, item), rest)
         &forwarded_group,
         crate::compiler2::CodeId::ZERO,
         Some("long_doc_forwarded.fz"),
-        r#"
-@doc "Removes the first matching left-side item for each item in the right list."
-@spec subtract([a], [a]) :: [a]
-fn subtract(left, []), do: left
-fn subtract(left, [item | rest]), do: subtract(delete_first(left, item), rest)
-"#,
         &tel,
     )
     .expect("forwarded long-doc grouped source should still decode");
@@ -1583,17 +1577,7 @@ end
         .expect("wrap forwarded module form as a top-level source list");
     let forwarded_module_surface = crate::compiler2::quoted_surface::read_scope_surface(
         &forwarded_module_root,
-        &crate::compiler2::quoted_surface::SurfaceSourceContext::new(
-            crate::compiler2::CodeId::ZERO,
-            r#"
-defmodule M do
-  @doc "Removes the first matching left-side item for each item in the right list."
-  @spec subtract([a], [a]) :: [a]
-  fn subtract(left, []), do: left
-  fn subtract(left, [item | rest]), do: subtract(delete_first(left, item), rest)
-end
-"#,
-        ),
+        &crate::compiler2::quoted_surface::SurfaceSourceContext::new(crate::compiler2::CodeId::ZERO),
     )
     .expect("forwarded whole-module source should still read as scope surface");
     let nested_surface = match forwarded_module_surface
@@ -1608,17 +1592,7 @@ end
                 .expect("wrap forwarded compiler fragment as a grouped source list");
             let compiler_fragment = crate::compiler2::quoted_surface::read_compiler_fragment_surface(
                 &compiler_fragment_root,
-                &crate::compiler2::quoted_surface::SurfaceSourceContext::new(
-                    crate::compiler2::CodeId::ZERO,
-                    r#"
-defmodule M do
-  @doc "Removes the first matching left-side item for each item in the right list."
-  @spec subtract([a], [a]) :: [a]
-  fn subtract(left, []), do: left
-  fn subtract(left, [item | rest]), do: subtract(delete_first(left, item), rest)
-end
-"#,
-                ),
+                &crate::compiler2::quoted_surface::SurfaceSourceContext::new(crate::compiler2::CodeId::ZERO),
             )
             .expect("forwarded macro-call source should still decode as compiler fragment");
             let module_form = match compiler_fragment
@@ -1631,17 +1605,7 @@ end
             };
             crate::compiler2::quoted_surface::read_module_body_surface(
                 module_form,
-                &crate::compiler2::quoted_surface::SurfaceSourceContext::new(
-                    crate::compiler2::CodeId::ZERO,
-                    r#"
-defmodule M do
-  @doc "Removes the first matching left-side item for each item in the right list."
-  @spec subtract([a], [a]) :: [a]
-  fn subtract(left, []), do: left
-  fn subtract(left, [item | rest]), do: subtract(delete_first(left, item), rest)
-end
-"#,
-                ),
+                &crate::compiler2::quoted_surface::SurfaceSourceContext::new(crate::compiler2::CodeId::ZERO),
             )
             .expect("forwarded module body should still decode")
         }
@@ -1659,14 +1623,6 @@ end
         &function.source,
         crate::compiler2::CodeId::ZERO,
         Some("forwarded_module.fz"),
-        r#"
-defmodule M do
-  @doc "Removes the first matching left-side item for each item in the right list."
-  @spec subtract([a], [a]) :: [a]
-  fn subtract(left, []), do: left
-  fn subtract(left, [item | rest]), do: subtract(delete_first(left, item), rest)
-end
-"#,
         &tel,
     )
     .expect("whole-module forwarding should preserve nested procbin-backed @doc payloads too");

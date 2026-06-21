@@ -4,9 +4,10 @@ use fz_runtime::any_value::ValueKind;
 
 use super::{
     Horizon, QuotedLexicalContext, QuotedLexicalContextKind, QuotedSourceCursor, QuotedSourceHeap,
-    QuotedSourceMetadata, QuotedSourceRoot, QuotedSourceSpan, parse_quoted_program,
+    QuotedSourceMetadata, QuotedSourceRoot, parse_quoted_program,
 };
 use crate::modules::runtime_library;
+use crate::source::{Id as SourceId, Span};
 use crate::telemetry::ConfiguredTelemetry;
 
 /// Every atom name and UTF-8 binary payload reachable in a quoted graph, in
@@ -65,10 +66,13 @@ fn context(kind: QuotedLexicalContextKind, module: &[&str], scope: &[&str], name
     .with_namespace_id(namespace_id)
 }
 
-fn meta(context: &QuotedLexicalContext, source_name: &str, line: u32) -> QuotedSourceMetadata {
+// `_source_name` and `line` are arbitrary span noise: the byte-offset `Span`
+// carries no source name, and these tests assert spans are not semantic content,
+// so the helper just needs to vary the span by its `line` input.
+fn meta(context: &QuotedLexicalContext, _source_name: &str, line: u32) -> QuotedSourceMetadata {
     QuotedSourceMetadata {
         lexical_context: Some(context.clone()),
-        span: Some(QuotedSourceSpan::new(source_name, line, 1, 3)),
+        span: Some(Span::new(SourceId(0), line, line.saturating_add(3))),
     }
 }
 

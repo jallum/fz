@@ -22,8 +22,7 @@ fn pack(x :: integer), do: <<x::integer-size(16), rest::binary-size(len)-unit(8)
 "#;
     let root = grouped_function_root("pack.fz", source);
     let tel = ConfiguredTelemetry::new();
-    let surface =
-        derive_function_surface(&root, CodeId::ZERO, Some("pack.fz"), source, &tel).expect("derive function surface");
+    let surface = derive_function_surface(&root, CodeId::ZERO, Some("pack.fz"), &tel).expect("derive function surface");
 
     let Attribute::Spec(spec) = &surface.attrs[0] else {
         panic!("expected @spec attr");
@@ -63,8 +62,7 @@ fn left + right, do: left + right
 "#;
     let root = grouped_function_root("plus.fz", source);
     let tel = ConfiguredTelemetry::new();
-    let surface =
-        derive_function_surface(&root, CodeId::ZERO, Some("plus.fz"), source, &tel).expect("derive function surface");
+    let surface = derive_function_surface(&root, CodeId::ZERO, Some("plus.fz"), &tel).expect("derive function surface");
 
     assert_eq!(surface.name, "+");
     let Attribute::Spec(spec) = &surface.attrs[0] else {
@@ -87,8 +85,8 @@ fn left :: integer + right :: float, do: left + right
 "#;
     let root = grouped_function_root("typed_plus.fz", source);
     let tel = ConfiguredTelemetry::new();
-    let surface = derive_function_surface(&root, CodeId::ZERO, Some("typed_plus.fz"), source, &tel)
-        .expect("derive function surface");
+    let surface =
+        derive_function_surface(&root, CodeId::ZERO, Some("typed_plus.fz"), &tel).expect("derive function surface");
 
     assert_eq!(surface.name, "+");
     let left = surface.clauses[0].param_annotations[0]
@@ -110,8 +108,7 @@ end
 "#;
     let root = grouped_function_root("with.fz", source);
     let tel = ConfiguredTelemetry::new();
-    let surface =
-        derive_function_surface(&root, CodeId::ZERO, Some("with.fz"), source, &tel).expect("derive function surface");
+    let surface = derive_function_surface(&root, CodeId::ZERO, Some("with.fz"), &tel).expect("derive function surface");
 
     let Expr::With(bindings, body, else_clauses) = &surface.clauses[0].body.node else {
         panic!("expected with body");
@@ -134,7 +131,7 @@ fn new(first, last, step), do: %Range{first: first, last: last, step: step}
     let root = grouped_function_root("range.fz", source);
     let tel = ConfiguredTelemetry::new();
     let surface =
-        derive_function_surface(&root, CodeId::ZERO, Some("range.fz"), source, &tel).expect("derive function surface");
+        derive_function_surface(&root, CodeId::ZERO, Some("range.fz"), &tel).expect("derive function surface");
 
     let Expr::Struct { module, fields } = &surface.clauses[0].body.node else {
         panic!("expected %Range{{}} to decode as a struct literal");

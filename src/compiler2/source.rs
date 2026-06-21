@@ -16,6 +16,8 @@ use fz_runtime::procbin::bitstring_bit_len as tagged_bitstring_bit_len;
 use fz_runtime::procbin::bitstring_byte_ptr as procbin_byte_ptr;
 use fz_runtime::process::{CompiledModuleConsts, DEFAULT_REDUCTIONS_PER_QUANTUM, Node, Process};
 
+use crate::source::Span;
+
 const NIL_ATOM: &str = "nil";
 const TRUE_ATOM: &str = "true";
 const FALSE_ATOM: &str = "false";
@@ -120,29 +122,16 @@ impl QuotedLexicalContext {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct QuotedSourceSpan {
-    pub source_name: String,
-    pub line: u32,
-    pub column: u32,
-    pub length: u32,
-}
-
-impl QuotedSourceSpan {
-    pub fn new(source_name: impl Into<String>, line: u32, column: u32, length: u32) -> Self {
-        Self {
-            source_name: source_name.into(),
-            line,
-            column,
-            length,
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct QuotedSourceMetadata {
     pub lexical_context: Option<QuotedLexicalContext>,
-    pub span: Option<QuotedSourceSpan>,
+    /// The byte-offset source span, carried verbatim from the lexer. Positions
+    /// are stored as a byte range — never line/column — so quoting and reading a
+    /// span are free copies; line/column is derived only when a diagnostic is
+    /// rendered, by the `SourceMap` (fz-hyj). The `code_id` is contextual: the
+    /// reader stamps the span with the source it is reading, so only the byte
+    /// range travels in the quoted heap.
+    pub span: Option<Span>,
 }
 
 /// Owns the source-process heap that backs one quoted-source graph.
@@ -346,12 +335,11 @@ impl QuotedSourceBuilder {
         self.map(&entries)
     }
 
-    pub fn span(&self, span: &QuotedSourceSpan) -> Result<AnyValueRef, QuotedSourceError> {
+    pub fn span(&self, span: &Span) -> Result<AnyValueRef, QuotedSourceError> {
+        let length = span.end.saturating_sub(span.start);
         self.map(&[
-            (self.atom("source"), self.utf8_binary(&span.source_name)?),
-            (self.atom("line"), self.int(span.line as i64)),
-            (self.atom("column"), self.int(span.column as i64)),
-            (self.atom("length"), self.int(span.length as i64)),
+            (self.atom("start"), self.int(span.start as i64)),
+            (self.atom("length"), self.int(length as i64)),
         ])
     }
 

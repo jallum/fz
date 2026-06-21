@@ -14,7 +14,7 @@ fn compiler2_quoted_surface_reads_alias_as_keyword_value() {
     let mut code = CodeMap::new();
     let code_id = code.define(Some("alias_as.fz".to_string()), source.to_string());
     let root = parse_quoted_program("alias_as.fz", source, &tel).expect("quoted parse");
-    let ctx = SurfaceSourceContext::new(code_id, source);
+    let ctx = SurfaceSourceContext::new(code_id);
 
     let surface = read_scope_surface(&root, &ctx).expect("surface read");
 
@@ -34,7 +34,7 @@ fn compiler2_quoted_surface_groups_multiclause_functions_into_one_logical_form()
     let mut code = CodeMap::new();
     let code_id = code.define(Some("surface.fz".to_string()), source.to_string());
     let root = parse_quoted_program("surface.fz", source, &tel).expect("quoted parse");
-    let ctx = SurfaceSourceContext::new(code_id, source);
+    let ctx = SurfaceSourceContext::new(code_id);
 
     let surface = read_scope_surface(&root, &ctx).expect("surface read");
 
@@ -131,7 +131,7 @@ fn compiler2_quoted_surface_keeps_attached_function_attrs_inside_grouped_source(
     let mut code = CodeMap::new();
     let code_id = code.define(Some("surface.fz".to_string()), source.to_string());
     let root = parse_quoted_program("surface.fz", source, &tel).expect("quoted parse");
-    let ctx = SurfaceSourceContext::new(code_id, source);
+    let ctx = SurfaceSourceContext::new(code_id);
 
     let surface = read_scope_surface(&root, &ctx).expect("surface read");
 
@@ -241,7 +241,7 @@ end
     let mut code = CodeMap::new();
     let code_id = code.define(Some("nested_long_doc.fz".to_string()), source.to_string());
     let root = parse_quoted_program("nested_long_doc.fz", source, &tel).expect("quoted parse");
-    let ctx = SurfaceSourceContext::new(code_id, source);
+    let ctx = SurfaceSourceContext::new(code_id);
 
     let outer = read_compiler_fragment_surface(&root, &ctx).expect("outer fragment surface");
     let ScopeForm::Module(module) = &outer.forms[0] else {
@@ -252,7 +252,7 @@ end
         panic!("expected grouped function macro call inside nested module body");
     };
 
-    derive_function_surface(&function.source, CodeId::ZERO, Some("nested_long_doc.fz"), source, &tel)
+    derive_function_surface(&function.source, CodeId::ZERO, Some("nested_long_doc.fz"), &tel)
         .expect("nested grouped function source should still decode long procbin-backed @doc payloads");
 }
 
@@ -263,7 +263,7 @@ fn compiler2_quoted_surface_reads_protocol_impl_callbacks_through_grouped_source
     let mut code = CodeMap::new();
     let code_id = code.define(Some("surface.fz".to_string()), source.to_string());
     let root = parse_quoted_program("surface.fz", source, &tel).expect("quoted parse");
-    let ctx = SurfaceSourceContext::new(code_id, source);
+    let ctx = SurfaceSourceContext::new(code_id);
 
     let surface = read_scope_surface(&root, &ctx).expect("surface read");
 
@@ -324,7 +324,7 @@ fn compiler2_quoted_surface_rejects_a_trailing_dangling_spec() {
     let mut code = CodeMap::new();
     let code_id = code.define(Some("dangling_tail.fz".to_string()), source.to_string());
     let root = parse_quoted_program("dangling_tail.fz", source, &tel).expect("quoted parse");
-    let ctx = SurfaceSourceContext::new(code_id, source);
+    let ctx = SurfaceSourceContext::new(code_id);
 
     let error = read_scope_surface(&root, &ctx).expect_err("a trailing @spec attaches to nothing");
     assert!(
@@ -340,7 +340,7 @@ fn compiler2_quoted_surface_rejects_a_spec_followed_by_a_non_function_form() {
     let mut code = CodeMap::new();
     let code_id = code.define(Some("dangling_mid.fz".to_string()), source.to_string());
     let root = parse_quoted_program("dangling_mid.fz", source, &tel).expect("quoted parse");
-    let ctx = SurfaceSourceContext::new(code_id, source);
+    let ctx = SurfaceSourceContext::new(code_id);
 
     read_scope_surface(&root, &ctx).expect_err("an interposed non-function form orphans the pending @spec");
 }
@@ -360,7 +360,7 @@ fn compiler2_quoted_surface_attaches_stacked_doc_and_spec_through_scope_attrs() 
     let mut code = CodeMap::new();
     let code_id = code.define(Some("stacked.fz".to_string()), source.to_string());
     let root = parse_quoted_program("stacked.fz", source, &tel).expect("quoted parse");
-    let ctx = SurfaceSourceContext::new(code_id, source);
+    let ctx = SurfaceSourceContext::new(code_id);
 
     let surface = read_scope_surface(&root, &ctx).expect("stacked attrs attach to the group");
     assert_eq!(

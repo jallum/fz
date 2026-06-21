@@ -29,7 +29,7 @@ pub(super) fn index_code(world: &mut World<'_>, code_id: CodeId) -> Result<JobEf
     let source_text = world.code_text(code_id).to_owned();
     let quoted_root = parse_quoted_program(&source_name, &source_text, world.tel())
         .map_err(|error| emit_job_diagnostic(world, error.to_diagnostic()))?;
-    let ctx = SurfaceSourceContext::new(code_id, &source_text);
+    let ctx = SurfaceSourceContext::new(code_id);
     let read_surface = if world.is_bootstrap(code_id) {
         read_compiler_fragment_surface
     } else {
@@ -247,7 +247,6 @@ pub(super) fn define_function(
         &expanded_source.source,
         expanded_source.code,
         world.code_name(expanded_source.code),
-        world.code_text(expanded_source.code),
         world.tel(),
     )
     .map_err(|error| emit_internal_surface_error(world, format!("quoted function decode failed: {error}")))?;

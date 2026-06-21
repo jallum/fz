@@ -11,7 +11,7 @@ use fz_runtime::any_value::AnyValueRef;
 use super::token_payload;
 use super::{
     QuotedLexicalContext, QuotedLexicalContextKind, QuotedSourceBuilder, QuotedSourceError, QuotedSourceHeap,
-    QuotedSourceMetadata, QuotedSourceRoot, QuotedSourceSpan,
+    QuotedSourceMetadata, QuotedSourceRoot,
 };
 
 #[derive(Debug)]
@@ -48,17 +48,15 @@ pub fn parse_quoted_program(
     tel: &dyn Telemetry,
 ) -> Result<QuotedSourceRoot, FrontDoorError> {
     let source_name = Rc::<str>::from(source_name.as_ref());
-    let tokens = Lexer::with_source_name(source_text, source_name.clone())
+    let tokens = Lexer::with_source_name(source_text, source_name)
         .tokenize(tel)
         .map_err(|error| FrontDoorError::syntax(error.msg, error.span))?;
-    FrontDoorParser::new(tokens, source_name, source_text).parse_program()
+    FrontDoorParser::new(tokens).parse_program()
 }
 
-struct FrontDoorParser<'a> {
+struct FrontDoorParser {
     toks: Vec<Token>,
     pos: usize,
-    source_name: Rc<str>,
-    source_text: &'a str,
     builder: QuotedSourceBuilder,
     allow_trailing_do: bool,
     allow_extern_symbol_folding: bool,
@@ -104,15 +102,13 @@ impl ParsedExpr {
     }
 }
 
-impl<'a> FrontDoorParser<'a> {
-    fn new(toks: Vec<Token>, source_name: Rc<str>, source_text: &'a str) -> Self {
+impl FrontDoorParser {
+    fn new(toks: Vec<Token>) -> Self {
         let heap = Rc::new(QuotedSourceHeap::new());
         let builder = heap.builder();
         Self {
             toks,
             pos: 0,
-            source_name,
-            source_text,
             builder,
             allow_trailing_do: true,
             allow_extern_symbol_folding: true,
@@ -2029,15 +2025,10 @@ impl<'a> FrontDoorParser<'a> {
                 module_path.to_vec(),
                 scope.to_vec(),
             )),
-            span: Some(self.quoted_span(span)),
+            // The lexer's byte-offset span travels verbatim into the quoted
+            // heap; no line/column is computed here (fz-hyj).
+            span: Some(span),
         })
-    }
-
-    fn quoted_span(&self, span: Span) -> QuotedSourceSpan {
-        let start = span.start as usize;
-        let length = span.end.saturating_sub(span.start);
-        let (line, column) = line_and_column(self.source_text, start);
-        QuotedSourceSpan::new(self.source_name.to_string(), line, column, length)
     }
 
     fn peek(&self) -> &Tok {
@@ -2262,20 +2253,6 @@ impl<'a> FrontDoorParser<'a> {
         }
         self.peek_at(offset)
     }
-}
-
-fn line_and_column(source_text: &str, byte_offset: usize) -> (u32, u32) {
-    let mut line = 1_u32;
-    let mut column = 1_u32;
-    for byte in source_text.as_bytes().iter().take(byte_offset).copied() {
-        if byte == b'\n' {
-            line += 1;
-            column = 1;
-        } else {
-            column += 1;
-        }
-    }
-    (line, column)
 }
 
 fn segments_ref(segments: &[String]) -> Vec<&str> {

@@ -63,12 +63,8 @@ fn compiler2_frontdoor_parses_alias_import_and_require_as_quoted_calls() {
 #[test]
 fn compiler2_frontdoor_threads_source_context_through_nested_modules() {
     let tel = ConfiguredTelemetry::new();
-    let root = parse_quoted_program(
-        "app.fz",
-        "defmodule App do\n  require Helpers\n  defmodule Tools do\n    import Helpers, except: [twice: 1]\n  end\nend\n",
-        &tel,
-    )
-    .expect("quoted parse");
+    let source = "defmodule App do\n  require Helpers\n  defmodule Tools do\n    import Helpers, except: [twice: 1]\n  end\nend\n";
+    let root = parse_quoted_program("app.fz", source, &tel).expect("quoted parse");
 
     let top = root.cursor().list_items().expect("top-level items");
     let app = top[0].ast_node().expect("app cursor").expect("app defmodule node");
@@ -126,19 +122,20 @@ fn compiler2_frontdoor_threads_source_context_through_nested_modules() {
             .expect("nested import module atoms"),
         vec!["App".to_string(), "Tools".to_string()]
     );
-    assert_eq!(
-        import
-            .meta
-            .map_value("__fz_span__")
-            .expect("nested import span lookup")
-            .expect("nested import span")
-            .map_value("line")
-            .expect("nested import line lookup")
-            .expect("nested import line")
-            .int_value()
-            .expect("nested import line int"),
-        4
-    );
+    // The span is a byte offset now; resolve it back to a line to assert the
+    // nested import's position threaded through correctly (it sits on line 4).
+    let start = import
+        .meta
+        .map_value("__fz_span__")
+        .expect("nested import span lookup")
+        .expect("nested import span")
+        .map_value("start")
+        .expect("nested import start lookup")
+        .expect("nested import start")
+        .int_value()
+        .expect("nested import start int") as usize;
+    let line = source[..start].bytes().filter(|&byte| byte == b'\n').count() + 1;
+    assert_eq!(line, 4, "nested import span should point at line 4");
 }
 
 #[test]

@@ -247,7 +247,7 @@ pub(crate) fn discover_modules(
     code_id: CodeId,
     parent_module: ModuleId,
     surface: &ScopeSurface,
-    ctx: &SurfaceSourceContext<'_>,
+    ctx: &SurfaceSourceContext,
     outputs: &mut Outputs,
     changed: &mut Changed,
 ) -> Result<(), FatalError> {
@@ -698,8 +698,7 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
         context: &FragmentPublicationContext,
     ) -> Result<Option<JobEffects>, FatalError> {
         if matches!(context.discovery, FragmentDiscovery::DiscoverNestedModules) {
-            let code_text = self.world.code_text(self.code_id).to_owned();
-            let ctx = SurfaceSourceContext::new(self.code_id, &code_text);
+            let ctx = SurfaceSourceContext::new(self.code_id);
             discover_modules(
                 self.world,
                 self.code_id,
@@ -757,8 +756,7 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
             ScopeForm::Module(module) => {
                 let module_id = self.world.reference_child_module(self.current_module, &module.name);
                 self.world.scope_module(module_id, self.namespace);
-                let code_text = self.world.code_text(self.code_id).to_owned();
-                let ctx = SurfaceSourceContext::new(self.code_id, &code_text);
+                let ctx = SurfaceSourceContext::new(self.code_id);
                 let body = read_module_body_surface(module, &ctx)
                     .map_err(|error| emit_surface_read_error(self.world, "module body read failed", &error))?;
                 self.register_protocol_impl_providers(module_id, &body, &ctx)?;
@@ -770,8 +768,7 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
                 Ok(None)
             }
             ScopeForm::ProtocolImpl(protocol_impl) => {
-                let code_text = self.world.code_text(self.code_id).to_owned();
-                let ctx = SurfaceSourceContext::new(self.code_id, &code_text);
+                let ctx = SurfaceSourceContext::new(self.code_id);
                 self.register_protocol_impl(protocol_impl, &ctx)?;
                 Ok(None)
             }
@@ -790,7 +787,7 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
         &mut self,
         module: ModuleId,
         body: &ScopeSurface,
-        ctx: &SurfaceSourceContext<'_>,
+        ctx: &SurfaceSourceContext,
     ) -> Result<(), FatalError> {
         for form in &body.forms {
             match form {
@@ -1100,7 +1097,7 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
     fn register_protocol_impl(
         &mut self,
         form: &ProtocolImplForm,
-        ctx: &SurfaceSourceContext<'_>,
+        ctx: &SurfaceSourceContext,
     ) -> Result<(), FatalError> {
         let protocol = reference_impl_protocol_module(self.world, self.current_module, self.namespace, &form.protocol);
         let target = reference_impl_target_module(self.world, self.current_module, self.namespace, &form.target);

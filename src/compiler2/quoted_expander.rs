@@ -659,10 +659,9 @@ fn read_surface_root_with(
     code_id: CodeId,
     root: &QuotedSourceRoot,
     context: &str,
-    read: fn(&QuotedSourceRoot, &SurfaceSourceContext<'_>) -> Result<ScopeSurface, QuotedSourceError>,
+    read: fn(&QuotedSourceRoot, &SurfaceSourceContext) -> Result<ScopeSurface, QuotedSourceError>,
 ) -> Result<ScopeSurface, super::scheduler::FatalError> {
-    let code_text = world.code_text(code_id).to_owned();
-    let ctx = SurfaceSourceContext::new(code_id, &code_text);
+    let ctx = SurfaceSourceContext::new(code_id);
     let source = if root.root().is_empty_list() || root.root().tag() == ValueKind::LIST {
         root.clone()
     } else {

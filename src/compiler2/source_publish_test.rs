@@ -66,7 +66,7 @@ fn publish_compiler_fragment_scope(
     code: super::CodeId,
     root: &QuotedSourceRoot,
 ) -> ScopePublication {
-    let ctx = SurfaceSourceContext::new(code, world.code_text(code));
+    let ctx = SurfaceSourceContext::new(code);
     let surface = read_compiler_fragment_surface(root, &ctx).expect("compiler fragment surface");
     publish_scope(
         world,
