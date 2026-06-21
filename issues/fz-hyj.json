@@ -2,6 +2,7 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-06-21T13:42:12Z",
   "created": "2026-06-20T20:12:49Z",
   "description": "[PERF] compiler2 eagerly processes the entire runtime library on every compile, regardless of what the program uses.\n\nObserved: `dbg(Enum.with_index([\"a\",\"b\"], fn (x,_index) -\u003e x \u003c\u003e \"!\" end))` takes ~1.34s end-to-end (debug build, fz2 interp). Not a churn/timeout (semantic analysis is bounded: 151 activation_analysis events). The cost is eager prelude intake.\n\nTelemetry breakdown (/tmp/fz2-ewi.jsonl, 4293 lines):\n  1474  fz.compiler2.job                     -- jobs driven for a one-liner\n   737  fz.compiler2.work_graph.applied\n   501  fz.compiler2.function.source.noted   -- ~500 library functions parsed+registered\n   501  fz.compiler2.compiler_service.define\n   454  fz.compiler2.macro.expanded          -- 454 macro expansions\n   151  fz.compiler2.{activation_analysis,return_type}.defined\n    26  fz.compiler2.function.defined         -- only ~26 functions actually compiled\n    31  fz.compiler2.lowered_body.defined\n\nDiagnosis: the whole runtime library (Enum, List, Enumerable, String, ...) -- ~500 functions and ~454 macro expansions -- is noted/macro-expanded/registered up front, but only ~26 functions are reached and compiled. ~500 functions of parse+expand overhead to run a program that touches three. The 1474 jobs and macro storm are downstream of this eager intake.\n\nFix direction: lazy / on-demand library intake -- note, macro-expand, and define a library function only when it is actually demanded (a function-source fact gated by demand), instead of eagerly processing the full prelude. Architectural; aligns with the incremental-fact-compiler direction (fz-rh2) and the strangler proposal.\n\nNot blocking the fz-hwn.27 arc. Measure before/after with the same repro + telemetry event counts; target: function.source.noted and macro.expanded drop to ~the reachable set.",
   "id": "fz-hyj",
@@ -13,8 +14,8 @@
     }
   ],
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "[PERF] compiler2 eagerly processes the whole runtime library on every compile",
   "type": "task",
-  "updated_at": "2026-06-21T13:27:52Z"
+  "updated_at": "2026-06-21T13:42:12Z"
 }
