@@ -138,7 +138,17 @@ pub(crate) fn closure_var_id(fn_id: FnId, position: usize) -> TypeVarId {
         pos,
         VAR_STRIDE_PER_FN,
     );
-    TypeVarId(fn_id.0 * VAR_STRIDE_PER_FN + pos)
+    let id = fn_id.0 * VAR_STRIDE_PER_FN + pos;
+    // A closure-surface var is a FREE var: it must stay in the untagged half of
+    // the id space so display never mistakes it for a structural address. The
+    // top bit is reserved for addresses (`addressed::ADDRESS_TAG`); reaching it
+    // would also overflow the `fn_id * 64` stride this allocator already assumes
+    // fits a `u32`.
+    debug_assert!(
+        id < super::addressed::ADDRESS_TAG,
+        "closure-var id collided with the address tag bit"
+    );
+    TypeVarId(id)
 }
 
 /// fz-try.7 — the dedicated return-var slot for a closure's surface arrow.

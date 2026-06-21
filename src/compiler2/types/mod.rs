@@ -53,6 +53,10 @@ pub struct Types {
     /// address path so the same address always yields the same `TypeVarId`,
     /// making the addressed arrow canonical by construction. See `addressed`.
     address_vars: HashMap<Vec<addressed::AddrStep>, TypeVarId>,
+    /// The reverse of `address_vars`: the path behind each address id, indexed
+    /// by the id's dense slot (its tag bit masked off). Lets display render an
+    /// address structurally (`a1_0`, `r0`) instead of as a bare `αN`.
+    address_paths: Vec<Vec<addressed::AddrStep>>,
 }
 
 #[derive(Default)]
@@ -87,6 +91,10 @@ pub(crate) struct ComparisonCacheStats {
 #[derive(Clone, Copy)]
 pub(super) struct TyCtx<'a> {
     arena: &'a [Descr],
+    /// The address reverse table (path per address id), so display can render a
+    /// structural address as `a1_0`/`r0`. Empty for the interner-internal ctx,
+    /// which only resolves descriptors and never renders.
+    addresses: &'a [Vec<addressed::AddrStep>],
 }
 
 impl<'a> TyCtx<'a> {
@@ -94,6 +102,15 @@ impl<'a> TyCtx<'a> {
         self.arena
             .get(t.0 as usize)
             .unwrap_or_else(|| panic!("unknown interned type id {}", t.0))
+    }
+
+    /// Render one type variable: a structural address (`a0`, `a1_0`, `r0`) when
+    /// its id carries the address tag, else a free var `αN` (fz-hwn.27.13).
+    fn render_var(&self, id: TypeVarId) -> String {
+        match addressed::address_path(self.addresses, id) {
+            Some(path) => addressed::format_address(path),
+            None => id.to_string(),
+        }
     }
 }
 
@@ -111,7 +128,10 @@ impl TypeInterner {
     }
 
     fn ctx(&self) -> TyCtx<'_> {
-        TyCtx { arena: &self.arena }
+        TyCtx {
+            arena: &self.arena,
+            addresses: &[],
+        }
     }
 
     fn descr(&self, t: &Ty) -> &Descr {
@@ -162,7 +182,10 @@ impl Types {
     }
 
     fn ctx(&self) -> TyCtx<'_> {
-        self.interner.ctx()
+        TyCtx {
+            arena: &self.interner.arena,
+            addresses: &self.address_paths,
+        }
     }
 
     fn descr(&self, t: &Ty) -> &Descr {

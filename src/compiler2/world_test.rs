@@ -1,5 +1,5 @@
 use super::facts::FactUse;
-use super::{DriveOutcome, FactKey, Job, ModuleId, ModuleInterface, Namespace, TypeName, TypeVarId, Types, World};
+use super::{DriveOutcome, FactKey, Job, ModuleId, ModuleInterface, Namespace, TypeName, Types, World};
 use crate::ast::Attribute;
 use crate::compiler2::drive::JobEffects;
 use crate::telemetry::ConfiguredTelemetry;
@@ -121,7 +121,6 @@ fn compiler2_resolve_spec_resolves_types_shapes_and_constraints_against_the_capt
     let list_float = expect.list(float);
     let int = expect.int();
     let list_int = expect.list(int);
-    let var0 = expect.type_var(TypeVarId(0));
 
     assert_eq!(resolved.params.len(), 2, "two declared parameters");
     assert_eq!(
@@ -134,15 +133,16 @@ fn compiler2_resolve_spec_resolves_types_shapes_and_constraints_against_the_capt
         expect.display(&int),
         "tkf_elem resolves to its integer inner",
     );
+    // fz-hwn.27.14 + .27.13: `resolve_spec` addresses the whole spec scope at
+    // the binder, so the spec's result variable `x` is the RESULT-SLOT ADDRESS
+    // r0 — not an encounter ordinal — and now renders legibly as `r0` rather
+    // than a bare `αN`.
+    let expect_r0 = expect.result_alpha();
     assert_eq!(
         world.types_mut().display(&resolved.result),
-        expect.display(&var0),
-        "the result is the free variable `x`",
+        expect.display(&expect_r0),
+        "the result is the result-slot address r0 (the spec's `x`), rendered legibly",
     );
-    // fz-hwn.27.14: `resolve_spec` addresses the whole spec scope at the binder,
-    // so the result variable is the RESULT-SLOT ADDRESS r0 — not an encounter
-    // ordinal. (Here r0 also interns as id 0 only because this spec has no
-    // param-position variables; the identity that matters is the address.)
     let r0 = world.types_mut().result_alpha();
     assert_eq!(
         resolved.result, r0,

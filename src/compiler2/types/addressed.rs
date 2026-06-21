@@ -54,16 +54,70 @@ pub enum AddrStep {
     VarSlot(u16),
 }
 
+/// The `TypeVarId` space is partitioned by its top bit so a var's KIND is
+/// intrinsic to its id, with no out-of-band lookup. Bit 31 SET means a
+/// structural address (minted here by [`Types::address_id`]); bit 31 CLEAR
+/// means a free var — a closure-surface var (`closure_var_id`, `fn_id*64+pos`),
+/// a resolver encounter var, or a typedef param. The two kinds densely overlap
+/// the low range otherwise (`closure_var_id(0, 0) == 0 ==` the first address),
+/// so the tag is what lets display render `a0`/`r0` for canonical addresses and
+/// `αN` for free vars without guessing (fz-hwn.27.13). `closure_var_id` asserts
+/// it never reaches the tag, which only tightens the `fn_id * 64` < `u32`
+/// invariant the closure-var stride already relies on.
+pub(super) const ADDRESS_TAG: u32 = 0x8000_0000;
+
+/// The structural address path behind an interned address id, or `None` when
+/// `id` is a free var (the tag is clear). The dense address index is the id
+/// with its tag masked off, so the reverse table is a flat `Vec` lookup.
+pub(super) fn address_path(paths: &[Vec<AddrStep>], id: TypeVarId) -> Option<&[AddrStep]> {
+    if id.0 & ADDRESS_TAG == 0 {
+        return None;
+    }
+    let index = (id.0 & !ADDRESS_TAG) as usize;
+    paths.get(index).map(Vec::as_slice)
+}
+
+/// Render a structural address path for display: the root step names the slot
+/// (`a{i}` for parameter `i`, `r0` for the result), and each nested step appends
+/// `_<component>` so `[Param(1), Field(0)]` reads `a1_0` and `[Result, Elem]`
+/// reads `r0_e` (fz-hwn.27.13). A legible mirror of the `AddrStep` path, never a
+/// hard type — purely diagnostic.
+pub(super) fn format_address(path: &[AddrStep]) -> String {
+    let mut out = String::new();
+    for (i, step) in path.iter().enumerate() {
+        match (i, step) {
+            (0, AddrStep::Param(p)) => out.push_str(&format!("a{p}")),
+            (0, AddrStep::Result) => out.push_str("r0"),
+            (_, AddrStep::Param(p)) => out.push_str(&format!("_p{p}")),
+            (_, AddrStep::Result) => out.push_str("_r"),
+            // Every path is rooted at a Param or Result slot, so index 0 is
+            // always one of the two arms above; nested component steps only ever
+            // appear after the root.
+            (_, AddrStep::Field(j)) | (_, AddrStep::MapField(j)) => out.push_str(&format!("_{j}")),
+            (_, AddrStep::VarSlot(k)) => out.push_str(&format!("_v{k}")),
+            (_, AddrStep::Elem) => out.push_str("_e"),
+            (_, AddrStep::Payload) => out.push_str("_p"),
+        }
+    }
+    out
+}
+
 impl Types {
     /// Intern a structural address to its canonical [`TypeVarId`]. Same address
     /// always yields the same id, so `param_alpha(0)` is stable across every
-    /// signature built by this `Types` instance.
+    /// signature built by this `Types` instance. The id carries [`ADDRESS_TAG`]
+    /// so it is structurally distinguishable from a free var, and its dense
+    /// index (the tag masked off) keys the [`Types::address_paths`] reverse
+    /// table that display reads back.
     pub fn address_id(&mut self, path: &[AddrStep]) -> TypeVarId {
         if let Some(&id) = self.address_vars.get(path) {
             return id;
         }
-        let id = TypeVarId(self.address_vars.len() as u32);
+        let index = self.address_vars.len() as u32;
+        debug_assert!(index < ADDRESS_TAG, "address-id space exhausted below the tag bit");
+        let id = TypeVarId(ADDRESS_TAG | index);
         self.address_vars.insert(path.to_vec(), id);
+        self.address_paths.push(path.to_vec());
         id
     }
 
@@ -268,6 +322,7 @@ impl Types {
 
 #[cfg(test)]
 mod tests {
+    use super::super::ClosureTarget;
     use super::AddrStep::{Field, Param};
     use super::*;
 
@@ -374,5 +429,60 @@ mod tests {
         let r0 = t.result_alpha();
         let expected = t.arrow(&[a0, etup], r0);
         assert_eq!(g, expected, "t reuses a0 inside the tuple; u addresses to a1_1");
+    }
+
+    #[test]
+    fn addresses_display_structurally_and_free_vars_stay_alpha() {
+        // The legibility intent (fz-hwn.27.13): a canonical address renders by
+        // its structural slot, while a free var renders as the bare `αN` — so
+        // "is this canonical?" is answerable from the rendering alone.
+        let mut t = Types::new();
+        let a0 = t.param_alpha(0);
+        let r0 = t.result_alpha();
+        let a1_0 = t.address_var(&[Param(1), Field(0)]);
+        assert_eq!(t.display(&a0), "a0");
+        assert_eq!(t.display(&r0), "r0");
+        assert_eq!(t.display(&a1_0), "a1_0", "a nested address renders by its path");
+
+        let free = var(&mut t, 7);
+        assert_eq!(t.display(&free), "α7", "a free var keeps the bare αN rendering");
+    }
+
+    #[test]
+    fn closure_surface_vars_render_as_free_not_addresses() {
+        // A closure-surface var shares the low id range with addresses
+        // (`closure_var_id(fn, 0)` can equal the first address's raw index), so
+        // it MUST be distinguishable: the address tag keeps it rendering `αN`,
+        // never a misleading `a0` that would read as canonical.
+        let mut t = Types::new();
+        // Mint an address first so the low dense slot 0 is claimed by `a0`.
+        let _a0 = t.param_alpha(0);
+        let closure = t.fn_ref_lit(ClosureTarget(0), 1);
+        let shown = t.display(&closure);
+        assert!(
+            shown.contains('α'),
+            "closure-surface vars render as free αN, not as addresses: {shown}",
+        );
+        assert!(
+            !shown.contains("a0"),
+            "a closure-surface var must not be mistaken for the address a0: {shown}",
+        );
+    }
+
+    #[test]
+    fn address_tag_is_transparent_to_interning() {
+        // Tagging an address id changes only its NUMBER; structurally identical
+        // arrows must still fold to one interned identity, and (a, b) must still
+        // differ from (a, a). The calculator reads vars by identity, never by
+        // magnitude, so the tag cannot perturb equality.
+        let mut t = Types::new();
+        let x = var(&mut t, 100);
+        let y = var(&mut t, 101);
+        let int = t.int();
+        let one = t.address_arrow(&[x, y], int);
+        let two = t.address_arrow(&[y, x], int);
+        assert_eq!(one, two, "alpha-equivalent arrows fold to one identity under tagging");
+        let aa = t.address_arrow(&[x, x], int);
+        assert_ne!(one, aa, "distinct params stay distinct under tagging");
     }
 }

@@ -24,7 +24,7 @@ pub(crate) fn display(cx: TyCtx<'_>, d: &Descr) -> String {
     append_axis(&mut parts, &d.atoms, "atom", |s| format!(":{}", s));
     append_axis(&mut parts, &d.opaques, "opaque", Clone::clone);
     append_axis(&mut parts, &d.brands, "brand", Clone::clone);
-    append_axis(&mut parts, &d.vars, "var", |id| id.to_string());
+    append_axis(&mut parts, &d.vars, "var", |id| cx.render_var(*id));
     parts.extend(d.tuples.iter().map(|c| format_tuple_clause(cx, c)));
     parts.extend(d.lists.iter().map(|c| format_list_clause(cx, c)));
     parts.extend(d.resources.iter().map(|c| format_resource_clause(cx, c)));
