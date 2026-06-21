@@ -329,6 +329,36 @@ impl TransportFactsBuilder {
         }
     }
 
+    /// Fold another fact set into this one. The fact builder is an additive,
+    /// idempotent monoid -- every `record_*` only ever unions entries in -- so
+    /// committing a speculatively-explored subtree is `self ∪ delta`, never a
+    /// structural overwrite. This is what replaces the old "snapshot the whole
+    /// builder, then `*facts = staged` or drop it" rollback: a dead branch is
+    /// discarded by simply not merging its delta. Taken by reference so a cached
+    /// delta can be re-merged on every memo hit without being consumed.
+    fn merge(&mut self, other: &TransportFactsBuilder) {
+        for (callable, draft) in &other.callables {
+            self.record_callable(
+                *callable,
+                draft.resolutions.clone(),
+                draft.direct_surfaces.clone(),
+                draft.boundary_ids.clone(),
+            );
+        }
+        for (boundary, draft) in &other.boundaries {
+            for publication in &draft.publications {
+                self.record_boundary(*boundary, publication.clone());
+            }
+            self.record_boundary_resolutions(*boundary, draft.resolutions.clone());
+        }
+        for (publication, shapes) in &other.publication_source_shapes {
+            self.record_publication_source_shapes(publication.clone(), shapes.clone());
+        }
+        for (publication, sources) in &other.publication_source_positions {
+            self.record_publication_source_positions(publication.clone(), sources.clone());
+        }
+    }
+
     fn finish(self) -> (HashMap<CallableId, CallableFacts>, HashMap<BoundaryId, BoundaryFacts>) {
         let callables = self
             .callables
@@ -1785,11 +1815,11 @@ fn shape_for_source(
     source: TransportSource,
     publication: Option<TransportPosition>,
 ) -> ShapeId {
-    let mut staged = facts.clone();
+    let mut delta = TransportFactsBuilder::default();
     match project_source(
         world,
         contexts,
-        &mut staged,
+        &mut delta,
         executable,
         context,
         ty,
@@ -1799,7 +1829,7 @@ fn shape_for_source(
         &mut Vec::new(),
     ) {
         SourceShape::Exact(shape) => {
-            *facts = staged;
+            facts.merge(&delta);
             shape
         }
         SourceShape::Recursive | SourceShape::Unknown => {
@@ -1925,12 +1955,12 @@ fn project_sources(
 ) -> SourceShape {
     let mut exact = Vec::new();
     let mut recursive = false;
-    let mut staged = facts.clone();
+    let mut delta = TransportFactsBuilder::default();
     for source in sources {
         match project_source(
             world,
             contexts,
-            &mut staged,
+            &mut delta,
             executable,
             context,
             ty,
@@ -1952,14 +1982,14 @@ fn project_sources(
         };
     }
     if exact.windows(2).all(|pair| pair[0] == pair[1]) {
-        *facts = staged;
+        facts.merge(&delta);
         SourceShape::Exact(exact[0])
     } else {
         if demand.is_callable() {
             if let Some(publication) = publication {
-                staged.record_publication_source_shapes(publication, exact);
+                delta.record_publication_source_shapes(publication, exact);
             }
-            *facts = staged;
+            facts.merge(&delta);
         }
         SourceShape::Unknown
     }
@@ -1982,7 +2012,7 @@ fn project_executable_input_source(
         return SourceShape::Unknown;
     }
 
-    let mut staged = facts.clone();
+    let mut delta = TransportFactsBuilder::default();
     let mut exact = Vec::new();
     let mut recursive = false;
     for (source_executable, value) in sources {
@@ -1995,7 +2025,7 @@ fn project_executable_input_source(
         match project_source(
             world,
             contexts,
-            &mut staged,
+            &mut delta,
             &source_executable,
             source_context,
             source_ty,
@@ -2017,7 +2047,7 @@ fn project_executable_input_source(
         };
     }
     if exact.windows(2).all(|pair| pair[0] == pair[1]) {
-        *facts = staged;
+        facts.merge(&delta);
         SourceShape::Exact(exact[0])
     } else if exact
         .iter()
@@ -2128,11 +2158,11 @@ fn project_tuple_value(
     let field_tys = tuple_field_tys(world, ty, fields.len());
     let mut item_shapes = Vec::with_capacity(items.len());
     for (item, (item_ty, field_demand)) in items.iter().copied().zip(field_tys.into_iter().zip(fields.iter())) {
-        let mut staged = facts.clone();
+        let mut delta = TransportFactsBuilder::default();
         let shape = match project_source(
             world,
             contexts,
-            &mut staged,
+            &mut delta,
             executable,
             context,
             item_ty,
@@ -2142,7 +2172,7 @@ fn project_tuple_value(
             visiting,
         ) {
             SourceShape::Exact(shape) => {
-                *facts = staged;
+                facts.merge(&delta);
                 shape
             }
             SourceShape::Recursive | SourceShape::Unknown => {
@@ -2255,7 +2285,7 @@ fn project_callsite_return(
         .unwrap_or(ExecutableNeed::Value);
     let mut shapes = Vec::new();
     let mut recursive = false;
-    let mut staged = facts.clone();
+    let mut delta = TransportFactsBuilder::default();
     for target in targets {
         match target.callee {
             SelectedCallee::ProviderBoundary(_) => return SourceShape::Unknown,
@@ -2270,7 +2300,7 @@ fn project_callsite_return(
                 match project_source(
                     world,
                     contexts,
-                    &mut staged,
+                    &mut delta,
                     &target,
                     target_context,
                     target_context.return_ty,
@@ -2294,7 +2324,7 @@ fn project_callsite_return(
         };
     }
     if shapes.windows(2).all(|pair| pair[0] == pair[1]) {
-        *facts = staged;
+        facts.merge(&delta);
         SourceShape::Exact(shapes[0])
     } else {
         SourceShape::Unknown
