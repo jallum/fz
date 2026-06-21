@@ -1,8 +1,6 @@
 {
   "assignee": "",
-  "blocked_by": [
-    "fz-bin.2"
-  ],
+  "blocked_by": [],
   "blocks": [],
   "created": "2026-06-21T18:23:26Z",
   "description": "Re-enable the fz-9i4.7.2 fixtures that now compile and verify the matrix is green.\n\nOnce the multi-target protocol callsite materializes (fz-bin.1), the union-receiver case (list|range) no longer hits 'unresolved multi-target direct callsite'. Re-enable enum_take_drop_split and any sibling fixtures pulled from the matrix known-failing set for this exact error.\n\nCAVEAT: enum_take_drop_split also depends on fz-kot (Enum.take/drop return [] even monomorphically) -- that is a SEPARATE bug. If the fixture compiles but produces wrong results, fz-kot blocks final green; gate the runtime-correctness fixture on fz-kot and only re-enable the compile/materialization assertion here.\n\nmap+struct mixed fixtures: gate on fz-bv3 (sound nominal struct-vs-map dispatch). list/range/struct-only fixtures route soundly without it.\n\nVERIFY: full lib + matrix '0 failed' from a fresh uniquely-marked run; zero warnings. Confirm the re-enabled fixtures assert the dispatch path (telemetry/edge shape), not just exit code.",
@@ -13,5 +11,5 @@
   "status": "open",
   "title": "Re-enable fz-9i4.7.2 fixtures that now compile; verify matrix green",
   "type": "task",
-  "updated_at": "2026-06-21T20:53:08Z"
+  "updated_at": "2026-06-21T20:53:19Z"
 }
