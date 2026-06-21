@@ -34,7 +34,7 @@ struct ExecutableContext {
     resume_entries: Vec<ResumeEntry>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum TransportSource {
     ExecutableReturn,
     ExecutableInput(usize),
@@ -46,7 +46,7 @@ enum TransportSource {
     CallableValue(LocalCallableProducer),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct LocalCallableProducer {
     function: FunctionId,
     captures: Box<[ValueId]>,
@@ -77,6 +77,70 @@ enum SourceShape {
     Exact(ShapeId),
     Recursive,
     Unknown,
+}
+
+/// The identity of an in-progress source projection. Two projections with the
+/// same `(executable, source, demand)` are the same node of the value-flow DAG;
+/// re-encountering one already on the stack is a cycle.
+type CycleFrame = (ExecutableKey, TransportSource, RuntimeDemand);
+
+/// Memo identity: a cycle frame plus the producing type, which the resolved
+/// shape also depends on.
+type MemoKey = (ExecutableKey, TransportSource, RuntimeDemand, Ty);
+
+/// One projection tree's cycle stack, carrying Tarjan low-links so a completed
+/// frame can tell whether it is the root of its strongly-connected component.
+/// A fresh `Cycle` is built per top-level projection (exactly where the bare
+/// `visiting` vector used to be), so cycle-detection scope is unchanged.
+#[derive(Default)]
+struct Cycle {
+    stack: Vec<CycleFrame>,
+    lowlinks: Vec<usize>,
+}
+
+impl Cycle {
+    /// Depth of `frame` if it is currently in progress on this tree's stack.
+    fn depth_of(&self, frame: &CycleFrame) -> Option<usize> {
+        self.stack.iter().position(|in_progress| in_progress == frame)
+    }
+
+    /// Begin a frame; its low-link starts at its own depth.
+    fn push(&mut self, frame: CycleFrame) -> usize {
+        let depth = self.stack.len();
+        self.stack.push(frame);
+        self.lowlinks.push(depth);
+        depth
+    }
+
+    /// Record a back-edge from the frame currently on top to an in-progress
+    /// frame at `target_depth`, lowering the top frame's low-link.
+    fn back_edge(&mut self, target_depth: usize) {
+        if let Some(low) = self.lowlinks.last_mut() {
+            *low = (*low).min(target_depth);
+        }
+    }
+
+    /// Complete the top frame: pop it, fold its low-link into the parent
+    /// (standard Tarjan propagation), and return that low-link.
+    fn pop(&mut self) -> usize {
+        let low = self.lowlinks.pop().expect("cycle low-link stack underflow");
+        self.stack.pop();
+        if let Some(parent) = self.lowlinks.last_mut() {
+            *parent = (*parent).min(low);
+        }
+        low
+    }
+}
+
+/// Plan-scoped memo of pure (publication-free) source projections, keyed by
+/// `MemoKey`. The value is the resolved shape plus the fact delta this frame
+/// contributes; the delta is replayed -- idempotently, since every `record_*`
+/// is an additive union -- into each caller's accumulator on a hit. Only frames
+/// that are their own SCC root are stored, so a cached result never depends on a
+/// computation still in progress above it.
+#[derive(Default)]
+struct ProjectionMemo {
+    entries: HashMap<MemoKey, (SourceShape, TransportFactsBuilder)>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -543,6 +607,9 @@ fn project_transport_plan(
 
     let mut facts = TransportFactsBuilder::default();
     let mut shape_graph = ShapeConstraintGraph::default();
+    // Plan-scoped: pure source projections are reused across every position and
+    // executable in this root, not just within one projection tree.
+    let mut memo = ProjectionMemo::default();
     for executable in executables {
         let symbol = executable_symbol(executable, world.types());
         let context = contexts
@@ -563,6 +630,7 @@ fn project_transport_plan(
             &context.runtime_demand.return_demand,
             TransportSource::ExecutableReturn,
             Some(return_position.clone()),
+            &mut memo,
         );
         shape_graph.anchor(return_position, return_shape);
 
@@ -591,6 +659,7 @@ fn project_transport_plan(
                     executable: symbol.clone(),
                     value,
                 }),
+                &mut memo,
             );
             shape_graph.anchor(
                 TransportPosition::Value {
@@ -663,6 +732,7 @@ fn project_transport_plan(
                     &context.runtime_demand.return_demand,
                     TransportSource::CallsiteReturn(callsite),
                     Some(position.clone()),
+                    &mut memo,
                 );
                 shape_graph.anchor(position, shape);
             }
@@ -730,6 +800,7 @@ fn project_transport_plan(
                     *resume,
                     &demand,
                     Some(position.clone()),
+                    &mut memo,
                 );
                 shape_graph.anchor(position, shape);
             }
@@ -1710,6 +1781,7 @@ fn shape_for_local_value(
     ty: Ty,
     demand: &RuntimeDemand,
     publication: Option<TransportPosition>,
+    memo: &mut ProjectionMemo,
 ) -> ShapeId {
     if let (Some(TransportSource::Join(sources)), Some(publication)) =
         (context.local_sources.get(&value), publication.clone())
@@ -1738,6 +1810,7 @@ fn shape_for_local_value(
         demand,
         TransportSource::LocalValue(value),
         publication,
+        memo,
     )
 }
 
@@ -1814,6 +1887,7 @@ fn shape_for_source(
     demand: &RuntimeDemand,
     source: TransportSource,
     publication: Option<TransportPosition>,
+    memo: &mut ProjectionMemo,
 ) -> ShapeId {
     let mut delta = TransportFactsBuilder::default();
     match project_source(
@@ -1826,7 +1900,8 @@ fn shape_for_source(
         demand,
         source,
         publication.clone(),
-        &mut Vec::new(),
+        &mut Cycle::default(),
+        memo,
     ) {
         SourceShape::Exact(shape) => {
             facts.merge(&delta);
@@ -1848,37 +1923,70 @@ fn project_source(
     demand: &RuntimeDemand,
     source: TransportSource,
     publication: Option<TransportPosition>,
-    visiting: &mut Vec<(ExecutableKey, TransportSource, RuntimeDemand)>,
+    cycle: &mut Cycle,
+    memo: &mut ProjectionMemo,
 ) -> SourceShape {
     if demand.is_ignore() || world.types().is_empty(&ty) {
         return SourceShape::Exact(world.intern_shape(ShapeDescr::Nothing));
     }
     let frame = (executable.clone(), source.clone(), demand.clone());
-    if visiting.contains(&frame) {
+    // A frame already on this tree's stack is a genuine cycle in the current
+    // computation; record the back-edge for SCC analysis and report it as
+    // recursive. This takes precedence over the memo: a frame can be both cached
+    // (resolved in an earlier tree) and in progress here, and the in-progress
+    // occurrence must still resolve via base cases, not the cached fixpoint.
+    if let Some(depth) = cycle.depth_of(&frame) {
+        cycle.back_edge(depth);
         return SourceShape::Recursive;
     }
-    visiting.push(frame);
+    // Publication-bearing frames are shallow, hit once, and record boundaries
+    // against their publication position, so they are neither looked up nor
+    // stored; only publication-free frames are pure enough to memoize.
+    let memo_key: Option<MemoKey> = publication
+        .is_none()
+        .then(|| (frame.0.clone(), frame.1.clone(), frame.2.clone(), ty));
+    if let Some(key) = memo_key.as_ref()
+        && let Some((shape, delta)) = memo.entries.get(key)
+    {
+        facts.merge(delta);
+        return *shape;
+    }
+
+    let depth = cycle.push(frame);
+    // Accumulate this frame's contribution into its own delta so it can be both
+    // committed upward and cached. Children write here; we union into `facts`
+    // once, after the frame completes.
+    let mut local = TransportFactsBuilder::default();
     let projected = match source {
         TransportSource::ExecutableReturn => project_sources(
             world,
             contexts,
-            facts,
+            &mut local,
             executable,
             context,
             ty,
             demand,
             &context.return_sources,
             publication,
-            visiting,
+            cycle,
+            memo,
         ),
-        TransportSource::ExecutableInput(semantic_index) => {
-            project_executable_input_source(world, contexts, facts, executable, ty, demand, semantic_index, visiting)
-        }
+        TransportSource::ExecutableInput(semantic_index) => project_executable_input_source(
+            world,
+            contexts,
+            &mut local,
+            executable,
+            ty,
+            demand,
+            semantic_index,
+            cycle,
+            memo,
+        ),
         TransportSource::LocalValue(value) => match context.local_sources.get(&value).cloned() {
             Some(TransportSource::CallableValue(producer)) => project_callable_value(
                 world,
                 contexts,
-                facts,
+                &mut local,
                 executable,
                 context,
                 ty,
@@ -1887,46 +1995,49 @@ fn project_source(
                 publication,
                 context.runtime_demand.value_demands.get(&value),
                 context.runtime_demand.callable_flows.get(&value),
+                memo,
             ),
             Some(source) => project_source(
                 world,
                 contexts,
-                facts,
+                &mut local,
                 executable,
                 context,
                 ty,
                 demand,
                 source,
                 publication,
-                visiting,
+                cycle,
+                memo,
             ),
             None => SourceShape::Unknown,
         },
-        TransportSource::CallsiteReturn(callsite) => {
-            project_callsite_return(world, contexts, facts, executable, context, callsite, demand, visiting)
-        }
+        TransportSource::CallsiteReturn(callsite) => project_callsite_return(
+            world, contexts, &mut local, executable, context, callsite, demand, cycle, memo,
+        ),
         TransportSource::Join(sources) => project_sources(
             world,
             contexts,
-            facts,
+            &mut local,
             executable,
             context,
             ty,
             demand,
             &sources,
             publication,
-            visiting,
+            cycle,
+            memo,
         ),
         TransportSource::TupleValue(items) => project_tuple_value(
-            world, contexts, facts, executable, context, ty, demand, &items, visiting,
+            world, contexts, &mut local, executable, context, ty, demand, &items, cycle, memo,
         ),
         TransportSource::TupleField { source, index } => project_tuple_field(
-            world, contexts, facts, executable, context, demand, source, index, visiting,
+            world, contexts, &mut local, executable, context, demand, source, index, cycle, memo,
         ),
         TransportSource::CallableValue(producer) => project_callable_value(
             world,
             contexts,
-            facts,
+            &mut local,
             executable,
             context,
             ty,
@@ -1935,9 +2046,20 @@ fn project_source(
             publication,
             None,
             None,
+            memo,
         ),
     };
-    visiting.pop();
+    let low = cycle.pop();
+    facts.merge(&local);
+    // Cache only SCC roots (`low == depth`): a frame whose subtree's back-edges
+    // all target itself or its own descendants. Frames inside a larger SCC have
+    // `low < depth` and stay uncached, since their result is provisional until
+    // the enclosing root settles.
+    if let Some(key) = memo_key
+        && low == depth
+    {
+        memo.entries.insert(key, (projected, local));
+    }
     projected
 }
 
@@ -1951,7 +2073,8 @@ fn project_sources(
     demand: &RuntimeDemand,
     sources: &[TransportSource],
     publication: Option<TransportPosition>,
-    visiting: &mut Vec<(ExecutableKey, TransportSource, RuntimeDemand)>,
+    cycle: &mut Cycle,
+    memo: &mut ProjectionMemo,
 ) -> SourceShape {
     let mut exact = Vec::new();
     let mut recursive = false;
@@ -1967,7 +2090,8 @@ fn project_sources(
             demand,
             source.clone(),
             publication.clone(),
-            visiting,
+            cycle,
+            memo,
         ) {
             SourceShape::Exact(shape) => exact.push(shape),
             SourceShape::Recursive => recursive = true,
@@ -2003,7 +2127,8 @@ fn project_executable_input_source(
     ty: Ty,
     demand: &RuntimeDemand,
     semantic_index: usize,
-    visiting: &mut Vec<(ExecutableKey, TransportSource, RuntimeDemand)>,
+    cycle: &mut Cycle,
+    memo: &mut ProjectionMemo,
 ) -> SourceShape {
     let mut sources = Vec::new();
     collect_call_arg_input_sources(world, contexts, executable, semantic_index, &mut sources);
@@ -2032,7 +2157,8 @@ fn project_executable_input_source(
             demand,
             TransportSource::LocalValue(value),
             None,
-            visiting,
+            cycle,
+            memo,
         ) {
             SourceShape::Exact(shape) => exact.push(shape),
             SourceShape::Recursive => recursive = true,
@@ -2144,7 +2270,8 @@ fn project_tuple_value(
     ty: Ty,
     demand: &RuntimeDemand,
     items: &[ValueId],
-    visiting: &mut Vec<(ExecutableKey, TransportSource, RuntimeDemand)>,
+    cycle: &mut Cycle,
+    memo: &mut ProjectionMemo,
 ) -> SourceShape {
     if demand.is_callable() {
         return SourceShape::Unknown;
@@ -2169,7 +2296,8 @@ fn project_tuple_value(
             field_demand,
             TransportSource::LocalValue(item),
             None,
-            visiting,
+            cycle,
+            memo,
         ) {
             SourceShape::Exact(shape) => {
                 facts.merge(&delta);
@@ -2193,7 +2321,8 @@ fn project_tuple_field(
     demand: &RuntimeDemand,
     source: ValueId,
     index: usize,
-    visiting: &mut Vec<(ExecutableKey, TransportSource, RuntimeDemand)>,
+    cycle: &mut Cycle,
+    memo: &mut ProjectionMemo,
 ) -> SourceShape {
     let Some(parent_ty) = context.analysis.value_types.get(&source).copied() else {
         return SourceShape::Unknown;
@@ -2211,7 +2340,8 @@ fn project_tuple_field(
         &parent_demand,
         TransportSource::LocalValue(source),
         None,
-        visiting,
+        cycle,
+        memo,
     ) {
         SourceShape::Exact(shape) => shape,
         other => return other,
@@ -2237,6 +2367,7 @@ fn project_callable_value(
     publication: Option<TransportPosition>,
     precise_demand: Option<&RuntimeDemand>,
     upstream_flow: Option<&CallableFlowFact>,
+    memo: &mut ProjectionMemo,
 ) -> SourceShape {
     if !local_callable_transport_requested(demand, precise_demand) {
         return SourceShape::Unknown;
@@ -2254,6 +2385,7 @@ fn project_callable_value(
         ty,
         upstream_flow,
         publication,
+        memo,
     ) else {
         return SourceShape::Unknown;
     };
@@ -2268,7 +2400,8 @@ fn project_callsite_return(
     context: &ExecutableContext,
     callsite: CallSiteId,
     demand: &RuntimeDemand,
-    visiting: &mut Vec<(ExecutableKey, TransportSource, RuntimeDemand)>,
+    cycle: &mut Cycle,
+    memo: &mut ProjectionMemo,
 ) -> SourceShape {
     let key = CallSiteKey {
         activation: executable.activation.clone(),
@@ -2307,7 +2440,8 @@ fn project_callsite_return(
                     demand,
                     TransportSource::ExecutableReturn,
                     None,
-                    visiting,
+                    cycle,
+                    memo,
                 ) {
                     SourceShape::Exact(shape) => shapes.push(shape),
                     SourceShape::Recursive => recursive = true,
@@ -2341,6 +2475,7 @@ fn callable_for_producer(
     callable_ty: Ty,
     upstream_flow: &CallableFlowFact,
     publication: Option<TransportPosition>,
+    memo: &mut ProjectionMemo,
 ) -> Option<super::super::transport::CallableId> {
     assert_eq!(
         upstream_flow.function, producer.function,
@@ -2385,6 +2520,7 @@ fn callable_for_producer(
                 capture_ty,
                 capture_demand,
                 None,
+                memo,
             ))
         })
         .collect::<Option<Vec<_>>>()?;
@@ -2412,6 +2548,7 @@ fn callable_for_producer(
             callable_ty,
             &capture_tys,
             &boundary_surface_demands,
+            memo,
         );
         let boundary_resolution_symbols =
             boundary_resolution_symbols_for_flow_surfaces(upstream_flow, &boundary_surface_demands, world.types());
@@ -2894,6 +3031,7 @@ fn boundary_return_shapes_for_flow_surfaces(
     callable_ty: Ty,
     capture_tys: &[Ty],
     surfaces: &BTreeSet<CallableSurface>,
+    memo: &mut ProjectionMemo,
 ) -> Vec<ShapeId> {
     surfaces
         .iter()
@@ -2929,7 +3067,7 @@ fn boundary_return_shapes_for_flow_surfaces(
             if world.types().is_empty(&boundary_return_ty) {
                 boundary_return_ty = world.types_mut().any();
             }
-            boundary_return_shape_for_resolution(world, contexts, facts, &resolution, boundary_return_ty)
+            boundary_return_shape_for_resolution(world, contexts, facts, &resolution, boundary_return_ty, memo)
         })
         .collect()
 }
@@ -2957,6 +3095,7 @@ fn boundary_return_shape_for_resolution(
     facts: &mut TransportFactsBuilder,
     resolution: &ExecutableSymbol,
     fallback_return_ty: Ty,
+    memo: &mut ProjectionMemo,
 ) -> ShapeId {
     let Some((executable, context)) = contexts.iter().find(|(candidate, _)| {
         candidate.need == resolution.need
@@ -2981,6 +3120,7 @@ fn boundary_return_shape_for_resolution(
         &demand,
         TransportSource::ExecutableReturn,
         None,
+        memo,
     );
     if !demand.is_ignore() && matches!(world.shape(shape), ShapeDescr::Nothing) {
         generic_shape_from_demand(world, return_ty, &demand, facts, None)
@@ -3133,6 +3273,7 @@ fn resume_shape(
     resume: ResumeEntry,
     demand: &RuntimeDemand,
     publication: Option<TransportPosition>,
+    memo: &mut ProjectionMemo,
 ) -> ShapeId {
     let value_ty = context
         .analysis
@@ -3153,6 +3294,7 @@ fn resume_shape(
             .map(TransportSource::CallsiteReturn)
             .unwrap_or(TransportSource::LocalValue(resume.value)),
         publication,
+        memo,
     )
 }
 

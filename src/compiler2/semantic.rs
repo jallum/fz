@@ -84,7 +84,7 @@ impl CallableSurface {
 /// Runtime demand specific to callable values, kept separate from generic
 /// whole-value demand so semantic flow derivation can publish one exact
 /// callable-flow fact per local producer.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
 pub struct CallableDemand {
     pub resolved: BTreeSet<CallableSurface>,
     pub opaque: bool,
@@ -150,7 +150,7 @@ impl CallableDemand {
 /// up to `Whole`. Coarsening here is always correctness-safe — it only means
 /// "materialize the whole box." Each field is a full [`RuntimeDemand`], so a
 /// tuple of callables keeps each field's callable obligations.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
 pub enum ShapeDemand {
     #[default]
     Ignore,
@@ -207,7 +207,7 @@ impl ShapeDemand {
 /// `escape` only ever grow. (Previously a `Value ⊔ Callable` join collapsed the
 /// callable axis to a representation-agnostic top, which then had to be
 /// non-monotonically *re-grounded* from the value's type at boundaries.)
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
 pub struct RuntimeDemand {
     pub shape: ShapeDemand,
     pub callable: CallableDemand,
