@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [
     "fz-bin.5"
@@ -20,8 +20,8 @@
     }
   ],
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "Build the callsite dispatch matrix from a multi-target CallSiteSummary (pure)",
   "type": "task",
-  "updated_at": "2026-06-21T23:37:09Z"
+  "updated_at": "2026-06-21T23:44:22Z"
 }
