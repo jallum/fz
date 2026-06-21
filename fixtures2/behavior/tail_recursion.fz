@@ -1,6 +1,5 @@
 #---
 # purpose: "100k-deep self-recursion must TCO — exits cleanly with the accumulated count"
-# defer.interp: fz-9i4.7.7 100k-deep interp run exceeds the 3s path budget only under llvm-cov instrumentation
 #---
 fn count(0, acc), do: acc
 fn count(n, acc), do: count(n - 1, acc + 1)

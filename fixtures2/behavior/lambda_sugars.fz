@@ -1,7 +1,6 @@
 #---
 # purpose: "capture shorthand and multi-clause anonymous fn desugar to ordinary lambda dispatch"
 # oracle: oracle.exs
-# defer.build: fz-c3b compiler2 native build lacks a settled callable boundary for lambda sugar
 #---
 #
 # # lambda_sugars
