@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
-use super::contract::TrashContractArrow;
+use crate::type_expr::ResolvedSpecDecl;
+
 use super::{CallableValueKind, ClosureTarget, FunctionContract, TypeVarId, Types};
 
 #[test]
@@ -8,13 +9,12 @@ fn function_contract_application_refines_callable_params_from_outer_bindings() {
     let mut types = Types::new();
     let t = types.type_var(TypeVarId(0));
     let nil = types.nil();
-    let contract = FunctionContract {
-        arrows: vec![TrashContractArrow {
-            params: vec![t, types.arrow(&[t], nil)],
-            result: types.resource(t),
-            constraints: HashMap::new(),
-        }],
+    let resolved = ResolvedSpecDecl {
+        params: vec![t, types.arrow(&[t], nil)],
+        result: types.resource(t),
+        constraints: HashMap::new(),
     };
+    let contract = FunctionContract::from_resolved(&mut types, vec![resolved]);
 
     let actual_payload = types.int();
     let actual_callable = types.fn_ref_lit(ClosureTarget(17), 1);
@@ -23,7 +23,7 @@ fn function_contract_application_refines_callable_params_from_outer_bindings() {
     assert_eq!(applied.matched_arrows.len(), 1, "the contract should match one arrow");
     let matched = &applied.matched_arrows[0];
     let matched_callable = types
-        .callable_clauses(&matched.params[1])
+        .callable_clauses(&matched[1])
         .expect("matched contract callable surface")
         .into_iter()
         .next()
@@ -38,7 +38,7 @@ fn function_contract_application_refines_callable_params_from_outer_bindings() {
             .is_some_and(|payload| types.is_integer(&payload)),
         "the result should refine to resource(integer)",
     );
-    let refined_callable = types.intersect(actual_callable, matched.params[1]);
+    let refined_callable = types.intersect(actual_callable, matched[1]);
     let callable = types
         .callable_value_clauses(&refined_callable)
         .expect("matched callable value surface")
@@ -64,13 +64,12 @@ fn function_contract_application_refines_reduce_style_callable_from_list_and_acc
     let mut types = Types::new();
     let elem = types.type_var(TypeVarId(0));
     let acc = types.type_var(TypeVarId(1));
-    let contract = FunctionContract {
-        arrows: vec![TrashContractArrow {
-            params: vec![types.list(elem), acc, types.arrow(&[elem, acc], acc)],
-            result: acc,
-            constraints: HashMap::new(),
-        }],
+    let resolved = ResolvedSpecDecl {
+        params: vec![types.list(elem), acc, types.arrow(&[elem, acc], acc)],
+        result: acc,
+        constraints: HashMap::new(),
     };
+    let contract = FunctionContract::from_resolved(&mut types, vec![resolved]);
 
     let int = types.int();
     let actual_list = types.list(int);
@@ -85,7 +84,7 @@ fn function_contract_application_refines_reduce_style_callable_from_list_and_acc
     );
 
     let matched_callable = types
-        .callable_clauses(&applied.matched_arrows[0].params[2])
+        .callable_clauses(&applied.matched_arrows[0][2])
         .expect("matched reduce callable surface")
         .into_iter()
         .next()
@@ -104,7 +103,7 @@ fn function_contract_application_refines_reduce_style_callable_from_list_and_acc
         "the reducer return should inherit the concrete accumulator binding",
     );
 
-    let refined_callable = types.intersect(actual_callable, applied.matched_arrows[0].params[2]);
+    let refined_callable = types.intersect(actual_callable, applied.matched_arrows[0][2]);
     let callable = types
         .callable_value_clauses(&refined_callable)
         .expect("refined reduce callable value surface")
@@ -130,13 +129,12 @@ fn function_contract_application_treats_empty_list_witness_as_underconstrained()
     let mut types = Types::new();
     let elem = types.type_var(TypeVarId(0));
     let acc = types.type_var(TypeVarId(1));
-    let contract = FunctionContract {
-        arrows: vec![TrashContractArrow {
-            params: vec![types.list(elem), acc, types.arrow(&[elem, acc], acc)],
-            result: acc,
-            constraints: HashMap::new(),
-        }],
+    let resolved = ResolvedSpecDecl {
+        params: vec![types.list(elem), acc, types.arrow(&[elem, acc], acc)],
+        result: acc,
+        constraints: HashMap::new(),
     };
+    let contract = FunctionContract::from_resolved(&mut types, vec![resolved]);
 
     let int = types.int();
     let actual_list = types.non_empty_list(int);
@@ -156,7 +154,7 @@ fn function_contract_application_treats_empty_list_witness_as_underconstrained()
     );
 
     let matched_callable = types
-        .callable_clauses(&applied.matched_arrows[0].params[2])
+        .callable_clauses(&applied.matched_arrows[0][2])
         .expect("matched reduce callable surface")
         .into_iter()
         .next()
@@ -182,13 +180,12 @@ fn function_contract_application_treats_empty_list_witness_as_underconstrained()
 fn function_contract_application_does_not_publish_underconstrained_result_evidence() {
     let mut types = Types::new();
     let t = types.type_var(TypeVarId(0));
-    let contract = FunctionContract {
-        arrows: vec![TrashContractArrow {
-            params: vec![types.arrow(&[t], t)],
-            result: t,
-            constraints: HashMap::new(),
-        }],
+    let resolved = ResolvedSpecDecl {
+        params: vec![types.arrow(&[t], t)],
+        result: t,
+        constraints: HashMap::new(),
     };
+    let contract = FunctionContract::from_resolved(&mut types, vec![resolved]);
 
     let actual_callable = types.fn_ref_lit(ClosureTarget(29), 1);
     let applied = contract.apply(&mut types, &[actual_callable]);
@@ -204,13 +201,12 @@ fn function_contract_application_does_not_publish_underconstrained_result_eviden
 fn function_contract_application_does_not_recurse_through_concrete_any_inputs() {
     let mut types = Types::new();
     let any = types.any();
-    let contract = FunctionContract {
-        arrows: vec![TrashContractArrow {
-            params: vec![any],
-            result: any,
-            constraints: HashMap::new(),
-        }],
+    let resolved = ResolvedSpecDecl {
+        params: vec![any],
+        result: any,
+        constraints: HashMap::new(),
     };
+    let contract = FunctionContract::from_resolved(&mut types, vec![resolved]);
 
     let applied = contract.apply(&mut types, &[any]);
 

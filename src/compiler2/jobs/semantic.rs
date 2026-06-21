@@ -1493,7 +1493,7 @@ fn apply_function_contract(
         refine_contract_inputs(
             world,
             input_types,
-            application.matched_arrows.iter().map(|arrow| arrow.params.as_slice()),
+            application.matched_arrows.iter().map(|params| params.as_slice()),
         ),
         application.result,
     )

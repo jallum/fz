@@ -4,13 +4,14 @@
 //! resolution applies it to observed arguments before minting callee
 //! activations or deriving callable-boundary demand.
 //!
-//! Trash markers (fz-hwn.27, The Addressed Arrow): the remaining `Trash*` types
-//! (`TrashContractArrow`, `TrashAppliedContractArrow`) are the separable
-//! params/result/constraints surface, superseded by the addressed arrow `Ty`
-//! plus a bounds sidecar in fz-hwn.27.9. The hand-rolled witness/substitution
-//! engine that used to live here was relocated to the Types calculator
-//! (`Types::match_arrow`, `types::arrow_match`) in fz-hwn.27.4, so contract
-//! application is now a calculator decision rather than a bespoke walk.
+//! A contract clause is one interned ADDRESSED ARROW plus its variable bounds
+//! (fz-hwn.27.9). The arrow's variables are structural addresses — the resolver
+//! assigns them at the binder (fz-hwn.27.14), so two alpha-equivalent contracts
+//! intern byte-identical — and the bounds are keyed by those same addresses, so
+//! application instantiates the arrow through the bounds sidecar with no bespoke
+//! substitution. The hand-rolled witness/substitution walk that used to live here
+//! is the Types calculator now (`Types::match_arrow`, `types::arrow_match`,
+//! fz-hwn.27.4); contract application is a calculator decision on the arrow.
 
 use std::collections::HashMap;
 
@@ -19,27 +20,26 @@ use crate::type_expr::ResolvedSpecDecl;
 use super::identity::FunctionId;
 use super::types::{ArrowMatch, Ty, TypeVarId, Types};
 
+/// One resolved contract clause: the addressed arrow surface and its
+/// address-keyed variable bounds.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TrashContractArrow {
-    pub params: Vec<Ty>,
-    pub result: Ty,
-    pub constraints: HashMap<TypeVarId, Ty>,
+pub struct ContractArrow {
+    pub arrow: Ty,
+    pub bounds: HashMap<TypeVarId, Ty>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FunctionContract {
-    pub arrows: Vec<TrashContractArrow>,
+    pub arrows: Vec<ContractArrow>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TrashAppliedContractArrow {
-    pub params: Vec<Ty>,
-    pub result: Ty,
-}
-
+/// The contract applied to observed arguments: the instantiated parameter
+/// surface of each clause that matched (used to refine the call's inputs), and
+/// the joined result. The per-clause result is folded into `result`, so the
+/// matched arrows carry only the parameter projection the caller consumes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppliedFunctionContract {
-    pub matched_arrows: Vec<TrashAppliedContractArrow>,
+    pub matched_arrows: Vec<Vec<Ty>>,
     pub result: Option<Ty>,
 }
 
@@ -49,14 +49,16 @@ pub struct FunctionContractMap {
 }
 
 impl FunctionContract {
-    pub fn from_resolved(arrows: Vec<ResolvedSpecDecl<Ty>>) -> Self {
+    pub fn from_resolved(types: &mut Types, arrows: Vec<ResolvedSpecDecl<Ty>>) -> Self {
         Self {
             arrows: arrows
                 .into_iter()
-                .map(|arrow| TrashContractArrow {
-                    params: arrow.params,
-                    result: arrow.result,
-                    constraints: arrow.constraints,
+                .map(|arrow| ContractArrow {
+                    // params/result arrive addressed from the resolver binder
+                    // (fz-hwn.27.14), so this packs them into the interned arrow
+                    // surface; the bounds are already keyed by those addresses.
+                    arrow: types.arrow(&arrow.params, arrow.result),
+                    bounds: arrow.constraints,
                 })
                 .collect(),
         }
@@ -65,8 +67,12 @@ impl FunctionContract {
     pub fn apply(&self, types: &mut Types, arg_tys: &[Ty]) -> AppliedFunctionContract {
         let mut matched_arrows = Vec::new();
         let mut result = None;
-        for arrow in &self.arrows {
-            match types.match_arrow(&arrow.params, &arrow.result, &arrow.constraints, arg_tys) {
+        for clause in &self.arrows {
+            let params = types.arrow_params(&clause.arrow);
+            let clause_result = types
+                .arrow_result(&clause.arrow)
+                .expect("a contract clause is an arrow with a result slot");
+            match types.match_arrow(&params, &clause_result, &clause.bounds, arg_tys) {
                 ArrowMatch::Known {
                     params,
                     result: matched,
@@ -75,19 +81,10 @@ impl FunctionContract {
                         Some(current) => types.union(current, matched),
                         None => matched,
                     });
-                    matched_arrows.push(TrashAppliedContractArrow {
-                        params,
-                        result: matched,
-                    });
+                    matched_arrows.push(params);
                 }
-                ArrowMatch::Underconstrained {
-                    params,
-                    result: matched,
-                } => {
-                    matched_arrows.push(TrashAppliedContractArrow {
-                        params,
-                        result: matched,
-                    });
+                ArrowMatch::Underconstrained { params, result: _ } => {
+                    matched_arrows.push(params);
                 }
                 ArrowMatch::Invalid => {}
             }
