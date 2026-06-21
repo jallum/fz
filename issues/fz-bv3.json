@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-21T18:47:39Z",
+  "description": "A typed function clause whose param annotation resolves to a STRUCT type (e.g. 'fn handle(x :: Box.t)' where Box.t = %Box{...}) does not dispatch -- it crashes at runtime: 'fz_struct_get_field_ref: ExpectedTag { expected: Struct, found: List }' (runtime/src/ir_runtime.rs:1620), 'panic in a function that cannot unwind'. Repro: define a struct with @type t, a 'fn f(x :: list)/f(x :: Struct.t)' pair, call on a value typed list|Struct. The Region::Type arm over a struct type emits a struct-field access against the non-struct branch value. Struct PATTERNS ('%Box{v: v}') dispatch correctly, so the workaround is to use struct-shape arms; this ticket is the underlying Region::Type-over-struct codegen/runtime bug. Surfaced while building fz-bin (protocol dispatch); fz-bin sidesteps it by using struct patterns for struct impls.",
+  "id": "fz-bv3",
+  "labels": [],
+  "priority": 3,
+  "status": "open",
+  "title": "[BUG] Region::Type dispatch over a struct type panics at runtime",
+  "type": "bug",
+  "updated_at": "2026-06-21T18:47:39Z"
+}
