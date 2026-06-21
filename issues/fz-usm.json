@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-21T18:47:39Z",
+  "description": "builtin_from_name (src/compiler2/resolve.rs:397) maps integer/float/atom/binary/bool/nil/any/never/utf8/pid/ref/cpointer but NOT 'list' or 'map'. So ':: map' as a type annotation fails with 'unknown type name map', and there is no bare name for the map type (':: list' resolves via another path; ':: map' has none). List.t / Map.t are also undefined in the runtime library (list.fz/map.fz have no @type t). This is type-system/library incompleteness: collection types have no uniform bare type name usable in annotations. Consider adding 'list'/'map' (and parametric list(a)/map(k,v)) builtin names and/or List.t/Map.t aliases. Surfaced while building fz-bin; fz-bin sidesteps it by using module_impl_target_ty directly.",
+  "id": "fz-usm",
+  "labels": [],
+  "priority": 3,
+  "status": "open",
+  "title": "[BUG] No builtin type names for 'list' and 'map'",
+  "type": "bug",
+  "updated_at": "2026-06-21T18:47:39Z"
+}
