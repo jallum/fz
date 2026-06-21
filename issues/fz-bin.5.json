@@ -2,7 +2,8 @@
   "assignee": "",
   "blocked_by": [
     "fz-bin.2",
-    "fz-bin.4"
+    "fz-bin.4",
+    "fz-bin.6"
   ],
   "blocks": [
     "fz-bin.3"
@@ -16,5 +17,5 @@
   "status": "open",
   "title": "Multi-target dispatch call-edge through materialize+codegen (all return flows)",
   "type": "task",
-  "updated_at": "2026-06-21T20:56:52Z"
+  "updated_at": "2026-06-21T23:36:52Z"
 }
