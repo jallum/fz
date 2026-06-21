@@ -7,9 +7,15 @@
   "id": "fz-bin.4",
   "labels": [],
   "parent": "fz-bin",
+  "comments": [
+    {
+      "text": "TREE STATE: the α WIP is uncommitted and currently emits one unused-field warning (CallbackArm.impl_function in protocol_dispatch.rs) -- it was the marker for the never-written forwarding body. Harvest (fz-bin.2) + deletion (this ticket) resolve it. Until then the tree fails the -D warnings gate, so fz-bin.2/.4 must land before any commit that runs the clippy gate.",
+      "timestamp": "2026-06-21T20:54:23Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "Remove the abandoned synthesized-dispatcher WIP (protocol_dispatch.rs + plan_entry_dispatch interception)",
   "type": "task",
-  "updated_at": "2026-06-21T20:53:19Z"
+  "updated_at": "2026-06-21T20:54:23Z"
 }
