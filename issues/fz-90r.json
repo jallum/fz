@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [
     "fz-27u"
@@ -9,8 +9,8 @@
   "id": "fz-90r",
   "labels": [],
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "Transport projection: return fact deltas instead of snapshot-cloning the builder",
   "type": "task",
-  "updated_at": "2026-06-21T17:05:47Z"
+  "updated_at": "2026-06-21T17:15:16Z"
 }
