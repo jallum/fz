@@ -1,6 +1,8 @@
 {
   "assignee": "Jason Allum",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-usm"
+  ],
   "blocks": [
     "fz-bin.2"
   ],
@@ -27,5 +29,5 @@
   "status": "in_progress",
   "title": "Synthesize a protocol-callback dispatcher from ProtocolDispatch arms",
   "type": "task",
-  "updated_at": "2026-06-21T18:47:19Z"
+  "updated_at": "2026-06-21T18:51:03Z"
 }
