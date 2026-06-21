@@ -3,12 +3,12 @@
   "blocked_by": [],
   "blocks": [],
   "created": "2026-06-21T18:47:39Z",
-  "description": "A typed function clause whose param annotation resolves to a STRUCT type (e.g. 'fn handle(x :: Box.t)' where Box.t = %Box{...}) does not dispatch -- it crashes at runtime: 'fz_struct_get_field_ref: ExpectedTag { expected: Struct, found: List }' (runtime/src/ir_runtime.rs:1620), 'panic in a function that cannot unwind'. Repro: define a struct with @type t, a 'fn f(x :: list)/f(x :: Struct.t)' pair, call on a value typed list|Struct. The Region::Type arm over a struct type emits a struct-field access against the non-struct branch value. Struct PATTERNS ('%Box{v: v}') dispatch correctly, so the workaround is to use struct-shape arms; this ticket is the underlying Region::Type-over-struct codegen/runtime bug. Surfaced while building fz-bin (protocol dispatch); fz-bin sidesteps it by using struct patterns for struct impls.",
+  "description": "A struct pattern/type clause, when the receiver's static type spans struct|map (or another struct), does NOT soundly test the struct's nominal tag: a non-matching map is ROUTED INTO the struct clause and fails at runtime instead of cleanly missing.\n\nMINIMAL REPRO (clean binary): defstruct Box; 'fn k(%Box{v: _}), do: :box; fn k(_), do: :other'; 'fn pick(b), do: if b, do: %Box{v:1}, else: %{a:1}'; 'k(pick(true))' -\u003e :box (ok), 'k(pick(false))' -\u003e match_error 'expected struct Box' (WRONG; should be :other). Sibling: a Region::Type arm over a struct type panics with fz_struct_get_field_ref ExpectedTag (runtime/src/ir_runtime.rs:1620) for the same root cause.\n\nROOT: a struct's value type is opaque-tag UNION tuple UNION map (module_struct_value_ty); the dispatch's struct test matches the map shape but does not gate on the nominal opaque tag, so a plain map satisfies the structural test and enters the struct clause, whose field extraction then asserts the tag and aborts. The dispatch must test the nominal tag FIRST (a clean miss), before any field projection.\n\nIMPACT on fz-bin: the Enumerable dispatcher must route Map (plain map) vs Range (struct, also a map). That distinction is unsound until this is fixed -\u003e blocks protocol fixtures that use Enum over BOTH maps and ranges/structs. It does NOT block list/range-only fixtures (enum_take_drop_split): list is disjoint from struct, and with arms ordered struct-before-map the Map arm is inert. So fz-bin proceeds for list/range; map+struct protocol fixtures gate on this.",
   "id": "fz-bv3",
   "labels": [],
   "priority": 3,
   "status": "open",
-  "title": "[BUG] Region::Type dispatch over a struct type panics at runtime",
+  "title": "[BUG] Struct dispatch doesn't test the nominal tag — a non-struct map misroutes into a struct clause",
   "type": "bug",
-  "updated_at": "2026-06-21T18:47:39Z"
+  "updated_at": "2026-06-21T19:21:40Z"
 }
