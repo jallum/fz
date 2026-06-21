@@ -14,11 +14,15 @@
     {
       "text": "Acceptance scoping (found at HEAD): grep -rn 'Trash\\|trash_' src/ has PRE-EXISTING hits NOT owned by fz-hwn.27: (1) ir_codegen/function.rs trash_tuple_return_delivery_plan (a stale marker from a prior cleanup -- candidate for its own removal ticket), (2) transport_contract_test.rs assert_no_trash_authority + a fact.contains(\"Trash\") guard (a different, legitimate 'Trash authority' check). The outro grep must EXCLUDE these (scope to the fz-hwn.27 kill-list: contract.rs Trash* surface types + any addressed-arrow markers), or they will falsely fail the criterion. As of 27.4, the fz-hwn.27-owned markers are only the contract.rs Trash* SURFACE types (TrashContractArrow/TrashAppliedContractArrow) + their uses in contract_test.rs, removed by 27.9; plus a doc-comment reference in resolve.rs. The contract.rs witness/substitution ENGINE markers were already removed (relocated to Types in 27.4).",
       "timestamp": "2026-06-20T00:56:12Z"
+    },
+    {
+      "text": "Outro verification gate — all acceptance criteria met, no code change needed (the fz-hwn.27-owned triggers were removed by the body tickets):\n(1) Step-1 machinery green: distinct_params_do_not_conflate_with_repeated_params ((a,b)!=(a,a)), input_to_result_identity_is_preserved, repeated_name_unifies_to_the_first_occurrence_address, shared_name_crosses_depth (cross-depth Underconstrained) — all pass.\n(2) Conflation gone: alpha_normalize_vars retired (fz-hwn.27.15); the activation key is the canonical arrow by construction (fz-hwn.27.6/.7); both binders address (key-mint .6/.7, resolver .14).\n(3) fz-hwn.23 falls out: compiler2_interp_runs_enum_with_index_mapper_from_backend_artifacts re-enabled and green (no value-template activation reaches the backend).\n(4) No trigger survives: grep -rn 'Trash|trash_' src/ returns only the legitimate assert_no_trash_authority guard (the excluded pre-existing non-.27 hit per the scoping comment); contract.rs Trash* surface types removed in .9, resolve.rs doc reference gone.\n(5) Whole-suite green, zero warnings: lib 1034/0, matrix 305/0, clippy -D warnings clean.",
+      "timestamp": "2026-06-21T11:42:20Z"
     }
   ],
   "priority": 1,
   "status": "open",
   "title": "Remove every Trash/trash_ trigger; prove the conflation is gone and the suite is green",
   "type": "task",
-  "updated_at": "2026-06-20T00:56:12Z"
+  "updated_at": "2026-06-21T11:42:20Z"
 }
