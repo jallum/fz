@@ -5,6 +5,7 @@
     "fz-hwn.9"
   ],
   "blocks": [],
+  "closed_at": "2026-06-21T11:42:20Z",
   "created": "2026-06-20T00:08:51Z",
   "description": "OUTRO ticket for fz-hwn.27. The cleanup gate -- the epic is not done until the triggers are gone.\n\nAcceptance criteria (proposal.html):\n- New machinery correct in isolation -- Step 1 unit tests pass: (a,b) != (a,a), repeated-name unification, cross-depth Underconstrained, input\u003c-\u003eresult identity.\n- The conflation is gone -- no per-position alpha normalization remains; an activation key is the canonical arrow by construction.\n- fz-hwn.23 falls out -- compiler2_interp_runs_enum_with_index_mapper_from_backend_artifacts is re-enabled and green for the RIGHT reason: no value-template activation reaches the backend.\n- NO TRIGGER SURVIVES -- grep -rn \"Trash\\|trash_\" src/ returns nothing. Every renamed concept is REMOVED, not merely hidden. Any trigger still standing means a caller still leans on dead code: that is unfinished body work, not an outro deferral.\n- Whole-suite green, zero warnings -- lib + fixture matrix, verified from a fresh uniquely-marked run (feedback_verify_green_before_commit).\n\nIf any symbol cannot yet be removed, the blocking consumer is a NEW ticket on this epic, not a silent deferral (feedback_no_silent_deferrals).\n\nDepends on: contract.rs collapse (fz-hwn.27.9), fz-hwn.23.",
   "id": "fz-hwn.27.10",
@@ -21,7 +22,7 @@
     }
   ],
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "Remove every Trash/trash_ trigger; prove the conflation is gone and the suite is green",
   "type": "task",
   "updated_at": "2026-06-21T11:42:20Z"
