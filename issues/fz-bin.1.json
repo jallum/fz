@@ -9,9 +9,15 @@
   "id": "fz-bin.1",
   "labels": [],
   "parent": "fz-bin",
+  "comments": [
+    {
+      "text": "RESEARCH RESOLVED (fork + constraints):\n\nFACT-ECOSYSTEM INSIGHT (decisive). A compiler2 function is not just a LoweredBody -- it is a whole derived fact ecosystem: FunctionSource -\u003e ExpandedFunctionSource -\u003e FunctionDefined(surface) -\u003e LoweredBody -\u003e EntryDispatch -\u003e Recursive -\u003e DispatchMask -\u003e FunctionContract -\u003e type refs -\u003e runtime_demand. Source-level synthesis (give the callback a synthesized quoted FunctionSource) reuses this ENTIRE chain automatically; IR-level synthesis must hand-produce each fact consistently (LoweredBody + EntryDispatch + Recursive + DispatchMask + ...), which is far more surface area and risk. =\u003e Prefer SOURCE-LEVEL synthesis (build_module_info_function precedent), NOT raw IR.\n\nANNOTATION CONSTRAINTS (measured):\n- ':: List.t' / ':: Map.t' HANG -- because List.t / Map.t are NOT defined types (no @type t in list.fz/map.fz); unresolved type -\u003e demand loop. Incidental, not fundamental.\n- Built-in type annotations dispatch correctly: ':: list', ':: map', ':: integer', ':: float', ':: atom' (verified ':: list'/':: integer'). Use these for built-in impl targets.\n- Struct impls (Range) must dispatch via a STRUCT PATTERN '%Range{...}' head, NOT ':: Range.t'. The Range impl already pattern-matches '%Range{...}'. Note: '%Range{} = x' as-bind hit 'pattern as-bind lhs must be a variable' -- use plain '%Range{first: f, last: l, step: s}' field binds (as the real impl does) or a bare struct pattern with no as-bind.\n- The synthesizer must therefore generate per-arm source keyed on impl-target KIND, mirroring module_impl_target_ty's built-in-name-vs-struct branch (world.rs:2900/3085): built-in name -\u003e ':: \u003cbuiltin\u003e' annotation; struct module -\u003e '%Module{...}' pattern.\n\nDISPATCHER SOURCE SHAPE (per callback C with arms):\n  fn \u003cC\u003e(x :: list, ...rest), do: \u003cEnumerable.List.C\u003e(x, ...rest)\n  fn \u003cC\u003e(x :: map,  ...rest), do: \u003cEnumerable.Map.C\u003e(x, ...rest)\n  fn \u003cC\u003e(%Range{...}=destructure, ...rest), do: \u003cEnumerable.Range.C\u003e(...)\nBody calls reference the impl by its qualified name (resolvable in the protocol module namespace) or, better, the already-resolved impl FunctionId carried in the arm (ProtocolCallbackImpl.function) to avoid re-resolution.\n\nDERIVATION: the dispatcher source is derived from ProtocolDispatch(protocol) and re-derived when arms grow (defimpls discovered lazily). Inject by making the callback's FunctionSource provider synthesize it (ensure_function_source for a protocol callback returns the synthesized dispatcher), so the rest of the pipeline (expand/define/lower/plan_entry_dispatch) runs unchanged.\n\nVERIFIED PIPELINE: runtime type dispatch among typed clauses on a union value compiles+runs in interp AND AOT (check(x::integer)/check(_) on integer|atom). So once the callback is a typed multi-clause function, the union case works by construction.",
+      "timestamp": "2026-06-21T18:27:22Z"
+    }
+  ],
   "priority": 1,
   "status": "in_progress",
   "title": "Synthesize a protocol-callback dispatcher from ProtocolDispatch arms",
   "type": "task",
-  "updated_at": "2026-06-21T18:24:06Z"
+  "updated_at": "2026-06-21T18:27:22Z"
 }
