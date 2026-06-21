@@ -1,9 +1,7 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [
-    "fz-bin.1"
-  ],
+  "blocks": [],
   "created": "2026-06-21T18:47:39Z",
   "description": "Bare type-name resolution is inconsistent, so type annotations work for some built-in types and silently fail for others. This is foundational: protocol dispatch (fz-bin) and any typed-dispatch over collections trips over it, so fix it first.\n\nGROUNDED in classify_name (src/compiler2/resolve.rs:324) and builtin_from_name (resolve.rs:397):\n- 'list' is SPECIAL-CASED (NameClass::List, parametric list(inner), resolve.rs:332).\n- 'resource' is special-cased (NameClass::Resource).\n- builtin_from_name covers: nil, bool, integer, float, cpointer, binary, atom, any, never, utf8, pid, ref.\n- EVERYTHING ELSE falls through to a type-alias lookup (NameClass::Named); if no alias is defined it is NameClass::Unknown -\u003e 'unknown type name'.\n\nCONSEQUENCES (measured):\n- ':: list' resolves; ':: map' fails with 'unknown type name map' (map is neither special-cased, a builtin, nor an alias). 'tuple', 'keyword' similarly have no bare name.\n- List.t / Map.t are NOT defined in the runtime library (list.fz/map.fz have no @type t), so ':: List.t' / ':: Map.t' are unresolved too (and a recursive/unresolved alias can hang the driver).\n- Net: collection types have no uniform, resolvable type name -- you cannot write a typed clause head that dispatches on 'is a map' or 'is a list' uniformly.\n\nFIX (make it uniform and complete -- choose and apply consistently):\n- Give every built-in type a resolvable bare name: add 'map' (-\u003e map_top, parametric map(k,v)?), 'tuple', and audit the set against the Types surface; OR\n- Define canonical Module.t aliases in the runtime library for List/Map/(Range exists)/etc. and route bare collection names through them; OR both.\n- Prefer removing the ad-hoc 'list'/'resource' special cases in favor of one consistent mechanism (builtin table and/or library aliases), so there is a single source of truth for type-name resolution.\n\nVERIFY: ':: map', ':: list', ':: tuple' (as applicable) all resolve and dispatch; add type_expr resolution tests; lib+matrix green. RELATED: fz-bv3 (Region::Type over a struct type panics) is the sibling foundational gap for STRUCT dispatch -- together they make typed dispatch over the full value space sound. This ticket BLOCKS fz-bin.1 (protocol-dispatch synthesis), which otherwise must hand-build IR to dodge the gap.",
   "id": "fz-usm",
@@ -12,5 +10,5 @@
   "status": "open",
   "title": "[BUG] Inconsistent/incomplete built-in type-name resolution (list special-cased, map/tuple unresolvable, no Module.t aliases)",
   "type": "bug",
-  "updated_at": "2026-06-21T18:51:03Z"
+  "updated_at": "2026-06-21T18:56:17Z"
 }
