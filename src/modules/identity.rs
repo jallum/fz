@@ -75,35 +75,6 @@ impl fmt::Display for ModuleNameParseError {
 impl Error for ModuleNameParseError {}
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct QualifiedName {
-    pub module: Option<ModuleName>,
-    pub name: String,
-}
-
-impl QualifiedName {
-    pub fn in_module(module: ModuleName, name: impl Into<String>) -> Self {
-        Self {
-            module: Some(module),
-            name: name.into(),
-        }
-    }
-
-    /// Display spelling used by current flattened IR names.
-    pub fn dotted(&self) -> String {
-        match &self.module {
-            Some(module) => format!("{}.{}", module, self.name),
-            None => self.name.clone(),
-        }
-    }
-}
-
-impl fmt::Display for QualifiedName {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.dotted())
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Mfa {
     pub module: ModuleName,
     pub name: String,

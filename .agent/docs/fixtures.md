@@ -6,7 +6,7 @@ thing about the language and proves it on every execution path that applies.
 file, reads the source-frontmatter block at the top, and runs the file through
 the compiler2 matrix (`run`, `interp`, `build`) unless the filename narrows
 that set. It scores each run against sibling sidecars. The same file also holds
-a set of static trials (the Elixir oracle, dump budgets, CLIF-shape proofs)
+a set of static trials (the Elixir oracle, compiler2 metrics, CLIF-shape proofs)
 that don't fit the per-path mould.
 
 ## Anatomy
@@ -176,7 +176,7 @@ A fixture pins its claim in the most direct medium for what it tests.
    harness enforces.
    When only a handful of counters matter, print or assert those scalars directly
    rather than goldening the whole stats map.
-4. **Compiler-shape budget** — `budget.*` frontmatter (see Dump budgets).
+4. **Compiler-shape signal** — compiler2 telemetry and metric assertions.
 5. **Expect-failure** — `expect: abort` / `expect: diagnostic`. The only medium
    that pins what the language must *refuse*: the program must abort (run-time)
    or be rejected (compile-time). Positive media (assertions, goldens) can only
@@ -185,23 +185,12 @@ A fixture pins its claim in the most direct medium for what it tests.
    sidecars. Use when the point is compiler2's own semantic/codegen surface:
    metrics, canonical call-edge facts, or a dense snapshot of those facts.
 
-## Dump budgets
+## Compiler-Shape Signals
 
-`budget.*` frontmatter pins compiler shape across three namespaces:
-`budget.codegen.*` (lowered function and instruction counts), `budget.specs.count`,
-and `budget.planner.*` (planner work counters — worklist pops, walk/type-fn
-calls, matcher specs, spec var/block/stmt counts, dispatches). The static
-`dump_budgets` trial runs `fz dump --emit stats <fixture>.fz` with telemetry on,
-reads the counters from the `fz.codegen.function_lowered` and authoritative
-`fz.planner.planned` events, and checks each declared target.
-
-`check_budget_metric` allows a symmetric band of ±`DUMP_BUDGET_TOLERANCE_PERCENT`
-(20%) around each target. A budget measures a runnable program, so it lives on a
-fixture with a `main`; a `main`-less runtime-library module is budgeted through a
-fixture that exercises it. A failing budget writes sibling `actual.clif` and
-`actual.specs` artifacts (gitignored). Budgets have no BLESS step — the
-frontmatter target is hand-updated in the same commit as the change that moves
-it.
+The old dump-budget trial and old-compiler stats dump path are gone with the old
+compiler front door. New compiler-shape contracts should use compiler2
+telemetry, `metrics.*` frontmatter, or explicit compiler2 dump artifacts tied to
+the path under test.
 
 ## Fixtures2 Frontmatter
 

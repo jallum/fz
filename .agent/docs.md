@@ -11,7 +11,7 @@ Read:
 - [fact engine](docs/fact-engine.md) — the domain-free fixpoint spine: jobs as rules, reads/waits/owned outputs, the deduped agenda, value-based fact slots with revisions, and the drive loop.
 - [semantic fixpoint](docs/semantic-fixpoint.md) — the heart: activation inputs as joined facts, emergent discovery vs. the observe-only seal job, the key/value split, and the `Recursive`/`DispatchMask` keying facts.
 - [pipeline](docs/pipeline.md) — source→artifact across the job families: demand from a root, lazy runtime code, the one-way artifact boundary, and retraction by fact ownership.
-- [compiler2 migration](docs/compiler2-migration.md) — cutover status: compiler2 is ready below the artifact seam; old `fz` remains the oracle until the agreed fixture surface is represented by fz2 matrix paths.
+- [compiler2 migration](docs/compiler2-migration.md) — cutover status: compiler2 owns the command-line compiler surface through `fz2`; the old `fz` wrapper/front door is deleted.
 - [type world](docs/type-world.md) — the World-owned interned type kernel: `Ty` as an id, one threaded `Types`, and why cheap id-equality lets facts detect change without hashing.
 - [type naming](docs/type-naming.md) — source type names resolve through namespaces to `TypeName` identities, then to hard `Ty` through `TypeDefined` facts.
 - [quoted source](docs/quoted-source.md) — compiler2's Fz-shaped quoted-source substrate: `{heap, root}` keys, fast-fail `semantically_eq` comparison with `Horizon` depth, Elixir-shaped AST tuples, private metadata keys, and `ScopeSnapshot`-based `__MODULE__` / `__ENV__` projection.
@@ -23,7 +23,7 @@ Read:
 - [externs](docs/externs.md) — the `extern "C"` FFI door: the `ExternTy` wire alphabet, marshal classes + auto-resolution, borrow-only args, C-vs-fz return ABI, runtime variadic dispatchers + symbol resolution, and resource typing.
 - [telemetry](docs/telemetry.md) — compile-time telemetry internals plus the emission contract, trace harness, and test-observability guidance.
 - [runtime telemetry](docs/runtime-telemetry.md) — the runtime event contract (`process_exited`, `dbg`) and how tests observe a run without poking process internals.
-- [parser syntax](docs/parser-syntax.md) — `src/parser` tokens→AST: Elixir surface syntax, keyword lists, no-parens calls, captures, and the desugar boundary.
+- [parser syntax](docs/parser-syntax.md) — source front-door boundary: `src/parser` is lexer-only; compiler2 parses tokens to quoted source in `compiler2/frontdoor.rs`.
 - [dispatch matrix](docs/dispatch-matrix.md) — the shared `DispatchMatrix`/`DispatchGraph` model behind function heads, `case`, receive, guard helpers, and protocol dispatch.
 - [pattern matching](docs/pattern-matching.md) — one decision model (`SourcePatternRows`→`PatternDispatchPlan`): test-first/project-second, payloads, and guards.
 - [any value](docs/any-value.md) — the one-word runtime value model (`AnyValueRef`): tags, container storage, codegen value lanes, and GC.
@@ -31,4 +31,4 @@ Read:
 - [pinned process register](docs/pinned-process-register.md) — how compiled code carries the current `Process*` and spends its reduction budget.
 - [scheduler zero-arg closures](docs/scheduler-zero-arg-closures.md) — scheduler re-entry is one verb (run a closure): receive, timeout, spawn, and halt continuations.
 - [reduction yielding](docs/reduction-yielding.md) — the per-process reduction budget that drives scheduler fairness while GC pressure stays heap-local until a natural boundary.
-- [fixtures](docs/fixtures.md) — the four-path fixture matrix: frontmatter, goldens, the Elixir oracle, and dump budgets.
+- [fixtures](docs/fixtures.md) — the compiler2 fixture matrix: frontmatter, goldens, the Elixir oracle, and compiler-shape signals.

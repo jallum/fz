@@ -11,6 +11,10 @@ use std::collections::HashMap;
 
 use super::identity::{FunctionId, ModuleId};
 
+pub(crate) fn protocol_domain_tag(protocol: impl std::fmt::Display) -> String {
+    format!("protocol::{}.t", protocol)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct ProtocolCallback {
     pub(crate) protocol: ModuleId,

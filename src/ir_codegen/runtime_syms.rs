@@ -222,7 +222,6 @@ pub(crate) fn declare_runtime_symbols<M: ClModule>(jmod: &mut M) -> Result<Runti
         dynamic_float_arith_unsupported_id: arith.dynamic_float_arith_unsupported_id,
         value_eq_ref_id: arith.value_eq_ref_id,
         matcher_eq_bytes_id: matcher.matcher_eq_bytes_id,
-        matcher_map_get_id: matcher.matcher_map_get_id,
         matcher_map_get_ref_id: matcher.matcher_map_get_ref_id,
         alloc_closure_id: closure.alloc_closure_id,
         closure_code_ref_id: closure.closure_code_ref_id,
@@ -456,7 +455,6 @@ fn declare_arith_runtime<M: ClModule>(jmod: &mut M) -> Result<ArithRefs, Codegen
 
 struct MatcherRefs {
     matcher_eq_bytes_id: FuncId,
-    matcher_map_get_id: FuncId,
     matcher_map_get_ref_id: FuncId,
 }
 
@@ -464,12 +462,9 @@ struct MatcherRefs {
 fn declare_matcher_runtime<M: ClModule>(jmod: &mut M) -> Result<MatcherRefs, CodegenError> {
     // Receive matcher binary-literal comparison.
     let matcher_eq_bytes_id = decl_import(jmod, "fz_matcher_eq_bytes")?;
-    // Receive matcher map-key lookup. Returns matcher miss sentinel on miss.
-    let matcher_map_get_id = decl_import(jmod, "fz_matcher_map_get")?;
     let matcher_map_get_ref_id = decl_import(jmod, "fz_matcher_map_get_ref")?;
     Ok(MatcherRefs {
         matcher_eq_bytes_id,
-        matcher_map_get_id,
         matcher_map_get_ref_id,
     })
 }
@@ -723,8 +718,6 @@ pub(crate) struct RuntimeRefs {
     pub(crate) value_eq_ref_id: FuncId,
     /// Selective-receive matcher binary-literal helper.
     pub matcher_eq_bytes_id: FuncId,
-    /// Selective-receive matcher map-key lookup helper.
-    pub matcher_map_get_id: FuncId,
     pub matcher_map_get_ref_id: FuncId,
     pub(crate) alloc_closure_id: FuncId,
     pub(crate) closure_code_ref_id: FuncId,

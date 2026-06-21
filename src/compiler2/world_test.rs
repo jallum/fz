@@ -2,7 +2,6 @@ use super::facts::FactUse;
 use super::{DriveOutcome, FactKey, Job, ModuleId, ModuleInterface, Namespace, TypeName, TypeVarId, Types, World};
 use crate::ast::Attribute;
 use crate::compiler2::drive::JobEffects;
-use crate::specs::ResolvedTypeShape;
 use crate::telemetry::ConfiguredTelemetry;
 
 #[test]
@@ -141,22 +140,6 @@ fn compiler2_resolve_spec_resolves_types_shapes_and_constraints_against_the_capt
         "the result is the free variable `x`, bound to id 0 on first sight",
     );
 
-    // Shapes carry the same variable numbering and keep declared names nominal.
-    assert_eq!(
-        resolved.param_shapes,
-        vec![
-            ResolvedTypeShape::Named {
-                name: "tkf_box".to_string(),
-                args: vec![ResolvedTypeShape::Float],
-            },
-            ResolvedTypeShape::Named {
-                name: "tkf_elem".to_string(),
-                args: Vec::new(),
-            },
-        ],
-    );
-    assert_eq!(resolved.result_shape, ResolvedTypeShape::Var(TypeVarId(0)));
-
     // The `when x: tkf_box(tkf_elem)` bound resolves to list(integer), keyed by
     // the very variable the result names.
     assert_eq!(resolved.constraints.len(), 1, "one when-clause bound");
@@ -169,44 +152,6 @@ fn compiler2_resolve_spec_resolves_types_shapes_and_constraints_against_the_capt
         world.types_mut().display(&bound),
         expect.display(&list_int),
         "tkf_box(tkf_elem) instantiates to a list of integer",
-    );
-
-    // The very same spec resolves to its canonical addressed arrow: the free
-    // result variable `x` addresses to r0, and its `when`-bound and name are
-    // re-keyed onto that address.
-    let arrow = world
-        .resolve_arrow(source.namespace, &spec)
-        .expect("the spec resolves to an addressed arrow");
-    let clauses = world
-        .types_mut()
-        .callable_clauses(&arrow.arrow)
-        .expect("the resolved arrow is callable-shaped");
-    assert_eq!(clauses.len(), 1, "one arrow clause");
-    let clause = &clauses[0];
-    assert_eq!(clause.args.len(), 2, "two addressed parameters");
-    assert_eq!(
-        world.types_mut().display(&clause.args[0]),
-        expect.display(&list_float),
-        "parameter 0 keeps its concrete list(float)",
-    );
-    let ret = clause.ret;
-    let r0 = world.types_mut().result_alpha();
-    assert_eq!(ret, r0, "the free result variable x addresses to r0");
-    let r0_id = world.types_mut().result_alpha_id();
-    let addressed_bound = arrow
-        .bounds
-        .get(&r0_id)
-        .copied()
-        .expect("x's when-bound is re-keyed onto r0");
-    assert_eq!(
-        world.types_mut().display(&addressed_bound),
-        expect.display(&list_int),
-        "x's bound list(integer) is re-keyed onto r0",
-    );
-    assert_eq!(
-        arrow.names.get(&r0_id).map(String::as_str),
-        Some("x"),
-        "the r0 address keeps the declared name x",
     );
 }
 

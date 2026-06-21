@@ -9,7 +9,6 @@ use std::collections::{HashMap, HashSet};
 use crate::ast::{
     AfterClause, BitField, BitSize, Expr, FnClause, LambdaClause, MatchClause, Pattern, Spanned, WithBinding,
 };
-use crate::compiler::source::Span;
 use crate::diag::Diagnostic;
 use crate::diag::codes;
 use crate::diag::driver::emit_through;
@@ -17,8 +16,11 @@ use crate::dispatch_matrix::pattern::{
     PatternBodyId, PatternDispatchError, PatternGuardExpr, PatternRow, SourcePatternError, SourcePatternRows,
     pattern_dispatch_from_source, pattern_dispatch_from_source_with_guard_resolver,
 };
+use crate::extern_contract::{
+    explicit_extern_wire_hint, extern_semantic_contract, extern_symbol_from_name, ty_to_extern_ty,
+};
 use crate::function_surface::FunctionSurface;
-use crate::ir_lower::{explicit_extern_wire_hint, extern_semantic_contract, extern_symbol_from_name, ty_to_extern_ty};
+use crate::source::Span;
 
 use super::super::body::{
     CallArg, CallSiteId, ControlDestination, ControlDispatch, ControlEntryId, ControlEntryOrigin, DispatchBindings,
@@ -3885,7 +3887,7 @@ fn pattern_name(pattern: &Pattern) -> &'static str {
 }
 
 fn emit_job_diagnostic(world: &World<'_>, diagnostic: Diagnostic) -> FatalError {
-    emit_through(world.tel(), None, std::slice::from_ref(&diagnostic));
+    emit_through(world.tel(), std::slice::from_ref(&diagnostic));
     FatalError
 }
 

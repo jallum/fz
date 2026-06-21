@@ -5,7 +5,6 @@
 //! by projecting semantic types into this explicit predicate layer.
 
 use crate::fz_ir::Module;
-use crate::types::{Ty as LegacyTy, ty_descr};
 use fz_runtime::any_value::{AnyValue as RuntimeAnyValue, ValueKind, struct_schema_id};
 use std::collections::{BTreeSet, HashMap};
 use std::fmt;
@@ -197,116 +196,6 @@ pub(crate) fn matches_runtime_type_predicate(
             ValueKind::NULL | ValueKind::INT | ValueKind::FLOAT | ValueKind::ATOM => false,
             _ => false,
         },
-    }
-}
-
-pub(crate) fn from_legacy_ty(ty: &LegacyTy) -> RuntimeTypePredicate {
-    let descr = ty_descr(ty);
-    RuntimeTypePredicate {
-        ints: ObservedSet {
-            cofinite: descr.ints.cofinite,
-            values: descr.ints.set.iter().copied().collect(),
-        },
-        floats: ObservedSet {
-            cofinite: descr.floats.cofinite,
-            values: descr.floats.set.iter().map(|bits| bits.get().to_bits()).collect(),
-        },
-        atoms: ObservedSet {
-            cofinite: descr.atoms.cofinite,
-            values: descr.atoms.set.iter().cloned().collect(),
-        },
-        lists: legacy_list_shapes(descr),
-        tuple_arities: legacy_tuple_arities(descr),
-        named_structs: legacy_named_structs(descr),
-        allow_other_structs: false,
-        maps: !descr.maps.is_empty(),
-        binaries: !descr.basic.is_empty(),
-        closures: !descr.funcs.is_empty(),
-        resources: !descr.resources.is_empty(),
-    }
-}
-
-fn legacy_list_shapes(descr: &crate::types::Descr) -> ObservedSet<ListShape> {
-    let mut out = ObservedSet::none();
-    for clause in &descr.lists {
-        let mut allowed = ObservedSet::finite([ListShape::Empty, ListShape::NonEmpty]);
-        for sig in &clause.pos {
-            let sig_allowed = if sig.empty && sig.elem.is_none() {
-                ObservedSet::lit(ListShape::Empty)
-            } else if !sig.empty && sig.elem.is_some() {
-                ObservedSet::lit(ListShape::NonEmpty)
-            } else {
-                ObservedSet::finite([ListShape::Empty, ListShape::NonEmpty])
-            };
-            allowed = intersect_observed_sets(&allowed, &sig_allowed);
-        }
-        for sig in &clause.neg {
-            if sig.empty && sig.elem.is_none() {
-                allowed = remove_observed_value(&allowed, &ListShape::Empty);
-            } else if !sig.empty && sig.elem.is_some() {
-                allowed = remove_observed_value(&allowed, &ListShape::NonEmpty);
-            }
-        }
-        out = out.union(&allowed);
-    }
-    out
-}
-
-fn legacy_tuple_arities(descr: &crate::types::Descr) -> ObservedSet<usize> {
-    let mut out = ObservedSet::none();
-    for clause in &descr.tuples {
-        let mut allowed = if clause.pos.is_empty() {
-            ObservedSet::any()
-        } else {
-            let mut arities = clause.pos.iter().map(|sig| sig.elems.len()).collect::<BTreeSet<_>>();
-            if arities.len() != 1 {
-                continue;
-            }
-            ObservedSet::lit(arities.pop_first().expect("one arity"))
-        };
-        for sig in &clause.neg {
-            allowed = remove_observed_value(&allowed, &sig.elems.len());
-        }
-        out = out.union(&allowed);
-    }
-    out
-}
-
-fn legacy_named_structs(descr: &crate::types::Descr) -> ObservedSet<String> {
-    const PREFIX: &str = "impl-target::";
-    ObservedSet {
-        cofinite: descr.opaques.cofinite,
-        values: descr
-            .opaques
-            .set
-            .iter()
-            .filter_map(|name| name.strip_prefix(PREFIX).map(str::to_string))
-            .collect(),
-    }
-}
-
-fn intersect_observed_sets<T>(left: &ObservedSet<T>, right: &ObservedSet<T>) -> ObservedSet<T>
-where
-    T: Ord + Clone,
-{
-    match (left.cofinite, right.cofinite) {
-        (false, false) => ObservedSet::finite(left.values.intersection(&right.values).cloned()),
-        (true, false) => ObservedSet::finite(right.values.difference(&left.values).cloned()),
-        (false, true) => ObservedSet::finite(left.values.difference(&right.values).cloned()),
-        (true, true) => ObservedSet::cofinite(left.values.union(&right.values).cloned()),
-    }
-}
-
-fn remove_observed_value<T>(set: &ObservedSet<T>, value: &T) -> ObservedSet<T>
-where
-    T: Ord + Clone,
-{
-    if set.cofinite {
-        let mut excluded = set.values.clone();
-        excluded.insert(value.clone());
-        ObservedSet::cofinite(excluded)
-    } else {
-        ObservedSet::finite(set.values.iter().filter(|candidate| *candidate != value).cloned())
     }
 }
 

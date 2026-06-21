@@ -74,6 +74,6 @@ pub(super) fn derive_type_def(world: &mut World<'_>, name: &TypeName) -> Result<
 }
 
 fn emit_job_diagnostic(world: &World<'_>, diagnostic: Diagnostic) -> FatalError {
-    emit_through(world.tel(), None, &[diagnostic]);
+    emit_through(world.tel(), &[diagnostic]);
     FatalError
 }

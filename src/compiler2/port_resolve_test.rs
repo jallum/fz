@@ -1,7 +1,5 @@
 //! Ported tests from old-world — behaviour already captured; assertions filled in next pass.
-#![allow(unused_imports)]
-
-use super::drive_test::{assert_resolved, function_id, module_id};
+use super::drive_test::assert_resolved;
 use super::{
     CodeSubmission, Compiler2, DriveOutcome, ExecutableNeed, InterfaceCallableKind, ModuleInterface,
     ModuleInterfaceCallable, RootSubmission, World,
@@ -653,9 +651,9 @@ fn struct_type_alias_populates_field_types() {
     });
     assert_resolved(
         compiler.drive(),
-        "@type t with all struct fields populates struct_field_types",
+        "@type t with all struct fields resolves the struct record shape",
     );
-    // TODO: assert Range struct_field_types has first/last/step all as integer
+    // TODO: assert Range's resolved struct record shape has first/last/step all as integer.
 }
 
 // Ported from src/frontend/resolve_test.rs: @type t for a struct must cover all defstruct fields or is an error

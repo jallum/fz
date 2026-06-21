@@ -235,7 +235,7 @@ fn build_command(tel: &ConfiguredTelemetry, args: &[String]) -> Result<(), CliEr
     let artifact = compiler
         .compile_root_aot(root, obj_name)
         .map_err(|error| CliError::failure(format!("fz2 build: {error}")))?;
-    emit_through(tel, None, artifact.diagnostics.as_slice());
+    emit_through(tel, artifact.diagnostics.as_slice());
     if artifact
         .diagnostics
         .as_slice()

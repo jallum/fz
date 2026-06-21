@@ -18,8 +18,8 @@
 //! `parse_type_def_body` is consumed by scoping (fz-rh2.12.1); the reference
 //! walk (fz-rh2.12.12) and resolver (fz-rh2.12.3) consume the rest.
 
-use crate::compiler::source::Span;
 use crate::parser::lexer::{Tok, Token};
+use crate::source::Span;
 
 /// A syntactic type expression. Every user name — scalar, alias, or
 /// variable — is a [`TypeExpr::Name`] until resolution classifies it.

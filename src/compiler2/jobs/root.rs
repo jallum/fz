@@ -1,10 +1,10 @@
 use std::collections::VecDeque;
 use std::collections::{HashMap, HashSet};
 
-use crate::compiler::source::Span;
 use crate::diag::Diagnostic;
 use crate::diag::codes;
 use crate::diag::driver::emit_through;
+use crate::source::Span;
 
 use super::super::drive::{FactKey, Job, JobEffects, settled_uses};
 use super::super::identity::{ActivationKey, ExecutableKey, ExecutableNeed, RootId, RootKind};
@@ -121,7 +121,7 @@ pub(super) fn seed_activation(world: &mut World<'_>, activation: &ActivationKey)
 
 fn emit_root_error(world: &World<'_>, span: Span, message: impl Into<String>) -> FatalError {
     let diagnostic = Diagnostic::error(codes::LOWER_UNSUPPORTED, message.into(), span);
-    emit_through(world.tel(), None, std::slice::from_ref(&diagnostic));
+    emit_through(world.tel(), std::slice::from_ref(&diagnostic));
     FatalError
 }
 

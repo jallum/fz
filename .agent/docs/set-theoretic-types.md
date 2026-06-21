@@ -44,33 +44,25 @@ matcher performs at runtime; constant map keys ride the lowering as values
 (`LoweredMapKey`). A numeric literal written in TYPE position (`@type d :: 0`)
 means its kind and emits the `type/numeric-literal-widened` warning
 (`compiler2/resolve.rs`). Atoms keep singleton sets because `:ok | :error`
-unions are the language's backbone. (The old pipeline under
-`src/types/concrete_types/` still carries its literal axes until it retires;
-compiler2's `int_lit`/`as_int_singleton` trait methods are documented
-degenerates.)
+unions are the language's backbone. Compiler2's `int_lit` and
+`as_int_singleton` trait methods are documented degenerates for the shared
+trait surface.
 A value belongs to a type if it belongs to the axis for its kind. `any()` is every
 axis at top, `none()` every axis at bottom, and `is_empty` holds when every axis is
 empty (structural clauses checked recursively, with a coinductive memo for recursive
 shapes).
 
-## Two implementations, one trait
+## One implementation, shared trait
 
 Consumers ask type questions through the `Types` trait (`src/types/mod.rs`), not by
-inspecting a representation. `Types::Ty` is an associated type, so the same algebra
-runs over two carriers:
+inspecting a representation. The active implementation is compiler2's
+`Types` (`src/compiler2/types/`): `Ty(u32)`, an interned id into one owning
+interner. Its structural `Descr` stays private and the id space is
+compiler2-owned. See [`type-world`](type-world.md) for the ownership and why
+id-equality is what lets facts detect change without hashing.
 
-- **`ConcreteTypes`** (`src/types/concrete_types/`) — `Ty(Arc<Descr>)`, a
-  reference-counted structural descriptor. `types::new()` builds it and
-  `DefaultTypes = ConcreteTypes`.
-- **Compiler2's `Types`** (`src/compiler2/types/`) — `Ty(u32)`, an interned id into
-  one owning interner. The structural kernel is duplicated here so its `Descr` stays
-  private and the id space is compiler2-owned. See [`type-world`](type-world.md) for
-  the ownership and why id-equality is what lets facts detect change without hashing.
-
-Both kernels carry the same axis model and decision procedure; they differ only in
-how a structural child is stored (an `Arc` vs an interned id). A `Ty` handle is
-meaningful only with the implementation value that produced it, so handles from two
-instances are never composed.
+A `Ty` handle is meaningful only with the implementation value that produced it,
+so handles from two `Types` instances are never composed.
 
 The trait is the abstraction boundary for construction, projection, substitution,
 nominal disjointness, widening, and equivalence:
@@ -129,8 +121,9 @@ complete executable fact may not. A `Ty` with free variables can live in a decla
 spec, an arrow clause, or an underconstrained result, but a *settled* return fact or
 activation key must be a known concrete type, a boundary-erased dynamic value, or a
 diagnostic — never a free variable, and never `none` standing in for "not proven
-yet" (see [`semantic-fixpoint`](semantic-fixpoint.md)). The scheme matcher and
-`apply_spec_set` are detailed in [`specs`](specs.md).
+yet" (see [`semantic-fixpoint`](semantic-fixpoint.md)). Compiler2 now owns
+contract-aware arrow matching; `src/specs` only carries the structural shape
+model described in [`specs`](specs.md).
 
 ## Brands carry their inner; opaques are nominal tags
 
@@ -238,10 +231,8 @@ same identity protocol dispatch uses (see [`protocols`](protocols.md)) and keeps
 ## Proof gates
 
 ```text
-cargo test --lib types::            # shared conformance + smoke over ConcreteTypes
 cargo test --lib compiler2::types   # the interned implementation
-cargo test --lib types::concrete_types::concrete_types_test::
-                                    # concrete Descr / DNF / component mechanics
+cargo test --lib dispatch_matrix    # shared generic dispatch/type-region model
 cargo test value_disjoint_soundness_table
 cargo test value_disjoint_nested_in_tuple_is_false
 ```

@@ -192,7 +192,7 @@ stack/heap pointer is tagged by OR-ing the top-byte tag word directly, with no
 address-mask clear. On x86_64 canonical refs the high bits are cleared with
 `ishl_imm` then `ushr_imm` before OR-ing the tag word. Keeping codegen on
 `AnyValueRefPacking` rather than a hardcoded mask is what keeps
-`fz dump --emit clif` aligned with the runtime packing model.
+compiler2 CLIF dumps aligned with the runtime packing model.
 
 ## Container Storage
 

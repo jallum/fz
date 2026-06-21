@@ -1,7 +1,5 @@
 //! Ported tests from old-world — behaviour already captured; assertions filled in next pass.
-#![allow(unused_imports)]
-
-use super::drive_test::{assert_resolved, function_id, module_id};
+use super::drive_test::assert_resolved;
 use super::{CodeSubmission, Compiler2, ExecutableNeed, RootSubmission};
 use crate::telemetry::ConfiguredTelemetry;
 

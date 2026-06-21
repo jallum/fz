@@ -742,8 +742,8 @@ fn compiler2_protocol_domain_marker_stays_type_owned_while_dispatch_revises_when
     );
 
     let mut expect = Types::new();
-    let marker = expect.opaque_of(&crate::frontend::protocols::protocol_domain_tag(
-        &crate::modules::identity::ModuleName::parse_dotted("Proof").expect("protocol name should parse"),
+    let marker = expect.opaque_of(&crate::compiler2::protocol::protocol_domain_tag(
+        crate::modules::identity::ModuleName::parse_dotted("Proof").expect("protocol name should parse"),
     ));
     let rendered = expect.display(&marker);
     assert_eq!(type_events[0].0, 0);
@@ -760,8 +760,8 @@ fn compiler2_protocol_domain_marker_stays_type_owned_while_dispatch_revises_when
     );
     let world_marker = world
         .types_mut()
-        .opaque_of(&crate::frontend::protocols::protocol_domain_tag(
-            &crate::modules::identity::ModuleName::parse_dotted("Proof").expect("protocol name should parse"),
+        .opaque_of(&crate::compiler2::protocol::protocol_domain_tag(
+            crate::modules::identity::ModuleName::parse_dotted("Proof").expect("protocol name should parse"),
         ));
     assert_eq!(t0_def.ty, world_marker, "t/0 should resolve to the marker opaque");
     assert_eq!(
@@ -2100,7 +2100,7 @@ fn compiler2_enum_reduce_operator_ref_activates_kernel_plus() {
     let mut compiler = Compiler2::new(&tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/enum_reduce_operator_ref.fz".to_string()),
-        text: include_str!("../type_infer/fixtures/enum_reduce_operator_ref.fz").to_string(),
+        text: include_str!("fixtures/enum_reduce_operator_ref.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,

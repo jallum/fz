@@ -435,7 +435,7 @@ fn function_label(world: &World<'_>, function: FunctionId) -> String {
     }
 }
 
-fn span_label(span: crate::compiler::source::Span) -> String {
+fn span_label(span: crate::source::Span) -> String {
     if span.is_dummy() {
         "<generated>".to_string()
     } else {

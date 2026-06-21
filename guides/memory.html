@@ -851,8 +851,8 @@ hold.</p>
 <h2 id="alloc-stats">11. Heap allocation stats</h2>
 
 <p>Each process heap records allocation requests by kind. The counters are
-runtime process facts, separate from <code>fz dump --emit stats</code>, which
-reports compiler decisions. They are reset after process setup, so static
+runtime process facts, separate from compiler2 telemetry, which reports
+compiler decisions. They are reset after process setup, so static
 closure singletons and bootstrap wiring do not pollute fixture baselines.</p>
 
 <p><code>Process.heap_alloc_stats()</code> exposes the current process snapshot

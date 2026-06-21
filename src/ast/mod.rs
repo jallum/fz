@@ -1,16 +1,9 @@
-use crate::compiler::source::{Span, SpanOrigin};
-use crate::frontend::protocols::ProtocolRegistry;
 use crate::modules::identity::ModuleName;
-use crate::modules::interface::ModuleInterface;
 use crate::parser::lexer::Token;
-use crate::type_expr::ModuleTypeEnv;
-use crate::types::Ty;
-use std::collections::{BTreeMap, HashMap};
-use std::rc::Rc;
+use crate::source::{Span, SpanOrigin};
 
 /// A `Vec<Token>` representing a type expression whose resolution is deferred
-/// until the full module type environment is available. Used in five AST fields
-/// that are parsed eagerly but resolved later via `parse_type_expr`.
+/// until compiler2 resolves it against the captured namespace.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TypeExprBody(pub Vec<Token>);
 
@@ -18,10 +11,9 @@ pub struct TypeExprBody(pub Vec<Token>);
 /// and Pattern reference in the AST is `Spanned<…>`; the outer enum
 /// values themselves are unwrapped so pattern matching stays clean.
 ///
-/// `origin` defaults to `Source` for parser-produced nodes. The macro
-/// expansion pass walks decoded-Value subtrees and stamps
-/// `SpanOrigin::Expanded` so a downstream diagnostic can show "expanded
-/// from `<macro>` at <macro_call>".
+/// `origin` defaults to `Source` for source-produced nodes. Macro expansion
+/// stamps `SpanOrigin::Expanded` so a downstream diagnostic can show
+/// "expanded from `<macro>` at <macro_call>".
 #[derive(Debug, Clone)]
 pub struct Spanned<T> {
     pub node: T,
@@ -39,9 +31,7 @@ impl<T> Spanned<T> {
     }
 
     /// Synthesize a Spanned with no source position. Used by tests and by
-    /// `value_to_expr` (which decodes runtime Values back to AST and has
-    /// no original span). The macro expander stamps `SpanOrigin::Expanded`
-    /// on these once it knows the call site.
+    /// generated nodes that have no original span.
     pub fn dummy(node: T) -> Self {
         Self {
             node,
@@ -85,7 +75,6 @@ pub enum Expr {
     Capture(Box<Spanned<Expr>>),
     /// fz-g58.2.6 — capture placeholder `&N` (1-based), only meaningful inside
     /// a `Capture` body. Desugars to the Nth lambda parameter in fz-g58.15.
-    #[allow(dead_code)] // The index is read by the fz-g58.15 desugar; 2.6 only parses it.
     CaptureArg(usize),
 
     // collections
@@ -105,15 +94,13 @@ pub enum Expr {
     /// m[k] — bracket access; returns nil if key absent.
     Index(Box<Spanned<Expr>>, Box<Spanned<Expr>>),
 
-    // named call: target(args...)  — target is an expr (usually Var; module
-    // qualification is desugared to Index by the parser and later resolved
-    // to a dotted Var). This is distinct from anonymous-function call.
+    // named call: target(args...) — target is an expr, usually Var. This is
+    // distinct from anonymous-function call.
     Call(Box<Spanned<Expr>>, Vec<Spanned<Expr>>),
     // anonymous-function call: target.(args...)
     ClosureCall(Box<Spanned<Expr>>, Vec<Spanned<Expr>>),
-    /// Call-argument type ascription: `expr :: TypeExpr`. Produced by the
-    /// call parser and consumed by extern lowering.
-    #[allow(dead_code)] // Read by fz-zar.B; fz-zar.A only preserves syntax.
+    /// Call-argument type ascription: `expr :: TypeExpr`. Consumed by extern
+    /// lowering.
     Ascribe(Box<Spanned<Expr>>, TypeExprBody),
 
     // operators
@@ -144,7 +131,7 @@ pub enum Expr {
     // anonymous fn: `fn p1 -> b1; p2 when g -> b2 end`. A non-empty list of
     // clauses, mirroring Elixir's `fn`. A single unguarded clause lowers and
     // evals directly; multi-clause and guarded forms desugar to a
-    // pattern-matrix lambda in fz-g58.15 (Arc 3) — see `lambda_direct_clause`.
+    // pattern-matrix lambda in fz-g58.15 (Arc 3).
     Lambda(Vec<LambdaClause>),
 
     // macro support (fz-ul4.10):
@@ -212,19 +199,6 @@ pub struct LambdaClause {
     pub body: Spanned<Expr>,
     /// Span of the whole clause: `params [when guard] -> body`.
     pub span: Span,
-}
-
-/// The single clause an `Expr::Lambda` can be run directly from, before the
-/// multi-clause/guard desugar (fz-g58.15, Arc 3) rewrites it. That is exactly
-/// one clause with no guard — the shape the interpreter and IR lowering execute
-/// today. Multi-clause or guarded lambdas return `None`: they must be desugared
-/// to a pattern-matrix lambda first, so both execution paths agree on which
-/// forms are runnable (three-path parity).
-pub fn lambda_direct_clause(clauses: &[LambdaClause]) -> Option<&LambdaClause> {
-    match clauses {
-        [clause] if clause.guard.is_none() => Some(clause),
-        _ => None,
-    }
 }
 
 /// fz-5vj — `after <timeout_ms> -> <body>` tail clause on a `receive`.
@@ -377,26 +351,20 @@ pub struct FnClause {
     pub span: Span,
 }
 
-/// fz-ul4.31.2 — uniform attribute carrier on FnDef / ModuleDef.
-/// Replaces the prior `doc: Option<String>` / `moduledoc: Option<String>`
-/// fields with a list of typed attribute variants. .31.4 adds `Spec` —
-/// extending this enum doesn't churn callers that already consume via
-/// `attrs: Vec<Attribute>`.
+/// fz-ul4.31.2 — uniform attribute carrier on parsed function/module surfaces.
 #[derive(Debug, Clone)]
 pub enum Attribute {
     /// `@doc "..."` attached above a fn/defmacro.
     Doc(String),
     /// `@moduledoc "..."` at the top of a module body.
     ModuleDoc(String),
-    /// fz-ul4.31.3 — `@type Name :: <type-expr>`. The body is stored as
-    /// raw tokens and parsed via `type_expr::build_module_type_env`
-    /// after all aliases in a module are collected, so forward
-    /// references resolve and cycles are detectable.
+    /// `@type Name :: <type-expr>`. The body is stored as raw tokens and
+    /// resolved by compiler2 after the declaration namespace is known.
     TypeAlias(TypeAliasDecl),
     /// fz-ul4.31.4 — `@spec name(T1, T2) :: R` declaration attached
     /// above a fn/defmacro. Per-parameter and result type-expression
-    /// bodies are stored as raw tokens; `SpecDecl::resolve` lowers them
-    /// to types against the enclosing module's `ModuleTypeEnv`.
+    /// bodies are stored as raw tokens and resolved by compiler2 against the
+    /// captured namespace.
     Spec(SpecDecl),
 }
 
@@ -425,233 +393,3 @@ pub struct TypeAliasDecl {
     /// Span of the whole `@type ... :: ...` declaration.
     pub span: Span,
 }
-
-#[derive(Debug, Clone)]
-pub struct FnDef {
-    pub name: String,
-    /// Span of just the name token. Useful for "redefinition" diagnostics.
-    pub name_span: Span,
-    pub clauses: Vec<FnClause>,
-    pub is_macro: bool,
-    /// `fnp` declarations are module-private: callable from the declaring
-    /// module after flattening, but omitted from public interfaces/artifacts.
-    pub is_private: bool,
-    /// `Some("C")` for `extern "C" fn` declarations; `None` for regular fns.
-    pub extern_abi: Option<String>,
-    /// Per-parameter type-expression bodies for `extern "C" fn` declarations.
-    /// `extern_param_tokens.len()` gives the arity. Empty for regular fns.
-    pub extern_param_tokens: Vec<TypeExprBody>,
-    /// Raw return-type tokens from `:: RetType`. Empty for regular fns.
-    /// Kept as tokens because lowering consults the type_env alias table.
-    pub extern_ret_tokens: TypeExprBody,
-    /// Optional constrained type variables from `when t: Bound`.
-    pub extern_constraints: Vec<(String, TypeExprBody)>,
-    /// True for `extern "C" fn name(fixed, ...)` declarations.
-    #[allow(dead_code)] // Read by fz-zar.B; fz-zar.A only records it.
-    pub variadic: bool,
-    /// Attributes attached above the first clause of this fn. The REPL
-    /// surfaces `Attribute::Doc` via `?<name>`. Empty when no `@…`
-    /// preceded the fn.
-    pub attrs: Vec<Attribute>,
-    /// Span covering all clauses (and any `@…` if present).
-    pub span: Span,
-}
-
-impl FnDef {
-    /// Returns the callable arity for regular and extern functions.
-    ///
-    /// Regular functions take their arity from the first clause. Extern
-    /// declarations have no clauses, so their parameter list owns the arity.
-    pub fn arity(&self) -> usize {
-        if self.extern_abi.is_some() {
-            self.extern_param_tokens.len()
-        } else {
-            self.clauses
-                .first()
-                .map(|clause| clause.params.len())
-                .expect("functions should have at least one clause")
-        }
-    }
-
-    /// Returns the first `@doc` string attached to this fn, if any.
-    pub fn doc(&self) -> Option<&str> {
-        self.attrs.iter().find_map(|a| match a {
-            Attribute::Doc(s) => Some(s.as_str()),
-            _ => None,
-        })
-    }
-}
-
-#[derive(Debug, Clone)]
-pub enum Item {
-    Fn(FnDef),
-    Module(ModuleDef),
-    Protocol(ProtocolDef),
-    ProtocolImpl(ProtocolImplDef),
-    Struct(StructDef),
-    /// `alias A.B.C` (as_name = "C") or `alias A.B.C, as: D` (as_name = "D").
-    /// Valid at root scope or inside a defmodule body. The resolver consumes
-    /// aliases, so they don't survive into the flattened Program.
-    Alias {
-        full_path: ModuleName,
-        as_name: String,
-        span: Span,
-    },
-    /// `import Mod` / `import Mod, only: [f: 1, g: 2]` /
-    /// `import Mod, except: [...]`. Valid at root scope or inside a defmodule
-    /// body; resolver-consumed.
-    Import {
-        path: ModuleName,
-        /// Whitelist of (name, arity) pairs. None means "all fns in the
-        /// imported module". Mutually exclusive with `except`.
-        only: Option<Vec<(String, usize)>>,
-        /// Blacklist of (name, arity) pairs.
-        except: Option<Vec<(String, usize)>>,
-        span: Span,
-    },
-    /// A macro invocation at item-position (top of program or top of a
-    /// defmodule body): `test("name") do <body> end` parses as
-    /// MacroCall { name: "test", args: [Binary("name"), Block([...])] }.
-    /// .16.3's expansion pass replaces these with the items the macro
-    /// returns (typically Item::Fn). Surviving instances at downstream
-    /// stages are an error.
-    ///
-    /// `parent_module` is set by the resolver when the MacroCall was
-    /// nested inside a defmodule body — the spliced fn names are then
-    /// qualified under that path so tests written inside `defmodule
-    /// MyTest do ... end` land as `MyTest.test_xxx`. At top-level it's
-    /// `None`.
-    MacroCall {
-        name: String,
-        name_span: Span,
-        args: Vec<Spanned<Expr>>,
-        parent_module: Option<String>,
-        span: Span,
-    },
-}
-
-#[derive(Debug, Clone)]
-#[allow(dead_code)]
-pub struct StructDef {
-    pub module: ModuleName,
-    pub fields: Vec<String>,
-    pub span: Span,
-}
-
-#[derive(Debug, Clone)]
-#[allow(dead_code)] // fz-31q.4 consumes protocol facts during registry resolution.
-pub struct ProtocolCallback {
-    pub name: String,
-    pub name_span: Span,
-    pub arity: usize,
-    pub attrs: Vec<Attribute>,
-    pub span: Span,
-}
-
-#[derive(Debug, Clone)]
-#[allow(dead_code)] // fz-31q.4 consumes protocol facts during registry resolution.
-pub struct ProtocolDef {
-    pub name: ModuleName,
-    pub name_span: Span,
-    pub callbacks: Vec<ProtocolCallback>,
-    pub attrs: Vec<Attribute>,
-    pub span: Span,
-}
-
-#[derive(Debug, Clone)]
-#[allow(dead_code)] // fz-31q.4 consumes protocol facts during registry resolution.
-pub struct ProtocolImplTarget {
-    pub path: ModuleName,
-    pub span: Span,
-}
-
-#[derive(Debug, Clone)]
-#[allow(dead_code)] // fz-31q.4 consumes protocol facts during registry resolution.
-pub struct ProtocolImplDef {
-    pub protocol: ModuleName,
-    pub protocol_span: Span,
-    pub target: ProtocolImplTarget,
-    pub items: Vec<Rc<Item>>,
-    pub attrs: Vec<Attribute>,
-    pub span: Span,
-}
-
-#[derive(Debug, Clone)]
-pub struct ModuleDef {
-    pub name: String,
-    pub name_span: Span,
-    /// In .18.1 the body holds only Item::Fn (incl. defmacro). Nested
-    /// modules join in .18.2 (recursive Item::Module here).
-    pub items: Vec<Rc<Item>>,
-    /// Attributes attached at the top of the module body. The resolver
-    /// surfaces `Attribute::ModuleDoc` into `Program.moduledocs` keyed by
-    /// the module's qualified path.
-    pub attrs: Vec<Attribute>,
-    pub span: Span,
-}
-
-impl ModuleDef {
-    /// Returns the first `@moduledoc` string attached to this module, if any.
-    pub fn moduledoc(&self) -> Option<&str> {
-        self.attrs.iter().find_map(|a| match a {
-            Attribute::ModuleDoc(s) => Some(s.as_str()),
-            _ => None,
-        })
-    }
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct Program {
-    /// Root-scope attributes, including top-level `@type` aliases. Module
-    /// attributes stay on their `ModuleDef`; root functions use this env.
-    pub attrs: Vec<Attribute>,
-    pub items: Vec<Rc<Item>>,
-    /// Qualified module path -> interface emitted from source-level
-    /// `defmodule` declarations. This is generated by `resolve::flatten_modules`
-    /// while the original module AST is still available. Later
-    /// separate-compilation stages consume this instead of dependency bodies.
-    pub module_interfaces: BTreeMap<ModuleName, ModuleInterface>,
-    /// Interfaces loaded from artifacts or built-ins that were used to resolve
-    /// imports but are not local source modules. Lowering uses these to keep
-    /// imported provider calls as explicit external edges.
-    pub external_module_interfaces: BTreeMap<ModuleName, ModuleInterface>,
-    /// Qualified-module-path → `@moduledoc "..."` text. Populated by
-    /// `resolve::flatten_modules` (the only stage that still sees
-    /// `ModuleDef`s). Used by the REPL's `?M` query.
-    pub module_docs: HashMap<String, String>,
-    /// fz-ul4.31.5 — Qualified-module-path → resolved `@type` aliases
-    /// for that module. Built by `resolve::flatten_modules` (which is
-    /// where the original `ModuleDef.attrs` are still visible). Used by
-    /// `spec_check::validate_specs` to resolve `@spec` bodies against
-    /// the right env. Top-level fns (outside any defmodule) use the
-    /// empty env stored under "".
-    pub module_type_envs: HashMap<String, ModuleTypeEnv>,
-    pub structs: BTreeMap<ModuleName, Vec<String>>,
-    /// Qualified struct schema -> resolved field types from record type aliases
-    /// such as `@type t :: %Range{first: integer}`. Field order still comes
-    /// from `defstruct`; this map supplies the per-field type facts.
-    pub struct_field_types: BTreeMap<ModuleName, Vec<(String, Ty)>>,
-    /// Protocol declarations and implementations collected during module
-    /// resolution while source-level protocol ASTs are still available.
-    #[allow(dead_code)]
-    // Consumed by the protocol dispatch/type tickets after registry resolution.
-    pub protocol_registry: ProtocolRegistry,
-    /// fz-swt.8 — Inner-type map for `opaque` aliases across every
-    /// module in the program. Keyed by the qualified opaque tag (as
-    /// stored on the qualified opaque type name); value is the parsed body
-    /// `T` following the `opaque` keyword. Used by the planner to type
-    /// `handle.value` accesses (a `Prim::MapGet` with key `:value` on
-    /// a singleton-opaque subject) as `T` rather than the generic
-    /// map-lookup fallback.
-    pub opaque_inners: HashMap<String, Ty>,
-    /// fz-axu.2 (K1) — Inner-type map for `refines` brand declarations,
-    /// parallel to `opaque_inners`. Keyed by the qualified brand tag (as
-    /// stored on the qualified brand type name); value is the parsed body `T`
-    /// following the `refines` keyword. K2 populates this during type-env
-    /// construction; K4's is_subtype rule consults it to recognise that
-    /// `brand("B") ⊆ T` when the declaration is in scope.
-    pub brand_inners: HashMap<String, Ty>,
-}
-
-#[cfg(test)]
-mod ast_test;

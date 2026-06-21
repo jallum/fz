@@ -1,5 +1,5 @@
-use crate::ast::{Attribute, FnClause, FnDef, SpecDecl, TypeExprBody};
-use crate::compiler::source::Span;
+use crate::ast::{Attribute, FnClause, SpecDecl, TypeExprBody};
+use crate::source::Span;
 
 pub(crate) trait CallableSurface {
     fn name(&self) -> &str;
@@ -57,32 +57,6 @@ impl FunctionSurface {
 }
 
 impl CallableSurface for FunctionSurface {
-    fn name(&self) -> &str {
-        &self.name
-    }
-
-    fn clauses(&self) -> &[FnClause] {
-        &self.clauses
-    }
-
-    fn extern_abi(&self) -> Option<&str> {
-        self.extern_abi.as_deref()
-    }
-
-    fn extern_param_tokens(&self) -> &[TypeExprBody] {
-        &self.extern_param_tokens
-    }
-
-    fn extern_ret_tokens(&self) -> &TypeExprBody {
-        &self.extern_ret_tokens
-    }
-
-    fn extern_constraints(&self) -> &[(String, TypeExprBody)] {
-        &self.extern_constraints
-    }
-}
-
-impl CallableSurface for FnDef {
     fn name(&self) -> &str {
         &self.name
     }

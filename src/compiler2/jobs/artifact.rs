@@ -6,12 +6,12 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::compiler::source::Span;
 use crate::diag::Diagnostic;
 use crate::diag::codes;
 use crate::diag::driver::emit_through;
-use crate::ir_lower::extern_ty_from_name;
+use crate::extern_contract::extern_ty_from_name;
 use crate::parser::lexer::Tok;
+use crate::source::Span;
 
 use super::super::artifact::{
     AbiReadyCallEdge, AbiReadyExecutable, AbiReadyProgram, AbiValueRepr, CallReturnFlow, CallTarget, CallableEntry,
@@ -1687,7 +1687,7 @@ fn incomplete_semantic_plan(world: &World<'_>, root_id: RootId, message: impl In
         format!("compiler2 materialization for root {}: {}", root_id.as_u32(), message),
         Span::DUMMY,
     );
-    emit_through(world.tel(), None, std::slice::from_ref(&diagnostic));
+    emit_through(world.tel(), std::slice::from_ref(&diagnostic));
     FatalError
 }
 

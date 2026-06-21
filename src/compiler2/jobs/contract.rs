@@ -8,7 +8,7 @@ use crate::ast::Attribute;
 use crate::diag::Diagnostic;
 use crate::diag::codes;
 use crate::diag::driver::emit_through;
-use crate::ir_lower::extern_semantic_contract;
+use crate::extern_contract::extern_semantic_contract;
 use crate::type_expr::ResolvedSpecDecl;
 
 use super::super::contract::FunctionContract;
@@ -106,5 +106,5 @@ fn publish_contract(
 }
 
 fn emit_job_diagnostic(world: &World<'_>, diagnostic: Diagnostic) {
-    emit_through(world.tel(), None, &[diagnostic]);
+    emit_through(world.tel(), &[diagnostic]);
 }

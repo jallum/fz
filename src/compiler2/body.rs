@@ -7,9 +7,9 @@
 use std::collections::HashMap;
 
 use crate::ast::{BinOp, BitType, Endian, TypeExprBody, UnOp};
-use crate::compiler::source::Span;
 use crate::dispatch_matrix::pattern::PatternDispatchPlan;
 use crate::fz_ir::ExternTy;
+use crate::source::Span;
 use crate::type_expr::ResolvedSpecDecl;
 
 use super::identity::{FunctionId, ModuleId};

@@ -1,7 +1,8 @@
 use super::*;
-use crate::compiler::source::{SourceMap, Span};
 use crate::diag::Diagnostics;
 use crate::diag::diagnostic::DiagCode;
+use crate::diag::render::Renderer;
+use crate::source::{SourceMap, Span};
 use crate::telemetry::capture::vec_writer;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -28,7 +29,7 @@ fn report_through_emits_event_per_diagnostic() {
     let warn = Diagnostic::warning(DiagCode("a/w"), "warned", Span::new(fid, 0, 1));
     let err = Diagnostic::error(DiagCode("a/e"), "broken", Span::new(fid, 2, 3));
 
-    emit_through(&tel, None, &[warn, err]);
+    emit_through(&tel, &[warn, err]);
 
     assert_eq!(cap.count(&["fz", "diag", "warning"]), 1);
     assert_eq!(cap.count(&["fz", "diag", "error"]), 1);
@@ -44,7 +45,7 @@ fn report_or_exit_renders_byte_identical_to_direct_path() {
     // path), then drive the new bus-routed path into a captured writer
     // and compare bytes.
     use crate::diag::style::ColorMode;
-    use crate::telemetry::{ConfiguredTelemetry, DiagRenderer};
+    use crate::telemetry::{ConfiguredTelemetry, diag_render::DiagRenderer};
 
     let mut sm = SourceMap::new();
     let fid = sm.add_code(Some("t.fz"), "fn main(), do: :ok\n");
@@ -61,7 +62,7 @@ fn report_or_exit_renders_byte_identical_to_direct_path() {
         &["fz", "diag"],
         Box::new(DiagRenderer::new_to_writer(sm_shared, w, ColorMode::Never)),
     );
-    emit_through(&tel, None, ds.as_slice());
+    emit_through(&tel, ds.as_slice());
     let actual = String::from_utf8(buf.borrow().clone()).unwrap();
     assert_eq!(actual, expected);
 }

@@ -47,7 +47,7 @@ The pieces a reader needs to sketch the box-and-arrow:
 takes a module and the plan the caller already prepared, builds a fresh runtime
 with the root process seeded (`fresh_with_root`), installs the plan as pid 1's
 image, runs `main/0` to completion, and returns the halt value paired with the
-runtime. `run_test_fn` is the `fz test` per-test wrapper: it builds a fresh
+runtime. `run_test_fn` was the legacy per-test wrapper: it builds a fresh
 runtime, gives the test its own heap and mailbox, and runs one test fn so state
 cannot leak between tests in a module. (`run_main` is a
 `#[cfg(test)]` convenience that plans the module and then calls

@@ -9,10 +9,10 @@ use std::rc::Rc;
 use fz_runtime::any_value::AnyValueRef;
 
 use crate::ast::{Attribute, SpecDecl, TypeExprBody};
-use crate::compiler::source::Span;
 use crate::diag::{Diagnostic, codes};
 use crate::function_surface::FunctionSurface;
 use crate::modules::identity::ModuleName;
+use crate::source::Span;
 use crate::telemetry::opaque_debug;
 use crate::{measurements, metadata};
 

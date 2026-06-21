@@ -1,24 +1,23 @@
 use self::source::{collect_pinned_names, direct_bitfield_bindings};
 use super::{
     BitstringEndian, BitstringFieldKind, BitstringFieldShape, BitstringFieldSize, BitstringShape, ComparisonValue,
-    DispatchCompileError, DispatchCompileOptions, DispatchConst, DispatchGraph, DispatchMatrix, DispatchMatrixBuilder,
-    DispatchMatrixError, EdgeEvidence, EdgeProjection, GuardId, OutcomeId, OutcomeMultiplicity, PinnedValueId,
-    ProjectionKind, Region, RegionPredicate, RegionQuestion, SubjectId, compile_dispatch_matrix,
+    DispatchCompileError, DispatchConst, DispatchGraph, DispatchMatrix, DispatchMatrixBuilder, DispatchMatrixError,
+    EdgeEvidence, EdgeProjection, GuardId, OutcomeId, OutcomeMultiplicity, PinnedValueId, ProjectionKind, Region,
+    RegionPredicate, RegionQuestion, SubjectId, compile_dispatch_matrix,
 };
 use crate::ast::{BitSize, BitType, Endian, Expr, Pattern, Spanned};
-use crate::compiler::source::Span;
 use crate::function_surface::CallableSurface;
-use crate::types::Ty as DefaultTy;
+use crate::source::Span;
 use std::collections::HashMap;
 
 pub(crate) mod source;
 pub(crate) use source::{
-    KnownSubjectDomain, PatternBodyId, PatternRow, SourcePatternError, SourcePatternRows,
-    collect_bound_names_in_pattern, collect_guard_capture_names, find_unreachable_rows, is_inexhaustive_with_domains,
+    PatternBodyId, PatternRow, SourcePatternError, SourcePatternRows, collect_bound_names_in_pattern,
+    collect_guard_capture_names, is_inexhaustive,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct PatternDispatchPlan<TypeHandle = DefaultTy> {
+pub(crate) struct PatternDispatchPlan<TypeHandle> {
     pub(crate) matrix: DispatchMatrix<TypeHandle>,
     pub(crate) graph: DispatchGraph<TypeHandle>,
     pub(crate) input_count: usize,
@@ -99,7 +98,7 @@ pub(crate) enum PatternSubjectRef {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum PatternGuardExpr<TypeHandle = DefaultTy> {
+pub(crate) enum PatternGuardExpr<TypeHandle> {
     Const(DispatchConst),
     Subject(SubjectId),
     Pinned(PinnedValueId),
@@ -145,7 +144,7 @@ impl<TypeHandle> PatternGuardExpr<TypeHandle> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct PatternGuardDispatch<TypeHandle = DefaultTy> {
+pub(crate) struct PatternGuardDispatch<TypeHandle> {
     pub(crate) plan: Box<PatternDispatchPlan<TypeHandle>>,
     pub(crate) bodies: Vec<PatternGuardExpr<TypeHandle>>,
 }
@@ -435,7 +434,7 @@ where
     producer.finish()
 }
 
-struct PatternDispatchProducer<TypeHandle = DefaultTy> {
+struct PatternDispatchProducer<TypeHandle> {
     builder: DispatchMatrixBuilder<TypeHandle>,
     input_count: usize,
     subjects: HashMap<PatternSubjectRef, SubjectId>,
@@ -451,7 +450,7 @@ struct PatternDispatchProducer<TypeHandle = DefaultTy> {
 impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
     fn new(patterns: &SourcePatternRows<TypeHandle>) -> Result<Self, SourcePatternError> {
         validate_source_rows(patterns)?;
-        let mut builder = DispatchMatrixBuilder::typed(super::Order::Source);
+        let mut builder = DispatchMatrixBuilder::typed();
         let mut subjects = HashMap::new();
         for ordinal in 0..patterns.input_count {
             let subject = builder.add_input_subject();
@@ -560,7 +559,7 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
     fn finish(self) -> Result<PatternDispatchPlan<TypeHandle>, PatternDispatchError> {
         let subjects = self.subject_refs_by_id();
         let matrix = self.builder.build().map_err(PatternDispatchError::MatrixBuild)?;
-        let graph = compile_dispatch_matrix(&matrix, DispatchCompileOptions::closed())
+        let graph = compile_dispatch_matrix(&matrix)
             .map_err(PatternDispatchError::Compile)?
             .graph;
         Ok(PatternDispatchPlan {

@@ -1,19 +1,20 @@
 use super::*;
 use crate::ast::{BitField, BitFieldSpec, BitSize, BitType, Endian, Expr, Pattern, Spanned};
+use crate::compiler2::{Ty, Types};
 use crate::dispatch_matrix::pattern::{PatternBodyId, PatternRow, PatternSubjectRef, SourcePatternRows};
-use crate::types::{Ty, Types};
 use std::collections::BTreeMap;
 use std::path::Path;
 
 #[test]
 fn builder_mints_stable_subject_and_arm_ids() {
-    let mut builder = DispatchMatrixBuilder::<Ty>::typed(Order::Source);
+    let mut builder = DispatchMatrixBuilder::<Ty>::typed();
     let first_subject = builder.add_input_subject();
     let projected_subject = builder
         .add_projected_subject(first_subject, ProjectionKind::ListTail)
         .expect("projection source exists");
     let second_subject = builder.add_input_subject();
-    let shared = builder.add_outcome(OutcomeMultiplicity::Shared);
+    let first_outcome = builder.add_outcome(OutcomeMultiplicity::Unique);
+    let second_outcome = builder.add_outcome(OutcomeMultiplicity::Unique);
 
     let first_arm = builder
         .add_arm_questions(
@@ -22,16 +23,19 @@ fn builder_mints_stable_subject_and_arm_ids() {
                 Region::List(ListRegion::Cons),
             ))],
             EdgeEvidence::empty(),
-            shared,
+            first_outcome,
         )
         .expect("first arm should be accepted");
     let second_arm = builder
         .add_arm_questions(
-            vec![RegionQuestion::new(RegionPredicate::new(second_subject, Region::Any))],
+            vec![RegionQuestion::new(RegionPredicate::new(
+                second_subject,
+                Region::List(ListRegion::Empty),
+            ))],
             EdgeEvidence::empty(),
-            shared,
+            second_outcome,
         )
-        .expect("shared outcome can be reused");
+        .expect("second arm should be accepted");
 
     let matrix = builder.build().expect("source order is always valid");
 
@@ -40,17 +44,17 @@ fn builder_mints_stable_subject_and_arm_ids() {
     assert_eq!(second_subject, SubjectId(2));
     assert_eq!(first_arm, ArmId(0));
     assert_eq!(second_arm, ArmId(1));
-    assert_eq!(matrix.subject(first_subject).expect("subject exists").id, first_subject);
+    assert_eq!(matrix.subjects[first_subject.0 as usize].id, first_subject);
     assert!(matches!(
-        matrix.subject(second_subject).expect("subject exists").source,
+        matrix.subjects[second_subject.0 as usize].source,
         SubjectSource::Input { ordinal: 1 }
     ));
-    assert_eq!(matrix.arm(second_arm).expect("arm exists").outcome, shared);
+    assert_eq!(matrix.arms[second_arm.0 as usize].outcome, second_outcome);
 }
 
 #[test]
 fn unique_outcome_cannot_be_routed_from_multiple_arms() {
-    let mut builder = DispatchMatrixBuilder::<Ty>::typed(Order::Source);
+    let mut builder = DispatchMatrixBuilder::<Ty>::typed();
     let subject = builder.add_input_subject();
     let unique = builder.add_outcome(OutcomeMultiplicity::Unique);
 
@@ -81,7 +85,7 @@ fn unique_outcome_cannot_be_routed_from_multiple_arms() {
 
 #[test]
 fn edge_evidence_keeps_proofs_and_projections_branch_local() {
-    let mut builder = DispatchMatrixBuilder::<Ty>::typed(Order::Source);
+    let mut builder = DispatchMatrixBuilder::<Ty>::typed();
     let list = builder.add_input_subject();
     let head = builder
         .add_projected_subject(list, ProjectionKind::ListHead)
@@ -105,9 +109,9 @@ fn edge_evidence_keeps_proofs_and_projections_branch_local() {
         .expect("evidence references known subjects");
     let matrix = builder.build().expect("source order is valid");
 
-    assert_eq!(matrix.arm(arm).expect("arm exists").evidence, evidence);
+    assert_eq!(matrix.arms[arm.0 as usize].evidence, evidence);
     assert!(matches!(
-        matrix.subject(head).expect("projection subject exists").source,
+        matrix.subjects[head.0 as usize].source,
         SubjectSource::Projection(SubjectProjection {
             source,
             kind: ProjectionKind::ListHead,
@@ -121,7 +125,7 @@ fn map_key_presence_question_produces_value_or_absent_evidence() {
     let value = SubjectId(1);
     let key = DispatchConst::AtomName("id".to_string());
 
-    let question: RegionQuestion = RegionQuestion::map_key_present(map, key.clone(), value);
+    let question: RegionQuestion<Ty> = RegionQuestion::map_key_present(map, key.clone(), value);
 
     assert_eq!(
         question.predicate,
@@ -152,8 +156,8 @@ fn map_key_presence_question_produces_value_or_absent_evidence() {
 fn present_nil_map_value_is_value_equality_after_presence() {
     let map = SubjectId(0);
     let value = SubjectId(1);
-    let presence: RegionQuestion = RegionQuestion::map_key_present(map, DispatchConst::Int(7), value);
-    let nil_value: RegionQuestion = RegionQuestion::equality(value, ComparisonValue::Const(DispatchConst::Nil));
+    let presence: RegionQuestion<Ty> = RegionQuestion::map_key_present(map, DispatchConst::Int(7), value);
+    let nil_value: RegionQuestion<Ty> = RegionQuestion::equality(value, ComparisonValue::Const(DispatchConst::Nil));
 
     assert!(matches!(
         presence.predicate.region,
@@ -180,12 +184,6 @@ fn retired_stale_dispatch_paths_stay_retired() {
         "protocol dispatch must not revive the retired switch-dispatch module"
     );
 
-    let planner_mod = include_str!("../ir_planner/mod.rs");
-    assert!(
-        !planner_mod.contains(concat!("switch", "_dispatch")),
-        "ir_planner should export protocol_dispatch, not the retired switch-dispatch name"
-    );
-
     let pattern_analysis = include_str!("pattern/source.rs");
     for needle in ["MatcherNode", "has_reachable_fail_in_matcher"] {
         assert!(
@@ -201,8 +199,8 @@ fn list_shape_questions_preserve_empty_cons_and_non_list_distinctions() {
     let head = SubjectId(1);
     let tail = SubjectId(2);
 
-    let empty: RegionQuestion = RegionQuestion::list_empty(list);
-    let cons: RegionQuestion = RegionQuestion::list_cons(list, head, tail);
+    let empty: RegionQuestion<Ty> = RegionQuestion::list_empty(list);
+    let cons: RegionQuestion<Ty> = RegionQuestion::list_cons(list, head, tail);
 
     assert_eq!(
         empty.match_evidence,
@@ -238,7 +236,7 @@ fn type_shape_and_equality_questions_share_graph_branch_shape() {
     let subject = SubjectId(0);
     let on_match = GraphNodeId(1);
     let on_miss = GraphNodeId(2);
-    let mut types = crate::types::new();
+    let mut types = Types::new();
 
     let questions = vec![
         RegionQuestion::type_region(subject, types.int()),
@@ -280,13 +278,17 @@ enum TestValue {
     Cons,
 }
 
-fn eval_graph(graph: &DispatchGraph, subject: SubjectId, value: TestValue) -> Option<OutcomeId> {
+fn eval_graph(graph: &DispatchGraph<Ty>, subject: SubjectId, value: TestValue) -> Option<OutcomeId> {
     let mut values = BTreeMap::new();
     values.insert(subject, value);
     eval_node(graph, graph.root, &values)
 }
 
-fn eval_node(graph: &DispatchGraph, node: GraphNodeId, values: &BTreeMap<SubjectId, TestValue>) -> Option<OutcomeId> {
+fn eval_node(
+    graph: &DispatchGraph<Ty>,
+    node: GraphNodeId,
+    values: &BTreeMap<SubjectId, TestValue>,
+) -> Option<OutcomeId> {
     match graph.node(node).expect("node exists") {
         DispatchNode::Fail => None,
         DispatchNode::Outcome { outcome, .. } => Some(*outcome),
@@ -305,15 +307,13 @@ fn eval_node(graph: &DispatchGraph, node: GraphNodeId, values: &BTreeMap<Subject
     }
 }
 
-fn eval_predicate(predicate: &RegionPredicate, values: &BTreeMap<SubjectId, TestValue>) -> bool {
+fn eval_predicate(predicate: &RegionPredicate<Ty>, values: &BTreeMap<SubjectId, TestValue>) -> bool {
     let Some(value) = values.get(&predicate.subject) else {
         return false;
     };
     match (&predicate.region, value) {
-        (Region::Any, _) => true,
-        (Region::Never, _) => false,
         (Region::Equal(ComparisonValue::Const(DispatchConst::Int(expected))), TestValue::Int(actual)) => {
-            expected == actual
+            *expected == *actual
         }
         (Region::Equal(ComparisonValue::Const(DispatchConst::Nil)), TestValue::Nil) => true,
         (Region::Equal(ComparisonValue::Const(DispatchConst::EmptyList)), TestValue::EmptyList) => true,
@@ -340,8 +340,8 @@ fn test_graph_evaluator_covers_non_int_fixture_values() {
     }
 }
 
-fn matrix_with_subject() -> (DispatchMatrixBuilder, SubjectId) {
-    let mut builder = DispatchMatrixBuilder::<Ty>::typed(Order::Source);
+fn matrix_with_subject() -> (DispatchMatrixBuilder<Ty>, SubjectId) {
+    let mut builder = DispatchMatrixBuilder::<Ty>::typed();
     let subject = builder.add_input_subject();
     (builder, subject)
 }
@@ -367,7 +367,7 @@ fn compile_source_order_uses_first_matching_arm() {
         .expect("source fallback arm");
     let matrix = builder.build().expect("matrix");
 
-    let compiled = compile_dispatch_matrix(&matrix, DispatchCompileOptions::closed()).expect("compile");
+    let compiled = compile_dispatch_matrix(&matrix).expect("compile");
 
     assert_eq!(eval_graph(&compiled.graph, subject, TestValue::Int(1)), Some(one));
     assert_eq!(eval_graph(&compiled.graph, subject, TestValue::Int(2)), Some(fallback));
@@ -401,7 +401,7 @@ fn compile_orthogonal_arms_in_deterministic_source_order() {
         .expect("second orthogonal arm");
     let matrix = builder.build().expect("matrix");
 
-    let compiled = compile_dispatch_matrix(&matrix, DispatchCompileOptions::closed()).expect("compile");
+    let compiled = compile_dispatch_matrix(&matrix).expect("compile");
     let Some(DispatchNode::Test { predicate, .. }) = compiled.graph.node(compiled.graph.root) else {
         panic!("expected root test");
     };
@@ -416,7 +416,7 @@ fn compile_orthogonal_arms_in_deterministic_source_order() {
 
 #[test]
 fn compile_shares_consecutive_common_prefix_tests() {
-    let mut builder = DispatchMatrixBuilder::<Ty>::typed(Order::Source);
+    let mut builder = DispatchMatrixBuilder::<Ty>::typed();
     let list = builder.add_input_subject();
     let head = builder
         .add_projected_subject(list, ProjectionKind::ListHead)
@@ -450,7 +450,7 @@ fn compile_shares_consecutive_common_prefix_tests() {
         .expect("second cons arm");
     let matrix = builder.build().expect("matrix");
 
-    let compiled = compile_dispatch_matrix(&matrix, DispatchCompileOptions::closed()).expect("compile");
+    let compiled = compile_dispatch_matrix(&matrix).expect("compile");
     let Some(DispatchNode::Test { predicate, .. }) = compiled.graph.node(compiled.graph.root) else {
         panic!("expected shared root test");
     };
@@ -461,10 +461,9 @@ fn compile_shares_consecutive_common_prefix_tests() {
 }
 
 #[test]
-fn compile_open_residual_uses_fallback_and_closed_residual_fails() {
+fn compile_closed_residual_fails_unmatched_values() {
     let (mut builder, subject) = matrix_with_subject();
     let one = builder.add_outcome(OutcomeMultiplicity::Unique);
-    let fallback = builder.add_outcome(OutcomeMultiplicity::Unique);
     builder
         .add_arm_questions(
             vec![RegionQuestion::equality(
@@ -477,20 +476,15 @@ fn compile_open_residual_uses_fallback_and_closed_residual_fails() {
         .expect("specific arm");
     let matrix = builder.build().expect("matrix");
 
-    let closed = compile_dispatch_matrix(&matrix, DispatchCompileOptions::closed()).expect("closed compile");
-    let open = compile_dispatch_matrix(&matrix, DispatchCompileOptions::open(fallback)).expect("open compile");
+    let closed = compile_dispatch_matrix(&matrix).expect("closed compile");
 
     assert_eq!(eval_graph(&closed.graph, subject, TestValue::Int(2)), None);
-    assert_eq!(eval_graph(&open.graph, subject, TestValue::Int(2)), Some(fallback));
     assert_eq!(closed.stats.fail_nodes, 1);
-    assert_eq!(closed.stats.fallback_nodes, 0);
-    assert_eq!(open.stats.fail_nodes, 0);
-    assert_eq!(open.stats.fallback_nodes, 1);
 }
 
 #[test]
 fn compile_places_projection_only_on_proven_edge() {
-    let mut builder = DispatchMatrixBuilder::<Ty>::typed(Order::Source);
+    let mut builder = DispatchMatrixBuilder::<Ty>::typed();
     let map = builder.add_input_subject();
     let value = builder
         .add_projected_subject(
@@ -515,7 +509,7 @@ fn compile_places_projection_only_on_proven_edge() {
         .expect("map presence arm");
     let matrix = builder.build().expect("matrix");
 
-    let compiled = compile_dispatch_matrix(&matrix, DispatchCompileOptions::closed()).expect("compile");
+    let compiled = compile_dispatch_matrix(&matrix).expect("compile");
     let Some(DispatchNode::Test {
         predicate,
         on_match,
@@ -547,180 +541,6 @@ fn compile_places_projection_only_on_proven_edge() {
     ));
 }
 
-fn type_arm(arm: u32, ty: Ty, outcome: u32) -> TypeRegionArm {
-    TypeRegionArm {
-        arm: ArmId(arm),
-        subject: SubjectId(0),
-        ty,
-        outcome: OutcomeId(outcome),
-    }
-}
-
-#[test]
-fn type_region_relation_classifies_scalars_lists_maps_range_like_any_and_empty_overlap() {
-    let mut types = crate::types::new();
-    let int = types.int();
-    let float = types.float();
-    let any = types.any();
-    let list_int = types.list(int.clone());
-    let list_any = types.list(any.clone());
-    let map = types.map_top();
-    let range = types.opaque_of("impl-target::Range");
-
-    assert_eq!(
-        type_region_relation(&types, &int, &any),
-        TypeRegionRelation::LeftMoreSpecific
-    );
-    assert_eq!(
-        type_region_relation(&types, &any, &int),
-        TypeRegionRelation::RightMoreSpecific
-    );
-    assert_eq!(type_region_relation(&types, &int, &float), TypeRegionRelation::Disjoint);
-    assert_eq!(
-        type_region_relation(&types, &list_int, &list_any),
-        TypeRegionRelation::LeftMoreSpecific
-    );
-    assert_eq!(
-        type_region_relation(&types, &map, &any),
-        TypeRegionRelation::LeftMoreSpecific
-    );
-    assert_eq!(
-        type_region_relation(&types, &range, &any),
-        TypeRegionRelation::LeftMoreSpecific
-    );
-    assert_eq!(type_region_relation(&types, &range, &int), TypeRegionRelation::Disjoint);
-}
-
-#[test]
-fn type_region_analysis_sorts_more_specific_before_less_specific() {
-    let mut types = crate::types::new();
-    let any = types.any();
-    let int = types.int();
-    let list_any = types.list(any.clone());
-    let arms = vec![type_arm(0, any, 0), type_arm(1, int, 1), type_arm(2, list_any, 2)];
-
-    let analysis = analyze_type_region_arms(&mut types, &arms, EqualTypeRegionPolicy::DuplicateCoverage);
-
-    assert_eq!(analysis.ordered_arms, vec![ArmId(1), ArmId(2), ArmId(0)]);
-    assert!(analysis.diagnostics.is_empty());
-}
-
-#[test]
-fn type_region_analysis_reports_equal_regions_by_policy() {
-    let mut types = crate::types::new();
-    let int = types.int();
-    let duplicate_arms = vec![type_arm(0, int.clone(), 0), type_arm(1, int, 1)];
-
-    let duplicate = analyze_type_region_arms(&mut types, &duplicate_arms, EqualTypeRegionPolicy::DuplicateCoverage);
-    let ambiguous = analyze_type_region_arms(&mut types, &duplicate_arms, EqualTypeRegionPolicy::Ambiguous);
-
-    assert_eq!(
-        duplicate.diagnostics,
-        vec![TypeRegionDiagnostic {
-            kind: TypeRegionDiagnosticKind::DuplicateCoverage,
-            left: ArmId(0),
-            right: ArmId(1),
-        }]
-    );
-    assert_eq!(
-        ambiguous.diagnostics,
-        vec![TypeRegionDiagnostic {
-            kind: TypeRegionDiagnosticKind::AmbiguousEqualRegions,
-            left: ArmId(0),
-            right: ArmId(1),
-        }]
-    );
-}
-
-#[test]
-fn type_region_analysis_recognizes_orthogonal_and_ambiguous_overlaps() {
-    let mut types = crate::types::new();
-    let int = types.int();
-    let float = types.float();
-    let list_int = types.list(int.clone());
-    let list_float = types.list(float.clone());
-    let orthogonal = vec![type_arm(0, int, 0), type_arm(1, float, 1)];
-    let ambiguous_overlap = vec![type_arm(2, list_int, 2), type_arm(3, list_float, 3)];
-
-    let orthogonal_analysis =
-        analyze_type_region_arms(&mut types, &orthogonal, EqualTypeRegionPolicy::DuplicateCoverage);
-    let ambiguous_analysis =
-        analyze_type_region_arms(&mut types, &ambiguous_overlap, EqualTypeRegionPolicy::DuplicateCoverage);
-
-    assert_eq!(
-        orthogonal_analysis.pairs[0].relation,
-        TypeRegionRelation::Disjoint,
-        "disjoint arms are orthogonal and need no priority"
-    );
-    assert!(orthogonal_analysis.diagnostics.is_empty());
-    assert_eq!(
-        ambiguous_analysis.diagnostics,
-        vec![TypeRegionDiagnostic {
-            kind: TypeRegionDiagnosticKind::AmbiguousOverlap,
-            left: ArmId(2),
-            right: ArmId(3),
-        }]
-    );
-}
-
-#[test]
-fn type_coverage_distinguishes_closed_union_from_open_residual() {
-    let mut types = crate::types::new();
-    let int = types.int();
-    let any = types.any();
-    let list_any = types.list(any.clone());
-    let domain = types.union(int.clone(), list_any.clone());
-    let arms = vec![type_arm(0, int, 0), type_arm(1, list_any, 1)];
-
-    let closed = analyze_type_coverage(&mut types, domain, &arms);
-    let open = analyze_type_coverage(&mut types, any, &arms);
-
-    assert_eq!(closed.status, TypeCoverageStatus::Closed);
-    assert!(types.is_empty(&closed.residual));
-    assert_eq!(open.status, TypeCoverageStatus::Open);
-    assert!(!types.is_empty(&open.residual));
-}
-
-#[test]
-fn compile_specificity_order_uses_type_analysis() {
-    let mut types = crate::types::new();
-    let any = types.any();
-    let int = types.int();
-    let mut builder = DispatchMatrixBuilder::<Ty>::typed(Order::Specificity);
-    let subject = builder.add_input_subject();
-    let broad = builder.add_outcome(OutcomeMultiplicity::Unique);
-    let narrow = builder.add_outcome(OutcomeMultiplicity::Unique);
-
-    builder
-        .add_arm_questions(
-            vec![RegionQuestion::type_region(subject, any)],
-            EdgeEvidence::empty(),
-            broad,
-        )
-        .expect("broad arm");
-    builder
-        .add_arm_questions(
-            vec![RegionQuestion::type_region(subject, int.clone())],
-            EdgeEvidence::empty(),
-            narrow,
-        )
-        .expect("narrow arm");
-    let matrix = builder.build().expect("matrix");
-
-    let compiled = compile_dispatch_matrix_with_type_order(
-        &mut types,
-        &matrix,
-        DispatchCompileOptions::closed(),
-        EqualTypeRegionPolicy::DuplicateCoverage,
-    )
-    .expect("specificity compile");
-    let Some(DispatchNode::Test { predicate, .. }) = compiled.graph.node(compiled.graph.root) else {
-        panic!("expected type test root");
-    };
-
-    assert_eq!(predicate.region, Region::Type(int));
-}
-
 #[test]
 fn graph_builder_preserves_node_identity_and_validates_edges() {
     let mut builder = DispatchGraphBuilder::<Ty>::typed();
@@ -730,7 +550,7 @@ fn graph_builder_preserves_node_identity_and_validates_edges() {
         evidence: EdgeEvidence::empty(),
     });
     let test = builder.add_node(DispatchNode::Test {
-        predicate: RegionPredicate::new(SubjectId(0), Region::Any),
+        predicate: RegionPredicate::new(SubjectId(0), Region::Equal(ComparisonValue::Const(DispatchConst::Nil))),
         on_match: DispatchEdge::new(out),
         on_miss: DispatchEdge::new(fail),
     });
@@ -755,7 +575,7 @@ fn graph_builder_rejects_unknown_root_or_edge_node() {
     let mut unknown_edge = DispatchGraphBuilder::<Ty>::typed();
     let fail = unknown_edge.add_node(DispatchNode::Fail);
     let test = unknown_edge.add_node(DispatchNode::Test {
-        predicate: RegionPredicate::new(SubjectId(0), Region::Any),
+        predicate: RegionPredicate::new(SubjectId(0), Region::Equal(ComparisonValue::Const(DispatchConst::Nil))),
         on_match: DispatchEdge::new(GraphNodeId(42)),
         on_miss: DispatchEdge::new(fail),
     });
@@ -769,7 +589,7 @@ fn sp<T>(node: T) -> Spanned<T> {
     Spanned::dummy(node)
 }
 
-fn pattern_row(patterns: Vec<Pattern>, body_id: PatternBodyId) -> PatternRow {
+fn pattern_row(patterns: Vec<Pattern>, body_id: PatternBodyId) -> PatternRow<Ty> {
     PatternRow {
         patterns: patterns.into_iter().map(sp).collect(),
         preconditions: Vec::new(),
@@ -783,7 +603,7 @@ fn pattern_row_with_guard_preconditions(
     body_id: PatternBodyId,
     guard: Expr,
     preconditions: Vec<(PatternSubjectRef, Ty)>,
-) -> PatternRow {
+) -> PatternRow<Ty> {
     PatternRow {
         patterns: patterns.into_iter().map(sp).collect(),
         preconditions,
@@ -792,20 +612,20 @@ fn pattern_row_with_guard_preconditions(
     }
 }
 
-fn pattern_plan(source_patterns: SourcePatternRows) -> pattern::PatternDispatchPlan {
+fn pattern_plan(source_patterns: SourcePatternRows<Ty>) -> pattern::PatternDispatchPlan<Ty> {
     pattern::pattern_dispatch_from_source(source_patterns).expect("pattern dispatch matrix")
 }
 
-fn plan_body_ids(plan: &pattern::PatternDispatchPlan) -> Vec<PatternBodyId> {
+fn plan_body_ids(plan: &pattern::PatternDispatchPlan<Ty>) -> Vec<PatternBodyId> {
     let mut ids = plan.outcomes.iter().map(|outcome| outcome.body_id).collect::<Vec<_>>();
     ids.sort();
     ids
 }
 
 fn arm_for_body(
-    plan: &pattern::PatternDispatchPlan,
+    plan: &pattern::PatternDispatchPlan<Ty>,
     body_id: PatternBodyId,
-) -> (&DispatchArm, &pattern::PatternDispatchOutcome) {
+) -> (&DispatchArm<Ty>, &pattern::PatternDispatchOutcome) {
     let outcome = plan
         .outcomes
         .iter()
@@ -820,7 +640,7 @@ fn arm_for_body(
     (arm, outcome)
 }
 
-fn has_region(plan: &pattern::PatternDispatchPlan, pred: impl Fn(&Region) -> bool) -> bool {
+fn has_region(plan: &pattern::PatternDispatchPlan<Ty>, pred: impl Fn(&Region<Ty>) -> bool) -> bool {
     plan.matrix
         .arms
         .iter()
@@ -844,7 +664,6 @@ fn pattern_dispatch_matrix_preserves_literal_outcomes_and_default() {
 
     let plan = pattern_plan(source_patterns);
 
-    assert_eq!(plan.matrix.order, Order::Source);
     assert_eq!(plan_body_ids(&plan), vec![0, 1, 2, 3, 4, 5]);
     assert!(matches!(
         plan.graph.node(plan.graph.root),
@@ -921,7 +740,7 @@ fn pattern_dispatch_matrix_preserves_tuple_list_projections_and_leaf_bindings() 
         .find(|binding| binding.name == "x")
         .expect("x binding");
     assert!(matches!(
-        plan.matrix.subject(x.source).expect("x source").source,
+        plan.matrix.subjects[x.source.0 as usize].source,
         SubjectSource::Projection(SubjectProjection {
             kind: ProjectionKind::TupleField(1),
             ..
@@ -940,14 +759,14 @@ fn pattern_dispatch_matrix_preserves_tuple_list_projections_and_leaf_bindings() 
         .find(|binding| binding.name == "t")
         .expect("t binding");
     assert!(matches!(
-        plan.matrix.subject(h.source).expect("h source").source,
+        plan.matrix.subjects[h.source.0 as usize].source,
         SubjectSource::Projection(SubjectProjection {
             kind: ProjectionKind::ListHead,
             ..
         })
     ));
     assert!(matches!(
-        plan.matrix.subject(t.source).expect("t source").source,
+        plan.matrix.subjects[t.source.0 as usize].source,
         SubjectSource::Projection(SubjectProjection {
             kind: ProjectionKind::ListTail,
             ..
@@ -1058,7 +877,7 @@ fn pattern_dispatch_matrix_preserves_bitstring_shape_and_dynamic_size_binding() 
         .expect("n binding");
     assert_eq!(size_subject, n.source);
     assert!(matches!(
-        plan.matrix.subject(n.source).expect("n source").source,
+        plan.matrix.subjects[n.source.0 as usize].source,
         SubjectSource::Projection(SubjectProjection {
             kind: ProjectionKind::BitstringField(0),
             ..
@@ -1149,7 +968,7 @@ fn pattern_dispatch_plan_carries_executable_payloads_directly() {
 
 #[test]
 fn pattern_dispatch_matrix_preserves_pins_guards_and_preconditions_as_questions() {
-    let mut types = crate::types::new();
+    let mut types = Types::new();
     let int = types.int();
     let source_patterns = SourcePatternRows {
         input_count: 1,
@@ -1158,7 +977,7 @@ fn pattern_dispatch_matrix_preserves_pins_guards_and_preconditions_as_questions(
                 vec![Pattern::Pinned("want".to_string())],
                 0,
                 Expr::Bool(true),
-                vec![(PatternSubjectRef::Input(0), int.clone())],
+                vec![(PatternSubjectRef::Input(0), int)],
             ),
             pattern_row(vec![Pattern::Wildcard], 1),
         ],
@@ -1181,7 +1000,7 @@ fn pattern_dispatch_matrix_preserves_pins_guards_and_preconditions_as_questions(
     assert!(
         arm.questions
             .iter()
-            .any(|question| question.predicate.region == Region::Type(int.clone()))
+            .any(|question| question.predicate.region == Region::Type(int))
     );
     assert!(
         arm.questions

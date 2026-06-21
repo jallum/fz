@@ -1,9 +1,9 @@
 //! Per-function Cranelift body emission.
 
 use super::*;
-use crate::compiler::source::Span;
 use crate::fz_ir::{Block, FnIr, PhysicalCapability, SourceInfo, Stmt, Term, Var};
 use crate::ir_dce::classify_var_uses;
+use crate::source::Span;
 use crate::types::{ClosureTypes, Types};
 use cranelift_codegen::{
     Context,
@@ -170,7 +170,7 @@ pub(crate) fn compile_fn<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
 
         // Per-stmt source location: ir_lower records spans into
         // SourceInfo.stmt_spans; encode each as a Cranelift SourceLoc so
-        // `fz dump --emit clif` can render `; @file:line:col` comments.
+        // Compiler2 CLIF dumps can render `; @file:line:col` comments.
         let stmt_spans = source.stmt_spans.get(&(f.id, blk.id));
         let block_env = None;
         for (idx, stmt) in blk.stmts.iter().enumerate() {

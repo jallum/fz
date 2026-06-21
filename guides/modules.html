@@ -151,9 +151,8 @@ interface contains facts that other modules are allowed to depend on:</p>
 <p>It does <em>not</em> contain function bodies. That is the whole point.
 An interface says what can be called, not how the answer is computed.</p>
 
-<p>Inspect interfaces with:</p>
-
-<pre>fz dump --emit interfaces path/to/file.fz</pre>
+<p>Interfaces are compiler facts produced during compiler2 source publication
+and module loading.</p>
 
 <p>Example:</p>
 
@@ -189,9 +188,8 @@ not need a new public contract. That is the basis for separate compilation.
 spec is the promise downstream modules can type-check against without
 looking at the function body.</p>
 
-<p>Check that policy with:</p>
-
-<pre>fz dump --emit interfaces --strict-interfaces path/to/file.fz</pre>
+<p>Compiler2 validates public contracts while loading modules and runtime
+library sources.</p>
 
 <p>This is accepted:</p>
 
@@ -229,24 +227,16 @@ than filesystem products:</p>
 </tbody>
 </table>
 
-<p><code>dump --emit interfaces</code> and <code>dump --emit specs</code> are
-separate on purpose. The interface dump is the public contract other modules may
-depend on. The specs dump is the compiler's internal planner view for this run.
-Contract tests should prefer interface output; raw IR and specs remain useful
-for compiler-internal behavior.</p>
+<p>Public interfaces and compiler-internal activation facts are separate on
+purpose. Interfaces are the public contract other modules may depend on.
+Compiler-internal dumps and telemetry are for implementation behavior.</p>
 
 <p>There is no <code>.fzi</code> / <code>.fzo</code> storage layer anymore.
-<code>fz run</code>, <code>fz build</code>, and <code>fz dump</code> compile
-the root source directly. If execution needs built-in runtime modules such as
+<code>fz2 run</code>, <code>fz2 build</code>, and <code>fz2 interp</code>
+submit the root source directly to compiler2. If execution needs built-in runtime modules such as
 <code>Utf8</code>, <code>Process</code>, or <code>Enum</code>, the graph loader
 discovers them from interface facts, recompiles their checked-in source, and
 links that reachable set into the same image.</p>
-
-<p>The REPL is different. Interactive <code>fz repl</code> uses definitions
-from the current session plus built-in runtime-library interfaces.
-<code>fz repl --script</code> has one whole-file root source, so it can compile
-reachable built-in runtime modules. Neither mode loads user modules from any
-persisted store because there is none.</p>
 
 <p>Normal whole-file compilation follows this shape:</p>
 
@@ -357,17 +347,15 @@ is allowed to be faster code, not a secret requirement.</p>
 
 <p>When you want whole-program optimization, ask for it explicitly:</p>
 
-<pre>fz run --lto path/to/file.fz
-fz build --lto path/to/file.fz -o /tmp/app
-fz dump --lto --emit bodies path/to/file.fz</pre>
+<pre>fz2 run --lto path/to/file.fz
+fz2 build --lto path/to/file.fz -o /tmp/app</pre>
 
 <p><code>--whole-program</code> is accepted as an alias for
 <code>--lto</code>.</p>
 
-<p><code>dump --emit stats</code> is the process view. It counts events such
-as interface collection, runtime-source materialization, link success/failure,
-and LTO boundary erasure. <code>dump --emit interfaces</code> and
-<code>dump --emit specs</code> remain product views.</p>
+<p>Compiler2 telemetry records events such as interface collection,
+runtime-source materialization, link success/failure, and LTO boundary
+erasure.</p>
 
 <p>LTO does three things in order:</p>
 
@@ -377,7 +365,7 @@ and LTO boundary erasure. <code>dump --emit interfaces</code> and
   <li>Erase allowed module boundaries before reducer/planner/codegen optimization.</li>
 </ol>
 
-<p>The CLI uses one shared preparation path for normal and LTO run/build/dump
+<p>The CLI uses one shared preparation path for normal and LTO run/build/interp
 commands. Boundary erasure is only available after the LTO path has built a
 validated linked-program state.</p>
 
@@ -387,10 +375,9 @@ explicit LTO mode, after validation, those firewalls can be cleared for
 loaded implementations so reducer and inliner passes may cross the module
 edge.</p>
 
-<p><code>fz dump --emit bodies --lto</code> reports the materialized
-codegen-facing body set after those rewrites. If a validated cross-module
-tail call is erased and inlined, the provider body no longer appears as a
-reachable user body in that dump.</p>
+<p>Compiler2 materialized/backend dumps report the codegen-facing body set
+after those rewrites. If a validated cross-module tail call is erased and
+inlined, the provider body no longer appears as a reachable user body there.</p>
 
 <div class="box blue">
 <strong>Important:</strong> LTO must not change what the program means. It

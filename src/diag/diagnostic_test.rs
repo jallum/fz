@@ -1,5 +1,5 @@
 use super::*;
-use crate::compiler::source::{Id as CodeId, Span};
+use crate::source::{Id as CodeId, Span};
 
 fn s(start: u32, end: u32) -> Span {
     Span::new(CodeId(0), start, end)

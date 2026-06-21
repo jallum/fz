@@ -13,18 +13,15 @@
 //! `DispatchMatrix` keeps that decision-tree spine but makes the row language
 //! more general than ML constructor patterns. Function heads, `case`, `with`
 //! `else`, selective receive, and guard helper dispatch are source-pattern
-//! producers over `Order::Source`; protocol dispatch is a type-region producer
-//! over `Order::Specificity` or an explicit residual order. All of them compile
-//! through this module rather than through construct-specific dispatch passes.
+//! producers. All of them compile through this module rather than through
+//! construct-specific dispatch passes.
 //! A producer supplies:
 //!
 //! - `Subject`s: root inputs plus projections that can be proven on branches.
 //! - `Region` questions: value-space tests such as type membership, equality,
 //!   tuple/list/map/bitstring shape, map-key presence, or a guard predicate.
-//! - ordered `DispatchArm`s: conjunctions of region questions that prove one
-//!   opaque `Outcome`.
-//! - an `Order`: source priority for pattern matching, type specificity for
-//!   closed protocol/type dispatch, or an explicit materialized order.
+//! - source-ordered `DispatchArm`s: conjunctions of region questions that prove
+//!   one opaque `Outcome`.
 //!
 //! The compiler then lowers those arms into a `DispatchGraph`. The graph is
 //! intentionally producer-neutral: it decides only which outcome wins or that
@@ -46,8 +43,7 @@
 //! `SourcePatternRows` are AST-facing input rows; they are not a second matcher
 //! model, and they do not own executable dispatch semantics.
 
-use crate::types::{Ty as DefaultTy, Types};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 pub(crate) mod pattern;
 
@@ -70,27 +66,13 @@ pub(crate) struct GuardId(pub(crate) u32);
 pub(crate) struct PinnedValueId(pub(crate) u32);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct DispatchMatrix<TypeHandle = DefaultTy> {
+pub(crate) struct DispatchMatrix<TypeHandle> {
     pub(crate) subjects: Vec<Subject>,
     pub(crate) outcomes: Vec<Outcome>,
     pub(crate) arms: Vec<DispatchArm<TypeHandle>>,
-    pub(crate) order: Order,
 }
 
 impl<TypeHandle> DispatchMatrix<TypeHandle> {
-    #[cfg(test)]
-    pub(crate) fn subject(&self, id: SubjectId) -> Option<&Subject> {
-        self.subjects.get(id.0 as usize)
-    }
-
-    pub(crate) fn outcome(&self, id: OutcomeId) -> Option<&Outcome> {
-        self.outcomes.get(id.0 as usize)
-    }
-
-    pub(crate) fn arm(&self, id: ArmId) -> Option<&DispatchArm<TypeHandle>> {
-        self.arms.get(id.0 as usize)
-    }
-
     pub(crate) fn map_type_handle<MappedHandle>(
         &self,
         map: &mut impl FnMut(&TypeHandle) -> MappedHandle,
@@ -99,7 +81,6 @@ impl<TypeHandle> DispatchMatrix<TypeHandle> {
             subjects: self.subjects.clone(),
             outcomes: self.outcomes.clone(),
             arms: self.arms.iter().map(|arm| arm.map_type_handle(map)).collect(),
-            order: self.order.clone(),
         }
     }
 }
@@ -132,7 +113,7 @@ pub(crate) enum ProjectionKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct DispatchArm<TypeHandle = DefaultTy> {
+pub(crate) struct DispatchArm<TypeHandle> {
     pub(crate) id: ArmId,
     pub(crate) questions: Vec<RegionQuestion<TypeHandle>>,
     pub(crate) evidence: EdgeEvidence<TypeHandle>,
@@ -158,7 +139,7 @@ impl<TypeHandle> DispatchArm<TypeHandle> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct RegionPredicate<TypeHandle = DefaultTy> {
+pub(crate) struct RegionPredicate<TypeHandle> {
     pub(crate) subject: SubjectId,
     pub(crate) region: Region<TypeHandle>,
 }
@@ -180,19 +161,13 @@ impl<TypeHandle> RegionPredicate<TypeHandle> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum Region<TypeHandle = DefaultTy> {
-    #[allow(dead_code)] // Permanent top-region vocabulary; current producers emit concrete regions.
-    Any,
-    #[allow(dead_code)] // Permanent bottom-region vocabulary used by model tests and future residuals.
-    Never,
+pub(crate) enum Region<TypeHandle> {
     Type(TypeHandle),
     Equal(ComparisonValue),
     TupleArity(u32),
     List(ListRegion),
     MapKind,
-    MapKeyPresent {
-        key: DispatchConst,
-    },
+    MapKeyPresent { key: DispatchConst },
     Bitstring(BitstringShape),
     Guard(GuardId),
 }
@@ -203,8 +178,6 @@ impl<TypeHandle> Region<TypeHandle> {
         map: &mut impl FnMut(&TypeHandle) -> MappedHandle,
     ) -> Region<MappedHandle> {
         match self {
-            Region::Any => Region::Any,
-            Region::Never => Region::Never,
             Region::Type(ty) => Region::Type(map(ty)),
             Region::Equal(value) => Region::Equal(value.clone()),
             Region::TupleArity(arity) => Region::TupleArity(*arity),
@@ -281,18 +254,6 @@ pub(crate) enum DispatchConst {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum Order {
-    /// Source-pattern semantics: first matching arm wins.
-    Source,
-    /// Type-dispatch semantics: more-specific regions win; incomparable
-    /// overlaps are diagnosed by later analysis.
-    Specificity,
-    /// A fully materialized order. Useful for tests and future graph snapshots.
-    #[allow(dead_code)] // Explicit orders are model vocabulary; production producers use Source/Specificity today.
-    Explicit(Vec<ArmId>),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Outcome {
     pub(crate) id: OutcomeId,
     pub(crate) multiplicity: OutcomeMultiplicity,
@@ -302,13 +263,10 @@ pub(crate) struct Outcome {
 pub(crate) enum OutcomeMultiplicity {
     /// At most one arm may route to this outcome.
     Unique,
-    /// Multiple arms may share this outcome.
-    #[allow(dead_code)] // Shared outcomes are part of the model; current producers mostly mint unique outcomes.
-    Shared,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct EdgeEvidence<TypeHandle = DefaultTy> {
+pub(crate) struct EdgeEvidence<TypeHandle> {
     pub(crate) proofs: Vec<Proof<TypeHandle>>,
     pub(crate) projections: Vec<EdgeProjection>,
 }
@@ -351,7 +309,7 @@ impl<TypeHandle> EdgeEvidence<TypeHandle> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Proof<TypeHandle = DefaultTy> {
+pub(crate) struct Proof<TypeHandle> {
     pub(crate) predicate: RegionPredicate<TypeHandle>,
     pub(crate) sense: ProofSense,
 }
@@ -388,7 +346,7 @@ pub(crate) struct EdgeProjection {
 /// primitives are lowering choices for these questions, not additional semantic
 /// variants in this model.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct RegionQuestion<TypeHandle = DefaultTy> {
+pub(crate) struct RegionQuestion<TypeHandle> {
     pub(crate) predicate: RegionPredicate<TypeHandle>,
     pub(crate) match_evidence: EdgeEvidence<TypeHandle>,
     pub(crate) miss_evidence: EdgeEvidence<TypeHandle>,
@@ -518,7 +476,7 @@ impl<TypeHandle> RegionQuestion<TypeHandle> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct DispatchGraph<TypeHandle = DefaultTy> {
+pub(crate) struct DispatchGraph<TypeHandle> {
     pub(crate) nodes: Vec<DispatchNode<TypeHandle>>,
     pub(crate) root: GraphNodeId,
 }
@@ -540,7 +498,7 @@ impl<TypeHandle> DispatchGraph<TypeHandle> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum DispatchNode<TypeHandle = DefaultTy> {
+pub(crate) enum DispatchNode<TypeHandle> {
     Fail,
     Outcome {
         outcome: OutcomeId,
@@ -578,7 +536,7 @@ impl<TypeHandle> DispatchNode<TypeHandle> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct DispatchEdge<TypeHandle = DefaultTy> {
+pub(crate) struct DispatchEdge<TypeHandle> {
     pub(crate) target: GraphNodeId,
     pub(crate) evidence: EdgeEvidence<TypeHandle>,
 }
@@ -612,45 +570,11 @@ pub(crate) enum DispatchMatrixError {
     UnknownSubject(SubjectId),
     UnknownOutcome(OutcomeId),
     UniqueOutcomeReused(OutcomeId),
-    UnknownArmInOrder(ArmId),
-    DuplicateArmInOrder(ArmId),
-    IncompleteExplicitOrder { expected: usize, actual: usize },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum DispatchCompileError {
-    UnknownOutcome(OutcomeId),
-    UnknownArm(ArmId),
-    SpecificityOrderRequiresTypeAnalysis,
     InvalidGraph(DispatchGraphError),
-    MatrixBuild(DispatchMatrixError),
-    NonTypeArmInSpecificityOrder(ArmId),
-    TypeOrderDiagnostics(Vec<TypeRegionDiagnostic>),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ResidualCoverage {
-    Closed,
-    Open { fallback: OutcomeId },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct DispatchCompileOptions {
-    pub(crate) residual: ResidualCoverage,
-}
-
-impl DispatchCompileOptions {
-    pub(crate) fn closed() -> Self {
-        Self {
-            residual: ResidualCoverage::Closed,
-        }
-    }
-
-    pub(crate) fn open(fallback: OutcomeId) -> Self {
-        Self {
-            residual: ResidualCoverage::Open { fallback },
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -659,55 +583,37 @@ pub(crate) struct DispatchCompileStats {
     pub(crate) test_nodes: usize,
     pub(crate) outcome_nodes: usize,
     pub(crate) fail_nodes: usize,
-    pub(crate) fallback_nodes: usize,
     pub(crate) shared_prefix_tests: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct CompiledDispatchGraph<TypeHandle = DefaultTy> {
+pub(crate) struct CompiledDispatchGraph<TypeHandle> {
     pub(crate) graph: DispatchGraph<TypeHandle>,
     pub(crate) stats: DispatchCompileStats,
 }
 
 #[derive(Debug, Clone)]
-struct ArmCompileState<'a, TypeHandle = DefaultTy> {
+struct ArmCompileState<'a, TypeHandle> {
     arm: &'a DispatchArm<TypeHandle>,
     questions: Vec<RegionQuestion<TypeHandle>>,
 }
 
 pub(crate) fn compile_dispatch_matrix<TypeHandle: Clone + Eq>(
     matrix: &DispatchMatrix<TypeHandle>,
-    options: DispatchCompileOptions,
 ) -> Result<CompiledDispatchGraph<TypeHandle>, DispatchCompileError> {
-    let ordered_arms = ordered_arms(matrix)?;
-    compile_ordered_arms(matrix, ordered_arms, options)
-}
-
-pub(crate) fn compile_dispatch_matrix_with_type_order<T, TypeHandle>(
-    t: &mut T,
-    matrix: &DispatchMatrix<TypeHandle>,
-    options: DispatchCompileOptions,
-    equal_policy: EqualTypeRegionPolicy,
-) -> Result<CompiledDispatchGraph<TypeHandle>, DispatchCompileError>
-where
-    T: Types<Ty = TypeHandle>,
-    TypeHandle: Clone + Eq,
-{
-    let ordered_arms = ordered_arms_with_type_order(t, matrix, equal_policy)?;
-    compile_ordered_arms(matrix, ordered_arms, options)
+    let ordered_arms = matrix.arms.iter().collect();
+    compile_ordered_arms(ordered_arms)
 }
 
 fn compile_ordered_arms<TypeHandle: Clone + Eq>(
-    matrix: &DispatchMatrix<TypeHandle>,
     ordered_arms: Vec<&DispatchArm<TypeHandle>>,
-    options: DispatchCompileOptions,
 ) -> Result<CompiledDispatchGraph<TypeHandle>, DispatchCompileError> {
     let mut stats = DispatchCompileStats {
         arms: ordered_arms.len(),
         ..DispatchCompileStats::default()
     };
     let mut builder = DispatchGraphBuilder::typed();
-    let fallback = fallback_node(matrix, options, &mut builder, &mut stats)?;
+    let fallback = fallback_node(&mut builder, &mut stats);
     let states = ordered_arms
         .into_iter()
         .map(|arm| ArmCompileState {
@@ -721,276 +627,11 @@ fn compile_ordered_arms<TypeHandle: Clone + Eq>(
 }
 
 fn fallback_node<TypeHandle: Clone + Eq>(
-    matrix: &DispatchMatrix<TypeHandle>,
-    options: DispatchCompileOptions,
     builder: &mut DispatchGraphBuilder<TypeHandle>,
     stats: &mut DispatchCompileStats,
-) -> Result<GraphNodeId, DispatchCompileError> {
-    match options.residual {
-        ResidualCoverage::Closed => {
-            stats.fail_nodes += 1;
-            Ok(builder.add_node(DispatchNode::Fail))
-        }
-        ResidualCoverage::Open { fallback } => {
-            matrix
-                .outcome(fallback)
-                .ok_or(DispatchCompileError::UnknownOutcome(fallback))?;
-            stats.outcome_nodes += 1;
-            stats.fallback_nodes += 1;
-            Ok(builder.add_node(DispatchNode::Outcome {
-                outcome: fallback,
-                evidence: EdgeEvidence::empty(),
-            }))
-        }
-    }
-}
-
-fn ordered_arms<TypeHandle>(
-    matrix: &DispatchMatrix<TypeHandle>,
-) -> Result<Vec<&DispatchArm<TypeHandle>>, DispatchCompileError> {
-    match &matrix.order {
-        Order::Source => Ok(matrix.arms.iter().collect()),
-        Order::Explicit(order) => {
-            let mut out = Vec::with_capacity(order.len());
-            for &id in order {
-                let Some(arm) = matrix.arm(id) else {
-                    return Err(DispatchCompileError::UnknownArm(id));
-                };
-                out.push(arm);
-            }
-            Ok(out)
-        }
-        Order::Specificity => Err(DispatchCompileError::SpecificityOrderRequiresTypeAnalysis),
-    }
-}
-
-fn ordered_arms_with_type_order<'a, T, TypeHandle>(
-    t: &mut T,
-    matrix: &'a DispatchMatrix<TypeHandle>,
-    equal_policy: EqualTypeRegionPolicy,
-) -> Result<Vec<&'a DispatchArm<TypeHandle>>, DispatchCompileError>
-where
-    T: Types<Ty = TypeHandle>,
-    TypeHandle: Clone + Eq,
-{
-    match &matrix.order {
-        Order::Specificity => {
-            let type_arms = type_region_arms_from_matrix(matrix)?;
-            let analysis = analyze_type_region_arms(t, &type_arms, equal_policy);
-            let blocking = analysis
-                .diagnostics
-                .iter()
-                .filter(|diag| {
-                    matches!(
-                        diag.kind,
-                        TypeRegionDiagnosticKind::AmbiguousEqualRegions | TypeRegionDiagnosticKind::AmbiguousOverlap
-                    )
-                })
-                .cloned()
-                .collect::<Vec<_>>();
-            if !blocking.is_empty() {
-                return Err(DispatchCompileError::TypeOrderDiagnostics(blocking));
-            }
-            analysis
-                .ordered_arms
-                .iter()
-                .map(|&id| matrix.arm(id).ok_or(DispatchCompileError::UnknownArm(id)))
-                .collect()
-        }
-        _ => ordered_arms(matrix),
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum TypeRegionRelation {
-    Equal,
-    LeftMoreSpecific,
-    RightMoreSpecific,
-    Disjoint,
-    OverlapAmbiguous,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum EqualTypeRegionPolicy {
-    DuplicateCoverage,
-    #[allow(dead_code)] // Ambiguity policy is model-tested; production protocol dispatch treats equals as duplicates.
-    Ambiguous,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum TypeRegionDiagnosticKind {
-    DuplicateCoverage,
-    AmbiguousEqualRegions,
-    AmbiguousOverlap,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct TypeRegionDiagnostic {
-    pub(crate) kind: TypeRegionDiagnosticKind,
-    pub(crate) left: ArmId,
-    pub(crate) right: ArmId,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct TypeRegionPair {
-    pub(crate) left: ArmId,
-    pub(crate) right: ArmId,
-    pub(crate) relation: TypeRegionRelation,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct TypeRegionArm<TypeHandle = DefaultTy> {
-    pub(crate) arm: ArmId,
-    pub(crate) subject: SubjectId,
-    pub(crate) ty: TypeHandle,
-    pub(crate) outcome: OutcomeId,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct TypeRegionAnalysis {
-    pub(crate) ordered_arms: Vec<ArmId>,
-    pub(crate) pairs: Vec<TypeRegionPair>,
-    pub(crate) diagnostics: Vec<TypeRegionDiagnostic>,
-}
-
-#[allow(dead_code)] // Type coverage is a DispatchMatrix model signal; protocol lowering stores the bool it needs today.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum TypeCoverageStatus {
-    Closed,
-    Open,
-}
-
-#[allow(dead_code)] // See TypeCoverageStatus: retained as the typed result of coverage analysis.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct TypeCoverage {
-    pub(crate) domain: DefaultTy,
-    pub(crate) covered: DefaultTy,
-    pub(crate) residual: DefaultTy,
-    pub(crate) status: TypeCoverageStatus,
-}
-
-pub(crate) fn type_region_relation<T, TypeHandle>(t: &T, left: &TypeHandle, right: &TypeHandle) -> TypeRegionRelation
-where
-    T: Types<Ty = TypeHandle>,
-{
-    if t.is_equivalent(left, right) {
-        TypeRegionRelation::Equal
-    } else if t.is_disjoint(left, right) {
-        TypeRegionRelation::Disjoint
-    } else if t.is_subtype(left, right) {
-        TypeRegionRelation::LeftMoreSpecific
-    } else if t.is_subtype(right, left) {
-        TypeRegionRelation::RightMoreSpecific
-    } else {
-        TypeRegionRelation::OverlapAmbiguous
-    }
-}
-
-pub(crate) fn analyze_type_region_arms<T, TypeHandle>(
-    t: &mut T,
-    arms: &[TypeRegionArm<TypeHandle>],
-    equal_policy: EqualTypeRegionPolicy,
-) -> TypeRegionAnalysis
-where
-    T: Types<Ty = TypeHandle>,
-    TypeHandle: Clone + Eq,
-{
-    let mut pairs = Vec::new();
-    let mut diagnostics = Vec::new();
-    for i in 0..arms.len() {
-        for j in (i + 1)..arms.len() {
-            let relation = type_region_relation(t, &arms[i].ty, &arms[j].ty);
-            pairs.push(TypeRegionPair {
-                left: arms[i].arm,
-                right: arms[j].arm,
-                relation,
-            });
-            match relation {
-                TypeRegionRelation::Equal if arms[i].outcome != arms[j].outcome => {
-                    let kind = match equal_policy {
-                        EqualTypeRegionPolicy::DuplicateCoverage => TypeRegionDiagnosticKind::DuplicateCoverage,
-                        EqualTypeRegionPolicy::Ambiguous => TypeRegionDiagnosticKind::AmbiguousEqualRegions,
-                    };
-                    diagnostics.push(TypeRegionDiagnostic {
-                        kind,
-                        left: arms[i].arm,
-                        right: arms[j].arm,
-                    });
-                }
-                TypeRegionRelation::OverlapAmbiguous => diagnostics.push(TypeRegionDiagnostic {
-                    kind: TypeRegionDiagnosticKind::AmbiguousOverlap,
-                    left: arms[i].arm,
-                    right: arms[j].arm,
-                }),
-                _ => {}
-            }
-        }
-    }
-
-    let mut ordered = arms.to_vec();
-    ordered.sort_by(|left, right| match type_region_relation(t, &left.ty, &right.ty) {
-        TypeRegionRelation::LeftMoreSpecific => std::cmp::Ordering::Less,
-        TypeRegionRelation::RightMoreSpecific => std::cmp::Ordering::Greater,
-        _ => left.arm.cmp(&right.arm),
-    });
-
-    TypeRegionAnalysis {
-        ordered_arms: ordered.into_iter().map(|arm| arm.arm).collect(),
-        pairs,
-        diagnostics,
-    }
-}
-
-#[allow(dead_code)] // Coverage analysis is kept as tested model API even when producers consume simpler facts.
-pub(crate) fn analyze_type_coverage<T: Types<Ty = DefaultTy>>(
-    t: &mut T,
-    domain: DefaultTy,
-    arms: &[TypeRegionArm],
-) -> TypeCoverage {
-    let mut covered = t.none();
-    for arm in arms {
-        let overlap = t.intersect(domain.clone(), arm.ty.clone());
-        covered = t.union(covered, overlap);
-    }
-    let residual = t.difference(domain.clone(), covered.clone());
-    let status = if t.is_empty(&residual) {
-        TypeCoverageStatus::Closed
-    } else {
-        TypeCoverageStatus::Open
-    };
-    TypeCoverage {
-        domain,
-        covered,
-        residual,
-        status,
-    }
-}
-
-fn type_region_arms_from_matrix<TypeHandle: Clone>(
-    matrix: &DispatchMatrix<TypeHandle>,
-) -> Result<Vec<TypeRegionArm<TypeHandle>>, DispatchCompileError> {
-    matrix
-        .arms
-        .iter()
-        .map(|arm| {
-            let Some(question) = arm
-                .questions
-                .iter()
-                .find(|question| matches!(question.predicate.region, Region::Type(_)))
-            else {
-                return Err(DispatchCompileError::NonTypeArmInSpecificityOrder(arm.id));
-            };
-            let Region::Type(ty) = &question.predicate.region else {
-                unreachable!("question was filtered to type regions")
-            };
-            Ok(TypeRegionArm {
-                arm: arm.id,
-                subject: question.predicate.subject,
-                ty: ty.clone(),
-                outcome: arm.outcome,
-            })
-        })
-        .collect()
+) -> GraphNodeId {
+    stats.fail_nodes += 1;
+    builder.add_node(DispatchNode::Fail)
 }
 
 fn compile_arm_sequence<TypeHandle: Clone + Eq>(
@@ -1064,8 +705,7 @@ fn test_node<TypeHandle: Clone + Eq>(
     builder.add_node(question.into_test_node(on_match, on_miss))
 }
 
-pub(crate) struct DispatchMatrixBuilder<TypeHandle = DefaultTy> {
-    order: Order,
+pub(crate) struct DispatchMatrixBuilder<TypeHandle> {
     subjects: Vec<Subject>,
     input_count: u32,
     outcomes: Vec<Outcome>,
@@ -1074,9 +714,8 @@ pub(crate) struct DispatchMatrixBuilder<TypeHandle = DefaultTy> {
 }
 
 impl<TypeHandle> DispatchMatrixBuilder<TypeHandle> {
-    fn empty(order: Order) -> Self {
+    fn empty() -> Self {
         Self {
-            order,
             subjects: Vec::new(),
             input_count: 0,
             outcomes: Vec::new(),
@@ -1087,8 +726,8 @@ impl<TypeHandle> DispatchMatrixBuilder<TypeHandle> {
 }
 
 impl<TypeHandle: Clone + Eq> DispatchMatrixBuilder<TypeHandle> {
-    pub(crate) fn typed(order: Order) -> Self {
-        Self::empty(order)
+    pub(crate) fn typed() -> Self {
+        Self::empty()
     }
 
     pub(crate) fn add_input_subject(&mut self) -> SubjectId {
@@ -1152,36 +791,11 @@ impl<TypeHandle: Clone + Eq> DispatchMatrixBuilder<TypeHandle> {
     }
 
     pub(crate) fn build(self) -> Result<DispatchMatrix<TypeHandle>, DispatchMatrixError> {
-        self.validate_order()?;
         Ok(DispatchMatrix {
             subjects: self.subjects,
             outcomes: self.outcomes,
             arms: self.arms,
-            order: self.order,
         })
-    }
-
-    fn validate_order(&self) -> Result<(), DispatchMatrixError> {
-        let Order::Explicit(order) = &self.order else {
-            return Ok(());
-        };
-        let known: BTreeSet<_> = self.arms.iter().map(|arm| arm.id).collect();
-        let mut seen = BTreeSet::new();
-        for &arm in order {
-            if !known.contains(&arm) {
-                return Err(DispatchMatrixError::UnknownArmInOrder(arm));
-            }
-            if !seen.insert(arm) {
-                return Err(DispatchMatrixError::DuplicateArmInOrder(arm));
-            }
-        }
-        if seen.len() != known.len() {
-            return Err(DispatchMatrixError::IncompleteExplicitOrder {
-                expected: known.len(),
-                actual: seen.len(),
-            });
-        }
-        Ok(())
     }
 
     fn ensure_subject(&self, id: SubjectId) -> Result<(), DispatchMatrixError> {
@@ -1220,7 +834,7 @@ pub(crate) enum DispatchGraphError {
     UnknownNode(GraphNodeId),
 }
 
-pub(crate) struct DispatchGraphBuilder<TypeHandle = DefaultTy> {
+pub(crate) struct DispatchGraphBuilder<TypeHandle> {
     nodes: Vec<DispatchNode<TypeHandle>>,
 }
 

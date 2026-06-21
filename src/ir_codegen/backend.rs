@@ -1,11 +1,9 @@
 use super::*;
 use crate::diag::Diagnostics;
-use crate::fz_ir::{FnId, Module, Var};
-use crate::ir_planner::SpecPlan;
-use crate::ir_planner::fn_types::{CallableCapability, SpecKey};
-use crate::types::{ClosureLitInfo, ClosureTypes, Ty, Types, key_slots_from_tys};
 use cranelift_codegen::ir::{AbiParam, Signature, types};
 use cranelift_codegen::isa::CallConv;
+use cranelift_codegen::isa::TargetIsa;
+use cranelift_codegen::settings::{Configurable, Flags};
 use cranelift_frontend::FunctionBuilderContext;
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{DataDescription, DataId, Linkage, Module as ClModule};
@@ -18,6 +16,22 @@ use object::macho::PLATFORM_MACOS;
 use object::write::MachOBuildVersion;
 use std::collections::HashMap;
 use std::rc::Rc;
+use std::sync::Arc;
+
+fn host_isa() -> Arc<dyn TargetIsa> {
+    host_isa_with(false)
+}
+
+fn host_isa_with(pic: bool) -> Arc<dyn TargetIsa> {
+    let mut flag_builder = cranelift_codegen::settings::builder();
+    flag_builder.set("opt_level", "speed").unwrap();
+    flag_builder.set("is_pic", if pic { "true" } else { "false" }).unwrap();
+    flag_builder.set("use_colocated_libcalls", "false").unwrap();
+    flag_builder.set("preserve_frame_pointers", "true").unwrap();
+    flag_builder.set("enable_pinned_reg", "true").unwrap();
+    let isa_builder = cranelift_native::builder().expect("host ISA");
+    isa_builder.finish(Flags::new(flag_builder)).expect("isa finish")
+}
 
 /// Abstracts the JIT/AOT split. The codegen pipeline is shared; the trait
 /// owns every legitimate point of variation — fn linkage, per-program
@@ -288,7 +302,7 @@ pub(crate) fn register_runtime_symbols(builder: &mut JITBuilder) {
         ir_runtime::fz_brand_bitstring_as_utf8 as *const u8,
     );
     // Runtime-exported fixture/test dtor. Bound unconditionally (not
-    // cfg(test)-gated) so any `fz dump --emit clif` or `fz run` over
+    // cfg(test)-gated) so any compiler2 CLIF dump or run over
     // a fixture using it resolves cleanly — the golden-CLIF harness
     // compiles every non-deferred fixture.
     builder.symbol(
@@ -380,8 +394,6 @@ impl Backend for JitBackend {
             _module: jmod,
             fn_ptrs,
             user_schemas: meta.user_schemas,
-            frame_sizes: meta.frame_sizes,
-            atom_names: meta.atom_names,
             node,
             bs_tuple_arity1_schema: meta.bs_tuple_arity1_schema,
             bs_tuple_arity3_schema: meta.bs_tuple_arity3_schema,
@@ -439,7 +451,7 @@ impl Backend for AotBackend {
         fbctx: &mut FunctionBuilderContext,
         meta: &CompiledMetadata,
     ) -> Result<(), CodegenError> {
-        // No `main`/0 in the source → nothing to drive at startup. `fz build`
+        // No `main`/0 in the source → nothing to drive at startup. `fz2 build`
         // errors gracefully on this artifact via its main_symbol check.
         let Some(main_fn_id) = meta.main_fn_id else {
             return Ok(());
@@ -644,7 +656,7 @@ impl Backend for AotBackend {
             .map_err(|e| CodegenError::new(format!("object emit: {}", e)))?;
         // For programs with a fz `main`, the C-callable `main` shim is the
         // linker's entry point. Without a fz main, no shim was emitted and
-        // we surface the underlying fz_fn_<id> name so `fz build` can
+        // we surface the underlying fz_fn_<id> name so `fz2 build` can
         // error cleanly.
         let main_symbol = if meta.main_fn_id.is_some() {
             Some("main".to_string())
@@ -660,7 +672,7 @@ impl Backend for AotBackend {
 }
 
 /// AOT artifact: per-module emitted object bytes plus enough metadata to
-/// drive linking. Consumed by `fz build`.
+/// drive linking. Consumed by `fz2 build`.
 pub struct AotArtifact {
     /// Object-file bytes (ELF on Linux, Mach-O on macOS, COFF on Windows)
     /// suitable for `cc` to link against fz_runtime + libc.
@@ -670,43 +682,4 @@ pub struct AotArtifact {
     /// the startup shim's call site.
     pub main_symbol: Option<String>,
     pub diagnostics: Diagnostics,
-}
-
-/// Resolve a TailCallClosure edge to its body's (FnId, SpecId raw u32).
-/// Returns None when the closure var isn't typed as a singleton closure_lit
-/// or when no covering spec is registered for the resolved key.
-/// Shared by tagged-return seeding, halt_kind analysis, and TailCallClosure
-/// codegen.
-pub(crate) fn resolve_tcc_body<T: Types<Ty = Ty> + ClosureTypes>(
-    t: &mut T,
-    closure: &Var,
-    args: &[Var],
-    ft: &SpecPlan,
-    module: &Module,
-    mut resolve_body_id: impl FnMut(&T, &SpecKey) -> Option<u32>,
-) -> Option<(FnId, u32)> {
-    let (fn_id, captures) = if let Some(ClosureLitInfo { target, captures, .. }) =
-        ft.vars.get(closure).and_then(|ty| t.closure_lit_parts(ty))
-    {
-        (FnId::from(target), captures)
-    } else {
-        match ft.callable_capabilities.get(closure)? {
-            CallableCapability::KnownFn(fn_id) => (*fn_id, Vec::new()),
-            CallableCapability::KnownClosure { fn_id, captures, .. } => (*fn_id, captures.clone()),
-            CallableCapability::OpaqueCallable => return None,
-        }
-    };
-    let body_fn = module.fn_by_id(fn_id);
-    let np = body_fn.block(body_fn.entry).params.len();
-    let any = t.any();
-    let mut key: Vec<Ty> = captures;
-    for av in args {
-        key.push(ft.vars.get(av).cloned().unwrap_or_else(|| any.clone()));
-    }
-    while key.len() < np {
-        key.push(any.clone());
-    }
-    key.truncate(np);
-    let key = SpecKey::value(fn_id, key_slots_from_tys(key));
-    Some((fn_id, resolve_body_id(&*t, &key)?))
 }

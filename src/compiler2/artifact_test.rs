@@ -14,8 +14,6 @@ use crate::compiler2::types::Ty;
 use crate::fz_ir::{
     Block, BlockId, ExternDecl, ExternId, ExternMarshalSite, ExternTy, FnCategory, FnId, FnIr, Module, Term, Var,
 };
-use crate::type_expr::ResolvedSpecDecl;
-use crate::types::Types as _;
 
 fn stub_activation_key(_types: &mut Types, input: Vec<super::types::Ty>) -> (RootId, FunctionId, ActivationKey) {
     let mut functions = FunctionMap::new();
@@ -225,7 +223,6 @@ fn compiler2_native_program_contract_maps_old_native_inputs_to_local_facts() {
     let cont_fn = FnId(1);
     let identity_fn = FnId(2);
 
-    let mut legacy_types = crate::types::new();
     let mut module = Module::default();
     module.externs.push(ExternDecl {
         id: ExternId(0),
@@ -234,12 +231,6 @@ fn compiler2_native_program_contract_maps_old_native_inputs_to_local_facts() {
         params: vec![ExternTy::CString, ExternTy::I64],
         variadic: true,
         ret: ExternTy::I64,
-        ret_descr: legacy_types.any(),
-        semantic_contract: ResolvedSpecDecl {
-            params: vec![legacy_types.any(), legacy_types.any()],
-            result: legacy_types.any(),
-            constraints: HashMap::new(),
-        },
     });
     module.extern_idx.insert(ExternId(0), 0);
     module.fns.push(FnIr {
@@ -397,7 +388,7 @@ fn compiler2_native_program_contract_maps_old_native_inputs_to_local_facts() {
 }
 
 #[test]
-fn compiler2_native_program_contract_treats_old_extern_semantics_as_cleanup_not_authority() {
+fn compiler2_native_program_contract_uses_native_body_extern_marshals_as_authority() {
     let mut types = Types::new();
     let int = types.int();
     let (_, _, stub_activation) = stub_activation_key(&mut types, vec![int]);
@@ -407,7 +398,6 @@ fn compiler2_native_program_contract_treats_old_extern_semantics_as_cleanup_not_
     };
     let entry_fn = FnId(0);
 
-    let mut legacy_types = crate::types::new();
     let mut module = Module::default();
     module.externs.push(ExternDecl {
         id: ExternId(0),
@@ -416,12 +406,6 @@ fn compiler2_native_program_contract_treats_old_extern_semantics_as_cleanup_not_
         params: vec![ExternTy::CString],
         variadic: false,
         ret: ExternTy::I64,
-        ret_descr: legacy_types.any(),
-        semantic_contract: ResolvedSpecDecl {
-            params: vec![legacy_types.any()],
-            result: legacy_types.any(),
-            constraints: HashMap::new(),
-        },
     });
     module.extern_idx.insert(ExternId(0), 0);
     module.fns.push(FnIr {
@@ -471,13 +455,8 @@ fn compiler2_native_program_contract_treats_old_extern_semantics_as_cleanup_not_
     };
 
     assert_eq!(
-        program.module.externs[0].semantic_contract.result,
-        legacy_types.any(),
-        "shared fz-IR still carries old extern semantic payloads during the fork",
-    );
-    assert_eq!(
         program.bodies[0].extern_marshals.get(&marshal_site),
         Some(&ExternTy::CString),
-        "compiler2-native codegen must treat NativeBody.extern_marshals as authority and old ExternDecl semantics as cleanup-only baggage",
+        "compiler2-native codegen must treat NativeBody.extern_marshals as authority",
     );
 }

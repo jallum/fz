@@ -143,7 +143,7 @@ pub(crate) fn encode_endian(e: Endian) -> u32 {
     }
 }
 
-/// Default unit per type. Mirrors `crate::ir_lower::resolved_unit_for`.
+/// Default bitstring unit per source type.
 pub(crate) fn default_unit_for(ty: BitType) -> u32 {
     match ty {
         BitType::Integer | BitType::Float | BitType::Bits => 1,

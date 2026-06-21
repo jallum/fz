@@ -1,28 +1,9 @@
 use crate::ast::{SpecDecl, TypeExprBody};
 use crate::function_surface::CallableSurface;
-use crate::fz_ir::{ExternId, ExternTy};
+use crate::fz_ir::ExternTy;
 use crate::parser::lexer::{Tok, Token};
-use std::collections::HashMap;
+use crate::types::Types;
 
-/// Name → ExternId index, built during the zeroth lowering pass.
-pub struct ExternTable {
-    map: HashMap<String, ExternId>,
-}
-
-impl ExternTable {
-    pub fn new() -> Self {
-        Self { map: HashMap::new() }
-    }
-    pub(crate) fn insert(&mut self, name: String, id: ExternId) {
-        self.map.insert(name, id);
-    }
-    pub fn lookup(&self, name: &str) -> Option<ExternId> {
-        self.map.get(name).copied()
-    }
-}
-
-/// Map a single token identifier to an `ExternTy`. Used when resolving the
-/// return-type annotation in an `extern "C" fn` declaration.
 /// fz-y3k — split an extern's fz-visible name into the C symbol it resolves
 /// to. A `lib::name` prefix is fz-side documentation/namespacing only; the
 /// linker sees just the bare suffix. fz-axu — externs declared inside a
@@ -47,8 +28,6 @@ pub(crate) fn extern_ty_from_name(name: &str) -> Option<ExternTy> {
         "float" => Some(ExternTy::F64),
         "nil" => Some(ExternTy::Unit),
         "never" => Some(ExternTy::Never),
-        // fz-0cv — binary marshal classes; one fz binary arg → one
-        // `*const u8` C arg. See [[fz-9ss]] for the runtime helpers.
         "binary" => Some(ExternTy::Binary),
         "cstring" => Some(ExternTy::CString),
         _ => None,
@@ -86,6 +65,31 @@ pub(crate) fn explicit_extern_wire_hint(body: &TypeExprBody) -> Option<ExternTy>
         [Token { tok: Tok::Nil, .. }] => Some(ExternTy::Unit),
         _ => None,
     }
+}
+
+/// Derive a coarse C-ABI wire type from a semantic Ty.
+///
+/// Explicit marshal hints should already have been handled before this point.
+/// The fallback uses the semantic upper bound: raw integer lanes cover both
+/// `integer` and `cpointer`; float-only types get F64; nil-only -> Unit;
+/// never -> Never. Everything else stays as a tagged value.
+pub(crate) fn ty_to_extern_ty<T: Types>(t: &mut T, d: &T::Ty) -> ExternTy {
+    if t.is_empty(d) {
+        return ExternTy::Never;
+    }
+    if t.is_nil(d) {
+        return ExternTy::Unit;
+    }
+    if t.is_floating(d) {
+        return ExternTy::F64;
+    }
+    let int = t.int();
+    let cpointer = t.cpointer();
+    let raw_word = t.union(int, cpointer);
+    if t.is_subtype(d, &raw_word) {
+        return ExternTy::I64;
+    }
+    ExternTy::Any
 }
 
 fn normalize_extern_semantic_body(body: &TypeExprBody) -> TypeExprBody {

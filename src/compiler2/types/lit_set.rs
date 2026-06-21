@@ -108,10 +108,9 @@ pub(crate) type AtomSet = LiteralSet<String>;
 /// The difference is at use sites: opaques are fixed (the name *is* the type);
 /// vars are substituted at instantiation sites (fz-try.6 onward).
 ///
-/// Fresh ids are allocated by `TypeVarId::fresh()` from a process-global atomic
-/// counter. This is intentionally simple — per-function scoping is handled by
-/// the planner (which renames at function-typing entry to ensure α-equivalence
-/// across signatures); the id itself carries no scope.
+/// Per-function scoping is handled by the planner, which renames at
+/// function-typing entry to ensure alpha-equivalence across signatures; the id
+/// itself carries no scope.
 pub(crate) type VarSet = LiteralSet<TypeVarId>;
 
 /// fz-try.7 — deterministic var-id allocation for a closure's surface arrow.

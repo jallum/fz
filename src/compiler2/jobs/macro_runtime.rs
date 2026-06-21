@@ -4,10 +4,10 @@
 //! backend-ready artifact for a hidden compile-time root whose inputs are the
 //! macro ABI: `__CALLER__` plus quoted arguments, all as `Any` values.
 
-use crate::compiler::source::Span;
 use crate::diag::Diagnostic;
 use crate::diag::codes;
 use crate::diag::driver::emit_through;
+use crate::source::Span;
 
 use super::super::drive::{FactKey, Job, JobEffects, settled_uses};
 use super::super::identity::FunctionId;
@@ -55,6 +55,6 @@ pub(super) fn build_macro_executable(world: &mut World<'_>, function: FunctionId
 
 fn emit_macro_runtime_error(world: &World<'_>, span: Span, message: impl Into<String>) -> FatalError {
     let diagnostic = Diagnostic::error(codes::LOWER_UNSUPPORTED, message.into(), span);
-    emit_through(world.tel(), None, std::slice::from_ref(&diagnostic));
+    emit_through(world.tel(), std::slice::from_ref(&diagnostic));
     FatalError
 }

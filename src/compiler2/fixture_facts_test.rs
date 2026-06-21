@@ -1,6 +1,6 @@
 use super::fixture_facts::{canonical_call_edge_facts, render_canonical_call_edge_snapshot};
 use super::{DriveOutcome, ExecutableNeed, FactKey, Job};
-use crate::compiler::source::Span;
+use crate::source::Span;
 use crate::telemetry::ConfiguredTelemetry;
 
 fn assert_resolved(outcome: DriveOutcome<Job, FactKey>, message: &str) {

@@ -1877,7 +1877,7 @@ fn branch_possible(world: &mut World<'_>, predicate: &RegionPredicate<Ty>, sourc
             }
         }
         Region::Guard(_) => true,
-        Region::MapKeyPresent { .. } | Region::Bitstring(_) | Region::Any | Region::Never => true,
+        Region::MapKeyPresent { .. } | Region::Bitstring(_) => true,
     }
 }
 

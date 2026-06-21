@@ -11,9 +11,9 @@
 //!   a handler registry with prefix-based routing and a span stack for parent
 //!   tracking. Single-threaded (`RefCell`, no `Send`/`Sync`).
 //! - **Handlers** (`handler`): `Handler::handle(&Event<'_, '_, '_>)` receives every
-//!   routed event. Concrete impls: `Capture` (tests), `DiagRenderer`
-//!   (diagnostics → stderr/writer), `JsonlBackend` (file logging),
-//!   `StatsHandler` (event counters).
+//!   routed event. Concrete impls: `Capture` (tests), `JsonlBackend` (file
+//!   logging), `StatsHandler` (event counters), and a test-only diagnostic
+//!   renderer.
 //! - **Macros** (`measurements!`, `metadata!` in `macros`): ergonomic
 //!   construction of event payloads.
 //!
@@ -33,6 +33,7 @@
 pub mod bus;
 #[cfg(test)]
 pub mod capture;
+#[cfg(test)]
 pub mod diag_render;
 pub mod event;
 pub mod handler;
@@ -41,23 +42,14 @@ pub mod sink;
 pub mod stats;
 pub mod value;
 
-use std::sync::atomic::{AtomicU64, Ordering};
-
-static NEXT_COMPILE_NONCE: AtomicU64 = AtomicU64::new(1);
-
 pub use bus::ConfiguredTelemetry;
 #[cfg(test)]
 pub use capture::Capture;
-pub use diag_render::DiagRenderer;
 pub use event::{Measurements, Metadata};
 #[cfg(test)]
 pub use handler::EventKind;
-pub use handler::{Event, Handler, HandlerId};
+pub use handler::{Event, Handler};
 pub use jsonl::JsonlBackend;
 pub use sink::{Telemetry, TelemetryExt};
 pub use stats::StatsHandler;
 pub use value::{Value, opaque, opaque_debug};
-
-pub(crate) fn next_compile_nonce() -> u64 {
-    NEXT_COMPILE_NONCE.fetch_add(1, Ordering::Relaxed)
-}

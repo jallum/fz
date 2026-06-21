@@ -1,9 +1,14 @@
 use super::*;
 use cranelift_codegen::ir::{InstBuilder, Signature, types};
-use cranelift_codegen::settings::{self};
+use cranelift_codegen::settings;
 use cranelift_codegen::verifier::verify_function;
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module as ClModule};
+
+fn fn_addr<M: ClModule>(jmod: &mut M, id: FuncId, b: &mut FunctionBuilder<'_>) -> cranelift_codegen::ir::Value {
+    let fref = jmod.declare_func_in_func(id, b.func);
+    b.ins().func_addr(types::I64, fref)
+}
 
 /// Emit the AOT C-callable main entry. Drives the cps-in-clif startup:
 /// `fz_aot_setup` → per-closure `fz_aot_register_static_closure` →

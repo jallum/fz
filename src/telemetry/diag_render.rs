@@ -4,17 +4,17 @@
 //! `diag::render::Renderer` does the actual formatting — this type is
 //! purely the glue.
 //!
-//! Both construction paths (stderr and writer) store a `Box<dyn Write>`
-//! so `handle` is a single code path with no match arm.
+//! Construction stores a `Box<dyn Write>` so `handle` is a single code path
+//! with no match arm.
 
 use std::cell::RefCell;
-use std::io::{Write, stderr};
+use std::io::Write;
 use std::rc::Rc;
 
-use crate::compiler::source::SourceMap;
 use crate::diag::Diagnostic;
 use crate::diag::render::Renderer as DiagRenderImpl;
 use crate::diag::style::ColorMode;
+use crate::source::SourceMap;
 
 use super::handler::{Event, Handler};
 
@@ -25,16 +25,6 @@ pub struct DiagRenderer {
 }
 
 impl DiagRenderer {
-    /// Render diagnostic events to stderr with the same color/no-color
-    /// policy `diag::render_to_stderr` uses.
-    pub fn new_stderr(sm: Rc<RefCell<SourceMap>>) -> Self {
-        Self {
-            sm,
-            writer: RefCell::new(Box::new(stderr())),
-            color: ColorMode::Auto,
-        }
-    }
-
     /// Render to an arbitrary writer with the given color mode.
     /// Tests usually pass a `Vec<u8>` and `ColorMode::Never`.
     pub fn new_to_writer<W: Write + 'static>(sm: Rc<RefCell<SourceMap>>, w: W, color: ColorMode) -> Self {

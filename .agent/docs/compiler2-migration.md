@@ -1,26 +1,26 @@
 # Compiler2 Migration
 
-Compiler2 is ready below the artifact seam, but the old compiler is still the
-oracle for the full source surface. The cutover decision is therefore not
-"backend readiness"; it is fixture-contract parity.
+Compiler2 owns the public command-line compiler surface. The old `fz` binary,
+`Compiler`/`World` wrapper, REPL/test-runner front door, and old-world CLI dump
+surface have been deleted.
 
 ## Current Decision
 
-Do not scrap the old `fz` surface yet.
+The compiler entry point is `fz2`. There is no compatibility `fz` wrapper.
 
 The backend and type-name questions that blocked migration are settled:
 
 - compiler2 owns source submission, type naming, contract resolution, semantic
   closure, and the artifact ladder through `NativeProgram(root)`;
-- `fz2 run`, `fz2 interp`, and `fz2 build` submit source directly to compiler2
-  and assert that old frontend/planner/type-infer telemetry stays absent;
+- `fz2 run`, `fz2 interp`, and `fz2 build` submit source directly to compiler2;
 - native backend time is named at the compiler2 artifact boundary by
   `fz.compiler2.native_backend.compile`, with raw codegen phases nested below it;
 - source-fragment re-lexing and per-call `ModuleTypeEnv` rebuilds are gone on the
   compiler2 path.
 
-The remaining blocker is above that seam: the checked fixture oracle still
-covers more source/runtime behavior than the fz2 matrix declares.
+Remaining migration work is no longer about an old executable oracle. It is
+about retiring shared old-world substrate once compiler2 has a native
+replacement for each piece.
 
 ## Fixture Signal
 
@@ -111,14 +111,15 @@ materializing local dispatch from the settled multi-target semantic fact, so
 
 ## What Remains Load-Bearing
 
-- The old `fz` CLI and fixture matrix paths remain the executable oracle for
-  source surfaces not yet represented by fz2 matrix paths.
-- The legacy frontend/parser/lowering/spec environment remains load-bearing for
-  that old surface until the fz2 fixture matrix covers the agreed contract.
-- `crate::type_expr` / `ModuleTypeEnv` remain frozen for the old frontend only;
-  compiler2 does not reuse them.
-- `ExternDecl.ret_descr` and `ExternDecl.semantic_contract` are a native
-  substrate cleanup, already tracked by `fz-rh2.15`.
+- Compiler2 still reuses neutral runtime/native substrate: `fz_ir` shapes,
+  native codegen runtime wrappers, diagnostics, source spans, dispatch-matrix
+  helpers, module identities, and selected legacy type/rendering adapters.
+- Old-world planner/codegen text probes are no longer active fixture-matrix
+  trials. Compiler-shape contracts should be expressed through compiler2
+  telemetry, compiler2 dumps, or fixture contracts.
+- Shared `ExternDecl` carries only ABI-facing metadata. Compiler2 semantic
+  extern facts stay in `LoweredExtern`, backend program facts, and
+  `NativeBody.extern_marshals`.
 
 ## What Is Not A Cutover Blocker
 
@@ -215,8 +216,7 @@ must not collapse to opaque-only impl targets, because intersecting an opaque-on
 target with a concrete struct value erases the field evidence that downstream
 semantic analysis needs.
 
-## Cutover Rule
+## Deletion Rule
 
-The old compiler can be scrapped only after the agreed source/contract fixture
-surface is represented by fz2 matrix paths or explicitly declared out of scope.
-Deletion tickets come after that coverage decision, not before it.
+Do not add a wrapper around the deleted `fz` surface. New compiler-facing tests
+and tooling should enter through compiler2 APIs or `fz2`.

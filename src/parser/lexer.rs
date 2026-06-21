@@ -2,10 +2,8 @@ use std::fmt;
 use std::rc::Rc;
 use std::str::from_utf8;
 
-use crate::compiler::source::{Id as CodeId, Span};
-use crate::diag::Diagnostic;
-use crate::diag::codes::LEX_UNEXPECTED_CHAR;
 use crate::measurements;
+use crate::source::{Id as CodeId, Span};
 use crate::telemetry::{Metadata, Telemetry, Value};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -146,16 +144,6 @@ impl fmt::Display for LexError {
         // Plain-text fallback. The .20.6 renderer is the proper rendering
         // path; `to_diagnostic` is what the driver calls.
         write!(f, "lex error: {}", self.msg)
-    }
-}
-
-impl LexError {
-    /// Promote a lex-time error into a structured Diagnostic. The headline
-    /// is the lexer's message; the primary span is the offending byte.
-    pub fn to_diagnostic(&self) -> Diagnostic {
-        // The lexer currently reports every lex-time failure with the
-        // same code and a specific message/span.
-        Diagnostic::error(LEX_UNEXPECTED_CHAR, self.msg.clone(), self.span)
     }
 }
 

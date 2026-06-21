@@ -1,7 +1,5 @@
 //! Ported tests from old-world — behaviour already captured; assertions filled in next pass.
-#![allow(unused_imports)]
-
-use super::drive_test::{assert_resolved, function_id, module_id};
+use super::drive_test::assert_resolved;
 use super::{CodeSubmission, Compiler2, ExecutableNeed, RootSubmission};
 use crate::telemetry::ConfiguredTelemetry;
 
@@ -878,7 +876,7 @@ fn reduce_cont_clause_links_list_param_to_accumulator_result() {
         need: ExecutableNeed::Value,
     });
     let _ = compiler.drive(); // Unresolved/SealSemanticClosure: pre-existing pipeline gap for defmodule-only roots
-    // TODO: fn_clause_1 with 5 params should have function_correspondence groups tying param 0 to result
+    // TODO: propagate the selected reducer contract far enough to tie param 0 to the result.
 }
 
 // Ported from src/ir_planner/ir_planner_test.rs: protocol impl callback with incompatible return type is rejected at compile time
@@ -1157,7 +1155,7 @@ fn string_literal_lowers_to_utf8_branded_bitstring() {
         need: ExecutableNeed::Value,
     });
     assert_resolved(compiler.drive(), "string literal utf8 brand should resolve");
-    // TODO: main body should have ConstBitstring(b"hi", 16); no Prim::Brand survives lowering; brand_inners has utf8
+    // TODO: main body should have ConstBitstring(b"hi", 16); utf8 branding stays semantic-only.
 }
 
 // Ported from src/ir_planner/ir_planner_test.rs: arithmetic on pid opaque type emits type error diagnostic

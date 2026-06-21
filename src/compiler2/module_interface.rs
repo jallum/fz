@@ -1,4 +1,4 @@
-use crate::compiler::source::Span;
+use crate::source::Span;
 
 use super::code::CodeId;
 use super::drive::FactKey;

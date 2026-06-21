@@ -15,7 +15,7 @@ use std::path::PathBuf;
 use std::process::{Command, Output, id};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-const FZ_BIN: &str = env!("CARGO_BIN_EXE_fz");
+const FZ2_BIN: &str = env!("CARGO_BIN_EXE_fz2");
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 fn unique_temp_path(prefix: &str, suffix: &str) -> PathBuf {
@@ -24,7 +24,7 @@ fn unique_temp_path(prefix: &str, suffix: &str) -> PathBuf {
 }
 
 fn run_with_args(args: &[&OsStr]) -> Output {
-    Command::new(FZ_BIN).args(args).output().expect("invoke fz binary")
+    Command::new(FZ2_BIN).args(args).output().expect("invoke fz2 binary")
 }
 
 #[cfg(unix)]

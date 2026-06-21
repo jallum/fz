@@ -1,7 +1,7 @@
 //! AOT link-time runtime archive selection.
 //!
-//! `fz build` links generated object code with `fz-runtime`'s staticlib. When
-//! the `fz` binary itself was built by `cargo llvm-cov`, the sibling runtime
+//! `fz2 build` links generated object code with `fz-runtime`'s staticlib. When
+//! the `fz2` binary itself was built by `cargo llvm-cov`, the sibling runtime
 //! archive is coverage-instrumented too; linking that archive into a plain AOT
 //! executable leaks unresolved LLVM profile-runtime symbols. Treat the AOT
 //! executable as the product and use a clean runtime archive at this boundary.

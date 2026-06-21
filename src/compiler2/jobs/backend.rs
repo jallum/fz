@@ -8,12 +8,12 @@
 
 use std::collections::HashSet;
 
-use crate::compiler::source::Span;
 use crate::diag::Diagnostic;
 use crate::diag::codes;
 use crate::diag::driver::emit_through;
 use crate::dispatch_matrix::pattern::{PatternDispatchPlan, PatternGuardDispatch, PatternGuardExpr};
 use crate::dispatch_matrix::{ComparisonValue, DispatchConst, DispatchNode, ProjectionKind, Region, SubjectSource};
+use crate::source::Span;
 
 use super::super::artifact::{
     BackendBody, BackendCallArg, BackendCallableEntry, BackendClause, BackendEntry, BackendEntryOrigin,
@@ -714,9 +714,7 @@ fn collect_region_atoms(
         | Region::List(_)
         | Region::MapKind
         | Region::Bitstring(_)
-        | Region::Guard(_)
-        | Region::Any
-        | Region::Never => {}
+        | Region::Guard(_) => {}
     }
 }
 
@@ -774,6 +772,6 @@ fn incomplete_backend_program(world: &World<'_>, root_id: RootId, message: impl 
         format!("compiler2 backend lowering for root {}: {}", root_id.as_u32(), message),
         Span::DUMMY,
     );
-    emit_through(world.tel(), None, std::slice::from_ref(&diagnostic));
+    emit_through(world.tel(), std::slice::from_ref(&diagnostic));
     FatalError
 }

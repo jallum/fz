@@ -489,11 +489,9 @@ through explicit `RuntimeTypePredicate` facts: compiler2 keeps rich semantic
 `Ty` facts for dispatch/refinement above the seam, then projects them into the
 runtime-observable predicate model the runtime can actually answer below it.
 
-Likewise, old semantic payloads still hanging off shared fz-IR structures
-(`ExternDecl.ret_descr`, `ExternDecl.semantic_contract`, and similar) are not
-authority for compiler2-native codegen after `NativeProgram(root)`. If the
-compiler2 backend still reads them, that is backend debt to remove, not part of
-the published handoff.
+Shared `ExternDecl` carries only ABI-facing metadata after `NativeProgram(root)`.
+Semantic extern facts stay in compiler2-owned structures: `LoweredExtern`,
+backend program facts, and `NativeBody.extern_marshals`.
 
 The same rule applies to native return delivery. `NativeBody.return_reprs` is
 the published result contract for a native body. Native lowering consumes
@@ -521,8 +519,8 @@ Current conclusion from the code:
 - `fz2` is now the side-by-side outer shell for those front doors: `fz2 run`,
   `fz2 interp`, and `fz2 build` submit source directly to Compiler2, seed
   `main/0`, and never reopen old planner or type-infer work
-- the remaining work above this seam is cutover: switch or retire the old `fz`
-  surface and remove the fallback plumbing once parity is proven
+- the old `fz` surface is retired; new compiler-facing work enters through
+  compiler2 APIs or `fz2`
 
 ## Redefinition retracts by ownership
 

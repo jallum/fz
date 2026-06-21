@@ -15,13 +15,13 @@ fn quoted_source(source_name: &str, text: &str) -> QuotedSourceRoot {
 fn function_surface_with_int(name: &str, value: i64) -> FunctionSurface {
     FunctionSurface {
         name: name.to_string(),
-        name_span: crate::compiler::source::Span::DUMMY,
+        name_span: crate::source::Span::DUMMY,
         clauses: vec![FnClause {
             params: vec![],
             param_annotations: vec![],
             guard: None,
             body: Spanned::dummy(Expr::Int(value)),
-            span: crate::compiler::source::Span::DUMMY,
+            span: crate::source::Span::DUMMY,
         }],
         is_macro: false,
         extern_abi: None,
@@ -30,7 +30,7 @@ fn function_surface_with_int(name: &str, value: i64) -> FunctionSurface {
         extern_constraints: vec![],
         variadic: false,
         attrs: vec![],
-        span: crate::compiler::source::Span::DUMMY,
+        span: crate::source::Span::DUMMY,
     }
 }
 
@@ -183,13 +183,13 @@ fn compiler2_identity_maps_promote_placeholders_and_preserve_reverse_lookup() {
     let generated = functions.reference_generated(
         add_def,
         math_def,
-        crate::compiler::source::Span::new(crate::compiler::source::Id(code_id.as_u32()), 5, 19),
+        crate::source::Span::new(crate::source::Id(code_id.as_u32()), 5, 19),
         1,
     );
     let same_generated = functions.reference_generated(
         add_def,
         math_def,
-        crate::compiler::source::Span::new(crate::compiler::source::Id(code_id.as_u32()), 5, 19),
+        crate::source::Span::new(crate::source::Id(code_id.as_u32()), 5, 19),
         1,
     );
     assert_eq!(

@@ -72,12 +72,6 @@ pub(crate) enum StaticLiteralField {
     Struct(DataId),
 }
 
-#[derive(Clone)]
-pub(crate) struct PendingStaticTupleDest {
-    pub(super) schema_id: u32,
-    pub(super) fields: Vec<Option<StaticLiteralField>>,
-}
-
 #[derive(Clone, Copy)]
 pub(crate) struct StaticStructRef {
     pub(super) data_id: DataId,
@@ -112,11 +106,6 @@ pub(crate) struct CodegenCache {
     pub(super) static_struct_refs: HashMap<u32, StaticStructRef>,
     /// Per-function counter for unique static struct data symbols.
     pub(super) static_struct_count: usize,
-    /// Tuple destinations being considered for static read-only storage.
-    pub(super) pending_static_tuple_dests: HashMap<u32, PendingStaticTupleDest>,
-    /// Tuple destinations that fell back to ordinary heap storage after a
-    /// dynamic field appeared.
-    pub(super) materialized_tuple_dests: HashMap<u32, ir::Value>,
     /// FuncRef for each extern, deduplicated per function.
     pub(super) extern_funcs: HashMap<ExternId, ir::FuncRef>,
     /// Var IDs referenced anywhere in the function's IR. Unit-return

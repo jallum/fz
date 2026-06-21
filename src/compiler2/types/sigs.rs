@@ -78,9 +78,8 @@ impl ListSig {
 /// `MakeClosure(fn_id, vars_typed_as_captures)`. Captures are stored as a
 /// vector aligned with the first N entry params of `fn_id`'s body.
 ///
-/// The arrow's `args` field carries the apparent post-capture arity (vector of
-/// `Descr::any()` until 22.9's `resolve_closure_return` refines per spec
-/// lookup).
+/// The arrow's `args` field carries the apparent post-capture arity for
+/// downstream contract-aware arrow matching.
 ///
 /// Two `ClosureLit`s are equal iff `kind`, `fn_id`, and elementwise
 /// `captures` match. Lit-bearing clauses do not collapse with lit-free clauses

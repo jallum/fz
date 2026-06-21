@@ -291,64 +291,6 @@ fn alloc_struct_for_schema<M: cranelift_module::Module>(
     body.b.inst_results(inst)[0]
 }
 
-fn codegen_value_for_static_literal_field<M: cranelift_module::Module>(
-    body: &mut CodegenFn<'_, '_, '_, M>,
-    field: StaticLiteralField,
-) -> CodegenValue {
-    match field {
-        StaticLiteralField::Scalar(value) => {
-            let raw = body.b.ins().iconst(types::I64, value.raw() as i64);
-            CodegenValue::known(raw, value.kind())
-        }
-        StaticLiteralField::Struct(data_id) => {
-            let gv = body.jmod.declare_data_in_func(data_id, body.b.func);
-            let addr = body.b.ins().symbol_value(types::I64, gv);
-            let ref_word = body.heap_ref_word_from_addr(addr, ValueKind::STRUCT);
-            CodegenValue::any_ref(ref_word)
-        }
-    }
-}
-
-fn emit_static_literal_field_store<M: cranelift_module::Module>(
-    body: &mut CodegenFn<'_, '_, '_, M>,
-    struct_bits: ir::Value,
-    field_idx: usize,
-    field: StaticLiteralField,
-) {
-    let value = codegen_value_for_static_literal_field(body, field);
-    body.struct_set_field(struct_bits, field_idx, value);
-}
-
-fn materialize_pending_tuple_dest<M: cranelift_module::Module>(
-    body: &mut CodegenFn<'_, '_, '_, M>,
-    runtime: &RuntimeRefs,
-    pending: &PendingStaticTupleDest,
-) -> ir::Value {
-    let struct_bits = alloc_struct_for_schema(body, runtime, pending.schema_id);
-    for (idx, field) in pending.fields.iter().copied().enumerate() {
-        if let Some(field) = field {
-            emit_static_literal_field_store(body, struct_bits, idx, field);
-        }
-    }
-    struct_bits
-}
-
-fn freeze_pending_tuple_dest<M: cranelift_module::Module>(
-    body: &mut CodegenFn<'_, '_, '_, M>,
-    env: &CodegenEnv<'_>,
-    dest_var: Var,
-    pending: PendingStaticTupleDest,
-) -> Result<ir::Value, CodegenError> {
-    let Some(fields) = pending.fields.into_iter().collect::<Option<Vec<_>>>() else {
-        return Err(CodegenError::new(format!(
-            "tuple destination {:?} reached freeze with unset static fields",
-            dest_var
-        )));
-    };
-    let data_id = define_static_struct_literal(body, env, dest_var, pending.schema_id, &fields)?;
-    Ok(static_struct_ref_word(body, dest_var, data_id))
-}
-
 /// Lower collection-typed Prim variants (List, Tuple, AllocStruct, Bitstring,
 /// Map, Vec) to a tagged `ir::Value`. Called by `lower_prim` for these arms.
 pub(crate) fn lower_collection_prim<M: cranelift_module::Module, T: Types<Ty = Ty>>(
@@ -445,104 +387,6 @@ pub(crate) fn lower_collection_prim<M: cranelift_module::Module, T: Types<Ty = T
                 body.struct_set_field(p, i, value);
             }
             LowerOut::ValueRef(p)
-        }
-        Prim::DestTupleBegin { arity, .. } => {
-            let schema_id = *tuple_schema_ids.get(arity).ok_or_else(|| {
-                CodegenError::new(format!(
-                    "tuple arity {} not pre-registered (compile() walk missed it?)",
-                    arity
-                ))
-            })?;
-            body.cache.pending_static_tuple_dests.insert(
-                dest_var.0,
-                PendingStaticTupleDest {
-                    schema_id,
-                    fields: vec![None; *arity],
-                },
-            );
-            LowerOut::DeadUnit
-        }
-        Prim::DestTupleSet { dest, index, value, .. } => {
-            if let Some(&dest_bits) = body.cache.materialized_tuple_dests.get(&dest.0) {
-                let field_value = binding_for_var(var_env, value.0);
-                body.struct_set_field(dest_bits, *index as usize, field_value);
-                return Ok(LowerOut::DeadUnit);
-            }
-            if body.cache.pending_static_tuple_dests.contains_key(&dest.0) {
-                if let Some(field) = static_literal_field_for_var(body.cache, var_env, *value) {
-                    let pending = body
-                        .cache
-                        .pending_static_tuple_dests
-                        .get_mut(&dest.0)
-                        .expect("pending tuple dest disappeared");
-                    let arity = pending.fields.len();
-                    let slot = pending.fields.get_mut(*index as usize).ok_or_else(|| {
-                        CodegenError::new(format!(
-                            "tuple destination {:?} set field {} beyond arity {}",
-                            dest, index, arity
-                        ))
-                    })?;
-                    *slot = Some(field);
-                    return Ok(LowerOut::DeadUnit);
-                }
-                let pending = body
-                    .cache
-                    .pending_static_tuple_dests
-                    .remove(&dest.0)
-                    .expect("pending tuple dest disappeared");
-                let dest_bits = materialize_pending_tuple_dest(body, runtime, &pending);
-                body.cache.materialized_tuple_dests.insert(dest.0, dest_bits);
-                let field_value = binding_for_var(var_env, value.0);
-                body.struct_set_field(dest_bits, *index as usize, field_value);
-                return Ok(LowerOut::DeadUnit);
-            }
-            let dest_bits = body.any_ref_for_var(var_env, dest.0);
-            let field_value = binding_for_var(var_env, value.0);
-            body.struct_set_field(dest_bits, *index as usize, field_value);
-            LowerOut::DeadUnit
-        }
-        Prim::DestFreeze { dest, .. } => {
-            if let Some(dest_bits) = body.cache.materialized_tuple_dests.remove(&dest.0) {
-                return Ok(LowerOut::ValueRefWord(dest_bits));
-            }
-            if let Some(pending) = body.cache.pending_static_tuple_dests.remove(&dest.0) {
-                let dest_bits = freeze_pending_tuple_dest(body, env, dest_var, pending)?;
-                return Ok(LowerOut::ValueRefWord(dest_bits));
-            }
-            let dest_bits = body.any_ref_for_var(var_env, dest.0);
-            LowerOut::ValueRef(dest_bits)
-        }
-        Prim::DestListBegin { .. } => LowerOut::DeadUnit,
-        Prim::DestListCons { head, tail, .. } => {
-            if let Some(tail_var) = tail {
-                body.cache.reusable_cons_candidate_count += 1;
-                let tail_bits = body.any_ref_for_var(var_env, tail_var.0);
-                let tail = list_tail_bits_for_var(t, value_types, block_env, *tail_var, tail_bits);
-                let reused = emit_reusable_cons_or_alloc(body, var_env, *head, tail);
-                if let Some(reused) = reused {
-                    return Ok(LowerOut::ValueRef(reused));
-                }
-            }
-            let acc = match tail {
-                Some(tail_var) => {
-                    let tail_bits = body.any_ref_for_var(var_env, tail_var.0);
-                    list_tail_bits_for_var(t, value_types, block_env, *tail_var, tail_bits)
-                }
-                None => ListTailBits::Empty,
-            };
-            let cons = emit_list_cons_bif(
-                body,
-                env,
-                var_env,
-                *head,
-                expected_runtime_value_kind(t, value_types, block_env, *head),
-                acc,
-            );
-            LowerOut::ValueRef(cons)
-        }
-        Prim::DestListFreeze { list, .. } => {
-            let list_bits = body.any_ref_for_var(var_env, list.0);
-            LowerOut::ValueRef(list_bits)
         }
         Prim::TupleField(c, idx) => {
             if let Some(binding) = body.cache.tuple_field_params.get(&(c.0, *idx)).copied() {
@@ -744,15 +588,6 @@ pub(crate) fn lower_collection_prim<M: cranelift_module::Module, T: Types<Ty = T
                 .declare_func_in_func(runtime.bs_read_field_ref_id, body.b.func);
             let inst = body.b.ins().call(fref, &[process, reader_ref, field_spec, size_value]);
             LowerOut::ValueRef(body.b.inst_results(inst)[0])
-        }
-        // `MakeMap`/`MapUpdate` are rewritten to the destination-passing form
-        // (`DestMapBegin`/`DestMapPut`/`DestMapFreeze`) by
-        // `ir_dest::lower_destinations`, which runs unconditionally before
-        // codegen and is enforced by `verify_module` — so they never reach
-        // here. Map construction always lowers through `DestMap*` (and so will
-        // `Map.put`/`Map.update` when the Map module lands).
-        Prim::MakeMap(_) | Prim::MapUpdate(..) => {
-            unreachable!("MakeMap/MapUpdate are lowered to DestMap by ir_dest before codegen")
         }
         Prim::DestMapBegin { base, extra, .. } => {
             let extra = body.b.ins().iconst(types::I32, *extra as i64);
@@ -1265,20 +1100,12 @@ pub(crate) fn lower_prim<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
         | Prim::MakeList(..)
         | Prim::MakeTuple(..)
         | Prim::MakeStruct { .. }
-        | Prim::DestTupleBegin { .. }
-        | Prim::DestTupleSet { .. }
-        | Prim::DestFreeze { .. }
-        | Prim::DestListBegin { .. }
-        | Prim::DestListCons { .. }
-        | Prim::DestListFreeze { .. }
         | Prim::TupleField(..)
         | Prim::StructField(..)
         | Prim::MakeBitstring(..)
         | Prim::ConstBitstring(..)
         | Prim::BitReaderInit(..)
         | Prim::BitReadField { .. }
-        | Prim::MakeMap(..)
-        | Prim::MapUpdate(..)
         | Prim::DestMapBegin { .. }
         | Prim::DestMapPut { .. }
         | Prim::DestMapFreeze { .. }
@@ -1293,15 +1120,6 @@ pub(crate) fn lower_prim<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
         Prim::MakeClosure(mk_ident, fn_id, captured) => lower_make_closure(
             body, env, var_env, dest_var, mk_ident, *fn_id, captured, block_id, stmt_idx,
         ),
-        // lower_program erases all Prim::Brand before returning.
-        // Reaching codegen with one means brand erasure didn't run (or
-        // a caller injected Brand after lowering); surface loudly rather
-        // than silently lowering as identity.
-        Prim::Brand(_, _) => unreachable!("Prim::Brand reached codegen — erasure should run inside lower_program"),
-
-        Prim::TypeTest(_, _) => {
-            unreachable!("compiler2 native program should not carry legacy Prim::TypeTest")
-        }
         Prim::RuntimeTypeTest(v, descr) => {
             lower_runtime_type_predicate(body, env, var_env, runtime, *v, descr, dest_var)
         }

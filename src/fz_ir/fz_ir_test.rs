@@ -1,6 +1,4 @@
 use super::*;
-use crate::modules::identity::ModuleName;
-use crate::modules::interface::{InterfaceFn, InterfaceSpec, ModuleInterface};
 
 /// fn identity(x) = x
 fn build_identity() -> FnIr {
@@ -64,8 +62,6 @@ fn fresh_vars_are_unique() {
 
 #[test]
 fn physical_entry_params_are_not_semantic_key_inputs() {
-    use crate::types::Types;
-
     let mut b = FnBuilder::new(FnId(0), "with_physical");
     let head = b.fresh_var();
     let source = b.fresh_var();
@@ -84,11 +80,6 @@ fn physical_entry_params_are_not_semantic_key_inputs() {
         }]
     );
     assert_eq!(fn_ir.semantic_entry_params(), vec![value]);
-
-    let mut t = crate::types::new();
-    let key = fn_ir.semantic_key(vec![t.any(), t.int()]);
-    assert!(key[0].is_none());
-    assert!(key[1].is_some());
 }
 
 #[test]
@@ -152,111 +143,8 @@ fn module_holds_multiple_fns_and_lookup_by_name() {
     mb.add_fn(build_add1());
     let m = mb.build();
     assert_eq!(m.fns.len(), 2);
-    assert!(m.fn_by_name("identity").is_some());
-    assert!(m.fn_by_name("add1").is_some());
-    assert!(m.fn_by_name("missing").is_none());
     assert_eq!(m.fn_by_id(FnId(0)).name, "identity");
     assert_eq!(m.fn_by_id(FnId(1)).name, "add1");
-}
-
-#[test]
-fn lto_rewrites_external_call_edge_to_direct_fn_id() {
-    let ident = CallsiteIdent::synthetic();
-    let mut caller = FnBuilder::new(FnId(0), "caller");
-    let entry = caller.block(vec![]);
-    caller.set_terminator(
-        entry,
-        Term::TailCall {
-            ident,
-            callee: DirectCallTarget::ProviderBoundary(Mfa::new(
-                ModuleName::from_segments(vec!["A".to_string()]),
-                "f",
-                0,
-            )),
-            args: Vec::new(),
-            is_back_edge: false,
-        },
-    );
-    let mut target = FnBuilder::new(FnId(1), "A.f");
-    let target_entry = target.block(vec![]);
-    target.set_terminator(target_entry, Term::Halt(Var(0)));
-    let mut mb = ModuleBuilder::new();
-    mb.add_fn(caller.build());
-    mb.add_fn(target.build());
-    let mut module = mb.build();
-    let export = Mfa::new(ModuleName::from_segments(vec!["A".to_string()]), "f", 0);
-    let exports = [(export, FnId(1))].into_iter().collect();
-
-    assert_eq!(module.rewrite_external_calls_for_lto(&exports), Ok(1));
-    assert!(module.external_call_edges().is_empty());
-    match &module.fn_by_id(FnId(0)).block(BlockId(0)).terminator {
-        Term::TailCall { callee, .. } => assert_eq!(*callee, DirectCallTarget::Local(FnId(1))),
-        other => panic!("expected TailCall, got {:?}", other),
-    }
-}
-
-#[test]
-fn lto_reports_missing_external_call_target() {
-    let ident = CallsiteIdent::synthetic();
-    let mut caller = FnBuilder::new(FnId(0), "caller");
-    let entry = caller.block(vec![]);
-    let export = Mfa::new(ModuleName::from_segments(vec!["Missing".to_string()]), "f", 0);
-    caller.set_terminator(
-        entry,
-        Term::TailCall {
-            ident,
-            callee: DirectCallTarget::ProviderBoundary(export.clone()),
-            args: Vec::new(),
-            is_back_edge: false,
-        },
-    );
-    let mut mb = ModuleBuilder::new();
-    mb.add_fn(caller.build());
-    let mut module = mb.build();
-    let exports = BTreeMap::new();
-
-    assert_eq!(
-        module.rewrite_external_calls_for_lto(&exports),
-        Err(ExternalLinkError::MissingTarget(export))
-    );
-    assert!(!module.external_call_edges().is_empty());
-}
-
-#[test]
-fn lto_export_map_comes_from_validated_interfaces() {
-    let mut target = FnBuilder::new(FnId(7), "Math.add");
-    let target_entry = target.block(vec![Var(0), Var(1)]);
-    target.set_terminator(target_entry, Term::Halt(Var(0)));
-    let mut mb = ModuleBuilder::new();
-    mb.add_fn(target.build());
-    let module = mb.build();
-
-    let math = ModuleName::from_segments(vec!["Math".to_string()]);
-    let mut interfaces = BTreeMap::new();
-    interfaces.insert(
-        math.clone(),
-        ModuleInterface {
-            name: math.clone(),
-            imports: Vec::new(),
-            exports: vec![InterfaceFn {
-                name: "add".to_string(),
-                arity: 2,
-                specs: vec![InterfaceSpec {
-                    params: vec!["Ident(\"integer\")".to_string(), "Ident(\"integer\")".to_string()],
-                    result: "Ident(\"integer\")".to_string(),
-                }],
-                name_span: Span::DUMMY,
-            }],
-            types: Vec::new(),
-            protocols: Vec::new(),
-            protocol_impls: Vec::new(),
-            docs: None,
-            fingerprint_inputs: Vec::new(),
-        },
-    );
-
-    let key = Mfa::new(math, "add", 2);
-    assert_eq!(module.interface_export_map(&interfaces).get(&key), Some(&FnId(7)));
 }
 
 #[test]

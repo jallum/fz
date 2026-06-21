@@ -1,8 +1,8 @@
 use crate::ast::{Expr, MatchClause, Spanned, WithBinding};
-use crate::compiler::source::Span;
 use crate::diag::{Diagnostic, codes};
-use crate::dispatch_matrix::pattern::{PatternBodyId, PatternRow, SourcePatternRows, is_inexhaustive_with_domains};
+use crate::dispatch_matrix::pattern::{PatternBodyId, PatternRow, SourcePatternRows, is_inexhaustive};
 use crate::function_surface::FunctionSurface;
+use crate::source::Span;
 
 use super::types::Ty;
 
@@ -149,7 +149,7 @@ fn check_match_clauses(
         })
         .collect();
     let source_patterns = SourcePatternRows { input_count: 1, rows };
-    if is_inexhaustive_with_domains(&source_patterns, &[]) {
+    if is_inexhaustive(&source_patterns) {
         diagnostics.push(inexhaustive_diag_at(span, construct, halt_atom));
     }
 }

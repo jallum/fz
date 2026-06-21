@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, HashMap};
 
-use crate::compiler::source::Span;
 use crate::function_surface::FunctionSurface;
+use crate::source::Span;
 use crate::types::ClosureTarget;
 
 use super::code::CodeId;
@@ -712,7 +712,6 @@ impl TypeRefMap {
     }
 
     // Consumed by the contract re-seat (fz-rh2.12.4); recorded one inch ahead.
-    #[allow(dead_code)]
     pub fn function_refs(&self, function: FunctionId) -> &[TypeName] {
         self.by_function.get(&function).map(Vec::as_slice).unwrap_or(&[])
     }
@@ -724,7 +723,6 @@ impl TypeRefMap {
     }
 
     // Consumed by DeriveTypeDef (fz-rh2.12.2); recorded one inch ahead.
-    #[allow(dead_code)]
     pub fn type_refs(&self, name: &TypeName) -> &[TypeName] {
         self.by_type.get(name).map(Vec::as_slice).unwrap_or(&[])
     }

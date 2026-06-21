@@ -9,7 +9,6 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use crate::compiler::source::Span;
 use crate::diag::Diagnostic;
 use crate::diag::codes;
 use crate::diag::driver::emit_through;
@@ -23,8 +22,7 @@ use crate::fz_ir::{
     ReceiveAfter, ReceiveClause, Term, UnOp as IrUnOp, Var,
 };
 use crate::runtime_type_predicate::RuntimeTypePredicate;
-use crate::type_expr::ResolvedSpecDecl;
-use crate::types::Types as LegacyTypes;
+use crate::source::Span;
 
 use super::super::artifact::{
     AbiValueRepr, BackendBody, BackendClause, BackendEntry, BackendEntryOrigin, BackendExecutable, BackendProgram,
@@ -43,37 +41,6 @@ use super::super::transport::{
 };
 use super::super::types::Ty;
 use super::super::world::World;
-
-fn legacy_extern_ty<T>(types: &mut T, ty: ExternTy) -> crate::types::Ty
-where
-    T: LegacyTypes<Ty = crate::types::Ty>,
-{
-    match ty {
-        ExternTy::Unit => types.nil(),
-        ExternTy::Never => types.none(),
-        ExternTy::I64 => types.int(),
-        ExternTy::F64 => types.float(),
-        ExternTy::Any | ExternTy::Binary | ExternTy::CString => types.any(),
-    }
-}
-
-fn legacy_extern_contract<T>(types: &mut T, signature: &LoweredExtern) -> ResolvedSpecDecl<crate::types::Ty>
-where
-    T: LegacyTypes<Ty = crate::types::Ty>,
-{
-    let params = signature
-        .params
-        .iter()
-        .copied()
-        .map(|ty| legacy_extern_ty(types, ty))
-        .collect::<Vec<_>>();
-    let result = legacy_extern_ty(types, signature.ret);
-    ResolvedSpecDecl {
-        params,
-        result,
-        constraints: HashMap::new(),
-    }
-}
 
 /// Lowers one backend program into the Compiler2-owned native handoff.
 ///
@@ -193,7 +160,6 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
         }
 
         let extern_marshals = collect_extern_marshals(world, root_id, program)?;
-        let mut legacy_types = crate::types::new();
         let mut extern_ids = HashMap::new();
         let mut extern_decls = Vec::new();
         for (index, executable) in program.executables.iter().enumerate() {
@@ -202,7 +168,6 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
             };
             let id = ExternId(extern_decls.len() as u32);
             extern_ids.insert(index, id);
-            let semantic_contract = legacy_extern_contract(&mut legacy_types, signature);
             extern_decls.push(ExternDecl {
                 id,
                 fz_name: world.function_ref(executable.key.activation.function).name.clone(),
@@ -210,8 +175,6 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                 params: signature.params.clone(),
                 variadic: signature.variadic,
                 ret: signature.ret,
-                ret_descr: semantic_contract.result.clone(),
-                semantic_contract,
             });
         }
 
@@ -2021,14 +1984,6 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
         state: &mut DispatchState,
     ) -> Result<Var, FatalError> {
         Ok(match region {
-            Region::Any => {
-                let (var, _) = ctx.emit_let(Prim::Const(Const::True));
-                var
-            }
-            Region::Never => {
-                let (var, _) = ctx.emit_let(Prim::Const(Const::False));
-                var
-            }
             Region::Type(ty) => {
                 let subject = self.dispatch_subject_var(ctx, plan, state, subject)?;
                 let predicate = self.world.types().runtime_type_predicate(ty);
@@ -4033,6 +3988,6 @@ fn incomplete_native_program(world: &World<'_>, root_id: RootId, message: impl I
         format!("compiler2 native lowering for root {}: {}", root_id.as_u32(), message),
         Span::DUMMY,
     );
-    emit_through(world.tel(), None, std::slice::from_ref(&diagnostic));
+    emit_through(world.tel(), std::slice::from_ref(&diagnostic));
     FatalError
 }

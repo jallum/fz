@@ -578,20 +578,6 @@ impl<'a> Runtime<'a> {
             }
         }
     }
-
-    /// Read-only access to a task (for tests / inspection).
-    #[cfg(test)]
-    pub fn task(&self, pid: PidId) -> Option<&Process> {
-        self.tasks.get(&pid).map(|b| &**b)
-    }
-
-    /// fz-yxs/fz-st5 — test-only mutable accessor. Lets the unit tests
-    /// in this module pre-seed a receiver with a `wait`
-    /// record before driving the sender-probe path.
-    #[cfg(test)]
-    pub fn task_mut(&mut self, pid: PidId) -> Option<&mut Process> {
-        self.tasks.get_mut(&pid).map(|b| &mut **b)
-    }
 }
 
 /// Test seam: a telemetry handler that projects each `fz.runtime.process_exited`
@@ -615,10 +601,6 @@ impl ProcessExitCapture {
         Box::new(ProcessExitHandler {
             records: self.records.clone(),
         })
-    }
-
-    pub fn last(&self) -> Option<ExitRecord> {
-        self.records.borrow().last().copied()
     }
 
     pub fn by_pid(&self, pid: PidId) -> Option<ExitRecord> {
@@ -721,7 +703,3 @@ impl Handler for ProcessExitHandler {
         });
     }
 }
-
-#[cfg(test)]
-#[path = "runtime_test.rs"]
-mod runtime_test;

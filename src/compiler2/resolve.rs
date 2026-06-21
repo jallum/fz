@@ -20,11 +20,10 @@
 use std::collections::HashMap;
 
 use crate::ast::{SpecDecl, TypeExprBody};
-use crate::compiler::source::Span;
 use crate::diag::Diagnostic;
 use crate::diag::codes;
 use crate::modules::identity::ModuleName;
-use crate::specs::{ResolvedStructFieldShape, ResolvedTypeShape};
+use crate::source::Span;
 use crate::type_expr::ResolvedSpecDecl;
 
 use super::identity::{NotedTypeDecl, TypeName};
@@ -35,44 +34,12 @@ use super::types::{Ty, TypeVarId};
 use super::world::World;
 
 /// An `@spec` resolved against its captured namespace: hard compiler2 types in
-/// argument/result position, the parallel structural [`ResolvedTypeShape`]s
-/// (variable-numbering shared with the types), and the `when`-clause bounds.
-///
-/// The shapes carry the same `TypeVarId`s as the types because both come from
-/// one traversal threading a single variable map, so a `t` in argument position
-/// and the `t` named in `when t: Bound` are the very same variable.
-// Consumed by the contract/dispatch/extern cut-over (fz-rh2.12.4); landed one
-// inch ahead and exercised by this inch's resolver tests.
-#[allow(dead_code)]
+/// argument/result position plus the `when`-clause bounds.
 #[derive(Debug, Clone)]
 pub(crate) struct ResolvedSpec {
     pub(crate) params: Vec<Ty>,
-    pub(crate) param_shapes: Vec<ResolvedTypeShape>,
     pub(crate) result: Ty,
-    pub(crate) result_shape: ResolvedTypeShape,
     pub(crate) constraints: HashMap<TypeVarId, Ty>,
-    /// The declared name of each free variable (`%{0: "t"}`), inverted from the
-    /// resolution environment. Ephemeral: diagnostics and the addressed-arrow
-    /// name sidecar; never part of a hard type.
-    pub(crate) var_names: HashMap<TypeVarId, String>,
-}
-
-/// An `@spec` resolved to the canonical **addressed arrow** plus its ephemeral
-/// sidecars. The arrow is the single interned language for the function's type
-/// surface (parameter variables addressed `a{i}`, the result `r0`, components
-/// `P_j`); `names` and `bounds` are keyed by the same address ids and live only
-/// as long as diagnostics and contract application need them. This is the
-/// canonical form [`World::resolve_spec_decl`]'s separable
-/// `{params, result, constraints}` surface (the `Trash*` contract types)
-/// collapses onto in fz-hwn.27.9.
-// Consumed by the contract restructure (fz-hwn.27.9); landed ahead and
-// exercised by this ticket's resolver test, mirroring `ResolvedSpec`.
-#[allow(dead_code)]
-#[derive(Debug, Clone)]
-pub(crate) struct ResolvedArrow {
-    pub(crate) arrow: Ty,
-    pub(crate) names: HashMap<TypeVarId, String>,
-    pub(crate) bounds: HashMap<TypeVarId, Ty>,
 }
 
 /// How a name in type position classifies once measured against the namespace.
@@ -142,13 +109,9 @@ impl World<'_> {
         Ok(TypeDef { ty, params })
     }
 
-    /// Resolves an `@spec` to hard types and parallel shapes against the
-    /// namespace captured where the spec appears. Free type variables are
-    /// allocated first-seen and shared across every position and the
-    /// `when`-clause bounds.
-    // Consumed by the contract/dispatch/extern cut-over (fz-rh2.12.4); landed one
-    // inch ahead and exercised by this inch's resolver tests.
-    #[allow(dead_code)]
+    /// Resolves an `@spec` to hard types against the namespace captured where
+    /// the spec appears. Free type variables are allocated first-seen and
+    /// shared across every position and the `when`-clause bounds.
     pub(crate) fn resolve_spec(
         &mut self,
         namespace: Namespace,
@@ -156,15 +119,13 @@ impl World<'_> {
     ) -> Result<ResolvedSpec, TypeExprError> {
         let mut vars: HashMap<String, TypeVarId> = HashMap::new();
         let mut params = Vec::with_capacity(spec.param_body_tokens.len());
-        let mut param_shapes = Vec::with_capacity(spec.param_body_tokens.len());
         for body in &spec.param_body_tokens {
             let expr = parse_type_expr(&body.0)?;
-            let (ty, shape) = self.resolve_pair(namespace, &expr, &mut vars)?;
+            let ty = self.resolve_ty(namespace, &expr, &mut vars)?;
             params.push(ty);
-            param_shapes.push(shape);
         }
         let result_expr = parse_type_expr(&spec.result_body_tokens.0)?;
-        let (result, result_shape) = self.resolve_pair(namespace, &result_expr, &mut vars)?;
+        let result = self.resolve_ty(namespace, &result_expr, &mut vars)?;
         let mut constraints = HashMap::new();
         for (var_name, body) in &spec.constraints {
             let Some(&id) = vars.get(var_name) else {
@@ -177,48 +138,11 @@ impl World<'_> {
             let bound = self.resolve_ty(namespace, &expr, &mut vars)?;
             constraints.insert(id, bound);
         }
-        let var_names = vars.into_iter().map(|(name, id)| (id, name)).collect();
         Ok(ResolvedSpec {
             params,
-            param_shapes,
             result,
-            result_shape,
             constraints,
-            var_names,
         })
-    }
-
-    /// Resolves one spec to its canonical [`ResolvedArrow`]: the addressed arrow
-    /// plus name/bound sidecars re-keyed onto addresses. Every variable is
-    /// canonicalized to its structural address at construction, so the arrow is
-    /// the canonical form by construction — no after-the-fact normalization.
-    #[allow(dead_code)]
-    pub(crate) fn resolve_arrow(
-        &mut self,
-        namespace: Namespace,
-        spec: &SpecDecl,
-    ) -> Result<ResolvedArrow, TypeExprError> {
-        let resolved = self.resolve_spec(namespace, spec)?;
-        let types = self.types_mut();
-        let (arrow, env) = types.address_arrow_with_env(&resolved.params, resolved.result);
-        let mut sigma: HashMap<TypeVarId, Ty> = HashMap::new();
-        for (&original, &address) in &env {
-            let var = types.type_var(address);
-            sigma.insert(original, var);
-        }
-        let mut bounds = HashMap::new();
-        for (original, bound) in &resolved.constraints {
-            if let Some(&address) = env.get(original) {
-                let bound = types.instantiate(bound, &sigma);
-                bounds.insert(address, bound);
-            }
-        }
-        let names = resolved
-            .var_names
-            .iter()
-            .filter_map(|(original, name)| env.get(original).map(|&address| (address, name.clone())))
-            .collect();
-        Ok(ResolvedArrow { arrow, names, bounds })
     }
 
     /// Resolves a source `TypeExprBody` directly against a captured namespace.
@@ -256,50 +180,30 @@ impl World<'_> {
         expr: &TypeExpr,
         vars: &mut HashMap<String, TypeVarId>,
     ) -> Result<Ty, TypeExprError> {
-        Ok(self.resolve_pair(namespace, expr, vars)?.0)
-    }
-
-    /// The one traversal. Produces the hard type and its structural shape
-    /// together so their variable numbering can never drift apart.
-    fn resolve_pair(
-        &mut self,
-        namespace: Namespace,
-        expr: &TypeExpr,
-        vars: &mut HashMap<String, TypeVarId>,
-    ) -> Result<(Ty, ResolvedTypeShape), TypeExprError> {
         match expr {
             TypeExpr::Name { path, args } => self.resolve_name(namespace, path, args, vars),
             TypeExpr::List(inner) => {
-                let (elem, elem_shape) = self.resolve_pair(namespace, inner, vars)?;
-                Ok((
-                    self.types_mut().list(elem),
-                    ResolvedTypeShape::List(Box::new(elem_shape)),
-                ))
+                let elem = self.resolve_ty(namespace, inner, vars)?;
+                Ok(self.types_mut().list(elem))
             }
-            TypeExpr::EmptyList => Ok((self.types_mut().nil(), ResolvedTypeShape::Nil)),
+            TypeExpr::EmptyList => Ok(self.types_mut().nil()),
             TypeExpr::Tuple(elems) => {
-                let (tys, shapes) = self.resolve_each(namespace, elems, vars)?;
-                Ok((self.types_mut().tuple(&tys), ResolvedTypeShape::Tuple(shapes)))
+                let tys = self.resolve_each(namespace, elems, vars)?;
+                Ok(self.types_mut().tuple(&tys))
             }
             TypeExpr::Arrow { params, result } => {
-                let (param_tys, param_shapes) = self.resolve_each(namespace, params, vars)?;
-                let (result_ty, result_shape) = self.resolve_pair(namespace, result, vars)?;
-                Ok((
-                    self.types_mut().arrow(&param_tys, result_ty),
-                    ResolvedTypeShape::Arrow {
-                        params: param_shapes,
-                        result: Box::new(result_shape),
-                    },
-                ))
+                let param_tys = self.resolve_each(namespace, params, vars)?;
+                let result_ty = self.resolve_ty(namespace, result, vars)?;
+                Ok(self.types_mut().arrow(&param_tys, result_ty))
             }
             TypeExpr::Union(elems) => {
-                let (tys, shapes) = self.resolve_each(namespace, elems, vars)?;
+                let tys = self.resolve_each(namespace, elems, vars)?;
                 let mut tys = tys.into_iter();
                 let mut acc = tys.next().expect("a parsed union has at least two members");
                 for ty in tys {
                     acc = self.types_mut().union(acc, ty);
                 }
-                Ok((acc, ResolvedTypeShape::Union(shapes)))
+                Ok(acc)
             }
             TypeExpr::StructRecord { module, fields } => {
                 let module_name = ModuleName::from_segments(module.clone());
@@ -309,14 +213,9 @@ impl World<'_> {
                 let field_order = self.module_struct_fields(module_id).map(|fields| fields.to_vec());
                 let any = self.types_mut().any();
                 let mut by_name = HashMap::new();
-                let mut field_shapes = Vec::with_capacity(fields.len());
                 for (name, field) in fields {
-                    let (field_ty, field_shape) = self.resolve_pair(namespace, field, vars)?;
+                    let field_ty = self.resolve_ty(namespace, field, vars)?;
                     by_name.insert(name.clone(), field_ty);
-                    field_shapes.push(ResolvedStructFieldShape {
-                        name: name.clone(),
-                        ty: field_shape,
-                    });
                 }
                 let ordered_names =
                     field_order.unwrap_or_else(|| fields.iter().map(|(name, _)| name.clone()).collect());
@@ -324,33 +223,23 @@ impl World<'_> {
                     .iter()
                     .map(|name| by_name.get(name).copied().unwrap_or(any))
                     .collect::<Vec<_>>();
-                let ty = self.struct_value_ty(&module_name.dotted(), &ordered_names, &ordered_fields);
-                Ok((
-                    ty,
-                    ResolvedTypeShape::StructRecord {
-                        module: module_name,
-                        fields: field_shapes,
-                    },
-                ))
+                Ok(self.struct_value_ty(&module_name.dotted(), &ordered_names, &ordered_fields))
             }
-            TypeExpr::AtomLit(name) => Ok((
-                self.types_mut().atom_lit(name),
-                ResolvedTypeShape::AtomLit(name.clone()),
-            )),
+            TypeExpr::AtomLit(name) => Ok(self.types_mut().atom_lit(name)),
             // The lattice cannot express a numeric singleton (Elixir's
             // descr draws the same line): a literal in type position means
             // its kind, and says so once.
             TypeExpr::IntLit(value) => {
                 self.warn_numeric_literal_type(&value.to_string());
-                Ok((self.types_mut().int(), ResolvedTypeShape::IntLit(*value)))
+                Ok(self.types_mut().int())
             }
             TypeExpr::FloatLit(bits) => {
                 self.warn_numeric_literal_type(&f64::from_bits(*bits).to_string());
-                Ok((self.types_mut().float(), ResolvedTypeShape::FloatLit(*bits)))
+                Ok(self.types_mut().float())
             }
-            TypeExpr::Wildcard => Ok((self.types_mut().any(), ResolvedTypeShape::Any)),
-            TypeExpr::Nil => Ok((self.types_mut().nil(), ResolvedTypeShape::Nil)),
-            TypeExpr::Bool => Ok((self.types_mut().bool(), ResolvedTypeShape::Bool)),
+            TypeExpr::Wildcard => Ok(self.types_mut().any()),
+            TypeExpr::Nil => Ok(self.types_mut().nil()),
+            TypeExpr::Bool => Ok(self.types_mut().bool()),
         }
     }
 
@@ -359,15 +248,12 @@ impl World<'_> {
         namespace: Namespace,
         exprs: &[TypeExpr],
         vars: &mut HashMap<String, TypeVarId>,
-    ) -> Result<(Vec<Ty>, Vec<ResolvedTypeShape>), TypeExprError> {
+    ) -> Result<Vec<Ty>, TypeExprError> {
         let mut tys = Vec::with_capacity(exprs.len());
-        let mut shapes = Vec::with_capacity(exprs.len());
         for expr in exprs {
-            let (ty, shape) = self.resolve_pair(namespace, expr, vars)?;
-            tys.push(ty);
-            shapes.push(shape);
+            tys.push(self.resolve_ty(namespace, expr, vars)?);
         }
-        Ok((tys, shapes))
+        Ok(tys)
     }
 
     fn resolve_name(
@@ -376,52 +262,37 @@ impl World<'_> {
         path: &[String],
         args: &[TypeExpr],
         vars: &mut HashMap<String, TypeVarId>,
-    ) -> Result<(Ty, ResolvedTypeShape), TypeExprError> {
-        let (arg_tys, arg_shapes) = self.resolve_each(namespace, args, vars)?;
+    ) -> Result<Ty, TypeExprError> {
+        let arg_tys = self.resolve_each(namespace, args, vars)?;
         match self.classify_name(namespace, path, args.len(), vars) {
             NameClass::List => {
                 if args.len() > 1 {
                     return Err(self.name_error(path, "list takes at most one type argument"));
                 }
                 let inner_ty = arg_tys.into_iter().next().unwrap_or_else(|| self.types_mut().any());
-                let inner_shape = arg_shapes.into_iter().next().unwrap_or(ResolvedTypeShape::Any);
-                Ok((
-                    self.types_mut().list(inner_ty),
-                    ResolvedTypeShape::List(Box::new(inner_shape)),
-                ))
+                Ok(self.types_mut().list(inner_ty))
             }
             NameClass::Resource => {
                 let inner_ty = arg_tys.into_iter().next().unwrap_or_else(|| self.types_mut().any());
-                let inner_shape = arg_shapes.into_iter().next().unwrap_or(ResolvedTypeShape::Any);
-                Ok((
-                    self.types_mut().resource(inner_ty),
-                    ResolvedTypeShape::Resource(Box::new(inner_shape)),
-                ))
+                Ok(self.types_mut().resource(inner_ty))
             }
             NameClass::Builtin(builtin) => {
                 if !args.is_empty() {
                     return Err(self.name_error(path, "a builtin type takes no type arguments"));
                 }
-                Ok((self.builtin_ty(builtin), builtin_shape(builtin)))
+                Ok(self.builtin_ty(builtin))
             }
             NameClass::Named(type_name) => {
                 let Some(def) = self.type_def(&type_name).cloned() else {
                     return Err(self.name_error(path, "type is referenced before it is resolved"));
                 };
-                let ty = def.instantiate(self.types_mut(), &arg_tys);
-                Ok((
-                    ty,
-                    ResolvedTypeShape::Named {
-                        name: path.join("."),
-                        args: arg_shapes,
-                    },
-                ))
+                Ok(def.instantiate(self.types_mut(), &arg_tys))
             }
             NameClass::Var(id) => {
                 if !args.is_empty() {
                     return Err(self.name_error(path, "a type variable takes no type arguments"));
                 }
-                Ok((self.types_mut().type_var(id), ResolvedTypeShape::Var(id)))
+                Ok(self.types_mut().type_var(id))
             }
             NameClass::Unknown => Err(self.name_error(path, "unknown type name")),
         }
@@ -516,21 +387,4 @@ fn builtin_from_name(name: &str) -> Option<Builtin> {
         "ref" => Builtin::Ref,
         _ => return None,
     })
-}
-
-fn builtin_shape(builtin: Builtin) -> ResolvedTypeShape {
-    match builtin {
-        Builtin::Nil => ResolvedTypeShape::Nil,
-        Builtin::Bool => ResolvedTypeShape::Bool,
-        Builtin::Integer => ResolvedTypeShape::Integer,
-        Builtin::Float => ResolvedTypeShape::Float,
-        Builtin::CPointer => ResolvedTypeShape::CPointer,
-        Builtin::Binary => ResolvedTypeShape::Binary,
-        Builtin::Atom => ResolvedTypeShape::Atom,
-        Builtin::Any => ResolvedTypeShape::Any,
-        Builtin::Never => ResolvedTypeShape::Never,
-        Builtin::Utf8 => ResolvedTypeShape::Utf8,
-        Builtin::Pid => ResolvedTypeShape::Pid,
-        Builtin::Ref => ResolvedTypeShape::Ref,
-    }
 }

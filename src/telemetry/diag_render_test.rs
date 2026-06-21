@@ -1,8 +1,8 @@
 use super::*;
-use crate::compiler::source::{Id as CodeId, SourceMap, Span};
 use crate::diag::diagnostic::{DiagCode, Diagnostic, Diagnostics};
 use crate::diag::render::Renderer;
 use crate::metadata;
+use crate::source::{Id as CodeId, SourceMap, Span};
 use crate::telemetry::bus::ConfiguredTelemetry;
 use crate::telemetry::capture::vec_writer;
 use crate::telemetry::sink::Telemetry;

@@ -1,13 +1,13 @@
 use super::*;
 use crate::ast::{Expr, Pattern, Spanned};
+use crate::compiler2::{Ty, Types};
 use crate::dispatch_matrix::pattern::{PatternDispatchError, PatternSubjectRef, pattern_dispatch_from_source};
-use crate::types::Types;
 
 fn sp<T>(node: T) -> Spanned<T> {
     Spanned::dummy(node)
 }
 
-fn row(patterns: Vec<Pattern>, body_id: PatternBodyId) -> PatternRow {
+fn row(patterns: Vec<Pattern>, body_id: PatternBodyId) -> PatternRow<Ty> {
     PatternRow {
         patterns: patterns.into_iter().map(sp).collect(),
         preconditions: Vec::new(),
@@ -16,11 +16,11 @@ fn row(patterns: Vec<Pattern>, body_id: PatternBodyId) -> PatternRow {
     }
 }
 
-fn row_with_guard(patterns: Vec<Pattern>, body_id: PatternBodyId) -> PatternRow {
+fn row_with_guard(patterns: Vec<Pattern>, body_id: PatternBodyId) -> PatternRow<Ty> {
     row_with_guard_expr(patterns, body_id, Expr::Bool(true))
 }
 
-fn row_with_guard_expr(patterns: Vec<Pattern>, body_id: PatternBodyId, guard: Expr) -> PatternRow {
+fn row_with_guard_expr(patterns: Vec<Pattern>, body_id: PatternBodyId, guard: Expr) -> PatternRow<Ty> {
     PatternRow {
         patterns: patterns.into_iter().map(sp).collect(),
         preconditions: Vec::new(),
@@ -187,7 +187,7 @@ fn source_pattern_rows_reject_row_arity_mismatch() {
 
 #[test]
 fn source_pattern_rows_reject_unknown_input_precondition() {
-    let mut types = crate::types::new();
+    let mut types = Types::new();
     let patterns = SourcePatternRows {
         input_count: 1,
         rows: vec![PatternRow {

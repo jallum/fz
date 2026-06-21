@@ -21,7 +21,7 @@ use std::cmp::{max, min};
 use std::io::{self, Write};
 use std::iter::repeat_n;
 
-use crate::compiler::source::{SourceMap, Span};
+use crate::source::{SourceMap, Span};
 
 use super::diagnostic::{Diagnostic, Severity, SpanLabel};
 use super::style::{self, ColorMode};

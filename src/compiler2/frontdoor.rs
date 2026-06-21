@@ -2,9 +2,9 @@ use std::fmt::{self, Display, Formatter};
 use std::mem::discriminant;
 use std::rc::Rc;
 
-use crate::compiler::source::Span;
 use crate::diag::{Diagnostic, codes::PARSE_EXPECTED_TOKEN};
 use crate::parser::lexer::{Lexer, Tok, Token};
+use crate::source::Span;
 use crate::telemetry::Telemetry;
 use fz_runtime::any_value::AnyValueRef;
 

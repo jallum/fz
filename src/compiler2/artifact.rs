@@ -15,7 +15,6 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::ast::{BinOp, UnOp};
-use crate::compiler::source::Span;
 use crate::dispatch_matrix::pattern::{PatternDispatchPlan, PatternGuardExpr};
 use crate::dispatch_matrix::{
     ComparisonValue, DispatchEdge, DispatchNode, EdgeEvidence, GraphNodeId, PinnedValueId, Region, RegionPredicate,
@@ -26,6 +25,7 @@ use crate::fz_ir::{
     ExternalCallEdge, FnId, FnIr as IrFn, Module as IrModule, Prim as IrPrim, ReceiveAfter as IrReceiveAfter,
     ReceiveClause as IrReceiveClause, Stmt as IrStmt, Term as IrTerm, Var,
 };
+use crate::source::Span;
 
 use super::body::{
     CallSiteId, ControlDestination, ControlDispatch, ControlEntryId, DispatchBindings, Literal, LoweredBitField,
@@ -481,9 +481,7 @@ fn collect_region_predicate_inputs(
                 collect_guard_expr_inputs(plan, guard, out);
             }
         }
-        Region::Any
-        | Region::Never
-        | Region::Type(_)
+        Region::Type(_)
         | Region::Equal(ComparisonValue::Const(_))
         | Region::TupleArity(_)
         | Region::List(_)

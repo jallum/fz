@@ -1,7 +1,7 @@
 use fz_runtime::any_value::AnyValueRef;
 
-use crate::compiler::source::{Id as SourceId, Span};
 use crate::parser::lexer::{Tok, Token};
+use crate::source::{Id as SourceId, Span};
 
 use super::source::{QuotedSourceBuilder, QuotedSourceCursor, QuotedSourceError};
 

@@ -462,22 +462,18 @@ much as it can from it.
 
 ```text
 source code
-  -> parse
-  -> resolve names and macros
-  -> resolve @spec contracts into overload sets
-  -> lower to fz IR
-  -> learn type facts
-  -> simplify what can be simplified
-  -> run it: interpreter, JIT, AOT, or REPL
+  -> compiler2 source publication
+  -> semantic closure
+  -> artifact handoff
+  -> run it: interpreter, JIT, or AOT
 ```
 
-One IR, four ways to run it. They must agree.
+One compiler2 artifact ladder, three ways to run it. They must agree.
 
-The type stack is split by ownership. `src/types/` owns the set-theoretic
-lattice, `src/type_expr/` turns source type syntax into compiler facts,
-`src/specs/` owns spec matching and overload application, `src/type_infer/`
-learns activation facts from IR, and `src/ir_planner/` turns those facts into
-call edges, return shapes, and codegen capabilities.
+The type stack is split by ownership. `src/compiler2/types/` owns compiler2's
+interned set-theoretic lattice, `src/compiler2/type_expr.rs` turns source type
+syntax into compiler2 facts, and the compiler2 job families derive semantic
+closure, ABI, backend, and native artifacts from those facts.
 
 ### Looking inside the compiler
 
@@ -485,29 +481,26 @@ The rule in this repo: **do not guess.** Make the compiler leave
 breadcrumbs.
 
 ```sh
-fz dump fixtures/quicksort/input.fz --emit clif       # Cranelift IR
-fz dump fixtures/quicksort/input.fz --emit interfaces # public module contracts
-fz dump fixtures/quicksort/input.fz --emit interfaces --strict-interfaces # require public @specs
-fz dump fixtures/quicksort/input.fz --emit specs      # internal inferred planner specs
-fz dump fixtures/quicksort/input.fz --emit outcomes   # what happened at each call site
-fz dump fixtures/quicksort/input.fz --emit stats      # compiler counters
+fz2 run --dump clif=/tmp/quicksort.clif fixtures2/behavior/quicksort.fz
+fz2 run --dump types=/tmp/quicksort.types fixtures2/behavior/quicksort.fz
+fz2 run --dump activations=/tmp/quicksort.activations fixtures2/behavior/quicksort.fz
+fz2 run --dump backend=/tmp/quicksort.backend fixtures2/behavior/quicksort.fz
+fz2 run --dump native=/tmp/quicksort.native fixtures2/behavior/quicksort.fz
 ```
 
-Module interfaces are compiler facts, not a stored sidecar format.
-`fz dump --emit interfaces` is the public-contract view for a compile, and
-`--strict-interfaces` requires explicit `@spec`s on public exports.
+Compiler2 dumps are file sinks installed on a `run`, `interp`, or `build`
+command. The supported dump kinds are `activations`, `types`, `materialized`,
+`abi`, `backend`, `native`, `fnir`, and `clif`.
 
-Run/build/dump commands always compile the root source directly. If the program
-pulls in built-in runtime modules such as `Utf8` or `Enum`, the execution graph
-loads their checked-in source on demand and links that reachable set into the
-same image.
+Run/build/interp commands always submit the root source directly to compiler2.
+If the program pulls in built-in runtime modules such as `Utf8` or `Enum`, the
+compiler loads their checked-in source on demand and materializes only the
+root-reachable artifact set.
 
 These answer the questions you actually have while changing things:
 *Did this call get folded? Did this function get specialized? Did
-the compiler skip something — and why?* Many fixtures pin budget
-numbers (function count, instruction count, planner pops, dispatches)
-so that a change in compiler shape shows up loudly instead of
-quietly.
+the compiler skip something — and why?* Compiler2 telemetry and fixture
+contracts are the durable signal for compiler shape.
 
 ---
 
@@ -519,26 +512,26 @@ Build the compiler:
 cargo build --release
 ```
 
-That gives you a `fz` binary at `target/release/fz` — put it on your
+That gives you a `fz2` binary at `target/release/fz2` — put it on your
 `PATH` (or alias it) and the rest of these commands just work.
 
 Run a file with the JIT:
 
 ```sh
-fz run fixtures/quicksort/input.fz
+fz2 run fixtures2/behavior/quicksort.fz
 ```
 
 Build a native executable:
 
 ```sh
-fz build fixtures/quicksort/input.fz -o /tmp/qsort
+fz2 build fixtures2/behavior/quicksort.fz -o /tmp/qsort
 /tmp/qsort
 ```
 
 Run through the interpreter:
 
 ```sh
-fz interp fixtures/quicksort/input.fz
+fz2 interp fixtures2/behavior/quicksort.fz
 ```
 
 Start the REPL:

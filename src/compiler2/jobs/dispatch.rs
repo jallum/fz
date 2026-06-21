@@ -14,7 +14,6 @@ use super::super::scheduler::FatalError;
 use super::super::types::Ty;
 use super::super::world::World;
 use crate::ast::{Expr, Pattern, Spanned};
-use crate::compiler::source::Span;
 use crate::diag::Diagnostic;
 use crate::diag::codes;
 use crate::diag::driver::emit_through;
@@ -24,6 +23,7 @@ use crate::dispatch_matrix::pattern::{
     pattern_dispatch_from_source_with_guard_resolver,
 };
 use crate::function_surface::FunctionSurface;
+use crate::source::Span;
 
 #[derive(Debug, Clone)]
 pub(super) struct GuardCall {
@@ -588,6 +588,6 @@ fn function_label(def: &FunctionSurface) -> String {
 }
 
 fn emit_job_diagnostic(world: &World<'_>, diagnostic: Diagnostic) -> FatalError {
-    emit_through(world.tel(), None, std::slice::from_ref(&diagnostic));
+    emit_through(world.tel(), std::slice::from_ref(&diagnostic));
     FatalError
 }

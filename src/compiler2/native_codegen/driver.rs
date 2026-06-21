@@ -16,8 +16,8 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
 
 /// Walk every fn body collecting tuple arities used by MakeTuple /
-/// DestTupleBegin / RuntimeTypePredicate facts, detecting any bitstring prim, then
-/// registering a deterministic-id Schema per arity in `user_schemas`.
+/// RuntimeTypePredicate facts, detecting any bitstring prim, then registering a
+/// deterministic-id Schema per arity in `user_schemas`.
 ///
 /// Returns `(tuple_arities, tuple_schema_ids, bs_tuple_arity1_schema,
 /// bs_tuple_arity3_schema)`. Arity-1 / arity-3 schemas used by the
@@ -39,16 +39,12 @@ fn collect_tuple_arities_and_register_schemas(
                     Prim::MakeTuple(args) => {
                         tuple_arities.insert(args.len());
                     }
-                    Prim::DestTupleBegin { arity, .. } => {
-                        tuple_arities.insert(*arity);
-                    }
                     Prim::MakeBitstring(_)
                     | Prim::BitReaderInit(_)
                     | Prim::BitReadField { .. }
                     | Prim::BitReaderDone(_) => {
                         has_bs_prim = true;
                     }
-                    Prim::TypeTest(_, _) => panic!("compiler2 native program should not carry legacy Prim::TypeTest"),
                     Prim::RuntimeTypeTest(_, descr) => {
                         tuple_arities.extend(descr.tuple_arities.values.iter().copied());
                     }
@@ -727,7 +723,6 @@ fn emit_receive_dispatch_bodies<M: cranelift_module::Module>(
                 &DispatchRuntimeHelpers {
                     value_eq_typed_id: Some(runtime.value_eq_ref_id),
                     matcher_eq_bytes_id: Some(runtime.matcher_eq_bytes_id),
-                    matcher_map_get_id: Some(runtime.matcher_map_get_id),
                     matcher_map_get_ref_id: Some(runtime.matcher_map_get_ref_id),
                     type_of_id: Some(runtime.type_of_id),
                     unbox_int_id: Some(runtime.unbox_int_id),

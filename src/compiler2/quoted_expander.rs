@@ -2,9 +2,9 @@ use std::collections::HashSet;
 
 use fz_runtime::any_value::{AnyValueRef, ValueKind};
 
-use crate::compiler::source::Span;
 use crate::diag::driver::emit_through;
 use crate::diag::{Diagnostic, codes};
+use crate::source::Span;
 use crate::telemetry::opaque_debug;
 use crate::{measurements, metadata};
 
@@ -702,7 +702,7 @@ pub(crate) fn emit_macro_expanded(
 }
 
 pub(crate) fn emit_job_diagnostic(world: &World<'_>, diagnostic: Diagnostic) -> super::scheduler::FatalError {
-    emit_through(world.tel(), None, std::slice::from_ref(&diagnostic));
+    emit_through(world.tel(), std::slice::from_ref(&diagnostic));
     super::scheduler::FatalError
 }
 

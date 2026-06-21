@@ -2,10 +2,10 @@ use crate::ast::{
     AfterClause, Attribute, BinOp, BitField, BitFieldSpec, BitSize, BitType, Endian, Expr, FnClause, LambdaClause,
     MatchClause, Pattern, Spanned, SpecDecl, TypeExprBody, UnOp, WithBinding,
 };
-use crate::compiler::source::{Id as SourceId, Span};
 use crate::function_surface::FunctionSurface;
 use crate::modules::identity::ModuleName;
 use crate::parser::lexer::{Tok, Token};
+use crate::source::{Id as SourceId, Span};
 
 use super::code::CodeId;
 use super::source::{QuotedAstNode, QuotedSourceCursor, QuotedSourceError, QuotedSourceRoot};

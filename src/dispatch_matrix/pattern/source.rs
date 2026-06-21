@@ -1,8 +1,9 @@
 use std::collections::BTreeSet;
 
 use crate::ast::{Expr, Pattern, Spanned};
-use crate::dispatch_matrix::{DispatchNode, GraphNodeId, ListRegion, Region, SubjectId};
-use crate::types::Ty as DefaultTy;
+use crate::dispatch_matrix::{DispatchNode, GraphNodeId};
+#[cfg(test)]
+use crate::dispatch_matrix::{ListRegion, Region, SubjectId};
 
 use super::{PatternDispatchPlan, PatternSubjectRef, pattern_dispatch_from_source};
 
@@ -11,7 +12,7 @@ use super::{PatternDispatchPlan, PatternSubjectRef, pattern_dispatch_from_source
 pub(crate) type PatternBodyId = u32;
 
 #[derive(Debug, Clone)]
-pub(crate) struct PatternRow<TypeHandle = DefaultTy> {
+pub(crate) struct PatternRow<TypeHandle> {
     /// Column patterns. `patterns.len()` must equal `SourcePatternRows::input_count`.
     pub(crate) patterns: Vec<Spanned<Pattern>>,
     /// `@spec` annotation tests evaluated at leaf-resolution time, before the guard.
@@ -21,12 +22,13 @@ pub(crate) struct PatternRow<TypeHandle = DefaultTy> {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct SourcePatternRows<TypeHandle = DefaultTy> {
+pub(crate) struct SourcePatternRows<TypeHandle> {
     pub(crate) input_count: usize,
     pub(crate) rows: Vec<PatternRow<TypeHandle>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg(test)]
 pub(crate) enum KnownSubjectDomain {
     Any,
     List,
@@ -188,6 +190,7 @@ pub(crate) fn direct_bitfield_bindings(pattern: &Pattern) -> Vec<String> {
 /// Body ids that no path through the dispatch graph reaches. Guarded rows do
 /// not consume coverage: for diagnostics we replace concrete guards with
 /// `true`, compile one dispatch plan, and traverse both guard branches.
+#[cfg(test)]
 pub(crate) fn find_unreachable_rows<TypeHandle: Clone + PartialEq + Eq>(
     patterns: &SourcePatternRows<TypeHandle>,
 ) -> Vec<PatternBodyId> {
@@ -198,11 +201,13 @@ pub(crate) fn find_unreachable_rows<TypeHandle: Clone + PartialEq + Eq>(
     row_bodies.difference(&reached).copied().collect()
 }
 
-#[cfg(test)]
 pub(crate) fn is_inexhaustive<TypeHandle: Clone + PartialEq + Eq>(patterns: &SourcePatternRows<TypeHandle>) -> bool {
-    is_inexhaustive_with_domains(patterns, &[])
+    let normalized = normalize_guards_for_analysis(patterns.clone());
+    let plan = plan_for_analysis(normalized);
+    has_reachable_fail_in_graph(&plan, plan.graph.root)
 }
 
+#[cfg(test)]
 pub(crate) fn is_inexhaustive_with_domains<TypeHandle: Clone + PartialEq + Eq>(
     patterns: &SourcePatternRows<TypeHandle>,
     domains: &[KnownSubjectDomain],
@@ -229,6 +234,7 @@ fn normalize_guards_for_analysis<TypeHandle>(
     patterns
 }
 
+#[cfg(test)]
 fn collect_reachable_bodies_from_graph<TypeHandle>(
     plan: &PatternDispatchPlan<TypeHandle>,
     node: GraphNodeId,
@@ -264,6 +270,7 @@ fn has_reachable_fail_in_graph<TypeHandle>(plan: &PatternDispatchPlan<TypeHandle
     }
 }
 
+#[cfg(test)]
 fn list_domain_is_covered<TypeHandle>(
     patterns: &SourcePatternRows<TypeHandle>,
     domains: &[KnownSubjectDomain],

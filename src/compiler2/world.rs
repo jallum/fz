@@ -9,14 +9,13 @@
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use crate::compiler::source::Span;
 use crate::diag::diagnostic::Severity;
 use crate::diag::driver::emit_through;
 use crate::diag::{Diagnostic, codes};
 use crate::dispatch_matrix::pattern::{PatternDispatchPlan, PatternGuardDispatch};
-use crate::frontend::protocols::protocol_domain_tag;
 use crate::modules::identity::{Mfa, ModuleName};
 use crate::modules::runtime_library;
+use crate::source::Span;
 use crate::telemetry::{Telemetry, opaque, opaque_debug};
 use crate::{FunctionSurface, measurements, metadata};
 
@@ -42,7 +41,7 @@ use super::module_interface::{InterfaceCallableKind, InterfaceExpectation, Inter
 use super::namespace::{Namespace, NamespaceStore, NamespaceSymbol};
 use super::protocol::{
     ProtocolCallback, ProtocolCallbackImpl, ProtocolCallbackMap, ProtocolDispatch, ProtocolDispatchArm,
-    ProtocolDispatchMap, ProtocolImpl, ProtocolImplKey, ProtocolImplMap, ProtocolImplProviderMap,
+    ProtocolDispatchMap, ProtocolImpl, ProtocolImplKey, ProtocolImplMap, ProtocolImplProviderMap, protocol_domain_tag,
 };
 use super::quoted_surface::{ReservedSourceDefinition, ScopeForm, reserved_source_definition};
 use super::runtime::{self, RuntimeModuleCode};
@@ -626,14 +625,14 @@ impl<'a> World<'a> {
             .map(|issue| issue.diagnostic)
             .collect::<Vec<_>>();
         if !diagnostics.is_empty() {
-            emit_through(self.tel, None, &diagnostics);
+            emit_through(self.tel, &diagnostics);
         }
         self.reported_unresolved = next;
     }
 
     pub(crate) fn emit_warning_once(&mut self, diagnostic: Diagnostic) {
         if diagnostic.severity != Severity::Warning {
-            emit_through(self.tel, None, std::slice::from_ref(&diagnostic));
+            emit_through(self.tel, std::slice::from_ref(&diagnostic));
             return;
         }
         if self
@@ -658,7 +657,7 @@ impl<'a> World<'a> {
                 .then(left.message.cmp(&right.message))
         });
         if !self.warning_diagnostics.is_empty() {
-            emit_through(self.tel, None, &self.warning_diagnostics);
+            emit_through(self.tel, &self.warning_diagnostics);
         }
         self.warning_diagnostics.clear();
     }
@@ -1690,7 +1689,6 @@ impl<'a> World<'a> {
     }
 
     // Consumed by the contract re-seat (fz-rh2.12.4); recorded one inch ahead.
-    #[allow(dead_code)]
     pub(crate) fn function_type_refs(&self, function: FunctionId) -> &[TypeName] {
         self.type_refs.function_refs(function)
     }
@@ -1817,11 +1815,9 @@ impl<'a> World<'a> {
     /// type is tagged `Module.Path::name`.
     pub(crate) fn qualified_type_tag(&self, name: &TypeName) -> String {
         if self.is_protocol_domain_type(name)
-            && let Some(protocol) = self
-                .module_name(name.module)
-                .and_then(|path| crate::modules::identity::ModuleName::parse_dotted(path).ok())
+            && let Some(protocol) = self.module_name(name.module)
         {
-            return protocol_domain_tag(&protocol);
+            return protocol_domain_tag(protocol);
         }
         if name.module.is_global() {
             return name.name.clone();
@@ -3005,7 +3001,7 @@ impl<'a> World<'a> {
 }
 
 fn emit_job_diagnostic(world: &World<'_>, diagnostic: Diagnostic) -> FatalError {
-    emit_through(world.tel(), None, std::slice::from_ref(&diagnostic));
+    emit_through(world.tel(), std::slice::from_ref(&diagnostic));
     FatalError
 }
 
@@ -3094,6 +3090,6 @@ fn impl_target_ty<T: crate::types::Types<Ty = Ty>>(t: &mut T, module_name: &str)
         "Atom" => t.atom(),
         "Binary" => t.str_t(),
         "Map" => t.map_top(),
-        other => crate::frontend::protocols::struct_impl_target_type(t, other),
+        other => t.opaque_of(&format!("impl-target::{}", other)),
     }
 }

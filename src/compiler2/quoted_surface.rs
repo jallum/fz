@@ -3,9 +3,9 @@ use std::collections::HashMap;
 use fz_runtime::any_value::AnyValueRef;
 
 use crate::ast::{Attribute, TypeAliasDecl, TypeExprBody};
-use crate::compiler::source::{Id as SourceId, Span};
 use crate::modules::identity::ModuleName;
 use crate::parser::lexer::Tok;
+use crate::source::{Id as SourceId, Span};
 
 use super::code::CodeId;
 use super::source::{QuotedAstNode, QuotedSourceCursor, QuotedSourceError, QuotedSourceRoot};
@@ -40,7 +40,6 @@ pub(crate) fn is_scope_definition_head(head: &str) -> bool {
 }
 
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub enum ScopeForm {
     Alias(AliasForm),
     Import(ImportForm),
@@ -55,7 +54,6 @@ pub enum ScopeForm {
 }
 
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct AliasForm {
     pub path: Vec<String>,
     pub as_name: String,
@@ -117,7 +115,6 @@ pub struct ProtocolImplForm {
 }
 
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct StructForm {
     pub source: QuotedSourceRoot,
     pub fields: Vec<String>,
@@ -125,7 +122,6 @@ pub struct StructForm {
 }
 
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct MacroCallForm {
     pub source: QuotedSourceRoot,
     pub span: Span,

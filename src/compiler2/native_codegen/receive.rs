@@ -76,7 +76,6 @@ pub(crate) fn declare_receive_dispatch<M: cranelift_module::Module>(
 pub(crate) struct DispatchRuntimeHelpers {
     pub value_eq_typed_id: Option<FuncId>,
     pub matcher_eq_bytes_id: Option<FuncId>,
-    pub matcher_map_get_id: Option<FuncId>,
     pub matcher_map_get_ref_id: Option<FuncId>,
     pub type_of_id: Option<FuncId>,
     pub unbox_int_id: Option<FuncId>,
@@ -103,10 +102,6 @@ pub(crate) struct DispatchRuntimeHelpers {
 struct DispatchRuntimeRefs {
     value_eq_typed_fref: Option<ir::FuncRef>,
     matcher_eq_bytes_fref: Option<ir::FuncRef>,
-    // Carried for API parity with `DispatchRuntimeHelpers::matcher_map_get_id`;
-    // current emit paths use the `_ref` variant instead.
-    #[allow(dead_code)]
-    matcher_map_get_fref: Option<ir::FuncRef>,
     matcher_map_get_ref_fref: Option<ir::FuncRef>,
     type_of_fref: Option<ir::FuncRef>,
     unbox_int_fref: Option<ir::FuncRef>,
@@ -144,7 +139,6 @@ pub(crate) fn emit_receive_dispatch_body<M: cranelift_module::Module>(
     let DispatchRuntimeHelpers {
         value_eq_typed_id,
         matcher_eq_bytes_id,
-        matcher_map_get_id,
         matcher_map_get_ref_id,
         type_of_id,
         unbox_int_id,
@@ -209,7 +203,6 @@ pub(crate) fn emit_receive_dispatch_body<M: cranelift_module::Module>(
         let runtime = DispatchRuntimeRefs {
             value_eq_typed_fref: value_eq_typed_id.map(|fid| m.declare_func_in_func(fid, b.func)),
             matcher_eq_bytes_fref: matcher_eq_bytes_id.map(|fid| m.declare_func_in_func(fid, b.func)),
-            matcher_map_get_fref: matcher_map_get_id.map(|fid| m.declare_func_in_func(fid, b.func)),
             matcher_map_get_ref_fref: matcher_map_get_ref_id.map(|fid| m.declare_func_in_func(fid, b.func)),
             type_of_fref: type_of_id.map(|fid| m.declare_func_in_func(fid, b.func)),
             unbox_int_fref: unbox_int_id.map(|fid| m.declare_func_in_func(fid, b.func)),
@@ -620,12 +613,6 @@ fn emit_region_test(
 ) -> Result<Vec<(SubjectId, ReceiveValue)>, CodegenError> {
     let mut true_values = Vec::new();
     match region {
-        Region::Any => {
-            b.ins().jump(true_b, &[]);
-        }
-        Region::Never => {
-            b.ins().jump(false_b, &[]);
-        }
         Region::Type(predicate) => {
             let val = resolve_dispatch_subject(b, ctx, subject, state)?;
             emit_runtime_type_predicate_region_test(b, ctx, val, predicate, true_b, false_b)?;
@@ -1969,9 +1956,7 @@ fn collect_binary_literals_in_region(region: &ReceiveRegion, out: &mut Vec<Vec<u
         Region::Equal(ComparisonValue::Const(value)) | Region::MapKeyPresent { key: value } => {
             collect_binary_literals_in_const(value, out);
         }
-        Region::Any
-        | Region::Never
-        | Region::Type(_)
+        Region::Type(_)
         | Region::Equal(ComparisonValue::Pinned(_))
         | Region::TupleArity(_)
         | Region::List(_)

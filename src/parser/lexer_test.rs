@@ -1,5 +1,5 @@
 use super::*;
-use crate::compiler::source::{Id, SourceMap};
+use crate::source::{Id, SourceMap};
 
 // DROP: lexer infrastructure — span accuracy, no language semantics
 #[test]

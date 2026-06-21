@@ -6,8 +6,8 @@
 
 use std::collections::HashMap;
 
-use crate::compiler::source::Span;
 use crate::fz_ir::FnId;
+use crate::source::Span;
 
 use super::body::{CallSiteId, LoweredBody, LoweredTail};
 use super::identity::{ActivationKey, FunctionId, RootId};

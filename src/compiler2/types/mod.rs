@@ -1,9 +1,7 @@
 //! Interned set-theoretic type implementation.
 //!
-//! This module intentionally duplicates the concrete type kernel instead of
-//! depending on `concrete_types::Descr`. Its `Descr` is private here, and every
-//! structural child is a `Ty` allocated by the owning
-//! `Types` instance.
+//! Its `Descr` is private here, and every structural child is a `Ty` allocated
+//! by the owning `Types` instance.
 
 mod addressed;
 mod arrow_match;
