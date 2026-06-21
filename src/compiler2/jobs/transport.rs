@@ -2879,13 +2879,12 @@ fn boundary_return_shapes_for_flow_surfaces(
                     continue;
                 }
                 let inputs = resolution.activation.inputs(world.types());
-                if inputs.len() != addressed_captures.len() + surface.inputs.len() {
+                let Some(own) = world
+                    .types_mut()
+                    .own_surface_past_captures(&inputs, &addressed_captures)
+                else {
                     continue;
-                }
-                if inputs[..addressed_captures.len()] != addressed_captures[..] {
-                    continue;
-                }
-                let own = world.types_mut().address_inputs(&inputs[addressed_captures.len()..]);
+                };
                 if own == surface.inputs {
                     found = Some(resolution);
                     break;

@@ -715,7 +715,7 @@ impl<'a> World<'a> {
     /// captures through unchanged. `None` when `template_surface` is already
     /// representable, or is a genuine polymorphic escape with no ground instance.
     pub(crate) fn ground_surface_for_template(
-        &self,
+        &mut self,
         root: RootId,
         function: FunctionId,
         captures_len: usize,
@@ -724,14 +724,24 @@ impl<'a> World<'a> {
         if !self.types.key_is_value_template(template_surface) {
             return None;
         }
-        self.activations
+        let candidates: Vec<Vec<Ty>> = self
+            .activations
             .keys()
             .filter(|key| key.root == root && key.function == function)
-            .filter_map(|key| {
-                let inputs = key.inputs(&self.types);
-                (inputs.len() >= captures_len).then(|| inputs[captures_len..].to_vec())
-            })
-            .find(|sibling_surface| self.is_ground_instance_of_template(sibling_surface, template_surface))
+            .map(|key| key.inputs(&self.types))
+            .filter(|inputs| inputs.len() >= captures_len)
+            .collect();
+        for inputs in candidates {
+            // The sibling's own-surface — its inputs past the leading capture
+            // slots, re-addressed into the standalone surface frame so it
+            // compares to the template by address, not by raw position
+            // (fz-hwn.27.8).
+            let sibling_surface = self.types.own_surface(&inputs, captures_len);
+            if self.is_ground_instance_of_template(&sibling_surface, template_surface) {
+                return Some(sibling_surface);
+            }
+        }
+        None
     }
 
     /// True when `sibling` is the SAME activation as `template` with its

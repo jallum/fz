@@ -498,10 +498,10 @@ fn callable_boundary_return_demand_contributions(
                     continue;
                 }
                 // Match `surface` as the own-surface suffix in the addressed
-                // frame: re-address the suffix standalone and compare to the
-                // canonical surface (fz-hwn.27.6, A).
-                let offset = resolution_inputs.len() - surface.inputs.len();
-                let own_surface = world.types_mut().address_inputs(&resolution_inputs[offset..]);
+                // frame: project the suffix past the capture prefix and compare
+                // to the canonical surface (fz-hwn.27.6, A; fz-hwn.27.8).
+                let captures_len = resolution_inputs.len() - surface.inputs.len();
+                let own_surface = world.types_mut().own_surface(&resolution_inputs, captures_len);
                 if own_surface != surface.inputs {
                     continue;
                 }
@@ -1446,15 +1446,12 @@ fn propagate_lambda_capture_demands(
             continue;
         }
         let callee_inputs = callee.activation.inputs(world.types());
-        if callee_inputs.len() < addressed_captures.len() {
-            continue;
-        }
-        if callee_inputs[..addressed_captures.len()] != addressed_captures[..] {
-            continue;
-        }
-        let own_params = world
+        let Some(own_params) = world
             .types_mut()
-            .address_inputs(&callee_inputs[addressed_captures.len()..]);
+            .own_surface_past_captures(&callee_inputs, &addressed_captures)
+        else {
+            continue;
+        };
         if !callable.resolved.is_empty() && !callable.resolved.iter().any(|surface| surface.inputs == own_params) {
             continue;
         }

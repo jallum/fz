@@ -122,6 +122,34 @@ impl Types {
             .collect()
     }
 
+    /// The OWN-SURFACE of a closure activation arrow: its parameter slots past
+    /// the `captures_len` leading capture slots, re-addressed standalone. A
+    /// closure activation surface is `(cap0..capK, param0..)` — the captures are
+    /// leading addressed slots and the params are the suffix (fz-hwn.27.8). The
+    /// suffix carries `a{K}..` addresses in the full arrow's frame; re-addressing
+    /// rebases it to the canonical `a0`-based surface frame, so two closures that
+    /// share a body but differ in captures yield one own-surface, comparable to a
+    /// standalone `CallableSurface`. Idempotent when `captures_len` is 0.
+    pub fn own_surface(&mut self, activation_inputs: &[Ty], captures_len: usize) -> Vec<Ty> {
+        self.address_inputs(&activation_inputs[captures_len..])
+    }
+
+    /// The own-surface of a closure activation that carries `addressed_captures`
+    /// as its leading slots, or `None` when it does not — a different closure
+    /// instance (fz-hwn.27.8). `addressed_captures` is the captures addressed
+    /// standalone; by the left-to-right addressing property it is exactly the
+    /// activation arrow's leading capture prefix, so prefix equality decides
+    /// capture identity and the suffix re-addresses to the own-surface.
+    pub fn own_surface_past_captures(
+        &mut self,
+        activation_inputs: &[Ty],
+        addressed_captures: &[Ty],
+    ) -> Option<Vec<Ty>> {
+        let captures_len = addressed_captures.len();
+        (activation_inputs.len() >= captures_len && activation_inputs[..captures_len] == *addressed_captures)
+            .then(|| self.own_surface(activation_inputs, captures_len))
+    }
+
     /// As [`address_arrow`](Self::address_arrow), but also returns the
     /// original-id -> address-id map. Callers re-key sidecars (variable bounds,
     /// human names) onto addresses through this map so they stay aligned with
