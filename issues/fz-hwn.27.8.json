@@ -21,11 +21,15 @@
     {
       "text": "Retarget comment (2026-06-20T16:13:20Z) is SUPERSEDED. Its premise — value_types frame divergence is 'the cure for fz-hwn.23' — was disproven: fz-hwn.23 is fixed (c1f1b55fb) by cross-activation surface grounding, and the gate reads addressed ActivationKey.inputs, never value_types (removing the alpha_normalize_vars on value_types changed nothing). This ticket reverts to its ORIGINAL scope: captures as leading addressed slots, replacing positional .input slicing with structural projection by address. NOTE: the fz-hwn.23 fix already does the capture/surface split PRAGMATICALLY (ground_surface_for_template slices inputs[captures_len..], captures threaded unchanged) — 27.8 is the principled structural home for that split.",
       "timestamp": "2026-06-20T20:35:17Z"
+    },
+    {
+      "text": "Frame-unification half DONE via fz-hwn.27.15 (retire alpha_normalize_vars): the value_types/return-evidence/callsite-return survivors the .27.5 probe flagged are gone — deleted, not re-addressed, because both binders now address (27.6 key-mint, 27.14 resolver) so those types were already in the addressed frame. The a0-vs-alpha0 divergence is resolved by construction. This ticket now covers ONLY the remaining half: captures as leading addressed slots (replace the ~19 positional inputs[..k]/[k..] slices with structural projection).",
+      "timestamp": "2026-06-21T11:26:39Z"
     }
   ],
   "priority": 1,
   "status": "open",
   "title": "Captures as leading addressed slots: replace positional .input slicing with structural projection",
   "type": "task",
-  "updated_at": "2026-06-20T20:35:17Z"
+  "updated_at": "2026-06-21T11:26:39Z"
 }
