@@ -5,7 +5,7 @@
   ],
   "blocks": [],
   "created": "2026-06-21T18:23:26Z",
-  "description": "Re-enable the fixture_matrix legs that were failing solely on multi-target protocol dispatch (membership_operator, range_enumerable, enumerable_protocol_dispatch, enum_map_family, enum_predicate_search per fz-9i4.7.2). Some may still fail on CORRECTNESS (e.g. enum_take_drop_split needs the separate take/drop bug). Re-enable the ones that go green; leave the rest gated with a comment pointing at their remaining blocker. Update/close fz-9i4.7.2. Depends on C2.",
+  "description": "Re-enable the fixture_matrix legs that failed solely on multi-target protocol dispatch (per fz-9i4.7.2: membership_operator, range_enumerable, enumerable_protocol_dispatch, enum_map_family, enum_predicate_search). Re-enable those that now go GREEN; leave any still-failing on a SEPARATE blocker gated with a comment naming it (e.g. enum_take_drop_split still needs fz-kot, the take/drop-returns-empty bug). Update/close fz-9i4.7.2. Depends on fz-bin.2.",
   "id": "fz-bin.3",
   "labels": [],
   "parent": "fz-bin",
@@ -13,5 +13,5 @@
   "status": "open",
   "title": "Re-enable fz-9i4.7.2 fixtures that now compile; verify matrix green",
   "type": "task",
-  "updated_at": "2026-06-21T18:23:27Z"
+  "updated_at": "2026-06-21T18:47:20Z"
 }
