@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-bin.1"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-bin.3"
+  ],
   "created": "2026-06-21T18:23:26Z",
   "description": "Make resolve_function_call treat a protocol callback as an ordinary function once it has a dispatcher body (bypass/retire the resolve_protocol_call multi-target emission), so a call to the callback resolves to ONE target (the dispatcher). Keep resolve_protocol_call's impl-MODULE demand (it drives discovery of defimpls whose target overlaps the receiver) or re-home that demand into the dispatcher derivation. Acceptance: /tmp/listrange.fz (Enum.take on list AND range) COMPILES with no 'multi-target direct callsite' error. Verify lib+matrix green. Depends on C1.",
   "id": "fz-bin.2",
