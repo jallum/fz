@@ -4,13 +4,14 @@
   "blocks": [
     "fz-27u"
   ],
+  "closed_at": "2026-06-21T17:21:18Z",
   "created": "2026-06-21T17:05:30Z",
   "description": "PERF (root cause of enum_take_drop_split ~1.2s compile). project_transport_plan derives one root's transport plan by folding over the program's value-flow DAG (project_source/project_sources et al). Five recursion sites do `let mut staged = facts.clone()`: a transactional rollback implemented as a full deep-copy of the entire TransportFactsBuilder (4 HashMaps of Callable/BoundaryFactsDraft) at EVERY node, committed (`*facts = staged`) on a consistent Exact shape and discarded otherwise. Measured on fixtures2/00420_enum_take_drop_split.fz: one plan call = 438 executables, 105,422 project_source calls, 2,678,965 HashMap entries deep-cloned, to produce 53 callables. ~0.6s, ~half the compile; a clean CPU sample puts essentially all on-thread time in project_source.\n\nROOT CAUSE: the fact builder is an additive, idempotent, commutative monoid (every record_* is extend_unique / entry-or-insert-push-if-absent; nothing mutated in place or removed). The snapshot clone provides a private write buffer AND a read view; but every in-fold read of facts.{callables,boundaries,publication_source_*} is reachable only with publication=None, where the reads are statically inert, or at top-level/post-pass sites against committed facts. So the clone's read view is never consulted in-fold -- the snapshot exists solely for rollback, and rollback of an additive monoid needs no snapshot.\n\nFIX: add `fn merge(\u0026mut self, other: \u0026TransportFactsBuilder)` (the monoid join, by-ref so it copies only entries, not the whole structure). At the 5 rollback sites replace `staged = facts.clone()` with `delta = TransportFactsBuilder::default()` (empty -\u003e no alloc until first insert) and the commit `*facts = staged` with `facts.merge(\u0026delta)`; discard paths just drop the delta. project_source signature is UNCHANGED (still \u0026mut TransportFactsBuilder; we hand it a fresh delta instead of a clone).\n\nEQUIVALENCE (correct by construction): staged begins as facts.clone() and only ever has entries added (records are additive), so staged = facts union writes; therefore *facts=staged === facts union= writes === facts.merge(\u0026delta). The callable-disagree branch in project_sources (commits publication-source-shapes while returning Unknown) keeps its record_*+merge pair unchanged. Only observable difference would be an in-fold read of the accumulator -- proven inert.\n\nVERIFY: temporary probe (project_source call count, cloned/merged entry count, per-plan elapsed) -- target clone-entries -\u003e ~0. lib + matrix green, zero warnings, before commit. NOTE: this is necessary but not sufficient for the \u003c50ms goal; the 449-executable/1810-activation over-specialization (downstream monolith) is a separate front. Re-measure after landing to quantify the remainder. Dated measurements are vs HEAD ce2cfb065; re-verify line numbers vs HEAD at execution.",
   "id": "fz-90r",
   "labels": [],
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Transport projection: return fact deltas instead of snapshot-cloning the builder",
   "type": "task",
-  "updated_at": "2026-06-21T17:15:16Z"
+  "updated_at": "2026-06-21T17:21:18Z"
 }
