@@ -4,13 +4,14 @@
     "fz-90r"
   ],
   "blocks": [],
+  "closed_at": "2026-06-21T17:47:12Z",
   "created": "2026-06-21T17:05:46Z",
   "description": "PERF, depends on fz-90r (delta refactor). After fz-90r makes project_source pure (writes captured in a returnable delta), the fold still re-derives shared callees ~hundreds of times: shared library executables (Enum.reduce[int] etc.) reached from many callers each re-run project_callsite_return -\u003e the callee's ExecutableReturn frame. Measured: 105,422 project_source calls to produce 53 facts on enum_take_drop_split.\n\nFIX: memoize project_source.\n- Key: (ExecutableKey, TransportSource, RuntimeDemand, Ty) -- the existing cycle `frame` plus ty (shape depends on ty; the cycle guard didn't need it).\n- Only cache publication.is_none() frames. Publication-bearing frames are shallow, top-level, hit once, and their delta is publication-specific -\u003e must stay uncached. The hot redundant frames come through project_callsite_return, which passes publication=None -\u003e exactly the cacheable set.\n- Value: (SourceShape, TransportFactsBuilder /* the frame's own delta */). On hit: facts.merge(\u0026cached_delta) + return shape. merge is idempotent (extend_unique) so re-merging on every hit is safe; hot frames carry empty deltas so the hit is effectively shape-only.\n\nSOUNDNESS UNDER CYCLES (the real hazard): recursive fz functions re-enter a frame -\u003e Recursive; a frame's result is context-independent only if its back-edges target ITSELF, not an enclosing frame. Carry Tarjan low-link: project_source returns the min stack-depth of any back-edge its subtree hit; a frame at depth k is cacheable iff that min \u003e= k (self-edges target k -\u003e cacheable; an ancestor edge targets \u003ck -\u003e compute fresh). Caches every acyclic frame and every self-recursive one (the hot set; Enum.* compile to self-recursion); conservatively recomputes only genuine MUTUAL recursion. visiting gains a HashMap\u003cFrameKey,usize\u003e for O(1) depth.\n\nVERIFY: probe -- project_source calls -\u003e distinct-frames (tens-low hundreds). lib + matrix green, zero warnings. Re-verify vs HEAD at execution.",
   "id": "fz-27u",
   "labels": [],
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Transport projection: memoize publication-free source frames",
   "type": "task",
-  "updated_at": "2026-06-21T17:30:07Z"
+  "updated_at": "2026-06-21T17:47:12Z"
 }
