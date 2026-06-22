@@ -2,6 +2,9 @@ defprotocol Enumerable do
   @spec reduce(t(a), b, (a, b) -> {:cont, b} | {:halt, b} | {:suspend, b}) :: {:done, b} | {:halted, b} | {:suspended, b, () -> any}
   fn reduce(enumerable, acc, reducer)
 
+  @spec reduce_while(t(a), b, (a, b) -> {:cont, b} | {:halt, c}) :: b | c
+  fn reduce_while(enumerable, acc, reducer)
+
   @spec count(t(a)) :: {:ok, integer} | {:error, any}
   fn count(enumerable)
 
@@ -18,6 +21,7 @@ end
 # matching receiver — no "scan the receiver type's own module" convention.
 defimpl Enumerable, for: List do
   fn reduce(list, acc, reducer), do: List.reduce(list, acc, reducer)
+  fn reduce_while(list, acc, reducer), do: List.reduce_while(list, acc, reducer)
   fn count(list), do: {:ok, List.count(list)}
   fn member?(list, value), do: {:ok, List.member?(list, value)}
   fn slice(_list), do: {:error, :unsupported}
@@ -25,6 +29,7 @@ end
 
 defimpl Enumerable, for: Map do
   fn reduce(map, acc, reducer), do: Map.reduce(map, acc, reducer)
+  fn reduce_while(map, acc, reducer), do: Map.reduce_while(map, acc, reducer)
   fn count(map), do: {:ok, Map.count(map)}
   fn member?(map, pair), do: {:ok, Map.member?(map, pair)}
   fn slice(map), do: Map.slice(map)
@@ -32,6 +37,7 @@ end
 
 defimpl Enumerable, for: Range do
   fn reduce(%Range{first: first, last: last, step: step}, acc, reducer), do: Range.reduce(first, last, step, acc, reducer)
+  fn reduce_while(%Range{first: first, last: last, step: step}, acc, reducer), do: Range.reduce_while(first, last, step, acc, reducer)
   fn count(%Range{first: first, last: last, step: step}), do: {:ok, Range.count(first, last, step)}
   fn member?(%Range{first: first, last: last, step: step}, value), do: {:ok, Range.member?(first, last, step, value)}
 

@@ -17,9 +17,9 @@ defmodule Enum do
     )
   end
 
-  @spec reduce_while(Enumerable.t(a), b, (a, b) -> {:cont, b} | {:halt, b}) :: b
+  @spec reduce_while(Enumerable.t(a), b, (a, b) -> {:cont, b} | {:halt, c}) :: b | c
   fn reduce_while(enumerable, acc, reducer) do
-    reduce_finish(Enumerable.reduce(enumerable, {:cont, acc}, reducer))
+    Enumerable.reduce_while(enumerable, acc, reducer)
   end
 
   @spec each(Enumerable.t(a), (a) -> any) :: :ok

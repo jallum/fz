@@ -1658,8 +1658,8 @@ where
 
     body.b.switch_to_block(fast_blk);
     body.b.seal_block(fast_blk);
-    let ai = body.value_raw_int(av);
-    let bi = body.value_raw_int(bv_value);
+    let ai = body.value_raw_int_for_checked_branch(av);
+    let bi = body.value_raw_int_for_checked_branch(bv_value);
     {
         let raw = match mop {
             BinOp::Add => body.b.ins().iadd(ai, bi),
@@ -1853,8 +1853,8 @@ where
 
     body.b.switch_to_block(fast_blk);
     body.b.seal_block(fast_blk);
-    let ai = body.value_raw_int(av);
-    let bi = body.value_raw_int(bv_value);
+    let ai = body.value_raw_int_for_checked_branch(av);
+    let bi = body.value_raw_int_for_checked_branch(bv_value);
     let cmp = body.b.ins().icmp(icc, ai, bi);
     body.b.ins().jump(join_blk, &[BlockArg::Value(cmp)]);
 

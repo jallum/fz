@@ -17,6 +17,10 @@ defmodule Range do
     {:suspended, acc, (fn () -> reduce_cont(first, last, step, first, acc, reducer) end)}
   end
 
+  @doc "Enumerable.reduce_while/3 callback body for ranges."
+  @spec reduce_while(integer, integer, integer, b, (integer, b) -> {:cont, b} | {:halt, c}) :: b | c
+  fn reduce_while(first, last, step, acc, reducer), do: reduce_while_cont(first, last, step, first, acc, reducer)
+
   @doc "Counts range elements for Enumerable."
   @spec count(integer, integer, integer) :: integer
   fn count(first, last, step) do
@@ -62,6 +66,19 @@ defmodule Range do
   fnp reduce_step(first, last, step, current, {:suspend, acc}, reducer) do
     {:suspended, acc, (fn () -> reduce_cont(first, last, step, current + step, acc, reducer) end)}
   end
+
+  @spec reduce_while_cont(integer, integer, integer, integer, b, (integer, b) -> {:cont, b} | {:halt, c}) :: b | c
+  fnp reduce_while_cont(first, last, step, current, acc, reducer) do
+    if done?(last, step, current) do
+      acc
+    else
+      reduce_while_step(first, last, step, current, reducer.(current, acc), reducer)
+    end
+  end
+
+  @spec reduce_while_step(integer, integer, integer, integer, {:cont, b} | {:halt, c}, (integer, b) -> {:cont, b} | {:halt, c}) :: b | c
+  fnp reduce_while_step(first, last, step, current, {:cont, acc}, reducer), do: reduce_while_cont(first, last, step, current + step, acc, reducer)
+  fnp reduce_while_step(_first, _last, _step, _current, {:halt, acc}, _reducer), do: acc
 
   fnp slice_from(_last, _step, _current, 0, acc), do: reverse(acc, [])
   fnp slice_from(last, step, current, amount, acc) do

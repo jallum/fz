@@ -23,6 +23,10 @@ defmodule List do
     {:suspended, acc, (fn () -> reduce_cont(list, acc, reducer) end)}
   end
 
+  @doc "Enumerable.reduce_while/3 callback body for lists."
+  @spec reduce_while([a], b, (a, b) -> {:cont, b} | {:halt, c}) :: b | c
+  fn reduce_while(list, acc, reducer), do: reduce_while_cont(list, acc, reducer)
+
   @doc "Counts a list for Enumerable."
   @spec count(any) :: integer
   fn count(list), do: count(list, 0)
@@ -50,6 +54,16 @@ defmodule List do
   fnp reduce_step(list, {:suspend, acc}, reducer) do
     {:suspended, acc, (fn () -> reduce_cont(list, acc, reducer) end)}
   end
+
+  @spec reduce_while_cont([a], b, (a, b) -> {:cont, b} | {:halt, c}) :: b | c
+  fnp reduce_while_cont([], acc, _reducer), do: acc
+  fnp reduce_while_cont([head | tail], acc, reducer) do
+    reduce_while_step(tail, reducer.(head, acc), reducer)
+  end
+
+  @spec reduce_while_step([a], {:cont, b} | {:halt, c}, (a, b) -> {:cont, b} | {:halt, c}) :: b | c
+  fnp reduce_while_step(list, {:cont, acc}, reducer), do: reduce_while_cont(list, acc, reducer)
+  fnp reduce_while_step(_list, {:halt, acc}, _reducer), do: acc
 
   fnp count([], acc), do: acc
   fnp count([_head | tail], acc), do: count(tail, acc + 1)

@@ -450,11 +450,12 @@ fn main(), do: App.run()
 }
 
 #[test]
-fn build_executes_map_struct_and_bitstring_fixtures() {
+fn build_executes_map_struct_bitstring_and_enum_halt_fixtures() {
     for fixture in [
         "fixtures2/behavior/map_three_path_parity.fz",
         "fixtures2/behavior/defstruct_runtime.fz",
         "fixtures2/behavior/utf8_smart_constructor.fz",
+        "fixtures2/behavior/enum_predicate_search.fz",
     ] {
         let expected = fixture_expected_stdout(fixture);
         let out_bin = unique_temp_path("fz2_fixture_build", ".bin");

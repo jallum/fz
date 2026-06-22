@@ -31,6 +31,10 @@ in the arrow:
 - parameter `i` → `a{i}`; the result slot → `r0`
 - component `j` of the slot at address `P` → `P_j` (param 1, field 0 → `a1_0`);
   nesting extends the path
+- component `j` inside tuple-union alternative `k` at address `P` →
+  `P_u{k}_{j}`; repeated source names still reuse their first address, but
+  independent variables in different tuple alternatives do not collapse just
+  because they occupy the same field position
 - a *name's* canonical id is the address of its **first occurrence** (pre-order:
   params left-to-right, then result); repeats reuse it
 
@@ -48,11 +52,12 @@ second parameter) and its contents `a1_0`/`a1_1`; an address can. Two distinct
 positions therefore have distinct addresses by construction. The only way two
 slots share an id is a shared *name* — which is deliberate.
 
-`AddrStep` is one step of a path: `Param(i)`, `Result`, `Field(j)`, `Elem`,
-`Payload`, `MapField(j)`, `VarSlot(k)`. A full address is a `&[AddrStep]` rooted
-at a `Param` or `Result`. `address_remap` walks a `Ty`, replacing each variable
-with the address of its first occurrence; `address_remap_children` recurses into
-tuples/lists/resources/maps/funcs, extending the path at each child.
+`AddrStep` is one step of a path: `Param(i)`, `Result`, `Field(j)`,
+`Variant(k)`, `Elem`, `Payload`, `MapField(j)`, `VarSlot(k)`. A full address is
+a `&[AddrStep]` rooted at a `Param` or `Result`. `address_remap` walks a `Ty`,
+replacing each variable with the address of its first occurrence;
+`address_remap_children` recurses into tuples/lists/resources/maps/funcs,
+extending the path at each child.
 
 ## Addressing makes the interner the canonical form
 

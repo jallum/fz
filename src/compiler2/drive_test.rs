@@ -5575,6 +5575,81 @@ fn compiler2_interp_runs_enum_reduce_from_backend_artifacts() {
 }
 
 #[test]
+fn compiler2_interp_runs_enum_reduce_while_halt_payload_with_distinct_type() {
+    let tel = ConfiguredTelemetry::new();
+    let dbg = DbgCapture::new();
+    tel.attach(&[], dbg.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures2/00284_enum_find_early_halt.fz".to_string()),
+        text: include_str!("../../fixtures2/00284_enum_find_early_halt.fz").to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    compiler.run_root_interp(root_id).unwrap_or_else(|error| {
+        let diagnostic = dbg.lines().join("\n");
+        panic!("Enum.reduce_while should stop on a halt payload whose type differs from the continue accumulator: {error}; dbg={diagnostic}");
+    });
+    assert_eq!(
+        dbg.lines().as_slice(),
+        ["1"],
+        "Enum.find/3 should return the first matching element and must not call the reducer again after {{:halt, entry}}",
+    );
+}
+
+#[test]
+fn compiler2_semantic_preserves_enum_find_halt_payload_distinct_from_default() {
+    let tel = ConfiguredTelemetry::new();
+    let functions = FunctionCapture::new();
+    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    let modules = ModuleCapture::new();
+    tel.attach(&["fz", "compiler2", "module", "defined"], modules.handler());
+    let returns = ReturnTypeCapture::new();
+    tel.attach(&["fz", "compiler2", "return_type", "defined"], returns.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("enum_find_semantic_halt_payload.fz".to_string()),
+        text: r#"
+fn main() do
+  Enum.find([1, 2], :none, fn (_x) -> true end)
+end
+"#
+        .to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    assert!(
+        compiler.demand(Job::SealSemanticClosure(root_id)),
+        "semantic closure should be demandable for the Enum.find root",
+    );
+    assert_resolved(
+        compiler.drive(),
+        "Enum.find semantic closure should converge with runtime library activations",
+    );
+
+    let find_id = function_id_in_module(&functions, &modules, "Enum", "find", 3);
+    let find_return = returns.last_for_function(root_id, find_id).return_ty;
+    let int = compiler.types_mut_for_test().int();
+    assert!(
+        compiler.types_for_test().is_subtype(&int, &find_return),
+        "Enum.find/3 should preserve the halted element payload alongside the default; got {}",
+        compiler.display_ty_for_test(find_return),
+    );
+}
+
+#[test]
 fn compiler2_interp_runs_first_class_callable_captured_by_a_non_tail_continuation() {
     // The minimal shape of fz-hwn.22, free of the Enum stdlib: `maplist` is
     // non-tail recursive (`[f.(h) | maplist(t, f)]`), so its recursion is

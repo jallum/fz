@@ -43,6 +43,8 @@ pub enum AddrStep {
     Result,
     /// Field `j` of the tuple at the current address.
     Field(u16),
+    /// Alternative `k` of a tuple union at the current address.
+    Variant(u16),
     /// The element of the list at the current address.
     Elem,
     /// The payload of the resource at the current address.
@@ -94,6 +96,7 @@ pub(super) fn format_address(path: &[AddrStep]) -> String {
             // always one of the two arms above; nested component steps only ever
             // appear after the root.
             (_, AddrStep::Field(j)) | (_, AddrStep::MapField(j)) => out.push_str(&format!("_{j}")),
+            (_, AddrStep::Variant(k)) => out.push_str(&format!("_u{k}")),
             (_, AddrStep::VarSlot(k)) => out.push_str(&format!("_v{k}")),
             (_, AddrStep::Elem) => out.push_str("_e"),
             (_, AddrStep::Payload) => out.push_str("_p"),
@@ -271,10 +274,22 @@ impl Types {
     /// structural step at each child (mirrors `map_recursive_inputs_with`, but
     /// path-aware).
     fn address_remap_children(&mut self, d: &mut Descr, path: &[AddrStep], map: &mut HashMap<TypeVarId, TypeVarId>) {
+        let tuple_alternatives = d
+            .tuples
+            .iter()
+            .map(|conj| conj.pos.len() + conj.neg.len())
+            .sum::<usize>();
+        let discriminate_tuple_alternatives = tuple_alternatives > 1;
+        let mut tuple_alternative = 0_u16;
         for conj in &mut d.tuples {
             for sig in conj.pos.iter_mut().chain(conj.neg.iter_mut()) {
+                let alternative = tuple_alternative;
+                tuple_alternative = tuple_alternative.saturating_add(1);
                 for (j, ty) in sig.elems.iter_mut().enumerate() {
                     let mut child = path.to_vec();
+                    if discriminate_tuple_alternatives {
+                        child.push(AddrStep::Variant(alternative));
+                    }
                     child.push(AddrStep::Field(j as u16));
                     *ty = self.address_remap(*ty, &child, map);
                 }
@@ -323,7 +338,7 @@ impl Types {
 #[cfg(test)]
 mod tests {
     use super::super::ClosureTarget;
-    use super::AddrStep::{Field, Param};
+    use super::AddrStep::{Field, Param, Variant};
     use super::*;
 
     fn var(t: &mut Types, id: u32) -> Ty {
@@ -429,6 +444,53 @@ mod tests {
         let r0 = t.result_alpha();
         let expected = t.arrow(&[a0, etup], r0);
         assert_eq!(g, expected, "t reuses a0 inside the tuple; u addresses to a1_1");
+    }
+
+    #[test]
+    fn tagged_union_payload_variables_are_addressed_per_variant() {
+        // {:cont, b} | {:halt, c} keeps b and c independent even though both
+        // payloads occupy tuple field 1. Repeated b in another arm still reuses
+        // b's first address through the original-variable map.
+        let mut t = Types::new();
+        let b = var(&mut t, 50);
+        let c = var(&mut t, 51);
+        let cont = {
+            let tag = t.atom_lit("cont");
+            t.tuple(&[tag, b])
+        };
+        let halt = {
+            let tag = t.atom_lit("halt");
+            t.tuple(&[tag, c])
+        };
+        let suspend = {
+            let tag = t.atom_lit("suspend");
+            t.tuple(&[tag, b])
+        };
+        let cont_or_halt = t.union(cont, halt);
+        let state = t.union(cont_or_halt, suspend);
+        let addressed = t.address_inputs(&[state])[0];
+
+        let b_addr = t.address_var(&[Param(0), Variant(0), Field(1)]);
+        let c_addr = t.address_var(&[Param(0), Variant(1), Field(1)]);
+        assert_ne!(b_addr, c_addr, "different tagged arms must not conflate b and c");
+
+        let cont = {
+            let tag = t.atom_lit("cont");
+            t.tuple(&[tag, b_addr])
+        };
+        let halt = {
+            let tag = t.atom_lit("halt");
+            t.tuple(&[tag, c_addr])
+        };
+        let suspend = {
+            let tag = t.atom_lit("suspend");
+            t.tuple(&[tag, b_addr])
+        };
+        let expected = {
+            let two = t.union(cont, halt);
+            t.union(two, suspend)
+        };
+        assert_eq!(addressed, expected);
     }
 
     #[test]

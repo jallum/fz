@@ -93,7 +93,9 @@ impl Types {
     /// pattern is ground.
     fn match_witness(&mut self, pattern: Ty, witness: Ty) -> Ty {
         let mut sigma = Sigma::new();
-        self.collect_match_subst(&pattern, &witness, &mut sigma);
+        if self.collect_match_subst(&pattern, &witness, &mut sigma) == MatchWitness::Invalid {
+            return self.none();
+        }
         if sigma.is_empty() {
             return witness;
         }
@@ -134,7 +136,7 @@ impl Types {
 
         for (pattern, witness) in params.iter().zip(witnesses.iter()) {
             let expected = self.instantiate(pattern, &sigma);
-            if !self.has_vars(witness) && !self.is_subtype(witness, &expected) {
+            if !self.has_vars(witness) && !self.has_vars(&expected) && !self.is_subtype(witness, &expected) {
                 return ArrowMatch::Invalid;
             }
         }
@@ -182,8 +184,11 @@ impl Types {
         if arity == 0 {
             return MatchWitness::Unknown;
         }
-        let pattern_fields = self.tuple_projections(pattern, arity);
-        if !pattern_fields.iter().any(|field| self.has_vars(field)) {
+        if !self
+            .tuple_projections(pattern, arity)
+            .iter()
+            .any(|field| self.has_vars(field))
+        {
             return MatchWitness::Unknown;
         }
         if self.max_tuple_arity(witness) < arity {
@@ -193,12 +198,101 @@ impl Types {
                 MatchWitness::Invalid
             };
         }
+        if let Some(outcome) = self.collect_correlated_tuple_match(pattern, witness, arity, sigma) {
+            return outcome;
+        }
+        let pattern_fields = self.tuple_projections(pattern, arity);
         let witness_fields = self.tuple_projections(witness, arity);
         let mut outcome = MatchWitness::Unknown;
         for (pattern_field, witness_field) in pattern_fields.iter().zip(witness_fields.iter()) {
             outcome = outcome.merge(self.collect_match_subst(pattern_field, witness_field, sigma));
         }
         outcome
+    }
+
+    fn collect_correlated_tuple_match(
+        &mut self,
+        pattern: &Ty,
+        witness: &Ty,
+        arity: usize,
+        sigma: &mut Sigma<Ty>,
+    ) -> Option<MatchWitness> {
+        let pattern_alternatives = self.tuple_positive_alternatives(pattern, arity)?;
+        let witness_alternatives = self.tuple_positive_alternatives(witness, arity)?;
+        let mut matched_any = false;
+        let mut outcome = MatchWitness::Unknown;
+        for pattern_fields in &pattern_alternatives {
+            for witness_fields in &witness_alternatives {
+                if !self.tuple_fields_overlap(pattern_fields, witness_fields) {
+                    continue;
+                }
+                matched_any = true;
+                let mut pair_sigma = Sigma::new();
+                let mut pair_outcome = MatchWitness::Unknown;
+                for (pattern_field, witness_field) in pattern_fields.iter().zip(witness_fields.iter()) {
+                    pair_outcome =
+                        pair_outcome.merge(self.collect_match_subst(pattern_field, witness_field, &mut pair_sigma));
+                }
+                if pair_outcome == MatchWitness::Invalid {
+                    continue;
+                }
+                self.merge_subst_union(sigma, pair_sigma);
+                outcome = outcome.merge(pair_outcome);
+            }
+        }
+        if matched_any {
+            Some(outcome)
+        } else {
+            Some(MatchWitness::Invalid)
+        }
+    }
+
+    fn tuple_positive_alternatives(&mut self, ty: &Ty, arity: usize) -> Option<Vec<Vec<Ty>>> {
+        let conjs = self.descr(ty).tuples.clone();
+        if conjs.is_empty() {
+            return None;
+        }
+        let mut alternatives = Vec::new();
+        for conj in conjs {
+            if !conj.neg.is_empty() || conj.pos.is_empty() {
+                return None;
+            }
+            let mut fields: Option<Vec<Ty>> = None;
+            for sig in conj.pos {
+                if sig.elems.len() != arity {
+                    continue;
+                }
+                fields = Some(match fields {
+                    Some(current) => current
+                        .iter()
+                        .zip(sig.elems.iter())
+                        .map(|(left, right)| self.intersect(*left, *right))
+                        .collect(),
+                    None => sig.elems,
+                });
+            }
+            let Some(fields) = fields else {
+                continue;
+            };
+            if fields.iter().all(|field| !self.is_empty(field)) {
+                alternatives.push(fields);
+            }
+        }
+        (!alternatives.is_empty()).then_some(alternatives)
+    }
+
+    fn tuple_fields_overlap(&mut self, pattern_fields: &[Ty], witness_fields: &[Ty]) -> bool {
+        pattern_fields.len() == witness_fields.len()
+            && pattern_fields
+                .iter()
+                .zip(witness_fields.iter())
+                .all(|(pattern, witness)| {
+                    if self.has_vars(pattern) || self.has_vars(witness) {
+                        return true;
+                    }
+                    let overlap = self.intersect(*pattern, *witness);
+                    !self.is_empty(&overlap)
+                })
     }
 
     fn collect_list_match(&mut self, pattern: &Ty, witness: &Ty, sigma: &mut Sigma<Ty>) -> MatchWitness {
@@ -248,7 +342,7 @@ impl Types {
                 continue;
             }
             if !witness_keys.contains(&key) {
-                if self.map_field_lookup(witness, &key).is_none() && !self.has_vars(witness) {
+                if !self.has_vars(witness) {
                     outcome = outcome.merge(MatchWitness::Invalid);
                 }
                 continue;

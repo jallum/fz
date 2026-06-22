@@ -96,16 +96,19 @@ payloads, callable arrows (args and ret), and map fields where keys align. A
 variable can be determined by a nested position, not only a top-level parameter:
 
 ```text
-param   : (a, b) -> {:cont, b} | {:halt, b}
+param   : (a, b) -> {:cont, b} | {:halt, c}
 witness : (integer, {:not_found, int}) ->
             {:cont, {:not_found, int}} | {:halt, {:found, int}}
 sigma   : a := integer
-          b := {:not_found, int} | {:found, int}
+          b := {:not_found, int}
+          c := {:found, int}
 ```
 
 This is the load-bearing case for higher-order functions such as
 `Enum.reduce_while/3`: the accumulator variable is witnessed by the initial
-accumulator and by the reducer's `{:cont, b}` / `{:halt, b}` payloads.
+accumulator and the reducer's `{:cont, b}` payload. The halt payload has its own
+variable when the contract allows a search result to differ from the accumulator
+type.
 
 Witness collection keeps evidence three-valued so a safe-fallback projection is not
 mistaken for proof:

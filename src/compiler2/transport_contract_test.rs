@@ -2380,10 +2380,10 @@ fn compiler2_transport_plan_scopes_enum_predicate_callback_inputs_to_concrete_ac
         plan.executable_membership.iter().any(|executable| function_is(
             &world,
             executable.activation.function,
-            "reduce_cont",
+            "reduce_while_cont",
             3
         )),
-        "Enum predicate/search should keep List.reduce_cont/3 in the transport frontier"
+        "Enum predicate/search should keep List.reduce_while_cont/3 in the transport frontier"
     );
 }
 

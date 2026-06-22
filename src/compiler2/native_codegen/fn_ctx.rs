@@ -398,6 +398,23 @@ impl<'a, 'env, 'fb, M: Module> CodegenFn<'a, 'env, 'fb, M> {
         }
     }
 
+    pub(crate) fn value_raw_int_for_checked_branch(&mut self, value: CodegenValue) -> ir::Value {
+        // The caller guards this block with a runtime int-tag check. Statically
+        // non-int scalar bindings make the block unreachable, but Cranelift
+        // still needs a well-typed i64 value while building it.
+        match value {
+            CodegenValue::RawInt(value) => value,
+            CodegenValue::Known {
+                payload,
+                kind: ValueKind::INT,
+            } => payload,
+            CodegenValue::AnyRef(value_ref) => self.unbox_int(value_ref),
+            CodegenValue::RawAtom(value) | CodegenValue::Condition(value) => value,
+            CodegenValue::Known { payload, .. } => payload,
+            CodegenValue::RawF64(value) => self.b.ins().bitcast(types::I64, MemFlags::new(), value),
+        }
+    }
+
     pub(crate) fn value_raw_float(&mut self, value: CodegenValue) -> ir::Value {
         match value {
             CodegenValue::RawF64(value) => value,

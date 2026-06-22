@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use crate::type_expr::ResolvedSpecDecl;
 
+use super::contract::ContractArrow;
 use super::{CallableValueKind, ClosureTarget, FunctionContract, TypeVarId, Types};
 
 #[test]
@@ -122,6 +123,235 @@ fn function_contract_application_refines_reduce_style_callable_from_list_and_acc
         .expect("reduce-style fn ref should preserve closure identity");
     assert_eq!(closure.target, ClosureTarget(23));
     assert_eq!(closure.kind, CallableValueKind::FnRef);
+}
+
+#[test]
+fn function_contract_application_binds_tagged_halt_payload_separately_from_continue_accumulator() {
+    let mut types = Types::new();
+    let cont_acc = types.type_var(TypeVarId(0));
+    let halt_acc = types.type_var(TypeVarId(1));
+    let atom_cont = types.atom_lit("cont");
+    let atom_halt = types.atom_lit("halt");
+    let atom_done = types.atom_lit("done");
+    let atom_halted = types.atom_lit("halted");
+    let cont_state = types.tuple(&[atom_cont, cont_acc]);
+    let halt_state = types.tuple(&[atom_halt, halt_acc]);
+    let state = types.union(cont_state, halt_state);
+    let done = types.tuple(&[atom_done, cont_acc]);
+    let halted = types.tuple(&[atom_halted, halt_acc]);
+    let result = types.union(done, halted);
+    let resolved = ResolvedSpecDecl {
+        params: vec![state],
+        result,
+        constraints: HashMap::new(),
+    };
+    let contract = FunctionContract::from_resolved(&mut types, vec![resolved]);
+
+    let none = types.atom_lit("none");
+    let int = types.int();
+    let observed_cont = types.tuple(&[atom_cont, none]);
+    let observed_halt = types.tuple(&[atom_halt, int]);
+    let observed_state = types.union(observed_cont, observed_halt);
+
+    let applied = contract.apply(&mut types, &[observed_state]);
+    let result = applied
+        .result
+        .expect("tagged union should ground both payload variables");
+    let expected_done = types.tuple(&[atom_done, none]);
+    let expected_halted = types.tuple(&[atom_halted, int]);
+    assert!(
+        types.is_subtype(&expected_done, &result),
+        "continue payload should bind only the continue result arm: {}",
+        types.display(&result),
+    );
+    assert!(
+        types.is_subtype(&expected_halted, &result),
+        "halt payload should bind the halted result arm separately from continue: {}",
+        types.display(&result),
+    );
+}
+
+#[test]
+fn function_contract_application_binds_reduce_halt_payload_from_callable_return() {
+    let mut types = Types::new();
+    let elem = types.type_var(TypeVarId(0));
+    let cont_acc = types.type_var(TypeVarId(1));
+    let halt_acc = types.type_var(TypeVarId(2));
+    let atom_cont = types.atom_lit("cont");
+    let atom_halt = types.atom_lit("halt");
+    let atom_suspend = types.atom_lit("suspend");
+    let atom_done = types.atom_lit("done");
+    let atom_halted = types.atom_lit("halted");
+    let atom_suspended = types.atom_lit("suspended");
+    let cont_state = types.tuple(&[atom_cont, cont_acc]);
+    let halt_state = types.tuple(&[atom_halt, halt_acc]);
+    let suspend_state = types.tuple(&[atom_suspend, cont_acc]);
+    let two_states = types.union(cont_state, halt_state);
+    let reducer_result = types.union(two_states, suspend_state);
+    let done = types.tuple(&[atom_done, cont_acc]);
+    let halted = types.tuple(&[atom_halted, halt_acc]);
+    let suspended = types.tuple(&[atom_suspended, cont_acc]);
+    let two_results = types.union(done, halted);
+    let result = types.union(two_results, suspended);
+    let reducer = types.arrow(&[elem, cont_acc], reducer_result);
+    let resolved = ResolvedSpecDecl {
+        params: vec![types.list(elem), reducer_result, reducer],
+        result,
+        constraints: HashMap::new(),
+    };
+    let contract = FunctionContract::from_resolved(&mut types, vec![resolved]);
+
+    let int = types.int();
+    let none = types.atom_lit("none");
+    let actual_list = types.list(int);
+    let actual_state = types.tuple(&[atom_cont, none]);
+    let actual_cont = types.tuple(&[atom_cont, none]);
+    let actual_halt = types.tuple(&[atom_halt, int]);
+    let actual_reducer_result = types.union(actual_cont, actual_halt);
+    let actual_reducer = types.arrow(&[int, none], actual_reducer_result);
+
+    let applied = contract.apply(&mut types, &[actual_list, actual_state, actual_reducer]);
+    let matched_reducer = types
+        .callable_clauses(&applied.matched_arrows[0][2])
+        .expect("matched reducer callable")
+        .into_iter()
+        .next()
+        .expect("matched reducer callable clause");
+    let expected_halt = types.tuple(&[atom_halt, int]);
+    assert!(
+        types.is_subtype(&expected_halt, &matched_reducer.ret),
+        "the reducer surface should keep halt payloads independent of the continue accumulator: {}",
+        types.display(&matched_reducer.ret),
+    );
+    let expected_halted = types.tuple(&[atom_halted, int]);
+    let result = applied
+        .result
+        .expect("callable halt payload should ground the contract result");
+    assert!(
+        types.is_subtype(&expected_halted, &result),
+        "the function result should carry the callable's halt payload: {}",
+        types.display(&result),
+    );
+}
+
+#[test]
+fn function_contract_application_keeps_reduce_halt_payload_free_until_callable_return_is_known() {
+    let mut types = Types::new();
+    let elem = types.type_var(TypeVarId(0));
+    let cont_acc = types.type_var(TypeVarId(1));
+    let halt_acc = types.type_var(TypeVarId(2));
+    let atom_cont = types.atom_lit("cont");
+    let atom_halt = types.atom_lit("halt");
+    let atom_suspend = types.atom_lit("suspend");
+    let atom_done = types.atom_lit("done");
+    let atom_halted = types.atom_lit("halted");
+    let atom_suspended = types.atom_lit("suspended");
+    let cont_state = types.tuple(&[atom_cont, cont_acc]);
+    let halt_state = types.tuple(&[atom_halt, halt_acc]);
+    let suspend_state = types.tuple(&[atom_suspend, cont_acc]);
+    let two_states = types.union(cont_state, halt_state);
+    let reducer_result = types.union(two_states, suspend_state);
+    let done = types.tuple(&[atom_done, cont_acc]);
+    let halted = types.tuple(&[atom_halted, halt_acc]);
+    let suspended = types.tuple(&[atom_suspended, cont_acc]);
+    let two_results = types.union(done, halted);
+    let result = types.union(two_results, suspended);
+    let reducer = types.arrow(&[elem, cont_acc], reducer_result);
+    let resolved = ResolvedSpecDecl {
+        params: vec![types.list(elem), reducer_result, reducer],
+        result,
+        constraints: HashMap::new(),
+    };
+    let contract = FunctionContract::from_resolved(&mut types, vec![resolved]);
+
+    let int = types.int();
+    let none = types.atom_lit("none");
+    let actual_list = types.list(int);
+    let actual_state = types.tuple(&[atom_cont, none]);
+    let actual_reducer_return = types.type_var(TypeVarId(99));
+    let actual_reducer = types.arrow(&[int, none], actual_reducer_return);
+
+    let applied = contract.apply(&mut types, &[actual_list, actual_state, actual_reducer]);
+    let matched_reducer = types
+        .callable_clauses(&applied.matched_arrows[0][2])
+        .expect("matched reducer callable")
+        .into_iter()
+        .next()
+        .expect("matched reducer callable clause");
+    let any = types.any();
+    let halt_probe = types.tuple(&[atom_halt, any]);
+    let halt_surface = types.intersect(matched_reducer.ret, halt_probe);
+    let halt_payload = types.tuple_field_type(&halt_surface, 1);
+    assert!(
+        types.has_vars(&halt_payload),
+        "the independent halt payload must stay free until callable return evidence arrives; ret={} payload={}",
+        types.display(&matched_reducer.ret),
+        types.display(&halt_payload),
+    );
+}
+
+#[test]
+fn addressed_function_contract_keeps_reduce_halt_payload_free_until_callable_return_is_known() {
+    let mut types = Types::new();
+    let elem = types.type_var(TypeVarId(0));
+    let cont_acc = types.type_var(TypeVarId(1));
+    let halt_acc = types.type_var(TypeVarId(2));
+    let atom_cont = types.atom_lit("cont");
+    let atom_halt = types.atom_lit("halt");
+    let atom_suspend = types.atom_lit("suspend");
+    let atom_done = types.atom_lit("done");
+    let atom_halted = types.atom_lit("halted");
+    let atom_suspended = types.atom_lit("suspended");
+    let cont_state = types.tuple(&[atom_cont, cont_acc]);
+    let halt_state = types.tuple(&[atom_halt, halt_acc]);
+    let suspend_state = types.tuple(&[atom_suspend, cont_acc]);
+    let two_states = types.union(cont_state, halt_state);
+    let reducer_result = types.union(two_states, suspend_state);
+    let done = types.tuple(&[atom_done, cont_acc]);
+    let halted = types.tuple(&[atom_halted, halt_acc]);
+    let suspended = types.tuple(&[atom_suspended, cont_acc]);
+    let two_results = types.union(done, halted);
+    let result = types.union(two_results, suspended);
+    let reducer = types.arrow(&[elem, cont_acc], reducer_result);
+    let list = types.list(elem);
+    let params = vec![list, reducer_result, reducer];
+    let arrow = types.address_arrow(&params, result);
+    let contract = FunctionContract {
+        arrows: vec![ContractArrow {
+            arrow,
+            bounds: HashMap::new(),
+        }],
+    };
+
+    let int = types.int();
+    let none = types.atom_lit("none");
+    let actual_list = types.list(int);
+    let actual_state = types.tuple(&[atom_cont, none]);
+    let actual_reducer_return = types.type_var(TypeVarId(99));
+    let actual_reducer = types.arrow(&[int, none], actual_reducer_return);
+
+    let applied = contract.apply(&mut types, &[actual_list, actual_state, actual_reducer]);
+    assert_eq!(
+        applied.matched_arrows.len(),
+        1,
+        "the addressed reduce-style contract should match the concrete call"
+    );
+    let matched_reducer = types
+        .callable_clauses(&applied.matched_arrows[0][2])
+        .expect("matched reducer callable")
+        .into_iter()
+        .next()
+        .expect("matched reducer callable clause");
+    let any = types.any();
+    let halt_probe = types.tuple(&[atom_halt, any]);
+    let halt_surface = types.intersect(matched_reducer.ret, halt_probe);
+    let halt_payload = types.tuple_field_type(&halt_surface, 1);
+    assert!(
+        types.has_vars(&halt_payload),
+        "the addressed independent halt payload must stay free until callable return evidence arrives; ret={} payload={}",
+        types.display(&matched_reducer.ret),
+        types.display(&halt_payload),
+    );
 }
 
 #[test]
