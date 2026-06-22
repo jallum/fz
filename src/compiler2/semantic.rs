@@ -993,9 +993,7 @@ impl JoinContribution for Vec<Ty> {
             "one activation cannot receive contributions with different arities",
         );
         for (current, next) in self.iter_mut().zip(other.iter()) {
-            *current = if *current == *next {
-                *current
-            } else if types.is_equivalent(current, next) {
+            *current = if *current == *next || types.is_equivalent(current, next) {
                 *current
             } else {
                 types.union(*current, *next)
@@ -1205,7 +1203,7 @@ mod tests {
 
         assert!(map.define(world.types_mut(), key.clone(), summary(joined)));
         assert!(
-            !map.define(world.types_mut(), key.clone(), summary(rejoined)),
+            !map.define(world.types_mut(), key, summary(rejoined)),
             "equivalent joined callsite evidence should not churn the semantic fact"
         );
     }

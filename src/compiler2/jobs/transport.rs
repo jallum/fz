@@ -2239,7 +2239,7 @@ fn project_source(
             ty,
             demand,
             semantic_index,
-            publication.clone(),
+            publication,
             cycle,
             memo,
         ),

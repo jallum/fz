@@ -867,8 +867,8 @@ macro_rules! semantic_helper_conformance_tests {
                 let nonempty = t.non_empty_list(int.clone());
                 let cont = t.atom_lit("cont");
                 let halt = t.atom_lit("halt");
-                let callable_a = t.arrow(&[int.clone()], cont);
-                let callable_b = t.arrow(&[int.clone()], halt);
+                let callable_a = t.arrow(std::slice::from_ref(&int), cont);
+                let callable_b = t.arrow(std::slice::from_ref(&int), halt);
                 let tuple_a = t.tuple(&[empty, callable_a]);
                 let tuple_b = t.tuple(&[nonempty, callable_b]);
 

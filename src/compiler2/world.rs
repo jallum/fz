@@ -585,7 +585,7 @@ impl<'a> World<'a> {
                     &metadata! {
                         activation: opaque_debug(activation),
                         inputs: opaque_debug(inputs),
-                        inputs_display: opaque_debug(&inputs.iter().map(|ty| self.types.display(ty).to_string()).collect::<Vec<_>>()),
+                        inputs_display: opaque_debug(&inputs.iter().map(|ty| self.types.display(ty)).collect::<Vec<_>>()),
                         publisher: opaque_debug(&job),
                     },
                 );
@@ -888,13 +888,12 @@ impl<'a> World<'a> {
                         "one activation input fact cannot receive differing arities from one publisher",
                     );
                     for (current_input, next_input) in current.iter_mut().zip(normalized) {
-                        *current_input = if *current_input == next_input {
-                            *current_input
-                        } else if self.types.is_equivalent(current_input, &next_input) {
-                            *current_input
-                        } else {
-                            self.types.union(*current_input, next_input)
-                        };
+                        *current_input =
+                            if *current_input == next_input || self.types.is_equivalent(current_input, &next_input) {
+                                *current_input
+                            } else {
+                                self.types.union(*current_input, next_input)
+                            };
                     }
                 }
             }
