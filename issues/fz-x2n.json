@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-bfh.1"
+  ],
   "blocks": [],
   "created": "2026-06-22T02:58:52Z",
   "description": "Goal\nReplace the temporary native callable-boundary fallback left by fz-bin.18 with a first-class dispatch boundary for polymorphic indirect closures.\n\nCurrent signal\nsrc/compiler2/jobs/native.rs still has deterministic_callable_boundary_fallback. The comment there names fz-x2n: direct-target CallClosure bypasses the stored heap-closure code pointer, but an indirect call through a heap closure published at multiple callable surfaces needs runtime selection instead of picking the first inhabited boundary.\n\nRequired work\n- Model a callable boundary that can represent multiple published surfaces for the same heap closure value.\n- Lower/codegen that boundary so indirect closure calls select the surface using callsite/runtime argument facts.\n- Keep direct-target fast paths direct; do not route monomorphic direct calls through the new boundary.\n- Remove deterministic_callable_boundary_fallback and its fz-x2n comment.\n\nChecks\n- Add a regression where the same returned/captured closure is invoked indirectly at more than one callable surface.\n- Existing fz-bin.18 direct-target-only coverage remains green.\n- cargo test --lib and cargo clippy --workspace --all-targets -- -D warnings.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Native codegen: replace polymorphic closure fallback with dispatch boundary",
   "type": "bug",
-  "updated_at": "2026-06-22T12:05:00Z"
+  "updated_at": "2026-06-22T13:14:55Z"
 }
