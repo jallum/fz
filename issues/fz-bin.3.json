@@ -12,9 +12,15 @@
   "id": "fz-bin.3",
   "labels": [],
   "parent": "fz-bin",
+  "comments": [
+    {
+      "text": "Audit result: removed every fz-9i4.7.2 defer from behavior fixtures. enum_map_family::interp now runs and passes. range_enumerable is gated on fz-bin.9; enum_predicate_search on fz-bin.10; bsx_guard_eq::interp on fz-bin.11; enum_take_drop_split on fz-bin.12 before fz-kot correctness can be observed; enumerable_protocol_dispatch and membership_operator remain gated on fz-bv3 for map+struct nominal dispatch. Verification: fixture_matrix 310 passed/61 ignored, cargo test --lib 1088 passed/22 ignored, clippy -D warnings clean.",
+      "timestamp": "2026-06-22T00:36:52Z"
+    }
+  ],
   "priority": 2,
   "status": "in_progress",
   "title": "Re-enable fz-9i4.7.2 fixtures that now compile; verify matrix green",
   "type": "task",
-  "updated_at": "2026-06-22T00:34:15Z"
+  "updated_at": "2026-06-22T00:36:52Z"
 }
