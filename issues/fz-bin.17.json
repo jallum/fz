@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-22T02:00:08Z",
+  "description": "Blocks fz-bin.14. Investigation of fixtures2/behavior/range_enumerable.fz showed the returned Range slicer callable inside {:ok, n, slicer} is transported through the return/resume payload as raw capture lanes, not as a boxed closure boundary. Native CLIF for main__e0__resume_24 has four params and stores v2 as the slicer continuation capture; v2 is the captured integer 10, while v3 is the continuation self. main__e0__resume_25 then reads capture slot 1 from that value and runtime aborts with fz_closure_get_capture_ref idx=0 expected closure ref, got tag ValueKind(0) word=0xa. Direct native fast-path and delivered-resume experiments proved the missing prerequisite is a transport/codegen seam: callable fields in tuple returns that are later resumed/invoked as closures need a first-class callable boundary/publication fact before native can materialize the closure object safely. Re-enable fz-bin.14 after this boundary fact exists.",
+  "id": "fz-bin.17",
+  "labels": [],
+  "parent": "fz-bin",
+  "priority": 2,
+  "status": "open",
+  "title": "Tuple-returned callable lacks boundary before runtime resume",
+  "type": "bug",
+  "updated_at": "2026-06-22T02:00:08Z"
+}
