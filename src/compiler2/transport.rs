@@ -94,6 +94,64 @@ impl InternedId for BoundaryId {
     }
 }
 
+/// The cross-executable agreement state for one input position's transport
+/// shape. Each caller contributes the [`ShapeId`] it sends across the call
+/// edge; the join answers a single question: "do all callers agree on one
+/// physical layout?".
+///
+/// Sticky three-state join-semilattice, height `<= 2`, strictly monotone, so it
+/// needs no widening budget:
+///
+/// - `Unbound` — bottom: no caller has contributed yet.
+/// - `Agreed(shape)` — every caller seen so far carries exactly this layout.
+/// - `Conflicted` — two distinct layouts seen; collapses to top and stays there.
+///
+/// `Unbound` is deliberately distinct from `Conflicted`: "no caller yet" is not
+/// "callers disagree". Conflating them would let an empty caller set masquerade
+/// as a resolved single shape (the unknown-is-not-none rule).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShapeAgreement {
+    Unbound,
+    Agreed(ShapeId),
+    Conflicted,
+}
+
+impl ShapeAgreement {
+    /// The least element: zero contributors.
+    pub const BOTTOM: Self = ShapeAgreement::Unbound;
+
+    /// A single caller's contribution of `shape`.
+    pub fn of(shape: ShapeId) -> Self {
+        ShapeAgreement::Agreed(shape)
+    }
+
+    /// The agreed shape iff every contributor so far carries one layout.
+    /// `None` for both `Unbound` (nobody yet) and `Conflicted` (disagreement).
+    pub fn agreed(self) -> Option<ShapeId> {
+        match self {
+            ShapeAgreement::Agreed(shape) => Some(shape),
+            ShapeAgreement::Unbound | ShapeAgreement::Conflicted => None,
+        }
+    }
+
+    pub fn is_conflicted(self) -> bool {
+        matches!(self, ShapeAgreement::Conflicted)
+    }
+
+    /// Monotone join: `self ⊔ other`. Commutative, idempotent, with a sticky
+    /// top — once `Conflicted`, always `Conflicted`.
+    pub fn join(self, other: Self) -> Self {
+        use ShapeAgreement::{Agreed, Conflicted, Unbound};
+        match (self, other) {
+            (Unbound, rhs) => rhs,
+            (lhs, Unbound) => lhs,
+            (Conflicted, _) | (_, Conflicted) => Conflicted,
+            (Agreed(left), Agreed(right)) if left == right => Agreed(left),
+            (Agreed(_), Agreed(_)) => Conflicted,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ShapeDescr {
     Nothing,
@@ -523,6 +581,93 @@ mod tests {
     use super::*;
     use crate::compiler2::identity::{FunctionMap, ModuleId};
     use crate::compiler2::types::Types;
+
+    fn two_distinct_shapes() -> (ShapeId, ShapeId) {
+        let mut types = Types::new();
+        let int = types.int();
+        let bool_ty = types.bool();
+        let mut interners = TransportInterners::default();
+        let int_lane = interners.intern_lane(LaneDescr {
+            ty: int,
+            class: TransportClass::Value,
+        });
+        let bool_lane = interners.intern_lane(LaneDescr {
+            ty: bool_ty,
+            class: TransportClass::Value,
+        });
+        let a = interners.intern_shape(ShapeDescr::Lane(int_lane));
+        let b = interners.intern_shape(ShapeDescr::Lane(bool_lane));
+        assert_ne!(a, b);
+        (a, b)
+    }
+
+    #[test]
+    fn shape_agreement_ascends_unbound_to_agreed_to_conflicted() {
+        // Intent: the lattice only ever climbs. One caller binds a shape; a
+        // second caller carrying a different shape forces the sticky top.
+        let (a, b) = two_distinct_shapes();
+
+        assert_eq!(ShapeAgreement::BOTTOM, ShapeAgreement::Unbound);
+        assert_eq!(ShapeAgreement::Unbound.agreed(), None);
+
+        let one = ShapeAgreement::Unbound.join(ShapeAgreement::of(a));
+        assert_eq!(one, ShapeAgreement::Agreed(a));
+        assert_eq!(one.agreed(), Some(a));
+
+        let still_one = one.join(ShapeAgreement::of(a));
+        assert_eq!(still_one, ShapeAgreement::Agreed(a), "idempotent on agreement");
+
+        let conflict = one.join(ShapeAgreement::of(b));
+        assert_eq!(conflict, ShapeAgreement::Conflicted);
+        assert_eq!(conflict.agreed(), None);
+        assert!(conflict.is_conflicted());
+    }
+
+    #[test]
+    fn shape_agreement_join_is_order_independent() {
+        // Intent: contributors arrive in any order; the joined result must not
+        // depend on arrival order.
+        let (a, b) = two_distinct_shapes();
+        let contributions = [ShapeAgreement::of(a), ShapeAgreement::Unbound, ShapeAgreement::of(a)];
+        let forward = contributions
+            .iter()
+            .copied()
+            .fold(ShapeAgreement::BOTTOM, ShapeAgreement::join);
+        let backward = contributions
+            .iter()
+            .rev()
+            .copied()
+            .fold(ShapeAgreement::BOTTOM, ShapeAgreement::join);
+        assert_eq!(forward, ShapeAgreement::Agreed(a));
+        assert_eq!(forward, backward);
+
+        let with_conflict = [ShapeAgreement::of(b), ShapeAgreement::of(a)];
+        assert_eq!(
+            with_conflict
+                .iter()
+                .copied()
+                .fold(ShapeAgreement::BOTTOM, ShapeAgreement::join),
+            with_conflict
+                .iter()
+                .rev()
+                .copied()
+                .fold(ShapeAgreement::BOTTOM, ShapeAgreement::join),
+        );
+    }
+
+    #[test]
+    fn shape_agreement_conflict_is_sticky_and_distinct_from_unbound() {
+        // Intent: Conflicted is top -- nothing lowers it, not even Unbound --
+        // and Unbound (nobody yet) is never mistaken for a resolved shape.
+        let (a, _b) = two_distinct_shapes();
+        let top = ShapeAgreement::Conflicted;
+        assert_eq!(top.join(ShapeAgreement::Unbound), ShapeAgreement::Conflicted);
+        assert_eq!(top.join(ShapeAgreement::of(a)), ShapeAgreement::Conflicted);
+        assert_eq!(top.join(ShapeAgreement::Conflicted), ShapeAgreement::Conflicted);
+
+        assert_ne!(ShapeAgreement::Unbound, ShapeAgreement::Conflicted);
+        assert_eq!(ShapeAgreement::Unbound.agreed(), ShapeAgreement::Conflicted.agreed());
+    }
 
     #[test]
     fn transport_shape_interner_hashes_recursive_children_by_id() {
