@@ -2,13 +2,15 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-06-22T12:04:16Z",
+  "close_reason": "stale: enum_take_drop_split now passes interp/run/build after fz-bin.16 and fz-dh8; verified against fixture golden",
   "created": "2026-06-21T18:23:40Z",
   "description": "Independent of protocol dispatch (fz-9i4.7.2/fz-bin). On a list-only program (which COMPILES, no multi-target error), Enum.take/drop return empty lists:\n\n  Enum.take([1,2,3], 5) -\u003e []   (expect [1,2,3])\n  Enum.take([1,2,3], 2) -\u003e []   (expect [1,2])\n  Enum.drop([1,2,3], 1) -\u003e []   (expect [2,3])\n\nBut on the same path:\n  Enum.reduce([1,2,3], 0, fn(x,a)-\u003ex+a end) -\u003e 6   (correct)\n  Enum.map([1,2,3], fn(x)-\u003ex*2 end) -\u003e [2,4,6]      (correct)\n\nSo reduce and map (full-fold list build) are correct; take/drop (which fold with an early {:halt, acc} and a tuple/count accumulator, then extract+reverse) return empty. Likely a bug in the halt/cont accumulator extraction or the {count,list}-\u003elist unwrap/reverse in Enum.take/drop (runtime_library/enum.fz), OR in how the halting reduce's {:halted, acc} result is unwrapped. Repro: fixtures2/00420_enum_take_drop_split.fz once it compiles (needs fz-bin), or the one-liners above. This blocks enum_take_drop_split producing correct output independent of the dispatch fix. Investigate the take/drop reduce-halt path; verify against the oracle in fixtures2/behavior/enum_take_drop_split.expected.txt.",
   "id": "fz-kot",
   "labels": [],
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "[BUG] Enum.take/drop/split return [] even when monomorphic (compile OK)",
   "type": "bug",
-  "updated_at": "2026-06-21T18:23:40Z"
+  "updated_at": "2026-06-22T12:04:16Z"
 }
