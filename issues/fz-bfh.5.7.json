@@ -2,14 +2,15 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-06-22T23:45:21Z",
   "created": "2026-06-22T23:42:22Z",
   "description": "Pre-existing clippy violations on the fz-bfh.5 WIP checkpoint (3fe32dbd1) block the pre-commit -D warnings gate: redundant_clone (jobs/transport.rs publication, semantic.rs key, world.rs display .to_string), if_same_then_else (semantic.rs + world.rs activation-input join), cloned_ref_to_slice_refs (types/types_test.rs arrow args). The WIP commit bypassed the hook. Mechanical fixes, no behavior change. Dealt with first because it blocks every commit in the arc.",
   "id": "fz-bfh.5.7",
   "labels": [],
   "parent": "fz-bfh.5",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "Clear pre-existing clippy debt blocking the -D warnings commit gate",
   "type": "bug",
-  "updated_at": "2026-06-22T23:42:22Z"
+  "updated_at": "2026-06-22T23:45:21Z"
 }
