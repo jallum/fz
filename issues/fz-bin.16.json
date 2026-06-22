@@ -9,9 +9,15 @@
   "id": "fz-bin.16",
   "labels": [],
   "parent": "fz-bin",
+  "comments": [
+    {
+      "text": "Partial progress before blocker fz-dh8: fz2 interp for fixtures2/behavior/enum_take_drop_split.fz now prints the full expected stdout in local testing. The fixture cannot be re-enabled for run/build yet because native JIT/AOT still produce incorrect tuple-accumulator list tails; fz-dh8 tracks that prerequisite and blocks this ticket.",
+      "timestamp": "2026-06-22T04:30:10Z"
+    }
+  ],
   "priority": 2,
   "status": "in_progress",
   "title": "Enum take/drop/split execution fails after compiler drive completes",
   "type": "bug",
-  "updated_at": "2026-06-22T04:24:52Z"
+  "updated_at": "2026-06-22T04:30:10Z"
 }
