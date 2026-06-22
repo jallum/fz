@@ -13,11 +13,15 @@
     {
       "text": "fz-bin.17 full-suite verification exposed this as a blocking prerequisite, not a follow-up. After tuple-return callable publication is enabled, captured-closure handoff fixtures still fail native lowering: /tmp/materialized_transport_handoff_refs.fz reports native attempted to encode callable shape ShapeId(13) for value Some(ValueId(1)) from Runtime(Var(0)) in Continuation { owner: FnId(4), index: 1 }. Transport publications exist for Value/CallArg/ExecutableInput positions, including apply1's callable input and pair/escape value positions, but native return/continuation lowering can still consume an ExecutableReturn or continuation ABI that lacks the matching publication and then attempts structural callable encoding from a boxed runtime var. This must be resolved before fz-bin.17 can be committed with cargo test --lib green.",
       "timestamp": "2026-06-22T02:38:58Z"
+    },
+    {
+      "text": "Further fz-bin.18 reduction on materialized_transport_handoff_refs.fz shows pair/escape publications are present broadly, including Value, CallArg, ExecutableInput, pair ResumePayload, pair ExecutableReturn, escape ExecutableReturn, and ReturnPayload positions. The failing native body is Continuation { owner: FnId(4), index: 1 }, encoding callable shape ShapeId(13) for value Some(ValueId(1)) from Runtime(Var(0)). A recursive mixed tuple ABI experiment fixed neither the handoff fixture nor range_enumerable; range then panicked in native_codegen/terminator.rs at callee_param_reprs indexing, proving the ABI and emitted arg lanes diverged. The correct fix needs to align transport publication positions, native continuation/return ABI construction, and direct callable argument lowering atomically.",
+      "timestamp": "2026-06-22T02:39:54Z"
     }
   ],
   "priority": 3,
   "status": "in_progress",
   "title": "Direct fast path miscalls boxed tuple-returned closure after resume",
   "type": "bug",
-  "updated_at": "2026-06-22T02:39:13Z"
+  "updated_at": "2026-06-22T02:39:54Z"
 }
