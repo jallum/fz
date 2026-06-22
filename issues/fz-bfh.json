@@ -3,12 +3,12 @@
   "blocked_by": [],
   "blocks": [],
   "created": "2026-06-22T12:04:25Z",
-  "description": "Goal\nFinish the work that was intentionally left outside fz-bin after protocol dispatch itself landed.\n\nSignal\nThe fz-bin epic closed the unresolved multi-target protocol callsite failure. Remaining work is narrower:\n- native indirect closure calls still need a real multi-surface callable boundary instead of the deterministic fallback left by fz-bin.18;\n- shared Enum.reduce/3 bridge captures still need generic direct-callable shape correlation;\n- struct-vs-map dispatch still needs a nominal-tag test before structural map projection;\n- enum_map_family still exposes a native direct-closure fast-path arity mismatch.\n\nStrategy\nKeep these independent. Each child owns one current failure mode and must retire any temporary fixture defers or native fallback it makes obsolete. Do not re-open the old fz-bin multi-target dispatch problem statement; that class is closed.",
+  "description": "Goal\nFinish the work that was intentionally left outside fz-bin after protocol dispatch itself landed.\n\nSignal (unified root)\nInvestigation collapsed the reduce failures to ONE root: the shared Enum.reduce* bridge callable's surface/return type is not a convergent, identity-correlated fixed point over non-List Enumerables (fz-f98). Its symptoms, all one defect:\n- fz-bfh.1 reduce/3 over Range + scalar acc crashes (lane mismatch / driver.rs:971 / transport.rs:2587 missing CallableFlowFact).\n- fz-bfh.2 reduce/2 over Range and reduce_while/3 over Map hit settled_callable_boundary \"names multiple boundaries\".\n- fz-bfh.3 reduce/2,3 over Map materialize an absent value (native.rs:2826).\n- fz-bfh.4 reduce over Range+Map together never converges (semantic-drive storm).\nOne non-List shape + a captured callable settles wrong (the crashes); two non-List shapes never settle (the storm). fz-f98 is the single fix; .1-.4 are its regression targets.\n\nIndependent items remain:\n- fz-x2n delete the dead callable-boundary fallback and fail-loud on multi-surface divergence (a hardening sibling, not the root).\n- fz-9i4.7.3 enum_map_family native direct-closure fast-path arity.\n- fz-bv3 struct-vs-map nominal dispatch.\n\nStrategy\nFix the root once in fz-f98 (identity-correlated boundary + monotone-convergent surface join), then verify each regression target green on interp + run + build and close it. Do not special-case any Enum helper or Enumerable impl. fz-x2n / fz-9i4.7.3 / fz-bv3 are independent and can proceed in parallel.",
   "id": "fz-bfh",
   "labels": [],
   "priority": 1,
   "status": "open",
   "title": "Retire fz-bin follow-up deferrals",
   "type": "epic",
-  "updated_at": "2026-06-22T12:05:22Z"
+  "updated_at": "2026-06-22T13:49:14Z"
 }
