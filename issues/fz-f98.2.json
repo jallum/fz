@@ -6,14 +6,15 @@
   "blocks": [
     "fz-f98.3"
   ],
+  "closed_at": "2026-06-22T14:27:52Z",
   "created": "2026-06-22T14:13:27Z",
   "description": "Goal\nCollapse callable flow, callable descriptor facts, and boundary selection into one producer-identity projection. A callable value's contract is minted at the producer as CallableFlowFact and transported by identity; ShapeId remains pure layout.\n\nDesign intent\nThe concepts currently split across CallableFlowFact, CallableDescr, CallableFacts, BoundaryDescr, and native settled_callable_boundary are all expressions of one principle: a callable value has a producer identity plus observed surfaces. Layout answers how many lanes carry the value; the producer contract answers which target/surface/boundary those lanes mean. Consumers must not re-derive that from capture-prefix position or sibling shape.\n\nRequired work\n- Introduce the minimal identity key needed for transport callable facts, likely producer executable + producer ValueId or a stable local callable producer key, and thread it from runtime demand into transport CallableFacts/BoundaryFacts.\n- Make CallableDescr only a layout descriptor (function/capture lane layout) or replace it where it currently smuggles semantic identity; move semantic identity to facts keyed by the producer contract.\n- Ensure callable_for_producer and generic_callable_shape project from upstream CallableFlowFact only; any missing flow is a fail-loud upstream-demand bug caught by fz-f98.1 telemetry.\n- Remove duplicate consumer-side recovery that matches by function + capture_count + position when a producer fact should already name the contract.\n\nChecks\n- Direct reducer capture-prefix tests still pass.\n- The Range scalar-reducer case no longer produces capture_count 0/1 divergence for one target function.\n- No special cases for Range, Map, or Enum helpers.",
   "id": "fz-f98.2",
   "labels": [],
   "parent": "fz-f98",
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Make callable contracts producer-identity projections, not layout-derived descriptors",
   "type": "task",
-  "updated_at": "2026-06-22T14:19:14Z"
+  "updated_at": "2026-06-22T14:27:52Z"
 }
