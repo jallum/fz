@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-22T01:29:23Z",
+  "description": "After fz-bin.10 fixes transport shape ownership for fixtures2/behavior/enum_predicate_search.fz, both fz2 interp and fz2 run reach native lowering and fail with error[artifact/incomplete-semantic-plan]: compiler2 native lowering for root 0: native callable materialization found no native boundary among CallableId fact boundaries [] for CallableId(...). The fixture uses Enum predicate/search callbacks that stay direct-callable in transport, but native callable materialization is trying to select a native boundary anyway. Investigate native callable materialization's direct-vs-first-class boundary selection before re-enabling enum_predicate_search execution.",
+  "id": "fz-bin.15",
+  "labels": [],
+  "parent": "fz-bin",
+  "priority": 2,
+  "status": "open",
+  "title": "Native callable materialization requires boundary for direct Enum predicate callback",
+  "type": "bug",
+  "updated_at": "2026-06-22T01:29:23Z"
+}
