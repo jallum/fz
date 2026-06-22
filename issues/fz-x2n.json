@@ -3,12 +3,13 @@
   "blocked_by": [],
   "blocks": [],
   "created": "2026-06-22T02:58:52Z",
-  "description": "Compiler2 can publish one captured closure value at multiple callable surfaces when a returned closure is invoked polymorphically. Direct-target CallClosure bypasses the stored closure code pointer, but an indirect call through the same heap closure would need a runtime dispatch/thunk boundary instead of the current single boundary function pointer. Add a first-class boundary representation/codegen path that can select among published surfaces by callsite/runtime argument facts, then remove the deterministic fallback used by fz-bin.18 for direct-target-only materialization.",
+  "description": "Goal\nReplace the temporary native callable-boundary fallback left by fz-bin.18 with a first-class dispatch boundary for polymorphic indirect closures.\n\nCurrent signal\nsrc/compiler2/jobs/native.rs still has deterministic_callable_boundary_fallback. The comment there names fz-x2n: direct-target CallClosure bypasses the stored heap-closure code pointer, but an indirect call through a heap closure published at multiple callable surfaces needs runtime selection instead of picking the first inhabited boundary.\n\nRequired work\n- Model a callable boundary that can represent multiple published surfaces for the same heap closure value.\n- Lower/codegen that boundary so indirect closure calls select the surface using callsite/runtime argument facts.\n- Keep direct-target fast paths direct; do not route monomorphic direct calls through the new boundary.\n- Remove deterministic_callable_boundary_fallback and its fz-x2n comment.\n\nChecks\n- Add a regression where the same returned/captured closure is invoked indirectly at more than one callable surface.\n- Existing fz-bin.18 direct-target-only coverage remains green.\n- cargo test --lib and cargo clippy --workspace --all-targets -- -D warnings.",
   "id": "fz-x2n",
   "labels": [],
+  "parent": "fz-bfh",
   "priority": 1,
   "status": "open",
-  "title": "Native codegen: add dispatch boundary for polymorphic indirect closures",
-  "type": "task",
-  "updated_at": "2026-06-22T02:58:52Z"
+  "title": "Native codegen: replace polymorphic closure fallback with dispatch boundary",
+  "type": "bug",
+  "updated_at": "2026-06-22T12:05:00Z"
 }
