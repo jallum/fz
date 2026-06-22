@@ -481,8 +481,12 @@ fn build_executes_map_struct_bitstring_and_enum_halt_fixtures() {
 }
 
 #[test]
-fn build_enum_take_drop_split_gets_past_compiler_drive() {
+fn native_enum_take_drop_split_preserves_tuple_accumulator_lists() {
     let fixture = "fixtures2/behavior/enum_take_drop_split.fz";
+    let expected = fixture_expected_stdout(fixture);
+    let run = run_fz2(&[OsStr::new("run"), OsStr::new(fixture)]);
+    assert_successful_stdout(&run, &expected, &format!("fz2 run {fixture}"));
+
     let out_bin = unique_temp_path("fz2_enum_take_drop_split_build", ".bin");
     let build = run_fz2(&[
         OsStr::new("build"),
@@ -490,16 +494,16 @@ fn build_enum_take_drop_split_gets_past_compiler_drive() {
         OsStr::new("-o"),
         out_bin.as_os_str(),
     ]);
-    let stderr = String::from_utf8_lossy(&build.stderr);
     assert!(
-        !stderr.contains("exceeded 5000 ms drive limit"),
-        "fz2 build {fixture} should not stop at the old compiler drive budget; stderr={stderr}"
+        build.status.success(),
+        "fz2 build {fixture} should succeed; stdout={:?} stderr={:?}",
+        String::from_utf8_lossy(&build.stdout),
+        String::from_utf8_lossy(&build.stderr)
     );
-    assert!(
-        build.status.success() || stderr.contains("src/compiler2/native_codegen/fn_ctx.rs"),
-        "fz2 build {fixture} should either succeed or expose the post-drive native blocker; stdout={:?} stderr={stderr:?}",
-        String::from_utf8_lossy(&build.stdout)
-    );
+    let built = Command::new(&out_bin)
+        .output()
+        .unwrap_or_else(|error| panic!("run built binary for {fixture}: {error}"));
+    assert_successful_stdout(&built, &expected, &format!("fz2 build/run {fixture}"));
     let _ = remove_file(&out_bin);
     let _ = remove_file(out_bin.with_extension("bin.o"));
 }

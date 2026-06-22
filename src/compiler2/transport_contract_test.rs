@@ -2882,6 +2882,81 @@ end
 }
 
 #[test]
+fn compiler2_transport_plan_preserves_nested_enum_reduce_predicate_capture_shape() {
+    let source = include_str!("../../fixtures2/behavior/enum_take_drop_split.fz");
+
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new(&tel);
+    world.submit_code(
+        Some("transport_enum_take_drop_split_nested_predicate_capture.fz".to_string()),
+        source.to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    drive_until_transport_plan(
+        &mut world,
+        root,
+        "Enum split_while reducer predicate capture should keep its callable shape through reduce_while",
+    );
+
+    let lambda_source_contains = |name: &str, needle: &str| -> bool {
+        let Some(range) = name.strip_prefix("#lambda:0:") else {
+            return false;
+        };
+        let Some((start, end)) = range.split_once('-') else {
+            return false;
+        };
+        let Ok(start) = start.parse::<usize>() else {
+            return false;
+        };
+        let Ok(end) = end.parse::<usize>() else {
+            return false;
+        };
+        source.get(start..end).is_some_and(|span| span.contains(needle))
+    };
+    let plan = transport_plan(&world, root);
+    let reducer = plan
+        .callables
+        .iter()
+        .find_map(|(callable, facts)| {
+            let descr = world.callable(*callable);
+            let [capture_shape] = descr.capture_shapes.as_ref() else {
+                return None;
+            };
+            let ShapeDescr::Callable(captured) = shape_descr(&world, *capture_shape) else {
+                return None;
+            };
+            let captured_function = world.callable(*captured).function?;
+            let captured_ref = world.function_ref(captured_function);
+            (lambda_source_contains(&captured_ref.name, "fn (x) -> x < 4 end") && !facts.direct_surfaces.is_empty())
+                .then_some((*capture_shape, *captured, facts.resolutions.clone()))
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "a take/drop/split reducer should capture the `x < 4` predicate as a callable shape: {:?}",
+                plan.callables
+            )
+        });
+    let (predicate_shape, predicate_callable, reducer_resolutions) = reducer;
+    assert!(
+        plan.callables
+            .get(&predicate_callable)
+            .is_some_and(|facts| facts.boundary_ids.is_empty()),
+        "the predicate is direct-only in this fixture; transport must not require a first-class boundary for its reducer capture"
+    );
+    for resolution in reducer_resolutions {
+        let position = TransportPosition::ExecutableInput {
+            executable: resolution,
+            semantic_index: 0,
+        };
+        assert_eq!(
+            plan.positions.get(&position).copied(),
+            Some(predicate_shape),
+            "the nested reducer executable must receive the predicate capture as the exact callable ShapeId"
+        );
+    }
+}
+
+#[test]
 fn compiler2_transport_plan_publishes_direct_reducer_capture_prefix_shape() {
     let source = r#"
 fn reduce_plain([], acc, _reducer), do: acc

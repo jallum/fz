@@ -836,6 +836,7 @@ fn project_transport_plan(
     }
 
     collect_clause_parameter_equalities(contexts, executables, &mut shape_graph, world.types());
+    seed_callable_flow_capture_inputs(world, contexts, &mut facts, &mut shape_graph, &mut memo);
     seed_callable_resolution_capture_inputs(world, &facts, &mut shape_graph);
     let local_shapes = shape_graph.clone().solve();
     collect_executable_input_constraints(
@@ -861,6 +862,85 @@ fn project_transport_plan(
         callables,
         boundaries,
         codegen_seam_facts,
+    }
+}
+
+fn seed_callable_flow_capture_inputs(
+    world: &mut World<'_>,
+    contexts: &HashMap<ExecutableKey, ExecutableContext>,
+    facts: &mut TransportFactsBuilder,
+    shape_graph: &mut ShapeConstraintGraph,
+    memo: &mut ProjectionMemo,
+) {
+    let mut flows = contexts
+        .iter()
+        .flat_map(|(executable, context)| {
+            context
+                .runtime_demand
+                .callable_flows
+                .values()
+                .map(move |flow| (executable, context, flow))
+        })
+        .collect::<Vec<_>>();
+    flows.sort_by_key(|(executable, _, flow)| {
+        (
+            executable.activation.function.as_u32(),
+            executable.activation.arrow,
+            flow.function.as_u32(),
+            flow.captures.iter().map(|value| value.as_u32()).collect::<Vec<_>>(),
+        )
+    });
+    flows.dedup_by(|left, right| left.0 == right.0 && left.2 == right.2);
+
+    for (executable, context, flow) in flows {
+        if flow.captures.is_empty() || flow.resolutions.is_empty() {
+            continue;
+        }
+        let Some(capture_tys) = flow
+            .captures
+            .iter()
+            .copied()
+            .map(|capture| context.analysis.value_types.get(&capture).copied())
+            .collect::<Option<Vec<_>>>()
+        else {
+            continue;
+        };
+        let resolution_symbols = flow
+            .resolutions
+            .iter()
+            .map(|resolution| executable_symbol(resolution, world.types()))
+            .collect::<Vec<_>>();
+        let capture_demands =
+            capture_demands_for_resolutions(contexts, &capture_tys, &resolution_symbols, world.types());
+        let capture_shapes = flow
+            .captures
+            .iter()
+            .copied()
+            .zip(capture_tys.iter().copied().zip(capture_demands.iter()))
+            .map(|(capture, (capture_ty, demand))| {
+                shape_for_local_value(
+                    world, contexts, facts, executable, context, capture, capture_ty, demand, None, memo,
+                )
+            })
+            .collect::<Vec<_>>();
+        for resolution in &resolution_symbols {
+            if resolution.activation.function != flow.function {
+                continue;
+            }
+            assert!(
+                resolution.activation.input.len() >= capture_shapes.len(),
+                "upstream callable-flow resolution is missing capture-prefix inputs: {resolution:?}"
+            );
+            for (semantic_index, shape) in capture_shapes.iter().copied().enumerate() {
+                shape_graph.anchor(
+                    TransportPosition::ExecutableInput {
+                        executable: resolution.clone(),
+                        semantic_index,
+                    },
+                    shape,
+                );
+            }
+        }
     }
 }
 

@@ -105,6 +105,15 @@ materializing local dispatch from the settled multi-target semantic fact, so
 `enumerable_protocol_dispatch`, `map_enumerable`, `membership_operator`, and
 `range_enumerable` all run through fz2 again.
 
+`fz-bin.16` re-enables `enum_take_drop_split` as a full run/interp/build matrix
+fixture. The take/drop/split runtime functions that carry tuple accumulators now
+use `Enum.reduce_while/3` directly with single-clause callbacks, avoiding the
+shared `Enum.reduce/3` bridge for those reducer shapes. Transport projection
+also seeds capture-prefix executable inputs from upstream callable-flow facts
+before the generic callable fallback, so reducer callbacks that capture a
+direct-only predicate keep the predicate's exact callable shape through native
+lowering.
+
 **Runtime/interpreter gaps.** Current fz2 failures also include
 `resource_lifecycle`, `tail_recursion` on `fz2 interp`, `utf8_pattern_match` on
 `fz2 interp`, and `enum_predicate_search` on `fz2 interp`.
