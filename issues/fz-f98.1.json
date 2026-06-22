@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [
     "fz-f98.2"
@@ -10,8 +10,8 @@
   "labels": [],
   "parent": "fz-f98",
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "Pin fz-f98 reduce-bridge regression contract and telemetry",
   "type": "task",
-  "updated_at": "2026-06-22T14:13:54Z"
+  "updated_at": "2026-06-22T14:15:40Z"
 }
