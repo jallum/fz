@@ -118,6 +118,11 @@ lowering.
 `resource_lifecycle`, `tail_recursion` on `fz2 interp`, `utf8_pattern_match` on
 `fz2 interp`, and `enum_predicate_search` on `fz2 interp`.
 
+`fz-bin.11` closes the `bsx_guard_eq` interpreter gap. Dispatch guard constants
+now materialize `DispatchConst::Utf8Binary` values in the backend interpreter,
+so guards such as `s == "hi"` compare through the same brand-blind runtime
+equality path as ordinary `==`.
+
 ## What Remains Load-Bearing
 
 - Compiler2 still reuses neutral runtime/native substrate: `fz_ir` shapes,
