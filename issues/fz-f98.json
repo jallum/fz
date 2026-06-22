@@ -15,11 +15,15 @@
     {
       "text": "fz-bfh.1 is a hard-crash manifestation of this same shared Enum.reduce/3 bridge capture-correlation gap, reproduced minimally over a Range with a scalar accumulator (fails interp/run/build with zero fixture coverage). The generic fix here likely subsumes fz-bfh.1; coordinate so one correlation fix closes both rather than two local patches.",
       "timestamp": "2026-06-22T13:14:55Z"
+    },
+    {
+      "text": "Cluster surfaced via enum_tier0 honest-coverage extension (reduce/2,3,reduce_while over Range+Map): fz-bfh.2 (multi-surface settled_callable_boundary error: reduce/2-over-Range, reduce_while-over-Map) and fz-bfh.3 (Map reduce materializes absent value). All share this shared-reduce-bridge capture-correlation root; one generic publication/correlation fix should cover fz-bfh.1/.2/.3 and this.",
+      "timestamp": "2026-06-22T13:29:58Z"
     }
   ],
   "priority": 2,
   "status": "open",
   "title": "Transport/native: correlate shared Enum.reduce bridge callable captures",
   "type": "bug",
-  "updated_at": "2026-06-22T13:14:55Z"
+  "updated_at": "2026-06-22T13:29:58Z"
 }
