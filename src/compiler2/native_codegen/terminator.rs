@@ -1137,10 +1137,13 @@ fn emit_native_tail_call<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
     };
     native_args.push(tail_cont_arg);
     mid_flight_arg_shapes.push(MidFlightArgShape::HeapRef);
+    let expected_arg_count =
+        expected_native_tail_arg_count(callee_param_reprs, env.surface.closure_target(callee_fn_id).is_some());
     assert_eq!(
         native_args.len(),
-        expected_native_tail_arg_count(callee_param_reprs, env.surface.closure_target(callee_fn_id).is_some(),),
-        "native tail-call arg lanes must match the published callee ABI contract"
+        expected_arg_count,
+        "native tail-call arg lanes must match the published callee ABI contract; caller_sid={this_spec_id}; callee_sid={callee_sid}; callee_fn_id={callee_fn_id:?}; term_args={args:?}; callee_param_reprs={callee_param_reprs:?}; closure_target={:?}",
+        env.surface.closure_target(callee_fn_id),
     );
     if is_native {
         // Native-to-native TailCall: use return_call so

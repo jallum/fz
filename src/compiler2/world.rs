@@ -36,7 +36,7 @@ use super::identity::{
     FunctionSource, ModuleId, ModuleMap, ModuleSourceKind, ModuleState, NotedTypeDecl, RootEntry, RootId, RootKind,
     RootMap, TypeDeclMap, TypeName, TypeRefMap,
 };
-use super::keying::{DispatchMaskMap, RecursiveMap};
+use super::keying::{DispatchDemand, DispatchMaskMap, RecursiveMap};
 use super::module_interface::{InterfaceCallableKind, InterfaceExpectation, InterfaceRequester, ModuleInterface};
 use super::namespace::{Namespace, NamespaceStore, NamespaceSymbol};
 use super::protocol::{
@@ -533,9 +533,12 @@ impl<'a> World<'a> {
         let waits: HashSet<_> = effects.waits.into_iter().collect();
         // Waiting completions extend: a blocked job's prior contributions
         // stand untouched (the scheduler likewise keeps its claims standing).
-        // A wait-free conclusion replaces the contribution key set; entry
-        // values join unless the publisher's ground shifted (rebase), which
-        // is the only path by which contributed inputs may narrow.
+        // A wait-free conclusion normally replaces the contribution key set.
+        // Activation-input evidence from semantic analysis is cumulative caller
+        // evidence: a rerun can add/widen, but a temporarily unreachable callsite
+        // cannot lower and re-raise the same body input edge. Non-semantic
+        // publishers still use normal replacement so source/root changes can
+        // withdraw genuinely stale external contributions.
         let rebased = self.work_graph.rebased(&job);
         // The work graph is the single source of truth for each publisher's
         // prior output frontier (it tracks every job's facts under the identical
@@ -569,6 +572,25 @@ impl<'a> World<'a> {
         } else {
             self.extend_activation_input_contributions(&job, effects.activation_input_contributions)
         };
+        for activation in &activation_input_changed {
+            if let Some(inputs) = self.activation_inputs.get(activation) {
+                self.tel.execute(
+                    &["fz", "compiler2", "activation_inputs", "defined"],
+                    &measurements! {
+                        root_id: activation.root.as_u32(),
+                        function_id: activation.function.as_u32(),
+                        input_arity: inputs.len(),
+                        rebased: rebased,
+                    },
+                    &metadata! {
+                        activation: opaque_debug(activation),
+                        inputs: opaque_debug(inputs),
+                        inputs_display: opaque_debug(&inputs.iter().map(|ty| self.types.display(ty).to_string()).collect::<Vec<_>>()),
+                        publisher: opaque_debug(&job),
+                    },
+                );
+            }
+        }
         let ContributionReplace {
             output_keys: return_demand_outputs,
             changed_keys: return_demand_changed,
@@ -810,8 +832,18 @@ impl<'a> World<'a> {
         rebased: bool,
     ) -> ContributionReplace<ActivationKey> {
         let next = self.normalize_contributions(contributions);
-        self.activation_inputs
-            .conclude(&mut self.types, job.clone(), previous_output_keys, next, rebased)
+        let preserve_frontier = rebased || matches!(job, Job::AnalyzeActivation(_));
+        if preserve_frontier {
+            self.activation_inputs.conclude_preserving_frontier(
+                &mut self.types,
+                job.clone(),
+                previous_output_keys,
+                next,
+            )
+        } else {
+            self.activation_inputs
+                .conclude(&mut self.types, job.clone(), previous_output_keys, next, false)
+        }
     }
 
     fn extend_activation_input_contributions(
@@ -834,6 +866,16 @@ impl<'a> World<'a> {
             // observed vars stay distinct and the evidence shares the key's
             // canonical form. Idempotent on already-addressed contributions.
             let normalized = self.types.address_inputs(&inputs);
+            let normalized = if self.recursive.get(activation.function).copied().unwrap_or(false) {
+                let mask = self
+                    .dispatch_masks
+                    .get(activation.function)
+                    .cloned()
+                    .unwrap_or_else(|| vec![DispatchDemand::Whole; normalized.len()]);
+                self.types.convergence_collapse_evidence_inputs(&normalized, &mask)
+            } else {
+                normalized
+            };
             match next.entry(activation) {
                 std::collections::hash_map::Entry::Vacant(entry) => {
                     entry.insert(normalized);
@@ -848,8 +890,10 @@ impl<'a> World<'a> {
                     for (current_input, next_input) in current.iter_mut().zip(normalized) {
                         *current_input = if *current_input == next_input {
                             *current_input
+                        } else if self.types.is_equivalent(current_input, &next_input) {
+                            *current_input
                         } else {
-                            self.types.refine_widen(current_input, &next_input)
+                            self.types.union(*current_input, next_input)
                         };
                     }
                 }
@@ -958,7 +1002,7 @@ impl<'a> World<'a> {
             // return_ty is already in the activation's addressed frame, matching the
             // surfaces addressed just above — no encounter re-normalization (fz-hwn.27.8).
         }
-        let changed = self.callsites.define(key.clone(), summary);
+        let changed = self.callsites.define(&mut self.types, key.clone(), summary);
         let summary = self
             .callsites
             .get(&key)
@@ -2224,7 +2268,7 @@ impl<'a> World<'a> {
         self.recursive.define(function, recursive)
     }
 
-    pub(crate) fn define_dispatch_mask(&mut self, function: FunctionId, mask: Vec<bool>) -> bool {
+    pub(crate) fn define_dispatch_mask(&mut self, function: FunctionId, mask: Vec<DispatchDemand>) -> bool {
         self.dispatch_masks.define(function, mask)
     }
 

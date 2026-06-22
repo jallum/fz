@@ -130,15 +130,24 @@ an already-addressed arrow.
 
 `canonical_activation_key` mints the precise evidence arrow with `from_inputs`,
 then — for recursive functions only — derives the dispatch key with
-`convergence_collapse(arrow, dispatch_mask)`. That widens every non-dispatch
-slot (`mask[i] == false`) to its `convergence_class` (`list(τ) -> list(any)`),
-so a recursive ascent settles: `list(int)` and `list(any)` share one recursive
-key. Dispatch slots and the result are preserved exactly.
+`convergence_collapse(arrow, dispatch_mask)`. The mask is a vector of
+`DispatchDemand`, not a boolean keep/drop bit: ignored subtrees collapse to
+their `convergence_class` (`list(τ)`, `[]`, and `[] | [τ]` all key as
+`list(any)`), while demanded structure can keep only the part dispatch observes
+(for example a tuple tag) and collapse the payload. `ListShape(elem_demand)` is
+still a recursive convergence key: it preserves the demanded element information
+from the whole list-family descriptor, then converges empty/non-empty shape to
+the all-list class, so a tail-recursive list walk does not fork one activation
+for the initial cons case, another for the possibly-empty tail, or another for
+an already-joined equivalent list family. A recursive ascent therefore settles
+without erasing the discriminator that chose the clause.
 
-Key ≠ evidence is intentional. The precise arrow stays in the `ActivationInputs`
-fact; the collapsed arrow is the `HashMap` dispatch key. This is the fz-y6w
-bounded-specialization control, and it is one whole-arrow operation on the
-interned arrow — not a per-input pre-pass.
+Key != evidence is intentional. The precise arrow stays in the
+`ActivationInputs` fact; the collapsed arrow is the `HashMap` dispatch key.
+Recursive activation-input evidence uses the same demand shape, but only widens
+variable-bearing ignored payloads so concrete caller evidence is not lowered by
+key convergence. This is the fz-y6w bounded-specialization control, and it is
+one whole-arrow operation on the interned arrow — not a per-input pre-pass.
 
 ## Matching is subsumption — the trichotomy calculator
 

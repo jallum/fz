@@ -581,37 +581,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
         let entry_vars = ctx.entry_params(entry_tys.as_slice());
         let mut capture_offset = self.bind_entry_input(&mut ctx, executable, entry, &entry_vars, &mut env)?;
         self.mark_delivered_entry_semantics(&mut ctx, executable, entry, &entry_vars[..capture_offset])?;
-        for (value, position) in entry.captures.iter().copied().zip(entry.capture_positions.iter()) {
-            let shape = position_shape(self.program, position);
-            let bound = self
-                .decode_runtime_value_for_position(&mut ctx, position, shape, &entry_vars, &mut capture_offset)
-                .map_err(|_| {
-                incomplete_native_program(
-                    self.world,
-                    self.root_id,
-                    format!(
-                        "native entry {:?} failed to decode capture {} at position {:?} with shape {:?}; offset={} params={}",
-                        ctx.origin,
-                        value.as_u32(),
-                        position,
-                        self.world.shape(shape),
-                        capture_offset,
-                        entry_vars.len()
-                    ),
-                )
-            })?;
-            bind_local_value(&mut ctx, executable, &mut env, value, bound);
-        }
-        for (capture, physical_var) in entry
-            .reusable_cons_captures
-            .iter()
-            .copied()
-            .zip(entry_vars.iter().copied().skip(capture_offset))
-        {
-            self.bind_runtime_value(&mut ctx, executable, &mut env, capture.source, physical_var);
-            let semantic_var = self.env_runtime_var(&mut ctx, executable, &env, capture.head);
-            ctx.builder.record_reusable_cons_cell(semantic_var, physical_var);
-        }
+        self.bind_entry_captures(&mut ctx, executable, entry, &entry_vars, &mut capture_offset, &mut env)?;
         self.lower_entry_steps(&mut ctx, executable, &mut env, &entry.steps)?;
         self.lower_entry_tail(&mut ctx, executable, entries, entry_fns, &env, &entry.tail)?;
         self.finish_native_fn(ctx);
@@ -997,6 +967,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                 ..
             } => {
                 let callee_value = env_local_value(env, *callee)?;
+                let mut direct_rejection = None;
                 let direct_call = if let Some(capture_lanes) = self.direct_callable_lanes(&callee_value)? {
                     let target = target.ok_or_else(|| {
                         incomplete_native_program(
@@ -1012,9 +983,22 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                     let arg_inputs_start = input_bindings.len().checked_sub(args.len()).ok_or(FatalError)?;
                     for (arg, binding) in args.iter().zip(input_bindings.iter().skip(arg_inputs_start)) {
                         let local = env_local_value(env, arg.value)?;
-                        if !binding.publication_lanes.is_empty()
-                            || !self.closure_fast_path_arg_is_structural(&local, binding.shape)
-                        {
+                        if !binding.publication_lanes.is_empty() {
+                            direct_rejection = Some(format!(
+                                "argument {} targets published input {:?}",
+                                arg.value.as_u32(),
+                                binding.position
+                            ));
+                            direct_ok = false;
+                            break;
+                        }
+                        if !self.closure_fast_path_arg_is_structural(&local, binding.shape) {
+                            direct_rejection = Some(format!(
+                                "argument {} local {:?} is not structural for shape {:?}",
+                                arg.value.as_u32(),
+                                local,
+                                binding.shape
+                            ));
                             direct_ok = false;
                             break;
                         }
@@ -1028,6 +1012,12 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                         )?;
                     }
                     if call_args.len() != callee_executable.param_reprs.len() {
+                        direct_rejection = Some(format!(
+                            "encoded {} call lanes for {} callee params in target {:?}",
+                            call_args.len(),
+                            callee_executable.param_reprs.len(),
+                            callee_executable.key
+                        ));
                         direct_ok = false;
                     }
                     direct_ok.then_some((target, call_args))
@@ -1071,8 +1061,15 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                             )),
                         },
                         ControlDestination::Deliver(entry_id) => {
-                            let continuation =
-                                self.entry_continuation(ctx, executable, entries, entry_fns, *entry_id, env)?;
+                            let continuation = self.delivered_call_continuation(
+                                ctx,
+                                executable,
+                                entries,
+                                entry_fns,
+                                *entry_id,
+                                env,
+                                return_flow.as_ref(),
+                            )?;
                             ctx.set_term(Term::Call {
                                 ident: CallsiteIdent::from_source(Span::DUMMY),
                                 callee,
@@ -1083,6 +1080,16 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                         }
                     }
                 } else {
+                    if let Some(reason) = direct_rejection {
+                        return Err(incomplete_native_program(
+                            self.world,
+                            self.root_id,
+                            format!(
+                                "native direct-only closure call in {:?} could not use direct target {:?}: {reason}",
+                                ctx.origin, target
+                            ),
+                        ));
+                    }
                     let closure = self.materialize_native_value(ctx, None, &callee_value)?;
                     let call_args = self.env_runtime_vars(
                         ctx,
@@ -1114,8 +1121,15 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                             Ok(())
                         }
                         ControlDestination::Deliver(entry_id) => {
-                            let continuation =
-                                self.entry_continuation(ctx, executable, entries, entry_fns, *entry_id, env)?;
+                            let continuation = self.delivered_call_continuation(
+                                ctx,
+                                executable,
+                                entries,
+                                entry_fns,
+                                *entry_id,
+                                env,
+                                return_flow.as_ref(),
+                            )?;
                             ctx.set_term(Term::CallClosure {
                                 ident: CallsiteIdent::from_source(Span::DUMMY),
                                 closure,
@@ -1422,13 +1436,14 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                 let input_bindings = executable_input_bindings(self.program, callee_executable);
                 for (arg, binding) in args.iter().zip(input_bindings.iter()) {
                     let local = env_local_value(env, arg.value)?;
-                    if binding.publication_lanes.is_empty() {
-                        self.encode_runtime_value(
+                    if publication_boundaries_for_position(self.program, &arg.position).is_empty() {
+                        self.encode_runtime_value_for_position(
                             ctx,
                             callee_executable,
                             Some(arg.value),
                             &local,
                             binding.shape,
+                            &arg.position,
                             &mut lanes,
                         )?;
                     } else {
@@ -1436,7 +1451,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                             ctx,
                             executable.value_types.get(&arg.value).copied(),
                             &local,
-                            &binding.position,
+                            &arg.position,
                         )?);
                     }
                 }
@@ -1495,7 +1510,15 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                 )),
             },
             ControlDestination::Deliver(entry_id) => {
-                let continuation = self.entry_continuation(ctx, executable, entries, entry_fns, *entry_id, env)?;
+                let continuation = self.delivered_call_continuation(
+                    ctx,
+                    executable,
+                    entries,
+                    entry_fns,
+                    *entry_id,
+                    env,
+                    Some(return_flow),
+                )?;
                 ctx.set_term(Term::Call {
                     ident: CallsiteIdent::from_source(Span::DUMMY),
                     callee,
@@ -1679,6 +1702,57 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
         }
     }
 
+    fn bind_entry_captures(
+        &mut self,
+        ctx: &mut NativeFnCtx,
+        executable: &BackendExecutable,
+        entry: &BackendEntry,
+        entry_vars: &[Var],
+        capture_offset: &mut usize,
+        env: &mut ValueEnv,
+    ) -> Result<(), FatalError> {
+        for (value, position) in entry.captures.iter().copied().zip(entry.capture_positions.iter()) {
+            let shape = position_shape(self.program, position);
+            let bound = self
+                .decode_runtime_value_for_position(ctx, position, shape, entry_vars, capture_offset)
+                .map_err(|_| {
+                    incomplete_native_program(
+                        self.world,
+                        self.root_id,
+                        format!(
+                            "native entry {:?} failed to decode capture {} at position {:?} with shape {:?}; offset={} params={}",
+                            ctx.origin,
+                            value.as_u32(),
+                            position,
+                            self.world.shape(shape),
+                            *capture_offset,
+                            entry_vars.len()
+                        ),
+                    )
+                })?;
+            bind_local_value(ctx, executable, env, value, bound);
+        }
+        for capture in entry.reusable_cons_captures.iter().copied() {
+            let physical_var = *entry_vars.get(*capture_offset).ok_or_else(|| {
+                incomplete_native_program(
+                    self.world,
+                    self.root_id,
+                    format!(
+                        "native entry {:?} missing reusable cons capture param at offset {} of {}",
+                        ctx.origin,
+                        *capture_offset,
+                        entry_vars.len()
+                    ),
+                )
+            })?;
+            self.bind_runtime_value(ctx, executable, env, capture.source, physical_var);
+            let semantic_var = self.env_runtime_var(ctx, executable, env, capture.head);
+            ctx.builder.record_reusable_cons_cell(semantic_var, physical_var);
+            *capture_offset += 1;
+        }
+        Ok(())
+    }
+
     fn mark_delivered_entry_semantics(
         &mut self,
         ctx: &mut NativeFnCtx,
@@ -1715,6 +1789,33 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
             ));
         }
         Ok(())
+    }
+
+    fn delivered_call_continuation(
+        &mut self,
+        ctx: &mut NativeFnCtx,
+        executable: &BackendExecutable,
+        entries: &[BackendEntry],
+        entry_fns: &HashMap<ControlEntryId, FnId>,
+        entry_id: ControlEntryId,
+        env: &ValueEnv,
+        return_flow: Option<&CallReturnFlow>,
+    ) -> Result<Cont, FatalError> {
+        let Some(CallReturnFlow::Deliver { payload, entry, .. }) = return_flow else {
+            return self.entry_continuation(ctx, executable, entries, entry_fns, entry_id, env);
+        };
+        if *entry != entry_id {
+            return Err(incomplete_native_program(
+                self.world,
+                self.root_id,
+                format!(
+                    "native delivered call targeted entry {} but return-flow targets {}",
+                    entry_id.as_u32(),
+                    entry.as_u32()
+                ),
+            ));
+        }
+        self.deliver_entry_continuation_for_payload(ctx, executable, entries, entry_fns, entry_id, env, payload)
     }
 
     fn entry_continuation(
@@ -1798,6 +1899,156 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
         Ok(Cont {
             fn_id,
             captured: Vec::new(),
+        })
+    }
+
+    fn deliver_entry_continuation_for_payload(
+        &mut self,
+        ctx: &mut NativeFnCtx,
+        executable: &BackendExecutable,
+        entries: &[BackendEntry],
+        entry_fns: &HashMap<ControlEntryId, FnId>,
+        entry_id: ControlEntryId,
+        env: &ValueEnv,
+        payload: &TransportPosition,
+    ) -> Result<Cont, FatalError> {
+        let entry = &entries[entry_id.as_u32() as usize];
+        let Some(value) = entry.origin.input_value() else {
+            return Err(incomplete_native_program(
+                self.world,
+                self.root_id,
+                format!(
+                    "native delivered adapter targeted entry {} without an input value",
+                    entry_id.as_u32()
+                ),
+            ));
+        };
+
+        let payload_shape = position_shape(self.program, payload);
+        let (payload_tys, payload_reprs) = if matches!(payload, TransportPosition::ExecutableReturn { .. }) {
+            let payload_tys = position_lane_tys_with_publications(self.world, self.program, payload, payload_shape);
+            let (payload_reprs, _) = native_return_contract(self.world, self.program, payload);
+            (payload_tys, payload_reprs)
+        } else {
+            continuation_result_entry(self.world, self.program, payload)
+        };
+        if payload_tys.len() != payload_reprs.len() {
+            return Err(incomplete_native_program(
+                self.world,
+                self.root_id,
+                format!(
+                    "native delivered adapter for {:?} expected {} payload lane types, got {} reprs",
+                    payload,
+                    payload_tys.len(),
+                    payload_reprs.len()
+                ),
+            ));
+        }
+        let extra_params = payload_reprs.len();
+
+        let capture_shapes = entry
+            .capture_positions
+            .iter()
+            .map(|position| position_shape(self.program, position))
+            .collect::<Vec<_>>();
+        let capture_lane_tys = capture_shapes
+            .iter()
+            .copied()
+            .zip(entry.capture_positions.iter())
+            .flat_map(|(shape, position)| {
+                position_lane_tys_with_publications(self.world, self.program, position, shape)
+            })
+            .collect::<Vec<_>>();
+        let capture_lane_reprs = entry_capture_reprs(self.world, self.program, entry);
+        let physical_capture_tys = entry
+            .reusable_cons_captures
+            .iter()
+            .map(|capture| {
+                executable
+                    .value_types
+                    .get(&capture.source)
+                    .copied()
+                    .unwrap_or_else(|| self.world.types_mut().any())
+            })
+            .collect::<Vec<_>>();
+
+        let mut param_tys = payload_tys;
+        let mut param_reprs = payload_reprs;
+        param_tys.extend(capture_lane_tys.iter().copied());
+        param_reprs.extend(capture_lane_reprs.iter().copied());
+        param_tys.extend(physical_capture_tys.iter().copied());
+        param_reprs.extend(
+            physical_capture_tys
+                .iter()
+                .copied()
+                .map(|ty| abi_value_repr(self.world, ty)),
+        );
+
+        let fn_id = self.module.fresh_fn_id();
+        let index = self.return_continuation_count;
+        self.return_continuation_count += 1;
+        let name = format!("deliver_lanes__{}_{}", ctx.fn_id.0, index);
+        let mut cont_ctx = NativeFnCtx::new(
+            fn_id,
+            &name,
+            FnCategory::CpsCont,
+            NativeBodyOrigin::Continuation {
+                owner: ctx.fn_id,
+                index,
+            },
+            NativeEntryAbi::Continuation { extra_params },
+            param_reprs,
+            executable.return_ty,
+            executable.transport.return_position.clone(),
+            ctx.return_reprs.clone(),
+            ctx.return_tuple_arity,
+            executable.effects,
+        );
+        let entry_vars = cont_ctx.entry_params(param_tys.as_slice());
+        let mut payload_lane_index = 0;
+        let delivered = self.decode_runtime_value_for_position(
+            &mut cont_ctx,
+            payload,
+            payload_shape,
+            &entry_vars,
+            &mut payload_lane_index,
+        )?;
+        let mut adapter_env = ValueEnv::default();
+        bind_local_value(&mut cont_ctx, executable, &mut adapter_env, value, delivered);
+        let mut lane_index = extra_params;
+        self.bind_entry_captures(
+            &mut cont_ctx,
+            executable,
+            entry,
+            &entry_vars,
+            &mut lane_index,
+            &mut adapter_env,
+        )?;
+        if lane_index != entry_vars.len() {
+            return Err(incomplete_native_program(
+                self.world,
+                self.root_id,
+                format!(
+                    "native delivered adapter for entry {} consumed {} params but exposes {}",
+                    entry_id.as_u32(),
+                    lane_index,
+                    entry_vars.len()
+                ),
+            ));
+        }
+        let args =
+            self.entry_call_args_from_value(&mut cont_ctx, executable, entries, entry_id, &adapter_env, value)?;
+        cont_ctx.set_term(Term::TailCall {
+            ident: CallsiteIdent::from_source(Span::DUMMY),
+            callee: DirectCallTarget::Local(*entry_fns.get(&entry_id).expect("resume entry should have a helper fn")),
+            args,
+            is_back_edge: false,
+        });
+        self.finish_native_fn(cont_ctx);
+
+        Ok(Cont {
+            fn_id,
+            captured: self.entry_capture_args(ctx, executable, entries, entry_id, env)?,
         })
     }
 
@@ -1968,19 +2219,26 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
             return Ok(None);
         };
         let descr = self.world.callable(*callable);
-        let Some(function) = descr.function else {
-            return Ok(None);
+        let generic_publication = descr.function.is_none();
+        let matched = if let Some(function) = descr.function {
+            published
+                .iter()
+                .copied()
+                .filter_map(|boundary| {
+                    self.native_boundary_for_transport_boundary(boundary, function, descr.capture_lanes.len())
+                        .transpose()
+                })
+                .collect::<Result<Vec<_>, _>>()?
+        } else {
+            self.callable_boundaries
+                .iter()
+                .filter(|candidate| published.contains(&candidate.boundary))
+                .map(NativeCallableBoundary::id)
+                .collect()
         };
-        let matched = published
-            .iter()
-            .copied()
-            .filter_map(|boundary| {
-                self.native_boundary_for_transport_boundary(boundary, function, descr.capture_lanes.len())
-                    .transpose()
-            })
-            .collect::<Result<Vec<_>, _>>()?;
         match self.select_inhabited_callable_boundary(&matched) {
             Ok(boundary) => Ok(boundary),
+            Err(()) if generic_publication => Ok(self.deterministic_callable_boundary_fallback(&matched)),
             Err(()) => Ok(None),
         }
     }
@@ -2662,7 +2920,12 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
     /// publication position that names its surface (`first_class_publication_
     /// boundary`). More than one boundary here therefore means policy did not
     /// preselect, which is a transport/abi fact gap, not a choice for native.
-    fn settled_callable_boundary(&self, callable: CallableId) -> Result<NativeCallableBoundaryId, FatalError> {
+    fn settled_callable_boundary(
+        &self,
+        callable: CallableId,
+        shape: ShapeId,
+        origin: &NativeBodyOrigin,
+    ) -> Result<NativeCallableBoundaryId, FatalError> {
         let plan = self.world.transport_plan(self.root_id);
         let boundary_ids: Vec<BoundaryId> = match plan.and_then(|plan| plan.callables.get(&callable)) {
             Some(facts) => facts.boundary_ids.to_vec(),
@@ -2686,14 +2949,16 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                 self.world,
                 self.root_id,
                 format!(
-                    "native callable materialization found no native boundary among CallableId fact boundaries {boundary_ids:?} for {callable:?}"
+                    "native callable materialization found no native boundary among CallableId fact boundaries {boundary_ids:?} for {callable:?} shape {shape:?} in {}",
+                    self.native_origin_debug(origin)
                 ),
             )),
             Err(()) => Err(incomplete_native_program(
                 self.world,
                 self.root_id,
                 format!(
-                    "native callable materialization for {callable:?} names multiple boundaries {matched:?}; a multi-surface callable value must arrive through a publication position",
+                    "native callable materialization for {callable:?} names multiple boundaries {matched:?}; a multi-surface callable value must arrive through a publication position in {}",
+                    self.native_origin_debug(origin),
                 ),
             )),
         }
@@ -2725,6 +2990,26 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                     "native callable materialization for {function:?}/{capture_count} matched multiple native boundaries {matched:?} for published transport boundary {boundary:?}",
                 ),
             )),
+        }
+    }
+
+    fn native_origin_debug(&self, origin: &NativeBodyOrigin) -> String {
+        match origin {
+            NativeBodyOrigin::Continuation { owner, index } => {
+                let owner_executable = self
+                    .executable_fns
+                    .iter()
+                    .position(|fn_id| fn_id == owner)
+                    .and_then(|executable_index| self.program.executables.get(executable_index))
+                    .map(|executable| format!("{:?}", executable.key));
+                match owner_executable {
+                    Some(executable) => {
+                        format!("Continuation {{ owner: {owner:?}, index: {index}, owner_executable: {executable} }}")
+                    }
+                    None => format!("{origin:?}"),
+                }
+            }
+            _ => format!("{origin:?}"),
         }
     }
 
@@ -3020,7 +3305,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                 let identity = self.callable_identity(function, capture_count);
                 let boundary = match boundary {
                     Some(boundary) => boundary,
-                    None => self.settled_callable_boundary(callable)?,
+                    None => self.settled_callable_boundary(callable, shape, &ctx.origin)?,
                 };
                 let prim = if lanes.is_empty() {
                     Prim::MakeFnRef(ctx.fresh_callsite(), identity)
@@ -3070,9 +3355,6 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
         let ShapeDescr::Callable(callable) = self.world.shape(*shape) else {
             return Ok(None);
         };
-        if self.callable_has_boundaries(*callable) {
-            return Ok(None);
-        }
         let descr = self.world.callable(*callable);
         if descr.function.is_none() {
             return Ok(None);
@@ -3098,8 +3380,11 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
         value: &NativeBoundValue,
         target: Option<usize>,
     ) -> Option<FnId> {
-        if ctx.callable_value_boundaries.contains_key(&closure) {
-            return None;
+        if let Some(boundary) = ctx.callable_value_boundaries.get(&closure).copied() {
+            return self
+                .callable_boundaries
+                .get(boundary.as_u32() as usize)
+                .map(|boundary| boundary.target_fn);
         }
         if let NativeBoundValue::Transport { shape, .. } = value
             && let ShapeDescr::Callable(callable) = self.world.shape(*shape)
@@ -3108,13 +3393,6 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
             return None;
         }
         let target_fn = target.map(|target| self.executable_fns[target])?;
-        if self
-            .callable_boundaries
-            .iter()
-            .any(|boundary| boundary.target_fn == target_fn)
-        {
-            return None;
-        }
         Some(target_fn)
     }
 

@@ -1257,6 +1257,46 @@ fn compiler2_runtime_demand_marks_joined_function_refs_first_class_before_reduce
 }
 
 #[test]
+fn compiler2_runtime_demand_resolves_enum_take_first_class_reducer_surfaces_before_transport() {
+    let tel = crate::telemetry::ConfiguredTelemetry::new();
+    let runtime_demands = RuntimeDemandCapture::new();
+    tel.attach(
+        &["fz", "compiler2", "runtime_demand", "defined"],
+        runtime_demands.handler(),
+    );
+
+    let mut world = World::new(&tel);
+    world.submit_code(
+        Some("runtime_demand_enum_take_reducer_surfaces.fz".to_string()),
+        "fn main() do\n  xs = [1, 2, 3, 4, 5]\n  dbg(Enum.take(xs, 3))\nend\n".to_string(),
+    );
+    let root_id = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    drive_until_semantic_closure(
+        &mut world,
+        root_id,
+        "Enum.take reducer callable-flow facts should settle before transport",
+    );
+
+    let record = runtime_demands.last(root_id);
+    let first_class_flows = record
+        .runtime_demands
+        .values()
+        .flat_map(|demand| demand.callable_flows.values())
+        .filter(|flow| !flow.first_class_surfaces.is_empty())
+        .collect::<Vec<_>>();
+
+    assert!(
+        !first_class_flows.is_empty(),
+        "Enum.take should publish first-class callable-flow surfaces before transport: {:?}",
+        record.runtime_demands
+    );
+    assert!(
+        first_class_flows.iter().all(|flow| !flow.first_class_edges.is_empty()),
+        "every first-class callable-flow surface must carry upstream executable edges before transport consumes it: {first_class_flows:?}",
+    );
+}
+
+#[test]
 fn compiler2_semantic_callsite_joins_duplicate_function_targets_before_artifact() {
     let tel = crate::telemetry::ConfiguredTelemetry::new();
     let functions = FunctionCapture::new();

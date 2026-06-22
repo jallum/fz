@@ -2806,8 +2806,8 @@ fn main(), do: make()
     let program = abi_ready.last(root_id).program;
     let continuation_entries = abi_ready_callable_entries(&program, continuation_id);
     assert!(
-        continuation_entries.iter().all(|entry| entry.capture_count == 3),
-        "the suspend continuation captures the list, accumulator, and reducer"
+        continuation_entries.iter().all(|entry| entry.capture_count == 2),
+        "the suspend continuation should publish only its runtime-live accumulator and reducer captures"
     );
     assert!(
         continuation_entries
@@ -4279,8 +4279,8 @@ fn compiler2_native_program_matches_tuple_field_call_continuations_to_the_callee
         .collect::<Vec<_>>();
     assert_eq!(
         tuple_field_conts.len(),
-        2,
-        "the rooted quicksort frontier reaches two qsort executables, and each should own one tuple-field continuation from partition/4",
+        1,
+        "the rooted quicksort frontier reaches one collapsed qsort executable, and it should own one tuple-field continuation from partition/4",
     );
     for tuple_field_cont in tuple_field_conts {
         let function = program.module.fn_by_id(tuple_field_cont.fn_id);
@@ -4646,6 +4646,84 @@ fn compiler2_native_codegen_keeps_callable_boundary_surface_authoritative_for_ra
     );
 
     jit_compile_native_program(&mut compiler, &program);
+}
+
+#[test]
+fn compiler2_interp_runs_range_reduce_scalar_bridge_from_backend_artifacts() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&[], capture.handler());
+    let dbg = DbgCapture::new();
+    tel.attach(&[], dbg.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures2/behavior/fz_f98_range_reduce_scalar.fz".to_string()),
+        text: include_str!("../../fixtures2/behavior/fz_f98_range_reduce_scalar.fz").to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    compiler.run_root_interp(root_id).unwrap_or_else(|error| {
+        let diagnostic = dbg.lines().join("\n");
+        panic!(
+            "Compiler2 backend interpreter should run the Range reduce scalar bridge fixture: {error}; dbg={diagnostic}"
+        );
+    });
+    assert_eq!(
+        dbg.lines().as_slice(),
+        ["6", "{6, 3}"],
+        "Range Enum.reduce/3 should keep scalar and tuple accumulator calls on the settled callable boundary",
+    );
+    assert!(
+        capture.find(&["fz", "type_infer"]).is_empty()
+            && capture.find(&["fz", "planner"]).is_empty()
+            && capture.find(&["fz", "codegen"]).is_empty(),
+        "Compiler2 interpreter runs should not reopen legacy type inference, planning, or codegen",
+    );
+}
+
+#[test]
+fn compiler2_interp_runs_range_and_map_to_list_from_backend_artifacts() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&[], capture.handler());
+    let dbg = DbgCapture::new();
+    tel.attach(&[], dbg.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures2/behavior/fz_f98_range_map_converges.fz".to_string()),
+        text: include_str!("../../fixtures2/behavior/fz_f98_range_map_converges.fz").to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    compiler.run_root_interp(root_id).unwrap_or_else(|error| {
+        let diagnostic = dbg.lines().join("\n");
+        panic!(
+            "Compiler2 backend interpreter should run Range and Map Enum.to_list through protocol dispatch: {error}; dbg={diagnostic}"
+        );
+    });
+    assert_eq!(
+        dbg.lines().as_slice(),
+        ["[1, 3, 5, 7]", "[{1, :a}]"],
+        "Range and Map Enum.to_list calls should keep their protocol impl identities distinct",
+    );
+    assert!(
+        capture.find(&["fz", "type_infer"]).is_empty()
+            && capture.find(&["fz", "planner"]).is_empty()
+            && capture.find(&["fz", "codegen"]).is_empty(),
+        "Compiler2 interpreter runs should not reopen legacy type inference, planning, or codegen",
+    );
 }
 
 #[test]
@@ -6091,7 +6169,7 @@ fn compiler2_native_program_routes_post_receive_resumes_through_delivered_contin
     );
 
     let program = native.last(root_id).program;
-    let receive_body_resume_fns = program
+    let receive_body_adapter_fns = program
         .module
         .fns
         .iter()
@@ -6116,23 +6194,47 @@ fn compiler2_native_program_routes_post_receive_resumes_through_delivered_contin
         .collect::<HashSet<_>>();
 
     assert_eq!(
-        receive_body_resume_fns.len(),
-        2,
-        "the fixture should expose one delivered post-receive resume per receive site",
+        receive_body_adapter_fns.len(),
+        6,
+        "each receive clause body callsite should get its own delivered-call lane adapter",
     );
-    for resume_fn in receive_body_resume_fns {
+    let mut receive_body_resume_fns = HashSet::new();
+    for adapter_fn in receive_body_adapter_fns {
         let body = program
             .bodies
             .iter()
-            .find(|body| body.fn_id == resume_fn)
-            .unwrap_or_else(|| panic!("native body for receive resume {resume_fn:?}"));
+            .find(|body| body.fn_id == adapter_fn)
+            .unwrap_or_else(|| panic!("native body for receive adapter {adapter_fn:?}"));
+        let function = program.module.fn_by_id(adapter_fn);
         assert!(
             matches!(body.entry_abi, NativeEntryAbi::Continuation { .. }),
-            "code reached from a receive-arm call must be published as a delivered continuation, not a local direct entry: fn={resume_fn:?} origin={:?} abi={:?}",
+            "code reached from a receive-arm call must be published as a delivered continuation, not a local direct entry: fn={adapter_fn:?} origin={:?} abi={:?}",
             body.origin,
             body.entry_abi,
         );
+        assert!(
+            function.name.starts_with("deliver_lanes__"),
+            "receive-arm calls should first enter the explicit delivered-call lane adapter: fn={adapter_fn:?} name={}",
+            function.name,
+        );
+        let target = function
+            .blocks
+            .iter()
+            .find_map(|block| match &block.terminator {
+                IrTerm::TailCall {
+                    callee: crate::fz_ir::DirectCallTarget::Local(target),
+                    ..
+                } => Some(*target),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("receive adapter {adapter_fn:?} should tail-call the shared resume entry"));
+        receive_body_resume_fns.insert(target);
     }
+    assert_eq!(
+        receive_body_resume_fns.len(),
+        2,
+        "the six receive-arm adapters should converge into one delivered post-receive resume per receive site",
+    );
 }
 
 #[test]
@@ -6463,10 +6565,27 @@ end
     );
 
     let program = native.last(root_id).program;
+    let adapter = program
+        .bodies
+        .iter()
+        .find(|body| {
+            program.module.fn_by_id(body.fn_id).name.starts_with("deliver_lanes__")
+                && matches!(body.entry_abi, NativeEntryAbi::Continuation { extra_params: 1 })
+        })
+        .expect("the non-tail float call should first enter a callee-return lane adapter");
+    assert_eq!(
+        adapter.param_reprs[0],
+        AbiValueRepr::RawF64,
+        "the delivered-call adapter must expose the callee's physical RawF64 return lane",
+    );
+
     let continuation = program
         .bodies
         .iter()
-        .find(|body| matches!(body.origin, NativeBodyOrigin::Continuation { .. }))
+        .find(|body| {
+            let function = program.module.fn_by_id(body.fn_id);
+            matches!(body.origin, NativeBodyOrigin::Continuation { .. }) && function.name.contains("__resume_")
+        })
         .expect("the non-tail float call should lower through a delivered continuation");
 
     assert_eq!(
@@ -6478,6 +6597,100 @@ end
         continuation.param_reprs[0],
         AbiValueRepr::ValueRef,
         "native continuation metadata must read the transport ContinuationEntry seam repr; recomputing from float type would incorrectly produce RawF64",
+    );
+}
+
+#[test]
+fn compiler2_native_program_adapts_delivered_calls_from_callee_return_lanes() {
+    let tel = ConfiguredTelemetry::new();
+    let native = NativeProgramCapture::new();
+    tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("enum_take_delivered_lane_adapter.fz".to_string()),
+        text: "fn main() do\n  xs = [1, 2, 3, 4, 5]\n  dbg(Enum.take(xs, 3))\nend\n".to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    assert_resolved(
+        compiler.drive(),
+        "Enum.take should settle before inspecting delivered-call native adapters",
+    );
+
+    let program = native.last(root_id).program;
+    let adapter = program
+        .bodies
+        .iter()
+        .find(|body| {
+            let function = program.module.fn_by_id(body.fn_id);
+            function.name.starts_with("deliver_lanes__")
+                && matches!(body.entry_abi, NativeEntryAbi::Continuation { extra_params: 3 })
+                && body
+                    .param_reprs
+                    .starts_with(&[AbiValueRepr::RawAtom, AbiValueRepr::ValueRef, AbiValueRepr::RawInt])
+        })
+        .expect("delivered call adapter should expose the callee's full split return lanes");
+
+    assert!(
+        program
+            .module
+            .fn_by_id(adapter.fn_id)
+            .blocks
+            .iter()
+            .any(|block| matches!(block.terminator, IrTerm::TailCall { .. })),
+        "the adapter should tail-deliver the reconstructed value to the original resume entry",
+    );
+}
+
+#[test]
+fn compiler2_native_program_carries_published_callable_boundary_targets_into_closure_calls() {
+    let tel = ConfiguredTelemetry::new();
+    let native = NativeProgramCapture::new();
+    tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("enum_take_reducer_direct_target.fz".to_string()),
+        text: "fn main() do\n  xs = [1, 2, 3, 4, 5]\n  dbg(Enum.take(xs, 3))\nend\n".to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    assert_resolved(
+        compiler.drive(),
+        "Enum.take should settle before inspecting reducer callable calls",
+    );
+
+    let program = native.last(root_id).program;
+    let reducer_calls = program
+        .module
+        .fns
+        .iter()
+        .filter(|function| function.name.starts_with("reduce_while_cont__clause_"))
+        .flat_map(|function| function.blocks.iter())
+        .filter_map(|block| match &block.terminator {
+            IrTerm::CallClosure { direct_target, .. } => Some(direct_target),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+
+    assert!(
+        !reducer_calls.is_empty(),
+        "the reducer loop should lower at least one first-class closure call",
+    );
+    assert!(
+        reducer_calls.iter().all(|target| target.is_some()),
+        "published callable boundary target identity must flow into reducer CallClosure terms",
     );
 }
 
@@ -7192,7 +7405,7 @@ end
 }
 
 #[test]
-fn compiler2_dispatch_call_edge_uses_joined_summary_return_type() {
+fn compiler2_membership_operator_protocol_receivers_settle_to_direct_impls() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
     tel.attach(&["fz", "diag", "error"], capture.handler());
@@ -7219,14 +7432,12 @@ fn compiler2_dispatch_call_edge_uses_joined_summary_return_type() {
     match compiler.drive() {
         DriveOutcome::Resolved => {}
         DriveOutcome::Fatal { job } => panic!(
-            "dispatch arms with different concrete return types should use the joined callsite return, not fail materialization: {job:?}; diag={:?}",
+            "membership operator protocol calls should resolve without materialization failures: {job:?}; diag={:?}",
             capture
                 .last(&["fz", "diag", "error"])
                 .map(|event| metadata_str(&event, "message").to_string())
         ),
-        other => panic!(
-            "dispatch arms with different concrete return types should resolve through materialization, got {other:?}"
-        ),
+        other => panic!("membership operator protocol calls should resolve through materialization, got {other:?}"),
     }
 
     let program = materialized.last(root_id).program;
@@ -7257,8 +7468,8 @@ fn compiler2_dispatch_call_edge_uses_joined_summary_return_type() {
         }
     }
     assert!(
-        found,
-        "membership_operator should exercise at least one materialized dispatch edge",
+        !found,
+        "membership_operator should now settle each protocol receiver to a direct impl instead of materializing a spurious dispatch edge",
     );
 }
 
@@ -7308,12 +7519,8 @@ fn compiler2_quicksort_root_closes_with_a_finite_recursive_frontier() {
         .collect::<Vec<_>>();
     assert_eq!(
         qsort_activations.len(),
-        2,
-        "root closure should keep the narrow and widened qsort/1 recursive activations"
-    );
-    assert!(
-        qsort_activations[0].arrow != qsort_activations[1].arrow,
-        "the two qsort/1 recursive activations should remain distinct after canonical keying"
+        1,
+        "root closure should collapse qsort/1 recursive list-family inputs to one activation key"
     );
     let mut partition_activations = activations
         .iter()
@@ -7348,18 +7555,14 @@ fn compiler2_quicksort_root_closes_with_a_finite_recursive_frontier() {
         .collect::<Vec<_>>();
     assert_eq!(
         append_activations.len(),
-        2,
-        "root closure should keep the narrow and widened append/2 recursive activations that hang off qsort/1"
+        1,
+        "root closure should collapse append/2 recursive list-family inputs to one activation key"
     );
     assert!(
         append_activations
             .iter()
             .all(|activation| activation.input_len(types) == 2),
         "append/2 should stay keyed on its two inputs"
-    );
-    assert!(
-        append_activations[0].arrow != append_activations[1].arrow,
-        "the two append/2 recursive activations should remain distinct after canonical keying"
     );
     // Honest argument evidence keys non-recursive runtime helpers
     // per-callsite (the designed behavior); the old any-defaults

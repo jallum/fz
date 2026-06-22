@@ -87,7 +87,7 @@ A named source struct (e.g. `Range`) maps to its nominal opaque tag
 `opaque(impl-target::Range)` (see [`set-theoretic-types`](set-theoretic-types.md)),
 which keeps it distinct from any structurally-similar value.
 
-## Dispatch is receiver-subtype selection
+## Dispatch is receiver/target overlap selection
 
 A protocol callsite is an ordinary call whose callee is a protocol callback
 function. When `resolve_function_call` sees `protocol_callback(fn)`, it hands off
@@ -97,7 +97,9 @@ type — the first argument:
 ```text
 receiver = input_types[0]
 for each registered (protocol, target) impl:
-    if is_subtype(receiver, impl_target_ty(target)) and it has this callback:
+    if runtime_type_predicate(receiver) overlaps runtime_type_predicate(impl_target_ty(target))
+       and intersect(receiver, impl_target_ty(target)) is non-empty
+       and it has this callback:
         collect it
 exactly one match  -> activate that impl callback as an ordinary call
                       (the protocol callsite becomes a direct call to the impl)
@@ -106,13 +108,19 @@ no match           -> demand the impl module Protocol.Target (from the provider
 many matches       -> unresolved (any): the receiver is open/ambiguous here
 ```
 
+The runtime-predicate check is what keeps runtime identity authoritative. A
+named struct value can carry structural field evidence, including map-shaped
+evidence, but it is not a plain runtime map; `Enumerable.Range` therefore does
+not overlap the `Map` impl just because the `Range` struct has fields.
+
 Selection is lazy about impl code, and there is a single discovery path: the
 **provider index** (`ProtocolImplProviders(protocol)`). Scope time records every
 `defimpl` as a `(protocol, target) -> Protocol.Target` entry — built-in impls
 co-located with the protocol's own source, and impls in a module the program
 never reaches by name alike. When no registered arm matches, the job reads that
 index and demands `DefineModule(Protocol.Target)` for each target the receiver
-overlaps; the impl is the unit of demand, not the arbitrarily-named module it
+overlaps by the same runtime-predicate-plus-intersection test; the impl is the
+unit of demand, not the arbitrarily-named module it
 sits inside, and its lexical host is never pulled. There is **no** receiver-type
 module-name scan: a protocol call always names the protocol, and that reference
 scopes its co-located `defimpl`s, so built-in impls ride in on the protocol. A

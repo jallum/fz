@@ -1,16 +1,19 @@
 //! Jobs that derive the stable facts used for activation keying.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
-use crate::dispatch_matrix::SubjectSource;
 use crate::dispatch_matrix::pattern::{PatternDispatchPlan, PatternGuardExpr};
+use crate::dispatch_matrix::{ListRegion, ProjectionKind, Region, RegionPredicate, Subject, SubjectId, SubjectSource};
 
 use super::super::body::{LoweredBody, LoweredStep, LoweredTail};
 use super::super::drive::{FactKey, Job, JobEffects, current_uses};
 use super::super::identity::FunctionId;
+use super::super::keying::DispatchDemand;
 use super::super::scheduler::FatalError;
 use super::super::types::Ty;
 use super::super::world::World;
+use crate::telemetry::opaque_debug;
+use crate::{measurements, metadata};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum StaticEdge {
@@ -89,6 +92,16 @@ pub(super) fn derive_dispatch_mask(world: &mut World<'_>, function: FunctionId) 
 
     let plan = world.entry_dispatch(function);
     let mask = dispatch_input_mask(&plan);
+    world.tel().execute(
+        &["fz", "compiler2", "dispatch_mask", "derived"],
+        &measurements! {
+            function_id: function.as_u32(),
+            arity: mask.len(),
+        },
+        &metadata! {
+            mask: opaque_debug(&mask),
+        },
+    );
     let changed = world.define_dispatch_mask(function, mask);
     Ok(JobEffects {
         reads: current_uses([FactKey::EntryDispatch(function)]),
@@ -236,11 +249,20 @@ fn collect_tail_edges(tail: &LoweredTail, edges: &mut Vec<StaticEdge>) {
     }
 }
 
-fn dispatch_input_mask(plan: &PatternDispatchPlan<Ty>) -> Vec<bool> {
-    let mut mask = vec![false; plan.input_count];
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DemandPathStep {
+    TupleField(u32),
+    ListHead,
+    ListTail,
+    MapValue,
+    BitstringField,
+}
+
+fn dispatch_input_mask(plan: &PatternDispatchPlan<Ty>) -> Vec<DispatchDemand> {
+    let mut mask = vec![DispatchDemand::Ignore; plan.input_count];
     for arm in &plan.matrix.arms {
         for question in &arm.questions {
-            mark_subject_inputs(&plan.matrix.subjects, question.predicate.subject, &mut mask);
+            mark_predicate_inputs(&plan.matrix.subjects, &question.predicate, &mut mask);
         }
     }
     for guard in &plan.guards {
@@ -249,30 +271,74 @@ fn dispatch_input_mask(plan: &PatternDispatchPlan<Ty>) -> Vec<bool> {
     mask
 }
 
-fn mark_subject_inputs(
-    subjects: &[crate::dispatch_matrix::Subject],
-    subject: crate::dispatch_matrix::SubjectId,
-    mask: &mut [bool],
-) {
-    let Some(subject) = subjects.get(subject.0 as usize) else {
+fn mark_predicate_inputs(subjects: &[Subject], predicate: &RegionPredicate<Ty>, mask: &mut [DispatchDemand]) {
+    let demand = demand_for_region(&predicate.region);
+    mark_subject_demand(subjects, predicate.subject, demand, mask);
+}
+
+fn demand_for_region(region: &Region<Ty>) -> DispatchDemand {
+    match region {
+        Region::List(ListRegion::Empty | ListRegion::Cons) => {
+            DispatchDemand::ListShape(Box::new(DispatchDemand::Ignore))
+        }
+        Region::TupleArity(_) => DispatchDemand::TupleFields(BTreeMap::new()),
+        Region::Equal(_)
+        | Region::Type(_)
+        | Region::MapKind
+        | Region::MapKeyPresent { .. }
+        | Region::Bitstring(_)
+        | Region::Guard(_) => DispatchDemand::Whole,
+    }
+}
+
+fn mark_subject_demand(subjects: &[Subject], subject: SubjectId, demand: DispatchDemand, mask: &mut [DispatchDemand]) {
+    let Some((ordinal, path)) = subject_path(subjects, subject) else {
         return;
     };
+    if let Some(slot) = mask.get_mut(ordinal as usize) {
+        slot.join_assign(demand_at_path(&path, demand));
+    }
+}
+
+fn subject_path(subjects: &[Subject], subject: SubjectId) -> Option<(u32, Vec<DemandPathStep>)> {
+    let subject = subjects.get(subject.0 as usize)?;
     match &subject.source {
-        SubjectSource::Input { ordinal } => {
-            if let Some(slot) = mask.get_mut(*ordinal as usize) {
-                *slot = true;
-            }
-        }
+        SubjectSource::Input { ordinal } => Some((*ordinal, Vec::new())),
         SubjectSource::Projection(projection) => {
-            mark_subject_inputs(subjects, projection.source, mask);
+            let (ordinal, mut path) = subject_path(subjects, projection.source)?;
+            match &projection.kind {
+                ProjectionKind::TupleField(field) => path.push(DemandPathStep::TupleField(*field)),
+                ProjectionKind::ListHead => path.push(DemandPathStep::ListHead),
+                ProjectionKind::ListTail => path.push(DemandPathStep::ListTail),
+                ProjectionKind::MapValue { .. } => path.push(DemandPathStep::MapValue),
+                ProjectionKind::BitstringField(_) => path.push(DemandPathStep::BitstringField),
+            }
+            Some((ordinal, path))
         }
     }
 }
 
-fn mark_guard_inputs(plan: &PatternDispatchPlan<Ty>, guard: &PatternGuardExpr<Ty>, mask: &mut [bool]) {
+fn demand_at_path(path: &[DemandPathStep], demand: DispatchDemand) -> DispatchDemand {
+    let Some((head, tail)) = path.split_first() else {
+        return demand;
+    };
+    match head {
+        DemandPathStep::TupleField(field) => {
+            let mut fields = BTreeMap::new();
+            fields.insert(*field, demand_at_path(tail, demand));
+            DispatchDemand::TupleFields(fields)
+        }
+        DemandPathStep::ListHead => DispatchDemand::ListShape(Box::new(demand_at_path(tail, demand))),
+        DemandPathStep::ListTail | DemandPathStep::MapValue | DemandPathStep::BitstringField => DispatchDemand::Whole,
+    }
+}
+
+fn mark_guard_inputs(plan: &PatternDispatchPlan<Ty>, guard: &PatternGuardExpr<Ty>, mask: &mut [DispatchDemand]) {
     match guard {
         PatternGuardExpr::Const(_) | PatternGuardExpr::Pinned(_) => {}
-        PatternGuardExpr::Subject(subject) => mark_subject_inputs(&plan.matrix.subjects, *subject, mask),
+        PatternGuardExpr::Subject(subject) => {
+            mark_subject_demand(&plan.matrix.subjects, *subject, DispatchDemand::Whole, mask)
+        }
         PatternGuardExpr::Unary { expr, .. } => mark_guard_inputs(plan, expr, mask),
         PatternGuardExpr::Binary { lhs, rhs, .. } => {
             mark_guard_inputs(plan, lhs, mask);

@@ -82,6 +82,15 @@ impl<T: Ord + Clone> ObservedSet<T> {
             (true, true) => Self::cofinite(self.values.intersection(&other.values).cloned()),
         }
     }
+
+    pub(crate) fn overlaps(&self, other: &Self) -> bool {
+        match (self.cofinite, other.cofinite) {
+            (false, false) => self.values.iter().any(|value| other.values.contains(value)),
+            (false, true) => self.values.iter().any(|value| !other.values.contains(value)),
+            (true, false) => other.values.iter().any(|value| !self.values.contains(value)),
+            (true, true) => true,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -152,6 +161,20 @@ impl RuntimeTypePredicate {
 
     pub(crate) fn has_structs(&self) -> bool {
         !self.tuple_arities.is_none() || !self.named_structs.is_none() || self.allow_other_structs
+    }
+
+    pub(crate) fn overlaps(&self, other: &Self) -> bool {
+        self.ints.overlaps(&other.ints)
+            || self.floats.overlaps(&other.floats)
+            || self.atoms.overlaps(&other.atoms)
+            || self.lists.overlaps(&other.lists)
+            || self.tuple_arities.overlaps(&other.tuple_arities)
+            || self.named_structs.overlaps(&other.named_structs)
+            || (self.allow_other_structs && other.allow_other_structs)
+            || (self.maps && other.maps)
+            || (self.binaries && other.binaries)
+            || (self.closures && other.closures)
+            || (self.resources && other.resources)
     }
 }
 

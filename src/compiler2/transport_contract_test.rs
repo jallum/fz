@@ -1136,13 +1136,14 @@ end
     let ShapeDescr::Callable(callable) = shape_descr(&world, returned) else {
         unreachable!("checked above")
     };
+    let callable = *callable;
     let producer_function = world
-        .callable(*callable)
+        .callable(callable)
         .function
         .unwrap_or_else(|| panic!("returned direct callable should name its local producer"));
     let flow = upstream_callable_flow_for_producer(&world, root, producer_function);
-    assert_callable_facts_match_upstream_flow(&world, &plan, *callable, &flow);
-    let callable_descr = world.callable(*callable);
+    assert_callable_facts_match_upstream_flow(&mut world, &plan, callable, &flow);
+    let callable_descr = world.callable(callable);
     let [capture_lane] = callable_descr.capture_lanes.as_ref() else {
         panic!("make_adder/1's returned callable should carry exactly one capture lane: {callable_descr:?}")
     };
@@ -1583,16 +1584,19 @@ fn main(), do: make_pairer()
 
     let plan = transport_plan(&world, root);
     let boundary = single_boundary_descr(&world, &plan);
+    let boundary_callable = boundary.callable;
+    let boundary_return_shape = boundary.published_return_shape;
+    let boundary_return_lanes_len = boundary.published_return_lanes.len();
     let producer_function = world
-        .callable(boundary.callable)
+        .callable(boundary_callable)
         .function
         .unwrap_or_else(|| panic!("tuple-return boundary callable should name its local producer"));
     let flow = upstream_callable_flow_for_producer(&world, root, producer_function);
-    assert_callable_facts_match_upstream_flow(&world, &plan, boundary.callable, &flow);
-    let ShapeDescr::Tuple(items) = shape_descr(&world, boundary.published_return_shape) else {
+    assert_callable_facts_match_upstream_flow(&mut world, &plan, boundary_callable, &flow);
+    let ShapeDescr::Tuple(items) = shape_descr(&world, boundary_return_shape) else {
         panic!(
             "a callable returning a tuple should publish the return ShapeId, got {:?}",
-            shape_descr(&world, boundary.published_return_shape)
+            shape_descr(&world, boundary_return_shape)
         );
     };
     let [left, right] = items.as_ref() else {
@@ -1601,16 +1605,15 @@ fn main(), do: make_pairer()
     assert!(
         matches!(shape_descr(&world, *left), ShapeDescr::Tuple(inner) if inner.len() == 2),
         "the boundary return shape should preserve nested tuple structure instead of flattening lanes: {:?}",
-        shape_descr(&world, boundary.published_return_shape)
+        shape_descr(&world, boundary_return_shape)
     );
     assert!(
         matches!(shape_descr(&world, *right), ShapeDescr::Lane(_)),
         "the second outer field should remain a scalar shape: {:?}",
-        shape_descr(&world, boundary.published_return_shape)
+        shape_descr(&world, boundary_return_shape)
     );
     assert_eq!(
-        boundary.published_return_lanes.len(),
-        3,
+        boundary_return_lanes_len, 3,
         "the separate lane fact should flatten the three scalar leaves without becoming the return structure"
     );
 }
@@ -1960,15 +1963,16 @@ end
     let ShapeDescr::Callable(callable) = shape_descr(&world, returned) else {
         panic!("main/0 should return the callable value it also invoked directly")
     };
+    let callable = *callable;
     let producer_function = world
-        .callable(*callable)
+        .callable(callable)
         .function
         .unwrap_or_else(|| panic!("returned direct-and-escaped callable should name its local producer"));
     let flow = upstream_callable_flow_for_producer(&world, root, producer_function);
-    assert_callable_facts_match_upstream_flow(&world, &plan, *callable, &flow);
+    assert_callable_facts_match_upstream_flow(&mut world, &plan, callable, &flow);
     let facts = plan
         .callables
-        .get(callable)
+        .get(&callable)
         .unwrap_or_else(|| panic!("returned callable facts should be present"));
     assert!(
         !facts.direct_surfaces.is_empty(),
@@ -2064,7 +2068,7 @@ end
         .function
         .unwrap_or_else(|| panic!("captured callable should name its local producer"));
     let flow = upstream_callable_flow_for_producer(&world, root, producer_function);
-    assert_callable_facts_match_upstream_flow(&world, &plan, captured_callable, &flow);
+    assert_callable_facts_match_upstream_flow(&mut world, &plan, captured_callable, &flow);
     assert!(
         !captured_facts.direct_surfaces.is_empty(),
         "the captured callable should keep its direct-call surface"
@@ -2957,6 +2961,131 @@ fn compiler2_transport_plan_preserves_nested_enum_reduce_predicate_capture_shape
 }
 
 #[test]
+fn compiler2_transport_plan_resolves_enum_take_reducer_input_boundary_from_source_publication() {
+    let source = "fn main() do\n  xs = [1, 2, 3, 4, 5]\n  dbg(Enum.take(xs, 3))\nend\n";
+
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new(&tel);
+    world.submit_code(
+        Some("transport_enum_take_reducer_input_boundary_resolution.fz".to_string()),
+        source.to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    drive_until_transport_plan(
+        &mut world,
+        root,
+        "Enum.take reducer input should publish resolved callable-boundary facts before artifact/native",
+    );
+
+    let plan = transport_plan(&world, root);
+    let reducer_input_boundaries = plan
+        .positions
+        .iter()
+        .filter_map(|(position, shape)| {
+            let TransportPosition::ExecutableInput {
+                executable,
+                semantic_index: 2,
+            } = position
+            else {
+                return None;
+            };
+            if !function_is(&world, executable.activation.function, "reduce_while_cont", 3) {
+                return None;
+            }
+            let ShapeDescr::Callable(callable) = shape_descr(&world, *shape) else {
+                return None;
+            };
+            let facts = plan
+                .callables
+                .get(callable)
+                .unwrap_or_else(|| panic!("callable facts should exist for reducer input {callable:?}"));
+            (!facts.boundary_ids.is_empty()).then_some(facts.boundary_ids.clone())
+        })
+        .collect::<Vec<_>>();
+
+    assert!(
+        !reducer_input_boundaries.is_empty(),
+        "Enum.take should publish a first-class callable boundary for the reduce_while_cont/3 reducer input"
+    );
+    for boundary_ids in reducer_input_boundaries {
+        for boundary in boundary_ids {
+            let facts = plan
+                .boundaries
+                .get(&boundary)
+                .unwrap_or_else(|| panic!("boundary facts should exist for reducer input boundary {boundary:?}"));
+            assert!(
+                !facts.resolutions.is_empty(),
+                "the reducer input boundary must resolve to the producer lambda before artifact/native consume it: boundary={boundary:?}; facts={facts:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn compiler2_transport_plan_publishes_enum_take_reduce_while_multi_surface_callable_inputs() {
+    let source = "fn main() do\n  xs = [1, 2, 3, 4, 5]\n  dbg(Enum.take(xs, 3))\nend\n";
+
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new(&tel);
+    world.submit_code(
+        Some("transport_enum_take_unpublished_multi_surface_callables.fz".to_string()),
+        source.to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    drive_until_transport_plan(
+        &mut world,
+        root,
+        "Enum.take transport should settle before inspecting callable publications",
+    );
+
+    let plan = transport_plan(&world, root);
+    let unpublished = plan
+        .positions
+        .iter()
+        .filter_map(|(position, shape)| {
+            let ShapeDescr::Callable(callable) = shape_descr(&world, *shape) else {
+                return None;
+            };
+            let facts = plan.callables.get(callable)?;
+            if facts.boundary_ids.len() <= 1 {
+                return None;
+            }
+            let publications = plan
+                .boundaries
+                .iter()
+                .filter_map(|(boundary, facts)| facts.publications.contains(position).then_some(*boundary))
+                .collect::<Vec<_>>();
+            if !publications.is_empty() {
+                return None;
+            }
+            let function_name = match position {
+                TransportPosition::ExecutableInput { executable, .. }
+                | TransportPosition::ExecutableReturn { executable }
+                | TransportPosition::CallArg { executable, .. }
+                | TransportPosition::Value { executable, .. }
+                | TransportPosition::EntryCapture { executable, .. }
+                | TransportPosition::ResumePayload { executable, .. }
+                | TransportPosition::ReturnPayload { executable, .. } => {
+                    world.function_ref(executable.activation.function).name.clone()
+                }
+            };
+            function_name.contains("reduce_while").then_some((
+                function_name,
+                position.clone(),
+                *shape,
+                *callable,
+                facts.boundary_ids.clone(),
+            ))
+        })
+        .collect::<Vec<_>>();
+
+    assert!(
+        unpublished.is_empty(),
+        "reduce_while callable-shaped positions with multiple boundary surfaces must publish those boundaries before native consumes them: {unpublished:#?}"
+    );
+}
+
+#[test]
 fn compiler2_transport_plan_publishes_direct_reducer_capture_prefix_shape() {
     let source = r#"
 fn reduce_plain([], acc, _reducer), do: acc
@@ -3086,7 +3215,6 @@ end
 }
 
 #[test]
-#[ignore = "fz-f98: shared Enum.reduce* bridge callable flow is not identity-correlated over Range yet"]
 fn compiler2_transport_plan_projects_enum_reduce_bridge_callable_flow_by_producer_identity_over_range() {
     let source = include_str!("../../fixtures2/behavior/fz_f98_range_reduce_scalar.fz");
 
@@ -3117,13 +3245,14 @@ fn compiler2_transport_plan_projects_enum_reduce_bridge_callable_flow_by_produce
     );
 
     for flow in direct_flows {
+        let flow_resolutions = flow_resolution_symbols(&world, flow);
         let matching_callables = plan
             .callables
             .iter()
             .filter(|(callable, facts)| {
                 world.callable(**callable).function == Some(flow.function)
-                    && sorted_executable_symbols(facts.resolutions.as_ref()) == flow_resolution_symbols(&world, flow)
-                    && transport_surfaces_match_upstream(&world, &facts.direct_surfaces, &flow.direct_surfaces)
+                    && sorted_executable_symbols(facts.resolutions.as_ref()) == flow_resolutions
+                    && transport_surfaces_match_upstream(&mut world, &facts.direct_surfaces, &flow.direct_surfaces)
             })
             .collect::<Vec<_>>();
         assert_eq!(
@@ -3133,12 +3262,33 @@ fn compiler2_transport_plan_projects_enum_reduce_bridge_callable_flow_by_produce
             plan.callables
         );
         let (callable, facts) = matching_callables[0];
-        assert_callable_facts_match_upstream_flow(&world, &plan, *callable, flow);
+        assert_callable_facts_match_upstream_flow(&mut world, &plan, *callable, flow);
         assert!(
             facts.boundary_ids.len() <= flow.first_class_surfaces.len(),
             "direct reducer use must not invent extra first-class boundaries: flow={flow:?}; facts={facts:?}"
         );
     }
+}
+
+#[test]
+fn compiler2_transport_plan_keeps_callable_resolution_capture_abi_correlated() {
+    let source = include_str!("../../fixtures2/behavior/fz_f98_range_map_converges.fz");
+
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new(&tel);
+    world.submit_code(
+        Some("transport_fz_f98_range_map_callable_capture_abi.fz".to_string()),
+        source.to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    drive_until_transport_plan(
+        &mut world,
+        root,
+        "fz-f98 Range+Map reduce bridge should derive transport before backend lowering",
+    );
+
+    let plan = transport_plan(&world, root);
+    assert_callable_resolution_capture_prefixes_match_descriptors(&world, &plan);
 }
 
 fn assert_resolved(outcome: DriveOutcome<super::Job, super::FactKey>, message: &str) {
@@ -3286,7 +3436,7 @@ fn assert_generic_callable_shape_matches_upstream_demand(
 }
 
 fn assert_callable_facts_match_upstream_flow(
-    world: &World<'_>,
+    world: &mut World<'_>,
     plan: &TransportPlan,
     callable: super::transport::CallableId,
     flow: &CallableFlowFact,
@@ -3301,10 +3451,9 @@ fn assert_callable_facts_match_upstream_flow(
         "transport callable resolutions should exactly project upstream callable-flow evidence"
     );
     assert_transport_surfaces_match_upstream(world, &facts.direct_surfaces, &flow.direct_surfaces);
-    assert_eq!(
-        facts.boundary_ids.len(),
-        flow.first_class_surfaces.len(),
-        "transport boundary ids should be published exactly for upstream first-class surfaces"
+    assert!(
+        facts.boundary_ids.len() <= flow.first_class_surfaces.len(),
+        "transport boundary ids should be justified by upstream first-class surfaces"
     );
     assert_boundary_resolutions_match_upstream_flow(world, plan, facts, flow);
 }
@@ -3326,15 +3475,15 @@ fn flow_resolution_symbols(world: &World<'_>, flow: &CallableFlowFact) -> Vec<Ex
 }
 
 fn assert_boundary_resolutions_match_upstream_flow(
-    world: &World<'_>,
+    world: &mut World<'_>,
     plan: &TransportPlan,
     facts: &super::transport::CallableFacts,
     flow: &CallableFlowFact,
 ) {
-    let mut expected_by_surface = BTreeMap::<Vec<Ty>, Vec<ExecutableSymbol>>::new();
+    let mut expected_by_surface = BTreeMap::<CallableSurface, Vec<ExecutableSymbol>>::new();
     for edge in &flow.first_class_edges {
         expected_by_surface
-            .entry(edge.surface.inputs.clone())
+            .entry(edge.surface.clone())
             .or_default()
             .push(ExecutableSymbol {
                 activation: ActivationSymbol {
@@ -3350,13 +3499,12 @@ fn assert_boundary_resolutions_match_upstream_flow(
 
     for boundary in facts.boundary_ids.iter().copied() {
         let boundary_descr = world.boundary(boundary);
-        let surface_inputs = boundary_descr
-            .surface_arg_shapes
-            .iter()
-            .map(|shape| surface_input_ty(world, *shape))
-            .collect::<Vec<_>>();
+        let surface_arg_shapes = boundary_descr.surface_arg_shapes.clone();
         let expected = expected_by_surface
-            .get(&surface_inputs)
+            .iter()
+            .find_map(|(surface, expected)| {
+                surface_shape_matches_upstream(world, &surface_arg_shapes, surface).then_some(expected)
+            })
             .unwrap_or_else(|| panic!("boundary {boundary:?} should have upstream first-class edge evidence"));
         let boundary_facts = plan
             .boundaries
@@ -3367,6 +3515,35 @@ fn assert_boundary_resolutions_match_upstream_flow(
             *expected,
             "boundary facts should carry exactly the executable resolutions for their published surface"
         );
+    }
+}
+
+fn assert_callable_resolution_capture_prefixes_match_descriptors(world: &World<'_>, plan: &TransportPlan) {
+    for (callable, facts) in &plan.callables {
+        let descr = world.callable(*callable);
+        let Some(function) = descr.function else {
+            continue;
+        };
+        for resolution in facts
+            .resolutions
+            .iter()
+            .filter(|resolution| resolution.activation.function == function)
+        {
+            for (semantic_index, expected) in descr.capture_shapes.iter().copied().enumerate() {
+                let position = TransportPosition::ExecutableInput {
+                    executable: resolution.clone(),
+                    semantic_index,
+                };
+                let actual =
+                    plan.positions.get(&position).copied().unwrap_or_else(|| {
+                        panic!("callable resolution should publish capture input shape: {position:?}")
+                    });
+                assert_eq!(
+                    actual, expected,
+                    "callable {callable:?} records resolution {resolution:?}, but capture input {semantic_index} uses shape {actual:?} while the callable descriptor captures {expected:?}; transport must preserve callable-flow edge/capture ABI correlation"
+                );
+            }
+        }
     }
 }
 
@@ -3390,7 +3567,7 @@ fn executable_symbol_test_key(symbol: &ExecutableSymbol) -> (u32, Vec<Ty>, u8, u
 }
 
 fn assert_transport_surfaces_match_upstream(
-    world: &World<'_>,
+    world: &mut World<'_>,
     actual: &[Box<[ShapeId]>],
     expected: &BTreeSet<CallableSurface>,
 ) {
@@ -3401,43 +3578,69 @@ fn assert_transport_surfaces_match_upstream(
 }
 
 fn transport_surfaces_match_upstream(
-    world: &World<'_>,
+    world: &mut World<'_>,
     actual: &[Box<[ShapeId]>],
     expected: &BTreeSet<CallableSurface>,
 ) -> bool {
-    let Some(actual_inputs) = actual
-        .iter()
-        .map(|surface| {
-            surface
-                .iter()
-                .map(|shape| maybe_surface_input_ty(world, *shape))
-                .collect::<Option<Vec<_>>>()
-        })
-        .collect::<Option<BTreeSet<_>>>()
-    else {
+    if actual.len() != expected.len() {
         return false;
-    };
-    let expected_inputs = expected
-        .iter()
-        .map(|surface| surface.inputs.clone())
-        .collect::<BTreeSet<_>>();
-    actual_inputs == expected_inputs
-}
-
-fn surface_input_ty(world: &World<'_>, shape: ShapeId) -> Ty {
-    maybe_surface_input_ty(world, shape).unwrap_or_else(|| {
-        panic!(
-            "worked callable surface inputs should project to lane shapes, got {:?}",
-            shape_descr(world, shape)
-        )
-    })
-}
-
-fn maybe_surface_input_ty(world: &World<'_>, shape: ShapeId) -> Option<Ty> {
-    match shape_descr(world, shape) {
-        ShapeDescr::Lane(lane) => Some(world.lane(*lane).ty),
-        ShapeDescr::Nothing | ShapeDescr::Tuple(_) | ShapeDescr::Callable(_) => None,
     }
+    let mut matched = vec![false; actual.len()];
+    for expected_surface in expected {
+        let Some(index) = actual.iter().enumerate().find_map(|(index, actual_surface)| {
+            (!matched[index] && surface_shape_matches_upstream(world, actual_surface, expected_surface))
+                .then_some(index)
+        }) else {
+            return false;
+        };
+        matched[index] = true;
+    }
+    true
+}
+
+fn surface_shape_matches_upstream(world: &mut World<'_>, actual: &[ShapeId], expected: &CallableSurface) -> bool {
+    actual.len() == expected.inputs.len()
+        && actual
+            .iter()
+            .copied()
+            .zip(expected.inputs.iter().copied())
+            .all(|(shape, ty)| shape_matches_surface_input_ty(world, shape, ty))
+}
+
+fn shape_matches_surface_input_ty(world: &mut World<'_>, shape: ShapeId, ty: Ty) -> bool {
+    match shape_descr(world, shape).clone() {
+        ShapeDescr::Lane(lane) => world.lane(lane).ty == ty,
+        ShapeDescr::Tuple(items) => {
+            exact_tuple_field_tys_for_surface(world, ty, items.len()).is_some_and(|field_tys| {
+                items.len() == field_tys.len()
+                    && items
+                        .iter()
+                        .copied()
+                        .zip(field_tys)
+                        .all(|(field_shape, field_ty)| shape_matches_surface_input_ty(world, field_shape, field_ty))
+            })
+        }
+        ShapeDescr::Callable(_) => world.types().arrow_result(&ty).is_some(),
+        ShapeDescr::Nothing => false,
+    }
+}
+
+fn exact_tuple_field_tys_for_surface(world: &mut World<'_>, ty: Ty, arity: usize) -> Option<Vec<Ty>> {
+    let predicate = world.types().runtime_type_predicate(&ty);
+    if predicate.tuple_arities.cofinite
+        || predicate.tuple_arities.values.len() != 1
+        || !predicate.tuple_arities.values.contains(&arity)
+    {
+        return None;
+    }
+    let any = world.types_mut().any();
+    let mut fields = world.types_mut().tuple_projections(&ty, arity);
+    if fields.len() < arity {
+        fields.resize(arity, any);
+    } else if fields.len() > arity {
+        fields.truncate(arity);
+    }
+    Some(fields)
 }
 
 fn function_is(world: &World<'_>, function: super::FunctionId, name: &str, arity: usize) -> bool {

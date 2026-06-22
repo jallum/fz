@@ -526,6 +526,9 @@ fn materialize_call_edges(
                 call_edges.insert(*callsite, edge);
             }
             LoweredTail::ClosureCall { callsite, dest, .. } => {
+                let LoweredTail::ClosureCall { callee, .. } = &entry.tail else {
+                    unreachable!("matched closure call above")
+                };
                 if let Some(edge) = materialize_closure_call_edge(
                     world,
                     root_id,
@@ -534,6 +537,7 @@ fn materialize_call_edges(
                     analysis,
                     callsite_needs.get(callsite).copied().unwrap_or(ExecutableNeed::Value),
                     *callsite,
+                    *callee,
                     dest,
                     callsite_args,
                 )? {
@@ -653,9 +657,26 @@ fn materialize_closure_call_edge(
     analysis: &ActivationAnalysis,
     need: ExecutableNeed,
     callsite: CallSiteId,
+    callee_value: ValueId,
     dest: &ControlDestination,
     callsite_args: &HashMap<CallSiteId, Vec<CallArg>>,
 ) -> Result<Option<MaterializedCallEdge>, FatalError> {
+    if let Some((direct, return_ty)) = materialize_transport_closure_call_edge(
+        world,
+        root_id,
+        transport_plan,
+        executable,
+        analysis,
+        callsite,
+        callee_value,
+        dest,
+        callsite_args,
+    )? {
+        return Ok(Some(MaterializedCallEdge {
+            target: CallEdge::Direct(direct),
+            return_ty,
+        }));
+    }
     let key = CallSiteKey {
         activation: executable.activation.clone(),
         callsite,
@@ -682,6 +703,156 @@ fn materialize_closure_call_edge(
         target: CallEdge::Direct(direct),
         return_ty,
     }))
+}
+
+fn materialize_transport_closure_call_edge(
+    world: &mut World<'_>,
+    root_id: RootId,
+    transport_plan: &TransportPlan,
+    executable: &ExecutableKey,
+    analysis: &ActivationAnalysis,
+    callsite: CallSiteId,
+    callee_value: ValueId,
+    dest: &ControlDestination,
+    callsite_args: &HashMap<CallSiteId, Vec<CallArg>>,
+) -> Result<Option<(DirectCallEdge<ExecutableKey>, Ty)>, FatalError> {
+    let caller_symbol = transport_executable_symbol(executable, world.types());
+    let callee_position = TransportPosition::Value {
+        executable: caller_symbol.clone(),
+        value: callee_value,
+    };
+    let Some(callee_shape) = transport_plan.positions.get(&callee_position).copied() else {
+        return Ok(None);
+    };
+    let ShapeDescr::Callable(callable) = world.shape(callee_shape) else {
+        return Ok(None);
+    };
+    let callable = *callable;
+    let Some(facts) = transport_plan.callables.get(&callable) else {
+        return Ok(None);
+    };
+    let args = callsite_args.get(&callsite).ok_or_else(|| {
+        incomplete_semantic_plan(
+            world,
+            root_id,
+            format!(
+                "missing lowered call arguments for closure callsite {}",
+                callsite.as_u32()
+            ),
+        )
+    })?;
+    let mut resolutions = boundary_resolutions_for_closure_call(
+        world,
+        transport_plan,
+        &caller_symbol,
+        callsite,
+        args,
+        &facts.boundary_ids,
+    );
+    if resolutions.is_empty() {
+        if facts.direct_edges.is_empty() {
+            return Ok(None);
+        }
+        let direct_edges = facts.direct_edges.to_vec();
+        let surface_inputs = args
+            .iter()
+            .map(|arg| analysis.value_types.get(&arg.value).copied())
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(|| {
+                incomplete_semantic_plan(
+                    world,
+                    root_id,
+                    format!(
+                        "missing semantic argument types for closure callsite {} direct edge selection",
+                        callsite.as_u32()
+                    ),
+                )
+            })?;
+        let surface_inputs = world.types_mut().address_inputs(&surface_inputs);
+        resolutions = direct_edge_resolutions_for_surface(world, &direct_edges, &surface_inputs);
+    }
+    resolutions.sort_by_key(transport_executable_sort_key);
+    resolutions.dedup();
+    if resolutions.is_empty() {
+        return Ok(None);
+    }
+    let [resolution] = resolutions.as_slice() else {
+        return Ok(None);
+    };
+    let activation = world.activation_key(
+        root_id,
+        resolution.activation.function,
+        resolution.activation.input.as_ref(),
+    );
+    let target = ExecutableKey {
+        activation,
+        need: resolution.need,
+    };
+    let callee = CallTarget::Local(target.clone());
+    let return_flow = call_return_flow(world, root_id, transport_plan, executable, &callee, callsite, dest)?;
+    let return_ty = world
+        .activation_return(&target.activation)
+        .unwrap_or_else(|| world.types_mut().none());
+    Ok(Some((
+        DirectCallEdge {
+            callee,
+            return_flow,
+            extern_marshals: None,
+        },
+        return_ty,
+    )))
+}
+
+fn boundary_resolutions_for_closure_call(
+    world: &World<'_>,
+    transport_plan: &TransportPlan,
+    caller_symbol: &ExecutableSymbol,
+    callsite: CallSiteId,
+    args: &[CallArg],
+    boundary_ids: &[super::super::transport::BoundaryId],
+) -> Vec<ExecutableSymbol> {
+    let Some(arg_shapes) = args
+        .iter()
+        .enumerate()
+        .map(|(semantic_index, _)| {
+            let position = TransportPosition::CallArg {
+                executable: caller_symbol.clone(),
+                callsite,
+                semantic_index,
+            };
+            transport_plan.positions.get(&position).copied()
+        })
+        .collect::<Option<Vec<_>>>()
+    else {
+        return Vec::new();
+    };
+    let mut resolutions = Vec::new();
+    for boundary in boundary_ids.iter().copied() {
+        let boundary_descr = world.boundary(boundary);
+        if boundary_descr.surface_arg_shapes.as_ref() != arg_shapes.as_slice() {
+            continue;
+        }
+        if let Some(boundary_facts) = transport_plan.boundaries.get(&boundary) {
+            for resolution in boundary_facts.resolutions.iter().cloned() {
+                if !resolutions.contains(&resolution) {
+                    resolutions.push(resolution);
+                }
+            }
+        }
+    }
+    resolutions
+}
+
+fn direct_edge_resolutions_for_surface(
+    _world: &mut World<'_>,
+    edges: &[super::super::transport::CallableDirectEdge],
+    surface_inputs: &[Ty],
+) -> Vec<ExecutableSymbol> {
+    edges
+        .iter()
+        .filter(|edge| edge.surface_inputs.as_ref() == surface_inputs)
+        .map(|edge| edge.resolution.clone())
+        .collect()
 }
 
 fn lower_materialized_call_target(
@@ -759,12 +930,22 @@ fn call_return_flow(
     let caller_symbol = transport_executable_symbol(executable, world.types());
     match dest {
         ControlDestination::Deliver(entry) => {
-            let payload = TransportPosition::ResumePayload {
+            let resume = TransportPosition::ResumePayload {
                 executable: caller_symbol,
                 callsite: Some(callsite),
                 entry: *entry,
             };
-            Ok(CallReturnFlow::Deliver { payload, entry: *entry })
+            let payload = match callee {
+                CallTarget::Local(callee) => TransportPosition::ExecutableReturn {
+                    executable: transport_executable_symbol(callee, world.types()),
+                },
+                CallTarget::ProviderBoundary(_) => resume.clone(),
+            };
+            Ok(CallReturnFlow::Deliver {
+                payload,
+                resume,
+                entry: *entry,
+            })
         }
         ControlDestination::Return => {
             let caller_return = TransportPosition::ExecutableReturn {
@@ -1402,20 +1583,23 @@ fn function_entry_publication_reprs(
     executable: &ExecutableSymbol,
     semantic_index: usize,
 ) -> Vec<AbiValueRepr> {
-    facts
-        .iter()
-        .filter(|fact| {
-            fact.shape.is_none()
-                && matches!(
-                    &fact.seam,
-                    CodegenSeam::FunctionEntry {
-                        executable: candidate,
-                        semantic_index: candidate_index,
-                    } if candidate == executable && *candidate_index == semantic_index
-                )
-        })
-        .map(|fact| abi_repr_from_codegen(fact.repr))
-        .collect()
+    let mut reprs = Vec::new();
+    let mut seen_lanes = HashSet::new();
+    for fact in facts.iter().filter(|fact| {
+        fact.shape.is_none()
+            && matches!(
+                &fact.seam,
+                CodegenSeam::FunctionEntry {
+                    executable: candidate,
+                    semantic_index: candidate_index,
+                } if candidate == executable && *candidate_index == semantic_index
+            )
+    }) {
+        if seen_lanes.insert(fact.lane) {
+            reprs.push(abi_repr_from_codegen(fact.repr));
+        }
+    }
+    reprs
 }
 
 fn shape_leaf_lanes_for_artifact(world: &World<'_>, shape: ShapeId) -> Vec<(ShapeId, LaneId)> {
@@ -1797,6 +1981,7 @@ fn incomplete_semantic_plan(world: &World<'_>, root_id: RootId, message: impl In
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::compiler2::transport::{CodegenSeamFact, LaneDescr, TransportClass};
     use crate::telemetry::ConfiguredTelemetry;
 
     #[test]
@@ -1835,6 +2020,42 @@ mod tests {
             transport_position_sort_key(&value_position),
             transport_position_sort_key(&tuple_position),
             "artifact handoff ordering must be stable for multiple activations/needs of the same function"
+        );
+    }
+
+    #[test]
+    fn function_entry_publication_reprs_deduplicates_duplicate_lane_facts() {
+        let tel = ConfiguredTelemetry::new();
+        let mut world = World::new(&tel);
+        world.submit_code(None, "fn main(x), do: x".to_string());
+        let root = world.submit_root(None, "main".to_string(), 1, ExecutableNeed::Value);
+        let function = world.root_entry(root).function;
+        let int = world.types_mut().int();
+        let lane = world.intern_lane(LaneDescr {
+            ty: int,
+            class: TransportClass::Value,
+        });
+        let executable = ExecutableSymbol {
+            activation: ActivationSymbol {
+                function,
+                input: vec![int].into_boxed_slice(),
+            },
+            need: ExecutableNeed::Value,
+        };
+        let fact = CodegenSeamFact {
+            seam: CodegenSeam::FunctionEntry {
+                executable: executable.clone(),
+                semantic_index: 0,
+            },
+            shape: None,
+            lane,
+            repr: CodegenLaneRepr::ValueRef,
+        };
+
+        assert_eq!(
+            function_entry_publication_reprs(&[fact.clone(), fact], &executable, 0),
+            vec![AbiValueRepr::ValueRef],
+            "duplicate publication facts for the same function-entry lane must not widen the executable ABI",
         );
     }
 }

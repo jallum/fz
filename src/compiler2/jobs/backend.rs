@@ -28,6 +28,7 @@ use super::super::identity::RootId;
 use super::super::identity::RootKind;
 use super::super::scheduler::FatalError;
 use super::super::transport::ShapeDescr;
+use super::super::transport::{ActivationSymbol, ExecutableSymbol, TransportPosition};
 use super::super::types::Ty;
 use super::super::world::World;
 
@@ -478,12 +479,31 @@ impl<'a, 'plan, 'tel> BackendLowerer<'a, 'plan, 'tel> {
 
     fn lower_call_args(
         &mut self,
-        _executable: &super::super::artifact::EmissionReadyExecutable,
-        _callsite: CallSiteId,
+        executable: &super::super::artifact::EmissionReadyExecutable,
+        callsite: CallSiteId,
         _closure_callee: Option<super::super::body::ValueId>,
         args: &[CallArg],
     ) -> Result<Vec<BackendCallArg>, FatalError> {
-        args.iter().map(|arg| Ok(BackendCallArg { value: arg.value })).collect()
+        let executable_symbol = ExecutableSymbol {
+            activation: ActivationSymbol {
+                function: executable.key.activation.function,
+                input: executable.key.activation.inputs(self.world.types()).into_boxed_slice(),
+            },
+            need: executable.key.need,
+        };
+        args.iter()
+            .enumerate()
+            .map(|(semantic_index, arg)| {
+                Ok(BackendCallArg {
+                    value: arg.value,
+                    position: TransportPosition::CallArg {
+                        executable: executable_symbol.clone(),
+                        callsite,
+                        semantic_index,
+                    },
+                })
+            })
+            .collect()
     }
 }
 

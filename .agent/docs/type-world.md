@@ -71,8 +71,9 @@ The keying and join logic lean on a few `Types` methods, each with a distinct jo
   slot ascends a bounded chain and the fixpoint terminates. This is the join behind
   activation-input facts and return types.
 - **`convergence_class(a)`** — the coarse identity class for a non-dispatch slot of
-  a recursive activation key. All list shapes share one class; disjoint families
-  (`int` vs a tagged tuple) stay distinct.
+  a recursive activation key. The whole list family shares one class, including
+  single shapes and joined empty/non-empty shapes; disjoint families (`int` vs a
+  tagged tuple) stay distinct.
 - **`widen_for_recursive_spec_key(a)`** — the per-slot transform for a recursive
   call key on slots that are *not* collapsed.
 - **`alpha_normalize_vars(a)`** — canonicalizes type-variable ids. Interning

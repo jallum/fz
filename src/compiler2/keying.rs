@@ -1,6 +1,34 @@
 //! Stable facts used to canonicalize activation keys.
 
+use std::collections::BTreeMap;
+
 use super::identity::FunctionId;
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) enum DispatchDemand {
+    #[default]
+    Ignore,
+    Whole,
+    TupleFields(BTreeMap<u32, DispatchDemand>),
+    ListShape(Box<DispatchDemand>),
+}
+
+impl DispatchDemand {
+    pub(crate) fn join_assign(&mut self, other: DispatchDemand) {
+        match (self, other) {
+            (Self::Whole, _) | (_, Self::Ignore) => {}
+            (slot @ Self::Ignore, next) => *slot = next,
+            (slot, Self::Whole) => *slot = Self::Whole,
+            (Self::ListShape(current), Self::ListShape(next)) => current.join_assign(*next),
+            (Self::TupleFields(current), Self::TupleFields(next)) => {
+                for (field, demand) in next {
+                    current.entry(field).or_default().join_assign(demand);
+                }
+            }
+            (slot, _) => *slot = Self::Whole,
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub(crate) struct FunctionFactMap<T> {
@@ -8,7 +36,7 @@ pub(crate) struct FunctionFactMap<T> {
 }
 
 pub(crate) type RecursiveMap = FunctionFactMap<bool>;
-pub(crate) type DispatchMaskMap = FunctionFactMap<Vec<bool>>;
+pub(crate) type DispatchMaskMap = FunctionFactMap<Vec<DispatchDemand>>;
 
 impl<T> FunctionFactMap<T>
 where

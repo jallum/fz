@@ -62,6 +62,87 @@ impl CallSiteSummary {
     pub fn settled_return(&self, types: &mut Types) -> Ty {
         self.return_ty.unwrap_or_else(|| types.none())
     }
+
+    fn replace_targets_join_returns(&mut self, types: &mut Types, mut observed: Self) {
+        observed.coalesce_targets(types);
+        for observed_target in &mut observed.targets {
+            if let Some(current_target) = self
+                .targets
+                .iter()
+                .find(|target| same_call_target(target, observed_target))
+            {
+                merge_callsite_input_vec(
+                    types,
+                    &mut observed_target.surface_inputs,
+                    &current_target.surface_inputs,
+                );
+                merge_callsite_activation(
+                    types,
+                    &mut observed_target.activation,
+                    current_target.activation.clone(),
+                );
+                observed_target.return_ty =
+                    join_optional_ty(types, current_target.return_ty, observed_target.return_ty);
+            }
+        }
+        observed.return_ty = join_optional_ty(types, self.return_ty, observed.return_ty);
+        *self = observed;
+    }
+
+    fn coalesce_targets(&mut self, types: &mut Types) {
+        let mut coalesced = Vec::<CallTargetSummary>::new();
+        for mut target in self.targets.drain(..) {
+            if let Some(current) = coalesced.iter_mut().find(|current| same_call_target(current, &target)) {
+                merge_callsite_input_vec(types, &mut current.surface_inputs, &target.surface_inputs);
+                merge_callsite_activation(types, &mut current.activation, target.activation.take());
+                current.return_ty = join_optional_ty(types, current.return_ty, target.return_ty);
+            } else {
+                coalesced.push(target);
+            }
+        }
+        self.targets = coalesced;
+    }
+}
+
+fn same_call_target(left: &CallTargetSummary, right: &CallTargetSummary) -> bool {
+    left.callee == right.callee
+}
+
+fn merge_callsite_input_vec(types: &mut Types, current: &mut Vec<Ty>, observed: &[Ty]) {
+    if current.len() < observed.len() {
+        current.resize_with(observed.len(), || types.any());
+    }
+    for (slot, next_ty) in observed.iter().copied().enumerate() {
+        if current[slot] == next_ty {
+            continue;
+        }
+        if types.is_equivalent(&current[slot], &next_ty) {
+            current[slot] = next_ty;
+        } else {
+            current[slot] = types.union(current[slot], next_ty);
+        }
+    }
+}
+
+fn merge_callsite_activation(_types: &mut Types, current: &mut Option<ActivationKey>, observed: Option<ActivationKey>) {
+    match (current.as_mut(), observed) {
+        (Some(current), Some(observed)) if current.root == observed.root && current.function == observed.function => {}
+        (None, Some(observed)) => {
+            *current = Some(observed);
+        }
+        _ => {}
+    }
+}
+
+fn join_optional_ty(types: &mut Types, current: Option<Ty>, observed: Option<Ty>) -> Option<Ty> {
+    match (current, observed) {
+        (Some(current), Some(observed)) if current != observed && !types.is_equivalent(&current, &observed) => {
+            Some(types.union(current, observed))
+        }
+        (Some(current), _) => Some(current),
+        (None, Some(observed)) => Some(observed),
+        (None, None) => None,
+    }
 }
 
 /// One exact callable surface observed semantically at a call boundary.
@@ -464,6 +545,11 @@ pub trait JoinContribution: Clone + PartialEq {
     fn bottom() -> Self;
     /// Monotone join: `self ⊔= other`.
     fn join_assign(&mut self, other: &Self, ctx: &mut Self::Ctx);
+    /// Semantic equality for scheduler dirtiness. Some joins preserve a stable
+    /// representative even when equivalent type handles differ.
+    fn equivalent(&self, other: &Self, _ctx: &Self::Ctx) -> bool {
+        self == other
+    }
 }
 
 /// One key's per-publisher contributions and their joined aggregate.
@@ -510,7 +596,7 @@ impl<K> Default for ContributionReplace<K> {
 }
 
 /// The activation-input contribution store: per-publisher body input evidence,
-/// joined pointwise by `refine_widen` over the shared type store.
+/// joined pointwise by union over the shared type store.
 pub type ActivationInputMap<P> = ContributionMap<ActivationKey, P, Vec<Ty>>;
 
 /// The return-demand contribution store: per-caller `ReturnDemand(E)` evidence,
@@ -693,6 +779,31 @@ where
         }
     }
 
+    /// A cumulative concluding-completion arm for evidence whose absence in a
+    /// rebased rerun is not a proof of impossibility. New entries join with the
+    /// publisher's prior entries; previous output keys stay in the publisher's
+    /// frontier and are not withdrawn.
+    pub fn conclude_preserving_frontier(
+        &mut self,
+        ctx: &mut V::Ctx,
+        publisher: P,
+        previous_output_keys: HashSet<K>,
+        next: HashMap<K, V>,
+    ) -> ContributionReplace<K> {
+        let mut output_keys = previous_output_keys;
+        output_keys.extend(next.keys().cloned());
+        let mut changed_keys = HashSet::new();
+        for (key, value) in next {
+            if self.apply(ctx, &key, &publisher, SlotEntry::Upsert(value), true) {
+                changed_keys.insert(key);
+            }
+        }
+        ContributionReplace {
+            output_keys,
+            changed_keys,
+        }
+    }
+
     /// The waiting-completion arm: listed keys gain (or widen) this publisher's
     /// entry; unlisted keys it previously contributed stand untouched. A blocked
     /// publisher recants nothing.
@@ -733,7 +844,7 @@ where
             }
         }
         let joined = join_contributions(ctx, slot.contributors.values());
-        let moved = old_joined.as_ref() != Some(&joined);
+        let moved = !old_joined.as_ref().is_some_and(|old| old.equivalent(&joined, ctx));
         if !slot.contributors.is_empty() {
             slot.joined = joined;
             self.slots.insert(key.clone(), slot);
@@ -765,7 +876,18 @@ impl CallSiteMap {
         Self::default()
     }
 
-    pub fn define(&mut self, key: CallSiteKey, summary: CallSiteSummary) -> bool {
+    pub fn define(&mut self, types: &mut Types, key: CallSiteKey, mut summary: CallSiteSummary) -> bool {
+        summary.coalesce_targets(types);
+        let Some(current) = self.slots.get_mut(&key) else {
+            self.slots.insert(key, summary);
+            return true;
+        };
+        let before = current.clone();
+        current.replace_targets_join_returns(types, summary);
+        before != *current
+    }
+
+    pub fn define_replace(&mut self, key: CallSiteKey, summary: CallSiteSummary) -> bool {
         let changed = self.slots.get(&key) != Some(&summary);
         self.slots.insert(key, summary);
         changed
@@ -857,9 +979,9 @@ impl JoinContribution for Vec<Ty> {
         Vec::new()
     }
 
-    /// Pointwise `refine_widen` over a shared arity. Bottom (the empty vector)
-    /// seeds from the first contributor; thereafter every contributor carries
-    /// the same arity.
+    /// Pointwise union over a shared arity. Bottom (the empty vector) seeds
+    /// from the first contributor; thereafter every contributor carries the
+    /// same arity.
     fn join_assign(&mut self, other: &Self, types: &mut Types) {
         if self.is_empty() {
             self.clone_from(other);
@@ -873,10 +995,20 @@ impl JoinContribution for Vec<Ty> {
         for (current, next) in self.iter_mut().zip(other.iter()) {
             *current = if *current == *next {
                 *current
+            } else if types.is_equivalent(current, next) {
+                *current
             } else {
-                types.refine_widen(current, next)
+                types.union(*current, *next)
             };
         }
+    }
+
+    fn equivalent(&self, other: &Self, types: &Types) -> bool {
+        self.len() == other.len()
+            && self
+                .iter()
+                .zip(other)
+                .all(|(left, right)| types.is_equivalent(left, right))
     }
 }
 
@@ -897,7 +1029,7 @@ mod tests {
     use std::collections::{BTreeSet, HashMap, HashSet};
 
     use super::*;
-    use crate::compiler2::{ExecutableNeed, World};
+    use crate::compiler2::{ExecutableNeed, Job, World};
     use crate::telemetry::ConfiguredTelemetry;
 
     fn test_key(world: &mut World<'_>) -> ActivationKey {
@@ -924,6 +1056,214 @@ mod tests {
 
     fn surface(tys: &[Ty], types: &mut Types) -> CallableSurface {
         CallableSurface::new(tys.to_vec(), types)
+    }
+
+    #[test]
+    fn callsite_summary_join_keeps_return_evidence_when_later_snapshot_is_pending() {
+        let tel = ConfiguredTelemetry::new();
+        let mut world = World::new(&tel);
+        let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+        let caller = world.root_function(root);
+        let callee = world.submit_root(None, "callee".to_string(), 1, ExecutableNeed::Value);
+        let callee = world.root_function(callee);
+        let int = world.types_mut().int();
+        let none = world.types_mut().none();
+        let caller_activation = ActivationKey::from_inputs(root, caller, &[], world.types_mut());
+        let callee_activation = ActivationKey::from_inputs(root, callee, &[int], world.types_mut());
+        let key = CallSiteKey {
+            activation: caller_activation,
+            callsite: CallSiteId::from_u32(0),
+        };
+        let ready = CallSiteSummary {
+            targets: vec![CallTargetSummary {
+                callee: SelectedCallee::Function(callee),
+                surface_inputs: vec![int],
+                activation: Some(callee_activation.clone()),
+                return_ty: Some(int),
+            }],
+            return_ty: Some(int),
+        };
+        let pending = CallSiteSummary {
+            targets: vec![CallTargetSummary {
+                callee: SelectedCallee::Function(callee),
+                surface_inputs: vec![int],
+                activation: Some(callee_activation),
+                return_ty: None,
+            }],
+            return_ty: None,
+        };
+        let mut map = CallSiteMap::new();
+
+        assert!(map.define(world.types_mut(), key.clone(), ready));
+        assert!(
+            !map.define(world.types_mut(), key.clone(), pending),
+            "a pending later snapshot must not erase concrete return evidence"
+        );
+        let stored = map.get(&key).expect("joined callsite summary");
+        assert_eq!(stored.return_ty, Some(int));
+        assert_eq!(stored.targets[0].return_ty, Some(int));
+
+        assert!(map.define_replace(
+            key.clone(),
+            CallSiteSummary {
+                targets: Vec::new(),
+                return_ty: Some(none),
+            },
+        ));
+        assert_eq!(
+            map.get(&key).expect("rebased replacement").return_ty,
+            Some(none),
+            "rebases still replace stale callsite evidence"
+        );
+    }
+
+    #[test]
+    fn callsite_summary_snapshot_does_not_manufacture_or_retain_activation_keys_for_same_callee() {
+        let tel = ConfiguredTelemetry::new();
+        let mut world = World::new(&tel);
+        let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+        let caller = world.root_function(root);
+        let callee_root = world.submit_root(None, "callee".to_string(), 1, ExecutableNeed::Value);
+        let callee = world.root_function(callee_root);
+        let int = world.types_mut().int();
+        let float = world.types_mut().float();
+        let caller_activation = ActivationKey::from_inputs(root, caller, &[], world.types_mut());
+        let int_activation = ActivationKey::from_inputs(root, callee, &[int], world.types_mut());
+        let float_activation = ActivationKey::from_inputs(root, callee, &[float], world.types_mut());
+        let key = CallSiteKey {
+            activation: caller_activation,
+            callsite: CallSiteId::from_u32(0),
+        };
+        let summary_for = |activation: ActivationKey, input: Ty| CallSiteSummary {
+            targets: vec![CallTargetSummary {
+                callee: SelectedCallee::Function(callee),
+                surface_inputs: vec![input],
+                activation: Some(activation),
+                return_ty: Some(input),
+            }],
+            return_ty: Some(input),
+        };
+        let mut map = CallSiteMap::new();
+
+        assert!(map.define(world.types_mut(), key.clone(), summary_for(int_activation.clone(), int)));
+        assert!(map.define(
+            world.types_mut(),
+            key.clone(),
+            summary_for(float_activation.clone(), float)
+        ));
+
+        let stored = map.get(&key).expect("joined callsite summary");
+        assert_eq!(stored.targets.len(), 1);
+        assert!(
+            !stored
+                .targets
+                .iter()
+                .any(|target| target.activation.as_ref() == Some(&int_activation)),
+            "target membership is a snapshot; stale activations must not linger"
+        );
+        assert!(
+            stored
+                .targets
+                .iter()
+                .any(|target| target.activation.as_ref() == Some(&float_activation))
+        );
+    }
+
+    #[test]
+    fn callsite_summary_join_is_quiet_for_equivalent_return_and_surface_types() {
+        let tel = ConfiguredTelemetry::new();
+        let mut world = World::new(&tel);
+        let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+        let caller = world.root_function(root);
+        let callee_root = world.submit_root(None, "callee".to_string(), 1, ExecutableNeed::Value);
+        let callee = world.root_function(callee_root);
+        let var = world.types_mut().type_var(TypeVarId(0));
+        let empty = world.types_mut().empty_list();
+        let non_empty = world.types_mut().non_empty_list(var);
+        let joined = world.types_mut().union(empty, non_empty);
+        let rejoined = world.types_mut().union(joined, empty);
+        assert!(
+            world.types().is_equivalent(&joined, &rejoined),
+            "test setup needs equivalent but independently joined types",
+        );
+        let caller_activation = ActivationKey::from_inputs(root, caller, &[], world.types_mut());
+        let callee_activation = ActivationKey::from_inputs(root, callee, &[joined], world.types_mut());
+        let key = CallSiteKey {
+            activation: caller_activation,
+            callsite: CallSiteId::from_u32(0),
+        };
+        let summary = |ty| CallSiteSummary {
+            targets: vec![CallTargetSummary {
+                callee: SelectedCallee::Function(callee),
+                surface_inputs: vec![ty],
+                activation: Some(callee_activation.clone()),
+                return_ty: Some(ty),
+            }],
+            return_ty: Some(ty),
+        };
+        let mut map = CallSiteMap::new();
+
+        assert!(map.define(world.types_mut(), key.clone(), summary(joined)));
+        assert!(
+            !map.define(world.types_mut(), key.clone(), summary(rejoined)),
+            "equivalent joined callsite evidence should not churn the semantic fact"
+        );
+    }
+
+    #[test]
+    fn activation_input_vector_join_does_not_lower_existing_union_evidence() {
+        let tel = ConfiguredTelemetry::new();
+        let mut world = World::new(&tel);
+        let atom_a = world.types_mut().atom_lit("a");
+        let atom_b = world.types_mut().atom_lit("b");
+        let union = world.types_mut().union(atom_a, atom_b);
+        let mut current = vec![union];
+
+        current.join_assign(&vec![atom_a], world.types_mut());
+
+        assert_eq!(
+            current,
+            vec![union],
+            "activation-input evidence is cumulative; a later narrower observation must not lower the joined slot",
+        );
+    }
+
+    #[test]
+    fn rebased_activation_input_conclusion_preserves_prior_publisher_frontier() {
+        let tel = ConfiguredTelemetry::new();
+        let mut world = World::new(&tel);
+        let key = test_key(&mut world);
+        let input = world.types_mut().atom_lit("seen");
+        let publisher = Job::AnalyzeActivation(key.clone());
+        let mut map = ActivationInputMap::new();
+
+        let first = map.conclude(
+            world.types_mut(),
+            publisher.clone(),
+            HashSet::new(),
+            HashMap::from([(key.clone(), vec![input])]),
+            false,
+        );
+        assert_eq!(first.output_keys, HashSet::from([key.clone()]));
+        assert_eq!(map.get(&key), Some(&vec![input]));
+
+        let rebased = map.conclude_preserving_frontier(
+            world.types_mut(),
+            publisher,
+            HashSet::from([key.clone()]),
+            HashMap::new(),
+        );
+
+        assert_eq!(
+            rebased.output_keys,
+            HashSet::from([key.clone()]),
+            "rebased activation-input evidence may pause but must not retract the publisher's prior edge"
+        );
+        assert!(
+            rebased.changed_keys.is_empty(),
+            "preserving an unchanged frontier should not mark the activation input dirty"
+        );
+        assert_eq!(map.get(&key), Some(&vec![input]));
     }
 
     #[test]

@@ -71,7 +71,11 @@ the callee activation key (reading `Recursive`/`DispatchMask`, see
 types to its `Activation` fact, subscribes the caller to the callee's
 `ReturnType`, and returns the callee's *current* return estimate. When the callee
 later widens its return, the caller re-runs and re-unions. Every moving part is
-monotone, so the cross-activation loop settles.
+monotone: return evidence joins upward, equivalent type representatives are
+quiet, and an `AnalyzeActivation` publisher preserves its prior activation-input
+frontier within an epoch instead of retracting a temporarily absent callsite. The
+cross-activation loop therefore settles without downstream phases reconstructing
+semantic decisions.
 
 ## Specialization stays finite
 
@@ -80,13 +84,19 @@ input shape — an accumulator's `[] ⊔ [x] ⊔ [x,y] ⊔ …` cartesian produc
 mechanisms bound it, both via the activation **key** (`canonical_activation_key`):
 
 - **The convergence collapse.** For a recursive function, each non-dispatch input
-  slot is keyed by its `convergence_class` — all pure list shapes fold to one
-  class, disjoint families (`int` vs a tagged tuple) stay distinct. So many call
-  shapes map to one key (the "balloon"), and the slot's actual type is recovered
-  as the `refine_widen` join of the contributing inputs.
-- **The dispatch mask.** The collapse applies only to slots that do *not* drive
-  clause selection. A dispatch slot keeps empty-vs-cons (or tag) precision, so
-  clause reachability stays sharp while accumulators balloon.
+  slot is keyed by its `convergence_class` — the whole list family, including
+  `[] | [t]` joins, folds to one class, while disjoint families (`int` vs a
+  tagged tuple) stay distinct. So many call shapes map to one key (the
+  "balloon"), and the slot's actual type is recovered as the union join of the
+  contributing inputs.
+- **The dispatch mask.** The collapse is shaped by the inputs that drive clause
+  selection. `Whole` preserves an input, tuple-field demand preserves only the
+  demanded fields, and `ListShape(elem_demand)` preserves demanded element
+  information from the whole list-family descriptor while converging
+  empty-vs-cons shape for recursive keys. That keeps recursive list walkers from
+  splitting the initial cons call from the possibly-empty tail, even when the
+  input surface is already a joined list family, while still letting body
+  evidence decide which clauses are reachable.
 
 Termination is a theorem, not a property of lucky inputs. Three facts carry it:
 numeric literal chains cannot exist (the lattice has no numeric singletons —

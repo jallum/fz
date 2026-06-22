@@ -205,7 +205,15 @@ pub struct CallableDescr {
 pub struct CallableFacts {
     pub resolutions: Box<[ExecutableSymbol]>,
     pub direct_surfaces: Box<[Box<[ShapeId]>]>,
+    pub direct_edges: Box<[CallableDirectEdge]>,
     pub boundary_ids: Box<[BoundaryId]>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct CallableDirectEdge {
+    pub surface_inputs: Box<[Ty]>,
+    pub surface_arg_shapes: Box<[ShapeId]>,
+    pub resolution: ExecutableSymbol,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

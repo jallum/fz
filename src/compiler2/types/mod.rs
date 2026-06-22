@@ -15,10 +15,11 @@ mod lit_set;
 mod sigs;
 
 use std::cell::RefCell;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use crate::runtime_type_predicate::{ListShape, ObservedSet, RuntimeTypePredicate};
 
+use super::keying::DispatchDemand;
 use crate::type_expr::opaque_owner_module;
 use crate::types::{
     ClosureTypes as SharedClosureTypes, RenderTypes as SharedRenderTypes, Types as SharedTypes,
@@ -471,19 +472,39 @@ impl Types {
     }
 
     pub fn convergence_class(&mut self, a: &Ty) -> Ty {
-        if as_pure_list(self.ctx(), self.descr(a)).is_some() {
+        let descr = self.descr(a).clone();
+        if descr.as_pure_list(self.ctx()).is_some() {
             let any = self.any();
             self.list(any)
+        } else if let Some(tuple) = descr.pure_tuple() {
+            let elems = tuple
+                .elems
+                .iter()
+                .map(|elem| self.convergence_class(elem))
+                .collect::<Vec<_>>();
+            self.tuple(&elems)
+        } else if let Some(resource) = descr.pure_resource() {
+            let payload = self.convergence_class(&resource.payload);
+            self.resource(payload)
+        } else if descr.is_pure_callable() {
+            self.intern(Descr::fun_top())
+        } else if let Some(map) = descr.pure_map() {
+            let fields = map
+                .fields
+                .iter()
+                .map(|(key, value)| (key.clone(), self.convergence_class(value)))
+                .collect::<Vec<_>>();
+            self.map(&fields)
         } else {
             *a
         }
     }
 
     /// Derive a recursive activation's dispatch KEY from its precise evidence
-    /// arrow by widening every NON-DISPATCH parameter slot (`mask[i] == false`)
-    /// to its convergence class, so the recursive ascent settles (fz-y6w bounded
-    /// specialization: `list(int)` and `list(any)` share one recursive key).
-    /// Dispatch slots and the result are preserved exactly.
+    /// arrow by widening every non-dispatch subtree to its convergence class, so
+    /// the recursive ascent settles (fz-y6w bounded specialization:
+    /// `list(int)` and `list(any)` share one recursive key). Dispatch demand is
+    /// type-shaped: a tuple tag can remain precise while its payload collapses.
     ///
     /// This is ONE whole-arrow operation on the interned arrow (fz-hwn.27.7) — it
     /// replaces a per-input `convergence_class` pre-pass run before the inputs
@@ -492,7 +513,7 @@ impl Types {
     /// variable-addressing `from_inputs` applies. The arrow remains the PRECISE
     /// evidence surface (carried by `ActivationInputs`); the collapse is a derived
     /// dispatch key, and key != evidence is intentional.
-    pub fn convergence_collapse(&mut self, arrow: Ty, mask: &[bool]) -> Ty {
+    pub(crate) fn convergence_collapse(&mut self, arrow: Ty, mask: &[DispatchDemand]) -> Ty {
         let Some(sig) = self.descr(&arrow).pure_arrow() else {
             return arrow;
         };
@@ -502,14 +523,88 @@ impl Types {
             .iter()
             .enumerate()
             .map(|(slot, param)| {
-                if mask.get(slot).copied().unwrap_or(true) {
-                    *param
-                } else {
-                    self.convergence_class(param)
-                }
+                let demand = mask.get(slot).unwrap_or(&DispatchDemand::Whole);
+                self.convergence_collapse_ty(*param, demand, true)
             })
             .collect::<Vec<_>>();
         self.arrow(&collapsed, ret)
+    }
+
+    pub(crate) fn convergence_collapse_evidence_inputs(&mut self, inputs: &[Ty], mask: &[DispatchDemand]) -> Vec<Ty> {
+        inputs
+            .iter()
+            .enumerate()
+            .map(|(slot, input)| {
+                let demand = mask.get(slot).unwrap_or(&DispatchDemand::Whole);
+                self.convergence_collapse_ty(*input, demand, false)
+            })
+            .collect()
+    }
+
+    fn convergence_collapse_ty(&mut self, ty: Ty, demand: &DispatchDemand, collapse_concrete_ignored: bool) -> Ty {
+        match demand {
+            DispatchDemand::Ignore => {
+                if collapse_concrete_ignored || self.has_vars(&ty) {
+                    self.convergence_class(&ty)
+                } else {
+                    ty
+                }
+            }
+            DispatchDemand::Whole => ty,
+            DispatchDemand::TupleFields(fields) => {
+                self.convergence_collapse_tuple_fields(ty, fields, collapse_concrete_ignored)
+            }
+            DispatchDemand::ListShape(elem_demand) => {
+                self.convergence_collapse_list_shape(ty, elem_demand, collapse_concrete_ignored)
+            }
+        }
+    }
+
+    fn convergence_collapse_tuple_fields(
+        &mut self,
+        ty: Ty,
+        fields: &BTreeMap<u32, DispatchDemand>,
+        collapse_concrete_ignored: bool,
+    ) -> Ty {
+        let mut d = self.descr(&ty).clone();
+        if d.tuples.is_empty() {
+            return self.convergence_class(&ty);
+        }
+        for conj in &mut d.tuples {
+            for sig in conj.pos.iter_mut().chain(conj.neg.iter_mut()) {
+                for (index, elem) in sig.elems.iter_mut().enumerate() {
+                    let demand = fields.get(&(index as u32)).unwrap_or(&DispatchDemand::Ignore);
+                    *elem = self.convergence_collapse_ty(*elem, demand, collapse_concrete_ignored);
+                }
+            }
+        }
+        self.intern(d)
+    }
+
+    fn convergence_collapse_list_shape(
+        &mut self,
+        ty: Ty,
+        elem_demand: &DispatchDemand,
+        collapse_concrete_ignored: bool,
+    ) -> Ty {
+        let mut d = self.descr(&ty).clone();
+        if d.lists.is_empty() {
+            return self.convergence_class(&ty);
+        }
+        if collapse_concrete_ignored {
+            let elem_descr = list_element_type(self.ctx(), &d);
+            let elem = self.intern(elem_descr);
+            let elem = self.convergence_collapse_ty(elem, elem_demand, collapse_concrete_ignored);
+            return self.list(elem);
+        }
+        for conj in &mut d.lists {
+            for sig in conj.pos.iter_mut().chain(conj.neg.iter_mut()) {
+                if let Some(elem) = sig.elem {
+                    sig.elem = Some(self.convergence_collapse_ty(elem, elem_demand, collapse_concrete_ignored));
+                }
+            }
+        }
+        self.intern(d)
     }
 
     pub fn union(&mut self, a: Ty, b: Ty) -> Ty {
@@ -712,6 +807,7 @@ impl Types {
         if runtime_type_predicate_requires_any(descr) {
             return RuntimeTypePredicate::any();
         }
+        let named_structs = runtime_type_predicate_named_structs(descr);
         RuntimeTypePredicate {
             // Numbers are presence bits: the predicate is a kind check,
             // never a value-membership set, from this pipeline.
@@ -729,9 +825,9 @@ impl Types {
             },
             lists: runtime_type_predicate_list_shapes(descr),
             tuple_arities: runtime_type_predicate_tuple_arities(descr),
-            named_structs: runtime_type_predicate_named_structs(descr),
+            named_structs: named_structs.clone(),
             allow_other_structs: false,
-            maps: !descr.maps.is_empty(),
+            maps: !descr.maps.is_empty() && named_structs.is_none(),
             binaries: descr.basic.contains_all(BasicBits::BINARY),
             closures: !descr.funcs.is_empty(),
             resources: !descr.resources.is_empty(),
@@ -1627,10 +1723,6 @@ fn has_vars(cx: TyCtx<'_>, d: &Descr) -> bool {
             .chain(c.neg.iter())
             .any(|sig| sig.fields.values().any(|t| has_vars(cx, cx.descr(t))))
     })
-}
-
-fn as_pure_list<'a>(cx: TyCtx<'a>, d: &'a Descr) -> Option<&'a ListSig> {
-    d.as_pure_list(cx)
 }
 
 fn arrow_join_return(cx: TyCtx<'_>, d: &Descr) -> Descr {

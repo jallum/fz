@@ -763,28 +763,42 @@ fn step_eval_entry(
                 }
             };
             let fn_id = FnId(function.as_u32());
-            let executable_target = match target {
-                Some(target) => *target,
-                None => {
-                    let resolved_capture_values;
-                    let capture_values = if let Some(shape) = capture_shape {
-                        resolved_capture_values =
-                            callable_capture_values(transport, runtime.cur_proc(), shape, &capture_lanes)?;
-                        resolved_capture_values.as_slice()
-                    } else {
-                        capture_lanes.as_slice()
-                    };
-                    let arg_values = materialize_call_args(transport, runtime.cur_proc(), &env, args)?;
-                    resolve_backend_callable_executable(
-                        runtime,
-                        types,
-                        module,
-                        program,
-                        fn_id,
-                        capture_values,
-                        &arg_values,
-                    )?
-                }
+            let executable_target = if let Some(target) = target {
+                *target
+            } else {
+                let inventory_capture_count = shared_callable_capture_count(program, function, capture_lanes.len());
+                let resolved_capture_values;
+                let published_capture_values;
+                let capture_values = if let Some(capture_count) = inventory_capture_count {
+                    published_capture_values = capture_lanes
+                        .get(..capture_count)
+                        .ok_or_else(|| {
+                            format!(
+                                "backend callable inventory for function {} expected {} capture lane(s), got {}",
+                                function.as_u32(),
+                                capture_count,
+                                capture_lanes.len()
+                            )
+                        })?
+                        .to_vec();
+                    published_capture_values.as_slice()
+                } else if let Some(shape) = capture_shape {
+                    resolved_capture_values =
+                        callable_capture_values(transport, runtime.cur_proc(), shape, &capture_lanes)?;
+                    resolved_capture_values.as_slice()
+                } else {
+                    capture_lanes.as_slice()
+                };
+                let arg_values = materialize_call_args(transport, runtime.cur_proc(), &env, args)?;
+                resolve_backend_callable_executable(
+                    runtime,
+                    types,
+                    module,
+                    program,
+                    fn_id,
+                    capture_values,
+                    &arg_values,
+                )?
             };
             let callee_executable = program
                 .executables
@@ -793,17 +807,31 @@ fn step_eval_entry(
             // Capture lanes are already the flat ABI lanes for the callee's leading
             // capture inputs; forward them directly. The capture/arg split is the
             // callee's fact: total inputs minus the explicit call args.
-            let arg_inputs_start = executable_input_bindings(program, callee_executable)?
-                .len()
-                .checked_sub(args.len())
-                .ok_or_else(|| {
-                    format!(
-                        "backend executable {} has fewer inputs than call args",
-                        callee_executable.key.activation.function.as_u32()
-                    )
-                })?;
+            let input_bindings = executable_input_bindings(program, callee_executable)?;
+            let arg_inputs_start = input_bindings.len().checked_sub(args.len()).ok_or_else(|| {
+                format!(
+                    "backend executable {} has fewer inputs than call args",
+                    callee_executable.key.activation.function.as_u32()
+                )
+            })?;
+            let capture_lanes_for_call =
+                if let Some(entry) = callable_entry_for_target(program, executable_target, function) {
+                    capture_lanes
+                        .get(..entry.capture_count)
+                        .ok_or_else(|| {
+                            format!(
+                                "backend callable entry {} expected {} capture lane(s), got {}",
+                                executable_target,
+                                entry.capture_count,
+                                capture_lanes.len()
+                            )
+                        })?
+                        .to_vec()
+                } else {
+                    capture_lanes
+                };
             let mut call_args = Vec::new();
-            call_args.extend(capture_lanes);
+            call_args.extend(capture_lanes_for_call);
             call_args.extend(encode_call_args(
                 transport,
                 program,
@@ -2563,26 +2591,48 @@ pub(super) fn resolve_backend_callable_executable(
             (executable.key.need == ExecutableNeed::Value
                 && executable.key.activation.function == FunctionId::from_fn_id(fn_id)
                 && entry.capture_count == captures.len()
-                && executable.key.activation.input_len(types) == captures.len() + args.len())
+                && {
+                    let input_len = executable.key.activation.input_len(types);
+                    input_len == captures.len() + args.len() || input_len >= args.len()
+                })
             .then_some(entry.target)
         })
         .collect::<Vec<_>>();
-
-    if let [target] = candidates.as_slice() {
-        return Ok(*target);
-    }
 
     let mut actual_types = Vec::with_capacity(captures.len() + args.len());
     for value in captures.iter().chain(args.iter()) {
         actual_types.push(dynamic_value_ty(runtime, types, module, *value)?);
     }
+    let arg_types = actual_types[captures.len()..].to_vec();
 
     let mut matches = candidates
         .into_iter()
         .filter(|target| {
             let executable = &program.executables[*target];
+            let Some(entry) = program.callable_entries.iter().find(|entry| entry.target == *target) else {
+                return false;
+            };
+            if !runtime_values_match_callable_entry_reprs(entry, captures, args) {
+                return false;
+            }
             let expected_inputs = executable.key.activation.inputs(types);
-            actual_types
+            let actual_inputs = if expected_inputs.len() == actual_types.len() {
+                actual_types.as_slice()
+            } else if expected_inputs.len() == arg_types.len() {
+                arg_types.as_slice()
+            } else if expected_inputs.len() > arg_types.len() {
+                let expected_suffix_start = expected_inputs.len() - arg_types.len();
+                return arg_types
+                    .iter()
+                    .zip(expected_inputs[expected_suffix_start..].iter())
+                    .all(|(&actual, &expected)| {
+                        let overlap = types.intersect(actual, expected);
+                        !types.is_empty(&overlap)
+                    });
+            } else {
+                return false;
+            };
+            actual_inputs
                 .iter()
                 .zip(expected_inputs.iter())
                 .all(|(&actual, &expected)| {
@@ -2609,6 +2659,72 @@ pub(super) fn resolve_backend_callable_executable(
             args.len(),
             matches
         )),
+    }
+}
+
+fn callable_entry_for_target(
+    program: &BackendProgram,
+    target: usize,
+    function: FunctionId,
+) -> Option<&crate::compiler2::BackendCallableEntry> {
+    program.callable_entries.iter().find(|entry| {
+        entry.target == target
+            && program
+                .executables
+                .get(entry.target)
+                .is_some_and(|executable| executable.key.activation.function == function)
+    })
+}
+
+fn shared_callable_capture_count(
+    program: &BackendProgram,
+    function: FunctionId,
+    available_lanes: usize,
+) -> Option<usize> {
+    let mut counts = program
+        .callable_entries
+        .iter()
+        .filter(|entry| {
+            program
+                .executables
+                .get(entry.target)
+                .is_some_and(|executable| executable.key.activation.function == function)
+        })
+        .map(|entry| entry.capture_count);
+    let count = counts.next()?;
+    counts
+        .all(|candidate| candidate == count)
+        .then_some(count)
+        .filter(|count| *count <= available_lanes)
+}
+
+fn runtime_values_match_callable_entry_reprs(
+    entry: &crate::compiler2::BackendCallableEntry,
+    captures: &[AnyValue],
+    args: &[AnyValue],
+) -> bool {
+    let reprs = entry
+        .capture_reprs
+        .iter()
+        .chain(entry.arg_reprs.iter())
+        .copied()
+        .collect::<Vec<_>>();
+    let values = captures.iter().chain(args.iter()).copied().collect::<Vec<_>>();
+    if reprs.len() != values.len() {
+        return true;
+    }
+    values
+        .into_iter()
+        .zip(reprs)
+        .all(|(value, repr)| runtime_value_matches_abi_repr(value, repr))
+}
+
+fn runtime_value_matches_abi_repr(value: AnyValue, repr: crate::compiler2::AbiValueRepr) -> bool {
+    match repr {
+        crate::compiler2::AbiValueRepr::RawInt => matches!(value, AnyValue::Int(_)),
+        crate::compiler2::AbiValueRepr::RawF64 => matches!(value, AnyValue::Float(_)),
+        crate::compiler2::AbiValueRepr::RawAtom => matches!(value, AnyValue::Atom(_)),
+        crate::compiler2::AbiValueRepr::ValueRef => true,
     }
 }
 

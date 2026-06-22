@@ -195,12 +195,14 @@ Callable-flow facts are part of `RuntimeDemand(executable)`, not a separate
 top-level fact family and not transport-local recovery. Runtime-demand transfer
 records direct callable surfaces where a callable is invoked, and first-class
 surfaces where a callable crosses an extern/provider/return/structural
-boundary. Projection only emits the builder's recorded surfaces. It may merge a
-richer direct-surface set into first-class publication when the same local
-callable escapes through a less-specific boundary seed: the decision is
-set-theoretic over callable argument types, not based on the number of observed
-surfaces. It must not reconstruct callable surfaces later by walking value
-demands or lowered bodies.
+boundary. When a surface is resolved to an executable, the surface and
+resolution travel together as callable-flow edge evidence. Projection only emits
+the builder's recorded surfaces and edges. It may merge a richer direct-surface
+set into first-class publication when the same local callable escapes through a
+less-specific boundary seed: the decision is set-theoretic over callable
+argument types, not based on the number of observed surfaces. It must not
+reconstruct callable surfaces or pair surfaces with resolutions later by walking
+value demands or lowered bodies.
 
 ## Compiler2 Semantic Reachability Invariant
 

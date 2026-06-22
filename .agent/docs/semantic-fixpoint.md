@@ -25,7 +25,8 @@ evidence are separate facts:
 ```text
 Activation(key)       # demand / existence (multi-publisher; callers claim it)
 ActivationInputs(key) # joined caller evidence (cumulative; per-publisher
-                      # entries join by refine_widen between ground shifts)
+                      # entries join by union; AnalyzeActivation publishers
+                      # preserve their prior frontier within an epoch)
 ```
 
 `world.activation_inputs(key)` reads the joined evidence once its fact is
@@ -66,7 +67,15 @@ Executable(callee_key, need)
 ```
 
 That publication is how the frontier grows. No separate sweep discovers
-reachable callees. `ReturnType(a)` is a CUMULATIVE claim: the store
+reachable callees. `ActivationInputs(a)` is cumulative for semantic-analysis
+publishers: if an `AnalyzeActivation` rerun temporarily stops seeing a callsite,
+the publisher keeps its prior activation-input frontier and only adds/widens new
+entries. Source/root publishers still use ordinary replacement so real external
+changes can withdraw stale contributions. This keeps fixpoint evidence from
+descending just because an intermediate clause-reachability approximation
+changed. The joined aggregate is compared by type equivalence, not raw `Ty`
+handle equality, so representative-only changes do not dirty the scheduler.
+`ReturnType(a)` is a CUMULATIVE claim: the store
 (`ActivationMap::define_return`) joins each round's evidence by union (which
 preserves closure identities), reports `changed=false` for equal joins, and
 only a rebased publisher replaces — within an epoch the return can only
@@ -79,6 +88,14 @@ coarsened the stored value; corpus programs converge in a few rungs and never
 meet it. `CallSiteSummary` snapshots carry
 `return_ty: Option<Ty>` — honest mid-ascent records whose `None` reads, behind
 the settled gate, as "provably never returns" (`settled_return`).
+
+`CallSiteSummary(a, callsite)` is the semantic call boundary fact. Its target
+list is keyed by callee identity: repeated observations of the same callee join
+their surface inputs and return evidence before artifact/native sees the fact.
+The summary does not synthesize a new activation key while joining; activation
+demand remains owned by the separate `Activation(callee_key)` publications from
+the semantic walk. Downstream phases consume that already-joined boundary
+surface instead of rediscovering or deduplicating semantic targets.
 
 ## The seal job now consumes settled facts
 
@@ -138,6 +155,14 @@ the scheduler.
 identity. For recursive functions it collapses non-dispatch inputs by
 `convergence_class`, using the `Recursive(fn)` and `DispatchMask(fn)` facts to
 decide which slots may balloon.
+List-family convergence is intentionally coarse at the key: `[]`, `[t]`, and
+the joined `[] | [t]` shape share one recursive identity, and a
+`ListShape(elem_demand)` dispatch slot keeps demanded element information while
+converging the shape. The element is derived from the whole list-family
+descriptor, not only from a pure-list singleton, so already-joined list evidence
+does not split recursive keys. The precise caller evidence remains in
+`ActivationInputs(key)`, so clause reachability is decided by evidence, not by
+downstream code rebuilding a more precise key.
 
 So today:
 

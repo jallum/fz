@@ -333,12 +333,15 @@ local types, or lowered bodies to derive another transport shape.
 
 Callable-flow target identity is part of that output contract. Runtime demand
 owns the semantic edge from each callable surface to the executable activation
-that satisfies it. Transport projects the first-class edges onto the
-`BoundaryId` values it mints, so `BoundaryFacts.resolutions` is the authority
-for the executable targets of a published callable boundary. ABI-ready,
-backend, and native consumers must read that boundary-owned relation; they must
-not pair every callable boundary with every callable resolution or recover
-targets from function id, capture count, lowered bodies, or type shape.
+that satisfies it. The paired edge is monotone data: direct calls carry
+`CallableDirectEdge { surface_inputs, resolution }`, and first-class
+publication carries the same surface/resolution relation through the `BoundaryId`
+values transport mints. `BoundaryFacts.resolutions` is the authority for the
+executable targets of a published callable boundary, and `CallableFacts.direct_edges`
+is the authority for direct closure-call target selection. ABI-ready, backend,
+and native consumers must read those owned relations; they must not pair every
+callable boundary with every callable resolution or recover targets from
+function id, capture count, lowered bodies, or type shape.
 
 The next two rungs narrow the contract:
 
@@ -497,9 +500,11 @@ The same rule applies to native return delivery. `NativeBody.return_reprs` is
 the published result contract for a native body. Native lowering consumes
 `CallReturnFlow`: `Tail` emits a native tail call, while `Continue` emits an
 ordinary call to a generated `ReturnLanes` continuation over the settled
-`ReturnPayload`. Codegen receives that explicit native term; it must not
-rediscover or improvise the contract at individual tailcall or callable-entry
-sites.
+`ReturnPayload`. `Deliver` carries both the callee's physical return payload
+and the caller's resume-entry payload. Native lowering inserts the adapter when
+those contracts differ, so codegen receives one explicit continuation term and
+must not rediscover or improvise the contract at individual tailcall or
+callable-entry sites.
 
 The same two-layer split now applies on both sides of the migration seam:
 legacy lowering may still project legacy `Ty` handles into

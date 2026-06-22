@@ -1,4 +1,5 @@
 use super::facts::FactUse;
+use super::keying::DispatchDemand;
 use super::{DriveOutcome, FactKey, Job, ModuleId, ModuleInterface, Namespace, TypeName, Types, World};
 use crate::ast::Attribute;
 use crate::compiler2::drive::JobEffects;
@@ -220,7 +221,7 @@ fn compiler2_activation_inputs_are_distinct_from_the_canonical_activation_key() 
     let root = world.submit_root(None, "main".to_string(), 0, super::ExecutableNeed::Value);
     let function = world.reference_function(ModuleId::GLOBAL, "loop", 1);
     assert!(world.define_recursive(function, true));
-    assert!(world.define_dispatch_mask(function, vec![false]));
+    assert!(world.define_dispatch_mask(function, vec![DispatchDemand::Ignore]));
 
     // A recursive fn's non-dispatch slot collapses to its convergence class
     // in the KEY (list(int) -> list(any)), while the body-input EVIDENCE
@@ -254,13 +255,234 @@ fn compiler2_activation_inputs_are_distinct_from_the_canonical_activation_key() 
 }
 
 #[test]
+fn compiler2_recursive_activation_key_ignores_accumulator_list_shape() {
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new(&tel);
+    let root = world.submit_root(None, "main".to_string(), 0, super::ExecutableNeed::Value);
+    let function = world.reference_function(ModuleId::GLOBAL, "partition", 4);
+    assert!(world.define_recursive(function, true));
+    assert!(world.define_dispatch_mask(
+        function,
+        vec![
+            DispatchDemand::Whole,
+            DispatchDemand::ListShape(Box::new(DispatchDemand::Whole)),
+            DispatchDemand::Ignore,
+            DispatchDemand::Ignore,
+        ],
+    ));
+
+    let int = world.types_mut().int();
+    let list_int = world.types_mut().list(int);
+    let empty = world.types_mut().empty_list();
+    let non_empty = world.types_mut().non_empty_list(int);
+
+    let initial = world.activation_key(root, function, &[int, non_empty, empty, empty]);
+    let lo_accumulated = world.activation_key(root, function, &[int, list_int, non_empty, empty]);
+    let hi_accumulated = world.activation_key(root, function, &[int, list_int, empty, non_empty]);
+
+    assert_eq!(
+        initial, lo_accumulated,
+        "ignored accumulator list shape must not split recursive activation keys",
+    );
+    assert_eq!(
+        initial, hi_accumulated,
+        "ignored accumulator list shape must not split recursive activation keys",
+    );
+}
+
+#[test]
+fn compiler2_recursive_activation_key_ignores_tuple_accumulator_list_shape() {
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new(&tel);
+    let root = world.submit_root(None, "main".to_string(), 0, super::ExecutableNeed::Value);
+    let function = world.reference_function(ModuleId::GLOBAL, "split_while_cont", 3);
+    assert!(world.define_recursive(function, true));
+    assert!(world.define_dispatch_mask(
+        function,
+        vec![
+            DispatchDemand::ListShape(Box::new(DispatchDemand::Ignore)),
+            DispatchDemand::Ignore,
+            DispatchDemand::Ignore,
+        ],
+    ));
+
+    let int = world.types_mut().int();
+    let list_int = world.types_mut().list(int);
+    let empty = world.types_mut().empty_list();
+    let non_empty = world.types_mut().non_empty_list(int);
+    let initial_acc = world.types_mut().tuple(&[empty, empty]);
+    let left_accumulated = world.types_mut().tuple(&[non_empty, empty]);
+    let right_accumulated = world.types_mut().tuple(&[empty, non_empty]);
+    let callable_a = {
+        let result = world.types_mut().atom_lit("cont");
+        world.types_mut().arrow(&[int], result)
+    };
+    let callable_b = {
+        let result = world.types_mut().atom_lit("halt");
+        world.types_mut().arrow(&[int], result)
+    };
+
+    let initial = world.activation_key(root, function, &[list_int, initial_acc, callable_a]);
+    let left = world.activation_key(root, function, &[list_int, left_accumulated, callable_a]);
+    let right = world.activation_key(root, function, &[list_int, right_accumulated, callable_b]);
+
+    assert_eq!(
+        initial, left,
+        "ignored tuple accumulator list shape must not split recursive activation keys",
+    );
+    assert_eq!(
+        initial, right,
+        "ignored callable surface details must not split recursive activation keys",
+    );
+}
+
+#[test]
+fn compiler2_activation_input_join_is_quiet_for_equivalent_list_evidence() {
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new(&tel);
+    let root = world.submit_root(None, "main".to_string(), 0, super::ExecutableNeed::Value);
+    let function = world.reference_function(ModuleId::GLOBAL, "subtract", 1);
+    assert!(world.define_recursive(function, false));
+    assert!(world.define_dispatch_mask(function, vec![DispatchDemand::Whole]));
+
+    let int = world.types_mut().int();
+    let list_int = world.types_mut().list(int);
+    let non_empty_int = world.types_mut().non_empty_list(int);
+    let equivalent_list = world.types_mut().union(list_int, non_empty_int);
+    assert!(
+        world.types().is_equivalent(&list_int, &equivalent_list),
+        "test setup should model telemetry's equivalent list evidence, got {} vs {}",
+        world.types_mut().display(&list_int),
+        world.types_mut().display(&equivalent_list),
+    );
+
+    let key = world.activation_key(root, function, &[list_int]);
+    world.complete_job(
+        Job::SeedRoot(root),
+        JobEffects {
+            activation_input_contributions: vec![(key.clone(), vec![list_int]), (key.clone(), vec![equivalent_list])],
+            ..JobEffects::default()
+        },
+    );
+
+    assert_eq!(
+        world.activation_inputs(&key),
+        Some(vec![list_int]),
+        "one publisher should keep the first representative instead of manufacturing list | list evidence",
+    );
+    let revision = world
+        .fact_revision(&FactKey::ActivationInputs(key.clone()))
+        .expect("activation-input fact should exist after the first contribution");
+
+    let step = world.complete_job(
+        Job::AnalyzeActivation(key.clone()),
+        JobEffects {
+            activation_input_contributions: vec![(key.clone(), vec![equivalent_list])],
+            ..JobEffects::default()
+        },
+    );
+    assert_eq!(
+        world.fact_revision(&FactKey::ActivationInputs(key.clone())),
+        Some(revision),
+        "an equivalent contribution from another publisher should not advance the activation-input revision",
+    );
+    assert!(
+        step.changed
+            .iter()
+            .all(|change| change.key != FactKey::ActivationInputs(key.clone())),
+        "equivalent activation-input evidence should not requeue semantic work",
+    );
+}
+
+#[test]
+fn compiler2_activation_analysis_preserves_prior_input_frontier() {
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new(&tel);
+    let root = world.submit_root(None, "main".to_string(), 0, super::ExecutableNeed::Value);
+    let caller = world.reference_function(ModuleId::GLOBAL, "caller", 1);
+    let callee = world.reference_function(ModuleId::GLOBAL, "callee", 1);
+    assert!(world.define_recursive(caller, true));
+    assert!(world.define_dispatch_mask(caller, vec![DispatchDemand::Whole]));
+    assert!(world.define_recursive(callee, true));
+    assert!(world.define_dispatch_mask(callee, vec![DispatchDemand::Whole]));
+
+    let int = world.types_mut().int();
+    let caller_key = world.activation_key(root, caller, &[int]);
+    let callee_key = world.activation_key(root, callee, &[int]);
+
+    world.complete_job(
+        Job::AnalyzeActivation(caller_key.clone()),
+        JobEffects {
+            activation_input_contributions: vec![(callee_key.clone(), vec![int])],
+            ..JobEffects::default()
+        },
+    );
+    let revision = world
+        .fact_revision(&FactKey::ActivationInputs(callee_key.clone()))
+        .expect("callee input evidence should be published");
+
+    let step = world.complete_job(
+        Job::AnalyzeActivation(caller_key),
+        JobEffects {
+            activation_input_contributions: vec![],
+            ..JobEffects::default()
+        },
+    );
+
+    assert_eq!(
+        world.activation_inputs(&callee_key),
+        Some(vec![int]),
+        "semantic analysis should not retract prior activation-input evidence when a callsite temporarily disappears",
+    );
+    assert_eq!(
+        world.fact_revision(&FactKey::ActivationInputs(callee_key.clone())),
+        Some(revision),
+        "preserving the semantic frontier should avoid a withdrawal revision",
+    );
+    assert!(
+        step.changed
+            .iter()
+            .all(|change| change.key != FactKey::ActivationInputs(callee_key.clone())),
+        "preserving the semantic frontier should not requeue activation analysis",
+    );
+}
+
+#[test]
+fn compiler2_recursive_list_shape_key_accepts_joined_list_family_evidence() {
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new(&tel);
+    let root = world.submit_root(None, "main".to_string(), 0, super::ExecutableNeed::Value);
+    let function = world.reference_function(ModuleId::GLOBAL, "delete_first", 2);
+    assert!(world.define_recursive(function, true));
+    assert!(world.define_dispatch_mask(
+        function,
+        vec![
+            DispatchDemand::ListShape(Box::new(DispatchDemand::Whole)),
+            DispatchDemand::Ignore,
+        ],
+    ));
+
+    let int = world.types_mut().int();
+    let list_int = world.types_mut().list(int);
+    let non_empty_int = world.types_mut().non_empty_list(int);
+    let joined_list_family = world.types_mut().union(list_int, non_empty_int);
+
+    let direct = world.activation_key(root, function, &[list_int, int]);
+    let joined = world.activation_key(root, function, &[joined_list_family, int]);
+    assert_eq!(
+        direct, joined,
+        "recursive list-shape keys should not split when upstream evidence is an equivalent joined list family",
+    );
+}
+
+#[test]
 fn compiler2_activation_inputs_retract_one_publishers_stale_contribution() {
     let tel = ConfiguredTelemetry::new();
     let mut world = World::new(&tel);
     let root = world.submit_root(None, "main".to_string(), 0, super::ExecutableNeed::Value);
     let function = world.reference_function(ModuleId::GLOBAL, "loop", 1);
     assert!(world.define_recursive(function, false));
-    assert!(world.define_dispatch_mask(function, vec![true]));
+    assert!(world.define_dispatch_mask(function, vec![DispatchDemand::Whole]));
 
     let input_a = world.types_mut().atom_lit("a");
     let input_b = world.types_mut().atom_lit("b");
@@ -305,7 +527,7 @@ fn compiler2_waiting_job_keeps_activation_input_contributions() {
     let root = world.submit_root(None, "main".to_string(), 0, super::ExecutableNeed::Value);
     let function = world.reference_function(ModuleId::GLOBAL, "loop", 1);
     assert!(world.define_recursive(function, false));
-    assert!(world.define_dispatch_mask(function, vec![true]));
+    assert!(world.define_dispatch_mask(function, vec![DispatchDemand::Whole]));
 
     let input = world.types_mut().int_lit(1);
     let key = world.activation_key(root, function, &[input]);

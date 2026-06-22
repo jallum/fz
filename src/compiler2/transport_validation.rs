@@ -101,6 +101,12 @@ impl ValidationContext<'_, '_> {
                     self.validate_shape(shape, plan, "callable direct surface");
                 }
             }
+            for edge in facts.direct_edges.iter() {
+                self.validate_executable(&edge.resolution, "callable direct edge resolution");
+                for shape in edge.surface_arg_shapes.iter().copied() {
+                    self.validate_shape(shape, plan, "callable direct edge surface");
+                }
+            }
             for boundary in facts.boundary_ids.iter().copied() {
                 self.validate_boundary(boundary, plan, "callable fact boundary");
             }

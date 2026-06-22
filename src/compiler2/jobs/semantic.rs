@@ -1259,10 +1259,10 @@ fn resolve_protocol_call(
         .clone();
     for arm in dispatch.arms {
         let target_ty = world.module_impl_target_ty(arm.target);
-        let overlap = world.types_mut().intersect(receiver_ty, target_ty);
-        if world.types().is_empty(&overlap) {
+        if !protocol_receiver_target_overlaps(world, receiver_ty, target_ty) {
             continue;
         }
+        let overlap = world.types_mut().intersect(receiver_ty, target_ty);
         if let Some(callback) = arm.callbacks.get(&callback_function).copied() {
             matches.push((callback, overlap));
         }
@@ -1284,8 +1284,7 @@ fn resolve_protocol_call(
         }
         for (target, provider) in world.protocol_impl_providers(protocol) {
             let target_ty = world.module_impl_target_ty(target);
-            let overlap = world.types_mut().intersect(receiver_ty, target_ty);
-            if world.types().is_empty(&overlap) {
+            if !protocol_receiver_target_overlaps(world, receiver_ty, target_ty) {
                 continue;
             }
             if world.module_defined_revision(provider).is_none() {
@@ -1343,6 +1342,15 @@ fn resolve_protocol_call(
         });
     }
     Ok((Some(CallSiteSummary { targets, return_ty }), activations, return_ty))
+}
+
+fn protocol_receiver_target_overlaps(world: &mut World<'_>, receiver_ty: Ty, target_ty: Ty) -> bool {
+    let receiver = world.types().runtime_type_predicate(&receiver_ty);
+    let target = world.types().runtime_type_predicate(&target_ty);
+    receiver.overlaps(&target) && {
+        let overlap = world.types_mut().intersect(receiver_ty, target_ty);
+        !world.types().is_empty(&overlap)
+    }
 }
 
 fn merge_protocol_matches_by_function(
@@ -1664,7 +1672,7 @@ fn merge_call_targets(
     for observed_target in observed {
         if let Some(current_target) = current
             .iter_mut()
-            .find(|target| target.callee == observed_target.callee)
+            .find(|target| same_call_target(target, &observed_target))
         {
             merge_summary_input_vec(
                 world,
@@ -1684,21 +1692,20 @@ fn merge_call_targets(
     Ok(())
 }
 
+fn same_call_target(left: &CallTargetSummary, right: &CallTargetSummary) -> bool {
+    left.callee == right.callee
+}
+
 fn merge_target_activation(
-    world: &mut World<'_>,
+    _world: &mut World<'_>,
     current: Option<ActivationKey>,
     observed: Option<ActivationKey>,
 ) -> Result<Option<ActivationKey>, FatalError> {
     match (current, observed) {
-        (Some(mut current), Some(observed)) => {
+        (Some(current), Some(observed)) => {
             if current.root != observed.root || current.function != observed.function {
                 return Err(FatalError);
             }
-            let mut current_inputs = current.inputs(world.types());
-            let observed_inputs = observed.inputs(world.types());
-            merge_summary_input_vec(world, &mut current_inputs, &observed_inputs);
-            let sentinel = world.types_mut().none();
-            current.arrow = world.types_mut().arrow(&current_inputs, sentinel);
             Ok(Some(current))
         }
         (None, None) => Ok(None),
@@ -1715,7 +1722,12 @@ fn merge_summary_input_vec(world: &mut World<'_>, current: &mut Vec<Ty>, observe
         current.resize_with(observed.len(), || any_ty(world));
     }
     for (slot, next_ty) in observed.iter().copied().enumerate() {
-        if current[slot] != next_ty {
+        if current[slot] == next_ty {
+            continue;
+        }
+        if world.types().is_equivalent(&current[slot], &next_ty) {
+            continue;
+        } else {
             current[slot] = world.types_mut().union(current[slot], next_ty);
         }
     }

@@ -509,6 +509,20 @@ fn native_enum_take_drop_split_preserves_tuple_accumulator_lists() {
 }
 
 #[test]
+fn native_enum_take_positive_single_call_survives_reduction_yield() {
+    let source_path = unique_temp_path("fz2_enum_take_positive_single", ".fz");
+    write(
+        &source_path,
+        "fn main() do\n  xs = [1, 2, 3, 4, 5]\n  dbg(Enum.take(xs, 3))\nend\n",
+    )
+    .unwrap_or_else(|error| panic!("write {}: {error}", source_path.display()));
+
+    let out = run_fz2(&[OsStr::new("run"), source_path.as_os_str()]);
+    assert_successful_stdout(&out, "[1, 2, 3]\n", "fz2 run minimal positive Enum.take fixture");
+    let _ = remove_file(&source_path);
+}
+
+#[test]
 fn run_and_interp_execute_case_and_with_fixtures() {
     let fixture = "fixtures2/behavior/case_with_total.fz";
     let expected = fixture_expected_stdout(fixture);

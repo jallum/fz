@@ -179,6 +179,7 @@ pub enum CallReturnFlow {
     },
     Deliver {
         payload: TransportPosition,
+        resume: TransportPosition,
         entry: ControlEntryId,
     },
 }
@@ -616,6 +617,7 @@ impl BackendEntryOrigin {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BackendCallArg {
     pub value: ValueId,
+    pub position: TransportPosition,
 }
 
 #[derive(Debug, Clone, PartialEq)]

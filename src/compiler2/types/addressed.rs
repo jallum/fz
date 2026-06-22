@@ -338,7 +338,7 @@ impl Types {
 #[cfg(test)]
 mod tests {
     use super::super::ClosureTarget;
-    use super::AddrStep::{Field, Param, Variant};
+    use super::AddrStep::{Elem, Field, Param, VarSlot, Variant};
     use super::*;
 
     fn var(t: &mut Types, id: u32) -> Ty {
@@ -491,6 +491,23 @@ mod tests {
             t.union(two, suspend)
         };
         assert_eq!(addressed, expected);
+    }
+
+    #[test]
+    fn address_inputs_is_idempotent_for_existing_element_addresses() {
+        let mut t = Types::new();
+        let head_a = t.address_var(&[Param(1), Elem]);
+        let head_b = t.address_var(&[Param(1), Elem, VarSlot(0)]);
+        let head = t.union(head_a, head_b);
+        let list = t.non_empty_list(head);
+        let scalar = t.param_alpha(0);
+        let once = t.address_inputs(&[scalar, list]);
+        let twice = t.address_inputs(&once);
+
+        assert_eq!(
+            twice, once,
+            "re-addressing canonical list evidence must not append fresh VarSlot components"
+        );
     }
 
     #[test]

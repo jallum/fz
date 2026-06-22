@@ -1,8 +1,9 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::mem;
 use std::slice;
 
 use super::*;
+use crate::compiler2::keying::DispatchDemand;
 use crate::runtime_type_predicate::{ListShape, ObservedSet, RuntimeTypePredicate};
 
 #[test]
@@ -187,6 +188,41 @@ fn runtime_type_predicate_projects_named_structs_and_widens_unknown_opaques() {
     let mystery = t.opaque_of("mystery");
     let widened = t.runtime_type_predicate(&mystery);
     assert_eq!(widened, RuntimeTypePredicate::any());
+}
+
+#[test]
+fn runtime_type_predicate_keeps_named_struct_identity_out_of_plain_map_kind() {
+    let mut t = Types::new();
+    let named = t.opaque_of("impl-target::Range");
+    let any = t.any();
+    let tuple = t.tuple(&[any, any, any]);
+    let first = t.atom_lit("first");
+    let last = t.atom_lit("last");
+    let step = t.atom_lit("step");
+    let structural_map = t.map(&[
+        (MapKey::Atom("first".to_string()), first),
+        (MapKey::Atom("last".to_string()), last),
+        (MapKey::Atom("step".to_string()), step),
+    ]);
+    let structural = t.union(tuple, structural_map);
+    let range_value = t.union(named, structural);
+    let range_predicate = t.runtime_type_predicate(&range_value);
+    let map_top = t.map_top();
+    let map_predicate = t.runtime_type_predicate(&map_top);
+
+    assert_eq!(
+        range_predicate.named_structs,
+        ObservedSet::lit("Range".to_string()),
+        "a struct value should keep its named runtime identity even though it also has structural field evidence",
+    );
+    assert!(
+        !range_predicate.maps,
+        "a named struct's structural map evidence must not make it a plain runtime map predicate",
+    );
+    assert!(
+        !range_predicate.overlaps(&map_predicate),
+        "protocol matching must not select the Map implementation for a Range struct value",
+    );
 }
 
 #[test]
@@ -769,6 +805,34 @@ macro_rules! semantic_helper_conformance_tests {
             }
 
             #[test]
+            fn union_keeps_normalized_list_evidence_when_rejoined_with_empty_list() {
+                let mut t = $ctor;
+                let elem = t.type_var(TypeVarId(0));
+                let empty = t.empty_list();
+                let non_empty = t.non_empty_list(elem);
+                let proper = t.union(empty.clone(), non_empty);
+                let rejoined = t.union(proper.clone(), empty.clone());
+
+                assert!(
+                    t.is_equivalent(&rejoined, &proper),
+                    "rejoining {} with {} lowered or widened the list evidence to {}",
+                    t.display(&proper),
+                    t.display(&empty),
+                    t.display(&rejoined)
+                );
+                assert!(
+                    !t.is_equivalent(&rejoined, &empty),
+                    "rejoining normalized list evidence collapsed to exact empty list"
+                );
+
+                let predicate = t.runtime_type_predicate(&rejoined);
+                assert_eq!(
+                    predicate.lists,
+                    ObservedSet::finite([ListShape::Empty, ListShape::NonEmpty])
+                );
+            }
+
+            #[test]
             fn convergence_class_unifies_all_list_shapes_but_separates_other_families() {
                 let mut t = $ctor;
                 let int = t.int();
@@ -780,6 +844,12 @@ macro_rules! semantic_helper_conformance_tests {
                 let list_class = t.convergence_class(&list);
                 assert!(t.is_equivalent(&empty_class, &nonempty_class));
                 assert!(t.is_equivalent(&nonempty_class, &list_class));
+                let joined = t.union(empty, nonempty);
+                let joined_class = t.convergence_class(&joined);
+                assert!(
+                    t.is_equivalent(&joined_class, &list_class),
+                    "empty | non-empty list unions should share the recursive list convergence class"
+                );
 
                 let tagged = t.tuple(&[int.clone(), int.clone()]);
                 let tagged_class = t.convergence_class(&tagged);
@@ -787,6 +857,28 @@ macro_rules! semantic_helper_conformance_tests {
 
                 let int_class = t.convergence_class(&int);
                 assert!(!t.is_equivalent(&int_class, &list_class));
+            }
+
+            #[test]
+            fn convergence_class_collapses_nested_list_and_callable_runtime_detail() {
+                let mut t = $ctor;
+                let int = t.int();
+                let empty = t.empty_list();
+                let nonempty = t.non_empty_list(int.clone());
+                let cont = t.atom_lit("cont");
+                let halt = t.atom_lit("halt");
+                let callable_a = t.arrow(&[int.clone()], cont);
+                let callable_b = t.arrow(&[int.clone()], halt);
+                let tuple_a = t.tuple(&[empty, callable_a]);
+                let tuple_b = t.tuple(&[nonempty, callable_b]);
+
+                let class_a = t.convergence_class(&tuple_a);
+                let class_b = t.convergence_class(&tuple_b);
+
+                assert!(
+                    t.is_equivalent(&class_a, &class_b),
+                    "ignored recursive tuple slots should collapse nested list/callable detail while preserving tuple family"
+                );
             }
 
             #[test]
@@ -801,12 +893,81 @@ macro_rules! semantic_helper_conformance_tests {
                 let int = t.int();
                 let list_int = t.list(int.clone());
                 let arrow = t.arrow(&[list_int.clone(), list_int.clone()], int.clone());
-                let collapsed = t.convergence_collapse(arrow, &[true, false]);
+                let collapsed = t.convergence_collapse(arrow, &[DispatchDemand::Whole, DispatchDemand::Ignore]);
 
                 let any = t.any();
                 let list_any = t.list(any);
                 let expected = t.arrow(&[list_int, list_any], int);
                 assert!(t.is_equivalent(&collapsed, &expected));
+            }
+
+            #[test]
+            fn convergence_collapse_list_shape_keeps_element_but_not_recursive_list_shape() {
+                let mut t = $ctor;
+                let int = t.int();
+                let non_empty = t.non_empty_list(int.clone());
+                let list_int = t.list(int);
+                let joined_list_family = t.union(list_int, non_empty);
+                let sentinel = t.none();
+                let arrow = t.arrow(&[joined_list_family], sentinel.clone());
+                let collapsed = t.convergence_collapse(
+                    arrow,
+                    &[DispatchDemand::ListShape(Box::new(DispatchDemand::Whole))],
+                );
+
+                let expected = t.arrow(&[list_int], sentinel);
+                assert!(
+                    t.is_equivalent(&collapsed, &expected),
+                    "recursive list-shape dispatch should converge joined list-family shape while preserving demanded element type"
+                );
+            }
+
+            #[test]
+            fn convergence_collapse_preserves_nested_dispatch_field_and_collapses_payload() {
+                let mut t = $ctor;
+                let elem = t.type_var(TypeVarId(0));
+                let payload = t.list(elem);
+                let tag = t.atom_lit("cont");
+                let state = t.tuple(&[tag, payload]);
+                let sentinel = t.none();
+                let arrow = t.arrow(&[state], sentinel);
+                let mut fields = BTreeMap::new();
+                fields.insert(0, DispatchDemand::Whole);
+                let collapsed = t.convergence_collapse(arrow, &[DispatchDemand::TupleFields(fields)]);
+
+                let any = t.any();
+                let collapsed_payload = t.list(any);
+                let expected_state = t.tuple(&[tag, collapsed_payload]);
+                let expected = t.arrow(&[expected_state], sentinel);
+                assert!(
+                    t.is_equivalent(&collapsed, &expected),
+                    "nested dispatch demand should preserve the tag and collapse the payload: {}",
+                    t.display(&collapsed)
+                );
+            }
+
+            #[test]
+            fn evidence_collapse_only_widens_variable_non_dispatch_payloads() {
+                let mut t = $ctor;
+                let int = t.int();
+                let concrete = t.list(int.clone());
+                let var = t.type_var(TypeVarId(0));
+                let variable = t.list(var);
+                let collapsed = t.convergence_collapse_evidence_inputs(
+                    &[concrete, variable],
+                    &[DispatchDemand::Ignore, DispatchDemand::Ignore],
+                );
+
+                let any = t.any();
+                let list_any = t.list(any);
+                assert!(
+                    t.is_equivalent(&collapsed[0], &concrete),
+                    "concrete non-dispatch evidence should stay precise"
+                );
+                assert!(
+                    t.is_equivalent(&collapsed[1], &list_any),
+                    "variable non-dispatch evidence should converge to list(any)"
+                );
             }
 
             #[test]
