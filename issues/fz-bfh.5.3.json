@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-bfh.5.1"
+  ],
   "blocks": [],
   "created": "2026-06-22T23:28:01Z",
   "description": "Goal\nDissolve the cross-executable input-merge into a cumulative contribution fact, collapsing the global two-solve into the single fixpoint. Pull becomes push: callees stop scanning callers; callers contribute.\n\nWhat\n- Add cumulative FactKey::InputShape(ExecutableKey) (list it in ClaimShape::is_cumulative, drive.rs:91) backed by a ContributionMap over the Stage-2 agreement lattice (mirror ReturnDemandMap, semantic.rs:604).\n- Each caller DeriveExecutableTransport(E) contributes its CallArg shapes keyed by callee ExecutableKey, via a new JobEffects channel routed in complete_job (world.rs:562-606), exactly like return_demand_contributions.\n- project_executable_input_source (jobs/transport.rs:2435) READS InputShape(E) instead of scanning contexts (delete the incoming_executable_input_positions / collect_call_arg_input_sources caller scans, ~2114/2623). Consumer rule: Agreed(S) and (no own-demand anchor OR own-demand==S) -\u003e merged shape S; else own-demand shape (preserves the current anchor_shape.is_none_or(==first) condition at ~1110-1118).\n- Remove the first solve() (jobs/transport.rs:900) and collect_executable_input_constraints two-phase staging; the input binding now arrives as a settled fact under the barrier.\n- seed_callable_flow_capture_inputs / seed_callable_resolution_capture_inputs (927/1010) become contributions to the resolution executable input slot.\n\nVerify\nshadow==monolith green; contract suite green; assert the two-solve is gone (single solve / no local_shapes pre-pass); zero warnings.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Stage 2: InputShape(E) cumulative contribution; pull-\u003epush; collapse the two-solve",
   "type": "task",
-  "updated_at": "2026-06-22T23:28:01Z"
+  "updated_at": "2026-06-22T23:28:09Z"
 }

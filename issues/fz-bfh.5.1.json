@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-bfh.5.3"
+  ],
   "created": "2026-06-22T23:27:20Z",
   "description": "Goal\nReplace the single per-root DeriveTransportPlan job with per-executable DeriveExecutableTransport(E) facts, leaving the cross-executable closure in a thin root fan-in. This caches the expensive per-executable projection (the Tarjan/memo/local-solve bulk and the enum_take_drop_split cost) and delivers blast-radius-by-revision.\n\nWhat\n- Add Job::DeriveExecutableTransport(ExecutableKey) + FactKey::ExecutableTransport(ExecutableKey) (drive.rs ~38/76), dispatched in jobs/mod.rs. Mirror the DeriveRuntimeDemand skeleton (jobs/runtime_demand.rs:155-258): gate on Executable(E)/SemanticClosed, read settled ActivationAnalyzed/ReturnType/LoweredBody/RuntimeDemand/CallSiteSummary, output the per-executable fact, enqueue follow-ups on misses.\n- ExecutableTransport(E) carries E intra-executable positions, its callable/boundary drafts, its CallArg shapes, and its publication-source data. ExecutableInput is projected PROVISIONALLY from own-demand (no caller merge yet).\n- derive_transport_plan(root) (jobs/transport.rs:551) becomes a FAN-IN: read all ExecutableTransport(E) in the closure, run the EXISTING cross-executable closure (collect_executable_input_constraints, return-sharing, expand/resolve, derive_codegen_seam_facts) to assemble a byte-identical TransportPlan.\n- Barrier KEPT: each DeriveExecutableTransport gated on SemanticClosed(root).\n\nWhere / notes\n- MemoKey already includes ExecutableKey (jobs/transport.rs:90) so per-executable scoping loses no memo sharing.\n- Seed per-executable jobs the way the seal seeds DeriveRuntimeDemand (jobs/root.rs:303-318).\n\nVerify\nshadow==monolith (semantic_analysis_test.rs:819-872) green; transport_contract_test.rs (~70 tests) green; transport_validation.rs on-define check green; zero warnings.",
   "id": "fz-bfh.5.1",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Stage 1: per-executable ExecutableTransport(E) facts; DeriveTransportPlan becomes a fan-in",
   "type": "task",
-  "updated_at": "2026-06-22T23:27:20Z"
+  "updated_at": "2026-06-22T23:28:09Z"
 }
