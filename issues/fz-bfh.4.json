@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-22T13:49:13Z",
+  "description": "Goal\nRegression target for the unified root fz-f98. A program that reduces over BOTH a Range and a Map (directly, or via to_list/reverse which reduce internally) must compile in bounded time instead of storming the semantic drive.\n\nSymptom (the non-convergence face of the fz-f98 root)\nMinimal repro:\n  fn main() do\n    dbg(Enum.to_list(1..7//2))\n    dbg(Enum.to_list(%{1 =\u003e :a}))\n  end\nResult: compiler2 root 0 exceeded 15000 ms drive limit after ~281000 jobs (release).\n\nBisection (release fz2, interp): range alone, map alone, range+range, list+list, range+list, map+list ALL converge in \u003c0.1s. Only two DISTINCT non-List shapes meeting the shared bridge storm (range+map).\n\nTelemetry (--log-telemetry): oscillation, not proliferation. The SAME ActivationKeys re-analyze thousands of times; activation_analysis.defined ~= return_type.defined (paired 1:1, ~52941 each); top-20 functions account for 96% of all re-analyses; #1 oscillator is Enum.reduce (fn69, re-analyzed ~5690x); a churning callsite targets the Map reduce fn with return_ty: None on Ty(19) inputs (the same fn/type as fz-bfh.3's absent value).\n\nNot fz-hwn.9: that ticket (closed) fixed the List reduce-SCC churn for Enum.with_index over a list; its repro now passes in ~0.03s. This range+map non-convergence is a distinct, open manifestation of the same shared-bridge instability. (enum_tier0's defer rationale that blamed fz-hwn.9 / with_index was a misattribution; corrected to point here.)\n\nRequired work (verification; fix is in fz-f98)\n- Pin a fixture: reduce/to_list over a Range AND a Map in one program, compiling in bounded time on interp + run + build.\n- The fz-f98 monotone-convergent surface join must settle the shared bridge to one fixed point across multiple non-List shapes.\n\nChecks\n- Range+Map reduce regression compiles without the drive-limit timeout.\n- enum_tier0 (List+Range+Map reduce family) re-enabled and green once fz-f98 lands.\n- cargo test --lib and cargo clippy --workspace --all-targets -- -D warnings.",
+  "id": "fz-bfh.4",
+  "labels": [],
+  "parent": "fz-bfh",
+  "priority": 2,
+  "status": "open",
+  "title": "Range+Map reduce: activation/return-type fixpoint never converges (semantic-drive storm)",
+  "type": "bug",
+  "updated_at": "2026-06-22T13:49:13Z"
+}
