@@ -9,9 +9,15 @@
   "id": "fz-bfh.1",
   "labels": [],
   "parent": "fz-bfh",
+  "comments": [
+    {
+      "text": "Additional manifestation: the full enum_tier0 fixture (with reduce/2,3,reduce_while over Range+Map added) fails in release in 0.06s with a fast panic at src/compiler2/jobs/transport.rs:2587 'local callable producer reached transport without upstream CallableFlowFact: LocalCallableProducer { function: FunctionId(66), captures: [] }'. Same capture-flow correlation root as the lane mismatch — the shared reduce-bridge closure reaches transport without its upstream CallableFlowFact. Timing note: original enum_tier0 takes 15.00s (release) to hit the fz-hwn.9 drive-limit timeout; the reduce-cluster panics fail far earlier (0.03-0.52s) and currently mask that timeout.",
+      "timestamp": "2026-06-22T13:29:58Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "Enum.reduce/3 over Range with scalar accumulator crashes on all three paths",
   "type": "bug",
-  "updated_at": "2026-06-22T13:14:55Z"
+  "updated_at": "2026-06-22T13:29:58Z"
 }
