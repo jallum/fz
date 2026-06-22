@@ -2,28 +2,56 @@
 # purpose: "Enum tier-0 functions return Elixir-style public values across List, Range, and Map"
 # oracle: oracle.exs
 # timeout.interp_secs: 15
-# defer.build: fz-hwn.9 Enum.with_index mapper activation churn times out
-# defer.interp: fz-hwn.9 Enum.with_index mapper activation churn times out
-# defer.run: fz-hwn.9 Enum.with_index mapper activation churn times out
+# defer.build: fz-f98 root; regression targets fz-bfh.1/.2/.3 (reduce crashes) + fz-bfh.4 (range+map storm)
+# defer.interp: fz-f98 root; regression targets fz-bfh.1/.2/.3 (reduce crashes) + fz-bfh.4 (range+map storm)
+# defer.run: fz-f98 root; regression targets fz-bfh.1/.2/.3 (reduce crashes) + fz-bfh.4 (range+map storm)
 #---
 #
 # Exercises the reduce-based public `Enum` surface that later Enum functions build
 # on: `reduce/2`, `reduce/3`, `reduce_while/3`, `each/2`, `count/1`, `count/2`,
-# `member?/2`, `to_list/1`, and `reverse/1,2`.
+# `member?/2`, `to_list/1`, and `reverse/1,2`. The reduce family runs over List,
+# Range, and Map so the "across List, Range, and Map" claim is exercised, not just
+# asserted.
 #
-# The interp timeout override is temporary correctness-only coverage for the
-# protocol-first tier-0 surface. `fz-g58.52` owns restoring the default 3s
-# fixture gate by removing it.
+# Re-enablement waits on the single root fz-f98 (the shared Enum.reduce* bridge
+# callable is not a convergent, identity-correlated fixed point over non-List
+# Enumerables). Its symptoms here: reduce/3 over Range (fz-bfh.1), reduce/2 over
+# Range and reduce_while/3 over Map (fz-bfh.2), reduce/2,3 over Map (fz-bfh.3), and
+# this fixture's Range+Map mix that storms the semantic drive to the 15s limit
+# (fz-bfh.4 — not the closed fz-hwn.9, which fixed only the List with_index churn).
+# The interp timeout override is temporary; `fz-g58.52` owns restoring the default
+# 3s fixture gate by removing it.
 fn main() do
   xs = [1, 2, 3, 4]
   range = 1..7//2
   map = %{2 => :two, 1 => :one}
 
+  # reduce/2 across List, Range, and Map
   dbg(Enum.reduce(xs, fn (x, acc) -> x * acc end))
+  dbg(Enum.reduce(range, fn (x, acc) -> x * acc end))
+  dbg(Enum.reduce(map, fn ({k, _v}, {ak, av}) -> {ak + k, av} end))
+  # reduce/3 across List, Range, and Map
   dbg(Enum.reduce(xs, 0, fn (x, acc) -> acc + x end))
+  dbg(Enum.reduce(range, 0, fn (x, acc) -> acc + x end))
+  dbg(Enum.reduce(map, 0, fn ({k, _v}, acc) -> acc + k end))
+  # reduce_while/3 across List, Range, and Map
   dbg(Enum.reduce_while(xs, 0, fn (x, acc) ->
     if x < 3 do
       {:cont, acc + x}
+    else
+      {:halt, acc}
+    end
+  end))
+  dbg(Enum.reduce_while(range, 0, fn (x, acc) ->
+    if x < 5 do
+      {:cont, acc + x}
+    else
+      {:halt, acc}
+    end
+  end))
+  dbg(Enum.reduce_while(map, [], fn ({k, v}, acc) ->
+    if k < 2 do
+      {:cont, [v | acc]}
     else
       {:halt, acc}
     end
