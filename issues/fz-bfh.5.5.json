@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-22T23:28:02Z",
+  "description": "Goal (separate arc)\nLift the SemanticClosed barrier so DeriveExecutableTransport(E) fires pre-closure, co-settling transport with activations inside the one fixpoint loop. Full realization of the northstar invariant through the backend seam.\n\nWhat\n- Drop the SemanticClosed gate on DeriveExecutableTransport; gate each prerequisite on Current/Settled facts the way derive_runtime_demand waits on current, not settled (jobs/runtime_demand.rs:237-244).\n- No new data model: the Stage-2 agreement cell and InputShape contributions already converge on ASCENDING contributors by quiescence, exactly like ActivationInputs (jobs/semantic.rs:205-206). The caller set need not be known up front; it accumulates.\n- Retire the seal runtime_demands re-gather seam (jobs/root.rs:302-318) and closure.runtime_demands consumption if nothing else needs the blob.\n- Confirm and delete now-dead Cycle/Tarjan and ProjectionMemo if any remnants survive earlier stages.\n\nRisk\nCaller-set narrowing: a late caller contribution dropped on a rebased rerun. Guard with the contribution withdrawal-on-rebase semantics (semantic.rs:746-780) and the equivalence harness driven WITHOUT forcing closure first.\n\nVerify\nshadow==monolith green; transport facts observed settling before SemanticClosed in telemetry; full matrix + lib green; zero warnings.",
+  "id": "fz-bfh.5.5",
+  "labels": [],
+  "parent": "fz-bfh.5",
+  "priority": 3,
+  "status": "open",
+  "title": "Stage 4 (arc): lift the SemanticClosed barrier; co-settle transport in the loop",
+  "type": "task",
+  "updated_at": "2026-06-22T23:28:02Z"
+}
