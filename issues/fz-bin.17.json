@@ -11,9 +11,15 @@
   "id": "fz-bin.17",
   "labels": [],
   "parent": "fz-bin",
+  "comments": [
+    {
+      "text": "Resolved transport side after fz-bin.18: runtime demand now recognizes callsite-return-derived callable captures that must cross continuation boundaries, transport projection carries publication positions through callsite returns and tuple projections, codegen seams publish executable-return and entry-capture published callable lanes, and the new contract test locks the tuple-returned callable resume case.",
+      "timestamp": "2026-06-22T03:01:48Z"
+    }
+  ],
   "priority": 2,
   "status": "in_progress",
   "title": "Tuple-returned callable lacks boundary before runtime resume",
   "type": "bug",
-  "updated_at": "2026-06-22T02:38:58Z"
+  "updated_at": "2026-06-22T03:01:48Z"
 }
