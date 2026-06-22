@@ -672,7 +672,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                 }
                 BackendStep::List { value, items, tail } => {
                     let vars = self.env_runtime_vars(ctx, executable, env, items);
-                    let tail = tail.map(|tail| self.env_runtime_var(ctx, executable, env, tail));
+                    let tail = self.list_tail_runtime_var(ctx, executable, env, *tail)?;
                     let (var, _) = ctx.emit_let(Prim::MakeList(vars, tail));
                     self.bind_runtime_value(ctx, executable, env, *value, var);
                 }
@@ -2663,6 +2663,35 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
             .collect()
     }
 
+    fn list_tail_runtime_var(
+        &mut self,
+        ctx: &mut NativeFnCtx,
+        executable: &BackendExecutable,
+        env: &ValueEnv,
+        tail: Option<ValueId>,
+    ) -> Result<Option<Var>, FatalError> {
+        let Some(tail) = tail else {
+            return Ok(None);
+        };
+        if matches!(env.value(tail), Some(NativeBoundValue::Absent)) && self.value_is_exact_empty_list(executable, tail)
+        {
+            return Ok(None);
+        }
+        Ok(Some(self.env_runtime_var(ctx, executable, env, tail)))
+    }
+
+    fn value_is_exact_empty_list(&mut self, executable: &BackendExecutable, value: ValueId) -> bool {
+        let Some(ty) = executable.value_types.get(&value).copied() else {
+            return false;
+        };
+        self.ty_is_exact_empty_list(ty)
+    }
+
+    fn ty_is_exact_empty_list(&mut self, ty: Ty) -> bool {
+        let empty = self.world.types_mut().empty_list();
+        self.world.types().is_equivalent(&ty, &empty)
+    }
+
     /// Bind a single native `Var` as a scalar value, recording its settled
     /// representation lane so downstream seams read it back uniformly.
     fn bind_runtime_value(
@@ -2723,6 +2752,9 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
         boundary: Option<NativeCallableBoundaryId>,
     ) -> Result<Var, FatalError> {
         let var = match value {
+            NativeBoundValue::Absent if ty.is_some_and(|ty| self.ty_is_exact_empty_list(ty)) => {
+                ctx.emit_let(Prim::MakeList(Vec::new(), None)).0
+            }
             NativeBoundValue::Absent => return Err(FatalError),
             NativeBoundValue::Runtime(var) => *var,
             NativeBoundValue::Transport { shape, lanes } => {

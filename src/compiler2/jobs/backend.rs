@@ -250,7 +250,7 @@ impl<'a, 'plan, 'tel> BackendLowerer<'a, 'plan, 'tel> {
                 literal: literal.clone(),
             },
             LoweredStep::Tuple { value, items } => {
-                if self.tuple_build_is_proven_runtime_absent(executable, *value) {
+                if self.value_is_proven_runtime_absent(executable, *value) {
                     BackendStep::Omitted { value: *value }
                 } else {
                     BackendStep::Tuple {
@@ -259,11 +259,17 @@ impl<'a, 'plan, 'tel> BackendLowerer<'a, 'plan, 'tel> {
                     }
                 }
             }
-            LoweredStep::List { value, items, tail } => BackendStep::List {
-                value: *value,
-                items: items.clone(),
-                tail: *tail,
-            },
+            LoweredStep::List { value, items, tail } => {
+                if self.value_is_proven_runtime_absent(executable, *value) {
+                    BackendStep::Omitted { value: *value }
+                } else {
+                    BackendStep::List {
+                        value: *value,
+                        items: items.clone(),
+                        tail: *tail,
+                    }
+                }
+            }
             LoweredStep::Map { value, entries } => BackendStep::Map {
                 value: *value,
                 entries: entries.iter().map(|(key, value)| (key.value, *value)).collect(),
@@ -379,7 +385,7 @@ impl<'a, 'plan, 'tel> BackendLowerer<'a, 'plan, 'tel> {
         })
     }
 
-    fn tuple_build_is_proven_runtime_absent(
+    fn value_is_proven_runtime_absent(
         &self,
         executable: &super::super::artifact::EmissionReadyExecutable,
         value: super::super::body::ValueId,

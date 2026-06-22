@@ -852,7 +852,7 @@ fn take_positive_reduce_while_has_typed_callback_return() {
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    let _ = compiler.drive(); // DeriveAbiReady: pre-existing pipeline gap for enum_take_drop_split
+    let _ = compiler.drive(); // LowerNativeProgram still has a pre-existing enum_take_drop_split gap.
     // TODO: declared return fact for Enum.reduce_while in Enum.take_positive should be non-bottom for int-amount spec
 }
 
