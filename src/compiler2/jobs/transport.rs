@@ -154,7 +154,11 @@ struct TransportFactsBuilder {
 #[derive(Debug, Clone, Default)]
 struct ShapeConstraintGraph {
     anchors: Vec<(TransportPosition, ShapeId)>,
-    equalities: Vec<(TransportPosition, TransportPosition)>,
+    equalities: Vec<(
+        TransportPosition,
+        TransportPosition,
+        &'static std::panic::Location<'static>,
+    )>,
 }
 
 impl ShapeConstraintGraph {
@@ -162,12 +166,19 @@ impl ShapeConstraintGraph {
         self.anchors.push((position, shape));
     }
 
+    #[track_caller]
     fn equal(&mut self, left: TransportPosition, right: TransportPosition) {
-        self.equalities.push((left, right));
+        self.equalities.push((left, right, std::panic::Location::caller()));
     }
 
     fn has_anchor(&self, position: &TransportPosition) -> bool {
         self.anchors.iter().any(|(anchored, _)| anchored == position)
+    }
+
+    fn anchor_shape(&self, position: &TransportPosition) -> Option<ShapeId> {
+        self.anchors
+            .iter()
+            .find_map(|(anchored, shape)| (anchored == position).then_some(*shape))
     }
 
     fn solve(self) -> HashMap<TransportPosition, ShapeId> {
@@ -175,7 +186,7 @@ impl ShapeConstraintGraph {
         for (position, _) in &self.anchors {
             union.add(position.clone());
         }
-        for (left, right) in &self.equalities {
+        for (left, right, _) in &self.equalities {
             union.union(left.clone(), right.clone());
         }
 
@@ -183,9 +194,26 @@ impl ShapeConstraintGraph {
         for (position, shape) in &self.anchors {
             let root = union.find_existing(position);
             if let Some(existing) = component_shapes.insert(root, *shape) {
+                let component = union
+                    .positions()
+                    .filter(|candidate| union.find_existing(candidate) == root)
+                    .cloned()
+                    .collect::<Vec<_>>();
+                let anchors = self
+                    .anchors
+                    .iter()
+                    .filter(|(candidate, _)| union.find_existing(candidate) == root)
+                    .cloned()
+                    .collect::<Vec<_>>();
+                let equalities = self
+                    .equalities
+                    .iter()
+                    .filter(|(left, right, _)| union.find_existing(left) == root || union.find_existing(right) == root)
+                    .map(|(left, right, caller)| (left.clone(), right.clone(), caller.to_string()))
+                    .collect::<Vec<_>>();
                 assert_eq!(
                     existing, *shape,
-                    "transport shape anchors disagree for connected position component: {position:?}"
+                    "transport shape anchors disagree for connected position component: {position:?}; component={component:?}; anchors={anchors:?}; equalities={equalities:?}"
                 );
             }
         }
@@ -207,7 +235,7 @@ impl ShapeConstraintGraph {
         for (position, _) in &self.anchors {
             union.add(position.clone());
         }
-        for (left, right) in &self.equalities {
+        for (left, right, _) in &self.equalities {
             union.union(left.clone(), right.clone());
         }
 
@@ -844,6 +872,9 @@ fn seed_callable_resolution_capture_inputs(
     for (callable, draft) in &facts.callables {
         let descr = world.callable(*callable);
         for resolution in &draft.resolutions {
+            if descr.function != Some(resolution.activation.function) {
+                continue;
+            }
             assert!(
                 resolution.activation.input.len() >= descr.capture_shapes.len(),
                 "upstream callable-flow resolution is missing capture-prefix inputs: {resolution:?}"
@@ -869,12 +900,24 @@ fn collect_executable_input_constraints(
     local_shapes: &HashMap<TransportPosition, ShapeId>,
     shape_graph: &mut ShapeConstraintGraph,
 ) {
+    let mut anchored_function_inputs = shape_graph
+        .anchors
+        .iter()
+        .filter_map(|(position, _)| match position {
+            TransportPosition::ExecutableInput {
+                executable,
+                semantic_index,
+            } => Some((executable.activation.function, *semantic_index)),
+            _ => None,
+        })
+        .collect::<HashSet<_>>();
     for executable in executables {
         let symbol = executable_symbol(executable, world.types());
         let context = contexts
             .get(executable)
             .expect("transport derivation requires one context per settled executable");
         for (semantic_index, ty) in executable.activation.inputs(world.types()).into_iter().enumerate() {
+            let function_input = (executable.activation.function, semantic_index);
             let demand = context
                 .runtime_demand
                 .input_demands
@@ -888,6 +931,7 @@ fn collect_executable_input_constraints(
             if executable_input_demand_requires_own_shape(&demand) && !shape_graph.has_anchor(&position) {
                 let shape = shape_for_executable_input(world, ty, &demand, facts, Some(position.clone()));
                 shape_graph.anchor(position, shape);
+                anchored_function_inputs.insert(function_input);
                 continue;
             }
             if let Some(incoming) = incoming_executable_input_positions(world, contexts, executable, semantic_index) {
@@ -897,22 +941,49 @@ fn collect_executable_input_constraints(
                     .collect::<Option<Vec<_>>>();
                 if let Some(incoming_shapes) = incoming_shapes {
                     let first = incoming_shapes.first().copied();
-                    if first.is_some() && incoming_shapes.iter().all(|shape| Some(*shape) == first) {
+                    let anchor_shape = shape_graph.anchor_shape(&position);
+                    let force_own_shape = anchored_function_inputs.contains(&function_input);
+                    if first.is_some()
+                        && incoming_shapes.iter().all(|shape| Some(*shape) == first)
+                        && !force_own_shape
+                        && anchor_shape.is_none_or(|shape| Some(shape) == first)
+                    {
                         for call_arg in incoming {
                             shape_graph.equal(position.clone(), call_arg);
                         }
-                    } else if !shape_graph.has_anchor(&position) {
+                    } else if anchor_shape.is_none() {
                         let shape = shape_for_executable_input(world, ty, &demand, facts, Some(position.clone()));
                         shape_graph.anchor(position, shape);
+                        anchored_function_inputs.insert(function_input);
                     }
-                } else {
+                } else if demand.is_ignore()
+                    && incoming.len() == 1
+                    && !shape_graph.has_anchor(&position)
+                    && !anchored_function_inputs.contains(&function_input)
+                {
+                    // A single ignored incoming arg still carries alias/ownership
+                    // evidence; multiple unresolved incoming args would merge
+                    // distinct recursive activations before their shapes settle.
                     for call_arg in incoming {
                         shape_graph.equal(position.clone(), call_arg);
                     }
+                } else if demand.is_ignore() && !shape_graph.has_anchor(&position) {
+                    let shape = shape_for_executable_input(world, ty, &demand, facts, Some(position.clone()));
+                    shape_graph.anchor(position, shape);
+                    anchored_function_inputs.insert(function_input);
+                } else if !shape_graph.has_anchor(&position) && !anchored_function_inputs.contains(&function_input) {
+                    for call_arg in incoming {
+                        shape_graph.equal(position.clone(), call_arg);
+                    }
+                } else if !shape_graph.has_anchor(&position) {
+                    let shape = shape_for_executable_input(world, ty, &demand, facts, Some(position.clone()));
+                    shape_graph.anchor(position, shape);
+                    anchored_function_inputs.insert(function_input);
                 }
             } else if !shape_graph.has_anchor(&position) {
                 let shape = shape_for_executable_input(world, ty, &demand, facts, Some(position.clone()));
                 shape_graph.anchor(position, shape);
+                anchored_function_inputs.insert(function_input);
             }
         }
     }
@@ -1847,16 +1918,13 @@ fn incoming_executable_input_positions(
                 continue;
             };
             if !summary.targets.iter().any(|target| {
-                target.activation.as_ref().is_some_and(|activation| {
-                    activation.function == executable.activation.function
-                        && activation.arrow == executable.activation.arrow
-                        && context
-                            .callsite_needs
-                            .get(callsite)
-                            .copied()
-                            .unwrap_or(ExecutableNeed::Value)
-                            == executable.need
-                })
+                target.activation.as_ref() == Some(&executable.activation)
+                    && context
+                        .callsite_needs
+                        .get(callsite)
+                        .copied()
+                        .unwrap_or(ExecutableNeed::Value)
+                        == executable.need
             }) {
                 continue;
             }

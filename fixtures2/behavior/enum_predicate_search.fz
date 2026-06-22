@@ -2,9 +2,9 @@
 # purpose: "Enum predicate and search functions match Elixir and halt as soon as the answer is known"
 # timeout.interp_secs: 15
 # oracle: oracle.exs
-# defer.build: fz-bin.10 transport anchors disagree for Enum predicate dispatch callbacks
-# defer.interp: fz-bin.10 transport anchors disagree for Enum predicate dispatch callbacks
-# defer.run: fz-bin.10 transport anchors disagree for Enum predicate dispatch callbacks
+# defer.build: fz-bin.15 post-transport ReturnLanes mismatch in Enum predicate/search execution
+# defer.interp: fz-bin.15 post-transport backend value unbound in Enum predicate/search execution
+# defer.run: fz-bin.15 post-transport ReturnLanes mismatch in Enum predicate/search execution
 #---
 #
 # Exercises the `fz-g58.25` Enum predicate/search layer:

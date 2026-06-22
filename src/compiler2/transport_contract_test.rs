@@ -2258,6 +2258,35 @@ fn compiler2_transport_plan_does_not_publish_dead_callable_input_boundaries() {
 }
 
 #[test]
+fn compiler2_transport_plan_scopes_enum_predicate_callback_inputs_to_concrete_activations() {
+    let source = include_str!("../../fixtures2/behavior/enum_predicate_search.fz");
+
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new(&tel);
+    world.submit_code(
+        Some("transport_enum_predicate_search_activation_inputs.fz".to_string()),
+        source.to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    drive_until_transport_plan(
+        &mut world,
+        root,
+        "Enum predicate/search callbacks should not merge accumulator shapes across concrete activations",
+    );
+
+    let plan = transport_plan(&world, root);
+    assert!(
+        plan.executable_membership.iter().any(|executable| function_is(
+            &world,
+            executable.activation.function,
+            "reduce_cont",
+            3
+        )),
+        "Enum predicate/search should keep List.reduce_cont/3 in the transport frontier"
+    );
+}
+
+#[test]
 fn compiler2_transport_plan_shares_recursive_return_and_resume_shapes() {
     let source = r#"
 fn pair_down(0), do: {0, 1}
