@@ -4599,6 +4599,56 @@ fn compiler2_native_program_marks_settled_singleton_closure_flows_with_exact_tar
 }
 
 #[test]
+fn compiler2_native_codegen_keeps_callable_boundary_surface_authoritative_for_range_reduce_bridge() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&[], capture.handler());
+    let native = NativeProgramCapture::new();
+    tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures2/behavior/fz_f98_range_reduce_scalar.fz".to_string()),
+        text: include_str!("../../fixtures2/behavior/fz_f98_range_reduce_scalar.fz").to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    let outcome = compiler.drive();
+    if !matches!(outcome, DriveOutcome::Resolved) {
+        let message = capture
+            .last(&["fz", "diag", "error"])
+            .map(|event| metadata_str(&event, "message").to_string())
+            .unwrap_or_else(|| "<missing diagnostic>".to_string());
+        panic!(
+            "Range reduce scalar bridge should settle before native codegen consumes it: {outcome:?}; diagnostic={message}"
+        );
+    }
+
+    let program = native.last(root_id).program;
+    let callable_boundary_targets = program
+        .callable_boundaries
+        .iter()
+        .map(|boundary| boundary.target_fn)
+        .collect::<HashSet<_>>();
+    let hinted_boundary_targets = native_closure_call_targets(&program)
+        .into_iter()
+        .flatten()
+        .filter(|target| callable_boundary_targets.contains(target))
+        .collect::<Vec<_>>();
+    assert!(
+        hinted_boundary_targets.is_empty(),
+        "closure calls to already-boundary-materialized reducer bridges should let the closure boundary own the surface, not re-infer it from direct target hints: {hinted_boundary_targets:?}"
+    );
+
+    jit_compile_native_program(&mut compiler, &program);
+}
+
+#[test]
 fn compiler2_native_program_preserves_variadic_extern_wrappers_and_marshals() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();

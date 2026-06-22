@@ -1627,17 +1627,16 @@ fn derive_callable_entries(
         .expect("ABI-ready callable inventory should read the settled transport plan");
     for boundary in &materialized.transport.boundary_ids {
         let boundary_descr = world.boundary(*boundary);
-        let callable_descr = world.callable(boundary_descr.callable);
         let boundary_facts = transport_plan
             .boundaries
             .get(boundary)
             .unwrap_or_else(|| panic!("transport plan should publish boundary facts for {boundary:?}"));
-        let capture_count = callable_descr.capture_shapes.len();
         let capture_reprs = boundary_lanes_reprs_from_transport(
             &materialized.transport.codegen_seam_facts,
             *boundary,
             boundary_descr.published_capture_lanes.as_ref(),
         );
+        let capture_count = capture_reprs.len();
         let arg_reprs = boundary_lanes_reprs_from_transport(
             &materialized.transport.codegen_seam_facts,
             *boundary,

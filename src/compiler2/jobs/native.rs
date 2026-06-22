@@ -1090,7 +1090,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                         env,
                         &args.iter().map(|arg| arg.value).collect::<Vec<_>>(),
                     );
-                    let direct_target = target.map(|target| self.executable_fns[target]);
+                    let direct_target = self.indirect_closure_call_target_hint(ctx, closure, &callee_value, *target);
                     match dest {
                         ControlDestination::Return => {
                             if let Some(CallReturnFlow::Continue { payload, .. }) = return_flow.as_ref() {
@@ -3070,12 +3070,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
         let ShapeDescr::Callable(callable) = self.world.shape(*shape) else {
             return Ok(None);
         };
-        if self
-            .world
-            .transport_plan(self.root_id)
-            .and_then(|plan| plan.callables.get(callable))
-            .is_some_and(|facts| !facts.boundary_ids.is_empty())
-        {
+        if self.callable_has_boundaries(*callable) {
             return Ok(None);
         }
         let descr = self.world.callable(*callable);
@@ -3094,6 +3089,40 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
             ));
         }
         Ok(Some(lanes.clone()))
+    }
+
+    fn indirect_closure_call_target_hint(
+        &self,
+        ctx: &NativeFnCtx,
+        closure: Var,
+        value: &NativeBoundValue,
+        target: Option<usize>,
+    ) -> Option<FnId> {
+        if ctx.callable_value_boundaries.contains_key(&closure) {
+            return None;
+        }
+        if let NativeBoundValue::Transport { shape, .. } = value
+            && let ShapeDescr::Callable(callable) = self.world.shape(*shape)
+            && self.callable_has_boundaries(*callable)
+        {
+            return None;
+        }
+        let target_fn = target.map(|target| self.executable_fns[target])?;
+        if self
+            .callable_boundaries
+            .iter()
+            .any(|boundary| boundary.target_fn == target_fn)
+        {
+            return None;
+        }
+        Some(target_fn)
+    }
+
+    fn callable_has_boundaries(&self, callable: super::super::transport::CallableId) -> bool {
+        self.world
+            .transport_plan(self.root_id)
+            .and_then(|plan| plan.callables.get(&callable))
+            .is_some_and(|facts| !facts.boundary_ids.is_empty())
     }
 
     fn closure_fast_path_arg_is_structural(&self, value: &NativeBoundValue, shape: ShapeId) -> bool {
