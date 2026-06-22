@@ -3,13 +3,13 @@
   "blocked_by": [],
   "blocks": [],
   "created": "2026-06-18T03:40:59Z",
-  "description": "Native JIT/AOT codegen aborts with 'ReturnLanes arity mismatch in return_lanes__N_M: lanes=N, return_reprs=M' — the lowered ReturnLanes node disagrees with the function's settled return-repr count.\n\nFixtures (fixtures2/behavior):\n- no_parens_do (build/AOT): 'ReturnLanes arity mismatch in return_lanes__13_1: lanes=1, return_reprs=0'.\n- no_parens_keyword (build/AOT): same shape.\n- map_enumerable (build): 'AOT compile failed: codegen: verify main__...' — verify failure in the same return-lanes lowering area.\n\nReconcile the ReturnLanes lane count with the return-repr inventory in native codegen.",
+  "description": "Goal\nFix the current enum_map_family native failure: direct closure fast-path lowering calls a target with more call arguments than its logical parameter surface accepts.\n\nCurrent signal\nThe old ReturnLanes arity-mismatch examples are no longer current: no_parens_do, no_parens_keyword, and map_enumerable pass direct run/build checks. The remaining fixture covered by this bucket is enum_map_family:\n\n  fz2 run fixtures2/behavior/enum_map_family.fz\n\nCurrent failure:\n\n  direct closure target fn 57 cannot receive 2 call args through only 1 logical params\n\nThe interpreter path completes and prints the expected map-family output; the native path panics in src/compiler2/native_codegen/driver.rs during direct closure target validation.\n\nRequired work\n- Narrow the enum_map_family case to the smallest Enum helper/lambda shape that trips the native direct-closure fast path.\n- Fix native lowering so direct closure calls only use the fast path when captured lanes and call arguments match the selected executable's logical parameter surface.\n- If the call is polymorphic or requires a callable boundary, route it through the correct boundary instead of forcing the direct path.\n- Update fixture defers that still mention the old ReturnLanes failure once the native paths pass.\n\nChecks\n- Focused native regression for the minimized direct-closure arity case.\n- cargo run --bin fz2 -- run fixtures2/behavior/enum_map_family.fz matches the golden.\n- cargo test --lib and cargo clippy --workspace --all-targets -- -D warnings.",
   "id": "fz-9i4.7.3",
   "labels": [],
-  "parent": "fz-9i4.7",
+  "parent": "fz-bfh",
   "priority": 2,
   "status": "open",
-  "title": "[BUG] Compiler2 native codegen ReturnLanes arity mismatch",
+  "title": "Native enum_map_family direct closure fast path passes too many args",
   "type": "bug",
-  "updated_at": "2026-06-18T03:40:59Z"
+  "updated_at": "2026-06-22T12:05:01Z"
 }
