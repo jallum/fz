@@ -2,6 +2,8 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-06-22T03:59:33Z",
+  "close_reason": "Fixed in 9c989b39a",
   "created": "2026-06-22T01:29:23Z",
   "description": "After fz-bin.10 fixes transport shape ownership for fixtures2/behavior/enum_predicate_search.fz, the fixture no longer panics with transport shape anchor disagreement. Current post-transport blockers are: fz2 interp fixtures2/behavior/enum_predicate_search.fz exits with 'backend value 8 is unbound'; fz2 run exits with 'compiler2 root 0 JIT compile failed: codegen: ReturnLanes arity mismatch ... lanes=2, return_reprs=0'; fz2 build -o /tmp/enum_predicate_search_bin exits with the same AOT ReturnLanes arity mismatch. Investigate backend value binding and native return-lane projection for Enum predicate/search callbacks before re-enabling the fixture execution modes.",
   "id": "fz-bin.15",
@@ -14,7 +16,7 @@
     }
   ],
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Enum predicate/search execution fails after transport settles",
   "type": "bug",
   "updated_at": "2026-06-22T03:59:33Z"
