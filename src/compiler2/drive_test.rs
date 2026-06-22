@@ -7067,6 +7067,77 @@ end
 }
 
 #[test]
+fn compiler2_dispatch_call_edge_uses_joined_summary_return_type() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&["fz", "diag", "error"], capture.handler());
+    let callsites = CallsiteCapture::new();
+    tel.attach(&["fz", "compiler2", "callsite", "defined"], callsites.handler());
+    let materialized = MaterializedProgramCapture::new();
+    tel.attach(
+        &["fz", "compiler2", "materialized_program", "defined"],
+        materialized.handler(),
+    );
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/membership_operator_compiler2.fz".to_string()),
+        text: include_str!("../../fixtures2/behavior/membership_operator.fz").to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    match compiler.drive() {
+        DriveOutcome::Resolved => {}
+        DriveOutcome::Fatal { job } => panic!(
+            "dispatch arms with different concrete return types should use the joined callsite return, not fail materialization: {job:?}; diag={:?}",
+            capture
+                .last(&["fz", "diag", "error"])
+                .map(|event| metadata_str(&event, "message").to_string())
+        ),
+        other => panic!(
+            "dispatch arms with different concrete return types should resolve through materialization, got {other:?}"
+        ),
+    }
+
+    let program = materialized.last(root_id).program;
+    let summaries = callsites.all();
+    let mut found = false;
+    for (key, executable) in &program.executables {
+        for (callsite, edge) in &executable.call_edges {
+            let CallEdge::Dispatch(dispatch) = &edge.target else {
+                continue;
+            };
+            let Some(summary) = summaries
+                .iter()
+                .rev()
+                .find(|record| record.key.activation == key.activation && record.key.callsite == *callsite)
+            else {
+                continue;
+            };
+            assert!(
+                dispatch.arms.len() > 1,
+                "multi-target summary should materialize as a multi-arm dispatch edge",
+            );
+            assert_eq!(
+                Some(edge.return_ty),
+                summary.summary.return_ty,
+                "dispatch call edges should use the summary-level joined return type, not require every arm return Ty to match",
+            );
+            found = true;
+        }
+    }
+    assert!(
+        found,
+        "membership_operator should exercise at least one materialized dispatch edge",
+    );
+}
+
+#[test]
 fn compiler2_quicksort_root_closes_with_a_finite_recursive_frontier() {
     let tel = ConfiguredTelemetry::new();
     let semantic = SemanticClosedCapture::new();

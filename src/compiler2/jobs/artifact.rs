@@ -604,9 +604,8 @@ fn materialize_direct_call_edge(
         return Ok(None);
     };
     let mut arms = Vec::new();
-    let mut return_ty = None;
     for (body_id, target) in dispatch.targets.into_iter().enumerate() {
-        let (direct, arm_return_ty) = lower_materialized_call_target(
+        let (direct, _arm_return_ty) = lower_materialized_call_target(
             world,
             root_id,
             transport_plan,
@@ -618,22 +617,6 @@ fn materialize_direct_call_edge(
             callsite_args,
             target,
         )?;
-        match return_ty {
-            Some(existing) if existing != arm_return_ty => {
-                return Err(incomplete_semantic_plan(
-                    world,
-                    root_id,
-                    format!(
-                        "multi-target direct callsite {} has inconsistent arm return types {:?} and {:?}",
-                        callsite.as_u32(),
-                        existing,
-                        arm_return_ty
-                    ),
-                ));
-            }
-            Some(_) => {}
-            None => return_ty = Some(arm_return_ty),
-        }
         arms.push(DispatchCallArm {
             body_id: body_id as u32,
             callee: direct.callee,
@@ -641,16 +624,17 @@ fn materialize_direct_call_edge(
             extern_marshals: direct.extern_marshals,
         });
     }
-    let return_ty = return_ty.ok_or_else(|| {
-        incomplete_semantic_plan(
+    if arms.is_empty() {
+        return Err(incomplete_semantic_plan(
             world,
             root_id,
             format!(
                 "multi-target direct callsite {} has no dispatch arms",
                 callsite.as_u32()
             ),
-        )
-    })?;
+        ));
+    }
+    let return_ty = summary.settled_return(world.types_mut());
     Ok(Some(MaterializedCallEdge {
         target: CallEdge::Dispatch(DispatchCallEdge {
             plan: dispatch.plan,
