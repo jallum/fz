@@ -7,9 +7,15 @@
   "id": "fz-bin.14",
   "labels": [],
   "parent": "fz-bin",
+  "comments": [
+    {
+      "text": "Created from fz-bin.9 verification. Current native run reaches Range slice after printing reduce/count/member outputs, then aborts at fz_closure_get_capture_ref with tagged int 0xa as closure self. Current backend interp reaches the second reduce output, then reports backend value 5 is unbound. The boundary-publication ambiguity from fz-bin.9 is no longer observed.",
+      "timestamp": "2026-06-22T01:07:31Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "Returned Range slicer callable is called with captured integer as closure self",
   "type": "bug",
-  "updated_at": "2026-06-22T01:06:20Z"
+  "updated_at": "2026-06-22T01:07:31Z"
 }
