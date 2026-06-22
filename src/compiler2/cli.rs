@@ -22,7 +22,10 @@ use crate::telemetry::{ConfiguredTelemetry, Event, Handler, JsonlBackend, StatsH
 use super::dump::{DumpSpec, install_dump_handlers, max_requested_stage, parse_dump_spec};
 use super::{CodeSubmission, Compiler2, ExecutableNeed, RootId, RootSubmission};
 
-const FZ2_COMPILER_DRIVE_TIMEOUT: Duration = Duration::from_secs(5);
+// Keep the frontdoor drive budget aligned with the slowest fixture path budget;
+// larger Enum protocol frontiers can legitimately take more than five seconds
+// to close before native/backend blockers are observable.
+const FZ2_COMPILER_DRIVE_TIMEOUT: Duration = Duration::from_secs(15);
 
 pub fn run() {
     let raw_args = std::env::args().skip(1).collect::<Vec<_>>();

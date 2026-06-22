@@ -2,9 +2,9 @@
 # purpose: "Enum take/drop/split functions match Elixir, including negative counts and predicate stop points"
 # oracle: oracle.exs
 # timeout.interp_secs: 15
-# defer.build: fz-bin.12 compiler2 drive times out before fz-kot runtime correctness can be observed
-# defer.interp: fz-bin.12 compiler2 drive times out before fz-kot runtime correctness can be observed
-# defer.run: fz-bin.12 compiler2 drive times out before fz-kot runtime correctness can be observed
+# defer.build: fz-bin.16 native codegen panic after compiler drive completes
+# defer.interp: fz-bin.16 backend value unbound after compiler drive completes
+# defer.run: fz-bin.16 native codegen panic after compiler drive completes
 #---
 #
 # Exercises the `fz-g58.26` Enum take/drop/split layer:

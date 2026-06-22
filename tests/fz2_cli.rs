@@ -480,6 +480,30 @@ fn build_executes_map_struct_and_bitstring_fixtures() {
 }
 
 #[test]
+fn build_enum_take_drop_split_gets_past_compiler_drive() {
+    let fixture = "fixtures2/behavior/enum_take_drop_split.fz";
+    let out_bin = unique_temp_path("fz2_enum_take_drop_split_build", ".bin");
+    let build = run_fz2(&[
+        OsStr::new("build"),
+        OsStr::new(fixture),
+        OsStr::new("-o"),
+        out_bin.as_os_str(),
+    ]);
+    let stderr = String::from_utf8_lossy(&build.stderr);
+    assert!(
+        !stderr.contains("exceeded 5000 ms drive limit"),
+        "fz2 build {fixture} should not stop at the old compiler drive budget; stderr={stderr}"
+    );
+    assert!(
+        build.status.success() || stderr.contains("src/compiler2/native_codegen/fn_ctx.rs"),
+        "fz2 build {fixture} should either succeed or expose the post-drive native blocker; stdout={:?} stderr={stderr:?}",
+        String::from_utf8_lossy(&build.stdout)
+    );
+    let _ = remove_file(&out_bin);
+    let _ = remove_file(out_bin.with_extension("bin.o"));
+}
+
+#[test]
 fn run_and_interp_execute_case_and_with_fixtures() {
     let fixture = "fixtures2/behavior/case_with_total.fz";
     let expected = fixture_expected_stdout(fixture);
