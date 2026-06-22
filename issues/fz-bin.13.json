@@ -4,14 +4,15 @@
   "blocks": [
     "fz-bin.3"
   ],
+  "closed_at": "2026-06-22T00:34:58Z",
   "created": "2026-06-22T00:34:06Z",
   "description": "While verifying fz-bin.3, compiler2::port_planner_test::take_positive_reduce_while_has_typed_callback_return flaked under native lowering: BackendStep::List rebuilt a list whose destination transport shape was ShapeDescr::Nothing, then native tried to materialize absent item/tail values. Tuple construction already omitted this shape; list construction must obey the same boundary. Also exact [] values that are absent in transport may still need runtime materialization when embedded in another runtime list.",
   "id": "fz-bin.13",
   "labels": [],
   "parent": "fz-bin",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Backend omits list builds whose transport shape is Nothing",
   "type": "bug",
-  "updated_at": "2026-06-22T00:34:15Z"
+  "updated_at": "2026-06-22T00:34:58Z"
 }
