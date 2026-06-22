@@ -9,9 +9,15 @@
   "id": "fz-f98.5",
   "labels": [],
   "parent": "fz-f98",
+  "comments": [
+    {
+      "text": "Trace update from minimal Enum.take reducer investigation:\n\n- The original excess-job symptom was upstream: recursive activation keys were splitting on exact tuple/list/callable evidence. The effective fix was to make Types::convergence_class recurse through aggregate structure and collapse callable runtime detail for keying while preserving exact evidence downstream.\n- After convergence, the remaining native crash is not a convergence problem. The earliest bad fact observed so far is in transport boundary/source resolution for a first-class reducer input.\n- Minimal signal: fn main() { xs = [1,2,3,4,5]; dbg(Enum.take(xs, 3)) } still reaches backend reducer ClosureCall terms with target: None / return_flow: None, then native emits CallClosure direct_target: None and runtime shifts a split reducer return into a one-lane continuation (fz_closure_get_capture_ref idx=1 expected closure ref).\n- Artifact/native fixes that reconstruct target identity from local shape are the wrong direction. The authoritative decision should flow from upstream callable-flow / transport boundary facts.\n- A useful failing transport assertion shape: for reduce_while_cont/3, inspect the closure-call callee Value position and its callable BoundaryIds. The Ty(0) accumulator activation publishes only BoundaryId(4) on ExecutableInput[2], and that boundary has zero resolutions, while sibling boundaries have resolutions but are not published on this position. That points at missing source-to-boundary resolution for the initial reducer executable input, before artifact/native.\n- A separate ABI fact was fixed earlier: direct call argument encoding must consume caller CallArg transport positions, not callee ExecutableInput positions. Another upstream artifact fact was fixed by deduping duplicate FunctionEntry seam facts by lane.\n\nApply the fz-f98.5 methodology to enum_take_drop_split by first pinning this transport/source-boundary contract with a focused failing test, then tracing why the initial reducer input publication has no source resolutions. Do not make native/codegen choose among callable boundaries.",
+      "timestamp": "2026-06-22T19:18:26Z"
+    }
+  ],
   "priority": 1,
   "status": "in_progress",
   "title": "Apply telemetry-first convergence audit to enum_take_drop_split",
   "type": "bug",
-  "updated_at": "2026-06-22T17:50:55Z"
+  "updated_at": "2026-06-22T19:18:26Z"
 }
