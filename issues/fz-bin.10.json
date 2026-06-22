@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-06-22T00:16:06Z",
@@ -8,8 +8,8 @@
   "labels": [],
   "parent": "fz-bin",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "Transport anchors disagree for Enum predicate dispatch callbacks",
   "type": "bug",
-  "updated_at": "2026-06-22T00:16:06Z"
+  "updated_at": "2026-06-22T01:18:54Z"
 }
