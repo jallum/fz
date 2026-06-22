@@ -1591,6 +1591,24 @@ fn arg_demands_for_summary(
         .get(&callsite)
         .copied()
         .unwrap_or(ExecutableNeed::Value);
+    if summary.targets.len() > 1
+        && let Some(arg) = args.first()
+    {
+        let fallback_ty = summary
+            .targets
+            .iter()
+            .find_map(|target| target.surface_inputs.first().copied())
+            .unwrap_or_else(|| world.types_mut().any());
+        let receiver_demand = boundary_value_flow_demand_at(
+            world,
+            facts,
+            callable_flows,
+            arg.value,
+            RuntimeDemand::whole(),
+            fallback_ty,
+        );
+        out[0].join_assign(&receiver_demand);
+    }
     for target in &summary.targets {
         let records_direct_arg_surfaces = match target.callee {
             super::super::semantic::SelectedCallee::Function(function) => {

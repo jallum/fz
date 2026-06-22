@@ -14,8 +14,9 @@ use crate::parser::lexer::Tok;
 use crate::source::Span;
 
 use super::super::artifact::{
-    AbiReadyCallEdge, AbiReadyExecutable, AbiReadyProgram, AbiValueRepr, CallReturnFlow, CallTarget, CallableEntry,
-    EffectSummary, EmissionReadyCallEdge, EmissionReadyCallableEntry, EmissionReadyExecutable, EmissionReadyProgram,
+    AbiReadyCallEdge, AbiReadyExecutable, AbiReadyProgram, AbiValueRepr, CallEdge, CallReturnFlow, CallTarget,
+    CallableEntry, DirectCallEdge, DispatchCallArm, DispatchCallEdge, DispatchCallMiss, EffectSummary,
+    EmissionReadyCallEdge, EmissionReadyCallableEntry, EmissionReadyExecutable, EmissionReadyProgram,
     ExecutableDispatch, MaterializedCallEdge, MaterializedExecutable, MaterializedExecutableTransport,
     MaterializedProgram, MaterializedTransportPlan,
 };
@@ -570,7 +571,25 @@ fn materialize_direct_call_edge(
     let Some(summary) = world.callsite_summary(&key).cloned() else {
         return Ok(None);
     };
-    let Some(target) = summary.single_target().cloned() else {
+    if let Some(target) = summary.single_target().cloned() {
+        let (direct, return_ty) = lower_materialized_call_target(
+            world,
+            root_id,
+            transport_plan,
+            executable,
+            analysis,
+            need,
+            callsite,
+            dest,
+            callsite_args,
+            target,
+        )?;
+        return Ok(Some(MaterializedCallEdge {
+            target: CallEdge::Direct(direct),
+            return_ty,
+        }));
+    }
+    let Some(dispatch) =
         super::super::callsite_dispatch::dispatch_from_callsite_summary(&summary).map_err(|error| {
             incomplete_semantic_plan(
                 world,
@@ -580,29 +599,66 @@ fn materialize_direct_call_edge(
                     callsite.as_u32()
                 ),
             )
-        })?;
-        return Err(incomplete_semantic_plan(
+        })?
+    else {
+        return Ok(None);
+    };
+    let mut arms = Vec::new();
+    let mut return_ty = None;
+    for (body_id, target) in dispatch.targets.into_iter().enumerate() {
+        let (direct, arm_return_ty) = lower_materialized_call_target(
+            world,
+            root_id,
+            transport_plan,
+            executable,
+            analysis,
+            need,
+            callsite,
+            dest,
+            callsite_args,
+            target,
+        )?;
+        match return_ty {
+            Some(existing) if existing != arm_return_ty => {
+                return Err(incomplete_semantic_plan(
+                    world,
+                    root_id,
+                    format!(
+                        "multi-target direct callsite {} has inconsistent arm return types {:?} and {:?}",
+                        callsite.as_u32(),
+                        existing,
+                        arm_return_ty
+                    ),
+                ));
+            }
+            Some(_) => {}
+            None => return_ty = Some(arm_return_ty),
+        }
+        arms.push(DispatchCallArm {
+            body_id: body_id as u32,
+            callee: direct.callee,
+            return_flow: direct.return_flow,
+            extern_marshals: direct.extern_marshals,
+        });
+    }
+    let return_ty = return_ty.ok_or_else(|| {
+        incomplete_semantic_plan(
             world,
             root_id,
             format!(
-                "materialization reached unresolved multi-target direct callsite {}; dispatch must be settled upstream",
+                "multi-target direct callsite {} has no dispatch arms",
                 callsite.as_u32()
             ),
-        ));
-    };
-    lower_materialized_call_target(
-        world,
-        root_id,
-        transport_plan,
-        executable,
-        analysis,
-        need,
-        callsite,
-        dest,
-        callsite_args,
-        target,
-    )
-    .map(Some)
+        )
+    })?;
+    Ok(Some(MaterializedCallEdge {
+        target: CallEdge::Dispatch(DispatchCallEdge {
+            plan: dispatch.plan,
+            arms,
+            miss: DispatchCallMiss::Unreachable,
+        }),
+        return_ty,
+    }))
 }
 
 fn materialize_closure_call_edge(
@@ -626,7 +682,7 @@ fn materialize_closure_call_edge(
     let Some(target) = summary.single_target().cloned() else {
         return Ok(None);
     };
-    lower_materialized_call_target(
+    let (direct, return_ty) = lower_materialized_call_target(
         world,
         root_id,
         transport_plan,
@@ -637,8 +693,11 @@ fn materialize_closure_call_edge(
         dest,
         callsite_args,
         target,
-    )
-    .map(Some)
+    )?;
+    Ok(Some(MaterializedCallEdge {
+        target: CallEdge::Direct(direct),
+        return_ty,
+    }))
 }
 
 fn lower_materialized_call_target(
@@ -652,7 +711,7 @@ fn lower_materialized_call_target(
     dest: &ControlDestination,
     callsite_args: &HashMap<CallSiteId, Vec<CallArg>>,
     target: CallTargetSummary,
-) -> Result<MaterializedCallEdge, FatalError> {
+) -> Result<(DirectCallEdge<ExecutableKey>, Ty), FatalError> {
     let (callee, extern_marshals) = match target.callee {
         SelectedCallee::Function(function) => {
             let activation = target.activation.clone().ok_or_else(|| {
@@ -694,12 +753,14 @@ fn lower_materialized_call_target(
         SelectedCallee::ProviderBoundary(function) => (CallTarget::ProviderBoundary(function), None),
     };
     let return_flow = call_return_flow(world, root_id, transport_plan, executable, &callee, callsite, dest)?;
-    Ok(MaterializedCallEdge {
-        callee,
-        return_ty: target.settled_return(world.types_mut()),
-        return_flow,
-        extern_marshals,
-    })
+    Ok((
+        DirectCallEdge {
+            callee,
+            return_flow,
+            extern_marshals,
+        },
+        target.settled_return(world.types_mut()),
+    ))
 }
 
 fn call_return_flow(
@@ -1137,10 +1198,7 @@ fn tail_effects(tail: &LoweredTail, call_edges: &HashMap<CallSiteId, Materialize
             effects.calls_opaque = true;
         }
         LoweredTail::DirectCall { callsite, .. } => {
-            if matches!(
-                call_edges.get(callsite).map(|edge| &edge.callee),
-                Some(CallTarget::ProviderBoundary(_))
-            ) {
+            if call_edges.get(callsite).is_some_and(call_edge_calls_provider_boundary) {
                 effects.calls_opaque = true;
             }
         }
@@ -1152,6 +1210,16 @@ fn tail_effects(tail: &LoweredTail, call_edges: &HashMap<CallSiteId, Materialize
         LoweredTail::ClosureCall { .. } => {}
     }
     effects
+}
+
+fn call_edge_calls_provider_boundary(edge: &MaterializedCallEdge) -> bool {
+    match &edge.target {
+        CallEdge::Direct(direct) => matches!(direct.callee, CallTarget::ProviderBoundary(_)),
+        CallEdge::Dispatch(dispatch) => dispatch
+            .arms
+            .iter()
+            .any(|arm| matches!(arm.callee, CallTarget::ProviderBoundary(_))),
+    }
 }
 
 fn settle_effects(
@@ -1168,20 +1236,19 @@ fn settle_effects(
         for (caller_key, executable) in executables.iter_mut() {
             let mut settled = local_effects(&executable.body, &executable.call_edges);
             for edge in executable.call_edges.values() {
-                let Some(callee) = edge.callee.local() else {
-                    continue;
-                };
-                let Some(callee_effects) = snapshot.get(callee).copied() else {
-                    return Err(incomplete_semantic_plan(
-                        world,
-                        root_id,
-                        format!(
-                            "materialized call edge {:?} -> {:?} points outside the closed executable frontier",
-                            caller_key, edge.callee
-                        ),
-                    ));
-                };
-                settled.union_with(callee_effects);
+                for callee in local_call_edge_callees(edge) {
+                    let Some(callee_effects) = snapshot.get(callee).copied() else {
+                        return Err(incomplete_semantic_plan(
+                            world,
+                            root_id,
+                            format!(
+                                "materialized call edge {:?} -> {:?} points outside the closed executable frontier",
+                                caller_key, callee
+                            ),
+                        ));
+                    };
+                    settled.union_with(callee_effects);
+                }
             }
             if executable.effects != settled {
                 executable.effects = settled;
@@ -1191,6 +1258,13 @@ fn settle_effects(
         if !changed {
             return Ok(());
         }
+    }
+}
+
+fn local_call_edge_callees(edge: &MaterializedCallEdge) -> Vec<&ExecutableKey> {
+    match &edge.target {
+        CallEdge::Direct(direct) => direct.callee.local().into_iter().collect(),
+        CallEdge::Dispatch(dispatch) => dispatch.arms.iter().filter_map(|arm| arm.callee.local()).collect(),
     }
 }
 
@@ -1318,10 +1392,8 @@ fn derive_abi_ready_executable(
             (
                 *callsite,
                 AbiReadyCallEdge {
-                    callee: edge.callee.clone(),
+                    target: edge.target.clone(),
                     return_ty: edge.return_ty,
-                    return_flow: edge.return_flow.clone(),
-                    extern_marshals: edge.extern_marshals.clone(),
                 },
             )
         })
@@ -1484,23 +1556,7 @@ fn derive_emission_ready_executable(
         .map(|(callsite, edge)| {
             Ok(EmissionReadyCallEdge {
                 callsite: *callsite,
-                callee: match &edge.callee {
-                    CallTarget::Local(callee) => {
-                        CallTarget::Local(executable_index.get(callee).copied().ok_or_else(|| {
-                            incomplete_semantic_plan(
-                                world,
-                                root_id,
-                                format!(
-                                    "ABI-ready call edge {:?} -> {:?} points outside the executable inventory",
-                                    key, callee
-                                ),
-                            )
-                        })?)
-                    }
-                    CallTarget::ProviderBoundary(function) => CallTarget::ProviderBoundary(*function),
-                },
-                return_flow: edge.return_flow.clone(),
-                extern_marshals: edge.extern_marshals.clone(),
+                target: lower_emission_call_edge_target(world, root_id, executable_index, &key, &edge.target)?,
             })
         })
         .collect::<Result<Vec<_>, _>>()?;
@@ -1518,6 +1574,60 @@ fn derive_emission_ready_executable(
         effects: executable.effects,
         body: executable.body.clone(),
         call_edges,
+    })
+}
+
+fn lower_emission_call_edge_target(
+    world: &World<'_>,
+    root_id: RootId,
+    executable_index: &HashMap<ExecutableKey, usize>,
+    caller: &ExecutableKey,
+    target: &CallEdge<ExecutableKey>,
+) -> Result<CallEdge<usize>, FatalError> {
+    Ok(match target {
+        CallEdge::Direct(direct) => CallEdge::Direct(DirectCallEdge {
+            callee: lower_emission_call_target(world, root_id, executable_index, caller, &direct.callee)?,
+            return_flow: direct.return_flow.clone(),
+            extern_marshals: direct.extern_marshals.clone(),
+        }),
+        CallEdge::Dispatch(dispatch) => CallEdge::Dispatch(DispatchCallEdge {
+            plan: dispatch.plan.clone(),
+            arms: dispatch
+                .arms
+                .iter()
+                .map(|arm| {
+                    Ok(DispatchCallArm {
+                        body_id: arm.body_id,
+                        callee: lower_emission_call_target(world, root_id, executable_index, caller, &arm.callee)?,
+                        return_flow: arm.return_flow.clone(),
+                        extern_marshals: arm.extern_marshals.clone(),
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?,
+            miss: dispatch.miss,
+        }),
+    })
+}
+
+fn lower_emission_call_target(
+    world: &World<'_>,
+    root_id: RootId,
+    executable_index: &HashMap<ExecutableKey, usize>,
+    caller: &ExecutableKey,
+    target: &CallTarget<ExecutableKey>,
+) -> Result<CallTarget<usize>, FatalError> {
+    Ok(match target {
+        CallTarget::Local(callee) => CallTarget::Local(executable_index.get(callee).copied().ok_or_else(|| {
+            incomplete_semantic_plan(
+                world,
+                root_id,
+                format!(
+                    "ABI-ready call edge {:?} -> {:?} points outside the executable inventory",
+                    caller, callee
+                ),
+            )
+        })?),
+        CallTarget::ProviderBoundary(function) => CallTarget::ProviderBoundary(*function),
     })
 }
 

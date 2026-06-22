@@ -12,8 +12,8 @@ use super::value::{
 use super::*;
 use crate::compiler2::transport::{ShapeDescr, ShapeId, TransportPosition, TransportStore};
 use crate::compiler2::{
-    BackendBody, BackendEntry, BackendExecutable, BackendProgram, BackendStep as ProgramStep, BackendTail, CallTarget,
-    ControlDestination, ExecutableDispatch, ValueId,
+    BackendBody, BackendEntry, BackendExecutable, BackendProgram, BackendStep as ProgramStep, BackendTail, CallEdge,
+    CallTarget, ControlDestination, ExecutableDispatch, ValueId,
 };
 use crate::compiler2::{ExecutableNeed, FunctionId};
 use crate::exec::runtime::output_hook_thunk;
@@ -688,33 +688,49 @@ fn step_eval_entry(
                 })),
             }
         }
-        BackendTail::DirectCall {
-            callee,
-            args,
-            extern_marshals,
-            dest,
-            ..
-        } => match callee {
-            CallTarget::Local(callee) => eval_direct_call(
+        BackendTail::DirectCall { target, args, dest, .. } => {
+            let (callee, extern_marshals) = match target {
+                CallEdge::Direct(direct) => (&direct.callee, direct.extern_marshals.as_deref()),
+                CallEdge::Dispatch(dispatch) => {
+                    let receiver = args.first().ok_or_else(|| {
+                        format!(
+                            "backend dispatch callsite in executable {} has no receiver argument",
+                            executable_index
+                        )
+                    })?;
+                    let input_values = env_values(transport, runtime.cur_proc(), &env, &[receiver.value])?;
+                    let body_id =
+                        select_dispatch_body(runtime, types, module, &dispatch.plan, &input_values, &HashMap::new())?
+                            .ok_or_else(|| {
+                            format!(
+                                "backend dispatch callsite in executable {} missed an exhaustive dispatch",
+                                executable_index
+                            )
+                        })?;
+                    let arm = dispatch
+                        .arms
+                        .iter()
+                        .find(|arm| arm.body_id == body_id)
+                        .ok_or_else(|| format!("backend dispatch call arm {} is out of bounds", body_id))?;
+                    (&arm.callee, arm.extern_marshals.as_deref())
+                }
+            };
+            eval_backend_direct_call_edge(
                 runtime,
                 types,
                 transport,
                 tel,
                 program,
                 module,
-                *callee,
+                callee,
                 args,
-                extern_marshals.as_deref(),
+                extern_marshals,
                 env,
                 executable_index,
                 dest.clone(),
                 continuations,
-            ),
-            CallTarget::ProviderBoundary(function) => Err(format!(
-                "unresolved provider-boundary backend call to function {}",
-                function.as_u32()
-            )),
-        },
+            )
+        }
         BackendTail::ClosureCall {
             target,
             callee,
@@ -1416,6 +1432,45 @@ fn delivered_env(
         next.insert(capture.source, env_get_value(env, capture.source)?);
     }
     Ok(next)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn eval_backend_direct_call_edge(
+    runtime: &mut IrInterpRuntime,
+    types: &mut crate::compiler2::Types,
+    transport: &TransportStore,
+    tel: &dyn Telemetry,
+    program: &BackendProgram,
+    module: &Module,
+    callee: &CallTarget<usize>,
+    args: &[crate::compiler2::BackendCallArg],
+    extern_marshals: Option<&[crate::fz_ir::ExternTy]>,
+    env: HashMap<ValueId, BackendBoundValue>,
+    executable_index: usize,
+    dest: ControlDestination,
+    continuations: Vec<BackendContinuation>,
+) -> Result<BackendEvalTransition, String> {
+    match callee {
+        CallTarget::Local(callee) => eval_direct_call(
+            runtime,
+            types,
+            transport,
+            tel,
+            program,
+            module,
+            *callee,
+            args,
+            extern_marshals,
+            env,
+            executable_index,
+            dest,
+            continuations,
+        ),
+        CallTarget::ProviderBoundary(function) => Err(format!(
+            "unresolved provider-boundary backend call to function {}",
+            function.as_u32()
+        )),
+    }
 }
 
 fn eval_direct_call(

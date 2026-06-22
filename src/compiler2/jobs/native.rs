@@ -26,8 +26,8 @@ use crate::source::Span;
 
 use super::super::artifact::{
     AbiValueRepr, BackendBody, BackendClause, BackendEntry, BackendEntryOrigin, BackendExecutable, BackendProgram,
-    BackendStep, BackendTail, CallReturnFlow, CallTarget, EffectSummary, NativeBody, NativeBodyOrigin,
-    NativeCallableBoundary, NativeCallableBoundaryId, NativeEntryAbi, NativeProgram,
+    BackendStep, BackendTail, CallEdge, CallReturnFlow, CallTarget, DispatchCallEdge, EffectSummary, NativeBody,
+    NativeBodyOrigin, NativeCallableBoundary, NativeCallableBoundaryId, NativeEntryAbi, NativeProgram,
     ReusableConsCapture as BackendReusableConsCapture,
 };
 use super::super::body::{ControlDestination, ControlEntryId, Literal, LoweredExtern, ValueId};
@@ -41,6 +41,8 @@ use super::super::transport::{
 };
 use super::super::types::Ty;
 use super::super::world::World;
+
+const UNREACHABLE_CONTROL_ATOM: &str = "compiler2_unreachable_control";
 
 /// Lowers one backend program into the Compiler2-owned native handoff.
 ///
@@ -147,7 +149,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
             .collect::<Vec<_>>();
 
         let mut callable_identity_fns = HashMap::new();
-        for (function, capture_count) in collect_callable_identity_needs(program) {
+        for (function, capture_count) in collect_callable_identity_needs(world, program) {
             callable_identity_fns
                 .entry((function, capture_count))
                 .or_insert_with(|| module.fresh_fn_id());
@@ -968,23 +970,22 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
             BackendTail::Value { value, dest } => {
                 self.lower_value_destination(ctx, executable, entries, entry_fns, env, *value, dest)
             }
-            BackendTail::DirectCall {
-                callee,
-                args,
-                dest,
-                return_flow,
-                ..
-            } => self.lower_direct_call_tail(
-                ctx,
-                executable,
-                entries,
-                entry_fns,
-                env,
-                callee,
-                args,
-                dest,
-                return_flow,
-            ),
+            BackendTail::DirectCall { target, args, dest, .. } => match target {
+                CallEdge::Direct(direct) => self.lower_direct_call_tail(
+                    ctx,
+                    executable,
+                    entries,
+                    entry_fns,
+                    env,
+                    &direct.callee,
+                    args,
+                    dest,
+                    &direct.return_flow,
+                ),
+                CallEdge::Dispatch(dispatch) => {
+                    self.lower_dispatch_call_tail(ctx, executable, entries, entry_fns, env, dispatch, args, dest)
+                }
+            },
             BackendTail::ClosureCall {
                 callee,
                 target,
@@ -1248,6 +1249,145 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
             dest,
             return_flow,
         )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn lower_dispatch_call_tail(
+        &mut self,
+        ctx: &mut NativeFnCtx,
+        executable: &BackendExecutable,
+        entries: &[BackendEntry],
+        entry_fns: &HashMap<ControlEntryId, FnId>,
+        env: &ValueEnv,
+        dispatch: &DispatchCallEdge<usize>,
+        args: &[super::super::artifact::BackendCallArg],
+        dest: &ControlDestination,
+    ) -> Result<(), FatalError> {
+        let receiver = args.first().ok_or_else(|| {
+            incomplete_native_program(
+                self.world,
+                self.root_id,
+                "native dispatch call has no receiver argument",
+            )
+        })?;
+        let input_vars = self.env_runtime_vars(ctx, executable, env, &[receiver.value]);
+        let mut state = DispatchState::new(input_vars, Vec::new(), Vec::new());
+        self.lower_dispatch_call_node(
+            ctx,
+            executable,
+            entries,
+            entry_fns,
+            env,
+            dispatch,
+            args,
+            dest,
+            dispatch.plan.graph.root,
+            &mut state,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn lower_dispatch_call_node(
+        &mut self,
+        ctx: &mut NativeFnCtx,
+        executable: &BackendExecutable,
+        entries: &[BackendEntry],
+        entry_fns: &HashMap<ControlEntryId, FnId>,
+        env: &ValueEnv,
+        dispatch: &DispatchCallEdge<usize>,
+        args: &[super::super::artifact::BackendCallArg],
+        dest: &ControlDestination,
+        node_id: GraphNodeId,
+        state: &mut DispatchState,
+    ) -> Result<(), FatalError> {
+        let Some(node) = dispatch.plan.graph.node(node_id).cloned() else {
+            return Err(incomplete_native_program(
+                self.world,
+                self.root_id,
+                format!("call dispatch graph node {:?} is out of bounds", node_id),
+            ));
+        };
+        match node {
+            DispatchNode::Fail => {
+                ctx.halt_with_atom(self.atom_id(UNREACHABLE_CONTROL_ATOM));
+                Ok(())
+            }
+            DispatchNode::Outcome { outcome, .. } => {
+                let Some(body_id) = dispatch.plan.outcome(outcome).map(|outcome| outcome.body_id) else {
+                    ctx.halt_with_atom(self.atom_id(UNREACHABLE_CONTROL_ATOM));
+                    return Ok(());
+                };
+                let arm = dispatch.arms.iter().find(|arm| arm.body_id == body_id).ok_or_else(|| {
+                    incomplete_native_program(
+                        self.world,
+                        self.root_id,
+                        format!("call dispatch arm {} is out of bounds", body_id),
+                    )
+                })?;
+                let (callee, call_args) =
+                    self.native_direct_call_target_and_args(ctx, executable, env, &arm.callee, args)?;
+                self.emit_native_direct_call_tail(
+                    ctx,
+                    executable,
+                    entries,
+                    entry_fns,
+                    env,
+                    callee,
+                    call_args,
+                    dest,
+                    &arm.return_flow,
+                )
+            }
+            DispatchNode::Test {
+                predicate,
+                on_match,
+                on_miss,
+            } => {
+                let cond = self.lower_dispatch_region(
+                    ctx,
+                    executable,
+                    &dispatch.plan,
+                    predicate.subject,
+                    &predicate.region,
+                    state,
+                )?;
+                let then_b = ctx.builder.block(vec![]);
+                let else_b = ctx.builder.block(vec![]);
+                ctx.set_term(Term::If {
+                    cond,
+                    then_b,
+                    else_b,
+                    origin: BranchOrigin::User,
+                });
+                let mut match_state = state.clone();
+                ctx.current_block = then_b;
+                self.lower_dispatch_call_node(
+                    ctx,
+                    executable,
+                    entries,
+                    entry_fns,
+                    env,
+                    dispatch,
+                    args,
+                    dest,
+                    on_match.target,
+                    &mut match_state,
+                )?;
+                ctx.current_block = else_b;
+                self.lower_dispatch_call_node(
+                    ctx,
+                    executable,
+                    entries,
+                    entry_fns,
+                    env,
+                    dispatch,
+                    args,
+                    dest,
+                    on_miss.target,
+                    state,
+                )
+            }
+        }
     }
 
     fn native_direct_call_target_and_args(
@@ -3648,7 +3788,7 @@ fn bind_local_value(
     env.insert(value, bound);
 }
 
-fn collect_callable_identity_needs(program: &BackendProgram) -> Vec<(FunctionId, usize)> {
+fn collect_callable_identity_needs(world: &World<'_>, program: &BackendProgram) -> Vec<(FunctionId, usize)> {
     let mut seen = HashSet::new();
     let mut out = Vec::new();
     for entry in &program.callable_entries {
@@ -3656,6 +3796,9 @@ fn collect_callable_identity_needs(program: &BackendProgram) -> Vec<(FunctionId,
         if seen.insert((function, entry.capture_count)) {
             out.push((function, entry.capture_count));
         }
+    }
+    for (_, shape) in &program.transport.position_shapes {
+        collect_callable_identity_needs_in_shape(world, *shape, &mut seen, &mut out);
     }
     for executable in &program.executables {
         match &executable.body {
@@ -3671,6 +3814,31 @@ fn collect_callable_identity_needs(program: &BackendProgram) -> Vec<(FunctionId,
         }
     }
     out
+}
+
+fn collect_callable_identity_needs_in_shape(
+    world: &World<'_>,
+    shape: ShapeId,
+    seen: &mut HashSet<(FunctionId, usize)>,
+    out: &mut Vec<(FunctionId, usize)>,
+) {
+    match world.shape(shape) {
+        ShapeDescr::Callable(callable) => {
+            let descr = world.callable(*callable);
+            if let Some(function) = descr.function {
+                let key = (function, descr.capture_lanes.len());
+                if seen.insert(key) {
+                    out.push(key);
+                }
+            }
+        }
+        ShapeDescr::Tuple(fields) => {
+            for field in fields.iter().copied() {
+                collect_callable_identity_needs_in_shape(world, field, seen, out);
+            }
+        }
+        ShapeDescr::Nothing | ShapeDescr::Lane(_) => {}
+    }
 }
 
 fn collect_callable_identity_needs_in_steps(
@@ -3732,19 +3900,51 @@ fn collect_extern_marshals_in_tail(
     tail: &BackendTail,
     out: &mut HashMap<usize, Vec<ExternTy>>,
 ) -> Result<(), FatalError> {
-    if let BackendTail::DirectCall {
-        callee,
-        extern_marshals,
-        ..
-    } = tail
-        && let CallTarget::Local(callee) = callee
+    if let BackendTail::DirectCall { target, .. } = tail {
+        match target {
+            CallEdge::Direct(direct) => {
+                collect_extern_marshals_for_call_target(
+                    world,
+                    root_id,
+                    program,
+                    &direct.callee,
+                    direct.extern_marshals.as_ref(),
+                    out,
+                )?;
+            }
+            CallEdge::Dispatch(dispatch) => {
+                for arm in &dispatch.arms {
+                    collect_extern_marshals_for_call_target(
+                        world,
+                        root_id,
+                        program,
+                        &arm.callee,
+                        arm.extern_marshals.as_ref(),
+                        out,
+                    )?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn collect_extern_marshals_for_call_target(
+    world: &World<'_>,
+    root_id: RootId,
+    program: &BackendProgram,
+    callee: &CallTarget<usize>,
+    extern_marshals: Option<&Vec<ExternTy>>,
+    out: &mut HashMap<usize, Vec<ExternTy>>,
+) -> Result<(), FatalError> {
+    if let CallTarget::Local(callee) = callee
         && matches!(program.executables[*callee].body, BackendBody::Extern { .. })
     {
         let signature = match &program.executables[*callee].body {
             BackendBody::Extern { signature } => signature,
             BackendBody::Clauses { .. } => unreachable!(),
         };
-        let marshals = extern_marshals.clone().unwrap_or_else(|| signature.params.clone());
+        let marshals = extern_marshals.cloned().unwrap_or_else(|| signature.params.clone());
         match out.get(callee) {
             Some(existing) if existing != &marshals => {
                 return Err(incomplete_native_program(

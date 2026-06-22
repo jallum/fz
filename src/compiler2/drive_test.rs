@@ -1,5 +1,8 @@
 use super::{AppliedStep, CodeSubmission, Compiler2, DriveOutcome, ExecutableNeed, Job, RootSubmission};
-use crate::compiler2::artifact::{BackendEntry, BackendTail, CallReturnFlow, MaterializedTransportPlan};
+use crate::compiler2::artifact::{
+    AbiReadyCallEdge, BackendEntry, BackendTail, CallEdge, CallReturnFlow, DirectCallEdge, EmissionReadyCallEdge,
+    MaterializedCallEdge, MaterializedTransportPlan,
+};
 use crate::compiler2::artifact::{NativeBodyOrigin, NativeCallableBoundaryId, NativeEntryAbi, NativeProgram};
 use crate::compiler2::drive::JobEffects;
 use crate::compiler2::transport::{CodegenLaneRepr, CodegenSeam, ExecutableSymbol, ShapeId, TransportPosition};
@@ -2226,7 +2229,7 @@ fn compiler2_materialization_projects_only_the_closed_quicksort_frontier() {
         .call_edges
         .get(&main_callsite)
         .unwrap_or_else(|| panic!("materialized call edge for main/0 -> qsort/1 at {main_callsite:?}"));
-    let qsort_callee = local_call_target(&qsort_edge.callee);
+    let qsort_callee = local_call_target(&materialized_direct_edge(qsort_edge).callee);
     assert_eq!(
         qsort_callee.activation.function, qsort_id,
         "materialization should freeze main/0's qsort/1 call to an exact executable key",
@@ -2512,7 +2515,10 @@ fn compiler2_materialization_freezes_only_the_selected_enum_reduce_path() {
     assert!(
         enum_reduce_edges
             .values()
-            .any(|edge| local_call_target(&edge.callee).activation.function == list_impl_reduce_id),
+            .any(|edge| local_call_target(&materialized_direct_edge(edge).callee)
+                .activation
+                .function
+                == list_impl_reduce_id),
         "materialization should freeze Enum.reduce/3's protocol call to the selected List-backed callback executable",
     );
 
@@ -2526,7 +2532,10 @@ fn compiler2_materialization_freezes_only_the_selected_enum_reduce_path() {
     assert!(
         bridge_edges
             .values()
-            .any(|edge| local_call_target(&edge.callee).activation.function == user_reducer_id),
+            .any(|edge| local_call_target(&materialized_direct_edge(edge).callee)
+                .activation
+                .function
+                == user_reducer_id),
         "materialization should freeze the bridge reducer call to the exact user reducer executable",
     );
     let (_, bridge_plan) = materialized_executable(&program, bridge_reducer_id);
@@ -2591,7 +2600,10 @@ fn compiler2_abi_ready_makes_tuple_field_return_delivery_explicit_for_quicksort(
         qsort_plan
             .call_edges
             .values()
-            .any(|edge| local_call_target(&edge.callee).activation.function == partition_id),
+            .any(|edge| local_call_target(&abi_ready_direct_edge(edge).callee)
+                .activation
+                .function
+                == partition_id),
         "qsort should retain a call edge to partition/4",
     );
     let (_, partition_exec) = abi_ready_executable(&program, partition_id);
@@ -3222,10 +3234,15 @@ fn compiler2_materialization_projects_variadic_extern_signatures_and_callsite_ma
     let open_edge = main_plan
         .call_edges
         .values()
-        .find(|edge| local_call_target(&edge.callee).activation.function == open_id)
+        .find(|edge| {
+            local_call_target(&materialized_direct_edge(edge).callee)
+                .activation
+                .function
+                == open_id
+        })
         .expect("materialized call edge for libc::open");
     assert_eq!(
-        open_edge.extern_marshals.as_deref(),
+        materialized_direct_edge(open_edge).extern_marshals.as_deref(),
         Some(&[ExternTy::CString, ExternTy::I64, ExternTy::I64][..]),
         "materialization should freeze the exact C marshal classes for a variadic extern callsite",
     );
@@ -3391,7 +3408,7 @@ fn compiler2_emission_ready_projects_only_the_closed_quicksort_inventory() {
         .call_edges
         .iter()
         .find(|edge| {
-            program.executables[*local_call_target(&edge.callee)]
+            program.executables[*local_call_target(&emission_ready_direct_edge(edge).callee)]
                 .key
                 .activation
                 .function
@@ -3399,7 +3416,7 @@ fn compiler2_emission_ready_projects_only_the_closed_quicksort_inventory() {
         })
         .expect("emission-ready main/0 -> qsort/1 call edge");
     assert_eq!(
-        program.executables[*local_call_target(&qsort_edge.callee)]
+        program.executables[*local_call_target(&emission_ready_direct_edge(qsort_edge).callee)]
             .key
             .activation
             .function,
@@ -3770,9 +3787,15 @@ fn compiler2_backend_program_keeps_only_the_closed_quicksort_inventory() {
     let (_, main_exec) = backend_executable(&program, main_id);
     let call = backend_direct_call(main_exec, &program, qsort_id);
     match call {
-        BackendTail::DirectCall { callee, args, .. } => {
+        BackendTail::DirectCall { target, args, .. } => {
+            let CallEdge::Direct(direct) = target else {
+                panic!("expected backend direct edge for main/0 -> qsort/1");
+            };
             assert_eq!(
-                program.executables[*local_call_target(callee)].key.activation.function,
+                program.executables[*local_call_target(&direct.callee)]
+                    .key
+                    .activation
+                    .function,
                 qsort_id,
                 "backend direct-call steps should point at settled executable inventory indices",
             );
@@ -3832,15 +3855,22 @@ fn main(), do: inc(41)
     let inc_id = function_id(&functions, "inc", 1);
     let (_, main_exec) = backend_executable(&program, main_id);
     let call = backend_direct_call(main_exec, &program, inc_id);
-    let BackendTail::DirectCall { return_flow, .. } = call else {
+    let BackendTail::DirectCall {
+        target: CallEdge::Direct(target),
+        ..
+    } = call
+    else {
         panic!("main/0 should tail-call inc/1, got {call:?}");
     };
     let CallReturnFlow::Tail {
         callee_return,
         caller_return,
-    } = return_flow
+    } = &target.return_flow
     else {
-        panic!("same-contract direct return should be classified as Tail, got {return_flow:?}");
+        panic!(
+            "same-contract direct return should be classified as Tail, got {:?}",
+            target.return_flow
+        );
     };
     assert_eq!(
         transport_position_shape(&program.transport, callee_return),
@@ -3888,8 +3918,11 @@ fn compiler2_backend_program_carries_return_payload_flow_before_native_lowering(
         };
         for entry in entries {
             match &entry.tail {
-                BackendTail::DirectCall { return_flow, .. } => {
-                    if return_flow_is_distinct_return_payload(&program.transport, return_flow) {
+                BackendTail::DirectCall {
+                    target: CallEdge::Direct(target),
+                    ..
+                } => {
+                    if return_flow_is_distinct_return_payload(&program.transport, &target.return_flow) {
                         saw_return_payload_flow = true;
                     }
                 }
@@ -4093,19 +4126,20 @@ fn compiler2_backend_program_preserves_variadic_extern_wire_classes() {
 
     let call = backend_direct_call(main_exec, &program, open_id);
     match call {
-        BackendTail::DirectCall {
-            callee,
-            args,
-            extern_marshals,
-            ..
-        } => {
+        BackendTail::DirectCall { target, args, .. } => {
+            let CallEdge::Direct(direct) = target else {
+                panic!("expected backend direct edge for libc::open");
+            };
             assert_eq!(
-                program.executables[*local_call_target(callee)].key.activation.function,
+                program.executables[*local_call_target(&direct.callee)]
+                    .key
+                    .activation
+                    .function,
                 open_id,
                 "backend extern calls should still target the settled extern executable inventory slot",
             );
             assert_eq!(
-                extern_marshals.as_deref(),
+                direct.extern_marshals.as_deref(),
                 Some(&[ExternTy::CString, ExternTy::I64, ExternTy::I64][..]),
                 "backend direct-call steps should carry the exact settled C wire classes for a variadic extern site",
             );
@@ -6624,17 +6658,24 @@ fn compiler2_abi_ready_preserves_variadic_extern_marshals_and_integer_lanes() {
     let open_edge = main_plan
         .call_edges
         .values()
-        .find(|edge| local_call_target(&edge.callee).activation.function == open_id)
+        .find(|edge| {
+            local_call_target(&abi_ready_direct_edge(edge).callee)
+                .activation
+                .function
+                == open_id
+        })
         .expect("ABI-ready call edge for libc::open");
     assert_eq!(
-        open_edge.extern_marshals.as_deref(),
+        abi_ready_direct_edge(open_edge).extern_marshals.as_deref(),
         Some(&[ExternTy::CString, ExternTy::I64, ExternTy::I64][..]),
         "ABI-ready call edges should preserve the frozen variadic marshal classes",
     );
     // The return contract is no longer duplicated on the call edge: it is read
     // from the callee's transport-backed return-delivery seam facts.
     assert_eq!(
-        local_call_target(&open_edge.callee).activation.function,
+        local_call_target(&abi_ready_direct_edge(open_edge).callee)
+            .activation
+            .function,
         open_id,
         "the call edge resolves to libc::open, whose transport return facts carry the contract",
     );
@@ -6688,7 +6729,7 @@ fn compiler2_emission_ready_preserves_variadic_extern_inventory_and_marshals() {
         .call_edges
         .iter()
         .find(|edge| {
-            program.executables[*local_call_target(&edge.callee)]
+            program.executables[*local_call_target(&emission_ready_direct_edge(edge).callee)]
                 .key
                 .activation
                 .function
@@ -6696,14 +6737,14 @@ fn compiler2_emission_ready_preserves_variadic_extern_inventory_and_marshals() {
         })
         .expect("emission-ready call edge for libc::open");
     assert_eq!(
-        open_edge.extern_marshals.as_deref(),
+        emission_ready_direct_edge(open_edge).extern_marshals.as_deref(),
         Some(&[ExternTy::CString, ExternTy::I64, ExternTy::I64][..]),
         "emission-ready call edges should preserve the frozen C marshal classes for a variadic extern callsite",
     );
     assert_eq!(
         return_delivery_reprs(
             &program.transport,
-            &program.executables[*local_call_target(&open_edge.callee)]
+            &program.executables[*local_call_target(&emission_ready_direct_edge(open_edge).callee)]
                 .transport
                 .executable,
         ),
@@ -6747,10 +6788,15 @@ fn compiler2_materialization_resolves_auto_variadic_marshals_from_value_types() 
     let printf_edge = main_plan
         .call_edges
         .values()
-        .find(|edge| local_call_target(&edge.callee).activation.function == printf_id)
+        .find(|edge| {
+            local_call_target(&materialized_direct_edge(edge).callee)
+                .activation
+                .function
+                == printf_id
+        })
         .expect("materialized call edge for libc::printf");
     assert_eq!(
-        printf_edge.extern_marshals.as_deref(),
+        materialized_direct_edge(printf_edge).extern_marshals.as_deref(),
         Some(&[ExternTy::CString, ExternTy::I64][..]),
         "a variadic extra integer should resolve to the I64 marshal class without an explicit ascription",
     );
@@ -6891,8 +6937,7 @@ fn compiler2_semantic_analysis_derives_reachable_call_edges_and_tuple_return_nee
 }
 
 #[test]
-#[ignore = "red-worklist: triage + re-enable"]
-fn compiler2_materializes_closed_union_protocol_dispatch_as_local_dispatch() {
+fn compiler2_materializes_closed_union_protocol_dispatch_as_call_edge() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
     tel.attach(&["fz", "diag", "error"], capture.handler());
@@ -6943,13 +6988,13 @@ end
     match compiler.drive() {
         DriveOutcome::Resolved => {}
         DriveOutcome::Fatal { job } => panic!(
-            "closed-union protocol receivers should materialize as local dispatch instead of dying with a missing direct edge: {job:?}; diag={:?}",
+            "closed-union protocol receivers should materialize as a dispatch call edge instead of dying with a missing direct edge: {job:?}; diag={:?}",
             capture
                 .last(&["fz", "diag", "error"])
                 .map(|event| metadata_str(&event, "message").to_string())
         ),
         other => panic!(
-            "closed-union protocol receivers should materialize as local dispatch instead of dying with a missing direct edge: {other:?}"
+            "closed-union protocol receivers should materialize as a dispatch call edge instead of dying with a missing direct edge: {other:?}"
         ),
     }
 
@@ -6981,52 +7026,43 @@ end
     let LoweredBody::Clauses { entries, .. } = &describe_exec.body else {
         panic!("describe/1 should materialize as clauses");
     };
-    let dispatch = entries
+    let callsite = entries
         .iter()
         .find_map(|entry| match &entry.tail {
-            LoweredTail::Dispatch { dispatch, .. } => Some(dispatch),
+            LoweredTail::DirectCall { callsite, .. } => Some(*callsite),
             _ => None,
         })
-        .unwrap_or_else(|| panic!("materialized describe/1 should contain a dispatch tail"));
+        .unwrap_or_else(|| panic!("materialized describe/1 should keep its original direct-call tail"));
+    let edge = describe_exec
+        .call_edges
+        .get(&callsite)
+        .unwrap_or_else(|| panic!("materialized call edge for describe/1 callsite {}", callsite.as_u32()));
+    let CallEdge::Dispatch(dispatch) = &edge.target else {
+        panic!("closed-union protocol receiver should materialize as a dispatch call edge");
+    };
     assert_eq!(
-        dispatch.arm_entries.len(),
+        dispatch.plan.input_count, 1,
+        "protocol call dispatch should test the receiver input only",
+    );
+    assert_eq!(
+        dispatch.arms.len(),
         2,
-        "closed-union protocol dispatch should materialize one direct arm per viable impl",
+        "closed-union protocol dispatch should materialize one call edge arm per viable impl",
     );
     let arm_targets = dispatch
-        .arm_entries
+        .arms
         .iter()
-        .map(|entry_id| {
-            let entry = &entries[entry_id.as_u32() as usize];
-            let LoweredTail::DirectCall { callsite, .. } = entry.tail else {
-                panic!("protocol dispatch arm entry should lower to one direct call");
-            };
-            describe_exec
-                .call_edges
-                .get(&callsite)
-                .unwrap_or_else(|| {
-                    panic!(
-                        "materialized call edge for synthetic protocol arm {}",
-                        callsite.as_u32()
-                    )
-                })
-                .callee
+        .map(|arm| {
+            arm.callee
                 .local()
-                .expect("synthetic protocol arms should target local executables")
+                .expect("protocol dispatch arms should target local executables")
                 .activation
                 .function
         })
         .collect::<HashSet<_>>();
     assert_eq!(
         arm_targets, expected_targets,
-        "the synthetic arm entries should target the two settled impl executables from the semantic summary",
-    );
-    assert!(
-        matches!(
-            entries[dispatch.miss_entry.as_u32() as usize].tail,
-            LoweredTail::Halt { .. }
-        ),
-        "protocol dispatch should keep an explicit no-match halt entry instead of an unlowerable stub",
+        "the dispatch call-edge arms should target the two settled impl executables from the semantic summary",
     );
 }
 
@@ -10939,6 +10975,27 @@ fn local_call_target<T>(target: &CallTarget<T>) -> &T {
     }
 }
 
+fn materialized_direct_edge(edge: &MaterializedCallEdge) -> &DirectCallEdge<ExecutableKey> {
+    match &edge.target {
+        CallEdge::Direct(direct) => direct,
+        CallEdge::Dispatch(_) => panic!("expected materialized direct call edge, got dispatch"),
+    }
+}
+
+fn abi_ready_direct_edge(edge: &AbiReadyCallEdge) -> &DirectCallEdge<ExecutableKey> {
+    match &edge.target {
+        CallEdge::Direct(direct) => direct,
+        CallEdge::Dispatch(_) => panic!("expected ABI-ready direct call edge, got dispatch"),
+    }
+}
+
+fn emission_ready_direct_edge(edge: &EmissionReadyCallEdge) -> &DirectCallEdge<usize> {
+    match &edge.target {
+        CallEdge::Direct(direct) => direct,
+        CallEdge::Dispatch(_) => panic!("expected emission-ready direct call edge, got dispatch"),
+    }
+}
+
 fn materialized_executable(
     program: &MaterializedProgram,
     function: FunctionId,
@@ -11018,8 +11075,14 @@ fn backend_direct_call_in_entry<'a>(
 ) -> Option<&'a BackendTail> {
     let entry = &entries[entry_id.as_u32() as usize];
     match &entry.tail {
-        BackendTail::DirectCall { callee: target, .. }
-            if program.executables[*local_call_target(target)].key.activation.function == callee =>
+        BackendTail::DirectCall {
+            target: CallEdge::Direct(target),
+            ..
+        } if program.executables[*local_call_target(&target.callee)]
+            .key
+            .activation
+            .function
+            == callee =>
         {
             Some(&entry.tail)
         }

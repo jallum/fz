@@ -130,10 +130,41 @@ pub struct MaterializedExecutable {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MaterializedCallEdge {
-    pub callee: CallTarget<ExecutableKey>,
+    pub target: CallEdge<ExecutableKey>,
     pub return_ty: Ty,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CallEdge<T> {
+    Direct(DirectCallEdge<T>),
+    Dispatch(DispatchCallEdge<T>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DirectCallEdge<T> {
+    pub callee: CallTarget<T>,
     pub return_flow: CallReturnFlow,
     pub extern_marshals: Option<Vec<ExternTy>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DispatchCallEdge<T> {
+    pub(crate) plan: PatternDispatchPlan<Ty>,
+    pub arms: Vec<DispatchCallArm<T>>,
+    pub miss: DispatchCallMiss,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DispatchCallArm<T> {
+    pub body_id: u32,
+    pub callee: CallTarget<T>,
+    pub return_flow: CallReturnFlow,
+    pub extern_marshals: Option<Vec<ExternTy>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DispatchCallMiss {
+    Unreachable,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -308,10 +339,8 @@ pub struct AbiReadyExecutable {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AbiReadyCallEdge {
-    pub callee: CallTarget<ExecutableKey>,
+    pub target: CallEdge<ExecutableKey>,
     pub return_ty: Ty,
-    pub return_flow: CallReturnFlow,
-    pub extern_marshals: Option<Vec<ExternTy>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -345,9 +374,7 @@ pub struct EmissionReadyExecutable {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EmissionReadyCallEdge {
     pub callsite: CallSiteId,
-    pub callee: CallTarget<usize>,
-    pub return_flow: CallReturnFlow,
-    pub extern_marshals: Option<Vec<ExternTy>>,
+    pub target: CallEdge<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -600,11 +627,9 @@ pub enum BackendTail {
     DirectCall {
         value: ValueId,
         callsite: CallSiteId,
-        callee: CallTarget<usize>,
+        target: CallEdge<usize>,
         args: Vec<BackendCallArg>,
         dest: ControlDestination,
-        return_flow: CallReturnFlow,
-        extern_marshals: Option<Vec<ExternTy>>,
     },
     ClosureCall {
         value: ValueId,

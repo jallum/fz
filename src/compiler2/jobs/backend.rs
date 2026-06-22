@@ -17,7 +17,7 @@ use crate::source::Span;
 
 use super::super::artifact::{
     BackendBody, BackendCallArg, BackendCallableEntry, BackendClause, BackendEntry, BackendEntryOrigin,
-    BackendExecutable, BackendProgram, BackendStep, BackendTail, MaterializedTransportPlan,
+    BackendExecutable, BackendProgram, BackendStep, BackendTail, CallEdge, DirectCallEdge, MaterializedTransportPlan,
 };
 use super::super::body::{
     CallArg, CallSiteId, ControlEntryId, ControlEntryOrigin, LoweredBody, LoweredClause, LoweredEntry, LoweredStep,
@@ -416,11 +416,9 @@ impl<'a, 'plan, 'tel> BackendLowerer<'a, 'plan, 'tel> {
                 BackendTail::DirectCall {
                     value: *value,
                     callsite: *callsite,
-                    callee: edge.callee,
+                    target: edge.target.clone(),
                     args: self.lower_call_args(executable, *callsite, None, args)?,
                     dest: dest.clone(),
-                    return_flow: edge.return_flow.clone(),
-                    extern_marshals: edge.extern_marshals.clone(),
                 }
             }
             LoweredTail::ClosureCall {
@@ -435,10 +433,12 @@ impl<'a, 'plan, 'tel> BackendLowerer<'a, 'plan, 'tel> {
                     value: *value,
                     callsite: *callsite,
                     callee: *callee,
-                    target: edge.and_then(|edge| edge.callee.copied_local()),
+                    target: edge
+                        .and_then(direct_call_edge)
+                        .and_then(|edge| edge.callee.copied_local()),
                     args: self.lower_call_args(executable, *callsite, Some(*callee), args)?,
                     dest: dest.clone(),
-                    return_flow: edge.map(|edge| edge.return_flow.clone()),
+                    return_flow: edge.and_then(direct_call_edge).map(|edge| edge.return_flow.clone()),
                 }
             }
             LoweredTail::If {
@@ -539,6 +539,13 @@ fn call_edge(
     executable.call_edges.iter().find(|edge| edge.callsite == callsite)
 }
 
+fn direct_call_edge(edge: &super::super::artifact::EmissionReadyCallEdge) -> Option<&DirectCallEdge<usize>> {
+    match &edge.target {
+        CallEdge::Direct(direct) => Some(direct),
+        CallEdge::Dispatch(_) => None,
+    }
+}
+
 fn collect_backend_atom_names(world: &mut World<'_>, executables: &[BackendExecutable]) -> Vec<String> {
     let mut seen = HashSet::new();
     let mut atoms = Vec::new();
@@ -629,6 +636,13 @@ fn collect_step_atoms(
 
 fn collect_tail_atoms(world: &mut World<'_>, tail: &BackendTail, seen: &mut HashSet<String>, atoms: &mut Vec<String>) {
     match tail {
+        BackendTail::DirectCall {
+            target: CallEdge::Dispatch(dispatch),
+            ..
+        } => {
+            collect_dispatch_atoms(world, &dispatch.plan, seen, atoms);
+            push_atom(seen, atoms, UNREACHABLE_CONTROL_ATOM);
+        }
         BackendTail::Dispatch { dispatch, .. } => collect_dispatch_atoms(world, &dispatch.plan, seen, atoms),
         BackendTail::Receive(receive) => collect_dispatch_atoms(world, &receive.dispatch, seen, atoms),
         BackendTail::Halt { atom } => push_atom(seen, atoms, atom),
