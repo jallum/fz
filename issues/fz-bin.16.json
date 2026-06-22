@@ -1,6 +1,8 @@
 {
   "assignee": "Jason Allum",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-dh8"
+  ],
   "blocks": [],
   "created": "2026-06-22T01:38:16Z",
   "description": "After fz-bin.12 raises the fz2 frontdoor drive budget enough for fixtures2/behavior/enum_take_drop_split.fz to pass semantic closure, the fixture exposes downstream execution failures. fz2 interp prints four [] lines then exits with 'backend value 0 is unbound'. fz2 run reaches native codegen and panics at src/compiler2/native_codegen/fn_ctx.rs:827: index out of bounds: len is 2 but index is 2. fz2 build reaches the same native codegen panic after the warning. Investigate backend/native execution for Enum take/drop/split before re-enabling the fixture.",
@@ -11,5 +13,5 @@
   "status": "in_progress",
   "title": "Enum take/drop/split execution fails after compiler drive completes",
   "type": "bug",
-  "updated_at": "2026-06-22T03:59:58Z"
+  "updated_at": "2026-06-22T04:24:52Z"
 }
