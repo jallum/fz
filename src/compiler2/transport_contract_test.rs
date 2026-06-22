@@ -1760,6 +1760,107 @@ fn main(), do: make()
     assert_no_unreachable_callable_facts(&world, &plan);
 }
 
+#[test]
+fn compiler2_transport_plan_publishes_tuple_returned_callable_captured_by_resume() {
+    let source = r#"
+fn make(a, b, c), do: {:ok, a + b + c, fn (x) -> a + b + c + x end}
+
+fn main() do
+  {:ok, n, f} = make(1, 10, 2)
+  dbg(n)
+  f.(3)
+end
+"#;
+
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new(&tel);
+    world.submit_code(
+        Some("transport_tuple_returned_callable_resume_capture.fz".to_string()),
+        source.to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    drive_until_transport_plan(
+        &mut world,
+        root,
+        "tuple-returned callable captured by a later resume should derive a transport plan",
+    );
+
+    let plan = transport_plan(&world, root);
+    let main = executable_for(&world, &plan, "main", 0);
+    let (resume_position, resume_shape) = plan
+        .positions
+        .iter()
+        .find(|(position, shape)| {
+            matches!(
+                position,
+                TransportPosition::ResumePayload {
+                    executable,
+                    callsite: Some(_),
+                    ..
+                } if executable == &main
+            ) && shape_contains_callable(&world, **shape)
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "main should resume the make/3 tuple return with the callable field still present: {:?}",
+                plan.positions
+            )
+        });
+    let callable = first_callable_in_shape(&world, *resume_shape)
+        .expect("the resumed tuple shape should contain the returned callable field");
+    let facts = plan
+        .callables
+        .get(&callable)
+        .unwrap_or_else(|| panic!("returned callable should have facts: {:?}", plan.callables));
+    let boundary = facts
+        .boundary_ids
+        .iter()
+        .copied()
+        .map(|boundary| (boundary, world.boundary(boundary)))
+        .find(|(_, boundary)| boundary.callable == callable)
+        .unwrap_or_else(|| {
+            panic!(
+                "the tuple-returned callable should publish a boundary at the resume seam: {:?}",
+                plan.callables
+            )
+        });
+    assert!(
+        plan.boundaries
+            .get(&boundary.0)
+            .is_some_and(|facts| facts.publications.iter().any(|position| position == resume_position)),
+        "the callable boundary must record the resume payload publication that carries the boxed closure pointer; \
+         resume_position={resume_position:?}; boundary={:?}; boundary_facts={:?}; seam_facts={:?}",
+        boundary.1,
+        plan.boundaries.get(&boundary.0),
+        plan.codegen_seam_facts,
+    );
+    let TransportPosition::ResumePayload {
+        callsite: Some(callsite),
+        entry,
+        ..
+    } = resume_position
+    else {
+        panic!("checked above")
+    };
+    assert_seam_fact(
+        &plan,
+        |seam| {
+            matches!(
+                seam,
+                CodegenSeam::ContinuationEntry {
+                    executable,
+                    callsite: candidate_callsite,
+                    entry: candidate_entry,
+                } if executable == &main && candidate_callsite == callsite && candidate_entry == entry
+            )
+        },
+        None,
+        boundary.1.published_value_lane,
+        CodegenLaneRepr::ValueRef,
+        "a tuple-returned callable captured by a later resume must enter the continuation as the published closure pointer",
+    );
+}
+
 /// fz-hwn.19.2.4.15: a protocol-dispatched `defimpl` that returns an escaped
 /// continuation capturing a callable used to reach transport with that callable's
 /// direct-call surface erased.
@@ -3460,6 +3561,14 @@ fn shape_contains_callable(world: &World<'_>, shape: ShapeId) -> bool {
         ShapeDescr::Callable(_) => true,
         ShapeDescr::Tuple(items) => items.iter().any(|item| shape_contains_callable(world, *item)),
         ShapeDescr::Nothing | ShapeDescr::Lane(_) => false,
+    }
+}
+
+fn first_callable_in_shape(world: &World<'_>, shape: ShapeId) -> Option<super::transport::CallableId> {
+    match shape_descr(world, shape) {
+        ShapeDescr::Callable(callable) => Some(*callable),
+        ShapeDescr::Tuple(items) => items.iter().find_map(|item| first_callable_in_shape(world, *item)),
+        ShapeDescr::Nothing | ShapeDescr::Lane(_) => None,
     }
 }
 

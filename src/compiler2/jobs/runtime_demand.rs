@@ -728,7 +728,10 @@ fn collect_entry_external_demands(
     let capture_demands = entry
         .captures
         .iter()
-        .map(|capture| live.remove(capture).unwrap_or(RuntimeDemand::ignore()))
+        .map(|capture| {
+            let demand = live.remove(capture).unwrap_or(RuntimeDemand::ignore());
+            continuation_capture_demand(world, facts, callable_flows, *capture, demand)
+        })
         .collect::<Vec<_>>();
     record_entry_capture_demands(out, entry_id, &capture_demands);
     for (capture, demand) in entry.captures.iter().zip(capture_demands) {
@@ -1048,6 +1051,177 @@ fn upgrade_joined_delivered_callable_value_demand(
         demand.callable.escape = true;
     }
     demand
+}
+
+fn continuation_capture_demand(
+    world: &mut World<'_>,
+    facts: &ExecutableFacts,
+    callable_flows: &mut CallableFlowBuilder,
+    capture: ValueId,
+    mut demand: RuntimeDemand,
+) -> RuntimeDemand {
+    if demand.is_callable()
+        && !facts.local_callable_producers.contains_key(&capture)
+        && value_is_callable(world, facts, capture)
+        && value_depends_on_callsite_return(facts, capture)
+        && value_is_closure_callee(&facts.body, capture)
+    {
+        demand.callable.escape = true;
+    }
+    record_first_class_boundary_demand(world, facts, callable_flows, capture, demand, None)
+}
+
+fn value_is_closure_callee(body: &LoweredBody, value: ValueId) -> bool {
+    let LoweredBody::Clauses { clauses, entries, .. } = body else {
+        return false;
+    };
+    clauses
+        .iter()
+        .any(|clause| tail_closure_callee(&clause.entry, entries, value))
+        || entries
+            .iter()
+            .any(|entry| matches!(&entry.tail, LoweredTail::ClosureCall { callee, .. } if *callee == value))
+}
+
+fn tail_closure_callee(entry_id: &ControlEntryId, entries: &[LoweredEntry], value: ValueId) -> bool {
+    entries
+        .get(entry_id.as_u32() as usize)
+        .is_some_and(|entry| matches!(&entry.tail, LoweredTail::ClosureCall { callee, .. } if *callee == value))
+}
+
+fn value_depends_on_callsite_return(facts: &ExecutableFacts, value: ValueId) -> bool {
+    let mut seen = HashSet::new();
+    value_depends_on_callsite_return_inner(facts, value, &mut seen)
+}
+
+fn value_depends_on_callsite_return_inner(
+    facts: &ExecutableFacts,
+    value: ValueId,
+    seen: &mut HashSet<ValueId>,
+) -> bool {
+    if !seen.insert(value) {
+        return false;
+    }
+    for join in facts.delivered_value_joins.values().filter(|join| join.value == value) {
+        for source in &join.sources {
+            match source {
+                DeliveredValueSource::CallsiteReturn(_) => return true,
+                DeliveredValueSource::LocalValue(source) => {
+                    if value_depends_on_callsite_return_inner(facts, *source, seen) {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    let LoweredBody::Clauses { entries, .. } = &facts.body else {
+        return false;
+    };
+    entries
+        .iter()
+        .flat_map(|entry| entry.steps.iter())
+        .any(|step| step_value_depends_on_callsite_return(facts, step, value, seen))
+}
+
+fn step_value_depends_on_callsite_return(
+    facts: &ExecutableFacts,
+    step: &LoweredStep,
+    value: ValueId,
+    seen: &mut HashSet<ValueId>,
+) -> bool {
+    let mut depends = |source| value_depends_on_callsite_return_inner(facts, source, seen);
+    match step {
+        LoweredStep::Tuple { value: defined, items } if *defined == value => items.iter().copied().any(depends),
+        LoweredStep::List {
+            value: defined,
+            items,
+            tail,
+        } if *defined == value => items.iter().copied().any(&mut depends) || tail.is_some_and(depends),
+        LoweredStep::Map {
+            value: defined,
+            entries,
+        } if *defined == value => entries.iter().any(|(key, field)| depends(key.value) || depends(*field)),
+        LoweredStep::MapUpdate {
+            value: defined,
+            base,
+            entries,
+        } if *defined == value => {
+            depends(*base) || entries.iter().any(|(key, field)| depends(key.value) || depends(*field))
+        }
+        LoweredStep::Struct {
+            value: defined, fields, ..
+        } if *defined == value => fields.iter().any(|(_, field)| depends(*field)),
+        LoweredStep::Bitstring { value: defined, fields } if *defined == value => fields.iter().any(|field| {
+            depends(field.value)
+                || matches!(
+                    field.spec.size,
+                    Some(super::super::body::LoweredBitSize::Value(size)) if depends(size)
+                )
+        }),
+        LoweredStep::BinaryOp {
+            value: defined,
+            left,
+            right,
+            ..
+        } if *defined == value => depends(*left) || depends(*right),
+        LoweredStep::UnaryOp {
+            value: defined, input, ..
+        } if *defined == value => depends(*input),
+        LoweredStep::MapIndex {
+            value: defined,
+            base,
+            key,
+        } if *defined == value => depends(*base) || depends(key.value),
+        LoweredStep::FieldAccess {
+            value: defined, base, ..
+        } if *defined == value => depends(*base),
+        LoweredStep::RequireMapValue {
+            value: defined, source, ..
+        } if *defined == value => depends(*source),
+        LoweredStep::TupleField {
+            value: defined, source, ..
+        } if *defined == value => depends(*source),
+        LoweredStep::SplitList { source, head, tail } if *head == value || *tail == value => depends(*source),
+        LoweredStep::BitstringInit { reader, source } if *reader == value => depends(*source),
+        LoweredStep::BitstringRead {
+            ok,
+            value: read_value,
+            next_reader,
+            reader,
+            spec,
+            ..
+        } if *ok == value || *read_value == value || *next_reader == value => {
+            depends(*reader)
+                || matches!(
+                    spec.size,
+                    Some(super::super::body::LoweredBitSize::Value(size)) if depends(size)
+                )
+        }
+        LoweredStep::Const { .. }
+        | LoweredStep::FunctionRef { .. }
+        | LoweredStep::Lambda { .. }
+        | LoweredStep::AssertLiteral { .. }
+        | LoweredStep::AssertStruct { .. }
+        | LoweredStep::AssertTuple { .. }
+        | LoweredStep::AssertEmptyList { .. }
+        | LoweredStep::AssertSame { .. }
+        | LoweredStep::AssertBitstringDone { .. }
+        | LoweredStep::Tuple { .. }
+        | LoweredStep::List { .. }
+        | LoweredStep::Map { .. }
+        | LoweredStep::MapUpdate { .. }
+        | LoweredStep::Struct { .. }
+        | LoweredStep::Bitstring { .. }
+        | LoweredStep::BinaryOp { .. }
+        | LoweredStep::UnaryOp { .. }
+        | LoweredStep::MapIndex { .. }
+        | LoweredStep::FieldAccess { .. }
+        | LoweredStep::RequireMapValue { .. }
+        | LoweredStep::TupleField { .. }
+        | LoweredStep::SplitList { .. }
+        | LoweredStep::BitstringInit { .. }
+        | LoweredStep::BitstringRead { .. } => false,
+    }
 }
 
 fn record_delivered_call_return_demands(
@@ -1857,13 +2031,21 @@ fn record_first_class_boundary_demand(
             opaque: demand.callable.opaque,
             escape: demand.callable.escape,
         });
-        if let Some(ty) = boundary_ty.or_else(|| facts.analysis.value_types.get(&value).copied()) {
+        let may_seed_from_value_type =
+            demand.callable.resolved.is_empty() || facts.local_callable_producers.contains_key(&value);
+        let type_seed = boundary_ty.or_else(|| {
+            may_seed_from_value_type
+                .then(|| facts.analysis.value_types.get(&value).copied())
+                .flatten()
+        });
+        if let Some(ty) = type_seed {
             ground_first_class_callable_surface(world, &mut recorded, ty);
         }
         if boundary_ty.is_none() {
             // No boundary type to ground against: seed the escaping surfaces from
             // the value's concrete call shapes. The publication surfaces are
             // grounded once, downstream, in `ground_dispatch_surfaces`.
+            recorded.callable.resolved.extend(demand.callable.resolved.clone());
             recorded.callable.resolved.extend(callable_flows.direct_surfaces(value));
         }
         callable_flows.record_first_class_demand(facts, value, &recorded);

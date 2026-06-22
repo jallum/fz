@@ -1252,12 +1252,21 @@ fn derive_codegen_seam_facts(
                             repr: CodegenLaneRepr::ValueRef,
                         });
                     }
+                    TransportPosition::ExecutableReturn { executable } => {
+                        out.push(CodegenSeamFact {
+                            seam: CodegenSeam::ReturnDelivery {
+                                executable: executable.clone(),
+                            },
+                            shape: None,
+                            lane: descr.published_value_lane,
+                            repr: CodegenLaneRepr::ValueRef,
+                        });
+                    }
                     TransportPosition::ResumePayload {
                         executable,
                         callsite: None,
                         entry,
-                    }
-                    | TransportPosition::EntryCapture { executable, entry, .. } => {
+                    } => {
                         out.push(CodegenSeamFact {
                             seam: CodegenSeam::BlockParam {
                                 executable: executable.clone(),
@@ -1268,9 +1277,32 @@ fn derive_codegen_seam_facts(
                             repr: CodegenLaneRepr::ValueRef,
                         });
                     }
-                    TransportPosition::ExecutableReturn { .. }
-                    | TransportPosition::CallArg { .. }
-                    | TransportPosition::Value { .. } => {}
+                    TransportPosition::EntryCapture { executable, entry, .. } => {
+                        out.push(CodegenSeamFact {
+                            seam: CodegenSeam::BlockParam {
+                                executable: executable.clone(),
+                                entry: *entry,
+                            },
+                            shape: None,
+                            lane: descr.published_value_lane,
+                            repr: CodegenLaneRepr::ValueRef,
+                        });
+                        if let Some(callsite) = executable_context_for_symbol(contexts, executable, world.types())
+                            .and_then(|context| resume_callsite_for_entry(context, *entry))
+                        {
+                            out.push(CodegenSeamFact {
+                                seam: CodegenSeam::ContinuationEntry {
+                                    executable: executable.clone(),
+                                    callsite,
+                                    entry: *entry,
+                                },
+                                shape: None,
+                                lane: descr.published_value_lane,
+                                repr: CodegenLaneRepr::ValueRef,
+                            });
+                        }
+                    }
+                    TransportPosition::CallArg { .. } | TransportPosition::Value { .. } => {}
                 }
             }
         }
@@ -2081,7 +2113,16 @@ fn project_source(
             None => SourceShape::Unknown,
         },
         TransportSource::CallsiteReturn(callsite) => project_callsite_return(
-            world, contexts, &mut local, executable, context, callsite, demand, cycle, memo,
+            world,
+            contexts,
+            &mut local,
+            executable,
+            context,
+            callsite,
+            demand,
+            publication,
+            cycle,
+            memo,
         ),
         TransportSource::Join(sources) => project_sources(
             world,
@@ -2097,10 +2138,30 @@ fn project_source(
             memo,
         ),
         TransportSource::TupleValue(items) => project_tuple_value(
-            world, contexts, &mut local, executable, context, ty, demand, &items, cycle, memo,
+            world,
+            contexts,
+            &mut local,
+            executable,
+            context,
+            ty,
+            demand,
+            &items,
+            publication,
+            cycle,
+            memo,
         ),
         TransportSource::TupleField { source, index } => project_tuple_field(
-            world, contexts, &mut local, executable, context, demand, source, index, cycle, memo,
+            world,
+            contexts,
+            &mut local,
+            executable,
+            context,
+            demand,
+            source,
+            index,
+            publication,
+            cycle,
+            memo,
         ),
         TransportSource::CallableValue(producer) => project_callable_value(
             world,
@@ -2338,6 +2399,7 @@ fn project_tuple_value(
     ty: Ty,
     demand: &RuntimeDemand,
     items: &[ValueId],
+    publication: Option<TransportPosition>,
     cycle: &mut Cycle,
     memo: &mut ProjectionMemo,
 ) -> SourceShape {
@@ -2363,7 +2425,7 @@ fn project_tuple_value(
             item_ty,
             field_demand,
             TransportSource::LocalValue(item),
-            None,
+            publication.clone(),
             cycle,
             memo,
         ) {
@@ -2389,6 +2451,7 @@ fn project_tuple_field(
     demand: &RuntimeDemand,
     source: ValueId,
     index: usize,
+    publication: Option<TransportPosition>,
     cycle: &mut Cycle,
     memo: &mut ProjectionMemo,
 ) -> SourceShape {
@@ -2407,7 +2470,7 @@ fn project_tuple_field(
         parent_ty,
         &parent_demand,
         TransportSource::LocalValue(source),
-        None,
+        publication,
         cycle,
         memo,
     ) {
@@ -2468,6 +2531,7 @@ fn project_callsite_return(
     context: &ExecutableContext,
     callsite: CallSiteId,
     demand: &RuntimeDemand,
+    publication: Option<TransportPosition>,
     cycle: &mut Cycle,
     memo: &mut ProjectionMemo,
 ) -> SourceShape {
@@ -2507,7 +2571,7 @@ fn project_callsite_return(
                     target_context.return_ty,
                     demand,
                     TransportSource::ExecutableReturn,
-                    None,
+                    publication.clone(),
                     cycle,
                     memo,
                 ) {
