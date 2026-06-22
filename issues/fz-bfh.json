@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-22T12:04:25Z",
+  "description": "Goal\nFinish the work that was intentionally left outside fz-bin after protocol dispatch itself landed.\n\nSignal\nThe fz-bin epic closed the unresolved multi-target protocol callsite failure. Remaining work is narrower:\n- native indirect closure calls still need a real multi-surface callable boundary instead of the deterministic fallback left by fz-bin.18;\n- shared Enum.reduce/3 bridge captures still need generic direct-callable shape correlation;\n- struct-vs-map dispatch still needs a nominal-tag test before structural map projection;\n- enum_map_family still exposes a native direct-closure fast-path arity mismatch.\n\nStrategy\nKeep these independent. Each child owns one current failure mode and must retire any temporary fixture defers or native fallback it makes obsolete. Do not re-open the old fz-bin multi-target dispatch problem statement; that class is closed.",
+  "id": "fz-bfh",
+  "labels": [],
+  "priority": 1,
+  "status": "open",
+  "title": "[EPIC] Retire fz-bin follow-up deferrals",
+  "type": "epic",
+  "updated_at": "2026-06-22T12:04:25Z"
+}
