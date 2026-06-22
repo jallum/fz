@@ -2,14 +2,15 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-06-22T04:49:14Z",
   "created": "2026-06-22T00:16:58Z",
   "description": "fz-bin.3 audit: fixtures2/behavior/bsx_guard_eq.fz had defer.interp incorrectly labeled fz-9i4.7.2. After protocol dispatch fixes, 'target/debug/fz2 interp fixtures2/behavior/bsx_guard_eq.fz' exits 0 but prints :guard_miss; expected :guard_hit. The fixture purpose is fz-bsx.4: a guard comparison 'when s == \"hi\"' on a utf8 binding must be brand-blind on all paths. Investigate compiler2 interpreter guard equality for utf8/string values and re-enable the interp path when it matches native/run.",
   "id": "fz-bin.11",
   "labels": [],
   "parent": "fz-bin",
   "priority": 3,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Interp utf8 guard equality misses brand-blind match",
   "type": "bug",
-  "updated_at": "2026-06-22T04:44:53Z"
+  "updated_at": "2026-06-22T04:49:14Z"
 }
