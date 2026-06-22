@@ -1,6 +1,8 @@
 {
   "assignee": "Jason Allum",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-bin.18"
+  ],
   "blocks": [
     "fz-bin.14"
   ],
@@ -13,5 +15,5 @@
   "status": "in_progress",
   "title": "Tuple-returned callable lacks boundary before runtime resume",
   "type": "bug",
-  "updated_at": "2026-06-22T02:00:34Z"
+  "updated_at": "2026-06-22T02:38:58Z"
 }
