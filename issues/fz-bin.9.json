@@ -7,9 +7,15 @@
   "id": "fz-bin.9",
   "labels": [],
   "parent": "fz-bin",
+  "comments": [
+    {
+      "text": "Resolved the original multi-boundary publication failure by deriving boundary return types from resolved executable targets and skipping first-class boundaries whose resolved return type is empty. The Range fixture now passes the reduce/count/member phase; remaining run/interp/build defers are retagged to fz-bin.14 for the returned slicer callable/capture failure.",
+      "timestamp": "2026-06-22T01:07:31Z"
+    }
+  ],
   "priority": 2,
   "status": "in_progress",
   "title": "Native dispatch arms publish callable input through multiple boundaries",
   "type": "bug",
-  "updated_at": "2026-06-22T00:37:25Z"
+  "updated_at": "2026-06-22T01:07:31Z"
 }
