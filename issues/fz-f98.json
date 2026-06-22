@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-22T04:18:12Z",
+  "description": "fz-bin.16 exposed a broader compiler gap: the shared Enum.reduce/3 bridge lambda can receive a generic callable-shaped reducer capture when several reducer shapes meet at the runtime function. Native then tries to box a direct-only callable at a callee input publication with no native boundary. fz-bin.16 avoids the bridge for Enum take/drop/split runtime functions, but the generic transport/native correlation should be fixed so direct callable reducer captures survive through shared bridge closures.",
+  "id": "fz-f98",
+  "labels": [],
+  "priority": 2,
+  "status": "open",
+  "title": "compiler2 preserves direct callable shapes through shared Enum.reduce bridge captures",
+  "type": "bug",
+  "updated_at": "2026-06-22T04:18:12Z"
+}
