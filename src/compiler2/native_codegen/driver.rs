@@ -931,7 +931,11 @@ fn build_codegen_closure_targets(
 ) -> HashMap<FnId, NativeClosureTargetSurface> {
     let mut targets = HashMap::new();
     for boundary in &program.callable_boundaries {
-        let next = closure_target_surface_from_body(program, param_reprs, boundary.target_fn, boundary.capture_count);
+        let next = NativeClosureTargetSurface {
+            capture_count: boundary.capture_count,
+            capture_reprs: arg_reprs_from_compiler2(&boundary.capture_reprs),
+            arg_reprs: arg_reprs_from_compiler2(&boundary.arg_reprs),
+        };
         if let Some(previous) = targets.insert(boundary.target_fn, next.clone()) {
             debug_assert_eq!(previous, next);
         }

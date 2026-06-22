@@ -170,13 +170,12 @@ fn harness_closure_target<M: ClModule>(
 ) -> (Option<ir::Value>, Option<ir::Value>, Option<ir::Value>) {
     let n_caps = boundary.capture_count;
     let mut param_cursor = 0;
-    for (p, repr) in entry_blk
-        .params
-        .iter()
-        .skip(n_caps)
-        .zip(boundary.arg_reprs.iter().copied())
-    {
-        var_env.insert(p.0, take_param_binding(body.b, params, &mut param_cursor, repr));
+    let mut arg_params = entry_blk.params.iter().skip(n_caps);
+    for repr in boundary.arg_reprs.iter().copied() {
+        let binding = take_param_binding(body.b, params, &mut param_cursor, repr);
+        if let Some(p) = arg_params.next() {
+            var_env.insert(p.0, binding);
+        }
     }
     let self_val = params[param_cursor];
     let cont_val = params[param_cursor + 1];
