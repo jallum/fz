@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-06-22T00:16:58Z",
@@ -8,8 +8,8 @@
   "labels": [],
   "parent": "fz-bin",
   "priority": 3,
-  "status": "open",
+  "status": "in_progress",
   "title": "Interp utf8 guard equality misses brand-blind match",
   "type": "bug",
-  "updated_at": "2026-06-22T00:16:58Z"
+  "updated_at": "2026-06-22T04:44:53Z"
 }
