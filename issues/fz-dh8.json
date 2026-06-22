@@ -8,9 +8,15 @@
   "description": "While working fz-bin.16, fz2 interp for fixtures2/behavior/enum_take_drop_split.fz now prints the full expected stream after moving the runtime callbacks onto reduce_while-friendly single-clause reducers. fz2 run and fz2 build execute without native lowering panics, but their stdout keeps only the newest cons cell in accumulator-built lists (for example Enum.take([1,2,3,4,5], 3) prints [3] instead of [1,2,3]). This is a native/JIT/AOT correctness blocker for re-enabling run/build on the fixture.",
   "id": "fz-dh8",
   "labels": [],
+  "comments": [
+    {
+      "text": "Focused evidence from fz-bin.16: after the Enum runtime callbacks were moved to reduce_while-friendly single-clause reducers, [1, 2, 3]\n[]\n[1, 2, 3, 4, 5]\n[4, 5]\n[4, 5]\n[1, 2, 3]\n[]\n[1, 2, 3, 4, 5]\n[]\n[1, 2, 3, 4, 5]\n[1, 3, 5]\n[1, 3, 5]\n[4, 5]\n[1, 2, 3, 4, 5]\n[]\n[1, 2, 3]\n[1, 2, 3]\n[3, 2, 1]\n[1, 2, 3, 4, 5]\n[]\n[1, 2, 3, 4, 5]\n[]\n[2, 4]\n[2, 4]\n{[1, 2, 3], [4, 5]}\n{[], [1, 2, 3, 4, 5]}\n{[1, 2, 3, 4, 5], []}\n{[1, 2, 3], [4, 5]}\n{[1, 2, 3], [4, 5]}\n{[1, 2, 3], [4, 5]}\n{[], [1, 2, 3, 4, 5]}\n{[1, 2, 3, 4, 5], []}\n{[2, 4], [1, 3, 5]}\n{[], [1, 2, 3, 4, 5]}\n{[1, 2, 3, 4, 5], []}\n[1]\n[2, 3]\n{[1], [2, 3]} matches the golden exactly.  and  both complete without native lowering errors but print only the newest cons in tuple-accumulator list results, e.g.  prints ,  prints , and split results keep / instead of full list tails. Temporarily disabling native_codegen reusable-cons consumption did not change the output, so the blocker is not simply in-place cons reuse.",
+      "timestamp": "2026-06-22T04:30:24Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "native preserves reducer accumulator list tails in take/drop/split",
   "type": "bug",
-  "updated_at": "2026-06-22T04:24:52Z"
+  "updated_at": "2026-06-22T04:30:24Z"
 }
