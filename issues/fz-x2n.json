@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-22T02:58:52Z",
+  "description": "Compiler2 can publish one captured closure value at multiple callable surfaces when a returned closure is invoked polymorphically. Direct-target CallClosure bypasses the stored closure code pointer, but an indirect call through the same heap closure would need a runtime dispatch/thunk boundary instead of the current single boundary function pointer. Add a first-class boundary representation/codegen path that can select among published surfaces by callsite/runtime argument facts, then remove the deterministic fallback used by fz-bin.18 for direct-target-only materialization.",
+  "id": "fz-x2n",
+  "labels": [],
+  "priority": 1,
+  "status": "open",
+  "title": "Native codegen: add dispatch boundary for polymorphic indirect closures",
+  "type": "task",
+  "updated_at": "2026-06-22T02:58:52Z"
+}
