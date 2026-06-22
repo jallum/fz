@@ -7,9 +7,15 @@
   "id": "fz-bin.15",
   "labels": [],
   "parent": "fz-bin",
+  "comments": [
+    {
+      "text": "Fixed in 9c989b39a. Restored enum_predicate_search for interp/run/build by splitting Enumerable.reduce_while from ordinary reduce, preserving tagged-union halt payloads through variant-aware addressed variables/correlated tuple matching, and hardening guarded native int comparison branches. Verified cargo test --lib; cargo clippy --workspace --all-targets -- -D warnings; cargo check --all; cargo test --test fixture_matrix enum_predicate_search -- --nocapture; cargo test --test fz2_cli build_executes_map_struct_bitstring_and_enum_halt_fixtures -- --exact --nocapture.",
+      "timestamp": "2026-06-22T03:59:33Z"
+    }
+  ],
   "priority": 2,
   "status": "in_progress",
   "title": "Enum predicate/search execution fails after transport settles",
   "type": "bug",
-  "updated_at": "2026-06-22T03:14:32Z"
+  "updated_at": "2026-06-22T03:59:33Z"
 }
