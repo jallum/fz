@@ -35,15 +35,18 @@ classify equal regions with different outcomes as duplicate coverage or as an
 ambiguity. `analyze_type_coverage` computes covered and residual receiver
 domains, distinguishing closed coverage from open residuals.
 
-`collect_protocol_dispatch_matrix_candidates` is the protocol producer. It reads
-planner facts and classifies a protocol callsite as ordinary static dispatch, no
-local dispatch, or a specificity-ordered matrix over visible local impls. A
-closed receiver union gets one direct-call outcome per covering local impl and no
-fallback; an open, erased, or provider-only overlap gets an explicit residual
-fallback outcome that preserves the protocol stub path. The frontend rewrite hook
-lowers the compiled `DispatchGraph` into the current `TypeTest`/`If` IR shape:
-closed graph `Fail` tails become the final direct `else`, while open residual
-fallbacks become the original stub call.
+Protocol call dispatch is callsite-owned in compiler2. `jobs/semantic.rs`
+settles each callsite as a `CallSiteSummary` with one `CallTargetSummary` per
+viable impl target. Single-target summaries stay direct. Multi-target summaries
+are consumed later by `compiler2::callsite_dispatch::dispatch_from_callsite_summary`,
+which builds a `PatternDispatchPlan<Ty>` from the receiver-narrowed
+`CallTargetSummary.surface_inputs` and assigns opaque body ids to the viable
+targets. The artifact rung then materializes a `CallEdge::Dispatch`: the plan is
+the runtime type-test graph, while each `DispatchCallArm` carries the existing
+impl `CallTarget`, return flow, and extern marshal facts outside
+`DispatchMatrix`. Dispatch misses are unreachable for closed receiver unions and
+lower to an explicit halt/trap path; there is no residual protocol-stub outcome
+in the matrix.
 
 `pattern_dispatch_from_source` is the source-pattern producer. It consumes the
 AST-facing `SourcePatternRows`, extracts positive proof paths into `Order::Source`
@@ -75,7 +78,7 @@ DispatchMatrix has three layers that must stay separate:
 
 Future dispatch changes should add producers on top of this model instead of
 adding one-off pattern, protocol, or planner dispatch passes. Graph compilation
-is tested with fake outcome handles, protocol direct-call / residual outcomes,
-and source-pattern-derived pattern outcomes. Protocol dispatch and source-pattern
+is tested with fake outcome handles, callsite-dispatch arm ids, and
+source-pattern-derived pattern outcomes. Protocol dispatch and source-pattern
 dispatch share the same decision model; runtime helper names that still say
 "matcher" are ABI vocabulary, not a separate compiler data model.
