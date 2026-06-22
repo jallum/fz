@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-22T14:13:16Z",
+  "description": "Goal\nMake the fz-f98 failure contract explicit before repairing code: one focused red suite must prove the shared Enum.reduce* bridge loses callable identity over non-List Enumerables and must expose the deciding facts directly.\n\nSignal\nCurrent spikes:\n- fz2 interp fixtures2/behavior/enum_tier0.fz panics at transport.rs:2587: local callable producer reached transport without upstream CallableFlowFact: FunctionId(66), captures [].\n- fz2 run/build fixtures2/behavior/enum_tier0.fz fail native lowering: CallableId(3) names multiple boundaries [0,1,2].\n- fz2 interp fixtures2/00180_enum_reduce_range.fz fails: backend executable expected 2 runtime lanes, got 3.\n- fz2 run fixtures2/00180_enum_reduce_range.fz panics at native_codegen/driver.rs:971 with one closure target surface carrying capture_count 1 and another capture_count 0.\n- range_enumerable and map_enumerable pass; direct Enumerable impls are not the root.\n\nRequired work\n- Add or re-enable focused red fixtures for fz-bfh.1/.2/.3/.4 with path deferrals tied to fz-f98 until the fix lands.\n- Add telemetry or test capture that reports, for a callable producer, its producer identity, captures, direct surfaces, first-class surfaces, resolutions, and the transport CallableId/BoundaryIds derived from it.\n- State the paper contract in the test names: one producer-minted callable flow projects one coherent callable contract independent of collection-state lane prefix.\n\nChecks\n- The focused fz-f98 contract tests fail for the current reason, not by timeout noise.\n- Existing transport direct-reducer tests remain green.",
+  "id": "fz-f98.1",
+  "labels": [],
+  "parent": "fz-f98",
+  "priority": 1,
+  "status": "open",
+  "title": "Pin fz-f98 reduce-bridge regression contract and telemetry",
+  "type": "task",
+  "updated_at": "2026-06-22T14:13:16Z"
+}
