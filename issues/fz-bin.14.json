@@ -17,11 +17,15 @@
     {
       "text": "Blocked by fz-bin.17. Current native crash is not the direct closure-call fast path alone: dumps show Enumerable.slice returns {:ok, n, slicer} with the callable field flattened through the return/resume payload. main__e0__resume_24 receives four params and captures v2 as slicer; v2 is the integer capture 10. main__e0__resume_25 then calls fz_closure_get_capture_ref through that value and aborts. Experimental native-only fixes either failed to affect the CLIF or broke direct-only callables with no boundary, so the prerequisite is to publish/materialize a first-class boundary for tuple-returned callable fields that later resume as closures.",
       "timestamp": "2026-06-22T02:00:17Z"
+    },
+    {
+      "text": "Range enumerable now runs through fz2 run/build/interp. Backend interpreter now mirrors native position-aware transport handoffs: executable inputs, call args, delivered resumes, and continuation captures honor published callable lanes and Nothing-shaped absent captures. Verified cargo test --lib and cargo clippy --workspace --all-targets -- -D warnings.",
+      "timestamp": "2026-06-22T03:14:11Z"
     }
   ],
   "priority": 2,
   "status": "in_progress",
   "title": "Returned Range slicer callable is called with captured integer as closure self",
   "type": "bug",
-  "updated_at": "2026-06-22T02:00:17Z"
+  "updated_at": "2026-06-22T03:14:11Z"
 }
