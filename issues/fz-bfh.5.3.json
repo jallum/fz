@@ -1,7 +1,8 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-bfh.5.1"
+    "fz-bfh.5.1",
+    "fz-bfh.5.2"
   ],
   "blocks": [],
   "created": "2026-06-22T23:28:01Z",

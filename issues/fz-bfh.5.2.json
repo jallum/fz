@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-bfh.5.3"
+  ],
   "created": "2026-06-22T23:27:30Z",
   "description": "Goal\nDefine the transport shape agreement lattice as a first-class monotone type, so the cross-executable input-merge is correct-by-construction (data-model up).\n\nWhat\n- Add a sticky three-state binding: Unbound (bottom, no contribution yet) -\u003e Agreed(ShapeId) (all contributors carry one shape) -\u003e Conflicted (top, \u003e=2 distinct shapes seen). Strictly monotone, height \u003c= 2, no widening budget needed.\n- Implement JoinContribution for it (bottom/join_assign/equivalent) mirroring impl JoinContribution for RuntimeDemand (semantic.rs:1015-1025). join_assign: Unbound is identity; Agreed(a)+Agreed(a)=Agreed(a); anything else with two distinct shapes = Conflicted (sticky).\n- Unit tests: monotone ascent only, order-independent join, stickiness of Conflicted, Unbound distinct from Conflicted (the unknown-is-not-none distinction).\n\nWhy\nShapes are interned/flat with NO existing join operator (confirmed). This is the ONE small operator the decomposition must introduce; everything else reuses existing machinery. Pure addition, no behavior change.\n\nVerify\nNew unit tests green; existing suite unaffected; zero warnings.",
   "id": "fz-bfh.5.2",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Stage 2 groundwork: define the sticky three-state shape-agreement lattice + JoinContribution",
   "type": "task",
-  "updated_at": "2026-06-22T23:27:30Z"
+  "updated_at": "2026-06-22T23:28:09Z"
 }
