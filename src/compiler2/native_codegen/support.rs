@@ -43,9 +43,7 @@ pub(crate) fn list_tail_bits_for_var<T: Types<Ty = Ty>>(
     tail_var: Var,
     tail_bits: ir::Value,
 ) -> ListTailBits {
-    if ty_is_empty_list_in_context(t, value_types, tail_var, block_env) {
-        ListTailBits::Empty
-    } else if ty_is_non_empty_list_in_context(t, value_types, tail_var, block_env) {
+    if ty_is_non_empty_list_in_context(t, value_types, tail_var, block_env) {
         ListTailBits::NonEmptyValueRef(tail_bits)
     } else {
         ListTailBits::ValueRef(tail_bits)
