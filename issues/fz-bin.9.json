@@ -2,6 +2,7 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-06-22T01:18:26Z",
   "created": "2026-06-22T00:15:58Z",
   "description": "fz-bin.3 probe after fz-bin.5/fz-bin.8: fixtures2/behavior/range_enumerable.fz no longer fails with unresolved multi-target dispatch or mismatched dispatch arm return Ty, but native lowering fails with callable publication boundary ambiguity. run path: 'transport position ExecutableInput ... semantic_index: 2 is published by multiple callable boundaries [BoundaryId(0), BoundaryId(1)]'; interp path: 'native callable materialization for CallableId(0) names multiple boundaries [NativeCallableBoundaryId(0), NativeCallableBoundaryId(1)]; a multi-surface callable value must arrive through a publication position'. Investigate callable boundary publication for dispatch call arms, especially Range Enumerable.reduce/slice callbacks where a callback input has multiple settled surfaces. This blocks re-enabling range_enumerable runtime/interp/build after protocol dispatch itself materializes.",
   "id": "fz-bin.9",
@@ -14,8 +15,8 @@
     }
   ],
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Native dispatch arms publish callable input through multiple boundaries",
   "type": "bug",
-  "updated_at": "2026-06-22T01:07:31Z"
+  "updated_at": "2026-06-22T01:18:26Z"
 }
