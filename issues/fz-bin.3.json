@@ -2,7 +2,8 @@
   "assignee": "Jason Allum",
   "blocked_by": [
     "fz-bin.5",
-    "fz-bin.7"
+    "fz-bin.7",
+    "fz-bin.8"
   ],
   "blocks": [],
   "created": "2026-06-21T18:23:26Z",
@@ -14,5 +15,5 @@
   "status": "in_progress",
   "title": "Re-enable fz-9i4.7.2 fixtures that now compile; verify matrix green",
   "type": "task",
-  "updated_at": "2026-06-22T00:07:53Z"
+  "updated_at": "2026-06-22T00:09:19Z"
 }
