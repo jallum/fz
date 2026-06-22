@@ -9,9 +9,15 @@
   "id": "fz-bfh.5.2",
   "labels": [],
   "parent": "fz-bfh.5",
+  "comments": [
+    {
+      "text": "Landed 9c9d79f71. ShapeAgreement in transport.rs (vocabulary, no upward dep); JoinContribution impl in semantic.rs beside RuntimeDemand. 4 unit tests green (ascent, order-independence, sticky top, unbound!=conflicted, contribution delegation). shadow==monolith green; clippy -D warnings clean. Pure addition.",
+      "timestamp": "2026-06-22T23:45:21Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "Stage 2 groundwork: define the sticky three-state shape-agreement lattice + JoinContribution",
   "type": "task",
-  "updated_at": "2026-06-22T23:28:09Z"
+  "updated_at": "2026-06-22T23:45:21Z"
 }
