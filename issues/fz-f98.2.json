@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-f98.1"
+  ],
   "blocks": [
     "fz-f98.3"
   ],
@@ -13,5 +15,5 @@
   "status": "open",
   "title": "Make callable contracts producer-identity projections, not layout-derived descriptors",
   "type": "task",
-  "updated_at": "2026-06-22T14:13:53Z"
+  "updated_at": "2026-06-22T14:13:54Z"
 }
