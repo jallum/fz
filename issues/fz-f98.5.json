@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [
     "fz-f98.4"
@@ -10,8 +10,8 @@
   "labels": [],
   "parent": "fz-f98",
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "Apply telemetry-first convergence audit to enum_take_drop_split",
   "type": "bug",
-  "updated_at": "2026-06-22T17:48:49Z"
+  "updated_at": "2026-06-22T17:50:55Z"
 }
