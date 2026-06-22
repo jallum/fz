@@ -9,6 +9,12 @@
   "id": "fz-bin.18",
   "labels": [],
   "parent": "fz-bin",
+  "comments": [
+    {
+      "text": "fz-bin.17 full-suite verification exposed this as a blocking prerequisite, not a follow-up. After tuple-return callable publication is enabled, captured-closure handoff fixtures still fail native lowering: /tmp/materialized_transport_handoff_refs.fz reports native attempted to encode callable shape ShapeId(13) for value Some(ValueId(1)) from Runtime(Var(0)) in Continuation { owner: FnId(4), index: 1 }. Transport publications exist for Value/CallArg/ExecutableInput positions, including apply1's callable input and pair/escape value positions, but native return/continuation lowering can still consume an ExecutableReturn or continuation ABI that lacks the matching publication and then attempts structural callable encoding from a boxed runtime var. This must be resolved before fz-bin.17 can be committed with cargo test --lib green.",
+      "timestamp": "2026-06-22T02:38:58Z"
+    }
+  ],
   "priority": 3,
   "status": "open",
   "title": "Direct fast path miscalls boxed tuple-returned closure after resume",
