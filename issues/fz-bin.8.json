@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-22T00:09:14Z",
+  "description": "fz-bin.3 probe after fz-bin.5: range_enumerable and membership_operator no longer fail with unresolved multi-target dispatch, but artifact materialization now rejects multi-target direct callsites whose arms settle to different Ty ids (e.g. callsite 15 Ty(167) vs Ty(170), callsite 0 Ty(72) vs Ty(98)). The dispatch edge currently stores one MaterializedCallEdge.return_ty and fz-bin.5 enforced equality. For protocol callbacks, derive the callsite return type by joining/settling the arm returns using the type lattice, keep per-arm CallReturnFlow, and preserve direct single-target behavior. Add/adjust a drive_test that exercises list|range protocol dispatch with differing arm return Ty ids and proves materialization/backend/native still pass.",
+  "id": "fz-bin.8",
+  "labels": [],
+  "parent": "fz-bin",
+  "priority": 1,
+  "status": "open",
+  "title": "Join dispatch call-edge arm return types",
+  "type": "bug",
+  "updated_at": "2026-06-22T00:09:14Z"
+}
