@@ -1,0 +1,13 @@
+#---
+# purpose: "fz-f98: Enum.reduce/3 over Range keeps scalar and tuple accumulators through the shared bridge"
+# defer.build: fz-f98 shared Enum.reduce* bridge callable surface is not identity-correlated over non-List Enumerables
+# defer.interp: fz-f98 shared Enum.reduce* bridge callable surface is not identity-correlated over non-List Enumerables
+# defer.run: fz-f98 shared Enum.reduce* bridge callable surface is not identity-correlated over non-List Enumerables
+#---
+#
+# Regression target for fz-bfh.1. The public Enum.reduce/3 bridge captures the
+# user reducer and threads it through the Range Enumerable implementation.
+fn main() do
+  dbg(Enum.reduce(1..3, 0, fn (x, acc) -> acc + x end))
+  dbg(Enum.reduce(1..3, {0, 0}, fn (x, {sum, count}) -> {sum + x, count + 1} end))
+end

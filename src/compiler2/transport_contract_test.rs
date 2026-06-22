@@ -3085,6 +3085,62 @@ end
     }
 }
 
+#[test]
+#[ignore = "fz-f98: shared Enum.reduce* bridge callable flow is not identity-correlated over Range yet"]
+fn compiler2_transport_plan_projects_enum_reduce_bridge_callable_flow_by_producer_identity_over_range() {
+    let source = include_str!("../../fixtures2/behavior/fz_f98_range_reduce_scalar.fz");
+
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new(&tel);
+    world.submit_code(
+        Some("transport_fz_f98_range_reduce_scalar_contract.fz".to_string()),
+        source.to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    drive_until_transport_plan(
+        &mut world,
+        root,
+        "fz-f98 Range reduce bridge should derive transport before backend lowering",
+    );
+
+    let plan = transport_plan(&world, root);
+    let closure = world.semantic_closure(root);
+    let direct_flows = closure
+        .runtime_demands
+        .values()
+        .flat_map(|demand| demand.callable_flows.values())
+        .filter(|flow| !flow.direct_surfaces.is_empty())
+        .collect::<Vec<_>>();
+    assert!(
+        !direct_flows.is_empty(),
+        "the Range reduce bridge fixture should publish callable-flow facts for direct reducer calls"
+    );
+
+    for flow in direct_flows {
+        let matching_callables = plan
+            .callables
+            .iter()
+            .filter(|(callable, facts)| {
+                world.callable(**callable).function == Some(flow.function)
+                    && sorted_executable_symbols(facts.resolutions.as_ref()) == flow_resolution_symbols(&world, flow)
+                    && transport_surfaces_match_upstream(&world, &facts.direct_surfaces, &flow.direct_surfaces)
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            matching_callables.len(),
+            1,
+            "one producer-minted CallableFlowFact should project to one transport callable contract: flow={flow:?}; callables={:?}",
+            plan.callables
+        );
+        let (callable, facts) = matching_callables[0];
+        assert_callable_facts_match_upstream_flow(&world, &plan, *callable, flow);
+        assert!(
+            facts.boundary_ids.len() <= flow.first_class_surfaces.len(),
+            "direct reducer use must not invent extra first-class boundaries: flow={flow:?}; facts={facts:?}"
+        );
+    }
+}
+
 fn assert_resolved(outcome: DriveOutcome<super::Job, super::FactKey>, message: &str) {
     assert!(matches!(outcome, DriveOutcome::Resolved), "{message}: {outcome:?}");
 }
@@ -3338,29 +3394,49 @@ fn assert_transport_surfaces_match_upstream(
     actual: &[Box<[ShapeId]>],
     expected: &BTreeSet<CallableSurface>,
 ) {
-    let actual_inputs = actual
-        .iter()
-        .map(|surface| {
-            surface
-                .iter()
-                .map(|shape| surface_input_ty(world, *shape))
-                .collect::<Vec<_>>()
-        })
-        .collect::<BTreeSet<_>>();
-    let expected_inputs = expected
-        .iter()
-        .map(|surface| surface.inputs.clone())
-        .collect::<BTreeSet<_>>();
-    assert_eq!(
-        actual_inputs, expected_inputs,
+    assert!(
+        transport_surfaces_match_upstream(world, actual, expected),
         "transport callable surfaces should exactly project upstream callable-flow inputs"
     );
 }
 
+fn transport_surfaces_match_upstream(
+    world: &World<'_>,
+    actual: &[Box<[ShapeId]>],
+    expected: &BTreeSet<CallableSurface>,
+) -> bool {
+    let Some(actual_inputs) = actual
+        .iter()
+        .map(|surface| {
+            surface
+                .iter()
+                .map(|shape| maybe_surface_input_ty(world, *shape))
+                .collect::<Option<Vec<_>>>()
+        })
+        .collect::<Option<BTreeSet<_>>>()
+    else {
+        return false;
+    };
+    let expected_inputs = expected
+        .iter()
+        .map(|surface| surface.inputs.clone())
+        .collect::<BTreeSet<_>>();
+    actual_inputs == expected_inputs
+}
+
 fn surface_input_ty(world: &World<'_>, shape: ShapeId) -> Ty {
+    maybe_surface_input_ty(world, shape).unwrap_or_else(|| {
+        panic!(
+            "worked callable surface inputs should project to lane shapes, got {:?}",
+            shape_descr(world, shape)
+        )
+    })
+}
+
+fn maybe_surface_input_ty(world: &World<'_>, shape: ShapeId) -> Option<Ty> {
     match shape_descr(world, shape) {
-        ShapeDescr::Lane(lane) => world.lane(*lane).ty,
-        other => panic!("worked callable surface inputs should project to lane shapes, got {other:?}"),
+        ShapeDescr::Lane(lane) => Some(world.lane(*lane).ty),
+        ShapeDescr::Nothing | ShapeDescr::Tuple(_) | ShapeDescr::Callable(_) => None,
     }
 }
 

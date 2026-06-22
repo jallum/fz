@@ -1,0 +1,14 @@
+#---
+# purpose: "fz-f98: Range and Map reduce users share a convergent bridge fixed point"
+# timeout.interp_secs: 15
+# defer.build: fz-f98 Range+Map through shared Enum.reduce* bridge does not converge yet
+# defer.interp: fz-f98 Range+Map through shared Enum.reduce* bridge does not converge yet
+# defer.run: fz-f98 Range+Map through shared Enum.reduce* bridge does not converge yet
+#---
+#
+# Regression target for fz-bfh.4. One non-List shape currently settles to the
+# wrong fact; two distinct non-List shapes together can storm the semantic drive.
+fn main() do
+  dbg(Enum.to_list(1..7//2))
+  dbg(Enum.to_list(%{1 => :a}))
+end

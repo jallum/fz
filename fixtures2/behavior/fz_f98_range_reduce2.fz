@@ -1,0 +1,12 @@
+#---
+# purpose: "fz-f98: Enum.reduce/2 over Range materializes one coherent callable boundary"
+# defer.build: fz-f98 shared Enum.reduce* bridge callable surface reaches settled_callable_boundary with multiple surfaces
+# defer.interp: fz-f98 shared Enum.reduce* bridge callable surface reaches settled_callable_boundary with multiple surfaces
+# defer.run: fz-f98 shared Enum.reduce* bridge callable surface reaches settled_callable_boundary with multiple surfaces
+#---
+#
+# Regression target for fz-bfh.2. A multi-surface callable value must be
+# resolved by producer identity/publication, not by native pick-first behavior.
+fn main() do
+  dbg(Enum.reduce(1..7//2, fn (x, acc) -> x * acc end))
+end
