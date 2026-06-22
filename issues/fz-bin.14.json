@@ -1,6 +1,8 @@
 {
   "assignee": "Jason Allum",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-bin.17"
+  ],
   "blocks": [],
   "created": "2026-06-22T01:06:20Z",
   "description": "After fz-bin.9 filters the dead reducer publication boundary, fixtures2/behavior/range_enumerable.fz reaches Enumerable.Range.slice/1. Native run prints the reduce/count/member outputs, then panics in runtime/src/ir_runtime.rs: fz_closure_get_capture_ref idx=0 expected closure ref, got tag ValueKind(0) word=0xa. Backend interp prints the two reduce outputs, then fails with 'backend value 5 is unbound'. Research indicates the returned slicer callable tuple field/capture path is passing a captured range integer where the closure self/boxed callable should be. This blocks re-enabling range_enumerable run/interp/build after the fz-bin.9 boundary publication fix.",
