@@ -7,9 +7,15 @@
   "id": "fz-bfh.5.6",
   "labels": [],
   "parent": "fz-bfh.5",
+  "comments": [
+    {
+      "text": "Stray eprintln! in resolve_publication_source_boundaries was uncommitted working-tree scaffolding layered on the fz-bfh.5 WIP checkpoint (3fe32dbd1), not committed history. Removed it, restoring the prior silent no-resolutions branch. Fail-loud-on-divergence belongs to fz-x2n, not here. Tree clean vs HEAD; shadow==monolith green; zero warnings. No commit required.",
+      "timestamp": "2026-06-22T23:32:34Z"
+    }
+  ],
   "priority": 3,
   "status": "open",
   "title": "Cleanup: remove stray eprintln! in resolve_publication_source_boundaries",
   "type": "task",
-  "updated_at": "2026-06-22T23:28:02Z"
+  "updated_at": "2026-06-22T23:32:34Z"
 }
