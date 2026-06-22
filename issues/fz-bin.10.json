@@ -2,14 +2,16 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-06-22T01:34:01Z",
+  "close_reason": "fixed",
   "created": "2026-06-22T00:16:06Z",
   "description": "fz-bin.3 probe after fz-bin.5/fz-bin.8: fixtures2/behavior/enum_predicate_search.fz no longer reports unresolved multi-target protocol dispatch, but both run and interp panic in jobs/transport.rs:186 with 'transport shape anchors disagree for connected position component: ExecutableInput ... semantic_index: 1 left ShapeId(13) right ShapeId(16)'. This appears when Enum predicate/search callbacks route through multi-target protocol dispatch and connect incompatible callback/accumulator transport shapes. Investigate transport unioning for dispatch call-edge arms and callback inputs before re-enabling enum_predicate_search.",
   "id": "fz-bin.10",
   "labels": [],
   "parent": "fz-bin",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Transport anchors disagree for Enum predicate dispatch callbacks",
   "type": "bug",
-  "updated_at": "2026-06-22T01:18:54Z"
+  "updated_at": "2026-06-22T01:34:01Z"
 }
