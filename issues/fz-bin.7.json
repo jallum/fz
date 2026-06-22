@@ -4,14 +4,15 @@
   "blocks": [
     "fz-bin.3"
   ],
+  "closed_at": "2026-06-22T00:07:45Z",
   "created": "2026-06-21T23:36:52Z",
   "description": "The agent doc .agent/docs/dispatch-matrix.md still describes collect_protocol_dispatch_matrix_candidates and protocol direct-call/residual outcomes as if an old planner producer exists. Current compiler2 code owns protocol selection in jobs/semantic.rs as CallSiteSummary targets, and fz-bin lowers multi-target callsites after semantic closure. Update the doc to name the real producer/consumer boundary: semantic resolves targets, the artifact call-edge builder constructs a PatternDispatchPlan over CallSiteSummary.surface_inputs, and outcomes remain opaque arm ids mapped to existing impl call targets outside DispatchMatrix. This is documentation cleanup for the arc; no production behavior change.",
   "id": "fz-bin.7",
   "labels": [],
   "parent": "fz-bin",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Docs: refresh dispatch-matrix protocol section for callsite-owned compiler2 dispatch",
   "type": "task",
-  "updated_at": "2026-06-22T00:07:04Z"
+  "updated_at": "2026-06-22T00:07:45Z"
 }
