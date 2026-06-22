@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-f98.4"
+  ],
   "created": "2026-06-22T17:48:35Z",
   "description": "Goal\nApply the same methodology used for the quicksort/operator-sugar non-convergence fix to fixtures2/behavior/enum_take_drop_split.fz, which currently still takes roughly 0.8s and exhibits the same class of excess semantic job churn. The outcome should be an upstream data-model fix or a precise proof that an existing upstream fix already covers it; do not optimize native/codegen or transport symptoms until the earliest incorrect semantic/type fact is identified.\n\nMethod\n- Run the fixture with --log-telemetry before changing code and reduce the log to the first moving facts, not just the hottest downstream job. Track AnalyzeActivation, ActivationInputs, ReturnType, CallSiteSummary, activation key creation, and any transport/native symptoms only as consumers.\n- Identify the earliest point where the data model is wrong: evidence descending, equivalent Ty representatives dirtying revisions, recursive keys splitting equivalent list/tuple/callable surfaces, or callsite summaries preserving decisions that should have been joined upstream.\n- Ensure decisions flow downhill. If semantic/type/keying owns the decision, fix it there; artifact, transport, native, and codegen must consume settled facts rather than reconstruct or deduplicate them.\n- Add focused tests before or with the fix: one small world/type/semantic regression for the earliest bad model, plus the enum_take_drop_split fixture proof. Prefer telemetry-observed assertions for bounded jobs/revisions where available.\n- Update .agent docs with any new invariant. Remove any temporary probes or scaffolding before close.\n\nStarting signal\n- Fixture: fixtures2/behavior/enum_take_drop_split.fz.\n- Current symptom: about 0.8s compile/run path despite being green; suspected same semantic churn class as the fixed quicksort/operator-sugar issue.\n- Useful comparison from prior fix: operator_sugar went from ~55k jobs / 15s timeout to 275 jobs after fixing upstream monotone semantic facts.\n\nChecks\n- fz2 --log-telemetry run/interp/build for enum_take_drop_split show bounded job counts and no repeated semantic churn.\n- Existing enum_take_drop_split behavior/matrix tests remain green.\n- cargo test --lib.\n- cargo clippy --workspace --all-targets -- -D warnings if code paths touched are warning-sensitive.\n\nNon-goals\n- No local performance patch in transport/native/codegen unless telemetry proves that layer owns the earliest incorrect model.\n- No fixture-specific special case for Enum.take/drop/split.",
   "id": "fz-f98.5",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Apply telemetry-first convergence audit to enum_take_drop_split",
   "type": "bug",
-  "updated_at": "2026-06-22T17:48:35Z"
+  "updated_at": "2026-06-22T17:48:49Z"
 }

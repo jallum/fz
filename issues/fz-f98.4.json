@@ -1,7 +1,8 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-f98.3"
+    "fz-f98.3",
+    "fz-f98.5"
   ],
   "blocks": [],
   "created": "2026-06-22T14:13:45Z",
@@ -13,5 +14,5 @@
   "status": "open",
   "title": "Remove reduce bridge scaffolds and harden post-fix callable invariants",
   "type": "task",
-  "updated_at": "2026-06-22T14:13:54Z"
+  "updated_at": "2026-06-22T17:48:49Z"
 }
