@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-f98.3"
+  ],
   "blocks": [],
   "created": "2026-06-22T14:13:45Z",
   "description": "Goal\nAfter the generic identity/surface fix lands, remove temporary affordances that avoided or tolerated the broken bridge and make the post-fix invariants fail loud.\n\nRequired work\n- Re-evaluate the fz-bin.16 bridge-avoidance scaffold in Enum take/drop/split. Remove it only if the generic shared-bridge fix makes the simpler reduce-based implementation green and clearer.\n- Re-enable enum_tier0 across interp/run/build and remove its fz-f98 deferrals once the regression targets are green.\n- Coordinate with fz-x2n: deterministic_callable_boundary_fallback remains deleted/fail-loud work, but only after fz-f98 establishes the invariant that a materialized callable value has one coherent publication contract or arrives through a publication position.\n- Update .agent docs and user guides only where the code-level facts changed; do not document temporary scaffolding as architecture.\n\nChecks\n- enum_tier0, enum_take_drop_split, range_enumerable, map_enumerable green on interp/run/build.\n- cargo test --lib.\n- cargo clippy --workspace --all-targets -- -D warnings.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Remove reduce bridge scaffolds and harden post-fix callable invariants",
   "type": "task",
-  "updated_at": "2026-06-22T14:13:45Z"
+  "updated_at": "2026-06-22T14:13:54Z"
 }

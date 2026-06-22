@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-f98.2"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-f98.4"
+  ],
   "created": "2026-06-22T14:13:36Z",
   "description": "Goal\nMake the shared Enum.reduce* bridge activation/return analysis converge to one fixed point across List, Range, and Map by joining surfaces and returns monotonically in the addressed-arrow frame.\n\nDesign intent\nActivation inputs, CallableSurface, and source contracts are already the same addressed-arrow principle at different boundaries. The fix should use that principle: join caller evidence by addressed slot identity and own-surface suffix, not by raw positional capture prefix in a surrounding executable layout.\n\nRequired work\n- Audit resolve_closure_call / callsite summary / activation input contribution paths for the bridge reducer and identify where non-List collection-state prefixes cause a captured callable to become a template, None return, or multiple boundary surfaces.\n- Replace any non-monotone re-grounding/replacement of callable surfaces with a join over CallableSurface sets and return evidence; absent evidence stays None, proven empty stays none(), and concrete returns ascend by union/widening only.\n- Use own_surface / own_surface_past_captures as the compatibility operation for suffix comparison; do not compare raw slots after collection-state prefixes.\n- Add a regression that Range+Map reduce/to_list compiles within the normal drive budget and shows bounded activation_analysis/return_type churn.\n\nChecks\n- fz-bfh.4 no longer drive-limit storms.\n- enum_tier0 with List+Range+Map reduce/2, reduce/3, reduce_while/3 reaches transport instead of oscillating.\n- ReturnType widening telemetry is not used as the normal escape hatch for this cluster.",
   "id": "fz-f98.3",
@@ -13,5 +15,5 @@
   "status": "open",
   "title": "Make shared reduce bridge surface and return joins monotone",
   "type": "task",
-  "updated_at": "2026-06-22T14:13:53Z"
+  "updated_at": "2026-06-22T14:13:54Z"
 }
