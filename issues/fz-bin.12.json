@@ -2,14 +2,16 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-06-22T01:41:05Z",
+  "close_reason": "fixed",
   "created": "2026-06-22T00:17:44Z",
   "description": "fz-bin.3 audit: fixtures2/behavior/enum_take_drop_split.fz no longer reports unresolved multi-target protocol dispatch after fz-bin.5/fz-bin.8, but run/interp/build now fail before runtime correctness with 'compiler2 root 0 exceeded 5000 ms drive limit' after ~3350 jobs and pending work, plus a type/no-matching-clause warning. This blocks re-enabling enum_take_drop_split before the known fz-kot output bug can be observed. Investigate compiler2 activation/semantic churn for Enum.take/drop/split after dispatch call-edge materialization; after it compiles, fz-kot still owns any wrong take/drop output.",
   "id": "fz-bin.12",
   "labels": [],
   "parent": "fz-bin",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Enum take/drop/split fixture times out after protocol dispatch materializes",
   "type": "bug",
-  "updated_at": "2026-06-22T01:34:10Z"
+  "updated_at": "2026-06-22T01:41:05Z"
 }
