@@ -1,9 +1,7 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [
-    "fz-x2n"
-  ],
+  "blocks": [],
   "created": "2026-06-22T13:14:44Z",
   "description": "Goal\nRegression target for the unified root fz-f98. Enum.reduce/3 over a Range with a scalar accumulator must work on interp + run + build. This ticket owns the fixture and per-path verification; the fix itself lands in fz-f98.\n\nSymptom (one face of the fz-f98 root)\n`Enum.reduce(1..3, 0, fn(x, acc) -\u003e acc + x end)` fails on every path:\n- interp: backend executable N expected 2 runtime lane(s), got 3 (backend.rs:1703)\n- run/build: panic at native_codegen/driver.rs:971 debug_assert_eq!(previous, \u0026next) (one target_fn yields two diverging closure-target surfaces; in release the assert vanishes and first-wins silently)\n- in the full enum_tier0 context the upstream form appears as a panic at transport.rs:2587 \"local callable producer reached transport without upstream CallableFlowFact (FunctionId 66, captures [])\".\n\nWhy it is the fz-f98 root: the capturing reduce bridge threads its callable capture behind Range's scalar lead-prefix (first,last,step,current), decorrelating the callable. List works; the discriminator is captured-callable x non-List (proof in fz-f98). A list/heap-ref accumulator masks it; a scalar/tuple accumulator exposes it. Not an independent fix.\n\nRequired work (verification; fix is in fz-f98)\n- Pin a fixture: Enum.reduce/3 over a Range with a scalar accumulator, plus a tuple-accumulator variant, on interp + run + build.\n- Confirm the fz-f98 root fix turns it green. Restoring driver.rs:971 to a sound invariant (not a release-silent assert) is hardening tracked in fz-x2n.\n\nChecks\n- New Range-reduce scalar-accumulator regression green on all three paths.\n- enum_take_drop_split + range_enumerable remain green.\n- cargo test --lib and cargo clippy --workspace --all-targets -- -D warnings.",
   "id": "fz-bfh.1",
@@ -19,5 +17,5 @@
   "status": "open",
   "title": "Enum.reduce/3 over Range with scalar accumulator crashes on all three paths",
   "type": "bug",
-  "updated_at": "2026-06-22T13:49:12Z"
+  "updated_at": "2026-06-22T13:49:23Z"
 }

@@ -1,7 +1,6 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-bfh.1",
     "fz-bfh.2"
   ],
   "blocks": [],
@@ -14,5 +13,5 @@
   "status": "open",
   "title": "Delete dead callable-boundary fallback; fail-loud on multi-surface surface divergence",
   "type": "bug",
-  "updated_at": "2026-06-22T13:49:13Z"
+  "updated_at": "2026-06-22T13:49:23Z"
 }
