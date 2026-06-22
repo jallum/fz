@@ -11,11 +11,15 @@
     {
       "text": "During fz-bin.16, the original native lowering fatal was traced to direct callable reducer captures flowing through the shared Enum.reduce/3 bridge. The fz-bin.16 runtime path avoids that bridge for take/drop/split, but the generic compiler issue remains: shared bridge callable captures need correlated direct callable shapes instead of falling back to generic callable inputs that native tries to box without a boundary.",
       "timestamp": "2026-06-22T04:30:10Z"
+    },
+    {
+      "text": "fz-bfh.1 is a hard-crash manifestation of this same shared Enum.reduce/3 bridge capture-correlation gap, reproduced minimally over a Range with a scalar accumulator (fails interp/run/build with zero fixture coverage). The generic fix here likely subsumes fz-bfh.1; coordinate so one correlation fix closes both rather than two local patches.",
+      "timestamp": "2026-06-22T13:14:55Z"
     }
   ],
   "priority": 2,
   "status": "open",
   "title": "Transport/native: correlate shared Enum.reduce bridge callable captures",
   "type": "bug",
-  "updated_at": "2026-06-22T12:05:00Z"
+  "updated_at": "2026-06-22T13:14:55Z"
 }
