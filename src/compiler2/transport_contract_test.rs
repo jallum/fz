@@ -2220,6 +2220,44 @@ end
 }
 
 #[test]
+fn compiler2_transport_plan_does_not_publish_dead_callable_input_boundaries() {
+    let source = include_str!("../../fixtures2/behavior/range_enumerable.fz");
+
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new(&tel);
+    world.submit_code(
+        Some("transport_range_enumerable_dead_boundary.fz".to_string()),
+        source.to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    drive_until_transport_plan(
+        &mut world,
+        root,
+        "Range Enumerable fixture should derive transport before the known slicer runtime blocker",
+    );
+
+    let plan = transport_plan(&world, root);
+    let dead_return_boundaries = plan
+        .boundaries
+        .keys()
+        .filter_map(|boundary| {
+            let descr = world.boundary(*boundary);
+            matches!(shape_descr(&world, descr.published_return_shape), ShapeDescr::Nothing).then_some(*boundary)
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        dead_return_boundaries.is_empty(),
+        "first-class callable boundaries whose resolved target returns an empty type are not callable contracts: {dead_return_boundaries:?}"
+    );
+
+    world.demand(super::Job::LowerNativeProgram(root));
+    assert_resolved(
+        world.drive_for(None),
+        "Range Enumerable fixture should lower native callable publications before the known slicer runtime blocker",
+    );
+}
+
+#[test]
 fn compiler2_transport_plan_shares_recursive_return_and_resume_shapes() {
     let source = r#"
 fn pair_down(0), do: {0, 1}

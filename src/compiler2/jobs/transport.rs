@@ -2540,18 +2540,24 @@ fn callable_for_producer(
     });
     let boundary_ids = if !boundary_surface_demands.is_empty() {
         let surface_arg_shapes = surface_shapes(world, &boundary_surface_demands, facts);
+        let boundary_resolution_symbols =
+            boundary_resolution_symbols_for_flow_surfaces(upstream_flow, &boundary_surface_demands, world.types());
+        let boundary_return_contracts = boundary_return_contracts_for_resolution_symbols(
+            world,
+            contexts,
+            callable_ty,
+            &boundary_surface_demands,
+            &boundary_resolution_symbols,
+            upstream_flow.escape && upstream_flow.direct_surfaces.is_empty(),
+        );
         let boundary_return_shapes = boundary_return_shapes_for_flow_surfaces(
             world,
             contexts,
             facts,
-            upstream_flow,
-            callable_ty,
-            &capture_tys,
-            &boundary_surface_demands,
+            &boundary_resolution_symbols,
+            &boundary_return_contracts.return_tys,
             memo,
         );
-        let boundary_resolution_symbols =
-            boundary_resolution_symbols_for_flow_surfaces(upstream_flow, &boundary_surface_demands, world.types());
         publish_boundaries_for_callable(
             world,
             facts,
@@ -2560,6 +2566,8 @@ fn callable_for_producer(
             &surface_arg_shapes,
             &capture_lanes,
             callable_ty,
+            &boundary_return_contracts.return_tys,
+            &boundary_return_contracts.publish,
             &boundary_return_shapes,
             &boundary_resolution_symbols,
             publication,
@@ -2695,12 +2703,13 @@ fn generic_callable_shape_with_resolutions(
         capture_lanes: Box::from([boxed_value_lane]),
     });
     let boundary_ids = if !surfaces.is_empty() {
+        let return_tys = boundary_return_tys_for_callable_surfaces(world, ty, surfaces);
         let return_shapes = publication
             .as_ref()
             .and_then(|position| {
                 boundary_return_shapes_for_publication_sources(world, facts, position, &published_surface_shapes)
             })
-            .unwrap_or_else(|| boundary_return_shapes_for_callable_surfaces(world, ty, surfaces, facts));
+            .unwrap_or_else(|| boundary_return_shapes_for_tys(world, &return_tys, facts));
         let resolution_symbols = publication
             .as_ref()
             .map(|position| {
@@ -2735,6 +2744,8 @@ fn generic_callable_shape_with_resolutions(
             &published_surface_shapes,
             &[],
             ty,
+            &return_tys,
+            &vec![true; return_tys.len()],
             &return_shapes,
             &resolution_symbols,
             publication,
@@ -2936,7 +2947,9 @@ fn publish_boundaries_for_callable(
     surfaces: &BTreeSet<CallableSurface>,
     surface_shapes: &[Box<[ShapeId]>],
     capture_lanes: &[LaneId],
-    callable_ty: Ty,
+    published_value_ty: Ty,
+    return_tys: &[Ty],
+    publish_boundary: &[bool],
     return_shapes: &[ShapeId],
     resolution_symbols: &[Vec<ExecutableSymbol>],
     publication: Option<TransportPosition>,
@@ -2945,6 +2958,16 @@ fn publish_boundaries_for_callable(
         surfaces.len(),
         surface_shapes.len(),
         "boundary surface shapes must align with published surfaces"
+    );
+    assert_eq!(
+        surfaces.len(),
+        return_tys.len(),
+        "boundary return types must align with published surfaces"
+    );
+    assert_eq!(
+        surfaces.len(),
+        publish_boundary.len(),
+        "boundary publish flags must align with published surfaces"
     );
     assert_eq!(
         surfaces.len(),
@@ -2957,15 +2980,19 @@ fn publish_boundaries_for_callable(
         "boundary resolution symbols must align with published surfaces"
     );
     let mut boundary_ids = Vec::new();
-    for (((surface, arg_shapes), return_shape), resolutions) in surfaces
+    for (((((surface, arg_shapes), return_ty), publish), return_shape), resolutions) in surfaces
         .iter()
         .zip(surface_shapes.iter())
+        .zip(return_tys.iter().copied())
+        .zip(publish_boundary.iter().copied())
         .zip(return_shapes.iter().copied())
         .zip(resolution_symbols.iter())
     {
-        let return_ty = boundary_return_ty_for_surface(world, callable_ty, surface);
+        if !publish {
+            continue;
+        }
         let return_lanes = boundary_lanes_for_shape(world, return_shape, return_ty).into_boxed_slice();
-        let published_value_lane = value_lane(world, callable_ty);
+        let published_value_lane = value_lane(world, published_value_ty);
         let arg_lanes = arg_shapes
             .iter()
             .copied()
@@ -3027,49 +3054,73 @@ fn boundary_return_shapes_for_flow_surfaces(
     world: &mut World<'_>,
     contexts: &HashMap<ExecutableKey, ExecutableContext>,
     facts: &mut TransportFactsBuilder,
-    flow: &CallableFlowFact,
-    callable_ty: Ty,
-    capture_tys: &[Ty],
-    surfaces: &BTreeSet<CallableSurface>,
+    resolution_symbols: &[Vec<ExecutableSymbol>],
+    return_tys: &[Ty],
     memo: &mut ProjectionMemo,
 ) -> Vec<ShapeId> {
-    surfaces
+    assert_eq!(
+        resolution_symbols.len(),
+        return_tys.len(),
+        "boundary return shapes must align resolution symbols with return types"
+    );
+    resolution_symbols
         .iter()
-        .map(|surface| {
-            // The resolution key is the addressed arrow of `capture_tys ++
-            // own_surface`. Match in the addressed frame (fz-hwn.27.6, A): the
-            // capture prefix is the captures addressed alone, and the own-surface
-            // suffix re-addressed standalone is the canonical surface.
-            let addressed_captures = world.types_mut().address_inputs(capture_tys);
-            let mut found = None;
-            for resolution in &flow.resolutions {
-                if resolution.activation.function != flow.function {
-                    continue;
-                }
-                let inputs = resolution.activation.inputs(world.types());
-                let Some(own) = world
-                    .types_mut()
-                    .own_surface_past_captures(&inputs, &addressed_captures)
-                else {
-                    continue;
-                };
-                if own == surface.inputs {
-                    found = Some(resolution);
-                    break;
-                }
-            }
-            let resolution = found
-                .map(|resolution| executable_symbol(resolution, world.types()))
-                .unwrap_or_else(|| {
-                    panic!("upstream callable-flow surface has no matching executable resolution: {surface:?}")
-                });
-            let mut boundary_return_ty = boundary_return_ty_for_surface(world, callable_ty, surface);
-            if world.types().is_empty(&boundary_return_ty) {
-                boundary_return_ty = world.types_mut().any();
-            }
-            boundary_return_shape_for_resolution(world, contexts, facts, &resolution, boundary_return_ty, memo)
+        .zip(return_tys.iter().copied())
+        .map(|(resolutions, return_ty)| {
+            let resolution = resolutions
+                .first()
+                .unwrap_or_else(|| panic!("upstream callable-flow surface has no executable resolution"));
+            boundary_return_shape_for_resolution(world, contexts, facts, resolution, return_ty, memo)
         })
         .collect()
+}
+
+struct BoundaryReturnContracts {
+    return_tys: Vec<Ty>,
+    publish: Vec<bool>,
+}
+
+fn boundary_return_contracts_for_resolution_symbols(
+    world: &mut World<'_>,
+    contexts: &HashMap<ExecutableKey, ExecutableContext>,
+    callable_ty: Ty,
+    surfaces: &BTreeSet<CallableSurface>,
+    resolution_symbols: &[Vec<ExecutableSymbol>],
+    publish_empty_resolved_returns: bool,
+) -> BoundaryReturnContracts {
+    assert_eq!(
+        surfaces.len(),
+        resolution_symbols.len(),
+        "boundary return types must align surfaces with resolution symbols"
+    );
+    let mut return_tys = Vec::with_capacity(surfaces.len());
+    let mut publish = Vec::with_capacity(surfaces.len());
+    for (surface, resolutions) in surfaces.iter().zip(resolution_symbols.iter()) {
+        let mut resolved = None;
+        for resolution in resolutions {
+            let Some((_, context)) = contexts.iter().find(|(candidate, _)| {
+                candidate.need == resolution.need
+                    && candidate.activation.function == resolution.activation.function
+                    && candidate.activation.inputs(world.types()).as_slice() == resolution.activation.input.as_ref()
+            }) else {
+                continue;
+            };
+            resolved = Some(match resolved {
+                Some(current) => world.types_mut().union(current, context.return_ty),
+                None => context.return_ty,
+            });
+        }
+        let surface_return_ty = boundary_return_ty_for_surface(world, callable_ty, surface);
+        let resolved_empty = resolved.is_some_and(|return_ty| world.types().is_empty(&return_ty));
+        let return_ty = match resolved {
+            Some(_) if resolved_empty && !world.types().is_empty(&surface_return_ty) => surface_return_ty,
+            Some(return_ty) => return_ty,
+            None => surface_return_ty,
+        };
+        return_tys.push(return_ty);
+        publish.push(!resolved_empty || publish_empty_resolved_returns);
+    }
+    BoundaryReturnContracts { return_tys, publish }
 }
 
 fn boundary_resolution_symbols_for_flow_surfaces(
@@ -3129,26 +3180,27 @@ fn boundary_return_shape_for_resolution(
     }
 }
 
-fn boundary_return_shapes_for_callable_surfaces(
+fn boundary_return_tys_for_callable_surfaces(
     world: &mut World<'_>,
     callable_ty: Ty,
     surfaces: &BTreeSet<CallableSurface>,
-    facts: &mut TransportFactsBuilder,
-) -> Vec<ShapeId> {
+) -> Vec<Ty> {
     surfaces
         .iter()
-        .map(|surface| boundary_return_shape_for_surface(world, callable_ty, surface, facts))
+        .map(|surface| boundary_return_ty_for_surface(world, callable_ty, surface))
         .collect()
 }
 
-fn boundary_return_shape_for_surface(
+fn boundary_return_shapes_for_tys(
     world: &mut World<'_>,
-    callable_ty: Ty,
-    surface: &CallableSurface,
+    return_tys: &[Ty],
     facts: &mut TransportFactsBuilder,
-) -> ShapeId {
-    let ret_ty = boundary_return_ty_for_surface(world, callable_ty, surface);
-    boundary_return_shape_for_ty(world, ret_ty, facts)
+) -> Vec<ShapeId> {
+    return_tys
+        .iter()
+        .copied()
+        .map(|ret_ty| boundary_return_shape_for_ty(world, ret_ty, facts))
+        .collect()
 }
 
 fn boundary_return_ty_for_surface(world: &mut World<'_>, callable_ty: Ty, surface: &CallableSurface) -> Ty {

@@ -391,7 +391,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
         );
         let entry_tys = executable_input_tys(self.world, self.program, executable);
         let entry_vars = ctx.entry_params(entry_tys.as_slice());
-        let semantic_inputs = bind_executable_inputs(self.world, self.program, executable, &mut ctx, &entry_vars)?;
+        let semantic_inputs = self.bind_executable_inputs(executable, &mut ctx, &entry_vars)?;
         let dispatch = executable
             .entry_dispatch
             .as_ref()
@@ -481,7 +481,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
         let mut env = ValueEnv::default();
         let entry_tys = executable_input_tys(self.world, self.program, executable);
         let entry_vars = ctx.entry_params(entry_tys.as_slice());
-        let semantic_inputs = bind_executable_inputs(self.world, self.program, executable, &mut ctx, &entry_vars)?;
+        let semantic_inputs = self.bind_executable_inputs(executable, &mut ctx, &entry_vars)?;
         for (value, bound) in clause.params.iter().copied().zip(semantic_inputs) {
             if let Some(bound) = bound {
                 bind_local_value(&mut ctx, executable, &mut env, value, bound);
@@ -1657,6 +1657,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                     shape,
                     position_width(self.world, shape, &publication_lanes),
                     !publication_lanes.is_empty(),
+                    None,
                     self.world,
                     ctx,
                     &mut lane_index,
@@ -1918,6 +1919,72 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
         };
         args.extend(self.entry_capture_args(ctx, executable, entries, entry_id, env)?);
         Ok(args)
+    }
+
+    fn bind_executable_inputs(
+        &self,
+        executable: &BackendExecutable,
+        ctx: &mut NativeFnCtx,
+        params: &[Var],
+    ) -> Result<Vec<Option<NativeBoundValue>>, FatalError> {
+        let semantic_arity = executable.key.activation.input_len(self.world.types());
+        let mut bound = vec![None; semantic_arity];
+        let mut lane_index = 0;
+        for binding in executable_input_bindings(self.program, executable) {
+            let native_boundary = self.native_publication_boundary_for_binding(&binding)?;
+            bound[binding.semantic_index] = Some(decode_runtime_value_with_width(
+                params,
+                binding.shape,
+                binding.width(self.world),
+                !binding.publication_lanes.is_empty(),
+                native_boundary,
+                self.world,
+                ctx,
+                &mut lane_index,
+            )?);
+        }
+        if lane_index != params.len() {
+            return Err(FatalError);
+        }
+        Ok(bound)
+    }
+
+    fn native_publication_boundary_for_binding(
+        &self,
+        binding: &ExecutableInputBinding,
+    ) -> Result<Option<NativeCallableBoundaryId>, FatalError> {
+        if binding.publication_lanes.is_empty() {
+            return Ok(None);
+        }
+        let ShapeDescr::Callable(callable) = self.world.shape(binding.shape) else {
+            return Ok(None);
+        };
+        let descr = self.world.callable(*callable);
+        let Some(function) = descr.function else {
+            return Ok(None);
+        };
+        let matched = binding
+            .publication_boundaries
+            .iter()
+            .copied()
+            .filter_map(|boundary| {
+                self.native_boundary_for_transport_boundary(boundary, function, descr.capture_lanes.len())
+                    .transpose()
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        match self.select_inhabited_callable_boundary(&matched) {
+            Ok(boundary) => Ok(boundary),
+            Err(()) => Err(incomplete_native_program(
+                self.world,
+                self.root_id,
+                format!(
+                    "native executable input publication {:?} published multiple callable boundaries {matched:?} for {function:?}/{}; candidates were {:?}",
+                    binding.position,
+                    descr.capture_lanes.len(),
+                    binding.publication_boundaries,
+                ),
+            )),
+        }
     }
 
     fn lower_dispatch_node(
@@ -2541,16 +2608,16 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
             .filter(|boundary| boundary_ids.contains(&boundary.boundary))
             .map(NativeCallableBoundary::id)
             .collect::<Vec<_>>();
-        match matched.as_slice() {
-            [boundary] => Ok(*boundary),
-            [] => Err(incomplete_native_program(
+        match self.select_inhabited_callable_boundary(&matched) {
+            Ok(Some(boundary)) => Ok(boundary),
+            Ok(None) => Err(incomplete_native_program(
                 self.world,
                 self.root_id,
                 format!(
                     "native callable materialization found no native boundary among CallableId fact boundaries {boundary_ids:?} for {callable:?}"
                 ),
             )),
-            _ => Err(incomplete_native_program(
+            Err(()) => Err(incomplete_native_program(
                 self.world,
                 self.root_id,
                 format!(
@@ -2602,14 +2669,43 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
             .iter()
             .filter_map(|(candidate, boundary)| (candidate == position).then_some(*boundary))
             .collect::<Vec<_>>();
-        match published.as_slice() {
-            [] => Ok(None),
-            [boundary] => self.native_boundary_for_transport_boundary(*boundary, function, capture_count),
-            _ => Err(incomplete_native_program(
+        let matched = published
+            .iter()
+            .copied()
+            .filter_map(|boundary| {
+                self.native_boundary_for_transport_boundary(boundary, function, capture_count)
+                    .transpose()
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        match self.select_inhabited_callable_boundary(&matched) {
+            Ok(boundary) => Ok(boundary),
+            Err(()) => Err(incomplete_native_program(
                 self.world,
                 self.root_id,
-                format!("transport position {position:?} is published by multiple callable boundaries {published:?}"),
+                format!(
+                    "transport position {position:?} published multiple callable boundaries {matched:?} for {function:?}/{capture_count}; candidates were {published:?}",
+                ),
             )),
+        }
+    }
+
+    fn select_inhabited_callable_boundary(
+        &self,
+        matched: &[NativeCallableBoundaryId],
+    ) -> Result<Option<NativeCallableBoundaryId>, ()> {
+        let inhabited = matched
+            .iter()
+            .copied()
+            .filter(|boundary| {
+                self.callable_boundaries
+                    .get(boundary.as_u32() as usize)
+                    .is_some_and(|candidate| !self.world.types().is_empty(&candidate.return_ty))
+            })
+            .collect::<Vec<_>>();
+        match inhabited.as_slice() {
+            [] => Ok(None),
+            [boundary] => Ok(Some(*boundary)),
+            _ => Err(()),
         }
     }
 
@@ -2755,7 +2851,16 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
             NativeBoundValue::Absent if ty.is_some_and(|ty| self.ty_is_exact_empty_list(ty)) => {
                 ctx.emit_let(Prim::MakeList(Vec::new(), None)).0
             }
-            NativeBoundValue::Absent => return Err(FatalError),
+            NativeBoundValue::Absent => {
+                return Err(incomplete_native_program(
+                    self.world,
+                    self.root_id,
+                    format!(
+                        "native attempted to materialize absent value as runtime value with ty {ty:?} in {:?}",
+                        ctx.origin
+                    ),
+                ));
+            }
             NativeBoundValue::Runtime(var) => *var,
             NativeBoundValue::Transport { shape, lanes } => {
                 self.materialize_transport_value(ctx, *shape, lanes, boundary)?
@@ -2775,8 +2880,24 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
         boundary: Option<NativeCallableBoundaryId>,
     ) -> Result<Var, FatalError> {
         match self.world.shape(shape).clone() {
-            ShapeDescr::Nothing => Err(FatalError),
-            ShapeDescr::Lane(_) => lanes.first().copied().ok_or(FatalError),
+            ShapeDescr::Nothing => Err(incomplete_native_program(
+                self.world,
+                self.root_id,
+                format!(
+                    "native attempted to materialize nothing-shaped transport value {shape:?} in {:?}",
+                    ctx.origin
+                ),
+            )),
+            ShapeDescr::Lane(_) => lanes.first().copied().ok_or_else(|| {
+                incomplete_native_program(
+                    self.world,
+                    self.root_id,
+                    format!(
+                        "native lane-shaped transport value {shape:?} has no runtime lane while materializing in {:?}",
+                        ctx.origin,
+                    ),
+                )
+            }),
             ShapeDescr::Tuple(fields) => {
                 let mut vars = Vec::with_capacity(fields.len());
                 for field in self.transport_field_views(shape, lanes, &fields)? {
@@ -2790,7 +2911,16 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                     return Ok(lanes[0]);
                 }
                 if lanes.len() != descr.capture_lanes.len() {
-                    return Err(FatalError);
+                    return Err(incomplete_native_program(
+                        self.world,
+                        self.root_id,
+                        format!(
+                            "native callable transport value {shape:?} has {} lanes, but callable {callable:?} expects {} capture lanes in {:?}",
+                            lanes.len(),
+                            descr.capture_lanes.len(),
+                            ctx.origin,
+                        ),
+                    ));
                 }
                 let function = descr.function.ok_or_else(|| {
                     incomplete_native_program(
@@ -2861,7 +2991,15 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
             return Ok(None);
         }
         if lanes.len() != descr.capture_lanes.len() {
-            return Err(FatalError);
+            return Err(incomplete_native_program(
+                self.world,
+                self.root_id,
+                format!(
+                    "native direct callable transport value {shape:?} has {} lanes, but callable {callable:?} expects {} capture lanes",
+                    lanes.len(),
+                    descr.capture_lanes.len(),
+                ),
+            ));
         }
         Ok(Some(lanes.clone()))
     }
@@ -2899,7 +3037,15 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
         fields: &[ShapeId],
     ) -> Result<Vec<NativeBoundValue>, FatalError> {
         if lanes.len() != self.world.shape_width(shape) {
-            return Err(FatalError);
+            return Err(incomplete_native_program(
+                self.world,
+                self.root_id,
+                format!(
+                    "native transport tuple view for {shape:?} has {} lanes, but shape width is {}",
+                    lanes.len(),
+                    self.world.shape_width(shape),
+                ),
+            ));
         }
         let mut offset = 0_usize;
         let mut values = Vec::with_capacity(fields.len());
@@ -2955,17 +3101,30 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                 }
                 Ok(())
             }
-            ShapeDescr::Callable(callable) => Err(incomplete_native_program(
-                self.world,
-                self.root_id,
-                format!(
-                    "native attempted to encode callable shape {:?} ({:?}) for value {:?} from {:?}; callable values must be supplied by matching transport lanes or a published value seam",
-                    shape,
-                    self.world.callable(callable),
-                    value_id,
-                    value,
-                ),
-            )),
+            ShapeDescr::Callable(callable) => {
+                let descr = self.world.callable(callable);
+                if descr.function.is_none()
+                    && let [lane] = descr.capture_lanes.as_ref()
+                {
+                    let ty = self.world.lane(*lane).ty;
+                    lanes.push(self.materialize_native_value(ctx, Some(ty), value)?);
+                    return Ok(());
+                }
+                if let NativeBoundValue::Runtime(var) = value
+                    && ctx.callable_value_boundaries.contains_key(var)
+                {
+                    lanes.push(*var);
+                    return Ok(());
+                }
+                Err(incomplete_native_program(
+                    self.world,
+                    self.root_id,
+                    format!(
+                        "native attempted to encode callable shape {:?} ({:?}) for value {:?} from {:?}; callable values must be supplied by matching transport lanes or a published value seam",
+                        shape, descr, value_id, value,
+                    ),
+                ))
+            }
         }
     }
 
@@ -3394,12 +3553,27 @@ fn function_entry_publication_lanes(
 }
 
 fn position_publication_lanes(program: &BackendProgram, seam_matches: impl Fn(&CodegenSeam) -> bool) -> Vec<LaneId> {
-    program
+    let mut lanes = Vec::new();
+    for lane in program
         .transport
         .codegen_seam_facts
         .iter()
         .filter(|fact| fact.shape.is_none() && seam_matches(&fact.seam))
         .map(|fact| fact.lane)
+    {
+        if !lanes.contains(&lane) {
+            lanes.push(lane);
+        }
+    }
+    lanes
+}
+
+fn publication_boundaries_for_position(program: &BackendProgram, position: &TransportPosition) -> Vec<BoundaryId> {
+    program
+        .transport
+        .publication_boundaries
+        .iter()
+        .filter_map(|(candidate, boundary)| (candidate == position).then_some(*boundary))
         .collect()
 }
 
@@ -3659,39 +3833,13 @@ fn executable_input_tys(world: &World<'_>, program: &BackendProgram, executable:
         .collect()
 }
 
-fn bind_executable_inputs(
-    world: &World<'_>,
-    program: &BackendProgram,
-    executable: &BackendExecutable,
-    ctx: &mut NativeFnCtx,
-    params: &[Var],
-) -> Result<Vec<Option<NativeBoundValue>>, FatalError> {
-    let semantic_arity = executable.key.activation.input_len(world.types());
-    let mut bound = vec![None; semantic_arity];
-    let mut lane_index = 0;
-    for binding in executable_input_bindings(program, executable) {
-        bound[binding.semantic_index] = Some(decode_runtime_value_with_width(
-            params,
-            binding.shape,
-            binding.width(world),
-            !binding.publication_lanes.is_empty(),
-            world,
-            ctx,
-            &mut lane_index,
-        )?);
-    }
-    if lane_index != params.len() {
-        return Err(FatalError);
-    }
-    Ok(bound)
-}
-
 #[derive(Clone)]
 struct ExecutableInputBinding {
     position: TransportPosition,
     semantic_index: usize,
     shape: ShapeId,
     publication_lanes: Vec<LaneId>,
+    publication_boundaries: Vec<BoundaryId>,
 }
 
 impl ExecutableInputBinding {
@@ -3722,6 +3870,7 @@ fn executable_input_bindings(program: &BackendProgram, executable: &BackendExecu
                 semantic_index: *semantic_index,
                 shape: position_shape(program, position),
                 publication_lanes: function_entry_publication_lanes(program, executable, *semantic_index),
+                publication_boundaries: publication_boundaries_for_position(program, position),
             })
         })
         .collect::<Vec<_>>();
@@ -3758,7 +3907,16 @@ fn decode_runtime_value(
     shape: ShapeId,
     lane_index: &mut usize,
 ) -> Result<NativeBoundValue, FatalError> {
-    decode_runtime_value_with_width(params, shape, world.shape_width(shape), false, world, ctx, lane_index)
+    decode_runtime_value_with_width(
+        params,
+        shape,
+        world.shape_width(shape),
+        false,
+        None,
+        world,
+        ctx,
+        lane_index,
+    )
 }
 
 fn decode_runtime_value_with_width(
@@ -3766,6 +3924,7 @@ fn decode_runtime_value_with_width(
     shape: ShapeId,
     width: usize,
     published_value: bool,
+    publication_boundary: Option<NativeCallableBoundaryId>,
     world: &World<'_>,
     ctx: &mut NativeFnCtx,
     lane_index: &mut usize,
@@ -3774,10 +3933,13 @@ fn decode_runtime_value_with_width(
     let lanes = params.get(*lane_index..end).ok_or(FatalError)?.to_vec();
     *lane_index = end;
     if published_value {
-        if lanes.is_empty() {
+        let [var] = lanes.as_slice() else {
             return Err(FatalError);
+        };
+        if let Some(boundary) = publication_boundary {
+            ctx.callable_value_boundaries.insert(*var, boundary);
         }
-        return Ok(NativeBoundValue::Transport { shape, lanes });
+        return Ok(NativeBoundValue::Runtime(*var));
     }
     decode_native_value_from_lanes(world, ctx, shape, lanes)
 }
