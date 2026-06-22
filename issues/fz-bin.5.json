@@ -8,6 +8,7 @@
   "blocks": [
     "fz-bin.3"
   ],
+  "closed_at": "2026-06-22T00:06:57Z",
   "created": "2026-06-21T20:56:50Z",
   "description": "Add a multi-target dispatch call-edge and lower it through every codegen stage. ONE atomic commit (the type will not compile until all stages handle the new shape). ALL return flows: Tail, Continue, Deliver.\n\nREPRESENTATION. MaterializedCallEdge.callee is today a single CallTarget\u003cExecutableKey\u003e (artifact.rs:132). Introduce a dispatch shape carrying: the PatternDispatchPlan\u003cTy\u003e from fz-bin.2 + one CallTarget\u003cExecutableKey\u003e per arm + a miss/residual behavior. Mirror it through the stage-specific edge types: AbiReadyCallEdge (artifact.rs:306), EmissionReadyCallEdge (artifact.rs:342), and the BackendProgram/native edge. Keep the single-target case as-is (do not regress concrete-receiver direct calls).\n\nMATERIALIZE (jobs/artifact.rs). materialize_direct_call_edge (552) currently errors on !single_target. Instead: when targets.len() \u003e 1, build the dispatch plan (fz-bin.2), lower EACH arm's target via lower_materialized_call_target (634) into a per-arm CallTarget + its CallReturnFlow, and assemble a dispatch edge. The return flow is shared by all arms (same callsite dest); compute it once (compute_call_return_flow path, ~703) and reuse. Each arm's receiver-narrowed surface_inputs drive its own transport/arg lowering.\n\nTRANSPORT. Each arm is a real call edge and needs its transport positions/marshals like any direct call. Confirm transport derivation (jobs/transport.rs) walks call_edges by callsite -\u003e for a dispatch edge it must visit every arm target. Extend the call-edge transport walk accordingly.\n\nCODEGEN. native.rs and backend.rs already emit a runtime type-test tree for LoweredTail::Dispatch (DispatchState; backend.rs:453). Reuse that emitter for the call edge: test the receiver value's runtime type per the plan, branch to the matching arm's direct call, converge results to the callsite dest. For Tail flow each arm tail-calls; for Continue/Deliver each arm calls then routes its payload to the shared continuation/entry. The miss arm: unreachable-by-construction when the matrix is exhaustive over the receiver union (emit a trap/halt), OR the residual any-receiver fallback (coordinate with fz-bin.4's note -- a truly-any receiver has no static arm; for the union case the arms ARE exhaustive).\n\nVERIFY: a multi-target protocol callsite (list|range receiver) materializes and emits a type-dispatch over List.reduce / Range.reduce; a drive_test asserting the dispatch edge shape; lib + matrix green; zero warnings. Concrete-receiver callsites still emit a single direct call (no dispatch edge).",
   "id": "fz-bin.5",
@@ -20,8 +21,8 @@
     }
   ],
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Multi-target dispatch call-edge through materialize+codegen (all return flows)",
   "type": "task",
-  "updated_at": "2026-06-21T23:50:23Z"
+  "updated_at": "2026-06-22T00:06:57Z"
 }
