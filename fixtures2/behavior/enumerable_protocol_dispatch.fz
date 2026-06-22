@@ -1,9 +1,9 @@
 #---
 # purpose: "Enumerable protocol dispatch covers List, Range, and Map receivers"
 # oracle: oracle.exs
-# defer.build: fz-9i4.7.2 compiler2 multi-target protocol/Enumerable dispatch not settled upstream
-# defer.interp: fz-9i4.7.2 compiler2 multi-target protocol/Enumerable dispatch not settled upstream
-# defer.run: fz-9i4.7.2 compiler2 multi-target protocol/Enumerable dispatch not settled upstream
+# defer.build: fz-bv3 map+struct protocol dispatch still needs nominal struct-vs-map tests
+# defer.interp: fz-bv3 map+struct protocol dispatch still needs nominal struct-vs-map tests
+# defer.run: fz-bv3 map+struct protocol dispatch still needs nominal struct-vs-map tests
 #---
 #
 # Exercises a closed-union `Enumerable.count/1` call whose receiver can be a

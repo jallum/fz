@@ -11,7 +11,7 @@
 # budget.planner.blocks: 19
 # budget.planner.stmts: 23
 # budget.planner.dispatches: 11
-# defer.interp: fz-9i4.7.2 compiler2 multi-target protocol/Enumerable dispatch not settled upstream
+# defer.interp: fz-bin.11 compiler2 interp utf8 guard equality misses brand-blind match
 #---
 #
 # # bsx_guard_eq
