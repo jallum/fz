@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-22T02:20:23Z",
+  "description": "While reducing fz-bin.17, a local make/3 returning {:ok, n, fn -\u003e ...} and then calling the closure after dbg(n) exposed a separate native direct-call fast-path bug. After entry-capture encoding correctly treats the closure as boxed/published, the direct closure call still selects the local target and passes structural capture lanes plus call args, producing a verifier mismatch such as main__e0__resume_2 got 6 args for a target signature expecting 3. Range enumerable no longer depends on this path because the protocol slicer uses the published callable boundary, but the direct fast path should skip boxed/published callable values or rematerialize through the settled boundary before direct target invocation.",
+  "id": "fz-bin.18",
+  "labels": [],
+  "parent": "fz-bin",
+  "priority": 3,
+  "status": "open",
+  "title": "Direct fast path miscalls boxed tuple-returned closure after resume",
+  "type": "bug",
+  "updated_at": "2026-06-22T02:20:23Z"
+}
