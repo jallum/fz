@@ -11,11 +11,15 @@
     {
       "text": "Created from fz-bin.9 verification. Current native run reaches Range slice after printing reduce/count/member outputs, then aborts at fz_closure_get_capture_ref with tagged int 0xa as closure self. Current backend interp reaches the second reduce output, then reports backend value 5 is unbound. The boundary-publication ambiguity from fz-bin.9 is no longer observed.",
       "timestamp": "2026-06-22T01:07:31Z"
+    },
+    {
+      "text": "Blocked by fz-bin.17. Current native crash is not the direct closure-call fast path alone: dumps show Enumerable.slice returns {:ok, n, slicer} with the callable field flattened through the return/resume payload. main__e0__resume_24 receives four params and captures v2 as slicer; v2 is the integer capture 10. main__e0__resume_25 then calls fz_closure_get_capture_ref through that value and aborts. Experimental native-only fixes either failed to affect the CLIF or broke direct-only callables with no boundary, so the prerequisite is to publish/materialize a first-class boundary for tuple-returned callable fields that later resume as closures.",
+      "timestamp": "2026-06-22T02:00:17Z"
     }
   ],
   "priority": 2,
   "status": "in_progress",
   "title": "Returned Range slicer callable is called with captured integer as closure self",
   "type": "bug",
-  "updated_at": "2026-06-22T01:41:09Z"
+  "updated_at": "2026-06-22T02:00:17Z"
 }
