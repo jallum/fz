@@ -10,7 +10,7 @@ use super::value::{
     interp_struct_field_from_tagged_bits, interp_value_from_ref_word, with_value_ref,
 };
 use super::*;
-use crate::compiler2::transport::{ShapeDescr, ShapeId, TransportPosition, TransportStore};
+use crate::compiler2::transport::{CallableId, ShapeDescr, ShapeId, TransportPosition, TransportStore};
 use crate::compiler2::{
     BackendBody, BackendEntry, BackendExecutable, BackendProgram, BackendStep as ProgramStep, BackendTail, CallEdge,
     CallTarget, ControlDestination, ExecutableDispatch, ValueId,
@@ -481,7 +481,8 @@ fn step_backend_executable(
             )
         }
         BackendBody::Clauses { clauses, entries, .. } => {
-            let semantic_inputs = bind_executable_inputs(transport, program, types, executable, &args)?;
+            let semantic_inputs =
+                bind_executable_inputs(transport, program, types, runtime.cur_proc(), executable, &args)?;
             let clause_index = if clauses.len() == 1 {
                 0
             } else {
@@ -673,7 +674,7 @@ fn step_eval_entry(
             entry_id.as_u32()
         )
     })?;
-    match &entry.tail {
+    let transition = match &entry.tail {
         BackendTail::Value { value, dest } => {
             let result = env_get_value(&env, *value)?;
             match dest {
@@ -792,7 +793,7 @@ fn step_eval_entry(
             // Capture lanes are already the flat ABI lanes for the callee's leading
             // capture inputs; forward them directly. The capture/arg split is the
             // callee's fact: total inputs minus the explicit call args.
-            let arg_inputs_start = executable_input_shapes(program, callee_executable)?
+            let arg_inputs_start = executable_input_bindings(program, callee_executable)?
                 .len()
                 .checked_sub(args.len())
                 .ok_or_else(|| {
@@ -820,7 +821,14 @@ fn step_eval_entry(
                     continuations.push(BackendContinuation {
                         executable: executable_index,
                         entry: *target,
-                        env: capture_backend_continuation_env(runtime.cur_proc(), entries, *target, &env)?,
+                        env: capture_backend_continuation_env(
+                            runtime.cur_proc(),
+                            transport,
+                            program,
+                            entries,
+                            *target,
+                            &env,
+                        )?,
                     });
                     continuations
                 }
@@ -934,7 +942,15 @@ fn step_eval_entry(
             Ok(BackendEvalTransition::Blocked)
         }
         BackendTail::Halt { atom } => Err(atom.clone()),
-    }
+    };
+    transition.map_err(|error| {
+        format!(
+            "backend executable {} function {} entry {} tail failed: {error}",
+            executable_index,
+            executable.key.activation.function.as_u32(),
+            entry_id.as_u32()
+        )
+    })
 }
 
 fn try_match_backend_receive(
@@ -1419,13 +1435,24 @@ fn delivered_env(
         | crate::compiler2::BackendEntryOrigin::ReceiveOutcome => {}
         crate::compiler2::BackendEntryOrigin::DeliveredResume { value, position } => {
             let shape = position_shape(program, position)?;
-            let bound = bind_delivered_value(transport, runtime.cur_proc(), entry_id, delivered.as_ref(), shape)?;
+            let bound = bind_delivered_value(
+                transport,
+                program,
+                runtime.cur_proc(),
+                entry_id,
+                delivered.as_ref(),
+                position,
+                shape,
+            )?;
             if let Some(bound) = bound {
                 next.insert(*value, bound);
             }
         }
     }
-    for capture in &entry.captures {
+    for (capture, position) in entry.captures.iter().zip(entry.capture_positions.iter()) {
+        if position_is_runtime_absent(transport, program, position)? {
+            continue;
+        }
         next.insert(*capture, env_get_value(env, *capture)?);
     }
     for capture in &entry.reusable_cons_captures {
@@ -1502,6 +1529,8 @@ fn eval_direct_call(
                 entry: target,
                 env: capture_backend_continuation_env(
                     runtime.cur_proc(),
+                    transport,
+                    program,
                     entries_for_executable(program, executable_index)?,
                     target,
                     &env,
@@ -1541,6 +1570,8 @@ fn eval_direct_call(
 
 fn capture_backend_continuation_env(
     proc: *mut Process,
+    transport: &TransportStore,
+    program: &BackendProgram,
     entries: &[BackendEntry],
     target: crate::compiler2::ControlEntryId,
     env: &HashMap<ValueId, BackendBoundValue>,
@@ -1549,7 +1580,10 @@ fn capture_backend_continuation_env(
         .get(target.as_u32() as usize)
         .ok_or_else(|| format!("backend entry {} is out of bounds", target.as_u32()))?;
     let mut captured = HashMap::with_capacity(entry.captures.len() + entry.reusable_cons_captures.len());
-    for capture in &entry.captures {
+    for (capture, position) in entry.captures.iter().zip(entry.capture_positions.iter()) {
+        if position_is_runtime_absent(transport, program, position)? {
+            continue;
+        }
         captured.insert(*capture, publish_backend_capture(proc, &env_get_value(env, *capture)?)?);
     }
     for capture in &entry.reusable_cons_captures {
@@ -1644,15 +1678,25 @@ fn bind_executable_inputs(
     transport: &TransportStore,
     program: &BackendProgram,
     types: &crate::compiler2::Types,
+    proc: *mut Process,
     executable: &BackendExecutable,
     args: &[AnyValue],
 ) -> Result<Vec<Option<BackendBoundValue>>, String> {
     let semantic_arity = executable.key.activation.input_len(types);
     let mut bound = vec![None; semantic_arity];
     let mut lane_index = 0;
-    for (semantic_index, shape) in executable_input_shapes(program, executable)? {
-        let value = decode_runtime_input(transport, executable, args, shape, &mut lane_index)?;
-        bound[semantic_index] = value;
+    for binding in executable_input_bindings(program, executable)? {
+        let value = decode_runtime_input_for_position(
+            transport,
+            program,
+            executable,
+            proc,
+            args,
+            &binding.position,
+            binding.shape,
+            &mut lane_index,
+        )?;
+        bound[binding.semantic_index] = value;
     }
     if lane_index != args.len() {
         return Err(format!(
@@ -1685,7 +1729,9 @@ pub(crate) fn encode_macro_entry_inputs(
         .get(program.entry)
         .ok_or_else(|| format!("macro entry executable {} is out of bounds", program.entry))?;
     let mut lanes = Vec::new();
-    for (semantic_index, shape) in executable_input_shapes(program, executable)? {
+    for binding in executable_input_bindings(program, executable)? {
+        let semantic_index = binding.semantic_index;
+        let shape = binding.shape;
         if matches!(transport.interners().shape(shape), ShapeDescr::Nothing) {
             continue;
         }
@@ -1709,10 +1755,26 @@ fn position_shape(program: &BackendProgram, position: &TransportPosition) -> Res
         .ok_or_else(|| format!("backend transport handoff did not publish shape for {position:?}"))
 }
 
-fn executable_input_shapes(
+fn position_is_runtime_absent(
+    transport: &TransportStore,
+    program: &BackendProgram,
+    position: &TransportPosition,
+) -> Result<bool, String> {
+    let shape = position_shape(program, position)?;
+    Ok(matches!(transport.interners().shape(shape), ShapeDescr::Nothing))
+}
+
+#[derive(Clone)]
+struct BackendExecutableInputBinding {
+    position: TransportPosition,
+    semantic_index: usize,
+    shape: ShapeId,
+}
+
+fn executable_input_bindings(
     program: &BackendProgram,
     executable: &BackendExecutable,
-) -> Result<Vec<(usize, ShapeId)>, String> {
+) -> Result<Vec<BackendExecutableInputBinding>, String> {
     let mut inputs = executable
         .transport
         .input_positions
@@ -1721,10 +1783,16 @@ fn executable_input_shapes(
             let TransportPosition::ExecutableInput { semantic_index, .. } = position else {
                 return None;
             };
-            Some(position_shape(program, position).map(|shape| (*semantic_index, shape)))
+            Some(
+                position_shape(program, position).map(|shape| BackendExecutableInputBinding {
+                    position: position.clone(),
+                    semantic_index: *semantic_index,
+                    shape,
+                }),
+            )
         })
         .collect::<Result<Vec<_>, _>>()?;
-    inputs.sort_by_key(|(semantic_index, _)| *semantic_index);
+    inputs.sort_by_key(|binding| binding.semantic_index);
     Ok(inputs)
 }
 
@@ -1883,22 +1951,43 @@ fn encode_call_args(
         ));
     }
     let mut lanes = Vec::new();
-    for (arg, (_, shape)) in args.iter().zip(
-        executable_input_shapes(program, executable)?
+    for (arg, binding) in args.iter().zip(
+        executable_input_bindings(program, executable)?
             .into_iter()
             .skip(semantic_start),
     ) {
-        let value = env_get_value(env, arg.value)?;
-        encode_runtime_value(transport, runtime.cur_proc(), &value, shape, &mut lanes)?;
+        if matches!(transport.interners().shape(binding.shape), ShapeDescr::Nothing) {
+            continue;
+        }
+        let value = env_get_value(env, arg.value).map_err(|error| {
+            format!(
+                "backend encode_call_args callee_fn={} semantic_index={} shape={:?} arg_value={:?}: {error}",
+                executable.key.activation.function.as_u32(),
+                binding.semantic_index,
+                transport.interners().shape(binding.shape),
+                arg.value,
+            )
+        })?;
+        encode_runtime_value_for_position(
+            transport,
+            program,
+            runtime.cur_proc(),
+            &value,
+            binding.shape,
+            &binding.position,
+            &mut lanes,
+        )?;
     }
     Ok(lanes)
 }
 
 fn bind_delivered_value(
     transport: &TransportStore,
+    program: &BackendProgram,
     proc: *mut Process,
     entry_id: crate::compiler2::ControlEntryId,
     delivered: Option<&BackendBoundValue>,
+    position: &TransportPosition,
     shape: ShapeId,
 ) -> Result<Option<BackendBoundValue>, String> {
     match transport.interners().shape(shape) {
@@ -1910,70 +1999,57 @@ fn bind_delivered_value(
                     entry_id.as_u32()
                 )
             })?;
-            Ok(Some(project_backend_value(transport, proc, delivered, shape)?))
+            Ok(Some(project_backend_value_for_position(
+                transport, program, proc, delivered, shape, position,
+            )?))
         }
     }
 }
 
-fn decode_runtime_input(
+fn decode_runtime_input_for_position(
     transport: &TransportStore,
+    program: &BackendProgram,
     executable: &BackendExecutable,
+    proc: *mut Process,
     args: &[AnyValue],
+    position: &TransportPosition,
     shape: ShapeId,
     lane_index: &mut usize,
 ) -> Result<Option<BackendBoundValue>, String> {
     match transport.interners().shape(shape) {
         ShapeDescr::Nothing => Ok(None),
-        _ => decode_runtime_value(transport, executable, args, shape, lane_index).map(Some),
+        _ => decode_runtime_value_for_position(transport, program, proc, args, position, shape, lane_index)
+            .map(Some)
+            .map_err(|error| {
+                format!(
+                    "backend executable {} failed to decode input at {position:?}: {error}",
+                    executable.key.activation.function.as_u32()
+                )
+            }),
     }
 }
 
-fn decode_runtime_value(
+fn project_backend_value_for_position(
     transport: &TransportStore,
-    executable: &BackendExecutable,
-    args: &[AnyValue],
-    shape: ShapeId,
-    lane_index: &mut usize,
-) -> Result<BackendBoundValue, String> {
-    let width = backend_shape_width(transport, shape);
-    let end = lane_index.checked_add(width).ok_or_else(|| {
-        format!(
-            "backend executable {} runtime lane offset overflow",
-            executable.key.activation.function.as_u32()
-        )
-    })?;
-    let lanes = args.get(*lane_index..end).ok_or_else(|| {
-        format!(
-            "backend executable {} expected runtime lane range {}..{}",
-            executable.key.activation.function.as_u32(),
-            *lane_index,
-            end
-        )
-    })?;
-    *lane_index = end;
-    decode_backend_value_from_lanes(transport, shape, lanes.to_vec())
-}
-
-fn project_backend_value(
-    transport: &TransportStore,
+    program: &BackendProgram,
     proc: *mut Process,
     value: &BackendBoundValue,
     shape: ShapeId,
+    position: &TransportPosition,
 ) -> Result<BackendBoundValue, String> {
-    if let BackendBoundValue::Transport {
-        shape: value_shape,
-        lanes,
-    } = value
-        && *value_shape == shape
-    {
-        return Ok(BackendBoundValue::Transport {
-            shape,
-            lanes: lanes.clone(),
-        });
-    }
     let mut lanes = Vec::new();
-    encode_runtime_value(transport, proc, value, shape, &mut lanes)?;
-    decode_backend_value_from_lanes(transport, shape, lanes)
+    encode_runtime_value_for_position(transport, program, proc, value, shape, position, &mut lanes)?;
+    let mut lane_index = 0;
+    let decoded =
+        decode_runtime_value_for_position(transport, program, proc, &lanes, position, shape, &mut lane_index)?;
+    if lane_index != lanes.len() {
+        return Err(format!(
+            "backend transport position {position:?} decoded {} lane(s), got {}",
+            lane_index,
+            lanes.len()
+        ));
+    }
+    Ok(decoded)
 }
 
 fn encode_runtime_value(
@@ -2028,11 +2104,146 @@ fn encode_runtime_value(
     }
 }
 
+fn encode_runtime_value_for_position(
+    transport: &TransportStore,
+    program: &BackendProgram,
+    proc: *mut Process,
+    value: &BackendBoundValue,
+    shape: ShapeId,
+    position: &TransportPosition,
+    lanes: &mut Vec<AnyValue>,
+) -> Result<(), String> {
+    match transport.interners().shape(shape) {
+        ShapeDescr::Tuple(fields) => {
+            let tuple_fields = tuple_field_values_for_shape(transport, proc, value, shape, fields)?;
+            for (field_value, field_shape) in tuple_fields.iter().zip(fields.iter().copied()) {
+                encode_runtime_value_for_position(transport, program, proc, field_value, field_shape, position, lanes)?;
+            }
+            Ok(())
+        }
+        ShapeDescr::Callable(callable) if position_publishes_callable(transport, program, position, *callable) => {
+            lanes.push(materialize_backend_value(transport, proc, value)?);
+            Ok(())
+        }
+        ShapeDescr::Nothing | ShapeDescr::Lane(_) | ShapeDescr::Callable(_) => {
+            encode_runtime_value(transport, proc, value, shape, lanes)
+        }
+    }
+}
+
+fn decode_runtime_value_for_position(
+    transport: &TransportStore,
+    program: &BackendProgram,
+    proc: *mut Process,
+    args: &[AnyValue],
+    position: &TransportPosition,
+    shape: ShapeId,
+    lane_index: &mut usize,
+) -> Result<BackendBoundValue, String> {
+    match transport.interners().shape(shape) {
+        ShapeDescr::Nothing => Ok(BackendBoundValue::Absent),
+        ShapeDescr::Lane(_) => {
+            let value = next_runtime_lane(args, lane_index)?;
+            Ok(BackendBoundValue::Runtime(value))
+        }
+        ShapeDescr::Callable(callable) if position_publishes_callable(transport, program, position, *callable) => {
+            let value = next_runtime_lane(args, lane_index)?;
+            Ok(BackendBoundValue::Runtime(value))
+        }
+        ShapeDescr::Callable(_) => {
+            let width = backend_shape_width(transport, shape);
+            let lanes = take_runtime_lanes(args, lane_index, width)?;
+            decode_backend_value_from_lanes(transport, shape, lanes)
+        }
+        ShapeDescr::Tuple(fields) => {
+            let mut field_values = Vec::with_capacity(fields.len());
+            let mut raw_lanes = Vec::new();
+            let mut all_raw = true;
+            for field in fields.iter().copied() {
+                let value =
+                    decode_runtime_value_for_position(transport, program, proc, args, position, field, lane_index)?;
+                if all_raw {
+                    if let Some(lanes) = raw_lanes_for_shape_value(transport, field, &value) {
+                        raw_lanes.extend(lanes);
+                    } else {
+                        all_raw = false;
+                    }
+                }
+                field_values.push(value);
+            }
+            if all_raw {
+                return Ok(BackendBoundValue::Transport {
+                    shape,
+                    lanes: raw_lanes,
+                });
+            }
+            let fields = field_values
+                .iter()
+                .map(|value| materialize_backend_value(transport, proc, value))
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(BackendBoundValue::Runtime(make_tuple_on_proc(proc, fields)?))
+        }
+    }
+}
+
 fn backend_shape_width(transport: &TransportStore, shape: ShapeId) -> usize {
     match transport.interners().shape(shape) {
         ShapeDescr::Callable(callable) if transport.interners().callable(*callable).function.is_none() => 1,
         _ => transport.interners().shape_width(shape),
     }
+}
+
+fn position_publishes_callable(
+    transport: &TransportStore,
+    program: &BackendProgram,
+    position: &TransportPosition,
+    callable: CallableId,
+) -> bool {
+    program
+        .transport
+        .publication_boundaries
+        .iter()
+        .filter_map(|(candidate, boundary)| (candidate == position).then_some(*boundary))
+        .any(|boundary| transport.interners().boundary(boundary).callable == callable)
+}
+
+fn raw_lanes_for_shape_value(
+    transport: &TransportStore,
+    shape: ShapeId,
+    value: &BackendBoundValue,
+) -> Option<Vec<AnyValue>> {
+    match (transport.interners().shape(shape), value) {
+        (ShapeDescr::Nothing, BackendBoundValue::Absent) => Some(Vec::new()),
+        (ShapeDescr::Lane(_), BackendBoundValue::Runtime(value)) => Some(vec![*value]),
+        (
+            ShapeDescr::Tuple(_) | ShapeDescr::Callable(_),
+            BackendBoundValue::Transport {
+                shape: value_shape,
+                lanes,
+            },
+        ) if *value_shape == shape && lanes.len() == transport.interners().shape_width(shape) => Some(lanes.clone()),
+        _ => None,
+    }
+}
+
+fn take_runtime_lanes(args: &[AnyValue], lane_index: &mut usize, width: usize) -> Result<Vec<AnyValue>, String> {
+    let end = lane_index
+        .checked_add(width)
+        .ok_or_else(|| "backend runtime lane offset overflow".to_string())?;
+    let lanes = args
+        .get(*lane_index..end)
+        .ok_or_else(|| format!("backend expected runtime lane range {}..{}", *lane_index, end))?
+        .to_vec();
+    *lane_index = end;
+    Ok(lanes)
+}
+
+fn next_runtime_lane(args: &[AnyValue], lane_index: &mut usize) -> Result<AnyValue, String> {
+    let value = *args
+        .get(*lane_index)
+        .ok_or_else(|| format!("backend expected runtime lane {}", *lane_index))?;
+    *lane_index += 1;
+    Ok(value)
 }
 
 fn decode_backend_value_from_lanes(
