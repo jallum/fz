@@ -3,13 +3,13 @@
   "blocked_by": [],
   "blocks": [],
   "created": "2026-06-22T01:29:23Z",
-  "description": "After fz-bin.10 fixes transport shape ownership for fixtures2/behavior/enum_predicate_search.fz, both fz2 interp and fz2 run reach native lowering and fail with error[artifact/incomplete-semantic-plan]: compiler2 native lowering for root 0: native callable materialization found no native boundary among CallableId fact boundaries [] for CallableId(...). The fixture uses Enum predicate/search callbacks that stay direct-callable in transport, but native callable materialization is trying to select a native boundary anyway. Investigate native callable materialization's direct-vs-first-class boundary selection before re-enabling enum_predicate_search execution.",
+  "description": "After fz-bin.10 fixes transport shape ownership for fixtures2/behavior/enum_predicate_search.fz, the fixture no longer panics with transport shape anchor disagreement. Current post-transport blockers are: fz2 interp fixtures2/behavior/enum_predicate_search.fz exits with 'backend value 8 is unbound'; fz2 run exits with 'compiler2 root 0 JIT compile failed: codegen: ReturnLanes arity mismatch ... lanes=2, return_reprs=0'; fz2 build -o /tmp/enum_predicate_search_bin exits with the same AOT ReturnLanes arity mismatch. Investigate backend value binding and native return-lane projection for Enum predicate/search callbacks before re-enabling the fixture execution modes.",
   "id": "fz-bin.15",
   "labels": [],
   "parent": "fz-bin",
   "priority": 2,
   "status": "open",
-  "title": "Native callable materialization requires boundary for direct Enum predicate callback",
+  "title": "Enum predicate/search execution fails after transport settles",
   "type": "bug",
-  "updated_at": "2026-06-22T01:29:23Z"
+  "updated_at": "2026-06-22T01:33:15Z"
 }
