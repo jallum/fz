@@ -17,11 +17,15 @@
     {
       "text": "Further fz-bin.18 reduction on materialized_transport_handoff_refs.fz shows pair/escape publications are present broadly, including Value, CallArg, ExecutableInput, pair ResumePayload, pair ExecutableReturn, escape ExecutableReturn, and ReturnPayload positions. The failing native body is Continuation { owner: FnId(4), index: 1 }, encoding callable shape ShapeId(13) for value Some(ValueId(1)) from Runtime(Var(0)). A recursive mixed tuple ABI experiment fixed neither the handoff fixture nor range_enumerable; range then panicked in native_codegen/terminator.rs at callee_param_reprs indexing, proving the ABI and emitted arg lanes diverged. The correct fix needs to align transport publication positions, native continuation/return ABI construction, and direct callable argument lowering atomically.",
       "timestamp": "2026-06-22T02:39:54Z"
+    },
+    {
+      "text": "Resolved native/codegen side of the blocker: native ABI construction now encodes/decodes publication-aware positions recursively instead of treating any publication as publication-only, return/resume/capture signatures use mixed raw/publication lane reprs, direct closure fast path declines boxed/published callable args and mismatched arity, closure target codegen consumes authoritative boundary ABI, and decoded multi-surface published closures no longer require one stored boundary. Broader polymorphic indirect-closure dispatch is tracked separately as fz-x2n; current direct-target polymorphic fixtures are green.",
+      "timestamp": "2026-06-22T03:01:26Z"
     }
   ],
   "priority": 3,
   "status": "in_progress",
   "title": "Direct fast path miscalls boxed tuple-returned closure after resume",
   "type": "bug",
-  "updated_at": "2026-06-22T02:39:54Z"
+  "updated_at": "2026-06-22T03:01:26Z"
 }
