@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-23T20:55:07Z",
+  "description": "record_callable_shape_surface_publications ignores its surface_shapes param (let _ = surface_shapes). The 4 callers compute it via callable_surface_shapes_for_demand -\u003e surface_shape -\u003e generic_shape_from_demand, which RECORDS callables into delta as a side effect. So removing the param cleanly requires proving that side-effect recording is unneeded (or independently triggered) -- needs oracle validation, not a quick edit. Deferred; do not remove the param without confirming the recorded callables are not consumed by the plan.",
+  "id": "fz-bfh.5.13",
+  "labels": [],
+  "parent": "fz-bfh.5",
+  "priority": 2,
+  "status": "open",
+  "title": "Investigate dead surface_shapes param in record_callable_shape_surface_publications",
+  "type": "task",
+  "updated_at": "2026-06-23T20:55:07Z"
+}
