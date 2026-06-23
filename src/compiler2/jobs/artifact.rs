@@ -76,6 +76,17 @@ pub(super) fn materialize_root(world: &mut World<'_>, root_id: RootId) -> Result
     let reads = settled_uses([closed_fact, transport_fact]);
     let mut executables = HashMap::new();
 
+    // Group the root's transport positions by executable once, so each
+    // executable reads its own slice instead of re-scanning every position in
+    // the whole-root plan (the former O(executables x positions) pass).
+    let mut positions_by_executable: HashMap<ExecutableSymbol, Vec<TransportPosition>> = HashMap::new();
+    for position in transport_plan.positions.keys() {
+        positions_by_executable
+            .entry(transport_position_executable(position).clone())
+            .or_default()
+            .push(position.clone());
+    }
+
     for executable in &closure.executables {
         let analysis = world
             .activation_analysis(&executable.activation)
@@ -121,7 +132,7 @@ pub(super) fn materialize_root(world: &mut World<'_>, root_id: RootId) -> Result
                     .get(executable)
                     .cloned()
                     .expect("settled semantic closure should have runtime demand for every executable"),
-                transport: materialized_executable_transport(&transport_plan, executable, world.types()),
+                transport: materialized_executable_transport(&positions_by_executable, executable, world.types()),
                 original_entry_ids: pruned.original_entry_ids,
                 value_types: analysis.value_types,
                 effects,
@@ -263,7 +274,7 @@ fn materialized_transport_plan(plan: &TransportPlan) -> MaterializedTransportPla
 }
 
 fn materialized_executable_transport(
-    plan: &TransportPlan,
+    positions_by_executable: &HashMap<ExecutableSymbol, Vec<TransportPosition>>,
     executable: &ExecutableKey,
     types: &Types,
 ) -> MaterializedExecutableTransport {
@@ -275,10 +286,11 @@ fn materialized_executable_transport(
     let mut entry_capture_positions = Vec::new();
     let mut call_arg_positions = Vec::new();
     let mut value_positions = Vec::new();
-    for position in plan.positions.keys() {
-        if transport_position_executable(position) != &symbol {
-            continue;
-        }
+    for position in positions_by_executable
+        .get(&symbol)
+        .map(Vec::as_slice)
+        .unwrap_or_default()
+    {
         match position {
             TransportPosition::ExecutableInput { .. } => input_positions.push(position.clone()),
             TransportPosition::ExecutableReturn { .. } => return_position = Some(position.clone()),
