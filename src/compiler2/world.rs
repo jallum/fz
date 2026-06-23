@@ -36,6 +36,7 @@ use super::identity::{
     FunctionSource, ModuleId, ModuleMap, ModuleSourceKind, ModuleState, NotedTypeDecl, RootEntry, RootId, RootKind,
     RootMap, TypeDeclMap, TypeName, TypeRefMap,
 };
+use super::jobs::transport::ExecutableTransportFacts;
 use super::keying::{DispatchDemand, DispatchMaskMap, RecursiveMap};
 use super::module_interface::{InterfaceCallableKind, InterfaceExpectation, InterfaceRequester, ModuleInterface};
 use super::namespace::{Namespace, NamespaceStore, NamespaceSymbol};
@@ -245,6 +246,7 @@ pub struct World<'a> {
     namespaces: NamespaceStore,
     types: Types,
     transport: TransportStore,
+    executable_transport: HashMap<ExecutableKey, ExecutableTransportFacts>,
     runtime_prelude: CodeId,
     runtime_modules: HashMap<ModuleId, RuntimeModuleCode>,
     reported_unresolved: HashSet<UnresolvedIssueKey>,
@@ -311,6 +313,7 @@ impl<'a> World<'a> {
             namespaces: NamespaceStore::new(),
             types: Types::new(),
             transport: TransportStore::new(),
+            executable_transport: HashMap::new(),
             runtime_prelude: CodeId::ZERO,
             runtime_modules: HashMap::new(),
             reported_unresolved: HashSet::new(),
@@ -1116,6 +1119,28 @@ impl<'a> World<'a> {
             .get(root)
             .cloned()
             .expect("semantic closures should only be read after their fact is defined")
+    }
+
+    /// Store one executable's transport contribution (the `ExecutableTransport`
+    /// fact content). Returns whether it changed, so the work graph bumps the
+    /// fact's revision only on real movement -- the blast-radius signal the
+    /// fan-in subscribes to.
+    pub(crate) fn define_executable_transport(
+        &mut self,
+        executable: ExecutableKey,
+        facts: ExecutableTransportFacts,
+    ) -> bool {
+        match self.executable_transport.get(&executable) {
+            Some(existing) if existing == &facts => false,
+            _ => {
+                self.executable_transport.insert(executable, facts);
+                true
+            }
+        }
+    }
+
+    pub(crate) fn executable_transport(&self, executable: &ExecutableKey) -> Option<&ExecutableTransportFacts> {
+        self.executable_transport.get(executable)
     }
 
     pub(crate) fn define_transport_plan(&mut self, root: RootId, plan: TransportPlan) -> bool {

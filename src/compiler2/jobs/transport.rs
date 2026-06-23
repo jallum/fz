@@ -162,6 +162,20 @@ struct ShapeConstraintGraph {
     )>,
 }
 
+/// One executable's transport contribution -- the content of an
+/// [`FactKey::ExecutableTransport`] fact. It is the intra-executable slice of
+/// the projection (anchors, equality edges, callable/boundary drafts) that
+/// `derive_executable_transport` produces and `derive_transport_plan` fans in.
+/// The cross-executable closure (input merge, boundary expansion, the solves,
+/// codegen seam) stays in the fan-in, which merges these contributions in
+/// executable-sort order so the assembled plan is byte identical to the former
+/// single-pass projection.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct ExecutableTransportFacts {
+    graph: ShapeConstraintGraph,
+    facts: TransportFactsBuilder,
+}
+
 impl ShapeConstraintGraph {
     fn anchor(&mut self, position: TransportPosition, shape: ShapeId) {
         self.anchors.push((position, shape));
@@ -170,6 +184,15 @@ impl ShapeConstraintGraph {
     #[track_caller]
     fn equal(&mut self, left: TransportPosition, right: TransportPosition) {
         self.equalities.push((left, right, std::panic::Location::caller()));
+    }
+
+    /// Append another graph's anchors and equality edges. Both vectors are
+    /// order-preserving, so fanning the per-executable graphs in a fixed
+    /// executable order reproduces the single-pass insertion order the solver
+    /// saw before the projection was split.
+    fn extend(&mut self, other: ShapeConstraintGraph) {
+        self.anchors.extend(other.anchors);
+        self.equalities.extend(other.equalities);
     }
 
     fn has_anchor(&self, position: &TransportPosition) -> bool {
@@ -533,6 +556,74 @@ impl TransportFactsBuilder {
     }
 }
 
+/// Project one executable's intra-executable transport contribution into its
+/// own `ExecutableTransport(E)` fact. Gated on `SemanticClosed` (Stage 1), so
+/// the whole closure is settled; the job builds the shared contexts (the
+/// cross-executable callable-producer lookups still need them) and projects
+/// only `executable`. `derive_transport_plan` fans these in.
+pub(super) fn derive_executable_transport(
+    world: &mut World<'_>,
+    executable: &ExecutableKey,
+) -> Result<JobEffects, FatalError> {
+    let root_id = executable.activation.root;
+    let closed_fact = FactKey::SemanticClosed(root_id);
+    if !world.fact_is_settled(&closed_fact) {
+        return Ok(JobEffects::wait_on_settled(
+            closed_fact,
+            [Job::SealSemanticClosure(root_id)],
+        ));
+    }
+
+    let closure = world.semantic_closure(root_id);
+    let mut reads = vec![closed_fact];
+    let mut wait_facts = HashSet::new();
+    let contexts = collect_transport_contexts(world, &closure, &closure.runtime_demands, &mut reads, &mut wait_facts);
+
+    if !wait_facts.is_empty() {
+        return Ok(JobEffects {
+            reads: settled_uses(reads),
+            waits: settled_uses(wait_facts),
+            follow_up: vec![Job::DeriveExecutableTransport(executable.clone())],
+            ..JobEffects::default()
+        });
+    }
+
+    let mut facts = TransportFactsBuilder::default();
+    let mut shape_graph = ShapeConstraintGraph::default();
+    let mut memo = ProjectionMemo::default();
+    if let Some(context) = contexts.get(executable) {
+        project_one_executable(
+            world,
+            executable,
+            context,
+            &contexts,
+            &mut facts,
+            &mut shape_graph,
+            &mut memo,
+        );
+    }
+    // A missing context means the executable left the closure on a rebase;
+    // publish an empty contribution so the fan-in's read still settles.
+
+    let changed = world.define_executable_transport(
+        executable.clone(),
+        ExecutableTransportFacts {
+            graph: shape_graph,
+            facts,
+        },
+    );
+
+    Ok(JobEffects {
+        reads: settled_uses(reads),
+        outputs: vec![FactKey::ExecutableTransport(executable.clone())],
+        changed: changed
+            .then_some(FactKey::ExecutableTransport(executable.clone()))
+            .into_iter()
+            .collect(),
+        ..JobEffects::default()
+    })
+}
+
 pub(super) fn derive_transport_plan(world: &mut World<'_>, root_id: RootId) -> Result<JobEffects, FatalError> {
     let closed_fact = FactKey::SemanticClosed(root_id);
     if !world.fact_is_settled(&closed_fact) {
@@ -559,7 +650,43 @@ pub(super) fn derive_transport_plan(world: &mut World<'_>, root_id: RootId) -> R
     let mut executables = closure.executables.iter().cloned().collect::<Vec<_>>();
     executables.sort_by_key(|e| executable_sort_key(e, world.types()));
 
-    let plan = project_transport_plan(world, &closure.entry, &executables, &contexts);
+    // Fan-in: each executable's transport contribution is its own settled fact.
+    // Seed the missing ones and wait; the scheduler re-runs this job when they
+    // settle, and reading them subscribes the plan to their revisions.
+    let mut transport_waits = HashSet::new();
+    let mut follow_up = Vec::new();
+    for executable in &executables {
+        let fact = FactKey::ExecutableTransport(executable.clone());
+        if world.fact_is_settled(&fact) {
+            reads.push(fact);
+        } else {
+            transport_waits.insert(fact);
+            follow_up.push(Job::DeriveExecutableTransport(executable.clone()));
+        }
+    }
+    if !transport_waits.is_empty() {
+        follow_up.push(Job::DeriveTransportPlan(root_id));
+        return Ok(JobEffects {
+            reads: settled_uses(reads),
+            waits: settled_uses(transport_waits),
+            follow_up,
+            ..JobEffects::default()
+        });
+    }
+
+    let per_executable = executables
+        .iter()
+        .map(|executable| {
+            (
+                executable.clone(),
+                world
+                    .executable_transport(executable)
+                    .cloned()
+                    .expect("settled ExecutableTransport fact should have a readable payload"),
+            )
+        })
+        .collect::<HashMap<_, _>>();
+    let plan = assemble_transport_plan(world, &closure.entry, &executables, &contexts, &per_executable);
 
     let changed = world.define_transport_plan(root_id, plan);
 
@@ -931,6 +1058,7 @@ fn finish_transport_plan(
 /// tail. The per-executable slice is now [`project_one_executable`] and the
 /// tail is [`finish_transport_plan`]; splitting them is the seam the
 /// per-executable `ExecutableTransport` fact will publish across.
+#[cfg(test)]
 fn project_transport_plan(
     world: &mut World<'_>,
     entry_executable: &ExecutableKey,
@@ -955,6 +1083,29 @@ fn project_transport_plan(
             &mut shape_graph,
             &mut memo,
         );
+    }
+    finish_transport_plan(world, entry_executable, executables, contexts, facts, shape_graph)
+}
+
+/// Fan the settled per-executable `ExecutableTransport` contributions into one
+/// plan. Merging in executable-sort order reproduces the single-pass insertion
+/// order the solver and the additive fact builder saw, so the assembled plan is
+/// byte identical to `project_transport_plan`.
+fn assemble_transport_plan(
+    world: &mut World<'_>,
+    entry_executable: &ExecutableKey,
+    executables: &[ExecutableKey],
+    contexts: &HashMap<ExecutableKey, ExecutableContext>,
+    per_executable: &HashMap<ExecutableKey, ExecutableTransportFacts>,
+) -> TransportPlan {
+    let mut facts = TransportFactsBuilder::default();
+    let mut shape_graph = ShapeConstraintGraph::default();
+    for executable in executables {
+        let contribution = per_executable
+            .get(executable)
+            .expect("fan-in requires one settled ExecutableTransport fact per executable");
+        shape_graph.extend(contribution.graph.clone());
+        facts.merge(&contribution.facts);
     }
     finish_transport_plan(world, entry_executable, executables, contexts, facts, shape_graph)
 }

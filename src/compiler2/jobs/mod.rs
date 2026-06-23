@@ -22,7 +22,7 @@ mod semantic;
 mod source;
 #[cfg(test)]
 mod source_test;
-mod transport;
+pub(crate) mod transport;
 mod types;
 
 #[cfg(test)]
@@ -49,6 +49,7 @@ pub(crate) fn run(world: &mut World<'_>, job: &Job) -> Result<JobEffects, FatalE
         Job::AnalyzeActivation(activation) => semantic::analyze_activation(world, activation),
         Job::DeriveRuntimeDemand(executable) => runtime_demand::derive_runtime_demand(world, executable),
         Job::SealSemanticClosure(root_id) => root::seal_semantic_closure(world, *root_id),
+        Job::DeriveExecutableTransport(executable) => transport::derive_executable_transport(world, executable),
         Job::DeriveTransportPlan(root_id) => transport::derive_transport_plan(world, *root_id),
         Job::MaterializeRoot(root_id) => artifact::materialize_root(world, *root_id),
         Job::DeriveAbiReady(root_id) => artifact::derive_abi_ready(world, *root_id),
