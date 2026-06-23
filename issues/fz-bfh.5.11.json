@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-23T13:13:23Z",
+  "description": "collect_executable_input_constraints called incoming_executable_input_positions (an O(callers x callsites) scan with callsite-summary lookups) twice per callable input position -- once for the callable-input projection, once for the agreement branch. Compute it once and reuse; the projection clones the Vec for source recording, the agreement branch consumes it. Byte-identical.",
+  "id": "fz-bfh.5.11",
+  "labels": [],
+  "parent": "fz-bfh.5",
+  "priority": 2,
+  "status": "open",
+  "title": "Hoist redundant incoming-caller scan in input merge",
+  "type": "task",
+  "updated_at": "2026-06-23T13:13:23Z"
+}
