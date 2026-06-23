@@ -7,9 +7,15 @@
   "id": "fz-bfh.5.13",
   "labels": [],
   "parent": "fz-bfh.5",
+  "comments": [
+    {
+      "text": "INVESTIGATED -\u003e NOT REMOVABLE (load-bearing). Empirically removed the surface_shapes param + the 4 callable_surface_shapes_for_demand computations and ran the guards: shadow + filtered contract green, BUT the full lib run made compiler2_transport_plan_scopes_enum_predicate_callback_inputs_to_concrete_activations flaky (passes alone, fails under the full run) -- the 114-vs-19 shape-agreement-conflict family. So callable_surface_shapes_for_demand's side effect (it records callables into delta via generic_shape_from_demand) IS consumed: those records keep the recursive enum-predicate reducer's input shapes from conflicting at solve. The param is ignored by record_callable_shape_surface_publications, but the caller's computation is not -- the ignored result is just how the side effect is triggered. Reverted (green at 56dca5970). A future clean refactor would make the side effect explicit (record the callables directly rather than discard a surface_shapes result), but that needs to identify exactly which records matter -- larger + oracle-gated, not a remove-unnecessary pass.",
+      "timestamp": "2026-06-23T21:05:14Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "Investigate dead surface_shapes param in record_callable_shape_surface_publications",
   "type": "task",
-  "updated_at": "2026-06-23T20:55:07Z"
+  "updated_at": "2026-06-23T21:05:14Z"
 }
