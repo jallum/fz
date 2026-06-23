@@ -205,7 +205,10 @@ impl ShapeConstraintGraph {
             .find_map(|(anchored, shape)| (anchored == position).then_some(*shape))
     }
 
-    fn solve(self) -> HashMap<TransportPosition, ShapeId> {
+    /// Build the position union-find from the anchors and equality edges. The
+    /// shape solve and the equivalence grouping are both views over this one
+    /// structure, so callers that need both build it once.
+    fn build_union(&self) -> PositionUnion {
         let mut union = PositionUnion::default();
         for (position, _) in &self.anchors {
             union.add(position.clone());
@@ -213,7 +216,12 @@ impl ShapeConstraintGraph {
         for (left, right, _) in &self.equalities {
             union.union(left.clone(), right.clone());
         }
+        union
+    }
 
+    /// Each component root's shape, asserting that every anchor in a component
+    /// agrees -- the flat agree-or-panic meet.
+    fn component_shapes(&self, union: &PositionUnion) -> HashMap<usize, ShapeId> {
         let mut component_shapes = HashMap::<usize, ShapeId>::new();
         for (position, shape) in &self.anchors {
             let root = union.find_existing(position);
@@ -241,7 +249,13 @@ impl ShapeConstraintGraph {
                 );
             }
         }
+        component_shapes
+    }
 
+    fn positions_for(
+        union: &PositionUnion,
+        component_shapes: &HashMap<usize, ShapeId>,
+    ) -> HashMap<TransportPosition, ShapeId> {
         union
             .positions()
             .filter_map(|position| {
@@ -254,15 +268,7 @@ impl ShapeConstraintGraph {
             .collect()
     }
 
-    fn equivalent_positions(&self) -> HashMap<TransportPosition, Vec<TransportPosition>> {
-        let mut union = PositionUnion::default();
-        for (position, _) in &self.anchors {
-            union.add(position.clone());
-        }
-        for (left, right, _) in &self.equalities {
-            union.union(left.clone(), right.clone());
-        }
-
+    fn equivalents_for(union: &PositionUnion) -> HashMap<TransportPosition, Vec<TransportPosition>> {
         let mut by_root = HashMap::<usize, Vec<TransportPosition>>::new();
         for position in union.positions() {
             let root = union.find_existing(position);
@@ -276,6 +282,30 @@ impl ShapeConstraintGraph {
             }
         }
         out
+    }
+
+    #[cfg(test)]
+    fn solve(&self) -> HashMap<TransportPosition, ShapeId> {
+        let union = self.build_union();
+        let component_shapes = self.component_shapes(&union);
+        Self::positions_for(&union, &component_shapes)
+    }
+
+    /// Resolve shapes and equivalence classes together, building the union-find
+    /// once. The fan-in needs both; computing them separately would build the
+    /// same union twice.
+    fn solve_with_equivalents(
+        &self,
+    ) -> (
+        HashMap<TransportPosition, ShapeId>,
+        HashMap<TransportPosition, Vec<TransportPosition>>,
+    ) {
+        let union = self.build_union();
+        let component_shapes = self.component_shapes(&union);
+        (
+            Self::positions_for(&union, &component_shapes),
+            Self::equivalents_for(&union),
+        )
     }
 }
 
@@ -1070,8 +1100,7 @@ fn finish_transport_plan(
         &call_arg_shapes,
         &mut shape_graph,
     );
-    let equivalents = shape_graph.equivalent_positions();
-    let positions = shape_graph.solve();
+    let (positions, equivalents) = shape_graph.solve_with_equivalents();
     facts.expand_boundary_publications(&equivalents);
     facts.resolve_publication_source_boundaries(world);
 
