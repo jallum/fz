@@ -94,64 +94,6 @@ impl InternedId for BoundaryId {
     }
 }
 
-/// The cross-executable agreement state for one input position's transport
-/// shape. Each caller contributes the [`ShapeId`] it sends across the call
-/// edge; the join answers a single question: "do all callers agree on one
-/// physical layout?".
-///
-/// Sticky three-state join-semilattice, height `<= 2`, strictly monotone, so it
-/// needs no widening budget:
-///
-/// - `Unbound` — bottom: no caller has contributed yet.
-/// - `Agreed(shape)` — every caller seen so far carries exactly this layout.
-/// - `Conflicted` — two distinct layouts seen; collapses to top and stays there.
-///
-/// `Unbound` is deliberately distinct from `Conflicted`: "no caller yet" is not
-/// "callers disagree". Conflating them would let an empty caller set masquerade
-/// as a resolved single shape (the unknown-is-not-none rule).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ShapeAgreement {
-    Unbound,
-    Agreed(ShapeId),
-    Conflicted,
-}
-
-impl ShapeAgreement {
-    /// The least element: zero contributors.
-    pub const BOTTOM: Self = ShapeAgreement::Unbound;
-
-    /// A single caller's contribution of `shape`.
-    pub fn of(shape: ShapeId) -> Self {
-        ShapeAgreement::Agreed(shape)
-    }
-
-    /// The agreed shape iff every contributor so far carries one layout.
-    /// `None` for both `Unbound` (nobody yet) and `Conflicted` (disagreement).
-    pub fn agreed(self) -> Option<ShapeId> {
-        match self {
-            ShapeAgreement::Agreed(shape) => Some(shape),
-            ShapeAgreement::Unbound | ShapeAgreement::Conflicted => None,
-        }
-    }
-
-    pub fn is_conflicted(self) -> bool {
-        matches!(self, ShapeAgreement::Conflicted)
-    }
-
-    /// Monotone join: `self ⊔ other`. Commutative, idempotent, with a sticky
-    /// top — once `Conflicted`, always `Conflicted`.
-    pub fn join(self, other: Self) -> Self {
-        use ShapeAgreement::{Agreed, Conflicted, Unbound};
-        match (self, other) {
-            (Unbound, rhs) => rhs,
-            (lhs, Unbound) => lhs,
-            (Conflicted, _) | (_, Conflicted) => Conflicted,
-            (Agreed(left), Agreed(right)) if left == right => Agreed(left),
-            (Agreed(_), Agreed(_)) => Conflicted,
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ShapeDescr {
     Nothing,

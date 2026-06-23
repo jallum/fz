@@ -9,7 +9,6 @@ use std::hash::Hash;
 
 use super::body::{CallSiteId, ControlEntryId, ValueId};
 use super::identity::{ActivationKey, ExecutableKey, FunctionId, RootId};
-use super::transport::ShapeAgreement;
 use super::types::{Ty, Types};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -1023,53 +1022,13 @@ impl JoinContribution for RuntimeDemand {
     }
 }
 
-impl JoinContribution for ShapeAgreement {
-    type Ctx = ();
-
-    fn bottom() -> Self {
-        ShapeAgreement::Unbound
-    }
-
-    fn join_assign(&mut self, other: &Self, _ctx: &mut ()) {
-        *self = self.join(*other);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::{BTreeSet, HashMap, HashSet};
 
     use super::*;
-    use crate::compiler2::transport::{LaneDescr, ShapeDescr, TransportClass, TransportInterners};
     use crate::compiler2::{ExecutableNeed, Job, World};
     use crate::telemetry::ConfiguredTelemetry;
-
-    #[test]
-    fn shape_agreement_join_contribution_delegates_to_the_lattice() {
-        // Intent: the contribution wiring (bottom + join_assign) is the same
-        // monotone climb the lattice algebra defines -- no separate behavior.
-        let mut interners = TransportInterners::default();
-        let mut types = Types::new();
-        let int = types.int();
-        let lane = interners.intern_lane(LaneDescr {
-            ty: int,
-            class: TransportClass::Value,
-        });
-        let shape = interners.intern_shape(ShapeDescr::Lane(lane));
-
-        assert_eq!(<ShapeAgreement as JoinContribution>::bottom(), ShapeAgreement::Unbound);
-
-        let mut cell = ShapeAgreement::bottom();
-        cell.join_assign(&ShapeAgreement::of(shape), &mut ());
-        assert_eq!(cell, ShapeAgreement::Agreed(shape), "first contributor binds the shape");
-
-        cell.join_assign(&ShapeAgreement::of(shape), &mut ());
-        assert_eq!(
-            cell,
-            ShapeAgreement::Agreed(shape),
-            "an agreeing contributor changes nothing"
-        );
-    }
 
     fn test_key(world: &mut World<'_>) -> ActivationKey {
         let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
