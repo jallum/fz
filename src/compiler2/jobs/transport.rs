@@ -788,7 +788,35 @@ pub(crate) fn transport_plan_for_runtime_demands_for_test(
     );
     let mut executables = closure.executables.iter().cloned().collect::<Vec<_>>();
     executables.sort_by_key(|e| executable_sort_key(e, world.types()));
-    project_transport_plan(world, &closure.entry, &executables, &contexts)
+    // Project each executable's contribution in-process (the per-executable
+    // facts are never published for a test's injected runtime demands), then
+    // assemble through the same fan-in production uses.
+    let mut per_executable = HashMap::new();
+    for executable in &executables {
+        let context = contexts
+            .get(executable)
+            .expect("transport derivation requires one context per settled executable");
+        let mut facts = TransportFactsBuilder::default();
+        let mut shape_graph = ShapeConstraintGraph::default();
+        let mut memo = ProjectionMemo::default();
+        project_one_executable(
+            world,
+            executable,
+            context,
+            &contexts,
+            &mut facts,
+            &mut shape_graph,
+            &mut memo,
+        );
+        per_executable.insert(
+            executable.clone(),
+            ExecutableTransportFacts {
+                graph: shape_graph,
+                facts,
+            },
+        );
+    }
+    assemble_transport_plan(world, &closure.entry, &executables, &contexts, &per_executable)
 }
 
 /// Project one executable's intra-executable transport contribution into
@@ -1060,44 +1088,10 @@ fn finish_transport_plan(
     }
 }
 
-/// Project a whole root by accumulating every executable's per-executable
-/// contribution into one builder, then closing it with the cross-executable
-/// tail. The per-executable slice is now [`project_one_executable`] and the
-/// tail is [`finish_transport_plan`]; splitting them is the seam the
-/// per-executable `ExecutableTransport` fact will publish across.
-#[cfg(test)]
-fn project_transport_plan(
-    world: &mut World<'_>,
-    entry_executable: &ExecutableKey,
-    executables: &[ExecutableKey],
-    contexts: &HashMap<ExecutableKey, ExecutableContext>,
-) -> TransportPlan {
-    let mut facts = TransportFactsBuilder::default();
-    let mut shape_graph = ShapeConstraintGraph::default();
-    // Plan-scoped: pure source projections are reused across every position and
-    // executable in this root, not just within one projection tree.
-    let mut memo = ProjectionMemo::default();
-    for executable in executables {
-        let context = contexts
-            .get(executable)
-            .expect("transport derivation requires one context per settled executable");
-        project_one_executable(
-            world,
-            executable,
-            context,
-            contexts,
-            &mut facts,
-            &mut shape_graph,
-            &mut memo,
-        );
-    }
-    finish_transport_plan(world, entry_executable, executables, contexts, facts, shape_graph)
-}
-
 /// Fan the settled per-executable `ExecutableTransport` contributions into one
 /// plan. Merging in executable-sort order reproduces the single-pass insertion
-/// order the solver and the additive fact builder saw, so the assembled plan is
-/// byte identical to `project_transport_plan`.
+/// order the solver and the additive fact builder saw before the projection was
+/// split per executable.
 fn assemble_transport_plan(
     world: &mut World<'_>,
     entry_executable: &ExecutableKey,
