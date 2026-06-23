@@ -1026,13 +1026,20 @@ fn finish_transport_plan(
     collect_clause_parameter_equalities(contexts, executables, &mut shape_graph, world.types());
     seed_callable_flow_capture_inputs(world, contexts, &mut facts, &mut shape_graph, &mut memo);
     seed_callable_resolution_capture_inputs(world, &facts, &mut shape_graph);
-    let local_shapes = shape_graph.clone().solve();
+    // The input merge only needs each incoming CallArg's resolved shape, which
+    // is its argument value's anchor: every non-clause-parameter value is
+    // anchored directly in `project_one_executable`, and `solve()`'s
+    // agree-or-panic guarantees a position's component shape equals any anchor
+    // in it. So the pre-merge shapes are read straight from the anchors instead
+    // of a full pre-pass solve -- collapsing the former two global solves into
+    // one (the final solve below).
+    let call_arg_shapes = call_arg_shapes_from_anchors(world, contexts, executables, &shape_graph);
     collect_executable_input_constraints(
         world,
         contexts,
         &mut facts,
         executables,
-        &local_shapes,
+        &call_arg_shapes,
         &mut shape_graph,
     );
     let equivalents = shape_graph.equivalent_positions();
@@ -1221,12 +1228,59 @@ fn seed_callable_resolution_capture_inputs(
     }
 }
 
+/// The resolved shape of each incoming `CallArg`, read directly from the
+/// anchors rather than a pre-pass solve. A `CallArg` is equated to its argument
+/// value in `project_one_executable`, and that value is anchored there (unless
+/// it is a clause parameter, which stays unanchored until the input merge --
+/// matching the pre-merge solve, which also leaves it unresolved). By
+/// `solve()`'s agree-or-panic invariant, a position's component shape equals any
+/// anchor in its component, so the value's own anchor is exactly what the
+/// pre-merge solve would report for the `CallArg`.
+fn call_arg_shapes_from_anchors(
+    world: &World<'_>,
+    contexts: &HashMap<ExecutableKey, ExecutableContext>,
+    executables: &[ExecutableKey],
+    shape_graph: &ShapeConstraintGraph,
+) -> HashMap<TransportPosition, ShapeId> {
+    let anchor_index = shape_graph
+        .anchors
+        .iter()
+        .map(|(position, shape)| (position.clone(), *shape))
+        .collect::<HashMap<_, _>>();
+    let mut out = HashMap::new();
+    for executable in executables {
+        let symbol = executable_symbol(executable, world.types());
+        let Some(context) = contexts.get(executable) else {
+            continue;
+        };
+        for (callsite, args) in &context.callsite_args {
+            for (semantic_index, arg) in args.iter().enumerate() {
+                let value_position = TransportPosition::Value {
+                    executable: symbol.clone(),
+                    value: arg.value,
+                };
+                if let Some(&shape) = anchor_index.get(&value_position) {
+                    out.insert(
+                        TransportPosition::CallArg {
+                            executable: symbol.clone(),
+                            callsite: *callsite,
+                            semantic_index,
+                        },
+                        shape,
+                    );
+                }
+            }
+        }
+    }
+    out
+}
+
 fn collect_executable_input_constraints(
     world: &mut World<'_>,
     contexts: &HashMap<ExecutableKey, ExecutableContext>,
     facts: &mut TransportFactsBuilder,
     executables: &[ExecutableKey],
-    local_shapes: &HashMap<TransportPosition, ShapeId>,
+    call_arg_shapes: &HashMap<TransportPosition, ShapeId>,
     shape_graph: &mut ShapeConstraintGraph,
 ) {
     let mut anchored_function_inputs = shape_graph
@@ -1291,7 +1345,7 @@ fn collect_executable_input_constraints(
             if let Some(incoming) = incoming_executable_input_positions(world, contexts, executable, semantic_index) {
                 let incoming_shapes = incoming
                     .iter()
-                    .map(|call_arg| local_shapes.get(call_arg).copied())
+                    .map(|call_arg| call_arg_shapes.get(call_arg).copied())
                     .collect::<Option<Vec<_>>>();
                 if let Some(incoming_shapes) = incoming_shapes {
                     let first = incoming_shapes.first().copied();
