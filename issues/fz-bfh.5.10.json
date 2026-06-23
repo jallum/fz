@@ -2,14 +2,15 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-06-23T12:06:42Z",
   "created": "2026-06-23T12:06:22Z",
   "description": "finish_transport_plan called equivalent_positions() then solve(), each rebuilding an identical PositionUnion from the same graph -- two union-finds for one graph. Factor build_union/component_shapes/positions_for/equivalents_for; add solve_with_equivalents that builds the union once and returns both. solve() is now test-only (gated).",
   "id": "fz-bfh.5.10",
   "labels": [],
   "parent": "fz-bfh.5",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "Build the position union-find once for solve + equivalence grouping",
   "type": "task",
-  "updated_at": "2026-06-23T12:06:22Z"
+  "updated_at": "2026-06-23T12:06:42Z"
 }
