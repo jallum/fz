@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-23T11:18:03Z",
+  "description": "ShapeAgreement (the sticky 3-state lattice + JoinContribution impl, fz-bfh.5.2) has zero production uses: it was groundwork for the pull-\u003epush InputShape contribution model, but 5.3 collapsed the two-solve via anchor-reads (call_arg_shapes_from_anchors) and never needed it. 5.5 (co-settling, which would use a contribution lattice) is a deferred separate arc. Keeping dead scaffolding for a hypothetical future violates the ethos -- re-add when 5.5 actually needs it. Remove: the ShapeAgreement enum+impl (transport.rs), the JoinContribution impl + its test (semantic.rs), and the lattice unit tests + two_distinct_shapes helper (transport_test.rs).",
+  "id": "fz-bfh.5.8",
+  "labels": [],
+  "parent": "fz-bfh.5",
+  "priority": 2,
+  "status": "open",
+  "title": "Remove unused ShapeAgreement scaffolding",
+  "type": "task",
+  "updated_at": "2026-06-23T11:18:03Z"
+}
