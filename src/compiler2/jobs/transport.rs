@@ -34,6 +34,43 @@ struct ExecutableContext {
     resume_entries: Vec<ResumeEntry>,
 }
 
+/// Key into the forward incoming-input-source index: a callee executable and
+/// the semantic input position fed.
+type IncomingInputKey = (ExecutableKey, usize);
+
+/// The per-root context set plus the forward index of incoming input sources it
+/// induces. The index is the push inverse of the former backward whole-closure
+/// scans (`collect_call_arg_input_sources`/`collect_callable_capture_input_sources`):
+/// rather than an executable scanning every other executable to discover who
+/// feeds its inputs, each producer's outgoing call-arg and callable-capture
+/// edges are pushed once into the fed callee's slot when the contexts are
+/// assembled. `project_executable_input_source` reads its callee's slot instead
+/// of scanning. Deref exposes the underlying context map unchanged, so callee
+/// lookups (`get`, `iter`, ...) read through.
+#[derive(Debug, Clone, Default)]
+struct TransportContexts {
+    by_executable: HashMap<ExecutableKey, ExecutableContext>,
+    incoming_input_sources: HashMap<IncomingInputKey, Vec<(ExecutableKey, ValueId)>>,
+}
+
+impl std::ops::Deref for TransportContexts {
+    type Target = HashMap<ExecutableKey, ExecutableContext>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.by_executable
+    }
+}
+
+impl TransportContexts {
+    /// The values feeding `callee`'s `semantic_index` input as `(producer,
+    /// value)` pairs, in a deterministic order (producer sort key, then value).
+    fn incoming_inputs(&self, callee: &ExecutableKey, semantic_index: usize) -> &[(ExecutableKey, ValueId)] {
+        self.incoming_input_sources
+            .get(&(callee.clone(), semantic_index))
+            .map_or(&[][..], Vec::as_slice)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum TransportSource {
     ExecutableReturn,
@@ -734,7 +771,7 @@ fn collect_transport_contexts(
     runtime_demands: &HashMap<ExecutableKey, ExecutableRuntimeDemand>,
     reads: &mut Vec<FactKey>,
     wait_facts: &mut HashSet<FactKey>,
-) -> HashMap<ExecutableKey, ExecutableContext> {
+) -> TransportContexts {
     let mut contexts = HashMap::new();
     for executable in &closure.executables {
         let activation_fact = FactKey::ActivationAnalyzed(executable.activation.clone());
@@ -799,7 +836,108 @@ fn collect_transport_contexts(
             },
         );
     }
-    contexts
+    let incoming_input_sources = build_incoming_input_sources(world, &contexts);
+    TransportContexts {
+        by_executable: contexts,
+        incoming_input_sources,
+    }
+}
+
+/// Build the forward incoming-input-source index from the assembled contexts.
+/// This enumerates exactly the `(producer, callee, semantic_index, value)`
+/// edges the former backward scans discovered, keyed by callee so a callee
+/// reads its feeders instead of scanning the whole closure. Within each slot
+/// the pairs are sorted (producer sort key, then value), so the result is
+/// deterministic where the HashMap-iterating scans were not.
+fn build_incoming_input_sources(
+    world: &World<'_>,
+    contexts: &HashMap<ExecutableKey, ExecutableContext>,
+) -> HashMap<IncomingInputKey, Vec<(ExecutableKey, ValueId)>> {
+    let mut executables_by_dispatch: HashMap<(FunctionId, Ty, ExecutableNeed), Vec<&ExecutableKey>> = HashMap::new();
+    for executable in contexts.keys() {
+        executables_by_dispatch
+            .entry((
+                executable.activation.function,
+                executable.activation.arrow,
+                executable.need,
+            ))
+            .or_default()
+            .push(executable);
+    }
+
+    let mut index: HashMap<IncomingInputKey, Vec<(ExecutableKey, ValueId)>> = HashMap::new();
+
+    // Call-arg edges: every caller's outgoing argument pushes to the callees its
+    // callsite resolves to, matched by (function, arrow, need) -- the same key
+    // the backward scan used, so several input-distinct callees sharing a
+    // dispatch key each receive the edge at the semantic index their own capture
+    // prefix dictates. A self-call is excluded, matching the former scan.
+    for (caller, context) in contexts {
+        for (callsite, args) in &context.callsite_args {
+            let need = context
+                .callsite_needs
+                .get(callsite)
+                .copied()
+                .unwrap_or(ExecutableNeed::Value);
+            let key = CallSiteKey {
+                activation: caller.activation.clone(),
+                callsite: *callsite,
+            };
+            let Some(summary) = world.callsite_summary(&key) else {
+                continue;
+            };
+            let mut fed = HashSet::new();
+            for target in &summary.targets {
+                let Some(activation) = target.activation.as_ref() else {
+                    continue;
+                };
+                let Some(callees) = executables_by_dispatch.get(&(activation.function, activation.arrow, need)) else {
+                    continue;
+                };
+                for &callee in callees {
+                    if callee == caller || !fed.insert(callee.clone()) {
+                        continue;
+                    }
+                    let Some(capture_prefix) = callee.activation.input_len(world.types()).checked_sub(args.len())
+                    else {
+                        continue;
+                    };
+                    for (arg_index, arg) in args.iter().enumerate() {
+                        index
+                            .entry((callee.clone(), capture_prefix + arg_index))
+                            .or_default()
+                            .push((caller.clone(), arg.value));
+                    }
+                }
+            }
+        }
+    }
+
+    // Callable-capture edges: a producer's callable flow names the executables
+    // it resolves to directly, so each capture pushes to that resolution at the
+    // capture's own index.
+    for (producer, context) in contexts {
+        for flow in context.runtime_demand.callable_flows.values() {
+            let resolutions = flow.resolutions.iter().collect::<HashSet<_>>();
+            for resolution in resolutions {
+                for (semantic_index, capture) in flow.captures.iter().copied().enumerate() {
+                    index
+                        .entry((resolution.clone(), semantic_index))
+                        .or_default()
+                        .push((producer.clone(), capture));
+                }
+            }
+        }
+    }
+
+    for sources in index.values_mut() {
+        sources.sort_by(|(left, left_value), (right, right_value)| {
+            executable_sort_key(left, world.types())
+                .cmp(&executable_sort_key(right, world.types()))
+                .then(left_value.as_u32().cmp(&right_value.as_u32()))
+        });
+    }
+    index
 }
 
 #[cfg(test)]
@@ -862,7 +1000,7 @@ fn project_one_executable(
     world: &mut World<'_>,
     executable: &ExecutableKey,
     context: &ExecutableContext,
-    contexts: &HashMap<ExecutableKey, ExecutableContext>,
+    contexts: &TransportContexts,
     facts: &mut TransportFactsBuilder,
     shape_graph: &mut ShapeConstraintGraph,
     memo: &mut ProjectionMemo,
@@ -1068,7 +1206,7 @@ fn finish_transport_plan(
     world: &mut World<'_>,
     entry_executable: &ExecutableKey,
     executables: &[ExecutableKey],
-    contexts: &HashMap<ExecutableKey, ExecutableContext>,
+    contexts: &TransportContexts,
     mut facts: TransportFactsBuilder,
     mut shape_graph: ShapeConstraintGraph,
 ) -> TransportPlan {
@@ -1124,7 +1262,7 @@ fn assemble_transport_plan(
     world: &mut World<'_>,
     entry_executable: &ExecutableKey,
     executables: &[ExecutableKey],
-    contexts: &HashMap<ExecutableKey, ExecutableContext>,
+    contexts: &TransportContexts,
     per_executable: &HashMap<ExecutableKey, ExecutableTransportFacts>,
 ) -> TransportPlan {
     let mut facts = TransportFactsBuilder::default();
@@ -1141,7 +1279,7 @@ fn assemble_transport_plan(
 
 fn seed_callable_flow_capture_inputs(
     world: &mut World<'_>,
-    contexts: &HashMap<ExecutableKey, ExecutableContext>,
+    contexts: &TransportContexts,
     facts: &mut TransportFactsBuilder,
     shape_graph: &mut ShapeConstraintGraph,
     memo: &mut ProjectionMemo,
@@ -1260,7 +1398,7 @@ fn seed_callable_resolution_capture_inputs(
 /// pre-merge solve would report for the `CallArg`.
 fn call_arg_shapes_from_anchors(
     world: &World<'_>,
-    contexts: &HashMap<ExecutableKey, ExecutableContext>,
+    contexts: &TransportContexts,
     executables: &[ExecutableKey],
     shape_graph: &ShapeConstraintGraph,
 ) -> HashMap<TransportPosition, ShapeId> {
@@ -1299,7 +1437,7 @@ fn call_arg_shapes_from_anchors(
 
 fn collect_executable_input_constraints(
     world: &mut World<'_>,
-    contexts: &HashMap<ExecutableKey, ExecutableContext>,
+    contexts: &TransportContexts,
     facts: &mut TransportFactsBuilder,
     executables: &[ExecutableKey],
     call_arg_shapes: &HashMap<TransportPosition, ShapeId>,
@@ -1425,7 +1563,7 @@ fn executable_input_demand_requires_own_shape(demand: &RuntimeDemand) -> bool {
 }
 
 fn collect_clause_parameter_equalities(
-    contexts: &HashMap<ExecutableKey, ExecutableContext>,
+    contexts: &TransportContexts,
     executables: &[ExecutableKey],
     shape_graph: &mut ShapeConstraintGraph,
     types: &Types,
@@ -1458,7 +1596,7 @@ fn collect_clause_parameter_equalities(
 
 fn derive_codegen_seam_facts(
     world: &World<'_>,
-    contexts: &HashMap<ExecutableKey, ExecutableContext>,
+    contexts: &TransportContexts,
     positions: &HashMap<TransportPosition, ShapeId>,
     boundaries: &HashMap<BoundaryId, BoundaryFacts>,
 ) -> Box<[CodegenSeamFact]> {
@@ -1749,7 +1887,7 @@ fn derive_codegen_seam_facts(
 /// demand.
 fn callsite_callee_return_position(
     world: &World<'_>,
-    contexts: &HashMap<ExecutableKey, ExecutableContext>,
+    contexts: &TransportContexts,
     executable: &ExecutableKey,
     context: &ExecutableContext,
     callsite: CallSiteId,
@@ -2323,7 +2461,7 @@ fn clause_parameter_values(body: &LoweredBody) -> HashSet<ValueId> {
 
 fn shape_for_local_value(
     world: &mut World<'_>,
-    contexts: &HashMap<ExecutableKey, ExecutableContext>,
+    contexts: &TransportContexts,
     facts: &mut TransportFactsBuilder,
     executable: &ExecutableKey,
     context: &ExecutableContext,
@@ -2379,12 +2517,12 @@ fn shape_for_executable_input(
 
 fn incoming_executable_input_positions(
     world: &World<'_>,
-    contexts: &HashMap<ExecutableKey, ExecutableContext>,
+    contexts: &TransportContexts,
     executable: &ExecutableKey,
     semantic_index: usize,
 ) -> Option<Vec<TransportPosition>> {
     let mut positions = Vec::new();
-    for (caller, context) in contexts {
+    for (caller, context) in contexts.iter() {
         if caller == executable {
             continue;
         }
@@ -2426,7 +2564,7 @@ fn incoming_executable_input_positions(
 
 fn shape_for_source(
     world: &mut World<'_>,
-    contexts: &HashMap<ExecutableKey, ExecutableContext>,
+    contexts: &TransportContexts,
     facts: &mut TransportFactsBuilder,
     executable: &ExecutableKey,
     context: &ExecutableContext,
@@ -2462,7 +2600,7 @@ fn shape_for_source(
 
 fn project_source(
     world: &mut World<'_>,
-    contexts: &HashMap<ExecutableKey, ExecutableContext>,
+    contexts: &TransportContexts,
     facts: &mut TransportFactsBuilder,
     executable: &ExecutableKey,
     context: &ExecutableContext,
@@ -2642,7 +2780,7 @@ fn project_source(
 
 fn project_sources(
     world: &mut World<'_>,
-    contexts: &HashMap<ExecutableKey, ExecutableContext>,
+    contexts: &TransportContexts,
     facts: &mut TransportFactsBuilder,
     executable: &ExecutableKey,
     context: &ExecutableContext,
@@ -2706,7 +2844,7 @@ fn project_sources(
 
 fn project_executable_input_source(
     world: &mut World<'_>,
-    contexts: &HashMap<ExecutableKey, ExecutableContext>,
+    contexts: &TransportContexts,
     facts: &mut TransportFactsBuilder,
     executable: &ExecutableKey,
     ty: Ty,
@@ -2716,9 +2854,7 @@ fn project_executable_input_source(
     cycle: &mut Cycle,
     memo: &mut ProjectionMemo,
 ) -> SourceShape {
-    let mut sources = Vec::new();
-    collect_call_arg_input_sources(world, contexts, executable, semantic_index, &mut sources);
-    collect_callable_capture_input_sources(contexts, executable, semantic_index, &mut sources);
+    let sources = contexts.incoming_inputs(executable, semantic_index);
     if sources.is_empty() {
         return SourceShape::Unknown;
     }
@@ -2728,11 +2864,11 @@ fn project_executable_input_source(
     let mut recursive = false;
     let mut unknown = false;
     for (source_executable, value) in sources {
-        let Some(source_context) = contexts.get(&source_executable) else {
+        let Some(source_context) = contexts.get(source_executable) else {
             unknown = true;
             continue;
         };
-        let Some(source_ty) = source_context.analysis.value_types.get(&value).copied() else {
+        let Some(source_ty) = source_context.analysis.value_types.get(value).copied() else {
             unknown = true;
             continue;
         };
@@ -2740,11 +2876,11 @@ fn project_executable_input_source(
             world,
             contexts,
             &mut delta,
-            &source_executable,
+            source_executable,
             source_context,
             source_ty,
             demand,
-            TransportSource::LocalValue(value),
+            TransportSource::LocalValue(*value),
             None,
             cycle,
             memo,
@@ -2885,79 +3021,9 @@ fn callable_input_shape_satisfies_demand(
     })
 }
 
-fn collect_call_arg_input_sources(
-    world: &World<'_>,
-    contexts: &HashMap<ExecutableKey, ExecutableContext>,
-    executable: &ExecutableKey,
-    semantic_index: usize,
-    out: &mut Vec<(ExecutableKey, ValueId)>,
-) {
-    for (caller, context) in contexts {
-        if caller == executable {
-            continue;
-        }
-        for (callsite, args) in &context.callsite_args {
-            let Some(capture_prefix) = executable.activation.input_len(world.types()).checked_sub(args.len()) else {
-                continue;
-            };
-            if semantic_index < capture_prefix {
-                continue;
-            }
-            let arg_index = semantic_index - capture_prefix;
-            let Some(arg) = args.get(arg_index) else {
-                continue;
-            };
-            if context
-                .callsite_needs
-                .get(callsite)
-                .copied()
-                .unwrap_or(ExecutableNeed::Value)
-                != executable.need
-            {
-                continue;
-            }
-            let key = CallSiteKey {
-                activation: caller.activation.clone(),
-                callsite: *callsite,
-            };
-            let Some(summary) = world.callsite_summary(&key) else {
-                continue;
-            };
-            if !summary.targets.iter().any(|target| {
-                target.activation.as_ref().is_some_and(|activation| {
-                    activation.function == executable.activation.function
-                        && activation.arrow == executable.activation.arrow
-                })
-            }) {
-                continue;
-            }
-            out.push((caller.clone(), arg.value));
-        }
-    }
-}
-
-fn collect_callable_capture_input_sources(
-    contexts: &HashMap<ExecutableKey, ExecutableContext>,
-    executable: &ExecutableKey,
-    semantic_index: usize,
-    out: &mut Vec<(ExecutableKey, ValueId)>,
-) {
-    for (producer_executable, context) in contexts {
-        for flow in context.runtime_demand.callable_flows.values() {
-            if !flow.resolutions.iter().any(|resolution| resolution == executable) {
-                continue;
-            }
-            let Some(capture) = flow.captures.get(semantic_index).copied() else {
-                continue;
-            };
-            out.push((producer_executable.clone(), capture));
-        }
-    }
-}
-
 fn project_tuple_value(
     world: &mut World<'_>,
-    contexts: &HashMap<ExecutableKey, ExecutableContext>,
+    contexts: &TransportContexts,
     facts: &mut TransportFactsBuilder,
     executable: &ExecutableKey,
     context: &ExecutableContext,
@@ -3009,7 +3075,7 @@ fn project_tuple_value(
 
 fn project_tuple_field(
     world: &mut World<'_>,
-    contexts: &HashMap<ExecutableKey, ExecutableContext>,
+    contexts: &TransportContexts,
     facts: &mut TransportFactsBuilder,
     executable: &ExecutableKey,
     context: &ExecutableContext,
@@ -3053,7 +3119,7 @@ fn project_tuple_field(
 
 fn project_callable_value(
     world: &mut World<'_>,
-    contexts: &HashMap<ExecutableKey, ExecutableContext>,
+    contexts: &TransportContexts,
     facts: &mut TransportFactsBuilder,
     executable: &ExecutableKey,
     context: &ExecutableContext,
@@ -3090,7 +3156,7 @@ fn project_callable_value(
 
 fn project_callsite_return(
     world: &mut World<'_>,
-    contexts: &HashMap<ExecutableKey, ExecutableContext>,
+    contexts: &TransportContexts,
     facts: &mut TransportFactsBuilder,
     executable: &ExecutableKey,
     context: &ExecutableContext,
@@ -3164,7 +3230,7 @@ fn project_callsite_return(
 
 fn callable_for_producer(
     world: &mut World<'_>,
-    contexts: &HashMap<ExecutableKey, ExecutableContext>,
+    contexts: &TransportContexts,
     facts: &mut TransportFactsBuilder,
     executable: &ExecutableKey,
     context: &ExecutableContext,
@@ -3288,7 +3354,7 @@ fn local_callable_transport_requested(demand: &RuntimeDemand, precise_demand: Op
 }
 
 fn capture_demands_for_resolutions(
-    contexts: &HashMap<ExecutableKey, ExecutableContext>,
+    contexts: &TransportContexts,
     capture_tys: &[Ty],
     resolutions: &[ExecutableSymbol],
     types: &Types,
@@ -3851,7 +3917,7 @@ fn boundary_return_shape_for_ty(world: &mut World<'_>, ret_ty: Ty, facts: &mut T
 
 fn boundary_return_shapes_for_flow_surfaces(
     world: &mut World<'_>,
-    contexts: &HashMap<ExecutableKey, ExecutableContext>,
+    contexts: &TransportContexts,
     facts: &mut TransportFactsBuilder,
     resolution_symbols: &[Vec<ExecutableSymbol>],
     return_tys: &[Ty],
@@ -3881,7 +3947,7 @@ struct BoundaryReturnContracts {
 
 fn boundary_return_contracts_for_resolution_symbols(
     world: &mut World<'_>,
-    contexts: &HashMap<ExecutableKey, ExecutableContext>,
+    contexts: &TransportContexts,
     callable_ty: Ty,
     surfaces: &BTreeSet<CallableSurface>,
     resolution_symbols: &[Vec<ExecutableSymbol>],
@@ -3941,7 +4007,7 @@ fn boundary_resolution_symbols_for_flow_surfaces(
 
 fn boundary_return_shape_for_resolution(
     world: &mut World<'_>,
-    contexts: &HashMap<ExecutableKey, ExecutableContext>,
+    contexts: &TransportContexts,
     facts: &mut TransportFactsBuilder,
     resolution: &ExecutableSymbol,
     fallback_return_ty: Ty,
@@ -4117,7 +4183,7 @@ fn resume_demand(context: &ExecutableContext, resume: ResumeEntry) -> RuntimeDem
 
 fn resume_shape(
     world: &mut World<'_>,
-    contexts: &HashMap<ExecutableKey, ExecutableContext>,
+    contexts: &TransportContexts,
     facts: &mut TransportFactsBuilder,
     executable: &ExecutableKey,
     context: &ExecutableContext,
