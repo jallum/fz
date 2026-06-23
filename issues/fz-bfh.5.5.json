@@ -2,6 +2,7 @@
   "assignee": "",
   "blocked_by": [
     "fz-bfh.5.4",
+    "fz-g2f",
     "fz-xhk"
   ],
   "blocks": [],
@@ -24,5 +25,5 @@
   "status": "open",
   "title": "Stage 4 (arc): lift the SemanticClosed barrier; co-settle transport in the loop",
   "type": "task",
-  "updated_at": "2026-06-23T22:37:49Z"
+  "updated_at": "2026-06-23T22:41:26Z"
 }
