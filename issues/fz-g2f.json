@@ -16,11 +16,15 @@
     {
       "text": "DEEPER FINDING (gates feasibility): in the current closed-world model a SETTLED root closure may be STABLE under code addition -- if the root reaches the new code it could not have settled without it; if it does not reach it, the closure does not grow. Closure growth happens DURING the initial drive (code discovery), not across drives after settling. Combined with the absence of any edit/invalidate primitive, this means incremental recompilation may have NO production trigger today -- so the signal (and 5.5's co-settling value) may be unmeasurable until fz-rh2 builds an incremental-edit capability.\nTHE ONE OPEN EMPIRICAL QUESTION that decides feasibility: does incrementally adding a defimpl RE-TRIGGER an already-settled consumer's call-site resolution (CallSiteSummary subscribing to the protocol's impl-set), thereby growing the settled root's closure? If YES, fz-g2f is buildable via incremental defimpl addition (open-world-ish dispatch fixpoint). If NO, fz-g2f is blocked on a new incremental-edit primitive (fz-rh2 spine) and 5.5 steps 2-4 cannot be value-verified until then. Resolve this before writing the test.",
       "timestamp": "2026-06-23T22:56:40Z"
+    },
+    {
+      "text": "FEASIBILITY CONFIRMED (YES): incrementally adding a defimpl on a later drive DOES re-trigger an already-settled consumer's call-site resolution, via the FactKey::ProtocolDispatch(protocol) subscription -- resolve_protocol_call reads it (jobs/semantic.rs:1251); a new defimpl bumps it (source_publish.rs:1218 refresh_protocol_dispatch -\u003e changed); it is NOT cumulative (drive.rs:88-98) so the change is a ground-shift that rebases subscribers (scheduler.rs:151-176, 217-229). So the settle-then-grow trigger = incremental defimpl addition where main's polymorphic/value-joined call site newly dispatches to the added impl. fz-g2f is buildable. Test plan: drive 1 settle main (protocol call, one impl, value joined over two types so dispatch is open); capture DeriveExecutableTransport run-set; drive 2 add the second defimpl -\u003e ProtocolDispatch bumps -\u003e main's closure grows -\u003e assert an unrelated executable's DeriveExecutableTransport is NOT in drive-2's run-set (RED today via SemanticClosed rebase-all; GREEN after 5.5 step 4).",
+      "timestamp": "2026-06-23T23:00:35Z"
     }
   ],
   "priority": 3,
   "status": "in_progress",
   "title": "Incremental-recompilation signal: test transport facts re-settle with bounded blast-radius",
   "type": "task",
-  "updated_at": "2026-06-23T22:56:40Z"
+  "updated_at": "2026-06-23T23:00:35Z"
 }
