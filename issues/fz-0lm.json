@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-23T22:36:26Z",
+  "description": "matrix::opaque_fn_value_join::build (an AOT/native build fixture) fails intermittently ONLY in the full parallel `cargo test --test fixture_matrix` run, never in isolation. Measured at the fz-xhk green floor (commit 56dca5970, BEFORE any change): full-matrix run1 ok, run2 FAILED, run3 FAILED (2/3 fail); the same fixture passes 3/3 when run alone. So the flake is in the parallel build harness (concurrent AOT compile/link of native fixtures racing on a shared output/temp path), not in the transport plan -- the plan for this fixture is deterministic and the transport_contract_test for it is green. This is the source of the matrix oracle's 31-vs-32 instability. Fix: isolate each AOT build fixture's output dir / serialize the link step. Pre-existing; surfaced during fz-bfh.5.5 verification.",
+  "id": "fz-0lm",
+  "labels": [],
+  "priority": 3,
+  "status": "open",
+  "title": "[BUG] opaque_fn_value_join::build flakes in the parallel fixture_matrix run",
+  "type": "task",
+  "updated_at": "2026-06-23T22:36:26Z"
+}
