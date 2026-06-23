@@ -9,9 +9,15 @@
   "id": "fz-bfh.5.5",
   "labels": [],
   "parent": "fz-bfh.5",
+  "comments": [
+    {
+      "text": "Deferred as the explicitly-separate Stage-4 arc (the ticket's own 'Goal (separate arc)' label). Confirmed against code: both derive_executable_transport AND the derive_transport_plan fan-in read world.semantic_closure (the executable SET + runtime_demands), which only exists after the seal (SemanticClosed). collect_transport_contexts iterates closure.executables. So lifting the barrier requires the executable set + per-executable contexts to be readable incrementally (contexts-as-facts / co-settling) -- a substantial data-model change. Marginal current benefit: batch compilation (fz2 build / the test matrix) settles the closure once regardless, so co-settling only pays off for incremental recompilation, which isn't exercised today. Core arc (5.1/5.3/5.4) complete and green; 5.5 is the value-when-incrementality-matters follow-on.",
+      "timestamp": "2026-06-23T10:57:24Z"
+    }
+  ],
   "priority": 3,
   "status": "open",
   "title": "Stage 4 (arc): lift the SemanticClosed barrier; co-settle transport in the loop",
   "type": "task",
-  "updated_at": "2026-06-22T23:28:10Z"
+  "updated_at": "2026-06-23T10:57:24Z"
 }
