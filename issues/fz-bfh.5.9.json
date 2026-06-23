@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-23T11:54:17Z",
+  "description": "project_transport_plan was a test-only parallel projection path (shared-loop accumulation) duplicating production's assemble_transport_plan (per-exec merge), proven byte-identical. Violates tests-use-production-paths. Deleted it; transport_plan_for_runtime_demands_for_test now builds per-executable contributions in-process and assembles through the production fan-in.",
+  "id": "fz-bfh.5.9",
+  "labels": [],
+  "parent": "fz-bfh.5",
+  "priority": 2,
+  "status": "open",
+  "title": "Delete test-only project_transport_plan; route shadow test through assemble",
+  "type": "task",
+  "updated_at": "2026-06-23T11:54:17Z"
+}
