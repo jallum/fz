@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-23T20:55:07Z",
+  "description": "project_one_executable iterated entry_capture_demands as demands.iter().cloned().enumerate() but discarded each demand (let _ = demand); it only needs the index to pair captures. Iterate 0..demands.len() instead -- no per-capture RuntimeDemand clone, no ignore binding.",
+  "id": "fz-bfh.5.12",
+  "labels": [],
+  "parent": "fz-bfh.5",
+  "priority": 2,
+  "status": "open",
+  "title": "Drop ignored demand clone in entry-capture equalities",
+  "type": "task",
+  "updated_at": "2026-06-23T20:55:07Z"
+}
