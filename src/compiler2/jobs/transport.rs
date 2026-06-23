@@ -1000,11 +1000,10 @@ fn project_one_executable(
             .get(entry.as_u32() as usize)
             .map(|lowered| lowered.captures.clone())
             .unwrap_or_default();
-        for (capture_index, demand) in demands.iter().cloned().enumerate() {
+        for capture_index in 0..demands.len() {
             let Some(&capture) = captures.get(capture_index) else {
                 continue;
             };
-            let _ = demand;
             shape_graph.equal(
                 TransportPosition::EntryCapture {
                     executable: symbol.clone(),
