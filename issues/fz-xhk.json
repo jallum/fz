@@ -4,13 +4,14 @@
   "blocks": [
     "fz-bfh.5.5"
   ],
+  "closed_at": "2026-06-23T22:36:26Z",
   "created": "2026-06-23T22:09:20Z",
   "description": "The per-executable transport projection (project_one_executable -\u003e project_executable_input_source) reaches the WHOLE closure via two backward scans: collect_call_arg_input_sources (transport.rs:2888 — scans every executable to find E's callers + arg values) and collect_callable_capture_input_sources (transport.rs:2939 — scans every executable to find producers whose callable_flows resolve to E). This backward pull is why the per-exec job cannot fire before SemanticClosed: E must see every other executable to discover who feeds it.\n\nInvert to a forward push: build, once when contexts are assembled, an incoming-input-sources index keyed by (callee, semantic_index) -\u003e [(caller, ValueId)], by iterating each executable's OUTGOING callsite_args and callable_flows. project_executable_input_source reads its entry instead of scanning. Delete both backward-scan fns. Bundle the index with the context map (it is a property of the context set) so it is built in the same pass.\n\nByte-identical (the final plan sorts all drafts, so source-set equality suffices); perf-positive (build once vs O(N) scan per input projection). This is the pull-\u003epush the data model needs before the index can become a contributed fact (5.5.2) and the barrier can lift (5.5.4).",
   "id": "fz-xhk",
   "labels": [],
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Stage 4a: invert backward input-source scans into a forward push index",
   "type": "task",
-  "updated_at": "2026-06-23T22:09:34Z"
+  "updated_at": "2026-06-23T22:36:26Z"
 }
