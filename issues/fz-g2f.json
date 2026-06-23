@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-23T22:41:19Z",
+  "description": "The value of lifting the SemanticClosed barrier (fz-bfh.5.5 steps 2-4: co-settling transport pre-seal) is incremental-recompilation blast-radius -- and NO test exercises it. The engine's rebase/contribution semantics are tested generically (scheduler_test.rs:615+: cumulative ascent vs replacing-rebase vs retraction), but nothing edits a source, re-drives the SAME world, and asserts which transport facts (ExecutableTransport(E)/TransportPlan) re-settle vs stay cached. The full matrix + shadow + contract tests all run a single batch drive to a sealed closure.\n\nBuild that signal: a harness that drives a root to settle, applies a localized source edit, re-drives, and asserts (via telemetry/fact revisions) that only the affected executables' transport facts re-settled. Without it, steps 2-4 of fz-bfh.5.5 produce a byte-identical BATCH plan (verifiable) but their actual purpose -- pre-seal/incremental co-settling -- is unverifiable, so landing the contribution-fact machinery would be non-load-bearing complexity until an unverifiable gate-drop. This is northstar 'add measurements for signal' and is really fz-rh2 (incremental spine) territory. Blocks the value-bearing remainder of fz-bfh.5.5.",
+  "id": "fz-g2f",
+  "labels": [],
+  "priority": 3,
+  "status": "open",
+  "title": "Incremental-recompilation signal: test transport facts re-settle with bounded blast-radius",
+  "type": "task",
+  "updated_at": "2026-06-23T22:41:19Z"
+}
