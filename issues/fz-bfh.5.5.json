@@ -14,11 +14,15 @@
     {
       "text": "Deferred as the explicitly-separate Stage-4 arc (the ticket's own 'Goal (separate arc)' label). Confirmed against code: both derive_executable_transport AND the derive_transport_plan fan-in read world.semantic_closure (the executable SET + runtime_demands), which only exists after the seal (SemanticClosed). collect_transport_contexts iterates closure.executables. So lifting the barrier requires the executable set + per-executable contexts to be readable incrementally (contexts-as-facts / co-settling) -- a substantial data-model change. Marginal current benefit: batch compilation (fz2 build / the test matrix) settles the closure once regardless, so co-settling only pays off for incremental recompilation, which isn't exercised today. Core arc (5.1/5.3/5.4) complete and green; 5.5 is the value-when-incrementality-matters follow-on.",
       "timestamp": "2026-06-23T10:57:24Z"
+    },
+    {
+      "text": "Re-opened for completion. Step 1 (pull-\u003epush inversion) landed as fz-xhk (9ad642c69): the two backward whole-closure scans in the per-exec projection (collect_call_arg_input_sources, collect_callable_capture_input_sources) are now a forward index built once when contexts assemble, bundled as TransportContexts. Byte-identical (transport 72/0, shadow green, 13 pre-existing lib reds unchanged), deterministic, perf-positive. Remaining DAG: (2) promote the forward index to an ascending contributed fact InputSources(E) [ContributionMap]; (3) bounded callee/producer context lookups -\u003e per-exec fact reads; (4) drop SemanticClosed gate on DeriveExecutableTransport(E); (5) retire seal runtime_demands re-gather + closure.runtime_demands consumers. Fan-in DeriveTransportPlan stays gated (whole-root artifact). Pre-existing flaky test fz-0lm surfaced + filed.",
+      "timestamp": "2026-06-23T22:37:49Z"
     }
   ],
   "priority": 3,
   "status": "open",
   "title": "Stage 4 (arc): lift the SemanticClosed barrier; co-settle transport in the loop",
   "type": "task",
-  "updated_at": "2026-06-23T22:09:34Z"
+  "updated_at": "2026-06-23T22:37:49Z"
 }
