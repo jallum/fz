@@ -9,9 +9,15 @@
   "id": "fz-bfh.5.1",
   "labels": [],
   "parent": "fz-bfh.5",
+  "comments": [
+    {
+      "text": "EXTRACTION landed (377e5d6ee): project_transport_plan split into project_one_executable (per-exec slice) + finish_transport_plan (cross-exec tail). Byte-identical (suite 74 pass / 1 pre-existing enum_take red). This is the seam the fact publishes across.\n\nBLOCKER found for the per-executable FACT itself: the plan-scoped ProjectionMemo is shared ACROSS executables and is not a pure cache -- for recursive callables it computes the converged recursive shape once (SCC root) and reuses it, enforcing cross-exec shape agreement. Isolating the memo per DeriveExecutableTransport(E) makes two executables project the same recursive frame to different structural shapes (ShapeId 114 vs 19 on reduce_while-family ExecutableInput[0], test compiler2_transport_plan_scopes_enum_predicate_callback_inputs_to_concrete_activations) -\u003e solve() agree-or-panic. The ShapeAgreement height-2 meet does NOT reproduce this (meet of distinct shapes = Conflicted/collapse; monolith picks the converged one). Real fix = transport shapes ascend as a monotone fixpoint across DeriveExecutableTransport revisions (the northstar core = 5.3+5.4+5.5 together). User chose 'merge 5.1+5.3 now'; scope deepened to the full fixpoint swing. Awaiting direction.",
+      "timestamp": "2026-06-23T00:34:32Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "Stage 1: per-executable ExecutableTransport(E) facts; DeriveTransportPlan becomes a fan-in",
   "type": "task",
-  "updated_at": "2026-06-22T23:28:09Z"
+  "updated_at": "2026-06-23T00:34:32Z"
 }
