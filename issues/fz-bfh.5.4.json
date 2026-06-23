@@ -6,14 +6,15 @@
   "blocks": [
     "fz-bfh.5.5"
   ],
+  "closed_at": "2026-06-23T10:57:24Z",
   "created": "2026-06-22T23:28:01Z",
   "description": "Goal\nExpress the boundary-publication closure as monotone propagation along the explicit Merged/return binding edges, making the root fan-in pure concatenation. Re-point the real consumers off the whole-root TransportPlan object.\n\nWhat\n- Replace expand_boundary_publications (jobs/transport.rs:390) and resolve_publication_source_boundaries (421) with propagation facts: a publication at position P flows to P iff a Merged (Stage 2) or callsite_callee_return_position binding edge links them; close to quiescence. Transitive classes may chain \u003e=3 executables (f-\u003eg-\u003eh) so propagation must be edge-following, not pairwise. HIGHEST-RISK ticket.\n- Boundary resolutions become a derived per-boundary fact accumulating publications from its class (additive, extend_unique semantics preserved).\n- Re-point consumers: materialize_root (jobs/artifact.rs) and native.rs read per-executable facts; the two whole-root iterations (materialized_executable_transport, materialized_transport_plan) get a per-executable position enumeration instead of iterating plan.positions.keys() globally.\n- Delete the assembly-side closure from the fan-in.\n\nVerify\nshadow==monolith green; full transport_contract_test.rs green (boundary inventory/per-surface tests are the guard); transport_validation.rs green; native + interp + build parity; zero warnings.",
   "id": "fz-bfh.5.4",
   "labels": [],
   "parent": "fz-bfh.5",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "Stage 3: boundary closure as propagation facts; re-point consumers; delete fan-in closure",
   "type": "task",
-  "updated_at": "2026-06-22T23:28:10Z"
+  "updated_at": "2026-06-23T10:57:24Z"
 }
