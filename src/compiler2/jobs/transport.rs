@@ -1334,10 +1334,11 @@ fn collect_executable_input_constraints(
                 executable: symbol.clone(),
                 semantic_index,
             };
+            let incoming = incoming_executable_input_positions(world, contexts, executable, semantic_index);
             let projected_callable_input_shape = if demand.is_callable()
-                && let Some(incoming) = incoming_executable_input_positions(world, contexts, executable, semantic_index)
+                && let Some(incoming) = incoming.as_ref()
             {
-                facts.record_publication_source_positions(position.clone(), incoming);
+                facts.record_publication_source_positions(position.clone(), incoming.clone());
                 let mut cycle = Cycle::default();
                 let mut memo = ProjectionMemo::default();
                 match project_executable_input_source(
@@ -1365,7 +1366,7 @@ fn collect_executable_input_constraints(
                 anchored_function_inputs.insert(function_input);
                 continue;
             }
-            if let Some(incoming) = incoming_executable_input_positions(world, contexts, executable, semantic_index) {
+            if let Some(incoming) = incoming {
                 let incoming_shapes = incoming
                     .iter()
                     .map(|call_arg| call_arg_shapes.get(call_arg).copied())
