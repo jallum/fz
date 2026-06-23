@@ -11,11 +11,15 @@
     {
       "text": "OUTPUT CONTRACT GREEN (e33a9a28f). The red pin compiler2_transport_plan_resolves_enum_take_reducer_input_boundary_from_source_publication now passes. Applied the output-contract strategy: the widened recursive reduce_while_cont/3 (any-accumulator, fz-y6w key) publishes a boxed value-lane return surface that the exact-return-match source-publication resolution rejected; relaxed the match for boxed returns only (concrete stays exact). Full lib 15-\u003e13 red, zero new regressions, +2 fixed (pin + a native boundary test).\n\nProgress: 5.6 (eprintln, no commit), 5.7 (clippy debt c8d01118e), 5.2 (ShapeAgreement 9c9d79f71), 5.1 EXTRACTION (377e5d6ee: project_one_executable + finish_transport_plan), output-contract fix (e33a9a28f).\n\nREMAINING refactors (5.1-fact / 5.3 / 5.4 / 5.5) are the transport-monotone fixpoint arc, blocked/impeded by: (1) the recursive-memo crux -- per-executable projection isolation diverges on recursive shapes, needs transport shapes to ascend as a monotone fixpoint, not a height-2 meet; (2) the branch has 13 pre-existing red native/interp/codegen tests (the enum red-worklist), so refactors that re-point native consumers (5.4/5.5) cannot be cleanly verified for three-path parity until that path is green. The output contract these refactors targeted is already satisfied.",
       "timestamp": "2026-06-23T01:03:06Z"
+    },
+    {
+      "text": "EMPIRICAL FINDING on the remaining tickets (5.3/5.4/5.5): implemented 5.3 (iterative input-merge fixpoint replacing solve1-\u003emerge-\u003esolve2) and measured it. Result: transport suite 75/0 unchanged, full lib SAME 13 reds (0 fixed/0 new), AOT enum_take_drop_split fails identically, ~2x SLOWER (N solves vs 2). The two-solve is NOT a fixpoint needing iteration -- the one-pass already converges for every program; the deferral never changes an outcome. So 5.3 (and 5.4, coupled via equivalent_positions; 5.5, which needs cross-exec-reads-as-facts = a massive rewrite) are behavior-neutral CHURN + perf-negative as refactors. Reverted (green floor 256b95723). The arc's real value landed in 5.1 (per-exec ExecutableTransport facts in the fixpoint). RECOMMEND: close 5.3/5.4/5.5 as superseded-by-5.1 / not-value-positive. The concrete user pain (enum_take_drop_split won't AOT-compile) is fz-hwn.10 -- a SEPARATE native boxed-apply dispatch bug, not this arc.",
+      "timestamp": "2026-06-23T10:42:58Z"
     }
   ],
   "priority": 1,
   "status": "open",
   "title": "Transport shape derivation folds into the fixpoint (retire the per-root monolith)",
   "type": "task",
-  "updated_at": "2026-06-23T01:03:06Z"
+  "updated_at": "2026-06-23T10:42:58Z"
 }
