@@ -144,7 +144,7 @@ struct ProjectionMemo {
     entries: HashMap<MemoKey, (SourceShape, TransportFactsBuilder)>,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct TransportFactsBuilder {
     callables: HashMap<CallableId, CallableFactsDraft>,
     boundaries: HashMap<BoundaryId, BoundaryFactsDraft>,
@@ -152,7 +152,7 @@ struct TransportFactsBuilder {
     publication_source_positions: HashMap<TransportPosition, Vec<TransportPosition>>,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct ShapeConstraintGraph {
     anchors: Vec<(TransportPosition, ShapeId)>,
     equalities: Vec<(
@@ -664,11 +664,229 @@ pub(crate) fn transport_plan_for_runtime_demands_for_test(
     project_transport_plan(world, &closure.entry, &executables, &contexts)
 }
 
-fn project_transport_plan(
+/// Project one executable's intra-executable transport contribution into
+/// `facts`/`shape_graph`. This is the per-executable slice of the former
+/// single-pass loop, verbatim: it anchors the executable's return, value,
+/// demanded-call-arg, return-payload, and resume shapes, and equates its
+/// call-arg/capture/return-sharing edges. Cross-executable edges that name a
+/// callee return position are still emitted here (they only name positions, not
+/// solved shapes); the closure over those edges happens in the fan-in. The
+/// shared `memo` is a pure cache, so isolating it per call (as
+/// `derive_executable_transport` does) changes only work, never the result.
+fn project_one_executable(
+    world: &mut World<'_>,
+    executable: &ExecutableKey,
+    context: &ExecutableContext,
+    contexts: &HashMap<ExecutableKey, ExecutableContext>,
+    facts: &mut TransportFactsBuilder,
+    shape_graph: &mut ShapeConstraintGraph,
+    memo: &mut ProjectionMemo,
+) {
+    let symbol = executable_symbol(executable, world.types());
+    let clause_params = clause_parameter_values(&context.body);
+
+    let return_position = TransportPosition::ExecutableReturn {
+        executable: symbol.clone(),
+    };
+    let return_shape = shape_for_source(
+        world,
+        contexts,
+        facts,
+        executable,
+        context,
+        context.return_ty,
+        &context.runtime_demand.return_demand,
+        TransportSource::ExecutableReturn,
+        Some(return_position.clone()),
+        memo,
+    );
+    shape_graph.anchor(return_position, return_shape);
+
+    let mut values = context.analysis.value_types.iter().collect::<Vec<_>>();
+    values.sort_by_key(|(value, _)| value.as_u32());
+    for (&value, &ty) in values {
+        if clause_params.contains(&value) {
+            continue;
+        }
+        let demand = context
+            .runtime_demand
+            .value_demands
+            .get(&value)
+            .cloned()
+            .unwrap_or_default();
+        let shape = shape_for_local_value(
+            world,
+            contexts,
+            facts,
+            executable,
+            context,
+            value,
+            ty,
+            &demand,
+            Some(TransportPosition::Value {
+                executable: symbol.clone(),
+                value,
+            }),
+            memo,
+        );
+        shape_graph.anchor(
+            TransportPosition::Value {
+                executable: symbol.clone(),
+                value,
+            },
+            shape,
+        );
+    }
+
+    let mut callsite_args = context.callsite_args.iter().collect::<Vec<_>>();
+    callsite_args.sort_by_key(|(callsite, _)| callsite.as_u32());
+    for (&callsite, args) in callsite_args {
+        for (semantic_index, arg) in args.iter().enumerate() {
+            let position = TransportPosition::CallArg {
+                executable: symbol.clone(),
+                callsite,
+                semantic_index,
+            };
+            shape_graph.equal(
+                position,
+                TransportPosition::Value {
+                    executable: symbol.clone(),
+                    value: arg.value,
+                },
+            );
+        }
+    }
+    let mut demanded_call_args = context.runtime_demand.call_arg_demands.iter().collect::<Vec<_>>();
+    demanded_call_args.sort_by_key(|(callsite, _)| callsite.as_u32());
+    for (&callsite, demands) in demanded_call_args {
+        let actual_arity = context.callsite_args.get(&callsite).map_or(0, Vec::len);
+        for (semantic_index, demand) in demands.iter().cloned().enumerate() {
+            if semantic_index >= actual_arity {
+                let position = TransportPosition::CallArg {
+                    executable: symbol.clone(),
+                    callsite,
+                    semantic_index,
+                };
+                let ty = world.types_mut().any();
+                let shape = generic_shape_from_demand(world, ty, &demand, facts, Some(position.clone()));
+                shape_graph.anchor(position, shape);
+            }
+        }
+    }
+
+    let mut return_callsites = context
+        .callsite_dests
+        .iter()
+        .filter_map(|(callsite, dest)| matches!(dest, ControlDestination::Return).then_some(*callsite))
+        .collect::<Vec<_>>();
+    return_callsites.sort_by_key(|callsite| callsite.as_u32());
+    return_callsites.dedup();
+    for callsite in return_callsites {
+        let position = TransportPosition::ReturnPayload {
+            executable: symbol.clone(),
+            callsite,
+        };
+        if let Some(callee_return) = callsite_callee_return_position(world, contexts, executable, context, callsite) {
+            shape_graph.equal(position, callee_return);
+        } else {
+            let shape = shape_for_source(
+                world,
+                contexts,
+                facts,
+                executable,
+                context,
+                context.return_ty,
+                &context.runtime_demand.return_demand,
+                TransportSource::CallsiteReturn(callsite),
+                Some(position.clone()),
+                memo,
+            );
+            shape_graph.anchor(position, shape);
+        }
+    }
+
+    let mut entry_captures = context.runtime_demand.entry_capture_demands.iter().collect::<Vec<_>>();
+    entry_captures.sort_by_key(|(entry, _)| entry.as_u32());
+    for (&entry, demands) in entry_captures {
+        let LoweredBody::Clauses { entries, .. } = &context.body else {
+            continue;
+        };
+        let captures = entries
+            .get(entry.as_u32() as usize)
+            .map(|lowered| lowered.captures.clone())
+            .unwrap_or_default();
+        for (capture_index, demand) in demands.iter().cloned().enumerate() {
+            let Some(&capture) = captures.get(capture_index) else {
+                continue;
+            };
+            let _ = demand;
+            shape_graph.equal(
+                TransportPosition::EntryCapture {
+                    executable: symbol.clone(),
+                    entry,
+                    capture_index,
+                },
+                TransportPosition::Value {
+                    executable: symbol.clone(),
+                    value: capture,
+                },
+            );
+        }
+    }
+
+    for resume in &context.resume_entries {
+        let position = TransportPosition::ResumePayload {
+            executable: symbol.clone(),
+            callsite: resume.callsite,
+            entry: resume.entry,
+        };
+        let demand = resume_demand(context, *resume);
+        // An ignored call result still arrives as the value the callee
+        // returns: a shared callee delivers its whole return regardless of
+        // this caller dropping it. Ignoring it must not mutate the
+        // transported shape, so union the resume with the callee return
+        // position instead of collapsing it to `Nothing`. The callee's own
+        // return anchor already carries divergence (`Nothing` when the
+        // callee never returns), so this stays correct for diverging calls.
+        // Demanded resumes keep their projection, which settles direct vs.
+        // first-class callable transport from the caller's use.
+        let shared_return = demand
+            .is_ignore()
+            .then_some(resume.callsite)
+            .flatten()
+            .and_then(|callsite| callsite_callee_return_position(world, contexts, executable, context, callsite));
+        if let Some(callee_return) = shared_return {
+            shape_graph.equal(position, callee_return);
+        } else {
+            let shape = resume_shape(
+                world,
+                contexts,
+                facts,
+                executable,
+                context,
+                *resume,
+                &demand,
+                Some(position.clone()),
+                memo,
+            );
+            shape_graph.anchor(position, shape);
+        }
+    }
+}
+
+/// Close the merged per-executable contributions into a finished plan: the
+/// cross-executable tail that was always run once per root. It seeds clause
+/// parameter and callable-flow equalities, runs the two solves with the input
+/// merge between them, expands and resolves boundary publications, and derives
+/// the codegen seam. `memo` is fresh here because every projection it needs is
+/// pure; the per-executable warm cache contributes nothing to the result.
+fn finish_transport_plan(
     world: &mut World<'_>,
     entry_executable: &ExecutableKey,
     executables: &[ExecutableKey],
     contexts: &HashMap<ExecutableKey, ExecutableContext>,
+    mut facts: TransportFactsBuilder,
+    mut shape_graph: ShapeConstraintGraph,
 ) -> TransportPlan {
     let entry = executable_symbol(entry_executable, world.types());
     let executable_membership = executables
@@ -676,208 +894,7 @@ fn project_transport_plan(
         .map(|e| executable_symbol(e, world.types()))
         .collect::<Vec<_>>()
         .into_boxed_slice();
-
-    let mut facts = TransportFactsBuilder::default();
-    let mut shape_graph = ShapeConstraintGraph::default();
-    // Plan-scoped: pure source projections are reused across every position and
-    // executable in this root, not just within one projection tree.
     let mut memo = ProjectionMemo::default();
-    for executable in executables {
-        let symbol = executable_symbol(executable, world.types());
-        let context = contexts
-            .get(executable)
-            .expect("transport derivation requires one context per settled executable");
-        let clause_params = clause_parameter_values(&context.body);
-
-        let return_position = TransportPosition::ExecutableReturn {
-            executable: symbol.clone(),
-        };
-        let return_shape = shape_for_source(
-            world,
-            contexts,
-            &mut facts,
-            executable,
-            context,
-            context.return_ty,
-            &context.runtime_demand.return_demand,
-            TransportSource::ExecutableReturn,
-            Some(return_position.clone()),
-            &mut memo,
-        );
-        shape_graph.anchor(return_position, return_shape);
-
-        let mut values = context.analysis.value_types.iter().collect::<Vec<_>>();
-        values.sort_by_key(|(value, _)| value.as_u32());
-        for (&value, &ty) in values {
-            if clause_params.contains(&value) {
-                continue;
-            }
-            let demand = context
-                .runtime_demand
-                .value_demands
-                .get(&value)
-                .cloned()
-                .unwrap_or_default();
-            let shape = shape_for_local_value(
-                world,
-                contexts,
-                &mut facts,
-                executable,
-                context,
-                value,
-                ty,
-                &demand,
-                Some(TransportPosition::Value {
-                    executable: symbol.clone(),
-                    value,
-                }),
-                &mut memo,
-            );
-            shape_graph.anchor(
-                TransportPosition::Value {
-                    executable: symbol.clone(),
-                    value,
-                },
-                shape,
-            );
-        }
-
-        let mut callsite_args = context.callsite_args.iter().collect::<Vec<_>>();
-        callsite_args.sort_by_key(|(callsite, _)| callsite.as_u32());
-        for (&callsite, args) in callsite_args {
-            for (semantic_index, arg) in args.iter().enumerate() {
-                let position = TransportPosition::CallArg {
-                    executable: symbol.clone(),
-                    callsite,
-                    semantic_index,
-                };
-                shape_graph.equal(
-                    position,
-                    TransportPosition::Value {
-                        executable: symbol.clone(),
-                        value: arg.value,
-                    },
-                );
-            }
-        }
-        let mut demanded_call_args = context.runtime_demand.call_arg_demands.iter().collect::<Vec<_>>();
-        demanded_call_args.sort_by_key(|(callsite, _)| callsite.as_u32());
-        for (&callsite, demands) in demanded_call_args {
-            let actual_arity = context.callsite_args.get(&callsite).map_or(0, Vec::len);
-            for (semantic_index, demand) in demands.iter().cloned().enumerate() {
-                if semantic_index >= actual_arity {
-                    let position = TransportPosition::CallArg {
-                        executable: symbol.clone(),
-                        callsite,
-                        semantic_index,
-                    };
-                    let ty = world.types_mut().any();
-                    let shape = generic_shape_from_demand(world, ty, &demand, &mut facts, Some(position.clone()));
-                    shape_graph.anchor(position, shape);
-                }
-            }
-        }
-
-        let mut return_callsites = context
-            .callsite_dests
-            .iter()
-            .filter_map(|(callsite, dest)| matches!(dest, ControlDestination::Return).then_some(*callsite))
-            .collect::<Vec<_>>();
-        return_callsites.sort_by_key(|callsite| callsite.as_u32());
-        return_callsites.dedup();
-        for callsite in return_callsites {
-            let position = TransportPosition::ReturnPayload {
-                executable: symbol.clone(),
-                callsite,
-            };
-            if let Some(callee_return) = callsite_callee_return_position(world, contexts, executable, context, callsite)
-            {
-                shape_graph.equal(position, callee_return);
-            } else {
-                let shape = shape_for_source(
-                    world,
-                    contexts,
-                    &mut facts,
-                    executable,
-                    context,
-                    context.return_ty,
-                    &context.runtime_demand.return_demand,
-                    TransportSource::CallsiteReturn(callsite),
-                    Some(position.clone()),
-                    &mut memo,
-                );
-                shape_graph.anchor(position, shape);
-            }
-        }
-
-        let mut entry_captures = context.runtime_demand.entry_capture_demands.iter().collect::<Vec<_>>();
-        entry_captures.sort_by_key(|(entry, _)| entry.as_u32());
-        for (&entry, demands) in entry_captures {
-            let LoweredBody::Clauses { entries, .. } = &context.body else {
-                continue;
-            };
-            let captures = entries
-                .get(entry.as_u32() as usize)
-                .map(|lowered| lowered.captures.clone())
-                .unwrap_or_default();
-            for (capture_index, demand) in demands.iter().cloned().enumerate() {
-                let Some(&capture) = captures.get(capture_index) else {
-                    continue;
-                };
-                let _ = demand;
-                shape_graph.equal(
-                    TransportPosition::EntryCapture {
-                        executable: symbol.clone(),
-                        entry,
-                        capture_index,
-                    },
-                    TransportPosition::Value {
-                        executable: symbol.clone(),
-                        value: capture,
-                    },
-                );
-            }
-        }
-
-        for resume in &context.resume_entries {
-            let position = TransportPosition::ResumePayload {
-                executable: symbol.clone(),
-                callsite: resume.callsite,
-                entry: resume.entry,
-            };
-            let demand = resume_demand(context, *resume);
-            // An ignored call result still arrives as the value the callee
-            // returns: a shared callee delivers its whole return regardless of
-            // this caller dropping it. Ignoring it must not mutate the
-            // transported shape, so union the resume with the callee return
-            // position instead of collapsing it to `Nothing`. The callee's own
-            // return anchor already carries divergence (`Nothing` when the
-            // callee never returns), so this stays correct for diverging calls.
-            // Demanded resumes keep their projection, which settles direct vs.
-            // first-class callable transport from the caller's use.
-            let shared_return = demand
-                .is_ignore()
-                .then_some(resume.callsite)
-                .flatten()
-                .and_then(|callsite| callsite_callee_return_position(world, contexts, executable, context, callsite));
-            if let Some(callee_return) = shared_return {
-                shape_graph.equal(position, callee_return);
-            } else {
-                let shape = resume_shape(
-                    world,
-                    contexts,
-                    &mut facts,
-                    executable,
-                    context,
-                    *resume,
-                    &demand,
-                    Some(position.clone()),
-                    &mut memo,
-                );
-                shape_graph.anchor(position, shape);
-            }
-        }
-    }
 
     collect_clause_parameter_equalities(contexts, executables, &mut shape_graph, world.types());
     seed_callable_flow_capture_inputs(world, contexts, &mut facts, &mut shape_graph, &mut memo);
@@ -907,6 +924,39 @@ fn project_transport_plan(
         boundaries,
         codegen_seam_facts,
     }
+}
+
+/// Project a whole root by accumulating every executable's per-executable
+/// contribution into one builder, then closing it with the cross-executable
+/// tail. The per-executable slice is now [`project_one_executable`] and the
+/// tail is [`finish_transport_plan`]; splitting them is the seam the
+/// per-executable `ExecutableTransport` fact will publish across.
+fn project_transport_plan(
+    world: &mut World<'_>,
+    entry_executable: &ExecutableKey,
+    executables: &[ExecutableKey],
+    contexts: &HashMap<ExecutableKey, ExecutableContext>,
+) -> TransportPlan {
+    let mut facts = TransportFactsBuilder::default();
+    let mut shape_graph = ShapeConstraintGraph::default();
+    // Plan-scoped: pure source projections are reused across every position and
+    // executable in this root, not just within one projection tree.
+    let mut memo = ProjectionMemo::default();
+    for executable in executables {
+        let context = contexts
+            .get(executable)
+            .expect("transport derivation requires one context per settled executable");
+        project_one_executable(
+            world,
+            executable,
+            context,
+            contexts,
+            &mut facts,
+            &mut shape_graph,
+            &mut memo,
+        );
+    }
+    finish_transport_plan(world, entry_executable, executables, contexts, facts, shape_graph)
 }
 
 fn seed_callable_flow_capture_inputs(
