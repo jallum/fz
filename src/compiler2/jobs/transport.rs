@@ -1606,6 +1606,15 @@ fn codegen_repr_for_lane(world: &World<'_>, lane: LaneId) -> CodegenLaneRepr {
     raw_codegen_repr_for_lane(world, lane).unwrap_or(CodegenLaneRepr::ValueRef)
 }
 
+/// Whether a shape is a single boxed value lane -- a `ValueRef`-repr return. A
+/// boxed return physically accepts any concrete producer return through the
+/// boxing seam, which is what lets a widened recursive activation's `any`
+/// return resolve to a concretely-returning producer. Tuple and raw-scalar
+/// returns are not boxed, so they keep an exact-match contract.
+fn boxed_value_return(world: &World<'_>, shape: ShapeId) -> bool {
+    matches!(world.shape(shape), ShapeDescr::Lane(lane) if codegen_repr_for_lane(world, *lane) == CodegenLaneRepr::ValueRef)
+}
+
 fn block_param_codegen_repr_for_lane(world: &World<'_>, lane: LaneId) -> CodegenLaneRepr {
     match raw_codegen_repr_for_lane(world, lane) {
         Some(repr @ (CodegenLaneRepr::RawInt | CodegenLaneRepr::RawAtom)) => repr,
@@ -3361,9 +3370,18 @@ fn resolution_symbols_for_source_publications(
                 continue;
             }
             let boundary_descr = world.boundary(*boundary);
-            if boundary_descr.surface_arg_shapes.as_ref() != arg_shapes
-                || boundary_descr.published_return_shape != return_shape
-            {
+            if boundary_descr.surface_arg_shapes.as_ref() != arg_shapes {
+                continue;
+            }
+            // The published return shape is normally an exact part of the
+            // surface contract. The one exception is a widened recursive
+            // activation: it publishes the same callable with a boxed `any`
+            // return where a concrete activation publishes a grounded return.
+            // The boxing seam reconciles those at runtime, so a boxed value-lane
+            // return on the boundary we are resolving accepts a producer that
+            // returns any concrete shape. Concrete (raw / tuple) returns stay
+            // strict, so genuinely distinct surfaces are not cross-resolved.
+            if boundary_descr.published_return_shape != return_shape && !boxed_value_return(world, return_shape) {
                 continue;
             }
             extend_unique(&mut resolutions, draft.resolutions.clone());
