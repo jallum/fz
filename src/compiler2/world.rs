@@ -1193,13 +1193,28 @@ impl<'a> World<'a> {
         executable: ExecutableKey,
         facts: ExecutableTransportFacts,
     ) -> bool {
-        match self.executable_transport.get(&executable) {
+        let changed = match self.executable_transport.get(&executable) {
             Some(existing) if existing == &facts => false,
             _ => {
-                self.executable_transport.insert(executable, facts);
+                self.executable_transport.insert(executable.clone(), facts);
                 true
             }
-        }
+        };
+        // The blast-radius signal: one event per executable whose transport was
+        // (re)projected this drive, regardless of whether the content moved.
+        // A re-run that exits early on a wait never reaches here, so the captured
+        // executable set is exactly the projection work a drive performed.
+        self.tel.execute(
+            &["fz", "compiler2", "executable_transport", "derived"],
+            &measurements! {
+                root_id: executable.activation.root.as_u32(),
+                changed: changed as u64,
+            },
+            &metadata! {
+                executable: opaque_debug(&executable),
+            },
+        );
+        changed
     }
 
     pub(crate) fn executable_transport(&self, executable: &ExecutableKey) -> Option<&ExecutableTransportFacts> {

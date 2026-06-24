@@ -56,6 +56,55 @@ struct JobStartCapture {
     starts: JobStarts,
 }
 
+/// Captures the executable behind every `executable_transport.derived` event:
+/// the set of executables a drive actually re-projected. `clear()` between
+/// drives isolates one drive's blast radius from the next.
+struct TransportDerivedCapture {
+    executables: Rc<RefCell<Vec<ExecutableKey>>>,
+}
+
+impl TransportDerivedCapture {
+    fn new() -> Self {
+        Self {
+            executables: Rc::new(RefCell::new(Vec::new())),
+        }
+    }
+
+    fn handler(&self) -> Box<dyn Handler> {
+        Box::new(TransportDerivedCaptureHandler {
+            executables: self.executables.clone(),
+        })
+    }
+
+    fn clear(&self) {
+        self.executables.borrow_mut().clear();
+    }
+
+    fn executables(&self) -> Vec<ExecutableKey> {
+        self.executables.borrow().clone()
+    }
+}
+
+struct TransportDerivedCaptureHandler {
+    executables: Rc<RefCell<Vec<ExecutableKey>>>,
+}
+
+impl Handler for TransportDerivedCaptureHandler {
+    fn handle(&self, event: &Event<'_, '_, '_>) {
+        if event.name != ["fz", "compiler2", "executable_transport", "derived"] || event.kind != EventKind::Event {
+            return;
+        }
+        let Some(executable) = event
+            .metadata
+            .get("executable")
+            .and_then(|value| value.downcast_ref::<ExecutableKey>())
+        else {
+            return;
+        };
+        self.executables.borrow_mut().push(executable.clone());
+    }
+}
+
 impl FunctionCapture {
     fn new() -> Self {
         Self {
@@ -868,6 +917,103 @@ fn compiler2_runtime_demand_shadow_facts_answer_transport_questions_for_quicksor
     assert_eq!(
         shadow_plan, monolith_plan,
         "shadow RuntimeDemand(E) facts must answer the same transport-facing questions as closure.runtime_demands",
+    );
+}
+
+/// fz-g2f: the incremental-recompilation blast-radius signal.
+///
+/// The value of subscribing the per-executable transport job to ONLY its precise
+/// dependency cone (fz-bfh.5.5) is a *bounded blast radius*: when a localized
+/// change grows an already-settled root's closure, only the executables the
+/// change actually reaches should re-project their transport. Nothing else
+/// exercises this, so it is built here as a signal that fails RED while the job
+/// subscribes to the whole closure / the global `SemanticClosed` fact and turns
+/// GREEN once it subscribes to its cone only.
+///
+/// The trigger is the production open-world dispatch path: adding a `defimpl`
+/// on the second drive bumps `ProtocolDispatch`, re-resolves the value-joined
+/// `Shout.say` call site in `shouty`, and grows the closure. `lonely` is reached
+/// only through zero-arg `quiet` — its dependency cone is `{lonely, quiet}`,
+/// disjoint from the dispatch-perturbed `shouty`/`main` — so adding the impl
+/// cannot change its transport and a bounded blast radius must NOT re-derive it.
+///
+/// RED before the split: growing the closure re-runs `SealSemanticClosure`,
+/// bumping `SemanticClosed`, which rebases every `DeriveExecutableTransport`
+/// reader, so `lonely` re-projects despite being unaffected.
+#[test]
+fn compiler2_adding_a_defimpl_reprojects_only_the_cone_its_dispatch_reaches() {
+    let tel = crate::telemetry::ConfiguredTelemetry::new();
+    let functions = FunctionCapture::new();
+    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    let transport = TransportDerivedCapture::new();
+    tel.attach(
+        &["fz", "compiler2", "executable_transport", "derived"],
+        transport.handler(),
+    );
+
+    let mut world = World::new(&tel);
+    world.submit_code(
+        Some("blast_radius_v1.fz".to_string()),
+        r#"
+defprotocol Shout do
+  @spec say(t(a)) :: a
+  fn say(x)
+end
+
+defimpl Shout, for: Integer do
+  fn say(n), do: n
+end
+
+fn lonely(a, b), do: a + b
+
+fn quiet(), do: lonely(3, 4)
+
+fn shouty() do
+  picked = if true, do: 1, else: "two"
+  Shout.say(picked)
+end
+
+fn main() do
+  shouty()
+  quiet()
+end
+"#
+        .to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    world.demand(Job::DeriveTransportPlan(root));
+    assert_resolved(
+        world.drive(),
+        "drive 1 with one Shout impl should settle the transport plan",
+    );
+
+    let lonely_id = functions.id("lonely", 2);
+    let s1 = transport.executables();
+    assert!(
+        s1.iter().any(|executable| executable.activation.function == lonely_id),
+        "lonely's transport must be derived on the first drive; saw {s1:?}",
+    );
+
+    transport.clear();
+    world.submit_code(
+        Some("blast_radius_v2.fz".to_string()),
+        r#"
+defimpl Shout, for: String do
+  fn say(s), do: s
+end
+"#
+        .to_string(),
+    );
+    world.demand(Job::DeriveTransportPlan(root));
+    assert_resolved(
+        world.drive(),
+        "drive 2 adding the String impl should re-settle the transport plan",
+    );
+
+    let s2 = transport.executables();
+    assert!(
+        !s2.iter().any(|executable| executable.activation.function == lonely_id),
+        "bounded blast radius: adding an unrelated defimpl must NOT re-derive lonely's transport; re-derived {s2:?}",
     );
 }
 
