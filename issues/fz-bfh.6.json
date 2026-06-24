@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-24T18:40:13Z",
+  "description": "UNVERIFIED agent observation during fz-bfh.5.5 work: AnalyzeActivation/DeriveRuntimeDemand reportedly re-derive ~1.8k times on heavy enum fixtures on the COMMITTED baseline (not caused by 5.5). If real, this is a demand/analysis slow-convergence likely overlapping fz-downstream-monolith / fz-8b0 (enum_take_drop_split slowness). FIRST confirm independently with a per-job-variant run counter, then decide if it's a real convergence bug vs expected fan-out. Non-blocking; parked at epic end.",
+  "id": "fz-bfh.6",
+  "labels": [],
+  "parent": "fz-bfh",
+  "priority": 4,
+  "status": "open",
+  "title": "[INVESTIGATE] demand/analysis fixpoint re-derivation volume on heavy enum fixtures",
+  "type": "task",
+  "updated_at": "2026-06-24T18:40:13Z"
+}
