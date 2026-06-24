@@ -23,7 +23,7 @@
   ],
   "priority": 1,
   "status": "in_progress",
-  "title": "fz-f98.3: closure capture layout must not fragment on use-demand across specialized activations",
+  "title": "closure capture layout must not fragment on use-demand across specialized activations",
   "type": "task",
-  "updated_at": "2026-06-24T20:08:57Z"
+  "updated_at": "2026-06-24T20:09:03Z"
 }
