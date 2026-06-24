@@ -7,9 +7,15 @@
   "id": "fz-bfh.7",
   "labels": [],
   "parent": "fz-bfh",
+  "comments": [
+    {
+      "text": "DONE (8a91e9c90). JobBudgetGuard in src/compiler2/job_budget_guard.rs (#[cfg(test)] mod) -- telemetry handler on [fz,compiler2,job] SpanStart, per-Job-variant counter, panics naming the runaway kind at a generous uniform 10_000 cap (livelock backstop, NOT fixture-tuned). Wired into the fz-g2f test. Available to any world.drive() drive-heavy test by attaching its handler.",
+      "timestamp": "2026-06-24T18:50:32Z"
+    }
+  ],
   "priority": 3,
   "status": "open",
   "title": "Per-job-kind livelock guard for drive-heavy tests",
   "type": "task",
-  "updated_at": "2026-06-24T18:48:09Z"
+  "updated_at": "2026-06-24T18:50:32Z"
 }
