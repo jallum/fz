@@ -9,9 +9,15 @@
   "id": "fz-f98.6",
   "labels": [],
   "parent": "fz-f98",
+  "comments": [
+    {
+      "text": "Execution finding (HEAD, evidence-grounded) — the boundary fragmentation is a SYMPTOM of bridge-reducer activation over-specialization, and suppressing it only relocates the failure. Do NOT land a transport/artifact dedup patch; the holistic fix is boxed-callable activation coherence (f98.5 family).\n\nProbed the failing `Enum.to_list` reducer (FunctionId 174 = #lambda:68, the reduce/3 wrapper `fn (entry, inner_acc) -\u003e {:cont, reducer.(entry, inner_acc)}`):\n- Each published boundary carries multiple resolutions that differ ONLY in non-dispatch input types the boundary erases to one ValueRef lane: the accumulator seen as `[]` then `any` (a subsumption pair), and the shared bridge reached over a Range (`int | float`) and a Map (`{any, any}`) entry (an incomparable pair). All share arg_reprs [ValueRef, ValueRef] and return_reprs [RawAtom, ValueRef].\n- Root: convergence_collapse runs only for RECURSIVE functions (world.rs:2926); the wrapper is non-recursive, so its activations never merge. And convergence_class does NOT merge `[]`/`any` or `{any,any}`/`int|float` (distinct classes) — they coincide ONLY at the boxed codegen repr (ValueRef). Activations are type-keyed; boundaries are repr-keyed; there is no type that names \"the boxed surface\", which is why a simple convergence toggle does not fix it.\n\nTried two symptom patches; both clear the boundary error and then UNMASK pre-existing native ABI assertions that were gated behind it (confirmed pre-existing: clean HEAD hits the boundary error first):\n- transport-level subsumption dedup of boundary resolutions -\u003e terminator.rs:1142 (native tail-call lane disagreement: caller_sid 208 -\u003e callee_sid 31, 5 args vs 6 params) and ripples ABI facts.\n- artifact-level dedup of codegen-identical CallableEntries (keyed on is_empty(return_ty), since the two intern distinct return Tys that print alike) -\u003e terminator.rs:1142 for the Range case; interp callable-entry ambiguity (\"backend callable 174 ... ambiguous across entries [64,66]\") and driver.rs:940 for the combined Range+Map case.\n\nThese assertions (boundary count, tail-call lane agreement, closure-target surface divergence at driver.rs:940/971, interp entry ambiguity) all detect different facets of ONE incoherence: the boxed bridge reducer is compiled as several bodies with mutually-incoherent ABIs where the runtime expects one body per (function, capture_count) dispatched through a shared identity entry. The correct-by-construction fix makes the boxed callable resolve to ONE coherent activation/body; then every assertion is satisfied because there is nothing to disambiguate. That is the boxed-callable activation-coherence design (f98.5 family), not a downstream dedup.\n\nRecommendation: sequence f98.6 as part of / after the f98.5 activation-coherence work; the standalone transport/artifact fix is dead-ended. fz_f98_range_map_converges defers restored; tree clean.",
+      "timestamp": "2026-06-24T22:50:06Z"
+    }
+  ],
   "priority": 2,
   "status": "in_progress",
   "title": "shared reduce bridge: one published callable boundary fragments into multiple native boundaries",
   "type": "bug",
-  "updated_at": "2026-06-24T22:16:53Z"
+  "updated_at": "2026-06-24T22:50:06Z"
 }
