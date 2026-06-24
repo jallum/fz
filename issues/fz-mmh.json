@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-24T10:56:35Z",
+  "description": "Promote the forward incoming-input-source index from a whole-closure build to an ascending contributed fact (InputSources, keyed by the (function,arrow,need) dispatch key, mirroring ReturnDemand). Each producer's DeriveExecutableTransport contributes its outgoing call-arg + capture edges, computed from its OWN facts alone -- no closure scan. Both transport jobs build their incoming index by reading the joined fact (current reads, so they re-run as siblings contribute). The shadow test keeps the in-process build. Byte-identical batch output; gate retained (the gate-drop is the final step).",
+  "id": "fz-mmh",
+  "labels": [],
+  "priority": 2,
+  "status": "open",
+  "title": "Stage 4b: InputSources contribution fact (forward push as ascending fact)",
+  "type": "task",
+  "updated_at": "2026-06-24T10:56:35Z"
+}
