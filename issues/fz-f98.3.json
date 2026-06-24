@@ -26,7 +26,7 @@
     }
   ],
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "closure capture layout must not fragment on use-demand across specialized activations",
   "type": "task",
   "updated_at": "2026-06-24T20:46:30Z"
