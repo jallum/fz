@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-24T20:43:45Z",
+  "description": "Discovered while completing fz-f98.3. Distinct from the capture-layout invariant (f98.3) and the native-boundary fragmentation: this is an accumulator/return-threading defect specific to reduce/2 (the reduce_first sentinel path) over a non-List Enumerable.\n\nRepro (with f98.3 capture fix; reduce/2 transport now settles): `Enum.reduce(1..3, fn (x, acc) -\u003e x * acc end)` and `Enum.reduce(1..7//2, ...)` panic at runtime:\n  fz panic: \"Enum.EmptyError\"\nThe fold returns its initial {:cont, :first} accumulator unadvanced -\u003e reduce_first_acc/reduce_first_finish raises EmptyError as if the collection were empty. Controls:\n- List reduce/2 WORKS: Enum.reduce([1,3,5,7], fn (x,acc) -\u003e x*acc end) = 105.\n- Range reduce/3 WORKS: Enum.reduce(1..7//2, 0, fn (x,acc) -\u003e x+acc end) = 16.\nSo the defect is the intersection (reduce/2 reduce_first sentinel) x (Range/non-List Enumerable). The `:first | {:acc, b}` accumulator union is threaded through Enumerable.reduce -\u003e Range.reduce; on the non-List path the inner lambda's {:cont, {:acc, _}} result is not delivered back as the next accumulator (likely a return/acc boundary repr mismatch for the sum-typed accumulator across the protocol-dispatched reduce boundary). Blocks fz_f98_range_reduce2 (bfh.2) run/interp/build.",
+  "id": "fz-f98.7",
+  "labels": [],
+  "parent": "fz-f98",
+  "priority": 2,
+  "status": "open",
+  "title": "Enum.reduce/2 over Range raises Enum.EmptyError: :first|{:acc} accumulator does not thread through the shared bridge over non-List Enumerables",
+  "type": "bug",
+  "updated_at": "2026-06-24T20:43:45Z"
+}
