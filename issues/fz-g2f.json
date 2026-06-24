@@ -20,11 +20,15 @@
     {
       "text": "FEASIBILITY CONFIRMED (YES): incrementally adding a defimpl on a later drive DOES re-trigger an already-settled consumer's call-site resolution, via the FactKey::ProtocolDispatch(protocol) subscription -- resolve_protocol_call reads it (jobs/semantic.rs:1251); a new defimpl bumps it (source_publish.rs:1218 refresh_protocol_dispatch -\u003e changed); it is NOT cumulative (drive.rs:88-98) so the change is a ground-shift that rebases subscribers (scheduler.rs:151-176, 217-229). So the settle-then-grow trigger = incremental defimpl addition where main's polymorphic/value-joined call site newly dispatches to the added impl. fz-g2f is buildable. Test plan: drive 1 settle main (protocol call, one impl, value joined over two types so dispatch is open); capture DeriveExecutableTransport run-set; drive 2 add the second defimpl -\u003e ProtocolDispatch bumps -\u003e main's closure grows -\u003e assert an unrelated executable's DeriveExecutableTransport is NOT in drive-2's run-set (RED today via SemanticClosed rebase-all; GREEN after 5.5 step 4).",
       "timestamp": "2026-06-23T23:00:35Z"
+    },
+    {
+      "text": "DONE (c6fa7cb93). Signal built + GREEN: executable_transport.derived telemetry event in define_executable_transport + in-process test compiler2_adding_a_defimpl_reprojects_only_the_cone_its_dispatch_reaches. Drives a root to settle (Shout protocol, one Integer impl, value-joined say call in shouty), adds defimpl for String on drive 2 (ProtocolDispatch bump grows the closure via the production open-world path), asserts lonely (cone {lonely,quiet}, disjoint from perturbed shouty/main) is NOT re-derived. RED at HEAD (seal bump rebased all transport readers); GREEN after fz-bfh.5.5's cone-scoped subscription.",
+      "timestamp": "2026-06-24T18:39:48Z"
     }
   ],
   "priority": 3,
   "status": "in_progress",
   "title": "Incremental-recompilation signal: test transport facts re-settle with bounded blast-radius",
   "type": "task",
-  "updated_at": "2026-06-23T23:00:35Z"
+  "updated_at": "2026-06-24T18:39:48Z"
 }
