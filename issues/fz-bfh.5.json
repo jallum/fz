@@ -15,11 +15,15 @@
     {
       "text": "EMPIRICAL FINDING on the remaining tickets (5.3/5.4/5.5): implemented 5.3 (iterative input-merge fixpoint replacing solve1-\u003emerge-\u003esolve2) and measured it. Result: transport suite 75/0 unchanged, full lib SAME 13 reds (0 fixed/0 new), AOT enum_take_drop_split fails identically, ~2x SLOWER (N solves vs 2). The two-solve is NOT a fixpoint needing iteration -- the one-pass already converges for every program; the deferral never changes an outcome. So 5.3 (and 5.4, coupled via equivalent_positions; 5.5, which needs cross-exec-reads-as-facts = a massive rewrite) are behavior-neutral CHURN + perf-negative as refactors. Reverted (green floor 256b95723). The arc's real value landed in 5.1 (per-exec ExecutableTransport facts in the fixpoint). RECOMMEND: close 5.3/5.4/5.5 as superseded-by-5.1 / not-value-positive. The concrete user pain (enum_take_drop_split won't AOT-compile) is fz-hwn.10 -- a SEPARATE native boxed-apply dispatch bug, not this arc.",
       "timestamp": "2026-06-23T10:42:58Z"
+    },
+    {
+      "text": "All children closed. Per-root transport monolith retired: per-exec ExecutableTransport(E) facts + fan-in (5.1), two-solve collapsed (5.3), materialize grouped once (5.4), input-source index inverted to the cumulative InputSources fact (xhk/mmh), and per-exec transport now subscribes to its precise cone only -- bounded incremental blast radius (5.5, fz-g2f green). Verify: transport 72/0, shadow byte-identical, full lib 13 pre-existing reds, clippy -D clean.",
+      "timestamp": "2026-06-24T18:53:06Z"
     }
   ],
   "priority": 1,
   "status": "open",
   "title": "Transport shape derivation folds into the fixpoint (retire the per-root monolith)",
   "type": "task",
-  "updated_at": "2026-06-23T10:42:58Z"
+  "updated_at": "2026-06-24T18:53:06Z"
 }
