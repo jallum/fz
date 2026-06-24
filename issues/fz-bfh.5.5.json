@@ -20,11 +20,15 @@
     {
       "text": "Re-opened for completion. Step 1 (pull-\u003epush inversion) landed as fz-xhk (9ad642c69): the two backward whole-closure scans in the per-exec projection (collect_call_arg_input_sources, collect_callable_capture_input_sources) are now a forward index built once when contexts assemble, bundled as TransportContexts. Byte-identical (transport 72/0, shadow green, 13 pre-existing lib reds unchanged), deterministic, perf-positive. Remaining DAG: (2) promote the forward index to an ascending contributed fact InputSources(E) [ContributionMap]; (3) bounded callee/producer context lookups -\u003e per-exec fact reads; (4) drop SemanticClosed gate on DeriveExecutableTransport(E); (5) retire seal runtime_demands re-gather + closure.runtime_demands consumers. Fan-in DeriveTransportPlan stays gated (whole-root artifact). Pre-existing flaky test fz-0lm surfaced + filed.",
       "timestamp": "2026-06-23T22:37:49Z"
+    },
+    {
+      "text": "Steps 1+2 landed (fz-xhk 9ad642c69, fz-mmh e4c1ea22e), both byte-identical + verified. The per-exec transport job's INPUT data now flows through the ascending InputSources contributed fact, not a backward closure scan -- the genuine forward-propagation inversion. GATE-DROP code-confirmed blocked on two deeper rewrites: (1) project_one_executable transitively reaches callee/producer CONTEXTS via the prebuilt whole-closure map; bounded neighborhood diverges (missing context -\u003e SourceShape::Unknown), so pre-seal projection needs a demand-driven rewrite (project_source + ~15 helpers WAIT on a missing neighbor's per-exec facts instead of a prebuilt map); (2) world.semantic_closure is published atomically by SealSemanticClosure (no partial closure pre-seal), so firing pre-closure needs the executable SET published incrementally -- a SealSemanticClosure rewrite beyond transport. Neither alone drops the gate. Payoff (co-settling) unverifiable here (fz-g2f not built; native red).",
+      "timestamp": "2026-06-24T10:59:13Z"
     }
   ],
   "priority": 3,
   "status": "open",
   "title": "Stage 4 (arc): lift the SemanticClosed barrier; co-settle transport in the loop",
   "type": "task",
-  "updated_at": "2026-06-24T10:56:56Z"
+  "updated_at": "2026-06-24T10:59:13Z"
 }
