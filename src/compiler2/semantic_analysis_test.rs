@@ -4,6 +4,7 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use super::body::{DeliveredValueSource, delivered_value_joins};
+use super::job_budget_guard::JobBudgetGuard;
 use super::{
     CallSiteKey, CallSiteSummary, CallableFlowFact, CodeSubmission, Compiler2, DriveOutcome, ExecutableKey,
     ExecutableNeed, ExecutableRuntimeDemand, FactKey, FunctionId, FunctionRef, Job, RootId, RootSubmission,
@@ -950,6 +951,10 @@ fn compiler2_adding_a_defimpl_reprojects_only_the_cone_its_dispatch_reaches() {
         &["fz", "compiler2", "executable_transport", "derived"],
         transport.handler(),
     );
+    // Livelock backstop: if cone-scoped re-derivation ever loops, this names the
+    // runaway job kind instead of hanging the drive.
+    let job_guard = JobBudgetGuard::new();
+    tel.attach(&["fz", "compiler2", "job"], job_guard.handler());
 
     let mut world = World::new(&tel);
     world.submit_code(
