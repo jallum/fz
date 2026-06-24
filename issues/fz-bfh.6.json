@@ -7,9 +7,15 @@
   "id": "fz-bfh.6",
   "labels": [],
   "parent": "fz-bfh",
+  "comments": [
+    {
+      "text": "Instrument landed in fz-bfh.7 (JobBudgetGuard, generous livelock cap). To pursue THIS investigation: lower the cap per-kind on a heavy enum fixture (e.g. enum_take_drop_split) to surface the actual AnalyzeActivation/DeriveRuntimeDemand run count, confirm it's genuine over-derivation (vs expected fan-out), and decide if it overlaps fz-downstream-monolith/fz-8b0 before fixing.",
+      "timestamp": "2026-06-24T18:50:33Z"
+    }
+  ],
   "priority": 4,
   "status": "open",
   "title": "[INVESTIGATE] demand/analysis fixpoint re-derivation volume on heavy enum fixtures",
   "type": "task",
-  "updated_at": "2026-06-24T18:40:13Z"
+  "updated_at": "2026-06-24T18:50:33Z"
 }
