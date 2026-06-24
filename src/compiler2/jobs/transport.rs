@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 use super::super::body::{
@@ -48,10 +49,18 @@ type IncomingInputKey = (ExecutableKey, usize);
 /// assembled. `project_executable_input_source` reads its callee's slot instead
 /// of scanning. Deref exposes the underlying context map unchanged, so callee
 /// lookups (`get`, `iter`, ...) read through.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Default)]
 struct TransportContexts {
     by_executable: HashMap<ExecutableKey, ExecutableContext>,
     incoming_input_sources: HashMap<IncomingInputKey, Vec<(ExecutableKey, ValueId)>>,
+    /// When `Some`, every projection lookup that dereferences a neighbor's
+    /// context records that neighbor's key here. `derive_executable_transport`
+    /// runs a throwaway recording projection against the full-closure context
+    /// set, then narrows the contexts/reads to exactly the recorded keys -- so
+    /// the per-executable transport job subscribes to ONLY the facts its
+    /// projection actually reads, never the blanket closure. `None` (the
+    /// fan-in/shadow path) makes every accessor a plain lookup.
+    accessed: RefCell<Option<HashSet<ExecutableKey>>>,
 }
 
 impl std::ops::Deref for TransportContexts {
@@ -63,12 +72,57 @@ impl std::ops::Deref for TransportContexts {
 }
 
 impl TransportContexts {
+    /// Record `key` as accessed when recording is enabled. A no-op otherwise.
+    fn record_access(&self, key: &ExecutableKey) {
+        if let Some(accessed) = self.accessed.borrow_mut().as_mut() {
+            accessed.insert(key.clone());
+        }
+    }
+
+    /// A neighbor's context, recording it as accessed. Projection dereferences
+    /// neighbors only through this, so the recorded set is exactly the cone.
+    fn context_for(&self, key: &ExecutableKey) -> Option<&ExecutableContext> {
+        self.record_access(key);
+        self.by_executable.get(key)
+    }
+
+    /// Whether a neighbor's context is present, recording it as accessed.
+    fn contains_context(&self, key: &ExecutableKey) -> bool {
+        self.record_access(key);
+        self.by_executable.contains_key(key)
+    }
+
+    /// The first context whose executable matches `symbol`'s dispatch identity,
+    /// recording the matched key as accessed.
+    fn context_for_symbol(
+        &self,
+        symbol: &ExecutableSymbol,
+        types: &Types,
+    ) -> Option<(&ExecutableKey, &ExecutableContext)> {
+        let found = self.by_executable.iter().find(|(candidate, _)| {
+            candidate.need == symbol.need
+                && candidate.activation.function == symbol.activation.function
+                && candidate.activation.inputs(types).as_slice() == symbol.activation.input.as_ref()
+        });
+        if let Some((key, _)) = found {
+            self.record_access(key);
+        }
+        found
+    }
+
     /// The values feeding `callee`'s `semantic_index` input as `(producer,
     /// value)` pairs, in a deterministic order (producer sort key, then value).
+    /// Records each producer as accessed: projection projects each through its
+    /// own context, so the producers belong to the cone.
     fn incoming_inputs(&self, callee: &ExecutableKey, semantic_index: usize) -> &[(ExecutableKey, ValueId)] {
-        self.incoming_input_sources
+        let sources = self
+            .incoming_input_sources
             .get(&(callee.clone(), semantic_index))
-            .map_or(&[][..], Vec::as_slice)
+            .map_or(&[][..], Vec::as_slice);
+        for (producer, _) in sources {
+            self.record_access(producer);
+        }
+        sources
     }
 }
 
@@ -626,9 +680,16 @@ impl TransportFactsBuilder {
 
 /// Project one executable's intra-executable transport contribution into its
 /// own `ExecutableTransport(E)` fact. Gated on `SemanticClosed` (Stage 1), so
-/// the whole closure is settled; the job builds the shared contexts (the
-/// cross-executable callable-producer lookups still need them) and projects
-/// only `executable`. `derive_transport_plan` fans these in.
+/// the whole closure is settled. The job builds the full-closure contexts as a
+/// superset, then a throwaway recording projection of `executable` discovers the
+/// precise dependency cone its projection actually reads. It narrows the
+/// contexts and the read subscription to that cone (plus `executable`) and runs
+/// the real projection over the narrowed contexts, so the published fact
+/// subscribes to ONLY its precise cone -- an incremental re-drive re-projects an
+/// executable only when its own cone changes. The `SemanticClosed` gate is
+/// POLLED, not subscribed to: subscribing would couple every transport job to
+/// one global fact and re-run them all on any closure perturbation, defeating
+/// the bounded blast radius. `derive_transport_plan` fans these in.
 pub(super) fn derive_executable_transport(
     world: &mut World<'_>,
     executable: &ExecutableKey,
@@ -643,15 +704,23 @@ pub(super) fn derive_executable_transport(
     }
 
     let closure = world.semantic_closure(root_id);
-    let mut reads = vec![closed_fact];
+    let mut superset_reads = Vec::new();
     let mut wait_facts = HashSet::new();
-    let mut contexts =
-        collect_transport_contexts(world, &closure, &closure.runtime_demands, &mut reads, &mut wait_facts);
+    let mut contexts = collect_transport_contexts(
+        world,
+        &closure,
+        &closure.runtime_demands,
+        &mut superset_reads,
+        &mut wait_facts,
+    );
 
     if !wait_facts.is_empty() {
+        // While the closure's facts are still settling, re-run the whole gather
+        // on the frontier: the cone is not yet computable. Subscribe to the seal
+        // here too so an unsettled-prerequisite re-run still wakes.
         return Ok(JobEffects {
-            reads: settled_uses(reads),
-            waits: settled_uses(wait_facts),
+            reads: settled_uses(superset_reads),
+            waits: settled_uses(wait_facts.into_iter().chain([closed_fact])),
             follow_up: vec![Job::DeriveExecutableTransport(executable.clone())],
             ..JobEffects::default()
         });
@@ -665,26 +734,62 @@ pub(super) fn derive_executable_transport(
         .get(executable)
         .map(|context| outgoing_input_contributions(world, executable, context))
         .unwrap_or_default();
-    let mut current_reads = Vec::new();
+    // The incoming index is built over the full superset so the recording pass
+    // resolves producers exactly as production does; the subscription it induces
+    // is rebuilt cone-only below.
+    let mut superset_input_reads = Vec::new();
     contexts.incoming_input_sources =
-        incoming_input_sources_from_facts(world, &contexts.by_executable, &mut current_reads);
+        incoming_input_sources_from_facts(world, &contexts.by_executable, &mut superset_input_reads);
+
+    // Discover the precise cone: a throwaway recording projection of `executable`
+    // records every neighbor context it dereferences. The throwaway builder /
+    // graph / memo are dropped -- only the recorded set is kept. The cone is the
+    // recorded set plus `executable` itself (always projected). A missing context
+    // means the executable left the closure on a rebase; the cone is then just
+    // itself and an empty contribution is published.
+    let mut accessed = HashSet::from([executable.clone()]);
+    if let Some(context) = contexts.get(executable).cloned() {
+        *contexts.accessed.borrow_mut() = Some(HashSet::from([executable.clone()]));
+        let mut throwaway_facts = TransportFactsBuilder::default();
+        let mut throwaway_graph = ShapeConstraintGraph::default();
+        let mut throwaway_memo = ProjectionMemo::default();
+        project_one_executable(
+            world,
+            executable,
+            &context,
+            &contexts,
+            &mut throwaway_facts,
+            &mut throwaway_graph,
+            &mut throwaway_memo,
+        );
+        accessed = contexts.accessed.replace(None).unwrap_or_default();
+    }
+
+    // Narrow contexts to the cone and rebuild reads to ONLY the cone's facts. A
+    // reachable-but-unaccessed neighbor never changes projection output, so
+    // dropping it keeps the result byte identical to the whole-closure gather
+    // while shrinking the subscription to the precise cone.
+    contexts.by_executable.retain(|key, _| accessed.contains(key));
+    let mut reads = Vec::new();
+    let mut current_reads = Vec::new();
+    for key in &accessed {
+        cone_reads_for(world, key, &mut reads, &mut current_reads);
+    }
 
     let mut facts = TransportFactsBuilder::default();
     let mut shape_graph = ShapeConstraintGraph::default();
     let mut memo = ProjectionMemo::default();
-    if let Some(context) = contexts.get(executable) {
+    if let Some(context) = contexts.get(executable).cloned() {
         project_one_executable(
             world,
             executable,
-            context,
+            &context,
             &contexts,
             &mut facts,
             &mut shape_graph,
             &mut memo,
         );
     }
-    // A missing context means the executable left the closure on a rebase;
-    // publish an empty contribution so the fan-in's read still settles.
 
     let changed = world.define_executable_transport(
         executable.clone(),
@@ -707,6 +812,33 @@ pub(super) fn derive_executable_transport(
             .collect(),
         ..JobEffects::default()
     })
+}
+
+/// The precise per-executable facts one cone member contributes to the job's
+/// subscription: its `ActivationAnalyzed`, `ReturnType`, every `CallSiteSummary`
+/// its analysis names, and its `RuntimeDemand` are settled reads; its
+/// `InputSources` slot is a current read (the input fixpoint ascends, so the job
+/// re-runs as producers contribute). These are exactly the facts the cone's
+/// context build and incoming-index lookup consume, so subscribing to only them
+/// re-projects the executable iff its own cone changes.
+fn cone_reads_for(
+    world: &World<'_>,
+    executable: &ExecutableKey,
+    reads: &mut Vec<FactKey>,
+    current_reads: &mut Vec<FactKey>,
+) {
+    reads.push(FactKey::ActivationAnalyzed(executable.activation.clone()));
+    reads.push(FactKey::ReturnType(executable.activation.clone()));
+    reads.push(FactKey::RuntimeDemand(executable.clone()));
+    if let Some(analysis) = world.activation_analysis(&executable.activation) {
+        for callsite in &analysis.callsites {
+            reads.push(FactKey::CallSiteSummary(CallSiteKey {
+                activation: executable.activation.clone(),
+                callsite: *callsite,
+            }));
+        }
+    }
+    current_reads.push(FactKey::InputSources(dispatch_key_for(executable)));
 }
 
 pub(super) fn derive_transport_plan(world: &mut World<'_>, root_id: RootId) -> Result<JobEffects, FatalError> {
@@ -876,6 +1008,7 @@ fn collect_transport_contexts(
     TransportContexts {
         by_executable: contexts,
         incoming_input_sources: HashMap::new(),
+        accessed: RefCell::new(None),
     }
 }
 
@@ -2127,7 +2260,7 @@ fn callsite_callee_return_position(
         .unwrap_or(ExecutableNeed::Value);
     let callee = ExecutableKey { activation, need };
     contexts
-        .contains_key(&callee)
+        .contains_context(&callee)
         .then(|| TransportPosition::ExecutableReturn {
             executable: executable_symbol(&callee, world.types()),
         })
@@ -2141,16 +2274,11 @@ fn resume_callsite_for_entry(context: &ExecutableContext, entry: ControlEntryId)
 }
 
 fn executable_context_for_symbol<'a>(
-    contexts: &'a HashMap<ExecutableKey, ExecutableContext>,
+    contexts: &'a TransportContexts,
     symbol: &ExecutableSymbol,
     types: &Types,
 ) -> Option<&'a ExecutableContext> {
-    contexts.iter().find_map(|(candidate, context)| {
-        (candidate.need == symbol.need
-            && candidate.activation.function == symbol.activation.function
-            && candidate.activation.inputs(types).as_slice() == symbol.activation.input.as_ref())
-        .then_some(context)
-    })
+    contexts.context_for_symbol(symbol, types).map(|(_, context)| context)
 }
 
 fn lanes_for_codegen_seam_shape(world: &World<'_>, shape: ShapeId) -> Vec<(ShapeId, LaneId)> {
@@ -3081,7 +3209,7 @@ fn project_executable_input_source(
     let mut recursive = false;
     let mut unknown = false;
     for (source_executable, value) in sources {
-        let Some(source_context) = contexts.get(source_executable) else {
+        let Some(source_context) = contexts.context_for(source_executable) else {
             unknown = true;
             continue;
         };
@@ -3407,7 +3535,7 @@ fn project_callsite_return(
                     return SourceShape::Unknown;
                 };
                 let target = ExecutableKey { activation, need };
-                let Some(target_context) = contexts.get(&target) else {
+                let Some(target_context) = contexts.context_for(&target) else {
                     return SourceShape::Unknown;
                 };
                 match project_source(
@@ -3578,11 +3706,7 @@ fn capture_demands_for_resolutions(
 ) -> Vec<RuntimeDemand> {
     let mut demands = vec![RuntimeDemand::ignore(); capture_tys.len()];
     for resolution in resolutions {
-        let Some((_, context)) = contexts.iter().find(|(candidate, _)| {
-            candidate.need == resolution.need
-                && candidate.activation.function == resolution.activation.function
-                && candidate.activation.inputs(types).as_slice() == resolution.activation.input.as_ref()
-        }) else {
+        let Some((_, context)) = contexts.context_for_symbol(resolution, types) else {
             panic!("upstream callable-flow resolution is outside the transport root context: {resolution:?}");
         };
         assert!(
@@ -4180,11 +4304,7 @@ fn boundary_return_contracts_for_resolution_symbols(
     for (surface, resolutions) in surfaces.iter().zip(resolution_symbols.iter()) {
         let mut resolved = None;
         for resolution in resolutions {
-            let Some((_, context)) = contexts.iter().find(|(candidate, _)| {
-                candidate.need == resolution.need
-                    && candidate.activation.function == resolution.activation.function
-                    && candidate.activation.inputs(world.types()).as_slice() == resolution.activation.input.as_ref()
-            }) else {
+            let Some((_, context)) = contexts.context_for_symbol(resolution, world.types()) else {
                 continue;
             };
             resolved = Some(match resolved {
@@ -4230,11 +4350,7 @@ fn boundary_return_shape_for_resolution(
     fallback_return_ty: Ty,
     memo: &mut ProjectionMemo,
 ) -> ShapeId {
-    let Some((executable, context)) = contexts.iter().find(|(candidate, _)| {
-        candidate.need == resolution.need
-            && candidate.activation.function == resolution.activation.function
-            && candidate.activation.inputs(world.types()).as_slice() == resolution.activation.input.as_ref()
-    }) else {
+    let Some((executable, context)) = contexts.context_for_symbol(resolution, world.types()) else {
         panic!("upstream callable-flow resolution is outside the transport root context: {resolution:?}");
     };
     let demand = context.runtime_demand.return_demand.clone();
