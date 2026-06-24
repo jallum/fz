@@ -686,7 +686,7 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
         let scope = ScopeSnapshot::module(self.current_module, self.namespace);
         let surface = match expand_item_macro_fragment(self, self.code_id, macro_call, scope)? {
             ExpandedScopeFragment::Complete(surface) => surface,
-            ExpandedScopeFragment::Blocked(effects) => return Ok(Some(effects)),
+            ExpandedScopeFragment::Blocked(effects) => return Ok(Some(*effects)),
         };
         let context = FragmentPublicationContext::expanded_fragment(self.current_module);
         self.apply_surface_fragment(&surface, &context)

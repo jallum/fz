@@ -4,12 +4,13 @@ use super::super::body::{
     CallArg, CallSiteId, ControlDestination, ControlEntryId, DeliveredValueSource, LoweredBody, LoweredStep,
     LoweredTail, ValueId, delivered_value_joins,
 };
-use super::super::drive::{FactKey, Job, JobEffects, settled_uses};
+use super::super::drive::{FactKey, Job, JobEffects, current_uses, settled_uses};
 use super::super::identity::{ExecutableKey, ExecutableNeed, FunctionId, RootId};
 use super::super::scheduler::FatalError;
 use super::super::semantic::{
     ActivationAnalysis, CallSiteKey, CallableDemand, CallableFlowFact, CallableSurface, ExecutableRuntimeDemand,
-    RuntimeDemand, SelectedCallee, SemanticClosure, ShapeDemand,
+    RuntimeDemand, SelectedCallee, SemanticClosure, ShapeDemand, TransportInputEdge, TransportInputKey,
+    TransportInputKind, TransportInputSources,
 };
 use super::super::transport::{
     ActivationSymbol, BoundaryDescr, BoundaryFacts, BoundaryId, CallableDescr, CallableDirectEdge, CallableFacts,
@@ -644,7 +645,8 @@ pub(super) fn derive_executable_transport(
     let closure = world.semantic_closure(root_id);
     let mut reads = vec![closed_fact];
     let mut wait_facts = HashSet::new();
-    let contexts = collect_transport_contexts(world, &closure, &closure.runtime_demands, &mut reads, &mut wait_facts);
+    let mut contexts =
+        collect_transport_contexts(world, &closure, &closure.runtime_demands, &mut reads, &mut wait_facts);
 
     if !wait_facts.is_empty() {
         return Ok(JobEffects {
@@ -654,6 +656,18 @@ pub(super) fn derive_executable_transport(
             ..JobEffects::default()
         });
     }
+
+    // This executable feeds its callees' inputs: contribute its outgoing edges
+    // so each callee's `InputSources` slot accumulates them. The incoming index
+    // this projection consumes is read back from those same facts (current reads
+    // so the job re-runs as siblings contribute and the input fixpoint ascends).
+    let input_source_contributions = contexts
+        .get(executable)
+        .map(|context| outgoing_input_contributions(world, executable, context))
+        .unwrap_or_default();
+    let mut current_reads = Vec::new();
+    contexts.incoming_input_sources =
+        incoming_input_sources_from_facts(world, &contexts.by_executable, &mut current_reads);
 
     let mut facts = TransportFactsBuilder::default();
     let mut shape_graph = ShapeConstraintGraph::default();
@@ -681,7 +695,11 @@ pub(super) fn derive_executable_transport(
     );
 
     Ok(JobEffects {
-        reads: settled_uses(reads),
+        reads: settled_uses(reads)
+            .into_iter()
+            .chain(current_uses(current_reads))
+            .collect(),
+        input_source_contributions,
         outputs: vec![FactKey::ExecutableTransport(executable.clone())],
         changed: changed
             .then_some(FactKey::ExecutableTransport(executable.clone()))
@@ -703,7 +721,8 @@ pub(super) fn derive_transport_plan(world: &mut World<'_>, root_id: RootId) -> R
     let closure = world.semantic_closure(root_id);
     let mut reads = vec![closed_fact];
     let mut wait_facts = HashSet::new();
-    let contexts = collect_transport_contexts(world, &closure, &closure.runtime_demands, &mut reads, &mut wait_facts);
+    let mut contexts =
+        collect_transport_contexts(world, &closure, &closure.runtime_demands, &mut reads, &mut wait_facts);
 
     if !wait_facts.is_empty() {
         return Ok(JobEffects {
@@ -713,6 +732,14 @@ pub(super) fn derive_transport_plan(world: &mut World<'_>, root_id: RootId) -> R
             ..JobEffects::default()
         });
     }
+
+    // The fan-in's closure tail also projects input sources, so it reads the
+    // same contributed index. By the time every `ExecutableTransport(E)` has
+    // settled (awaited below) each producer has contributed, so this index is
+    // complete and byte-identical to the former whole-closure scan.
+    let mut current_reads = Vec::new();
+    contexts.incoming_input_sources =
+        incoming_input_sources_from_facts(world, &contexts.by_executable, &mut current_reads);
 
     let mut executables = closure.executables.iter().cloned().collect::<Vec<_>>();
     executables.sort_by_key(|e| executable_sort_key(e, world.types()));
@@ -734,7 +761,10 @@ pub(super) fn derive_transport_plan(world: &mut World<'_>, root_id: RootId) -> R
     if !transport_waits.is_empty() {
         follow_up.push(Job::DeriveTransportPlan(root_id));
         return Ok(JobEffects {
-            reads: settled_uses(reads),
+            reads: settled_uses(reads)
+                .into_iter()
+                .chain(current_uses(current_reads))
+                .collect(),
             waits: settled_uses(transport_waits),
             follow_up,
             ..JobEffects::default()
@@ -758,7 +788,10 @@ pub(super) fn derive_transport_plan(world: &mut World<'_>, root_id: RootId) -> R
     let changed = world.define_transport_plan(root_id, plan);
 
     Ok(JobEffects {
-        reads: settled_uses(reads),
+        reads: settled_uses(reads)
+            .into_iter()
+            .chain(current_uses(current_reads))
+            .collect(),
         outputs: vec![FactKey::TransportPlan(root_id)],
         changed: changed.then_some(FactKey::TransportPlan(root_id)).into_iter().collect(),
         ..JobEffects::default()
@@ -836,19 +869,198 @@ fn collect_transport_contexts(
             },
         );
     }
-    let incoming_input_sources = build_incoming_input_sources(world, &contexts);
+    // The incoming-input-source index is filled by the caller: production reads
+    // it from the contributed `InputSources` facts (each producer pushes its
+    // outgoing edges); the shadow test builds it in-process from injected
+    // demands. Leaving it empty here keeps the two sources out of this pass.
     TransportContexts {
         by_executable: contexts,
-        incoming_input_sources,
+        incoming_input_sources: HashMap::new(),
     }
 }
 
-/// Build the forward incoming-input-source index from the assembled contexts.
-/// This enumerates exactly the `(producer, callee, semantic_index, value)`
-/// edges the former backward scans discovered, keyed by callee so a callee
-/// reads its feeders instead of scanning the whole closure. Within each slot
-/// the pairs are sorted (producer sort key, then value), so the result is
-/// deterministic where the HashMap-iterating scans were not.
+/// The dispatch identity a callee is matched by: `(function, arrow, need)`,
+/// input-type-blind. Both the contributed `InputSources` key and the callee's
+/// own lookup use this, so several input-distinct executables share one slot.
+fn dispatch_key_for(executable: &ExecutableKey) -> TransportInputKey {
+    TransportInputKey {
+        function: executable.activation.function,
+        arrow: executable.activation.arrow,
+        need: executable.need,
+    }
+}
+
+/// One producer executable's outgoing transport-input edges, keyed by the callee
+/// dispatch key each feeds. This is the per-producer slice of the former forward
+/// index, computed from the producer's OWN facts alone (its callsite args +
+/// summaries, its callable-flow captures) -- no closure scan -- so it can be
+/// contributed as a fact that callees join. Call-arg edges target every callee
+/// sharing the callsite target's `(function, arrow)` under the callsite need;
+/// capture edges bind the exact resolution executable.
+fn outgoing_input_contributions(
+    world: &World<'_>,
+    producer: &ExecutableKey,
+    context: &ExecutableContext,
+) -> Vec<(TransportInputKey, TransportInputSources)> {
+    let mut by_key: HashMap<TransportInputKey, TransportInputSources> = HashMap::new();
+    let mut push = |key: TransportInputKey, edge: TransportInputEdge| {
+        let sources = by_key.entry(key).or_default();
+        if !sources.edges.contains(&edge) {
+            sources.edges.push(edge);
+        }
+    };
+
+    let mut callsite_args = context.callsite_args.iter().collect::<Vec<_>>();
+    callsite_args.sort_by_key(|(callsite, _)| callsite.as_u32());
+    for (callsite, args) in callsite_args {
+        let need = context
+            .callsite_needs
+            .get(callsite)
+            .copied()
+            .unwrap_or(ExecutableNeed::Value);
+        let key = CallSiteKey {
+            activation: producer.activation.clone(),
+            callsite: *callsite,
+        };
+        let Some(summary) = world.callsite_summary(&key) else {
+            continue;
+        };
+        let arg_values = args.iter().map(|arg| arg.value).collect::<Box<[_]>>();
+        let mut fed = HashSet::new();
+        for target in &summary.targets {
+            let Some(activation) = target.activation.as_ref() else {
+                continue;
+            };
+            let dispatch = TransportInputKey {
+                function: activation.function,
+                arrow: activation.arrow,
+                need,
+            };
+            if !fed.insert(dispatch) {
+                continue;
+            }
+            push(
+                dispatch,
+                TransportInputEdge {
+                    producer: producer.clone(),
+                    kind: TransportInputKind::CallArgs(arg_values.clone()),
+                },
+            );
+        }
+    }
+
+    let mut flows = context.runtime_demand.callable_flows.values().collect::<Vec<_>>();
+    flows.sort_by_key(|flow| {
+        (
+            flow.function.as_u32(),
+            flow.captures.iter().map(|value| value.as_u32()).collect::<Vec<_>>(),
+        )
+    });
+    for flow in flows {
+        let captures = flow.captures.iter().copied().collect::<Box<[_]>>();
+        let mut bound = HashSet::new();
+        for resolution in &flow.resolutions {
+            if !bound.insert(resolution.clone()) {
+                continue;
+            }
+            push(
+                dispatch_key_for(resolution),
+                TransportInputEdge {
+                    producer: producer.clone(),
+                    kind: TransportInputKind::Captures {
+                        target: Box::new(resolution.clone()),
+                        captures: captures.clone(),
+                    },
+                },
+            );
+        }
+    }
+
+    by_key.into_iter().collect()
+}
+
+/// Build the per-callee incoming-source index from the contributed `InputSources`
+/// facts -- the production replacement for `build_incoming_input_sources`. Each
+/// closure executable's dispatch-key slot is read (subscribing the reader to its
+/// revisions so it re-runs as producers contribute) and resolved against that
+/// executable's own arity. Byte-identical to the whole-closure scan once every
+/// producer has contributed.
+fn incoming_input_sources_from_facts(
+    world: &World<'_>,
+    contexts: &HashMap<ExecutableKey, ExecutableContext>,
+    current_reads: &mut Vec<FactKey>,
+) -> HashMap<(ExecutableKey, usize), Vec<(ExecutableKey, ValueId)>> {
+    let mut index = HashMap::new();
+    for executable in contexts.keys() {
+        let key = dispatch_key_for(executable);
+        current_reads.push(FactKey::InputSources(key));
+        let Some(sources) = world.input_sources(&key) else {
+            continue;
+        };
+        let input_len = executable.activation.input_len(world.types());
+        for semantic_index in 0..input_len {
+            let resolved = resolve_incoming_input_slot(world, sources, executable, semantic_index);
+            if !resolved.is_empty() {
+                index.insert((executable.clone(), semantic_index), resolved);
+            }
+        }
+    }
+    index
+}
+
+/// Resolve one callee input slot from its dispatch key's contributed edges:
+/// call-arg edges (self-call excluded, as the backward scan did) apply the
+/// callee's capture prefix; capture edges consume only when bound to this exact
+/// executable. Sorted (producer sort key, value) for determinism.
+fn resolve_incoming_input_slot(
+    world: &World<'_>,
+    sources: &TransportInputSources,
+    executable: &ExecutableKey,
+    semantic_index: usize,
+) -> Vec<(ExecutableKey, ValueId)> {
+    let input_len = executable.activation.input_len(world.types());
+    let mut out = Vec::new();
+    for edge in &sources.edges {
+        match &edge.kind {
+            TransportInputKind::CallArgs(args) => {
+                if &edge.producer == executable {
+                    continue;
+                }
+                let Some(capture_prefix) = input_len.checked_sub(args.len()) else {
+                    continue;
+                };
+                if semantic_index < capture_prefix {
+                    continue;
+                }
+                if let Some(value) = args.get(semantic_index - capture_prefix).copied() {
+                    out.push((edge.producer.clone(), value));
+                }
+            }
+            TransportInputKind::Captures { target, captures } => {
+                if target.as_ref() != executable {
+                    continue;
+                }
+                if let Some(value) = captures.get(semantic_index).copied() {
+                    out.push((edge.producer.clone(), value));
+                }
+            }
+        }
+    }
+    out.sort_by(|(left, left_value), (right, right_value)| {
+        executable_sort_key(left, world.types())
+            .cmp(&executable_sort_key(right, world.types()))
+            .then(left_value.as_u32().cmp(&right_value.as_u32()))
+    });
+    out
+}
+
+/// Build the forward incoming-input-source index from the assembled contexts in
+/// one whole-closure pass. Production reads this index from the contributed
+/// `InputSources` facts instead (`incoming_input_sources_from_facts`); only the
+/// shadow test -- which injects runtime demands and never publishes those facts
+/// -- builds it directly. Both yield the same edge set, so the shadow guard
+/// still pins the projection while the contract suite exercises the fact path.
+#[cfg(test)]
 fn build_incoming_input_sources(
     world: &World<'_>,
     contexts: &HashMap<ExecutableKey, ExecutableContext>,
@@ -949,7 +1161,12 @@ pub(crate) fn transport_plan_for_runtime_demands_for_test(
     let closure = world.semantic_closure(root_id);
     let mut reads = Vec::new();
     let mut wait_facts = HashSet::new();
-    let contexts = collect_transport_contexts(world, &closure, runtime_demands, &mut reads, &mut wait_facts);
+    let mut contexts = collect_transport_contexts(world, &closure, runtime_demands, &mut reads, &mut wait_facts);
+    // The shadow path injects runtime demands and never publishes the per-callee
+    // `InputSources` facts, so it builds the incoming index in-process directly
+    // from those demands -- the same edge set production accumulates by
+    // contribution.
+    contexts.incoming_input_sources = build_incoming_input_sources(world, &contexts.by_executable);
     assert!(
         wait_facts.is_empty(),
         "transport projection test requires settled prerequisite facts: {wait_facts:?}",

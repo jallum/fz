@@ -75,6 +75,7 @@ pub enum FactKey {
     Executable(ExecutableKey),
     ReturnDemand(ExecutableKey),
     RuntimeDemand(ExecutableKey),
+    InputSources(super::semantic::TransportInputKey),
     SemanticClosed(RootId),
     ExecutableTransport(ExecutableKey),
     TransportPlan(RootId),
@@ -93,7 +94,7 @@ impl ClaimShape for FactKey {
     fn is_cumulative(&self) -> bool {
         matches!(
             self,
-            FactKey::ReturnType(_) | FactKey::ActivationInputs(_) | FactKey::ReturnDemand(_)
+            FactKey::ReturnType(_) | FactKey::ActivationInputs(_) | FactKey::ReturnDemand(_) | FactKey::InputSources(_)
         )
     }
 }
@@ -108,6 +109,10 @@ pub(crate) struct JobEffects {
     pub(crate) changed: Vec<FactKey>,
     pub(crate) activation_input_contributions: Vec<(ActivationKey, Vec<super::types::Ty>)>,
     pub(crate) return_demand_contributions: Vec<(ExecutableKey, super::semantic::RuntimeDemand)>,
+    pub(crate) input_source_contributions: Vec<(
+        super::semantic::TransportInputKey,
+        super::semantic::TransportInputSources,
+    )>,
     pub(crate) runtime_demands: Vec<(ExecutableKey, super::semantic::ExecutableRuntimeDemand)>,
     pub(crate) follow_up: Vec<Job>,
 }

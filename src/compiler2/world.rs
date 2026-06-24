@@ -51,8 +51,8 @@ use super::scheduler::FatalError;
 use super::scope::ScopeSnapshot;
 use super::semantic::{
     ActivationAnalysis, ActivationInputMap, ActivationMap, CallSiteKey, CallSiteMap, CallSiteSummary, CallableDemand,
-    ContributionReplace, ExecutableRuntimeDemand, ReturnDemandMap, RuntimeDemand, SemanticClosure, SemanticClosureMap,
-    ShapeDemand,
+    ContributionReplace, ExecutableRuntimeDemand, JoinContribution, ReturnDemandMap, RuntimeDemand, SemanticClosure,
+    SemanticClosureMap, ShapeDemand, TransportInputKey, TransportInputSourceMap, TransportInputSources,
 };
 use super::source::{
     QuotedLexicalContext, QuotedLexicalContextKind, QuotedSourceBuilder, QuotedSourceError, QuotedSourceMetadata,
@@ -232,6 +232,7 @@ pub struct World<'a> {
     activations: ActivationMap,
     activation_inputs: ActivationInputMap<Job>,
     return_demands: ReturnDemandMap<Job>,
+    input_sources: TransportInputSourceMap<Job>,
     runtime_demands: RuntimeDemandMap,
     callsites: CallSiteMap,
     semantic_closures: SemanticClosureMap,
@@ -299,6 +300,7 @@ impl<'a> World<'a> {
             activations: ActivationMap::new(),
             activation_inputs: ActivationInputMap::new(),
             return_demands: ReturnDemandMap::new(),
+            input_sources: TransportInputSourceMap::new(),
             runtime_demands: RuntimeDemandMap::new(),
             callsites: CallSiteMap::new(),
             semantic_closures: SemanticClosureMap::new(),
@@ -556,9 +558,16 @@ impl<'a> World<'a> {
             })
             .collect::<HashSet<_>>();
         let previous_return_demand_outputs = previous_output_keys
+            .iter()
+            .filter_map(|fact| match fact {
+                FactKey::ReturnDemand(executable) => Some(executable.clone()),
+                _ => None,
+            })
+            .collect::<HashSet<_>>();
+        let previous_input_source_outputs = previous_output_keys
             .into_iter()
             .filter_map(|fact| match fact {
-                FactKey::ReturnDemand(executable) => Some(executable),
+                FactKey::InputSources(key) => Some(key),
                 _ => None,
             })
             .collect::<HashSet<_>>();
@@ -607,9 +616,23 @@ impl<'a> World<'a> {
         } else {
             self.extend_return_demand_contributions(&job, effects.return_demand_contributions)
         };
+        let ContributionReplace {
+            output_keys: input_source_outputs,
+            changed_keys: input_source_changed,
+        } = if waits.is_empty() {
+            self.conclude_input_source_contributions(
+                &job,
+                previous_input_source_outputs,
+                effects.input_source_contributions,
+                rebased,
+            )
+        } else {
+            self.extend_input_source_contributions(&job, effects.input_source_contributions)
+        };
         let mut outputs = effects.outputs;
         outputs.extend(activation_input_outputs.into_iter().map(FactKey::ActivationInputs));
         outputs.extend(return_demand_outputs.into_iter().map(FactKey::ReturnDemand));
+        outputs.extend(input_source_outputs.into_iter().map(FactKey::InputSources));
         let mut runtime_demand_changed = Vec::new();
         for (executable, demand) in effects.runtime_demands {
             let changed = self.define_runtime_demand(executable.clone(), demand);
@@ -622,6 +645,7 @@ impl<'a> World<'a> {
         let mut changed = effects.changed;
         changed.extend(activation_input_changed.into_iter().map(FactKey::ActivationInputs));
         changed.extend(return_demand_changed.into_iter().map(FactKey::ReturnDemand));
+        changed.extend(input_source_changed.into_iter().map(FactKey::InputSources));
         changed.extend(runtime_demand_changed);
         let changed = dedupe_job_facts(changed);
         let step = self
@@ -943,6 +967,45 @@ impl<'a> World<'a> {
             .get(key)
             .cloned()
             .unwrap_or_else(RuntimeDemand::ignore)
+    }
+
+    fn conclude_input_source_contributions(
+        &mut self,
+        job: &Job,
+        previous_output_keys: HashSet<TransportInputKey>,
+        contributions: Vec<(TransportInputKey, TransportInputSources)>,
+        rebased: bool,
+    ) -> ContributionReplace<TransportInputKey> {
+        let next = self.normalize_input_source_contributions(contributions);
+        self.input_sources
+            .conclude(&mut (), job.clone(), previous_output_keys, next, rebased)
+    }
+
+    fn extend_input_source_contributions(
+        &mut self,
+        job: &Job,
+        contributions: Vec<(TransportInputKey, TransportInputSources)>,
+    ) -> ContributionReplace<TransportInputKey> {
+        let next = self.normalize_input_source_contributions(contributions);
+        self.input_sources.extend(&mut (), job.clone(), next)
+    }
+
+    fn normalize_input_source_contributions(
+        &mut self,
+        contributions: Vec<(TransportInputKey, TransportInputSources)>,
+    ) -> HashMap<TransportInputKey, TransportInputSources> {
+        let mut next = HashMap::<TransportInputKey, TransportInputSources>::new();
+        for (key, sources) in contributions {
+            next.entry(key)
+                .and_modify(|current| current.join_assign(&sources, &mut ()))
+                .or_insert(sources);
+        }
+        next
+    }
+
+    pub(crate) fn input_sources(&self, key: &TransportInputKey) -> Option<&TransportInputSources> {
+        self.fact_revision(&FactKey::InputSources(*key))?;
+        self.input_sources.get(key)
     }
 
     pub(crate) fn define_runtime_demand(&mut self, key: ExecutableKey, demand: ExecutableRuntimeDemand) -> bool {

@@ -294,7 +294,7 @@ pub(super) fn expand_function_source(
                 ..JobEffects::default()
             })
         }
-        FunctionSourceExpansion::Blocked(effects) => Ok(effects),
+        FunctionSourceExpansion::Blocked(effects) => Ok(*effects),
     }
 }
 
@@ -303,7 +303,7 @@ enum FunctionSourceExpansion {
         source: FunctionSource,
         reads: Vec<FactKey>,
     },
-    Blocked(JobEffects),
+    Blocked(Box<JobEffects>),
 }
 
 struct FunctionSourceExpander<'world, 'tel> {
@@ -374,7 +374,9 @@ impl<'world, 'tel> FunctionSourceExpander<'world, 'tel> {
         let expanded = match self.expand_function_root(source.source.clone(), scope, 0)? {
             ExpandedRoot::Complete(expanded) => expanded,
             ExpandedRoot::Blocked(effects) => {
-                return Ok(FunctionSourceExpansion::Blocked(self.blocked_effects(effects)));
+                return Ok(FunctionSourceExpansion::Blocked(Box::new(
+                    self.blocked_effects(*effects),
+                )));
             }
         };
         let mut source = source.clone();

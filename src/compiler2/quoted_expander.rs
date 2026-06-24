@@ -25,17 +25,17 @@ pub(crate) const MAX_MACRO_EXPANSION_DEPTH: usize = 64;
 
 pub(crate) enum ExpandedRoot {
     Complete(QuotedSourceRoot),
-    Blocked(JobEffects),
+    Blocked(Box<JobEffects>),
 }
 
 pub(crate) enum ExpandedValue {
     Complete(AnyValueRef),
-    Blocked(JobEffects),
+    Blocked(Box<JobEffects>),
 }
 
 pub(crate) enum ExpandedScopeFragment {
     Complete(ScopeSurface),
-    Blocked(JobEffects),
+    Blocked(Box<JobEffects>),
 }
 
 pub(crate) trait QuotedExpansionCtx<'tel> {
@@ -189,9 +189,9 @@ pub(crate) trait QuotedExpansionCtx<'tel> {
         let function = match symbol {
             NamespaceSymbol::Macro(function) => function,
             NamespaceSymbol::Callable(function) => {
-                return Ok(Some(ExpandedValue::Blocked(
+                return Ok(Some(ExpandedValue::Blocked(Box::new(
                     self.wait_for_callable_module_interface(function),
-                )));
+                ))));
             }
             NamespaceSymbol::Function(_)
             | NamespaceSymbol::Module(_)
@@ -264,10 +264,10 @@ pub(crate) trait QuotedExpansionCtx<'tel> {
             } else {
                 vec![Job::DefineModule(module)]
             };
-            return Ok(Some(ExpandedValue::Blocked(JobEffects::wait_on_current(
+            return Ok(Some(ExpandedValue::Blocked(Box::new(JobEffects::wait_on_current(
                 FactKey::ModuleDefined(module),
                 follow_up,
-            ))));
+            )))));
         }
         self.note_read(FactKey::ModuleDefined(module));
         let function = {
@@ -275,9 +275,9 @@ pub(crate) trait QuotedExpansionCtx<'tel> {
             match world.lookup_module_callable(module, &function_name, args.len()) {
                 Some(NamespaceSymbol::Macro(function)) => Some(function),
                 Some(NamespaceSymbol::Callable(function)) => {
-                    return Ok(Some(ExpandedValue::Blocked(
+                    return Ok(Some(ExpandedValue::Blocked(Box::new(
                         self.wait_for_callable_module_interface(function),
-                    )));
+                    ))));
                 }
                 _ => None,
             }
@@ -333,10 +333,10 @@ pub(crate) trait QuotedExpansionCtx<'tel> {
     ) -> Result<ExpandedValue, super::scheduler::FatalError> {
         let macro_fact = FactKey::MacroExecutable(function);
         if self.world().fact_revision(&macro_fact).is_none() {
-            return Ok(ExpandedValue::Blocked(JobEffects::wait_on_current(
+            return Ok(ExpandedValue::Blocked(Box::new(JobEffects::wait_on_current(
                 macro_fact,
                 [Job::BuildMacroExecutable(function)],
-            )));
+            ))));
         }
         self.note_read(macro_fact);
 
