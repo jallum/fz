@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-f98.4"
+  ],
   "created": "2026-06-24T20:43:45Z",
   "description": "Discovered while completing fz-f98.3 (capture-layout invariant). Distinct from f98.3's capture-layout fragmentation: this reproduces for a ZERO-CAPTURE bridge lambda, so it is not a capture-layout issue.\n\nRepro on HEAD (with fz-f98.3 capture fix applied): `Enum.to_list(1..3)` and `Enum.to_list(%{1 =\u003e :a})` fail native lowering:\n  error[artifact/incomplete-semantic-plan]: native callable materialization for FunctionId(174)/0 matched multiple native boundaries [NativeCallableBoundaryId(0), NativeCallableBoundaryId(2)] for published transport boundary BoundaryId(N)\n(FunctionId 174 = the to_list reducer lambda `fn (entry, acc) -\u003e [entry | acc] end`, capture_count 0; the Map case fragments at FunctionId 159 = the Enumerable reduce/5 impl.)\n\nnative.rs native_boundary_for_transport_boundary filters callable_boundaries by (boundary, function, capture_count) and demands exactly one match; here ONE published transport boundary maps to TWO native boundaries that differ on an axis outside that filter (surface arg-shapes or return-shape). The shared bridge reducer is reached across specialized activations / protocol-dispatched Enumerable impls, each emitting a native boundary, none deduplicated under the single published boundary.\n\nInvariant (same family as f98.3, one layer down): one closure value publishes ONE callable boundary; native materialization must resolve exactly one native boundary per published transport boundary. Northstar: dedup/identity at the published-boundary level so the (boundary, function, capture_count) key is sufficient, OR the boundary key carries the surface/return discriminant that native materialization already keys on. Blocks fz_f98_range_map_converges (bfh.4) and the to_list/run paths of fz_f98_range_reduce2.",
   "id": "fz-f98.6",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "shared reduce bridge: one published callable boundary fragments into multiple native boundaries",
   "type": "bug",
-  "updated_at": "2026-06-24T20:43:45Z"
+  "updated_at": "2026-06-24T20:46:56Z"
 }
