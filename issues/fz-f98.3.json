@@ -11,9 +11,15 @@
   "id": "fz-f98.3",
   "labels": [],
   "parent": "fz-f98",
+  "comments": [
+    {
+      "text": "INVESTIGATION CHECKPOINT (not yet implemented). Ground truth confirmed: f98.2's addressed-frame surface match is already correct -- runtime_demand.rs:519-522 compares own_surface (past captures) to surface.inputs and skips on mismatch, NOT a raw-slot compare. So f98.3's locus is the RETURN-EVIDENCE join, not the surface match. Per f98's pinned telemetry (~52941 activation_analysis re-derivations paired 1:1 with return_type; #1 oscillator Enum.reduce fn69; churning Map-reduce callsite with return_ty: None on Ty(19) -- same fn/type as fz-bfh.3's absent value), the storm is a NON-MONOTONE RETURN ASCENT: the shared bridge executable's return type drops back to None rather than widening monotonically once concrete evidence arrives ([[unknown-is-not-none]] / convergence-by-construction). FIX SHAPE (Output Contract Loop, fresh budget): (1) reproduce the range+map storm with the fz-bfh.7 JobBudgetGuard to name the oscillating kind loud; (2) trace to the exact site where the bridge return_ty is RE-GROUND to None instead of joined; (3) make the join widen-only -- absent stays None, proven-empty stays none(), concrete ascends by union only -- and DELETE the re-grounding (the 'remove what's no longer necessary'); (4) regression: range+map reduce/to_list compiles within the normal drive budget with bounded activation_analysis/return_type churn (guard-observed), ReturnType widening telemetry NOT the escape hatch. Did NOT implement at this session's context depth to avoid the sprawl class we just cleaned (see fz-bfh.5.5 history).",
+      "timestamp": "2026-06-24T19:35:33Z"
+    }
+  ],
   "priority": 1,
   "status": "in_progress",
   "title": "Make shared reduce bridge surface and return joins monotone",
   "type": "task",
-  "updated_at": "2026-06-22T14:27:58Z"
+  "updated_at": "2026-06-24T19:35:33Z"
 }
