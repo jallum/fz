@@ -3291,6 +3291,43 @@ fn compiler2_transport_plan_keeps_callable_resolution_capture_abi_correlated() {
     assert_callable_resolution_capture_prefixes_match_descriptors(&world, &plan);
 }
 
+/// fz-f98.3: a captured callable that is unused on one specialized activation
+/// must still carry its construction layout there -- the closure's capture
+/// layout is one physical fact, not a per-activation use property.
+///
+/// `Enum.reduce/2` over a stepped Range wraps the user reducer in the inner
+/// lambda `fn (entry, state) -> reduce_first_step(entry, state, reducer) end` and
+/// threads a `:first | {:acc, b}` accumulator. `reduce_first_step/3` IGNORES its
+/// reducer on the `:first` arm and CALLS it on the `{:acc, _}` arm, so the lambda
+/// specializes into two activations that share one captured reducer. The
+/// backward use-demand on the `:first` activation bottoms to `Ignore`; deriving
+/// the capture shape from that per-activation demand anchored `Nothing`, while
+/// the closure's construction layout is the boxed `Callable` -- two shapes for
+/// one capture slot of one closure, which the shape-anchor meet rejected. The
+/// single construction-derived seeder makes both activations carry the same
+/// `Callable` capture layout, so the plan settles and capture inputs match the
+/// canonical descriptor.
+#[test]
+fn compiler2_transport_plan_keeps_unused_capture_on_specialized_activation_at_construction_layout() {
+    let source = include_str!("../../fixtures2/behavior/fz_f98_range_reduce2.fz");
+
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new(&tel);
+    world.submit_code(
+        Some("transport_fz_f98_range_reduce2_capture_layout.fz".to_string()),
+        source.to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    drive_until_transport_plan(
+        &mut world,
+        root,
+        "fz-f98.3 reduce/2 over Range should derive a transport plan without a capture shape-anchor conflict",
+    );
+
+    let plan = transport_plan(&world, root);
+    assert_callable_resolution_capture_prefixes_match_descriptors(&world, &plan);
+}
+
 fn assert_resolved(outcome: DriveOutcome<super::Job, super::FactKey>, message: &str) {
     assert!(matches!(outcome, DriveOutcome::Resolved), "{message}: {outcome:?}");
 }

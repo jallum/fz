@@ -1,13 +1,15 @@
 #---
 # purpose: "fz-f98: Range and Map reduce users share a convergent bridge fixed point"
 # timeout.interp_secs: 15
-# defer.build: fz-f98 Range+Map through shared Enum.reduce* bridge does not converge yet
-# defer.interp: fz-f98 Range+Map through shared Enum.reduce* bridge does not converge yet
-# defer.run: fz-f98 Range+Map through shared Enum.reduce* bridge does not converge yet
+# defer.build: fz-f98.6 the to_list reducer boundary fragments into multiple native boundaries (one published transport boundary -> several native callable boundaries)
+# defer.interp: fz-f98.6 the to_list reducer boundary fragments into multiple native boundaries (one published transport boundary -> several native callable boundaries)
+# defer.run: fz-f98.6 the to_list reducer boundary fragments into multiple native boundaries (one published transport boundary -> several native callable boundaries)
 #---
 #
-# Regression target for fz-bfh.4. One non-List shape currently settles to the
-# wrong fact; two distinct non-List shapes together can storm the semantic drive.
+# Regression target for fz-bfh.4. The semantic drive and transport plan now settle
+# (fz-f98.3 fixed the closure capture-layout fragmentation); native lowering still
+# materializes more than one native callable boundary for the single published
+# bridge-reducer boundary (fz-f98.6).
 fn main() do
   dbg(Enum.to_list(1..7//2))
   dbg(Enum.to_list(%{1 => :a}))

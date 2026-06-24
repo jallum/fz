@@ -1569,8 +1569,7 @@ fn finish_transport_plan(
     let mut memo = ProjectionMemo::default();
 
     collect_clause_parameter_equalities(contexts, executables, &mut shape_graph, world.types());
-    seed_callable_flow_capture_inputs(world, contexts, &mut facts, &mut shape_graph, &mut memo);
-    seed_callable_resolution_capture_inputs(world, &facts, &mut shape_graph);
+    seed_callable_capture_inputs(world, contexts, &mut facts, &mut shape_graph, &mut memo);
     // The input merge only needs each incoming CallArg's resolved shape, which
     // is its argument value's anchor: every non-clause-parameter value is
     // anchored directly in `project_one_executable`, and `solve()`'s
@@ -1627,7 +1626,14 @@ fn assemble_transport_plan(
     finish_transport_plan(world, entry_executable, executables, contexts, facts, shape_graph)
 }
 
-fn seed_callable_flow_capture_inputs(
+/// Anchor every callable resolution's capture-prefix inputs to the closure's
+/// construction layout. This is the SOLE seeder of capture-input shapes: a
+/// closure value has one physical capture layout, owned by the value and derived
+/// once from its construction (the joined demand over all the flow's
+/// resolutions), so two observers of the same closure cannot disagree about its
+/// shape. (The former second pass that re-derived capture shapes from the
+/// canonical interned descr was redundant with this and is gone.)
+fn seed_callable_capture_inputs(
     world: &mut World<'_>,
     contexts: &TransportContexts,
     facts: &mut TransportFactsBuilder,
@@ -1671,61 +1677,40 @@ fn seed_callable_flow_capture_inputs(
             .resolutions
             .iter()
             .map(|resolution| executable_symbol(resolution, world.types()))
+            .filter(|resolution| resolution.activation.function == flow.function)
+            .collect::<Vec<_>>();
+        if resolution_symbols.is_empty() {
+            continue;
+        }
+        // A capture's shape is the closure's CONSTRUCTION layout: the capture is
+        // physically present in the record for every activation of the closure,
+        // regardless of which specialized activation happens to read it. So the
+        // demand joins across ALL of the flow's resolutions (a present-but-unused
+        // capture on one specialization joins with its use on another), never
+        // per single resolution -- a per-activation demand bottoms to `Ignore`
+        // for the arm that ignores the capture and would anchor `Nothing`,
+        // fragmenting a layout-identical closure (fz-f98.3,
+        // [[feedback_shapeid_is_pure_layout]]). The joined shape is then anchored
+        // identically for every resolution.
+        let capture_demands =
+            capture_demands_for_resolutions(contexts, &capture_tys, &resolution_symbols, world.types());
+        let capture_shapes = flow
+            .captures
+            .iter()
+            .copied()
+            .zip(capture_tys.iter().copied().zip(capture_demands.iter()))
+            .map(|(capture, (capture_ty, demand))| {
+                shape_for_local_value(
+                    world, contexts, facts, executable, context, capture, capture_ty, demand, None, memo,
+                )
+            })
             .collect::<Vec<_>>();
         for resolution in &resolution_symbols {
-            if resolution.activation.function != flow.function {
-                continue;
-            }
-            let capture_demands = capture_demands_for_resolutions(
-                contexts,
-                &capture_tys,
-                std::slice::from_ref(resolution),
-                world.types(),
-            );
-            let capture_shapes = flow
-                .captures
-                .iter()
-                .copied()
-                .zip(capture_tys.iter().copied().zip(capture_demands.iter()))
-                .map(|(capture, (capture_ty, demand))| {
-                    shape_for_local_value(
-                        world, contexts, facts, executable, context, capture, capture_ty, demand, None, memo,
-                    )
-                })
-                .collect::<Vec<_>>();
             assert!(
                 resolution.activation.input.len() >= capture_shapes.len(),
                 "upstream callable-flow resolution is missing capture-prefix inputs: {resolution:?}"
             );
             for (semantic_index, shape) in capture_shapes.iter().copied().enumerate() {
-                shape_graph.anchor(
-                    TransportPosition::ExecutableInput {
-                        executable: resolution.clone(),
-                        semantic_index,
-                    },
-                    shape,
-                );
-            }
-        }
-    }
-}
-
-fn seed_callable_resolution_capture_inputs(
-    world: &World<'_>,
-    facts: &TransportFactsBuilder,
-    shape_graph: &mut ShapeConstraintGraph,
-) {
-    for (callable, draft) in &facts.callables {
-        let descr = world.callable(*callable);
-        for resolution in &draft.resolutions {
-            if descr.function != Some(resolution.activation.function) {
-                continue;
-            }
-            assert!(
-                resolution.activation.input.len() >= descr.capture_shapes.len(),
-                "upstream callable-flow resolution is missing capture-prefix inputs: {resolution:?}"
-            );
-            for (semantic_index, shape) in descr.capture_shapes.iter().copied().enumerate() {
                 shape_graph.anchor(
                     TransportPosition::ExecutableInput {
                         executable: resolution.clone(),

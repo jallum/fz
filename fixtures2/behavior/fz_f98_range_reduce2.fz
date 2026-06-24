@@ -1,8 +1,8 @@
 #---
 # purpose: "fz-f98: Enum.reduce/2 over Range materializes one coherent callable boundary"
-# defer.build: fz-f98 shared Enum.reduce* bridge callable surface reaches settled_callable_boundary with multiple surfaces
-# defer.interp: fz-f98 shared Enum.reduce* bridge callable surface reaches settled_callable_boundary with multiple surfaces
-# defer.run: fz-f98 shared Enum.reduce* bridge callable surface reaches settled_callable_boundary with multiple surfaces
+# defer.build: fz-f98.7 reduce/2 :first|{:acc} accumulator does not thread back through the Range bridge (Enum.EmptyError); fz-f98.6 reducer boundary fragments into multiple native boundaries
+# defer.interp: fz-f98.7 reduce/2 :first|{:acc} accumulator does not thread back through the Range bridge (Enum.EmptyError); fz-f98.6 reducer boundary fragments into multiple native boundaries
+# defer.run: fz-f98.7 reduce/2 :first|{:acc} accumulator does not thread back through the Range bridge (Enum.EmptyError); fz-f98.6 reducer boundary fragments into multiple native boundaries
 #---
 #
 # Regression target for fz-bfh.2. A multi-surface callable value must be
