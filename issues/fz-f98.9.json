@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-f98.5"
+  ],
   "created": "2026-06-25T13:15:27Z",
   "description": "Diagnostic that makes the [[fz-f98.5]] class loud at the source. Detect when a TYPE IS SILENTLY WIDENED TO any and warn:\n- a function PARAMETER whose type graduates to any (no declared type narrowed it), vs a parameter DECLARED :: any (intentional -\u003e no warning).\n- a STRUCT FIELD that DEFAULTS to any (no declared field type), vs a field DECLARED any (intentional -\u003e no warning).\nThe discriminator is PROVENANCE: 'graduated/defaulted any' (silent widening) warns; 'declared any' is silent. Requires tracking whether an any came from an explicit declaration or from defaulting/widening. Uses crate::diag::{Diagnostic, codes}; warnings are errors per CLAUDE.md if we control them. Tests observe the diagnostic (telemetry/diagnostic capture). This warning would have caught the Range-fields-are-any bug immediately and pinpoints the graduation sites for the sibling fix. Depends on shared provenance plumbing with the honor-declared-types fix.",
   "id": "fz-f98.9",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Warn when a parameter or struct field type is graduated/defaulted to any (not declared any)",
   "type": "task",
-  "updated_at": "2026-06-25T13:15:27Z"
+  "updated_at": "2026-06-25T13:15:28Z"
 }
