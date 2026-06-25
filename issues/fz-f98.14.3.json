@@ -2,6 +2,7 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-06-25T20:42:14Z",
   "created": "2026-06-25T20:26:30Z",
   "description": "00420's closure is several-hundred activations (1504 return defines / max 4 ascents). Determine whether that breadth is legitimate (35 Enum calls x List+Range x lambdas x reduce bridge) or bloated by over-specialization / shape-polymorphic accumulator (f98). If bloated, f98 shape-convergence may shrink the closure and ease the seal independent of the engine arc. Grounded findings only.",
   "id": "fz-f98.14.3",
@@ -14,7 +15,7 @@
     }
   ],
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "Spike: audit 00420 closure size — legitimate breadth vs over-specialization (does the take/drop/split family create more activations than necessary?)",
   "type": "task",
   "updated_at": "2026-06-25T20:42:14Z"
