@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-25T14:37:33Z",
+  "description": "Cluster from the fz-f98.9 graduation measurement (~9 hits): send/2 param0 and fz_send/2 param0 declare pid but receive any. A pid value graduates to any before reaching send. Smallest, likely-isolated cluster. Trace where the pid type is dropped (spawn/self return typing or the send call surface).",
+  "id": "fz-f98.12",
+  "labels": [],
+  "parent": "fz-f98",
+  "priority": 3,
+  "status": "open",
+  "title": "pid graduates to any at send/2",
+  "type": "bug",
+  "updated_at": "2026-06-25T14:37:33Z"
+}
