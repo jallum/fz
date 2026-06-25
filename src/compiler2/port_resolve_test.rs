@@ -375,6 +375,8 @@ fn import_from_external_interface_carries_provider_boundary_call_without_provide
         include_str!("../../fixtures2/00069_import_from_external_interface.fz").to_string(),
     );
     let root = world.submit_root(Some("User".to_string()), "run".to_string(), 2, ExecutableNeed::Value);
+    // Native lowering is demand-only, so demand it explicitly before driving.
+    world.demand(super::Job::LowerNativeProgram(root));
     assert_resolved(world.drive(), "interface-only provider call should settle");
     assert!(
         world.module_defined_revision(math).is_none(),

@@ -3573,6 +3573,9 @@ fn compiler2_artifact_ladder_consumes_only_the_previous_rung() {
         need: ExecutableNeed::Value,
     });
 
+    // Native lowering is demand-only, so drive the root explicitly to the
+    // native rung to exercise the full one-way ladder.
+    compiler.demand(Job::LowerNativeProgram(root_id));
     assert_resolved(
         compiler.drive(),
         "artifact projection should settle as a one-way ladder over the closed quicksort root",
@@ -3661,8 +3664,8 @@ fn compiler2_artifact_ladder_consumes_only_the_previous_rung() {
         "backend lowering should not reopen semantic or planner discovery upstream of the artifact ladder",
     );
     assert!(
-        backend.follow_up == vec![Job::LowerNativeProgram(root_id)],
-        "backend lowering should hand off directly to the native handoff projection",
+        backend.follow_up.is_empty(),
+        "backend lowering is the end of the demand-free ladder: native is produced only on explicit demand",
     );
     assert!(
         backend
@@ -4035,6 +4038,7 @@ fn compiler2_native_program_does_not_fabricate_nil_for_zero_width_resume_payload
         arity: 0,
         need: ExecutableNeed::Value,
     });
+    compiler.demand(Job::LowerNativeProgram(root_id));
 
     let outcome = compiler.drive();
     if !matches!(outcome, DriveOutcome::Resolved) {
@@ -4179,6 +4183,7 @@ fn compiler2_native_program_keeps_only_the_closed_quicksort_inventory() {
         arity: 0,
         need: ExecutableNeed::Value,
     });
+    compiler.demand(Job::LowerNativeProgram(root_id));
 
     let outcome = compiler.drive();
     if !matches!(outcome, DriveOutcome::Resolved) {
@@ -4244,6 +4249,7 @@ fn compiler2_native_program_matches_tuple_field_call_continuations_to_the_callee
         arity: 0,
         need: ExecutableNeed::Value,
     });
+    compiler.demand(Job::LowerNativeProgram(root_id));
 
     let outcome = compiler.drive();
     if !matches!(outcome, DriveOutcome::Resolved) {
@@ -4360,6 +4366,7 @@ fn compiler2_native_program_keeps_direct_only_enum_reduce_out_of_callable_invent
         arity: 0,
         need: ExecutableNeed::Value,
     });
+    compiler.demand(Job::LowerNativeProgram(root_id));
 
     let outcome = compiler.drive();
     if !matches!(outcome, DriveOutcome::Resolved) {
@@ -4513,6 +4520,7 @@ fn compiler2_native_program_joins_callable_resume_before_materializing_closure_c
         arity: 0,
         need: ExecutableNeed::Value,
     });
+    compiler.demand(Job::LowerNativeProgram(root_id));
 
     let outcome = compiler.drive();
     if !matches!(outcome, DriveOutcome::Resolved) {
@@ -4565,6 +4573,7 @@ fn compiler2_native_program_marks_settled_singleton_closure_flows_with_exact_tar
         arity: 0,
         need: ExecutableNeed::Value,
     });
+    compiler.demand(Job::LowerNativeProgram(root_id));
 
     let outcome = compiler.drive();
     if !matches!(outcome, DriveOutcome::Resolved) {
@@ -4617,6 +4626,7 @@ fn compiler2_native_codegen_keeps_callable_boundary_surface_authoritative_for_ra
         arity: 0,
         need: ExecutableNeed::Value,
     });
+    compiler.demand(Job::LowerNativeProgram(root_id));
 
     let outcome = compiler.drive();
     if !matches!(outcome, DriveOutcome::Resolved) {
@@ -4747,6 +4757,7 @@ fn compiler2_native_program_preserves_variadic_extern_wrappers_and_marshals() {
         arity: 0,
         need: ExecutableNeed::Value,
     });
+    compiler.demand(Job::LowerNativeProgram(root_id));
 
     let outcome = compiler.drive();
     if !matches!(outcome, DriveOutcome::Resolved) {
@@ -4799,6 +4810,8 @@ fn compiler2_native_program_revision_stays_stable_for_identical_recompute() {
         need: ExecutableNeed::Value,
     });
 
+    // Native is demand-only: demand it to produce the initial derivation.
+    compiler.demand(Job::LowerNativeProgram(root_id));
     let outcome = compiler.drive();
     if !matches!(outcome, DriveOutcome::Resolved) {
         let message = capture
@@ -4859,6 +4872,7 @@ fn compiler2_native_program_jit_runs_quicksort_through_compiler2_codegen() {
         arity: 0,
         need: ExecutableNeed::Value,
     });
+    compiler.demand(Job::LowerNativeProgram(root_id));
 
     let outcome = compiler.drive();
     if !matches!(outcome, DriveOutcome::Resolved) {
@@ -4908,6 +4922,7 @@ fn compiler2_native_codegen_brackets_every_phase_under_one_compile_span() {
         arity: 0,
         need: ExecutableNeed::Value,
     });
+    compiler.demand(Job::LowerNativeProgram(root_id));
     let outcome = compiler.drive();
     assert!(
         matches!(outcome, DriveOutcome::Resolved),
@@ -5011,6 +5026,7 @@ fn compiler2_native_program_jit_runs_spawn_then_receive_through_compiler2_codege
         arity: 0,
         need: ExecutableNeed::Value,
     });
+    compiler.demand(Job::LowerNativeProgram(root_id));
 
     let outcome = compiler.drive();
     if !matches!(outcome, DriveOutcome::Resolved) {
@@ -5092,6 +5108,7 @@ fn compiler2_native_program_jit_runs_spawn_receive_and_assert_through_compiler2_
         arity: 0,
         need: ExecutableNeed::Value,
     });
+    compiler.demand(Job::LowerNativeProgram(root_id));
 
     let outcome = compiler.drive();
     if !matches!(outcome, DriveOutcome::Resolved) {
@@ -5136,6 +5153,7 @@ fn compiler2_native_program_jit_runs_enum_reduce_through_compiler2_codegen() {
         arity: 0,
         need: ExecutableNeed::Value,
     });
+    compiler.demand(Job::LowerNativeProgram(root_id));
 
     let outcome = compiler.drive();
     if !matches!(outcome, DriveOutcome::Resolved) {
@@ -5182,6 +5200,7 @@ fn compiler2_native_program_jit_runs_enum_map_reduce_with_direct_closure_targets
         arity: 0,
         need: ExecutableNeed::Value,
     });
+    compiler.demand(Job::LowerNativeProgram(root_id));
 
     let outcome = compiler.drive();
     if !matches!(outcome, DriveOutcome::Resolved) {
@@ -5229,6 +5248,7 @@ fn compiler2_native_program_jit_runs_source_lambda_sugars_through_compiler2_code
         arity: 0,
         need: ExecutableNeed::Value,
     });
+    compiler.demand(Job::LowerNativeProgram(root_id));
 
     let outcome = compiler.drive();
     if !matches!(outcome, DriveOutcome::Resolved) {
@@ -5289,6 +5309,7 @@ fn compiler2_native_program_jit_runs_variadic_extern_through_compiler2_codegen()
         arity: 0,
         need: ExecutableNeed::Value,
     });
+    compiler.demand(Job::LowerNativeProgram(root_id));
 
     let outcome = compiler.drive();
     if !matches!(outcome, DriveOutcome::Resolved) {
@@ -5333,6 +5354,7 @@ fn compiler2_native_program_jit_runs_map_fixture_through_compiler2_codegen() {
         arity: 0,
         need: ExecutableNeed::Value,
     });
+    compiler.demand(Job::LowerNativeProgram(root_id));
 
     let outcome = compiler.drive();
     if !matches!(outcome, DriveOutcome::Resolved) {
@@ -5368,6 +5390,7 @@ fn compiler2_native_program_jit_keeps_tail_recursion_bounded() {
         arity: 0,
         need: ExecutableNeed::Value,
     });
+    compiler.demand(Job::LowerNativeProgram(root_id));
 
     let outcome = compiler.drive();
     if !matches!(outcome, DriveOutcome::Resolved) {
@@ -5417,6 +5440,7 @@ fn compiler2_cont_threaded_recursion_closes_with_a_back_edge() {
         arity: 0,
         need: ExecutableNeed::Value,
     });
+    compiler.demand(Job::LowerNativeProgram(root_id));
     assert_resolved(compiler.drive(), "tail recursion lowers to a native program");
 
     let program = native.last(root_id).program;
@@ -6162,6 +6186,7 @@ fn compiler2_native_program_routes_post_receive_resumes_through_delivered_contin
         arity: 0,
         need: ExecutableNeed::Value,
     });
+    compiler.demand(Job::LowerNativeProgram(root_id));
 
     assert_resolved(
         compiler.drive(),
@@ -6558,6 +6583,7 @@ end
         arity: 0,
         need: ExecutableNeed::Value,
     });
+    compiler.demand(Job::LowerNativeProgram(root_id));
 
     assert_resolved(
         compiler.drive(),
@@ -6617,6 +6643,7 @@ fn compiler2_native_program_adapts_delivered_calls_from_callee_return_lanes() {
         arity: 0,
         need: ExecutableNeed::Value,
     });
+    compiler.demand(Job::LowerNativeProgram(root_id));
 
     assert_resolved(
         compiler.drive(),
@@ -6665,6 +6692,7 @@ fn compiler2_native_program_carries_published_callable_boundary_targets_into_clo
         arity: 0,
         need: ExecutableNeed::Value,
     });
+    compiler.demand(Job::LowerNativeProgram(root_id));
 
     assert_resolved(
         compiler.drive(),
@@ -6716,6 +6744,7 @@ fn compiler2_native_program_resource_fixture_shapes_callable_boundaries_explicit
         arity: 0,
         need: ExecutableNeed::Value,
     });
+    compiler.demand(Job::LowerNativeProgram(root_id));
 
     assert_resolved(
         compiler.drive(),
@@ -6816,6 +6845,7 @@ fn escaping_destructor_keys_its_activation_at_the_grounded_boundary_surface() {
         arity: 0,
         need: ExecutableNeed::Value,
     });
+    compiler.demand(Job::LowerNativeProgram(root_id));
 
     assert_resolved(
         compiler.drive(),
@@ -6885,6 +6915,7 @@ fn compiler2_native_codegen_dispatches_typed_capture_closure_directly_without_a_
         arity: 0,
         need: ExecutableNeed::Value,
     });
+    compiler.demand(Job::LowerNativeProgram(root_id));
 
     assert_resolved(
         compiler.drive(),
@@ -8436,6 +8467,7 @@ fn compiler2_native_program_routes_nontail_if_join_flow_through_continuation_ent
         arity: 0,
         need: ExecutableNeed::Value,
     });
+    compiler.demand(Job::LowerNativeProgram(root_id));
 
     assert_resolved(
         compiler.drive(),
@@ -8504,6 +8536,7 @@ fn main(), do: rebuild([1, 2])
         arity: 0,
         need: ExecutableNeed::Value,
     });
+    compiler.demand(Job::LowerNativeProgram(root_id));
 
     assert_resolved(
         compiler.drive(),
@@ -12752,6 +12785,7 @@ fn compiler2_native_program_jit_adapts_callable_raw_returns_back_to_value_refs()
         arity: 0,
         need: ExecutableNeed::Value,
     });
+    compiler.demand(Job::LowerNativeProgram(root_id));
 
     assert_resolved(
         compiler.drive(),

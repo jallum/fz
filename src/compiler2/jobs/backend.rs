@@ -25,7 +25,6 @@ use super::super::body::{
 };
 use super::super::drive::{FactKey, Job, JobEffects, settled_uses};
 use super::super::identity::RootId;
-use super::super::identity::RootKind;
 use super::super::scheduler::FatalError;
 use super::super::transport::ShapeDescr;
 use super::super::transport::{ActivationSymbol, ExecutableSymbol, TransportPosition};
@@ -87,11 +86,12 @@ pub(super) fn lower_backend_program(world: &mut World<'_>, root_id: RootId) -> R
         reads: settled_uses([emission_ready_fact]),
         outputs: vec![backend_fact.clone()],
         changed: changed.then_some(backend_fact).into_iter().collect(),
-        follow_up: if changed && world.root_entry(root_id).kind == RootKind::Runtime {
-            vec![Job::LowerNativeProgram(root_id)]
-        } else {
-            Vec::new()
-        },
+        // Native lowering is demand-only: the interp front door drives roots to
+        // `BackendProgram` and never consumes native, while the JIT/AOT/dump
+        // front doors transitively demand `LowerNativeProgram(root)` for the
+        // whole-program root they compile. Pushing native here produced ~30
+        // unconsumed native bodies on every interp run. No artifact above the
+        // demanded product.
         ..JobEffects::default()
     })
 }
