@@ -3067,10 +3067,18 @@ impl<'a> World<'a> {
         match name.rsplit('.').next().unwrap_or(name.as_str()) {
             "List" | "Integer" | "Float" | "Atom" | "Binary" | "Map" => impl_target_ty(&mut self.types, &name),
             _ if self.module_struct_fields(module).is_some() => {
-                let field_count = self.module_struct_fields(module).map_or(0, |fields| fields.len());
-                let any = self.types.any();
-                let fields = vec![any; field_count];
-                self.module_struct_value_ty(module, &fields)
+                // Honor the struct's declared @type field types for the dispatch
+                // target too (fz-f98.8/f98.10): a `vec![any]` target erases the
+                // element at the protocol boundary, so intersecting a concrete
+                // receiver against it cannot recover the element type.
+                if let Some(declared) = self.declared_struct_value_ty(module) {
+                    declared
+                } else {
+                    let field_count = self.module_struct_fields(module).map_or(0, |fields| fields.len());
+                    let any = self.types.any();
+                    let fields = vec![any; field_count];
+                    self.module_struct_value_ty(module, &fields)
+                }
             }
             _ => impl_target_ty(&mut self.types, &name),
         }
