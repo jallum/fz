@@ -817,6 +817,14 @@ where
     /// publisher's prior entry unless its ground shifted (`rebased`), the only
     /// path by which contributed values may narrow. `previous_output_keys` is
     /// the publisher's prior frontier, owned by the work graph.
+    ///
+    /// Withdrawal-on-conclude is correct only where a publisher's absence of a
+    /// key genuinely retracts a contribution it alone made (e.g. a `SeedRoot`
+    /// that stops seeding a body's input edge). For a fact whose contributions
+    /// only ever grow within an epoch as upstream evidence ascends — a callee
+    /// or demand transiently unreachable, not impossible — a non-rebased absence
+    /// is NOT a retraction; those callers conclude through
+    /// `conclude_preserving_frontier` so the frontier survives the round.
     pub fn conclude(
         &mut self,
         ctx: &mut V::Ctx,
@@ -848,7 +856,7 @@ where
     }
 
     /// A cumulative concluding-completion arm for evidence whose absence in a
-    /// rebased rerun is not a proof of impossibility. New entries join with the
+    /// rerun is not a proof of impossibility. New entries join with the
     /// publisher's prior entries; previous output keys stay in the publisher's
     /// frontier and are not withdrawn.
     pub fn conclude_preserving_frontier(

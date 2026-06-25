@@ -936,8 +936,17 @@ impl<'a> World<'a> {
         rebased: bool,
     ) -> ContributionReplace<ExecutableKey> {
         let next = self.normalize_return_demand_contributions(contributions);
-        self.return_demands
-            .conclude(&mut (), job.clone(), previous_output_keys, next, rebased)
+        // Return-demand contributions are cumulative caller evidence: within an
+        // epoch a caller's demand frontier only grows as its inputs ascend, so a
+        // key transiently absent from one rerun is not a retraction. Only a
+        // rebased (ground-shifted) publisher withdraws a genuinely stale key.
+        if rebased {
+            self.return_demands
+                .conclude(&mut (), job.clone(), previous_output_keys, next, true)
+        } else {
+            self.return_demands
+                .conclude_preserving_frontier(&mut (), job.clone(), previous_output_keys, next)
+        }
     }
 
     fn extend_return_demand_contributions(
@@ -977,8 +986,17 @@ impl<'a> World<'a> {
         rebased: bool,
     ) -> ContributionReplace<TransportInputKey> {
         let next = self.normalize_input_source_contributions(contributions);
-        self.input_sources
-            .conclude(&mut (), job.clone(), previous_output_keys, next, rebased)
+        // Transport input sources are cumulative: within an epoch the set of
+        // sources feeding a transport input only grows as the closure ascends,
+        // so a source transiently absent from one rerun is not a retraction.
+        // Only a rebased (ground-shifted) publisher withdraws a stale source.
+        if rebased {
+            self.input_sources
+                .conclude(&mut (), job.clone(), previous_output_keys, next, true)
+        } else {
+            self.input_sources
+                .conclude_preserving_frontier(&mut (), job.clone(), previous_output_keys, next)
+        }
     }
 
     fn extend_input_source_contributions(
