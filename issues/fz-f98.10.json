@@ -2,6 +2,7 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [
+    "fz-f98.11",
     "fz-f98.9"
   ],
   "created": "2026-06-25T14:37:32Z",
@@ -13,5 +14,5 @@
   "status": "open",
   "title": "Enumerable protocol boundary erases element type to any (t(a) -\u003e any)",
   "type": "bug",
-  "updated_at": "2026-06-25T14:37:33Z"
+  "updated_at": "2026-06-25T14:37:35Z"
 }
