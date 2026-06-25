@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-25T21:39:20Z",
+  "description": "The Enum.reduce operator-ref telemetry survey shows fz2 interp drives to LowerBackendProgram(root), but jobs/backend.rs unconditionally follows a changed runtime BackendProgram with LowerNativeProgram(root). run_root_interp consumes BackendProgram and does not read NativeProgram, so this violates the spreadsheet-style demand rule: produce only the fact demanded by the consumer. Signal: fixtures2/00181_enum_reduce_operator_ref.fz produced LowerNativeProgram x1 and NativeProgram x1 on an interpreter run. Strategy: remove the unconditional backend-\u003enative follow_up, and make native consumers explicitly demand LowerNativeProgram through compile_root_jit/run_root_jit/compile_root_aot. Add telemetry/job-count regression coverage that interp reaches BackendProgram and leaves NativeProgram absent.",
+  "id": "fz-go4.14",
+  "labels": [],
+  "parent": "fz-go4",
+  "priority": 2,
+  "status": "open",
+  "title": "Compiler2 backend-only roots should not enqueue native lowering",
+  "type": "bug",
+  "updated_at": "2026-06-25T21:39:20Z"
+}
