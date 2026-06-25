@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-25T14:37:33Z",
+  "description": "Cluster from the fz-f98.9 graduation measurement (DOMINANT by hit-count, ~600): +/2, */2, -/2, %/2, fz_op_add/mul/sub/rem_* and fz_binary_concat declare int / float / int|float / binary params but receive any. These are DOWNSTREAM SYMPTOMS: the operands graduated to any upstream (protocol-boundary erasure, type-variable collapse, etc.) and then flow into arithmetic. Likely largely resolved by fixing the roots (this clusters' fz-blocker: the protocol-erasure cluster + the b-var-collapse in f98.5/f98.6). Trace remaining operand graduations after the roots land; some may be independent. Do NOT fix at the operator (that is the symptom site).",
+  "id": "fz-f98.11",
+  "labels": [],
+  "parent": "fz-f98",
+  "priority": 2,
+  "status": "open",
+  "title": "Values graduate to any before reaching Kernel arithmetic operators",
+  "type": "bug",
+  "updated_at": "2026-06-25T14:37:33Z"
+}
