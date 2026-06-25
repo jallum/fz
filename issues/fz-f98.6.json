@@ -26,8 +26,8 @@
     }
   ],
   "priority": 2,
-  "status": "in_progress",
+  "status": "open",
   "title": "shared reduce bridge: one published callable boundary fragments into multiple native boundaries",
   "type": "bug",
-  "updated_at": "2026-06-25T01:29:49Z"
+  "updated_at": "2026-06-25T01:29:58Z"
 }
