@@ -9,9 +9,15 @@
   "id": "fz-f98.8",
   "labels": [],
   "parent": "fz-f98",
+  "comments": [
+    {
+      "text": "DONE (commit dd8c57467). struct_assertion_ty now reads the struct module's declared @type t field types (waiting on TypeDefined / demanding DeriveTypeDef like body/contract derivation) instead of defaulting every field to any. Contract params already narrow via refine_contract_inputs (intersect input with @spec surface), so the struct-field path was the gap. Float axis of the over-monomorphization eliminated: reduce_cont/reduce_step/done? for an integer range are now integer-only (was int|float). RED/GREEN regression added; lib suite identical to baseline (13 pre-existing); clippy clean. Remaining any/value-template over-monomorphization axes are fz-f98.6 (separate).",
+      "timestamp": "2026-06-25T13:29:24Z"
+    }
+  ],
   "priority": 1,
   "status": "in_progress",
   "title": "Honor declared types: struct fields and contract params must not silently graduate to any",
   "type": "bug",
-  "updated_at": "2026-06-25T13:15:50Z"
+  "updated_at": "2026-06-25T13:29:24Z"
 }
