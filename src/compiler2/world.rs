@@ -33,8 +33,8 @@ use super::dispatch::{EntryDispatchMap, GuardDispatchMap};
 use super::drive::{FactKey, Job, JobEffects, WorkGraph};
 use super::identity::{
     ActivationKey, ExecutableKey, ExecutableNeed, ExpandedFunctionSourceMap, FunctionId, FunctionMap, FunctionRef,
-    FunctionSource, ModuleId, ModuleMap, ModuleSourceKind, ModuleState, NotedTypeDecl, RootEntry, RootId, RootKind,
-    RootMap, TypeDeclMap, TypeName, TypeRefMap,
+    FunctionSource, ModuleId, ModuleMap, ModuleSourceKind, ModuleState, NotedTypeDecl, PendingFunctionSourceMap,
+    RootEntry, RootId, RootKind, RootMap, TypeDeclMap, TypeName, TypeRefMap,
 };
 use super::jobs::transport::ExecutableTransportFacts;
 use super::keying::{DispatchDemand, DispatchMaskMap, RecursiveMap};
@@ -215,6 +215,7 @@ pub struct World<'a> {
     code: CodeMap,
     modules: ModuleMap,
     functions: FunctionMap,
+    pending_function_sources: PendingFunctionSourceMap,
     expanded_function_sources: ExpandedFunctionSourceMap,
     type_decls: TypeDeclMap,
     type_refs: TypeRefMap,
@@ -283,6 +284,7 @@ impl<'a> World<'a> {
             code: CodeMap::new(),
             modules: ModuleMap::new(),
             functions: FunctionMap::new(),
+            pending_function_sources: PendingFunctionSourceMap::new(),
             expanded_function_sources: ExpandedFunctionSourceMap::new(),
             type_decls: TypeDeclMap::new(),
             type_refs: TypeRefMap::new(),
@@ -2067,6 +2069,71 @@ impl<'a> World<'a> {
         changed
     }
 
+    /// Stashes the source form a scope walk built for `function` without minting
+    /// the consumable `FunctionSource` fact (fz-f98.14.5). This is the eager
+    /// interface-tier record: it carries everything a reference needs that lives
+    /// outside the namespace (notably the variadic flag), while the body stays
+    /// cold until a reached consumer pulls it through `PublishFunctionSource`. A
+    /// function the program never reaches keeps its body cold here forever,
+    /// exactly like an unreferenced `@type` decl.
+    pub(crate) fn stash_function_source(&mut self, function: FunctionId, source: FunctionSource) {
+        let function_ref = self.functions.reference_for(function);
+        let source_owner_module = source.owner_module;
+        let source_module_id = function_ref.module;
+        // The eager interface-tier signal: this function's identity and interface
+        // are published at scope time even though the body stays cold until a
+        // consumer pulls it (fz-f98.14.5). It mirrors the `function.source.noted`
+        // shape so name-keyed observers see every scope-defined function, and it
+        // is the surface counterpart to `type.noted`.
+        self.tel.execute(
+            &["fz", "compiler2", "function", "source", "stashed"],
+            &measurements! {
+                code_id: source.code.as_u32(),
+                module_id: function_ref.module.as_u32(),
+                owner_module_id: source.owner_module.as_u32(),
+                function_id: function.as_u32(),
+                arity: function_ref.arity,
+                clauses: function_source_clause_count(&source),
+                source_heap_id: source.source.key().heap_id,
+                source_root_ref: source.source.root().raw_word(),
+            },
+            &metadata! {
+                function_ref: opaque_debug(function_ref),
+                source: opaque_debug(&source),
+                function_id: opaque_debug(&function),
+                module_id: opaque_debug(&source_module_id),
+                owner_module_id: opaque_debug(&source_owner_module),
+            },
+        );
+        self.pending_function_sources.stash(function, source);
+
+        // Demand-addressed publication is pulled, but a (re)scope is the only
+        // event that can satisfy a demand registered before the owning code
+        // existed, or supersede a body a consumer already pulled (fz-f98.14.5).
+        // Both cases are exactly the functions whose `FunctionSource` fact is
+        // already live or already waited on; for them, and only them, the scope
+        // re-pulls so the new body flows to its standing consumers — late code
+        // wakes the parked pull, and a redefinition propagates its retraction.
+        // A body no consumer reached has neither a fact nor a waiter, so it
+        // stays cold: opening a scope still does no cold body work.
+        let source_fact = FactKey::FunctionSource(function);
+        if self.has_fact(&source_fact) || self.work_graph.is_waited(&source_fact) {
+            self.work_graph.enqueue(Job::PublishFunctionSource(function));
+        }
+    }
+
+    pub(crate) fn pending_function_source(&self, function: FunctionId) -> Option<&FunctionSource> {
+        self.pending_function_sources.get(function)
+    }
+
+    /// Promotes a stashed source into the consumable `FunctionSource` fact when a
+    /// reached consumer demands the body. Returns `true` when the fact's content
+    /// changed, so the caller publishes the change to the scheduler.
+    pub(crate) fn publish_pending_function_source(&mut self, function: FunctionId) -> Option<bool> {
+        let source = self.pending_function_sources.get(function).cloned()?;
+        Some(self.note_function_source(function, source))
+    }
+
     pub(crate) fn note_function_source(&mut self, function: FunctionId, source: FunctionSource) -> bool {
         let changed = self.functions.note(function, source);
         let source = match self.functions.get(function) {
@@ -2623,13 +2690,13 @@ impl<'a> World<'a> {
 
     #[cfg(test)]
     pub(crate) fn function_scope(&self, function: FunctionId) -> Option<ScopeSnapshot> {
-        match self.functions.get(function) {
+        let source = match self.functions.get(function) {
             super::identity::FunctionState::Defined { source, .. }
-            | super::identity::FunctionState::Noted { source } => {
-                Some(ScopeSnapshot::function(source.owner_module, source.namespace, function))
-            }
-            super::identity::FunctionState::Placeholder => None,
-        }
+            | super::identity::FunctionState::Noted { source } => source.as_ref(),
+            // Before the body is pulled the stash still records the owner scope.
+            super::identity::FunctionState::Placeholder => self.pending_function_source(function)?,
+        };
+        Some(ScopeSnapshot::function(source.owner_module, source.namespace, function))
     }
 
     pub(crate) fn function_arity(&self, function: FunctionId) -> usize {
@@ -2640,11 +2707,30 @@ impl<'a> World<'a> {
         match self.functions.get(function) {
             super::identity::FunctionState::Defined { surface, .. } => surface.variadic,
             super::identity::FunctionState::Noted { source } => source.variadic,
-            super::identity::FunctionState::Placeholder => false,
+            // The body is still cold; the eager stash carries the variadic flag
+            // so name resolution scores variadic functions without forcing the
+            // body (fz-f98.14.5).
+            super::identity::FunctionState::Placeholder => self
+                .pending_function_source(function)
+                .is_some_and(|source| source.variadic),
         }
     }
 
+    /// A reached consumer always pulls a body through `PublishFunctionSource`:
+    /// it mints the `FunctionSource` fact for exactly this function from the
+    /// stash the owning scope walk left, and demands that scope when the stash
+    /// is not yet populated (fz-f98.14.5). The scope-walk fallback is owned by
+    /// `PublishFunctionSource` itself, so opening a scope never publishes a cold
+    /// body.
     pub(crate) fn ensure_function_source(&mut self, function: FunctionId) -> Vec<Job> {
+        vec![Job::PublishFunctionSource(function)]
+    }
+
+    /// The scope walk that populates `function`'s pending source stash, as the
+    /// fact it produces plus the job that produces it. `PublishFunctionSource`
+    /// waits on this scope, not on `FunctionSource`, so it never waits on the
+    /// fact it is itself the sole producer of (fz-f98.14.5).
+    pub(crate) fn demand_function_scope(&mut self, function: FunctionId) -> Vec<(FactKey, Job)> {
         let module = self.function_module(function);
         if module.is_global() {
             let function_ref = self.function_ref(function).clone();
@@ -2655,14 +2741,14 @@ impl<'a> World<'a> {
                 .filter_map(|code_id| match self.code.get(code_id) {
                     CodeState::Pending => None,
                     CodeState::Indexed { source } if code_surface_can_publish_function(source, &function_ref) => {
-                        Some(Job::ScopeCode(code_id))
+                        Some((FactKey::CodeScoped(code_id), Job::ScopeCode(code_id)))
                     }
                     CodeState::Scoped { .. } | CodeState::Indexed { .. } => None,
                 })
                 .collect();
         }
         if self.module_has_source_state(module) || self.ensure_runtime_module(module).is_some() {
-            return vec![Job::DefineModule(module)];
+            return vec![(FactKey::ModuleDefined(module), Job::DefineModule(module))];
         }
         Vec::new()
     }

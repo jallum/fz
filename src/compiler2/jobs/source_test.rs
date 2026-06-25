@@ -1,4 +1,6 @@
-use super::source::{define_function, define_module, expand_function_source, index_code, scope_code};
+use super::source::{
+    define_function, define_module, expand_function_source, index_code, publish_function_source_job, scope_code,
+};
 use super::{Job, World};
 use crate::compiler2::{FactKey, ModuleId};
 use crate::telemetry::{Capture, ConfiguredTelemetry};
@@ -66,6 +68,10 @@ fn re_scoping_the_runtime_prelude_does_not_churn_fn_macro_source() {
     world.complete_job(Job::ScopeCode(prelude), scoped);
 
     let fn_macro = world.reference_function(ModuleId::GLOBAL, "fn", 1);
+    // Scope only stashes the body now (fz-f98.14.5); pull it through the
+    // demand-addressed publish job before expanding/defining.
+    let publish = publish_function_source_job(&mut world, fn_macro).expect("fn/1 source should publish from stash");
+    world.complete_job(Job::PublishFunctionSource(fn_macro), publish);
     let expand = expand_function_source(&mut world, fn_macro).expect("fn/1 source should expand");
     world.complete_job(Job::ExpandFunctionSource(fn_macro), expand);
     let define = define_function(&mut world, fn_macro).expect("fn/1 should define from expanded source");

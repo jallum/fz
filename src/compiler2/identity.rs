@@ -664,6 +664,37 @@ impl ExpandedFunctionSourceMap {
     }
 }
 
+/// The function source forms a scope walk has built but not yet published as a
+/// consumable `FunctionSource` fact (fz-f98.14.5). Scope publication stashes
+/// every function it defines here eagerly — the interface tier — while the
+/// body-bearing `FunctionSource` is minted only when a reached consumer pulls
+/// it through `PublishFunctionSource`. A function that no consumer reaches keeps
+/// its body cold here, exactly like an unreferenced `@type` decl. A missing
+/// entry means the owning scope has not been walked yet, not that the body is
+/// absent.
+#[derive(Debug, Default)]
+pub struct PendingFunctionSourceMap {
+    slots: Vec<Option<FunctionSource>>,
+}
+
+impl PendingFunctionSourceMap {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn stash(&mut self, function: FunctionId, source: FunctionSource) {
+        let index = function.as_u32() as usize;
+        if self.slots.len() <= index {
+            self.slots.resize_with(index + 1, || None);
+        }
+        self.slots[index] = Some(source);
+    }
+
+    pub fn get(&self, function: FunctionId) -> Option<&FunctionSource> {
+        self.slots.get(function.as_u32() as usize)?.as_ref()
+    }
+}
+
 /// The noted `@type` declarations, keyed by [`TypeName`]. Populated while
 /// scoping (fz-rh2.12.1) and read by `DeriveTypeDef` (fz-rh2.12.2). A type is
 /// an identity that may be referenced before — or without ever — being

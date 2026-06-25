@@ -269,6 +269,45 @@ pub(super) fn define_function(
     })
 }
 
+/// Mints the consumable `FunctionSource` fact for one function when a reached
+/// consumer pulls its body (fz-f98.14.5).
+///
+/// Scope publication stashes every function's source eagerly but leaves the
+/// body cold. This job promotes the one stashed source a consumer asked for,
+/// so opening a scope produces no cold body work: a function the program never
+/// reaches never reaches this job. If the owning scope has not been walked yet
+/// the stash is empty, so it waits on that scope first — the same fallback
+/// `ensure_function_source` chooses.
+pub(super) fn publish_function_source_job(
+    world: &mut World<'_>,
+    function_id: super::super::FunctionId,
+) -> Result<JobEffects, FatalError> {
+    let Some(changed) = world.publish_pending_function_source(function_id) else {
+        // The owning scope has not been walked yet, so the stash is empty. Wait
+        // on that scope and re-run once it has stashed this body; never wait on
+        // `FunctionSource`, the fact this job is the sole producer of.
+        let mut waits = Vec::new();
+        let mut follow_up = Vec::new();
+        for (fact, job) in world.demand_function_scope(function_id) {
+            waits.push(fact);
+            follow_up.push(job);
+        }
+        return Ok(JobEffects {
+            waits: current_uses(waits),
+            follow_up,
+            ..JobEffects::default()
+        });
+    };
+    Ok(JobEffects {
+        outputs: vec![FactKey::FunctionSource(function_id)],
+        changed: changed
+            .then_some(FactKey::FunctionSource(function_id))
+            .into_iter()
+            .collect(),
+        ..JobEffects::default()
+    })
+}
+
 pub(super) fn expand_function_source(
     world: &mut World<'_>,
     function_id: super::super::FunctionId,

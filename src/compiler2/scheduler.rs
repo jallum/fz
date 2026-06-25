@@ -78,6 +78,16 @@ where
         self.deps.output_keys(job)
     }
 
+    /// Whether any job is currently blocked waiting on `fact` (in either its
+    /// current or settled use). A pulled producer reads this to learn that a
+    /// standing demand for the fact it mints exists, even before it can satisfy
+    /// it — so when a later input finally lets it produce, the demand is honored
+    /// rather than dropped (fz-f98.14.5).
+    pub fn is_waited(&self, fact: &F) -> bool {
+        !self.deps.waiters(&FactUse::current(fact.clone())).is_empty()
+            || !self.deps.waiters(&FactUse::settled(fact.clone())).is_empty()
+    }
+
     pub fn has_unresolved(&self) -> bool {
         self.deps.has_unresolved()
     }

@@ -22,6 +22,7 @@ pub enum Job {
     ScopeCode(CodeId),
     DefineModule(ModuleId),
     DefineModuleInterface(ModuleId),
+    PublishFunctionSource(FunctionId),
     ExpandFunctionSource(FunctionId),
     DefineFunction(FunctionId),
     DeriveTypeDef(TypeName),

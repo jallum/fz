@@ -82,6 +82,7 @@ fn job_kind_name(job: &Job) -> &'static str {
         ScopeCode(_) => "ScopeCode",
         DefineModule(_) => "DefineModule",
         DefineModuleInterface(_) => "DefineModuleInterface",
+        PublishFunctionSource(_) => "PublishFunctionSource",
         ExpandFunctionSource(_) => "ExpandFunctionSource",
         DefineFunction(_) => "DefineFunction",
         DeriveTypeDef(_) => "DeriveTypeDef",

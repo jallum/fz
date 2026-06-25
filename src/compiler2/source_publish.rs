@@ -208,10 +208,6 @@ pub(crate) fn publish_protocol_surface(
     let function_id = world.reference_function(module_id, function.name.clone(), function.arity);
     scope = world.bind_namespace(scope, function.name.clone(), NamespaceSymbol::Function(function_id));
     let publication = publish_function_source(world, code_id, module_id, module_id, scope, &function, true, Vec::new());
-    outputs.push(publication.output.clone());
-    if publication.changed {
-        changed.push(publication.output);
-    }
     if let Some(callable) = publication.callable {
         callables.push(callable);
     }
@@ -443,10 +439,6 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
             &function,
             &context,
         )?;
-        self.outputs.push(publication.output.clone());
-        if publication.changed {
-            self.changed.push(publication.output);
-        }
         if let Some(callable) = publication.callable {
             self.callables.push(callable);
         }
@@ -744,10 +736,6 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
                     function,
                     context,
                 )?;
-                self.outputs.push(publication.output.clone());
-                if publication.changed {
-                    self.changed.push(publication.output);
-                }
                 if let Some(callable) = publication.callable {
                     self.callables.push(callable);
                 }
@@ -1190,10 +1178,6 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
         let mut callbacks = HashMap::new();
         for function in functions {
             let publication = self.define_source_function(impl_module, impl_module, impl_scope, &function, &context)?;
-            self.outputs.push(publication.output.clone());
-            if publication.changed {
-                self.changed.push(publication.output);
-            }
             // Key by the protocol's callback identity — the same interned
             // FunctionId a callsite resolves to — not by (name, arity).
             let callback = self
@@ -1326,8 +1310,6 @@ fn required_remote_macro_list(required_remote_macros: &HashSet<FunctionId>) -> V
 
 struct FunctionPublication {
     function: FunctionId,
-    output: FactKey,
-    changed: bool,
     callable: Option<ModuleInterfaceCallable>,
 }
 
@@ -1342,18 +1324,23 @@ fn publish_function_source(
     required_remote_macros: Vec<FunctionId>,
 ) -> FunctionPublication {
     let function_id = world.reference_function(function_module, function.name.clone(), function.arity);
-    let revision = world.note_function_source(
-        function_id,
-        FunctionSource {
-            code: code_id,
-            owner_module,
-            namespace,
-            capture_params: Vec::new(),
-            required_remote_macros,
-            variadic: function.variadic,
-            source: function.source.clone(),
-        },
-    );
+    // Stash the body eagerly but leave it cold: the consumable `FunctionSource`
+    // fact is minted only when a reached consumer pulls it through
+    // `PublishFunctionSource` (fz-f98.14.5). The interface — the callable below,
+    // the `function_id` itself, and the namespace bindings reserve_local_forms
+    // already made — is what every reference and protocol dispatch resolves
+    // against, so it stays eager.
+    let source = FunctionSource {
+        code: code_id,
+        owner_module,
+        namespace,
+        capture_params: Vec::new(),
+        required_remote_macros,
+        variadic: function.variadic,
+        source: function.source.clone(),
+    };
+    emit_compiler_service_define(world, function_id, &source);
+    world.stash_function_source(function_id, source);
 
     let callable = (export_public && !function.is_private).then(|| ModuleInterfaceCallable {
         function: function_id,
@@ -1365,19 +1352,13 @@ fn publish_function_source(
         },
         variadic: function.variadic,
     });
-    let source = world
-        .function_source(function_id)
-        .expect("function source should exist immediately after compiler service publication");
-    emit_compiler_service_define(world, function_id, &source, revision);
     FunctionPublication {
         function: function_id,
-        output: FactKey::FunctionSource(function_id),
-        changed: revision,
         callable,
     }
 }
 
-fn emit_compiler_service_define(world: &World<'_>, function: FunctionId, source: &FunctionSource, changed: bool) {
+fn emit_compiler_service_define(world: &World<'_>, function: FunctionId, source: &FunctionSource) {
     let function_ref = world.function_ref(function);
     world.tel().execute(
         &["fz", "compiler2", "compiler_service", "define"],
@@ -1386,7 +1367,6 @@ fn emit_compiler_service_define(world: &World<'_>, function: FunctionId, source:
             module_id: function_ref.module.as_u32() as u64,
             owner_module_id: source.owner_module.as_u32() as u64,
             function_id: function.as_u32() as u64,
-            changed: changed as u64,
             namespace: source.namespace.as_u32() as u64,
             source_heap_id: source.source.key().heap_id as u64,
             source_root_ref: source.source.root().raw_word(),

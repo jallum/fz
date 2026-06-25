@@ -1291,11 +1291,13 @@ fn compiler2_root_scopes_only_the_code_that_can_publish_its_entry() {
 #[test]
 fn compiler2_root_source_publication_is_once_per_code_fact() {
     let tel = ConfiguredTelemetry::new();
-    let source_notes = SourceNoteCapture::new();
-    tel.attach(
-        &["fz", "compiler2", "function", "source", "noted"],
-        source_notes.handler(),
-    );
+    // Scope publication is demand-addressed (fz-f98.14.5): the per-code-fact,
+    // once-each identity surface is the eager `stashed` event; `noted` now only
+    // fires for bodies that are actually pulled. This test asserts the
+    // per-code-fact publication identity, so it observes `stashed`.
+    let stashed_event: &'static [&'static str] = &["fz", "compiler2", "function", "source", "stashed"];
+    let source_notes = SourceNoteCapture::for_event(stashed_event);
+    tel.attach(stashed_event, source_notes.handler());
     let outputs = OutputCapture::new();
     tel.attach(&["fz", "compiler2", "job"], outputs.handler());
 
@@ -1344,13 +1346,13 @@ fn compiler2_root_source_publication_is_once_per_code_fact() {
         assert_eq!(
             source_notes.count(name, arity),
             1,
-            "prelude macro source {name}/{arity} should be noted exactly once"
+            "prelude macro source {name}/{arity} should be stashed exactly once per code fact"
         );
     }
     assert_eq!(
         source_notes.count("main", 0),
         1,
-        "user entry source should be noted exactly once"
+        "user entry source should be stashed exactly once per code fact"
     );
 }
 
@@ -7978,12 +7980,22 @@ fn compiler2_submit_code_after_root_auto_scopes_new_definitions_without_reseedin
     let scope_outputs = outputs
         .take(Job::ScopeCode(late_code_id))
         .expect("late code ScopeCode job effects");
-    let foo_id = function_id(&functions, "foo", 0);
+    // Scope publication is demand-addressed (fz-f98.14.5): the late ScopeCode
+    // publishes CodeScoped and eagerly stashes foo/0's source, but does NOT
+    // output FunctionSource for the uncalled foo. The auto-scope is proven by the
+    // CodeScoped output plus foo/0's eager `stashed` capture.
     assert!(
         scope_outputs
             .iter()
+            .any(|(fact, _)| *fact == FactKey::CodeScoped(late_code_id)),
+        "late code should auto-scope without an explicit ScopeCode demand"
+    );
+    let foo_id = function_id(&functions, "foo", 0);
+    assert!(
+        !scope_outputs
+            .iter()
             .any(|(fact, _)| *fact == FactKey::FunctionSource(foo_id)),
-        "late code should note foo/0 source without an explicit ScopeCode demand"
+        "an uncalled late foo/0 should be stashed, not body-published, by auto-scope"
     );
     assert_eq!(
         outputs.stops_matching(|job| matches!(job, Job::SeedRoot(_))).len(),
@@ -10397,14 +10409,20 @@ impl FunctionCapture {
 
 impl SourceNoteCapture {
     fn new() -> Self {
+        Self::for_event(&["fz", "compiler2", "function", "source", "noted"])
+    }
+
+    fn for_event(event: &'static [&'static str]) -> Self {
         Self {
             notes: Rc::new(RefCell::new(Vec::new())),
+            event,
         }
     }
 
     fn handler(&self) -> Box<dyn Handler> {
         Box::new(SourceNoteCaptureHandler {
             notes: self.notes.clone(),
+            event: self.event,
         })
     }
 
@@ -10805,10 +10823,15 @@ struct FunctionCaptureHandler {
 
 struct SourceNoteCapture {
     notes: SourceNotes,
+    // The source-publication event this capture observes. `noted` is the
+    // body-pull signal; `stashed` is the eager per-code-fact interface signal
+    // (fz-f98.14.5). Tests pick the tier whose intent they assert.
+    event: &'static [&'static str],
 }
 
 struct SourceNoteCaptureHandler {
     notes: SourceNotes,
+    event: &'static [&'static str],
 }
 
 struct ModuleCaptureHandler {
@@ -10923,9 +10946,14 @@ impl Handler for FunctionCaptureHandler {
         if event.kind != EventKind::Event {
             return;
         }
+        // `stashed` is the eager interface signal every scope-defined function
+        // emits; `defined` marks a function whose body was pulled and lowered.
+        // Both name a function by identity, which is what name lookups want
+        // (fz-f98.14.5). The body-noted churn is observed separately through
+        // `SourceNoteCapture`.
         let from_source = match event.name {
             ["fz", "compiler2", "function", "defined"] => false,
-            ["fz", "compiler2", "function", "source", "noted"] => true,
+            ["fz", "compiler2", "function", "source", "stashed"] => true,
             _ => return,
         };
         let Some(function_id) = event
@@ -10982,7 +11010,7 @@ impl Handler for FunctionCaptureHandler {
 
 impl Handler for SourceNoteCaptureHandler {
     fn handle(&self, event: &Event<'_, '_, '_>) {
-        if event.name != ["fz", "compiler2", "function", "source", "noted"] || event.kind != EventKind::Event {
+        if event.name != self.event || event.kind != EventKind::Event {
             return;
         }
         let Some(function_ref) = event

@@ -130,8 +130,13 @@ fn collect_static_graph(
         }
         let module = world.function_module(function);
         if !module.is_global() && world.module_defined_revision(module).is_none() {
+            // Demand the scope that produces the `ModuleDefined` this site waits
+            // on, not the body (fz-f98.14.5). The body is pulled below, once the
+            // function is defined.
             waits.insert(FactKey::ModuleDefined(module));
-            follow_up.extend(world.ensure_function_source(function));
+            for (_, job) in world.demand_function_scope(function) {
+                follow_up.insert(job);
+            }
             return;
         }
         waits.insert(FactKey::FunctionDefined(function));

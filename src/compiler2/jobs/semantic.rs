@@ -1661,8 +1661,14 @@ fn wait_for_unresolved_function_module(
     if !world.module_has_source_state(module) && !world.is_runtime_module(module) {
         return false;
     }
+    // This site needs the function's module DEFINED (its scope walked), not its
+    // body published: a protocol callback has no body of its own, so pulling
+    // `PublishFunctionSource` here would chase a source that never exists
+    // (fz-f98.14.5). Demand the scope that matches the `ModuleDefined` wait.
     waits.insert(FactKey::ModuleDefined(module));
-    follow_up.extend(world.ensure_function_source(function));
+    for (_, job) in world.demand_function_scope(function) {
+        follow_up.insert(job);
+    }
     true
 }
 

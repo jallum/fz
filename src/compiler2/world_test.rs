@@ -93,9 +93,11 @@ fn compiler2_resolve_spec_resolves_types_shapes_and_constraints_against_the_capt
         world.demand(Job::DefineFunction(function)),
         "defined function materialization should be demandable when a caller actually needs it",
     );
+    // Scope stashes the raw source eagerly; the body fact is noted only when the
+    // demand above is driven (fz-f98.14.5), so read the stash before drive.
     assert!(
-        world.function_source(function).is_some(),
-        "scoping should note the grouped quoted function source before define",
+        world.pending_function_source(function).is_some(),
+        "scoping should stash the grouped quoted function source before define",
     );
     let outcome = world.drive();
     assert!(
@@ -183,9 +185,12 @@ fn compiler2_define_function_stages_expanded_source_before_definition() {
     );
 
     let main = world.reference_function(ModuleId::GLOBAL, "main", 0);
+    // Raw source lives in the eager stash until demand (fz-f98.14.5); clone it so
+    // it survives the later define drive.
     let raw = world
-        .function_source(main)
-        .expect("scoping should note raw function source");
+        .pending_function_source(main)
+        .expect("scoping should stash raw function source")
+        .clone();
     assert!(
         world.fact_revision(&FactKey::ExpandedFunctionSource(main)).is_none(),
         "scoping alone should not yet stage expanded function source",
