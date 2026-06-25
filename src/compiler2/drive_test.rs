@@ -12451,6 +12451,81 @@ fn compiler2_quicksort_converges_identically_on_every_schedule() {
 }
 
 #[test]
+#[ignore = "red-worklist fz-f98.14: 00420 drive is a 1.3s monolithic per-root reseal over a \
+            several-hundred-activation closure; re-enable when the seal is incremental (fz-f98.14.1) \
+            and partial-publication churn is settled-gated (fz-f98.14.2)"]
+fn compiler2_enum_take_drop_split_seals_without_reseal_runaway() {
+    // The fz-bfh.6 case the general `JobBudgetGuard` deliberately refuses to
+    // bake a tolerance for: 00420 drives the whole Enum.take/drop/split family
+    // over List+Range. The drive CONVERGES, but re-derives wildly — measured at
+    // ~5,600 jobs and ~1.3s, with `SealSemanticClosure(root)` alone re-firing
+    // ~334x and dragging `DeriveRuntimeDemand` (~1,731x), `AnalyzeActivation`
+    // (~1,737x) and `DeriveExecutableTransport` (~587x) with it. The job count
+    // is schedule-dependent across process hash seeds (5,598–5,702), the
+    // signature of a non-monotone join in the seal/demand/transport cycle:
+    // a unique least fixpoint would do identical, bounded work on every
+    // schedule (cf. `compiler2_quicksort_converges_identically_on_every_schedule`).
+    //
+    // An incremental per-root seal re-fires a small bounded number of times,
+    // not once per upstream type ascent. These caps are the tight,
+    // fixture-specific measurement `job_budget_guard.rs` documents as belonging
+    // in its own test — they pin the runaway so a monotone fix proves itself.
+    let tel = ConfiguredTelemetry::new();
+    let counts: Rc<RefCell<HashMap<&'static str, u64>>> = Rc::new(RefCell::new(HashMap::new()));
+    let sink = Rc::clone(&counts);
+    tel.attach(
+        &["fz", "compiler2", "job"],
+        Box::new(move |event: &Event<'_, '_, '_>| {
+            if event.kind != EventKind::SpanStart {
+                return;
+            }
+            let Some(job) = event.metadata.get("job").and_then(|value| value.downcast_ref::<Job>()) else {
+                return;
+            };
+            let kind = match job {
+                Job::SealSemanticClosure(_) => "SealSemanticClosure",
+                Job::DeriveRuntimeDemand(_) => "DeriveRuntimeDemand",
+                Job::DeriveExecutableTransport(_) => "DeriveExecutableTransport",
+                Job::AnalyzeActivation(_) => "AnalyzeActivation",
+                _ => "other",
+            };
+            *sink.borrow_mut().entry(kind).or_default() += 1;
+        }),
+    );
+
+    let mut world = crate::compiler2::World::new(&tel);
+    world.submit_code(
+        Some("enum_take_drop_split.fz".to_string()),
+        include_str!("../../fixtures2/00420_enum_take_drop_split.fz").to_string(),
+    );
+    world.submit_root(None, "main".to_string(), 0, crate::compiler2::ExecutableNeed::Value);
+    // The reseal runaway is the primary signal; the non-monotone cycle also
+    // currently lands a `Fatal LowerNativeProgram` (inconsistent transport
+    // shapes), so capture the outcome and gate on the churn first, then require
+    // the drive to actually converge once the join is monotone.
+    let outcome = world.drive();
+
+    let counts = counts.borrow();
+    let seal = counts.get("SealSemanticClosure").copied().unwrap_or(0);
+    let total: u64 = counts.values().sum();
+    // The per-root seal is a barrier, not a per-ascent recompute: it must settle
+    // in a small bounded number of re-runs. 334 is a reseal ladder.
+    assert!(
+        seal <= 32,
+        "SealSemanticClosure re-fired {seal}x on the take/drop/split root — the per-root seal \
+         must converge incrementally, not reseal on every upstream ascent. Job counts: {:?}",
+        *counts,
+    );
+    assert!(
+        total < 1500,
+        "the take/drop/split drive ran {total} jobs — a converging fixpoint over ~30 calls does \
+         bounded work, not a reseal runaway. Job counts: {:?}",
+        *counts,
+    );
+    assert_resolved(outcome, "the take/drop/split family converges");
+}
+
+#[test]
 fn compiler2_resolved_drive_is_quiescent() {
     // After Resolved, the fixpoint is a fixpoint: re-driving with no new
     // submissions runs zero jobs. Self-wake loops (the runaway's engine)
