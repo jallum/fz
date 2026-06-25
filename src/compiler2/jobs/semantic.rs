@@ -19,7 +19,9 @@ use super::super::body::{
 };
 use super::super::contract::FunctionContract;
 use super::super::drive::{FactKey, Job, JobEffects, current_uses};
-use super::super::identity::{ActivationKey, ExecutableNeed, FunctionId, ModuleId, function_id_of_closure_target};
+use super::super::identity::{
+    ActivationKey, ExecutableNeed, FunctionId, ModuleId, TypeName, function_id_of_closure_target,
+};
 use super::super::protocol::ProtocolCallbackImpl;
 use super::super::scheduler::FatalError;
 use super::super::semantic::{ActivationAnalysis, CallSiteKey, CallSiteSummary, CallTargetSummary, SelectedCallee};
@@ -307,14 +309,14 @@ fn apply_steps(
     world: &mut World<'_>,
     steps: &[LoweredStep],
     values: &mut SemanticValues,
-    _calls: &mut Vec<CallEmission>,
-    _activation: &ActivationKey,
-    _reads: &mut Vec<FactKey>,
-    _waits: &mut HashSet<FactKey>,
-    _follow_up: &mut HashSet<Job>,
+    calls: &mut Vec<CallEmission>,
+    activation: &ActivationKey,
+    reads: &mut Vec<FactKey>,
+    waits: &mut HashSet<FactKey>,
+    follow_up: &mut HashSet<Job>,
 ) -> Result<(), FatalError> {
     for step in steps {
-        apply_step(world, step, values, _calls, _activation, _reads, _waits, _follow_up)?;
+        apply_step(world, step, values, calls, activation, reads, waits, follow_up)?;
     }
     Ok(())
 }
@@ -325,9 +327,9 @@ fn apply_step(
     values: &mut SemanticValues,
     _calls: &mut Vec<CallEmission>,
     _activation: &ActivationKey,
-    _reads: &mut Vec<FactKey>,
-    _waits: &mut HashSet<FactKey>,
-    _follow_up: &mut HashSet<Job>,
+    reads: &mut Vec<FactKey>,
+    waits: &mut HashSet<FactKey>,
+    follow_up: &mut HashSet<Job>,
 ) -> Result<(), FatalError> {
     match step {
         LoweredStep::Const { value, literal } => {
@@ -457,7 +459,7 @@ fn apply_step(
             let Some(source_ty) = value_ty(values, *source) else {
                 return Ok(());
             };
-            let asserted = struct_assertion_ty(world, *module);
+            let asserted = struct_assertion_ty(world, *module, reads, waits, follow_up);
             let refined = world.types_mut().intersect(source_ty, asserted);
             values.insert(*source, refined);
         }
@@ -2218,7 +2220,39 @@ fn lowered_map_key(
     Some(map_key_from_ty(world, key_ty))
 }
 
-fn struct_assertion_ty(world: &mut World<'_>, module: ModuleId) -> Ty {
+fn struct_assertion_ty(
+    world: &mut World<'_>,
+    module: ModuleId,
+    reads: &mut Vec<FactKey>,
+    waits: &mut HashSet<FactKey>,
+    follow_up: &mut HashSet<Job>,
+) -> Ty {
+    // Honor the struct's declared field types (`@type t`) so a destructure
+    // recovers them even after a value crossed a protocol boundary that erased
+    // its concrete shape (fz-f98.8: an integer `Range` whose fields graduate to
+    // `any` makes `current + step` an `any + any` the `+` overload widens to
+    // `int | float`). The declared type is a fact, so wait on it like any other
+    // (mirrors the `TypeDefined` wait-set in body/contract derivation): a struct
+    // that declares `@type t` but whose definition has not settled defers here
+    // rather than baking in the `any` default. Only a struct with no `@type`
+    // declaration defaults its fields to `any`.
+    let name = TypeName {
+        module,
+        name: "t".to_string(),
+        arity: 0,
+    };
+    if world.type_decl(&name).is_some() {
+        let fact = FactKey::TypeDefined(name.clone());
+        if world.has_fact(&fact) {
+            reads.push(fact);
+            if let Some(declared) = world.declared_struct_value_ty(module) {
+                return declared;
+            }
+        } else {
+            waits.insert(fact);
+            follow_up.insert(Job::DeriveTypeDef(name));
+        }
+    }
     let field_count = world.module_struct_fields(module).map_or(0, |fields| fields.len());
     let any = world.types_mut().any();
     let fields = vec![any; field_count];

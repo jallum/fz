@@ -1889,6 +1889,22 @@ impl<'a> World<'a> {
         self.type_defs.get(name)
     }
 
+    /// The struct module's declared value type, from its conventional `@type t`
+    /// (arity 0). A struct's field types live in this declaration — `defstruct`
+    /// carries only field names — so destructure/assertion must read it here
+    /// rather than defaulting every field to `any` (fz-f98.8: an integer `Range`
+    /// whose fields graduate to `any` makes `current + step` an `any + any` that
+    /// the `+` overload widens to `int | float`).
+    pub(crate) fn declared_struct_value_ty(&mut self, module: ModuleId) -> Option<Ty> {
+        let name = TypeName {
+            module,
+            name: "t".to_string(),
+            arity: 0,
+        };
+        let def = self.type_defs.get(&name)?.clone();
+        Some(def.instantiate(&mut self.types, &[]))
+    }
+
     pub(crate) fn define_protocol_dispatch(&mut self, protocol: ModuleId, dispatch: ProtocolDispatch) -> bool {
         let changed = self.protocol_dispatches.define(protocol, dispatch);
         let dispatch = self

@@ -3291,6 +3291,60 @@ fn compiler2_transport_plan_keeps_callable_resolution_capture_abi_correlated() {
     assert_callable_resolution_capture_prefixes_match_descriptors(&world, &plan);
 }
 
+/// fz-f98.8: a struct's declared `@type` field types are honored on destructure,
+/// so an all-integer `Range` never infers float-typed elements.
+///
+/// `Range` declares `@type t :: %Range{first: integer, last: integer, step: integer}`,
+/// but `defstruct` carries only field names. When a `Range` value crosses the
+/// `Enumerable` protocol boundary its concrete shape is erased, so destructuring
+/// `%Range{first, last, step}` used to bind the fields as `any`. The recursive
+/// step `current + step` was then `any + any`, and the `+` overload set
+/// (`int->integer`, the `float` clauses) admits both guards for `any` operands,
+/// so it widened to `int | float` — a phantom float in an all-integer range that
+/// then floods the shared reducer and feeds the reducer over-monomorphization.
+/// Honoring the declared field types keeps `first/last/step` `integer`, so the
+/// Range recursion (`reduce_cont`/`reduce_step`) stays integer-only.
+#[test]
+fn compiler2_declared_struct_field_types_keep_integer_range_elements_off_float() {
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new(&tel);
+    world.submit_code(
+        Some("range_int_elements.fz".to_string()),
+        "fn main() do\n  dbg(Enum.to_list(1..3))\nend\n".to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    drive_until_transport_plan(
+        &mut world,
+        root,
+        "fz-f98.8 to_list over an integer range should derive transport",
+    );
+    // The Range-specific recursion is monomorphic over integer ranges; no input
+    // may carry `float` (only the generic Enum/dbg entry points legitimately
+    // accept the whole element domain).
+    let candidates: Vec<(String, Vec<Ty>)> = {
+        let plan = transport_plan(&world, root);
+        plan.executable_membership
+            .iter()
+            .filter_map(|sym| {
+                let name = world.function_ref(sym.activation.function).name.clone();
+                (name.contains("reduce_cont") || name.contains("reduce_step") || name.contains("done?"))
+                    .then(|| (name, sym.activation.input.to_vec()))
+            })
+            .collect()
+    };
+    let offenders: Vec<(String, Vec<String>)> = candidates
+        .into_iter()
+        .filter_map(|(name, tys)| {
+            let rendered: Vec<String> = tys.iter().map(|ty| world.types_mut().display(ty)).collect();
+            rendered.iter().any(|s| s.contains("float")).then_some((name, rendered))
+        })
+        .collect();
+    assert!(
+        offenders.is_empty(),
+        "an all-integer range must not infer float-typed elements; the Range recursion carries float inputs: {offenders:?}",
+    );
+}
+
 /// fz-f98.3: a captured callable that is unused on one specialized activation
 /// must still carry its construction layout there -- the closure's capture
 /// layout is one physical fact, not a per-activation use property.
