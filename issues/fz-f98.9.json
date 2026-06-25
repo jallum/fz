@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [
     "fz-f98.5"
@@ -10,8 +10,8 @@
   "labels": [],
   "parent": "fz-f98",
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "Warn when a parameter or struct field type is graduated/defaulted to any (not declared any)",
   "type": "task",
-  "updated_at": "2026-06-25T13:15:28Z"
+  "updated_at": "2026-06-25T13:29:25Z"
 }
