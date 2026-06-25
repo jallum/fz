@@ -2,14 +2,15 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-06-25T20:29:30Z",
   "created": "2026-06-25T20:26:09Z",
   "description": "Cumulative demand/source contributions only grow within an epoch as upstream evidence ascends; a key transiently absent from a non-rebased rerun is not a retraction. Route non-rebased conclude_return_demand_contributions and conclude_input_source_contributions through conclude_preserving_frontier; keep the rebased ground-shift path on the withdrawing conclude (preserves redefinition/minimal-recalc). Mirrors the existing AnalyzeActivation activation-input pattern. Sound, regression-free; tightens monotonicity but does not by itself close the enum_take_drop_split runaway (see the reseal-runaway arc).",
   "id": "fz-f98.13",
   "labels": [],
   "parent": "fz-f98",
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "Compiler2 fact engine: return-demand and input-source conclusions honor within-epoch monotonicity (non-rebased absence is not retraction)",
   "type": "task",
-  "updated_at": "2026-06-25T20:26:09Z"
+  "updated_at": "2026-06-25T20:29:30Z"
 }
