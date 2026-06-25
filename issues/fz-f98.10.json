@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-25T14:37:32Z",
+  "description": "Cluster from the fz-f98.9 graduation measurement. reduce/3 param0, reverse/1 param0, to_list/1 param0 declare protocol::Enumerable.t but receive any (~104 site-hits across the matrix). The protocol's generic t(a) boundary erases the concrete element/collection type to any when a value crosses it -- the protocol analog of fz-f98.8 (which recovered struct field types at destructure). This is the dominant ROOT: the any it produces then floods arithmetic operators downstream (see sibling cluster). Fix: preserve / recover the concrete element type across the t(a) protocol boundary so Enumerable consumers don't graduate to any. Overlaps f98.5/f98.6 over-monomorphization (the any axis).",
+  "id": "fz-f98.10",
+  "labels": [],
+  "parent": "fz-f98",
+  "priority": 1,
+  "status": "open",
+  "title": "Enumerable protocol boundary erases element type to any (t(a) -\u003e any)",
+  "type": "bug",
+  "updated_at": "2026-06-25T14:37:32Z"
+}
