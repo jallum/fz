@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-25T21:39:29Z",
+  "description": "The northstar says runtime modules warm lazily and the root should pull only reached runtime surfaces. In the Enum.reduce operator-ref survey, DefineModule publishes FunctionSource x217 changed facts for whole runtime modules, while only a small subset is later expanded/defined/lowered/analyzed. Current source_publish::publish_scope reserves/publishes every function in a demanded module because ModuleInterface and FunctionSource are coupled at module-definition granularity. This is not semantic closure overreach, but it is still spreadsheet-model overproduction: cells unrelated to the demand become facts and can churn readers/waiters. Strategy: research a split surface contract: module interface/export facts can be produced without publishing all FunctionSource facts, then exact callable demand publishes FunctionSource(function) for the requested callable. Preserve source-order macro semantics and diagnostics; runtime bootstrap may need pre-indexed callable source spans or per-callable source thunks. Signal: for fixtures2/00181_enum_reduce_operator_ref.fz, cold runtime functions should remain without FunctionSource facts unless needed for interface/export proof.",
+  "id": "fz-go4.15",
+  "labels": [],
+  "parent": "fz-go4",
+  "priority": 2,
+  "status": "open",
+  "title": "Compiler2 runtime module definition should not publish cold function-source facts",
+  "type": "task",
+  "updated_at": "2026-06-25T21:39:29Z"
+}
