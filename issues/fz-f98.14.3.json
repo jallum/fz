@@ -7,9 +7,15 @@
   "id": "fz-f98.14.3",
   "labels": [],
   "parent": "fz-f98.14",
+  "comments": [
+    {
+      "text": "SPIKE VERDICT: LEGITIMATE BREADTH, NOT over-specialization (hard numbers, release 685e63be5). 00420 final sealed root-0 closure = 281 distinct activations (337 ever seeded); seal re-walks it ~346x =\u003e O(closure^2). Top fns: reduce_while/3 Enum 25, List impl 20/20, reducer lambdas 12 each. The reduce_while activations fragment along 3 DISPATCH-RELEVANT dims: receiver ([int] vs Range struct), accumulator SHAPE ({[],int}/{[],:true}/{[],[]}/{[],[],int} - distinct physical layouts the reducer destructures), and reducer CAPTURE (the 4 take_while acts that look identical at reduce_while level carry 4 DISTINCT user predicates #67/#69/#70/#87 as captured input 0 - reduce_while-level display was capture-blind). No rendered (receiver,acc,reducer+capture) tuple maps to 2 activations =\u003e NO over-fragmenting key dimension; convergence_class/dispatch-mask already correct. SCALING IS LINEAR: activations ~= 14 + 9.2*calls (predicts exactly 337 at 35 calls); acts/call DECREASES 23-\u003e9.6 with scale (fixed runtime base + constant marginal) - over-spec would be super-linear. Bounded orthogonal note: ~250 transitional seed arrows (188 type-var, 62 any) co-exist with grounded finals during ascent (\u003c=3 per capture) - normal seed-\u003eground, not duplicate finals, shaves a constant not the slope. CONCLUSION: closure size is the real program size; no convergence fix shrinks it meaningfully; the path is the incremental seal (fz-f98.14.1), not collapsing activations. Over-specialization RULED OUT.",
+      "timestamp": "2026-06-25T20:42:14Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "Spike: audit 00420 closure size — legitimate breadth vs over-specialization (does the take/drop/split family create more activations than necessary?)",
   "type": "task",
-  "updated_at": "2026-06-25T20:26:30Z"
+  "updated_at": "2026-06-25T20:42:14Z"
 }
