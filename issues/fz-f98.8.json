@@ -16,8 +16,8 @@
     }
   ],
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Honor declared types: struct fields and contract params must not silently graduate to any",
   "type": "bug",
-  "updated_at": "2026-06-25T13:29:24Z"
+  "updated_at": "2026-06-25T13:29:25Z"
 }
