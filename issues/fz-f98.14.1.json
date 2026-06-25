@@ -7,9 +7,15 @@
   "id": "fz-f98.14.1",
   "labels": [],
   "parent": "fz-f98.14",
+  "comments": [
+    {
+      "text": "SPIKE PLAN (grounded, measured baseline 685e63be5). Seal re-fires ~340x because seal_semantic_closure (jobs/root.rs:134-373) REBUILDS the whole closure from scratch each run (BFS from entry, root.rs:188-296) and subscribes via settled_uses(reads) (root.rs:366) to settled-readiness of EVERY fact in the ~281-activation closure; the type fixpoint re-settles those facts ~340x =\u003e O(closure x ascents). FIX = mirror the transport split (fz-bfh.5): add FactKey::ActivationClosed(ActivationKey) (non-cumulative) + Job::SealActivationClosure(ActivationKey) that walks ONE activation's cone (extract root.rs:198-296 for a single executable; subscribe cone_reads_for-style: Activation/ActivationAnalyzed/ReturnType/LoweredBody/own CallSiteSummaries/RuntimeDemand). Reshape SealSemanticClosure(root) into a pure fan-in BARRIER (model derive_transport_plan transport.rs:844-931): aggregate the transitive closure over settled ActivationClosed edges from entry, seed+wait missing ones, run the GLOBAL runtime-demand frontier loop (demanded_callable_executables runtime_demand.rs:2173 is inherently whole-set - residual non-incremental kernel, bounded few rounds), publish SemanticClosed unchanged. Barrier now subscribes to ActivationClosed revisions + RuntimeDemand set only; the ~3400 CallSiteSummary bumps wake the ONE owning SealActivationClosure (O(1 activation)), bubbling to the barrier only when an EDGE actually changes (changed-gated). Seams: drive.rs:20-100 (job+fact), jobs/root.rs:134-373 (split), jobs/mod.rs (wire), world.rs (define_activation_closed +changed dedup, mirror define_executable_transport world.rs:1209), telemetry activation_closed.derived. Correctness: completeness/exact-snapshot/redefinition(rebased replace)/quiescence/converges_identically all preserved (same args transport split preserved). PROJECTED seal-runs single-to-low-double-digits (=\u003e seal\u003c=32). HONEST: clears seal\u003c=32 but NOT total\u003c1500 or the Fatal/Resolved - those need fz-f98.14.2. Sequence 14.1 first/with 14.2. Not prototyped (projection grounded in measured transport-split behavior on same fixture).",
+      "timestamp": "2026-06-25T20:42:13Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "Spike: incremental / cone-scoped SealSemanticClosure (stop re-walking the whole closure per settled-fact change)",
   "type": "task",
-  "updated_at": "2026-06-25T20:26:29Z"
+  "updated_at": "2026-06-25T20:42:13Z"
 }
