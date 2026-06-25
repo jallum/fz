@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-25T20:26:30Z",
+  "description": "AnalyzeActivation publishes partial evidence by design (semantic.rs:179) to avoid deadlocking recursive cones; this tears down + re-publishes replacing facts (~4040 None-\u003eSome), each read as a change. Preserving omitted replacing publishers is UNSOUND (claims overwritten value). Investigate gating downstream-visible replacing publications on settled inputs WITHOUT deadlocking the recursive cone — e.g. settle-gate only the seal-visible replacing facts, or a two-phase publish. Grounded plan only.",
+  "id": "fz-f98.14.2",
+  "labels": [],
+  "parent": "fz-f98.14",
+  "priority": 1,
+  "status": "open",
+  "title": "Spike: deadlock-safe settled-gating of downstream-visible replacing-fact publication (kill partial-publication re-appearance churn)",
+  "type": "task",
+  "updated_at": "2026-06-25T20:26:30Z"
+}
