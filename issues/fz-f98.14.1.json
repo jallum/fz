@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-25T20:26:29Z",
+  "description": "SealSemanticClosure re-walks the entire root closure on every settled dependency change (~342x for 00420), O(closure x changes). Investigate making the seal incremental: re-validate only the changed cone / dirty frontier rather than the whole root. Grounded plan only; no engine surgery without it. Relates to downstream-monolith and fz-bfh.5 cone-scoped subscription.",
+  "id": "fz-f98.14.1",
+  "labels": [],
+  "parent": "fz-f98.14",
+  "priority": 1,
+  "status": "open",
+  "title": "Spike: incremental / cone-scoped SealSemanticClosure (stop re-walking the whole closure per settled-fact change)",
+  "type": "task",
+  "updated_at": "2026-06-25T20:26:29Z"
+}
