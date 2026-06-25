@@ -10,9 +10,15 @@
   "id": "fz-f98.10",
   "labels": [],
   "parent": "fz-f98",
+  "comments": [
+    {
+      "text": "PROGRESS (commit c6c459189): dispatch-target field types now honored (f98.8 path reused) -\u003e the Range-with-any-fields bridge activation is gone. Suite identical to baseline.\n\nREMAINING CORE (traced precisely, this is NOT the dispatch-target tweak): the top-union (any) bridge activations of reduce/3 \u0026 reverse/1 persist. Mechanism: the bridge Enum.reduce/3's element a and accumulator b are bound from the REDUCER argument (contract.apply matches (a,b)-\u003eb against the inner lambda), NOT from the receiver -- the opaque Enumerable.t(a) cannot bind a. The element only becomes concrete when the lambda is CALLED inside Range.reduce (reducer.(current=int, acc)); that binding must propagate back through the fixpoint to the bridge's a/b. It does not -- a/b COLLAPSE TO any instead of being preserved as type variables and instantiated. reverse(Range) then returns any, to_list feeds it back into the outer reverse, and the cycle sustains the any activations.\n\n=\u003e f98.10's remaining core is the SAME type-variable-collapse as f98.5/f98.6 (a/b should stay vars and instantiate, not graduate to any -- [[unknown-is-not-none]]). It is not a localized protocol-dispatch tweak; it is the over-monomorphization convergence core. The protocol opaque is one trigger (it erases a at the boundary), but the fix is variable preservation through the bridge fixpoint. Recommend folding the remaining f98.10 into f98.5 (or doing f98.5's var-preservation first; it likely resolves f98.10's residual).",
+      "timestamp": "2026-06-25T15:43:56Z"
+    }
+  ],
   "priority": 1,
   "status": "in_progress",
   "title": "Enumerable protocol boundary erases element type to any (t(a) -\u003e any)",
   "type": "bug",
-  "updated_at": "2026-06-25T15:36:51Z"
+  "updated_at": "2026-06-25T15:43:56Z"
 }
