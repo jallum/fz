@@ -6,7 +6,7 @@
     "fz-f98.14.7.2.2"
   ],
   "created": "2026-06-26T10:31:30Z",
-  "description": "RE-SCOPED (prototype-proven, fz-f98.14.10.2). The fix is TWO-PART, not a split into two identities: (1) addressed-alpha convergence_class — the recursive KEY holds structure by address (list(a_e), addressed callable-surface var) not the any/fun_top fallback; PROVEN to terminate + dissolve partition/4 over-spec + keep the reducer resolvable. (2) THE KEYSTONE: a transport-side resolution seam that resolves an activation-key address var's element/surface back to the ActivationInputs evidence layout when deriving ShapeId/boundary. Part 1 alone breaks transport (+9 lib/+3 matrix) because transport consumes the key as a ground layout and there is no address-\u003eevidence resolution today. Build (2) FIRST (or together); then (1) lands and dissolves the convergence family (reducer-any fz-f98.14.7, accumulator-widening, partition fz-f98.14.7.2.2, and this split). = [[shapeid_is_pure_layout]]: the key is a dispatch-identity surface; making it also the layout surface requires the resolver that maps address-\u003eevidence.",
+  "description": "DOWN TO ONE RESIDUAL (verified HEAD d42413dfa). The two-part fix largely landed via concurrent work: (1) addressed-alpha convergence_class LANDED (dc6e737e2, convergence_class_at); the frontier-consistency concern (14.10.3) is MOOT (realpha removed). What remains is the transport-shape residual: SealSemanticClosure seals fine, but the transport plan-builder's component_shapes agree-or-panic meet (transport.rs:338) rejects FunctionId(68) — four EVIDENCE-DISTINCT executables (inputs [Ty32,Ty93], [Ty32,Ty322], [Ty32,Ty347], [Ty32,Ty998]) carry four distinct ShapeIds (32/33/34/35) inside ONE union-find connected component. Two coupled defects: (a) DETERMINISM — component_shapes is HashMap-iteration-order-dependent, so which ShapeId 'wins' the flat meet varies -\u003e the panic is FLAKY under parallelism (the 2 HEAD reds enum_reduce_runtime_graph + take_positive_reduce_while flip pass/fail); (b) REAL — four genuinely-distinct-shaped producers should not be forced to one shape at a converged-activation input position (the [[shapeid_is_pure_layout]] multi-producer case 14.7.2 fixed for callables, here for input shapes). Fix (b) (don't fuse distinct-shape producers; box/widen or keep per-producer positions) + (a) (deterministic component shaping). This is the last piece of the convergence epic.",
   "id": "fz-f98.14.10",
   "labels": [],
   "parent": "fz-f98.14",
@@ -14,5 +14,5 @@
   "status": "open",
   "title": "Separate activation-key convergence-identity from transport-layout-identity",
   "type": "bug",
-  "updated_at": "2026-06-26T15:08:03Z"
+  "updated_at": "2026-06-26T17:00:11Z"
 }
