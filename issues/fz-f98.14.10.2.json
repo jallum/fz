@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-26T14:49:52Z",
+  "description": "AUDIT (agent ab09328, probe-proven): convergence_class (types/mod.rs:477 list-\u003elist(any); :489 callable-\u003efun_top) uses lattice EXTREMES as FALLBACKS to bound the recursive dispatch key — discarding knowable structure. The EARNED form is an addressed-alpha: list(\u003celem address var a_e\u003e) and an addressed callable-surface var. PROBE 1: list(a1_e) folds to one key as well as list(any) (breadth bounded) but has_vars=true (RESOLVABLE) vs list(any) has_vars=false (irreversibly ground). PROBE 2: unbounded DEPTH (list(list(...))) grows address paths without bound -\u003e a depth-cap ⊤ is genuinely EARNED (the existing define_return past-2x-budget-\u003eany cap; KEEP it). THE BRIDGE: an addressed key (list(a1_e)) is losslessly resolvable against ActivationInputs evidence (a1_e=int) -\u003e the address IS the layout bridge -\u003e fz-f98.14.10's key/layout SPLIT is largely UNNECESSARY for breadth (make the one identity addressed, don't separate two). Plausibly ONE ROOT dissolving: reducer-any (fz-f98.14.7), accumulator-widening, 14.10 fusion. NEEDS PROTOTYPE end-to-end (analysis+breadth-probe only so far). Implementation: thread the slot address path through convergence_collapse_ty into the list/callable collapse to mint a{i}_e / addressed surface var; keep define_return depth-cap. Validate fz-y6w termination + the f98 family + which of 14.7.2.2/14.7/14.1/14.10 reds clear.",
+  "id": "fz-f98.14.10.2",
+  "labels": [],
+  "parent": "fz-f98.14.10",
+  "priority": 1,
+  "status": "open",
+  "title": "Addressed-alpha convergence_class: recursive key holds structure by ADDRESS, not collapsed to any/fun_top (breadth); keep the depth-cap",
+  "type": "bug",
+  "updated_at": "2026-06-26T14:49:52Z"
+}
