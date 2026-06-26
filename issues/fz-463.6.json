@@ -1,7 +1,8 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-463.5"
+    "fz-463.5",
+    "fz-463.9"
   ],
   "blocks": [],
   "created": "2026-06-26T20:24:27Z",
@@ -19,5 +20,5 @@
   "status": "open",
   "title": "Delete SemanticClosure/define_semantic_closure/SealSemanticClosure; flip RED gate to GREEN",
   "type": "bug",
-  "updated_at": "2026-06-26T23:27:16Z"
+  "updated_at": "2026-06-26T23:27:18Z"
 }
