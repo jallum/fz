@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-26T02:10:19Z",
+  "description": "Un-masked by the 14.7 de-widening. When a now-resolvable closure is re-threaded as a direct-call argument through a recursive continuation (reduce_plain(tail, reducer.(head,acc), reducer)), native must MATERIALIZE it but transport assigns NO boundary: plan.callables[CallableId].boundary_ids==[]. Transport mints boundaries only for first_class_surfaces (callables that escape first-class via record_first_class_demand, runtime_demand.rs); a callable consumed with a resolved call contract and merely passed onward takes callable_for_producer's else{Vec::new()} branch (transport.rs:3649). 14.6 fixed WHICH boundary a first-class callable resolves to, not whether re-threaded resolved callables get one. Reds: native_program_keeps_distinct...capture_identity_differs, carries_published_callable_boundary_targets_into_closure_calls. Bounded transport/abi fix.",
+  "id": "fz-f98.14.7.1",
+  "labels": [],
+  "parent": "fz-f98.14.7",
+  "priority": 1,
+  "status": "open",
+  "title": "Transport: mint a callable boundary for re-threaded resolved-call argument callables (native must materialize them)",
+  "type": "bug",
+  "updated_at": "2026-06-26T02:10:19Z"
+}
