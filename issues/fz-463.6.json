@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-463.5"
   ],
@@ -10,8 +10,8 @@
   "labels": [],
   "parent": "fz-463",
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "Delete SemanticClosure/define_semantic_closure/SealSemanticClosure; flip RED gate to GREEN",
   "type": "bug",
-  "updated_at": "2026-06-26T20:24:28Z"
+  "updated_at": "2026-06-26T21:35:40Z"
 }
