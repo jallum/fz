@@ -72,6 +72,7 @@ pub enum FactKey {
     ActivationInputs(ActivationKey),
     ActivationAnalyzed(ActivationKey),
     ReturnType(ActivationKey),
+    CallSiteTargets(CallSiteKey),
     CallSiteSummary(CallSiteKey),
     Executable(ExecutableKey),
     ReturnDemand(ExecutableKey),

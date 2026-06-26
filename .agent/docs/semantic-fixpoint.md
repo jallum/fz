@@ -61,6 +61,7 @@ outputs:
 ```text
 ActivationAnalyzed(a)
 ReturnType(a)
+CallSiteTargets(callsite)
 CallSiteSummary(callsite)
 Activation(callee_key)
 Executable(callee_key, need)
@@ -89,13 +90,17 @@ meet it. `CallSiteSummary` snapshots carry
 `return_ty: Option<Ty>` — honest mid-ascent records whose `None` reads, behind
 the settled gate, as "provably never returns" (`settled_return`).
 
-`CallSiteSummary(a, callsite)` is the semantic call boundary fact. Its target
-list is keyed by callee identity: repeated observations of the same callee join
-their surface inputs and return evidence before artifact/native sees the fact.
-The summary does not synthesize a new activation key while joining; activation
-demand remains owned by the separate `Activation(callee_key)` publications from
-the semantic walk. Downstream phases consume that already-joined boundary
-surface instead of rediscovering or deduplicating semantic targets.
+`CallSiteTargets(a, callsite)` is the membership signal: each edge carries only
+callee identity plus the selected activation key, so surface/return type ascents
+do not bump the revision that reachability readers subscribe to.
+`CallSiteSummary(a, callsite)` remains the semantic call boundary fact. Its
+target list is keyed by callee identity: repeated observations of the same
+callee join their surface inputs and return evidence before artifact/native sees
+the fact. The summary does not synthesize a new activation key while joining;
+activation demand remains owned by the separate `Activation(callee_key)`
+publications from the semantic walk. Downstream phases consume that
+already-joined boundary surface instead of rediscovering or deduplicating
+semantic targets.
 
 ## The seal job now consumes settled facts
 
@@ -180,7 +185,8 @@ the basis for the remaining type-system tickets.
 - `SeedRoot` owns `RootEntry(root)` and seeds the entry `Activation` and
   `Executable` demand facts.
 - `AnalyzeActivation(a)` owns `ActivationAnalyzed(a)`, `ReturnType(a)`,
-  `CallSiteSummary(...)`, and any callee demand facts it publishes.
+  `CallSiteTargets(...)`, `CallSiteSummary(...)`, and any callee demand facts it
+  publishes.
 - `SealSemanticClosure(root)` owns only `SemanticClosed(root)`. It observes the
   settled semantic frontier; it does not manually prove freshness anymore.
 

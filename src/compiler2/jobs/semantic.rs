@@ -24,7 +24,9 @@ use super::super::identity::{
 };
 use super::super::protocol::ProtocolCallbackImpl;
 use super::super::scheduler::FatalError;
-use super::super::semantic::{ActivationAnalysis, CallSiteKey, CallSiteSummary, CallTargetSummary, SelectedCallee};
+use super::super::semantic::{
+    ActivationAnalysis, CallSiteKey, CallSiteSummary, CallSiteTargets, CallTargetSummary, SelectedCallee,
+};
 use super::super::types::{ClosureTarget, Ty};
 use super::super::world::World;
 
@@ -198,6 +200,13 @@ pub(super) fn analyze_activation(world: &mut World<'_>, activation: &ActivationK
             outputs.push(callsite_fact.clone());
             if callsite_changed {
                 changed.push(callsite_fact);
+            }
+            let targets_fact = FactKey::CallSiteTargets(call.key.clone());
+            let targets_changed =
+                world.define_callsite_targets(call.key.clone(), CallSiteTargets::from_summary(summary));
+            outputs.push(targets_fact.clone());
+            if targets_changed {
+                changed.push(targets_fact);
             }
         }
         for callee_activation in &call.activations {

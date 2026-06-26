@@ -68,7 +68,8 @@ INDEX     CodeIndexed, ModuleIndexed
 SURFACE   CodeScoped, ModuleDefined, FunctionSource, FunctionDefined,
           TypeDefined, ProtocolDispatch, FunctionContract, LoweredBody,
           EntryDispatch, …
-SEMANTIC  Activation, Executable, ReturnType, CallSiteSummary, SemanticClosed
+SEMANTIC  Activation, Executable, ReturnType, CallSiteTargets, CallSiteSummary,
+          SemanticClosed
 ARTIFACT  MaterializedProgram → AbiReady → …
 ```
 

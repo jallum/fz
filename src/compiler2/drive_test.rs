@@ -1796,10 +1796,18 @@ fn compiler2_analyze_activation_publishes_one_whole_callsite_fact_per_call() {
         .iter()
         .filter(|(fact, _)| matches!(fact, FactKey::CallSiteSummary(_)))
         .count();
+    let callsite_target_facts = outputs
+        .iter()
+        .filter(|(fact, _)| matches!(fact, FactKey::CallSiteTargets(_)))
+        .count();
 
     assert_eq!(
         callsite_facts, 1,
         "an activation with one reached direct call should publish one whole callsite-summary fact",
+    );
+    assert_eq!(
+        callsite_target_facts, 1,
+        "an activation with one reached direct call should publish one target-only membership fact",
     );
     assert!(
         effects

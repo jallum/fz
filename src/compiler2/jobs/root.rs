@@ -251,16 +251,16 @@ pub(super) fn seal_semantic_closure(world: &mut World<'_>, root_id: RootId) -> R
                     activation: activation.clone(),
                     callsite,
                 };
-                let callsite_fact = FactKey::CallSiteSummary(key.clone());
+                let callsite_fact = FactKey::CallSiteTargets(key.clone());
                 if !read_fact(world, callsite_fact, &mut reads, &mut waits) {
                     follow_up.insert(Job::AnalyzeActivation(activation.clone()));
                     continue;
                 }
-                let summary = world
-                    .callsite_summary(&key)
-                    .expect("callsite facts should have a summary value")
+                let targets = world
+                    .callsite_targets(&key)
+                    .expect("callsite target facts should have a target value")
                     .clone();
-                for target in &summary.targets {
+                for target in &targets.targets {
                     let SelectedCallee::Function(function) = target.callee else {
                         continue;
                     };

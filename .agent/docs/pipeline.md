@@ -241,10 +241,11 @@ resumes cannot silently reclassify the join seam.
 
 ## The artifact boundary is one-way
 
-`MaterializeRoot` reads `SemanticClosed(root)` and nothing else from the semantic
-world. It clones the closed executable set, prunes each body to its reachable
-clauses, and freezes each live callsite to its selected callee. It cannot ask a
-type question or discover a new callee.
+`MaterializeRoot` gates on `SemanticClosed(root)` and reads the per-executable
+facts already named by that closed frontier, including `RuntimeDemand(E)`. It
+clones the closed executable set, prunes each body to its reachable clauses, and
+freezes each live callsite to its selected callee. It cannot ask a new type
+question or discover a new callee.
 
 - If a constituent the closure named is missing, it does not improvise — it
   waits for a fresh closure (`SealSemanticClosure` re-runs).
@@ -445,7 +446,9 @@ JIT or AOT entry points.
 Backend-facing work has one hard rule after `MaterializedProgram`: it may read
 only the settled artifact ladder below it.
 
-- `MaterializeRoot(root)` may consume only `SemanticClosed(root)`.
+- `MaterializeRoot(root)` may consume only `SemanticClosed(root)`,
+  `TransportPlan(root)`, and per-executable facts for members of that closed
+  frontier.
 - `DeriveAbiReady(root)` may consume only `MaterializedProgram(root)` plus the
   world-owned type store.
 - `DeriveEmissionReady(root)` may consume only `AbiReadyProgram(root)`.

@@ -42,6 +42,17 @@ pub struct CallTargetSummary {
     pub return_ty: Option<Ty>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CallTargetEdge {
+    pub callee: SelectedCallee,
+    pub activation: Option<ActivationKey>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CallSiteTargets {
+    pub targets: Vec<CallTargetEdge>,
+}
+
 impl CallTargetSummary {
     /// The Kleene reading of a settled summary: evidence absent at the
     /// fixpoint means no value ever flows — the empty type. Only valid
@@ -101,6 +112,22 @@ impl CallSiteSummary {
             }
         }
         self.targets = coalesced;
+    }
+}
+
+impl CallSiteTargets {
+    pub fn from_summary(summary: &CallSiteSummary) -> Self {
+        let mut targets = Vec::new();
+        for target in &summary.targets {
+            let edge = CallTargetEdge {
+                callee: target.callee.clone(),
+                activation: target.activation.clone(),
+            };
+            if !targets.contains(&edge) {
+                targets.push(edge);
+            }
+        }
+        Self { targets }
     }
 }
 
@@ -681,6 +708,11 @@ pub struct CallSiteMap {
     slots: HashMap<CallSiteKey, CallSiteSummary>,
 }
 
+#[derive(Debug, Default)]
+pub struct CallSiteTargetsMap {
+    slots: HashMap<CallSiteKey, CallSiteTargets>,
+}
+
 #[derive(Debug, Clone)]
 pub struct SemanticClosureSlot {
     closure: SemanticClosure,
@@ -973,6 +1005,22 @@ impl CallSiteMap {
     }
 }
 
+impl CallSiteTargetsMap {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn define(&mut self, key: CallSiteKey, targets: CallSiteTargets) -> bool {
+        let changed = self.slots.get(&key) != Some(&targets);
+        self.slots.insert(key, targets);
+        changed
+    }
+
+    pub fn get(&self, key: &CallSiteKey) -> Option<&CallSiteTargets> {
+        self.slots.get(key)
+    }
+}
+
 impl CallSiteSummary {
     pub fn arity(&self) -> usize {
         self.targets
@@ -1119,6 +1167,42 @@ mod tests {
             activation: ActivationKey::from_inputs(root, function, &[], world.types_mut()),
             need: ExecutableNeed::Value,
         }
+    }
+
+    #[test]
+    fn callsite_targets_ignore_type_payload_ascent() {
+        let tel = ConfiguredTelemetry::new();
+        let mut world = World::new(&tel);
+        let activation = test_key(&mut world);
+        let callee = activation.function;
+        let int = world.types_mut().int();
+        let atom = world.types_mut().atom();
+        let any = world.types_mut().any();
+
+        let narrow = CallSiteSummary {
+            targets: vec![CallTargetSummary {
+                callee: SelectedCallee::Function(callee),
+                surface_inputs: vec![int],
+                activation: Some(activation.clone()),
+                return_ty: Some(int),
+            }],
+            return_ty: Some(int),
+        };
+        let wider = CallSiteSummary {
+            targets: vec![CallTargetSummary {
+                callee: SelectedCallee::Function(callee),
+                surface_inputs: vec![any],
+                activation: Some(activation),
+                return_ty: Some(atom),
+            }],
+            return_ty: Some(atom),
+        };
+
+        assert_eq!(
+            CallSiteTargets::from_summary(&narrow),
+            CallSiteTargets::from_summary(&wider),
+            "membership edges are callee+activation identity only; surface and return type ascents must not move them",
+        );
     }
 
     fn resolved_surface(tys: &[Ty], types: &mut Types) -> CallableDemand {

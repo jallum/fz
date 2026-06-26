@@ -50,9 +50,10 @@ use super::runtime_demand_facts::RuntimeDemandMap;
 use super::scheduler::FatalError;
 use super::scope::ScopeSnapshot;
 use super::semantic::{
-    ActivationAnalysis, ActivationInputMap, ActivationMap, CallSiteKey, CallSiteMap, CallSiteSummary, CallableDemand,
-    ContributionReplace, ExecutableRuntimeDemand, JoinContribution, ReturnDemandMap, RuntimeDemand, SemanticClosure,
-    SemanticClosureMap, ShapeDemand, TransportInputKey, TransportInputSourceMap, TransportInputSources,
+    ActivationAnalysis, ActivationInputMap, ActivationMap, CallSiteKey, CallSiteMap, CallSiteSummary, CallSiteTargets,
+    CallSiteTargetsMap, CallableDemand, ContributionReplace, ExecutableRuntimeDemand, JoinContribution,
+    ReturnDemandMap, RuntimeDemand, SemanticClosure, SemanticClosureMap, ShapeDemand, TransportInputKey,
+    TransportInputSourceMap, TransportInputSources,
 };
 use super::source::{
     QuotedLexicalContext, QuotedLexicalContextKind, QuotedSourceBuilder, QuotedSourceError, QuotedSourceMetadata,
@@ -236,6 +237,7 @@ pub struct World<'a> {
     input_sources: TransportInputSourceMap<Job>,
     runtime_demands: RuntimeDemandMap,
     callsites: CallSiteMap,
+    callsite_targets: CallSiteTargetsMap,
     semantic_closures: SemanticClosureMap,
     artifacts: MaterializedProgramMap,
     abi_ready: AbiReadyProgramMap,
@@ -305,6 +307,7 @@ impl<'a> World<'a> {
             input_sources: TransportInputSourceMap::new(),
             runtime_demands: RuntimeDemandMap::new(),
             callsites: CallSiteMap::new(),
+            callsite_targets: CallSiteTargetsMap::new(),
             semantic_closures: SemanticClosureMap::new(),
             artifacts: MaterializedProgramMap::new(),
             abi_ready: AbiReadyProgramMap::new(),
@@ -1113,6 +1116,14 @@ impl<'a> World<'a> {
 
     pub fn callsite_summary(&self, key: &CallSiteKey) -> Option<&CallSiteSummary> {
         self.callsites.get(key)
+    }
+
+    pub fn define_callsite_targets(&mut self, key: CallSiteKey, targets: CallSiteTargets) -> bool {
+        self.callsite_targets.define(key, targets)
+    }
+
+    pub fn callsite_targets(&self, key: &CallSiteKey) -> Option<&CallSiteTargets> {
+        self.callsite_targets.get(key)
     }
 
     pub(crate) fn define_semantic_closure(&mut self, root: RootId, closure: SemanticClosure) -> bool {
