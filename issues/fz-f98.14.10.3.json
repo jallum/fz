@@ -2,6 +2,7 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-06-26T17:00:10Z",
   "created": "2026-06-26T15:46:25Z",
   "description": "Found by the 14.10 two-part spike (agent ae159c1). Part 1's addressed-alpha convergence collapse (list-\u003elist(a_e), callable-\u003eaddress_var) makes the recursive activation KEY non-idempotent across sites: SealSemanticClosure waits on an activation key that the analyzer never settles (seal-side key != analyzer-concluded key), so 6 enum-reduce-multi-surface activations stall (pending=0, Settled(Activation) waited-on, SemanticClosed never seals). The address-var branches change what activation_key/canonical_activation_key produces depending on the path frame; re-canonicalizing an already-address-var key (or the seal recomputing it) yields a different key. NOTE realpha_inputs (the key re-canonicalizer) was deleted. FIX: make the addressed convergence collapse produce a CANONICAL key that round-trips identically wherever the key is (re)computed (analyze, seal, flow edges) — idempotent under re-addressing. This is the frontier-side prerequisite for the addressed-key arc; blocks landing fz-f98.14.10.2 (addressed convergence) and thus the whole family. Transport keystone (P2) is independently sound.",
   "id": "fz-f98.14.10.3",
@@ -18,8 +19,8 @@
     }
   ],
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "Addressed-collapse activation key must be frontier-consistent (seal-side key == analyzer-side key; idempotent re-canonicalization)",
   "type": "bug",
-  "updated_at": "2026-06-26T16:50:19Z"
+  "updated_at": "2026-06-26T17:00:10Z"
 }
