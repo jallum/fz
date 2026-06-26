@@ -2,15 +2,14 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
-  "closed_at": "2026-06-26T19:44:34Z",
   "created": "2026-06-26T19:43:36Z",
   "description": "The transport plan-builder's component_shapes agree-or-panic meet (transport.rs:338) flaked because the graph fed to it was built NON-MONOTONICALLY: executable_sort_key ordered on raw interned Ty ids (process-hash-volatile mint order) and collect_executable_input_constraints gated anchor-vs-union on a stateful (function, semantic_index) accumulator, so visitation order decided whether FunctionId(68)'s four layout-distinct callable executables landed in 4 components (pass) or 1 (panic). FIX (two-part): (1) executable_sort_key visitation key sorts on a canonical structural projection (types.display of each input) not raw Ty id — schedule-free; output/codegen-seam keys kept raw-Ty to avoid a return-lane reorder; (2) DELETED the anchored_function_inputs accumulator + force_own_shape; the anchor-vs-union decision is now a pure per-position function (\u003e=2 layout-distinct resolved surfaces -\u003e all anchor own shape, never fuse). (1) alone deterministically PANICKED (ladder wrong even under canonical order) -\u003e both needed. Result: the 3 transport.rs:338 tests STABLY green (12/12 across runs vs flaky baseline), lib 1131/0, clippy clean, zero new reds; composes with fz-ijz. The determinism test compiler2_transport_input_components_are_schedule_independent is #[ignore]d (blocked by fz-f98.14.1 reseal runaway: fixture ~13s/drive). Net non-test LoC +55/-48 one file (deletion/folding of the accumulator).",
   "id": "fz-f98.14.10.4",
   "labels": [],
   "parent": "fz-f98.14.10",
   "priority": 1,
-  "status": "closed",
+  "status": "open",
   "title": "transport.rs:338 shape-graph is schedule-independent: canonical sort key + pure per-position anchor (no stateful accumulator)",
   "type": "bug",
-  "updated_at": "2026-06-26T19:44:34Z"
+  "updated_at": "2026-06-26T19:46:40Z"
 }
