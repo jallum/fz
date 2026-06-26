@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-26T20:24:06Z",
+  "description": "ROOT-CAUSE FIX. CallSiteSummary bundles membership-relevant content (targets[*].callee + targets[*].activation — stable, drives only 3 closure changes) with ascending type content (targets[*].surface_inputs, return_ty — semantic.rs:55-57, bump 945x). The fact has ONE revision, so every type-ascent re-wakes every membership subscriber (the seal). This false-sharing IS the ~270-fire wake-storm.\n\nDO: introduce a CallSiteTargets fact (callee+activation edges per callsite) distinct from the ascending-type CallSiteSummary, published by AnalyzeActivation alongside the summary, whose revision bumps ONLY when targets change. Membership subscribers (the seal, seal.4) subscribe to CallSiteTargets; type consumers keep reading CallSiteSummary. Same identity/layout-split philosophy as ShapeId (see [[shapeid_is_pure_layout]]) and the addressed-arrow (fz-f98.14.10): separate stable membership identity from ascending type content into distinct fact revisions.\n\nREMOVES: the false-sharing that drives the seal fires. THIS is what makes seal.4-6 correct (a presence-only seal would otherwise miss late-resolving targets). One commit.",
+  "id": "fz-463.3",
+  "labels": [],
+  "parent": "fz-463",
+  "priority": 1,
+  "status": "open",
+  "title": "[KEYSTONE] Split CallSiteTargets (membership edges) out of the type-laden CallSiteSummary",
+  "type": "bug",
+  "updated_at": "2026-06-26T20:24:06Z"
+}
