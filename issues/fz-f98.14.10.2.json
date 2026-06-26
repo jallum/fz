@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-06-26T14:49:52Z",
@@ -8,8 +8,8 @@
   "labels": [],
   "parent": "fz-f98.14.10",
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "Addressed-alpha convergence_class: recursive key holds structure by ADDRESS, not collapsed to any/fun_top (breadth); keep the depth-cap",
   "type": "bug",
-  "updated_at": "2026-06-26T14:49:52Z"
+  "updated_at": "2026-06-26T14:49:53Z"
 }
