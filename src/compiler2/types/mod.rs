@@ -544,7 +544,11 @@ impl Types {
     fn convergence_collapse_ty(&mut self, ty: Ty, demand: &DispatchDemand, collapse_concrete_ignored: bool) -> Ty {
         match demand {
             DispatchDemand::Ignore => {
-                if collapse_concrete_ignored || self.has_vars(&ty) {
+                // KEY path (`collapse_concrete_ignored`) collapses to `fun_top` for
+                // fz-y6w termination. The EVIDENCE path keeps a var-bearing pure
+                // callable verbatim so it stays resolvable and the accumulator
+                // narrows; every other var-bearing type collapses to its class.
+                if collapse_concrete_ignored || (self.has_vars(&ty) && !self.descr(&ty).is_pure_callable()) {
                     self.convergence_class(&ty)
                 } else {
                     ty
