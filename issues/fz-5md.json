@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-26T15:58:59Z",
+  "description": "Scheduler waiters currently wake when any waited fact changes. Park blocked jobs until every FactUse in their full wait set is satisfied, while preserving subscriber invalidation. Spike proved this reduces Enum.reduce fixture churn and keeps scheduler/fact tests green.",
+  "id": "fz-5md",
+  "labels": [],
+  "priority": 2,
+  "status": "open",
+  "title": "Fact-engine waiters should park until full wait set is satisfied",
+  "type": "task",
+  "updated_at": "2026-06-26T15:58:59Z"
+}
