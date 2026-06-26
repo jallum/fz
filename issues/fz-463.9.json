@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-463.8"
+  ],
   "blocks": [],
   "created": "2026-06-26T23:27:16Z",
   "description": "The ladder is currently PUSHED: the seal schedules DeriveTransportPlan + MaterializeRoot as follow-ups (root.rs:363-366, conditional on closure_changed); each rung pushes the next (MaterializeRoot-\u003eDeriveAbiReady artifact.rs:163; DeriveAbiReady-\u003eDeriveEmissionReady artifact.rs:228-231; DeriveEmissionReady-\u003eLowerBackendProgram artifact.rs:502-505). Native lowering is already demand-only (native.rs comment ~89-95) and the JIT/AOT/dump front doors transitively demand LowerNativeProgram(root); the interp front door demands BackendProgram(root).\n\nDO: delete the seal's follow_up pushes of DeriveTransportPlan/MaterializeRoot (root.rs:363-366) and the rung-to-rung follow_up pushes (artifact.rs:163,228-231,502-505). Rely on the root compile entry demand-pulling the TOP artifact (BackendProgram/NativeProgram), which transitively pulls each rung via its existing wait+follow_up-on-prerequisite path. This is the last push-based machinery downstream of the analyzer frontier (roots aside).\n\nREMOVES: all proactive artifact-ladder seeding; the ladder is pure pull. One commit. Blocked by fz-463.8. Blocks fz-463.6.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Convert the artifact ladder from push to demand-pull",
   "type": "bug",
-  "updated_at": "2026-06-26T23:27:16Z"
+  "updated_at": "2026-06-26T23:27:17Z"
 }
