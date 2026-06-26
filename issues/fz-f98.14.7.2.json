@@ -7,9 +7,15 @@
   "id": "fz-f98.14.7.2",
   "labels": [],
   "parent": "fz-f98.14.7",
+  "comments": [
+    {
+      "text": "FULL RESIDUAL (agents a9f56bd + a76c613): the 14.7 de-widening type-fix (1 LoC: EVIDENCE-path keeps a var-bearing pure callable verbatim so the reducer resolves and acc narrows to RawInt; KEY path stays fun_top for termination) is the CORRECT root and nets matrix 29-\u003e20/21 (whole enum/reduce-bridge family green) but exposes 6 lib reds, ALL one transport-convergence root in three faces: (1) SHAPE-ANCHOR disagreement transport.rs:338 (connected component carries two ShapeIds differing only by input Ty): enum_find_index, take_positive_reduce_while, enum_reduce_runtime_graph. (2) PUBLICATION multi-boundary collision native.rs ~2986 (one published BoundaryId -\u003e multiple resolutions): carries_published_callable_boundary_targets, adapts_delivered_calls. (3) MULTI-PRODUCER materialization (distinct-capture producers converge on one activation, native must box, transport mints no per-identity boundary): keeps_distinct_capture_identity, transport_plan_preserves_nested_enum, quicksort_root_closes_finite_frontier. Root = [[shapeid_is_pure_layout]] / addressed-arrow: a connected position component must agree on LAYOUT ShapeId, and a converged activation reached by distinct-capture producers needs per-producer-identity boundaries. This SHARES the type-fused-identity root with fz-f98.14.1 (the seal). NOT a bounded fix (4 agents proved it). Needs the transport multi-producer-convergence / addressed-arrow design. 14.7 type-fix is gated on this; do not land it alone (regresses 6 lib).",
+      "timestamp": "2026-06-26T02:46:12Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "Transport: converge the resolvable-callable recursive frontier without re-widening to fun_top (shape-anchor disagreement)",
   "type": "bug",
-  "updated_at": "2026-06-26T02:10:19Z"
+  "updated_at": "2026-06-26T02:46:12Z"
 }
