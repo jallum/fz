@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-463.3"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-463.5"
+  ],
   "created": "2026-06-26T20:24:26Z",
   "description": "With CallSiteTargets (seal.3) carrying stable membership edges, the seal no longer needs to re-walk the whole closure subscribing to type-bearing facts. The executable set is ALREADY incrementally published by AnalyzeActivation as Activation/Executable presence facts (semantic.rs:205,216) — the seal's BFS is redundant re-derivation.\n\nDO: rebase seal_semantic_closure to fold the entry-reachable Activation/Executable presence facts over CallSiteTargets, subscribing to PRESENCE + targets only (not CallSiteSummary/ReturnType/ActivationAnalyzed content). Latent callable executables move onto the same frontier: DeriveRuntimeDemand(E) already computes callable_flows[*].resolutions and enqueues DeriveRuntimeDemand follow-ups (runtime_demand.rs:~208) — have it ALSO publish those latents as Activation/Executable frontier facts (mind the proposal's 'monotone with retraction': a widening activation key SUPERSEDES a narrow latent executable, not merely adds — route retraction through replace_outputs). Then delete demanded_callable_executables (runtime_demand.rs:2173-2190, only caller is the seal at root.rs:328) and the seal's inner re-walk loop.\n\nREMOVES: the whole-closure type-content subscription; seal fires -\u003e a handful. Blocked by seal.3.",
   "id": "fz-463.4",
