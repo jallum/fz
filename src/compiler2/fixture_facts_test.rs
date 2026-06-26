@@ -82,10 +82,10 @@ fn main(), do: add1(41)
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
     assert_resolved(world.drive(), "compiler2 should settle the direct-call fixture");
 
-    let closure = world.semantic_closure(root);
-    let activation = closure
-        .activations
+    let activations = world.root_executable_frontier(root);
+    let activation = activations
         .iter()
+        .map(|executable| &executable.activation)
         .find(|activation| world.function_ref(activation.function).name == "main")
         .expect("main activation");
     let analysis = world.activation_analysis(activation).expect("main activation analysis");

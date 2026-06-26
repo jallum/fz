@@ -1982,7 +1982,7 @@ end
         !facts.boundary_ids.is_empty(),
         "the escaped callable should still publish a first-class boundary"
     );
-    let runtime_demands = runtime_demands_for_closure(&world, root);
+    let runtime_demands = runtime_demands_for_frontier(&world, root);
     for boundary in facts.boundary_ids.iter().copied() {
         let boundary_descr = world.boundary(boundary);
         let boundary_facts = plan
@@ -2619,7 +2619,7 @@ fn compiler2_transport_plan_publishes_joined_callable_value_position_before_nati
 
     let plan = transport_plan(&world, root);
     let main = executable_for(&world, &plan, "main", 0);
-    let runtime_demands = runtime_demands_for_closure(&world, root);
+    let runtime_demands = runtime_demands_for_frontier(&world, root);
     let main_demand = runtime_demands
         .iter()
         .find_map(|(executable, demand)| (executable.activation.function == main.activation.function).then_some(demand))
@@ -3310,7 +3310,7 @@ fn compiler2_transport_plan_projects_enum_reduce_bridge_callable_flow_by_produce
     );
 
     let plan = transport_plan(&world, root);
-    let runtime_demands = runtime_demands_for_closure(&world, root);
+    let runtime_demands = runtime_demands_for_frontier(&world, root);
     let direct_flows = runtime_demands
         .values()
         .flat_map(|demand| demand.callable_flows.values())
@@ -3536,19 +3536,18 @@ fn callable_facts_for_function<'a>(
         .collect()
 }
 
-fn runtime_demands_for_closure(
+fn runtime_demands_for_frontier(
     world: &World<'_>,
     root: super::RootId,
 ) -> HashMap<ExecutableKey, ExecutableRuntimeDemand> {
     world
-        .semantic_closure(root)
-        .executables
-        .iter()
+        .root_executable_frontier(root)
+        .into_iter()
         .map(|executable| {
             (
                 executable.clone(),
                 world
-                    .runtime_demand(executable)
+                    .runtime_demand(&executable)
                     .cloned()
                     .unwrap_or_else(|| panic!("runtime demand for {executable:?}")),
             )
@@ -3561,7 +3560,7 @@ fn upstream_callable_flow_for_producer(
     root: super::RootId,
     function: super::FunctionId,
 ) -> CallableFlowFact {
-    runtime_demands_for_closure(world, root)
+    runtime_demands_for_frontier(world, root)
         .values()
         .flat_map(|demand| demand.callable_flows.values())
         .find(|flow| flow.function == function)
@@ -3576,7 +3575,7 @@ fn upstream_input_demand_for_function(
     arity: usize,
     semantic_index: usize,
 ) -> RuntimeDemand {
-    runtime_demands_for_closure(world, root)
+    runtime_demands_for_frontier(world, root)
         .iter()
         .find_map(|(executable, demand)| {
             let function_ref = world.function_ref(executable.activation.function);

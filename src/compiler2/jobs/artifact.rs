@@ -72,7 +72,8 @@ pub(super) fn materialize_root(world: &mut World<'_>, root_id: RootId) -> Result
         .transport_plan(root_id)
         .cloned()
         .expect("settled transport plan should be readable");
-    let closure = world.semantic_closure(root_id);
+    let entry = world.root_entry_executable(root_id);
+    let frontier = world.root_executable_frontier(root_id);
     let mut reads = vec![closed_fact, transport_fact];
     let mut executables = HashMap::new();
 
@@ -87,7 +88,7 @@ pub(super) fn materialize_root(world: &mut World<'_>, root_id: RootId) -> Result
             .push(position.clone());
     }
 
-    for executable in &closure.executables {
+    for executable in &frontier {
         let analysis = world
             .activation_analysis(&executable.activation)
             .cloned()
@@ -149,7 +150,7 @@ pub(super) fn materialize_root(world: &mut World<'_>, root_id: RootId) -> Result
     let program = MaterializedProgram {
         semantic_revision: closed_revision,
         transport_revision,
-        entry: closure.entry,
+        entry,
         transport: materialized_transport_plan(&transport_plan),
         executables,
     };

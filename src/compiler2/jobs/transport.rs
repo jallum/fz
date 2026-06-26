@@ -10,8 +10,8 @@ use super::super::identity::{ExecutableKey, ExecutableNeed, FunctionId, RootId};
 use super::super::scheduler::FatalError;
 use super::super::semantic::{
     ActivationAnalysis, CallSiteKey, CallableDemand, CallableFlowFact, CallableSurface, ExecutableRuntimeDemand,
-    RuntimeDemand, SelectedCallee, SemanticClosure, ShapeDemand, TransportInputEdge, TransportInputKey,
-    TransportInputKind, TransportInputSources,
+    RuntimeDemand, SelectedCallee, ShapeDemand, TransportInputEdge, TransportInputKey, TransportInputKind,
+    TransportInputSources,
 };
 use super::super::transport::{
     ActivationSymbol, BoundaryDescr, BoundaryFacts, BoundaryId, CallableDescr, CallableDirectEdge, CallableFacts,
@@ -717,10 +717,10 @@ pub(super) fn derive_executable_transport(
         ));
     }
 
-    let closure = world.semantic_closure(root_id);
+    let executables = world.root_executable_frontier(root_id);
     let mut superset_reads = Vec::new();
     let mut wait_facts = HashSet::new();
-    let mut contexts = collect_transport_contexts(world, &closure, None, &mut superset_reads, &mut wait_facts);
+    let mut contexts = collect_transport_contexts(world, &executables, None, &mut superset_reads, &mut wait_facts);
 
     if !wait_facts.is_empty() {
         // While the closure's facts are still settling, re-run the whole gather
@@ -858,10 +858,11 @@ pub(super) fn derive_transport_plan(world: &mut World<'_>, root_id: RootId) -> R
         ));
     }
 
-    let closure = world.semantic_closure(root_id);
+    let entry = world.root_entry_executable(root_id);
+    let executables = world.root_executable_frontier(root_id);
     let mut reads = vec![closed_fact];
     let mut wait_facts = HashSet::new();
-    let mut contexts = collect_transport_contexts(world, &closure, None, &mut reads, &mut wait_facts);
+    let mut contexts = collect_transport_contexts(world, &executables, None, &mut reads, &mut wait_facts);
 
     if !wait_facts.is_empty() {
         return Ok(JobEffects {
@@ -880,7 +881,7 @@ pub(super) fn derive_transport_plan(world: &mut World<'_>, root_id: RootId) -> R
     contexts.incoming_input_sources =
         incoming_input_sources_from_facts(world, &contexts.by_executable, &mut current_reads);
 
-    let mut executables = closure.executables.iter().cloned().collect::<Vec<_>>();
+    let mut executables = executables.into_iter().collect::<Vec<_>>();
     executables.sort_by_key(|e| executable_sort_key(e, world.types()));
 
     // Fan-in: each executable's transport contribution is its own settled fact.
@@ -922,7 +923,7 @@ pub(super) fn derive_transport_plan(world: &mut World<'_>, root_id: RootId) -> R
             )
         })
         .collect::<HashMap<_, _>>();
-    let plan = assemble_transport_plan(world, &closure.entry, &executables, &contexts, &per_executable);
+    let plan = assemble_transport_plan(world, &entry, &executables, &contexts, &per_executable);
 
     let changed = world.define_transport_plan(root_id, plan);
 
@@ -939,13 +940,13 @@ pub(super) fn derive_transport_plan(world: &mut World<'_>, root_id: RootId) -> R
 
 fn collect_transport_contexts(
     world: &mut World<'_>,
-    closure: &SemanticClosure,
+    executables: &HashSet<ExecutableKey>,
     runtime_demands: Option<&HashMap<ExecutableKey, ExecutableRuntimeDemand>>,
     reads: &mut Vec<FactKey>,
     wait_facts: &mut HashSet<FactKey>,
 ) -> TransportContexts {
     let mut contexts = HashMap::new();
-    for executable in &closure.executables {
+    for executable in executables {
         let activation_fact = FactKey::ActivationAnalyzed(executable.activation.clone());
         if !world.fact_is_settled(&activation_fact) {
             wait_facts.insert(activation_fact);
@@ -1311,10 +1312,11 @@ pub(crate) fn transport_plan_for_runtime_demands_for_test(
     root_id: RootId,
     runtime_demands: &HashMap<ExecutableKey, ExecutableRuntimeDemand>,
 ) -> TransportPlan {
-    let closure = world.semantic_closure(root_id);
+    let entry = world.root_entry_executable(root_id);
+    let frontier = world.root_executable_frontier(root_id);
     let mut reads = Vec::new();
     let mut wait_facts = HashSet::new();
-    let mut contexts = collect_transport_contexts(world, &closure, Some(runtime_demands), &mut reads, &mut wait_facts);
+    let mut contexts = collect_transport_contexts(world, &frontier, Some(runtime_demands), &mut reads, &mut wait_facts);
     // The shadow path injects runtime demands and never publishes the per-callee
     // `InputSources` facts, so it builds the incoming index in-process directly
     // from those demands -- the same edge set production accumulates by
@@ -1324,7 +1326,7 @@ pub(crate) fn transport_plan_for_runtime_demands_for_test(
         wait_facts.is_empty(),
         "transport projection test requires settled prerequisite facts: {wait_facts:?}",
     );
-    let mut executables = closure.executables.iter().cloned().collect::<Vec<_>>();
+    let mut executables = frontier.into_iter().collect::<Vec<_>>();
     executables.sort_by_key(|e| executable_sort_key(e, world.types()));
     // Project each executable's contribution in-process (the per-executable
     // facts are never published for a test's injected runtime demands), then
@@ -1354,7 +1356,7 @@ pub(crate) fn transport_plan_for_runtime_demands_for_test(
             },
         );
     }
-    assemble_transport_plan(world, &closure.entry, &executables, &contexts, &per_executable)
+    assemble_transport_plan(world, &entry, &executables, &contexts, &per_executable)
 }
 
 /// Project one executable's intra-executable transport contribution into

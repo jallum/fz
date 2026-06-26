@@ -1210,13 +1210,6 @@ impl<'a> World<'a> {
         changed
     }
 
-    pub(crate) fn semantic_closure(&self, root: RootId) -> SemanticClosure {
-        self.semantic_closures
-            .get(root)
-            .cloned()
-            .expect("semantic closures should only be read after their fact is defined")
-    }
-
     /// Store one executable's transport contribution (the `ExecutableTransport`
     /// fact content). Returns whether it changed, so the work graph bumps the
     /// fact's revision only on real movement -- the blast-radius signal the
@@ -2792,6 +2785,24 @@ impl<'a> World<'a> {
 
     pub fn fact_is_settled(&self, key: &FactKey) -> bool {
         self.work_graph.facts().is_settled(key)
+    }
+
+    pub(crate) fn root_executable_frontier(&self, root: RootId) -> HashSet<ExecutableKey> {
+        self.work_graph
+            .fact_keys()
+            .filter_map(|fact| match fact {
+                FactKey::Executable(executable) if executable.activation.root == root => Some(executable.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    pub(crate) fn root_entry_executable(&mut self, root: RootId) -> ExecutableKey {
+        let entry = self.root_entry(root);
+        ExecutableKey {
+            activation: self.activation_key(root, entry.function, &entry.input),
+            need: entry.need,
+        }
     }
 
     pub(crate) fn scope_lexical_context(

@@ -74,6 +74,10 @@ where
         &self.facts
     }
 
+    pub fn fact_keys(&self) -> impl Iterator<Item = &F> {
+        self.facts.keys()
+    }
+
     pub fn output_keys(&self, job: &J) -> HashSet<F> {
         self.deps.output_keys(job)
     }

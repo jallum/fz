@@ -614,16 +614,15 @@ fn runtime_demand_for_function(
         .unwrap_or_else(|| panic!("runtime demand for function {}", function.as_u32()))
 }
 
-fn runtime_demands_for_closure(world: &World<'_>, root: RootId) -> HashMap<ExecutableKey, ExecutableRuntimeDemand> {
+fn runtime_demands_for_frontier(world: &World<'_>, root: RootId) -> HashMap<ExecutableKey, ExecutableRuntimeDemand> {
     world
-        .semantic_closure(root)
-        .executables
-        .iter()
+        .root_executable_frontier(root)
+        .into_iter()
         .map(|executable| {
             (
                 executable.clone(),
                 world
-                    .runtime_demand(executable)
+                    .runtime_demand(&executable)
                     .cloned()
                     .unwrap_or_else(|| panic!("runtime demand for {executable:?}")),
             )
@@ -1523,7 +1522,7 @@ fn main(), do: make_pairer()
         "escaped callable tuple-return fixture should settle before transport",
     );
 
-    let runtime_demands = runtime_demands_for_closure(&world, root_id);
+    let runtime_demands = runtime_demands_for_frontier(&world, root_id);
     let tuple_return_demands = runtime_demands
         .iter()
         .filter_map(|(executable, demand)| {
@@ -1586,7 +1585,7 @@ end
         "recursive tuple resume fixture should settle before transport",
     );
 
-    let runtime_demands = runtime_demands_for_closure(&world, root_id);
+    let runtime_demands = runtime_demands_for_frontier(&world, root_id);
     let resume_demands = runtime_demands
         .iter()
         .filter_map(|(executable, demand)| {
@@ -1633,10 +1632,9 @@ fn main(), do: make()
         "suspend-shaped Enumerable.reduce fixture should settle before transport",
     );
 
-    let closure = world.semantic_closure(root_id);
-    let reducer_executables = closure
-        .executables
-        .iter()
+    let reducer_executables = world
+        .root_executable_frontier(root_id)
+        .into_iter()
         .filter(|executable| {
             let function_ref = world.function_ref(executable.activation.function);
             function_ref.name.starts_with("#lambda:")

@@ -113,15 +113,16 @@ fn evaluate_fixture(fixture: &ContractFixture) -> EvaluatedFixture {
         .unwrap_or(0);
     let facts = normalize_fact_spans(canonical_call_edge_facts(&world, root_id), prefix);
     let snapshot = render_canonical_call_edge_snapshot(&facts);
-    let closure = world.semantic_closure(root_id);
     let root_code = world.function_definition(world.root_function(root_id)).0.code;
-    let local_activations = closure
-        .activations
+    let frontier = world.root_executable_frontier(root_id);
+    let local_activations = frontier
         .iter()
+        .map(|executable| &executable.activation)
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
         .filter(|activation| world.function_definition(activation.function).0.code == root_code)
         .count() as u64;
-    let local_executables = closure
-        .executables
+    let local_executables = frontier
         .iter()
         .filter(|executable| world.function_definition(executable.activation.function).0.code == root_code)
         .count() as u64;

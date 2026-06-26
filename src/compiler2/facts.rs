@@ -147,6 +147,10 @@ where
         self.slots.get(key).is_some_and(FactSlot::is_settled)
     }
 
+    pub fn keys(&self) -> impl Iterator<Item = &F> {
+        self.slots.keys()
+    }
+
     pub fn satisfies(&self, fact_use: &FactUse<F>) -> bool {
         match fact_use {
             FactUse::Current(key) => self.revision(key).is_some(),

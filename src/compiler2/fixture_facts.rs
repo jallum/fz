@@ -31,10 +31,15 @@ pub struct CanonicalCallTargetFact {
 }
 
 pub(crate) fn canonical_call_edge_facts(world: &World<'_>, root: RootId) -> Vec<CanonicalCallEdgeFact> {
-    let closure = world.semantic_closure(root);
     let root_code = world.function_definition(world.root_function(root)).0.code;
     let mut labels = HashMap::new();
-    let mut activations = closure.activations.into_iter().collect::<Vec<_>>();
+    let mut activations = world
+        .root_executable_frontier(root)
+        .into_iter()
+        .map(|executable| executable.activation)
+        .collect::<Vec<_>>();
+    activations.sort_by_key(|activation| (activation.root.as_u32(), activation.function.as_u32(), activation.arrow));
+    activations.dedup();
     activations.retain(|activation| world.function_definition(activation.function).0.code == root_code);
     activations.sort_by_cached_key(|activation| activation_sort_key(world, activation, &mut labels));
 
