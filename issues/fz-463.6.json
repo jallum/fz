@@ -4,6 +4,7 @@
     "fz-463.5"
   ],
   "blocks": [],
+  "closed_at": "2026-06-26T22:44:00Z",
   "created": "2026-06-26T20:24:27Z",
   "description": "Once seal.4-5 leave it vestigial, remove the monolith entirely.\n\nDO: delete SemanticClosure struct + define_semantic_closure (world.rs) + the SealSemanticClosure job (drive.rs, jobs/root.rs:134-376) + SemanticClosureMap from World; keep SemanticReady/SemanticClosed only if still load-bearing as presence (else collapse to one presence fact). Re-enable compiler2_enum_take_drop_split_seals_without_reseal_runaway (drive_test.rs:~12575) and FLIP it from #[ignore]d RED gate to a standing GREEN convergence assertion (seal\u003c=32 — or whatever the presence barrier fires; total\u003c1500; drive fast; schedule-independent). Re-enable the #[ignore]d compiler2_transport_input_components_are_schedule_independent (transport_contract_test.rs, blocked by the runaway). Update northstar.html + .agent docs: the seal is read-only presence, membership lives on the analyzer frontier.\n\nREMOVES: SealSemanticClosure entirely. Blocked by seal.5.",
   "id": "fz-463.6",
@@ -16,7 +17,7 @@
     }
   ],
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Delete SemanticClosure/define_semantic_closure/SealSemanticClosure; flip RED gate to GREEN",
   "type": "bug",
   "updated_at": "2026-06-26T22:44:00Z"
