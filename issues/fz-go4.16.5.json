@@ -4,7 +4,9 @@
     "fz-go4.16.3",
     "fz-go4.16.4"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-go4.16.6"
+  ],
   "created": "2026-06-26T23:44:29Z",
   "description": "Goal\nProduce one materialized executable and one effects product per demanded executable, without MaterializeRoot and without settle_effects(root).\n\nRequired shape\n- MaterializedExecutableProduct(E) reads local semantic/runtime-demand/transport products for E and emits symbolic call targets using ExecutableKey.\n- ExecutableEffectsProduct(E) computes local effects from E and pulls callee effects symbolically.\n- Recursive effects converge through a monotone bottom-to-fixed-point SCC-local query. Do not iterate all materialized executables in a root.\n- Products update PullSession inventory only because E was demanded by the front-door/root path or by a named local dependency.\n\nSignal\nCall edges in materialized products point only to symbolic callees named by the local executable. A focused fake mutual-recursion test settles transitive effects without a root loop.\n\nRemoval target\nNew path does not call MaterializeRoot or settle_effects. Root MaterializedProgram remains legacy-only until deletion.\n\nVerification\nTargeted materialized-executable tests, effects-cycle test, and 00181 product inventory contains the ten expected executable roles without a frontier walk.",
   "id": "fz-go4.16.5",
@@ -14,5 +16,5 @@
   "status": "open",
   "title": "Pull path: add per-executable materialization and effects products",
   "type": "task",
-  "updated_at": "2026-06-26T23:44:43Z"
+  "updated_at": "2026-06-26T23:44:44Z"
 }
