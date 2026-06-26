@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-26T20:24:26Z",
+  "description": "With membership presence-driven (seal.4), both facts become 'all reachable executables have settled facts' — a pure quiescence barrier, not a payload.\n\nDO: re-point DeriveExecutableTransport (already gates SemanticReady), DeriveTransportPlan (transport.rs:858, still gates SemanticClosed), and MaterializeRoot (artifact.rs) to gate on the presence barrier + read per-executable facts (executables set + RuntimeDemand(E) + per-executable analysis) instead of cloning the SemanticClosure payload via world.semantic_closure().\n\nREMOVES: the closure payload reads in transport/materialize (the semantic_closure() clone calls). Blocked by seal.4.",
+  "id": "fz-463.5",
+  "labels": [],
+  "parent": "fz-463",
+  "priority": 1,
+  "status": "open",
+  "title": "Collapse SemanticReady/SemanticClosed to a pure presence barrier",
+  "type": "bug",
+  "updated_at": "2026-06-26T20:24:26Z"
+}
