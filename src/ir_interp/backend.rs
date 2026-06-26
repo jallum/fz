@@ -2644,7 +2644,19 @@ pub(super) fn resolve_backend_callable_executable(
     matches.sort_unstable();
     matches.dedup();
 
-    match matches.as_slice() {
+    // A closure that is dispatched indirectly may have several body
+    // specializations of the same surface that differ only in how tightly they
+    // narrow their (non-capture) argument inputs -- e.g. a mapper whose
+    // accumulator starts as `nil` and widens to `nil | integer` across a fold.
+    // The runtime value carries the concrete arguments, so the most-specialized
+    // body that still accepts them is the unique correct callee; a wider sibling
+    // only matched because its input type is a superset. Keep the minimal
+    // specializations (those not strictly subsumed by another match) so a chain
+    // of narrowings resolves to its tightest body instead of reporting a false
+    // ambiguity.
+    let minimal = most_specialized_callable_targets(types, program, &matches);
+
+    match minimal.as_slice() {
         [target] => Ok(*target),
         [] => Err(format!(
             "backend callable {} with {} capture(s) and {} arg(s) has no settled callable entry",
@@ -2657,9 +2669,65 @@ pub(super) fn resolve_backend_callable_executable(
             fn_id.0,
             captures.len(),
             args.len(),
-            matches
+            minimal
         )),
     }
+}
+
+/// Reduce a set of matching closure-call targets to the most specialized ones.
+///
+/// Targets are compared by their executable activation inputs (capture + arg
+/// types). A target is *dominated* when another matching target narrows every
+/// input to a subtype and strictly narrows at least one -- the dominating target
+/// is the more specialized body and is the one a concrete runtime value should
+/// dispatch to. Returning only the undominated (minimal) targets collapses a
+/// narrowing chain to its tightest element; genuinely incomparable surfaces are
+/// all retained so a real ambiguity is still reported.
+fn most_specialized_callable_targets(
+    types: &crate::compiler2::Types,
+    program: &BackendProgram,
+    matches: &[usize],
+) -> Vec<usize> {
+    let inputs: Vec<Vec<crate::compiler2::Ty>> = matches
+        .iter()
+        .map(|target| program.executables[*target].key.activation.inputs(types))
+        .collect();
+    matches
+        .iter()
+        .copied()
+        .enumerate()
+        .filter(|(i, _)| {
+            !matches
+                .iter()
+                .enumerate()
+                .any(|(j, _)| j != *i && activation_inputs_strictly_narrow(types, &inputs[j], &inputs[*i]))
+        })
+        .map(|(_, target)| target)
+        .collect()
+}
+
+/// True when `narrow` is a strictly more specialized input vector than `wide`:
+/// equal length, every input of `narrow` is a subtype of the matching `wide`
+/// input, and at least one is a strict subtype. Different arities are
+/// incomparable.
+fn activation_inputs_strictly_narrow(
+    types: &crate::compiler2::Types,
+    narrow: &[crate::compiler2::Ty],
+    wide: &[crate::compiler2::Ty],
+) -> bool {
+    if narrow.len() != wide.len() {
+        return false;
+    }
+    let mut strict = false;
+    for (n, w) in narrow.iter().zip(wide.iter()) {
+        if !types.is_subtype(n, w) {
+            return false;
+        }
+        if !types.is_subtype(w, n) {
+            strict = true;
+        }
+    }
+    strict
 }
 
 fn callable_entry_for_target(

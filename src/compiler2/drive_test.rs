@@ -4455,6 +4455,7 @@ end
         need: ExecutableNeed::Value,
     });
 
+    compiler.demand(Job::LowerNativeProgram(root_id));
     let outcome = compiler.drive();
     if !matches!(outcome, DriveOutcome::Resolved) {
         let message = capture

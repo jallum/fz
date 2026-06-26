@@ -571,6 +571,18 @@ impl TransportFactsBuilder {
                 continue;
             };
             let boundary_descr = world.boundary(boundary);
+            // The boundary we are filling resolutions for is anchored to a
+            // specific callable identity (`BoundaryDescr::callable`), which for a
+            // first-class closure carries the captured-value shapes that
+            // distinguish, say, a reducer that closed over `gt2` from one that
+            // closed over `even`. Source boundaries are matched by *layout*
+            // (`surface_arg_shapes` + `published_return_shape`) so two distinct
+            // captures of the same lambda surface look identical here. Anchoring
+            // the collection to the target callable keeps a concrete boundary
+            // from absorbing a sibling capture's resolutions; a generic
+            // (`function: None`) dispatch boundary still pools every concrete
+            // producer that flows through it.
+            let target_callable = boundary_descr.callable;
             let mut resolutions = Vec::new();
             for publication in &draft.publications {
                 if let Some(source_shapes) = self.publication_source_shapes.get(publication) {
@@ -582,6 +594,7 @@ impl TransportFactsBuilder {
                             source_shapes,
                             &boundary_descr.surface_arg_shapes,
                             boundary_descr.published_return_shape,
+                            target_callable,
                         ),
                     );
                 }
@@ -594,6 +607,7 @@ impl TransportFactsBuilder {
                             source_positions,
                             &boundary_descr.surface_arg_shapes,
                             boundary_descr.published_return_shape,
+                            target_callable,
                         ),
                     );
                 }
@@ -3851,6 +3865,7 @@ fn generic_callable_shape_with_resolutions(
                             shapes,
                             &published_surface_shapes,
                             &return_shapes,
+                            callable,
                         )
                     })
                     .or_else(|| {
@@ -3864,6 +3879,7 @@ fn generic_callable_shape_with_resolutions(
                                     source_positions,
                                     &published_surface_shapes,
                                     &return_shapes,
+                                    callable,
                                 )
                             })
                     })
@@ -3899,12 +3915,35 @@ fn generic_callable_shape_with_resolutions(
     world.intern_shape(ShapeDescr::Callable(callable))
 }
 
+/// A source boundary's resolutions belong on a target boundary only when the
+/// two share callable identity. Boundaries are matched by *layout* elsewhere
+/// (surface arg shapes + return shape), so two first-class closures that close
+/// over different captures of the same lambda surface (e.g. a reducer over
+/// `gt2` vs `even`) look identical by layout but are interned as distinct
+/// `CallableId`s carrying distinct capture shapes. A concrete (`function: Some`)
+/// target therefore admits a source only when their interned callables agree; a
+/// generic (`function: None`) dispatch target still pools every concrete
+/// producer that flows through it, because that boundary's whole job is to
+/// dispatch the union.
+fn source_callable_admitted_by_target(world: &World<'_>, source: CallableId, target: CallableId) -> bool {
+    if source == target {
+        return true;
+    }
+    let target_descr = world.callable(target);
+    let source_descr = world.callable(source);
+    // A generic dispatch boundary on either side pools the union: a generic
+    // target collects every concrete producer, and a concrete target can be fed
+    // by an upstream generic carrier it was specialized from.
+    target_descr.function.is_none() || source_descr.function.is_none()
+}
+
 fn resolution_symbols_for_callable_source_surfaces(
     world: &World<'_>,
     facts: &TransportFactsBuilder,
     source_shapes: &[ShapeId],
     surface_shapes: &[Box<[ShapeId]>],
     return_shapes: &[ShapeId],
+    target_callable: CallableId,
 ) -> Vec<Vec<ExecutableSymbol>> {
     assert_eq!(
         surface_shapes.len(),
@@ -3915,7 +3954,14 @@ fn resolution_symbols_for_callable_source_surfaces(
         .iter()
         .zip(return_shapes.iter().copied())
         .map(|(arg_shapes, return_shape)| {
-            resolution_symbols_for_callable_source_surface(world, facts, source_shapes, arg_shapes, return_shape)
+            resolution_symbols_for_callable_source_surface(
+                world,
+                facts,
+                source_shapes,
+                arg_shapes,
+                return_shape,
+                target_callable,
+            )
         })
         .collect()
 }
@@ -3926,12 +3972,16 @@ fn resolution_symbols_for_callable_source_surface(
     source_shapes: &[ShapeId],
     arg_shapes: &[ShapeId],
     return_shape: ShapeId,
+    target_callable: CallableId,
 ) -> Vec<ExecutableSymbol> {
     let mut resolutions = Vec::new();
     for shape in source_shapes {
         let ShapeDescr::Callable(callable) = world.shape(*shape) else {
             continue;
         };
+        if !source_callable_admitted_by_target(world, *callable, target_callable) {
+            continue;
+        }
         let Some(callable_facts) = facts.callables.get(callable) else {
             continue;
         };
@@ -3961,6 +4011,7 @@ fn resolution_symbols_for_source_publication_surfaces(
     source_positions: &[TransportPosition],
     surface_shapes: &[Box<[ShapeId]>],
     return_shapes: &[ShapeId],
+    target_callable: CallableId,
 ) -> Vec<Vec<ExecutableSymbol>> {
     assert_eq!(
         surface_shapes.len(),
@@ -3971,7 +4022,14 @@ fn resolution_symbols_for_source_publication_surfaces(
         .iter()
         .zip(return_shapes.iter().copied())
         .map(|(arg_shapes, return_shape)| {
-            resolution_symbols_for_source_publications(world, facts, source_positions, arg_shapes, return_shape)
+            resolution_symbols_for_source_publications(
+                world,
+                facts,
+                source_positions,
+                arg_shapes,
+                return_shape,
+                target_callable,
+            )
         })
         .collect()
 }
@@ -3982,6 +4040,7 @@ fn resolution_symbols_for_source_publications(
     source_positions: &[TransportPosition],
     arg_shapes: &[ShapeId],
     return_shape: ShapeId,
+    target_callable: CallableId,
 ) -> Vec<ExecutableSymbol> {
     let mut resolutions = Vec::new();
     for source in source_positions {
@@ -3990,6 +4049,9 @@ fn resolution_symbols_for_source_publications(
                 continue;
             }
             let boundary_descr = world.boundary(*boundary);
+            if !source_callable_admitted_by_target(world, boundary_descr.callable, target_callable) {
+                continue;
+            }
             if boundary_descr.surface_arg_shapes.as_ref() != arg_shapes {
                 continue;
             }
