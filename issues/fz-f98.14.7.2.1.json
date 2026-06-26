@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-06-26T09:39:53Z",
@@ -8,8 +8,8 @@
   "labels": [],
   "parent": "fz-f98.14.7.2",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "Native-codegen split-return lane decomposition: delivered-call adapter shape (deliver_lanes__ extra_params order/arity)",
   "type": "bug",
-  "updated_at": "2026-06-26T09:39:53Z"
+  "updated_at": "2026-06-26T09:41:16Z"
 }
