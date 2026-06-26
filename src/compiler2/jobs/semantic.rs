@@ -102,7 +102,7 @@ pub(super) fn analyze_activation(world: &mut World<'_>, activation: &ActivationK
         dispatch_fact,
     ];
     let mut waits = HashSet::new();
-    let mut follow_up = HashSet::from([Job::SealSemanticClosure(activation.root)]);
+    let mut follow_up = HashSet::new();
     let mut outputs = Vec::new();
     let mut changed = Vec::new();
 
@@ -209,7 +209,6 @@ pub(super) fn analyze_activation(world: &mut World<'_>, activation: &ActivationK
             if !callee_activation.already_present {
                 follow_up.insert(Job::AnalyzeActivation(callee_activation.key.clone()));
             }
-            follow_up.insert(Job::SealSemanticClosure(activation.root));
         }
         for executable in &call.latent_executables {
             if emitted_executables.insert(executable.clone()) {
@@ -251,7 +250,6 @@ pub(super) fn analyze_activation(world: &mut World<'_>, activation: &ActivationK
         changed.push(analyzed_fact);
     }
 
-    follow_up.insert(Job::SealSemanticClosure(activation.root));
     Ok(JobEffects {
         reads: current_uses(reads),
         waits: current_uses(waits),
@@ -1615,7 +1613,6 @@ fn prepare_function_call(
     // so mutual recursion cannot deadlock. Absent evidence stays absent: it
     // is the ascent's bottom, never the type `none`.
     reads.push(FactKey::ReturnType(activation.clone()));
-    follow_up.insert(Job::SealSemanticClosure(caller.root));
     let return_evidence = world.activation_return(&activation);
     Some((activation, already_present, return_evidence))
 }
