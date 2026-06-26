@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-26T23:44:28Z",
+  "description": "Goal\nReplace root transport planning with demanded-position and demanded-input products.\n\nRequired shape\n- TransportShapeProduct(position) derives a shape for one demanded position and pulls only connected positions needed for that component.\n- TransportComponentProduct(anchor position) solves only the component reachable from that demanded anchor, not the root transport graph.\n- IncomingInputSlotProduct(callee, slot) reads PullSession incoming-input contributions recorded by demanded callers; it must not scan all executables to find callers.\n- CallableFactsProduct and BoundaryFactsProduct are first-class products. Direct callable facts and boundary publications are not reconstructed by backend scans.\n- Decisions must use structural descriptors or already-chosen descriptors. Raw ShapeId/LaneId/CallableId/BoundaryId insertion order cannot decide semantics.\n\nSignal\nThe operator-ref transport contract passes on the product path: Kernel.+/2 callable facts exist, direct surface arity is 2, boundary_ids is empty, main return is a two-field tuple, and every leaf lane is integer.\n\nRemoval target\nNew path does not call DeriveExecutableTransport or DeriveTransportPlan. No root shape graph solve. No root sort that feeds inclusion or layout.\n\nVerification\nTargeted transport component tests, insertion-order stability test, 00181 product-path transport assertion, and existing compiler2_transport_plan_keeps_enum_reduce_operator_refs_direct_callable behavior preserved.",
+  "id": "fz-go4.16.4",
+  "labels": [],
+  "parent": "fz-go4.16",
+  "priority": 1,
+  "status": "open",
+  "title": "Pull path: add per-position transport shape and input-slot products",
+  "type": "task",
+  "updated_at": "2026-06-26T23:44:28Z"
+}
