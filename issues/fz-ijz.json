@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-26T18:26:42Z",
+  "description": "Introduce a narrow semantic readiness/revision fact so DeriveExecutableTransport no longer waits on the SemanticClosed payload while still rebasing when the semantic closure moves. Spike showed lower enum-reduce job churn without adding new full-suite failures.",
+  "id": "fz-ijz",
+  "labels": [],
+  "priority": 1,
+  "status": "open",
+  "title": "Decouple executable transport from SemanticClosed payload",
+  "type": "task",
+  "updated_at": "2026-06-26T18:26:42Z"
+}
