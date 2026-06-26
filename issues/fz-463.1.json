@@ -2,14 +2,16 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-06-26T21:00:07Z",
+  "close_reason": "Removed SemanticClosure.runtime_demands; consumers now read per-executable RuntimeDemand facts directly.",
   "created": "2026-06-26T20:24:05Z",
   "description": "The closure's runtime_demands map is dead: every production reader was re-pointed onto the per-executable RuntimeDemand(E) fact (read via world.runtime_demand(exec)). Spike re-pointed collect_transport_contexts (transport.rs:726,871) and MaterializeRoot (artifact.rs:131); the semantic_analysis_test that asserts per-executable RuntimeDemand(E) answers the same questions as closure.runtime_demands still passes -\u003e the payload is provably redundant.\n\nDO: delete the field SemanticClosure.runtime_demands (semantic.rs:501); drop the seal's gather loop that reads RuntimeDemand(E) for every executable purely to assemble it (root.rs:302-318) — KEEP only the latent-discovery read that demanded_callable_executables still needs (that read moves/dies in seal.4, not here); retarget runtime_demand.defined per-root telemetry (world.rs:1137-1198) to iterate closure.executables + world.runtime_demand(exec); migrate the 5 transport_contract_test/semantic_analysis_test readers of closure.runtime_demands to per-executable facts.\n\nREMOVES: the closure's demand payload and the seal's RuntimeDemand(E) VALUE subscription for the payload. PROVEN safe (spike Move B, lib 934/0, still Resolved + 3 closure changes). One commit.",
   "id": "fz-463.1",
   "labels": [],
   "parent": "fz-463",
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Delete SemanticClosure.runtime_demands payload",
   "type": "bug",
-  "updated_at": "2026-06-26T20:48:46Z"
+  "updated_at": "2026-06-26T21:00:07Z"
 }
