@@ -349,7 +349,6 @@ pub(super) fn seal_semantic_closure(world: &mut World<'_>, root_id: RootId) -> R
                 entry,
                 activations,
                 executables,
-                runtime_demands,
             },
         );
         outputs.push(semantic_closed_fact.clone());

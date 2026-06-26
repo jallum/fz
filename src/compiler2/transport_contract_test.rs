@@ -1,5 +1,5 @@
 use std::cell::RefCell;
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
 
 use super::body::{DeliveredValueSource, delivered_value_joins};
@@ -9,7 +9,7 @@ use super::transport::{
     BoundaryDescr, CodegenLaneRepr, CodegenSeam, LaneId, ShapeDescr, ShapeId, TransportPlan, TransportPosition,
 };
 use super::types::Ty;
-use super::{DriveOutcome, ExecutableNeed, LoweredBody, RuntimeDemand, World};
+use super::{DriveOutcome, ExecutableKey, ExecutableNeed, ExecutableRuntimeDemand, LoweredBody, RuntimeDemand, World};
 use crate::telemetry::{Capture, ConfiguredTelemetry, Value};
 
 const EVENT_NAME: &[&str] = &["fz", "compiler2", "transport_flow", "defined"];
@@ -1982,6 +1982,7 @@ end
         !facts.boundary_ids.is_empty(),
         "the escaped callable should still publish a first-class boundary"
     );
+    let runtime_demands = runtime_demands_for_closure(&world, root);
     for boundary in facts.boundary_ids.iter().copied() {
         let boundary_descr = world.boundary(boundary);
         let boundary_facts = plan
@@ -1992,9 +1993,7 @@ end
             .resolutions
             .iter()
             .map(|resolution| {
-                let demand = world
-                    .semantic_closure(root)
-                    .runtime_demands
+                let demand = runtime_demands
                     .iter()
                     .find(|(executable, _)| {
                         executable.need == resolution.need
@@ -2620,9 +2619,8 @@ fn compiler2_transport_plan_publishes_joined_callable_value_position_before_nati
 
     let plan = transport_plan(&world, root);
     let main = executable_for(&world, &plan, "main", 0);
-    let closure = world.semantic_closure(root);
-    let main_demand = closure
-        .runtime_demands
+    let runtime_demands = runtime_demands_for_closure(&world, root);
+    let main_demand = runtime_demands
         .iter()
         .find_map(|(executable, demand)| (executable.activation.function == main.activation.function).then_some(demand))
         .expect("main runtime demand should be present");
@@ -3312,9 +3310,8 @@ fn compiler2_transport_plan_projects_enum_reduce_bridge_callable_flow_by_produce
     );
 
     let plan = transport_plan(&world, root);
-    let closure = world.semantic_closure(root);
-    let direct_flows = closure
-        .runtime_demands
+    let runtime_demands = runtime_demands_for_closure(&world, root);
+    let direct_flows = runtime_demands
         .values()
         .flat_map(|demand| demand.callable_flows.values())
         .filter(|flow| !flow.direct_surfaces.is_empty())
@@ -3539,14 +3536,32 @@ fn callable_facts_for_function<'a>(
         .collect()
 }
 
+fn runtime_demands_for_closure(
+    world: &World<'_>,
+    root: super::RootId,
+) -> HashMap<ExecutableKey, ExecutableRuntimeDemand> {
+    world
+        .semantic_closure(root)
+        .executables
+        .iter()
+        .map(|executable| {
+            (
+                executable.clone(),
+                world
+                    .runtime_demand(executable)
+                    .cloned()
+                    .unwrap_or_else(|| panic!("runtime demand for {executable:?}")),
+            )
+        })
+        .collect()
+}
+
 fn upstream_callable_flow_for_producer(
     world: &World<'_>,
     root: super::RootId,
     function: super::FunctionId,
 ) -> CallableFlowFact {
-    let closure = world.semantic_closure(root);
-    closure
-        .runtime_demands
+    runtime_demands_for_closure(world, root)
         .values()
         .flat_map(|demand| demand.callable_flows.values())
         .find(|flow| flow.function == function)
@@ -3561,9 +3576,7 @@ fn upstream_input_demand_for_function(
     arity: usize,
     semantic_index: usize,
 ) -> RuntimeDemand {
-    let closure = world.semantic_closure(root);
-    closure
-        .runtime_demands
+    runtime_demands_for_closure(world, root)
         .iter()
         .find_map(|(executable, demand)| {
             let function_ref = world.function_ref(executable.activation.function);

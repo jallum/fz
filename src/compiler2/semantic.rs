@@ -498,7 +498,6 @@ pub struct SemanticClosure {
     pub entry: ExecutableKey,
     pub activations: HashSet<ActivationKey>,
     pub executables: HashSet<ExecutableKey>,
-    pub runtime_demands: HashMap<ExecutableKey, ExecutableRuntimeDemand>,
 }
 
 #[derive(Debug, Clone)]

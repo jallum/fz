@@ -1131,33 +1131,37 @@ impl<'a> World<'a> {
                 root_id: opaque_debug(&root),
             },
         );
+        let runtime_demands = closure
+            .executables
+            .iter()
+            .filter_map(|executable| {
+                self.runtime_demand(executable)
+                    .cloned()
+                    .map(|demand| (executable.clone(), demand))
+            })
+            .collect::<HashMap<_, _>>();
         self.tel.execute(
             &["fz", "compiler2", "runtime_demand", "defined"],
             &measurements! {
                 root_id: root.as_u32(),
-                executables: closure.runtime_demands.len() as u64,
-                demanded_inputs: closure
-                    .runtime_demands
+                executables: runtime_demands.len() as u64,
+                demanded_inputs: runtime_demands
                     .values()
                     .map(|demand| demand.input_demands.iter().filter(|demand| !demand.is_ignore()).count() as u64)
                     .sum::<u64>(),
-                omitted_inputs: closure
-                    .runtime_demands
+                omitted_inputs: runtime_demands
                     .values()
                     .map(|demand| demand.input_demands.iter().filter(|demand| demand.is_ignore()).count() as u64)
                     .sum::<u64>(),
-                demanded_values: closure
-                    .runtime_demands
+                demanded_values: runtime_demands
                     .values()
                     .map(|demand| demand.value_demands.values().filter(|demand| !demand.is_ignore()).count() as u64)
                     .sum::<u64>(),
-                tuple_field_demands: closure
-                    .runtime_demands
+                tuple_field_demands: runtime_demands
                     .values()
                     .map(|demand| demand.value_demands.values().map(count_tuple_field_demands).sum::<u64>())
                     .sum::<u64>(),
-                direct_callable_flows: closure
-                    .runtime_demands
+                direct_callable_flows: runtime_demands
                     .values()
                     .map(|demand| {
                         demand
@@ -1167,8 +1171,7 @@ impl<'a> World<'a> {
                             .count() as u64
                     })
                     .sum::<u64>(),
-                first_class_callable_flows: closure
-                    .runtime_demands
+                first_class_callable_flows: runtime_demands
                     .values()
                     .map(|demand| {
                         demand
@@ -1178,20 +1181,18 @@ impl<'a> World<'a> {
                             .count() as u64
                     })
                     .sum::<u64>(),
-                opaque_callable_demands: closure
-                    .runtime_demands
+                opaque_callable_demands: runtime_demands
                     .values()
                     .map(|demand| demand.value_demands.values().map(count_opaque_callable_demands).sum::<u64>())
                     .sum::<u64>(),
-                escaped_callable_demands: closure
-                    .runtime_demands
+                escaped_callable_demands: runtime_demands
                     .values()
                     .map(|demand| demand.value_demands.values().map(count_escaped_callable_demands).sum::<u64>())
                     .sum::<u64>(),
             },
             &metadata! {
                 root_id: opaque_debug(&root),
-                runtime_demands: opaque_debug(&closure.runtime_demands),
+                runtime_demands: opaque_debug(&runtime_demands),
             },
         );
         super::dump::emit_semantic_dump_events(self, root, closure);

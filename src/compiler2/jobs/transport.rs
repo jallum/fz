@@ -720,13 +720,7 @@ pub(super) fn derive_executable_transport(
     let closure = world.semantic_closure(root_id);
     let mut superset_reads = Vec::new();
     let mut wait_facts = HashSet::new();
-    let mut contexts = collect_transport_contexts(
-        world,
-        &closure,
-        &closure.runtime_demands,
-        &mut superset_reads,
-        &mut wait_facts,
-    );
+    let mut contexts = collect_transport_contexts(world, &closure, None, &mut superset_reads, &mut wait_facts);
 
     if !wait_facts.is_empty() {
         // While the closure's facts are still settling, re-run the whole gather
@@ -867,8 +861,7 @@ pub(super) fn derive_transport_plan(world: &mut World<'_>, root_id: RootId) -> R
     let closure = world.semantic_closure(root_id);
     let mut reads = vec![closed_fact];
     let mut wait_facts = HashSet::new();
-    let mut contexts =
-        collect_transport_contexts(world, &closure, &closure.runtime_demands, &mut reads, &mut wait_facts);
+    let mut contexts = collect_transport_contexts(world, &closure, None, &mut reads, &mut wait_facts);
 
     if !wait_facts.is_empty() {
         return Ok(JobEffects {
@@ -947,7 +940,7 @@ pub(super) fn derive_transport_plan(world: &mut World<'_>, root_id: RootId) -> R
 fn collect_transport_contexts(
     world: &mut World<'_>,
     closure: &SemanticClosure,
-    runtime_demands: &HashMap<ExecutableKey, ExecutableRuntimeDemand>,
+    runtime_demands: Option<&HashMap<ExecutableKey, ExecutableRuntimeDemand>>,
     reads: &mut Vec<FactKey>,
     wait_facts: &mut HashSet<FactKey>,
 ) -> TransportContexts {
@@ -975,7 +968,20 @@ fn collect_transport_contexts(
             .activation_return(&executable.activation)
             .unwrap_or_else(|| world.types_mut().none());
         let body = world.lowered_body(executable.activation.function);
-        let runtime_demand = runtime_demands.get(executable).cloned().unwrap_or_default();
+        let runtime_demand = if let Some(runtime_demands) = runtime_demands {
+            runtime_demands.get(executable).cloned().unwrap_or_default()
+        } else {
+            let runtime_fact = FactKey::RuntimeDemand(executable.clone());
+            if !world.fact_is_settled(&runtime_fact) {
+                wait_facts.insert(runtime_fact);
+                continue;
+            }
+            reads.push(runtime_fact);
+            world
+                .runtime_demand(executable)
+                .cloned()
+                .expect("settled runtime-demand fact should have a readable payload")
+        };
         let callsite_needs = executable_callsite_needs(&body, &analysis.reachable_clauses, executable.need);
         for callsite in &analysis.callsites {
             let fact = FactKey::CallSiteSummary(CallSiteKey {
@@ -1308,7 +1314,7 @@ pub(crate) fn transport_plan_for_runtime_demands_for_test(
     let closure = world.semantic_closure(root_id);
     let mut reads = Vec::new();
     let mut wait_facts = HashSet::new();
-    let mut contexts = collect_transport_contexts(world, &closure, runtime_demands, &mut reads, &mut wait_facts);
+    let mut contexts = collect_transport_contexts(world, &closure, Some(runtime_demands), &mut reads, &mut wait_facts);
     // The shadow path injects runtime demands and never publishes the per-callee
     // `InputSources` facts, so it builds the incoming index in-process directly
     // from those demands -- the same edge set production accumulates by

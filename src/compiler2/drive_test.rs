@@ -3585,12 +3585,21 @@ fn compiler2_artifact_ladder_consumes_only_the_previous_rung() {
 
     let materialize = outputs.effects(Job::MaterializeRoot(root_id));
     assert_eq!(
-        materialize.reads,
+        materialize.reads[..2],
         vec![
             settled_fact(FactKey::SemanticClosed(root_id)),
             settled_fact(FactKey::TransportPlan(root_id)),
         ],
         "materialization should consume the closed semantic root and its settled transport plan",
+    );
+    assert!(
+        materialize
+            .reads
+            .iter()
+            .skip(2)
+            .all(|fact| matches!(fact, FactUse::Settled(FactKey::RuntimeDemand(_)))),
+        "materialization should read per-executable runtime-demand facts directly after the closed semantic and transport rungs: {:?}",
+        materialize.reads,
     );
     assert!(
         materialize.waits.is_empty(),

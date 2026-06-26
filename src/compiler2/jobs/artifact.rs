@@ -73,7 +73,7 @@ pub(super) fn materialize_root(world: &mut World<'_>, root_id: RootId) -> Result
         .cloned()
         .expect("settled transport plan should be readable");
     let closure = world.semantic_closure(root_id);
-    let reads = settled_uses([closed_fact, transport_fact]);
+    let mut reads = vec![closed_fact, transport_fact];
     let mut executables = HashMap::new();
 
     // Group the root's transport positions by executable once, so each
@@ -127,11 +127,13 @@ pub(super) fn materialize_root(world: &mut World<'_>, root_id: RootId) -> Result
             MaterializedExecutable {
                 entry_dispatch: materialize_entry_dispatch(world, executable, &analysis),
                 return_ty,
-                runtime_demand: closure
-                    .runtime_demands
-                    .get(executable)
-                    .cloned()
-                    .expect("settled semantic closure should have runtime demand for every executable"),
+                runtime_demand: {
+                    reads.push(FactKey::RuntimeDemand(executable.clone()));
+                    world
+                        .runtime_demand(executable)
+                        .cloned()
+                        .expect("settled semantic closure should have runtime demand for every executable")
+                },
                 transport: materialized_executable_transport(&positions_by_executable, executable, world.types()),
                 original_entry_ids: pruned.original_entry_ids,
                 value_types: analysis.value_types,
@@ -154,7 +156,7 @@ pub(super) fn materialize_root(world: &mut World<'_>, root_id: RootId) -> Result
     let materialized_fact = FactKey::MaterializedProgram(root_id);
     let changed = world.define_materialized_program(root_id, program);
     Ok(JobEffects {
-        reads,
+        reads: settled_uses(reads),
         outputs: vec![materialized_fact.clone()],
         changed: changed.then_some(materialized_fact).into_iter().collect(),
         follow_up: changed.then_some(Job::DeriveAbiReady(root_id)).into_iter().collect(),
