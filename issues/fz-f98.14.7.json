@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-26T01:06:08Z",
+  "description": "jit_runs_enum_map_reduce_with_direct_closure_targets: BoundaryId(8) has ONE callable (CallableId(4)), ONE capture identity (Ty201), ONE layout, but TWO resolutions differing only in a non-capture ARG TYPE (Ty0 vs Ty57) sharing a shape — genuine arg-specialized bodies (distinct target_fn). A native zero-capture closure value is one code pointer keyed (function, capture_count), identical for both; the indirect closure-call path (terminator.rs emit_call_closure) has no arg-type dispatch, so one runtime value cannot reach an arg-type-indexed family. PROVEN (agent a71faf3) no bounded boundary-identity fix suffices. Same family as quicksort_root_closes_with_a_finite_recursive_frontier (settles on 3 partition/4 activations vs 1) — semantic-closure frontier activation-key fragmentation. Root = type-fused activation identity (the unifying [[shapeid_is_pure_layout]] root, cf fz-y6w/fz-8b0). FIX: collapse the indirectly-dispatched closure's arg-specializations into one body upstream, OR native arg-type dispatch parity with the interp seam. Tied to fz-f98.14.1's identity-split.",
+  "id": "fz-f98.14.7",
+  "labels": [],
+  "parent": "fz-f98.14",
+  "priority": 1,
+  "status": "open",
+  "title": "Over-specialization: indirectly-dispatched closures get arg-type-specialized bodies one closure value cannot reach",
+  "type": "bug",
+  "updated_at": "2026-06-26T01:06:08Z"
+}
