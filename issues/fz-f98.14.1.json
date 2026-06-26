@@ -17,11 +17,15 @@
     {
       "text": "ACCOUNTING REFUTED by measurement (predict-then-confirm). Built ExecutableEdges(ExecutableKey) per-executable edge-set fact + ledger barrier subscribing to edge content (changed-deduped on the SET). Result: 00180 seal 106-\u003e116, total 727-\u003e1301; 00420 seal 349-\u003e312, total 5573-\u003e13854 — wakes FLAT, total DOUBLED/TRIPLED (same trap as the prior walk-relocation). ROOT CAUSE PROVEN: (1) edge sets churn ~45x not ~3x because ActivationKey.arrow FUSES input-type values into closure-membership identity (identity.rs from_inputs) — a callee's key re-mints as its inputs ascend, so the caller's edge SET genuinely changes; changed-dedup can't filter it (elements really changed); NO type-blind member identity exists that both filters wobble and preserves genuine specialization while the activation key IS the type-laden arrow. (2) the barrier DISCOVERS membership by waiting, so it observes the O(N) settling ladder (104 of 110 wakes bail on unsettled edge facts mid-convergence); collapsing that needs a post-quiescence single-shot run primitive the scheduler lacks. CONCLUSION: fz-f98.14.1 as scoped (accounting, key-path untouched) CANNOT reach seal\u003c=32; under the candidate the RED gate was WORSE (seal 312, total 13854). The real fix needs EITHER (a) a type-stable member identity = separate ascending type content from the stable membership/layout identity in ActivationKey.arrow (the [[shapeid_is_pure_layout]] / addressed-arrow direction; a KEY-PATH change, fenced off in this ticket), OR (b) a quiescence-gated single-shot seal (new scheduler primitive). Both larger than this ticket and UNIFYING: the same type-fused-identity root also drives fz-f98.14.6 (native boundary conflation) and the quicksort non-monotonicity. Re-scope: 14.1 is blocked on the identity-split arc, do not land the accounting regression.",
       "timestamp": "2026-06-26T00:19:15Z"
+    },
+    {
+      "text": "RESOLVED as a spike (affba333, vs HEAD 497dc2d43). Conclusion: the seal is now a pure WAKE-AMPLIFIER (closure converges to 3 distinct values, seal fires ~329x). Root cause confirmed = exactly this ticket's prediction: CallSiteSummary FALSE-SHARES ascending type content (surface_inputs/return_ty) with stable membership identity (callee+activation) under one revision. fz-f98.14.10 fixed the ActivationKey.arrow half; the CallSiteSummary-bundling half remains. The two prior accounting/walk-relocation attempts here are correctly refuted and NOT to be retried. The rip is decomposed into the fz-463 epic (keystone fz-463.3 = CallSiteTargets split). Superseded by fz-463.",
+      "timestamp": "2026-06-26T20:24:39Z"
     }
   ],
   "priority": 1,
   "status": "in_progress",
   "title": "Spike: incremental / cone-scoped SealSemanticClosure (stop re-walking the whole closure per settled-fact change)",
   "type": "task",
-  "updated_at": "2026-06-26T10:31:31Z"
+  "updated_at": "2026-06-26T20:24:39Z"
 }
