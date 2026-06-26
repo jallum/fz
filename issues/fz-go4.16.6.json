@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-26T23:44:30Z",
+  "description": "Goal\nCreate per-executable ABI and backend products whose intermediate call targets remain symbolic ExecutableKey values.\n\nRequired shape\n- AbiExecutableProduct(E) is derived from MaterializedExecutableProduct(E), TransportShapeProduct positions, CallableFactsProduct, and BoundaryFactsProduct.\n- BackendExecutableProduct(E) lowers one ABI-ready executable to backend form without assigning dense root indices.\n- ABI/backend products must not depend on AbiReadyProgram(root), EmissionReadyProgram(root), or any root-wide executable order.\n- Dense usize targets are forbidden in these products. They belong only to final BackendProgram packaging.\n\nSignal\nA test asserts no dense index exists in per-executable artifacts and all inter-executable references are ExecutableKey until final packaging.\n\nRemoval target\nNew path does not call DeriveAbiReady or DeriveEmissionReady.\n\nVerification\nTargeted ABI/backend product tests, existing backend-interp tests through legacy path unchanged, cargo fmt --all, relevant compiler2 lib tests.",
+  "id": "fz-go4.16.6",
+  "labels": [],
+  "parent": "fz-go4.16",
+  "priority": 1,
+  "status": "open",
+  "title": "Pull path: add per-executable ABI and symbolic backend products",
+  "type": "task",
+  "updated_at": "2026-06-26T23:44:30Z"
+}
