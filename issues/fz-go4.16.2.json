@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-go4.16.1"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-go4.16.3"
+  ],
   "created": "2026-06-26T23:44:27Z",
   "description": "Goal\nAdd the request-local PullSession used by the product path to remember what one front-door demand has actually pulled.\n\nRequired shape\n- Session-owned memo/in-progress guard for ProductKey results.\n- Demanded executable set populated only when products are pulled by local dependencies.\n- Symbolic call edge inventory keyed by ExecutableKey.\n- Request-local incoming-input reverse index keyed by callee executable and semantic input slot.\n- Transport component and final packaging inventory needed by later product producers.\n- Telemetry counters for root_scans and follow_ups that must stay zero on the product path.\n\nSignal\nA session test proves a caller product records an outgoing edge and the callee input slot reads that exact key. No root executable frontier, fact-table scan, or full executable collection iteration is used to discover the callee.\n\nRemoval target\nNo production dependency on root_executable_frontier in the new path. If compatibility helpers remain reachable only from legacy jobs, document that boundary in the test names.\n\nVerification\ncargo fmt --all; targeted PullSession tests; rg coverage proving new PullSession code does not call root_executable_frontier.",
   "id": "fz-go4.16.2",
@@ -13,5 +15,5 @@
   "status": "open",
   "title": "Pull path: add request-local PullSession inventory",
   "type": "task",
-  "updated_at": "2026-06-26T23:44:41Z"
+  "updated_at": "2026-06-26T23:44:42Z"
 }
