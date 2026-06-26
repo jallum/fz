@@ -2,14 +2,15 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-06-26T01:05:43Z",
   "created": "2026-06-25T23:21:42Z",
   "description": "LowerNativeProgram fails with 'native callable materialization for FunctionId(N)/0 matched multiple native boundaries [2,4]/[8 boundaries]' on the reduce-bridge family (protocol-callback FunctionIds 160/189/192/193). This is the Fatal that makes 00420's RED gate non-Resolved (fz-f98.14), the transport shape-anchor disagreement (transport.rs:338) found in the f98 spikes, AND a NEW-red trigger when C2 (fz-f98.14.5) perturbs publication ordering. Distinct from the seal reseal (fz-f98.14.1): this is native-callable-boundary IDENTITY - one published BoundaryId resolving to multiple native boundaries when the reduce bridge's shape-polymorphic accumulator / capture identity fragments. Blocks 00420 Resolved and fz-f98.14.5. Investigate: how native lowering maps callable boundaries to BoundaryId and why the reduce-bridge family yields multiple for one id.",
   "id": "fz-f98.14.6",
   "labels": [],
   "parent": "fz-f98.14",
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "Native callable-boundary conflation: 'matched multiple native boundaries' for one BoundaryId (LowerNativeProgram Fatal)",
   "type": "bug",
-  "updated_at": "2026-06-25T23:49:11Z"
+  "updated_at": "2026-06-26T01:05:43Z"
 }
