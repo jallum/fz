@@ -2,14 +2,15 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-06-26T01:45:51Z",
   "created": "2026-06-26T01:06:08Z",
   "description": "Three distinct native-lowering reds (agent a71faf3, each its own root, NOT the boundary conflation): (1) abi_ready_matches_direct_callable_captures_by_canonical_activation_key — reduce_plain/3 flat param_reprs expected [ValueRef,RawInt], got [ValueRef,ValueRef,ValueRef] (repr narrowing). (2) native_program_jit_adapts_callable_raw_returns_back_to_value_refs — Fatal 'callable transport value ShapeId(19) has 1 lanes but CallableId(2) expects 0 capture lanes' (capture-lane-count mismatch). (3) native_program_adapts_delivered_calls_from_callee_return_lanes — reaches native, fails the adapter-body-shape expect (return-lane delivery). Triage each.",
   "id": "fz-f98.14.8",
   "labels": [],
   "parent": "fz-f98.14",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Native callable repr/lane mismatches (param_reprs narrowing, capture-lane count, return-lane delivery)",
   "type": "bug",
-  "updated_at": "2026-06-26T01:27:25Z"
+  "updated_at": "2026-06-26T01:45:51Z"
 }
