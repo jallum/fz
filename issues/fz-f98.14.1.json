@@ -4,6 +4,7 @@
     "fz-f98.14.10"
   ],
   "blocks": [],
+  "closed_at": "2026-06-26T20:24:39Z",
   "created": "2026-06-25T20:26:29Z",
   "description": "Make SealSemanticClosure stop the O(closure^2) reseal. REFINED (per user + prior spike): the prior walk-relocation attempt (per-activation SealActivationClosure + fan-in barrier) FAILED - it made each run cheaper but the run COUNT stayed ~311 and TOTAL jobs went UP 5315-\u003e8055. Root: the seal is woken by its settled-subscriptions to type-bearing facts (CallSiteSummary/ReturnType/ActivationAnalyzed) that wobble as the recursion cone ascends, but the closure MEMBERSHIP only changes ~3x; there is no membership-stable fact to subscribe to (membership and type-value are fused in ActivationKey.arrow + bundled CallSiteSummary). CORRECT DIRECTION: ACCOUNTING, not walking - per-executable supply/demand facts + a root ledger/barrier that concludes once the ledger balances (supply==demand) at quiescence, woken only by membership/edge change, NOT type-value wobble. This needs a membership signal split out of the type-bearing facts (relates to the publication-tier finding). Confine iteration to the recursion cone; acyclic consumers (incl. the seal) fire once on settled deps. Floor = lattice height inside the cone.",
   "id": "fz-f98.14.1",
@@ -24,7 +25,7 @@
     }
   ],
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Spike: incremental / cone-scoped SealSemanticClosure (stop re-walking the whole closure per settled-fact change)",
   "type": "task",
   "updated_at": "2026-06-26T20:24:39Z"
