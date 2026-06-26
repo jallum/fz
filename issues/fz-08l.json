@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-06-26T19:43:32Z",
@@ -7,8 +7,8 @@
   "id": "fz-08l",
   "labels": [],
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "Compiler2 artifact ladder must not reread live TransportPlan",
   "type": "bug",
-  "updated_at": "2026-06-26T19:43:32Z"
+  "updated_at": "2026-06-26T19:43:38Z"
 }
