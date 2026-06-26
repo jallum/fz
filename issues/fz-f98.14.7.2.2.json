@@ -9,9 +9,15 @@
   "id": "fz-f98.14.7.2.2",
   "labels": [],
   "parent": "fz-f98.14.7.2",
+  "comments": [
+    {
+      "text": "BLOCKED on fz-f98.14.10 (proven). Bounded keying fix READY (~25 LoC: descr.rs is_pure_list_modulo_empty folding an emptiness-only list union [int]|[] -\u003e list(any) in the convergence_collapse_ty Ignore-key branch) makes partition/4 converge to 1 in isolation, target green, termination intact (strictly narrower than the existing fun_top/single-list collapse). CANNOT land: identical collapse on identical [int]|[] shape in 00420 reconnects layout-distinct ValueId positions -\u003e transport.rs:338 panic (4 distinct ShapeIds/component) -\u003e reds enum_reduce_runtime_graph + take_positive_reduce_while + transport_plan_preserves_nested_enum. Lands the moment fz-f98.14.10 separates transport layout-identity from the convergence key. Test re-ignored + characterized.",
+      "timestamp": "2026-06-26T10:31:31Z"
+    }
+  ],
   "priority": 1,
   "status": "in_progress",
   "title": "Activation over-specialization: recursive list-family partition/4 settles to 3 keys (asserts 1)",
   "type": "bug",
-  "updated_at": "2026-06-26T10:31:30Z"
+  "updated_at": "2026-06-26T10:31:31Z"
 }
