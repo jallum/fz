@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [
     "fz-463.4"
@@ -10,8 +10,8 @@
   "labels": [],
   "parent": "fz-463",
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "[KEYSTONE] Split CallSiteTargets (membership edges) out of the type-laden CallSiteSummary",
   "type": "bug",
-  "updated_at": "2026-06-26T20:24:27Z"
+  "updated_at": "2026-06-26T21:04:45Z"
 }
