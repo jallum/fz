@@ -2885,6 +2885,86 @@ end
     );
 }
 
+/// The transport.rs:338 agree-or-panic meet is only correct if the shape graph
+/// fed to it is built schedule-independently. The flaky panic was a NON-MONOTONE
+/// build: layout-distinct sibling specializations of one function fused into a
+/// single anchor component depending on visitation order (which sibling the
+/// interning-order-dependent sort visited first) and on a stateful prior-anchoring
+/// accumulator. The fix makes both the visitation order (canonical structural sort
+/// key) and the per-input anchor-vs-union decision in
+/// `collect_executable_input_constraints` pure — the latter unions a callable
+/// input with its incoming call args only when their shapes all agree, or when a
+/// single unsettled source converges, so layout-distinct siblings never fuse
+/// regardless of schedule.
+///
+/// This drives the reduce-bridge fixture many times in-process; each `World` rides
+/// a per-process hash seed that varies the upstream wake order. The transport
+/// invariant it pins: the meet ALWAYS succeeds (a plan is produced, never a
+/// disagreement panic) and the graph ALWAYS keeps layout-distinct callable
+/// siblings in distinct shape components. (The upstream semantic closure for this
+/// fixture is itself schedule-dependent in how many type-specializations it mints
+/// — the separately-ticketed fz-f98.14 reseal runaway — so this asserts the
+/// transport invariant under that variance, not byte-identity of the closure.)
+#[test]
+#[ignore = "red-worklist fz-f98.14.1: the multi-surface enum_take_drop_split fixture is ~13s/drive \
+            under the reseal runaway, so driving it repeatedly times out; the transport schedule-\
+            independence it asserts is already gated by the three now-stable transport.rs:338 tests. \
+            Re-enable when the per-root seal is incremental (fixture drive is fast)."]
+fn compiler2_transport_input_components_are_schedule_independent() {
+    let source = include_str!("../../fixtures2/behavior/enum_take_drop_split.fz");
+
+    // Whether some `(function, slot)` input group keeps two or more LAYOUT-DISTINCT
+    // siblings in two or more distinct shape components — the non-fusion signature
+    // the meet panicked on when it failed.
+    let keeps_layout_distinct_siblings_split = || -> bool {
+        let tel = ConfiguredTelemetry::new();
+        let mut world = World::new(&tel);
+        world.submit_code(
+            Some("transport_input_components_schedule_independent.fz".to_string()),
+            source.to_string(),
+        );
+        let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+        // A disagreement in the agree-or-panic meet would panic inside this drive.
+        drive_until_transport_plan(
+            &mut world,
+            root,
+            "transport meet must reach a plan on every schedule (no anchor disagreement)",
+        );
+        let plan = transport_plan(&world, root);
+
+        let mut layouts = BTreeMap::<(u32, usize), BTreeSet<Box<[Ty]>>>::new();
+        let mut shapes = BTreeMap::<(u32, usize), BTreeSet<ShapeId>>::new();
+        for (position, shape) in &plan.positions {
+            if let TransportPosition::ExecutableInput {
+                executable,
+                semantic_index,
+            } = position
+            {
+                let key = (executable.activation.function.as_u32(), *semantic_index);
+                layouts
+                    .entry(key)
+                    .or_default()
+                    .insert(executable.activation.input.clone());
+                shapes.entry(key).or_default().insert(*shape);
+            }
+        }
+        layouts
+            .iter()
+            .any(|(key, group_layouts)| group_layouts.len() >= 2 && shapes.get(key).map_or(0, BTreeSet::len) >= 2)
+    };
+
+    // Three in-process drives: the panic was triggered by process state that
+    // accumulates across drives, so one drive is not enough to expose it, but a
+    // few are — the cross-process gauntlet carries the broader schedule sweep.
+    for run in 1..=3 {
+        assert!(
+            keeps_layout_distinct_siblings_split(),
+            "the reduce-bridge fixture must reach the transport meet and keep layout-distinct \
+             sibling inputs in distinct shape components on every schedule (run {run})"
+        );
+    }
+}
+
 #[test]
 fn compiler2_transport_plan_preserves_nested_enum_reduce_predicate_capture_shape() {
     let source = include_str!("../../fixtures2/behavior/enum_take_drop_split.fz");

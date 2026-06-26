@@ -1792,17 +1792,6 @@ fn collect_executable_input_constraints(
     call_arg_shapes: &HashMap<TransportPosition, ShapeId>,
     shape_graph: &mut ShapeConstraintGraph,
 ) {
-    let mut anchored_function_inputs = shape_graph
-        .anchors
-        .iter()
-        .filter_map(|(position, _)| match position {
-            TransportPosition::ExecutableInput {
-                executable,
-                semantic_index,
-            } => Some((executable.activation.function, *semantic_index)),
-            _ => None,
-        })
-        .collect::<HashSet<_>>();
     for executable in executables {
         let symbol = executable_symbol(executable, world.types());
         let context = contexts
@@ -1820,7 +1809,6 @@ fn collect_executable_input_constraints(
             .activation_inputs(&executable.activation)
             .unwrap_or_else(|| executable.activation.inputs(world.types()));
         for (semantic_index, ty) in layout_inputs.into_iter().enumerate() {
-            let function_input = (executable.activation.function, semantic_index);
             let demand = context
                 .runtime_demand
                 .input_demands
@@ -1860,7 +1848,6 @@ fn collect_executable_input_constraints(
                 let shape = projected_callable_input_shape
                     .unwrap_or_else(|| shape_for_executable_input(world, ty, &demand, facts, Some(position.clone())));
                 shape_graph.anchor(position, shape);
-                anchored_function_inputs.insert(function_input);
                 continue;
             }
             if let Some(incoming) = incoming {
@@ -1869,27 +1856,28 @@ fn collect_executable_input_constraints(
                     .map(|call_arg| call_arg_shapes.get(call_arg).copied())
                     .collect::<Option<Vec<_>>>();
                 if let Some(incoming_shapes) = incoming_shapes {
+                    // Every incoming shape has settled: union with the call args
+                    // only when they all agree (and agree with any existing anchor),
+                    // which is layout-preserving. Distinct incoming shapes fall
+                    // through and anchor this slot's own shape instead, so
+                    // layout-distinct sibling callables never fuse into one
+                    // component.
                     let first = incoming_shapes.first().copied();
                     let anchor_shape = shape_graph.anchor_shape(&position);
-                    let force_own_shape = anchored_function_inputs.contains(&function_input);
                     if first.is_some()
                         && incoming_shapes.iter().all(|shape| Some(*shape) == first)
-                        && !force_own_shape
                         && anchor_shape.is_none_or(|shape| Some(shape) == first)
                     {
                         for call_arg in incoming {
                             shape_graph.equal(position.clone(), call_arg);
                         }
                     } else if anchor_shape.is_none() {
-                        let shape = shape_for_executable_input(world, ty, &demand, facts, Some(position.clone()));
+                        let shape = projected_callable_input_shape.unwrap_or_else(|| {
+                            shape_for_executable_input(world, ty, &demand, facts, Some(position.clone()))
+                        });
                         shape_graph.anchor(position, shape);
-                        anchored_function_inputs.insert(function_input);
                     }
-                } else if demand.is_ignore()
-                    && incoming.len() == 1
-                    && !shape_graph.has_anchor(&position)
-                    && !anchored_function_inputs.contains(&function_input)
-                {
+                } else if demand.is_ignore() && incoming.len() == 1 && !shape_graph.has_anchor(&position) {
                     // A single ignored incoming arg still carries alias/ownership
                     // evidence; multiple unresolved incoming args would merge
                     // distinct recursive activations before their shapes settle.
@@ -1899,20 +1887,23 @@ fn collect_executable_input_constraints(
                 } else if demand.is_ignore() && !shape_graph.has_anchor(&position) {
                     let shape = shape_for_executable_input(world, ty, &demand, facts, Some(position.clone()));
                     shape_graph.anchor(position, shape);
-                    anchored_function_inputs.insert(function_input);
                 } else if !shape_graph.has_anchor(&position)
-                    && !anchored_function_inputs.contains(&function_input)
                     && demand.callable.resolved.len() <= 1
+                    && incoming.len() == 1
                 {
-                    // Union the input with its incoming call args only when at most
-                    // one resolved direct surface converges here: a single identity
-                    // (or none) cannot fuse layout-distinct callables. When two or
-                    // more distinct resolved surfaces meet at one direct callable
-                    // input (e.g. two `find_index` predicates sharing the reduce
-                    // machinery), unioning would collapse their layout-distinct
-                    // capture shapes into one anchor component, so they fall through
-                    // to their own projected input shape instead. A joined opaque
-                    // value carries one resolved surface (its box) and still unions.
+                    // The incoming shapes have not all settled (this input's own
+                    // shape was not projectable), so the layout-preserving "incoming
+                    // agree" gate above cannot fire. Union with the incoming call arg
+                    // only when a SINGLE incoming source converges here at a slot
+                    // carrying at most one resolved surface: one source cannot fuse
+                    // layout-distinct callables, so a recursive self-call still
+                    // carries its source layout (fz-go4.1). With two or more
+                    // unsettled incoming sources — the take/drop/split WRAPPER that
+                    // sees several layout-distinct reducers before their shapes
+                    // settle — unioning would merge distinct capture shapes into one
+                    // anchor component and trip the agree-or-panic meet, so it
+                    // anchors its own shape instead. A joined opaque value is
+                    // first-class and unions through the agree gate above.
                     for call_arg in incoming {
                         shape_graph.equal(position.clone(), call_arg);
                     }
@@ -1921,12 +1912,10 @@ fn collect_executable_input_constraints(
                         shape_for_executable_input(world, ty, &demand, facts, Some(position.clone()))
                     });
                     shape_graph.anchor(position, shape);
-                    anchored_function_inputs.insert(function_input);
                 }
             } else if !shape_graph.has_anchor(&position) {
                 let shape = shape_for_executable_input(world, ty, &demand, facts, Some(position.clone()));
                 shape_graph.anchor(position, shape);
-                anchored_function_inputs.insert(function_input);
             }
         }
     }
@@ -2357,11 +2346,32 @@ fn block_param_codegen_repr_for_lane(world: &World<'_>, lane: LaneId) -> Codegen
     }
 }
 
-type ExecutableSortKey = (u32, Vec<Ty>, u8, usize);
-type CodegenSeamFactSortKey = (u8, ExecutableSortKey, u32, u32, usize, u32, u8);
+// The EXECUTABLE VISITATION key (`executable_sort_key`) is a CANONICAL STRUCTURAL
+// render of its input types (`Vec<String>`), not the raw interned `Ty(u32)` ids.
+// The upstream type fixpoint mints `Ty` ids in process-hash-dependent order, so a
+// raw-id key would sort same-function specializations differently per run — and
+// that visitation order drives the non-monotone anchor/union gate in
+// `collect_executable_input_constraints`, which is the schedule-dependent source
+// of the transport.rs shape-anchor panic. A structural render is a pure function
+// of input STRUCTURE: total, deterministic, and interning-order-free.
+//
+// The fact-OUTPUT keys below (`executable_symbol_sort_key` etc.) stay raw-`Ty`
+// keyed: they order published resolution/codegen-seam lists, not the union
+// ladder, and within one plan the `Ty` ids are stable — re-keying them on the
+// structural render reorders which resolution a boundary picks for its return
+// lane, which is a layout regression, not a determinism fix.
+type ExecutableSortKey = (u32, Vec<String>, u8, usize);
+type ExecutableSymbolSortKey = (u32, Vec<Ty>, u8, usize);
+type CodegenSeamFactSortKey = (u8, ExecutableSymbolSortKey, u32, u32, usize, u32, u8);
 
-fn empty_executable_sort_key() -> ExecutableSortKey {
+fn empty_executable_symbol_sort_key() -> ExecutableSymbolSortKey {
     (0, Vec::new(), 0, 0)
+}
+
+/// Canonical structural render of an input type vector — the schedule-free
+/// projection used as the executable visitation secondary sort key.
+fn input_structure_key(inputs: &[Ty], types: &Types) -> Vec<String> {
+    inputs.iter().map(|ty| types.display(ty)).collect()
 }
 
 fn codegen_seam_fact_sort_key(fact: &CodegenSeamFact) -> CodegenSeamFactSortKey {
@@ -2399,9 +2409,11 @@ fn codegen_seam_fact_sort_key(fact: &CodegenSeamFact) -> CodegenSeamFactSortKey 
             0,
             callsite.as_u32() as usize,
         ),
-        CodegenSeam::CallableBoundary { boundary } => (6, empty_executable_sort_key(), boundary.as_u32(), 0, 0),
+        CodegenSeam::CallableBoundary { boundary } => (6, empty_executable_symbol_sort_key(), boundary.as_u32(), 0, 0),
         CodegenSeam::ExternBoundary { executable } => (7, executable_symbol_sort_key(executable), 0, 0, 0),
-        CodegenSeam::FirstClassPublication { boundary } => (8, empty_executable_sort_key(), boundary.as_u32(), 0, 0),
+        CodegenSeam::FirstClassPublication { boundary } => {
+            (8, empty_executable_symbol_sort_key(), boundary.as_u32(), 0, 0)
+        }
     };
     let repr = match fact.repr {
         CodegenLaneRepr::ValueRef => 0,
@@ -2419,7 +2431,7 @@ fn executable_sort_key(executable: &ExecutableKey, types: &Types) -> ExecutableS
     };
     (
         executable.activation.function.as_u32(),
-        executable.activation.inputs(types),
+        input_structure_key(&executable.activation.inputs(types), types),
         need.0,
         need.1,
     )
@@ -2435,7 +2447,7 @@ fn executable_symbol(executable: &ExecutableKey, types: &Types) -> ExecutableSym
     }
 }
 
-fn executable_symbol_sort_key(symbol: &ExecutableSymbol) -> ExecutableSortKey {
+fn executable_symbol_sort_key(symbol: &ExecutableSymbol) -> ExecutableSymbolSortKey {
     let need = match symbol.need {
         ExecutableNeed::Value => (0, 0),
         ExecutableNeed::TupleFields(arity) => (1, arity),
@@ -2448,7 +2460,7 @@ fn executable_symbol_sort_key(symbol: &ExecutableSymbol) -> ExecutableSortKey {
     )
 }
 
-fn callable_direct_edge_sort_key(edge: &CallableDirectEdge) -> (Vec<Ty>, ExecutableSortKey) {
+fn callable_direct_edge_sort_key(edge: &CallableDirectEdge) -> (Vec<Ty>, ExecutableSymbolSortKey) {
     (
         edge.surface_inputs.to_vec(),
         executable_symbol_sort_key(&edge.resolution),
