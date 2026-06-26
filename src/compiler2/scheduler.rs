@@ -86,6 +86,7 @@ where
     pub fn is_waited(&self, fact: &F) -> bool {
         !self.deps.waiters(&FactUse::current(fact.clone())).is_empty()
             || !self.deps.waiters(&FactUse::settled(fact.clone())).is_empty()
+            || !self.deps.waiters(&FactUse::settled_presence(fact.clone())).is_empty()
     }
 
     pub fn has_unresolved(&self) -> bool {
@@ -184,9 +185,27 @@ where
                     &mut coalesced,
                     &mut coalesced_seen,
                 );
+                if change.readiness_changed() {
+                    self.enqueue_dependents(
+                        FactUse::settled_presence(change.key.clone()),
+                        false,
+                        &mut pending_changes,
+                        &mut enqueued,
+                        &mut coalesced,
+                        &mut coalesced_seen,
+                    );
+                }
             } else if change.readiness_changed() {
                 self.enqueue_dependents(
                     FactUse::settled(change.key.clone()),
+                    false,
+                    &mut pending_changes,
+                    &mut enqueued,
+                    &mut coalesced,
+                    &mut coalesced_seen,
+                );
+                self.enqueue_dependents(
+                    FactUse::settled_presence(change.key.clone()),
                     false,
                     &mut pending_changes,
                     &mut enqueued,

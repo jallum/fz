@@ -20,6 +20,7 @@ pub trait ClaimShape {
 pub enum FactUse<F> {
     Current(F),
     Settled(F),
+    SettledPresence(F),
 }
 
 impl<F> FactUse<F> {
@@ -31,22 +32,26 @@ impl<F> FactUse<F> {
         Self::Settled(fact)
     }
 
+    pub fn settled_presence(fact: F) -> Self {
+        Self::SettledPresence(fact)
+    }
+
     pub fn fact(&self) -> &F {
         match self {
-            Self::Current(fact) | Self::Settled(fact) => fact,
+            Self::Current(fact) | Self::Settled(fact) | Self::SettledPresence(fact) => fact,
         }
     }
 
     pub fn into_fact(self) -> F {
         match self {
-            Self::Current(fact) | Self::Settled(fact) => fact,
+            Self::Current(fact) | Self::Settled(fact) | Self::SettledPresence(fact) => fact,
         }
     }
 
     pub fn readiness(&self) -> FactReadiness {
         match self {
             Self::Current(_) => FactReadiness::Current,
-            Self::Settled(_) => FactReadiness::Settled,
+            Self::Settled(_) | Self::SettledPresence(_) => FactReadiness::Settled,
         }
     }
 }
@@ -145,7 +150,7 @@ where
     pub fn satisfies(&self, fact_use: &FactUse<F>) -> bool {
         match fact_use {
             FactUse::Current(key) => self.revision(key).is_some(),
-            FactUse::Settled(key) => self.is_settled(key),
+            FactUse::Settled(key) | FactUse::SettledPresence(key) => self.is_settled(key),
         }
     }
 

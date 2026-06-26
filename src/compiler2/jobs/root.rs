@@ -7,6 +7,7 @@ use crate::diag::driver::emit_through;
 use crate::source::Span;
 
 use super::super::drive::{FactKey, Job, JobEffects, settled_uses};
+use super::super::facts::FactUse;
 use super::super::identity::{ActivationKey, ExecutableKey, ExecutableNeed, RootId, RootKind};
 use super::super::scheduler::FatalError;
 use super::super::semantic::{CallSiteKey, RuntimeDemand, SelectedCallee, SemanticClosure};
@@ -135,6 +136,8 @@ pub(super) fn seal_semantic_closure(world: &mut World<'_>, root_id: RootId) -> R
     let root = world.root_entry(root_id);
     let mut reads = Vec::new();
     let mut waits = HashSet::new();
+    let mut presence_reads = Vec::new();
+    let mut presence_waits = HashSet::new();
     let mut follow_up = HashSet::new();
     let mut outputs = Vec::new();
     let mut changed = Vec::new();
@@ -216,7 +219,7 @@ pub(super) fn seal_semantic_closure(world: &mut World<'_>, root_id: RootId) -> R
             // merely-present analysis may be a half-built snapshot. Settledness
             // is the freshness marker.
             let analyzed_fact = FactKey::ActivationAnalyzed(activation.clone());
-            if !read_fact(world, analyzed_fact, &mut reads, &mut waits) {
+            if !read_presence(world, analyzed_fact, &mut presence_reads, &mut presence_waits) {
                 follow_up.insert(Job::AnalyzeActivation(activation.clone()));
                 continue;
             }
@@ -226,13 +229,13 @@ pub(super) fn seal_semantic_closure(world: &mut World<'_>, root_id: RootId) -> R
                 .clone();
 
             let return_fact = FactKey::ReturnType(activation.clone());
-            if !read_fact(world, return_fact, &mut reads, &mut waits) {
+            if !read_presence(world, return_fact, &mut presence_reads, &mut presence_waits) {
                 follow_up.insert(Job::AnalyzeActivation(activation.clone()));
                 continue;
             }
 
             let lowered_fact = FactKey::LoweredBody(activation.function);
-            if !read_fact(world, lowered_fact.clone(), &mut reads, &mut waits) {
+            if !read_presence(world, lowered_fact.clone(), &mut presence_reads, &mut presence_waits) {
                 follow_up.insert(Job::LowerFunction(activation.function));
                 continue;
             }
@@ -295,17 +298,17 @@ pub(super) fn seal_semantic_closure(world: &mut World<'_>, root_id: RootId) -> R
             }
         }
 
-        if !waits.is_empty() {
+        if !waits.is_empty() || !presence_waits.is_empty() {
             break;
         }
 
         runtime_demands.clear();
         for executable in &executables {
-            if !read_fact(
+            if !read_presence(
                 world,
                 FactKey::RuntimeDemand(executable.clone()),
-                &mut reads,
-                &mut waits,
+                &mut presence_reads,
+                &mut presence_waits,
             ) {
                 follow_up.insert(Job::DeriveRuntimeDemand(executable.clone()));
                 continue;
@@ -316,7 +319,7 @@ pub(super) fn seal_semantic_closure(world: &mut World<'_>, root_id: RootId) -> R
                 .expect("settled runtime-demand fact should have a readable payload");
             runtime_demands.insert(executable.clone(), demand);
         }
-        if !waits.is_empty() {
+        if !waits.is_empty() || !presence_waits.is_empty() {
             break;
         }
 
@@ -339,7 +342,7 @@ pub(super) fn seal_semantic_closure(world: &mut World<'_>, root_id: RootId) -> R
 
     outputs.extend(executables.iter().cloned().map(FactKey::Executable));
 
-    if waits.is_empty() {
+    if waits.is_empty() && presence_waits.is_empty() {
         let semantic_ready_fact = FactKey::SemanticReady(root_id);
         outputs.push(semantic_ready_fact.clone());
         let semantic_closed_fact = FactKey::SemanticClosed(root_id);
@@ -365,8 +368,8 @@ pub(super) fn seal_semantic_closure(world: &mut World<'_>, root_id: RootId) -> R
     }
 
     Ok(JobEffects {
-        reads: settled_uses(reads),
-        waits: settled_uses(waits),
+        reads: settled_uses(reads).into_iter().chain(presence_reads).collect(),
+        waits: settled_uses(waits).into_iter().chain(presence_waits).collect(),
         outputs,
         changed,
         follow_up: follow_up.into_iter().collect(),
@@ -380,6 +383,22 @@ fn read_fact(world: &World<'_>, fact: FactKey, reads: &mut Vec<FactKey>, waits: 
         true
     } else {
         waits.insert(fact);
+        false
+    }
+}
+
+fn read_presence(
+    world: &World<'_>,
+    fact: FactKey,
+    reads: &mut Vec<FactUse<FactKey>>,
+    waits: &mut HashSet<FactUse<FactKey>>,
+) -> bool {
+    let fact_use = FactUse::settled_presence(fact);
+    if world.fact_is_settled(fact_use.fact()) {
+        reads.push(fact_use);
+        true
+    } else {
+        waits.insert(fact_use);
         false
     }
 }

@@ -20,6 +20,10 @@ fn settled(fact: &'static str) -> FactUse<&'static str> {
     FactUse::settled(fact)
 }
 
+fn settled_presence(fact: &'static str) -> FactUse<&'static str> {
+    FactUse::settled_presence(fact)
+}
+
 fn complete(
     scheduler: &mut TestScheduler,
     job: u32,
@@ -30,6 +34,61 @@ fn complete(
     follow_up: Vec<u32>,
 ) -> AppliedStep<u32, &'static str> {
     scheduler.complete(&job, reads, waits, outputs, changed, follow_up)
+}
+
+#[test]
+fn compiler2_scheduler_settled_presence_ignores_content_revision_bumps() {
+    let mut scheduler = TestScheduler::new();
+    let producer = 1_u32;
+    let waiter = 2_u32;
+
+    complete(
+        &mut scheduler,
+        waiter,
+        HashSet::new(),
+        HashSet::from([settled_presence("summary")]),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    );
+    let appeared = complete(
+        &mut scheduler,
+        producer,
+        HashSet::new(),
+        HashSet::new(),
+        vec!["summary"],
+        vec!["summary"],
+        Vec::new(),
+    );
+    assert_eq!(
+        appeared.enqueued,
+        vec![waiter],
+        "settled-presence waiters should wake when the fact first settles",
+    );
+    let _ = scheduler.pop();
+    complete(
+        &mut scheduler,
+        waiter,
+        HashSet::from([settled_presence("summary")]),
+        HashSet::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    );
+
+    let moved = complete(
+        &mut scheduler,
+        producer,
+        HashSet::new(),
+        HashSet::new(),
+        vec!["summary"],
+        vec!["summary"],
+        Vec::new(),
+    );
+    assert!(
+        !moved.enqueued.contains(&waiter),
+        "settled-presence readers are readiness subscribers, not content subscribers",
+    );
 }
 
 #[test]

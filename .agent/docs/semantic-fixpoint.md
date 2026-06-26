@@ -105,7 +105,8 @@ semantic targets.
 ## The seal job now consumes settled facts
 
 `SealSemanticClosure(root)` no longer carries its own freshness machinery. It
-waits on and reads **settled** semantic prerequisites, assembles the reachable
+uses settled-presence waits for type-bearing prerequisites, reads
+`CallSiteTargets` as the stable membership signal, assembles the reachable
 activation/executable set, and publishes `SemanticClosed(root)` when that set is
 clean. There is no `DependencySnapshot`, no `semantic_closure_is_current`, and
 no manual revision polling.
