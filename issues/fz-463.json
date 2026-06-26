@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-26T20:23:37Z",
+  "description": "Rip out SealSemanticClosure as a recomputing whole-closure monolith. Post-fz-f98.14.10 the sealed closure (membership+demands) converges to just 3 distinct values across the entire 00420 (enum_take_drop_split) drive, yet the seal fires ~329x to recompute a full-closure BFS that differs only 3x. The seal is now a pure WAKE-AMPLIFIER, not a re-discoverer of semantics (northstar: the seal must be read-only).\n\nROOT CAUSE (spike affba333, validated vs HEAD 497dc2d43): the seal reads CallSiteSummary to learn callee TARGETS (callee+activation), but CallSiteSummary's single revision bumps on ANY field change incl. the ascending surface_inputs/return_ty Tys (semantic.rs:55-57). Membership depends only on targets[*].callee+activation (stable -\u003e 3 closure changes), but the fact's one revision FALSE-SHARES type-ascent with membership identity. That false-sharing is the ~270-fire wake-storm. This is exactly what fz-f98.14.1 predicted ('membership and type-value are fused in ActivationKey.arrow + bundled CallSiteSummary; needs a membership signal split out of the type-bearing facts'). fz-f98.14.10 fixed the ActivationKey.arrow half; the CallSiteSummary bundling is the remaining half. Same identity/layout-split philosophy as ShapeId + addressed-arrow.\n\nBaseline numbers (HEAD 14.10.4, 00420, --test-threads=1): seal fires ~329 (269-332 by schedule); total jobs ~4965; callsite.defined re-derive 4881 / CHANGED 945; activation_analysis CHANGED 839; return_type CHANGED 369; semantic_closed re-derive 3 / CHANGED 3; runtime_demand.defined 3. The convergence non-monotonicity (fires vary 269-332 across schedules) is the residual blocker the split kills.\n\nVERDICT: the seal can be strangled to nothing, gated on one keystone (seal.3 CallSiteTargets split). seal.1+seal.2 are bankable immediately (already proven green in spike: +6 LoC, 934/0 lib tests, still Resolved, still 3 closure changes). Supersedes the twice-refuted-as-scoped fz-f98.14.1.",
+  "id": "fz-463",
+  "labels": [],
+  "priority": 1,
+  "status": "open",
+  "title": "[EPIC] Compiler2: strangle the semantic seal — frontier-driven membership, no whole-closure recompute",
+  "type": "bug",
+  "updated_at": "2026-06-26T20:23:37Z"
+}
