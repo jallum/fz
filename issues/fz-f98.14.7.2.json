@@ -2,6 +2,7 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-06-26T09:40:39Z",
   "created": "2026-06-26T02:10:19Z",
   "description": "Un-masked by the 14.7 de-widening. convergence_class-\u003efun_top served DOUBLE DUTY: widened the acc AND converged the recursive frontier. Keeping the callable evidence resolvable (14.7) removes the frontier convergence on that slot, so FunctionId(68)'s acc input fragments into distinct activations ([Ty31,Ty92],[Ty31,Ty306],[Ty31,Ty327],[Ty31,Ty949]) whose transport shape anchors disagree for one connected position component (transport.rs:338 assertion; also where 00420 now panics before the seal). = [[shapeid_is_pure_layout]] / addressed-arrow territory: a connected component must agree on layout ShapeId. Need to converge the frontier (or correctly group the component) without re-widening the resolvable reducer to fun_top. Reds: transport_plan_preserves_nested_enum_reduce_predicate_capture_shape, opaque_fn_value_join::build. Deeper than Gap A.",
   "id": "fz-f98.14.7.2",
@@ -14,8 +15,8 @@
     }
   ],
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Transport: converge the resolvable-callable recursive frontier without re-widening to fun_top (shape-anchor disagreement)",
   "type": "bug",
-  "updated_at": "2026-06-26T08:38:25Z"
+  "updated_at": "2026-06-26T09:40:39Z"
 }
