@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-26T09:53:09Z",
+  "description": "compiler2_productive_deepening_terminates_by_widening (drive_test.rs ~12245: deep(n)=[deep(n-1)] divergent ascent must terminate via widening) TIMES OUT in the lib suite (nextest kills at ~16s) and has across this whole arc — pre-existing, predates fz-f98.14.x. Likely a widening-termination / return-widening-budget convergence issue. Distinct from the reduce-bridge work. Triage: is widening firing? does it eventually terminate (slow) or genuinely loop?",
+  "id": "fz-f98.14.9",
+  "labels": [],
+  "parent": "fz-f98.14",
+  "priority": 2,
+  "status": "open",
+  "title": "productive_deepening_terminates_by_widening times out (lib suite, ~16s+)",
+  "type": "bug",
+  "updated_at": "2026-06-26T09:53:09Z"
+}
