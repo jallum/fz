@@ -10,9 +10,15 @@
   "id": "fz-f98.14.10",
   "labels": [],
   "parent": "fz-f98.14",
+  "comments": [
+    {
+      "text": "transport.rs:338 residual — HOW the order causes it, PROVEN (spike ad3e97b, pass-vs-panic rendered). NON-MONOTONE graph construction. FunctionId(68) value3 has FOUR genuinely-distinct Callable layouts (capture_shapes [15]/[16]/[17]/[28] -\u003e ShapeIds 32/33/34/35; structurally identical across runs — NOT order-variant internings). PASS run: 4 distinct union-find roots (separate components, meet consistent). PANIC run: 1 shared root (fused, agree-or-panic fires). The chain: (1) collect_executable_input_constraints decides anchor-own vs equal-union per input position, gated by STATEFUL accumulator anchored_function_inputs keyed (function, semantic_index) — NOT including evidence types — so the first-visited specialization sets the flag and forces layout-distinct siblings down a different branch; (2) visitation = executables.sort_by_key(executable_sort_key) where executable_sort_key = (function, activation.inputs() Vec\u003cTy\u003e, need), and Vec\u003cTy\u003e sorts on RAW interned Ty id (Ty(u32) Ord); (3) those ids are minted by the upstream type fixpoint in PROCESS-HASH-DEPENDENT order (Ty93/322/349/1005 vs Ty93/324/347/998 — same logical types, diff ids). Volatile ids -\u003e volatile sort -\u003e volatile first-visited -\u003e volatile gate sequence -\u003e the union-ladder's 'canonical executable-sort order' assumption is VIOLATED -\u003e non-monotone graph -\u003e flaky panic. The agree-or-panic meet (transport.rs:338) is the CORRECT invariant; the bug is the non-canonical input feeding it. FIX (two coupled): (1) executable_sort_key must sort on an ORDER-STABLE structural/canonical projection of inputs, not raw Ty id; (2) the anchor-vs-union decision must be a PURE per-position function (\u003e=2 layout-distinct resolved surfaces converging on one input -\u003e all anchor own shape, never union) not a stateful (function, semantic_index) accumulator. (1) restores schedule-independence; (2) guarantees correctness (distinct layouts never fused). This is the last piece — the 2 HEAD reds (enum_reduce_runtime_graph, take_positive_reduce_while) are this.",
+      "timestamp": "2026-06-26T17:24:12Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "Separate activation-key convergence-identity from transport-layout-identity",
   "type": "bug",
-  "updated_at": "2026-06-26T17:00:11Z"
+  "updated_at": "2026-06-26T17:24:12Z"
 }
