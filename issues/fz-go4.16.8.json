@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-26T23:44:30Z",
+  "description": "Goal\nProve the product path removes churn and preserves behavior on fixtures2/00181_enum_reduce_operator_ref.fz.\n\nRequired proof\n- Run current no-dump baseline and product-path no-dump telemetry with --log-telemetry.\n- Use targeted dumps for types, activations, backend, and product shape inspection. Avoid fnir unless intentionally testing native because fnir pulls native lowering.\n- Compare product-path telemetry against the plan baseline: current branch no-dump interp is 378 job fires, 174 unique jobs; old ../survey.html baseline was 497 job fires with 86 SealSemanticClosure jobs total.\n- Product path must show SealSemanticClosure=0, DeriveTransportPlan=0, MaterializeRoot=0, DeriveAbiReady=0, DeriveEmissionReady=0, follow_ups=0, root_scans=0.\n- Product path must preserve main/0[] =\u003e {int, int}, two Enum.reduce callsites returning int, direct Kernel.+/2 arity-2 callable facts, no boundary ids, and integer tuple return lanes.\n\nSignal\nA checked-in test or telemetry post-processing assertion proves reduced churn and forbidden-job absence for the product path.\n\nRemoval target\nIdentify any temporary compatibility scaffolding that must be deleted in the next ticket. If new scaffolding cannot be removed immediately, create and link a cleanup ticket before closing this one.\n\nVerification\ncargo run --quiet --bin fz2 -- --log-telemetry /tmp/fz00181_pull.jsonl interp fixtures2/00181_enum_reduce_operator_ref.fz; targeted dump command from ../pull-based.html; focused regression tests.",
+  "id": "fz-go4.16.8",
+  "labels": [],
+  "parent": "fz-go4.16",
+  "priority": 1,
+  "status": "open",
+  "title": "Pull path: prove fixture 00181 with telemetry and dumps",
+  "type": "task",
+  "updated_at": "2026-06-26T23:44:30Z"
+}
