@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-go4.16.8"
+  ],
   "blocks": [],
   "created": "2026-06-26T23:44:31Z",
   "description": "Goal\nRemove the legacy production path after product-path parity and telemetry proof are complete.\n\nRequired removals\n- Delete production dependency on SealSemanticClosure, SemanticReady, and SemanticClosed from the backend path.\n- Delete production use of root_executable_frontier(root). Keep no hidden helper that scans root/world collections for executable inclusion.\n- Delete production DeriveTransportPlan(root) and TransportPlan(root) dependency from artifact/backend path.\n- Delete root MaterializedProgram, AbiReadyProgram, and EmissionReadyProgram as required intermediates for interpreter backend output.\n- Delete settle_effects(root).\n- Delete or quarantine tests that assert old job names instead of product contracts.\n- Remove temporary feature flags or dual-path shims introduced by earlier tickets.\n\nSignal\nTests pass without the old jobs on the product-backed path. rg for the removed concepts shows no production dependency except explicitly marked legacy/test references that are justified or scheduled for removal.\n\nVerification\ncargo fmt --all; cargo clippy --workspace --all-targets -- -D warnings; focused compiler2 product-path tests; cargo test --workspace unless an open ticket documents unrelated red surface.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Pull path: delete legacy semantic and root artifact dependencies",
   "type": "task",
-  "updated_at": "2026-06-26T23:44:31Z"
+  "updated_at": "2026-06-26T23:44:45Z"
 }
