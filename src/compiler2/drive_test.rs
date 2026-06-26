@@ -4415,7 +4415,6 @@ fn compiler2_native_program_keeps_direct_only_enum_reduce_out_of_callable_invent
 }
 
 #[test]
-#[ignore = "red-worklist fz-f98.14.7.2: transport multi-producer convergence, exposed by the provably-correct reducer de-widening (fz-f98.14.7); re-enable when 14.7.2 lands"]
 fn compiler2_native_program_keeps_distinct_direct_callable_executables_for_same_surface_when_capture_identity_differs()
 {
     let tel = ConfiguredTelemetry::new();
@@ -6630,8 +6629,8 @@ end
     );
 }
 
+#[ignore = "red-worklist fz-f98.14.7.2-residual: the transport multi-producer convergence is fixed (LowerNativeProgram now resolves for this fixture), but the delivered-call adapter shape differs from this test's hardcoded expectation — the generated deliver_lanes__ continuation carries extra_params:2 with param_reprs [RawAtom, RawInt, ValueRef] rather than the asserted extra_params:3 / [RawAtom, ValueRef, RawInt]. This is a native-codegen split-return lane-decomposition contract, a distinct arc from transport multi-producer convergence; re-ticket as fz-f98.14.7.2.1 (verify whether the new adapter shape is correct-and-the-assertion-is-stale, or a real lane-order/arity regression)"]
 #[test]
-#[ignore = "red-worklist fz-f98.14.7.2: transport multi-producer convergence, exposed by the provably-correct reducer de-widening (fz-f98.14.7); re-enable when 14.7.2 lands"]
 fn compiler2_native_program_adapts_delivered_calls_from_callee_return_lanes() {
     let tel = ConfiguredTelemetry::new();
     let native = NativeProgramCapture::new();
@@ -6681,7 +6680,6 @@ fn compiler2_native_program_adapts_delivered_calls_from_callee_return_lanes() {
 }
 
 #[test]
-#[ignore = "red-worklist fz-f98.14.7.2: transport multi-producer convergence, exposed by the provably-correct reducer de-widening (fz-f98.14.7); re-enable when 14.7.2 lands"]
 fn compiler2_native_program_carries_published_callable_boundary_targets_into_closure_calls() {
     let tel = ConfiguredTelemetry::new();
     let native = NativeProgramCapture::new();
@@ -7510,8 +7508,8 @@ fn compiler2_membership_operator_protocol_receivers_settle_to_direct_impls() {
     );
 }
 
+#[ignore = "red-worklist fz-f98.14.7.2-residual: this is a SemanticClosed activation-frontier test (partition/4 settles to 3 keys, asserts 1) and reproduces IDENTICALLY with the fz-f98.14.7.2 transport/native fixes reverted — it is a semantic over-specialization exposed by the fz-f98.14.7 de-widening, upstream of transport and unrelated to multi-producer convergence; re-ticket as fz-f98.14.7.2.2 (collapse the recursive list-family partition/4 keys in activation keying, cf. fz-y6w)"]
 #[test]
-#[ignore = "red-worklist fz-f98.14.7.2: transport multi-producer convergence, exposed by the provably-correct reducer de-widening (fz-f98.14.7); re-enable when 14.7.2 lands"]
 fn compiler2_quicksort_root_closes_with_a_finite_recursive_frontier() {
     let tel = ConfiguredTelemetry::new();
     let semantic = SemanticClosedCapture::new();

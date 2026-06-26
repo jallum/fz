@@ -2224,11 +2224,10 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
             published
                 .iter()
                 .copied()
-                .filter_map(|boundary| {
-                    self.native_boundary_for_transport_boundary(boundary, function, descr.capture_lanes.len())
-                        .transpose()
+                .flat_map(|boundary| {
+                    self.native_boundaries_for_transport_boundary(boundary, function, descr.capture_lanes.len())
                 })
-                .collect::<Result<Vec<_>, _>>()?
+                .collect::<Vec<_>>()
         } else {
             self.callable_boundaries
                 .iter()
@@ -2964,14 +2963,20 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
         }
     }
 
-    fn native_boundary_for_transport_boundary(
+    /// Every native callable boundary that materializes `(boundary, function,
+    /// capture_count)`. A single published transport boundary legitimately pools
+    /// several resolutions of one callable identity — the same reducer specialized
+    /// over distinct arrow types interns identical native boundaries that differ
+    /// only by their (type-content) target activation. They are layout-identical,
+    /// so the caller collapses them through `select_inhabited_callable_boundary`
+    /// rather than treating the multiplicity as an error.
+    fn native_boundaries_for_transport_boundary(
         &self,
         boundary: BoundaryId,
         function: FunctionId,
         capture_count: usize,
-    ) -> Result<Option<NativeCallableBoundaryId>, FatalError> {
-        let matched = self
-            .callable_boundaries
+    ) -> Vec<NativeCallableBoundaryId> {
+        self.callable_boundaries
             .iter()
             .filter(|candidate| {
                 candidate.boundary == boundary
@@ -2979,18 +2984,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                     && candidate.capture_count == capture_count
             })
             .map(NativeCallableBoundary::id)
-            .collect::<Vec<_>>();
-        match matched.as_slice() {
-            [boundary] => Ok(Some(*boundary)),
-            [] => Ok(None),
-            _ => Err(incomplete_native_program(
-                self.world,
-                self.root_id,
-                format!(
-                    "native callable materialization for {function:?}/{capture_count} matched multiple native boundaries {matched:?} for published transport boundary {boundary:?}",
-                ),
-            )),
-        }
+            .collect()
     }
 
     fn native_origin_debug(&self, origin: &NativeBodyOrigin) -> String {
@@ -3029,11 +3023,8 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
         let matched = published
             .iter()
             .copied()
-            .filter_map(|boundary| {
-                self.native_boundary_for_transport_boundary(boundary, function, capture_count)
-                    .transpose()
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+            .flat_map(|boundary| self.native_boundaries_for_transport_boundary(boundary, function, capture_count))
+            .collect::<Vec<_>>();
         match self.select_inhabited_callable_boundary(&matched) {
             Ok(boundary) => Ok(boundary),
             Err(()) => Ok(self.deterministic_callable_boundary_fallback(&matched)),
@@ -3303,9 +3294,18 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                 })?;
                 let capture_count = descr.capture_lanes.len();
                 let identity = self.callable_identity(function, capture_count);
+                // A direct-only resolved callable carries no published boundary by
+                // construction (transport keeps `boundary_ids` empty for a capture
+                // that is only ever called at its known surface). Its value still
+                // materializes to a real closure/fn-ref; the call site resolves the
+                // dispatch target directly (`indirect_closure_call_target_hint`),
+                // so we attach a boundary only when transport actually minted one.
                 let boundary = match boundary {
-                    Some(boundary) => boundary,
-                    None => self.settled_callable_boundary(callable, shape, &ctx.origin)?,
+                    Some(boundary) => Some(boundary),
+                    None if self.callable_has_boundaries(callable) => {
+                        Some(self.settled_callable_boundary(callable, shape, &ctx.origin)?)
+                    }
+                    None => None,
                 };
                 let prim = if lanes.is_empty() {
                     Prim::MakeFnRef(ctx.fresh_callsite(), identity)
@@ -3313,7 +3313,9 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                     Prim::MakeClosure(ctx.fresh_callsite(), identity, lanes.to_vec())
                 };
                 let (var, _) = ctx.emit_let(prim);
-                ctx.callable_value_boundaries.insert(var, boundary);
+                if let Some(boundary) = boundary {
+                    ctx.callable_value_boundaries.insert(var, boundary);
+                }
                 Ok(var)
             }
         }

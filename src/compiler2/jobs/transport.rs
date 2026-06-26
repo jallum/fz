@@ -1889,12 +1889,26 @@ fn collect_executable_input_constraints(
                     let shape = shape_for_executable_input(world, ty, &demand, facts, Some(position.clone()));
                     shape_graph.anchor(position, shape);
                     anchored_function_inputs.insert(function_input);
-                } else if !shape_graph.has_anchor(&position) && !anchored_function_inputs.contains(&function_input) {
+                } else if !shape_graph.has_anchor(&position)
+                    && !anchored_function_inputs.contains(&function_input)
+                    && demand.callable.resolved.len() <= 1
+                {
+                    // Union the input with its incoming call args only when at most
+                    // one resolved direct surface converges here: a single identity
+                    // (or none) cannot fuse layout-distinct callables. When two or
+                    // more distinct resolved surfaces meet at one direct callable
+                    // input (e.g. two `find_index` predicates sharing the reduce
+                    // machinery), unioning would collapse their layout-distinct
+                    // capture shapes into one anchor component, so they fall through
+                    // to their own projected input shape instead. A joined opaque
+                    // value carries one resolved surface (its box) and still unions.
                     for call_arg in incoming {
                         shape_graph.equal(position.clone(), call_arg);
                     }
                 } else if !shape_graph.has_anchor(&position) {
-                    let shape = shape_for_executable_input(world, ty, &demand, facts, Some(position.clone()));
+                    let shape = projected_callable_input_shape.unwrap_or_else(|| {
+                        shape_for_executable_input(world, ty, &demand, facts, Some(position.clone()))
+                    });
                     shape_graph.anchor(position, shape);
                     anchored_function_inputs.insert(function_input);
                 }
