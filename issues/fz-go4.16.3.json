@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-26T23:44:28Z",
+  "description": "Goal\nCreate product producers for local semantic/runtime-demand information without reusing DeriveRuntimeDemand as a job or recreating SemanticClosed under a new name.\n\nRequired shape\n- Extract reusable local helper logic from DeriveRuntimeDemand into product-safe functions.\n- RuntimeDemandProduct(E) reads only the facts/products needed for E and returns a demanded-value product plus named product waits for callees/callable targets.\n- OutgoingInputEdgesProduct(E) records caller-owned outgoing call-argument and callable-capture edges into PullSession.\n- Direct callable demand for operator refs stays direct; escaped or opaque callable demand remains explicit when actually demanded.\n- Recursive demand behavior must use monotone per-product/SCC-local convergence, not root iteration over all runtime-demand facts.\n\nSignal\nFor fixtures2/00181_enum_reduce_operator_ref.fz, the product path reports direct callable reducer demand for Kernel.+/2, no first-class callable boundary demand, and the same public callsite types as the current activations dump.\n\nRemoval target\nNew path does not call Job::DeriveRuntimeDemand or SealSemanticClosure. Existing jobs may remain only for the legacy path until the final deletion tickets.\n\nVerification\nTargeted unit/product tests for direct lambda/operator callable demand; no-dump telemetry for 00181 with product events; existing compiler2 runtime-demand tests remain green.",
+  "id": "fz-go4.16.3",
+  "labels": [],
+  "parent": "fz-go4.16",
+  "priority": 1,
+  "status": "open",
+  "title": "Pull path: port semantic and runtime-demand helpers into products",
+  "type": "task",
+  "updated_at": "2026-06-26T23:44:28Z"
+}
