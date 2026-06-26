@@ -9,9 +9,15 @@
   "id": "fz-463.6",
   "labels": [],
   "parent": "fz-463",
+  "comments": [
+    {
+      "text": "Closed for this arc as a reduction rather than a deletion. The .1-.5 work is banked in fz-go4-ownership-boundary-audit at a705cec2e. A clean .5 survey run on fixtures2/00181_enum_reduce_operator_ref.fz produced 378 job starts with 32 SealSemanticClosure starts. A prototype SealSemanticClosure deletion without first splitting the whole-root TransportPlan(root)/MaterializedProgram(root) boundary produced 809 job starts and failed backend execution with compiler2_unreachable_control, moving churn into AnalyzeActivation, SeedActivation, DeriveRuntimeDemand, and DeriveTransportPlan. Conclusion: do not replace the seal with another root inventory/frontier/accounting mechanism. The next deletion attempt needs a precursor that splits the root artifact fan-in into exact per-executable pulls.",
+      "timestamp": "2026-06-26T22:44:00Z"
+    }
+  ],
   "priority": 1,
   "status": "in_progress",
   "title": "Delete SemanticClosure/define_semantic_closure/SealSemanticClosure; flip RED gate to GREEN",
   "type": "bug",
-  "updated_at": "2026-06-26T21:35:40Z"
+  "updated_at": "2026-06-26T22:44:00Z"
 }
