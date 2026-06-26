@@ -7,9 +7,15 @@
   "id": "fz-f98.14.10.3",
   "labels": [],
   "parent": "fz-f98.14.10",
+  "comments": [
+    {
+      "text": "FULLY MAPPED (spike agent a8f27e8 + isolation follow-up). DIVERGENCE (rendered, FunctionId(185) reduce_while/take reducer): analyzer key has variant-union element address a1_1_0_e; the seal waits on a1_u0_1_0_e (spurious Variant(u0) step) -\u003e never matches -\u003e SemanticClosed never seals -\u003e 6 enum-reduce-multi-surface stalls. ROOT: an ADDRESSING INCONSISTENCY between P1's convergence_class_at (walks pure_tuple with Field(j) ONLY, no Variant step) and the canonical address_remap (inserts Variant(k) for \u003e1-alternative tuples via discriminate_tuple_alternatives). define_callsite_summary (world.rs:1085) realpha_inputs re-addresses the convergence key; address_vars_at re-mints the existing var in the Variant-aware frame -\u003e a1_1_0_e drifts to a1_u0_1_0_e. TWO FIXES: (A, tested) make address_remap PRESERVE existing ADDRESS_TAG vars (don't re-address) -\u003e both sides a1_1_0_e, clears 5/6 stalls -- BUT a1_1_0_e is NON-CANONICAL (lacks the Variant disambiguator) and transport derives layout expecting the canonical Variant-aware address, so (A) is a paper-over that interacts badly with the enum-reduce transport path. (B, UNTESTED, likely-correct) make convergence_class_at address tuple variants the SAME way address_remap does (insert the Variant step) -\u003e both sides a1_u0_1_0_e, canonical + transport-consistent, no re-addressing disabled. TEST (B) NEXT. RESIDUAL after the stall clears: a SEPARATE transport-shape problem (non-recursive FunctionId(68): 4 evidence-distinct executables [Ty32,Ty93/316/336/966] forced into one position-component -\u003e flaky transport.rs:338 shape-anchor; HashMap-iteration nondeterminism). NOTE: branch HEAD moved to d42413dfa (fz-5md 'park waiters until full wait set satisfies'), which itself perturbed the enum-reduce family (take_positive + enum_reduce_runtime_graph now fail at HEAD in isolation) — re-baseline before measuring.",
+      "timestamp": "2026-06-26T16:35:12Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "Addressed-collapse activation key must be frontier-consistent (seal-side key == analyzer-side key; idempotent re-canonicalization)",
   "type": "bug",
-  "updated_at": "2026-06-26T15:46:25Z"
+  "updated_at": "2026-06-26T16:35:12Z"
 }
