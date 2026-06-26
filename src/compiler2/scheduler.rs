@@ -224,13 +224,20 @@ where
         coalesced: &mut Vec<J>,
         coalesced_seen: &mut HashSet<J>,
     ) {
-        let dependents = self
-            .deps
-            .subscribers(&fact_use)
-            .into_iter()
-            .chain(self.deps.waiters(&fact_use))
-            .collect::<Vec<_>>();
-        for job in dependents {
+        for job in self.deps.subscribers(&fact_use) {
+            let dirtied = self.facts.mark_dirty(&job, &self.deps.output_keys(&job));
+            pending_changes.extend(dirtied);
+            if shift {
+                self.rebased.insert(job.clone());
+            }
+            self.enqueue_step(job, enqueued, coalesced, coalesced_seen);
+        }
+
+        for job in self.deps.waiters(&fact_use) {
+            let waits = self.deps.waits_for(&job);
+            if !waits.iter().all(|wait| self.facts.satisfies(wait)) {
+                continue;
+            }
             let dirtied = self.facts.mark_dirty(&job, &self.deps.output_keys(&job));
             pending_changes.extend(dirtied);
             if shift {

@@ -218,6 +218,57 @@ fn compiler2_scheduler_wakes_waiters_when_a_matching_fact_appears() {
 }
 
 #[test]
+fn compiler2_scheduler_parks_waiters_until_their_full_wait_set_is_satisfied() {
+    let mut scheduler = TestScheduler::new();
+    let waiter = 4_u32;
+
+    complete(
+        &mut scheduler,
+        waiter,
+        HashSet::new(),
+        HashSet::from([current("foo"), current("bar")]),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    );
+
+    let foo = complete(
+        &mut scheduler,
+        1_u32,
+        HashSet::new(),
+        HashSet::new(),
+        vec!["foo"],
+        vec!["foo"],
+        Vec::new(),
+    );
+    assert!(
+        foo.enqueued.is_empty(),
+        "a waiter blocked on foo + bar should stay parked when only foo appears",
+    );
+    assert_eq!(
+        scheduler.pop(),
+        None,
+        "the partially satisfied waiter should not hit the agenda",
+    );
+
+    let bar = complete(
+        &mut scheduler,
+        2_u32,
+        HashSet::new(),
+        HashSet::new(),
+        vec!["bar"],
+        vec!["bar"],
+        Vec::new(),
+    );
+    assert_eq!(
+        bar.enqueued,
+        vec![waiter],
+        "the waiter should wake once every fact in its wait set is satisfied",
+    );
+    assert_eq!(scheduler.pop(), Some(waiter));
+}
+
+#[test]
 fn compiler2_scheduler_has_unresolved_tracks_waiter_presence_without_materializing_frontier() {
     let mut scheduler = TestScheduler::new();
     assert!(

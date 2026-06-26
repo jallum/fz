@@ -116,6 +116,10 @@ where
             .unwrap_or_default()
     }
 
+    pub fn waits_for(&self, job: &J) -> HashSet<FactUse<F>> {
+        self.waits.get(job).cloned().unwrap_or_default()
+    }
+
     pub fn has_unresolved(&self) -> bool {
         !self.waiters.is_empty()
     }
