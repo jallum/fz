@@ -527,3 +527,43 @@ fn compiler2_define_function_updates_a_re_noted_surface_when_expansion_changes()
         other => panic!("function should stay defined after redefine, got {other:?}"),
     }
 }
+
+#[test]
+fn compiler2_activation_key_from_inputs_results_in_addressed_result_alpha_not_none() {
+    // The activation arrow's result slot is the addressed result variable `r0`
+    // ("return not yet known" — an unknown to be resolved), NEVER `none()` (⊥).
+    // `none`, like `any`, must be EARNED from evidence, never used as a fallback
+    // for an unknown; a not-yet-computed return is a distinct cell (a var), not
+    // the empty type. (fz-f98.14.10.1, [[unknown-is-not-none]].)
+    use super::ExecutableNeed;
+    use super::identity::{ActivationKey, FunctionMap, ModuleId, RootEntry, RootKind, RootMap};
+    use super::types::Types;
+
+    let mut types = Types::new();
+    let int = types.int();
+    let mut functions = FunctionMap::new();
+    let function = functions.reference(ModuleId::GLOBAL, "main", 0);
+    let mut roots = RootMap::new();
+    let root = roots.define(RootEntry {
+        function,
+        input: vec![int],
+        need: ExecutableNeed::Value,
+        kind: RootKind::Runtime,
+    });
+
+    let key = ActivationKey::from_inputs(root, function, &[int], &mut types);
+
+    let result = types
+        .arrow_result(&key.arrow)
+        .expect("the activation arrow has a result slot");
+    let result_alpha = types.result_alpha();
+    let none = types.none();
+    assert_eq!(
+        result, result_alpha,
+        "from_inputs must address the result slot to r0 (the unknown result var)",
+    );
+    assert_ne!(
+        result, none,
+        "the not-yet-known result must NOT be none() — none, like any, must be earned, never a fallback",
+    );
+}
