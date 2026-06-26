@@ -693,26 +693,26 @@ impl TransportFactsBuilder {
 }
 
 /// Project one executable's intra-executable transport contribution into its
-/// own `ExecutableTransport(E)` fact. Gated on `SemanticClosed` (Stage 1), so
-/// the whole closure is settled. The job builds the full-closure contexts as a
-/// superset, then a throwaway recording projection of `executable` discovers the
-/// precise dependency cone its projection actually reads. It narrows the
-/// contexts and the read subscription to that cone (plus `executable`) and runs
-/// the real projection over the narrowed contexts, so the published fact
-/// subscribes to ONLY its precise cone -- an incremental re-drive re-projects an
-/// executable only when its own cone changes. The `SemanticClosed` gate is
-/// POLLED, not subscribed to: subscribing would couple every transport job to
-/// one global fact and re-run them all on any closure perturbation, defeating
-/// the bounded blast radius. `derive_transport_plan` fans these in.
+/// own `ExecutableTransport(E)` fact. Gated on `SemanticReady` (Stage 1), so
+/// the whole closure is settled without subscribing to the `SemanticClosed`
+/// payload. The job builds the full-closure contexts as a superset, then a
+/// throwaway recording projection of `executable` discovers the precise
+/// dependency cone its projection actually reads. It narrows the contexts and
+/// the read subscription to that cone (plus `executable`) and runs the real
+/// projection over the narrowed contexts, so the published fact subscribes to
+/// ONLY its precise cone -- an incremental re-drive re-projects an executable
+/// only when its own cone changes. The `SemanticReady` gate moves with semantic
+/// closure content so stalled projections still rebase without coupling every
+/// transport job to the whole closure payload.
 pub(super) fn derive_executable_transport(
     world: &mut World<'_>,
     executable: &ExecutableKey,
 ) -> Result<JobEffects, FatalError> {
     let root_id = executable.activation.root;
-    let closed_fact = FactKey::SemanticClosed(root_id);
-    if !world.fact_is_settled(&closed_fact) {
+    let ready_fact = FactKey::SemanticReady(root_id);
+    if !world.fact_is_settled(&ready_fact) {
         return Ok(JobEffects::wait_on_settled(
-            closed_fact,
+            ready_fact,
             [Job::SealSemanticClosure(root_id)],
         ));
     }
@@ -734,7 +734,7 @@ pub(super) fn derive_executable_transport(
         // here too so an unsettled-prerequisite re-run still wakes.
         return Ok(JobEffects {
             reads: settled_uses(superset_reads),
-            waits: settled_uses(wait_facts.into_iter().chain([closed_fact])),
+            waits: settled_uses(wait_facts.into_iter().chain([ready_fact])),
             follow_up: vec![Job::DeriveExecutableTransport(executable.clone())],
             ..JobEffects::default()
         });

@@ -340,6 +340,8 @@ pub(super) fn seal_semantic_closure(world: &mut World<'_>, root_id: RootId) -> R
     outputs.extend(executables.iter().cloned().map(FactKey::Executable));
 
     if waits.is_empty() {
+        let semantic_ready_fact = FactKey::SemanticReady(root_id);
+        outputs.push(semantic_ready_fact.clone());
         let semantic_closed_fact = FactKey::SemanticClosed(root_id);
         let closure_changed = world.define_semantic_closure(
             root_id,
@@ -352,6 +354,7 @@ pub(super) fn seal_semantic_closure(world: &mut World<'_>, root_id: RootId) -> R
         );
         outputs.push(semantic_closed_fact.clone());
         if closure_changed {
+            changed.push(semantic_ready_fact);
             changed.push(semantic_closed_fact);
         }
         if closure_changed || world.transport_plan(root_id).is_none() {

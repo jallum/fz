@@ -77,6 +77,7 @@ pub enum FactKey {
     ReturnDemand(ExecutableKey),
     RuntimeDemand(ExecutableKey),
     InputSources(super::semantic::TransportInputKey),
+    SemanticReady(RootId),
     SemanticClosed(RootId),
     ExecutableTransport(ExecutableKey),
     TransportPlan(RootId),
