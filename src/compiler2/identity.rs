@@ -35,6 +35,11 @@ impl FunctionId {
         self.0
     }
 
+    #[cfg(test)]
+    pub(crate) fn for_test(raw: u32) -> Self {
+        Self(raw)
+    }
+
     /// Convert an IR-layer `FnId` to a `FunctionId`. These carry the same raw
     /// index: compiler2 assigns `FunctionId` values and the IR layer stores
     /// them verbatim as `FnId`. Only use this at the interpreter/backend
@@ -57,6 +62,11 @@ pub struct RootId(u32);
 impl RootId {
     pub fn as_u32(self) -> u32 {
         self.0
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_test(raw: u32) -> Self {
+        Self(raw)
     }
 }
 

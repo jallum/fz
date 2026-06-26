@@ -20,6 +20,8 @@ mod module_interface;
 mod namespace;
 mod native_codegen;
 mod protocol;
+#[doc(hidden)]
+pub mod pull;
 mod quoted_expander;
 mod quoted_function;
 mod quoted_surface;
