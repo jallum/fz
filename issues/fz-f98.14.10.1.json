@@ -2,14 +2,15 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-06-26T14:19:22Z",
   "created": "2026-06-26T14:07:54Z",
   "description": "ActivationKey::from_inputs (identity.rs:88) sets the arrow result to types.none() — but none() is bottom/never, NOT 'return unknown'. Per unknown-is-not-none a pending return must be a distinct cell: the addressed result var r0 (result_alpha(), addressed.rs:146). address_inputs's own contract (addressed.rs:164-172) says 'the key's r0 result is appended by the caller'; from_inputs writing none() contradicts it and leaves the activation arrow non-addressed (-\u003e none instead of (a0,a1,..) -\u003e r0). The comment at identity.rs:67-70 names this the fz-hwn.27.6 step. FIX: from_inputs result = types.result_alpha(). Behavior-invariant for keying (result is a constant across all keys either way; nothing reads the result side — verified by grep), so dedup is unchanged; representationally correct + completes the addressed arrow the fz-f98.14.10 split builds on. Validate: full suite zero new reds; update any test asserting '-\u003e none' on a key arrow to '-\u003e r0' (those assertions were wrong).",
   "id": "fz-f98.14.10.1",
   "labels": [],
   "parent": "fz-f98.14.10",
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Activation-key arrow result is the addressed r0 var, not none() (unknown-is-not-none; finish fz-hwn.27.6)",
   "type": "bug",
-  "updated_at": "2026-06-26T14:07:55Z"
+  "updated_at": "2026-06-26T14:19:22Z"
 }
