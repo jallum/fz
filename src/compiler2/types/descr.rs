@@ -290,6 +290,21 @@ impl Descr {
             })
     }
 
+    /// True when this type is purely the list FAMILY — one or more list
+    /// alternatives (e.g. `[int] | []`) and nothing on any other axis. Unlike
+    /// [`as_pure_list`](Self::as_pure_list) it admits a union of list shapes, so
+    /// the addressed convergence class can collapse a recursive list-family slot
+    /// (`[int] | []`) to one addressed-element list rather than leaving the union
+    /// uncollapsed (fz-f98.14.10.2).
+    pub(super) fn is_pure_list_family(&self) -> bool {
+        self.axis_free()
+            && !self.lists.is_empty()
+            && self.tuples.is_empty()
+            && self.resources.is_empty()
+            && self.funcs.is_empty()
+            && self.maps.is_empty()
+    }
+
     pub(super) fn pure_tuple(&self) -> Option<&TupleSig> {
         self.axis_free()
             .then_some(())

@@ -7517,7 +7517,6 @@ fn compiler2_membership_operator_protocol_receivers_settle_to_direct_impls() {
     );
 }
 
-#[ignore = "red-worklist fz-f98.14.7.2-residual: this is a SemanticClosed activation-frontier test (partition/4 settles to 3 keys, asserts 1) and reproduces IDENTICALLY with the fz-f98.14.7.2 transport/native fixes reverted — it is a semantic over-specialization exposed by the fz-f98.14.7 de-widening, upstream of transport and unrelated to multi-producer convergence; re-ticket as fz-f98.14.7.2.2 (collapse the recursive list-family partition/4 keys in activation keying, cf. fz-y6w)"]
 #[test]
 fn compiler2_quicksort_root_closes_with_a_finite_recursive_frontier() {
     let tel = ConfiguredTelemetry::new();
@@ -7590,10 +7589,14 @@ fn compiler2_quicksort_root_closes_with_a_finite_recursive_frontier() {
         "partition/4 should stay keyed on its four inputs"
     );
     let partition_inputs = partition_activations[0].inputs(types);
-    assert_eq!(
-        partition_inputs[2], partition_inputs[3],
-        "partition/4's recursive accumulator slots share one convergence class"
-    );
+    // fz-f98.14.10.2: the two recursive accumulator slots collapse to their
+    // ADDRESSED convergence class — `[a2_e]` and `[a3_e]` — list-family slots
+    // whose element is a resolvable structural-address var, not the path-blind
+    // `list(any)`. They are distinct BY ADDRESS (param 2 vs param 3), which is
+    // correct: distinct parameter positions must not conflate. The win is that
+    // each slot folds to ONE key (no `[int] | []` over-spec survives).
+    assert_eq!(types.display(&partition_inputs[2]), "[a2_e]");
+    assert_eq!(types.display(&partition_inputs[3]), "[a3_e]");
     let append_activations = activations
         .iter()
         .filter(|activation| activation.function == append_id)

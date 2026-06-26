@@ -1808,7 +1808,18 @@ fn collect_executable_input_constraints(
         let context = contexts
             .get(executable)
             .expect("transport derivation requires one context per settled executable");
-        for (semantic_index, ty) in executable.activation.inputs(world.types()).into_iter().enumerate() {
+        // The KEY inputs are the dispatch identity carried by `symbol`; after the
+        // addressed-alpha convergence collapse they may be address vars
+        // (`list(a1_e)`, surface vars) that carry no layout. LAYOUT is derived from
+        // the PRECISE EVIDENCE — the un-collapsed `ActivationInputs` fact — so a
+        // slot's ShapeId anchors on its real ground type (`list(int)`, the concrete
+        // callable) rather than the address var. KEY ≠ EVIDENCE, applied at the
+        // transport seam (fz-f98.14.10.2). When the fact is absent (no body
+        // evidence yet) the key inputs are the only available layout source.
+        let layout_inputs = world
+            .activation_inputs(&executable.activation)
+            .unwrap_or_else(|| executable.activation.inputs(world.types()));
+        for (semantic_index, ty) in layout_inputs.into_iter().enumerate() {
             let function_input = (executable.activation.function, semantic_index);
             let demand = context
                 .runtime_demand

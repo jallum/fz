@@ -885,20 +885,25 @@ macro_rules! semantic_helper_conformance_tests {
             fn convergence_collapse_widens_only_non_dispatch_slots_of_the_arrow() {
                 // The dispatch KEY of a recursive activation is a whole-arrow
                 // collapse of its precise evidence arrow (fz-hwn.27.7): a
-                // non-dispatch list slot widens to its convergence class so the
-                // recursive ascent settles, while dispatch slots and the result
-                // are preserved exactly. Here slot 0 dispatches and slot 1 does
-                // not, so only slot 1's `list(int)` collapses to `list(any)`.
+                // non-dispatch list slot widens to its ADDRESSED convergence
+                // class so the recursive ascent settles, while dispatch slots and
+                // the result are preserved exactly. Here slot 0 dispatches and
+                // slot 1 does not, so slot 1's `list(int)` collapses to
+                // `list(a1_e)` — a resolvable element address var at the slot's
+                // structural address, not the path-blind `list(any)`
+                // (fz-f98.14.10.2). Breadth is still one address per position so
+                // fz-y6w termination holds.
                 let mut t = $ctor;
                 let int = t.int();
                 let list_int = t.list(int.clone());
                 let arrow = t.arrow(&[list_int.clone(), list_int.clone()], int.clone());
                 let collapsed = t.convergence_collapse(arrow, &[DispatchDemand::Whole, DispatchDemand::Ignore]);
 
-                let any = t.any();
-                let list_any = t.list(any);
-                let expected = t.arrow(&[list_int, list_any], int);
-                assert!(t.is_equivalent(&collapsed, &expected));
+                let params = t.arrow_params(&collapsed);
+                let ret = t.arrow_join_return(&collapsed);
+                assert_eq!(t.display(&params[0]), "[int]");
+                assert_eq!(t.display(&params[1]), "[a1_e]");
+                assert_eq!(t.display(&ret), "int");
             }
 
             #[test]
@@ -935,15 +940,18 @@ macro_rules! semantic_helper_conformance_tests {
                 fields.insert(0, DispatchDemand::Whole);
                 let collapsed = t.convergence_collapse(arrow, &[DispatchDemand::TupleFields(fields)]);
 
-                let any = t.any();
-                let collapsed_payload = t.list(any);
-                let expected_state = t.tuple(&[tag, collapsed_payload]);
-                let expected = t.arrow(&[expected_state], sentinel);
-                assert!(
-                    t.is_equivalent(&collapsed, &expected),
-                    "nested dispatch demand should preserve the tag and collapse the payload: {}",
+                // The dispatch tag (field 0) is preserved exactly; the ignored
+                // payload (field 1) collapses to its ADDRESSED class — the list
+                // element addressed at `[Param(0), Field(1), Elem]`, displayed
+                // `a0_1_e` — not the path-blind `list(any)` (fz-f98.14.10.2).
+                let params = t.arrow_params(&collapsed);
+                assert_eq!(
+                    t.display(&params[0]),
+                    "{:cont, [a0_1_e]}",
+                    "nested dispatch demand should preserve the tag and collapse the payload to its addressed class: {}",
                     t.display(&collapsed)
                 );
+                let _ = sentinel;
             }
 
             #[test]

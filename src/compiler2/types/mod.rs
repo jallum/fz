@@ -34,6 +34,7 @@ pub use crate::types::{
 
 pub use arrow_match::ArrowMatch;
 
+use addressed::AddrStep;
 use conj::Conj;
 use descr::Descr;
 use lit_set::{LiteralSet, closure_ret_var_id, closure_var_id};
@@ -500,6 +501,67 @@ impl Types {
         }
     }
 
+    /// The ADDRESSED convergence class of `ty` at structural address `path`: the
+    /// same family collapse as [`convergence_class`], but a pure list's element
+    /// and a pure callable become a RESOLVABLE address var at their structural
+    /// address (`P_e`, `P`) rather than the `any`/`fun_top` fallback
+    /// (fz-f98.14.10.2). Breadth is still one address per position, so the
+    /// interner folds same-shape arrows to one key exactly as `list(any)` did and
+    /// fz-y6w termination holds. Depth is capped: past `ADDRESS_COLLAPSE_DEPTH`
+    /// nested addressing steps the element tops out at `any` (the earned depth ⊤)
+    /// so a self-nesting list can never grow the address path without bound.
+    fn convergence_class_at(&mut self, a: &Ty, path: &[AddrStep]) -> Ty {
+        const ADDRESS_COLLAPSE_DEPTH: usize = 8;
+        let descr = self.descr(a).clone();
+        if descr.is_pure_list_family() {
+            if path.len() >= ADDRESS_COLLAPSE_DEPTH {
+                let any = self.any();
+                return self.list(any);
+            }
+            let mut child = path.to_vec();
+            child.push(AddrStep::Elem);
+            let elem = self.address_var(&child);
+            self.list(elem)
+        } else if descr.is_pure_callable() {
+            // A clause-less `fun_top` is the unresolvable fallback; the address
+            // var keeps the slot resolvable (`has_vars` true) so the indirect
+            // reducer still narrows at its call.
+            self.address_var(path)
+        } else if let Some(tuple) = descr.pure_tuple() {
+            let elems = tuple
+                .elems
+                .iter()
+                .enumerate()
+                .map(|(j, elem)| {
+                    let mut child = path.to_vec();
+                    child.push(AddrStep::Field(j as u16));
+                    self.convergence_class_at(elem, &child)
+                })
+                .collect::<Vec<_>>();
+            self.tuple(&elems)
+        } else if let Some(resource) = descr.pure_resource() {
+            let payload = resource.payload;
+            let mut child = path.to_vec();
+            child.push(AddrStep::Payload);
+            let payload = self.convergence_class_at(&payload, &child);
+            self.resource(payload)
+        } else if let Some(map) = descr.pure_map() {
+            let fields = map
+                .fields
+                .iter()
+                .enumerate()
+                .map(|(j, (key, value))| {
+                    let mut child = path.to_vec();
+                    child.push(AddrStep::MapField(j as u16));
+                    (key.clone(), self.convergence_class_at(value, &child))
+                })
+                .collect::<Vec<_>>();
+            self.map(&fields)
+        } else {
+            *a
+        }
+    }
+
     /// Derive a recursive activation's dispatch KEY from its precise evidence
     /// arrow by widening every non-dispatch subtree to its convergence class, so
     /// the recursive ascent settles (fz-y6w bounded specialization:
@@ -524,7 +586,8 @@ impl Types {
             .enumerate()
             .map(|(slot, param)| {
                 let demand = mask.get(slot).unwrap_or(&DispatchDemand::Whole);
-                self.convergence_collapse_ty(*param, demand, true)
+                let path = [AddrStep::Param(slot as u16)];
+                self.convergence_collapse_ty(*param, demand, &path, true)
             })
             .collect::<Vec<_>>();
         self.arrow(&collapsed, ret)
@@ -536,19 +599,33 @@ impl Types {
             .enumerate()
             .map(|(slot, input)| {
                 let demand = mask.get(slot).unwrap_or(&DispatchDemand::Whole);
-                self.convergence_collapse_ty(*input, demand, false)
+                let path = [AddrStep::Param(slot as u16)];
+                self.convergence_collapse_ty(*input, demand, &path, false)
             })
             .collect()
     }
 
-    fn convergence_collapse_ty(&mut self, ty: Ty, demand: &DispatchDemand, collapse_concrete_ignored: bool) -> Ty {
+    fn convergence_collapse_ty(
+        &mut self,
+        ty: Ty,
+        demand: &DispatchDemand,
+        path: &[AddrStep],
+        collapse_concrete_ignored: bool,
+    ) -> Ty {
         match demand {
             DispatchDemand::Ignore => {
-                // KEY path (`collapse_concrete_ignored`) collapses to `fun_top` for
-                // fz-y6w termination. The EVIDENCE path keeps a var-bearing pure
-                // callable verbatim so it stays resolvable and the accumulator
-                // narrows; every other var-bearing type collapses to its class.
-                if collapse_concrete_ignored || (self.has_vars(&ty) && !self.descr(&ty).is_pure_callable()) {
+                // KEY path (`collapse_concrete_ignored`) collapses an ignored slot
+                // to its ADDRESSED convergence class: a pure list becomes
+                // `list(<P_e var>)` and a pure callable an addressed surface var,
+                // so the slot stays RESOLVABLE at its structural address instead of
+                // bottoming out at `any`/`fun_top` (fz-f98.14.10.2). Breadth is
+                // still var-bounded (one address per position) so fz-y6w
+                // termination holds; depth is capped in `convergence_class_at`.
+                // The EVIDENCE path keeps a var-bearing pure callable verbatim and
+                // collapses every other var-bearing type to its (path-blind) class.
+                if collapse_concrete_ignored {
+                    self.convergence_class_at(&ty, path)
+                } else if self.has_vars(&ty) && !self.descr(&ty).is_pure_callable() {
                     self.convergence_class(&ty)
                 } else {
                     ty
@@ -556,10 +633,10 @@ impl Types {
             }
             DispatchDemand::Whole => ty,
             DispatchDemand::TupleFields(fields) => {
-                self.convergence_collapse_tuple_fields(ty, fields, collapse_concrete_ignored)
+                self.convergence_collapse_tuple_fields(ty, fields, path, collapse_concrete_ignored)
             }
             DispatchDemand::ListShape(elem_demand) => {
-                self.convergence_collapse_list_shape(ty, elem_demand, collapse_concrete_ignored)
+                self.convergence_collapse_list_shape(ty, elem_demand, path, collapse_concrete_ignored)
             }
         }
     }
@@ -568,17 +645,20 @@ impl Types {
         &mut self,
         ty: Ty,
         fields: &BTreeMap<u32, DispatchDemand>,
+        path: &[AddrStep],
         collapse_concrete_ignored: bool,
     ) -> Ty {
         let mut d = self.descr(&ty).clone();
         if d.tuples.is_empty() {
-            return self.convergence_class(&ty);
+            return self.convergence_collapse_ignored_leaf(&ty, path, collapse_concrete_ignored);
         }
         for conj in &mut d.tuples {
             for sig in conj.pos.iter_mut().chain(conj.neg.iter_mut()) {
                 for (index, elem) in sig.elems.iter_mut().enumerate() {
                     let demand = fields.get(&(index as u32)).unwrap_or(&DispatchDemand::Ignore);
-                    *elem = self.convergence_collapse_ty(*elem, demand, collapse_concrete_ignored);
+                    let mut child = path.to_vec();
+                    child.push(AddrStep::Field(index as u16));
+                    *elem = self.convergence_collapse_ty(*elem, demand, &child, collapse_concrete_ignored);
                 }
             }
         }
@@ -589,26 +669,40 @@ impl Types {
         &mut self,
         ty: Ty,
         elem_demand: &DispatchDemand,
+        path: &[AddrStep],
         collapse_concrete_ignored: bool,
     ) -> Ty {
         let mut d = self.descr(&ty).clone();
         if d.lists.is_empty() {
-            return self.convergence_class(&ty);
+            return self.convergence_collapse_ignored_leaf(&ty, path, collapse_concrete_ignored);
         }
+        let mut child = path.to_vec();
+        child.push(AddrStep::Elem);
         if collapse_concrete_ignored {
             let elem_descr = list_element_type(self.ctx(), &d);
             let elem = self.intern(elem_descr);
-            let elem = self.convergence_collapse_ty(elem, elem_demand, collapse_concrete_ignored);
+            let elem = self.convergence_collapse_ty(elem, elem_demand, &child, collapse_concrete_ignored);
             return self.list(elem);
         }
         for conj in &mut d.lists {
             for sig in conj.pos.iter_mut().chain(conj.neg.iter_mut()) {
                 if let Some(elem) = sig.elem {
-                    sig.elem = Some(self.convergence_collapse_ty(elem, elem_demand, collapse_concrete_ignored));
+                    sig.elem = Some(self.convergence_collapse_ty(elem, elem_demand, &child, collapse_concrete_ignored));
                 }
             }
         }
         self.intern(d)
+    }
+
+    /// The collapse for an ignored slot that did not match the demanded shape:
+    /// KEY path uses the addressed class (stays resolvable); EVIDENCE path the
+    /// path-blind class (its earned ⊤).
+    fn convergence_collapse_ignored_leaf(&mut self, ty: &Ty, path: &[AddrStep], collapse_concrete_ignored: bool) -> Ty {
+        if collapse_concrete_ignored {
+            self.convergence_class_at(ty, path)
+        } else {
+            self.convergence_class(ty)
+        }
     }
 
     pub fn union(&mut self, a: Ty, b: Ty) -> Ty {

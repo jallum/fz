@@ -106,14 +106,6 @@ impl ActivationKey {
     pub fn input_len(&self, types: &super::types::Types) -> usize {
         types.arrow_arity(&self.arrow)
     }
-
-    /// Re-canonicalize the key by whole-scope re-addressing of its inputs.
-    /// Idempotent on an already-addressed arrow; carries a key minted elsewhere
-    /// (a flow edge, a cloned summary) back onto the canonical addresses.
-    pub fn realpha_inputs(&mut self, types: &mut super::types::Types) {
-        let params = types.arrow_params(&self.arrow);
-        *self = Self::from_inputs(self.root, self.function, &params, types);
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

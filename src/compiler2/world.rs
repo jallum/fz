@@ -1081,9 +1081,10 @@ impl<'a> World<'a> {
             // Whole-scope addressing, matching the key and surfaces (fz-hwn.27.6,
             // A): one shared pass over the surface inputs, not per-position.
             target.surface_inputs = self.types.address_inputs(&target.surface_inputs);
-            if let Some(activation) = &mut target.activation {
-                activation.realpha_inputs(&mut self.types);
-            }
+            // The embedded activation key is already canonical: its sole producer
+            // (`prepare_function_call` → `canonical_activation_key` → `from_inputs`)
+            // mints through the single addressing pass, so re-addressing it here was
+            // a no-op left over from the conflation engine deleted in fz-hwn.27.6.
             // return_ty is already in the activation's addressed frame, matching the
             // surfaces addressed just above — no encounter re-normalization (fz-hwn.27.8).
         }
