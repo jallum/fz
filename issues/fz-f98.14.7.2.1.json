@@ -2,14 +2,15 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-06-26T09:52:28Z",
   "created": "2026-06-26T09:39:53Z",
   "description": "Exposed (not caused) by the 14.7.2 transport fix: compiler2_native_program_adapts_delivered_calls_from_callee_return_lanes now LOWERS (transport multi-producer convergence fixed) but the generated deliver_lanes__ continuation carries extra_params:2 [RawAtom,RawInt,ValueRef] vs the test's hardcoded extra_params:3 [RawAtom,ValueRef,RawInt]. DISTINCT arc from transport — native-codegen split-return lane-decomposition contract. First step: determine whether the new adapter shape is correct-and-the-assertion-is-stale, or a real lane-order/arity regression. Test currently #[ignore] red-worklist.",
   "id": "fz-f98.14.7.2.1",
   "labels": [],
   "parent": "fz-f98.14.7.2",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Native-codegen split-return lane decomposition: delivered-call adapter shape (deliver_lanes__ extra_params order/arity)",
   "type": "bug",
-  "updated_at": "2026-06-26T09:41:16Z"
+  "updated_at": "2026-06-26T09:52:28Z"
 }
