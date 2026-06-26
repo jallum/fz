@@ -6629,7 +6629,6 @@ end
     );
 }
 
-#[ignore = "red-worklist fz-f98.14.7.2-residual: the transport multi-producer convergence is fixed (LowerNativeProgram now resolves for this fixture), but the delivered-call adapter shape differs from this test's hardcoded expectation — the generated deliver_lanes__ continuation carries extra_params:2 with param_reprs [RawAtom, RawInt, ValueRef] rather than the asserted extra_params:3 / [RawAtom, ValueRef, RawInt]. This is a native-codegen split-return lane-decomposition contract, a distinct arc from transport multi-producer convergence; re-ticket as fz-f98.14.7.2.1 (verify whether the new adapter shape is correct-and-the-assertion-is-stale, or a real lane-order/arity regression)"]
 #[test]
 fn compiler2_native_program_adapts_delivered_calls_from_callee_return_lanes() {
     let tel = ConfiguredTelemetry::new();
@@ -6655,16 +6654,26 @@ fn compiler2_native_program_adapts_delivered_calls_from_callee_return_lanes() {
     );
 
     let program = native.last(root_id).program;
+    // A delivered-call adapter's continuation `extra_params` are EXACTLY the callee's
+    // return lanes (`native_return_contract(payload)` over the callee `ExecutableReturn`);
+    // any continuation captures the resume entry needs are threaded as *additional*
+    // params after the payload, never folded into the delivered value's lane decomposition.
+    //
+    // fz-f98.14.7 (de-widen reducer evidence) stopped widening var-bearing callables to a
+    // boxed `ValueRef`. The callee here returns the two-lane Enum.take list result
+    // `[RawAtom, RawInt]`; the reducer closure the resume entry resumes against is a
+    // separate `ValueRef` *capture*, so the adapter carries `extra_params: 2`
+    // (payload `[RawAtom, RawInt]`) followed by the `[ValueRef]` capture lane — NOT the
+    // pre-de-widening three-lane `[RawAtom, ValueRef, RawInt]` payload that conflated the
+    // boxed closure capture with the callee return.
     let adapter = program
         .bodies
         .iter()
         .find(|body| {
             let function = program.module.fn_by_id(body.fn_id);
             function.name.starts_with("deliver_lanes__")
-                && matches!(body.entry_abi, NativeEntryAbi::Continuation { extra_params: 3 })
-                && body
-                    .param_reprs
-                    .starts_with(&[AbiValueRepr::RawAtom, AbiValueRepr::ValueRef, AbiValueRepr::RawInt])
+                && matches!(body.entry_abi, NativeEntryAbi::Continuation { extra_params: 2 })
+                && body.param_reprs == [AbiValueRepr::RawAtom, AbiValueRepr::RawInt, AbiValueRepr::ValueRef]
         })
         .expect("delivered call adapter should expose the callee's full split return lanes");
 
