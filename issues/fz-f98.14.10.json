@@ -2,6 +2,7 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [
+    "fz-f98.14.1",
     "fz-f98.14.7.2.2"
   ],
   "created": "2026-06-26T10:31:30Z",
@@ -13,5 +14,5 @@
   "status": "open",
   "title": "Separate activation-key convergence-identity from transport-layout-identity",
   "type": "bug",
-  "updated_at": "2026-06-26T10:31:30Z"
+  "updated_at": "2026-06-26T10:31:31Z"
 }
