@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-06-26T09:39:53Z",
@@ -8,8 +8,8 @@
   "labels": [],
   "parent": "fz-f98.14.7.2",
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "Activation over-specialization: recursive list-family partition/4 settles to 3 keys (asserts 1)",
   "type": "bug",
-  "updated_at": "2026-06-26T09:39:53Z"
+  "updated_at": "2026-06-26T09:53:10Z"
 }
