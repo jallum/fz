@@ -6,7 +6,7 @@
     "fz-f98.14.7.2.2"
   ],
   "created": "2026-06-26T10:31:30Z",
-  "description": "THE proven remaining root of the f98 convergence epic. The ActivationKey doubles as both (a) the CONVERGENCE identity (which must COLLAPSE recursive non-dispatch inputs to a bounded class for finiteness — fz-y6w) and (b) the transport LAYOUT identity (which must stay DISTINCT per physical layout — transport shape-meet, transport.rs:338, interns one ShapeId per layout). These pull opposite ways. PROVEN (agent a4a5531, escape-clause): the correct convergence collapse of an emptiness-only list union ([int] | [] -\u003e list(any), ~25 LoC: descr.rs is_pure_list_modulo_empty + convergence_collapse_ty Ignore-key fold) makes partition/4 converge to 1 (fz-f98.14.7.2.2) IN ISOLATION, but the identical collapse on the identical shape via the identical path in 00420 reconnects layout-distinct ValueId positions -\u003e transport.rs:338 panics on 4 distinct interned ShapeIds in one component -\u003e reds 3 transport guards. No type/code-path dimension distinguishes the two; the collapse IS correct, the break is that collapsing the KEY collapses the LAYOUT-IDENTITY. FIX: derive transport layout-identity SEPARATELY from the (collapsed) convergence key — addressed-arrow / [[shapeid_is_pure_layout]] applied to the activation key. UNBLOCKS fz-f98.14.7.2.2 (partition-\u003e1; the ~25-LoC keying fix lands the moment this is done) AND fz-f98.14.1 (the seal: a membership-stable wake signal needs the same split). Investigate-and-design first (correct-by-construction; this is the deliberately-fenced-off activation-key model).",
+  "description": "RE-SCOPED (prototype-proven, fz-f98.14.10.2). The fix is TWO-PART, not a split into two identities: (1) addressed-alpha convergence_class — the recursive KEY holds structure by address (list(a_e), addressed callable-surface var) not the any/fun_top fallback; PROVEN to terminate + dissolve partition/4 over-spec + keep the reducer resolvable. (2) THE KEYSTONE: a transport-side resolution seam that resolves an activation-key address var's element/surface back to the ActivationInputs evidence layout when deriving ShapeId/boundary. Part 1 alone breaks transport (+9 lib/+3 matrix) because transport consumes the key as a ground layout and there is no address-\u003eevidence resolution today. Build (2) FIRST (or together); then (1) lands and dissolves the convergence family (reducer-any fz-f98.14.7, accumulator-widening, partition fz-f98.14.7.2.2, and this split). = [[shapeid_is_pure_layout]]: the key is a dispatch-identity surface; making it also the layout surface requires the resolver that maps address-\u003eevidence.",
   "id": "fz-f98.14.10",
   "labels": [],
   "parent": "fz-f98.14",
@@ -14,5 +14,5 @@
   "status": "open",
   "title": "Separate activation-key convergence-identity from transport-layout-identity",
   "type": "bug",
-  "updated_at": "2026-06-26T10:31:31Z"
+  "updated_at": "2026-06-26T15:08:03Z"
 }
