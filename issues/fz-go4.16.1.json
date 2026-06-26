@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-26T23:44:27Z",
+  "description": "Goal\nIntroduce the static product-key pull driver for the new artifact path. A ProductKey names the product being demanded; the driver maps each key kind to exactly one producer and memoizes product results for the current request.\n\nRequired shape\n- Define the product-key vocabulary needed by ../pull-based.html: RootBackendProduct, BackendExecutable, AbiExecutable, MaterializedExecutable, ExecutableEffects, RuntimeDemand, OutgoingInputEdges, IncomingInputSlot, TransportShape, TransportComponent, CallableFacts, and BoundaryFacts.\n- Add telemetry for product requested, produced, waited, cache hit, and reentered.\n- Producers return product/fact waits when prerequisites are missing. They do not enqueue follow_up jobs and do not self-schedule.\n- Keep this as scaffolding behind the new path; do not route production backend work through it until later tickets supply the products.\n\nSignal\nA unit test pulls a fake product with a fake prerequisite through the driver. Duplicate requests coalesce or hit the cache. The wait path names a product key or fact wait and contains no JobEffects::follow_up.\n\nRemoval target\nNone yet. This ticket creates the minimal pull substrate needed for the later removal tickets.\n\nVerification\ncargo fmt --all; targeted product-driver tests; cargo test -p fz --lib compiler2 if the local suite naming supports it.",
+  "id": "fz-go4.16.1",
+  "labels": [],
+  "parent": "fz-go4.16",
+  "priority": 1,
+  "status": "open",
+  "title": "Pull path: add ProductKey driver and product telemetry",
+  "type": "task",
+  "updated_at": "2026-06-26T23:44:27Z"
+}
