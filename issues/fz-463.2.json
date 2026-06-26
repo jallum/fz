@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-26T20:24:06Z",
+  "description": "AnalyzeActivation (fires 1481x on 00420) unconditionally enqueues SealSemanticClosure as a follow-up at 4 sites (semantic.rs:105,212,254,1618). These are push-based seeding; the seal's own settled_uses subscription re-wakes it correctly and SeedRoot still bootstraps it, so the pokes are redundant.\n\nDO: remove the 4 follow_up.insert(Job::SealSemanticClosure(root)) sites in semantic.rs.\n\nREMOVES: ~50 direct seal re-enqueues (seal fires 329-\u003e~287 measured). PROVEN green in spike. Note: this alone does NOT fix the runaway (the dominant ~270 fires come from the settled subscription to CallSiteSummary type-content — that is seal.3/seal.4). One commit.",
+  "id": "fz-463.2",
+  "labels": [],
+  "parent": "fz-463",
+  "priority": 1,
+  "status": "open",
+  "title": "Remove unconditional AnalyzeActivation-\u003eSealSemanticClosure pokes",
+  "type": "bug",
+  "updated_at": "2026-06-26T20:24:06Z"
+}
