@@ -12,7 +12,11 @@ use super::transport::{
     BoundaryDescr, CodegenLaneRepr, CodegenSeam, LaneId, ShapeDescr, ShapeId, TransportPlan, TransportPosition,
 };
 use super::types::Ty;
-use super::{DriveOutcome, ExecutableKey, ExecutableNeed, ExecutableRuntimeDemand, LoweredBody, RuntimeDemand, World};
+use super::{
+    CodeSubmission, Compiler2, DriveOutcome, ExecutableKey, ExecutableNeed, ExecutableRuntimeDemand, Job, LoweredBody,
+    RootSubmission, RuntimeDemand, World,
+};
+use crate::telemetry::handler::{Event, EventKind, Handler};
 use crate::telemetry::{Capture, ConfiguredTelemetry, Value};
 
 const EVENT_NAME: &[&str] = &["fz", "compiler2", "transport_flow", "defined"];
@@ -2979,6 +2983,17 @@ end
 "#;
 
     let tel = ConfiguredTelemetry::new();
+    let legacy_baseline = current_no_dump_interp_job_telemetry(source);
+    let legacy_job_fires = legacy_baseline.total_stops();
+    assert!(
+        legacy_job_fires > 0,
+        "legacy no-dump interp should provide a job baseline for the product telemetry comparison"
+    );
+    assert!(
+        legacy_baseline.stop_count_matching(|job| matches!(job, Job::SealSemanticClosure(_))) > 0,
+        "legacy no-dump interp should still exercise SealSemanticClosure so the product proof compares against real old churn"
+    );
+
     let mut world = World::new(&tel);
     world.submit_code(
         Some("pull_root_backend_enum_reduce_operator_refs.fz".to_string()),
@@ -2994,7 +3009,9 @@ end
     let plan = transport_plan(&world, root);
     let expected_executables = plan.executable_membership.len();
     let capture = Capture::new();
+    let product_jobs = JobTelemetry::new();
     tel.attach(&["fz", "compiler2", "pull"], capture.handler());
+    tel.attach(&["fz", "compiler2", "job"], product_jobs.handler());
     let mut driver = ProductDriver::new(&tel, root);
     assert!(
         driver.session().executable_index().is_empty(),
@@ -3035,6 +3052,16 @@ end
     assert_eq!(driver.session().root_scans(), 0);
     assert_eq!(driver.session().follow_ups(), 0);
     driver.finish_session();
+    assert_eq!(
+        product_jobs.total_stops(),
+        0,
+        "product path should produce RootBackendProduct without compiler job churn; legacy baseline fired {legacy_job_fires} jobs"
+    );
+    assert_eq!(
+        product_jobs.stop_count_matching(forbidden_product_path_job),
+        0,
+        "product path must not run legacy semantic/root artifact jobs"
+    );
     assert!(
         capture.count(&["fz", "compiler2", "pull", "product", "requested"]) > 0,
         "root backend product path should emit product request telemetry"
@@ -4876,6 +4903,93 @@ fn measurement_u64(event: &crate::telemetry::capture::OwnedEvent, key: &str) -> 
         panic!("expected u64 measurement {key} in {:?}", event.measurements)
     };
     *value
+}
+
+fn current_no_dump_interp_job_telemetry(source: &str) -> JobTelemetry {
+    let tel = ConfiguredTelemetry::new();
+    let jobs = JobTelemetry::new();
+    tel.attach(&["fz", "compiler2", "job"], jobs.handler());
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("current_no_dump_00181_enum_reduce_operator_ref.fz".to_string()),
+        text: source.to_string(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    compiler
+        .run_root_interp(root)
+        .expect("current no-dump interp baseline should run fixture 00181");
+    jobs
+}
+
+struct JobTelemetry {
+    live: Rc<RefCell<HashMap<u64, Job>>>,
+    stops: Rc<RefCell<Vec<Job>>>,
+}
+
+impl JobTelemetry {
+    fn new() -> Self {
+        Self {
+            live: Rc::new(RefCell::new(HashMap::new())),
+            stops: Rc::new(RefCell::new(Vec::new())),
+        }
+    }
+
+    fn handler(&self) -> Box<dyn Handler> {
+        Box::new(JobTelemetryHandler {
+            live: self.live.clone(),
+            stops: self.stops.clone(),
+        })
+    }
+
+    fn total_stops(&self) -> usize {
+        self.stops.borrow().len()
+    }
+
+    fn stop_count_matching(&self, mut predicate: impl FnMut(&Job) -> bool) -> usize {
+        self.stops.borrow().iter().filter(|job| predicate(job)).count()
+    }
+}
+
+struct JobTelemetryHandler {
+    live: Rc<RefCell<HashMap<u64, Job>>>,
+    stops: Rc<RefCell<Vec<Job>>>,
+}
+
+impl Handler for JobTelemetryHandler {
+    fn handle(&self, event: &Event<'_, '_, '_>) {
+        if event.name != ["fz", "compiler2", "job"] {
+            return;
+        }
+        match event.kind {
+            EventKind::SpanStart => {
+                if let Some(job) = event.metadata.get("job").and_then(|value| value.downcast_ref::<Job>()) {
+                    self.live.borrow_mut().insert(event.span_id, job.clone());
+                }
+            }
+            EventKind::SpanStop => {
+                if let Some(job) = self.live.borrow_mut().remove(&event.span_id) {
+                    self.stops.borrow_mut().push(job);
+                }
+            }
+            EventKind::Event | EventKind::SpanException => {}
+        }
+    }
+}
+
+fn forbidden_product_path_job(job: &Job) -> bool {
+    matches!(
+        job,
+        Job::SealSemanticClosure(_)
+            | Job::DeriveTransportPlan(_)
+            | Job::MaterializeRoot(_)
+            | Job::DeriveAbiReady(_)
+            | Job::DeriveEmissionReady(_)
+    )
 }
 
 fn all_contract_strings() -> Vec<&'static str> {
