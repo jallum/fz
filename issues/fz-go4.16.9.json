@@ -15,11 +15,15 @@
     {
       "text": "Compatibility scaffolding identified by fz-go4.16.8 proof: product tests still pre-settle legacy facts with drive_until_transport_plan; produce_runtime_demand_product can read a settled FactKey::RuntimeDemand; produce_transport_shape_product can exact-read a settled TransportPlan(root). Delete these with the legacy semantic/root artifact dependencies in this ticket, and switch the interpreter front door to the product-backed path.",
       "timestamp": "2026-06-27T02:46:27Z"
+    },
+    {
+      "text": "Implemented public interp RootBackendProduct path and removed product fallbacks to settled legacy RuntimeDemand/TransportPlan. Verification: cargo fmt --all; cargo clippy --all-targets -- -D warnings; cargo test -q --lib compiler2_pull_; timeout tests compiler2_root_drive_timeout_reports_the_configured_limit and jsonl_backend_records_compiler2_drive_timeouts; CLI proof cargo run --quiet --bin fz2 -- --log-telemetry /tmp/fz00181-product-nodump.jsonl interp fixtures2/00181_enum_reduce_operator_ref.fz. Telemetry proof: 283 compiler job starts vs checked legacy baseline 379, and zero forbidden root-artifact jobs for RootId(0). Broad cargo test -q --lib compiler2 still has related product coverage red; filed fz-go4.16.11 for remaining ReturnType fixpoint/continuation coverage instead of restoring legacy root artifact path.",
+      "timestamp": "2026-06-27T03:14:45Z"
     }
   ],
   "priority": 1,
   "status": "in_progress",
   "title": "Pull path: delete legacy semantic and root artifact dependencies",
   "type": "task",
-  "updated_at": "2026-06-27T02:47:16Z"
+  "updated_at": "2026-06-27T03:14:45Z"
 }
