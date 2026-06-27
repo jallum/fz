@@ -9,9 +9,15 @@
   "id": "fz-go4.16.10",
   "labels": [],
   "parent": "fz-go4.16",
+  "comments": [
+    {
+      "text": "Closed by 91256e8f0. Docs now describe product-keyed artifact demand as the target model: ProductKey/PullWait driver, per-executable products, EntryCapture transport as a TransportPosition demanded by AbiExecutable(E), and RootBackendProduct(root) as final dense packaging. Remaining SemanticClosed/TransportPlan/follow_up references are explicit legacy or negative references. Cleanup ticket fz-go4.16.12 tracks ../pull-based.html. Verification: cargo fmt --all --check; cargo test -q --lib compiler2_pull_; cargo test -q --lib compiler2::compiler2_test::compiler2_root_drive_timeout_reports_the_configured_limit -- --exact; cargo test -q --lib compiler2::telemetry_dump_test::jsonl_backend_records_compiler2_drive_timeouts -- --exact; cargo run --quiet --bin fz2 -- --log-telemetry /tmp/fz00181-docverify.jsonl interp fixtures2/00181_enum_reduce_operator_ref.fz; telemetry post-processing showed 282 compiler job starts and 0 forbidden RootId(0) root artifact jobs; cargo clippy --all-targets -- -D warnings; pre-commit cargo check/clippy.",
+      "timestamp": "2026-06-27T03:26:49Z"
+    }
+  ],
   "priority": 1,
   "status": "in_progress",
   "title": "Pull path: update docs and remove planning scaffolding",
   "type": "task",
-  "updated_at": "2026-06-27T03:16:04Z"
+  "updated_at": "2026-06-27T03:26:49Z"
 }
