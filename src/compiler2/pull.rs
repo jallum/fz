@@ -15,7 +15,7 @@ use super::drive::FactKey;
 use super::facts::FactUse;
 use super::identity::{ExecutableKey, RootId};
 use super::semantic::{ExecutableRuntimeDemand, RuntimeDemand};
-use super::transport::{BoundaryId, CallableId, TransportPosition};
+use super::transport::{BoundaryFacts, BoundaryId, CallableFacts, CallableId, ShapeId, TransportPosition};
 use super::world::World;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -87,6 +87,11 @@ impl ProductKey {
 pub enum ProductValue {
     Unit,
     RuntimeDemand(Box<ExecutableRuntimeDemand>),
+    IncomingInputSlot(Box<[IncomingInputSource]>),
+    TransportShape(Option<ShapeId>),
+    TransportComponent(TransportComponentInventory),
+    CallableFacts(Option<CallableFacts>),
+    BoundaryFacts(Option<BoundaryFacts>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -129,7 +134,15 @@ impl ProductMemo {
     pub fn runtime_demand(&self, executable: &ExecutableKey) -> Option<&ExecutableRuntimeDemand> {
         match self.produced.get(&ProductKey::RuntimeDemand(executable.clone())) {
             Some(ProductValue::RuntimeDemand(demand)) => Some(demand.as_ref()),
-            Some(ProductValue::Unit) | None => None,
+            Some(
+                ProductValue::Unit
+                | ProductValue::IncomingInputSlot(_)
+                | ProductValue::TransportShape(_)
+                | ProductValue::TransportComponent(_)
+                | ProductValue::CallableFacts(_)
+                | ProductValue::BoundaryFacts(_),
+            )
+            | None => None,
         }
     }
 
@@ -176,7 +189,10 @@ pub struct PullSession {
     incoming_inputs: HashMap<InputSlot, Vec<IncomingInputSource>>,
     return_demands: HashMap<ExecutableKey, RuntimeDemand>,
     demanded_transport_positions: HashSet<TransportPosition>,
+    transport_shapes: HashMap<TransportPosition, ShapeId>,
     transport_components: HashMap<TransportPosition, TransportComponentInventory>,
+    callable_facts: HashMap<CallableId, CallableFacts>,
+    boundary_facts: HashMap<BoundaryId, BoundaryFacts>,
     demanded_callables: HashSet<CallableId>,
     demanded_boundaries: HashSet<BoundaryId>,
     executable_index: HashMap<ExecutableKey, usize>,
@@ -194,7 +210,10 @@ impl PullSession {
             incoming_inputs: HashMap::new(),
             return_demands: HashMap::new(),
             demanded_transport_positions: HashSet::new(),
+            transport_shapes: HashMap::new(),
             transport_components: HashMap::new(),
+            callable_facts: HashMap::new(),
+            boundary_facts: HashMap::new(),
             demanded_callables: HashSet::new(),
             demanded_boundaries: HashSet::new(),
             executable_index: HashMap::new(),
@@ -231,8 +250,20 @@ impl PullSession {
         &self.demanded_transport_positions
     }
 
+    pub fn transport_shape(&self, position: &TransportPosition) -> Option<ShapeId> {
+        self.transport_shapes.get(position).copied()
+    }
+
     pub fn transport_component(&self, anchor: &TransportPosition) -> Option<&TransportComponentInventory> {
         self.transport_components.get(anchor)
+    }
+
+    pub fn callable_facts(&self, callable: CallableId) -> Option<&CallableFacts> {
+        self.callable_facts.get(&callable)
+    }
+
+    pub fn boundary_facts(&self, boundary: BoundaryId) -> Option<&BoundaryFacts> {
+        self.boundary_facts.get(&boundary)
     }
 
     pub fn demanded_callables(&self) -> &HashSet<CallableId> {
@@ -284,6 +315,21 @@ impl PullSession {
         self.demanded_transport_positions.extend(positions.iter().cloned());
         self.transport_components
             .insert(anchor.clone(), TransportComponentInventory { anchor, positions });
+    }
+
+    pub fn record_transport_shape(&mut self, position: TransportPosition, shape: ShapeId) {
+        self.demanded_transport_positions.insert(position.clone());
+        self.transport_shapes.insert(position, shape);
+    }
+
+    pub fn record_callable_facts(&mut self, callable: CallableId, facts: CallableFacts) {
+        self.demanded_callables.insert(callable);
+        self.callable_facts.insert(callable, facts);
+    }
+
+    pub fn record_boundary_facts(&mut self, boundary: BoundaryId, facts: BoundaryFacts) {
+        self.demanded_boundaries.insert(boundary);
+        self.boundary_facts.insert(boundary, facts);
     }
 
     pub fn assign_executable_index(&mut self, executable: ExecutableKey, index: usize) {
@@ -394,24 +440,26 @@ impl ProductProducers for WorldProductProducers<'_, '_> {
         super::jobs::runtime_demand::produce_outgoing_input_edges_product(self.world, session, executable)
     }
 
-    fn produce_incoming_input_slot(&mut self, _session: &mut PullSession, slot: &InputSlot) -> PullOutcome {
-        PullOutcome::wait_on_product(ProductKey::IncomingInputSlot(slot.clone()))
+    fn produce_incoming_input_slot(&mut self, session: &mut PullSession, slot: &InputSlot) -> PullOutcome {
+        PullOutcome::Produced(ProductValue::IncomingInputSlot(
+            session.incoming_input_sources(slot).to_vec().into_boxed_slice(),
+        ))
     }
 
-    fn produce_transport_shape(&mut self, _session: &mut PullSession, position: &TransportPosition) -> PullOutcome {
-        PullOutcome::wait_on_product(ProductKey::TransportShape(position.clone()))
+    fn produce_transport_shape(&mut self, session: &mut PullSession, position: &TransportPosition) -> PullOutcome {
+        super::jobs::transport::produce_transport_shape_product(self.world, session, position)
     }
 
-    fn produce_transport_component(&mut self, _session: &mut PullSession, position: &TransportPosition) -> PullOutcome {
-        PullOutcome::wait_on_product(ProductKey::TransportComponent(position.clone()))
+    fn produce_transport_component(&mut self, session: &mut PullSession, position: &TransportPosition) -> PullOutcome {
+        super::jobs::transport::produce_transport_component_product(self.world, session, position)
     }
 
-    fn produce_callable_facts(&mut self, _session: &mut PullSession, callable: CallableId) -> PullOutcome {
-        PullOutcome::wait_on_product(ProductKey::CallableFacts(callable))
+    fn produce_callable_facts(&mut self, session: &mut PullSession, callable: CallableId) -> PullOutcome {
+        PullOutcome::Produced(ProductValue::CallableFacts(session.callable_facts(callable).cloned()))
     }
 
-    fn produce_boundary_facts(&mut self, _session: &mut PullSession, boundary: BoundaryId) -> PullOutcome {
-        PullOutcome::wait_on_product(ProductKey::BoundaryFacts(boundary))
+    fn produce_boundary_facts(&mut self, session: &mut PullSession, boundary: BoundaryId) -> PullOutcome {
+        PullOutcome::Produced(ProductValue::BoundaryFacts(session.boundary_facts(boundary).cloned()))
     }
 }
 
@@ -730,6 +778,105 @@ mod tests {
         );
         assert_eq!(session.root_scans(), 0);
         assert_eq!(session.follow_ups(), 0);
+    }
+
+    #[test]
+    fn world_product_reads_incoming_input_slot_from_session_inventory() {
+        let tel = ConfiguredTelemetry::new();
+        let root = RootId::for_test(6);
+        let caller = fake_executable(root);
+        let callee = fake_executable(root);
+        let slot = InputSlot {
+            executable: callee.clone(),
+            semantic_index: 0,
+        };
+        let source = IncomingInputSource {
+            producer: caller.clone(),
+            value: ValueId::from_u32(9),
+        };
+        let mut driver = ProductDriver::new(&tel, root);
+        driver.session_mut().record_call_edge(DemandedCallEdge {
+            caller,
+            callsite: Some(CallSiteId::from_u32(1)),
+            callee,
+            inputs: vec![(slot.semantic_index, source.clone())],
+        });
+        let mut world = World::new(&tel);
+        let mut producers = WorldProductProducers::new(&mut world);
+
+        let outcome = driver.pull(&mut producers, ProductKey::IncomingInputSlot(slot));
+
+        assert_eq!(
+            outcome,
+            PullOutcome::Produced(ProductValue::IncomingInputSlot(Box::new([source])))
+        );
+        assert_eq!(driver.session().root_scans(), 0);
+        assert_eq!(driver.session().follow_ups(), 0);
+    }
+
+    #[test]
+    fn world_product_transport_artifacts_are_session_backed_not_self_waits() {
+        use super::super::transport::{
+            ActivationSymbol, CallableDescr, CallableFacts, ExecutableSymbol, LaneDescr, ShapeDescr, TransportClass,
+        };
+
+        let tel = ConfiguredTelemetry::new();
+        let root = RootId::for_test(7);
+        let executable = fake_executable(root);
+        let mut world = World::new(&tel);
+        let int = world.types_mut().int();
+        let lane = world.intern_lane(LaneDescr {
+            ty: int,
+            class: TransportClass::Value,
+        });
+        let shape = world.intern_shape(ShapeDescr::Lane(lane));
+        let callable = world.intern_callable(CallableDescr {
+            function: Some(executable.activation.function),
+            capture_shapes: Box::default(),
+            capture_lanes: Box::default(),
+        });
+        let callable_facts = CallableFacts {
+            resolutions: Box::new([ExecutableSymbol {
+                activation: ActivationSymbol {
+                    function: executable.activation.function,
+                    input: Box::default(),
+                },
+                need: executable.need,
+            }]),
+            direct_surfaces: Box::new([Box::new([shape])]),
+            direct_edges: Box::default(),
+            boundary_ids: Box::default(),
+        };
+        let position = TransportPosition::ExecutableReturn {
+            executable: callable_facts.resolutions[0].clone(),
+        };
+        let mut driver = ProductDriver::new(&tel, root);
+        driver.session_mut().record_transport_shape(position.clone(), shape);
+        driver
+            .session_mut()
+            .record_transport_component(position.clone(), vec![position.clone()]);
+        driver
+            .session_mut()
+            .record_callable_facts(callable, callable_facts.clone());
+        let mut producers = WorldProductProducers::new(&mut world);
+
+        assert_eq!(
+            driver.pull(&mut producers, ProductKey::TransportShape(position.clone())),
+            PullOutcome::Produced(ProductValue::TransportShape(Some(shape)))
+        );
+        assert_eq!(
+            driver.pull(&mut producers, ProductKey::TransportComponent(position.clone())),
+            PullOutcome::Produced(ProductValue::TransportComponent(TransportComponentInventory {
+                anchor: position.clone(),
+                positions: vec![position],
+            }))
+        );
+        assert_eq!(
+            driver.pull(&mut producers, ProductKey::CallableFacts(callable)),
+            PullOutcome::Produced(ProductValue::CallableFacts(Some(callable_facts)))
+        );
+        assert_eq!(driver.session().root_scans(), 0);
+        assert_eq!(driver.session().follow_ups(), 0);
     }
 
     #[test]

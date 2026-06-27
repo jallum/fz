@@ -6,7 +6,10 @@ use super::super::body::{
     LoweredTail, ValueId, delivered_value_joins,
 };
 use super::super::drive::{FactKey, Job, JobEffects, current_uses, settled_uses};
-use super::super::identity::{ExecutableKey, ExecutableNeed, FunctionId, RootId};
+use super::super::identity::{ActivationKey, ExecutableKey, ExecutableNeed, FunctionId, RootId};
+use super::super::pull::{
+    InputSlot, ProductKey, ProductValue, PullOutcome, PullSession, PullWait, TransportComponentInventory,
+};
 use super::super::scheduler::FatalError;
 use super::super::semantic::{
     ActivationAnalysis, CallSiteKey, CallableDemand, CallableFlowFact, CallableSurface, ExecutableRuntimeDemand,
@@ -936,6 +939,269 @@ pub(super) fn derive_transport_plan(world: &mut World<'_>, root_id: RootId) -> R
         changed: changed.then_some(FactKey::TransportPlan(root_id)).into_iter().collect(),
         ..JobEffects::default()
     })
+}
+
+pub(crate) fn produce_transport_shape_product(
+    world: &mut World<'_>,
+    session: &mut PullSession,
+    position: &TransportPosition,
+) -> PullOutcome {
+    if let Some(shape) = session.transport_shape(position) {
+        return PullOutcome::Produced(ProductValue::TransportShape(Some(shape)));
+    }
+    let Some(projection) = project_transport_component_product(world, session, position) else {
+        return PullOutcome::Produced(ProductValue::TransportShape(None));
+    };
+    match projection {
+        TransportProductProjection::Waiting(waits) => PullOutcome::Waiting(waits),
+        TransportProductProjection::Produced { shape, .. } => {
+            PullOutcome::Produced(ProductValue::TransportShape(shape))
+        }
+    }
+}
+
+pub(crate) fn produce_transport_component_product(
+    world: &mut World<'_>,
+    session: &mut PullSession,
+    position: &TransportPosition,
+) -> PullOutcome {
+    if let Some(component) = session.transport_component(position).cloned() {
+        return PullOutcome::Produced(ProductValue::TransportComponent(component));
+    }
+    let Some(projection) = project_transport_component_product(world, session, position) else {
+        let component = TransportComponentInventory {
+            anchor: position.clone(),
+            positions: vec![position.clone()],
+        };
+        session.record_transport_component(component.anchor.clone(), component.positions.clone());
+        return PullOutcome::Produced(ProductValue::TransportComponent(component));
+    };
+    match projection {
+        TransportProductProjection::Waiting(waits) => PullOutcome::Waiting(waits),
+        TransportProductProjection::Produced { component, .. } => {
+            PullOutcome::Produced(ProductValue::TransportComponent(component))
+        }
+    }
+}
+
+enum TransportProductProjection {
+    Waiting(Vec<PullWait>),
+    Produced {
+        shape: Option<ShapeId>,
+        component: TransportComponentInventory,
+    },
+}
+
+fn project_transport_component_product(
+    world: &mut World<'_>,
+    session: &mut PullSession,
+    anchor: &TransportPosition,
+) -> Option<TransportProductProjection> {
+    let executable = executable_key_for_transport_position(session.root(), anchor, world.types_mut());
+    let demand = match session.memo().runtime_demand(&executable).cloned() {
+        Some(demand) => demand,
+        None => {
+            return Some(TransportProductProjection::Waiting(vec![PullWait::Product(
+                ProductKey::RuntimeDemand(executable),
+            )]));
+        }
+    };
+
+    let mut runtime_demands = HashMap::from([(executable.clone(), demand)]);
+    let mut executables = HashSet::from([executable]);
+    let mut wait_products = Vec::new();
+    while let Some(next) = expand_transport_product_executables(world, session, &executables, &runtime_demands) {
+        let mut changed = false;
+        for executable in next {
+            if executables.insert(executable.clone()) {
+                changed = true;
+            }
+            if let std::collections::hash_map::Entry::Vacant(entry) = runtime_demands.entry(executable.clone()) {
+                if let Some(demand) = session.memo().runtime_demand(&executable).cloned() {
+                    entry.insert(demand);
+                } else {
+                    wait_products.push(ProductKey::RuntimeDemand(executable));
+                }
+            }
+        }
+        if !wait_products.is_empty() {
+            return Some(TransportProductProjection::Waiting(
+                wait_products.into_iter().map(PullWait::Product).collect(),
+            ));
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    let mut reads = Vec::new();
+    let mut wait_facts = HashSet::new();
+    let mut contexts =
+        collect_transport_contexts(world, &executables, Some(&runtime_demands), &mut reads, &mut wait_facts);
+    if !wait_facts.is_empty() {
+        return Some(TransportProductProjection::Waiting(
+            wait_facts
+                .into_iter()
+                .map(|fact| PullWait::Fact(super::super::facts::FactUse::settled(fact)))
+                .collect(),
+        ));
+    }
+
+    install_session_incoming_inputs(world, session, &mut contexts);
+    let mut facts = TransportFactsBuilder::default();
+    let mut shape_graph = ShapeConstraintGraph::default();
+    let mut memo = ProjectionMemo::default();
+    let mut ordered = executables.iter().cloned().collect::<Vec<_>>();
+    ordered.sort_by_key(|executable| executable_sort_key(executable, world.types()));
+    for executable in &ordered {
+        let Some(context) = contexts.get(executable).cloned() else {
+            continue;
+        };
+        project_one_executable(
+            world,
+            executable,
+            &context,
+            &contexts,
+            &mut facts,
+            &mut shape_graph,
+            &mut memo,
+        );
+    }
+    collect_clause_parameter_equalities(&contexts, &ordered, &mut shape_graph, world.types());
+    seed_callable_capture_inputs(world, &contexts, &mut facts, &mut shape_graph, &mut memo);
+    let call_arg_shapes = call_arg_shapes_from_anchors(world, &contexts, &ordered, &shape_graph);
+    collect_executable_input_constraints(
+        world,
+        &contexts,
+        &mut facts,
+        &ordered,
+        &call_arg_shapes,
+        &mut shape_graph,
+    );
+
+    let union = shape_graph.build_union();
+    if !union.indexes.contains_key(anchor) {
+        let component = TransportComponentInventory {
+            anchor: anchor.clone(),
+            positions: vec![anchor.clone()],
+        };
+        session.record_transport_component(component.anchor.clone(), component.positions.clone());
+        return Some(TransportProductProjection::Produced { shape: None, component });
+    }
+    let root = union.find_existing(anchor);
+    let component_shapes = shape_graph.component_shapes(&union);
+    let shape = component_shapes.get(&root).copied();
+    let positions = union
+        .positions()
+        .filter(|position| union.find_existing(position) == root)
+        .cloned()
+        .collect::<Vec<_>>();
+    let equivalents = ShapeConstraintGraph::equivalents_for(&union);
+    facts.expand_boundary_publications(&equivalents);
+    facts.resolve_publication_source_boundaries(world);
+    let (callables, boundaries) = facts.finish();
+
+    for position in &positions {
+        if let Some(shape) = shape {
+            session.record_transport_shape(position.clone(), shape);
+        }
+    }
+    for (callable, facts) in callables {
+        session.record_callable_facts(callable, facts);
+    }
+    for (boundary, facts) in boundaries {
+        session.record_boundary_facts(boundary, facts);
+    }
+    let component = TransportComponentInventory {
+        anchor: anchor.clone(),
+        positions,
+    };
+    session.record_transport_component(component.anchor.clone(), component.positions.clone());
+    Some(TransportProductProjection::Produced { shape, component })
+}
+
+fn expand_transport_product_executables(
+    world: &World<'_>,
+    session: &PullSession,
+    executables: &HashSet<ExecutableKey>,
+    runtime_demands: &HashMap<ExecutableKey, ExecutableRuntimeDemand>,
+) -> Option<Vec<ExecutableKey>> {
+    let mut next = Vec::new();
+    for executable in executables {
+        let demand = runtime_demands
+            .get(executable)
+            .or_else(|| session.memo().runtime_demand(executable))?;
+        for flow in demand.callable_flows.values() {
+            for resolution in &flow.resolutions {
+                push_executable_unique(&mut next, resolution.clone());
+            }
+        }
+        let analysis = world.activation_analysis(&executable.activation)?;
+        let body = world.lowered_body(executable.activation.function);
+        let callsite_needs = executable_callsite_needs(&body, &analysis.reachable_clauses, executable.need);
+        for callsite in &analysis.callsites {
+            let summary = world.callsite_summary(&CallSiteKey {
+                activation: executable.activation.clone(),
+                callsite: *callsite,
+            })?;
+            let need = callsite_needs.get(callsite).copied().unwrap_or(ExecutableNeed::Value);
+            for target in &summary.targets {
+                let Some(activation) = target.activation.clone() else {
+                    continue;
+                };
+                push_executable_unique(&mut next, ExecutableKey { activation, need });
+            }
+        }
+    }
+    Some(next)
+}
+
+fn push_executable_unique(target: &mut Vec<ExecutableKey>, executable: ExecutableKey) {
+    if !target.contains(&executable) {
+        target.push(executable);
+    }
+}
+
+fn install_session_incoming_inputs(world: &World<'_>, session: &PullSession, contexts: &mut TransportContexts) {
+    for executable in contexts.by_executable.keys() {
+        let input_len = executable.activation.input_len(world.types());
+        for semantic_index in 0..input_len {
+            let slot = InputSlot {
+                executable: executable.clone(),
+                semantic_index,
+            };
+            let sources = session
+                .incoming_input_sources(&slot)
+                .iter()
+                .map(|source| (source.producer.clone(), source.value))
+                .collect::<Vec<_>>();
+            if !sources.is_empty() {
+                contexts
+                    .incoming_input_sources
+                    .insert((executable.clone(), semantic_index), sources);
+            }
+        }
+    }
+}
+
+fn executable_key_for_transport_position(
+    root: RootId,
+    position: &TransportPosition,
+    types: &mut Types,
+) -> ExecutableKey {
+    let symbol = match position {
+        TransportPosition::ExecutableInput { executable, .. }
+        | TransportPosition::ExecutableReturn { executable }
+        | TransportPosition::ResumePayload { executable, .. }
+        | TransportPosition::ReturnPayload { executable, .. }
+        | TransportPosition::CallArg { executable, .. }
+        | TransportPosition::EntryCapture { executable, .. }
+        | TransportPosition::Value { executable, .. } => executable,
+    };
+    ExecutableKey {
+        activation: ActivationKey::from_inputs(root, symbol.activation.function, &symbol.activation.input, types),
+        need: symbol.need,
+    }
 }
 
 fn collect_transport_contexts(

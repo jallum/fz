@@ -2593,6 +2593,160 @@ end
 }
 
 #[test]
+fn compiler2_pull_transport_keeps_enum_reduce_operator_refs_direct_callable() {
+    let source = r#"
+fn main() do
+  {
+    Enum.reduce([1, 2, 3], 0, &Kernel.+/2),
+    Enum.reduce([1, 2, 3], 0, &+/2)
+  }
+end
+"#;
+
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&["fz", "compiler2", "pull"], capture.handler());
+    let mut world = World::new(&tel);
+    world.submit_code(
+        Some("pull_transport_enum_reduce_operator_refs.fz".to_string()),
+        source.to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::TupleFields(2));
+    drive_until_transport_plan(
+        &mut world,
+        root,
+        "Enum.reduce operator-ref fixture should settle legacy facts before product comparison",
+    );
+
+    let plan = transport_plan(&world, root);
+    let main = executable_for(&world, &plan, "main", 0);
+    let main_return = TransportPosition::ExecutableReturn { executable: main };
+    let executables = plan
+        .executable_membership
+        .iter()
+        .map(|symbol| executable_key_for_symbol(&mut world, root, symbol))
+        .collect::<HashSet<_>>();
+    let mut driver = ProductDriver::new(&tel, root);
+    {
+        let mut producers = WorldProductProducers::new(&mut world);
+        pull_runtime_demands_for_executables(&mut driver, &mut producers, &executables);
+        for executable in &executables {
+            assert_product_produced(
+                driver.pull(&mut producers, ProductKey::OutgoingInputEdges(executable.clone())),
+                "outgoing input edges should be derivable before transport shape projection",
+            );
+        }
+        assert_product_produced(
+            driver.pull(&mut producers, ProductKey::TransportShape(main_return.clone())),
+            "main return transport shape should be product-derivable",
+        );
+    }
+    driver.finish_session();
+
+    let returned = match driver.session().memo().get(&ProductKey::TransportShape(main_return)) {
+        Some(ProductValue::TransportShape(Some(shape))) => *shape,
+        other => panic!("main return transport product should contain a concrete shape, got {other:?}"),
+    };
+    let ShapeDescr::Tuple(items) = shape_descr(&world, returned) else {
+        panic!("product main/0 should return the two reduced integer results as a tuple")
+    };
+    assert_eq!(items.len(), 2, "product main/0 should return one field per reduce call");
+    assert!(
+        shape_leaf_lanes(&world, returned)
+            .iter()
+            .all(|(_, lane)| world.types().is_integer(&world.lane(*lane).ty)),
+        "product return leaves should stay integer lanes; returned={:?}; leaves={:?}",
+        shape_descr(&world, returned),
+        shape_leaf_lanes(&world, returned)
+            .into_iter()
+            .map(|(shape, lane)| (shape, lane, world.lane(lane).ty))
+            .collect::<Vec<_>>()
+    );
+
+    let plus_callables = driver
+        .session()
+        .demanded_callables()
+        .iter()
+        .filter_map(|callable| {
+            let facts = driver.session().callable_facts(*callable)?;
+            let function = world.callable(*callable).function?;
+            function_is(&world, function, "+", 2).then_some((*callable, facts))
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        !plus_callables.is_empty(),
+        "product transport should produce callable facts for Kernel.+/2"
+    );
+    assert!(
+        plus_callables
+            .iter()
+            .any(|(_, facts)| facts.direct_surfaces.iter().any(|surface| surface.len() == 2)),
+        "product transport should keep reducer demand as a direct two-argument callable surface: {plus_callables:?}"
+    );
+    assert!(
+        plus_callables.iter().all(|(_, facts)| facts.boundary_ids.is_empty()),
+        "product transport should not publish first-class boundaries for operator-ref reducers: {plus_callables:?}"
+    );
+    assert_eq!(driver.session().root_scans(), 0);
+    assert_eq!(driver.session().follow_ups(), 0);
+    assert!(
+        capture.count(&["fz", "compiler2", "pull", "product", "requested"]) > 0,
+        "product transport path should emit product request telemetry"
+    );
+}
+
+#[test]
+fn compiler2_pull_transport_shape_is_stable_across_product_request_order() {
+    let source = r#"
+fn main() do
+  {
+    Enum.reduce([1, 2, 3], 0, &Kernel.+/2),
+    Enum.reduce([1, 2, 3], 0, &+/2)
+  }
+end
+"#;
+
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new(&tel);
+    world.submit_code(
+        Some("pull_transport_order_stability_enum_reduce_operator_refs.fz".to_string()),
+        source.to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::TupleFields(2));
+    drive_until_transport_plan(
+        &mut world,
+        root,
+        "Enum.reduce operator-ref fixture should settle legacy facts before product order comparison",
+    );
+
+    let plan = transport_plan(&world, root);
+    let main_return = TransportPosition::ExecutableReturn {
+        executable: executable_for(&world, &plan, "main", 0),
+    };
+    let executables = plan
+        .executable_membership
+        .iter()
+        .map(|symbol| executable_key_for_symbol(&mut world, root, symbol))
+        .collect::<Vec<_>>();
+    let mut reversed = executables.clone();
+    reversed.reverse();
+
+    let forward_shape =
+        pull_transport_shape_for_executables_in_order(&tel, &mut world, root, &executables, main_return.clone());
+    let reverse_shape = pull_transport_shape_for_executables_in_order(&tel, &mut world, root, &reversed, main_return);
+
+    assert_eq!(
+        forward_shape, reverse_shape,
+        "product transport shape must not depend on product request order"
+    );
+    assert_eq!(
+        shape_descr(&world, forward_shape),
+        shape_descr(&world, reverse_shape),
+        "equal product shapes should name the same structural descriptor"
+    );
+}
+
+#[test]
 fn compiler2_transport_plan_has_no_dangling_direct_enum_reduce_callable() {
     let source = include_str!("../../fixtures2/00010_enum_reduce_main.fz");
 
@@ -3676,6 +3830,47 @@ fn pull_runtime_demands_for_executables(
             driver.session().memo().runtime_demand(executable).is_some(),
             "runtime-demand product should exist for {executable:?}"
         );
+    }
+}
+
+fn pull_transport_shape_for_executables_in_order(
+    tel: &ConfiguredTelemetry,
+    world: &mut World<'_>,
+    root: super::RootId,
+    executables: &[ExecutableKey],
+    position: TransportPosition,
+) -> ShapeId {
+    let mut driver = ProductDriver::new(tel, root);
+    {
+        let mut producers = WorldProductProducers::new(world);
+        for _ in 0..executables.len().saturating_mul(2).max(1) {
+            for executable in executables {
+                match driver.pull(&mut producers, ProductKey::RuntimeDemand(executable.clone())) {
+                    PullOutcome::Produced(ProductValue::RuntimeDemand(_)) => {}
+                    PullOutcome::Produced(other) => {
+                        panic!("runtime-demand product for {executable:?} produced unexpected value {other:?}")
+                    }
+                    PullOutcome::Waiting(waits) => {
+                        panic!("runtime-demand product for {executable:?} waited on prerequisites: {waits:?}")
+                    }
+                }
+            }
+        }
+        for executable in executables {
+            assert_product_produced(
+                driver.pull(&mut producers, ProductKey::OutgoingInputEdges(executable.clone())),
+                "outgoing input edges should be derivable before transport shape projection",
+            );
+        }
+        assert_product_produced(
+            driver.pull(&mut producers, ProductKey::TransportShape(position.clone())),
+            "transport shape should be product-derivable",
+        );
+    }
+
+    match driver.session().memo().get(&ProductKey::TransportShape(position)) {
+        Some(ProductValue::TransportShape(Some(shape))) => *shape,
+        other => panic!("transport product should contain a concrete shape, got {other:?}"),
     }
 }
 
