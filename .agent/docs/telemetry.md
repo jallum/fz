@@ -202,8 +202,7 @@ slots bump revisions only when their aggregate value changes. Handlers and
 tests that care about "did this semantic thing actually change?" should key on
 the reported revision or the published fact/output, not on the mere existence
 of a repeated event. This matters most for joined facts like
-`FactValue::Inputs(Vec<Ty>)`, callsite summaries, semantic closure, and
-materialized programs.
+`FactValue::Inputs(Vec<Ty>)`, callsite summaries, and product artifacts.
 
 **Local type ids are world-owned facts.** Compiler2 `Ty` values are interned
 `u32` handles owned by `World.types`. They are valid only inside that one
@@ -223,27 +222,19 @@ opaque metadata, the emitted log shows the actual precipitating `Job`,
 behind the final outcome. There is no extra "job_fatal" event and no redundant
 "fact_published" stream.
 
-Artifact jobs lean on that raw `JobEffects` payload as a contract surface. The
-tests assert that:
+Product artifact producers lean on pull telemetry as their contract surface. The
+tests assert that the interpreter front door requests `RootBackendProduct(root)`,
+that producers wait on exact `ProductKey` / `FactUse<FactKey>` prerequisites,
+and that no forbidden root artifact jobs fire on the product path. Legacy job
+span assertions remain useful for macro/native compatibility paths, but they
+are not the target model for new artifact work.
 
-- `MaterializeRoot(root)` reads only `SemanticClosed(root)`
-- `DeriveAbiReady(root)` reads only `MaterializedProgram(root)`
-- `DeriveEmissionReady(root)` reads only `AbiReadyProgram(root)`
-- `LowerBackendProgram(root)` reads only `EmissionReadyProgram(root)`
-- `LowerNativeProgram(root)` reads only `BackendProgram(root)`
-- `BuildMacroExecutable(function)` waits on `BackendProgram(macro_root)` and
-  publishes `MacroExecutable(function)` without scheduling
-  `LowerNativeProgram(macro_root)`
-
-So backend code that asks semantic, type, or reachability questions after the
-artifact boundary is visible as the wrong `reads`/`waits` shape on the job span,
-not just as a vague architectural complaint.
-
-Transport plan construction emits `[fz, compiler2, transport_flow, defined]`.
-The event is the final runtime-transport authority signal: shared descriptor
-interners plus one root-scoped `TransportPlan(root)`. `RuntimeDemand` is
-pre-plan evidence; `TransportPosition -> ShapeId`, `CallableId` facts,
-`BoundaryId` contracts, and `CodegenSeamFact` rows are the settled product.
+Transport product construction emits `[fz, compiler2, transport_flow, defined]`
+for the legacy root transport signal and `[fz, compiler2, pull, product, *]` for
+per-position product demand. The product path treats `RuntimeDemand(E)` as
+pre-transport evidence; `TransportPosition -> ShapeId`, `CallableId` facts,
+`BoundaryId` contracts, and `CodegenSeamFact` rows are produced for the
+positions and boundaries named by demanded executable products.
 
 The transport-flow measurements are:
 
@@ -322,8 +313,8 @@ all use this same event with `origin=fz_compiler`.
 
 **Compiler2 tests should observe telemetry, not world internals.** The common
 captures live in `src/compiler2/drive_test.rs` and assert on emitted
-definitions, work-graph steps, callsite summaries, semantic closure, and the
-full artifact ladder through `NativeProgram(root)`. The quicksort,
+definitions, work-graph steps, callsite summaries, product pulls, and native
+handoff products where relevant. The quicksort,
 `Enum.reduce`, and variadic-extern contracts are the fast summary probe; the
 compiler2-owned native JIT fixture tests prove the in-house backend can consume
 `NativeProgram(root)` directly, while the `Compiler2::compile_root_jit` /

@@ -31,19 +31,22 @@ loop drive parsing, lowering, type inference, and artifact emission.
 
 ## Jobs are rules; effects are their contract
 
-A job returns `JobEffects`:
+The generic scheduler still runs legacy/source/semantic jobs. A job returns
+`JobEffects`:
 
 ```text
 reads     facts it used        -> "wake me when these change"   (subscriber)
 waits     facts it needed but  -> "wake me when these appear"   (waiter; also
           could not read yet       counts as unresolved work)
 outputs   (FactKey, FactValue) -> facts this job OWNS this run
-follow_up jobs to enqueue now
+follow_up legacy jobs to enqueue now
 ```
 
-A job that cannot proceed records `waits` and the `follow_up` jobs that will
-produce them, then returns. It is not an error to be blocked; it is how
-ordering emerges without a schedule.
+A job that cannot proceed records `waits` and returns. Legacy jobs may also
+name `follow_up` jobs, but new artifact producers must not use that mechanism:
+artifact work is demanded by `ProductKey` through the pull driver below.
+Blocked work is not an error; exact waits are how ordering emerges without a
+separate phase schedule.
 
 ## Waiting extends, concluding replaces
 
@@ -93,7 +96,7 @@ while let Some(job) = agenda.pop():
         waiting?  extend reads/claims, dirty the job's claims
         else      replace reads/waits/claims (retraction final)
         classify each change: ascent -> wake; shift -> rebase + wake
-        enqueue dependents, then follow_ups
+        enqueue dependents, then legacy follow_ups
 ```
 
 The loop ends as `Resolved` (agenda empty, no waiters), `Unresolved { waits }`
@@ -102,6 +105,46 @@ The loop ends as `Resolved` (agenda empty, no waiters), `Unresolved { waits }`
 **Errors are not facts.** A job returning `FatalError` aborts the whole drive;
 the diagnostic goes out through telemetry. Closure never masks an error, and
 there is no diagnostics fact family to reconcile.
+
+## Product pulls for artifacts
+
+The interpreter artifact path is not a scheduler pass and it does not enqueue
+follow-up jobs. `Compiler2::run_root_interp` asks the product driver for
+`ProductKey::RootBackendProduct(root)`. Each product producer returns either a
+`ProductValue` or an exact set of waits:
+
+```text
+ProductKey =
+  RootBackendProduct(root)
+  BackendExecutable(E)
+  AbiExecutable(E)
+  MaterializedExecutable(E)
+  ExecutableEffects(E)
+  RuntimeDemand(E)
+  OutgoingInputEdges(E)
+  IncomingInputSlot(slot)
+  TransportShape(position)
+  TransportComponent(position)
+  CallableFacts(id)
+  BoundaryFacts(id)
+
+PullWait = Product(ProductKey) | Fact(FactUse<FactKey>)
+```
+
+The pull driver is the only code that expands a product wait into its producer.
+A producer may say "I need `AbiExecutable(E)`" or "I need settled
+`ReturnType(A)`"; it may not schedule unrelated work under another name. Fact
+waits are satisfied at the Compiler2 front door by driving only the direct fact
+producer needed for that exact fact, while deferring forbidden root artifact
+jobs for the submitted root.
+
+`PullSession` is request-local product state. It memoizes produced products and
+records the symbolic inventory discovered by demanded products: materialized,
+ABI, and backend executables; runtime demand; incoming input sources; transport
+shapes/components; callable/boundary facts; and the final dense executable
+index. The final dense `BackendProgram` packaging is the only root-wide assembly
+step. It packages the symbolic backend executables already present in the
+session; it does not scan the fact table to rediscover artifact membership.
 
 ## Tiny walkthrough
 

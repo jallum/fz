@@ -1,16 +1,17 @@
 # Semantic Fixpoint
 
-This is the heart of Compiler2: turning a root request into a **settled**
-semantic frontier of typed, reachable activations and executables. The current
-engine distinguishes two notions of fact readiness:
+Compiler2 semantic facts are local evidence about typed, reachable activations
+and executable demand. Artifact readiness is now pulled by product keys; the
+semantic side still publishes facts with two readiness levels:
 
 - `Current(fact)`: the fact is present and may be read by iterative semantic
   work.
 - `Settled(fact)`: every current publisher is clean, so downstream work may
   consume it as complete for now.
 
-Four jobs shape the frontier: `SeedRoot`, `SeedActivation`,
-`AnalyzeActivation`, and `SealSemanticClosure`.
+`SeedRoot`, `SeedActivation`, and `AnalyzeActivation` shape those local facts.
+`SealSemanticClosure` and `SemanticClosed(root)` remain legacy/root-artifact
+compatibility machinery, not the target model for new artifact work.
 
 ## What an activation is today
 
@@ -33,10 +34,10 @@ ActivationInputs(key) # joined caller evidence (cumulative; per-publisher
 live. A clause whose params outnumber the joined evidence yields no evidence
 that round — incomplete inputs never default to a type.
 
-## Discovery is still producer-driven
+## Executable demand is local semantic output
 
-`AnalyzeActivation(a)` walks `a`'s reachable clauses, infers value and return
-types, and publishes semantic outputs. The walk's path results are
+`AnalyzeActivation(a)` follows `a`'s reachable clauses, infers value and return
+types, and publishes semantic outputs. Path results are
 `Option<Ty>`: `None` means "no evidence on this path yet" — a pending callee
 (`prepare_function_call` returns the callee's return evidence as-is and keeps
 the subscription that re-wakes the caller; no waits on returns, so mutual
@@ -67,7 +68,7 @@ Activation(callee_key)
 Executable(callee_key, need)
 ```
 
-That publication is how the frontier grows. No separate sweep discovers
+That publication is how executable demand grows. No separate sweep discovers
 reachable callees. `ActivationInputs(a)` is cumulative for semantic-analysis
 publishers: if an `AnalyzeActivation` rerun temporarily stops seeing a callsite,
 the publisher keeps its prior activation-input frontier and only adds/widens new
@@ -98,57 +99,43 @@ target list is keyed by callee identity: repeated observations of the same
 callee join their surface inputs and return evidence before artifact/native sees
 the fact. The summary does not synthesize a new activation key while joining;
 activation demand remains owned by the separate `Activation(callee_key)`
-publications from the semantic walk. Downstream phases consume that
+publications from local semantic analysis. Downstream products consume that
 already-joined boundary surface instead of rediscovering or deduplicating
 semantic targets.
 
-## The seal job now consumes settled facts
+## Product waits replace root semantic closure
 
-`SealSemanticClosure(root)` no longer carries its own freshness machinery. It
-uses settled-presence waits for type-bearing prerequisites, reads
-`CallSiteTargets` as the stable membership signal, assembles the reachable
-activation/executable set, and publishes `SemanticClosed(root)` when that set is
-clean. There is no `DependencySnapshot`, no `semantic_closure_is_current`, and
-no manual revision polling.
+The product path consumes settled facts directly. For one executable `E`,
+`MaterializedExecutable(E)` waits on settled `ActivationAnalyzed(E.activation)`,
+settled `ReturnType(E.activation)`, settled callsite summaries for that local
+activation, `RuntimeDemand(E)`, `OutgoingInputEdges(E)`, and the transport
+positions required by the local body. It returns `PullWait::Fact` or
+`PullWait::Product` for those exact prerequisites.
 
-That means artifact work can simply wait on `Settled(SemanticClosed(root))`
-instead of trying to infer freshness from presence plus a stored revision set.
+The root product waits on `RootEntry(root)`, `Recursive(entry)`, and
+`DispatchMask(entry)` only so it can key the entry executable, then asks for
+`BackendExecutable(entry)`. Additional executables enter the request through
+symbolic call edges and callable entries recorded by already demanded products.
+There is no `SemanticClosed(root)` prerequisite on the product path and no
+root-wide semantic scan that decides artifact membership.
 
-The seal never publishes activation facts. The entry activation is seeded by
-`SeedRoot`; a direct callee's activation is published by its caller's
-concluding `AnalyzeActivation`. A **latent executable** — a callable reached
-only through the runtime-demand frontier, never a direct call edge (an escaped
-or opaque callable, like a reducer captured by a returned suspend
-continuation) — has no such concluding publisher, so the seal demands a
-`SeedActivation(key)` for it and gates on `Settled(Activation(key))` like any
-other callee. `SeedActivation` publishes `Activation` + `ActivationInputs` and
-follow-ups `AnalyzeActivation`, and **concludes**. The seal must not seed these
-itself: a *blocked* publisher's claims are marked dirty and never settle, so a
-seal that both published a latent activation and waited on its settledness
-would wait on its own perpetually-dirty output forever.
-
-Runtime demand follows the same boundary. `DeriveRuntimeDemand(executable)`
-owns one `RuntimeDemand(executable)` fact; the seal no longer computes a
-root-wide runtime-demand monolith. During sealing, `SealSemanticClosure(root)`
-waits on each member executable's settled runtime-demand fact, reads the
-settled payloads, and discovers the next latent executable frontier from those
-facts. The derivation may read current runtime-demand facts for executable
-dependencies it can name cheaply from the executable's own body or prior
-callable-flow facts, but it must not scan the whole semantic closure to rebuild
-a global demand map.
+`RuntimeDemand(E)` is also a product on the new path. It derives demand from
+the current session's incoming inputs, local callable-flow facts, and named
+callee/callable products. It does not rebuild a global runtime-demand map from
+all semantic facts.
 
 ## Current vs settled is the key boundary
 
-Semantic jobs iterate on **current** evidence. Artifact/backend jobs consume
-only **settled** evidence.
+Semantic jobs iterate on **current** evidence. Product artifact producers consume
+only **settled** fact evidence.
 
 Examples:
 
 ```text
 AnalyzeActivation(a)      reads Current(ReturnType(callee))
-SealSemanticClosure(root) waits on Settled(ReturnType(a))
-MaterializeRoot(root)     waits on Settled(SemanticClosed(root))
-DeriveAbiReady(root)      waits on Settled(MaterializedProgram(root))
+MaterializedExecutable(E) waits on Settled(ReturnType(a))
+AbiExecutable(E)          waits on Product(MaterializedExecutable(E))
+BackendExecutable(E)      waits on Product(AbiExecutable(E))
 ```
 
 This is the important line in the current design: type values are not used to
@@ -188,8 +175,9 @@ the basis for the remaining type-system tickets.
 - `AnalyzeActivation(a)` owns `ActivationAnalyzed(a)`, `ReturnType(a)`,
   `CallSiteTargets(...)`, `CallSiteSummary(...)`, and any callee demand facts it
   publishes.
-- `SealSemanticClosure(root)` owns only `SemanticClosed(root)`. It observes the
-  settled semantic frontier; it does not manually prove freshness anymore.
+- Product artifact producers own request-local `ProductValue`s in
+  `PullSession`, not scheduler facts. They wait on settled semantic facts by
+  exact key and must not publish activation facts or schedule follow-up jobs.
 
 ## Module facts at the walk's gates (fz-rh2.17.5.9)
 

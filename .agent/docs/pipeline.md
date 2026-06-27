@@ -1,9 +1,9 @@
 # Pipeline: From Source To Artifact
 
-The compiler turns submitted source plus a root request into a frozen, 
-backend-ready program — and touches only what the root reaches. This doc traces 
-that journey across the job families. The engine underneath is `fact-engine`; 
-the semantic core is `semantic-fixpoint`.
+The compiler turns submitted source plus a root request into a frozen,
+backend-ready program — and touches only what the root reaches. This doc traces
+that journey across direct fact producers and product-keyed artifact pulls. The
+engine underneath is `fact-engine`; the semantic core is `semantic-fixpoint`.
 
 ## Identity first, work on demand
 
@@ -13,9 +13,12 @@ immediately; defining it later fills the slot behind that id. A function can be
 definition happens unless a root reaches it, so an uncalled function stays a cold
 definition fact and never grows an activation.
 
-## The job families
+## Fact and product families
 
-All families share one agenda; "stratum" is a write boundary, not a pass.
+Fact families share one agenda; "stratum" is a write boundary, not a pass. The
+artifact path for interpreter execution is product-keyed and request-local:
+product producers return `ProductValue` or exact `PullWait`s, and the product
+driver is the only code that expands product waits.
 
 ```text
 source    IndexCode, ScopeCode, DefineModule, ExpandFunctionSource, DefineFunction
@@ -29,46 +32,60 @@ body      LowerFunction
 dispatch  ReifyGuardDispatch, PlanEntryDispatch
             guard-pure helpers and clause matching -> GuardDispatch/EntryDispatch
 macro     BuildMacroExecutable
-            one demanded defmacro -> hidden macro root -> BackendProgram -> MacroExecutable
+            legacy compile-time path: one demanded defmacro -> hidden macro root
+            -> BackendProgram -> MacroExecutable
 keying    DeriveRecursive, DeriveDispatchMask
             stable per-function facts used to canonicalize activation keys
-semantic  SeedRoot, AnalyzeActivation, SealSemanticClosure
-            the root-scoped type+demand fixpoint -> SemanticClosed
-artifact  MaterializeRoot
-            freeze the closed set -> MaterializedProgram
-          DeriveAbiReady
-            make ABI lanes, return delivery, and callable entries explicit -> AbiReadyProgram
-          DeriveEmissionReady
-            assign stable emission inventory -> EmissionReadyProgram
-          LowerBackendProgram
-            attach settled call targets, callable-boundary obligations, and extern wire classes
-            to structured function bodies -> BackendProgram
+semantic  SeedRoot, SeedActivation, AnalyzeActivation
+            root entry facts, activation evidence, return types, callsite targets,
+            callsite summaries, and executable demand
+product   RootBackendProduct(root)
+            final dense interpreter package for a root
+          BackendExecutable(E)
+            one symbolic backend executable
+          AbiExecutable(E)
+            ABI lanes, return delivery, entry captures, resumes, and callable entries
+            for one executable
+          MaterializedExecutable(E)
+            one pruned body, selected call edges, local return/value types, and local
+            transport positions
+          ExecutableEffects(E)
+            effect summary over the symbolic call-edge closure demanded by E
+          RuntimeDemand(E), OutgoingInputEdges(E), IncomingInputSlot(slot)
+            request-local representation demand and input-source accounting
+          TransportShape(position), TransportComponent(position),
+          CallableFacts(id), BoundaryFacts(id)
+            addressable transport and callable-boundary products
 ```
 
-The artifact family is a one-way ladder:
+The product inventory is not a root artifact ladder. A demanded executable forms
+the product chain below, and each product can name only its exact product/fact
+prerequisites:
 
 ```text
-MaterializedProgram(root)
-  -> AbiReadyProgram(root)
-  -> EmissionReadyProgram(root)
-  -> BackendProgram(root)
-  -> NativeProgram(root)
+BackendExecutable(E)
+  <- AbiExecutable(E)
+     <- MaterializedExecutable(E)
+     <- ExecutableEffects(E)
+     <- TransportShape/TransportComponent positions named by E
+     <- RuntimeDemand(E), OutgoingInputEdges(E), IncomingInputSlot(slot)
 ```
 
-Those rungs are derived mechanically from the closed artifact below them. They
-do not reopen semantic discovery. `NativeProgram(root)` is intentionally a
-separate lowering step above `BackendProgram(root)`, not a side query back into
-semantic or planner state.
+`RootBackendProduct(root)` is the final assembly boundary. It keys the root
+entry, pulls `BackendExecutable(entry)`, follows symbolic backend call edges and
+callable entries already recorded in the request-local `PullSession`, assigns
+dense executable indices, and packages the `BackendProgram`. It does not consume
+`SemanticClosed(root)`, `TransportPlan(root)`, or the old root artifact ladder.
 
 `RootEntry.kind` decides where a root is allowed to go:
 
 - `RootKind::Runtime` is a user/runtime entry request. It uses the submitted
-  entry arity, rejects macro entry functions, and continues from
-  `BackendProgram(root)` to `NativeProgram(root)`.
+  entry arity, rejects macro entry functions, and the interpreter front door
+  pulls `RootBackendProduct(root)`.
 - `RootKind::Macro` is a hidden compile-time entry request created only by
   `BuildMacroExecutable`. It uses the macro ABI input vector
-  `__CALLER__ + captures + quoted args`, stops at `BackendProgram(root)`, and
-  publishes `MacroExecutable(function)` for the macro expander.
+  `__CALLER__ + captures + quoted args`, uses the legacy backend program path,
+  and publishes `MacroExecutable(function)` for the macro expander.
 
 ## A root's journey
 
@@ -77,24 +94,24 @@ submit_root(main/0)
   SeedRoot(root)
     publishes RootEntry, and once main is defined + key facts exist:
       Activation(root, main, []) , Executable(...)
-      follow-ups: LowerFunction(main), PlanEntryDispatch(main),
-                  AnalyzeActivation(entry), SealSemanticClosure(root)
-  AnalyzeActivation walks main, resolves callsites, contributes callee
-    Activation/Executable facts -> the frontier grows itself (emergent)
-  SealSemanticClosure observes the frontier; when it settles, writes
-    SemanticClosed(root) and enqueues MaterializeRoot(root)
-  MaterializeRoot freezes the closed set into MaterializedProgram(root),
-    pruning unreachable clauses and turning semantically cold local-control
-    entries into explicit halt stubs
-  DeriveAbiReady(root) derives ABI lanes, return delivery, and callable-boundary facts
-  DeriveEmissionReady(root) derives stable emission inventory
-  LowerBackendProgram(root) derives the backend-consumable handoff
-  LowerNativeProgram(root) derives the CPS/native handoff for compiler2-owned codegen
+  ProductDriver pulls RootBackendProduct(root)
+    waits on settled RootEntry(root), Recursive(main), DispatchMask(main)
+    pulls BackendExecutable(entry E)
+      pulls AbiExecutable(E)
+        pulls MaterializedExecutable(E)
+          waits on settled ActivationAnalyzed(E.activation), ReturnType(E.activation),
+          and local CallSiteSummary facts
+          pulls RuntimeDemand(E), OutgoingInputEdges(E), and local TransportShape products
+        pulls ExecutableEffects(E)
+        pulls EntryCapture, resume, input, return, and callable-boundary transport products
+      lowers one symbolic backend executable
+    packages the request-local symbolic executable inventory into BackendProgram(root)
 ```
 
-Each callee pulls its own `LowerFunction` / `PlanEntryDispatch` /
-`DeriveRecursive` / `DeriveDispatchMask` as the analysis needs them, so the
-strata interleave per function rather than running front-to-back.
+Each fact wait names the exact prerequisite: `LowerFunction` /
+`PlanEntryDispatch` / `DeriveRecursive` / `DeriveDispatchMask` run because a
+product asked for a fact that requires them. New artifact producers must not
+self-schedule or smuggle broad follow-up work into that path.
 
 Root submission is not a source-publication phase. `submit_root` creates the
 root query and enqueues `SeedRoot(root)` only. If the entry function is not
@@ -105,20 +122,21 @@ that function. That source `ScopeCode` may wait on the runtime prelude's
 code id. Unrelated submitted code therefore stays indexed-but-unscoped unless a
 root, explicit demand, or active late-code path actually asks for its surface.
 
-Macro executable readiness follows the same artifact ladder but with a hidden
-macro root:
+Macro executable readiness still uses legacy scheduler jobs with a hidden macro
+root:
 
 ```text
 demand BuildMacroExecutable(inc/1)
   waits for FunctionDefined(inc/1)
   creates macro root input [Any(__CALLER__), Any(x)]
   waits on BackendProgram(macro_root)
-    follow-ups: SeedRoot(macro_root), LowerBackendProgram(macro_root)
+    legacy follow-ups: SeedRoot(macro_root), LowerBackendProgram(macro_root)
   publishes MacroExecutable(inc/1)
 ```
 
 The macro root does not schedule `LowerNativeProgram`; compile-time macro
-execution uses the backend interpreter over the quoted source heap.
+execution uses the backend interpreter over the quoted source heap. This is
+compatibility behavior, not the model to copy for new artifact work.
 
 `Fz.Compiler.define(source_root, __ENV__)` is the source-tier publication point
 for definitions. It receives compiler-shaped quoted AST on the active source
@@ -239,33 +257,35 @@ templates. That choice is derived from the reachable receive-outcome entry
 graph, not from the first tail in the clause body, so branches and local
 resumes cannot silently reclassify the join seam.
 
-## The artifact boundary is one-way
+## The artifact boundary is product-keyed
 
-`MaterializeRoot` gates on `SemanticClosed(root)` and reads the per-executable
-facts already named by that closed frontier, including `RuntimeDemand(E)`. It
-clones the closed executable set, prunes each body to its reachable clauses, and
-freezes each live callsite to its selected callee. It cannot ask a new type
-question or discover a new callee.
+`MaterializedExecutable(E)` is the first backend-owned product. It waits on
+settled local semantic facts for `E.activation`, `RuntimeDemand(E)`,
+`OutgoingInputEdges(E)`, and the transport shapes required by that local body.
+It clones and prunes one body, freezes that executable's live callsites to
+selected call edges, and records symbolic callee edges for later product pulls.
+It cannot ask a new type question or discover a callee except through the
+settled callsite facts for the activation it is materializing.
 
-- If a constituent the closure named is missing, it does not improvise — it
-  waits for a fresh closure (`SealSemanticClosure` re-runs).
-- If a callsite the closure claimed is genuinely unresolvable, it is a fatal
+- If a local prerequisite is missing, it returns a `PullWait` for that exact fact
+  or product.
+- If a settled callsite is genuinely unresolvable, it is a fatal
   `incomplete-semantic-plan` diagnostic.
 
-So semantics close, then artifacts consume; growth across that line is an error,
-not a feature.
+So semantic facts settle locally, then products consume those facts by key.
+Growth across that line is represented by another named product/fact wait, not
+by a root pass.
 
 Runtime demand is what makes that line precise for *representation*. A semantic
-closure fact — an activation, a callsite summary, an exact callable surface — is
+fact — an activation, a callsite summary, an exact callable surface — is
 evidence about what the program *means*; it is never an obligation to
-materialize a runtime value. Representation is derived only after semantic
-closure settles, from `RuntimeDemand(executable)`: a value earns an ABI lane, a
-tuple earns field lanes, and a callable earns a first-class boundary *only* when
-a settled demand asks for one. One shared boundary-transport model governs every
-runtime-carried value — inputs, executable returns, delivered resumes, and
-closure captures all draw their shape from the same demand-derived recursive
-layout family, so a return can never collapse to a narrower vocabulary than an
-input.
+materialize a runtime value. Representation is derived from
+`RuntimeDemand(E)`: a value earns an ABI lane, a tuple earns field lanes, and a
+callable earns a first-class boundary *only* when a settled product demand asks
+for one. One shared boundary-transport model governs every runtime-carried
+value — inputs, executable returns, delivered resumes, and closure captures all
+draw their shape from the same demand-derived recursive layout family, so a
+return can never collapse to a narrower vocabulary than an input.
 
 The exact callable surfaces demand reads from live in
 `CallSiteSummary.targets[*].surface_inputs`: that is the authority for which
@@ -273,7 +293,7 @@ callable shape a call actually uses, and it is small and executable-origin-aware
 by construction — it names the surfaces a body proves, not every surface a type
 permits. Recursive transport (nested captures, tuple fields, direct-callable
 producers) is not stored on that witness; it is derived downstream from settled
-demand into the transport plan's `ShapeId` / `LaneId` facts.
+demand into `TransportShape(position)` and related callable/boundary products.
 
 A callable surface that publishes a transport boundary names a runtime dispatch
 site, so it must be **ground**: type variables are an inference-phase concept and
@@ -311,26 +331,25 @@ fragments layout-identical pointers and forces out-of-band lane patching at each
 carrier — the defect class behind a first-class callable captured by a non-tail
 continuation arriving with zero lanes.
 
-## Artifact ladder and fact taxonomy
+## Product inventory and fact taxonomy
 
-`MaterializedProgram` is the first backend-owned snapshot. It is allowed to
-carry only closed facts already proven by semantics:
+`MaterializedExecutable(E)` is the first backend-owned executable product. It is
+allowed to carry only local facts already proven by semantics:
 
-- pruned lowered bodies for the closed executable frontier
+- one pruned lowered body
 - selected call edges
 - return types and per-value types
 - effect summaries
 - frozen extern marshal classes
 
-Transport-spine cutover note: `fz-hwn.19.2` changes the artifact seam from
-"derive transport inside the artifact ladder" to "consume
-`SemanticClosed(root)` plus `TransportPlan(root)`." Artifact remains
-responsible for closed program packaging and stable downstream inventory, but
-transport owns `TransportPosition -> ShapeId`, lane facts, `CallableId` facts,
-`BoundaryId` contracts, call result payload positions (`ResumePayload` for
-`Deliver(entry)`, `ReturnPayload` for `Return`), and `CodegenSeamFact` rows.
-Live artifact code must not walk `TrashRuntimeValueLayout`, `RuntimeDemand`,
-local types, or lowered bodies to derive another transport shape.
+Transport products own physical layout: `TransportPosition -> ShapeId`, lane
+facts, `CallableId` facts, `BoundaryId` contracts, call result payload positions
+(`ResumePayload` for `Deliver(entry)`, `ReturnPayload` for `Return`), and
+`CodegenSeamFact` rows. `EntryCapture { executable, entry, value }` is a
+`TransportPosition`; `AbiExecutable(E)` pulls those entry-capture shapes when
+the materialized executable's entries capture values. Artifact code must not
+derive another transport shape by scanning local types or lowered bodies after a
+shape product exists.
 
 Callable-flow target identity is part of that output contract. Runtime demand
 owns the semantic edge from each callable surface to the executable activation
@@ -344,22 +363,22 @@ and native consumers must read those owned relations; they must not pair every
 callable boundary with every callable resolution or recover targets from
 function id, capture count, lowered bodies, or type shape.
 
-The next two rungs narrow the contract:
+The next products narrow the contract:
 
-- `AbiReadyProgram` reads ABI lanes, explicit return delivery, and
-  callable-boundary obligations from the materialized transport handoff:
-  `TransportPosition -> ShapeId`, `CallableId`, `BoundaryId`, and
-  `CodegenSeamFact` rows. It does not derive movement from
-  `RuntimeDemand`, local type facts, or executable need.
-- `EmissionReadyProgram` assigns stable emission-local inventory over Compiler2
-  ids and carries forward the settled clause-entry dispatch each reachable
-  executable needs at runtime.
-- `BackendProgram` keeps the same closed inventory, but rewrites each
-  structured body so direct calls point at executable inventory slots,
-  callable-boundary arguments name the required callable-entry inventory, and
-  extern callsites carry concrete wire classes. This is the interpreter-ready
+- `ExecutableEffects(E)` derives local effects over symbolic call edges already
+  present in the request-local session.
+- `AbiExecutable(E)` reads `MaterializedExecutable(E)`,
+  `ExecutableEffects(E)`, and the exact transport products for executable
+  inputs, returns, entry captures, resumes, local backend values, and callable
+  boundaries. It does not derive movement from root-wide demand state.
+- `BackendExecutable(E)` reads `AbiExecutable(E)` and lowers one symbolic
+  backend executable. Direct calls remain symbolic executable keys until final
+  packaging.
+- `RootBackendProduct(root)` packages the request-local symbolic executable
+  inventory into dense `BackendProgram` indices. This is the interpreter-ready
   handoff.
-- `NativeProgram` is the native-specific handoff above `BackendProgram`: a
+- The legacy `NativeProgram` path remains a native-specific handoff above the
+  old `BackendProgram(root)` path: a
   Compiler2-owned CPS/codegen-ready projection carrying direct executable
   bodies, clause helpers, continuations, callable-boundary refs on closure
   values, native body return contracts, and extern-marshal facts instead of
@@ -369,10 +388,11 @@ The next two rungs narrow the contract:
   ABI reprs from lane type.
 
 Callable entry inventory is an artifact fact, not a native-codegen guess.
-`LowerBackendProgram` settles callable-boundary obligations from the closed
-artifact inventory for callable-construction values, returned callable values,
-and explicit callable-boundary arguments. A closure-call callee is a consumer
-of an already materialized callable value, not a constructor obligation.
+`AbiExecutable(E)` and `BackendExecutable(E)` settle callable-boundary
+obligations from the request-local product inventory for
+callable-construction values, returned callable values, and explicit
+callable-boundary arguments. A closure-call callee is a consumer of an already
+materialized callable value, not a constructor obligation.
 Native lowering preserves two distinct facts:
 
 - opaque callable-boundary refs on `MakeFnRef` / `MakeClosure` results
@@ -443,24 +463,27 @@ Interpreter work should consume `BackendProgram`, and native work should
 consume `NativeProgram`, not invent old planner/codegen state while wiring
 JIT or AOT entry points.
 
-Backend-facing work has one hard rule after `MaterializedProgram`: it may read
-only the settled artifact ladder below it.
+Backend-facing product work has one hard rule after
+`MaterializedExecutable(E)`: it may read only exact prerequisites named by the
+requested product.
 
-- `MaterializeRoot(root)` may consume only `SemanticClosed(root)`,
-  `TransportPlan(root)`, and per-executable facts for members of that closed
-  frontier.
-- `DeriveAbiReady(root)` may consume only `MaterializedProgram(root)` plus the
-  world-owned type store.
-- `DeriveEmissionReady(root)` may consume only `AbiReadyProgram(root)`.
-- `LowerBackendProgram(root)` may consume only `EmissionReadyProgram(root)` plus
-  the world-owned type store.
-- `LowerNativeProgram(root)` may consume only `BackendProgram(root)` plus the
-  world-owned type store.
+- `MaterializedExecutable(E)` may consume only settled local semantic facts for
+  `E`, `RuntimeDemand(E)`, `OutgoingInputEdges(E)`, and local transport shape
+  products.
+- `ExecutableEffects(E)` may consume only materialized executables reachable
+  through symbolic call edges already recorded in the request-local session.
+- `AbiExecutable(E)` may consume only `MaterializedExecutable(E)`,
+  `ExecutableEffects(E)`, exact transport products, and the world-owned type
+  store.
+- `BackendExecutable(E)` may consume only `AbiExecutable(E)`, request-local
+  transport facts, and the world-owned type store.
+- `RootBackendProduct(root)` may consume only `RootEntry(root)`/entry key facts
+  and the request-local backend executable inventory.
 
 If backend code needs to ask semantic, reachability, callee-selection, or
-type-inference questions after that line, the artifact contract is incomplete
-or the consumer is violating it. The fix is to publish the missing closed fact,
-not to poke back into semantic state.
+type-inference questions after that line, the product contract is incomplete or
+the consumer is violating it. The fix is to publish or pull the missing named
+fact/product, not to scan semantic state.
 
 ## Native codegen contract
 
@@ -541,7 +564,8 @@ redefine main to drop the qsort call
     qsort had only main as caller -> slot empties -> Activation(qsort) retracts
     AnalyzeActivation(qsort) wakes, no input -> drops its outputs
       Activation(partition), Activation(append) lose their owners -> retract
-  SealSemanticClosure re-runs over the smaller frontier, re-seals SemanticClosed
+  the next RootBackendProduct(root) pull asks only for products still reachable
+    through the new settled local call edges
 ```
 
 The blast radius is exactly the dependency chain, propagated by fact ownership.

@@ -213,14 +213,15 @@
       <h1>Incremental Fact Compiler</h1>
       <p class="lede">
         The compiler is one world of stable ids, immutable source-owned definitions, and derived
-        facts. Code and runtime modules are referenced first and defined later. A single deduped
-        work graph pulls only the surfaces, activations, and artifacts that a submitted root
-        actually reaches.
+        facts. Code and runtime modules are referenced first and defined later. Direct facts settle
+        through exact waits, and product-keyed artifact pulls ask only for the executable products
+        a submitted root actually reaches.
       </p>
       <p class="rule">
-        There is one fixpoint loop. Joined activation inputs, return types, direct-call summaries,
-        recursive keying facts, and semantic closure all settle in the same agenda. Materialization
-        starts only after that loop goes quiet.
+        There is one fact engine and one product driver. Joined activation inputs, return types,
+        direct-call summaries, and recursive keying facts settle as direct facts. Backend artifacts
+        are request-local products that wait on exact facts or products; they do not begin from a
+        root-wide semantic closure pass.
       </p>
     </header>
 
@@ -231,16 +232,16 @@
           <h3>Goal</h3>
           <p>
             Submit code, submit a root, and derive exactly one backend-owned answer from the
-            smallest reachable semantic frontier. Unused user functions and unused runtime library
-            functions stay cold.
+            smallest executable product set demanded by that root. Unused user functions and unused
+            runtime library functions stay cold.
           </p>
         </div>
         <div class="card">
           <h3>Signal</h3>
           <p>
             Tests assert both presence and absence: which modules were defined, which activations
-            existed, which callsites were selected, which roots reclosed after redefinition, and
-            which functions never warmed.
+            existed, which callsites were selected, which product keys were requested, and which
+            functions never warmed.
           </p>
         </div>
         <div class="card">
@@ -278,10 +279,6 @@
 
     activations: ActivationMap,
     callsites: CallSiteMap,
-    semantic_closures: SemanticClosureMap,
-    artifacts: MaterializedProgramMap,
-    abi_ready: AbiReadyProgramMap,
-    emission_ready: EmissionReadyProgramMap,
     backend: BackendProgramMap,
 
     work_graph: Scheduler&lt;Job, FactKey&gt;,
@@ -313,11 +310,13 @@
         </div>
       </div>
       <p>
-        The artifact boundary is a one-way ladder:
-        <code>MaterializedProgram</code> then <code>AbiReadyProgram</code> then
-        <code>EmissionReadyProgram</code> then <code>BackendProgram</code>. Those maps are pure
-        projections. They are not new semantic authorities and they do not reopen reachability or
-        type discovery.
+        The artifact boundary is product-keyed:
+        <code>MaterializedExecutable(E)</code> then <code>AbiExecutable(E)</code> then
+        <code>BackendExecutable(E)</code>, with <code>RuntimeDemand(E)</code>,
+        <code>ExecutableEffects(E)</code>, <code>TransportShape(position)</code>, and callable /
+        boundary facts pulled only when a demanded executable names them. The final
+        <code>RootBackendProduct(root)</code> packages request-local symbolic executables into one
+        dense <code>BackendProgram</code>.
       </p>
     </section>
 
@@ -461,19 +460,19 @@ enum FactValue {
             <td>Type and plan facts are one family. A callsite summary carries selected callee, joined input types, executable need, and return type together.</td>
           </tr>
           <tr>
-            <td>Closure</td>
-            <td><code>SemanticClosed</code></td>
-            <td>One root-scoped statement that the reachable frontier is complete for the current exact dependency snapshot.</td>
+            <td>Product root</td>
+            <td><code>RootBackendProduct(root)</code></td>
+            <td>The demanded root answer. It keys the entry executable, pulls symbolic backend executables by product key, and packages only the request-local inventory.</td>
           </tr>
           <tr>
-            <td>Artifact</td>
-            <td><code>MaterializedProgram</code></td>
-            <td>One backend-owned snapshot projected from the closed semantic frontier.</td>
+            <td>Executable products</td>
+            <td><code>MaterializedExecutable(E)</code>, <code>AbiExecutable(E)</code>, <code>BackendExecutable(E)</code></td>
+            <td>Per-executable artifact products. Each producer waits on exact local facts or product keys and never schedules unrelated work.</td>
           </tr>
           <tr>
-            <td>Artifact projections</td>
-            <td><code>AbiReadyProgram</code>, <code>EmissionReadyProgram</code>, <code>BackendProgram</code></td>
-            <td>Next-rung facts derived mechanically from <code>MaterializedProgram</code>; they carry backend ABI, stable inventory, and backend-ready structured bodies without reopening semantics.</td>
+            <td>Representation products</td>
+            <td><code>RuntimeDemand(E)</code>, <code>ExecutableEffects(E)</code>, <code>TransportShape(position)</code>, <code>CallableFacts</code>, <code>BoundaryFacts</code></td>
+            <td>Request-local representation and transport answers pulled only for positions and callable boundaries named by demanded executables.</td>
           </tr>
         </tbody>
       </table>
@@ -488,8 +487,8 @@ enum FactValue {
       <h2>Work Graph</h2>
       <p>
         The work graph is one agenda, one fact table, and one dependency index. Jobs record what
-        they read, what they could not read yet, what they output, and what follow-up jobs should
-        be enqueued.
+        they read, what they could not read yet, and what they output. Legacy jobs may enqueue
+        follow-up jobs, but new artifact producers return product/fact waits instead.
       </p>
       <pre><code>struct Scheduler&lt;Job, Fact&gt; {
     agenda: Agenda&lt;Job&gt;,
@@ -509,7 +508,7 @@ struct Agenda&lt;Job&gt; {
       - subscribers that previously read them
       - waiters that previously blocked on them
 
-    follow-up jobs are deduped into the same agenda
+    legacy follow-up jobs are deduped into the same agenda
 }</code></pre>
       <p>
         The outer drive loop has only three outcomes:
@@ -630,76 +629,75 @@ surface: DeriveTypeDef -> TypeDefined(SomeModule,"t",1) = hard Ty
     </section>
 
     <section>
-      <h2>Semantic Closure And Artifact Projection</h2>
+      <h2>Product Pulls And Artifact Projection</h2>
       <p>
         <code>AnalyzeActivation</code> publishes direct-call summaries, reached callee activations,
         executable needs, a joined return type, and the set of reachable clauses for one rooted
-        activation. <code>SealSemanticClosure</code> does not invent new semantic facts. It only
-        walks the already-published frontier, proves every reachable dependency is present, and then
-        records an exact dependency snapshot plus the closed root frontier.
+        activation. Artifact products consume those local facts directly: if a prerequisite is not
+        settled, the producer returns an exact <code>PullWait::Fact</code>; if another artifact is
+        needed, it returns <code>PullWait::Product</code>.
       </p>
-      <pre><code>SemanticClosed(root) depends on:
-  RootEntry(root)
-  FunctionDefined(entry)
-  Activation(...)
-  Executable(...)
-  ActivationAnalyzed(...)
-  ReturnType(...)
-  LoweredBody(...)
-  CallSiteSummary(...)
+      <pre><code>RootBackendProduct(root)
+  waits on RootEntry(root), Recursive(entry), DispatchMask(entry)
+  pulls BackendExecutable(entry E)
 
-DependencySnapshot = HashMap&lt;FactKey, u64&gt;</code></pre>
+BackendExecutable(E)
+  pulls AbiExecutable(E)
+
+AbiExecutable(E)
+  pulls MaterializedExecutable(E)
+  pulls ExecutableEffects(E)
+  pulls TransportShape(EntryCapture / input / return / resume / boundary positions)
+
+MaterializedExecutable(E)
+  waits on ActivationAnalyzed(E.activation), ReturnType(E.activation), CallSiteSummary(...)
+  pulls RuntimeDemand(E), OutgoingInputEdges(E), TransportShape(ExecutableReturn(E))</code></pre>
       <p>
-        Materialization is downstream of that one fact. <code>MaterializeRoot</code> reads the
-        closed frontier, clones only the reachable lowered bodies, prunes unreachable clauses,
-        rewrites semantically cold local-control entries into explicit halt stubs, and freezes each
-        live callsite to one selected callee executable. Then
-        <code>DeriveAbiReady</code> reads only <code>MaterializedProgram</code> and
-        <code>DeriveEmissionReady</code> reads only <code>AbiReadyProgram</code>. No rung asks new
-        semantic questions and no rung reopens discovery.
+        Product materialization clones one executable body, prunes unreachable clauses, rewrites
+        semantically cold local-control entries into explicit halt stubs, and freezes each live
+        callsite to selected symbolic callee executable keys. The root product is only the final
+        dense packaging step; it packages the symbolic executable products already in the request
+        session and does not scan all semantic facts to rediscover membership.
       </p>
     </section>
 
     <section>
-      <h2>Artifact Ladder And Fact Taxonomy</h2>
+      <h2>Product Inventory And Fact Taxonomy</h2>
       <p>
-        The backend handoff is a ladder, not one giant catch-all structure. Each rung owns one
-        narrower question, and each rung is derived only from the one below it.
+        The backend handoff is a product inventory, not one giant catch-all structure. Each product
+        owns one narrower question, and each product is derived only from the exact facts and
+        products it names.
       </p>
       <div class="grid">
         <div class="card">
-          <h3><code>MaterializedProgram</code></h3>
+          <h3><code>MaterializedExecutable</code></h3>
           <p>
-            The first backend-owned snapshot. It carries the closed executable frontier, pruned
-            lowered bodies, selected call edges, per-executable return types, per-value types,
-            effect summaries, and frozen extern marshal classes.
+            The first backend-owned executable product. It carries one pruned lowered body,
+            selected call edges, return type, per-value types, local transport positions, and frozen
+            extern marshal classes.
           </p>
         </div>
         <div class="card">
-          <h3><code>AbiReadyProgram</code></h3>
+          <h3><code>AbiExecutable</code></h3>
           <p>
-            The next projection. It derives ABI lanes and return contracts from
-            <code>MaterializedProgram</code> plus <code>ExecutableNeed</code>: value/param/return
-            reprs, call-edge ABI, explicit return delivery, and callable-boundary obligations.
+            The ABI projection for one executable. It derives value/param/return reprs, call-edge
+            ABI, explicit return delivery, <code>EntryCapture</code> transport, resume transport,
+            and callable-boundary obligations from materialized and transport products.
           </p>
         </div>
         <div class="card">
-          <h3><code>EmissionReadyProgram</code></h3>
+          <h3><code>BackendExecutable</code></h3>
           <p>
-            The final closed executable inventory before backend lowering. It assigns a stable
-            emission inventory over Compiler2 keys for executable entries and callable entries, then
-            rewrites cross-references to dense emission-local indices. It also carries the settled
-            clause-entry dispatch each reachable executable needs at runtime. Dense ordinals live
-            here only as emission bookkeeping, never as semantic identity.
+            The symbolic interpreter handoff for one executable. It keeps direct calls as
+            executable keys until root packaging assigns dense indices, so per-executable products
+            stay independent of root inventory order.
           </p>
         </div>
         <div class="card">
-          <h3><code>BackendProgram</code></h3>
+          <h3><code>RootBackendProduct</code></h3>
           <p>
-            The interpreter-ready handoff. It keeps the same closed inventory, but rewrites each
-            structured body so direct calls point at executable inventory slots, callable-boundary
-            arguments name the required callable-entry inventory, and extern callsites carry the
-            concrete wire classes the closed path settled.
+            The interpreter-ready package. It assigns dense executable indices and callable-entry
+            inventory for the symbolic backend executables already present in the pull session.
           </p>
         </div>
         <div class="card">
@@ -738,11 +736,12 @@ DependencySnapshot = HashMap&lt;FactKey, u64&gt;</code></pre>
         <li>formatted telemetry payloads instead of raw ids, facts, and opaque structures</li>
       </ul>
       <p>
-        Interpreter work should consume <code>BackendProgram</code>, and native work should consume
-        <code>NativeProgram</code>, not invent old planner/codegen state while wiring JIT or AOT.
+        Interpreter work should consume <code>RootBackendProduct(root)</code>, and native work
+        should consume <code>NativeProgram</code>, not invent old planner/codegen state while wiring
+        JIT or AOT.
         If a backend consumer needs semantic, reachability, or type answers after
-        <code>MaterializedProgram</code>, that missing information belongs as a new artifact fact
-        instead of an adapter-side query back into the semantic world.
+        <code>MaterializedExecutable(E)</code>, that missing information belongs as a named fact or
+        product instead of an adapter-side query back into the semantic world.
       </p>
       <h3>Native Codegen Contract</h3>
       <p>
@@ -897,22 +896,22 @@ RootEntry(root)</code></pre>
         <h3><span class="num">03</span>The root seed starts the first activation</h3>
         <p>
           <code>SeedRoot(root)</code> waits until <code>Recursive(main)</code> and
-          <code>DispatchMask(main)</code> exist, then publishes:
+          <code>DispatchMask(main)</code> exist, then publishes the entry demand facts:
         </p>
         <pre><code>Activation(root, main/0, []) = Inputs([])
-Executable(root, main/0, [], Value)
-follow_up:
-  LowerFunction(main/0)
-  PlanEntryDispatch(main/0)
-  AnalyzeActivation(root, main/0, [])
-  SealSemanticClosure(root)</code></pre>
+Executable(root, main/0, [], Value)</code></pre>
+        <p>
+          The artifact path does not rely on self-scheduled follow-up work. When the interpreter
+          asks for <code>RootBackendProduct(root)</code>, the product driver waits on the exact facts
+          needed to key the entry executable and then pulls <code>BackendExecutable(main/0[])</code>.
+        </p>
       </div>
 
       <div class="step">
         <h3><span class="num">04</span>Activation analysis co-derives types and plans</h3>
         <p>
           <code>AnalyzeActivation(root, main/0, [])</code> lowers nothing new beyond
-          <code>main/0</code>'s own body and walks only dispatch-reachable clauses. It publishes one
+          <code>main/0</code>'s own body and follows only dispatch-reachable clauses. It publishes one
           direct-call summary:
         </p>
         <pre><code>CallSiteSummary(root, main, qsort_call) =
@@ -962,38 +961,33 @@ join =&gt; Inputs([list(int)]) after refine_widen + alpha normalization</code></
       </div>
 
       <div class="step">
-        <h3><span class="num">07</span>Closure excludes <code>foo/0</code></h3>
+        <h3><span class="num">07</span>Product demand excludes <code>foo/0</code></h3>
         <p>
-          Once every reachable activation has <code>Activation</code>, <code>Executable</code>,
-          <code>ActivationAnalyzed</code>, <code>ReturnType</code>, <code>LoweredBody</code>, and
-          <code>CallSiteSummary</code>, <code>SealSemanticClosure(root)</code> records the closed
-          frontier and exact dependency snapshot:
+          When <code>RootBackendProduct(root)</code> pulls the entry backend executable, products follow
+          only the symbolic call edges recorded by demanded executable products:
         </p>
-        <pre><code>SemanticClosed(root)
-  activations: { main/0, qsort/1 narrow, qsort/1 widened, partition/4, append/2, ...runtime helpers... }
-  executables: same frontier shaped by ExecutableNeed</code></pre>
+        <pre><code>RootBackendProduct(root)
+  entry: main/0[]
+  products: BackendExecutable(main), BackendExecutable(qsort), BackendExecutable(partition),
+            BackendExecutable(append), ...runtime helpers named by call edges...</code></pre>
         <p>
-          <code>foo/0</code> is absent from both sets because no reached callsite ever referenced
-          it.
+          <code>foo/0</code> is absent because no reached callsite ever referenced it, so no product
+          key asks for its body or backend executable.
         </p>
       </div>
 
       <div class="step">
-        <h3><span class="num">08</span>The artifact ladder freezes and inventories the closed path only</h3>
+        <h3><span class="num">08</span>Products freeze and package only demanded executables</h3>
         <p>
-          <code>MaterializeRoot(root)</code> clones only the executable bodies in the closed
-          frontier, prunes unreachable clauses, rewrites semantically cold local-control entries
-          into explicit halt stubs, and emits <code>MaterializedProgram(root)</code>.
-          <code>DeriveAbiReady(root)</code> then makes return delivery, ABI lanes, and callable
-          entries explicit without asking new semantic questions. Finally,
-          <code>DeriveEmissionReady(root)</code> rewrites that closed artifact into stable emission
-          inventory, <code>LowerBackendProgram(root)</code> attaches settled call targets,
-          callable-boundary obligations, and concrete extern wire classes to the structured bodies,
-          and <code>LowerNativeProgram(root)</code> lowers that closed handoff into CPS/native
-          bodies for shared codegen. Redefining uncalled <code>foo/0</code> later does not reopen
-          the root.
-          Redefining <code>main/0</code> does, because the old callsite summaries and closed
-          frontier are replaced by new ones.
+          <code>MaterializedExecutable(E)</code> clones one body, prunes unreachable clauses, rewrites
+          semantically cold local-control entries into explicit halt stubs, and records symbolic call
+          edges. <code>AbiExecutable(E)</code> then makes return delivery, ABI lanes,
+          <code>EntryCapture</code> positions, resumes, and callable entries explicit without asking new
+          semantic questions. <code>BackendExecutable(E)</code> lowers one symbolic body. Finally,
+          <code>RootBackendProduct(root)</code> assigns dense indices and packages the request-local
+          inventory into <code>BackendProgram</code>. Redefining uncalled <code>foo/0</code> later does
+          not change that root product. Redefining <code>main/0</code> can, because the settled local
+          callsite summaries it depends on may change.
         </p>
       </div>
     </section>
@@ -1056,10 +1050,10 @@ ReturnType(root, lambda#reduce_sum/2, [int, int]) = int</code></pre>
       <div class="step">
         <h3><span class="num">05</span>Unreached runtime code stays cold</h3>
         <p>
-          The final closure contains only the user function, the reducer lambda, and the reached
-          runtime/protocol helpers. Unrelated runtime modules such as <code>Utf8</code> or
-          unreached <code>Enum</code> helpers never become part of <code>SemanticClosed(root)</code>
-          and therefore never reach materialization.
+          The final root product contains only the user function, the reducer lambda, and the
+          reached runtime/protocol helpers. Unrelated runtime modules such as <code>Utf8</code> or
+          unreached <code>Enum</code> helpers never get product keys and therefore never reach
+          materialization.
         </p>
       </div>
     </section>
@@ -1119,8 +1113,8 @@ ReturnType(root, lambda#reduce_sum/2, [int, int]) = int</code></pre>
         <li><strong>One logical fact, one key:</strong> whole callsite summaries replace split partial facts.</li>
         <li><strong>No separate type loop:</strong> activation-input joins are ordinary fact replacement.</li>
         <li><strong>Lazy runtime bootstrap:</strong> <code>runtime.fz</code> and runtime modules warm only when demanded.</li>
-        <li><strong>Read-only closure:</strong> <code>SealSemanticClosure</code> proves completeness; it does not rediscover semantics.</li>
-        <li><strong>Artifact isolation:</strong> materialization consumes a closed frontier and never reopens discovery.</li>
+        <li><strong>Product-keyed artifacts:</strong> artifact producers return exact fact/product waits; they do not self-schedule follow-up work.</li>
+        <li><strong>Artifact isolation:</strong> materialization consumes settled local facts and named products, then final root packaging only densifies request-local inventory.</li>
         <li><strong>Blast radius by revision:</strong> redefinition propagates only as far as fact revisions actually change.</li>
       </ul>
     </section>

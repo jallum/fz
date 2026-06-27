@@ -7,10 +7,10 @@ Read:
 
 - [agent-docs](docs/agent-docs.md) — writing or revising `.agent/docs` guidance.
 - [guides](docs/guides.md) — writing user-facing `guides/*.html`: voice, shape, callouts, and the compact contract each leaves the reader.
-- [northstar](../northstar.html) — the current world model: lazy `runtime.fz` bootstrap, namespace savepoints, local interned `Types`/`Ty`, joined activation facts, exact semantic closure, artifact boundaries, and the worked quicksort / `Enum.reduce` examples.
+- [northstar](../northstar.html) — the current world model: lazy `runtime.fz` bootstrap, namespace savepoints, local interned `Types`/`Ty`, joined activation facts, product-keyed pull artifacts, and the worked quicksort / `Enum.reduce` examples.
 - [fact engine](docs/fact-engine.md) — the domain-free fixpoint spine: jobs as rules, reads/waits/owned outputs, the deduped agenda, value-based fact slots with revisions, and the drive loop.
-- [semantic fixpoint](docs/semantic-fixpoint.md) — the heart: activation inputs as joined facts, emergent discovery vs. the observe-only seal job, the key/value split, and the `Recursive`/`DispatchMask` keying facts.
-- [pipeline](docs/pipeline.md) — source→artifact across the job families: demand from a root, lazy runtime code, the one-way artifact boundary, and retraction by fact ownership.
+- [semantic fixpoint](docs/semantic-fixpoint.md) — activation inputs as joined facts, executable demand from local semantic analysis, the key/value split, and the `Recursive`/`DispatchMask` keying facts consumed by product roots.
+- [pipeline](docs/pipeline.md) — source→artifact across direct facts and product keys: demand from a root, lazy runtime code, product-local artifact derivation, final root packaging, and retraction by fact ownership.
 - [compiler2 migration](docs/compiler2-migration.md) — cutover status: compiler2 owns the command-line compiler surface through `fz2`; the old `fz` wrapper/front door is deleted.
 - [type world](docs/type-world.md) — the World-owned interned type kernel: `Ty` as an id, one threaded `Types`, and why cheap id-equality lets facts detect change without hashing.
 - [type naming](docs/type-naming.md) — source type names resolve through namespaces to `TypeName` identities, then to hard `Ty` through `TypeDefined` facts.

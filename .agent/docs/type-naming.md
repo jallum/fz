@@ -57,7 +57,7 @@ disagrees with its definition, or that no module ever defines, is an
 unresolved-frontier diagnostic surfaced when the drive goes quiet — the same
 machinery as an unknown import.
 
-## Naming settles below the semantic frontier
+## Naming settles below executable demand
 
 Type denotation is a **surface-tier** fact. It depends only on indexing and
 definition — never on activations, return types, or callsite summaries. The tiers,
@@ -68,16 +68,17 @@ INDEX     CodeIndexed, ModuleIndexed
 SURFACE   CodeScoped, ModuleDefined, FunctionSource, FunctionDefined,
           TypeDefined, ProtocolDispatch, FunctionContract, LoweredBody,
           EntryDispatch, …
-SEMANTIC  Activation, Executable, ReturnType, CallSiteTargets, CallSiteSummary,
-          SemanticClosed
-ARTIFACT  MaterializedProgram → AbiReady → …
+	SEMANTIC  Activation, Executable, ReturnType, CallSiteTargets, CallSiteSummary,
+	          ActivationAnalyzed
+	PRODUCT   MaterializedExecutable(E) → AbiExecutable(E) → BackendExecutable(E),
+	          RootBackendProduct(root)
 ```
 
 Every dependency edge points down this list. By the time the fixpoint loop runs
 (see [`semantic-fixpoint`](semantic-fixpoint.md)) every type name is already a hard
 `Ty`. The semantic tier *reads* types; it never moves a denotation. That one-way
-rule is what lets `SealSemanticClosure` observe a frontier whose types are settled
-rather than chase one that is still resolving.
+rule is what lets product artifact producers wait on settled local semantic facts
+rather than chase type names that are still resolving.
 
 ## A name resolves to a self-contained symbol
 

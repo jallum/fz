@@ -463,17 +463,18 @@ much as it can from it.
 ```text
 source code
   -> compiler2 source publication
-  -> semantic closure
-  -> artifact handoff
+  -> local semantic facts
+  -> product-keyed artifact handoff
   -> run it: interpreter, JIT, or AOT
 ```
 
-One compiler2 artifact ladder, three ways to run it. They must agree.
+One compiler2 source and semantic fact model, product-keyed artifacts for the
+runtime handoff. The ways to run it must agree at the observable boundary.
 
 The type stack is split by ownership. `src/compiler2/types/` owns compiler2's
 interned set-theoretic lattice, `src/compiler2/type_expr.rs` turns source type
-syntax into compiler2 facts, and the compiler2 job families derive semantic
-closure, ABI, backend, and native artifacts from those facts.
+syntax into compiler2 facts, and compiler2 derives ABI, backend, and native
+artifacts from those facts by named demand.
 
 ### Looking inside the compiler
 
