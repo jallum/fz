@@ -2,14 +2,16 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-06-27T04:46:59Z",
+  "close_reason": "fixed",
   "created": "2026-06-26T23:43:20Z",
   "description": "Goal\nReplace the compiler2 semantic/artifact root-pass path with a product-keyed pull path. The new path starts from the front-door demand for BackendProgram(root), pulls only the products named by local dependencies, and packages the final backend program after the demanded symbolic products exist.\n\nSignal\nFor fixtures2/00181_enum_reduce_operator_ref.fz, --log-telemetry shows fewer jobs than the current branch, zero SealSemanticClosure jobs on the new product path, zero production root_executable_frontier/root scan calls, zero follow_up producer pokes in the new path, and the same external result: main/0[] =\u003e {int, int}; both reducer operator refs resolve to direct Kernel.+/2 callable transport with no first-class boundary.\n\nStrategy\nExecute the detailed plan in ../pull-based.html as one commit-sized ticket per DAG step. Build the product driver and request-local PullSession first, then add semantic/runtime-demand products, transport products, materialized/effects products, ABI/backend products, final packaging, telemetry proof, legacy deletion, and docs closeout.\n\nGuardrails\nNo walkers. No passes. No self-scheduling. No whole-root fact scans. No root frontier under a new name. New product producers must return product waits, not follow_up jobs. Sorting is allowed only for local deterministic output or final dense packaging, never for semantic discovery or demand inclusion.\n\nReference\nPlan artifact: ../pull-based.html.",
   "id": "fz-go4.16",
   "labels": [],
   "parent": "fz-go4",
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "Compiler2 pull-based artifact path: replace semantic/root passes with product-keyed demand",
   "type": "epic",
-  "updated_at": "2026-06-26T23:43:20Z"
+  "updated_at": "2026-06-27T04:46:59Z"
 }
