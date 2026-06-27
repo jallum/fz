@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-go4.16.7"
   ],
@@ -12,8 +12,8 @@
   "labels": [],
   "parent": "fz-go4.16",
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "Pull path: prove fixture 00181 with telemetry and dumps",
   "type": "task",
-  "updated_at": "2026-06-26T23:44:45Z"
+  "updated_at": "2026-06-27T02:39:52Z"
 }
