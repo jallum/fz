@@ -14,7 +14,9 @@ use super::body::{CallSiteId, ValueId};
 use super::drive::FactKey;
 use super::facts::FactUse;
 use super::identity::{ExecutableKey, RootId};
+use super::semantic::{ExecutableRuntimeDemand, RuntimeDemand};
 use super::transport::{BoundaryId, CallableId, TransportPosition};
+use super::world::World;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct InputSlot {
@@ -84,6 +86,7 @@ impl ProductKey {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProductValue {
     Unit,
+    RuntimeDemand(Box<ExecutableRuntimeDemand>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -123,6 +126,13 @@ impl ProductMemo {
         self.in_progress.contains(key)
     }
 
+    pub fn runtime_demand(&self, executable: &ExecutableKey) -> Option<&ExecutableRuntimeDemand> {
+        match self.produced.get(&ProductKey::RuntimeDemand(executable.clone())) {
+            Some(ProductValue::RuntimeDemand(demand)) => Some(demand.as_ref()),
+            Some(ProductValue::Unit) | None => None,
+        }
+    }
+
     fn begin(&mut self, key: ProductKey) -> bool {
         self.in_progress.insert(key)
     }
@@ -146,7 +156,7 @@ pub struct IncomingInputSource {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DemandedCallEdge {
     pub caller: ExecutableKey,
-    pub callsite: CallSiteId,
+    pub callsite: Option<CallSiteId>,
     pub callee: ExecutableKey,
     pub inputs: Vec<(usize, IncomingInputSource)>,
 }
@@ -164,6 +174,7 @@ pub struct PullSession {
     demanded_executables: HashSet<ExecutableKey>,
     call_edges: HashMap<ExecutableKey, Vec<DemandedCallEdge>>,
     incoming_inputs: HashMap<InputSlot, Vec<IncomingInputSource>>,
+    return_demands: HashMap<ExecutableKey, RuntimeDemand>,
     demanded_transport_positions: HashSet<TransportPosition>,
     transport_components: HashMap<TransportPosition, TransportComponentInventory>,
     demanded_callables: HashSet<CallableId>,
@@ -181,6 +192,7 @@ impl PullSession {
             demanded_executables: HashSet::new(),
             call_edges: HashMap::new(),
             incoming_inputs: HashMap::new(),
+            return_demands: HashMap::new(),
             demanded_transport_positions: HashSet::new(),
             transport_components: HashMap::new(),
             demanded_callables: HashSet::new(),
@@ -209,6 +221,10 @@ impl PullSession {
 
     pub fn incoming_input_sources(&self, slot: &InputSlot) -> &[IncomingInputSource] {
         self.incoming_inputs.get(slot).map(Vec::as_slice).unwrap_or(&[])
+    }
+
+    pub fn return_demand(&self, executable: &ExecutableKey) -> Option<&RuntimeDemand> {
+        self.return_demands.get(executable)
     }
 
     pub fn demanded_transport_positions(&self) -> &HashSet<TransportPosition> {
@@ -250,6 +266,17 @@ impl PullSession {
             push_unique(self.incoming_inputs.entry(slot).or_default(), source.clone());
         }
         self.call_edges.entry(edge.caller.clone()).or_default().push(edge);
+    }
+
+    pub fn record_return_demand(&mut self, executable: ExecutableKey, demand: RuntimeDemand) {
+        if demand.is_ignore() {
+            return;
+        }
+        self.demanded_executables.insert(executable.clone());
+        self.return_demands
+            .entry(executable)
+            .and_modify(|existing| existing.join_assign(&demand))
+            .or_insert(demand);
     }
 
     pub fn record_transport_component(&mut self, anchor: TransportPosition, positions: Vec<TransportPosition>) {
@@ -309,18 +336,83 @@ where
 }
 
 pub trait ProductProducers {
-    fn produce_root_backend_product(&mut self, root: RootId) -> PullOutcome;
-    fn produce_backend_executable(&mut self, executable: &ExecutableKey) -> PullOutcome;
-    fn produce_abi_executable(&mut self, executable: &ExecutableKey) -> PullOutcome;
-    fn produce_materialized_executable(&mut self, executable: &ExecutableKey) -> PullOutcome;
-    fn produce_executable_effects(&mut self, executable: &ExecutableKey) -> PullOutcome;
-    fn produce_runtime_demand(&mut self, executable: &ExecutableKey) -> PullOutcome;
-    fn produce_outgoing_input_edges(&mut self, executable: &ExecutableKey) -> PullOutcome;
-    fn produce_incoming_input_slot(&mut self, slot: &InputSlot) -> PullOutcome;
-    fn produce_transport_shape(&mut self, position: &TransportPosition) -> PullOutcome;
-    fn produce_transport_component(&mut self, position: &TransportPosition) -> PullOutcome;
-    fn produce_callable_facts(&mut self, callable: CallableId) -> PullOutcome;
-    fn produce_boundary_facts(&mut self, boundary: BoundaryId) -> PullOutcome;
+    fn produce_root_backend_product(&mut self, session: &mut PullSession, root: RootId) -> PullOutcome;
+    fn produce_backend_executable(&mut self, session: &mut PullSession, executable: &ExecutableKey) -> PullOutcome;
+    fn produce_abi_executable(&mut self, session: &mut PullSession, executable: &ExecutableKey) -> PullOutcome;
+    fn produce_materialized_executable(&mut self, session: &mut PullSession, executable: &ExecutableKey)
+    -> PullOutcome;
+    fn produce_executable_effects(&mut self, session: &mut PullSession, executable: &ExecutableKey) -> PullOutcome;
+    fn produce_runtime_demand(&mut self, session: &mut PullSession, executable: &ExecutableKey) -> PullOutcome;
+    fn produce_outgoing_input_edges(&mut self, session: &mut PullSession, executable: &ExecutableKey) -> PullOutcome;
+    fn produce_incoming_input_slot(&mut self, session: &mut PullSession, slot: &InputSlot) -> PullOutcome;
+    fn produce_transport_shape(&mut self, session: &mut PullSession, position: &TransportPosition) -> PullOutcome;
+    fn produce_transport_component(&mut self, session: &mut PullSession, position: &TransportPosition) -> PullOutcome;
+    fn produce_callable_facts(&mut self, session: &mut PullSession, callable: CallableId) -> PullOutcome;
+    fn produce_boundary_facts(&mut self, session: &mut PullSession, boundary: BoundaryId) -> PullOutcome;
+}
+
+pub struct WorldProductProducers<'w, 'a> {
+    world: &'w mut World<'a>,
+}
+
+impl<'w, 'a> WorldProductProducers<'w, 'a> {
+    pub fn new(world: &'w mut World<'a>) -> Self {
+        Self { world }
+    }
+}
+
+impl ProductProducers for WorldProductProducers<'_, '_> {
+    fn produce_root_backend_product(&mut self, _session: &mut PullSession, root: RootId) -> PullOutcome {
+        PullOutcome::wait_on_product(ProductKey::RootBackendProduct(root))
+    }
+
+    fn produce_backend_executable(&mut self, _session: &mut PullSession, executable: &ExecutableKey) -> PullOutcome {
+        PullOutcome::wait_on_product(ProductKey::BackendExecutable(executable.clone()))
+    }
+
+    fn produce_abi_executable(&mut self, _session: &mut PullSession, executable: &ExecutableKey) -> PullOutcome {
+        PullOutcome::wait_on_product(ProductKey::AbiExecutable(executable.clone()))
+    }
+
+    fn produce_materialized_executable(
+        &mut self,
+        _session: &mut PullSession,
+        executable: &ExecutableKey,
+    ) -> PullOutcome {
+        PullOutcome::wait_on_product(ProductKey::MaterializedExecutable(executable.clone()))
+    }
+
+    fn produce_executable_effects(&mut self, _session: &mut PullSession, executable: &ExecutableKey) -> PullOutcome {
+        PullOutcome::wait_on_product(ProductKey::ExecutableEffects(executable.clone()))
+    }
+
+    fn produce_runtime_demand(&mut self, session: &mut PullSession, executable: &ExecutableKey) -> PullOutcome {
+        super::jobs::runtime_demand::produce_runtime_demand_product(self.world, session, executable)
+    }
+
+    fn produce_outgoing_input_edges(&mut self, session: &mut PullSession, executable: &ExecutableKey) -> PullOutcome {
+        super::jobs::runtime_demand::produce_outgoing_input_edges_product(self.world, session, executable)
+    }
+
+    fn produce_incoming_input_slot(&mut self, _session: &mut PullSession, slot: &InputSlot) -> PullOutcome {
+        PullOutcome::wait_on_product(ProductKey::IncomingInputSlot(slot.clone()))
+    }
+
+    fn produce_transport_shape(&mut self, _session: &mut PullSession, position: &TransportPosition) -> PullOutcome {
+        PullOutcome::wait_on_product(ProductKey::TransportShape(position.clone()))
+    }
+
+    fn produce_transport_component(&mut self, _session: &mut PullSession, position: &TransportPosition) -> PullOutcome {
+        PullOutcome::wait_on_product(ProductKey::TransportComponent(position.clone()))
+    }
+
+    fn produce_callable_facts(&mut self, _session: &mut PullSession, callable: CallableId) -> PullOutcome {
+        PullOutcome::wait_on_product(ProductKey::CallableFacts(callable))
+    }
+
+    fn produce_boundary_facts(&mut self, _session: &mut PullSession, boundary: BoundaryId) -> PullOutcome {
+        PullOutcome::wait_on_product(ProductKey::BoundaryFacts(boundary))
+    }
 }
 
 pub struct ProductDriver<'a> {
@@ -352,7 +444,9 @@ impl<'a> ProductDriver<'a> {
     pub fn pull(&mut self, producers: &mut impl ProductProducers, key: ProductKey) -> PullOutcome {
         self.emit("requested", &key, 0);
         self.session.note_product_request(&key);
-        if let Some(value) = self.session.memo.get(&key) {
+        if !matches!(key, ProductKey::RuntimeDemand(_))
+            && let Some(value) = self.session.memo.get(&key)
+        {
             self.emit("cache_hit", &key, 0);
             return PullOutcome::Produced(value.clone());
         }
@@ -362,18 +456,28 @@ impl<'a> ProductDriver<'a> {
         }
 
         let outcome = match &key {
-            ProductKey::RootBackendProduct(root) => producers.produce_root_backend_product(*root),
-            ProductKey::BackendExecutable(executable) => producers.produce_backend_executable(executable),
-            ProductKey::AbiExecutable(executable) => producers.produce_abi_executable(executable),
-            ProductKey::MaterializedExecutable(executable) => producers.produce_materialized_executable(executable),
-            ProductKey::ExecutableEffects(executable) => producers.produce_executable_effects(executable),
-            ProductKey::RuntimeDemand(executable) => producers.produce_runtime_demand(executable),
-            ProductKey::OutgoingInputEdges(executable) => producers.produce_outgoing_input_edges(executable),
-            ProductKey::IncomingInputSlot(slot) => producers.produce_incoming_input_slot(slot),
-            ProductKey::TransportShape(position) => producers.produce_transport_shape(position),
-            ProductKey::TransportComponent(position) => producers.produce_transport_component(position),
-            ProductKey::CallableFacts(callable) => producers.produce_callable_facts(*callable),
-            ProductKey::BoundaryFacts(boundary) => producers.produce_boundary_facts(*boundary),
+            ProductKey::RootBackendProduct(root) => producers.produce_root_backend_product(&mut self.session, *root),
+            ProductKey::BackendExecutable(executable) => {
+                producers.produce_backend_executable(&mut self.session, executable)
+            }
+            ProductKey::AbiExecutable(executable) => producers.produce_abi_executable(&mut self.session, executable),
+            ProductKey::MaterializedExecutable(executable) => {
+                producers.produce_materialized_executable(&mut self.session, executable)
+            }
+            ProductKey::ExecutableEffects(executable) => {
+                producers.produce_executable_effects(&mut self.session, executable)
+            }
+            ProductKey::RuntimeDemand(executable) => producers.produce_runtime_demand(&mut self.session, executable),
+            ProductKey::OutgoingInputEdges(executable) => {
+                producers.produce_outgoing_input_edges(&mut self.session, executable)
+            }
+            ProductKey::IncomingInputSlot(slot) => producers.produce_incoming_input_slot(&mut self.session, slot),
+            ProductKey::TransportShape(position) => producers.produce_transport_shape(&mut self.session, position),
+            ProductKey::TransportComponent(position) => {
+                producers.produce_transport_component(&mut self.session, position)
+            }
+            ProductKey::CallableFacts(callable) => producers.produce_callable_facts(&mut self.session, *callable),
+            ProductKey::BoundaryFacts(boundary) => producers.produce_boundary_facts(&mut self.session, *boundary),
         };
 
         match outcome {
@@ -453,51 +557,71 @@ mod tests {
     }
 
     impl ProductProducers for FakeProducers {
-        fn produce_root_backend_product(&mut self, root: RootId) -> PullOutcome {
+        fn produce_root_backend_product(&mut self, _session: &mut PullSession, root: RootId) -> PullOutcome {
             self.produce(ProductKey::RootBackendProduct(root))
         }
 
-        fn produce_backend_executable(&mut self, executable: &ExecutableKey) -> PullOutcome {
+        fn produce_backend_executable(
+            &mut self,
+            _session: &mut PullSession,
+            executable: &ExecutableKey,
+        ) -> PullOutcome {
             self.produce(ProductKey::BackendExecutable(executable.clone()))
         }
 
-        fn produce_abi_executable(&mut self, executable: &ExecutableKey) -> PullOutcome {
+        fn produce_abi_executable(&mut self, _session: &mut PullSession, executable: &ExecutableKey) -> PullOutcome {
             self.produce(ProductKey::AbiExecutable(executable.clone()))
         }
 
-        fn produce_materialized_executable(&mut self, executable: &ExecutableKey) -> PullOutcome {
+        fn produce_materialized_executable(
+            &mut self,
+            _session: &mut PullSession,
+            executable: &ExecutableKey,
+        ) -> PullOutcome {
             self.produce(ProductKey::MaterializedExecutable(executable.clone()))
         }
 
-        fn produce_executable_effects(&mut self, executable: &ExecutableKey) -> PullOutcome {
+        fn produce_executable_effects(
+            &mut self,
+            _session: &mut PullSession,
+            executable: &ExecutableKey,
+        ) -> PullOutcome {
             self.produce(ProductKey::ExecutableEffects(executable.clone()))
         }
 
-        fn produce_runtime_demand(&mut self, executable: &ExecutableKey) -> PullOutcome {
+        fn produce_runtime_demand(&mut self, _session: &mut PullSession, executable: &ExecutableKey) -> PullOutcome {
             self.produce(ProductKey::RuntimeDemand(executable.clone()))
         }
 
-        fn produce_outgoing_input_edges(&mut self, executable: &ExecutableKey) -> PullOutcome {
+        fn produce_outgoing_input_edges(
+            &mut self,
+            _session: &mut PullSession,
+            executable: &ExecutableKey,
+        ) -> PullOutcome {
             self.produce(ProductKey::OutgoingInputEdges(executable.clone()))
         }
 
-        fn produce_incoming_input_slot(&mut self, slot: &InputSlot) -> PullOutcome {
+        fn produce_incoming_input_slot(&mut self, _session: &mut PullSession, slot: &InputSlot) -> PullOutcome {
             self.produce(ProductKey::IncomingInputSlot(slot.clone()))
         }
 
-        fn produce_transport_shape(&mut self, position: &TransportPosition) -> PullOutcome {
+        fn produce_transport_shape(&mut self, _session: &mut PullSession, position: &TransportPosition) -> PullOutcome {
             self.produce(ProductKey::TransportShape(position.clone()))
         }
 
-        fn produce_transport_component(&mut self, position: &TransportPosition) -> PullOutcome {
+        fn produce_transport_component(
+            &mut self,
+            _session: &mut PullSession,
+            position: &TransportPosition,
+        ) -> PullOutcome {
             self.produce(ProductKey::TransportComponent(position.clone()))
         }
 
-        fn produce_callable_facts(&mut self, callable: CallableId) -> PullOutcome {
+        fn produce_callable_facts(&mut self, _session: &mut PullSession, callable: CallableId) -> PullOutcome {
             self.produce(ProductKey::CallableFacts(callable))
         }
 
-        fn produce_boundary_facts(&mut self, boundary: BoundaryId) -> PullOutcome {
+        fn produce_boundary_facts(&mut self, _session: &mut PullSession, boundary: BoundaryId) -> PullOutcome {
             self.produce(ProductKey::BoundaryFacts(boundary))
         }
     }
@@ -588,7 +712,7 @@ mod tests {
         };
         let edge = DemandedCallEdge {
             caller: caller.clone(),
-            callsite: CallSiteId::from_u32(2),
+            callsite: Some(CallSiteId::from_u32(2)),
             callee: callee.clone(),
             inputs: vec![(1, source.clone())],
         };

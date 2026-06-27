@@ -3,6 +3,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
 
 use super::body::{DeliveredValueSource, delivered_value_joins};
+use super::pull::{ProductDriver, ProductKey, ProductValue, PullOutcome, WorldProductProducers};
 use super::semantic::{CallableFlowFact, CallableSurface};
 use super::transport::{ActivationSymbol, ExecutableSymbol};
 use super::transport::{
@@ -500,6 +501,8 @@ fn main(), do: inc(1.0)
 "#;
 
     let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&["fz", "compiler2", "pull"], capture.handler());
     let mut world = World::new(&tel);
     world.submit_code(
         Some("transport_codegen_seam_tail_call.fz".to_string()),
@@ -2506,6 +2509,90 @@ end
 }
 
 #[test]
+fn compiler2_pull_runtime_demand_keeps_enum_reduce_operator_refs_direct_callable() {
+    let source = r#"
+fn main() do
+  {
+    Enum.reduce([1, 2, 3], 0, &Kernel.+/2),
+    Enum.reduce([1, 2, 3], 0, &+/2)
+  }
+end
+"#;
+
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&["fz", "compiler2", "pull"], capture.handler());
+    let mut world = World::new(&tel);
+    world.submit_code(
+        Some("pull_runtime_enum_reduce_operator_refs.fz".to_string()),
+        source.to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::TupleFields(2));
+    drive_until_transport_plan(
+        &mut world,
+        root,
+        "Enum.reduce operator-ref fixture should settle legacy facts before product comparison",
+    );
+
+    let plan = transport_plan(&world, root);
+    let executables = plan
+        .executable_membership
+        .iter()
+        .map(|symbol| executable_key_for_symbol(&mut world, root, symbol))
+        .collect::<HashSet<_>>();
+    let mut driver = ProductDriver::new(&tel, root);
+    {
+        let mut producers = WorldProductProducers::new(&mut world);
+        pull_runtime_demands_for_executables(&mut driver, &mut producers, &executables);
+        for executable in &executables {
+            assert_product_produced(
+                driver.pull(&mut producers, ProductKey::OutgoingInputEdges(executable.clone())),
+                "outgoing input edges should be derivable from product runtime demand",
+            );
+        }
+    }
+    driver.finish_session();
+
+    let plus_flows = executables
+        .iter()
+        .filter_map(|executable| driver.session().memo().runtime_demand(executable))
+        .flat_map(|demand| demand.callable_flows.values())
+        .filter(|flow| function_is(&world, flow.function, "+", 2))
+        .collect::<Vec<_>>();
+    assert!(
+        plus_flows.iter().any(|flow| {
+            flow.direct_surfaces.iter().any(|surface| surface.inputs.len() == 2)
+                && flow
+                    .resolutions
+                    .iter()
+                    .any(|resolution| function_is(&world, resolution.activation.function, "+", 2))
+        }),
+        "product runtime demand should keep operator refs as direct Kernel.+/2 callable flows: {plus_flows:?}"
+    );
+    assert!(
+        plus_flows
+            .iter()
+            .all(|flow| flow.first_class_surfaces.is_empty() && !flow.opaque && !flow.escape),
+        "operator refs used only as Enum.reduce reducers should not become first-class product demand: {plus_flows:?}"
+    );
+    assert_eq!(driver.session().root_scans(), 0);
+    assert_eq!(driver.session().follow_ups(), 0);
+    assert!(
+        capture.count(&["fz", "compiler2", "pull", "product", "requested"]) > 0,
+        "product path should emit product request telemetry"
+    );
+    assert!(
+        capture.count(&["fz", "compiler2", "pull", "product", "produced"]) > 0,
+        "product path should emit product production telemetry"
+    );
+    let finished = capture
+        .last(&["fz", "compiler2", "pull", "session", "finished"])
+        .expect("product path should emit final session telemetry");
+    assert_eq!(measurement_u64(&finished, "root_scans"), 0);
+    assert_eq!(measurement_u64(&finished, "follow_ups"), 0);
+}
+
+#[test]
 fn compiler2_transport_plan_has_no_dangling_direct_enum_reduce_callable() {
     let source = include_str!("../../fixtures2/00010_enum_reduce_main.fz");
 
@@ -3520,6 +3607,17 @@ fn executable_for(
         .unwrap_or_else(|| panic!("transport plan executable {name}/{arity}"))
 }
 
+fn executable_key_for_symbol(
+    world: &mut World<'_>,
+    root: super::RootId,
+    symbol: &super::transport::ExecutableSymbol,
+) -> ExecutableKey {
+    ExecutableKey {
+        activation: world.activation_key(root, symbol.activation.function, &symbol.activation.input),
+        need: symbol.need,
+    }
+}
+
 fn callable_facts_for_function<'a>(
     world: &'a World<'_>,
     plan: &'a TransportPlan,
@@ -3553,6 +3651,36 @@ fn runtime_demands_for_frontier(
             )
         })
         .collect()
+}
+
+fn pull_runtime_demands_for_executables(
+    driver: &mut ProductDriver<'_>,
+    producers: &mut impl super::pull::ProductProducers,
+    executables: &HashSet<ExecutableKey>,
+) {
+    for _ in 0..executables.len().saturating_mul(2).max(1) {
+        for executable in executables {
+            match driver.pull(producers, ProductKey::RuntimeDemand(executable.clone())) {
+                PullOutcome::Produced(ProductValue::RuntimeDemand(_)) => {}
+                PullOutcome::Produced(other) => {
+                    panic!("runtime-demand product for {executable:?} produced unexpected value {other:?}")
+                }
+                PullOutcome::Waiting(waits) => {
+                    panic!("runtime-demand product for {executable:?} waited on prerequisites: {waits:?}")
+                }
+            }
+        }
+    }
+    for executable in executables {
+        assert!(
+            driver.session().memo().runtime_demand(executable).is_some(),
+            "runtime-demand product should exist for {executable:?}"
+        );
+    }
+}
+
+fn assert_product_produced(outcome: PullOutcome, message: &str) {
+    assert!(matches!(outcome, PullOutcome::Produced(_)), "{message}: {outcome:?}");
 }
 
 fn upstream_callable_flow_for_producer(
