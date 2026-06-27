@@ -29,7 +29,7 @@ use super::super::facts::FactUse;
 use super::super::identity::{ExecutableKey, ExecutableNeed, RootId};
 use super::super::pull::{ProductKey, ProductValue, PullOutcome, PullSession, PullWait};
 use super::super::scheduler::FatalError;
-use super::super::semantic::{ActivationAnalysis, CallSiteKey, CallTargetSummary, SelectedCallee};
+use super::super::semantic::{ActivationAnalysis, CallSiteKey, CallTargetSummary, SelectedCallee, ShapeDemand};
 use super::super::transport::{
     ActivationSymbol, CodegenLaneRepr, CodegenSeam, ExecutableSymbol, LaneId, ShapeDescr, ShapeId, TransportPlan,
     TransportPosition,
@@ -187,6 +187,13 @@ pub(crate) fn produce_materialized_executable_product(
     if session.memo().runtime_demand(executable).is_none() {
         waits.push(PullWait::Product(ProductKey::RuntimeDemand(executable.clone())));
     }
+    if session
+        .memo()
+        .get(&ProductKey::OutgoingInputEdges(executable.clone()))
+        .is_none()
+    {
+        waits.push(PullWait::Product(ProductKey::OutgoingInputEdges(executable.clone())));
+    }
     if let Some(analysis) = world.activation_analysis(&executable.activation) {
         for callsite in &analysis.callsites {
             let fact = FactKey::CallSiteSummary(CallSiteKey {
@@ -222,6 +229,17 @@ pub(crate) fn produce_materialized_executable_product(
     );
     let body = pruned.body;
     let callsite_args = collect_callsite_args(&body);
+    waits.extend(required_call_edge_transport_waits(
+        world,
+        session,
+        executable,
+        &analysis,
+        &body,
+        &callsite_args,
+    ));
+    if !waits.is_empty() {
+        return PullOutcome::Waiting(waits);
+    }
     let transport_plan = session_transport_plan(world, session, executable);
     let call_edges = materialize_call_edges(
         world,
@@ -355,7 +373,25 @@ pub(crate) fn produce_abi_executable_product(
         materialized.effects = effects;
     }
     materialized.transport = session_materialized_executable_transport(session, executable, world.types());
+    waits.extend(required_executable_input_transport_waits(
+        session,
+        executable,
+        &materialized,
+        world.types(),
+    ));
     waits.extend(required_entry_capture_transport_waits(
+        session,
+        executable,
+        &materialized,
+        world.types(),
+    ));
+    waits.extend(required_resume_transport_waits(
+        session,
+        executable,
+        &materialized,
+        world.types(),
+    ));
+    waits.extend(required_local_backend_transport_waits(
         session,
         executable,
         &materialized,
@@ -606,6 +642,410 @@ fn required_entry_capture_transport_waits(
         }
     }
     waits
+}
+
+fn required_executable_input_transport_waits(
+    session: &PullSession,
+    executable: &ExecutableKey,
+    materialized: &MaterializedExecutable,
+    types: &Types,
+) -> Vec<PullWait> {
+    let symbol = transport_executable_symbol(executable, types);
+    let callable_carriers = callable_carrier_values(&materialized.body);
+    let input_callable_carrier_indexes = input_indexes_for_values(&materialized.body, &callable_carriers);
+    materialized
+        .runtime_demand
+        .input_demands
+        .iter()
+        .enumerate()
+        .filter_map(|(semantic_index, demand)| {
+            if matches!(demand.shape, ShapeDemand::Ignore) && !input_callable_carrier_indexes.contains(&semantic_index)
+            {
+                return None;
+            }
+            let position = TransportPosition::ExecutableInput {
+                executable: symbol.clone(),
+                semantic_index,
+            };
+            session
+                .transport_shape(&position)
+                .is_none()
+                .then_some(PullWait::Product(ProductKey::TransportShape(position)))
+        })
+        .collect()
+}
+
+fn callable_carrier_values(body: &LoweredBody) -> HashSet<ValueId> {
+    let LoweredBody::Clauses { entries, .. } = body else {
+        return HashSet::new();
+    };
+    let mut values = HashSet::new();
+    for entry in entries {
+        for step in &entry.steps {
+            if let LoweredStep::Lambda { captures, .. } = step {
+                values.extend(captures.iter().copied());
+            }
+        }
+        match &entry.tail {
+            LoweredTail::DirectCall { args, .. } => {
+                values.extend(args.iter().map(|arg| arg.value));
+            }
+            LoweredTail::ClosureCall { callee, args, .. } => {
+                values.insert(*callee);
+                values.extend(args.iter().map(|arg| arg.value));
+            }
+            LoweredTail::Value { .. }
+            | LoweredTail::If { .. }
+            | LoweredTail::Dispatch { .. }
+            | LoweredTail::Receive(_)
+            | LoweredTail::Halt { .. } => {}
+        }
+    }
+    values
+}
+
+fn input_indexes_for_values(body: &LoweredBody, values: &HashSet<ValueId>) -> HashSet<usize> {
+    let LoweredBody::Clauses { clauses, .. } = body else {
+        return HashSet::new();
+    };
+    clauses
+        .iter()
+        .flat_map(|clause| {
+            clause
+                .params
+                .iter()
+                .enumerate()
+                .filter_map(|(index, value)| values.contains(value).then_some(index))
+        })
+        .collect()
+}
+
+fn required_resume_transport_waits(
+    session: &PullSession,
+    executable: &ExecutableKey,
+    materialized: &MaterializedExecutable,
+    types: &Types,
+) -> Vec<PullWait> {
+    let LoweredBody::Clauses { entries, .. } = &materialized.body else {
+        return Vec::new();
+    };
+    let symbol = transport_executable_symbol(executable, types);
+    let mut waits = Vec::new();
+    for entry in entries {
+        let (callsite, ControlDestination::Deliver(entry_id)) = (match &entry.tail {
+            LoweredTail::DirectCall { callsite, dest, .. } | LoweredTail::ClosureCall { callsite, dest, .. } => {
+                (*callsite, dest)
+            }
+            LoweredTail::Value { .. }
+            | LoweredTail::If { .. }
+            | LoweredTail::Dispatch { .. }
+            | LoweredTail::Receive(_)
+            | LoweredTail::Halt { .. } => continue,
+        }) else {
+            continue;
+        };
+        let position = TransportPosition::ResumePayload {
+            executable: symbol.clone(),
+            callsite: Some(callsite),
+            entry: materialized
+                .original_entry_ids
+                .get(entry_id.as_u32() as usize)
+                .copied()
+                .unwrap_or(*entry_id),
+        };
+        if !session.demanded_transport_positions().contains(&position) {
+            waits.push(PullWait::Product(ProductKey::TransportShape(position)));
+        }
+    }
+    waits
+}
+
+fn required_local_backend_transport_waits(
+    session: &PullSession,
+    executable: &ExecutableKey,
+    materialized: &MaterializedExecutable,
+    types: &Types,
+) -> Vec<PullWait> {
+    let LoweredBody::Clauses { clauses, entries, .. } = &materialized.body else {
+        return Vec::new();
+    };
+    let symbol = transport_executable_symbol(executable, types);
+    let mut waits = Vec::new();
+    for value in clauses
+        .iter()
+        .flat_map(|clause| clause.projections.iter())
+        .chain(entries.iter().flat_map(|entry| entry.steps.iter()))
+        .flat_map(step_result_values)
+    {
+        let position = TransportPosition::Value {
+            executable: symbol.clone(),
+            value,
+        };
+        if !session.demanded_transport_positions().contains(&position) {
+            waits.push(PullWait::Product(ProductKey::TransportShape(position)));
+        }
+    }
+    for entry in entries {
+        let (callsite, args, value) = match &entry.tail {
+            LoweredTail::DirectCall {
+                value, callsite, args, ..
+            }
+            | LoweredTail::ClosureCall {
+                value, callsite, args, ..
+            } => (*callsite, args, *value),
+            LoweredTail::Value { .. }
+            | LoweredTail::If { .. }
+            | LoweredTail::Dispatch { .. }
+            | LoweredTail::Receive(_)
+            | LoweredTail::Halt { .. } => continue,
+        };
+        let value_position = TransportPosition::Value {
+            executable: symbol.clone(),
+            value,
+        };
+        if !session.demanded_transport_positions().contains(&value_position) {
+            waits.push(PullWait::Product(ProductKey::TransportShape(value_position)));
+        }
+        for semantic_index in 0..args.len() {
+            let position = TransportPosition::CallArg {
+                executable: symbol.clone(),
+                callsite,
+                semantic_index,
+            };
+            if !session.demanded_transport_positions().contains(&position) {
+                waits.push(PullWait::Product(ProductKey::TransportShape(position)));
+            }
+        }
+        let return_payload = TransportPosition::ReturnPayload {
+            executable: symbol.clone(),
+            callsite,
+        };
+        let key = ProductKey::TransportShape(return_payload.clone());
+        if session.transport_shape(&return_payload).is_none() && session.memo().get(&key).is_none() {
+            waits.push(PullWait::Product(key));
+        }
+    }
+    waits
+}
+
+fn step_result_values(step: &LoweredStep) -> Vec<super::super::body::ValueId> {
+    match step {
+        LoweredStep::Const { value, .. }
+        | LoweredStep::Tuple { value, .. }
+        | LoweredStep::List { value, .. }
+        | LoweredStep::Map { value, .. }
+        | LoweredStep::MapUpdate { value, .. }
+        | LoweredStep::Struct { value, .. }
+        | LoweredStep::Bitstring { value, .. }
+        | LoweredStep::FunctionRef { value, .. }
+        | LoweredStep::Lambda { value, .. }
+        | LoweredStep::BinaryOp { value, .. }
+        | LoweredStep::UnaryOp { value, .. }
+        | LoweredStep::MapIndex { value, .. }
+        | LoweredStep::FieldAccess { value, .. }
+        | LoweredStep::RequireMapValue { value, .. }
+        | LoweredStep::TupleField { value, .. } => vec![*value],
+        LoweredStep::SplitList { head, tail, .. } => vec![*head, *tail],
+        LoweredStep::BitstringInit { reader, .. } => vec![*reader],
+        LoweredStep::BitstringRead {
+            ok, value, next_reader, ..
+        } => vec![*ok, *value, *next_reader],
+        LoweredStep::AssertLiteral { .. }
+        | LoweredStep::AssertStruct { .. }
+        | LoweredStep::AssertTuple { .. }
+        | LoweredStep::AssertEmptyList { .. }
+        | LoweredStep::AssertSame { .. }
+        | LoweredStep::AssertBitstringDone { .. } => Vec::new(),
+    }
+}
+
+fn required_call_edge_transport_waits(
+    world: &mut World<'_>,
+    session: &PullSession,
+    executable: &ExecutableKey,
+    analysis: &ActivationAnalysis,
+    body: &LoweredBody,
+    callsite_args: &HashMap<CallSiteId, Vec<CallArg>>,
+) -> Vec<PullWait> {
+    let LoweredBody::Clauses { entries, .. } = body else {
+        return Vec::new();
+    };
+    let caller_symbol = transport_executable_symbol(executable, world.types());
+    let callsite_needs = callsite_needs_for_body(body, executable.need);
+    let summaries = analysis
+        .callsites
+        .iter()
+        .filter_map(|callsite| {
+            let key = CallSiteKey {
+                activation: executable.activation.clone(),
+                callsite: *callsite,
+            };
+            world
+                .callsite_summary(&key)
+                .cloned()
+                .map(|summary| (*callsite, summary))
+        })
+        .collect::<HashMap<_, _>>();
+    let mut waits = HashSet::new();
+    for entry in entries {
+        match &entry.tail {
+            LoweredTail::DirectCall { callsite, dest, .. } => {
+                record_return_flow_transport_waits(
+                    session,
+                    &mut waits,
+                    &caller_symbol,
+                    *callsite,
+                    dest,
+                    summaries.get(callsite).into_iter().flat_map(|summary| {
+                        summary.targets.iter().filter_map(|target| {
+                            target.activation.clone().map(|activation| ExecutableKey {
+                                activation,
+                                need: callsite_needs.get(callsite).copied().unwrap_or(ExecutableNeed::Value),
+                            })
+                        })
+                    }),
+                    world.types(),
+                );
+            }
+            LoweredTail::ClosureCall {
+                callsite, callee, dest, ..
+            } => {
+                let has_callable_flow = session
+                    .memo()
+                    .runtime_demand(executable)
+                    .is_some_and(|demand| demand.callable_flows.contains_key(callee));
+                if has_callable_flow {
+                    push_optional_transport_shape_wait(
+                        session,
+                        &mut waits,
+                        TransportPosition::Value {
+                            executable: caller_symbol.clone(),
+                            value: *callee,
+                        },
+                    );
+                    for (semantic_index, _) in callsite_args.get(callsite).into_iter().flatten().enumerate() {
+                        push_optional_transport_shape_wait(
+                            session,
+                            &mut waits,
+                            TransportPosition::CallArg {
+                                executable: caller_symbol.clone(),
+                                callsite: *callsite,
+                                semantic_index,
+                            },
+                        );
+                    }
+                }
+                let mut callees = summaries
+                    .get(callsite)
+                    .into_iter()
+                    .flat_map(|summary| {
+                        summary.targets.iter().filter_map(|target| {
+                            target.activation.clone().map(|activation| ExecutableKey {
+                                activation,
+                                need: callsite_needs.get(callsite).copied().unwrap_or(ExecutableNeed::Value),
+                            })
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                if let Some(shape) = session.transport_shape(&TransportPosition::Value {
+                    executable: caller_symbol.clone(),
+                    value: *callee,
+                }) && let ShapeDescr::Callable(callable) = world.shape(shape)
+                    && let Some(facts) = session.callable_facts(*callable)
+                {
+                    for edge in &facts.direct_edges {
+                        callees.push(ExecutableKey {
+                            activation: world.activation_key(
+                                session.root(),
+                                edge.resolution.activation.function,
+                                edge.resolution.activation.input.as_ref(),
+                            ),
+                            need: edge.resolution.need,
+                        });
+                    }
+                }
+                record_return_flow_transport_waits(
+                    session,
+                    &mut waits,
+                    &caller_symbol,
+                    *callsite,
+                    dest,
+                    callees,
+                    world.types(),
+                );
+            }
+            LoweredTail::Value { .. }
+            | LoweredTail::If { .. }
+            | LoweredTail::Dispatch { .. }
+            | LoweredTail::Receive(_)
+            | LoweredTail::Halt { .. } => {}
+        }
+    }
+    waits.into_iter().collect()
+}
+
+fn record_return_flow_transport_waits(
+    session: &PullSession,
+    waits: &mut HashSet<PullWait>,
+    caller_symbol: &ExecutableSymbol,
+    callsite: CallSiteId,
+    dest: &ControlDestination,
+    callees: impl IntoIterator<Item = ExecutableKey>,
+    types: &Types,
+) {
+    let ControlDestination::Return = dest else {
+        return;
+    };
+    push_transport_shape_wait(
+        session,
+        waits,
+        TransportPosition::ExecutableReturn {
+            executable: caller_symbol.clone(),
+        },
+    );
+    push_transport_shape_wait(
+        session,
+        waits,
+        TransportPosition::ReturnPayload {
+            executable: caller_symbol.clone(),
+            callsite,
+        },
+    );
+    for callee in callees {
+        let callee_symbol = transport_executable_symbol(&callee, types);
+        push_transport_shape_wait(
+            session,
+            waits,
+            TransportPosition::ExecutableReturn {
+                executable: callee_symbol.clone(),
+            },
+        );
+        push_optional_transport_shape_wait(
+            session,
+            waits,
+            TransportPosition::ReturnPayload {
+                executable: callee_symbol,
+                callsite,
+            },
+        );
+    }
+}
+
+fn push_transport_shape_wait(session: &PullSession, waits: &mut HashSet<PullWait>, position: TransportPosition) {
+    if session.transport_shape(&position).is_none() {
+        waits.insert(PullWait::Product(ProductKey::TransportShape(position)));
+    }
+}
+
+fn push_optional_transport_shape_wait(
+    session: &PullSession,
+    waits: &mut HashSet<PullWait>,
+    position: TransportPosition,
+) {
+    let key = ProductKey::TransportShape(position.clone());
+    if session.transport_shape(&position).is_none() && session.memo().get(&key).is_none() {
+        waits.insert(PullWait::Product(key));
+    }
 }
 
 fn transport_executable_symbol(executable: &ExecutableKey, types: &Types) -> ExecutableSymbol {

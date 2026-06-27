@@ -449,7 +449,14 @@ fn continue_backend_value(
             frame.entry,
             Some(value),
             &[],
-        )?,
+        )
+        .map_err(|error| {
+            format!(
+                "backend continuation delivery executable={} entry={}: {error}",
+                frame.executable,
+                frame.entry.as_u32()
+            )
+        })?,
         continuations,
     }))
 }
@@ -734,14 +741,16 @@ fn step_eval_entry(
         }
         BackendTail::ClosureCall {
             target,
+            callsite,
             callee,
             args,
             dest,
             ..
         } => {
-            let callee_value = env_get_value(&env, *callee)?;
+            let callee_value = env_get_value(&env, *callee);
+            let missing_direct_callee = callee_value.is_err();
             let (function, capture_shape, capture_lanes) = match callee_value {
-                BackendBoundValue::Transport { shape, lanes }
+                Ok(BackendBoundValue::Transport { shape, lanes })
                     if matches!(transport.interners().shape(shape), ShapeDescr::Callable(_)) =>
                 {
                     let ShapeDescr::Callable(callable) = transport.interners().shape(shape) else {
@@ -753,13 +762,37 @@ fn step_eval_entry(
                     })?;
                     (function, Some(shape), lanes)
                 }
-                other => {
+                Ok(other) => {
                     let materialized = materialize_backend_value(transport, runtime.cur_proc(), &other)?;
                     let (fn_id, captures) = match materialized {
                         AnyValue::FnRef(fn_id) => (fn_id, Vec::new()),
-                        other => unpack_closure(other.value(runtime.cur_proc())?)?,
+                        other => unpack_closure(other.value(runtime.cur_proc())?).map_err(|error| {
+                            format!(
+                                "closure call executable={} function={} callsite={} callee_value={}: {error}",
+                                executable_index,
+                                executable.key.activation.function.as_u32(),
+                                callsite.as_u32(),
+                                callee.as_u32()
+                            )
+                        })?,
                     };
                     (FunctionId::from_fn_id(fn_id), None, captures)
+                }
+                Err(error) => {
+                    let Some(target) = target else {
+                        return Err(format!(
+                            "closure call executable={} function={} callsite={} callee_value={}: {error}",
+                            executable_index,
+                            executable.key.activation.function.as_u32(),
+                            callsite.as_u32(),
+                            callee.as_u32()
+                        ));
+                    };
+                    let callee_executable = program
+                        .executables
+                        .get(*target)
+                        .ok_or_else(|| format!("backend executable {} is out of bounds", target))?;
+                    (callee_executable.key.activation.function, None, Vec::new())
                 }
             };
             let fn_id = FnId(function.as_u32());
@@ -807,13 +840,28 @@ fn step_eval_entry(
             // Capture lanes are already the flat ABI lanes for the callee's leading
             // capture inputs; forward them directly. The capture/arg split is the
             // callee's fact: total inputs minus the explicit call args.
-            let input_bindings = executable_input_bindings(program, callee_executable)?;
-            let arg_inputs_start = input_bindings.len().checked_sub(args.len()).ok_or_else(|| {
-                format!(
-                    "backend executable {} has fewer inputs than call args",
-                    callee_executable.key.activation.function.as_u32()
-                )
-            })?;
+            let arg_inputs_start = callee_executable
+                .key
+                .activation
+                .input_len(types)
+                .checked_sub(args.len())
+                .ok_or_else(|| {
+                    format!(
+                        "backend executable {} has fewer inputs than call args",
+                        callee_executable.key.activation.function.as_u32()
+                    )
+                })?;
+            if missing_direct_callee && arg_inputs_start != 0 {
+                return Err(format!(
+                    "closure call executable={} function={} callsite={} omitted callee value {} but target {} needs {} capture input(s)",
+                    executable_index,
+                    executable.key.activation.function.as_u32(),
+                    callsite.as_u32(),
+                    callee.as_u32(),
+                    executable_target,
+                    arg_inputs_start
+                ));
+            }
             let capture_lanes_for_call =
                 if let Some(entry) = callable_entry_for_target(program, executable_target, function) {
                     capture_lanes
@@ -1979,14 +2027,22 @@ fn encode_call_args(
         ));
     }
     let mut lanes = Vec::new();
-    for (arg, binding) in args.iter().zip(
-        executable_input_bindings(program, executable)?
-            .into_iter()
-            .skip(semantic_start),
-    ) {
+    for binding in executable_input_bindings(program, executable)?
+        .into_iter()
+        .filter(|binding| binding.semantic_index >= semantic_start)
+    {
         if matches!(transport.interners().shape(binding.shape), ShapeDescr::Nothing) {
             continue;
         }
+        let arg_offset = binding.semantic_index - semantic_start;
+        let arg = args.get(arg_offset).ok_or_else(|| {
+            format!(
+                "backend executable {} missing semantic call arg {} for binding {}",
+                executable.key.activation.function.as_u32(),
+                arg_offset,
+                binding.semantic_index
+            )
+        })?;
         let value = env_get_value(env, arg.value).map_err(|error| {
             format!(
                 "backend encode_call_args callee_fn={} semantic_index={} shape={:?} arg_value={:?}: {error}",
@@ -2004,7 +2060,16 @@ fn encode_call_args(
             binding.shape,
             &binding.position,
             &mut lanes,
-        )?;
+        )
+        .map_err(|error| {
+            format!(
+                "backend encode_call_args callee_fn={} semantic_index={} shape={:?} arg_value={:?}: {error}",
+                executable.key.activation.function.as_u32(),
+                binding.semantic_index,
+                transport.interners().shape(binding.shape),
+                arg.value,
+            )
+        })?;
     }
     Ok(lanes)
 }

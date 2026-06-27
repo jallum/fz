@@ -949,6 +949,15 @@ pub(crate) fn produce_transport_shape_product(
     if let Some(shape) = session.transport_shape(position) {
         return PullOutcome::Produced(ProductValue::TransportShape(Some(shape)));
     }
+    if let Some(shape) = world
+        .transport_plan(session.root())
+        .and_then(|plan| plan.positions.get(position))
+        .copied()
+    {
+        let executable = executable_key_for_transport_position(session.root(), position, world.types_mut());
+        session.record_transport_shape_for(&executable, position.clone(), shape);
+        return PullOutcome::Produced(ProductValue::TransportShape(Some(shape)));
+    }
     let Some(projection) = project_transport_component_product(world, session, position) else {
         return PullOutcome::Produced(ProductValue::TransportShape(None));
     };
@@ -1033,6 +1042,16 @@ fn project_transport_component_product(
             break;
         }
     }
+    let outgoing_waits = executables
+        .iter()
+        .filter_map(|executable| {
+            let key = ProductKey::OutgoingInputEdges(executable.clone());
+            session.memo().get(&key).is_none().then_some(PullWait::Product(key))
+        })
+        .collect::<Vec<_>>();
+    if !outgoing_waits.is_empty() {
+        return Some(TransportProductProjection::Waiting(outgoing_waits));
+    }
 
     let mut reads = Vec::new();
     let mut wait_facts = HashSet::new();
@@ -1103,7 +1122,8 @@ fn project_transport_component_product(
 
     for position in &positions {
         if let Some(shape) = shape {
-            session.record_transport_shape(position.clone(), shape);
+            let executable = executable_key_for_transport_position(session.root(), position, world.types_mut());
+            session.record_transport_shape_for(&executable, position.clone(), shape);
         }
     }
     for (callable, facts) in callables {
@@ -3781,7 +3801,7 @@ fn project_callable_value(
         return SourceShape::Unknown;
     }
     let Some(upstream_flow) = upstream_flow else {
-        panic!("local callable producer reached transport without upstream CallableFlowFact: {producer:?}");
+        return SourceShape::Unknown;
     };
     let Some(callable) = callable_for_producer(
         world,

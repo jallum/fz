@@ -2547,8 +2547,10 @@ end
         let mut producers = WorldProductProducers::new(&mut world);
         pull_runtime_demands_for_executables(&mut driver, &mut producers, &executables);
         for executable in &executables {
-            assert_product_produced(
-                driver.pull(&mut producers, ProductKey::OutgoingInputEdges(executable.clone())),
+            pull_product_until_produced(
+                &mut driver,
+                &mut producers,
+                ProductKey::OutgoingInputEdges(executable.clone()),
                 "outgoing input edges should be derivable from product runtime demand",
             );
         }
@@ -2633,14 +2635,22 @@ end
         let mut producers = WorldProductProducers::new(&mut world);
         pull_runtime_demands_for_executables(&mut driver, &mut producers, &executables);
         for executable in &executables {
-            assert_product_produced(
-                driver.pull(&mut producers, ProductKey::OutgoingInputEdges(executable.clone())),
+            pull_product_until_produced(
+                &mut driver,
+                &mut producers,
+                ProductKey::OutgoingInputEdges(executable.clone()),
                 "outgoing input edges should be derivable before transport shape projection",
             );
         }
         assert_product_produced(
             driver.pull(&mut producers, ProductKey::TransportShape(main_return.clone())),
             "main return transport shape should be product-derivable",
+        );
+        pull_product_until_produced(
+            &mut driver,
+            &mut producers,
+            ProductKey::TransportComponent(main_return.clone()),
+            "main return transport component should produce callable facts",
         );
     }
     driver.finish_session();
@@ -2783,8 +2793,10 @@ end
         let mut producers = WorldProductProducers::new(&mut world);
         pull_runtime_demands_for_executables(&mut driver, &mut producers, &executables);
         for executable in &executables {
-            assert_product_produced(
-                driver.pull(&mut producers, ProductKey::OutgoingInputEdges(executable.clone())),
+            pull_product_until_produced(
+                &mut driver,
+                &mut producers,
+                ProductKey::OutgoingInputEdges(executable.clone()),
                 "outgoing input edges should be derivable before materialization",
             );
         }
@@ -2795,8 +2807,10 @@ end
             );
         }
         for executable in &executables {
-            assert_product_produced(
-                driver.pull(&mut producers, ProductKey::MaterializedExecutable(executable.clone())),
+            pull_product_until_produced(
+                &mut driver,
+                &mut producers,
+                ProductKey::MaterializedExecutable(executable.clone()),
                 "materialized executable should be product-derivable",
             );
         }
@@ -2870,8 +2884,10 @@ end
         let mut producers = WorldProductProducers::new(&mut world);
         pull_runtime_demands_for_executables(&mut driver, &mut producers, &executables);
         for executable in &executables {
-            assert_product_produced(
-                driver.pull(&mut producers, ProductKey::OutgoingInputEdges(executable.clone())),
+            pull_product_until_produced(
+                &mut driver,
+                &mut producers,
+                ProductKey::OutgoingInputEdges(executable.clone()),
                 "outgoing input edges should be derivable before ABI/backend products",
             );
         }
@@ -2882,14 +2898,18 @@ end
             );
         }
         for executable in &executables {
-            assert_product_produced(
-                driver.pull(&mut producers, ProductKey::MaterializedExecutable(executable.clone())),
+            pull_product_until_produced(
+                &mut driver,
+                &mut producers,
+                ProductKey::MaterializedExecutable(executable.clone()),
                 "materialized executable should be product-derivable before ABI/backend products",
             );
         }
         for executable in &executables {
-            assert_product_produced(
-                driver.pull(&mut producers, ProductKey::ExecutableEffects(executable.clone())),
+            pull_product_until_produced(
+                &mut driver,
+                &mut producers,
+                ProductKey::ExecutableEffects(executable.clone()),
                 "executable effects should be product-derivable before ABI/backend products",
             );
         }
@@ -2945,6 +2965,93 @@ end
     assert!(driver.session().executable_index().is_empty());
     assert_eq!(driver.session().root_scans(), 0);
     assert_eq!(driver.session().follow_ups(), 0);
+}
+
+#[test]
+fn compiler2_pull_root_backend_product_packages_and_runs_enum_reduce_operator_refs() {
+    let source = r#"
+fn main() do
+  {
+    Enum.reduce([1, 2, 3], 0, &Kernel.+/2),
+    Enum.reduce([1, 2, 3], 0, &+/2)
+  }
+end
+"#;
+
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new(&tel);
+    world.submit_code(
+        Some("pull_root_backend_enum_reduce_operator_refs.fz".to_string()),
+        source.to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::TupleFields(2));
+    drive_until_transport_plan(
+        &mut world,
+        root,
+        "Enum.reduce operator-ref fixture should settle legacy facts before product root backend packaging",
+    );
+
+    let plan = transport_plan(&world, root);
+    let expected_executables = plan.executable_membership.len();
+    let capture = Capture::new();
+    tel.attach(&["fz", "compiler2", "pull"], capture.handler());
+    let mut driver = ProductDriver::new(&tel, root);
+    assert!(
+        driver.session().executable_index().is_empty(),
+        "dense executable indices should not exist before final backend packaging"
+    );
+    let product = {
+        let mut producers = WorldProductProducers::new(&mut world);
+        pull_product_until_produced(
+            &mut driver,
+            &mut producers,
+            ProductKey::RootBackendProduct(root),
+            "root backend product should be product-derivable",
+        )
+    };
+    let ProductValue::RootBackendProduct(program) = product else {
+        panic!("root backend product should return a BackendProgram, got {product:?}");
+    };
+
+    assert_eq!(
+        program.executables.len(),
+        expected_executables,
+        "final backend package should include exactly the demanded executable products"
+    );
+    assert_eq!(
+        driver.session().backend_executables().len(),
+        expected_executables,
+        "root package should pull every demanded symbolic backend executable"
+    );
+    assert_eq!(
+        driver.session().executable_index().len(),
+        expected_executables,
+        "dense executable indices are assigned at final packaging only"
+    );
+    assert!(
+        program.callable_entries.is_empty(),
+        "operator refs in fixture 00181 should stay direct callable transport with no backend callable entries"
+    );
+    assert_eq!(driver.session().root_scans(), 0);
+    assert_eq!(driver.session().follow_ups(), 0);
+    driver.finish_session();
+    assert!(
+        capture.count(&["fz", "compiler2", "pull", "product", "requested"]) > 0,
+        "root backend product path should emit product request telemetry"
+    );
+    assert!(
+        capture.count(&["fz", "compiler2", "pull", "product", "produced"]) > 0,
+        "root backend product path should emit product production telemetry"
+    );
+    let finished = capture
+        .last(&["fz", "compiler2", "pull", "session", "finished"])
+        .expect("root backend product path should emit final session telemetry");
+    assert_eq!(measurement_u64(&finished, "root_scans"), 0);
+    assert_eq!(measurement_u64(&finished, "follow_ups"), 0);
+
+    let (types, transport) = world.types_mut_and_transport();
+    crate::ir_interp::run_backend_main(types, transport, &tel, &program)
+        .expect("product-built BackendProgram should run through the interpreter");
 }
 
 #[test]
@@ -4058,8 +4165,10 @@ fn pull_transport_shape_for_executables_in_order(
             }
         }
         for executable in executables {
-            assert_product_produced(
-                driver.pull(&mut producers, ProductKey::OutgoingInputEdges(executable.clone())),
+            pull_product_until_produced(
+                &mut driver,
+                &mut producers,
+                ProductKey::OutgoingInputEdges(executable.clone()),
                 "outgoing input edges should be derivable before transport shape projection",
             );
         }
@@ -4084,17 +4193,19 @@ fn pull_product_until_produced(
     producers: &mut impl super::pull::ProductProducers,
     key: ProductKey,
     message: &str,
-) {
+) -> ProductValue {
     let mut stack = vec![key.clone()];
+    let mut last_wait = None;
     for _ in 0..10_000 {
         let Some(current) = stack.pop() else {
             stack.push(key.clone());
             continue;
         };
         match driver.pull(producers, current.clone()) {
-            PullOutcome::Produced(_) if current == key => return,
+            PullOutcome::Produced(value) if current == key => return value,
             PullOutcome::Produced(_) => {}
             PullOutcome::Waiting(waits) => {
+                last_wait = Some((current.clone(), waits.clone()));
                 stack.push(current);
                 for wait in waits.into_iter().rev() {
                     let PullWait::Product(product) = wait else {
@@ -4105,7 +4216,7 @@ fn pull_product_until_produced(
             }
         }
     }
-    panic!("{message}: product {key:?} did not settle through named product waits");
+    panic!("{message}: product {key:?} did not settle through named product waits; last wait: {last_wait:?}");
 }
 
 fn materialized_call_edge_callees(edge: &super::artifact::MaterializedCallEdge) -> Vec<&ExecutableKey> {

@@ -17,16 +17,16 @@ use crate::source::Span;
 
 use super::super::artifact::{
     AbiReadyExecutable, BackendBody, BackendCallArg, BackendCallableEntry, BackendClause, BackendEntry,
-    BackendEntryOrigin, BackendExecutable, BackendProgram, BackendStep, BackendTail, CallEdge, DirectCallEdge,
-    EmissionReadyExecutable, MaterializedTransportPlan,
+    BackendEntryOrigin, BackendExecutable, BackendProgram, BackendStep, BackendTail, CallEdge, CallTarget,
+    DirectCallEdge, DispatchCallArm, EmissionReadyExecutable, MaterializedTransportPlan,
 };
 use super::super::body::{
     CallArg, CallSiteId, ControlEntryId, ControlEntryOrigin, LoweredBody, LoweredClause, LoweredEntry, LoweredStep,
     LoweredTail,
 };
 use super::super::drive::{FactKey, Job, JobEffects, settled_uses};
-use super::super::identity::ExecutableKey;
 use super::super::identity::RootId;
+use super::super::identity::{ExecutableKey, ExecutableNeed};
 use super::super::pull::{
     ProductKey, ProductValue, PullOutcome, PullSession, PullWait, SymbolicBackendBody, SymbolicBackendClause,
     SymbolicBackendEntry, SymbolicBackendExecutable, SymbolicBackendTail,
@@ -102,6 +102,74 @@ pub(super) fn lower_backend_program(world: &mut World<'_>, root_id: RootId) -> R
     })
 }
 
+pub(crate) fn produce_root_backend_product(
+    world: &mut World<'_>,
+    session: &mut PullSession,
+    root: RootId,
+) -> PullOutcome {
+    let entry = world.root_entry_executable(root);
+    let mut reachable = HashSet::new();
+    let mut stack = vec![entry.clone()];
+    let mut waits = Vec::new();
+    while let Some(current) = stack.pop() {
+        if !reachable.insert(current.clone()) {
+            continue;
+        }
+        let Some(backend) = session.backend_executable(&current) else {
+            waits.push(PullWait::Product(ProductKey::BackendExecutable(current)));
+            continue;
+        };
+        for target in backend.call_edges.values() {
+            for callee in symbolic_call_edge_callees(target) {
+                stack.push(callee.clone());
+            }
+        }
+    }
+    if !waits.is_empty() {
+        return PullOutcome::Waiting(waits);
+    }
+
+    let mut executable_keys = reachable.into_iter().collect::<Vec<_>>();
+    executable_keys.sort_by(|left, right| compare_executable_keys(left, right, world.types()));
+    let executable_index = executable_keys
+        .iter()
+        .enumerate()
+        .map(|(index, executable)| (executable.clone(), index))
+        .collect::<std::collections::HashMap<_, _>>();
+    for (executable, index) in &executable_index {
+        session.assign_executable_index(executable.clone(), *index);
+    }
+    let executables = executable_keys
+        .iter()
+        .map(|executable| {
+            let backend = session
+                .backend_executable(executable)
+                .expect("reachable backend executable should have been checked before packaging");
+            package_symbolic_backend_executable(world, root, backend, &executable_index)
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .expect("root backend product should have complete symbolic executable inventory");
+    let callable_entries = package_backend_callable_entries(world, root, session, &executable_index)
+        .expect("root backend product should have complete callable-entry inventory");
+    let transport = symbolic_materialized_transport_plan(session, &entry, world.types());
+    let entry_index = executable_index
+        .get(&entry)
+        .copied()
+        .expect("root entry should be in packaged executable inventory");
+    let program = BackendProgram {
+        emission_ready_revision: 0,
+        transport_revision: 0,
+        entry: entry_index,
+        transport,
+        atom_names: collect_backend_atom_names(world, &executables),
+        struct_schemas: world.struct_schemas(),
+        executables,
+        callable_entries,
+    };
+    world.define_backend_program(root, program.clone());
+    PullOutcome::Produced(ProductValue::RootBackendProduct(Box::new(program)))
+}
+
 pub(crate) fn produce_backend_executable_product(
     world: &mut World<'_>,
     session: &mut PullSession,
@@ -131,6 +199,355 @@ pub(crate) fn produce_backend_executable_product(
     };
     session.record_backend_executable(executable.clone(), backend.clone());
     PullOutcome::Produced(ProductValue::BackendExecutable(Box::new(backend)))
+}
+
+fn symbolic_call_edge_callees(target: &CallEdge<ExecutableKey>) -> Vec<&ExecutableKey> {
+    match target {
+        CallEdge::Direct(direct) => direct.callee.local().into_iter().collect(),
+        CallEdge::Dispatch(dispatch) => dispatch.arms.iter().filter_map(|arm| arm.callee.local()).collect(),
+    }
+}
+
+fn package_symbolic_backend_executable(
+    world: &World<'_>,
+    root: RootId,
+    backend: &SymbolicBackendExecutable,
+    executable_index: &std::collections::HashMap<ExecutableKey, usize>,
+) -> Result<BackendExecutable, FatalError> {
+    Ok(BackendExecutable {
+        key: backend.key.clone(),
+        entry_dispatch: backend.abi.entry_dispatch.clone(),
+        return_ty: backend.abi.return_ty,
+        param_reprs: backend.abi.param_reprs.clone(),
+        runtime_demand: backend.abi.runtime_demand.clone(),
+        transport: backend.abi.transport.clone(),
+        value_types: backend.abi.value_types.clone(),
+        value_reprs: backend.abi.value_reprs.clone(),
+        effects: backend.abi.effects,
+        body: package_symbolic_backend_body(world, root, &backend.key, &backend.body, executable_index)?,
+    })
+}
+
+fn package_symbolic_backend_body(
+    world: &World<'_>,
+    root: RootId,
+    caller: &ExecutableKey,
+    body: &SymbolicBackendBody,
+    executable_index: &std::collections::HashMap<ExecutableKey, usize>,
+) -> Result<BackendBody, FatalError> {
+    Ok(match body {
+        SymbolicBackendBody::Extern { signature } => BackendBody::Extern {
+            signature: signature.clone(),
+        },
+        SymbolicBackendBody::Clauses {
+            clauses,
+            entries,
+            generated,
+        } => BackendBody::Clauses {
+            clauses: clauses
+                .iter()
+                .map(|clause| BackendClause {
+                    span: clause.span,
+                    params: clause.params.clone(),
+                    projections: clause.projections.clone(),
+                    entry: clause.entry,
+                })
+                .collect(),
+            entries: entries
+                .iter()
+                .map(|entry| package_symbolic_backend_entry(world, root, caller, entry, executable_index))
+                .collect::<Result<Vec<_>, _>>()?,
+            generated: generated.clone(),
+        },
+    })
+}
+
+fn package_symbolic_backend_entry(
+    world: &World<'_>,
+    root: RootId,
+    caller: &ExecutableKey,
+    entry: &SymbolicBackendEntry,
+    executable_index: &std::collections::HashMap<ExecutableKey, usize>,
+) -> Result<BackendEntry, FatalError> {
+    Ok(BackendEntry {
+        span: entry.span,
+        origin: entry.origin.clone(),
+        params: entry.params.clone(),
+        captures: entry.captures.clone(),
+        capture_positions: entry.capture_positions.clone(),
+        reusable_cons_captures: entry.reusable_cons_captures.clone(),
+        steps: entry.steps.clone(),
+        tail: package_symbolic_backend_tail(world, root, caller, &entry.tail, executable_index)?,
+    })
+}
+
+fn package_symbolic_backend_tail(
+    world: &World<'_>,
+    root: RootId,
+    caller: &ExecutableKey,
+    tail: &SymbolicBackendTail,
+    executable_index: &std::collections::HashMap<ExecutableKey, usize>,
+) -> Result<BackendTail, FatalError> {
+    Ok(match tail {
+        SymbolicBackendTail::Value { value, dest } => BackendTail::Value {
+            value: *value,
+            dest: dest.clone(),
+        },
+        SymbolicBackendTail::DirectCall {
+            value,
+            callsite,
+            target,
+            args,
+            dest,
+        } => BackendTail::DirectCall {
+            value: *value,
+            callsite: *callsite,
+            target: package_call_edge(world, root, caller, target, executable_index)?,
+            args: args.clone(),
+            dest: dest.clone(),
+        },
+        SymbolicBackendTail::ClosureCall {
+            value,
+            callsite,
+            callee,
+            target,
+            args,
+            dest,
+            return_flow,
+        } => BackendTail::ClosureCall {
+            value: *value,
+            callsite: *callsite,
+            callee: *callee,
+            target: target
+                .as_ref()
+                .map(|target| {
+                    executable_index.get(target).copied().ok_or_else(|| {
+                        incomplete_backend_program(
+                            world,
+                            root,
+                            format!(
+                                "symbolic closure target {:?} -> {:?} is missing from final inventory",
+                                caller, target
+                            ),
+                        )
+                    })
+                })
+                .transpose()?,
+            args: args.clone(),
+            dest: dest.clone(),
+            return_flow: return_flow.clone(),
+        },
+        SymbolicBackendTail::If {
+            cond,
+            then_entry,
+            else_entry,
+        } => BackendTail::If {
+            cond: *cond,
+            then_entry: *then_entry,
+            else_entry: *else_entry,
+        },
+        SymbolicBackendTail::Dispatch {
+            inputs,
+            bindings,
+            dispatch,
+        } => BackendTail::Dispatch {
+            inputs: inputs.clone(),
+            bindings: bindings.clone(),
+            dispatch: dispatch.clone(),
+        },
+        SymbolicBackendTail::Receive(receive) => BackendTail::Receive(receive.clone()),
+        SymbolicBackendTail::Halt { atom } => BackendTail::Halt { atom: atom.clone() },
+    })
+}
+
+fn package_call_edge(
+    world: &World<'_>,
+    root: RootId,
+    caller: &ExecutableKey,
+    target: &CallEdge<ExecutableKey>,
+    executable_index: &std::collections::HashMap<ExecutableKey, usize>,
+) -> Result<CallEdge<usize>, FatalError> {
+    Ok(match target {
+        CallEdge::Direct(direct) => CallEdge::Direct(DirectCallEdge {
+            callee: package_call_target(world, root, caller, &direct.callee, executable_index)?,
+            return_flow: direct.return_flow.clone(),
+            extern_marshals: direct.extern_marshals.clone(),
+        }),
+        CallEdge::Dispatch(dispatch) => CallEdge::Dispatch(super::super::artifact::DispatchCallEdge {
+            plan: dispatch.plan.clone(),
+            arms: dispatch
+                .arms
+                .iter()
+                .map(|arm| {
+                    Ok(DispatchCallArm {
+                        body_id: arm.body_id,
+                        callee: package_call_target(world, root, caller, &arm.callee, executable_index)?,
+                        return_flow: arm.return_flow.clone(),
+                        extern_marshals: arm.extern_marshals.clone(),
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?,
+            miss: dispatch.miss,
+        }),
+    })
+}
+
+fn package_call_target(
+    world: &World<'_>,
+    root: RootId,
+    caller: &ExecutableKey,
+    target: &CallTarget<ExecutableKey>,
+    executable_index: &std::collections::HashMap<ExecutableKey, usize>,
+) -> Result<CallTarget<usize>, FatalError> {
+    Ok(match target {
+        CallTarget::Local(callee) => CallTarget::Local(executable_index.get(callee).copied().ok_or_else(|| {
+            incomplete_backend_program(
+                world,
+                root,
+                format!(
+                    "symbolic backend call edge {:?} -> {:?} points outside final executable inventory",
+                    caller, callee
+                ),
+            )
+        })?),
+        CallTarget::ProviderBoundary(function) => CallTarget::ProviderBoundary(*function),
+    })
+}
+
+fn package_backend_callable_entries(
+    world: &World<'_>,
+    root: RootId,
+    session: &PullSession,
+    executable_index: &std::collections::HashMap<ExecutableKey, usize>,
+) -> Result<Vec<BackendCallableEntry>, FatalError> {
+    let mut entries = Vec::new();
+    for (boundary, facts) in session.boundary_facts_inventory() {
+        let boundary_descr = world.boundary(*boundary);
+        for target_symbol in facts.resolutions.iter() {
+            let Some(target) = executable_key_for_symbol_in_index(target_symbol, executable_index, world.types())
+            else {
+                return Err(incomplete_backend_program(
+                    world,
+                    root,
+                    format!(
+                        "boundary {:?} resolution {:?} is missing from final executable inventory",
+                        boundary, target_symbol
+                    ),
+                ));
+            };
+            let Some(target_index) = executable_index.get(&target).copied() else {
+                return Err(incomplete_backend_program(
+                    world,
+                    root,
+                    format!(
+                        "boundary {:?} target {:?} is missing from final executable inventory",
+                        boundary, target
+                    ),
+                ));
+            };
+            let Some(target_backend) = session.backend_executable(&target) else {
+                return Err(incomplete_backend_program(
+                    world,
+                    root,
+                    format!(
+                        "boundary {:?} target {:?} is missing from backend products",
+                        boundary, target
+                    ),
+                ));
+            };
+            entries.push(BackendCallableEntry {
+                boundary: *boundary,
+                target: target_index,
+                capture_count: boundary_descr.published_capture_lanes.len(),
+                capture_reprs: boundary_descr
+                    .published_capture_lanes
+                    .iter()
+                    .copied()
+                    .map(|lane| abi_value_repr_for_lane(world, lane))
+                    .collect(),
+                arg_reprs: boundary_descr
+                    .published_arg_lanes
+                    .iter()
+                    .copied()
+                    .map(|lane| abi_value_repr_for_lane(world, lane))
+                    .collect(),
+                return_ty: target_backend.abi.return_ty,
+                return_shape: boundary_descr.published_return_shape,
+                return_lanes: boundary_descr.published_return_lanes.to_vec(),
+            });
+        }
+    }
+    entries.sort_by(compare_backend_callable_entries);
+    entries.dedup();
+    Ok(entries)
+}
+
+fn executable_key_for_symbol_in_index(
+    symbol: &ExecutableSymbol,
+    executable_index: &std::collections::HashMap<ExecutableKey, usize>,
+    types: &super::super::Types,
+) -> Option<ExecutableKey> {
+    executable_index
+        .keys()
+        .find(|key| {
+            key.need == symbol.need
+                && key.activation.function == symbol.activation.function
+                && key.activation.inputs(types).as_slice() == symbol.activation.input.as_ref()
+        })
+        .cloned()
+}
+
+fn compare_backend_callable_entries(left: &BackendCallableEntry, right: &BackendCallableEntry) -> std::cmp::Ordering {
+    left.target
+        .cmp(&right.target)
+        .then_with(|| left.boundary.as_u32().cmp(&right.boundary.as_u32()))
+        .then_with(|| left.capture_count.cmp(&right.capture_count))
+}
+
+fn compare_executable_keys(
+    left: &ExecutableKey,
+    right: &ExecutableKey,
+    types: &super::super::Types,
+) -> std::cmp::Ordering {
+    left.activation
+        .root
+        .as_u32()
+        .cmp(&right.activation.root.as_u32())
+        .then_with(|| {
+            left.activation
+                .function
+                .as_u32()
+                .cmp(&right.activation.function.as_u32())
+        })
+        .then_with(|| left.activation.inputs(types).cmp(&right.activation.inputs(types)))
+        .then_with(|| compare_executable_needs(left.need, right.need))
+}
+
+fn compare_executable_needs(left: ExecutableNeed, right: ExecutableNeed) -> std::cmp::Ordering {
+    match (left, right) {
+        (ExecutableNeed::Value, ExecutableNeed::Value) => std::cmp::Ordering::Equal,
+        (ExecutableNeed::Value, ExecutableNeed::TupleFields(_)) => std::cmp::Ordering::Less,
+        (ExecutableNeed::TupleFields(_), ExecutableNeed::Value) => std::cmp::Ordering::Greater,
+        (ExecutableNeed::TupleFields(left), ExecutableNeed::TupleFields(right)) => left.cmp(&right),
+    }
+}
+
+fn abi_value_repr_for_lane(
+    world: &World<'_>,
+    lane: super::super::transport::LaneId,
+) -> super::super::artifact::AbiValueRepr {
+    let ty = world.lane(lane).ty;
+    if world.types().is_floating(&ty) {
+        return super::super::artifact::AbiValueRepr::RawF64;
+    }
+    if world.types().is_integer(&ty) {
+        return super::super::artifact::AbiValueRepr::RawInt;
+    }
+    if !world.types().atom_literals(&ty).is_empty() {
+        super::super::artifact::AbiValueRepr::RawAtom
+    } else {
+        super::super::artifact::AbiValueRepr::ValueRef
+    }
 }
 
 fn lower_symbolic_body(
@@ -329,6 +746,16 @@ fn symbolic_materialized_transport_plan(
         .map(|(position, shape)| (position.clone(), *shape))
         .collect::<Vec<_>>();
     position_shapes.sort_by_key(|(position, _)| format!("{position:?}"));
+    let mut publication_boundaries = session
+        .boundary_facts_inventory()
+        .iter()
+        .flat_map(|(boundary, facts)| facts.publications.iter().cloned().map(|position| (position, *boundary)))
+        .collect::<Vec<_>>();
+    publication_boundaries.sort_by(|left, right| {
+        format!("{:?}", left.0)
+            .cmp(&format!("{:?}", right.0))
+            .then_with(|| left.1.as_u32().cmp(&right.1.as_u32()))
+    });
     MaterializedTransportPlan {
         entry: ExecutableSymbol {
             activation: ActivationSymbol {
@@ -341,7 +768,7 @@ fn symbolic_materialized_transport_plan(
         position_shapes,
         callable_ids: session.demanded_callables().iter().copied().collect(),
         boundary_ids: session.demanded_boundaries().iter().copied().collect(),
-        publication_boundaries: Vec::new(),
+        publication_boundaries,
         codegen_seam_facts: Box::default(),
     }
 }

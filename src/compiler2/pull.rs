@@ -11,8 +11,8 @@ use crate::telemetry::{Telemetry, opaque_debug};
 use crate::{measurements, metadata};
 
 use super::artifact::{
-    AbiReadyExecutable, BackendCallArg, BackendEntryOrigin, BackendReceive, BackendStep, CallEdge, CallReturnFlow,
-    EffectSummary, MaterializedExecutable, ReusableConsCapture,
+    AbiReadyExecutable, BackendCallArg, BackendEntryOrigin, BackendProgram, BackendReceive, BackendStep, CallEdge,
+    CallReturnFlow, EffectSummary, MaterializedExecutable, ReusableConsCapture,
 };
 use super::body::{
     CallSiteId, ControlDestination, ControlDispatch, ControlEntryId, DispatchBindings, LoweredExtern, ValueId,
@@ -92,6 +92,7 @@ impl ProductKey {
 #[derive(Debug, Clone, PartialEq)]
 pub enum ProductValue {
     Unit,
+    RootBackendProduct(Box<BackendProgram>),
     BackendExecutable(Box<SymbolicBackendExecutable>),
     AbiExecutable(Box<AbiReadyExecutable>),
     MaterializedExecutable(Box<MaterializedExecutable>),
@@ -224,6 +225,7 @@ impl ProductMemo {
             Some(ProductValue::RuntimeDemand(demand)) => Some(demand.as_ref()),
             Some(
                 ProductValue::Unit
+                | ProductValue::RootBackendProduct(_)
                 | ProductValue::BackendExecutable(_)
                 | ProductValue::AbiExecutable(_)
                 | ProductValue::MaterializedExecutable(_)
@@ -249,6 +251,10 @@ impl ProductMemo {
 
     fn unblock(&mut self, key: &ProductKey) {
         self.in_progress.remove(key);
+    }
+
+    fn remove(&mut self, key: &ProductKey) {
+        self.produced.remove(key);
     }
 }
 
@@ -433,14 +439,19 @@ impl PullSession {
     pub fn record_call_edge(&mut self, edge: DemandedCallEdge) {
         self.demanded_executables.insert(edge.caller.clone());
         self.demanded_executables.insert(edge.callee.clone());
+        let mut changed = false;
         for (semantic_index, source) in &edge.inputs {
             let slot = InputSlot {
                 executable: edge.callee.clone(),
                 semantic_index: *semantic_index,
             };
-            push_unique(self.incoming_inputs.entry(slot).or_default(), source.clone());
+            changed |= push_unique(self.incoming_inputs.entry(slot).or_default(), source.clone());
         }
-        self.call_edges.entry(edge.caller.clone()).or_default().push(edge);
+        let edges = self.call_edges.entry(edge.caller.clone()).or_default();
+        changed |= push_unique(edges, edge.clone());
+        if changed {
+            self.invalidate_demand_derived_products(&edge.callee);
+        }
     }
 
     pub fn record_return_demand(&mut self, executable: ExecutableKey, demand: RuntimeDemand) {
@@ -448,10 +459,12 @@ impl PullSession {
             return;
         }
         self.demanded_executables.insert(executable.clone());
-        self.return_demands
-            .entry(executable)
-            .and_modify(|existing| existing.join_assign(&demand))
-            .or_insert(demand);
+        let entry = self.return_demands.entry(executable.clone()).or_default();
+        let before = entry.clone();
+        entry.join_assign(&demand);
+        if *entry != before {
+            self.invalidate_demand_derived_products(&executable);
+        }
     }
 
     pub fn record_materialized_executable(&mut self, executable: ExecutableKey, materialized: MaterializedExecutable) {
@@ -486,6 +499,19 @@ impl PullSession {
         self.transport_shapes.insert(position, shape);
     }
 
+    pub fn record_transport_shape_for(
+        &mut self,
+        executable: &ExecutableKey,
+        position: TransportPosition,
+        shape: ShapeId,
+    ) {
+        self.demanded_transport_positions.insert(position.clone());
+        let changed = self.transport_shapes.insert(position, shape) != Some(shape);
+        if changed {
+            self.invalidate_artifact_products(executable);
+        }
+    }
+
     pub fn record_callable_facts(&mut self, callable: CallableId, facts: CallableFacts) {
         self.demanded_callables.insert(callable);
         self.callable_facts.insert(callable, facts);
@@ -499,6 +525,23 @@ impl PullSession {
     pub fn assign_executable_index(&mut self, executable: ExecutableKey, index: usize) {
         self.demanded_executables.insert(executable.clone());
         self.executable_index.insert(executable, index);
+    }
+
+    fn invalidate_demand_derived_products(&mut self, executable: &ExecutableKey) {
+        self.memo.remove(&ProductKey::RuntimeDemand(executable.clone()));
+        self.invalidate_artifact_products(executable);
+    }
+
+    fn invalidate_artifact_products(&mut self, executable: &ExecutableKey) {
+        self.memo
+            .remove(&ProductKey::MaterializedExecutable(executable.clone()));
+        self.memo.remove(&ProductKey::ExecutableEffects(executable.clone()));
+        self.memo.remove(&ProductKey::AbiExecutable(executable.clone()));
+        self.memo.remove(&ProductKey::BackendExecutable(executable.clone()));
+        self.materialized_executables.remove(executable);
+        self.executable_effects.remove(executable);
+        self.abi_executables.remove(executable);
+        self.backend_executables.remove(executable);
     }
 
     fn note_product_request(&mut self, key: &ProductKey) {
@@ -536,12 +579,15 @@ impl PullSession {
     }
 }
 
-fn push_unique<T>(items: &mut Vec<T>, value: T)
+fn push_unique<T>(items: &mut Vec<T>, value: T) -> bool
 where
     T: PartialEq,
 {
     if !items.contains(&value) {
         items.push(value);
+        true
+    } else {
+        false
     }
 }
 
@@ -572,8 +618,8 @@ impl<'w, 'a> WorldProductProducers<'w, 'a> {
 }
 
 impl ProductProducers for WorldProductProducers<'_, '_> {
-    fn produce_root_backend_product(&mut self, _session: &mut PullSession, root: RootId) -> PullOutcome {
-        PullOutcome::wait_on_product(ProductKey::RootBackendProduct(root))
+    fn produce_root_backend_product(&mut self, session: &mut PullSession, root: RootId) -> PullOutcome {
+        super::jobs::backend::produce_root_backend_product(self.world, session, root)
     }
 
     fn produce_backend_executable(&mut self, session: &mut PullSession, executable: &ExecutableKey) -> PullOutcome {
@@ -929,19 +975,49 @@ mod tests {
             inputs: vec![(1, source.clone())],
         };
         let mut session = PullSession::new(RootId::for_test(3));
+        session.memo.finish(
+            &ProductKey::RuntimeDemand(callee.clone()),
+            ProductValue::RuntimeDemand(Box::default()),
+        );
 
         session.record_call_edge(edge.clone());
 
         assert_eq!(session.call_edges(&caller), std::slice::from_ref(&edge));
         assert_eq!(
             session.incoming_input_sources(&InputSlot {
-                executable: callee,
+                executable: callee.clone(),
                 semantic_index: 1,
             }),
             std::slice::from_ref(&source)
         );
+        assert!(
+            session.memo().get(&ProductKey::RuntimeDemand(callee)).is_none(),
+            "recording a new incoming edge invalidates stale request-local callee runtime demand"
+        );
         assert_eq!(session.root_scans(), 0);
         assert_eq!(session.follow_ups(), 0);
+    }
+
+    #[test]
+    fn pull_session_invalidates_runtime_demand_when_return_demand_grows() {
+        let executable = fake_executable(RootId::for_test(5));
+        let mut session = PullSession::new(RootId::for_test(5));
+        session.memo.finish(
+            &ProductKey::RuntimeDemand(executable.clone()),
+            ProductValue::RuntimeDemand(Box::default()),
+        );
+
+        session.record_return_demand(executable.clone(), RuntimeDemand::whole());
+
+        assert_eq!(
+            session.return_demand(&executable),
+            Some(&RuntimeDemand::whole()),
+            "the joined return demand should be retained for the next pull"
+        );
+        assert!(
+            session.memo().get(&ProductKey::RuntimeDemand(executable)).is_none(),
+            "recording a stronger return demand invalidates stale request-local runtime demand"
+        );
     }
 
     #[test]

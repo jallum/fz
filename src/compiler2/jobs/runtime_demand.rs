@@ -266,6 +266,12 @@ pub(crate) fn produce_runtime_demand_product(
     session: &mut PullSession,
     executable: &ExecutableKey,
 ) -> PullOutcome {
+    if world.fact_is_settled(&FactKey::RuntimeDemand(executable.clone()))
+        && let Some(demand) = world.runtime_demand(executable).cloned()
+    {
+        return PullOutcome::Produced(ProductValue::RuntimeDemand(Box::new(demand)));
+    }
+
     let mut waits = HashSet::new();
     let Some(facts) = collect_one_executable_facts_product(world, executable, &mut waits) else {
         return product_waits(waits);
