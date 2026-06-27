@@ -3,7 +3,9 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
 
 use super::body::{DeliveredValueSource, delivered_value_joins};
-use super::pull::{ProductDriver, ProductKey, ProductValue, PullOutcome, WorldProductProducers};
+use super::pull::{
+    ProductDriver, ProductKey, ProductValue, PullOutcome, PullWait, SymbolicBackendTail, WorldProductProducers,
+};
 use super::semantic::{CallableFlowFact, CallableSurface};
 use super::transport::{ActivationSymbol, ExecutableSymbol};
 use super::transport::{
@@ -2834,6 +2836,118 @@ end
 }
 
 #[test]
+fn compiler2_pull_abi_and_backend_products_keep_call_edges_symbolic() {
+    let source = r#"
+fn main() do
+  {
+    Enum.reduce([1, 2, 3], 0, &Kernel.+/2),
+    Enum.reduce([1, 2, 3], 0, &+/2)
+  }
+end
+"#;
+
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new(&tel);
+    world.submit_code(
+        Some("pull_abi_backend_enum_reduce_operator_refs.fz".to_string()),
+        source.to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::TupleFields(2));
+    drive_until_transport_plan(
+        &mut world,
+        root,
+        "Enum.reduce operator-ref fixture should settle legacy facts before product ABI/backend comparison",
+    );
+
+    let plan = transport_plan(&world, root);
+    let executables = plan
+        .executable_membership
+        .iter()
+        .map(|symbol| executable_key_for_symbol(&mut world, root, symbol))
+        .collect::<HashSet<_>>();
+    let mut driver = ProductDriver::new(&tel, root);
+    {
+        let mut producers = WorldProductProducers::new(&mut world);
+        pull_runtime_demands_for_executables(&mut driver, &mut producers, &executables);
+        for executable in &executables {
+            assert_product_produced(
+                driver.pull(&mut producers, ProductKey::OutgoingInputEdges(executable.clone())),
+                "outgoing input edges should be derivable before ABI/backend products",
+            );
+        }
+        for position in plan.positions.keys() {
+            assert_product_produced(
+                driver.pull(&mut producers, ProductKey::TransportShape(position.clone())),
+                "transport shape should be derivable before ABI/backend products",
+            );
+        }
+        for executable in &executables {
+            assert_product_produced(
+                driver.pull(&mut producers, ProductKey::MaterializedExecutable(executable.clone())),
+                "materialized executable should be product-derivable before ABI/backend products",
+            );
+        }
+        for executable in &executables {
+            assert_product_produced(
+                driver.pull(&mut producers, ProductKey::ExecutableEffects(executable.clone())),
+                "executable effects should be product-derivable before ABI/backend products",
+            );
+        }
+        for executable in &executables {
+            pull_product_until_produced(
+                &mut driver,
+                &mut producers,
+                ProductKey::AbiExecutable(executable.clone()),
+                "ABI executable should be product-derivable",
+            );
+            pull_product_until_produced(
+                &mut driver,
+                &mut producers,
+                ProductKey::BackendExecutable(executable.clone()),
+                "symbolic backend executable should be product-derivable",
+            );
+        }
+    }
+
+    assert_eq!(
+        driver.session().abi_executables().len(),
+        executables.len(),
+        "ABI products should be per demanded executable"
+    );
+    assert_eq!(
+        driver.session().backend_executables().len(),
+        executables.len(),
+        "backend products should be per demanded executable"
+    );
+    for (caller, abi) in driver.session().abi_executables() {
+        for edge in abi.call_edges.values() {
+            for callee in abi_ready_call_edge_callees(edge) {
+                assert!(
+                    executables.contains(callee),
+                    "ABI call edge from {caller:?} should remain an ExecutableKey in the demanded set, got {callee:?}"
+                );
+            }
+        }
+    }
+    for (caller, backend) in driver.session().backend_executables() {
+        assert_eq!(
+            backend.call_edges,
+            backend
+                .abi
+                .call_edges
+                .iter()
+                .map(|(callsite, edge)| (*callsite, edge.target.clone()))
+                .collect::<HashMap<_, _>>(),
+            "symbolic backend product should preserve ABI ExecutableKey call edges"
+        );
+        assert_symbolic_backend_body_has_no_dense_targets(&backend.body, caller);
+    }
+    assert!(driver.session().executable_index().is_empty());
+    assert_eq!(driver.session().root_scans(), 0);
+    assert_eq!(driver.session().follow_ups(), 0);
+}
+
+#[test]
 fn compiler2_transport_plan_has_no_dangling_direct_enum_reduce_callable() {
     let source = include_str!("../../fixtures2/00010_enum_reduce_main.fz");
 
@@ -3965,8 +4079,84 @@ fn assert_product_produced(outcome: PullOutcome, message: &str) {
     assert!(matches!(outcome, PullOutcome::Produced(_)), "{message}: {outcome:?}");
 }
 
+fn pull_product_until_produced(
+    driver: &mut ProductDriver<'_>,
+    producers: &mut impl super::pull::ProductProducers,
+    key: ProductKey,
+    message: &str,
+) {
+    let mut stack = vec![key.clone()];
+    for _ in 0..10_000 {
+        let Some(current) = stack.pop() else {
+            stack.push(key.clone());
+            continue;
+        };
+        match driver.pull(producers, current.clone()) {
+            PullOutcome::Produced(_) if current == key => return,
+            PullOutcome::Produced(_) => {}
+            PullOutcome::Waiting(waits) => {
+                stack.push(current);
+                for wait in waits.into_iter().rev() {
+                    let PullWait::Product(product) = wait else {
+                        panic!("{message}: product {key:?} waited on non-product prerequisite {wait:?}");
+                    };
+                    stack.push(product);
+                }
+            }
+        }
+    }
+    panic!("{message}: product {key:?} did not settle through named product waits");
+}
+
 fn materialized_call_edge_callees(edge: &super::artifact::MaterializedCallEdge) -> Vec<&ExecutableKey> {
     match &edge.target {
+        super::artifact::CallEdge::Direct(direct) => direct.callee.local().into_iter().collect(),
+        super::artifact::CallEdge::Dispatch(dispatch) => {
+            dispatch.arms.iter().filter_map(|arm| arm.callee.local()).collect()
+        }
+    }
+}
+
+fn abi_ready_call_edge_callees(edge: &super::artifact::AbiReadyCallEdge) -> Vec<&ExecutableKey> {
+    match &edge.target {
+        super::artifact::CallEdge::Direct(direct) => direct.callee.local().into_iter().collect(),
+        super::artifact::CallEdge::Dispatch(dispatch) => {
+            dispatch.arms.iter().filter_map(|arm| arm.callee.local()).collect()
+        }
+    }
+}
+
+fn assert_symbolic_backend_body_has_no_dense_targets(body: &super::pull::SymbolicBackendBody, caller: &ExecutableKey) {
+    let super::pull::SymbolicBackendBody::Clauses { entries, .. } = body else {
+        return;
+    };
+    for entry in entries {
+        match &entry.tail {
+            SymbolicBackendTail::DirectCall { target, .. } => {
+                assert!(
+                    !abi_call_edge_callees_from_target(target).is_empty(),
+                    "symbolic backend direct call in {caller:?} should keep ExecutableKey targets"
+                );
+            }
+            SymbolicBackendTail::ClosureCall { target, .. } => {
+                if let Some(target) = target {
+                    assert!(
+                        target.activation.root == caller.activation.root,
+                        "symbolic backend closure target should be an ExecutableKey, got {target:?}"
+                    );
+                }
+            }
+            SymbolicBackendTail::Value { .. }
+            | SymbolicBackendTail::If { .. }
+            | SymbolicBackendTail::Dispatch { .. }
+            | SymbolicBackendTail::Receive(_)
+            | SymbolicBackendTail::Halt { .. } => {}
+        }
+    }
+}
+
+fn abi_call_edge_callees_from_target(target: &super::artifact::CallEdge<ExecutableKey>) -> Vec<&ExecutableKey> {
+    match target {
         super::artifact::CallEdge::Direct(direct) => direct.callee.local().into_iter().collect(),
         super::artifact::CallEdge::Dispatch(dispatch) => {
             dispatch.arms.iter().filter_map(|arm| arm.callee.local()).collect()

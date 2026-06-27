@@ -16,15 +16,21 @@ use crate::dispatch_matrix::{ComparisonValue, DispatchConst, DispatchNode, Proje
 use crate::source::Span;
 
 use super::super::artifact::{
-    BackendBody, BackendCallArg, BackendCallableEntry, BackendClause, BackendEntry, BackendEntryOrigin,
-    BackendExecutable, BackendProgram, BackendStep, BackendTail, CallEdge, DirectCallEdge, MaterializedTransportPlan,
+    AbiReadyExecutable, BackendBody, BackendCallArg, BackendCallableEntry, BackendClause, BackendEntry,
+    BackendEntryOrigin, BackendExecutable, BackendProgram, BackendStep, BackendTail, CallEdge, DirectCallEdge,
+    EmissionReadyExecutable, MaterializedTransportPlan,
 };
 use super::super::body::{
     CallArg, CallSiteId, ControlEntryId, ControlEntryOrigin, LoweredBody, LoweredClause, LoweredEntry, LoweredStep,
     LoweredTail,
 };
 use super::super::drive::{FactKey, Job, JobEffects, settled_uses};
+use super::super::identity::ExecutableKey;
 use super::super::identity::RootId;
+use super::super::pull::{
+    ProductKey, ProductValue, PullOutcome, PullSession, PullWait, SymbolicBackendBody, SymbolicBackendClause,
+    SymbolicBackendEntry, SymbolicBackendExecutable, SymbolicBackendTail,
+};
 use super::super::scheduler::FatalError;
 use super::super::transport::ShapeDescr;
 use super::super::transport::{ActivationSymbol, ExecutableSymbol, TransportPosition};
@@ -94,6 +100,250 @@ pub(super) fn lower_backend_program(world: &mut World<'_>, root_id: RootId) -> R
         // demanded product.
         ..JobEffects::default()
     })
+}
+
+pub(crate) fn produce_backend_executable_product(
+    world: &mut World<'_>,
+    session: &mut PullSession,
+    executable: &ExecutableKey,
+) -> PullOutcome {
+    if let Some(backend) = session.backend_executable(executable).cloned() {
+        return PullOutcome::Produced(ProductValue::BackendExecutable(Box::new(backend)));
+    }
+    let Some(abi) = session.abi_executable(executable).cloned() else {
+        return PullOutcome::Waiting(vec![PullWait::Product(ProductKey::AbiExecutable(executable.clone()))]);
+    };
+    let transport = symbolic_materialized_transport_plan(session, executable, world.types());
+    let mut lowerer = BackendLowerer::new(world, session.root(), &transport);
+    let emission = symbolic_emission_ready_executable(executable.clone(), &abi);
+    let lowered = lower_symbolic_body(&mut lowerer, &emission, &abi)
+        .expect("symbolic backend lowering should be complete after ABI product exists");
+    let call_edges = abi
+        .call_edges
+        .iter()
+        .map(|(callsite, edge)| (*callsite, edge.target.clone()))
+        .collect::<std::collections::HashMap<_, _>>();
+    let backend = SymbolicBackendExecutable {
+        key: executable.clone(),
+        abi: Box::new(abi),
+        body: lowered,
+        call_edges,
+    };
+    session.record_backend_executable(executable.clone(), backend.clone());
+    PullOutcome::Produced(ProductValue::BackendExecutable(Box::new(backend)))
+}
+
+fn lower_symbolic_body(
+    lowerer: &mut BackendLowerer<'_, '_, '_>,
+    emission: &EmissionReadyExecutable,
+    abi: &AbiReadyExecutable,
+) -> Result<SymbolicBackendBody, FatalError> {
+    match &abi.body {
+        LoweredBody::Extern { signature } => Ok(SymbolicBackendBody::Extern {
+            signature: signature.clone(),
+        }),
+        LoweredBody::Clauses {
+            clauses,
+            entries,
+            generated,
+        } => Ok(SymbolicBackendBody::Clauses {
+            clauses: clauses
+                .iter()
+                .map(|clause| {
+                    Ok(SymbolicBackendClause {
+                        span: clause.span,
+                        params: clause.params.clone(),
+                        projections: clause
+                            .projections
+                            .iter()
+                            .map(|step| lowerer.lower_step(emission, step))
+                            .collect::<Result<Vec<_>, _>>()?,
+                        entry: clause.entry,
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?,
+            entries: entries
+                .iter()
+                .enumerate()
+                .map(|(index, entry)| lower_symbolic_entry(lowerer, emission, abi, index, entry))
+                .collect::<Result<Vec<_>, _>>()?,
+            generated: generated.clone(),
+        }),
+    }
+}
+
+fn lower_symbolic_entry(
+    lowerer: &mut BackendLowerer<'_, '_, '_>,
+    emission: &EmissionReadyExecutable,
+    abi: &AbiReadyExecutable,
+    entry_index: usize,
+    entry: &LoweredEntry,
+) -> Result<SymbolicBackendEntry, FatalError> {
+    let entry_id = original_entry_id(emission, entry_index);
+    Ok(SymbolicBackendEntry {
+        span: entry.span,
+        origin: lower_entry_origin(emission, entry_index, entry),
+        params: entry.params.clone(),
+        captures: entry.captures.clone(),
+        capture_positions: lowerer.capture_positions_for_entry(emission, entry_id, entry)?,
+        reusable_cons_captures: entry
+            .reusable_cons_captures
+            .iter()
+            .map(|capture| super::super::artifact::ReusableConsCapture {
+                head: capture.head,
+                source: capture.source,
+            })
+            .collect(),
+        steps: entry
+            .steps
+            .iter()
+            .map(|step| lowerer.lower_step(emission, step))
+            .collect::<Result<Vec<_>, _>>()?,
+        tail: lower_symbolic_tail(lowerer, emission, abi, &entry.tail).unwrap_or_else(|_| {
+            panic!(
+                "symbolic backend entry {entry_index} tail is incomplete: {:?}",
+                entry.tail
+            )
+        }),
+    })
+}
+
+fn lower_symbolic_tail(
+    lowerer: &mut BackendLowerer<'_, '_, '_>,
+    emission: &EmissionReadyExecutable,
+    abi: &AbiReadyExecutable,
+    tail: &LoweredTail,
+) -> Result<SymbolicBackendTail, FatalError> {
+    Ok(match tail {
+        LoweredTail::Value { value, dest } => SymbolicBackendTail::Value {
+            value: *value,
+            dest: dest.clone(),
+        },
+        LoweredTail::DirectCall {
+            value,
+            callsite,
+            args,
+            dest,
+            ..
+        } => {
+            let edge = abi.call_edges.get(callsite).ok_or_else(|| {
+                incomplete_backend_program(
+                    lowerer.world,
+                    lowerer.root_id,
+                    format!("missing symbolic direct-call edge for callsite {}", callsite.as_u32()),
+                )
+            })?;
+            SymbolicBackendTail::DirectCall {
+                value: *value,
+                callsite: *callsite,
+                target: edge.target.clone(),
+                args: lowerer.lower_call_args(emission, *callsite, None, args)?,
+                dest: dest.clone(),
+            }
+        }
+        LoweredTail::ClosureCall {
+            value,
+            callsite,
+            callee,
+            args,
+            dest,
+        } => {
+            let edge = abi.call_edges.get(callsite);
+            SymbolicBackendTail::ClosureCall {
+                value: *value,
+                callsite: *callsite,
+                callee: *callee,
+                target: edge
+                    .and_then(|edge| symbolic_direct_call_edge(&edge.target))
+                    .and_then(|edge| edge.callee.local().cloned()),
+                args: lowerer.lower_call_args(emission, *callsite, Some(*callee), args)?,
+                dest: dest.clone(),
+                return_flow: edge
+                    .and_then(|edge| symbolic_direct_call_edge(&edge.target))
+                    .map(|edge| edge.return_flow.clone()),
+            }
+        }
+        LoweredTail::If {
+            cond,
+            then_entry,
+            else_entry,
+        } => SymbolicBackendTail::If {
+            cond: *cond,
+            then_entry: *then_entry,
+            else_entry: *else_entry,
+        },
+        LoweredTail::Dispatch {
+            inputs,
+            bindings,
+            dispatch,
+        } => SymbolicBackendTail::Dispatch {
+            inputs: inputs.clone(),
+            bindings: bindings.clone(),
+            dispatch: dispatch.clone(),
+        },
+        LoweredTail::Receive(receive) => {
+            SymbolicBackendTail::Receive(Box::new(super::super::artifact::BackendReceive {
+                bindings: receive.bindings.clone(),
+                dispatch: receive.dispatch.clone(),
+                clauses: receive.clauses.clone(),
+                after: receive.after.clone(),
+                dest: receive.dest.clone(),
+            }))
+        }
+        LoweredTail::Halt { atom } => SymbolicBackendTail::Halt { atom: atom.clone() },
+    })
+}
+
+fn symbolic_direct_call_edge(target: &CallEdge<ExecutableKey>) -> Option<&DirectCallEdge<ExecutableKey>> {
+    match target {
+        CallEdge::Direct(direct) => Some(direct),
+        CallEdge::Dispatch(_) => None,
+    }
+}
+
+fn symbolic_emission_ready_executable(key: ExecutableKey, abi: &AbiReadyExecutable) -> EmissionReadyExecutable {
+    EmissionReadyExecutable {
+        key,
+        entry_dispatch: abi.entry_dispatch.clone(),
+        return_ty: abi.return_ty,
+        param_reprs: abi.param_reprs.clone(),
+        runtime_demand: abi.runtime_demand.clone(),
+        transport: abi.transport.clone(),
+        original_entry_ids: abi.original_entry_ids.clone(),
+        value_types: abi.value_types.clone(),
+        value_reprs: abi.value_reprs.clone(),
+        effects: abi.effects,
+        body: abi.body.clone(),
+        call_edges: Vec::new(),
+    }
+}
+
+fn symbolic_materialized_transport_plan(
+    session: &PullSession,
+    executable: &ExecutableKey,
+    types: &super::super::Types,
+) -> MaterializedTransportPlan {
+    let mut position_shapes = session
+        .transport_shapes()
+        .iter()
+        .map(|(position, shape)| (position.clone(), *shape))
+        .collect::<Vec<_>>();
+    position_shapes.sort_by_key(|(position, _)| format!("{position:?}"));
+    MaterializedTransportPlan {
+        entry: ExecutableSymbol {
+            activation: ActivationSymbol {
+                function: executable.activation.function,
+                input: executable.activation.inputs(types).into_boxed_slice(),
+            },
+            need: executable.need,
+        },
+        executable_membership: Box::default(),
+        position_shapes,
+        callable_ids: session.demanded_callables().iter().copied().collect(),
+        boundary_ids: session.demanded_boundaries().iter().copied().collect(),
+        publication_boundaries: Vec::new(),
+        codegen_seam_facts: Box::default(),
+    }
 }
 
 struct BackendLowerer<'a, 'plan, 'tel> {

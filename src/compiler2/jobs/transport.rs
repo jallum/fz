@@ -1766,31 +1766,22 @@ fn project_one_executable(
         }
     }
 
-    let mut entry_captures = context.runtime_demand.entry_capture_demands.iter().collect::<Vec<_>>();
-    entry_captures.sort_by_key(|(entry, _)| entry.as_u32());
-    for (&entry, demands) in entry_captures {
-        let LoweredBody::Clauses { entries, .. } = &context.body else {
-            continue;
-        };
-        let captures = entries
-            .get(entry.as_u32() as usize)
-            .map(|lowered| lowered.captures.clone())
-            .unwrap_or_default();
-        for capture_index in 0..demands.len() {
-            let Some(&capture) = captures.get(capture_index) else {
-                continue;
-            };
-            shape_graph.equal(
-                TransportPosition::EntryCapture {
-                    executable: symbol.clone(),
-                    entry,
-                    capture_index,
-                },
-                TransportPosition::Value {
-                    executable: symbol.clone(),
-                    value: capture,
-                },
-            );
+    if let LoweredBody::Clauses { entries, .. } = &context.body {
+        for (entry_index, entry) in entries.iter().enumerate() {
+            let entry_id = ControlEntryId::from_u32(entry_index as u32);
+            for (capture_index, capture) in entry.captures.iter().copied().enumerate() {
+                shape_graph.equal(
+                    TransportPosition::EntryCapture {
+                        executable: symbol.clone(),
+                        entry: entry_id,
+                        capture_index,
+                    },
+                    TransportPosition::Value {
+                        executable: symbol.clone(),
+                        value: capture,
+                    },
+                );
+            }
         }
     }
 

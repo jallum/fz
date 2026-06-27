@@ -10,8 +10,13 @@ use std::collections::{HashMap, HashSet};
 use crate::telemetry::{Telemetry, opaque_debug};
 use crate::{measurements, metadata};
 
-use super::artifact::{EffectSummary, MaterializedExecutable};
-use super::body::{CallSiteId, ValueId};
+use super::artifact::{
+    AbiReadyExecutable, BackendCallArg, BackendEntryOrigin, BackendReceive, BackendStep, CallEdge, CallReturnFlow,
+    EffectSummary, MaterializedExecutable, ReusableConsCapture,
+};
+use super::body::{
+    CallSiteId, ControlDestination, ControlDispatch, ControlEntryId, DispatchBindings, LoweredExtern, ValueId,
+};
 use super::drive::FactKey;
 use super::facts::FactUse;
 use super::identity::{ExecutableKey, RootId};
@@ -87,6 +92,8 @@ impl ProductKey {
 #[derive(Debug, Clone, PartialEq)]
 pub enum ProductValue {
     Unit,
+    BackendExecutable(Box<SymbolicBackendExecutable>),
+    AbiExecutable(Box<AbiReadyExecutable>),
     MaterializedExecutable(Box<MaterializedExecutable>),
     ExecutableEffects(EffectSummary),
     RuntimeDemand(Box<ExecutableRuntimeDemand>),
@@ -107,6 +114,84 @@ pub enum PullWait {
 pub enum PullOutcome {
     Produced(ProductValue),
     Waiting(Vec<PullWait>),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SymbolicBackendExecutable {
+    pub key: ExecutableKey,
+    pub abi: Box<AbiReadyExecutable>,
+    pub body: SymbolicBackendBody,
+    pub call_edges: HashMap<CallSiteId, CallEdge<ExecutableKey>>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum SymbolicBackendBody {
+    Extern {
+        signature: LoweredExtern,
+    },
+    Clauses {
+        clauses: Vec<SymbolicBackendClause>,
+        entries: Vec<SymbolicBackendEntry>,
+        generated: Vec<super::FunctionId>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SymbolicBackendClause {
+    pub span: crate::source::Span,
+    pub params: Vec<ValueId>,
+    pub projections: Vec<BackendStep>,
+    pub entry: ControlEntryId,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SymbolicBackendEntry {
+    pub span: crate::source::Span,
+    pub origin: BackendEntryOrigin,
+    pub params: Vec<ValueId>,
+    pub captures: Vec<ValueId>,
+    pub capture_positions: Vec<TransportPosition>,
+    pub reusable_cons_captures: Vec<ReusableConsCapture>,
+    pub steps: Vec<BackendStep>,
+    pub tail: SymbolicBackendTail,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum SymbolicBackendTail {
+    Value {
+        value: ValueId,
+        dest: ControlDestination,
+    },
+    DirectCall {
+        value: ValueId,
+        callsite: CallSiteId,
+        target: CallEdge<ExecutableKey>,
+        args: Vec<BackendCallArg>,
+        dest: ControlDestination,
+    },
+    ClosureCall {
+        value: ValueId,
+        callsite: CallSiteId,
+        callee: ValueId,
+        target: Option<ExecutableKey>,
+        args: Vec<BackendCallArg>,
+        dest: ControlDestination,
+        return_flow: Option<CallReturnFlow>,
+    },
+    If {
+        cond: ValueId,
+        then_entry: ControlEntryId,
+        else_entry: ControlEntryId,
+    },
+    Dispatch {
+        inputs: Vec<ValueId>,
+        bindings: DispatchBindings,
+        dispatch: Box<ControlDispatch>,
+    },
+    Receive(Box<BackendReceive>),
+    Halt {
+        atom: String,
+    },
 }
 
 impl PullOutcome {
@@ -139,6 +224,8 @@ impl ProductMemo {
             Some(ProductValue::RuntimeDemand(demand)) => Some(demand.as_ref()),
             Some(
                 ProductValue::Unit
+                | ProductValue::BackendExecutable(_)
+                | ProductValue::AbiExecutable(_)
                 | ProductValue::MaterializedExecutable(_)
                 | ProductValue::ExecutableEffects(_)
                 | ProductValue::IncomingInputSlot(_)
@@ -195,6 +282,8 @@ pub struct PullSession {
     return_demands: HashMap<ExecutableKey, RuntimeDemand>,
     materialized_executables: HashMap<ExecutableKey, MaterializedExecutable>,
     executable_effects: HashMap<ExecutableKey, EffectSummary>,
+    abi_executables: HashMap<ExecutableKey, AbiReadyExecutable>,
+    backend_executables: HashMap<ExecutableKey, SymbolicBackendExecutable>,
     demanded_transport_positions: HashSet<TransportPosition>,
     transport_shapes: HashMap<TransportPosition, ShapeId>,
     transport_components: HashMap<TransportPosition, TransportComponentInventory>,
@@ -218,6 +307,8 @@ impl PullSession {
             return_demands: HashMap::new(),
             materialized_executables: HashMap::new(),
             executable_effects: HashMap::new(),
+            abi_executables: HashMap::new(),
+            backend_executables: HashMap::new(),
             demanded_transport_positions: HashSet::new(),
             transport_shapes: HashMap::new(),
             transport_components: HashMap::new(),
@@ -269,6 +360,22 @@ impl PullSession {
 
     pub fn executable_effects_inventory(&self) -> &HashMap<ExecutableKey, EffectSummary> {
         &self.executable_effects
+    }
+
+    pub fn abi_executable(&self, executable: &ExecutableKey) -> Option<&AbiReadyExecutable> {
+        self.abi_executables.get(executable)
+    }
+
+    pub fn abi_executables(&self) -> &HashMap<ExecutableKey, AbiReadyExecutable> {
+        &self.abi_executables
+    }
+
+    pub fn backend_executable(&self, executable: &ExecutableKey) -> Option<&SymbolicBackendExecutable> {
+        self.backend_executables.get(executable)
+    }
+
+    pub fn backend_executables(&self) -> &HashMap<ExecutableKey, SymbolicBackendExecutable> {
+        &self.backend_executables
     }
 
     pub fn demanded_transport_positions(&self) -> &HashSet<TransportPosition> {
@@ -355,6 +462,16 @@ impl PullSession {
     pub fn record_executable_effects(&mut self, executable: ExecutableKey, effects: EffectSummary) {
         self.demanded_executables.insert(executable.clone());
         self.executable_effects.insert(executable, effects);
+    }
+
+    pub fn record_abi_executable(&mut self, executable: ExecutableKey, abi: AbiReadyExecutable) {
+        self.demanded_executables.insert(executable.clone());
+        self.abi_executables.insert(executable, abi);
+    }
+
+    pub fn record_backend_executable(&mut self, executable: ExecutableKey, backend: SymbolicBackendExecutable) {
+        self.demanded_executables.insert(executable.clone());
+        self.backend_executables.insert(executable, backend);
     }
 
     pub fn record_transport_component(&mut self, anchor: TransportPosition, positions: Vec<TransportPosition>) {
@@ -459,12 +576,12 @@ impl ProductProducers for WorldProductProducers<'_, '_> {
         PullOutcome::wait_on_product(ProductKey::RootBackendProduct(root))
     }
 
-    fn produce_backend_executable(&mut self, _session: &mut PullSession, executable: &ExecutableKey) -> PullOutcome {
-        PullOutcome::wait_on_product(ProductKey::BackendExecutable(executable.clone()))
+    fn produce_backend_executable(&mut self, session: &mut PullSession, executable: &ExecutableKey) -> PullOutcome {
+        super::jobs::backend::produce_backend_executable_product(self.world, session, executable)
     }
 
-    fn produce_abi_executable(&mut self, _session: &mut PullSession, executable: &ExecutableKey) -> PullOutcome {
-        PullOutcome::wait_on_product(ProductKey::AbiExecutable(executable.clone()))
+    fn produce_abi_executable(&mut self, session: &mut PullSession, executable: &ExecutableKey) -> PullOutcome {
+        super::jobs::artifact::produce_abi_executable_product(self.world, session, executable)
     }
 
     fn produce_materialized_executable(

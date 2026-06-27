@@ -326,6 +326,53 @@ pub(crate) fn produce_executable_effects_product(
     PullOutcome::Produced(ProductValue::ExecutableEffects(effects))
 }
 
+pub(crate) fn produce_abi_executable_product(
+    world: &mut World<'_>,
+    session: &mut PullSession,
+    executable: &ExecutableKey,
+) -> PullOutcome {
+    if let Some(abi) = session.abi_executable(executable).cloned() {
+        return PullOutcome::Produced(ProductValue::AbiExecutable(Box::new(abi)));
+    }
+    let mut waits = Vec::new();
+    if session.materialized_executable(executable).is_none() {
+        waits.push(PullWait::Product(ProductKey::MaterializedExecutable(
+            executable.clone(),
+        )));
+    }
+    if session.executable_effects(executable).is_none() {
+        waits.push(PullWait::Product(ProductKey::ExecutableEffects(executable.clone())));
+    }
+    if !waits.is_empty() {
+        return PullOutcome::Waiting(waits);
+    }
+
+    let mut materialized = session
+        .materialized_executable(executable)
+        .cloned()
+        .expect("materialized executable product wait should have been satisfied");
+    if let Some(effects) = session.executable_effects(executable) {
+        materialized.effects = effects;
+    }
+    materialized.transport = session_materialized_executable_transport(session, executable, world.types());
+    waits.extend(required_entry_capture_transport_waits(
+        session,
+        executable,
+        &materialized,
+        world.types(),
+    ));
+    if !waits.is_empty() {
+        return PullOutcome::Waiting(waits);
+    }
+    materialized.transport = session_materialized_executable_transport(session, executable, world.types());
+    let transport_plan = session_transport_plan(world, session, executable);
+    let plan = build_executable_abi_plan(world, executable, &materialized, &transport_plan);
+    let abi = derive_abi_ready_executable(&materialized, &plan)
+        .expect("per-executable ABI derivation should not require root fan-in");
+    session.record_abi_executable(executable.clone(), abi.clone());
+    PullOutcome::Produced(ProductValue::AbiExecutable(Box::new(abi)))
+}
+
 /// Derives one ABI-ready program from one materialized closed artifact.
 ///
 /// This job consumes only `MaterializedProgram(root)` plus the world-owned type
@@ -491,11 +538,24 @@ fn session_materialized_executable_transport(
     types: &Types,
 ) -> MaterializedExecutableTransport {
     let mut positions_by_executable = HashMap::<ExecutableSymbol, Vec<TransportPosition>>::new();
-    for position in session.transport_shapes().keys() {
+    let mut positions = session.transport_shapes().keys().cloned().collect::<HashSet<_>>();
+    positions.extend(
+        session
+            .demanded_transport_positions()
+            .iter()
+            .filter(|position| {
+                matches!(
+                    position,
+                    TransportPosition::EntryCapture { .. } | TransportPosition::ResumePayload { .. }
+                )
+            })
+            .cloned(),
+    );
+    for position in positions {
         positions_by_executable
-            .entry(transport_position_executable(position).clone())
+            .entry(transport_position_executable(&position).clone())
             .or_default()
-            .push(position.clone());
+            .push(position);
     }
     materialized_executable_transport(&positions_by_executable, executable, types)
 }
@@ -515,6 +575,37 @@ fn session_transport_plan(world: &World<'_>, session: &PullSession, entry_execut
         boundaries: session.boundary_facts_inventory().clone(),
         codegen_seam_facts: Box::default(),
     }
+}
+
+fn required_entry_capture_transport_waits(
+    session: &PullSession,
+    executable: &ExecutableKey,
+    materialized: &MaterializedExecutable,
+    types: &Types,
+) -> Vec<PullWait> {
+    let LoweredBody::Clauses { entries, .. } = &materialized.body else {
+        return Vec::new();
+    };
+    let symbol = transport_executable_symbol(executable, types);
+    let mut waits = Vec::new();
+    for (entry_index, entry) in entries.iter().enumerate() {
+        let entry_id = materialized
+            .original_entry_ids
+            .get(entry_index)
+            .copied()
+            .unwrap_or_else(|| ControlEntryId::from_u32(entry_index as u32));
+        for capture_index in 0..entry.captures.len() {
+            let position = TransportPosition::EntryCapture {
+                executable: symbol.clone(),
+                entry: entry_id,
+                capture_index,
+            };
+            if !session.demanded_transport_positions().contains(&position) {
+                waits.push(PullWait::Product(ProductKey::TransportShape(position)));
+            }
+        }
+    }
+    waits
 }
 
 fn transport_executable_symbol(executable: &ExecutableKey, types: &Types) -> ExecutableSymbol {
@@ -1671,7 +1762,8 @@ fn build_executable_abi_plan(
             shape_leaf_lanes_for_artifact(world, shape)
                 .into_iter()
                 .map(|(leaf_shape, lane)| {
-                    seam_repr_for_lane(
+                    seam_repr_for_lane_or_default(
+                        world,
                         &transport_plan.codegen_seam_facts,
                         |seam| {
                             matches!(
@@ -1721,7 +1813,8 @@ fn build_executable_abi_plan(
                     let repr = if let [repr] = publication_reprs.as_slice() {
                         *repr
                     } else {
-                        seam_repr_for_lane(
+                        seam_repr_for_lane_or_default(
+                            world,
                             &transport_plan.codegen_seam_facts,
                             |seam| {
                                 matches!(
@@ -1840,6 +1933,23 @@ fn seam_repr_for_lane(
         .find(|fact| seam_matches(&fact.seam) && fact.shape == shape && fact.lane == lane)
         .unwrap_or_else(|| panic!("transport plan should publish a codegen seam fact for {shape:?} {lane:?}"));
     abi_repr_from_codegen(fact.repr)
+}
+
+fn seam_repr_for_lane_or_default(
+    world: &mut World<'_>,
+    facts: &[super::super::transport::CodegenSeamFact],
+    seam_matches: impl Fn(&CodegenSeam) -> bool,
+    shape: Option<ShapeId>,
+    lane: LaneId,
+) -> AbiValueRepr {
+    facts
+        .iter()
+        .find(|fact| seam_matches(&fact.seam) && fact.shape == shape && fact.lane == lane)
+        .map(|fact| abi_repr_from_codegen(fact.repr))
+        .unwrap_or_else(|| {
+            let ty = world.lane(lane).ty;
+            abi_value_repr(world, ty)
+        })
 }
 
 fn abi_repr_from_codegen(repr: CodegenLaneRepr) -> AbiValueRepr {

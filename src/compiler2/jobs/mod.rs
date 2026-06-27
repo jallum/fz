@@ -9,7 +9,7 @@ use super::scheduler::FatalError;
 use super::world::World;
 
 pub(crate) mod artifact;
-mod backend;
+pub(crate) mod backend;
 mod body;
 mod contract;
 mod dispatch;
