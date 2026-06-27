@@ -1,6 +1,7 @@
 use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap, HashSet};
 
+use super::super::artifact::MaterializedExecutable;
 use super::super::body::{
     CallArg, CallSiteId, ControlDestination, ControlEntryId, DeliveredValueSource, LoweredBody, LoweredStep,
     LoweredTail, ValueId, delivered_value_joins,
@@ -30,6 +31,7 @@ struct ExecutableContext {
     analysis: ActivationAnalysis,
     return_ty: Ty,
     body: LoweredBody,
+    original_entry_ids: Vec<ControlEntryId>,
     runtime_demand: ExecutableRuntimeDemand,
     callsite_needs: HashMap<CallSiteId, ExecutableNeed>,
     callsite_args: HashMap<CallSiteId, Vec<CallArg>>,
@@ -723,7 +725,8 @@ pub(super) fn derive_executable_transport(
     let executables = world.root_executable_frontier(root_id);
     let mut superset_reads = Vec::new();
     let mut wait_facts = HashSet::new();
-    let mut contexts = collect_transport_contexts(world, &executables, None, &mut superset_reads, &mut wait_facts);
+    let mut contexts =
+        collect_transport_contexts(world, &executables, None, None, &mut superset_reads, &mut wait_facts);
 
     if !wait_facts.is_empty() {
         // While the closure's facts are still settling, re-run the whole gather
@@ -865,7 +868,7 @@ pub(super) fn derive_transport_plan(world: &mut World<'_>, root_id: RootId) -> R
     let executables = world.root_executable_frontier(root_id);
     let mut reads = vec![closed_fact];
     let mut wait_facts = HashSet::new();
-    let mut contexts = collect_transport_contexts(world, &executables, None, &mut reads, &mut wait_facts);
+    let mut contexts = collect_transport_contexts(world, &executables, None, None, &mut reads, &mut wait_facts);
 
     if !wait_facts.is_empty() {
         return Ok(JobEffects {
@@ -1051,8 +1054,14 @@ fn project_transport_component_product(
 
     let mut reads = Vec::new();
     let mut wait_facts = HashSet::new();
-    let mut contexts =
-        collect_transport_contexts(world, &executables, Some(&runtime_demands), &mut reads, &mut wait_facts);
+    let mut contexts = collect_transport_contexts(
+        world,
+        &executables,
+        Some(&runtime_demands),
+        Some(session.materialized_executables()),
+        &mut reads,
+        &mut wait_facts,
+    );
     if !wait_facts.is_empty() {
         return Some(TransportProductProjection::Waiting(
             wait_facts
@@ -1244,6 +1253,7 @@ fn collect_transport_contexts(
     world: &mut World<'_>,
     executables: &HashSet<ExecutableKey>,
     runtime_demands: Option<&HashMap<ExecutableKey, ExecutableRuntimeDemand>>,
+    materialized_executables: Option<&HashMap<ExecutableKey, MaterializedExecutable>>,
     reads: &mut Vec<FactKey>,
     wait_facts: &mut HashSet<FactKey>,
 ) -> TransportContexts {
@@ -1270,7 +1280,11 @@ fn collect_transport_contexts(
         let return_ty = world
             .activation_return(&executable.activation)
             .unwrap_or_else(|| world.types_mut().none());
-        let body = world.lowered_body(executable.activation.function);
+        let materialized = materialized_executables.and_then(|materialized| materialized.get(executable));
+        let uses_materialized_body = materialized.is_some();
+        let (body, original_entry_ids) = materialized
+            .map(|materialized| (materialized.body.clone(), materialized.original_entry_ids.clone()))
+            .unwrap_or_else(|| (world.lowered_body(executable.activation.function), Vec::new()));
         let runtime_demand = if let Some(runtime_demands) = runtime_demands {
             runtime_demands.get(executable).cloned().unwrap_or_default()
         } else {
@@ -1285,7 +1299,17 @@ fn collect_transport_contexts(
                 .cloned()
                 .expect("settled runtime-demand fact should have a readable payload")
         };
-        let callsite_needs = executable_callsite_needs(&body, &analysis.reachable_clauses, executable.need);
+        let reachable_clauses = if uses_materialized_body {
+            local_clause_ids(&body)
+        } else {
+            analysis.reachable_clauses.clone()
+        };
+        let reachable_entries = if uses_materialized_body {
+            local_entry_ids(&body)
+        } else {
+            analysis.reachable_entries.clone()
+        };
+        let callsite_needs = executable_callsite_needs(&body, &reachable_clauses, executable.need);
         for callsite in &analysis.callsites {
             let fact = FactKey::CallSiteSummary(CallSiteKey {
                 activation: executable.activation.clone(),
@@ -1297,7 +1321,7 @@ fn collect_transport_contexts(
             }
             reads.push(fact);
         }
-        let resume_entries = collect_resume_entries(&body, &analysis);
+        let resume_entries = collect_resume_entries(&body, &analysis, &original_entry_ids);
         let mut local_sources = collect_value_sources(&body);
         for (value, semantic_index) in collect_clause_parameter_sources(&body) {
             local_sources.insert(value, TransportSource::ExecutableInput(semantic_index));
@@ -1314,11 +1338,12 @@ fn collect_transport_contexts(
                 callsite_args: collect_callsite_args(&body),
                 callsite_dests: collect_callsite_dests(&body),
                 local_sources,
-                return_sources: collect_return_sources(&body, &analysis),
+                return_sources: collect_return_sources(&body, &reachable_clauses, &reachable_entries),
                 resume_entries,
                 analysis,
                 return_ty,
                 body,
+                original_entry_ids,
                 runtime_demand,
                 callsite_needs,
             },
@@ -1618,7 +1643,14 @@ pub(crate) fn transport_plan_for_runtime_demands_for_test(
     let frontier = world.root_executable_frontier(root_id);
     let mut reads = Vec::new();
     let mut wait_facts = HashSet::new();
-    let mut contexts = collect_transport_contexts(world, &frontier, Some(runtime_demands), &mut reads, &mut wait_facts);
+    let mut contexts = collect_transport_contexts(
+        world,
+        &frontier,
+        Some(runtime_demands),
+        None,
+        &mut reads,
+        &mut wait_facts,
+    );
     // The shadow path injects runtime demands and never publishes the per-callee
     // `InputSources` facts, so it builds the incoming index in-process directly
     // from those demands -- the same edge set production accumulates by
@@ -1699,18 +1731,14 @@ fn project_one_executable(
     );
     shape_graph.anchor(return_position, return_shape);
 
+    let value_demands = effective_value_demands(world, executable, context, contexts);
     let mut values = context.analysis.value_types.iter().collect::<Vec<_>>();
     values.sort_by_key(|(value, _)| value.as_u32());
     for (&value, &ty) in values {
         if clause_params.contains(&value) {
             continue;
         }
-        let demand = context
-            .runtime_demand
-            .value_demands
-            .get(&value)
-            .cloned()
-            .unwrap_or_default();
+        let demand = value_demands.get(&value).cloned().unwrap_or_default();
         let shape = shape_for_local_value(
             world,
             contexts,
@@ -1804,7 +1832,7 @@ fn project_one_executable(
 
     if let LoweredBody::Clauses { entries, .. } = &context.body {
         for (entry_index, entry) in entries.iter().enumerate() {
-            let entry_id = ControlEntryId::from_u32(entry_index as u32);
+            let entry_id = original_entry_id(context, entry_index);
             for (capture_index, capture) in entry.captures.iter().copied().enumerate() {
                 shape_graph.equal(
                     TransportPosition::EntryCapture {
@@ -2036,6 +2064,66 @@ fn seed_callable_capture_inputs(
             }
         }
     }
+}
+
+fn effective_value_demands(
+    world: &World<'_>,
+    executable: &ExecutableKey,
+    context: &ExecutableContext,
+    contexts: &TransportContexts,
+) -> HashMap<ValueId, RuntimeDemand> {
+    let mut demands = context.runtime_demand.value_demands.clone();
+    for (callsite, arg_demands) in &context.runtime_demand.call_arg_demands {
+        let Some(args) = context.callsite_args.get(callsite) else {
+            continue;
+        };
+        for (arg, demand) in args.iter().zip(arg_demands.iter()) {
+            demands
+                .entry(arg.value)
+                .and_modify(|existing| existing.join_assign(demand))
+                .or_insert_with(|| demand.clone());
+        }
+    }
+    for (callsite, args) in &context.callsite_args {
+        let key = CallSiteKey {
+            activation: executable.activation.clone(),
+            callsite: *callsite,
+        };
+        let Some(summary) = world.callsite_summary(&key) else {
+            continue;
+        };
+        let need = context
+            .callsite_needs
+            .get(callsite)
+            .copied()
+            .unwrap_or(ExecutableNeed::Value);
+        for target in &summary.targets {
+            let Some(activation) = target.activation.as_ref() else {
+                continue;
+            };
+            let callee = ExecutableKey {
+                activation: activation.clone(),
+                need,
+            };
+            let Some(callee_context) = contexts.context_for(&callee) else {
+                continue;
+            };
+            let Some(capture_prefix) = callee.activation.input_len(world.types()).checked_sub(args.len()) else {
+                continue;
+            };
+            for (arg_index, arg) in args.iter().enumerate() {
+                let semantic_index = capture_prefix + arg_index;
+                let Some(demand) = callee_context.runtime_demand.input_demands.get(semantic_index) else {
+                    continue;
+                };
+                demands
+                    .entry(arg.value)
+                    .and_modify(|existing| existing.join_assign(demand))
+                    .or_insert_with(|| demand.clone());
+            }
+        }
+    }
+    demands
 }
 
 /// The resolved shape of each incoming `CallArg`, read directly from the
@@ -3011,14 +3099,31 @@ fn collect_step_origin(step: &LoweredStep, out: &mut HashMap<ValueId, TransportS
     }
 }
 
-fn collect_return_sources(body: &LoweredBody, analysis: &ActivationAnalysis) -> Vec<TransportSource> {
+fn local_clause_ids(body: &LoweredBody) -> Vec<u32> {
+    let LoweredBody::Clauses { clauses, .. } = body else {
+        return Vec::new();
+    };
+    (0..clauses.len() as u32).collect()
+}
+
+fn local_entry_ids(body: &LoweredBody) -> Vec<ControlEntryId> {
+    let LoweredBody::Clauses { entries, .. } = body else {
+        return Vec::new();
+    };
+    (0..entries.len() as u32).map(ControlEntryId::from_u32).collect()
+}
+
+fn collect_return_sources(
+    body: &LoweredBody,
+    reachable_clauses: &[u32],
+    reachable_entries: &[ControlEntryId],
+) -> Vec<TransportSource> {
     let LoweredBody::Clauses { clauses, entries, .. } = body else {
         return Vec::new();
     };
-    let reachable_clauses = analysis.reachable_clauses.iter().copied().collect::<HashSet<_>>();
-    let reachable_entries = analysis.reachable_entries.iter().copied().collect::<HashSet<_>>();
+    let reachable_entries = reachable_entries.iter().copied().collect::<HashSet<_>>();
     let mut out = Vec::new();
-    for clause_id in reachable_clauses {
+    for clause_id in reachable_clauses.iter().copied() {
         collect_return_sources_from_entry(clauses[clause_id as usize].entry, entries, &reachable_entries, &mut out);
     }
     out
@@ -3088,14 +3193,18 @@ fn collect_return_sources_from_entry(
     }
 }
 
-fn collect_resume_entries(body: &LoweredBody, analysis: &ActivationAnalysis) -> Vec<ResumeEntry> {
+fn collect_resume_entries(
+    body: &LoweredBody,
+    analysis: &ActivationAnalysis,
+    original_entry_ids: &[ControlEntryId],
+) -> Vec<ResumeEntry> {
     let LoweredBody::Clauses { entries, .. } = body else {
         return Vec::new();
     };
     let reachable_entries = analysis.reachable_entries.iter().copied().collect::<HashSet<_>>();
     let mut deliver_callsites = HashMap::new();
     for (entry_index, entry) in entries.iter().enumerate() {
-        let source_entry = ControlEntryId::from_u32(entry_index as u32);
+        let source_entry = original_entry_id_from(original_entry_ids, entry_index);
         if !reachable_entries.contains(&source_entry) {
             continue;
         }
@@ -3108,14 +3217,15 @@ fn collect_resume_entries(body: &LoweredBody, analysis: &ActivationAnalysis) -> 
             _ => None,
         };
         if let (Some(callsite), Some(ControlDestination::Deliver(target))) = (callsite, dest) {
-            deliver_callsites.insert(*target, callsite);
+            let target = original_entry_id_from(original_entry_ids, target.as_u32() as usize);
+            deliver_callsites.insert(target, callsite);
         }
     }
     entries
         .iter()
         .enumerate()
         .filter_map(|(index, entry)| {
-            let entry_id = ControlEntryId::from_u32(index as u32);
+            let entry_id = original_entry_id_from(original_entry_ids, index);
             if !reachable_entries.contains(&entry_id) && !deliver_callsites.contains_key(&entry_id) {
                 return None;
             }
@@ -3129,6 +3239,17 @@ fn collect_resume_entries(body: &LoweredBody, analysis: &ActivationAnalysis) -> 
             })
         })
         .collect()
+}
+
+fn original_entry_id(context: &ExecutableContext, entry_index: usize) -> ControlEntryId {
+    original_entry_id_from(&context.original_entry_ids, entry_index)
+}
+
+fn original_entry_id_from(original_entry_ids: &[ControlEntryId], entry_index: usize) -> ControlEntryId {
+    original_entry_ids
+        .get(entry_index)
+        .copied()
+        .unwrap_or_else(|| ControlEntryId::from_u32(entry_index as u32))
 }
 
 fn clause_parameter_values(body: &LoweredBody) -> HashSet<ValueId> {

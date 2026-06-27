@@ -27,7 +27,7 @@ use super::super::body::{
 use super::super::drive::{FactKey, Job, JobEffects, settled_uses};
 use super::super::facts::FactUse;
 use super::super::identity::RootId;
-use super::super::identity::{ExecutableKey, ExecutableNeed};
+use super::super::identity::{ActivationKey, ExecutableKey, ExecutableNeed};
 use super::super::pull::{
     ProductKey, ProductValue, PullOutcome, PullSession, PullWait, SymbolicBackendBody, SymbolicBackendClause,
     SymbolicBackendEntry, SymbolicBackendExecutable, SymbolicBackendTail,
@@ -124,6 +124,7 @@ pub(crate) fn produce_root_backend_product(
     let entry = world.root_entry_executable(root);
     let mut reachable = HashSet::new();
     let mut stack = vec![entry.clone()];
+    stack.extend(boundary_resolution_executables(world, root, session));
     let mut waits = Vec::new();
     while let Some(current) = stack.pop() {
         if !reachable.insert(current.clone()) {
@@ -219,6 +220,27 @@ fn symbolic_call_edge_callees(target: &CallEdge<ExecutableKey>) -> Vec<&Executab
     match target {
         CallEdge::Direct(direct) => direct.callee.local().into_iter().collect(),
         CallEdge::Dispatch(dispatch) => dispatch.arms.iter().filter_map(|arm| arm.callee.local()).collect(),
+    }
+}
+
+fn boundary_resolution_executables(world: &mut World<'_>, root: RootId, session: &PullSession) -> Vec<ExecutableKey> {
+    let mut out = Vec::new();
+    for facts in session.boundary_facts_inventory().values() {
+        for target in facts.resolutions.iter() {
+            out.push(executable_key_for_symbol(root, target, world.types_mut()));
+        }
+    }
+    out
+}
+
+fn executable_key_for_symbol(
+    root: RootId,
+    symbol: &ExecutableSymbol,
+    types: &mut super::super::Types,
+) -> ExecutableKey {
+    ExecutableKey {
+        activation: ActivationKey::from_inputs(root, symbol.activation.function, &symbol.activation.input, types),
+        need: symbol.need,
     }
 }
 

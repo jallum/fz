@@ -21,8 +21,8 @@ use super::super::artifact::{
     MaterializedProgram, MaterializedTransportPlan,
 };
 use super::super::body::{
-    CallArg, CallSiteId, ControlDestination, ControlEntryId, Literal, LoweredBody, LoweredEntry, LoweredStep,
-    LoweredTail, ValueId,
+    CallArg, CallSiteId, ControlDestination, ControlEntryId, ControlEntryOrigin, Literal, LoweredBody, LoweredEntry,
+    LoweredStep, LoweredTail, ValueId,
 };
 use super::super::drive::{FactKey, Job, JobEffects, settled_uses};
 use super::super::facts::FactUse;
@@ -636,7 +636,7 @@ fn required_entry_capture_transport_waits(
                 entry: entry_id,
                 capture_index,
             };
-            if !session.demanded_transport_positions().contains(&position) {
+            if session.transport_shape(&position).is_none() {
                 waits.push(PullWait::Product(ProductKey::TransportShape(position)));
             }
         }
@@ -731,29 +731,42 @@ fn required_resume_transport_waits(
     };
     let symbol = transport_executable_symbol(executable, types);
     let mut waits = Vec::new();
+    let mut deliver_callsites = HashMap::new();
     for entry in entries {
-        let (callsite, ControlDestination::Deliver(entry_id)) = (match &entry.tail {
+        let Some((callsite, ControlDestination::Deliver(entry_id))) = (match &entry.tail {
             LoweredTail::DirectCall { callsite, dest, .. } | LoweredTail::ClosureCall { callsite, dest, .. } => {
-                (*callsite, dest)
+                Some((*callsite, dest))
             }
             LoweredTail::Value { .. }
             | LoweredTail::If { .. }
             | LoweredTail::Dispatch { .. }
             | LoweredTail::Receive(_)
-            | LoweredTail::Halt { .. } => continue,
+            | LoweredTail::Halt { .. } => None,
         }) else {
             continue;
         };
+        let entry_id = materialized
+            .original_entry_ids
+            .get(entry_id.as_u32() as usize)
+            .copied()
+            .unwrap_or(*entry_id);
+        deliver_callsites.insert(entry_id, callsite);
+    }
+    for (entry_index, entry) in entries.iter().enumerate() {
+        let ControlEntryOrigin::DeliveredResume { .. } = entry.origin else {
+            continue;
+        };
+        let entry_id = materialized
+            .original_entry_ids
+            .get(entry_index)
+            .copied()
+            .unwrap_or_else(|| ControlEntryId::from_u32(entry_index as u32));
         let position = TransportPosition::ResumePayload {
             executable: symbol.clone(),
-            callsite: Some(callsite),
-            entry: materialized
-                .original_entry_ids
-                .get(entry_id.as_u32() as usize)
-                .copied()
-                .unwrap_or(*entry_id),
+            callsite: deliver_callsites.get(&entry_id).copied(),
+            entry: entry_id,
         };
-        if !session.demanded_transport_positions().contains(&position) {
+        if session.transport_shape(&position).is_none() {
             waits.push(PullWait::Product(ProductKey::TransportShape(position)));
         }
     }
@@ -781,7 +794,7 @@ fn required_local_backend_transport_waits(
             executable: symbol.clone(),
             value,
         };
-        if !session.demanded_transport_positions().contains(&position) {
+        if session.transport_shape(&position).is_none() {
             waits.push(PullWait::Product(ProductKey::TransportShape(position)));
         }
     }
@@ -803,7 +816,7 @@ fn required_local_backend_transport_waits(
             executable: symbol.clone(),
             value,
         };
-        if !session.demanded_transport_positions().contains(&value_position) {
+        if session.transport_shape(&value_position).is_none() {
             waits.push(PullWait::Product(ProductKey::TransportShape(value_position)));
         }
         for semantic_index in 0..args.len() {
@@ -812,7 +825,7 @@ fn required_local_backend_transport_waits(
                 callsite,
                 semantic_index,
             };
-            if !session.demanded_transport_positions().contains(&position) {
+            if session.transport_shape(&position).is_none() {
                 waits.push(PullWait::Product(ProductKey::TransportShape(position)));
             }
         }

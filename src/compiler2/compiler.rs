@@ -286,18 +286,37 @@ impl<'a> Compiler2<'a> {
             FactKey::LoweredBody(function) => Some(Job::LowerFunction(*function)),
             FactKey::Recursive(function) => Some(Job::DeriveRecursive(*function)),
             FactKey::DispatchMask(function) => Some(Job::DeriveDispatchMask(*function)),
+            FactKey::Activation(activation) | FactKey::ActivationInputs(activation) => {
+                Some(Job::SeedActivation(activation.clone()))
+            }
             FactKey::ActivationAnalyzed(activation) | FactKey::ReturnType(activation) => {
+                if !self.world.has_fact(&FactKey::Activation(activation.clone()))
+                    || !self.world.has_fact(&FactKey::ActivationInputs(activation.clone()))
+                {
+                    self.demand_if_needed(Job::SeedActivation(activation.clone()), fact);
+                }
                 Some(Job::AnalyzeActivation(activation.clone()))
             }
-            FactKey::CallSiteTargets(key) => Some(Job::AnalyzeActivation(key.activation.clone())),
+            FactKey::CallSiteTargets(key) => {
+                if !self.world.has_fact(&FactKey::Activation(key.activation.clone()))
+                    || !self.world.has_fact(&FactKey::ActivationInputs(key.activation.clone()))
+                {
+                    self.demand_if_needed(Job::SeedActivation(key.activation.clone()), fact);
+                }
+                Some(Job::AnalyzeActivation(key.activation.clone()))
+            }
             _ => None,
         };
         if let Some(job) = job {
-            if self.world.work_graph.output_keys(&job).contains(fact) && !self.world.work_graph.rebased(&job) {
-                return;
-            }
-            self.world.demand(job);
+            self.demand_if_needed(job, fact);
         }
+    }
+
+    fn demand_if_needed(&mut self, job: Job, target_fact: &FactKey) {
+        if self.world.work_graph.output_keys(&job).contains(target_fact) && !self.world.work_graph.rebased(&job) {
+            return;
+        }
+        self.world.demand(job);
     }
 
     fn product_fact_wait_is_satisfied(&self, fact: &FactUse<FactKey>) -> bool {

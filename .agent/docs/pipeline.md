@@ -276,6 +276,15 @@ So semantic facts settle locally, then products consume those facts by key.
 Growth across that line is represented by another named product/fact wait, not
 by a root pass.
 
+Backend-required transport positions wait for an actual produced
+`TransportShape(position)`, not merely for the position to appear in
+`PullSession.demanded_transport_positions`. `TransportComponent(position)` can
+name equivalent positions before every shape has been produced; backend and ABI
+products consume shapes, so their waits must test `PullSession::transport_shape`.
+Because transport shapes are demand-derived, a changed executable demand or
+incoming-input edge invalidates that executable's cached transport
+shapes/components along with its materialized/ABI/backend products.
+
 Runtime demand is what makes that line precise for *representation*. A semantic
 fact — an activation, a callsite summary, an exact callable surface — is
 evidence about what the program *means*; it is never an obligation to
@@ -294,6 +303,9 @@ by construction — it names the surfaces a body proves, not every surface a typ
 permits. Recursive transport (nested captures, tuple fields, direct-callable
 producers) is not stored on that witness; it is derived downstream from settled
 demand into `TransportShape(position)` and related callable/boundary products.
+Actual call-argument values also inherit the selected callee input demand during
+transport projection, so recursive calls do not omit a local argument value just
+because the caller's own `call_arg_demands` are temporarily bottom.
 
 A callable surface that publishes a transport boundary names a runtime dispatch
 site, so it must be **ground**: type variables are an inference-phase concept and

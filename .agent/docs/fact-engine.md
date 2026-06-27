@@ -145,6 +145,10 @@ shapes/components; callable/boundary facts; and the final dense executable
 index. The final dense `BackendProgram` packaging is the only root-wide assembly
 step. It packages the symbolic backend executables already present in the
 session; it does not scan the fact table to rediscover artifact membership.
+Transport products are demand-derived session state: when an executable's
+runtime demand or incoming input sources change, the session invalidates that
+executable's cached transport shapes/components before rebuilding downstream
+materialized, ABI, or backend products.
 
 ## Tiny walkthrough
 

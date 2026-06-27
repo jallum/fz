@@ -659,6 +659,15 @@ MaterializedExecutable(E)
         dense packaging step; it packages the symbolic executable products already in the request
         session and does not scan all semantic facts to rediscover membership.
       </p>
+      <p>
+        Backend-required transport positions wait for produced
+        <code>TransportShape(position)</code> values, not just demanded position membership.
+        Transport shapes are demand-derived: when an executable's runtime demand or incoming
+        input evidence changes, the request session invalidates that executable's cached transport
+        shapes/components before rebuilding its materialized, ABI, and backend products. Actual
+        call arguments inherit the selected callee input demand during transport projection, so a
+        recursive caller cannot omit a local argument value that the callee input will decode.
+      </p>
     </section>
 
     <section>

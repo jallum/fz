@@ -293,6 +293,7 @@ pub struct PullSession {
     demanded_transport_positions: HashSet<TransportPosition>,
     transport_shapes: HashMap<TransportPosition, ShapeId>,
     transport_components: HashMap<TransportPosition, TransportComponentInventory>,
+    transport_positions_by_executable: HashMap<ExecutableKey, HashSet<TransportPosition>>,
     callable_facts: HashMap<CallableId, CallableFacts>,
     boundary_facts: HashMap<BoundaryId, BoundaryFacts>,
     demanded_callables: HashSet<CallableId>,
@@ -319,6 +320,7 @@ impl PullSession {
             demanded_transport_positions: HashSet::new(),
             transport_shapes: HashMap::new(),
             transport_components: HashMap::new(),
+            transport_positions_by_executable: HashMap::new(),
             callable_facts: HashMap::new(),
             boundary_facts: HashMap::new(),
             demanded_callables: HashSet::new(),
@@ -512,6 +514,10 @@ impl PullSession {
         shape: ShapeId,
     ) {
         self.demanded_transport_positions.insert(position.clone());
+        self.transport_positions_by_executable
+            .entry(executable.clone())
+            .or_default()
+            .insert(position.clone());
         let changed = self.transport_shapes.insert(position, shape) != Some(shape);
         if changed {
             self.invalidate_artifact_products(executable);
@@ -535,6 +541,7 @@ impl PullSession {
 
     fn invalidate_demand_derived_products(&mut self, executable: &ExecutableKey) {
         self.memo.remove(&ProductKey::RuntimeDemand(executable.clone()));
+        self.invalidate_transport_products(executable);
         self.invalidate_artifact_products(executable);
     }
 
@@ -548,6 +555,34 @@ impl PullSession {
         self.executable_effects.remove(executable);
         self.abi_executables.remove(executable);
         self.backend_executables.remove(executable);
+    }
+
+    fn invalidate_transport_products(&mut self, executable: &ExecutableKey) {
+        let Some(positions) = self.transport_positions_by_executable.remove(executable) else {
+            return;
+        };
+        for position in &positions {
+            self.transport_shapes.remove(position);
+            self.transport_components.remove(position);
+            self.memo.remove(&ProductKey::TransportShape(position.clone()));
+            self.memo.remove(&ProductKey::TransportComponent(position.clone()));
+        }
+
+        let stale_components = self
+            .transport_components
+            .iter()
+            .filter_map(|(anchor, component)| {
+                component
+                    .positions
+                    .iter()
+                    .any(|position| positions.contains(position))
+                    .then_some(anchor.clone())
+            })
+            .collect::<Vec<_>>();
+        for anchor in stale_components {
+            self.transport_components.remove(&anchor);
+            self.memo.remove(&ProductKey::TransportComponent(anchor));
+        }
     }
 
     fn enter_runtime_demand(&mut self, executable: &ExecutableKey) {
