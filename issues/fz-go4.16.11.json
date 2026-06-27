@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-06-27T03:14:35Z",
@@ -8,8 +8,8 @@
   "labels": [],
   "parent": "fz-go4.16",
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "Pull interp: close remaining product return-type and continuation coverage",
   "type": "bug",
-  "updated_at": "2026-06-27T03:14:35Z"
+  "updated_at": "2026-06-27T03:27:04Z"
 }
