@@ -298,6 +298,7 @@ pub struct PullSession {
     demanded_callables: HashSet<CallableId>,
     demanded_boundaries: HashSet<BoundaryId>,
     executable_index: HashMap<ExecutableKey, usize>,
+    active_runtime_demands: HashSet<ExecutableKey>,
     root_scans: u64,
     follow_ups: u64,
 }
@@ -323,6 +324,7 @@ impl PullSession {
             demanded_callables: HashSet::new(),
             demanded_boundaries: HashSet::new(),
             executable_index: HashMap::new(),
+            active_runtime_demands: HashSet::new(),
             root_scans: 0,
             follow_ups: 0,
         }
@@ -426,6 +428,10 @@ impl PullSession {
 
     pub fn executable_index(&self) -> &HashMap<ExecutableKey, usize> {
         &self.executable_index
+    }
+
+    pub fn runtime_demand_is_active(&self, executable: &ExecutableKey) -> bool {
+        self.active_runtime_demands.contains(executable)
     }
 
     pub fn root_scans(&self) -> u64 {
@@ -542,6 +548,14 @@ impl PullSession {
         self.executable_effects.remove(executable);
         self.abi_executables.remove(executable);
         self.backend_executables.remove(executable);
+    }
+
+    fn enter_runtime_demand(&mut self, executable: &ExecutableKey) {
+        self.active_runtime_demands.insert(executable.clone());
+    }
+
+    fn finish_runtime_demand(&mut self, executable: &ExecutableKey) {
+        self.active_runtime_demands.remove(executable);
     }
 
     fn note_product_request(&mut self, key: &ProductKey) {
@@ -713,6 +727,10 @@ impl<'a> ProductDriver<'a> {
             return PullOutcome::Waiting(vec![PullWait::Product(key)]);
         }
 
+        if let ProductKey::RuntimeDemand(executable) = &key {
+            self.session.enter_runtime_demand(executable);
+        }
+
         let outcome = match &key {
             ProductKey::RootBackendProduct(root) => producers.produce_root_backend_product(&mut self.session, *root),
             ProductKey::BackendExecutable(executable) => {
@@ -741,6 +759,9 @@ impl<'a> ProductDriver<'a> {
         match outcome {
             PullOutcome::Produced(value) => {
                 self.session.memo.finish(&key, value.clone());
+                if let ProductKey::RuntimeDemand(executable) = &key {
+                    self.session.finish_runtime_demand(executable);
+                }
                 self.emit("produced", &key, 0);
                 PullOutcome::Produced(value)
             }

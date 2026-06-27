@@ -949,15 +949,6 @@ pub(crate) fn produce_transport_shape_product(
     if let Some(shape) = session.transport_shape(position) {
         return PullOutcome::Produced(ProductValue::TransportShape(Some(shape)));
     }
-    if let Some(shape) = world
-        .transport_plan(session.root())
-        .and_then(|plan| plan.positions.get(position))
-        .copied()
-    {
-        let executable = executable_key_for_transport_position(session.root(), position, world.types_mut());
-        session.record_transport_shape_for(&executable, position.clone(), shape);
-        return PullOutcome::Produced(ProductValue::TransportShape(Some(shape)));
-    }
     let Some(projection) = project_transport_component_product(world, session, position) else {
         return PullOutcome::Produced(ProductValue::TransportShape(None));
     };
@@ -1019,7 +1010,12 @@ fn project_transport_component_product(
     let mut runtime_demands = HashMap::from([(executable.clone(), demand)]);
     let mut executables = HashSet::from([executable]);
     let mut wait_products = Vec::new();
-    while let Some(next) = expand_transport_product_executables(world, session, &executables, &runtime_demands) {
+    while let Some(mut next) = expand_transport_product_executables(world, session, &executables, &runtime_demands) {
+        next.extend(expand_transport_product_incoming_producers(
+            world,
+            session,
+            &executables,
+        ));
         let mut changed = false;
         for executable in next {
             if executables.insert(executable.clone()) {
@@ -1174,6 +1170,26 @@ fn expand_transport_product_executables(
         }
     }
     Some(next)
+}
+
+fn expand_transport_product_incoming_producers(
+    world: &World<'_>,
+    session: &PullSession,
+    executables: &HashSet<ExecutableKey>,
+) -> Vec<ExecutableKey> {
+    let mut next = Vec::new();
+    for executable in executables {
+        for semantic_index in 0..executable.activation.input_len(world.types()) {
+            let slot = InputSlot {
+                executable: executable.clone(),
+                semantic_index,
+            };
+            for source in session.incoming_input_sources(&slot) {
+                push_executable_unique(&mut next, source.producer.clone());
+            }
+        }
+    }
+    next
 }
 
 fn push_executable_unique(target: &mut Vec<ExecutableKey>, executable: ExecutableKey) {

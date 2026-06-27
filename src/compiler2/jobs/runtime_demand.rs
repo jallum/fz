@@ -266,12 +266,6 @@ pub(crate) fn produce_runtime_demand_product(
     session: &mut PullSession,
     executable: &ExecutableKey,
 ) -> PullOutcome {
-    if world.fact_is_settled(&FactKey::RuntimeDemand(executable.clone()))
-        && let Some(demand) = world.runtime_demand(executable).cloned()
-    {
-        return PullOutcome::Produced(ProductValue::RuntimeDemand(Box::new(demand)));
-    }
-
     let mut waits = HashSet::new();
     let Some(facts) = collect_one_executable_facts_product(world, executable, &mut waits) else {
         return product_waits(waits);
@@ -291,8 +285,10 @@ pub(crate) fn produce_runtime_demand_product(
         }
         if let Some(demand) = session.memo().runtime_demand(&target).cloned() {
             demands.insert(target, demand);
-        } else {
+        } else if session.runtime_demand_is_active(&target) {
             demands.insert(target.clone(), empty_runtime_demand(&target, world.types()));
+        } else {
+            waits.insert(PullWait::Product(ProductKey::RuntimeDemand(target)));
         }
     }
     if !waits.is_empty() {

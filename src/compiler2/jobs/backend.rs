@@ -25,6 +25,7 @@ use super::super::body::{
     LoweredTail,
 };
 use super::super::drive::{FactKey, Job, JobEffects, settled_uses};
+use super::super::facts::FactUse;
 use super::super::identity::RootId;
 use super::super::identity::{ExecutableKey, ExecutableNeed};
 use super::super::pull::{
@@ -107,6 +108,19 @@ pub(crate) fn produce_root_backend_product(
     session: &mut PullSession,
     root: RootId,
 ) -> PullOutcome {
+    let root_entry = world.root_entry(root);
+    let keying_waits = [
+        FactKey::RootEntry(root),
+        FactKey::DispatchMask(root_entry.function),
+        FactKey::Recursive(root_entry.function),
+    ]
+    .into_iter()
+    .filter(|fact| !world.fact_is_settled(fact))
+    .map(|fact| PullWait::Fact(FactUse::settled(fact)))
+    .collect::<Vec<_>>();
+    if !keying_waits.is_empty() {
+        return PullOutcome::Waiting(keying_waits);
+    }
     let entry = world.root_entry_executable(root);
     let mut reachable = HashSet::new();
     let mut stack = vec![entry.clone()];

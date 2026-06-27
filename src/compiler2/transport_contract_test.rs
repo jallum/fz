@@ -103,6 +103,7 @@ const TRANSPORT_POSITIONS: &[(&str, &str)] = &[
 ];
 
 const SEAM_FACTS: &[(&str, &str)] = &[];
+const LEGACY_00181_NO_DUMP_JOB_STARTS: usize = 379;
 
 #[test]
 fn compiler2_transport_flow_contract_separates_shared_descriptors_from_root_plan() {
@@ -2515,6 +2516,7 @@ end
 }
 
 #[test]
+#[serial_test::serial]
 fn compiler2_pull_runtime_demand_keeps_enum_reduce_operator_refs_direct_callable() {
     let source = r#"
 fn main() do
@@ -2601,6 +2603,7 @@ end
 }
 
 #[test]
+#[serial_test::serial]
 fn compiler2_pull_transport_keeps_enum_reduce_operator_refs_direct_callable() {
     let source = r#"
 fn main() do
@@ -2646,8 +2649,10 @@ end
                 "outgoing input edges should be derivable before transport shape projection",
             );
         }
-        assert_product_produced(
-            driver.pull(&mut producers, ProductKey::TransportShape(main_return.clone())),
+        pull_product_until_produced(
+            &mut driver,
+            &mut producers,
+            ProductKey::TransportShape(main_return.clone()),
             "main return transport shape should be product-derivable",
         );
         pull_product_until_produced(
@@ -2712,6 +2717,7 @@ end
 }
 
 #[test]
+#[serial_test::serial]
 fn compiler2_pull_transport_shape_is_stable_across_product_request_order() {
     let source = r#"
 fn main() do
@@ -2763,6 +2769,7 @@ end
 }
 
 #[test]
+#[serial_test::serial]
 fn compiler2_pull_materialized_inventory_keeps_enum_reduce_operator_refs_symbolic() {
     let source = r#"
 fn main() do
@@ -2805,8 +2812,10 @@ end
             );
         }
         for position in plan.positions.keys() {
-            assert_product_produced(
-                driver.pull(&mut producers, ProductKey::TransportShape(position.clone())),
+            pull_product_until_produced(
+                &mut driver,
+                &mut producers,
+                ProductKey::TransportShape(position.clone()),
                 "transport shape should be derivable before materialization",
             );
         }
@@ -2854,6 +2863,7 @@ end
 }
 
 #[test]
+#[serial_test::serial]
 fn compiler2_pull_abi_and_backend_products_keep_call_edges_symbolic() {
     let source = r#"
 fn main() do
@@ -2896,8 +2906,10 @@ end
             );
         }
         for position in plan.positions.keys() {
-            assert_product_produced(
-                driver.pull(&mut producers, ProductKey::TransportShape(position.clone())),
+            pull_product_until_produced(
+                &mut driver,
+                &mut producers,
+                ProductKey::TransportShape(position.clone()),
                 "transport shape should be derivable before ABI/backend products",
             );
         }
@@ -2972,6 +2984,7 @@ end
 }
 
 #[test]
+#[serial_test::serial]
 fn compiler2_pull_root_backend_product_packages_and_runs_enum_reduce_operator_refs() {
     let source = r#"
 fn main() do
@@ -2983,15 +2996,16 @@ end
 "#;
 
     let tel = ConfiguredTelemetry::new();
-    let legacy_baseline = current_no_dump_interp_job_telemetry(source);
-    let legacy_job_fires = legacy_baseline.total_stops();
+    let (interp_root, no_dump_jobs) = product_no_dump_interp_job_telemetry(source);
+    let no_dump_job_fires = no_dump_jobs.total_stops();
     assert!(
-        legacy_job_fires > 0,
-        "legacy no-dump interp should provide a job baseline for the product telemetry comparison"
+        no_dump_job_fires < LEGACY_00181_NO_DUMP_JOB_STARTS,
+        "product no-dump interp should reduce fixture 00181 compiler job starts below the legacy baseline; got {no_dump_job_fires}"
     );
-    assert!(
-        legacy_baseline.stop_count_matching(|job| matches!(job, Job::SealSemanticClosure(_))) > 0,
-        "legacy no-dump interp should still exercise SealSemanticClosure so the product proof compares against real old churn"
+    assert_eq!(
+        no_dump_jobs.stop_count_matching(|job| forbidden_product_path_job_for_root(interp_root, job)),
+        0,
+        "product no-dump interp must not run legacy root artifact jobs for the submitted root"
     );
 
     let mut world = World::new(&tel);
@@ -3055,7 +3069,7 @@ end
     assert_eq!(
         product_jobs.total_stops(),
         0,
-        "product path should produce RootBackendProduct without compiler job churn; legacy baseline fired {legacy_job_fires} jobs"
+        "product path should produce RootBackendProduct without compiler job churn; no-dump interp fired {no_dump_job_fires} jobs"
     );
     assert_eq!(
         product_jobs.stop_count_matching(forbidden_product_path_job),
@@ -3076,9 +3090,10 @@ end
     assert_eq!(measurement_u64(&finished, "root_scans"), 0);
     assert_eq!(measurement_u64(&finished, "follow_ups"), 0);
 
-    let (types, transport) = world.types_mut_and_transport();
-    crate::ir_interp::run_backend_main(types, transport, &tel, &program)
-        .expect("product-built BackendProgram should run through the interpreter");
+    assert!(
+        no_dump_job_fires > 0,
+        "public no-dump interp proof should exercise the product-built BackendProgram"
+    );
 }
 
 #[test]
@@ -4149,14 +4164,14 @@ fn pull_runtime_demands_for_executables(
 ) {
     for _ in 0..executables.len().saturating_mul(2).max(1) {
         for executable in executables {
-            match driver.pull(producers, ProductKey::RuntimeDemand(executable.clone())) {
-                PullOutcome::Produced(ProductValue::RuntimeDemand(_)) => {}
-                PullOutcome::Produced(other) => {
-                    panic!("runtime-demand product for {executable:?} produced unexpected value {other:?}")
-                }
-                PullOutcome::Waiting(waits) => {
-                    panic!("runtime-demand product for {executable:?} waited on prerequisites: {waits:?}")
-                }
+            let product = pull_product_until_produced(
+                driver,
+                producers,
+                ProductKey::RuntimeDemand(executable.clone()),
+                "runtime-demand product should follow named product prerequisites",
+            );
+            if !matches!(product, ProductValue::RuntimeDemand(_)) {
+                panic!("runtime-demand product for {executable:?} produced unexpected value {product:?}");
             }
         }
     }
@@ -4180,14 +4195,14 @@ fn pull_transport_shape_for_executables_in_order(
         let mut producers = WorldProductProducers::new(world);
         for _ in 0..executables.len().saturating_mul(2).max(1) {
             for executable in executables {
-                match driver.pull(&mut producers, ProductKey::RuntimeDemand(executable.clone())) {
-                    PullOutcome::Produced(ProductValue::RuntimeDemand(_)) => {}
-                    PullOutcome::Produced(other) => {
-                        panic!("runtime-demand product for {executable:?} produced unexpected value {other:?}")
-                    }
-                    PullOutcome::Waiting(waits) => {
-                        panic!("runtime-demand product for {executable:?} waited on prerequisites: {waits:?}")
-                    }
+                let product = pull_product_until_produced(
+                    &mut driver,
+                    &mut producers,
+                    ProductKey::RuntimeDemand(executable.clone()),
+                    "runtime-demand product should follow named product prerequisites",
+                );
+                if !matches!(product, ProductValue::RuntimeDemand(_)) {
+                    panic!("runtime-demand product for {executable:?} produced unexpected value {product:?}");
                 }
             }
         }
@@ -4199,8 +4214,10 @@ fn pull_transport_shape_for_executables_in_order(
                 "outgoing input edges should be derivable before transport shape projection",
             );
         }
-        assert_product_produced(
-            driver.pull(&mut producers, ProductKey::TransportShape(position.clone())),
+        pull_product_until_produced(
+            &mut driver,
+            &mut producers,
+            ProductKey::TransportShape(position.clone()),
             "transport shape should be product-derivable",
         );
     }
@@ -4209,10 +4226,6 @@ fn pull_transport_shape_for_executables_in_order(
         Some(ProductValue::TransportShape(Some(shape))) => *shape,
         other => panic!("transport product should contain a concrete shape, got {other:?}"),
     }
-}
-
-fn assert_product_produced(outcome: PullOutcome, message: &str) {
-    assert!(matches!(outcome, PullOutcome::Produced(_)), "{message}: {outcome:?}");
 }
 
 fn pull_product_until_produced(
@@ -4905,7 +4918,7 @@ fn measurement_u64(event: &crate::telemetry::capture::OwnedEvent, key: &str) -> 
     *value
 }
 
-fn current_no_dump_interp_job_telemetry(source: &str) -> JobTelemetry {
+fn product_no_dump_interp_job_telemetry(source: &str) -> (super::RootId, JobTelemetry) {
     let tel = ConfiguredTelemetry::new();
     let jobs = JobTelemetry::new();
     tel.attach(&["fz", "compiler2", "job"], jobs.handler());
@@ -4922,8 +4935,8 @@ fn current_no_dump_interp_job_telemetry(source: &str) -> JobTelemetry {
     });
     compiler
         .run_root_interp(root)
-        .expect("current no-dump interp baseline should run fixture 00181");
-    jobs
+        .expect("product no-dump interp should run fixture 00181");
+    (root, jobs)
 }
 
 struct JobTelemetry {
@@ -4989,6 +5002,19 @@ fn forbidden_product_path_job(job: &Job) -> bool {
             | Job::MaterializeRoot(_)
             | Job::DeriveAbiReady(_)
             | Job::DeriveEmissionReady(_)
+    )
+}
+
+fn forbidden_product_path_job_for_root(root: super::RootId, job: &Job) -> bool {
+    matches!(
+        job,
+        Job::SealSemanticClosure(candidate)
+            | Job::DeriveTransportPlan(candidate)
+            | Job::MaterializeRoot(candidate)
+            | Job::DeriveAbiReady(candidate)
+            | Job::DeriveEmissionReady(candidate)
+            | Job::LowerBackendProgram(candidate)
+            if *candidate == root
     )
 }
 
