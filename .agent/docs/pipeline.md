@@ -76,6 +76,9 @@ entry, pulls `BackendExecutable(entry)`, follows symbolic backend call edges and
 callable entries already recorded in the request-local `PullSession`, assigns
 dense executable indices, and packages the `BackendProgram`. It does not consume
 `SemanticClosed(root)`, `TransportPlan(root)`, or the old root artifact ladder.
+The temporary planning artifact `../pull-based.html` has been retired; this
+doc, `northstar.html`, and the closed `fz-go4.16.*` tickets are the durable
+source of truth for the pull artifact path.
 
 `RootEntry.kind` decides where a root is allowed to go:
 
