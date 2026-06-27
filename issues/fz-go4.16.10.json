@@ -4,6 +4,7 @@
     "fz-go4.16.9"
   ],
   "blocks": [],
+  "closed_at": "2026-06-27T03:26:49Z",
   "created": "2026-06-26T23:44:31Z",
   "description": "Goal\nClose the arc by making the pull-based model the documented compiler2 artifact model and by deleting temporary planning scaffolding.\n\nRequired docs\n- northstar.html: replace semantic closure/artifact ladder root-pass language with product-keyed pull language. Remove or clearly mark follow_up as legacy.\n- .agent/docs/fact-engine.md: document ProductKey pull driver and state that new artifact producers return waits instead of follow_up jobs.\n- .agent/docs/semantic-fixpoint.md: remove any claim that the seal/frontier jobs are the desired target model once replacement lands.\n- .agent/docs/pipeline.md: replace the root artifact ladder with per-product inventory and final packaging boundary.\n- User-facing guides only if they describe compiler2 telemetry, dumps, backend products, or semantic closure behavior.\n\nSignal\nDocs describe one model: product-keyed demand pulls exactly the products named by local dependencies; final dense packaging is the only root-wide assembly step; follow_up, walkers, passes, and whole fact-table scans are not normalized for the new path.\n\nRemoval target\nDelete or archive ../pull-based.html only if its content has been fully absorbed into durable docs. Otherwise leave it as a referenced plan artifact and create a cleanup ticket if it should not remain.\n\nVerification\nDocumentation review against the implemented code, rg for stale SemanticClosed/root frontier language in docs, and full focused test set from the parent epic.",
   "id": "fz-go4.16.10",
@@ -16,7 +17,7 @@
     }
   ],
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Pull path: update docs and remove planning scaffolding",
   "type": "task",
   "updated_at": "2026-06-27T03:26:49Z"
