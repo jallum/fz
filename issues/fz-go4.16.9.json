@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-go4.16.8"
   ],
@@ -18,8 +18,8 @@
     }
   ],
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "Pull path: delete legacy semantic and root artifact dependencies",
   "type": "task",
-  "updated_at": "2026-06-27T02:46:27Z"
+  "updated_at": "2026-06-27T02:47:16Z"
 }
