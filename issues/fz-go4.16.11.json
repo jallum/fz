@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-27T03:14:35Z",
+  "description": "After fz-go4.16.9 moves run_root_interp to RootBackendProduct, focused 00181 product proof passes, but broader legacy interp fixtures still expose incomplete product coverage. Repro examples: cargo test -q --lib compiler2::drive_test::compiler2_interp_runs_enum_reduce_while_halt_payload_with_distinct_type -- --exact and cargo test -q --lib compiler2::drive_test::compiler2_interp_runs_spawned_children_from_backend_runtime_intrinsics -- --exact both hit product fact-wait budgets for settled ReturnType. Earlier broad compiler2 filter also showed continuation/resume transport gaps in first-class callable continuation and distinct boxed callable fixtures. Treat these as product coverage work, not reason to stitch the legacy root artifact path back into run_root_interp.",
+  "id": "fz-go4.16.11",
+  "labels": [],
+  "parent": "fz-go4.16",
+  "priority": 1,
+  "status": "open",
+  "title": "Pull interp: close remaining product return-type and continuation coverage",
+  "type": "bug",
+  "updated_at": "2026-06-27T03:14:35Z"
+}
