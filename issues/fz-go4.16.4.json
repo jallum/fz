@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-go4.16.3"
   ],
@@ -12,8 +12,8 @@
   "labels": [],
   "parent": "fz-go4.16",
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "Pull path: add per-position transport shape and input-slot products",
   "type": "task",
-  "updated_at": "2026-06-26T23:44:43Z"
+  "updated_at": "2026-06-27T00:33:30Z"
 }
