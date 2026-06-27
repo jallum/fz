@@ -2747,6 +2747,93 @@ end
 }
 
 #[test]
+fn compiler2_pull_materialized_inventory_keeps_enum_reduce_operator_refs_symbolic() {
+    let source = r#"
+fn main() do
+  {
+    Enum.reduce([1, 2, 3], 0, &Kernel.+/2),
+    Enum.reduce([1, 2, 3], 0, &+/2)
+  }
+end
+"#;
+
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new(&tel);
+    world.submit_code(
+        Some("pull_materialized_enum_reduce_operator_refs.fz".to_string()),
+        source.to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::TupleFields(2));
+    drive_until_transport_plan(
+        &mut world,
+        root,
+        "Enum.reduce operator-ref fixture should settle legacy facts before product materialization comparison",
+    );
+
+    let plan = transport_plan(&world, root);
+    let executables = plan
+        .executable_membership
+        .iter()
+        .map(|symbol| executable_key_for_symbol(&mut world, root, symbol))
+        .collect::<HashSet<_>>();
+    let mut driver = ProductDriver::new(&tel, root);
+    {
+        let mut producers = WorldProductProducers::new(&mut world);
+        pull_runtime_demands_for_executables(&mut driver, &mut producers, &executables);
+        for executable in &executables {
+            assert_product_produced(
+                driver.pull(&mut producers, ProductKey::OutgoingInputEdges(executable.clone())),
+                "outgoing input edges should be derivable before materialization",
+            );
+        }
+        for position in plan.positions.keys() {
+            assert_product_produced(
+                driver.pull(&mut producers, ProductKey::TransportShape(position.clone())),
+                "transport shape should be derivable before materialization",
+            );
+        }
+        for executable in &executables {
+            assert_product_produced(
+                driver.pull(&mut producers, ProductKey::MaterializedExecutable(executable.clone())),
+                "materialized executable should be product-derivable",
+            );
+        }
+    }
+
+    assert_eq!(
+        driver.session().materialized_executables().len(),
+        10,
+        "00181 product materialization should contain the ten demanded executable roles"
+    );
+    assert!(
+        driver.session().materialized_executables().keys().any(|executable| {
+            let function = world.function_ref(executable.activation.function);
+            function.name == "main" && function.arity == 0
+        }),
+        "product materialization should include main/0"
+    );
+    assert!(
+        driver.session().materialized_executables().keys().any(|executable| {
+            let function = world.function_ref(executable.activation.function);
+            function.name == "+" && function.arity == 2
+        }),
+        "product materialization should include Kernel.+/2"
+    );
+    for (caller, materialized) in driver.session().materialized_executables() {
+        for edge in materialized.call_edges.values() {
+            for callee in materialized_call_edge_callees(edge) {
+                assert!(
+                    driver.session().materialized_executable(callee).is_some(),
+                    "symbolic materialized call edge from {caller:?} points to an undemanded callee {callee:?}"
+                );
+            }
+        }
+    }
+    assert_eq!(driver.session().root_scans(), 0);
+    assert_eq!(driver.session().follow_ups(), 0);
+}
+
+#[test]
 fn compiler2_transport_plan_has_no_dangling_direct_enum_reduce_callable() {
     let source = include_str!("../../fixtures2/00010_enum_reduce_main.fz");
 
@@ -3876,6 +3963,15 @@ fn pull_transport_shape_for_executables_in_order(
 
 fn assert_product_produced(outcome: PullOutcome, message: &str) {
     assert!(matches!(outcome, PullOutcome::Produced(_)), "{message}: {outcome:?}");
+}
+
+fn materialized_call_edge_callees(edge: &super::artifact::MaterializedCallEdge) -> Vec<&ExecutableKey> {
+    match &edge.target {
+        super::artifact::CallEdge::Direct(direct) => direct.callee.local().into_iter().collect(),
+        super::artifact::CallEdge::Dispatch(dispatch) => {
+            dispatch.arms.iter().filter_map(|arm| arm.callee.local()).collect()
+        }
+    }
 }
 
 fn upstream_callable_flow_for_producer(

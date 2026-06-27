@@ -8,7 +8,7 @@ use super::drive::{Job, JobEffects};
 use super::scheduler::FatalError;
 use super::world::World;
 
-mod artifact;
+pub(crate) mod artifact;
 mod backend;
 mod body;
 mod contract;

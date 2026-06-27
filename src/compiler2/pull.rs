@@ -10,6 +10,7 @@ use std::collections::{HashMap, HashSet};
 use crate::telemetry::{Telemetry, opaque_debug};
 use crate::{measurements, metadata};
 
+use super::artifact::{EffectSummary, MaterializedExecutable};
 use super::body::{CallSiteId, ValueId};
 use super::drive::FactKey;
 use super::facts::FactUse;
@@ -83,9 +84,11 @@ impl ProductKey {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ProductValue {
     Unit,
+    MaterializedExecutable(Box<MaterializedExecutable>),
+    ExecutableEffects(EffectSummary),
     RuntimeDemand(Box<ExecutableRuntimeDemand>),
     IncomingInputSlot(Box<[IncomingInputSource]>),
     TransportShape(Option<ShapeId>),
@@ -100,7 +103,7 @@ pub enum PullWait {
     Fact(FactUse<FactKey>),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum PullOutcome {
     Produced(ProductValue),
     Waiting(Vec<PullWait>),
@@ -136,6 +139,8 @@ impl ProductMemo {
             Some(ProductValue::RuntimeDemand(demand)) => Some(demand.as_ref()),
             Some(
                 ProductValue::Unit
+                | ProductValue::MaterializedExecutable(_)
+                | ProductValue::ExecutableEffects(_)
                 | ProductValue::IncomingInputSlot(_)
                 | ProductValue::TransportShape(_)
                 | ProductValue::TransportComponent(_)
@@ -188,6 +193,8 @@ pub struct PullSession {
     call_edges: HashMap<ExecutableKey, Vec<DemandedCallEdge>>,
     incoming_inputs: HashMap<InputSlot, Vec<IncomingInputSource>>,
     return_demands: HashMap<ExecutableKey, RuntimeDemand>,
+    materialized_executables: HashMap<ExecutableKey, MaterializedExecutable>,
+    executable_effects: HashMap<ExecutableKey, EffectSummary>,
     demanded_transport_positions: HashSet<TransportPosition>,
     transport_shapes: HashMap<TransportPosition, ShapeId>,
     transport_components: HashMap<TransportPosition, TransportComponentInventory>,
@@ -209,6 +216,8 @@ impl PullSession {
             call_edges: HashMap::new(),
             incoming_inputs: HashMap::new(),
             return_demands: HashMap::new(),
+            materialized_executables: HashMap::new(),
+            executable_effects: HashMap::new(),
             demanded_transport_positions: HashSet::new(),
             transport_shapes: HashMap::new(),
             transport_components: HashMap::new(),
@@ -246,12 +255,32 @@ impl PullSession {
         self.return_demands.get(executable)
     }
 
+    pub fn materialized_executable(&self, executable: &ExecutableKey) -> Option<&MaterializedExecutable> {
+        self.materialized_executables.get(executable)
+    }
+
+    pub fn materialized_executables(&self) -> &HashMap<ExecutableKey, MaterializedExecutable> {
+        &self.materialized_executables
+    }
+
+    pub fn executable_effects(&self, executable: &ExecutableKey) -> Option<EffectSummary> {
+        self.executable_effects.get(executable).copied()
+    }
+
+    pub fn executable_effects_inventory(&self) -> &HashMap<ExecutableKey, EffectSummary> {
+        &self.executable_effects
+    }
+
     pub fn demanded_transport_positions(&self) -> &HashSet<TransportPosition> {
         &self.demanded_transport_positions
     }
 
     pub fn transport_shape(&self, position: &TransportPosition) -> Option<ShapeId> {
         self.transport_shapes.get(position).copied()
+    }
+
+    pub fn transport_shapes(&self) -> &HashMap<TransportPosition, ShapeId> {
+        &self.transport_shapes
     }
 
     pub fn transport_component(&self, anchor: &TransportPosition) -> Option<&TransportComponentInventory> {
@@ -262,8 +291,16 @@ impl PullSession {
         self.callable_facts.get(&callable)
     }
 
+    pub fn callable_facts_inventory(&self) -> &HashMap<CallableId, CallableFacts> {
+        &self.callable_facts
+    }
+
     pub fn boundary_facts(&self, boundary: BoundaryId) -> Option<&BoundaryFacts> {
         self.boundary_facts.get(&boundary)
+    }
+
+    pub fn boundary_facts_inventory(&self) -> &HashMap<BoundaryId, BoundaryFacts> {
+        &self.boundary_facts
     }
 
     pub fn demanded_callables(&self) -> &HashSet<CallableId> {
@@ -308,6 +345,16 @@ impl PullSession {
             .entry(executable)
             .and_modify(|existing| existing.join_assign(&demand))
             .or_insert(demand);
+    }
+
+    pub fn record_materialized_executable(&mut self, executable: ExecutableKey, materialized: MaterializedExecutable) {
+        self.demanded_executables.insert(executable.clone());
+        self.materialized_executables.insert(executable, materialized);
+    }
+
+    pub fn record_executable_effects(&mut self, executable: ExecutableKey, effects: EffectSummary) {
+        self.demanded_executables.insert(executable.clone());
+        self.executable_effects.insert(executable, effects);
     }
 
     pub fn record_transport_component(&mut self, anchor: TransportPosition, positions: Vec<TransportPosition>) {
@@ -422,14 +469,14 @@ impl ProductProducers for WorldProductProducers<'_, '_> {
 
     fn produce_materialized_executable(
         &mut self,
-        _session: &mut PullSession,
+        session: &mut PullSession,
         executable: &ExecutableKey,
     ) -> PullOutcome {
-        PullOutcome::wait_on_product(ProductKey::MaterializedExecutable(executable.clone()))
+        super::jobs::artifact::produce_materialized_executable_product(self.world, session, executable)
     }
 
-    fn produce_executable_effects(&mut self, _session: &mut PullSession, executable: &ExecutableKey) -> PullOutcome {
-        PullOutcome::wait_on_product(ProductKey::ExecutableEffects(executable.clone()))
+    fn produce_executable_effects(&mut self, session: &mut PullSession, executable: &ExecutableKey) -> PullOutcome {
+        super::jobs::artifact::produce_executable_effects_product(self.world, session, executable)
     }
 
     fn produce_runtime_demand(&mut self, session: &mut PullSession, executable: &ExecutableKey) -> PullOutcome {
@@ -880,6 +927,164 @@ mod tests {
     }
 
     #[test]
+    fn executable_effects_product_settles_symbolic_mutual_recursion_without_root_loop() {
+        use super::super::artifact::{
+            CallEdge, CallReturnFlow, CallTarget, DirectCallEdge, MaterializedCallEdge, MaterializedExecutable,
+            MaterializedExecutableTransport,
+        };
+        use super::super::body::{
+            ControlEntryId, ControlEntryOrigin, LoweredClause, LoweredEntry, LoweredStep, LoweredTail,
+        };
+        use super::super::transport::ExecutableSymbol;
+        use crate::source::Span;
+
+        let tel = ConfiguredTelemetry::new();
+        let root = RootId::for_test(8);
+        let first = fake_executable_with_function(root, 80);
+        let second = fake_executable_with_function(root, 81);
+        let first_symbol = executable_symbol_for_test(&first);
+        let second_symbol = executable_symbol_for_test(&second);
+        let mut driver = ProductDriver::new(&tel, root);
+        driver.session_mut().record_materialized_executable(
+            first.clone(),
+            fake_materialized_executable(
+                allocating_body(),
+                first_symbol.clone(),
+                Some(fake_call_edge(
+                    second.clone(),
+                    first_symbol.clone(),
+                    second_symbol.clone(),
+                )),
+            ),
+        );
+        driver.session_mut().record_materialized_executable(
+            second.clone(),
+            fake_materialized_executable(
+                empty_body(),
+                second_symbol.clone(),
+                Some(fake_call_edge(first.clone(), second_symbol, first_symbol)),
+            ),
+        );
+        let mut world = World::new(&tel);
+        let mut producers = WorldProductProducers::new(&mut world);
+
+        let outcome = driver.pull(&mut producers, ProductKey::ExecutableEffects(second.clone()));
+
+        let PullOutcome::Produced(ProductValue::ExecutableEffects(effects)) = outcome else {
+            panic!("effects product should settle the local symbolic SCC, got {outcome:?}")
+        };
+        assert!(effects.allocates, "effects should propagate through mutual recursion");
+        assert!(
+            driver
+                .session()
+                .executable_effects(&first)
+                .is_some_and(|effects| effects.allocates)
+        );
+        assert!(
+            driver
+                .session()
+                .executable_effects(&second)
+                .is_some_and(|effects| effects.allocates)
+        );
+        assert_eq!(driver.session().root_scans(), 0);
+        assert_eq!(driver.session().follow_ups(), 0);
+
+        fn fake_materialized_executable(
+            body: super::super::LoweredBody,
+            executable: ExecutableSymbol,
+            edge: Option<MaterializedCallEdge>,
+        ) -> MaterializedExecutable {
+            let return_position = TransportPosition::ExecutableReturn {
+                executable: executable.clone(),
+            };
+            MaterializedExecutable {
+                entry_dispatch: None,
+                return_ty: test_ty(),
+                runtime_demand: ExecutableRuntimeDemand::default(),
+                transport: MaterializedExecutableTransport {
+                    executable,
+                    input_positions: Vec::new(),
+                    return_position,
+                    resume_positions: Vec::new(),
+                    return_payload_positions: Vec::new(),
+                    entry_capture_positions: Vec::new(),
+                    call_arg_positions: Vec::new(),
+                    value_positions: Vec::new(),
+                },
+                original_entry_ids: Vec::new(),
+                value_types: HashMap::new(),
+                effects: EffectSummary::default(),
+                body,
+                call_edges: edge
+                    .map(|edge| HashMap::from([(CallSiteId::from_u32(0), edge)]))
+                    .unwrap_or_default(),
+            }
+        }
+
+        fn fake_call_edge(
+            callee: ExecutableKey,
+            caller_symbol: ExecutableSymbol,
+            callee_symbol: ExecutableSymbol,
+        ) -> MaterializedCallEdge {
+            MaterializedCallEdge {
+                target: CallEdge::Direct(DirectCallEdge {
+                    callee: CallTarget::Local(callee),
+                    return_flow: CallReturnFlow::Tail {
+                        callee_return: TransportPosition::ExecutableReturn {
+                            executable: callee_symbol,
+                        },
+                        caller_return: TransportPosition::ExecutableReturn {
+                            executable: caller_symbol,
+                        },
+                    },
+                    extern_marshals: None,
+                }),
+                return_ty: test_ty(),
+            }
+        }
+
+        fn allocating_body() -> super::super::LoweredBody {
+            let value = ValueId::from_u32(0);
+            clauses_with_projection(vec![LoweredStep::Tuple {
+                value,
+                items: Vec::new(),
+            }])
+        }
+
+        fn empty_body() -> super::super::LoweredBody {
+            clauses_with_projection(Vec::new())
+        }
+
+        fn clauses_with_projection(projections: Vec<LoweredStep>) -> super::super::LoweredBody {
+            super::super::LoweredBody::Clauses {
+                clauses: vec![LoweredClause {
+                    span: Span::DUMMY,
+                    params: Vec::new(),
+                    projections,
+                    entry: ControlEntryId::from_u32(0),
+                }],
+                entries: vec![LoweredEntry {
+                    span: Span::DUMMY,
+                    origin: ControlEntryOrigin::Clause,
+                    params: Vec::new(),
+                    captures: Vec::new(),
+                    reusable_cons_captures: Vec::new(),
+                    steps: Vec::new(),
+                    tail: LoweredTail::Halt {
+                        atom: "done".to_string(),
+                    },
+                }],
+                generated: Vec::new(),
+            }
+        }
+
+        fn test_ty() -> super::super::Ty {
+            let mut types = super::super::Types::new();
+            types.none()
+        }
+    }
+
+    #[test]
     fn pull_session_finished_telemetry_reports_zero_push_counters() {
         let tel = ConfiguredTelemetry::new();
         let capture = Capture::new();
@@ -904,12 +1109,26 @@ mod tests {
     }
 
     fn fake_executable(root: RootId) -> ExecutableKey {
-        let function = super::super::FunctionId::for_test(root.as_u32() + 10);
+        fake_executable_with_function(root, root.as_u32() + 10)
+    }
+
+    fn fake_executable_with_function(root: RootId, function: u32) -> ExecutableKey {
+        let function = super::super::FunctionId::for_test(function);
         let mut types = super::super::Types::new();
         let activation = super::super::ActivationKey::from_inputs(root, function, &[], &mut types);
         ExecutableKey {
             activation,
             need: super::super::ExecutableNeed::Value,
+        }
+    }
+
+    fn executable_symbol_for_test(executable: &ExecutableKey) -> super::super::transport::ExecutableSymbol {
+        super::super::transport::ExecutableSymbol {
+            activation: super::super::transport::ActivationSymbol {
+                function: executable.activation.function,
+                input: Box::default(),
+            },
+            need: executable.need,
         }
     }
 

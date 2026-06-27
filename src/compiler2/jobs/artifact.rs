@@ -25,7 +25,9 @@ use super::super::body::{
     LoweredTail, ValueId,
 };
 use super::super::drive::{FactKey, Job, JobEffects, settled_uses};
+use super::super::facts::FactUse;
 use super::super::identity::{ExecutableKey, ExecutableNeed, RootId};
+use super::super::pull::{ProductKey, ProductValue, PullOutcome, PullSession, PullWait};
 use super::super::scheduler::FatalError;
 use super::super::semantic::{ActivationAnalysis, CallSiteKey, CallTargetSummary, SelectedCallee};
 use super::super::transport::{
@@ -163,6 +165,165 @@ pub(super) fn materialize_root(world: &mut World<'_>, root_id: RootId) -> Result
         follow_up: changed.then_some(Job::DeriveAbiReady(root_id)).into_iter().collect(),
         ..JobEffects::default()
     })
+}
+
+pub(crate) fn produce_materialized_executable_product(
+    world: &mut World<'_>,
+    session: &mut PullSession,
+    executable: &ExecutableKey,
+) -> PullOutcome {
+    if let Some(materialized) = session.materialized_executable(executable).cloned() {
+        return PullOutcome::Produced(ProductValue::MaterializedExecutable(Box::new(materialized)));
+    }
+    let mut waits = Vec::new();
+    let activation_fact = FactKey::ActivationAnalyzed(executable.activation.clone());
+    if !world.fact_is_settled(&activation_fact) {
+        waits.push(PullWait::Fact(FactUse::settled(activation_fact)));
+    }
+    let return_fact = FactKey::ReturnType(executable.activation.clone());
+    if !world.fact_is_settled(&return_fact) {
+        waits.push(PullWait::Fact(FactUse::settled(return_fact)));
+    }
+    if session.memo().runtime_demand(executable).is_none() {
+        waits.push(PullWait::Product(ProductKey::RuntimeDemand(executable.clone())));
+    }
+    if let Some(analysis) = world.activation_analysis(&executable.activation) {
+        for callsite in &analysis.callsites {
+            let fact = FactKey::CallSiteSummary(CallSiteKey {
+                activation: executable.activation.clone(),
+                callsite: *callsite,
+            });
+            if !world.fact_is_settled(&fact) {
+                waits.push(PullWait::Fact(FactUse::settled(fact)));
+            }
+        }
+    }
+    let return_position = TransportPosition::ExecutableReturn {
+        executable: transport_executable_symbol(executable, world.types()),
+    };
+    if session.transport_shape(&return_position).is_none() {
+        waits.push(PullWait::Product(ProductKey::TransportShape(return_position)));
+    }
+    if !waits.is_empty() {
+        return PullOutcome::Waiting(waits);
+    }
+
+    let analysis = world
+        .activation_analysis(&executable.activation)
+        .cloned()
+        .expect("settled activation analysis should be readable for materialized product");
+    let return_ty = world
+        .activation_return(&executable.activation)
+        .unwrap_or_else(|| world.types_mut().none());
+    let pruned = prune_lowered_body(
+        world.lowered_body(executable.activation.function),
+        &analysis.reachable_clauses,
+        &analysis.reachable_entries,
+    );
+    let body = pruned.body;
+    let callsite_args = collect_callsite_args(&body);
+    let transport_plan = session_transport_plan(world, session, executable);
+    let call_edges = materialize_call_edges(
+        world,
+        session.root(),
+        &transport_plan,
+        executable,
+        &analysis,
+        &body,
+        &callsite_args,
+    )
+    .expect("product materialization should use settled semantic facts")
+    .expect("product materialization should have complete call edges after waits");
+    let effects = local_effects(&body, &call_edges);
+    let materialized = MaterializedExecutable {
+        entry_dispatch: materialize_entry_dispatch(world, executable, &analysis),
+        return_ty,
+        runtime_demand: session
+            .memo()
+            .runtime_demand(executable)
+            .cloned()
+            .expect("runtime-demand product wait should have been satisfied"),
+        transport: session_materialized_executable_transport(session, executable, world.types()),
+        original_entry_ids: pruned.original_entry_ids,
+        value_types: analysis.value_types,
+        effects,
+        body,
+        call_edges,
+    };
+    session.record_materialized_executable(executable.clone(), materialized.clone());
+    PullOutcome::Produced(ProductValue::MaterializedExecutable(Box::new(materialized)))
+}
+
+pub(crate) fn produce_executable_effects_product(
+    _world: &mut World<'_>,
+    session: &mut PullSession,
+    executable: &ExecutableKey,
+) -> PullOutcome {
+    if let Some(effects) = session.executable_effects(executable) {
+        return PullOutcome::Produced(ProductValue::ExecutableEffects(effects));
+    }
+    let mut reachable = HashSet::new();
+    let mut stack = vec![executable.clone()];
+    let mut waits = Vec::new();
+    while let Some(current) = stack.pop() {
+        if !reachable.insert(current.clone()) {
+            continue;
+        }
+        let Some(materialized) = session.materialized_executable(&current) else {
+            waits.push(PullWait::Product(ProductKey::MaterializedExecutable(current)));
+            continue;
+        };
+        for edge in materialized.call_edges.values() {
+            for callee in local_call_edge_callees(edge) {
+                stack.push(callee.clone());
+            }
+        }
+    }
+    if !waits.is_empty() {
+        return PullOutcome::Waiting(waits);
+    }
+
+    let mut settled = reachable
+        .iter()
+        .map(|key| {
+            let materialized = session
+                .materialized_executable(key)
+                .expect("reachable materialized executable should have been checked above");
+            (key.clone(), local_effects(&materialized.body, &materialized.call_edges))
+        })
+        .collect::<HashMap<_, _>>();
+    loop {
+        let snapshot = settled.clone();
+        let mut changed = false;
+        for key in &reachable {
+            let materialized = session
+                .materialized_executable(key)
+                .expect("reachable materialized executable should have been checked above");
+            let mut effects = local_effects(&materialized.body, &materialized.call_edges);
+            for edge in materialized.call_edges.values() {
+                for callee in local_call_edge_callees(edge) {
+                    if let Some(callee_effects) = snapshot.get(callee).copied() {
+                        effects.union_with(callee_effects);
+                    }
+                }
+            }
+            if settled.get(key).copied() != Some(effects) {
+                settled.insert(key.clone(), effects);
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    for (key, effects) in &settled {
+        session.record_executable_effects(key.clone(), *effects);
+    }
+    let effects = settled
+        .get(executable)
+        .copied()
+        .expect("requested executable should be in reachable effects set");
+    PullOutcome::Produced(ProductValue::ExecutableEffects(effects))
 }
 
 /// Derives one ABI-ready program from one materialized closed artifact.
@@ -321,6 +482,38 @@ fn materialized_executable_transport(
         entry_capture_positions,
         call_arg_positions,
         value_positions,
+    }
+}
+
+fn session_materialized_executable_transport(
+    session: &PullSession,
+    executable: &ExecutableKey,
+    types: &Types,
+) -> MaterializedExecutableTransport {
+    let mut positions_by_executable = HashMap::<ExecutableSymbol, Vec<TransportPosition>>::new();
+    for position in session.transport_shapes().keys() {
+        positions_by_executable
+            .entry(transport_position_executable(position).clone())
+            .or_default()
+            .push(position.clone());
+    }
+    materialized_executable_transport(&positions_by_executable, executable, types)
+}
+
+fn session_transport_plan(world: &World<'_>, session: &PullSession, entry_executable: &ExecutableKey) -> TransportPlan {
+    let mut executable_membership = session
+        .demanded_executables()
+        .iter()
+        .map(|executable| transport_executable_symbol(executable, world.types()))
+        .collect::<Vec<_>>();
+    executable_membership.sort_by_key(transport_executable_sort_key);
+    TransportPlan {
+        entry: transport_executable_symbol(entry_executable, world.types()),
+        executable_membership: executable_membership.into_boxed_slice(),
+        positions: session.transport_shapes().clone(),
+        callables: session.callable_facts_inventory().clone(),
+        boundaries: session.boundary_facts_inventory().clone(),
+        codegen_seam_facts: Box::default(),
     }
 }
 
