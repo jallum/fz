@@ -643,14 +643,17 @@ pub struct TransportInputKey {
 
 /// One producer's contribution of values flowing into a callee dispatch key.
 /// `CallArgs` is a callsite's full argument vector consumed by ANY callee
-/// sharing the `(function, arrow, need)` key (the callee applies its own capture
-/// prefix to find the slot) -- exactly the input-type-blind match the backward
-/// scan used. `Captures` is a callable flow's capture vector bound to the EXACT
-/// resolution executable (indexed directly by semantic position); a sibling that
-/// merely shares the dispatch key skips it.
+/// sharing the `(function, arrow, need)` key. Direct calls bind the first
+/// explicit argument to semantic input 0; closure calls bind explicit arguments
+/// after the callee's capture prefix. `Captures` is a callable flow's capture
+/// vector bound to the EXACT resolution executable (indexed directly by
+/// semantic position); a sibling that merely shares the dispatch key skips it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TransportInputKind {
-    CallArgs(Box<[ValueId]>),
+    CallArgs {
+        args: Box<[ValueId]>,
+        direct: bool,
+    },
     Captures {
         target: Box<ExecutableKey>,
         captures: Box<[ValueId]>,

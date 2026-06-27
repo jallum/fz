@@ -309,6 +309,11 @@ demand into `TransportShape(position)` and related callable/boundary products.
 Actual call-argument values also inherit the selected callee input demand during
 transport projection, so recursive calls do not omit a local argument value just
 because the caller's own `call_arg_demands` are temporarily bottom.
+That inheritance uses the lowered call form, not arity alone: direct calls bind
+explicit arg 0 to callee semantic input 0, while closure calls bind explicit
+args after the callee capture prefix. Product runtime-demand pulls record the
+same dependency edge (`callee RuntimeDemand -> caller RuntimeDemand`) so a
+changed callee demand invalidates only the products that read it.
 
 A callable surface that publishes a transport boundary names a runtime dispatch
 site, so it must be **ground**: type variables are an inference-phase concept and

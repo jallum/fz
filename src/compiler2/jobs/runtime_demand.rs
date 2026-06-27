@@ -283,10 +283,11 @@ pub(crate) fn produce_runtime_demand_product(
         if target == *executable {
             continue;
         }
+        session.record_runtime_demand_dependency(target.clone(), executable.clone());
         if let Some(demand) = session.memo().runtime_demand(&target).cloned() {
             demands.insert(target, demand);
         } else if session.runtime_demand_is_active(&target) {
-            demands.insert(target.clone(), empty_runtime_demand(&target, world.types()));
+            demands.insert(target.clone(), active_runtime_demand_seed(world, &target));
         } else {
             waits.insert(PullWait::Product(ProductKey::RuntimeDemand(target)));
         }
@@ -416,8 +417,12 @@ fn record_callsite_input_edges(
     facts: &ExecutableFacts,
 ) {
     let call_args = call_args_by_callsite(&facts.body);
+    let call_modes = call_modes_by_callsite(&facts.body);
     for (callsite, summary) in &facts.callsites {
         let Some(args) = call_args.get(callsite) else {
+            continue;
+        };
+        let Some(mode) = call_modes.get(callsite).copied() else {
             continue;
         };
         let need = facts
@@ -430,16 +435,12 @@ fn record_callsite_input_edges(
                 continue;
             };
             let callee = ExecutableKey { activation, need };
-            let offset = callee
-                .activation
-                .input_len(world.types())
-                .saturating_sub(target.surface_inputs.len());
             let inputs = args
                 .iter()
                 .enumerate()
                 .map(|(index, arg)| {
                     (
-                        offset + index,
+                        mode.semantic_index(callee.activation.input_len(world.types()), args.len(), index),
                         IncomingInputSource {
                             producer: executable.clone(),
                             value: arg.value,
@@ -506,10 +507,40 @@ fn call_args_by_callsite(body: &LoweredBody) -> HashMap<CallSiteId, Vec<CallArg>
     out
 }
 
+fn call_modes_by_callsite(body: &LoweredBody) -> HashMap<CallSiteId, CallInputMode> {
+    let mut out = HashMap::new();
+    let LoweredBody::Clauses { clauses, entries, .. } = body else {
+        return out;
+    };
+    for clause in clauses {
+        record_tail_call_mode(&entries[clause.entry.as_u32() as usize].tail, &mut out);
+    }
+    for entry in entries {
+        record_tail_call_mode(&entry.tail, &mut out);
+    }
+    out
+}
+
 fn record_tail_call_args(tail: &LoweredTail, out: &mut HashMap<CallSiteId, Vec<CallArg>>) {
     match tail {
         LoweredTail::DirectCall { callsite, args, .. } | LoweredTail::ClosureCall { callsite, args, .. } => {
             out.insert(*callsite, args.clone());
+        }
+        LoweredTail::Value { .. }
+        | LoweredTail::If { .. }
+        | LoweredTail::Dispatch { .. }
+        | LoweredTail::Receive(_)
+        | LoweredTail::Halt { .. } => {}
+    }
+}
+
+fn record_tail_call_mode(tail: &LoweredTail, out: &mut HashMap<CallSiteId, CallInputMode>) {
+    match tail {
+        LoweredTail::DirectCall { callsite, .. } => {
+            out.insert(*callsite, CallInputMode::Direct);
+        }
+        LoweredTail::ClosureCall { callsite, .. } => {
+            out.insert(*callsite, CallInputMode::Closure);
         }
         LoweredTail::Value { .. }
         | LoweredTail::If { .. }
@@ -595,6 +626,35 @@ fn read_settled(world: &World<'_>, fact: FactKey, reads: &mut Vec<FactKey>) -> b
 fn empty_runtime_demand(executable: &ExecutableKey, types: &Types) -> ExecutableRuntimeDemand {
     ExecutableRuntimeDemand {
         input_demands: vec![RuntimeDemand::ignore(); executable.activation.input_len(types)],
+        ..ExecutableRuntimeDemand::default()
+    }
+}
+
+fn active_runtime_demand_seed(world: &mut World<'_>, executable: &ExecutableKey) -> ExecutableRuntimeDemand {
+    let inputs = executable.activation.inputs(world.types());
+    ExecutableRuntimeDemand {
+        input_demands: inputs
+            .into_iter()
+            .enumerate()
+            .map(|(semantic_index, ty)| {
+                // Active direct-call cycles need one concrete receiver lane to
+                // keep forwarded state bindable. Other slots must wait for
+                // normal demand evidence so callable reducers do not become
+                // first-class merely because the cycle is open.
+                if semantic_index != 0 {
+                    return RuntimeDemand::ignore();
+                }
+                let boundary = boundary_runtime_demand(world, ty);
+                if !boundary.callable.is_empty() {
+                    RuntimeDemand::ignore()
+                } else {
+                    RuntimeDemand {
+                        shape: boundary.shape,
+                        callable: CallableDemand::default(),
+                    }
+                }
+            })
+            .collect(),
         ..ExecutableRuntimeDemand::default()
     }
 }
@@ -2195,7 +2255,16 @@ fn direct_call_arg_demands(
     demands: &HashMap<ExecutableKey, ExecutableRuntimeDemand>,
     callable_flows: &mut CallableFlowBuilder,
 ) -> Vec<RuntimeDemand> {
-    arg_demands_for_summary(world, executable, callsite, args, 0, facts, demands, callable_flows)
+    arg_demands_for_summary(
+        world,
+        executable,
+        callsite,
+        args,
+        CallInputMode::Direct,
+        facts,
+        demands,
+        callable_flows,
+    )
 }
 
 fn closure_call_arg_demands(
@@ -2207,7 +2276,16 @@ fn closure_call_arg_demands(
     demands: &HashMap<ExecutableKey, ExecutableRuntimeDemand>,
     callable_flows: &mut CallableFlowBuilder,
 ) -> Vec<RuntimeDemand> {
-    arg_demands_for_summary(world, executable, callsite, args, 0, facts, demands, callable_flows)
+    arg_demands_for_summary(
+        world,
+        executable,
+        callsite,
+        args,
+        CallInputMode::Closure,
+        facts,
+        demands,
+        callable_flows,
+    )
 }
 
 fn arg_demands_for_summary(
@@ -2215,7 +2293,7 @@ fn arg_demands_for_summary(
     _executable: &ExecutableKey,
     callsite: CallSiteId,
     args: &[CallArg],
-    default_offset: usize,
+    input_mode: CallInputMode,
     facts: &ExecutableFacts,
     demands: &HashMap<ExecutableKey, ExecutableRuntimeDemand>,
     callable_flows: &mut CallableFlowBuilder,
@@ -2259,23 +2337,19 @@ fn arg_demands_for_summary(
             super::super::semantic::SelectedCallee::ProviderBoundary(_) => false,
         };
         let target_demands = local_target_input_demands(world, target, need, demands);
-        let offset = target
-            .activation
-            .as_ref()
-            .map(|activation| {
-                activation
-                    .input_len(world.types())
-                    .saturating_sub(target.surface_inputs.len())
-            })
-            .unwrap_or(default_offset);
         for (index, (arg, slot)) in args.iter().zip(out.iter_mut()).enumerate().take(arity) {
             let fallback_ty = target
                 .surface_inputs
                 .get(index)
                 .copied()
                 .unwrap_or_else(|| world.types_mut().any());
+            let offset = target
+                .activation
+                .as_ref()
+                .map(|activation| input_mode.semantic_index(activation.input_len(world.types()), args.len(), index))
+                .unwrap_or(index);
             let observed = target_demands
-                .get(offset + index)
+                .get(offset)
                 .cloned()
                 .unwrap_or_else(|| boundary_runtime_demand(world, fallback_ty));
             if records_direct_arg_surfaces {
@@ -2292,6 +2366,21 @@ fn arg_demands_for_summary(
         }
     }
     out
+}
+
+#[derive(Clone, Copy)]
+enum CallInputMode {
+    Direct,
+    Closure,
+}
+
+impl CallInputMode {
+    fn semantic_index(self, callee_input_len: usize, arg_count: usize, arg_index: usize) -> usize {
+        match self {
+            CallInputMode::Direct => arg_index,
+            CallInputMode::Closure => callee_input_len.saturating_sub(arg_count) + arg_index,
+        }
+    }
 }
 
 /// Seed an escaping callable argument's surface from the boundary it crosses.

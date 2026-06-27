@@ -2560,6 +2560,7 @@ end
                 "outgoing input edges should be derivable from product runtime demand",
             );
         }
+        pull_runtime_demands_for_executables(&mut driver, &mut producers, &executables);
     }
     driver.finish_session();
 
@@ -3063,6 +3064,7 @@ end
         program.callable_entries.is_empty(),
         "operator refs in fixture 00181 should stay direct callable transport with no backend callable entries"
     );
+    assert_direct_clause_param_forwards_have_abi_reprs(&world, &program);
     assert_eq!(driver.session().root_scans(), 0);
     assert_eq!(driver.session().follow_ups(), 0);
     driver.finish_session();
@@ -3094,6 +3096,80 @@ end
         no_dump_job_fires > 0,
         "public no-dump interp proof should exercise the product-built BackendProgram"
     );
+}
+
+fn assert_direct_clause_param_forwards_have_abi_reprs(world: &World<'_>, program: &super::artifact::BackendProgram) {
+    let mut checked = 0;
+    for executable in &program.executables {
+        let super::artifact::BackendBody::Clauses { clauses, entries, .. } = &executable.body else {
+            continue;
+        };
+        let clause_params = clauses
+            .iter()
+            .flat_map(|clause| clause.params.iter().copied())
+            .collect::<HashSet<_>>();
+        for entry in entries {
+            let super::artifact::BackendTail::DirectCall { target, args, .. } = &entry.tail else {
+                continue;
+            };
+            let Some(first_arg) = args.first() else {
+                continue;
+            };
+            if !clause_params.contains(&first_arg.value) {
+                continue;
+            }
+            let super::artifact::CallEdge::Direct(edge) = target else {
+                continue;
+            };
+            let Some(callee_index) = edge.callee.copied_local() else {
+                continue;
+            };
+            let callee = program
+                .executables
+                .get(callee_index)
+                .expect("packaged direct-call callee index should be in bounds");
+            if executable_input_shape_is_nothing(world, program, callee, 0) {
+                continue;
+            }
+            checked += 1;
+            assert!(
+                executable.value_reprs.contains_key(&first_arg.value),
+                "direct call in {:?} forwards clause param {:?} into non-empty callee input 0, so ABI must bind it",
+                executable.key,
+                first_arg.value
+            );
+        }
+    }
+    assert!(
+        checked > 0,
+        "Enum.reduce operator-ref backend product should exercise direct forwarding of a clause param"
+    );
+}
+
+fn executable_input_shape_is_nothing(
+    world: &World<'_>,
+    program: &super::artifact::BackendProgram,
+    executable: &super::artifact::BackendExecutable,
+    semantic_index: usize,
+) -> bool {
+    let symbol = ExecutableSymbol {
+        activation: ActivationSymbol {
+            function: executable.key.activation.function,
+            input: executable.key.activation.inputs(world.types()).into_boxed_slice(),
+        },
+        need: executable.key.need,
+    };
+    let position = TransportPosition::ExecutableInput {
+        executable: symbol,
+        semantic_index,
+    };
+    let shape = program
+        .transport
+        .position_shapes
+        .iter()
+        .find_map(|(candidate, shape)| (candidate == &position).then_some(*shape))
+        .unwrap_or_else(|| panic!("backend product should publish callee input position {position:?}"));
+    matches!(world.shape(shape), ShapeDescr::Nothing)
 }
 
 #[test]
@@ -4162,7 +4238,7 @@ fn pull_runtime_demands_for_executables(
     producers: &mut impl super::pull::ProductProducers,
     executables: &HashSet<ExecutableKey>,
 ) {
-    for _ in 0..executables.len().saturating_mul(2).max(1) {
+    for _ in 0..executables.len().saturating_mul(32).max(1) {
         for executable in executables {
             let product = pull_product_until_produced(
                 driver,
@@ -4173,6 +4249,12 @@ fn pull_runtime_demands_for_executables(
             if !matches!(product, ProductValue::RuntimeDemand(_)) {
                 panic!("runtime-demand product for {executable:?} produced unexpected value {product:?}");
             }
+        }
+        if executables
+            .iter()
+            .all(|executable| driver.session().memo().runtime_demand(executable).is_some())
+        {
+            break;
         }
     }
     for executable in executables {

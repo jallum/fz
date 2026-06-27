@@ -35,10 +35,28 @@ struct ExecutableContext {
     runtime_demand: ExecutableRuntimeDemand,
     callsite_needs: HashMap<CallSiteId, ExecutableNeed>,
     callsite_args: HashMap<CallSiteId, Vec<CallArg>>,
+    callsite_modes: HashMap<CallSiteId, CallInputMode>,
     local_sources: HashMap<ValueId, TransportSource>,
     callsite_dests: HashMap<CallSiteId, ControlDestination>,
     return_sources: Vec<TransportSource>,
     resume_entries: Vec<ResumeEntry>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CallInputMode {
+    Direct,
+    Closure,
+}
+
+impl CallInputMode {
+    fn semantic_index(self, callee_input_len: usize, arg_count: usize, arg_index: usize) -> Option<usize> {
+        match self {
+            CallInputMode::Direct => (arg_index < callee_input_len).then_some(arg_index),
+            CallInputMode::Closure => callee_input_len
+                .checked_sub(arg_count)
+                .map(|capture_prefix| capture_prefix + arg_index),
+        }
+    }
 }
 
 /// Key into the forward incoming-input-source index: a callee executable and
@@ -1336,6 +1354,7 @@ fn collect_transport_contexts(
             executable.clone(),
             ExecutableContext {
                 callsite_args: collect_callsite_args(&body),
+                callsite_modes: collect_callsite_modes(&body),
                 callsite_dests: collect_callsite_dests(&body),
                 local_sources,
                 return_sources: collect_return_sources(&body, &reachable_clauses, &reachable_entries),
@@ -1420,11 +1439,19 @@ fn outgoing_input_contributions(
             if !fed.insert(dispatch) {
                 continue;
             }
+            let direct = context
+                .callsite_modes
+                .get(callsite)
+                .copied()
+                .is_some_and(|mode| mode == CallInputMode::Direct);
             push(
                 dispatch,
                 TransportInputEdge {
                     producer: producer.clone(),
-                    kind: TransportInputKind::CallArgs(arg_values.clone()),
+                    kind: TransportInputKind::CallArgs {
+                        args: arg_values.clone(),
+                        direct,
+                    },
                 },
             );
         }
@@ -1503,17 +1530,22 @@ fn resolve_incoming_input_slot(
     let mut out = Vec::new();
     for edge in &sources.edges {
         match &edge.kind {
-            TransportInputKind::CallArgs(args) => {
+            TransportInputKind::CallArgs { args, direct } => {
                 if &edge.producer == executable {
                     continue;
                 }
-                let Some(capture_prefix) = input_len.checked_sub(args.len()) else {
-                    continue;
+                let arg_index = if *direct {
+                    semantic_index
+                } else {
+                    let Some(capture_prefix) = input_len.checked_sub(args.len()) else {
+                        continue;
+                    };
+                    if semantic_index < capture_prefix {
+                        continue;
+                    }
+                    semantic_index - capture_prefix
                 };
-                if semantic_index < capture_prefix {
-                    continue;
-                }
-                if let Some(value) = args.get(semantic_index - capture_prefix).copied() {
+                if let Some(value) = args.get(arg_index).copied() {
                     out.push((edge.producer.clone(), value));
                 }
             }
@@ -1567,6 +1599,9 @@ fn build_incoming_input_sources(
     // prefix dictates. A self-call is excluded, matching the former scan.
     for (caller, context) in contexts {
         for (callsite, args) in &context.callsite_args {
+            let Some(mode) = context.callsite_modes.get(callsite).copied() else {
+                continue;
+            };
             let need = context
                 .callsite_needs
                 .get(callsite)
@@ -1591,13 +1626,14 @@ fn build_incoming_input_sources(
                     if callee == caller || !fed.insert(callee.clone()) {
                         continue;
                     }
-                    let Some(capture_prefix) = callee.activation.input_len(world.types()).checked_sub(args.len())
-                    else {
-                        continue;
-                    };
                     for (arg_index, arg) in args.iter().enumerate() {
+                        let Some(semantic_index) =
+                            mode.semantic_index(callee.activation.input_len(world.types()), args.len(), arg_index)
+                        else {
+                            continue;
+                        };
                         index
-                            .entry((callee.clone(), capture_prefix + arg_index))
+                            .entry((callee.clone(), semantic_index))
                             .or_default()
                             .push((caller.clone(), arg.value));
                     }
@@ -2085,6 +2121,9 @@ fn effective_value_demands(
         }
     }
     for (callsite, args) in &context.callsite_args {
+        let Some(mode) = context.callsite_modes.get(callsite).copied() else {
+            continue;
+        };
         let key = CallSiteKey {
             activation: executable.activation.clone(),
             callsite: *callsite,
@@ -2108,11 +2147,12 @@ fn effective_value_demands(
             let Some(callee_context) = contexts.context_for(&callee) else {
                 continue;
             };
-            let Some(capture_prefix) = callee.activation.input_len(world.types()).checked_sub(args.len()) else {
-                continue;
-            };
             for (arg_index, arg) in args.iter().enumerate() {
-                let semantic_index = capture_prefix + arg_index;
+                let Some(semantic_index) =
+                    mode.semantic_index(callee.activation.input_len(world.types()), args.len(), arg_index)
+                else {
+                    continue;
+                };
                 let Some(demand) = callee_context.runtime_demand.input_demands.get(semantic_index) else {
                     continue;
                 };
@@ -2875,6 +2915,17 @@ fn collect_callsite_args(body: &LoweredBody) -> HashMap<CallSiteId, Vec<CallArg>
     out
 }
 
+fn collect_callsite_modes(body: &LoweredBody) -> HashMap<CallSiteId, CallInputMode> {
+    let mut out = HashMap::new();
+    let LoweredBody::Clauses { clauses, entries, .. } = body else {
+        return out;
+    };
+    for clause in clauses {
+        collect_tail_call_modes(&clause.entry, entries, &mut out);
+    }
+    out
+}
+
 fn collect_callsite_dests(body: &LoweredBody) -> HashMap<CallSiteId, ControlDestination> {
     let mut out = HashMap::new();
     let LoweredBody::Clauses { clauses, entries, .. } = body else {
@@ -2975,6 +3026,57 @@ fn collect_tail_call_args(
         LoweredTail::Value { dest, .. } => {
             if let ControlDestination::Deliver(target) = dest {
                 collect_tail_call_args(target, entries, out);
+            }
+        }
+        LoweredTail::Halt { .. } => {}
+    }
+}
+
+fn collect_tail_call_modes(
+    entry_id: &ControlEntryId,
+    entries: &[super::super::body::LoweredEntry],
+    out: &mut HashMap<CallSiteId, CallInputMode>,
+) {
+    let entry = &entries[entry_id.as_u32() as usize];
+    match &entry.tail {
+        LoweredTail::DirectCall { callsite, dest, .. } => {
+            out.insert(*callsite, CallInputMode::Direct);
+            if let ControlDestination::Deliver(target) = dest {
+                collect_tail_call_modes(target, entries, out);
+            }
+        }
+        LoweredTail::ClosureCall { callsite, dest, .. } => {
+            out.insert(*callsite, CallInputMode::Closure);
+            if let ControlDestination::Deliver(target) = dest {
+                collect_tail_call_modes(target, entries, out);
+            }
+        }
+        LoweredTail::If {
+            then_entry, else_entry, ..
+        } => {
+            collect_tail_call_modes(then_entry, entries, out);
+            collect_tail_call_modes(else_entry, entries, out);
+        }
+        LoweredTail::Dispatch { dispatch, .. } => {
+            for arm_entry in &dispatch.arm_entries {
+                collect_tail_call_modes(arm_entry, entries, out);
+            }
+            collect_tail_call_modes(&dispatch.miss_entry, entries, out);
+        }
+        LoweredTail::Receive(receive) => {
+            for clause in &receive.clauses {
+                collect_tail_call_modes(&clause.entry, entries, out);
+            }
+            if let Some(after) = &receive.after {
+                collect_tail_call_modes(&after.entry, entries, out);
+            }
+            if let ControlDestination::Deliver(target) = receive.dest {
+                collect_tail_call_modes(&target, entries, out);
+            }
+        }
+        LoweredTail::Value { dest, .. } => {
+            if let ControlDestination::Deliver(target) = dest {
+                collect_tail_call_modes(target, entries, out);
             }
         }
         LoweredTail::Halt { .. } => {}
@@ -3330,6 +3432,9 @@ fn incoming_executable_input_positions(
             continue;
         }
         for (callsite, args) in &context.callsite_args {
+            let Some(mode) = context.callsite_modes.get(callsite).copied() else {
+                continue;
+            };
             let key = CallSiteKey {
                 activation: caller.activation.clone(),
                 callsite: *callsite,
@@ -3349,11 +3454,12 @@ fn incoming_executable_input_positions(
                 continue;
             }
 
-            let capture_prefix = executable.activation.input_len(world.types()).checked_sub(args.len())?;
-            if semantic_index < capture_prefix {
-                return None;
-            }
-            let arg_index = semantic_index - capture_prefix;
+            let arg_index = explicit_arg_index_for_semantic_input(
+                mode,
+                executable.activation.input_len(world.types()),
+                args.len(),
+                semantic_index,
+            )?;
             let position = TransportPosition::CallArg {
                 executable: executable_symbol(caller, world.types()),
                 callsite: *callsite,
@@ -3363,6 +3469,25 @@ fn incoming_executable_input_positions(
         }
     }
     (!positions.is_empty()).then_some(positions)
+}
+
+fn explicit_arg_index_for_semantic_input(
+    mode: CallInputMode,
+    callee_input_len: usize,
+    arg_count: usize,
+    semantic_index: usize,
+) -> Option<usize> {
+    match mode {
+        CallInputMode::Direct => (semantic_index < arg_count).then_some(semantic_index),
+        CallInputMode::Closure => {
+            let capture_prefix = callee_input_len.checked_sub(arg_count)?;
+            if semantic_index < capture_prefix {
+                None
+            } else {
+                Some(semantic_index - capture_prefix)
+            }
+        }
+    }
 }
 
 fn shape_for_source(

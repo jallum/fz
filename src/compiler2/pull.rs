@@ -209,6 +209,7 @@ impl PullOutcome {
 pub struct ProductMemo {
     produced: HashMap<ProductKey, ProductValue>,
     in_progress: HashSet<ProductKey>,
+    invalidated_in_progress: HashSet<ProductKey>,
 }
 
 impl ProductMemo {
@@ -244,16 +245,25 @@ impl ProductMemo {
         self.in_progress.insert(key)
     }
 
-    fn finish(&mut self, key: &ProductKey, value: ProductValue) {
+    fn finish(&mut self, key: &ProductKey, value: ProductValue) -> bool {
         self.in_progress.remove(key);
+        if self.invalidated_in_progress.remove(key) {
+            self.produced.remove(key);
+            return false;
+        }
         self.produced.insert(key.clone(), value);
+        true
     }
 
     fn unblock(&mut self, key: &ProductKey) {
         self.in_progress.remove(key);
+        self.invalidated_in_progress.remove(key);
     }
 
     fn remove(&mut self, key: &ProductKey) {
+        if self.in_progress.contains(key) {
+            self.invalidated_in_progress.insert(key.clone());
+        }
         self.produced.remove(key);
     }
 }
@@ -285,6 +295,8 @@ pub struct PullSession {
     demanded_executables: HashSet<ExecutableKey>,
     call_edges: HashMap<ExecutableKey, Vec<DemandedCallEdge>>,
     incoming_inputs: HashMap<InputSlot, Vec<IncomingInputSource>>,
+    runtime_demand_dependents: HashMap<ExecutableKey, HashSet<ExecutableKey>>,
+    latest_runtime_demands: HashMap<ExecutableKey, ExecutableRuntimeDemand>,
     return_demands: HashMap<ExecutableKey, RuntimeDemand>,
     materialized_executables: HashMap<ExecutableKey, MaterializedExecutable>,
     executable_effects: HashMap<ExecutableKey, EffectSummary>,
@@ -312,6 +324,8 @@ impl PullSession {
             demanded_executables: HashSet::new(),
             call_edges: HashMap::new(),
             incoming_inputs: HashMap::new(),
+            runtime_demand_dependents: HashMap::new(),
+            latest_runtime_demands: HashMap::new(),
             return_demands: HashMap::new(),
             materialized_executables: HashMap::new(),
             executable_effects: HashMap::new(),
@@ -350,6 +364,22 @@ impl PullSession {
 
     pub fn incoming_input_sources(&self, slot: &InputSlot) -> &[IncomingInputSource] {
         self.incoming_inputs.get(slot).map(Vec::as_slice).unwrap_or(&[])
+    }
+
+    pub fn record_runtime_demand_dependency(&mut self, dependency: ExecutableKey, dependent: ExecutableKey) {
+        if dependency == dependent {
+            return;
+        }
+        self.runtime_demand_dependents
+            .entry(dependency)
+            .or_default()
+            .insert(dependent);
+    }
+
+    fn record_latest_runtime_demand(&mut self, executable: ExecutableKey, demand: ExecutableRuntimeDemand) -> bool {
+        let changed = self.latest_runtime_demands.get(&executable) != Some(&demand);
+        self.latest_runtime_demands.insert(executable, demand);
+        changed
     }
 
     pub fn return_demand(&self, executable: &ExecutableKey) -> Option<&RuntimeDemand> {
@@ -540,9 +570,61 @@ impl PullSession {
     }
 
     fn invalidate_demand_derived_products(&mut self, executable: &ExecutableKey) {
+        let mut stack = vec![executable.clone()];
+        let mut seen = HashSet::new();
+        while let Some(current) = stack.pop() {
+            if !seen.insert(current.clone()) {
+                continue;
+            }
+            self.invalidate_demand_derived_products_one(&current);
+            if let Some(dependents) = self.runtime_demand_dependents.get(&current).cloned() {
+                stack.extend(dependents);
+            }
+        }
+    }
+
+    fn invalidate_runtime_demand_dependents(&mut self, executable: &ExecutableKey) {
+        let Some(dependents) = self.runtime_demand_dependents.get(executable).cloned() else {
+            return;
+        };
+        for dependent in dependents {
+            self.invalidate_demand_derived_products_one(&dependent);
+        }
+    }
+
+    fn invalidate_demand_derived_products_one(&mut self, executable: &ExecutableKey) {
         self.memo.remove(&ProductKey::RuntimeDemand(executable.clone()));
         self.invalidate_transport_products(executable);
         self.invalidate_artifact_products(executable);
+    }
+
+    fn discard_product_side_effects(&mut self, key: &ProductKey) {
+        match key {
+            ProductKey::MaterializedExecutable(executable) => {
+                self.materialized_executables.remove(executable);
+            }
+            ProductKey::ExecutableEffects(executable) => {
+                self.executable_effects.remove(executable);
+            }
+            ProductKey::AbiExecutable(executable) => {
+                self.abi_executables.remove(executable);
+            }
+            ProductKey::BackendExecutable(executable) => {
+                self.backend_executables.remove(executable);
+            }
+            ProductKey::TransportShape(position) => {
+                self.transport_shapes.remove(position);
+            }
+            ProductKey::TransportComponent(position) => {
+                self.transport_components.remove(position);
+            }
+            ProductKey::RootBackendProduct(_)
+            | ProductKey::RuntimeDemand(_)
+            | ProductKey::OutgoingInputEdges(_)
+            | ProductKey::IncomingInputSlot(_)
+            | ProductKey::CallableFacts(_)
+            | ProductKey::BoundaryFacts(_) => {}
+        }
     }
 
     fn invalidate_artifact_products(&mut self, executable: &ExecutableKey) {
@@ -793,9 +875,22 @@ impl<'a> ProductDriver<'a> {
 
         match outcome {
             PullOutcome::Produced(value) => {
-                self.session.memo.finish(&key, value.clone());
+                let settled = self.session.memo.finish(&key, value.clone());
                 if let ProductKey::RuntimeDemand(executable) = &key {
                     self.session.finish_runtime_demand(executable);
+                    if settled
+                        && let ProductValue::RuntimeDemand(demand) = &value
+                        && self
+                            .session
+                            .record_latest_runtime_demand(executable.clone(), demand.as_ref().clone())
+                    {
+                        self.session.invalidate_runtime_demand_dependents(executable);
+                    }
+                }
+                if !settled {
+                    self.session.discard_product_side_effects(&key);
+                    self.emit("waited", &key, 1);
+                    return PullOutcome::Waiting(vec![PullWait::Product(key)]);
                 }
                 self.emit("produced", &key, 0);
                 PullOutcome::Produced(value)

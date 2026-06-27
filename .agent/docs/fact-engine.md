@@ -149,6 +149,10 @@ Transport products are demand-derived session state: when an executable's
 runtime demand or incoming input sources change, the session invalidates that
 executable's cached transport shapes/components before rebuilding downstream
 materialized, ABI, or backend products.
+Runtime-demand products also record the other runtime-demand products they read.
+When one settles to a changed value, only those recorded dependents are
+invalidated; if a product is invalidated while in progress, the pull driver
+rejects that stale result and returns an explicit product wait for the same key.
 
 ## Tiny walkthrough
 
