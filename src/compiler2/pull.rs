@@ -10,6 +10,7 @@ use std::collections::{HashMap, HashSet};
 use crate::telemetry::{Telemetry, opaque_debug};
 use crate::{measurements, metadata};
 
+use super::body::{CallSiteId, ValueId};
 use super::drive::FactKey;
 use super::facts::FactUse;
 use super::identity::{ExecutableKey, RootId};
@@ -52,6 +53,30 @@ impl ProductKey {
             Self::TransportComponent(_) => "transport_component",
             Self::CallableFacts(_) => "callable_facts",
             Self::BoundaryFacts(_) => "boundary_facts",
+        }
+    }
+
+    fn executable(&self) -> Option<&ExecutableKey> {
+        match self {
+            Self::BackendExecutable(executable)
+            | Self::AbiExecutable(executable)
+            | Self::MaterializedExecutable(executable)
+            | Self::ExecutableEffects(executable)
+            | Self::RuntimeDemand(executable)
+            | Self::OutgoingInputEdges(executable) => Some(executable),
+            Self::IncomingInputSlot(slot) => Some(&slot.executable),
+            Self::RootBackendProduct(_)
+            | Self::TransportShape(_)
+            | Self::TransportComponent(_)
+            | Self::CallableFacts(_)
+            | Self::BoundaryFacts(_) => None,
+        }
+    }
+
+    fn transport_position(&self) -> Option<&TransportPosition> {
+        match self {
+            Self::TransportShape(position) | Self::TransportComponent(position) => Some(position),
+            _ => None,
         }
     }
 }
@@ -112,6 +137,177 @@ impl ProductMemo {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct IncomingInputSource {
+    pub producer: ExecutableKey,
+    pub value: ValueId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DemandedCallEdge {
+    pub caller: ExecutableKey,
+    pub callsite: CallSiteId,
+    pub callee: ExecutableKey,
+    pub inputs: Vec<(usize, IncomingInputSource)>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TransportComponentInventory {
+    pub anchor: TransportPosition,
+    pub positions: Vec<TransportPosition>,
+}
+
+#[derive(Debug)]
+pub struct PullSession {
+    root: RootId,
+    memo: ProductMemo,
+    demanded_executables: HashSet<ExecutableKey>,
+    call_edges: HashMap<ExecutableKey, Vec<DemandedCallEdge>>,
+    incoming_inputs: HashMap<InputSlot, Vec<IncomingInputSource>>,
+    demanded_transport_positions: HashSet<TransportPosition>,
+    transport_components: HashMap<TransportPosition, TransportComponentInventory>,
+    demanded_callables: HashSet<CallableId>,
+    demanded_boundaries: HashSet<BoundaryId>,
+    executable_index: HashMap<ExecutableKey, usize>,
+    root_scans: u64,
+    follow_ups: u64,
+}
+
+impl PullSession {
+    pub fn new(root: RootId) -> Self {
+        Self {
+            root,
+            memo: ProductMemo::default(),
+            demanded_executables: HashSet::new(),
+            call_edges: HashMap::new(),
+            incoming_inputs: HashMap::new(),
+            demanded_transport_positions: HashSet::new(),
+            transport_components: HashMap::new(),
+            demanded_callables: HashSet::new(),
+            demanded_boundaries: HashSet::new(),
+            executable_index: HashMap::new(),
+            root_scans: 0,
+            follow_ups: 0,
+        }
+    }
+
+    pub fn root(&self) -> RootId {
+        self.root
+    }
+
+    pub fn memo(&self) -> &ProductMemo {
+        &self.memo
+    }
+
+    pub fn demanded_executables(&self) -> &HashSet<ExecutableKey> {
+        &self.demanded_executables
+    }
+
+    pub fn call_edges(&self, caller: &ExecutableKey) -> &[DemandedCallEdge] {
+        self.call_edges.get(caller).map(Vec::as_slice).unwrap_or(&[])
+    }
+
+    pub fn incoming_input_sources(&self, slot: &InputSlot) -> &[IncomingInputSource] {
+        self.incoming_inputs.get(slot).map(Vec::as_slice).unwrap_or(&[])
+    }
+
+    pub fn demanded_transport_positions(&self) -> &HashSet<TransportPosition> {
+        &self.demanded_transport_positions
+    }
+
+    pub fn transport_component(&self, anchor: &TransportPosition) -> Option<&TransportComponentInventory> {
+        self.transport_components.get(anchor)
+    }
+
+    pub fn demanded_callables(&self) -> &HashSet<CallableId> {
+        &self.demanded_callables
+    }
+
+    pub fn demanded_boundaries(&self) -> &HashSet<BoundaryId> {
+        &self.demanded_boundaries
+    }
+
+    pub fn executable_index(&self) -> &HashMap<ExecutableKey, usize> {
+        &self.executable_index
+    }
+
+    pub fn root_scans(&self) -> u64 {
+        self.root_scans
+    }
+
+    pub fn follow_ups(&self) -> u64 {
+        self.follow_ups
+    }
+
+    pub fn record_call_edge(&mut self, edge: DemandedCallEdge) {
+        self.demanded_executables.insert(edge.caller.clone());
+        self.demanded_executables.insert(edge.callee.clone());
+        for (semantic_index, source) in &edge.inputs {
+            let slot = InputSlot {
+                executable: edge.callee.clone(),
+                semantic_index: *semantic_index,
+            };
+            push_unique(self.incoming_inputs.entry(slot).or_default(), source.clone());
+        }
+        self.call_edges.entry(edge.caller.clone()).or_default().push(edge);
+    }
+
+    pub fn record_transport_component(&mut self, anchor: TransportPosition, positions: Vec<TransportPosition>) {
+        self.demanded_transport_positions.insert(anchor.clone());
+        self.demanded_transport_positions.extend(positions.iter().cloned());
+        self.transport_components
+            .insert(anchor.clone(), TransportComponentInventory { anchor, positions });
+    }
+
+    pub fn assign_executable_index(&mut self, executable: ExecutableKey, index: usize) {
+        self.demanded_executables.insert(executable.clone());
+        self.executable_index.insert(executable, index);
+    }
+
+    fn note_product_request(&mut self, key: &ProductKey) {
+        if let Some(executable) = key.executable() {
+            self.demanded_executables.insert(executable.clone());
+        }
+        if let Some(position) = key.transport_position() {
+            self.demanded_transport_positions.insert(position.clone());
+        }
+        match key {
+            ProductKey::CallableFacts(callable) => {
+                self.demanded_callables.insert(*callable);
+            }
+            ProductKey::BoundaryFacts(boundary) => {
+                self.demanded_boundaries.insert(*boundary);
+            }
+            _ => {}
+        }
+    }
+
+    fn emit_finished(&self, tel: &dyn Telemetry) {
+        tel.execute(
+            &["fz", "compiler2", "pull", "session", "finished"],
+            &measurements! {
+                root_id: self.root.as_u32(),
+                executables: self.demanded_executables.len(),
+                transport_positions: self.demanded_transport_positions.len(),
+                callables: self.demanded_callables.len(),
+                boundaries: self.demanded_boundaries.len(),
+                follow_ups: self.follow_ups,
+                root_scans: self.root_scans,
+            },
+            &metadata! {},
+        );
+    }
+}
+
+fn push_unique<T>(items: &mut Vec<T>, value: T)
+where
+    T: PartialEq,
+{
+    if !items.contains(&value) {
+        items.push(value);
+    }
+}
+
 pub trait ProductProducers {
     fn produce_root_backend_product(&mut self, root: RootId) -> PullOutcome;
     fn produce_backend_executable(&mut self, executable: &ExecutableKey) -> PullOutcome;
@@ -129,28 +325,38 @@ pub trait ProductProducers {
 
 pub struct ProductDriver<'a> {
     tel: &'a dyn Telemetry,
-    memo: ProductMemo,
+    session: PullSession,
 }
 
 impl<'a> ProductDriver<'a> {
-    pub fn new(tel: &'a dyn Telemetry) -> Self {
-        Self {
-            tel,
-            memo: ProductMemo::default(),
-        }
+    pub fn new(tel: &'a dyn Telemetry, root: RootId) -> Self {
+        Self::with_session(tel, PullSession::new(root))
     }
 
-    pub fn memo(&self) -> &ProductMemo {
-        &self.memo
+    pub fn with_session(tel: &'a dyn Telemetry, session: PullSession) -> Self {
+        Self { tel, session }
+    }
+
+    pub fn session(&self) -> &PullSession {
+        &self.session
+    }
+
+    pub fn session_mut(&mut self) -> &mut PullSession {
+        &mut self.session
+    }
+
+    pub fn finish_session(&self) {
+        self.session.emit_finished(self.tel);
     }
 
     pub fn pull(&mut self, producers: &mut impl ProductProducers, key: ProductKey) -> PullOutcome {
         self.emit("requested", &key, 0);
-        if let Some(value) = self.memo.get(&key) {
+        self.session.note_product_request(&key);
+        if let Some(value) = self.session.memo.get(&key) {
             self.emit("cache_hit", &key, 0);
             return PullOutcome::Produced(value.clone());
         }
-        if !self.memo.begin(key.clone()) {
+        if !self.session.memo.begin(key.clone()) {
             self.emit("reentered", &key, 1);
             return PullOutcome::Waiting(vec![PullWait::Product(key)]);
         }
@@ -172,12 +378,12 @@ impl<'a> ProductDriver<'a> {
 
         match outcome {
             PullOutcome::Produced(value) => {
-                self.memo.finish(&key, value.clone());
+                self.session.memo.finish(&key, value.clone());
                 self.emit("produced", &key, 0);
                 PullOutcome::Produced(value)
             }
             PullOutcome::Waiting(waits) => {
-                self.memo.unblock(&key);
+                self.session.memo.unblock(&key);
                 self.emit("waited", &key, waits.len());
                 PullOutcome::Waiting(waits)
             }
@@ -309,7 +515,7 @@ mod tests {
             root_entry: Some(executable),
             ..FakeProducers::default()
         };
-        let mut driver = ProductDriver::new(&tel);
+        let mut driver = ProductDriver::new(&tel, root);
 
         let first = driver.pull(&mut producers, root_key.clone());
         assert_eq!(first, PullOutcome::wait_on_product(prerequisite.clone()));
@@ -337,10 +543,11 @@ mod tests {
         let tel = ConfiguredTelemetry::new();
         let capture = Capture::new();
         tel.attach(&[], capture.handler());
-        let executable = fake_executable(RootId::for_test(1));
+        let root = RootId::for_test(1);
+        let executable = fake_executable(root);
         let key = ProductKey::BackendExecutable(executable);
         let mut producers = FakeProducers::default();
-        let mut driver = ProductDriver::new(&tel);
+        let mut driver = ProductDriver::new(&tel, root);
 
         let outcome = driver.pull(&mut producers, key.clone());
 
@@ -348,26 +555,81 @@ mod tests {
             outcome,
             PullOutcome::wait_on_fact(FactUse::current(FactKey::CodeIndexed(super::super::CodeId::ZERO)))
         );
-        assert!(driver.memo().get(&key).is_none());
-        assert!(!driver.memo().contains_in_progress(&key));
+        assert!(driver.session().memo().get(&key).is_none());
+        assert!(!driver.session().memo().contains_in_progress(&key));
         assert_eq!(capture.count(&["fz", "compiler2", "pull", "product", "waited"]), 1);
     }
 
     #[test]
     fn product_driver_turns_reentry_into_a_product_wait() {
         let tel = ConfiguredTelemetry::new();
-        let executable = fake_executable(RootId::for_test(2));
+        let root = RootId::for_test(2);
+        let executable = fake_executable(root);
         let key = ProductKey::ExecutableEffects(executable);
-        let mut driver = ProductDriver::new(&tel);
+        let mut driver = ProductDriver::new(&tel, root);
         let mut producers = FakeProducers {
             reenter: Some(key.clone()),
             ..FakeProducers::default()
         };
 
-        assert!(driver.memo.begin(key.clone()));
+        assert!(driver.session.memo.begin(key.clone()));
         let outcome = driver.pull(&mut producers, key.clone());
 
         assert_eq!(outcome, PullOutcome::wait_on_product(key));
+    }
+
+    #[test]
+    fn pull_session_records_outgoing_edges_into_exact_incoming_input_slots() {
+        let caller = fake_executable(RootId::for_test(3));
+        let callee = fake_executable(RootId::for_test(4));
+        let source = IncomingInputSource {
+            producer: caller.clone(),
+            value: ValueId::from_u32(7),
+        };
+        let edge = DemandedCallEdge {
+            caller: caller.clone(),
+            callsite: CallSiteId::from_u32(2),
+            callee: callee.clone(),
+            inputs: vec![(1, source.clone())],
+        };
+        let mut session = PullSession::new(RootId::for_test(3));
+
+        session.record_call_edge(edge.clone());
+
+        assert_eq!(session.call_edges(&caller), std::slice::from_ref(&edge));
+        assert_eq!(
+            session.incoming_input_sources(&InputSlot {
+                executable: callee,
+                semantic_index: 1,
+            }),
+            std::slice::from_ref(&source)
+        );
+        assert_eq!(session.root_scans(), 0);
+        assert_eq!(session.follow_ups(), 0);
+    }
+
+    #[test]
+    fn pull_session_finished_telemetry_reports_zero_push_counters() {
+        let tel = ConfiguredTelemetry::new();
+        let capture = Capture::new();
+        tel.attach(&[], capture.handler());
+        let root = RootId::for_test(5);
+        let executable = fake_executable(root);
+        let mut driver = ProductDriver::new(&tel, root);
+        let mut producers = FakeProducers::default();
+
+        assert_eq!(
+            driver.pull(&mut producers, ProductKey::RuntimeDemand(executable)),
+            PullOutcome::Produced(ProductValue::Unit)
+        );
+        driver.finish_session();
+
+        let finished = capture
+            .last(&["fz", "compiler2", "pull", "session", "finished"])
+            .expect("pull session should emit final inventory telemetry");
+        assert_eq!(measurement_u64(&finished, "executables"), 1);
+        assert_eq!(measurement_u64(&finished, "follow_ups"), 0);
+        assert_eq!(measurement_u64(&finished, "root_scans"), 0);
     }
 
     fn fake_executable(root: RootId) -> ExecutableKey {
@@ -377,6 +639,13 @@ mod tests {
         ExecutableKey {
             activation,
             need: super::super::ExecutableNeed::Value,
+        }
+    }
+
+    fn measurement_u64(event: &crate::telemetry::capture::OwnedEvent, key: &str) -> u64 {
+        match event.measurements.get(key) {
+            Some(crate::telemetry::Value::U64(value)) => *value,
+            other => panic!("expected u64 measurement {key}, got {other:?}"),
         }
     }
 }
