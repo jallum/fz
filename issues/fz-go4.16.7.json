@@ -6,14 +6,15 @@
   "blocks": [
     "fz-go4.16.8"
   ],
+  "closed_at": "2026-06-27T02:39:12Z",
   "created": "2026-06-26T23:44:30Z",
   "description": "Goal\nBuild BackendProgram(root) from the PullSession inventory after symbolic products have been demanded and produced.\n\nRequired shape\n- Front door requests RootBackendProduct(root), which pulls BackendExecutable(root entry) and everything transitively named by symbolic local products.\n- Final packager sees only session inventory that already exists because products were pulled. It must not call root_executable_frontier or scan world facts to discover executables.\n- Assign dense executable indices, atom tables, callable tables, and other interpreter conveniences only in this final product.\n- Deterministic sorting is allowed here because semantics and inclusion have already been decided.\n\nSignal\nThe interpreter consumes the product-built BackendProgram for a focused fixture. Dense index sort is final-only and has no effect on transport, runtime demand, or semantic inclusion.\n\nRemoval target\nLegacy EmissionReadyProgram becomes unnecessary for the new interp backend path, but deletion waits for the telemetry and legacy-removal tickets.\n\nVerification\nA narrow product-path interp test for 00181 or an equivalent fixture; targeted assertions that final packaging has root_scans=0 and follow_ups=0.",
   "id": "fz-go4.16.7",
   "labels": [],
   "parent": "fz-go4.16",
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Pull path: add final BackendProgram packager",
   "type": "task",
-  "updated_at": "2026-06-27T01:27:57Z"
+  "updated_at": "2026-06-27T02:39:12Z"
 }
