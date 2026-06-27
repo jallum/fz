@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-27T04:12:47Z",
+  "description": "The current fz-go4.16 parent proof found a nondeterministic interp failure in fixtures2/00181_enum_reduce_operator_ref.fz: backend executable 179 directly calls 178 with ValueId(0), but the product ABI can omit the clause-param binding for that forwarded input. Prove and fix the pull product dependency/demand path without adding passes, walks, or follow-up jobs.",
+  "id": "fz-go4.16.13",
+  "labels": [],
+  "parent": "fz-go4.16",
+  "priority": 1,
+  "status": "open",
+  "title": "Fix pull backend ABI flake for direct-call forwarded inputs",
+  "type": "bug",
+  "updated_at": "2026-06-27T04:12:47Z"
+}
