@@ -2,14 +2,16 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-06-27T04:07:56Z",
+  "close_reason": "retired external ../pull-based.html and documented durable source of truth",
   "created": "2026-06-27T03:25:02Z",
   "description": "../pull-based.html was the temporary planning artifact for the pull-based artifact arc. After durable docs and tickets have fully absorbed the implementation DAG, telemetry plan, artifact inventory, EntryCapture details, and fixture 00181 worked example, archive or delete this temporary file so future work does not treat it as live source of truth. Do not remove it until the durable docs/tickets are verified to contain the information needed by implementing agents.",
   "id": "fz-go4.16.12",
   "labels": [],
   "parent": "fz-go4.16",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Archive temporary pull-based plan artifact",
   "type": "task",
-  "updated_at": "2026-06-27T04:06:43Z"
+  "updated_at": "2026-06-27T04:07:56Z"
 }
