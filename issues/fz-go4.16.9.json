@@ -11,9 +11,15 @@
   "id": "fz-go4.16.9",
   "labels": [],
   "parent": "fz-go4.16",
+  "comments": [
+    {
+      "text": "Compatibility scaffolding identified by fz-go4.16.8 proof: product tests still pre-settle legacy facts with drive_until_transport_plan; produce_runtime_demand_product can read a settled FactKey::RuntimeDemand; produce_transport_shape_product can exact-read a settled TransportPlan(root). Delete these with the legacy semantic/root artifact dependencies in this ticket, and switch the interpreter front door to the product-backed path.",
+      "timestamp": "2026-06-27T02:46:27Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "Pull path: delete legacy semantic and root artifact dependencies",
   "type": "task",
-  "updated_at": "2026-06-26T23:44:45Z"
+  "updated_at": "2026-06-27T02:46:27Z"
 }
