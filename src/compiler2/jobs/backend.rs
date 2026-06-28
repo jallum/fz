@@ -11,6 +11,8 @@ use crate::diag::driver::emit_through;
 use crate::dispatch_matrix::pattern::{PatternDispatchPlan, PatternGuardDispatch, PatternGuardExpr};
 use crate::dispatch_matrix::{ComparisonValue, DispatchConst, DispatchNode, ProjectionKind, Region, SubjectSource};
 use crate::source::Span;
+use crate::telemetry::{TelemetryExt as _, opaque_debug};
+use crate::{measurements, metadata};
 
 use super::super::artifact::{
     AbiReadyExecutable, BackendBody, BackendCallArg, BackendCallableEntry, BackendClause, BackendEntry,
@@ -22,7 +24,7 @@ use super::super::body::{
     LoweredStep, LoweredTail,
 };
 use super::super::drive::{FactKey, Job, JobEffects};
-use super::super::facts::FactUse;
+use super::super::facts::{FactReadiness, FactUse};
 use super::super::identity::RootId;
 use super::super::identity::{ActivationKey, ExecutableKey, ExecutableNeed};
 use super::super::pull::{
@@ -69,7 +71,7 @@ pub(super) fn build_backend_product(world: &mut World<'_>, root_id: RootId) -> R
                 for wait in waits.into_iter().rev() {
                     match wait {
                         PullWait::Product(product) => stack.push(product),
-                        PullWait::Fact(fact) => return Ok(wait_for_product_fact(world, fact)),
+                        PullWait::Fact(fact) => drive_product_fact_wait(world, root_id, fact)?,
                     }
                 }
             }
@@ -82,42 +84,135 @@ pub(super) fn build_backend_product(world: &mut World<'_>, root_id: RootId) -> R
     ))
 }
 
-fn wait_for_product_fact(world: &World<'_>, fact: FactUse<FactKey>) -> JobEffects {
-    let mut follow_up = product_fact_producers(world, fact.fact());
-    follow_up.sort_by_key(|job| format!("{job:?}"));
-    follow_up.dedup();
-    JobEffects {
-        waits: vec![fact],
-        follow_up,
-        ..JobEffects::default()
+fn drive_product_fact_wait(world: &mut World<'_>, root_id: RootId, fact: FactUse<FactKey>) -> Result<(), FatalError> {
+    let mut deferred = Vec::new();
+    let mut jobs_ran = 0_u64;
+    while !product_fact_wait_is_satisfied(world, &fact) {
+        let job = match world.work_graph.pop() {
+            Some(job) => job,
+            None => {
+                demand_product_fact_producer(world, fact.fact());
+                let Some(job) = world.work_graph.pop() else {
+                    for job in deferred {
+                        world.demand(job);
+                    }
+                    return Err(emit_backend_product_error(
+                        world,
+                        Span::DUMMY,
+                        format!(
+                            "compiler2 backend product for root {} waited on {:?} with no ready producer",
+                            root_id.as_u32(),
+                            fact
+                        ),
+                    ));
+                };
+                job
+            }
+        };
+        if forbidden_product_path_job(root_id, &job) {
+            deferred.push(job);
+            continue;
+        }
+        let job_span = world.tel().span(
+            &["fz", "compiler2", "job"],
+            metadata! {
+                job: opaque_debug(&job),
+            },
+        );
+        match super::run(world, &job) {
+            Ok(effects) => {
+                jobs_ran += 1;
+                job_span.stop_with(
+                    &measurements! {},
+                    &metadata! {
+                        effects: opaque_debug(&effects),
+                    },
+                );
+                world.complete_job(job, effects);
+            }
+            Err(err) => {
+                job_span.stop_with(&measurements! {}, &metadata! {});
+                for job in deferred {
+                    world.demand(job);
+                }
+                return Err(err);
+            }
+        }
+        if jobs_ran > 50_000 {
+            for job in deferred {
+                world.demand(job);
+            }
+            return Err(emit_backend_product_error(
+                world,
+                Span::DUMMY,
+                format!(
+                    "compiler2 backend product for root {} exceeded fact-wait budget for {:?}",
+                    root_id.as_u32(),
+                    fact
+                ),
+            ));
+        }
     }
+    for job in deferred {
+        world.demand(job);
+    }
+    Ok(())
 }
 
-fn product_fact_producers(world: &World<'_>, fact: &FactKey) -> Vec<Job> {
-    match fact {
-        FactKey::RootEntry(root) => vec![Job::SeedRoot(*root)],
-        FactKey::FunctionDefined(function) => vec![Job::DefineFunction(*function)],
-        FactKey::LoweredBody(function) => vec![Job::LowerFunction(*function)],
-        FactKey::Recursive(function) => vec![Job::DeriveRecursive(*function)],
-        FactKey::DispatchMask(function) => vec![Job::DeriveDispatchMask(*function)],
+fn demand_product_fact_producer(world: &mut World<'_>, fact: &FactKey) {
+    let job = match fact {
+        FactKey::RootEntry(root) => Some(Job::SeedRoot(*root)),
+        FactKey::FunctionDefined(function) => Some(Job::DefineFunction(*function)),
+        FactKey::LoweredBody(function) => Some(Job::LowerFunction(*function)),
+        FactKey::Recursive(function) => Some(Job::DeriveRecursive(*function)),
+        FactKey::DispatchMask(function) => Some(Job::DeriveDispatchMask(*function)),
         FactKey::Activation(activation) | FactKey::ActivationInputs(activation) => {
-            vec![Job::SeedActivation(activation.clone())]
+            Some(Job::SeedActivation(activation.clone()))
         }
-        FactKey::ActivationAnalyzed(activation)
-        | FactKey::ReturnType(activation)
-        | FactKey::CallSiteTargets(CallSiteKey { activation, .. })
-        | FactKey::CallSiteSummary(CallSiteKey { activation, .. }) => {
-            let mut jobs = Vec::new();
+        FactKey::ActivationAnalyzed(activation) | FactKey::ReturnType(activation) => {
             if !world.has_fact(&FactKey::Activation(activation.clone()))
                 || !world.has_fact(&FactKey::ActivationInputs(activation.clone()))
             {
-                jobs.push(Job::SeedActivation(activation.clone()));
+                demand_if_needed(world, Job::SeedActivation(activation.clone()), fact);
             }
-            jobs.push(Job::AnalyzeActivation(activation.clone()));
-            jobs
+            Some(Job::AnalyzeActivation(activation.clone()))
         }
-        _ => Vec::new(),
+        FactKey::CallSiteTargets(CallSiteKey { activation, .. })
+        | FactKey::CallSiteSummary(CallSiteKey { activation, .. }) => {
+            if !world.has_fact(&FactKey::Activation(activation.clone()))
+                || !world.has_fact(&FactKey::ActivationInputs(activation.clone()))
+            {
+                demand_if_needed(world, Job::SeedActivation(activation.clone()), fact);
+            }
+            Some(Job::AnalyzeActivation(activation.clone()))
+        }
+        _ => None,
+    };
+    if let Some(job) = job {
+        demand_if_needed(world, job, fact);
     }
+}
+
+fn demand_if_needed(world: &mut World<'_>, job: Job, target_fact: &FactKey) {
+    if world.work_graph.output_keys(&job).contains(target_fact) && !world.work_graph.rebased(&job) {
+        return;
+    }
+    world.demand(job);
+}
+
+fn product_fact_wait_is_satisfied(world: &World<'_>, fact: &FactUse<FactKey>) -> bool {
+    match fact.readiness() {
+        FactReadiness::Current => world.fact_revision(fact.fact()).is_some(),
+        FactReadiness::Settled => world.fact_is_settled(fact.fact()),
+    }
+}
+
+fn forbidden_product_path_job(root: RootId, job: &Job) -> bool {
+    matches!(
+        job,
+        Job::SealSemanticClosure(candidate) | Job::DeriveTransportPlan(candidate) | Job::BuildBackendProduct(candidate)
+            if *candidate == root
+    )
 }
 
 fn emit_backend_product_error(world: &World<'_>, span: Span, message: impl Into<String>) -> FatalError {
