@@ -6,14 +6,16 @@
   "blocks": [
     "fz-go4.17.7"
   ],
+  "closed_at": "2026-06-28T18:13:01Z",
+  "close_reason": "TransportShape now waits on TransportComponent and only reads the resulting shape fact, component production emits anchor/size telemetry, tests pin the wait and 00181 telemetry, and fmt/check/clippy passed.",
   "created": "2026-06-28T15:52:29Z",
   "description": "Goal\nMake TransportShape(position) depend on TransportComponent(position) instead of rebuilding a component projection itself. The component product must start from one demanded anchor and follow only reachable equality/source edges for that component.\n\nSignal\nTransportShape(position) first waits for ProductKey::TransportComponent(position), then reads the produced shape for that position. TransportComponent telemetry reports the component size and demanded anchor. It does not expand to every executable known to a root/session just to find supply. 00181 still produces the tuple integer return shape and direct Kernel.+/2 callable facts.\n\nStrategy\nSeparate three responsibilities: local edge emission for one executable/position, component reachability from an anchor, and final shape lookup. Use structural descriptors for decisions; sorting is allowed only for deterministic output after membership is known.\n\nRemoval steps\n- Delete project_transport_component_product as the catch-all producer once its pieces are split. Do not leave it unused “for reference.”\n- Remove the TransportShape path that calls the catch-all projection directly. Missing component data must wait on ProductKey::TransportComponent(position).\n- Remove side-effect recording of unrelated shapes/callables/boundaries from a TransportShape request. Those must be produced by their own products or by the demanded component product.\n- Delete compatibility branches that expand from session.demanded_executables just to build a larger shape graph.\n\nVerification\nComponent-size telemetry test; insertion-order stability test; 00181 product-path transport assertion; rg proving TransportShape no longer calls the catch-all projection directly.",
   "id": "fz-go4.17.6",
   "labels": [],
   "parent": "fz-go4.17",
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Pull transport: split TransportShape from demanded component solving",
   "type": "bug",
-  "updated_at": "2026-06-28T18:09:46Z"
+  "updated_at": "2026-06-28T18:13:01Z"
 }
