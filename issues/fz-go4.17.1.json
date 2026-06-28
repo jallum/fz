@@ -2,14 +2,16 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-06-28T12:59:39Z",
+  "close_reason": "Fixed in d0a488f51: macro roots no longer schedule SeedRoot beside BuildBackendProduct, macro root seeding omits the legacy seal, and successful backend product fact waits stop restoring deferred same-root legacy jobs. Verified with compiler2_pull_, port_macros, macro drive test, focused interp, check/clippy, and 00181 telemetry showing zero SealSemanticClosure/DeriveTransportPlan/DeriveRuntimeDemand/DeriveExecutableTransport.",
   "created": "2026-06-28T10:53:23Z",
   "description": "Goal\nMove Compiler2 macro executable readiness off the legacy root backend path so hidden macro roots do not run SealSemanticClosure, DeriveRuntimeDemand, DeriveExecutableTransport, or DeriveTransportPlan during product-backed interp.\n\nSignal\nRunning fixtures2/00181_enum_reduce_operator_ref.fz with --log-telemetry interp shows zero SealSemanticClosure, DeriveTransportPlan, DeriveRuntimeDemand, and DeriveExecutableTransport job starts across all roots, including macro roots. BuildMacroExecutable no longer returns a wait with follow_up producers [SeedRoot(root), BuildBackendProduct(root)] for BackendProgram(macro_root).\n\nEvidence\nDiagnostic spike fz-go4.17-spike-forbidden-telemetry on d73d4775b showed remaining forbidden jobs all on hidden macro roots RootId(1) and RootId(2): SealSemanticClosure=4, DeriveTransportPlan=4, DeriveRuntimeDemand=2, DeriveExecutableTransport=2, BuildBackendProduct=2. src/compiler2/jobs/macro_runtime.rs currently waits on BackendProgram(macro_root) with follow_up producers SeedRoot(root) and BuildBackendProduct(root). .agent/docs/pipeline.md explicitly documents RootKind::Macro as using the legacy backend program path.\n\nStrategy\nTreat macro executable build as another product-backed front-door demand. Either pull RootBackendProduct(macro_root) directly from BuildMacroExecutable without producer follow_up, or move macro executable readiness behind a product/driver boundary that can drive exact fact waits the same way the runtime interp front door now does. Do not restore root artifact ladder or hide the seal under another name.\n\nVerification\nFocused macro/runtime tests, compiler2_pull_ tests, fixtures2/00181 no-dump telemetry post-processing, cargo fmt/check/clippy.",
   "id": "fz-go4.17.1",
   "labels": [],
   "parent": "fz-go4.17",
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "Macro roots still keep legacy semantic/transport jobs alive",
   "type": "bug",
-  "updated_at": "2026-06-28T10:53:23Z"
+  "updated_at": "2026-06-28T12:59:39Z"
 }
