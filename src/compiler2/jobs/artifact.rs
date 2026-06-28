@@ -151,49 +151,144 @@ pub(crate) fn produce_executable_effects_product(
     if let Some(effects) = session.executable_effects(executable) {
         return PullOutcome::Produced(ProductValue::ExecutableEffects(effects));
     }
-    let mut reachable = HashSet::new();
+    let graph = match collect_effect_cone(session, executable) {
+        Ok(graph) => graph,
+        Err(waits) => return PullOutcome::Waiting(waits),
+    };
+    let scc = effect_scc_containing(executable, &graph.edges);
+    let waits = effect_scc_external_waits(session, &scc, &graph.edges);
+    if !waits.is_empty() {
+        return PullOutcome::Waiting(waits);
+    }
+    let settled = settle_effect_scc(session, &scc, &graph);
+    for (key, effects) in &settled {
+        session.record_executable_effects(key.clone(), *effects);
+    }
+    let effects = settled
+        .get(executable)
+        .copied()
+        .expect("requested executable should belong to its effects SCC");
+    PullOutcome::Produced(ProductValue::ExecutableEffects(effects))
+}
+
+struct EffectGraph {
+    local: HashMap<ExecutableKey, EffectSummary>,
+    edges: HashMap<ExecutableKey, Vec<ExecutableKey>>,
+}
+
+fn collect_effect_cone(session: &PullSession, executable: &ExecutableKey) -> Result<EffectGraph, Vec<PullWait>> {
+    let mut local = HashMap::new();
+    let mut edges = HashMap::new();
+    let mut seen = HashSet::new();
     let mut stack = vec![executable.clone()];
     let mut waits = Vec::new();
     while let Some(current) = stack.pop() {
-        if !reachable.insert(current.clone()) {
+        if !seen.insert(current.clone()) {
             continue;
         }
         let Some(materialized) = session.materialized_executable(&current) else {
             waits.push(PullWait::Product(ProductKey::MaterializedExecutable(current)));
             continue;
         };
-        for edge in materialized.call_edges.values() {
-            for callee in local_call_edge_callees(edge) {
+        local.insert(
+            current.clone(),
+            local_effects(&materialized.body, &materialized.call_edges),
+        );
+        let callees = materialized
+            .call_edges
+            .values()
+            .flat_map(local_call_edge_callees)
+            .cloned()
+            .collect::<Vec<_>>();
+        for callee in &callees {
+            if session.executable_effects(callee).is_none() {
                 stack.push(callee.clone());
             }
         }
+        edges.insert(current, callees);
     }
-    if !waits.is_empty() {
-        return PullOutcome::Waiting(waits);
+    if waits.is_empty() {
+        Ok(EffectGraph { local, edges })
+    } else {
+        Err(waits)
     }
+}
 
-    let mut settled = reachable
+fn effect_scc_containing(
+    executable: &ExecutableKey,
+    edges: &HashMap<ExecutableKey, Vec<ExecutableKey>>,
+) -> HashSet<ExecutableKey> {
+    let mut forward = HashSet::new();
+    collect_effect_reachable(executable, edges, &mut forward);
+    forward
         .iter()
+        .filter(|candidate| {
+            let mut reaches_entry = HashSet::new();
+            collect_effect_reachable(candidate, edges, &mut reaches_entry);
+            reaches_entry.contains(executable)
+        })
+        .cloned()
+        .collect()
+}
+
+fn collect_effect_reachable(
+    executable: &ExecutableKey,
+    edges: &HashMap<ExecutableKey, Vec<ExecutableKey>>,
+    out: &mut HashSet<ExecutableKey>,
+) {
+    if !out.insert(executable.clone()) {
+        return;
+    }
+    for callee in edges.get(executable).into_iter().flatten() {
+        collect_effect_reachable(callee, edges, out);
+    }
+}
+
+fn effect_scc_external_waits(
+    session: &PullSession,
+    scc: &HashSet<ExecutableKey>,
+    edges: &HashMap<ExecutableKey, Vec<ExecutableKey>>,
+) -> Vec<PullWait> {
+    let mut waits = Vec::new();
+    for executable in scc {
+        for callee in edges.get(executable).into_iter().flatten() {
+            if scc.contains(callee) || session.executable_effects(callee).is_some() {
+                continue;
+            }
+            let key = ProductKey::ExecutableEffects(callee.clone());
+            if !session.product_is_in_progress(&key) {
+                waits.push(PullWait::Product(key));
+            }
+        }
+    }
+    waits
+}
+
+fn settle_effect_scc(
+    session: &PullSession,
+    scc: &HashSet<ExecutableKey>,
+    graph: &EffectGraph,
+) -> HashMap<ExecutableKey, EffectSummary> {
+    let mut settled = scc
+        .iter()
+        .map(|key| (*key).clone())
         .map(|key| {
-            let materialized = session
-                .materialized_executable(key)
-                .expect("reachable materialized executable should have been checked above");
-            (key.clone(), local_effects(&materialized.body, &materialized.call_edges))
+            let effects = graph.local.get(&key).copied().unwrap_or_default();
+            (key, effects)
         })
         .collect::<HashMap<_, _>>();
     loop {
         let snapshot = settled.clone();
         let mut changed = false;
-        for key in &reachable {
-            let materialized = session
-                .materialized_executable(key)
-                .expect("reachable materialized executable should have been checked above");
-            let mut effects = local_effects(&materialized.body, &materialized.call_edges);
-            for edge in materialized.call_edges.values() {
-                for callee in local_call_edge_callees(edge) {
-                    if let Some(callee_effects) = snapshot.get(callee).copied() {
-                        effects.union_with(callee_effects);
-                    }
+        for key in scc {
+            let mut effects = graph.local.get(key).copied().unwrap_or_default();
+            for callee in graph.edges.get(key).into_iter().flatten() {
+                if let Some(callee_effects) = snapshot
+                    .get(callee)
+                    .copied()
+                    .or_else(|| session.executable_effects(callee))
+                {
+                    effects.union_with(callee_effects);
                 }
             }
             if settled.get(key).copied() != Some(effects) {
@@ -205,14 +300,7 @@ pub(crate) fn produce_executable_effects_product(
             break;
         }
     }
-    for (key, effects) in &settled {
-        session.record_executable_effects(key.clone(), *effects);
-    }
-    let effects = settled
-        .get(executable)
-        .copied()
-        .expect("requested executable should be in reachable effects set");
-    PullOutcome::Produced(ProductValue::ExecutableEffects(effects))
+    settled
 }
 
 pub(crate) fn produce_abi_executable_product(

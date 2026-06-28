@@ -369,6 +369,10 @@ impl PullSession {
         &self.memo
     }
 
+    pub fn product_is_in_progress(&self, key: &ProductKey) -> bool {
+        self.memo.in_progress.contains(key)
+    }
+
     pub fn demanded_executables(&self) -> &HashSet<ExecutableKey> {
         &self.demanded_executables
     }
