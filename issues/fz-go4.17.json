@@ -2,14 +2,16 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-06-28T18:33:11Z",
+  "close_reason": "Arc complete: old root artifact ladder removed from the product path; native, macro, backend dump, and interpreter front doors use product BackendProgram; remaining semantic/transport jobs are explicitly legacy diagnostics/tests. Final proof: cargo test -q --lib compiler2_pull_; cargo test -q --lib compiler2_macro_executable_runs_quote_unquote_on_the_source_heap; cargo fmt --all -- --check; cargo check --all; cargo clippy --all-targets -- -D warnings; 00181 no-dump telemetry job_starts=246 (\u003c379 baseline), legacy_semantic_transport_job_starts=0, root_frontier_legacy_events=0, root_session executables=10 transport_positions=160 callables=2 boundaries=0 producer_pokes=0.",
   "created": "2026-06-27T21:22:45Z",
   "description": "Goal\nDelete the old root artifact ladder that .16.9 should have removed: MaterializeRoot, DeriveAbiReady, DeriveEmissionReady, LowerBackendProgram, and their root projection stores/tests/docs. Native, macro, and dump front doors must not keep the ladder alive.\n\nSignal\nrg shows no production Job variants or FactKey variants for the old ladder, no MaterializedProgram/AbiReadyProgram/EmissionReadyProgram root stores, and product-backed interp/native/macro paths still pass. Unsupported dump stages are removed or product-backed; no old-stage drive remains.\n\nStrategy\nCut remaining consumers to product BackendProgram first, retire obsolete dump stages, delete ladder jobs/stores/tests/docs, then prove with focused tests, rg, clippy, and telemetry on fixtures2/00181_enum_reduce_operator_ref.fz.",
   "id": "fz-go4.17",
   "labels": [],
   "parent": "fz-go4",
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Remove legacy root artifact ladder after pull backend cutover",
   "type": "task",
-  "updated_at": "2026-06-27T21:22:50Z"
+  "updated_at": "2026-06-28T18:33:11Z"
 }
