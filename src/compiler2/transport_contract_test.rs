@@ -3002,6 +3002,11 @@ end
         0,
         "product no-dump interp must not run legacy root artifact jobs for the submitted root"
     );
+    assert_eq!(
+        no_dump_jobs.stop_count_matching(legacy_semantic_transport_job),
+        0,
+        "product no-dump interp must not run legacy semantic/transport jobs for submitted or hidden roots"
+    );
 
     let mut world = World::new(&tel);
     world.submit_code(
@@ -5103,6 +5108,16 @@ fn forbidden_product_path_job(job: &Job) -> bool {
     matches!(
         job,
         Job::SealSemanticClosure(_) | Job::DeriveTransportPlan(_) | Job::BuildBackendProduct(_)
+    )
+}
+
+fn legacy_semantic_transport_job(job: &Job) -> bool {
+    matches!(
+        job,
+        Job::SealSemanticClosure(_)
+            | Job::DeriveRuntimeDemand(_)
+            | Job::DeriveExecutableTransport(_)
+            | Job::DeriveTransportPlan(_)
     )
 }
 
