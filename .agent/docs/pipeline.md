@@ -32,7 +32,7 @@ body      LowerFunction
 dispatch  ReifyGuardDispatch, PlanEntryDispatch
             guard-pure helpers and clause matching -> GuardDispatch/EntryDispatch
 macro     BuildMacroExecutable
-            legacy compile-time path: one demanded defmacro -> hidden macro root
+            one demanded defmacro -> hidden macro root
             -> BackendProgram -> MacroExecutable
 keying    DeriveRecursive, DeriveDispatchMask
             stable per-function facts used to canonicalize activation keys
@@ -132,14 +132,16 @@ product:
 demand BuildMacroExecutable(inc/1)
   waits for FunctionDefined(inc/1)
   creates macro root input [Any(__CALLER__), Any(x)]
-  waits on BackendProgram(macro_root)
-    producers: SeedRoot(macro_root), BuildBackendProduct(macro_root)
+  produces BackendProgram(macro_root) through RootBackendProduct(macro_root)
   publishes MacroExecutable(inc/1)
 ```
 
 The macro root does not schedule `LowerNativeProgram`; compile-time macro
-execution uses the backend interpreter over the quoted source heap. This is
-compatibility behavior, not the model to copy for new artifact work.
+execution uses the backend interpreter over the quoted source heap.
+`BuildMacroExecutable` does not wait with a producer list. If the macro root's
+`BackendProgram` fact is missing, it directly invokes the backend product
+producer and completes that exact product job's effects so the fact table sees
+the published backend program.
 
 `Fz.Compiler.define(source_root, __ENV__)` is the source-tier publication point
 for definitions. It receives compiler-shaped quoted AST on the active source

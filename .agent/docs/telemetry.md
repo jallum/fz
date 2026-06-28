@@ -230,6 +230,32 @@ and that no forbidden root artifact jobs fire on the product path. Legacy job
 span assertions remain useful for macro/native compatibility paths, but they
 are not the target model for new artifact work.
 
+The public 00181 no-dump proof should be gathered from CLI telemetry, not from
+world internals:
+
+```sh
+rm -f /tmp/fz-00181.jsonl
+cargo run -q -- --log-telemetry /tmp/fz-00181.jsonl \
+  interp fixtures2/00181_enum_reduce_operator_ref.fz
+
+jq -sr '
+  def nm: .name|join(".");
+  "job_starts=\([.[] | select(nm=="fz.compiler2.job" and .kind=="span_start")] | length)",
+  "legacy_semantic_transport_job_starts=\([.[] | select(nm=="fz.compiler2.job" and .kind=="span_start" and (.metadata.job.debug|test("SealSemanticClosure|DeriveRuntimeDemand|DeriveExecutableTransport|DeriveTransportPlan")))] | length)",
+  "root_frontier_legacy_events=\([.[] | select(nm=="fz.compiler2.legacy.root_executable_frontier")] | length)",
+  "root_session=\([.[] | select(nm=="fz.compiler2.pull.session.finished" and .measurements.root_id==0)] | last | .measurements)"
+' /tmp/fz-00181.jsonl
+```
+
+Current expected signal for `fixtures2/00181_enum_reduce_operator_ref.fz`:
+`job_starts=246` against the `LEGACY_00181_NO_DUMP_JOB_STARTS=379` test
+baseline, `legacy_semantic_transport_job_starts=0`,
+`root_frontier_legacy_events=0`, and root session measurements
+`executables=10`, `transport_positions=160`, `callables=2`, `boundaries=0`,
+`producer_pokes=0`. Backend dumps may be requested with `--dump
+backend=/tmp/fz-00181.backend`; semantic `types` / `activations` dumps
+intentionally use the legacy semantic diagnostic surface.
+
 Transport product construction emits `[fz, compiler2, transport_flow, defined]`
 for the legacy root transport signal and `[fz, compiler2, pull, product, *]` for
 per-position product demand. The product path treats `RuntimeDemand(E)` as

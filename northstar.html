@@ -338,12 +338,15 @@
     DeriveRecursive(FunctionId),
     DeriveDispatchMask(FunctionId),
     SeedRoot(RootId),
-	    AnalyzeActivation(ActivationKey),
-	    SealSemanticClosure(RootId),
-	    DeriveTransportPlan(RootId),
-	    BuildBackendProduct(RootId),
-	    LowerNativeProgram(RootId),
-	}</code></pre>
+    AnalyzeActivation(ActivationKey),
+    BuildMacroExecutable(FunctionId),
+    LowerNativeProgram(RootId),
+}</code></pre>
+      <p>
+        The full enum still contains legacy semantic-closure and root transport-plan jobs for
+        diagnostic dump surfaces and old contract tests. They are not the artifact vocabulary:
+        backend products are pulled by <code>ProductKey</code> and exact settled fact waits.
+      </p>
       <p>
         <code>ScopeCode</code> then walks the parsed items in source order. The first pass reserves
         local functions and child modules so later definitions can reference them. The second pass
@@ -608,10 +611,8 @@ surface: DeriveTypeDef -> TypeDefined(SomeModule,"t",1) = hard Ty
         Type denotation is a <strong>surface-tier</strong> fact: it depends only on indexing
         and definition, never on activations, return types, or callsite summaries. Every
         dependency edge runs one way — index, surface, semantic, artifact — so by the time
-        the fixpoint loop runs, every type name is already a hard <code>Ty</code>. The
-        semantic tier reads types; it never moves a denotation. That one-way rule is what
-        keeps <code>SealSemanticClosure</code> observing a settled frontier instead of
-        chasing one that is still resolving.
+        artifact products ask semantic questions, every type name is already a hard
+        <code>Ty</code>. The semantic tier reads types; it never moves a denotation.
       </p>
       <p>
         Two consequences keep the symbol self-contained and the program minimal. A nominal
@@ -1071,11 +1072,11 @@ ReturnType(root, lambda#reduce_sum/2, [int, int]) = int</code></pre>
       <h2>Observability And Guideposts</h2>
       <p>
         Telemetry carries raw ids, facts, and opaque structures. Formatting belongs in handlers.
-	        The compiler surface emits spans for <code>drive</code> and each <code>job</code>, plus
-	        state-defining events such as <code>function.defined</code>,
-	        <code>callsite.defined</code>, <code>semantic_closed.defined</code>,
-	        <code>backend_program.defined</code>, and <code>native_program.defined</code>. Tests
-	        observe those events instead of poking through world internals.
+        The compiler surface emits spans for <code>drive</code> and each <code>job</code>, plus
+        state-defining events such as <code>function.defined</code>,
+        <code>callsite.defined</code>, <code>backend_program.defined</code>,
+        <code>native_program.defined</code>, and <code>pull.session.finished</code>. Tests
+        observe those events instead of poking through world internals.
       </p>
       <div class="grid">
         <div class="card">

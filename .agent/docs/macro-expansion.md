@@ -198,9 +198,13 @@ The job:
 1. waits for `FunctionDefined(function)`
 2. checks that the function surface is actually `is_macro`
 3. asks `World::macro_root(function)` for the hidden compile-time root
-4. waits on `BackendProgram(root)` with producers
-   `SeedRoot(root), BuildBackendProduct(root)`
+4. produces `BackendProgram(root)` through the backend product producer when
+   that fact is not already present
 5. publishes `MacroExecutable(function)`
+
+This path does not carry a producer list and does not schedule native lowering.
+The macro executable is a backend-interpreter artifact for one hidden macro
+root.
 
 `World::macro_root(function)` builds a `RootEntry` with:
 
