@@ -142,12 +142,11 @@ impl<'a> Compiler2<'a> {
     }
 
     pub(crate) fn drive_root_to_dump_stage(&mut self, root: RootId, stage: DumpStage) -> Result<(), String> {
-        let job = match stage {
-            DumpStage::Semantic => Job::SealSemanticClosure(root),
-            DumpStage::Backend => Job::BuildBackendProduct(root),
-            DumpStage::Native => Job::LowerNativeProgram(root),
-        };
-        self.drive_root_to(root, job)
+        match stage {
+            DumpStage::Semantic => self.drive_root_to(root, Job::SealSemanticClosure(root)),
+            DumpStage::Backend => self.product_backend_program_for_root(root).map(|_| ()),
+            DumpStage::Native => self.drive_root_to(root, Job::LowerNativeProgram(root)),
+        }
     }
 
     /// Drives one root to `BackendProgram` and runs it through the shared

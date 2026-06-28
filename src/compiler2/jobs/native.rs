@@ -52,10 +52,8 @@ const UNREACHABLE_CONTROL_ATOM: &str = "compiler2_unreachable_control";
 pub(super) fn lower_native_program(world: &mut World<'_>, root_id: RootId) -> Result<JobEffects, FatalError> {
     let backend_fact = FactKey::BackendProgram(root_id);
     if !world.has_fact(&backend_fact) {
-        return Ok(JobEffects::wait_on_settled(
-            backend_fact,
-            [Job::BuildBackendProduct(root_id)],
-        ));
+        let effects = super::backend::build_backend_product(world, root_id)?;
+        world.complete_job(Job::BuildBackendProduct(root_id), effects);
     }
 
     let backend = world.backend_program(root_id);

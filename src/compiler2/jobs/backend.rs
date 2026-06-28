@@ -42,7 +42,7 @@ use super::super::world::World;
 
 const UNREACHABLE_CONTROL_ATOM: &str = "compiler2_unreachable_control";
 
-pub(super) fn build_backend_product(world: &mut World<'_>, root_id: RootId) -> Result<JobEffects, FatalError> {
+pub(crate) fn build_backend_product(world: &mut World<'_>, root_id: RootId) -> Result<JobEffects, FatalError> {
     let backend_fact = FactKey::BackendProgram(root_id);
     let root_key = ProductKey::RootBackendProduct(root_id);
     let mut driver = ProductDriver::new(world.tel(), root_id);
