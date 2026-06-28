@@ -47,12 +47,11 @@ mod world;
 pub use agenda::Agenda;
 pub(crate) use artifact::NativeEntryAbi;
 pub use artifact::{
-    AbiReadyCallEdge, AbiReadyExecutable, AbiReadyProgram, AbiReadyProgramMap, AbiValueRepr, BackendBody,
-    BackendCallArg, BackendCallableEntry, BackendClause, BackendEntry, BackendEntryOrigin, BackendExecutable,
-    BackendProgram, BackendProgramMap, BackendReceive, BackendStep, BackendTail, CallEdge, CallTarget, CallableEntry,
-    DirectCallEdge, DispatchCallArm, DispatchCallEdge, DispatchCallMiss, EmissionReadyCallEdge,
-    EmissionReadyCallableEntry, EmissionReadyExecutable, EmissionReadyProgram, EmissionReadyProgramMap,
-    ExecutableDispatch, MaterializedCallEdge, MaterializedExecutable, MaterializedProgram, MaterializedProgramMap,
+    AbiReadyCallEdge, AbiReadyExecutable, AbiValueRepr, BackendBody, BackendCallArg, BackendCallableEntry,
+    BackendClause, BackendEntry, BackendEntryOrigin, BackendExecutable, BackendProgram, BackendProgramMap,
+    BackendReceive, BackendStep, BackendTail, CallEdge, CallTarget, CallableEntry, DirectCallEdge, DispatchCallArm,
+    DispatchCallEdge, DispatchCallMiss, EmissionReadyCallEdge, EmissionReadyCallableEntry, EmissionReadyExecutable,
+    ExecutableDispatch, MaterializedCallEdge, MaterializedExecutable,
 };
 pub(crate) use artifact::{NativeBody, NativeProgram};
 pub use body::{

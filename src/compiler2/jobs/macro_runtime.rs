@@ -36,7 +36,7 @@ pub(super) fn build_macro_executable(world: &mut World<'_>, function: FunctionId
     let Some(backend_revision) = world.fact_revision(&backend_fact) else {
         return Ok(JobEffects::wait_on_settled(
             backend_fact,
-            [Job::SeedRoot(root), Job::LowerBackendProgram(root)],
+            [Job::SeedRoot(root), Job::BuildBackendProduct(root)],
         ));
     };
 

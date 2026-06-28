@@ -54,7 +54,7 @@ pub(super) fn lower_native_program(world: &mut World<'_>, root_id: RootId) -> Re
     if !world.has_fact(&backend_fact) {
         return Ok(JobEffects::wait_on_settled(
             backend_fact,
-            [Job::LowerBackendProgram(root_id)],
+            [Job::BuildBackendProduct(root_id)],
         ));
     }
 
@@ -284,7 +284,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
             .collect();
         module.struct_schemas = self.program.struct_schemas.clone();
         Ok(NativeProgram {
-            backend_revision: self.program.emission_ready_revision,
+            backend_revision: self.program.backend_revision,
             entry,
             module,
             bodies: self.native_bodies,
@@ -1853,6 +1853,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
         executable: &BackendExecutable,
         payload: &TransportPosition,
     ) -> Result<Cont, FatalError> {
+        let payload_shape = position_shape(self.program, payload);
         let (param_tys, payload_reprs) = return_payload_entry(self.world, self.program, payload);
         if param_tys.len() != payload_reprs.len() {
             return Err(incomplete_native_program(
@@ -1889,12 +1890,35 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
             ctx.return_tuple_arity,
             executable.effects,
         );
-        let lanes = cont_ctx.entry_params(param_tys.as_slice());
-        if ctx.return_reprs.is_empty() {
-            cont_ctx.set_term(Term::ReturnLanes(Vec::new()));
-        } else {
-            cont_ctx.set_term(Term::ReturnLanes(lanes));
+        let params = cont_ctx.entry_params(param_tys.as_slice());
+        let mut lane_index = 0;
+        let payload_value =
+            self.decode_runtime_value_for_position(&mut cont_ctx, payload, payload_shape, &params, &mut lane_index)?;
+        if lane_index != params.len() {
+            return Err(incomplete_native_program(
+                self.world,
+                self.root_id,
+                format!(
+                    "native return-lane continuation for {:?} consumed {} payload lanes, but received {}",
+                    payload,
+                    lane_index,
+                    params.len()
+                ),
+            ));
         }
+        let return_position = executable.transport.return_position.clone();
+        let return_shape = position_shape(self.program, &return_position);
+        let mut return_lanes = Vec::new();
+        self.encode_runtime_value_for_position(
+            &mut cont_ctx,
+            executable,
+            None,
+            &payload_value,
+            return_shape,
+            &return_position,
+            &mut return_lanes,
+        )?;
+        cont_ctx.set_term(Term::ReturnLanes(return_lanes));
         self.finish_native_fn(cont_ctx);
         Ok(Cont {
             fn_id,

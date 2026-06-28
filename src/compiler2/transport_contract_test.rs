@@ -2248,7 +2248,7 @@ fn compiler2_transport_plan_helper_preserves_pending_post_transport_consumers() 
     );
     world.remove_transport_plan(root);
 
-    let consumer = super::Job::MaterializeRoot(root);
+    let consumer = super::Job::BuildBackendProduct(root);
     world.demand(consumer.clone());
 
     drive_until_transport_plan(
@@ -4162,10 +4162,7 @@ fn drive_until_transport_plan(world: &mut World<'_>, root: super::RootId, messag
 fn is_post_transport_consumer_for_root(job: &super::Job, root: super::RootId) -> bool {
     matches!(
         job,
-        super::Job::MaterializeRoot(candidate)
-            | super::Job::DeriveAbiReady(candidate)
-            | super::Job::DeriveEmissionReady(candidate)
-            | super::Job::LowerBackendProgram(candidate)
+        super::Job::BuildBackendProduct(candidate)
             | super::Job::LowerNativeProgram(candidate)
             if *candidate == root
     )
@@ -5079,23 +5076,14 @@ impl Handler for JobTelemetryHandler {
 fn forbidden_product_path_job(job: &Job) -> bool {
     matches!(
         job,
-        Job::SealSemanticClosure(_)
-            | Job::DeriveTransportPlan(_)
-            | Job::MaterializeRoot(_)
-            | Job::DeriveAbiReady(_)
-            | Job::DeriveEmissionReady(_)
+        Job::SealSemanticClosure(_) | Job::DeriveTransportPlan(_) | Job::BuildBackendProduct(_)
     )
 }
 
 fn forbidden_product_path_job_for_root(root: super::RootId, job: &Job) -> bool {
     matches!(
         job,
-        Job::SealSemanticClosure(candidate)
-            | Job::DeriveTransportPlan(candidate)
-            | Job::MaterializeRoot(candidate)
-            | Job::DeriveAbiReady(candidate)
-            | Job::DeriveEmissionReady(candidate)
-            | Job::LowerBackendProgram(candidate)
+        Job::SealSemanticClosure(candidate) | Job::DeriveTransportPlan(candidate) | Job::BuildBackendProduct(candidate)
             if *candidate == root
     )
 }

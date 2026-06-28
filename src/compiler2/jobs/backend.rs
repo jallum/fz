@@ -1,10 +1,7 @@
-//! Compiler2 backend-lowering jobs.
+//! Compiler2 backend product packaging.
 //!
-//! This module turns one emission-ready closed root into one backend-owned
-//! program. The result keeps function/clause structure, but every callsite now
-//! points at settled executable inventory, every callable boundary carries its
-//! required callable-entry inventory, and every extern callsite carries its
-//! concrete wire classes.
+//! This module packages product-keyed symbolic backend executables into the
+//! backend-owned program consumed by the interpreter and native lowering.
 
 use std::collections::HashSet;
 
@@ -21,86 +18,112 @@ use super::super::artifact::{
     DirectCallEdge, DispatchCallArm, EmissionReadyExecutable, MaterializedTransportPlan,
 };
 use super::super::body::{
-    CallArg, CallSiteId, ControlEntryId, ControlEntryOrigin, LoweredBody, LoweredClause, LoweredEntry, LoweredStep,
-    LoweredTail,
+    CallArg, CallSiteId, ControlDestination, ControlEntryId, ControlEntryOrigin, LoweredBody, LoweredEntry,
+    LoweredStep, LoweredTail,
 };
-use super::super::drive::{FactKey, Job, JobEffects, settled_uses};
+use super::super::drive::{FactKey, Job, JobEffects};
 use super::super::facts::FactUse;
 use super::super::identity::RootId;
 use super::super::identity::{ActivationKey, ExecutableKey, ExecutableNeed};
 use super::super::pull::{
-    ProductKey, ProductValue, PullOutcome, PullSession, PullWait, SymbolicBackendBody, SymbolicBackendClause,
-    SymbolicBackendEntry, SymbolicBackendExecutable, SymbolicBackendTail,
+    ProductDriver, ProductKey, ProductValue, PullOutcome, PullSession, PullWait, SymbolicBackendBody,
+    SymbolicBackendClause, SymbolicBackendEntry, SymbolicBackendExecutable, SymbolicBackendTail, WorldProductProducers,
 };
 use super::super::scheduler::FatalError;
-use super::super::transport::ShapeDescr;
-use super::super::transport::{ActivationSymbol, ExecutableSymbol, TransportPosition};
+use super::super::semantic::CallSiteKey;
+use super::super::transport::{
+    ActivationSymbol, BoundaryId, CodegenLaneRepr, CodegenSeam, CodegenSeamFact, ExecutableSymbol, LaneId, ShapeDescr,
+    ShapeId, TransportPosition,
+};
 use super::super::types::Ty;
 use super::super::world::World;
 
 const UNREACHABLE_CONTROL_ATOM: &str = "compiler2_unreachable_control";
 
-/// Lowers one emission-ready closed root into the shared backend handoff.
-///
-/// The backend artifact consumes only `EmissionReadyProgram(root)` plus the
-/// world-owned type store. It does not reopen semantic closure, planner state,
-/// or backend-specific discovery.
-pub(super) fn lower_backend_program(world: &mut World<'_>, root_id: RootId) -> Result<JobEffects, FatalError> {
-    let emission_ready_fact = FactKey::EmissionReadyProgram(root_id);
-    let Some(emission_ready_revision) = world.fact_revision(&emission_ready_fact) else {
-        return Ok(JobEffects::wait_on_settled(
-            emission_ready_fact,
-            [Job::DeriveEmissionReady(root_id)],
-        ));
-    };
-
-    let emission_ready = world.emission_ready_program(root_id);
-    let executables = {
-        let mut lowerer = BackendLowerer::new(world, root_id, &emission_ready.transport);
-        emission_ready
-            .executables
-            .iter()
-            .map(|executable| lowerer.lower_executable(executable))
-            .collect::<Result<Vec<_>, _>>()?
-    };
-    let callable_entries = emission_ready
-        .callable_entries
-        .iter()
-        .map(|entry| BackendCallableEntry {
-            boundary: entry.boundary,
-            target: entry.target,
-            capture_count: entry.capture_count,
-            capture_reprs: entry.capture_reprs.clone(),
-            arg_reprs: entry.arg_reprs.clone(),
-            return_ty: entry.return_ty,
-            return_shape: entry.return_shape,
-            return_lanes: entry.return_lanes.clone(),
-        })
-        .collect();
-    let program = BackendProgram {
-        emission_ready_revision,
-        transport_revision: emission_ready.transport_revision,
-        entry: emission_ready.entry,
-        transport: emission_ready.transport,
-        atom_names: collect_backend_atom_names(world, &executables),
-        struct_schemas: world.struct_schemas(),
-        executables,
-        callable_entries,
-    };
+pub(super) fn build_backend_product(world: &mut World<'_>, root_id: RootId) -> Result<JobEffects, FatalError> {
     let backend_fact = FactKey::BackendProgram(root_id);
-    let changed = world.define_backend_program(root_id, program);
-    Ok(JobEffects {
-        reads: settled_uses([emission_ready_fact]),
-        outputs: vec![backend_fact.clone()],
-        changed: changed.then_some(backend_fact).into_iter().collect(),
-        // Native lowering is demand-only: the interp front door drives roots to
-        // `BackendProgram` and never consumes native, while the JIT/AOT/dump
-        // front doors transitively demand `LowerNativeProgram(root)` for the
-        // whole-program root they compile. Pushing native here produced ~30
-        // unconsumed native bodies on every interp run. No artifact above the
-        // demanded product.
+    let root_key = ProductKey::RootBackendProduct(root_id);
+    let mut driver = ProductDriver::new(world.tel(), root_id);
+    let mut stack = vec![root_key.clone()];
+    for _ in 0..50_000 {
+        let Some(current) = stack.pop() else {
+            stack.push(root_key.clone());
+            continue;
+        };
+        let outcome = {
+            let mut producers = WorldProductProducers::new(world);
+            driver.pull(&mut producers, current.clone())
+        };
+        match outcome {
+            PullOutcome::Produced(ProductValue::RootBackendProduct(_)) if current == root_key => {
+                driver.finish_session();
+                return Ok(JobEffects {
+                    outputs: vec![backend_fact.clone()],
+                    changed: vec![backend_fact],
+                    ..JobEffects::default()
+                });
+            }
+            PullOutcome::Produced(_) => {}
+            PullOutcome::Waiting(waits) => {
+                stack.push(current);
+                for wait in waits.into_iter().rev() {
+                    match wait {
+                        PullWait::Product(product) => stack.push(product),
+                        PullWait::Fact(fact) => return Ok(wait_for_product_fact(world, fact)),
+                    }
+                }
+            }
+        }
+    }
+    Err(emit_backend_product_error(
+        world,
+        Span::DUMMY,
+        format!("compiler2 backend product for root {} did not settle", root_id.as_u32()),
+    ))
+}
+
+fn wait_for_product_fact(world: &World<'_>, fact: FactUse<FactKey>) -> JobEffects {
+    let mut follow_up = product_fact_producers(world, fact.fact());
+    follow_up.sort_by_key(|job| format!("{job:?}"));
+    follow_up.dedup();
+    JobEffects {
+        waits: vec![fact],
+        follow_up,
         ..JobEffects::default()
-    })
+    }
+}
+
+fn product_fact_producers(world: &World<'_>, fact: &FactKey) -> Vec<Job> {
+    match fact {
+        FactKey::RootEntry(root) => vec![Job::SeedRoot(*root)],
+        FactKey::FunctionDefined(function) => vec![Job::DefineFunction(*function)],
+        FactKey::LoweredBody(function) => vec![Job::LowerFunction(*function)],
+        FactKey::Recursive(function) => vec![Job::DeriveRecursive(*function)],
+        FactKey::DispatchMask(function) => vec![Job::DeriveDispatchMask(*function)],
+        FactKey::Activation(activation) | FactKey::ActivationInputs(activation) => {
+            vec![Job::SeedActivation(activation.clone())]
+        }
+        FactKey::ActivationAnalyzed(activation)
+        | FactKey::ReturnType(activation)
+        | FactKey::CallSiteTargets(CallSiteKey { activation, .. })
+        | FactKey::CallSiteSummary(CallSiteKey { activation, .. }) => {
+            let mut jobs = Vec::new();
+            if !world.has_fact(&FactKey::Activation(activation.clone()))
+                || !world.has_fact(&FactKey::ActivationInputs(activation.clone()))
+            {
+                jobs.push(Job::SeedActivation(activation.clone()));
+            }
+            jobs.push(Job::AnalyzeActivation(activation.clone()));
+            jobs
+        }
+        _ => Vec::new(),
+    }
+}
+
+fn emit_backend_product_error(world: &World<'_>, span: Span, message: impl Into<String>) -> FatalError {
+    let diagnostic = Diagnostic::error(codes::ARTIFACT_INCOMPLETE_SEMANTIC_PLAN, message.into(), span);
+    emit_through(world.tel(), std::slice::from_ref(&diagnostic));
+    FatalError
 }
 
 pub(crate) fn produce_root_backend_product(
@@ -166,13 +189,13 @@ pub(crate) fn produce_root_backend_product(
         .expect("root backend product should have complete symbolic executable inventory");
     let callable_entries = package_backend_callable_entries(world, root, session, &executable_index)
         .expect("root backend product should have complete callable-entry inventory");
-    let transport = symbolic_materialized_transport_plan(session, &entry, world.types());
+    let transport = symbolic_materialized_transport_plan(session, &entry, world);
     let entry_index = executable_index
         .get(&entry)
         .copied()
         .expect("root entry should be in packaged executable inventory");
     let program = BackendProgram {
-        emission_ready_revision: 0,
+        backend_revision: 0,
         transport_revision: 0,
         entry: entry_index,
         transport,
@@ -196,7 +219,7 @@ pub(crate) fn produce_backend_executable_product(
     let Some(abi) = session.abi_executable(executable).cloned() else {
         return PullOutcome::Waiting(vec![PullWait::Product(ProductKey::AbiExecutable(executable.clone()))]);
     };
-    let transport = symbolic_materialized_transport_plan(session, executable, world.types());
+    let transport = symbolic_materialized_transport_plan(session, executable, world);
     let mut lowerer = BackendLowerer::new(world, session.root(), &transport);
     let emission = symbolic_emission_ready_executable(executable.clone(), &abi);
     let lowered = lower_symbolic_body(&mut lowerer, &emission, &abi)
@@ -774,7 +797,7 @@ fn symbolic_emission_ready_executable(key: ExecutableKey, abi: &AbiReadyExecutab
 fn symbolic_materialized_transport_plan(
     session: &PullSession,
     executable: &ExecutableKey,
-    types: &super::super::Types,
+    world: &World<'_>,
 ) -> MaterializedTransportPlan {
     let mut position_shapes = session
         .transport_shapes()
@@ -792,11 +815,12 @@ fn symbolic_materialized_transport_plan(
             .cmp(&format!("{:?}", right.0))
             .then_with(|| left.1.as_u32().cmp(&right.1.as_u32()))
     });
+    let codegen_seam_facts = symbolic_codegen_seam_facts(session, &position_shapes, world);
     MaterializedTransportPlan {
         entry: ExecutableSymbol {
             activation: ActivationSymbol {
                 function: executable.activation.function,
-                input: executable.activation.inputs(types).into_boxed_slice(),
+                input: executable.activation.inputs(world.types()).into_boxed_slice(),
             },
             need: executable.need,
         },
@@ -805,7 +829,401 @@ fn symbolic_materialized_transport_plan(
         callable_ids: session.demanded_callables().iter().copied().collect(),
         boundary_ids: session.demanded_boundaries().iter().copied().collect(),
         publication_boundaries,
-        codegen_seam_facts: Box::default(),
+        codegen_seam_facts,
+    }
+}
+
+fn symbolic_codegen_seam_facts(
+    session: &PullSession,
+    position_shapes: &[(TransportPosition, ShapeId)],
+    world: &World<'_>,
+) -> Box<[CodegenSeamFact]> {
+    let mut out = Vec::new();
+    for (position, shape) in position_shapes {
+        for (leaf_shape, lane) in lanes_for_codegen_seam_shape(world, *shape) {
+            match position {
+                TransportPosition::ExecutableInput {
+                    executable,
+                    semantic_index,
+                } => {
+                    let repr = codegen_repr_for_lane(world, lane);
+                    out.push(CodegenSeamFact {
+                        seam: CodegenSeam::FunctionEntry {
+                            executable: executable.clone(),
+                            semantic_index: *semantic_index,
+                        },
+                        shape: Some(leaf_shape),
+                        lane,
+                        repr,
+                    });
+                    if symbolic_backend_for_executable(session, executable, world)
+                        .is_some_and(|backend| matches!(backend.body, SymbolicBackendBody::Extern { .. }))
+                    {
+                        out.push(CodegenSeamFact {
+                            seam: CodegenSeam::ExternBoundary {
+                                executable: executable.clone(),
+                            },
+                            shape: Some(leaf_shape),
+                            lane,
+                            repr,
+                        });
+                    }
+                }
+                TransportPosition::ExecutableReturn { executable } => {
+                    let repr = codegen_repr_for_lane(world, lane);
+                    out.push(CodegenSeamFact {
+                        seam: CodegenSeam::ReturnDelivery {
+                            executable: executable.clone(),
+                        },
+                        shape: Some(leaf_shape),
+                        lane,
+                        repr,
+                    });
+                    if symbolic_backend_for_executable(session, executable, world)
+                        .is_some_and(|backend| matches!(backend.body, SymbolicBackendBody::Extern { .. }))
+                    {
+                        out.push(CodegenSeamFact {
+                            seam: CodegenSeam::ExternBoundary {
+                                executable: executable.clone(),
+                            },
+                            shape: Some(leaf_shape),
+                            lane,
+                            repr,
+                        });
+                    }
+                }
+                TransportPosition::ResumePayload {
+                    executable,
+                    callsite,
+                    entry,
+                } => {
+                    let repr = block_param_codegen_repr_for_lane(world, lane);
+                    out.push(CodegenSeamFact {
+                        seam: CodegenSeam::BlockParam {
+                            executable: executable.clone(),
+                            entry: *entry,
+                        },
+                        shape: Some(leaf_shape),
+                        lane,
+                        repr,
+                    });
+                    if let Some(callsite) = callsite {
+                        out.push(CodegenSeamFact {
+                            seam: CodegenSeam::ContinuationEntry {
+                                executable: executable.clone(),
+                                callsite: *callsite,
+                                entry: *entry,
+                            },
+                            shape: Some(leaf_shape),
+                            lane,
+                            repr,
+                        });
+                    }
+                }
+                TransportPosition::ReturnPayload { executable, callsite } => {
+                    out.push(CodegenSeamFact {
+                        seam: CodegenSeam::ReturnContinuation {
+                            executable: executable.clone(),
+                            callsite: *callsite,
+                        },
+                        shape: Some(leaf_shape),
+                        lane,
+                        repr: codegen_repr_for_lane(world, lane),
+                    });
+                }
+                TransportPosition::EntryCapture { executable, entry, .. } => {
+                    let repr = block_param_codegen_repr_for_lane(world, lane);
+                    out.push(CodegenSeamFact {
+                        seam: CodegenSeam::BlockParam {
+                            executable: executable.clone(),
+                            entry: *entry,
+                        },
+                        shape: Some(leaf_shape),
+                        lane,
+                        repr,
+                    });
+                    if let Some(callsite) = symbolic_entry_capture_owner_callsite(session, executable, position, world)
+                    {
+                        out.push(CodegenSeamFact {
+                            seam: CodegenSeam::ContinuationEntry {
+                                executable: executable.clone(),
+                                callsite,
+                                entry: *entry,
+                            },
+                            shape: Some(leaf_shape),
+                            lane,
+                            repr,
+                        });
+                    }
+                }
+                TransportPosition::CallArg {
+                    executable, callsite, ..
+                } => {
+                    if symbolic_backend_for_executable(session, executable, world)
+                        .and_then(|backend| symbolic_callsite_dest(backend, *callsite))
+                        .is_some_and(|dest| matches!(dest, ControlDestination::Return))
+                    {
+                        out.push(CodegenSeamFact {
+                            seam: CodegenSeam::TailCall {
+                                executable: executable.clone(),
+                                callsite: *callsite,
+                            },
+                            shape: Some(leaf_shape),
+                            lane,
+                            repr: codegen_repr_for_lane(world, lane),
+                        });
+                    }
+                }
+                TransportPosition::Value { .. } => {}
+            }
+        }
+    }
+    for boundary in session.boundary_facts_inventory().keys().copied() {
+        push_symbolic_boundary_codegen_seams(session, world, boundary, &mut out);
+    }
+    out.sort_by_key(|fact| format!("{fact:?}"));
+    out.into_boxed_slice()
+}
+
+fn push_symbolic_boundary_codegen_seams(
+    session: &PullSession,
+    world: &World<'_>,
+    boundary: BoundaryId,
+    out: &mut Vec<CodegenSeamFact>,
+) {
+    let descr = world.boundary(boundary);
+    for lane in descr
+        .published_capture_lanes
+        .iter()
+        .chain(descr.published_arg_lanes.iter())
+        .chain(descr.published_return_lanes.iter())
+        .copied()
+    {
+        out.push(CodegenSeamFact {
+            seam: CodegenSeam::CallableBoundary { boundary },
+            shape: None,
+            lane,
+            repr: codegen_repr_for_lane(world, lane),
+        });
+    }
+    let Some(facts) = session.boundary_facts(boundary) else {
+        return;
+    };
+    if facts.publications.is_empty() {
+        return;
+    }
+    out.push(CodegenSeamFact {
+        seam: CodegenSeam::FirstClassPublication { boundary },
+        shape: None,
+        lane: descr.published_value_lane,
+        repr: CodegenLaneRepr::ValueRef,
+    });
+    for publication in facts.publications.iter() {
+        push_symbolic_publication_codegen_seam(session, world, boundary, publication, descr.published_value_lane, out);
+    }
+}
+
+fn push_symbolic_publication_codegen_seam(
+    session: &PullSession,
+    world: &World<'_>,
+    boundary: BoundaryId,
+    publication: &TransportPosition,
+    lane: LaneId,
+    out: &mut Vec<CodegenSeamFact>,
+) {
+    let repr = CodegenLaneRepr::ValueRef;
+    match publication {
+        TransportPosition::ExecutableInput {
+            executable,
+            semantic_index,
+        } => out.push(CodegenSeamFact {
+            seam: CodegenSeam::FunctionEntry {
+                executable: executable.clone(),
+                semantic_index: *semantic_index,
+            },
+            shape: None,
+            lane,
+            repr,
+        }),
+        TransportPosition::ResumePayload {
+            executable,
+            callsite: Some(callsite),
+            entry,
+        } => out.push(CodegenSeamFact {
+            seam: CodegenSeam::ContinuationEntry {
+                executable: executable.clone(),
+                callsite: *callsite,
+                entry: *entry,
+            },
+            shape: None,
+            lane,
+            repr,
+        }),
+        TransportPosition::ReturnPayload { executable, callsite } => out.push(CodegenSeamFact {
+            seam: CodegenSeam::ReturnContinuation {
+                executable: executable.clone(),
+                callsite: *callsite,
+            },
+            shape: None,
+            lane,
+            repr,
+        }),
+        TransportPosition::ExecutableReturn { executable } => out.push(CodegenSeamFact {
+            seam: CodegenSeam::ReturnDelivery {
+                executable: executable.clone(),
+            },
+            shape: None,
+            lane,
+            repr,
+        }),
+        TransportPosition::ResumePayload {
+            executable,
+            callsite: None,
+            entry,
+        } => out.push(CodegenSeamFact {
+            seam: CodegenSeam::BlockParam {
+                executable: executable.clone(),
+                entry: *entry,
+            },
+            shape: None,
+            lane,
+            repr,
+        }),
+        TransportPosition::EntryCapture { executable, entry, .. } => {
+            out.push(CodegenSeamFact {
+                seam: CodegenSeam::BlockParam {
+                    executable: executable.clone(),
+                    entry: *entry,
+                },
+                shape: None,
+                lane,
+                repr,
+            });
+            if let Some(callsite) = symbolic_entry_capture_owner_callsite(session, executable, publication, world) {
+                out.push(CodegenSeamFact {
+                    seam: CodegenSeam::ContinuationEntry {
+                        executable: executable.clone(),
+                        callsite,
+                        entry: *entry,
+                    },
+                    shape: None,
+                    lane,
+                    repr,
+                });
+            }
+        }
+        TransportPosition::CallArg { .. } | TransportPosition::Value { .. } => {
+            let _ = boundary;
+        }
+    }
+}
+
+fn symbolic_backend_for_executable<'a>(
+    session: &'a PullSession,
+    executable: &ExecutableSymbol,
+    world: &World<'_>,
+) -> Option<&'a SymbolicBackendExecutable> {
+    session
+        .backend_executables()
+        .values()
+        .find(|backend| executable_symbol(&backend.key, world) == *executable)
+}
+
+fn executable_symbol(executable: &ExecutableKey, world: &World<'_>) -> ExecutableSymbol {
+    ExecutableSymbol {
+        activation: ActivationSymbol {
+            function: executable.activation.function,
+            input: executable.activation.inputs(world.types()).into_boxed_slice(),
+        },
+        need: executable.need,
+    }
+}
+
+fn symbolic_entry_capture_owner_callsite(
+    session: &PullSession,
+    executable: &ExecutableSymbol,
+    position: &TransportPosition,
+    world: &World<'_>,
+) -> Option<CallSiteId> {
+    let backend = symbolic_backend_for_executable(session, executable, world)?;
+    let SymbolicBackendBody::Clauses { entries, .. } = &backend.body else {
+        return None;
+    };
+    entries
+        .iter()
+        .filter(|entry| entry.capture_positions.iter().any(|candidate| candidate == position))
+        .find_map(|entry| match &entry.origin {
+            BackendEntryOrigin::DeliveredResume {
+                position:
+                    TransportPosition::ResumePayload {
+                        callsite: Some(callsite),
+                        ..
+                    },
+                ..
+            } => Some(*callsite),
+            _ => None,
+        })
+}
+
+fn symbolic_callsite_dest(backend: &SymbolicBackendExecutable, callsite: CallSiteId) -> Option<&ControlDestination> {
+    let SymbolicBackendBody::Clauses { entries, .. } = &backend.body else {
+        return None;
+    };
+    entries.iter().find_map(|entry| match &entry.tail {
+        SymbolicBackendTail::DirectCall {
+            callsite: candidate,
+            dest,
+            ..
+        }
+        | SymbolicBackendTail::ClosureCall {
+            callsite: candidate,
+            dest,
+            ..
+        } if *candidate == callsite => Some(dest),
+        _ => None,
+    })
+}
+
+fn lanes_for_codegen_seam_shape(world: &World<'_>, shape: ShapeId) -> Vec<(ShapeId, LaneId)> {
+    match world.shape(shape) {
+        ShapeDescr::Nothing => Vec::new(),
+        ShapeDescr::Lane(lane) => vec![(shape, *lane)],
+        ShapeDescr::Callable(callable) => world
+            .callable(*callable)
+            .capture_lanes
+            .iter()
+            .copied()
+            .map(|lane| (shape, lane))
+            .collect(),
+        ShapeDescr::Tuple(items) => items
+            .iter()
+            .copied()
+            .flat_map(|item| lanes_for_codegen_seam_shape(world, item))
+            .collect(),
+    }
+}
+
+fn raw_codegen_repr_for_lane(world: &World<'_>, lane: LaneId) -> Option<CodegenLaneRepr> {
+    let ty = world.lane(lane).ty;
+    if world.types().is_floating(&ty) {
+        Some(CodegenLaneRepr::RawF64)
+    } else if world.types().is_integer(&ty) {
+        Some(CodegenLaneRepr::RawInt)
+    } else if world.types().is_atom_type(&ty) {
+        Some(CodegenLaneRepr::RawAtom)
+    } else {
+        None
+    }
+}
+
+fn codegen_repr_for_lane(world: &World<'_>, lane: LaneId) -> CodegenLaneRepr {
+    raw_codegen_repr_for_lane(world, lane).unwrap_or(CodegenLaneRepr::ValueRef)
+}
+
+fn block_param_codegen_repr_for_lane(world: &World<'_>, lane: LaneId) -> CodegenLaneRepr {
+    match raw_codegen_repr_for_lane(world, lane) {
+        Some(repr @ (CodegenLaneRepr::RawInt | CodegenLaneRepr::RawAtom)) => repr,
+        Some(CodegenLaneRepr::RawF64 | CodegenLaneRepr::ValueRef) | None => CodegenLaneRepr::ValueRef,
     }
 }
 
@@ -822,99 +1240,6 @@ impl<'a, 'plan, 'tel> BackendLowerer<'a, 'plan, 'tel> {
             root_id,
             transport,
         }
-    }
-
-    fn lower_executable(
-        &mut self,
-        executable: &super::super::artifact::EmissionReadyExecutable,
-    ) -> Result<BackendExecutable, FatalError> {
-        Ok(BackendExecutable {
-            key: executable.key.clone(),
-            entry_dispatch: executable.entry_dispatch.clone(),
-            return_ty: executable.return_ty,
-            param_reprs: executable.param_reprs.clone(),
-            runtime_demand: executable.runtime_demand.clone(),
-            transport: executable.transport.clone(),
-            value_types: executable.value_types.clone(),
-            value_reprs: executable.value_reprs.clone(),
-            effects: executable.effects,
-            body: self.lower_body(executable)?,
-        })
-    }
-
-    fn lower_body(
-        &mut self,
-        executable: &super::super::artifact::EmissionReadyExecutable,
-    ) -> Result<BackendBody, FatalError> {
-        match &executable.body {
-            LoweredBody::Extern { signature } => Ok(BackendBody::Extern {
-                signature: signature.clone(),
-            }),
-            LoweredBody::Clauses {
-                clauses,
-                entries,
-                generated,
-            } => Ok(BackendBody::Clauses {
-                clauses: clauses
-                    .iter()
-                    .map(|clause| self.lower_clause(executable, clause))
-                    .collect::<Result<Vec<_>, _>>()?,
-                entries: entries
-                    .iter()
-                    .enumerate()
-                    .map(|(index, entry)| self.lower_entry(executable, index, entry))
-                    .collect::<Result<Vec<_>, _>>()?,
-                generated: generated.clone(),
-            }),
-        }
-    }
-
-    fn lower_clause(
-        &mut self,
-        executable: &super::super::artifact::EmissionReadyExecutable,
-        clause: &LoweredClause,
-    ) -> Result<BackendClause, FatalError> {
-        Ok(BackendClause {
-            span: clause.span,
-            params: clause.params.clone(),
-            projections: clause
-                .projections
-                .iter()
-                .map(|step| self.lower_step(executable, step))
-                .collect::<Result<Vec<_>, _>>()?,
-            entry: clause.entry,
-        })
-    }
-
-    fn lower_entry(
-        &mut self,
-        executable: &super::super::artifact::EmissionReadyExecutable,
-        entry_index: usize,
-        entry: &LoweredEntry,
-    ) -> Result<BackendEntry, FatalError> {
-        let entry_id = original_entry_id(executable, entry_index);
-        let capture_positions = self.capture_positions_for_entry(executable, entry_id, entry)?;
-        Ok(BackendEntry {
-            span: entry.span,
-            origin: lower_entry_origin(executable, entry_index, entry),
-            params: entry.params.clone(),
-            captures: entry.captures.clone(),
-            capture_positions,
-            reusable_cons_captures: entry
-                .reusable_cons_captures
-                .iter()
-                .map(|capture| super::super::artifact::ReusableConsCapture {
-                    head: capture.head,
-                    source: capture.source,
-                })
-                .collect(),
-            steps: entry
-                .steps
-                .iter()
-                .map(|step| self.lower_step(executable, step))
-                .collect::<Result<Vec<_>, _>>()?,
-            tail: self.lower_tail(executable, &entry.tail)?,
-        })
     }
 
     fn capture_positions_for_entry(
@@ -1109,87 +1434,6 @@ impl<'a, 'plan, 'tel> BackendLowerer<'a, 'plan, 'tel> {
             .is_some_and(|shape| matches!(self.world.shape(shape), ShapeDescr::Nothing))
     }
 
-    fn lower_tail(
-        &mut self,
-        executable: &super::super::artifact::EmissionReadyExecutable,
-        tail: &LoweredTail,
-    ) -> Result<BackendTail, FatalError> {
-        Ok(match tail {
-            LoweredTail::Value { value, dest } => BackendTail::Value {
-                value: *value,
-                dest: dest.clone(),
-            },
-            LoweredTail::DirectCall {
-                value,
-                callsite,
-                args,
-                dest,
-                ..
-            } => {
-                let edge = call_edge(executable, *callsite).ok_or_else(|| {
-                    incomplete_backend_program(
-                        self.world,
-                        self.root_id,
-                        format!("missing settled direct-call edge for callsite {}", callsite.as_u32()),
-                    )
-                })?;
-                BackendTail::DirectCall {
-                    value: *value,
-                    callsite: *callsite,
-                    target: edge.target.clone(),
-                    args: self.lower_call_args(executable, *callsite, None, args)?,
-                    dest: dest.clone(),
-                }
-            }
-            LoweredTail::ClosureCall {
-                value,
-                callsite,
-                callee,
-                args,
-                dest,
-            } => {
-                let edge = call_edge(executable, *callsite);
-                BackendTail::ClosureCall {
-                    value: *value,
-                    callsite: *callsite,
-                    callee: *callee,
-                    target: edge
-                        .and_then(direct_call_edge)
-                        .and_then(|edge| edge.callee.copied_local()),
-                    args: self.lower_call_args(executable, *callsite, Some(*callee), args)?,
-                    dest: dest.clone(),
-                    return_flow: edge.and_then(direct_call_edge).map(|edge| edge.return_flow.clone()),
-                }
-            }
-            LoweredTail::If {
-                cond,
-                then_entry,
-                else_entry,
-            } => BackendTail::If {
-                cond: *cond,
-                then_entry: *then_entry,
-                else_entry: *else_entry,
-            },
-            LoweredTail::Dispatch {
-                inputs,
-                bindings,
-                dispatch,
-            } => BackendTail::Dispatch {
-                inputs: inputs.clone(),
-                bindings: bindings.clone(),
-                dispatch: dispatch.clone(),
-            },
-            LoweredTail::Receive(receive) => BackendTail::Receive(Box::new(super::super::artifact::BackendReceive {
-                bindings: receive.bindings.clone(),
-                dispatch: receive.dispatch.clone(),
-                clauses: receive.clauses.clone(),
-                after: receive.after.clone(),
-                dest: receive.dest.clone(),
-            })),
-            LoweredTail::Halt { atom } => BackendTail::Halt { atom: atom.clone() },
-        })
-    }
-
     fn lower_call_args(
         &mut self,
         executable: &super::super::artifact::EmissionReadyExecutable,
@@ -1269,20 +1513,6 @@ fn original_entry_id(
         .get(entry_index)
         .copied()
         .unwrap_or_else(|| ControlEntryId::from_u32(entry_index as u32))
-}
-
-fn call_edge(
-    executable: &super::super::artifact::EmissionReadyExecutable,
-    callsite: CallSiteId,
-) -> Option<&super::super::artifact::EmissionReadyCallEdge> {
-    executable.call_edges.iter().find(|edge| edge.callsite == callsite)
-}
-
-fn direct_call_edge(edge: &super::super::artifact::EmissionReadyCallEdge) -> Option<&DirectCallEdge<usize>> {
-    match &edge.target {
-        CallEdge::Direct(direct) => Some(direct),
-        CallEdge::Dispatch(_) => None,
-    }
 }
 
 fn collect_backend_atom_names(world: &mut World<'_>, executables: &[BackendExecutable]) -> Vec<String> {

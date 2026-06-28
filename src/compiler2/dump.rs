@@ -8,7 +8,7 @@ use std::rc::Rc;
 use crate::telemetry::handler::EventKind;
 use crate::telemetry::{ConfiguredTelemetry, Handler, Value, opaque};
 
-use super::artifact::{AbiReadyProgram, BackendProgram, MaterializedProgram, NativeProgram};
+use super::artifact::{BackendProgram, NativeProgram};
 use super::identity::{ActivationKey, ExecutableKey, FunctionId, RootId};
 use super::semantic::SemanticClosure;
 use super::world::World;
@@ -17,8 +17,6 @@ use super::world::World;
 pub(crate) enum DumpKind {
     Activations,
     Types,
-    Materialized,
-    AbiReady,
     Backend,
     Native,
     Fnir,
@@ -34,8 +32,6 @@ pub(crate) struct DumpSpec {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum DumpStage {
     Semantic,
-    Materialized,
-    AbiReady,
     Backend,
     Native,
 }
@@ -61,8 +57,6 @@ impl DumpKind {
     pub(crate) fn required_stage(self) -> Option<DumpStage> {
         match self {
             Self::Activations | Self::Types => Some(DumpStage::Semantic),
-            Self::Materialized => Some(DumpStage::Materialized),
-            Self::AbiReady => Some(DumpStage::AbiReady),
             Self::Backend => Some(DumpStage::Backend),
             Self::Native | Self::Fnir => Some(DumpStage::Native),
             Self::Clif => None,
@@ -105,18 +99,6 @@ pub(crate) fn install_dump_handlers(tel: &ConfiguredTelemetry, root: RootId, spe
                 tel.attach(
                     &["fz", "compiler2", "dump", "activations"],
                     boxed_text_dump_handler::<ActivationsDump>(&spec.path, root, "dump"),
-                );
-            }
-            DumpKind::Materialized => {
-                tel.attach(
-                    &["fz", "compiler2", "materialized_program", "defined"],
-                    boxed_debug_dump_handler::<MaterializedProgram>(&spec.path, root, "program"),
-                );
-            }
-            DumpKind::AbiReady => {
-                tel.attach(
-                    &["fz", "compiler2", "abi_ready_program", "defined"],
-                    boxed_debug_dump_handler::<AbiReadyProgram>(&spec.path, root, "program"),
                 );
             }
             DumpKind::Backend => {
@@ -264,14 +246,12 @@ fn parse_dump_kind_name(name: &str) -> Result<DumpKind, String> {
     match name {
         "activations" | "acts" => Ok(DumpKind::Activations),
         "types" => Ok(DumpKind::Types),
-        "materialized" | "mat" => Ok(DumpKind::Materialized),
-        "abi" | "abiready" | "abi-ready" => Ok(DumpKind::AbiReady),
         "backend" => Ok(DumpKind::Backend),
         "native" => Ok(DumpKind::Native),
         "fnir" => Ok(DumpKind::Fnir),
         "clif" => Ok(DumpKind::Clif),
         other => Err(format!(
-            "unsupported dump kind `{other}`; expected one of activations, types, materialized, abi, backend, native, fnir, clif"
+            "unsupported dump kind `{other}`; expected one of activations, types, backend, native, fnir, clif"
         )),
     }
 }

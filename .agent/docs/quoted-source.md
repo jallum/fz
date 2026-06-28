@@ -240,9 +240,8 @@ the `fz-rh2.11.7.*` arc.
   typed as `Any`. That input vector is part of the activation key and the
   published `Activation` fact value.
 - A runtime root is `RootKind::Runtime`. Runtime roots reject macro entry
-  functions during `SeedRoot`, and `LowerBackendProgram` only schedules
-  `LowerNativeProgram` for runtime roots. Compile-time macro roots stop at the
-  backend interpreter-ready rung.
+  functions during `SeedRoot`. Compile-time macro roots pull
+  `BuildBackendProduct` and stop at the backend interpreter-ready product.
 - `LowerFunction` and `PlanEntryDispatch` are shared by runtime functions and
   macros. The difference is the hidden compile-time ABI slot, not a second
   macro-only body or dispatch implementation.

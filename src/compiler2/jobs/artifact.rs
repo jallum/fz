@@ -1,8 +1,8 @@
 //! Compiler2 artifact projection jobs.
 //!
-//! This module turns a closed semantic root into backend-owned artifact
-//! projections. Each rung is derived from the one below it and never reopens
-//! semantic discovery.
+//! This module produces executable-scoped backend products on demand. Each
+//! producer names the exact fact or product it needs instead of deriving a
+//! root-wide projection stack.
 
 use std::collections::{HashMap, HashSet};
 
@@ -14,158 +14,29 @@ use crate::parser::lexer::Tok;
 use crate::source::Span;
 
 use super::super::artifact::{
-    AbiReadyCallEdge, AbiReadyExecutable, AbiReadyProgram, AbiValueRepr, CallEdge, CallReturnFlow, CallTarget,
-    CallableEntry, DirectCallEdge, DispatchCallArm, DispatchCallEdge, DispatchCallMiss, EffectSummary,
-    EmissionReadyCallEdge, EmissionReadyCallableEntry, EmissionReadyExecutable, EmissionReadyProgram,
-    ExecutableDispatch, MaterializedCallEdge, MaterializedExecutable, MaterializedExecutableTransport,
-    MaterializedProgram, MaterializedTransportPlan,
+    AbiReadyCallEdge, AbiReadyExecutable, AbiValueRepr, CallEdge, CallReturnFlow, CallTarget, DirectCallEdge,
+    DispatchCallArm, DispatchCallEdge, DispatchCallMiss, EffectSummary, ExecutableDispatch, MaterializedCallEdge,
+    MaterializedExecutable, MaterializedExecutableTransport,
 };
 use super::super::body::{
     CallArg, CallSiteId, ControlDestination, ControlEntryId, ControlEntryOrigin, Literal, LoweredBody, LoweredEntry,
     LoweredStep, LoweredTail, ValueId,
 };
-use super::super::drive::{FactKey, Job, JobEffects, settled_uses};
+use super::super::drive::FactKey;
 use super::super::facts::FactUse;
 use super::super::identity::{ExecutableKey, ExecutableNeed, RootId};
 use super::super::pull::{ProductKey, ProductValue, PullOutcome, PullSession, PullWait};
 use super::super::scheduler::FatalError;
 use super::super::semantic::{ActivationAnalysis, CallSiteKey, CallTargetSummary, SelectedCallee, ShapeDemand};
 use super::super::transport::{
-    ActivationSymbol, CodegenLaneRepr, CodegenSeam, ExecutableSymbol, LaneId, ShapeDescr, ShapeId, TransportPlan,
-    TransportPosition,
+    ActivationSymbol, CodegenLaneRepr, CodegenSeam, CodegenSeamFact, ExecutableSymbol, LaneId, ShapeDescr, ShapeId,
+    TransportPlan, TransportPosition,
 };
 use super::super::types::{Ty, Types};
 use super::super::world::World;
 use super::semantic::executable_callsite_needs;
 
 const UNREACHABLE_CONTROL_ATOM: &str = "compiler2_unreachable_control";
-
-/// Materializes one closed root into a backend-owned program snapshot.
-///
-/// The job reads the current `SemanticClosed(root)` payload, clones only the
-/// reachable lowered bodies, prunes unreachable clauses, rewrites semantically
-/// cold local-control entries into explicit halt stubs, freezes each live
-/// callsite to its selected callee executable, and settles executable effects
-/// over the closed call graph. Missing semantic constituents are fatal:
-/// materialization never reopens discovery.
-pub(super) fn materialize_root(world: &mut World<'_>, root_id: RootId) -> Result<JobEffects, FatalError> {
-    let closed_fact = FactKey::SemanticClosed(root_id);
-    if !world.fact_is_settled(&closed_fact) {
-        return Ok(JobEffects::wait_on_settled(
-            closed_fact,
-            [super::super::Job::SealSemanticClosure(root_id)],
-        ));
-    }
-    let transport_fact = FactKey::TransportPlan(root_id);
-    if !world.fact_is_settled(&transport_fact) {
-        return Ok(JobEffects::wait_on_settled(
-            transport_fact,
-            [super::super::Job::DeriveTransportPlan(root_id)],
-        ));
-    }
-
-    let closed_revision = world
-        .fact_revision(&closed_fact)
-        .expect("settled semantic closure should have a revision");
-    let transport_revision = world
-        .fact_revision(&transport_fact)
-        .expect("settled transport plan should have a revision");
-    let transport_plan = world
-        .transport_plan(root_id)
-        .cloned()
-        .expect("settled transport plan should be readable");
-    let entry = world.root_entry_executable(root_id);
-    let frontier = world.root_executable_frontier(root_id);
-    let mut reads = vec![closed_fact, transport_fact];
-    let mut executables = HashMap::new();
-
-    // Group the root's transport positions by executable once, so each
-    // executable reads its own slice instead of re-scanning every position in
-    // the whole-root plan (the former O(executables x positions) pass).
-    let mut positions_by_executable: HashMap<ExecutableSymbol, Vec<TransportPosition>> = HashMap::new();
-    for position in transport_plan.positions.keys() {
-        positions_by_executable
-            .entry(transport_position_executable(position).clone())
-            .or_default()
-            .push(position.clone());
-    }
-
-    for executable in &frontier {
-        let analysis = world
-            .activation_analysis(&executable.activation)
-            .cloned()
-            .expect("settled semantic closure should have activation analysis for every executable");
-        // The Kleene reading at the settled boundary: return evidence still
-        // absent at the fixpoint means no value ever flows — the function
-        // provably never returns, and its return type is the empty type.
-        let return_ty = world
-            .activation_return(&executable.activation)
-            .unwrap_or_else(|| world.types_mut().none());
-        let pruned = prune_lowered_body(
-            world.lowered_body(executable.activation.function),
-            &analysis.reachable_clauses,
-            &analysis.reachable_entries,
-        );
-        let body = pruned.body;
-        let callsite_args = collect_callsite_args(&body);
-        let Some(call_edges) = materialize_call_edges(
-            world,
-            root_id,
-            &transport_plan,
-            executable,
-            &analysis,
-            &body,
-            &callsite_args,
-        )?
-        else {
-            return Err(incomplete_semantic_plan(
-                world,
-                root_id,
-                format!("executable {:?} has incomplete call edges", executable),
-            ));
-        };
-        let effects = local_effects(&body, &call_edges);
-        executables.insert(
-            executable.clone(),
-            MaterializedExecutable {
-                entry_dispatch: materialize_entry_dispatch(world, executable, &analysis),
-                return_ty,
-                runtime_demand: {
-                    reads.push(FactKey::RuntimeDemand(executable.clone()));
-                    world
-                        .runtime_demand(executable)
-                        .cloned()
-                        .expect("settled semantic closure should have runtime demand for every executable")
-                },
-                transport: materialized_executable_transport(&positions_by_executable, executable, world.types()),
-                original_entry_ids: pruned.original_entry_ids,
-                value_types: analysis.value_types,
-                effects,
-                body,
-                call_edges,
-            },
-        );
-    }
-
-    settle_effects(world, root_id, &mut executables)?;
-
-    let program = MaterializedProgram {
-        semantic_revision: closed_revision,
-        transport_revision,
-        entry,
-        transport: materialized_transport_plan(&transport_plan),
-        executables,
-    };
-    let materialized_fact = FactKey::MaterializedProgram(root_id);
-    let changed = world.define_materialized_program(root_id, program);
-    Ok(JobEffects {
-        reads: settled_uses(reads),
-        outputs: vec![materialized_fact.clone()],
-        changed: changed.then_some(materialized_fact).into_iter().collect(),
-        follow_up: changed.then_some(Job::DeriveAbiReady(root_id)).into_iter().collect(),
-        ..JobEffects::default()
-    })
-}
 
 pub(crate) fn produce_materialized_executable_product(
     world: &mut World<'_>,
@@ -403,78 +274,10 @@ pub(crate) fn produce_abi_executable_product(
     materialized.transport = session_materialized_executable_transport(session, executable, world.types());
     let transport_plan = session_transport_plan(world, session, executable);
     let plan = build_executable_abi_plan(world, executable, &materialized, &transport_plan);
-    let abi = derive_abi_ready_executable(&materialized, &plan)
+    let abi = build_abi_executable(&materialized, &plan)
         .expect("per-executable ABI derivation should not require root fan-in");
     session.record_abi_executable(executable.clone(), abi.clone());
     PullOutcome::Produced(ProductValue::AbiExecutable(Box::new(abi)))
-}
-
-/// Derives one ABI-ready program from one materialized closed artifact.
-///
-/// This job consumes only `MaterializedProgram(root)` plus the world-owned type
-/// store. It makes ABI lanes and return delivery explicit without asking any
-/// semantic question or discovering new executable work.
-pub(super) fn derive_abi_ready(world: &mut World<'_>, root_id: RootId) -> Result<JobEffects, FatalError> {
-    let materialized_fact = FactKey::MaterializedProgram(root_id);
-    let Some(materialized_revision) = world.fact_revision(&materialized_fact) else {
-        return Ok(JobEffects::wait_on_settled(
-            materialized_fact,
-            [Job::MaterializeRoot(root_id)],
-        ));
-    };
-
-    let reads = settled_uses([materialized_fact]);
-    let materialized = world.materialized_program(root_id);
-    let transport_plan = world
-        .transport_plan(root_id)
-        .cloned()
-        .expect("materialized program should name a readable transport plan");
-    let plans = materialized
-        .executables
-        .iter()
-        .map(|(key, executable)| {
-            (
-                key.clone(),
-                build_executable_abi_plan(world, key, executable, &transport_plan),
-            )
-        })
-        .collect::<HashMap<_, _>>();
-    let executables = materialized
-        .executables
-        .iter()
-        .map(|(key, executable)| {
-            Ok((
-                key.clone(),
-                derive_abi_ready_executable(
-                    executable,
-                    plans
-                        .get(key)
-                        .expect("ABI-ready executable plan should exist for every materialized executable"),
-                )?,
-            ))
-        })
-        .collect::<Result<HashMap<_, _>, FatalError>>()?;
-    let callable_entries = derive_callable_entries(world, root_id, &materialized, &executables)?;
-    let program = AbiReadyProgram {
-        materialized_revision,
-        transport_revision: materialized.transport_revision,
-        entry: materialized.entry,
-        transport: materialized.transport.clone(),
-        executables,
-        callable_entries,
-    };
-    let abi_ready_fact = FactKey::AbiReadyProgram(root_id);
-    let changed = world.define_abi_ready_program(root_id, program);
-    Ok(JobEffects {
-        reads,
-        outputs: vec![abi_ready_fact.clone()],
-        changed: changed.then_some(abi_ready_fact).into_iter().collect(),
-        follow_up: changed
-            .then_some(Job::DeriveEmissionReady(root_id))
-            .into_iter()
-            .collect(),
-        ..JobEffects::default()
-    })
 }
 
 #[derive(Debug, Clone)]
@@ -486,38 +289,6 @@ struct ExecutableAbiPlan {
 struct PrunedLoweredBody {
     body: LoweredBody,
     original_entry_ids: Vec<ControlEntryId>,
-}
-
-fn materialized_transport_plan(plan: &TransportPlan) -> MaterializedTransportPlan {
-    let mut position_shapes = plan
-        .positions
-        .iter()
-        .map(|(position, shape)| (position.clone(), *shape))
-        .collect::<Vec<_>>();
-    position_shapes.sort_by_key(|left| transport_position_sort_key(&left.0));
-    let mut callable_ids = plan.callables.keys().copied().collect::<Vec<_>>();
-    callable_ids.sort_by_key(|callable| callable.as_u32());
-    let mut boundary_ids = plan.boundaries.keys().copied().collect::<Vec<_>>();
-    boundary_ids.sort_by_key(|boundary| boundary.as_u32());
-    let mut publication_boundaries = plan
-        .boundaries
-        .iter()
-        .flat_map(|(boundary, facts)| facts.publications.iter().cloned().map(|position| (position, *boundary)))
-        .collect::<Vec<_>>();
-    publication_boundaries.sort_by(|left, right| {
-        transport_position_sort_key(&left.0)
-            .cmp(&transport_position_sort_key(&right.0))
-            .then_with(|| left.1.as_u32().cmp(&right.1.as_u32()))
-    });
-    MaterializedTransportPlan {
-        entry: plan.entry.clone(),
-        executable_membership: plan.executable_membership.clone(),
-        position_shapes,
-        callable_ids,
-        boundary_ids,
-        publication_boundaries,
-        codegen_seam_facts: plan.codegen_seam_facts.clone(),
-    }
 }
 
 fn materialized_executable_transport(
@@ -603,13 +374,130 @@ fn session_transport_plan(world: &World<'_>, session: &PullSession, entry_execut
         .map(|executable| transport_executable_symbol(executable, world.types()))
         .collect::<Vec<_>>();
     executable_membership.sort_by_key(transport_executable_sort_key);
+    let codegen_seam_facts = session_codegen_publication_seam_facts(world, session);
     TransportPlan {
         entry: transport_executable_symbol(entry_executable, world.types()),
         executable_membership: executable_membership.into_boxed_slice(),
         positions: session.transport_shapes().clone(),
         callables: session.callable_facts_inventory().clone(),
         boundaries: session.boundary_facts_inventory().clone(),
-        codegen_seam_facts: Box::default(),
+        codegen_seam_facts,
+    }
+}
+
+fn session_codegen_publication_seam_facts(world: &World<'_>, session: &PullSession) -> Box<[CodegenSeamFact]> {
+    let mut out = Vec::new();
+    for boundary in session.boundary_facts_inventory().keys().copied() {
+        let descr = world.boundary(boundary);
+        for lane in descr
+            .published_capture_lanes
+            .iter()
+            .chain(descr.published_arg_lanes.iter())
+            .chain(descr.published_return_lanes.iter())
+            .copied()
+        {
+            out.push(CodegenSeamFact {
+                seam: CodegenSeam::CallableBoundary { boundary },
+                shape: None,
+                lane,
+                repr: codegen_repr_for_lane(world, lane),
+            });
+        }
+        let Some(facts) = session.boundary_facts(boundary) else {
+            continue;
+        };
+        if facts.publications.is_empty() {
+            continue;
+        }
+        out.push(CodegenSeamFact {
+            seam: CodegenSeam::FirstClassPublication { boundary },
+            shape: None,
+            lane: descr.published_value_lane,
+            repr: CodegenLaneRepr::ValueRef,
+        });
+        for publication in facts.publications.iter() {
+            push_session_publication_codegen_seam(publication, descr.published_value_lane, &mut out);
+        }
+    }
+    out.sort_by_key(|fact| format!("{fact:?}"));
+    out.into_boxed_slice()
+}
+
+fn push_session_publication_codegen_seam(
+    publication: &TransportPosition,
+    lane: LaneId,
+    out: &mut Vec<CodegenSeamFact>,
+) {
+    let repr = CodegenLaneRepr::ValueRef;
+    match publication {
+        TransportPosition::ExecutableInput {
+            executable,
+            semantic_index,
+        } => out.push(CodegenSeamFact {
+            seam: CodegenSeam::FunctionEntry {
+                executable: executable.clone(),
+                semantic_index: *semantic_index,
+            },
+            shape: None,
+            lane,
+            repr,
+        }),
+        TransportPosition::ExecutableReturn { executable } => out.push(CodegenSeamFact {
+            seam: CodegenSeam::ReturnDelivery {
+                executable: executable.clone(),
+            },
+            shape: None,
+            lane,
+            repr,
+        }),
+        TransportPosition::ReturnPayload { executable, callsite } => out.push(CodegenSeamFact {
+            seam: CodegenSeam::ReturnContinuation {
+                executable: executable.clone(),
+                callsite: *callsite,
+            },
+            shape: None,
+            lane,
+            repr,
+        }),
+        TransportPosition::ResumePayload {
+            executable,
+            callsite: Some(callsite),
+            entry,
+        } => out.push(CodegenSeamFact {
+            seam: CodegenSeam::ContinuationEntry {
+                executable: executable.clone(),
+                callsite: *callsite,
+                entry: *entry,
+            },
+            shape: None,
+            lane,
+            repr,
+        }),
+        TransportPosition::ResumePayload {
+            executable,
+            callsite: None,
+            entry,
+        } => out.push(CodegenSeamFact {
+            seam: CodegenSeam::BlockParam {
+                executable: executable.clone(),
+                entry: *entry,
+            },
+            shape: None,
+            lane,
+            repr,
+        }),
+        TransportPosition::EntryCapture { executable, entry, .. } => {
+            out.push(CodegenSeamFact {
+                seam: CodegenSeam::BlockParam {
+                    executable: executable.clone(),
+                    entry: *entry,
+                },
+                shape: None,
+                lane,
+                repr,
+            });
+        }
+        TransportPosition::CallArg { .. } | TransportPosition::Value { .. } => {}
     }
 }
 
@@ -833,12 +721,19 @@ fn required_local_backend_transport_waits(
             executable: symbol.clone(),
             callsite,
         };
-        let key = ProductKey::TransportShape(return_payload.clone());
-        if session.transport_shape(&return_payload).is_none() && session.memo().get(&key).is_none() {
-            waits.push(PullWait::Product(key));
+        if transport_shape_product_pending(session, &return_payload) {
+            waits.push(PullWait::Product(ProductKey::TransportShape(return_payload)));
         }
     }
     waits
+}
+
+fn transport_shape_product_pending(session: &PullSession, position: &TransportPosition) -> bool {
+    session.transport_shape(position).is_none()
+        && session
+            .memo()
+            .get(&ProductKey::TransportShape(position.clone()))
+            .is_none()
 }
 
 fn step_result_values(step: &LoweredStep) -> Vec<super::super::body::ValueId> {
@@ -1055,9 +950,8 @@ fn push_optional_transport_shape_wait(
     waits: &mut HashSet<PullWait>,
     position: TransportPosition,
 ) {
-    let key = ProductKey::TransportShape(position.clone());
-    if session.transport_shape(&position).is_none() && session.memo().get(&key).is_none() {
-        waits.insert(PullWait::Product(key));
+    if transport_shape_product_pending(session, &position) {
+        waits.insert(PullWait::Product(ProductKey::TransportShape(position)));
     }
 }
 
@@ -1150,98 +1044,6 @@ fn transport_executable_sort_key(executable: &ExecutableSymbol) -> TransportExec
         need.0,
         need.1,
     )
-}
-
-/// Derives one emission-ready inventory from one ABI-ready closed artifact.
-///
-/// This job consumes only `AbiReadyProgram(root)`. It assigns stable
-/// emission-local executable indices, rewrites executable cross-references to
-/// those indices, and preserves Compiler2 keys only as descriptive inventory
-/// payload.
-pub(super) fn derive_emission_ready(world: &mut World<'_>, root_id: RootId) -> Result<JobEffects, FatalError> {
-    let abi_ready_fact = FactKey::AbiReadyProgram(root_id);
-    let Some(abi_ready_revision) = world.fact_revision(&abi_ready_fact) else {
-        return Ok(JobEffects::wait_on_settled(
-            abi_ready_fact,
-            [Job::DeriveAbiReady(root_id)],
-        ));
-    };
-
-    let reads = settled_uses([abi_ready_fact]);
-    let abi_ready = world.abi_ready_program(root_id);
-
-    let mut executable_keys = abi_ready.executables.keys().cloned().collect::<Vec<_>>();
-    executable_keys.sort_by(|left, right| compare_executable_keys(left, right, world.types()));
-
-    let executable_index = executable_keys
-        .iter()
-        .enumerate()
-        .map(|(index, key)| (key.clone(), index))
-        .collect::<HashMap<_, _>>();
-
-    let executables = executable_keys
-        .into_iter()
-        .map(|key| derive_emission_ready_executable(world, root_id, &abi_ready, &executable_index, key))
-        .collect::<Result<Vec<_>, _>>()?;
-
-    let mut callable_entries = abi_ready
-        .callable_entries
-        .iter()
-        .map(|entry| {
-            Ok(EmissionReadyCallableEntry {
-                boundary: entry.boundary,
-                target: executable_index.get(&entry.target).copied().ok_or_else(|| {
-                    incomplete_semantic_plan(
-                        world,
-                        root_id,
-                        format!(
-                            "callable entry target {:?} is missing from the ABI-ready executable inventory",
-                            entry.target
-                        ),
-                    )
-                })?,
-                capture_count: entry.capture_count,
-                capture_reprs: entry.capture_reprs.clone(),
-                arg_reprs: entry.arg_reprs.clone(),
-                return_ty: entry.return_ty,
-                return_shape: entry.return_shape,
-                return_lanes: entry.return_lanes.clone(),
-            })
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    callable_entries.sort_by(compare_emission_callable_entries);
-
-    let entry = executable_index.get(&abi_ready.entry).copied().ok_or_else(|| {
-        incomplete_semantic_plan(
-            world,
-            root_id,
-            format!(
-                "root entry {:?} is missing from the ABI-ready executable inventory",
-                abi_ready.entry
-            ),
-        )
-    })?;
-
-    let program = EmissionReadyProgram {
-        abi_ready_revision,
-        transport_revision: abi_ready.transport_revision,
-        entry,
-        transport: abi_ready.transport,
-        executables,
-        callable_entries,
-    };
-    let emission_ready_fact = FactKey::EmissionReadyProgram(root_id);
-    let changed = world.define_emission_ready_program(root_id, program);
-    Ok(JobEffects {
-        reads,
-        outputs: vec![emission_ready_fact.clone()],
-        changed: changed.then_some(emission_ready_fact).into_iter().collect(),
-        follow_up: changed
-            .then_some(Job::LowerBackendProgram(root_id))
-            .into_iter()
-            .collect(),
-        ..JobEffects::default()
-    })
 }
 
 fn materialize_call_edges(
@@ -2139,45 +1941,6 @@ fn call_edge_calls_provider_boundary(edge: &MaterializedCallEdge) -> bool {
     }
 }
 
-fn settle_effects(
-    world: &World<'_>,
-    root_id: RootId,
-    executables: &mut HashMap<ExecutableKey, MaterializedExecutable>,
-) -> Result<(), FatalError> {
-    loop {
-        let snapshot = executables
-            .iter()
-            .map(|(key, executable)| (key.clone(), executable.effects))
-            .collect::<HashMap<_, _>>();
-        let mut changed = false;
-        for (caller_key, executable) in executables.iter_mut() {
-            let mut settled = local_effects(&executable.body, &executable.call_edges);
-            for edge in executable.call_edges.values() {
-                for callee in local_call_edge_callees(edge) {
-                    let Some(callee_effects) = snapshot.get(callee).copied() else {
-                        return Err(incomplete_semantic_plan(
-                            world,
-                            root_id,
-                            format!(
-                                "materialized call edge {:?} -> {:?} points outside the closed executable frontier",
-                                caller_key, callee
-                            ),
-                        ));
-                    };
-                    settled.union_with(callee_effects);
-                }
-            }
-            if executable.effects != settled {
-                executable.effects = settled;
-                changed = true;
-            }
-        }
-        if !changed {
-            return Ok(());
-        }
-    }
-}
-
 fn local_call_edge_callees(edge: &MaterializedCallEdge) -> Vec<&ExecutableKey> {
     match &edge.target {
         CallEdge::Direct(direct) => direct.callee.local().into_iter().collect(),
@@ -2300,7 +2063,7 @@ fn build_executable_abi_plan(
     }
 }
 
-fn derive_abi_ready_executable(
+fn build_abi_executable(
     executable: &MaterializedExecutable,
     plan: &ExecutableAbiPlan,
 ) -> Result<AbiReadyExecutable, FatalError> {
@@ -2375,19 +2138,6 @@ fn shape_leaf_lanes_for_artifact(world: &World<'_>, shape: ShapeId) -> Vec<(Shap
     }
 }
 
-fn seam_repr_for_lane(
-    facts: &[super::super::transport::CodegenSeamFact],
-    seam_matches: impl Fn(&CodegenSeam) -> bool,
-    shape: Option<ShapeId>,
-    lane: LaneId,
-) -> AbiValueRepr {
-    let fact = facts
-        .iter()
-        .find(|fact| seam_matches(&fact.seam) && fact.shape == shape && fact.lane == lane)
-        .unwrap_or_else(|| panic!("transport plan should publish a codegen seam fact for {shape:?} {lane:?}"));
-    abi_repr_from_codegen(fact.repr)
-}
-
 fn seam_repr_for_lane_or_default(
     world: &mut World<'_>,
     facts: &[super::super::transport::CodegenSeamFact],
@@ -2411,6 +2161,19 @@ fn abi_repr_from_codegen(repr: CodegenLaneRepr) -> AbiValueRepr {
         CodegenLaneRepr::RawInt => AbiValueRepr::RawInt,
         CodegenLaneRepr::RawF64 => AbiValueRepr::RawF64,
         CodegenLaneRepr::RawAtom => AbiValueRepr::RawAtom,
+    }
+}
+
+fn codegen_repr_for_lane(world: &World<'_>, lane: LaneId) -> CodegenLaneRepr {
+    let ty = world.lane(lane).ty;
+    if world.types().is_floating(&ty) {
+        CodegenLaneRepr::RawF64
+    } else if world.types().is_integer(&ty) {
+        CodegenLaneRepr::RawInt
+    } else if world.types().is_atom_type(&ty) {
+        CodegenLaneRepr::RawAtom
+    } else {
+        CodegenLaneRepr::ValueRef
     }
 }
 
@@ -2476,251 +2239,6 @@ fn literal_repr(literal: &Literal) -> AbiValueRepr {
         Literal::Atom(_) | Literal::Bool(_) | Literal::Nil => AbiValueRepr::RawAtom,
         Literal::Binary(_) => AbiValueRepr::ValueRef,
     }
-}
-
-fn derive_emission_ready_executable(
-    world: &World<'_>,
-    root_id: RootId,
-    abi_ready: &AbiReadyProgram,
-    executable_index: &HashMap<ExecutableKey, usize>,
-    key: ExecutableKey,
-) -> Result<EmissionReadyExecutable, FatalError> {
-    let executable = abi_ready
-        .executables
-        .get(&key)
-        .expect("sorted executable keys should resolve in the ABI-ready program");
-    let mut call_edges = executable
-        .call_edges
-        .iter()
-        .map(|(callsite, edge)| {
-            Ok(EmissionReadyCallEdge {
-                callsite: *callsite,
-                target: lower_emission_call_edge_target(world, root_id, executable_index, &key, &edge.target)?,
-            })
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    call_edges.sort_by_key(|edge| edge.callsite.as_u32());
-    Ok(EmissionReadyExecutable {
-        key,
-        entry_dispatch: executable.entry_dispatch.clone(),
-        return_ty: executable.return_ty,
-        param_reprs: executable.param_reprs.clone(),
-        runtime_demand: executable.runtime_demand.clone(),
-        transport: executable.transport.clone(),
-        original_entry_ids: executable.original_entry_ids.clone(),
-        value_types: executable.value_types.clone(),
-        value_reprs: executable.value_reprs.clone(),
-        effects: executable.effects,
-        body: executable.body.clone(),
-        call_edges,
-    })
-}
-
-fn lower_emission_call_edge_target(
-    world: &World<'_>,
-    root_id: RootId,
-    executable_index: &HashMap<ExecutableKey, usize>,
-    caller: &ExecutableKey,
-    target: &CallEdge<ExecutableKey>,
-) -> Result<CallEdge<usize>, FatalError> {
-    Ok(match target {
-        CallEdge::Direct(direct) => CallEdge::Direct(DirectCallEdge {
-            callee: lower_emission_call_target(world, root_id, executable_index, caller, &direct.callee)?,
-            return_flow: direct.return_flow.clone(),
-            extern_marshals: direct.extern_marshals.clone(),
-        }),
-        CallEdge::Dispatch(dispatch) => CallEdge::Dispatch(DispatchCallEdge {
-            plan: dispatch.plan.clone(),
-            arms: dispatch
-                .arms
-                .iter()
-                .map(|arm| {
-                    Ok(DispatchCallArm {
-                        body_id: arm.body_id,
-                        callee: lower_emission_call_target(world, root_id, executable_index, caller, &arm.callee)?,
-                        return_flow: arm.return_flow.clone(),
-                        extern_marshals: arm.extern_marshals.clone(),
-                    })
-                })
-                .collect::<Result<Vec<_>, _>>()?,
-            miss: dispatch.miss,
-        }),
-    })
-}
-
-fn lower_emission_call_target(
-    world: &World<'_>,
-    root_id: RootId,
-    executable_index: &HashMap<ExecutableKey, usize>,
-    caller: &ExecutableKey,
-    target: &CallTarget<ExecutableKey>,
-) -> Result<CallTarget<usize>, FatalError> {
-    Ok(match target {
-        CallTarget::Local(callee) => CallTarget::Local(executable_index.get(callee).copied().ok_or_else(|| {
-            incomplete_semantic_plan(
-                world,
-                root_id,
-                format!(
-                    "ABI-ready call edge {:?} -> {:?} points outside the executable inventory",
-                    caller, callee
-                ),
-            )
-        })?),
-        CallTarget::ProviderBoundary(function) => CallTarget::ProviderBoundary(*function),
-    })
-}
-
-fn derive_callable_entries(
-    world: &mut World<'_>,
-    root_id: RootId,
-    materialized: &MaterializedProgram,
-    executables: &HashMap<ExecutableKey, AbiReadyExecutable>,
-) -> Result<Vec<CallableEntry>, FatalError> {
-    let mut entries = Vec::new();
-    let transport_plan = world
-        .transport_plan(root_id)
-        .expect("ABI-ready callable inventory should read the settled transport plan");
-    for boundary in &materialized.transport.boundary_ids {
-        let boundary_descr = world.boundary(*boundary);
-        let boundary_facts = transport_plan
-            .boundaries
-            .get(boundary)
-            .unwrap_or_else(|| panic!("transport plan should publish boundary facts for {boundary:?}"));
-        let capture_reprs = boundary_lanes_reprs_from_transport(
-            &materialized.transport.codegen_seam_facts,
-            *boundary,
-            boundary_descr.published_capture_lanes.as_ref(),
-        );
-        let capture_count = capture_reprs.len();
-        let arg_reprs = boundary_lanes_reprs_from_transport(
-            &materialized.transport.codegen_seam_facts,
-            *boundary,
-            boundary_descr.published_arg_lanes.as_ref(),
-        );
-        for target_symbol in boundary_facts.resolutions.iter() {
-            let target = executable_key_for_symbol(materialized, target_symbol, world.types()).ok_or_else(|| {
-                incomplete_semantic_plan(
-                    world,
-                    root_id,
-                    format!("transport callable boundary target is missing from artifact inventory: {target_symbol:?}"),
-                )
-            })?;
-            let target_executable = executables.get(&target).ok_or_else(|| {
-                incomplete_semantic_plan(
-                    world,
-                    root_id,
-                    format!("transport callable boundary target is missing from ABI-ready inventory: {target:?}"),
-                )
-            })?;
-            entries.push(CallableEntry {
-                boundary: *boundary,
-                target,
-                capture_count,
-                capture_reprs: capture_reprs.clone(),
-                arg_reprs: arg_reprs.clone(),
-                return_ty: target_executable.return_ty,
-                return_shape: boundary_descr.published_return_shape,
-                return_lanes: boundary_descr.published_return_lanes.to_vec(),
-            });
-        }
-    }
-    entries.sort_by(|left, right| compare_callable_entries(left, right, world.types()));
-    entries.dedup();
-    Ok(entries)
-}
-
-fn executable_key_for_symbol(
-    materialized: &MaterializedProgram,
-    symbol: &ExecutableSymbol,
-    types: &Types,
-) -> Option<ExecutableKey> {
-    materialized
-        .executables
-        .keys()
-        .find(|key| {
-            key.need == symbol.need
-                && key.activation.function == symbol.activation.function
-                && key.activation.inputs(types).as_slice() == symbol.activation.input.as_ref()
-        })
-        .cloned()
-}
-
-fn boundary_lanes_reprs_from_transport(
-    facts: &[super::super::transport::CodegenSeamFact],
-    boundary: super::super::transport::BoundaryId,
-    lanes: &[LaneId],
-) -> Vec<AbiValueRepr> {
-    lanes
-        .iter()
-        .copied()
-        .map(|lane| {
-            seam_repr_for_lane(
-                facts,
-                |seam| matches!(seam, CodegenSeam::CallableBoundary { boundary: candidate } if *candidate == boundary),
-                None,
-                lane,
-            )
-        })
-        .collect()
-}
-
-fn compare_callable_entries(left: &CallableEntry, right: &CallableEntry, types: &Types) -> std::cmp::Ordering {
-    left.boundary
-        .as_u32()
-        .cmp(&right.boundary.as_u32())
-        .then_with(|| {
-            left.target
-                .activation
-                .function
-                .as_u32()
-                .cmp(&right.target.activation.function.as_u32())
-        })
-        .then_with(|| left.capture_count.cmp(&right.capture_count))
-        .then_with(|| {
-            left.target
-                .activation
-                .inputs(types)
-                .cmp(&right.target.activation.inputs(types))
-        })
-        .then_with(|| left.capture_reprs.cmp(&right.capture_reprs))
-        .then_with(|| left.arg_reprs.cmp(&right.arg_reprs))
-        .then_with(|| left.return_ty.cmp(&right.return_ty))
-        .then_with(|| left.return_shape.cmp(&right.return_shape))
-        .then_with(|| left.return_lanes.cmp(&right.return_lanes))
-}
-
-fn compare_executable_keys(left: &ExecutableKey, right: &ExecutableKey, types: &Types) -> std::cmp::Ordering {
-    left.activation
-        .root
-        .as_u32()
-        .cmp(&right.activation.root.as_u32())
-        .then_with(|| {
-            left.activation
-                .function
-                .as_u32()
-                .cmp(&right.activation.function.as_u32())
-        })
-        .then_with(|| left.activation.inputs(types).cmp(&right.activation.inputs(types)))
-        .then_with(|| compare_executable_needs(left.need, right.need))
-}
-
-fn compare_executable_needs(left: ExecutableNeed, right: ExecutableNeed) -> std::cmp::Ordering {
-    match (left, right) {
-        (ExecutableNeed::Value, ExecutableNeed::Value) => std::cmp::Ordering::Equal,
-        (ExecutableNeed::Value, ExecutableNeed::TupleFields(_)) => std::cmp::Ordering::Less,
-        (ExecutableNeed::TupleFields(_), ExecutableNeed::Value) => std::cmp::Ordering::Greater,
-        (ExecutableNeed::TupleFields(left), ExecutableNeed::TupleFields(right)) => left.cmp(&right),
-    }
-}
-
-fn compare_emission_callable_entries(
-    left: &EmissionReadyCallableEntry,
-    right: &EmissionReadyCallableEntry,
-) -> std::cmp::Ordering {
-    left.target
-        .cmp(&right.target)
-        .then_with(|| left.boundary.as_u32().cmp(&right.boundary.as_u32()))
-        .then_with(|| left.capture_count.cmp(&right.capture_count))
 }
 
 fn abi_value_repr(world: &mut World<'_>, ty: Ty) -> AbiValueRepr {

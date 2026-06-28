@@ -165,9 +165,10 @@ formatting, no processing, no allocation, no calculation, and no cloning. It
 passes O(1) reads of existing state — ids and stored counts in measurements;
 borrowed `&str`s and `opaque`/`opaque_debug` borrows of compiler-owned
 structures in metadata (`Job`, `JobEffects`, `AppliedStep<Job, FactKey>`,
-`FunctionRef`, `CallSiteSummary`, `SemanticClosure`, the program ladder,
-`TypeDef` with the `Types` interner beside it, `Vec<ArgRepr>`, …). Handlers do
-any rendering, counting, or projection at event time. If an emit site has to
+`FunctionRef`, `CallSiteSummary`, `SemanticClosure`, `BackendProgram`,
+`NativeProgram`, `TypeDef` with the `Types` interner beside it,
+`Vec<ArgRepr>`, …). Handlers do any rendering, counting, or projection at event
+time. If an emit site has to
 build a display string, a `Vec<String>`, or a derived value just for
 telemetry, that is the wrong side of the boundary. Plain `opaque(...)` values
 stay type-erased; `opaque_debug(...)` additionally carries a borrowed `Debug`
@@ -345,11 +346,11 @@ Useful reruns:
 
 - `cargo test --lib compiler2_ -- --nocapture`
 - `cargo test --lib compiler2::drive_test::compiler2_quicksort_root_closes_with_a_finite_recursive_frontier -- --exact --nocapture`
-- `cargo test --lib compiler2::drive_test::compiler2_materialization_projects_only_the_closed_quicksort_frontier -- --exact --nocapture`
+- `cargo test --lib compiler2::drive_test::compiler2_backend_program_keeps_only_the_closed_quicksort_inventory -- --exact --nocapture`
 - `cargo test --lib compiler2::drive_test::compiler2_enum_reduce_selects_list_protocol_impl_and_callable_reducer -- --exact --nocapture`
-- `cargo test --lib compiler2::drive_test::compiler2_materialization_freezes_only_the_selected_enum_reduce_path -- --exact --nocapture`
-- `cargo test --lib compiler2::drive_test::compiler2_artifact_ladder_consumes_only_the_previous_rung -- --exact --nocapture`
-- `cargo test --lib compiler2::drive_test::compiler2_emission_ready_preserves_variadic_extern_inventory_and_marshals -- --exact --nocapture`
+- `cargo test --lib compiler2::drive_test::compiler2_backend_program_keeps_direct_only_enum_reduce_out_of_callable_inventory -- --exact --nocapture`
+- `cargo test --lib compiler2::drive_test::compiler2_backend_program_carries_return_payload_flow_before_native_lowering -- --exact --nocapture`
+- `cargo test --lib compiler2::drive_test::compiler2_backend_program_preserves_variadic_extern_wire_classes -- --exact --nocapture`
 - `cargo test --lib compiler2::drive_test::compiler2_native_program_jit_runs_quicksort_through_compiler2_codegen -- --exact --nocapture`
 - `cargo test --lib compiler2::drive_test::compiler2_native_program_jit_runs_enum_reduce_through_compiler2_codegen -- --exact --nocapture`
 - `cargo test --lib compiler2::drive_test::compiler2_native_program_jit_runs_variadic_extern_through_compiler2_codegen -- --exact --nocapture`

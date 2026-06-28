@@ -58,7 +58,7 @@ product   RootBackendProduct(root)
             addressable transport and callable-boundary products
 ```
 
-The product inventory is not a root artifact ladder. A demanded executable forms
+The product inventory is not a root projection stack. A demanded executable forms
 the product chain below, and each product can name only its exact product/fact
 prerequisites:
 
@@ -75,7 +75,7 @@ BackendExecutable(E)
 entry, pulls `BackendExecutable(entry)`, follows symbolic backend call edges and
 callable entries already recorded in the request-local `PullSession`, assigns
 dense executable indices, and packages the `BackendProgram`. It does not consume
-`SemanticClosed(root)`, `TransportPlan(root)`, or the old root artifact ladder.
+`SemanticClosed(root)`, `TransportPlan(root)`, or the old root projection stack.
 The temporary planning artifact `../pull-based.html` has been retired; this
 doc, `northstar.html`, and the closed `fz-go4.16.*` tickets are the durable
 source of truth for the pull artifact path.
@@ -125,15 +125,15 @@ that function. That source `ScopeCode` may wait on the runtime prelude's
 code id. Unrelated submitted code therefore stays indexed-but-unscoped unless a
 root, explicit demand, or active late-code path actually asks for its surface.
 
-Macro executable readiness still uses legacy scheduler jobs with a hidden macro
-root:
+Macro executable readiness uses a hidden macro root and pulls the backend
+product:
 
 ```text
 demand BuildMacroExecutable(inc/1)
   waits for FunctionDefined(inc/1)
   creates macro root input [Any(__CALLER__), Any(x)]
   waits on BackendProgram(macro_root)
-    legacy follow-ups: SeedRoot(macro_root), LowerBackendProgram(macro_root)
+    producers: SeedRoot(macro_root), BuildBackendProduct(macro_root)
   publishes MacroExecutable(inc/1)
 ```
 

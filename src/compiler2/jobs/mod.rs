@@ -52,10 +52,7 @@ pub(crate) fn run(world: &mut World<'_>, job: &Job) -> Result<JobEffects, FatalE
         Job::SealSemanticClosure(root_id) => root::seal_semantic_closure(world, *root_id),
         Job::DeriveExecutableTransport(executable) => transport::derive_executable_transport(world, executable),
         Job::DeriveTransportPlan(root_id) => transport::derive_transport_plan(world, *root_id),
-        Job::MaterializeRoot(root_id) => artifact::materialize_root(world, *root_id),
-        Job::DeriveAbiReady(root_id) => artifact::derive_abi_ready(world, *root_id),
-        Job::DeriveEmissionReady(root_id) => artifact::derive_emission_ready(world, *root_id),
-        Job::LowerBackendProgram(root_id) => backend::lower_backend_program(world, *root_id),
+        Job::BuildBackendProduct(root_id) => backend::build_backend_product(world, *root_id),
         Job::LowerNativeProgram(root_id) => native::lower_native_program(world, *root_id),
     }
 }

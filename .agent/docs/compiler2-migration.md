@@ -11,7 +11,7 @@ The compiler entry point is `fz2`. There is no compatibility `fz` wrapper.
 The backend and type-name questions that blocked migration are settled:
 
 - compiler2 owns source submission, type naming, contract resolution, semantic
-  closure, and the artifact ladder through `NativeProgram(root)`;
+  closure, backend-product construction, and `NativeProgram(root)`;
 - `fz2 run`, `fz2 interp`, and `fz2 build` submit source directly to compiler2;
 - native backend time is named at the compiler2 artifact boundary by
   `fz.compiler2.native_backend.compile`, with raw codegen phases nested below it;
@@ -213,10 +213,10 @@ semantic closure should therefore contain the still-observable never-returning
 call edge, but it must not require activation analysis, call edges, or materialized
 executables for continuation code that cannot run.
 
-`fz.compiler2.materialize.wait_fresh_closure` records the reason
-`MaterializeRoot` is waiting for a sealed semantic closure. It is a diagnostic
-signal for stale or incomplete closure facts, not a retry mechanism and not a
-substitute for publishing the minimally necessary semantic facts.
+Backend product construction reads the transport and executable products it
+needs directly. Missing closure or transport evidence should surface as exact
+product waits on the facts that can produce that evidence, not as a root-level
+materialization retry or whole-program projection.
 
 ## Compiler2 Struct Type Invariant
 

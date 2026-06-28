@@ -1,17 +1,13 @@
 use super::{AppliedStep, CodeSubmission, Compiler2, DriveOutcome, ExecutableNeed, Job, RootSubmission};
-use crate::compiler2::artifact::{
-    AbiReadyCallEdge, BackendEntry, BackendTail, CallEdge, CallReturnFlow, DirectCallEdge, EmissionReadyCallEdge,
-    MaterializedCallEdge, MaterializedTransportPlan,
-};
+use crate::compiler2::artifact::{BackendEntry, BackendTail, CallEdge, CallReturnFlow, MaterializedTransportPlan};
 use crate::compiler2::artifact::{NativeBodyOrigin, NativeCallableBoundaryId, NativeEntryAbi, NativeProgram};
 use crate::compiler2::drive::JobEffects;
-use crate::compiler2::transport::{CodegenLaneRepr, CodegenSeam, ExecutableSymbol, ShapeId, TransportPosition};
+use crate::compiler2::transport::{ExecutableSymbol, ShapeId, TransportPosition};
 use crate::compiler2::{
-    AbiReadyProgram, AbiValueRepr, ActivationKey, BackendEntryOrigin, BackendProgram, BackendStep, CallSiteId,
-    CallSiteKey, CallSiteSummary, CallTarget, CallableEntry, ControlEntryOrigin, EmissionReadyProgram, ExecutableKey,
-    FactKey, FactUse, FunctionId, FunctionRef, LoweredBody, LoweredStep, LoweredTail, MaterializedProgram, ModuleId,
-    ModuleState, QuotedSourceHeap, QuotedSourceMetadata, SelectedCallee, SemanticClosure, Ty, TypeName, TypeVarId,
-    Types, ValueId, World, parse_quoted_program,
+    AbiValueRepr, ActivationKey, BackendEntryOrigin, BackendProgram, BackendStep, CallSiteId, CallSiteKey,
+    CallSiteSummary, CallTarget, ControlEntryOrigin, ExecutableKey, FactKey, FactUse, FunctionId, FunctionRef,
+    LoweredBody, LoweredStep, LoweredTail, ModuleId, ModuleState, QuotedSourceHeap, QuotedSourceMetadata,
+    SelectedCallee, SemanticClosure, Ty, TypeName, TypeVarId, Types, ValueId, World, parse_quoted_program,
 };
 use crate::diag::codes;
 use crate::dispatch_matrix::Region;
@@ -43,9 +39,6 @@ type SourceNotes = Rc<RefCell<Vec<FunctionRef>>>;
 type ModuleDefs = Rc<RefCell<HashMap<ModuleId, Vec<ModuleState>>>>;
 type CallsiteDefs = Rc<RefCell<Vec<CallsiteDefinedRecord>>>;
 type SemanticClosedDefs = Rc<RefCell<Vec<SemanticClosedRecord>>>;
-type MaterializedProgramDefs = Rc<RefCell<Vec<MaterializedProgramRecord>>>;
-type AbiReadyProgramDefs = Rc<RefCell<Vec<AbiReadyProgramRecord>>>;
-type EmissionReadyProgramDefs = Rc<RefCell<Vec<EmissionReadyProgramRecord>>>;
 type BackendProgramDefs = Rc<RefCell<Vec<BackendProgramRecord>>>;
 type NativeProgramDefs = Rc<RefCell<Vec<NativeProgramRecord>>>;
 type ReturnTypeDefs = Rc<RefCell<Vec<ReturnTypeRecord>>>;
@@ -87,19 +80,16 @@ fn output_facts(effects: &JobEffects) -> OutputFacts {
         .collect()
 }
 
+fn demand_backend_product(compiler: &mut Compiler2<'_>, root_id: crate::compiler2::RootId) {
+    assert!(
+        compiler.demand(Job::BuildBackendProduct(root_id)),
+        "backend product should be explicitly demandable for {root_id:?}",
+    );
+}
+
 fn handoff_shape_at(plan: &MaterializedTransportPlan, position: &TransportPosition) -> ShapeId {
     plan.shape_at(position)
         .unwrap_or_else(|| panic!("transport handoff should include shape for {position:?}"))
-}
-
-fn return_delivery_reprs(plan: &MaterializedTransportPlan, executable: &ExecutableSymbol) -> Vec<CodegenLaneRepr> {
-    plan.codegen_seam_facts
-        .iter()
-        .filter_map(|fact| match &fact.seam {
-            CodegenSeam::ReturnDelivery { executable: candidate } if candidate == executable => Some(fact.repr),
-            _ => None,
-        })
-        .collect()
 }
 
 fn executable_input_position(
@@ -1063,7 +1053,6 @@ fn compiler2_submit_root_pulls_scope_and_seeds_entry_semantics_without_warming_f
         arity: 0,
         need: ExecutableNeed::Value,
     });
-
     assert_resolved(
         compiler.drive(),
         "root submission should pull the source surface through to the entry seed",
@@ -1380,7 +1369,7 @@ fn compiler2_macro_executable_runs_quote_unquote_on_the_source_heap() {
     assert!(compiler.demand(Job::BuildMacroExecutable(inc)));
     assert_resolved(
         compiler.drive(),
-        "macro executable readiness should drive the shared backend artifact ladder",
+        "macro executable readiness should drive the shared backend product",
     );
     let macro_outputs = outputs
         .take(Job::BuildMacroExecutable(inc))
@@ -1658,7 +1647,7 @@ fn compiler2_runtime_roots_reject_macro_entries() {
     assert!(
         outputs
             .stops_matching(
-                |job| matches!(job, Job::LowerBackendProgram(id) | Job::LowerNativeProgram(id) if *id == root),
+                |job| matches!(job, Job::BuildBackendProduct(id) | Job::LowerNativeProgram(id) if *id == root),
             )
             .is_empty(),
         "rejected macro runtime roots must not reach backend or native lowering for the rejected runtime root"
@@ -1779,7 +1768,6 @@ fn compiler2_analyze_activation_publishes_one_whole_callsite_fact_per_call() {
         arity: 0,
         need: ExecutableNeed::Value,
     });
-
     assert_resolved(
         compiler.drive(),
         "a direct call root should settle through one whole callsite fact per reached call",
@@ -1895,7 +1883,6 @@ fn compiler2_enum_reduce_selects_list_protocol_impl_and_callable_reducer() {
         arity: 0,
         need: ExecutableNeed::Value,
     });
-
     assert_resolved(
         compiler.drive(),
         "Enum.reduce should settle runtime protocol dispatch and closure calls in one semantic closure",
@@ -2074,7 +2061,6 @@ fn compiler2_enum_reduce_operator_ref_activates_kernel_plus() {
         arity: 0,
         need: ExecutableNeed::Value,
     });
-
     assert_resolved(
         compiler.drive(),
         "Enum.reduce operator refs should settle through the same protocol and callable path",
@@ -2158,1107 +2144,6 @@ fn compiler2_enum_reduce_operator_ref_activates_kernel_plus() {
         compiler.display_ty_for_test(kernel_plus_return),
         "int",
         "the reached Kernel.+ activation should stay on the integer lane",
-    );
-}
-
-#[test]
-fn compiler2_materialization_projects_only_the_closed_quicksort_frontier() {
-    let tel = ConfiguredTelemetry::new();
-    let capture = Capture::new();
-    tel.attach(&[], capture.handler());
-    let outputs = OutputCapture::new();
-    tel.attach(&["fz", "compiler2", "job"], outputs.handler());
-    let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function"], functions.handler());
-    let bodies = LoweredBodyCapture::new();
-    tel.attach(&["fz", "compiler2", "lowered_body", "defined"], bodies.handler());
-    let materialized = MaterializedProgramCapture::new();
-    tel.attach(
-        &["fz", "compiler2", "materialized_program", "defined"],
-        materialized.handler(),
-    );
-
-    let mut compiler = Compiler2::new(&tel);
-    compiler.submit_code(CodeSubmission {
-        name: Some("fixtures/quicksort_plus_foo.fz".to_string()),
-        text: include_str!("../../fixtures2/00001_quicksort_plus_foo.fz").to_string(),
-    });
-    let root_id = compiler.submit_root(RootSubmission {
-        module_name: None,
-        name: "main".to_string(),
-        arity: 0,
-        need: ExecutableNeed::Value,
-    });
-
-    assert_resolved(
-        compiler.drive(),
-        "materialization should project only the closed quicksort frontier into backend-owned data",
-    );
-
-    let program = materialized.last(root_id).program;
-    let main_id = function_id(&functions, "main", 0);
-    let qsort_id = function_id(&functions, "qsort", 1);
-    let partition_id = function_id(&functions, "partition", 4);
-    let append_id = function_id(&functions, "append", 2);
-    let foo_id = function_id(&functions, "foo", 0);
-    let executable_ids = program
-        .executables
-        .keys()
-        .map(|key| key.activation.function)
-        .collect::<HashSet<_>>();
-
-    assert_eq!(
-        program.entry.activation.function, main_id,
-        "the materialized program entry should stay rooted at main/0",
-    );
-    assert!(
-        executable_ids.contains(&main_id)
-            && executable_ids.contains(&qsort_id)
-            && executable_ids.contains(&partition_id)
-            && executable_ids.contains(&append_id),
-        "materialization should keep the closed quicksort path",
-    );
-    assert!(
-        !executable_ids.contains(&foo_id),
-        "materialization should keep uncalled foo/0 out of the backend snapshot",
-    );
-
-    let (_, main_plan) = materialized_executable(&program, main_id);
-    match &main_plan.body {
-        crate::compiler2::LoweredBody::Clauses { clauses, entries, .. } => {
-            let entry = &entries[clauses[0].entry.as_u32() as usize];
-            assert!(
-                matches!(entry.origin, ControlEntryOrigin::Clause),
-                "materialization should preserve clause entry ids when it prunes and reindexes control entries",
-            );
-        }
-        other => panic!("expected clause body for materialized main/0, got {other:?}"),
-    }
-    let (main_callsite, main_call_value) = direct_call_in_body(lowered_body(&bodies, main_id), qsort_id);
-    let qsort_edge = main_plan
-        .call_edges
-        .get(&main_callsite)
-        .unwrap_or_else(|| panic!("materialized call edge for main/0 -> qsort/1 at {main_callsite:?}"));
-    let qsort_callee = local_call_target(&materialized_direct_edge(qsort_edge).callee);
-    assert_eq!(
-        qsort_callee.activation.function, qsort_id,
-        "materialization should freeze main/0's qsort/1 call to an exact executable key",
-    );
-    assert!(
-        program.executables.contains_key(qsort_callee),
-        "materialized direct-call edges should point at a reachable executable plan",
-    );
-    assert_eq!(
-        main_plan.value_types.get(&main_call_value),
-        Some(&qsort_edge.return_ty),
-        "materialization should retain the settled type of a direct-call result value",
-    );
-    assert!(
-        main_plan.effects.observable && main_plan.effects.reads_allocation_stats,
-        "main/0's executable effects should include dbg/heap-alloc observation through the closed call graph",
-    );
-
-    let (_, qsort_plan) = materialized_executable(&program, qsort_id);
-    assert!(
-        qsort_plan.effects.allocates && !qsort_plan.effects.observable,
-        "qsort/1 should remain allocation-heavy but locally unobservable in the materialized plan",
-    );
-
-    let materialize_outputs = outputs
-        .take(Job::MaterializeRoot(root_id))
-        .expect("MaterializeRoot job effects for quicksort root");
-    assert!(
-        materialize_outputs
-            .iter()
-            .all(|(fact, _)| *fact == FactKey::MaterializedProgram(root_id)),
-        "materialization should publish only the materialized-program fact and no semantic facts",
-    );
-    assert!(
-        !outputs
-            .stops_matching(|job| matches!(job, Job::MaterializeRoot(root) if *root == root_id))
-            .is_empty(),
-        "materialization should run as an ordinary root-owned job",
-    );
-    assert!(
-        capture.find(&["fz", "planner"]).is_empty(),
-        "Compiler2 materialization should not invoke the legacy planner pipeline",
-    );
-}
-
-#[test]
-fn compiler2_materialized_program_carries_transport_plan_refs_not_layout_trees() {
-    let tel = ConfiguredTelemetry::new();
-    let materialized = MaterializedProgramCapture::new();
-    tel.attach(
-        &["fz", "compiler2", "materialized_program", "defined"],
-        materialized.handler(),
-    );
-    let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function"], functions.handler());
-
-    let source = r#"
-fn apply1(f, x), do: f.(x)
-fn make_adder(a), do: fn (x) -> x + a end
-fn pair(x), do: {x, make_adder(x)}
-fn escape(), do: make_adder(10)
-
-fn main() do
-  {n, f} = pair(41)
-  {apply1(f, n), escape()}
-end
-"#;
-
-    let mut compiler = Compiler2::new(&tel);
-    compiler.submit_code(CodeSubmission {
-        name: Some("materialized_transport_handoff_refs.fz".to_string()),
-        text: source.to_string(),
-    });
-    let root_id = compiler.submit_root(RootSubmission {
-        module_name: None,
-        name: "main".to_string(),
-        arity: 0,
-        need: ExecutableNeed::TupleFields(2),
-    });
-
-    assert_resolved(
-        compiler.drive(),
-        "materialization should consume the transport plan handoff",
-    );
-
-    let program = materialized.last(root_id).program;
-    assert!(
-        program.transport_revision > 0,
-        "materialized programs should record the TransportPlan fact revision they consumed"
-    );
-    assert_eq!(
-        program.transport.executable_membership.len(),
-        program.executables.len(),
-        "materialized executable inventory should mirror TransportPlan membership"
-    );
-    assert!(
-        !program.transport.callable_ids.is_empty(),
-        "direct/escaped callables should be named by CallableId refs in the materialized handoff"
-    );
-    assert!(
-        !program.transport.boundary_ids.is_empty(),
-        "escaped callable publication should be named by BoundaryId refs in the materialized handoff"
-    );
-    assert!(
-        !program.transport.codegen_seam_facts.is_empty(),
-        "codegen seam facts should be carried as plan-owned rows, not recomputed from layout trees"
-    );
-
-    let pair_id = function_id(&functions, "pair", 1);
-    let main_id = function_id(&functions, "main", 0);
-    let (_, pair_executable) = materialized_executable(&program, pair_id);
-    assert!(
-        matches!(
-            pair_executable.transport.return_position,
-            crate::compiler2::transport::TransportPosition::ExecutableReturn { .. }
-        ),
-        "materialized executables should name their transport return position"
-    );
-    assert!(
-        !pair_executable.transport.input_positions.is_empty(),
-        "materialized executables should name their function-entry input positions"
-    );
-
-    let (_, main_executable) = materialized_executable(&program, main_id);
-    assert!(
-        !main_executable.transport.resume_positions.is_empty(),
-        "materialized executables should name delivered-resume positions from TransportPlan"
-    );
-    assert!(
-        !main_executable.transport.call_arg_positions.is_empty(),
-        "materialized executables should name call-argument positions from TransportPlan"
-    );
-    assert!(
-        !main_executable.transport.value_positions.is_empty(),
-        "materialized executables should name body-value positions from TransportPlan"
-    );
-}
-
-#[test]
-fn compiler2_materialization_turns_semantically_cold_cond_arms_into_halt_stubs() {
-    let tel = ConfiguredTelemetry::new();
-    let capture = Capture::new();
-    tel.attach(&[], capture.handler());
-    let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function"], functions.handler());
-    let materialized = MaterializedProgramCapture::new();
-    tel.attach(
-        &["fz", "compiler2", "materialized_program", "defined"],
-        materialized.handler(),
-    );
-
-    let mut compiler = Compiler2::new(&tel);
-    compiler.submit_code(CodeSubmission {
-        name: Some("cond_specialization.fz".to_string()),
-        text: include_str!("../../fixtures2/00011_cond_specialization.fz").to_string(),
-    });
-    let root_id = compiler.submit_root(RootSubmission {
-        module_name: None,
-        name: "main".to_string(),
-        arity: 0,
-        need: ExecutableNeed::Value,
-    });
-
-    assert_resolved(
-        compiler.drive(),
-        "materialization should specialize semantically cold cond arms before ABI projection",
-    );
-
-    let program = materialized.last(root_id).program;
-    let main_id = function_id(&functions, "main", 0);
-    let (_, executable) = materialized_executable(&program, main_id);
-    let LoweredBody::Clauses { entries, .. } = &executable.body else {
-        panic!("main/0 should materialize as a clause body");
-    };
-    let direct_calls = entries
-        .iter()
-        .filter(|entry| matches!(entry.tail, LoweredTail::DirectCall { .. }))
-        .count();
-    let cold_halts = entries
-        .iter()
-        .filter(|entry| {
-            matches!(
-                entry.tail,
-                LoweredTail::Halt {
-                    ref atom
-                } if atom == "compiler2_unreachable_control"
-            )
-        })
-        .count();
-    assert_eq!(
-        executable.call_edges.len(),
-        3,
-        "materialization should prune the cold dbg arm while keeping the live Kernel.+/2, Kernel.==/2, and dbg/1 calls",
-    );
-    assert_eq!(
-        direct_calls, 3,
-        "the specialized materialized body should keep the live condition-evaluation calls plus the surviving dbg/1 tail",
-    );
-    assert!(
-        cold_halts >= 1,
-        "materialization should turn impossible local-control arms into explicit halt stubs",
-    );
-}
-
-#[test]
-fn compiler2_materialization_freezes_only_the_selected_enum_reduce_path() {
-    let tel = ConfiguredTelemetry::new();
-    let capture = Capture::new();
-    tel.attach(&[], capture.handler());
-    let outputs = OutputCapture::new();
-    tel.attach(&["fz", "compiler2", "job"], outputs.handler());
-    let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function"], functions.handler());
-    let modules = ModuleCapture::new();
-    tel.attach(&["fz", "compiler2", "module", "defined"], modules.handler());
-    let materialized = MaterializedProgramCapture::new();
-    tel.attach(
-        &["fz", "compiler2", "materialized_program", "defined"],
-        materialized.handler(),
-    );
-
-    let mut compiler = Compiler2::new(&tel);
-    compiler.submit_code(CodeSubmission {
-        name: Some("fixtures/enum_reduce_runtime_graph.fz".to_string()),
-        text: include_str!("../../fixtures2/00010_enum_reduce_main.fz").to_string(),
-    });
-    let root_id = compiler.submit_root(RootSubmission {
-        module_name: None,
-        name: "main".to_string(),
-        arity: 0,
-        need: ExecutableNeed::Value,
-    });
-
-    assert_resolved(
-        compiler.drive(),
-        "materialization should freeze only the selected runtime, protocol, and callable reduce path",
-    );
-
-    let program = materialized.last(root_id).program;
-    let main_id = function_id(&functions, "main", 0);
-    let enum_reduce_id = function_id_in_module(&functions, &modules, "Enum", "reduce", 3);
-    let enum_map_id = function_id_in_module(&functions, &modules, "Enum", "map", 2);
-    let enum_reverse_id = function_id_in_module(&functions, &modules, "Enum", "reverse", 1);
-    let enumerable_list_id = module_id(&modules, "Enumerable.List");
-    let main_generated = generated_functions_owned_by(&functions, main_id);
-    let user_reducer_id = main_generated[0].function_id;
-    let enum_generated = generated_functions_owned_by(&functions, enum_reduce_id);
-    let bridge_reducer_id = enum_generated[0].function_id;
-    let list_impl_reduce_id = functions
-        .all()
-        .into_iter()
-        .find(|record| {
-            record.function_ref.name == "reduce" && record.arity == 3 && record.module_id == enumerable_list_id
-        })
-        .unwrap_or_else(|| panic!("function.defined for the selected List-backed protocol callback"))
-        .function_id;
-
-    let executable_ids = program
-        .executables
-        .keys()
-        .map(|key| key.activation.function)
-        .collect::<HashSet<_>>();
-    assert!(
-        executable_ids.contains(&main_id)
-            && executable_ids.contains(&enum_reduce_id)
-            && executable_ids.contains(&list_impl_reduce_id)
-            && executable_ids.contains(&bridge_reducer_id)
-            && executable_ids.contains(&user_reducer_id),
-        "materialization should keep the selected public reduce path, protocol callback, bridge lambda, and user reducer",
-    );
-    assert!(
-        !executable_ids.contains(&enum_map_id) && !executable_ids.contains(&enum_reverse_id),
-        "materialization should keep unrelated Enum paths cold",
-    );
-
-    let enum_reduce_edges = &program
-        .executables
-        .iter()
-        .find(|(key, _)| key.activation.function == enum_reduce_id)
-        .expect("materialized executable for Enum.reduce/3")
-        .1
-        .call_edges;
-    assert!(
-        enum_reduce_edges
-            .values()
-            .any(|edge| local_call_target(&materialized_direct_edge(edge).callee)
-                .activation
-                .function
-                == list_impl_reduce_id),
-        "materialization should freeze Enum.reduce/3's protocol call to the selected List-backed callback executable",
-    );
-
-    let bridge_edges = &program
-        .executables
-        .iter()
-        .find(|(key, _)| key.activation.function == bridge_reducer_id)
-        .expect("materialized executable for the bridge reducer lambda")
-        .1
-        .call_edges;
-    assert!(
-        bridge_edges
-            .values()
-            .any(|edge| local_call_target(&materialized_direct_edge(edge).callee)
-                .activation
-                .function
-                == user_reducer_id),
-        "materialization should freeze the bridge reducer call to the exact user reducer executable",
-    );
-    let (_, bridge_plan) = materialized_executable(&program, bridge_reducer_id);
-    assert!(
-        !bridge_plan.effects.calls_opaque,
-        "once the reducer closure target is known, the bridge lambda should not carry an opaque-call effect",
-    );
-
-    let materialize_outputs = outputs
-        .take(Job::MaterializeRoot(root_id))
-        .expect("MaterializeRoot job effects for Enum.reduce root");
-    assert!(
-        materialize_outputs
-            .iter()
-            .all(|(fact, _)| *fact == FactKey::MaterializedProgram(root_id)),
-        "materialization should publish only the materialized-program fact and no semantic facts",
-    );
-    assert!(
-        capture.find(&["fz", "planner"]).is_empty(),
-        "Compiler2 materialization should not invoke the legacy planner pipeline",
-    );
-}
-
-#[test]
-fn compiler2_abi_ready_makes_tuple_field_return_delivery_explicit_for_quicksort() {
-    let tel = ConfiguredTelemetry::new();
-    let capture = Capture::new();
-    tel.attach(&[], capture.handler());
-    let outputs = OutputCapture::new();
-    tel.attach(&["fz", "compiler2", "job"], outputs.handler());
-    let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function"], functions.handler());
-    let abi_ready = AbiReadyProgramCapture::new();
-    tel.attach(
-        &["fz", "compiler2", "abi_ready_program", "defined"],
-        abi_ready.handler(),
-    );
-
-    let mut compiler = Compiler2::new(&tel);
-    compiler.submit_code(CodeSubmission {
-        name: Some("fixtures/quicksort_plus_foo.fz".to_string()),
-        text: include_str!("../../fixtures2/00001_quicksort_plus_foo.fz").to_string(),
-    });
-    let root_id = compiler.submit_root(RootSubmission {
-        module_name: None,
-        name: "main".to_string(),
-        arity: 0,
-        need: ExecutableNeed::Value,
-    });
-
-    assert_resolved(
-        compiler.drive(),
-        "ABI-ready projection should derive tuple-field return ABI from the closed quicksort frontier",
-    );
-
-    let program = abi_ready.last(root_id).program;
-    let qsort_id = function_id(&functions, "qsort", 1);
-    let partition_id = function_id(&functions, "partition", 4);
-    let foo_id = function_id(&functions, "foo", 0);
-    let (_, qsort_plan) = abi_ready_executable(&program, qsort_id);
-    assert!(
-        qsort_plan
-            .call_edges
-            .values()
-            .any(|edge| local_call_target(&abi_ready_direct_edge(edge).callee)
-                .activation
-                .function
-                == partition_id),
-        "qsort should retain a call edge to partition/4",
-    );
-    let (_, partition_exec) = abi_ready_executable(&program, partition_id);
-    let _partition_return_shape = handoff_shape_at(&program.transport, &partition_exec.transport.return_position);
-    let partition_return_reprs = return_delivery_reprs(&program.transport, &partition_exec.transport.executable);
-    assert_eq!(
-        partition_return_reprs,
-        vec![CodegenLaneRepr::ValueRef, CodegenLaneRepr::ValueRef],
-        "partition/4 delivers exactly the two tuple-field lanes from plan-owned return-delivery seam facts",
-    );
-    assert!(
-        program.executables.keys().all(|key| key.activation.function != foo_id),
-        "ABI-ready projection should stay closed over the reached quicksort frontier and keep foo/0 cold",
-    );
-    assert!(
-        program.callable_entries.is_empty(),
-        "quicksort plus an uncalled foo/0 should not manufacture callable-entry obligations",
-    );
-
-    let abi_outputs = outputs
-        .take(Job::DeriveAbiReady(root_id))
-        .expect("DeriveAbiReady job effects for quicksort root");
-    assert!(
-        abi_outputs
-            .iter()
-            .all(|(fact, _)| *fact == FactKey::AbiReadyProgram(root_id)),
-        "ABI-ready projection should publish only the ABI-ready fact",
-    );
-    assert!(
-        capture.find(&["fz", "planner"]).is_empty() && capture.find(&["fz", "codegen"]).is_empty(),
-        "deriving ABI facts should not wake the legacy planner or codegen pipelines",
-    );
-    assert!(
-        capture
-            .find(&["fz", "compiler2", "abi_ready_program", "defined"])
-            .into_iter()
-            .all(|event| event.metadata.len() == 0),
-        "generic capture should not durable-copy opaque ABI-ready metadata",
-    );
-}
-
-#[test]
-fn compiler2_abi_ready_boxes_heap_projection_returns_at_function_boundaries() {
-    let tel = ConfiguredTelemetry::new();
-    let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function"], functions.handler());
-    let abi_ready = AbiReadyProgramCapture::new();
-    tel.attach(
-        &["fz", "compiler2", "abi_ready_program", "defined"],
-        abi_ready.handler(),
-    );
-
-    let mut compiler = Compiler2::new(&tel);
-    compiler.submit_code(CodeSubmission {
-        name: Some("fixtures/compiler2_projection_boundary_abi.fz".to_string()),
-        text: include_str!("../../fixtures2/00012_projection_boundary_abi.fz").to_string(),
-    });
-    let root_id = compiler.submit_root(RootSubmission {
-        module_name: None,
-        name: "main".to_string(),
-        arity: 0,
-        need: ExecutableNeed::Value,
-    });
-
-    assert_resolved(
-        compiler.drive(),
-        "ABI-ready projection should keep heap observations boxed across function boundaries",
-    );
-
-    let tuple_first_id = function_id(&functions, "tuple_first", 1);
-    let map_first_id = function_id(&functions, "map_first", 1);
-    let program = abi_ready.last(root_id).program;
-
-    // These helpers project an integer out of a heap structure. The value is
-    // soundly an integer, so the settled return layout carries the precise raw
-    // lane rather than a conservatively boxed ref; the caller reboxes only where
-    // it actually stores the value (here, main's heap tuple). Verified by
-    // JIT-running the fixture: the unbox-at-read / rebox-at-store round-trip is
-    // correct.
-    for function in [tuple_first_id, map_first_id] {
-        let (_, executable) = abi_ready_executable(&program, function);
-        let _return_shape = handoff_shape_at(&program.transport, &executable.transport.return_position);
-        assert_eq!(
-            return_delivery_reprs(&program.transport, &executable.transport.executable),
-            vec![CodegenLaneRepr::RawInt],
-            "projection helpers return their precise raw integer lane; boxing happens at the consuming heap store, not eagerly at the return",
-        );
-    }
-}
-
-#[test]
-fn compiler2_abi_ready_keeps_direct_only_enum_reduce_out_of_callable_inventory() {
-    let tel = ConfiguredTelemetry::new();
-    let capture = Capture::new();
-    tel.attach(&[], capture.handler());
-    let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function"], functions.handler());
-    let modules = ModuleCapture::new();
-    tel.attach(&["fz", "compiler2", "module", "defined"], modules.handler());
-    let abi_ready = AbiReadyProgramCapture::new();
-    tel.attach(
-        &["fz", "compiler2", "abi_ready_program", "defined"],
-        abi_ready.handler(),
-    );
-
-    let mut compiler = Compiler2::new(&tel);
-    compiler.submit_code(CodeSubmission {
-        name: Some("fixtures/enum_reduce_runtime_graph.fz".to_string()),
-        text: include_str!("../../fixtures2/00010_enum_reduce_main.fz").to_string(),
-    });
-    let root_id = compiler.submit_root(RootSubmission {
-        module_name: None,
-        name: "main".to_string(),
-        arity: 0,
-        need: ExecutableNeed::Value,
-    });
-    let outcome = compiler.drive();
-    if !matches!(outcome, DriveOutcome::Resolved) {
-        let message = capture
-            .last(&["fz", "diag", "error"])
-            .map(|event| metadata_str(&event, "message").to_string())
-            .unwrap_or_else(|| "<missing diagnostic>".to_string());
-        panic!(
-            "ABI-ready projection should keep direct-only Enum.reduce reducers out of first-class callable inventory: {outcome:?}; diagnostic={message}"
-        );
-    }
-
-    let main_id = function_id(&functions, "main", 0);
-    let enum_reduce_id = function_id_in_module(&functions, &modules, "Enum", "reduce", 3);
-    let user_reducer_id = generated_functions_owned_by(&functions, main_id)
-        .into_iter()
-        .next()
-        .expect("generated user reducer")
-        .function_id;
-    let bridge_reducer_id = generated_functions_owned_by(&functions, enum_reduce_id)
-        .into_iter()
-        .next()
-        .expect("generated bridge reducer")
-        .function_id;
-
-    let program = abi_ready.last(root_id).program;
-    assert!(
-        program.callable_entries.is_empty(),
-        "resolved reducer calls should transport direct callable evidence without publishing first-class callable entries",
-    );
-    let executable_functions = program
-        .executables
-        .keys()
-        .map(|key| key.activation.function)
-        .collect::<HashSet<_>>();
-    assert!(
-        executable_functions.is_superset(&HashSet::from([user_reducer_id, bridge_reducer_id])),
-        "the user reducer and bridge reducer should still exist in the closed executable frontier",
-    );
-}
-
-#[test]
-fn compiler2_abi_ready_keeps_returned_suspend_continuation_callable_entry() {
-    let tel = ConfiguredTelemetry::new();
-    let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function"], functions.handler());
-    let modules = ModuleCapture::new();
-    tel.attach(&["fz", "compiler2", "module", "defined"], modules.handler());
-    let abi_ready = AbiReadyProgramCapture::new();
-    tel.attach(
-        &["fz", "compiler2", "abi_ready_program", "defined"],
-        abi_ready.handler(),
-    );
-
-    let mut world = World::new(&tel);
-    world.submit_code(
-        Some("fixtures/enum_reduce_suspend_callable_frontier.fz".to_string()),
-        r#"
-fn make() do
-  fn () ->
-    Enumerable.reduce([1, 2, 3], {:suspend, 0}, fn (x, acc) -> {:cont, acc + x} end)
-  end
-end
-
-fn main(), do: make()
-"#
-        .to_string(),
-    );
-    let root_id = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
-
-    drive_until_fact(
-        &mut world,
-        FactKey::AbiReadyProgram(root_id),
-        Job::DeriveAbiReady(root_id),
-        "returned suspend continuations should be closed before ABI-ready callable inventory is derived",
-    );
-
-    let list_reduce_id = function_id_in_module(&functions, &modules, "List", "reduce", 3);
-    let continuation_id = generated_functions_owned_by(&functions, list_reduce_id)
-        .into_iter()
-        .find(|record| record.arity == 0)
-        .expect("List.reduce suspend branch should generate a zero-arity continuation")
-        .function_id;
-
-    let program = abi_ready.last(root_id).program;
-    let continuation_entries = abi_ready_callable_entries(&program, continuation_id);
-    assert!(
-        continuation_entries.iter().all(|entry| entry.capture_count == 2),
-        "the suspend continuation should publish only its runtime-live accumulator and reducer captures"
-    );
-    assert!(
-        continuation_entries
-            .iter()
-            .all(|entry| entry.target.need == ExecutableNeed::Value),
-        "callable entries should target value-return executables"
-    );
-    assert!(
-        continuation_entries
-            .iter()
-            .all(|entry| program.executables.contains_key(&entry.target)),
-        "returned continuation callable-entry targets must already exist in the closed executable frontier",
-    );
-}
-
-#[test]
-fn compiler2_abi_ready_matches_direct_callable_captures_by_canonical_activation_key() {
-    let tel = ConfiguredTelemetry::new();
-    let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function"], functions.handler());
-    let abi_ready = AbiReadyProgramCapture::new();
-    tel.attach(
-        &["fz", "compiler2", "abi_ready_program", "defined"],
-        abi_ready.handler(),
-    );
-
-    let mut compiler = Compiler2::new(&tel);
-    compiler.submit_code(CodeSubmission {
-        name: Some("fixtures/callable_canonical_capture_frontier.fz".to_string()),
-        text: r#"
-fn reduce_plain([], acc, _reducer), do: acc
-fn reduce_plain([head | tail], acc, reducer), do: reduce_plain(tail, reducer.(head, acc), reducer)
-
-fn main() do
-  predicate = fn x -> x > 2 end
-  reducer = fn (entry, acc) ->
-    if predicate.(entry), do: acc + 1, else: acc
-  end
-
-  reduce_plain([1, 2, 3, 4], 0, reducer)
-end
-"#
-        .to_string(),
-    });
-    let root_id = compiler.submit_root(RootSubmission {
-        module_name: None,
-        name: "main".to_string(),
-        arity: 0,
-        need: ExecutableNeed::Value,
-    });
-
-    assert_resolved(
-        compiler.drive(),
-        "direct callable capture layouts should resolve through canonical activation keys, not raw capture Ty ids",
-    );
-
-    let main_id = function_id(&functions, "main", 0);
-    let reduce_plain_id = functions.id("reduce_plain", 3);
-    let _predicate_id = generated_functions_owned_by(&functions, main_id)
-        .into_iter()
-        .find(|record| record.arity == 1)
-        .expect("main should generate the captured predicate closure")
-        .function_id;
-    let reducer_id = generated_functions_owned_by(&functions, main_id)
-        .into_iter()
-        .find(|record| record.arity == 2)
-        .expect("main should generate the captured reducer closure")
-        .function_id;
-
-    let program = abi_ready.last(root_id).program;
-    let (_, reduce_plain_executable) = abi_ready_executable(&program, reduce_plain_id);
-    assert_eq!(
-        reduce_plain_executable.param_reprs,
-        vec![AbiValueRepr::ValueRef, AbiValueRepr::RawInt],
-        "reduce_plain/3 should keep only its list and narrowed acc lanes in flat param_reprs",
-    );
-    assert_eq!(reduce_plain_executable.transport.input_positions.len(), 3);
-    // The caller's view of the reducer is one-level only: the reducer's exact
-    // body identity plus the FLAT lanes it carries. Because the captured
-    // predicate is itself zero-capture, it contributes no runtime lanes, so the
-    // reducer transports zero capture lanes. The predicate identity is NOT
-    // modeled here — a carrier never knows its callee's callees.
-    let reducer_input_position =
-        executable_input_position(&program.transport, &reduce_plain_executable.transport.executable, 2);
-    assert!(
-        reduce_plain_executable
-            .transport
-            .input_positions
-            .contains(&reducer_input_position),
-        "the reducer input should remain an executable-input transport position on reduce_plain/3",
-    );
-    // The predicate identity lives where it is actually consumed: on the
-    // reducer's OWN executable input, served on its own platter. This is the
-    // exact fact the old recursive model wrongly hoisted into the caller.
-    let (_, reducer_executable) = abi_ready_executable(&program, reducer_id);
-    let reducer_key = program
-        .executables
-        .keys()
-        .find(|key| key.activation.function == reducer_id)
-        .expect("the reducer body should resolve to a canonical closed executable key");
-    assert_eq!(
-        reducer_key.activation.input_len(compiler.types_mut_for_test()),
-        3,
-        "the reducer keeps its full semantic arity: one captured predicate plus two call args",
-    );
-    let predicate_input_position =
-        executable_input_position(&program.transport, &reducer_executable.transport.executable, 0);
-    assert!(
-        reducer_executable
-            .transport
-            .input_positions
-            .contains(&predicate_input_position),
-        "the captured predicate is the reducer executable's own transport input, not nested into the caller input",
-    );
-    assert!(
-        program.callable_entries.is_empty(),
-        "a direct-only captured reducer should not publish first-class callable-entry inventory",
-    );
-}
-
-#[test]
-fn compiler2_abi_ready_does_not_publish_unused_callable_constructors() {
-    let tel = ConfiguredTelemetry::new();
-    let capture = Capture::new();
-    tel.attach(&[], capture.handler());
-    let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function"], functions.handler());
-    let abi_ready = AbiReadyProgramCapture::new();
-    tel.attach(
-        &["fz", "compiler2", "abi_ready_program", "defined"],
-        abi_ready.handler(),
-    );
-
-    let mut compiler = Compiler2::new(&tel);
-    compiler.submit_code(CodeSubmission {
-        name: Some("fixtures/unused_callable_constructor_frontier.fz".to_string()),
-        text: r#"
-fn ignore(_fun), do: 0
-
-fn main() do
-  fun = fn x -> x + 1 end
-  ignore(fun)
-end
-"#
-        .to_string(),
-    });
-    let root_id = compiler.submit_root(RootSubmission {
-        module_name: None,
-        name: "main".to_string(),
-        arity: 0,
-        need: ExecutableNeed::Value,
-    });
-
-    assert_resolved(
-        compiler.drive(),
-        "constructing and passing a callable should not publish its executable unless a call or escape demands it",
-    );
-
-    let main_id = function_id(&functions, "main", 0);
-    let lambda_id = generated_functions_owned_by(&functions, main_id)
-        .into_iter()
-        .next()
-        .expect("main should generate the unused closure body")
-        .function_id;
-
-    let program = abi_ready.last(root_id).program;
-    let (_, ignore_executable) = abi_ready_executable(&program, functions.id("ignore", 1));
-    assert_eq!(
-        ignore_executable.param_reprs,
-        Vec::<AbiValueRepr>::new(),
-        "an unused callable semantic input should not allocate a runtime ABI lane",
-    );
-    assert!(
-        ignore_executable
-            .transport
-            .input_positions
-            .contains(&executable_input_position(
-                &program.transport,
-                &ignore_executable.transport.executable,
-                0,
-            )),
-        "ABI-ready handoff should record the omitted callable input as a transport position whose shape is plan-owned",
-    );
-    assert!(
-        program
-            .callable_entries
-            .iter()
-            .all(|entry| entry.target.activation.function != lambda_id),
-        "callable constructors should not create callable-entry inventory without a demand site",
-    );
-    assert!(
-        program
-            .executables
-            .keys()
-            .all(|key| key.activation.function != lambda_id),
-        "the unused closure body should stay outside the closed executable frontier",
-    );
-
-    let abi_event = capture
-        .last(&["fz", "compiler2", "abi_ready_program", "defined"])
-        .expect("ABI-ready telemetry for unused callable constructor");
-    assert!(
-        measurement_u64(&abi_event, "omitted_inputs") >= 1,
-        "ABI-ready telemetry should report omitted runtime inputs",
-    );
-}
-
-#[test]
-fn compiler2_abi_ready_passes_direct_callable_captures_without_a_heap_closure_lane() {
-    let tel = ConfiguredTelemetry::new();
-    let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function"], functions.handler());
-    let abi_ready = AbiReadyProgramCapture::new();
-    tel.attach(
-        &["fz", "compiler2", "abi_ready_program", "defined"],
-        abi_ready.handler(),
-    );
-
-    let mut compiler = Compiler2::new(&tel);
-    compiler.submit_code(CodeSubmission {
-        name: Some("fixtures/direct_callable_capture_abi.fz".to_string()),
-        text: r#"
-fn apply(fun), do: fun.(41)
-
-fn make_adder(a), do: fn x -> x + a end
-
-fn main(), do: apply(make_adder(1))
-"#
-        .to_string(),
-    });
-    let root_id = compiler.submit_root(RootSubmission {
-        module_name: None,
-        name: "main".to_string(),
-        arity: 0,
-        need: ExecutableNeed::Value,
-    });
-
-    assert_resolved(
-        compiler.drive(),
-        "ABI-ready projection should transport direct callable captures instead of a heap closure lane",
-    );
-
-    let apply_id = functions.id("apply", 1);
-    let _adder_lambda_id = generated_functions_owned_by(&functions, functions.id("make_adder", 1))
-        .into_iter()
-        .next()
-        .expect("make_adder/1 should generate one captured lambda body")
-        .function_id;
-
-    let program = abi_ready.last(root_id).program;
-    let (_, apply_executable) = abi_ready_executable(&program, apply_id);
-    assert_eq!(
-        apply_executable.param_reprs,
-        vec![AbiValueRepr::RawInt],
-        "the direct callable input should lower to its demanded capture lane only",
-    );
-    assert_eq!(apply_executable.transport.input_positions.len(), 1);
-    assert!(
-        apply_executable
-            .transport
-            .input_positions
-            .contains(&executable_input_position(
-                &program.transport,
-                &apply_executable.transport.executable,
-                0,
-            )),
-        "the direct callable input should be carried by the plan-owned executable-input shape",
-    );
-    assert!(
-        program.callable_entries.is_empty(),
-        "a direct-only callable path should not publish first-class callable-entry inventory",
-    );
-}
-
-#[test]
-fn compiler2_abi_ready_callable_entries_read_boundary_seam_facts() {
-    let tel = ConfiguredTelemetry::new();
-    let abi_ready = AbiReadyProgramCapture::new();
-    tel.attach(
-        &["fz", "compiler2", "abi_ready_program", "defined"],
-        abi_ready.handler(),
-    );
-
-    let mut compiler = Compiler2::new(&tel);
-    compiler.submit_code(CodeSubmission {
-        name: Some("fixtures/callable_entry_boundary_seam_facts.fz".to_string()),
-        text: r#"
-fn make_adder(a), do: fn (x) -> x + a end
-fn main() do
-  f = make_adder(10)
-  f.(1)
-  f
-end
-"#
-        .to_string(),
-    });
-    let root_id = compiler.submit_root(RootSubmission {
-        module_name: None,
-        name: "main".to_string(),
-        arity: 0,
-        need: ExecutableNeed::Value,
-    });
-
-    assert_resolved(
-        compiler.drive(),
-        "ABI-ready callable entries should read transport boundary seam facts",
-    );
-
-    let program = abi_ready.last(root_id).program;
-    let [entry] = program.callable_entries.as_slice() else {
-        panic!(
-            "escaped make_adder/1 should publish exactly one callable entry: {:?}",
-            program.callable_entries
-        )
-    };
-    assert_eq!(entry.capture_count, 1);
-    assert_eq!(
-        entry.capture_reprs,
-        vec![AbiValueRepr::RawInt],
-        "published callable captures cross the boundary at the target body's grounded repr; the boxed apply wrapper unboxes each capture from `self` to that repr"
-    );
-    assert_eq!(
-        entry.arg_reprs,
-        vec![AbiValueRepr::RawInt],
-        "published callable args cross the boundary at the target body's grounded repr; the boxed apply wrapper unboxes each arg before tail-calling the body"
-    );
-    assert_eq!(
-        entry.return_lanes.len(),
-        1,
-        "published callable returns read the BoundaryId contract seam facts"
-    );
-}
-
-#[test]
-fn compiler2_abi_ready_callable_entry_preserves_tuple_boundary_return_lanes() {
-    let tel = ConfiguredTelemetry::new();
-    let abi_ready = AbiReadyProgramCapture::new();
-    tel.attach(
-        &["fz", "compiler2", "abi_ready_program", "defined"],
-        abi_ready.handler(),
-    );
-
-    let mut compiler = Compiler2::new(&tel);
-    compiler.submit_code(CodeSubmission {
-        name: Some("fixtures/callable_entry_tuple_boundary_return.fz".to_string()),
-        text: r#"
-fn make_pairer(), do: fn (_x) -> {{1, 2}, 3} end
-fn main(), do: make_pairer()
-"#
-        .to_string(),
-    });
-    let root_id = compiler.submit_root(RootSubmission {
-        module_name: None,
-        name: "main".to_string(),
-        arity: 0,
-        need: ExecutableNeed::Value,
-    });
-
-    assert_resolved(
-        compiler.drive(),
-        "ABI-ready callable entries should preserve tuple boundary return contracts",
-    );
-
-    let program = abi_ready.last(root_id).program;
-    let [entry] = program.callable_entries.as_slice() else {
-        panic!(
-            "escaped pairer should publish exactly one callable entry: {:?}",
-            program.callable_entries
-        )
-    };
-    assert_eq!(
-        entry.return_lanes.len(),
-        3,
-        "tuple callable returns preserve the boundary return lane contract instead of local layout boxing"
-    );
-}
-
-#[test]
-fn compiler2_materialization_projects_variadic_extern_signatures_and_callsite_marshals() {
-    let tel = ConfiguredTelemetry::new();
-    let capture = Capture::new();
-    tel.attach(&[], capture.handler());
-    let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function"], functions.handler());
-    let materialized = MaterializedProgramCapture::new();
-    tel.attach(
-        &["fz", "compiler2", "materialized_program", "defined"],
-        materialized.handler(),
-    );
-
-    let mut compiler = Compiler2::new(&tel);
-    compiler.submit_code(CodeSubmission {
-        name: Some("fixtures/variadic_open_compiler2.fz".to_string()),
-        text: include_str!("../../fixtures2/00013_variadic_open.fz").to_string(),
-    });
-    let root_id = compiler.submit_root(RootSubmission {
-        module_name: None,
-        name: "main".to_string(),
-        arity: 0,
-        need: ExecutableNeed::Value,
-    });
-
-    assert_resolved(
-        compiler.drive(),
-        "variadic extern calls should settle to a backend-ready executable and callsite marshal plan",
-    );
-
-    let program = materialized.last(root_id).program;
-    let main_id = function_id(&functions, "main", 0);
-    let open_id = function_id(&functions, "libc::open", 2);
-    let (_, open_plan) = materialized_executable(&program, open_id);
-    let (_, main_plan) = materialized_executable(&program, main_id);
-
-    match &open_plan.body {
-        LoweredBody::Extern { signature } => {
-            assert_eq!(signature.symbol, "open");
-            assert_eq!(signature.params, vec![ExternTy::CString, ExternTy::I64]);
-            assert!(signature.variadic);
-            assert_eq!(signature.ret, ExternTy::I64);
-        }
-        other => panic!("expected variadic extern body for libc::open, got {other:?}"),
-    }
-
-    let open_edge = main_plan
-        .call_edges
-        .values()
-        .find(|edge| {
-            local_call_target(&materialized_direct_edge(edge).callee)
-                .activation
-                .function
-                == open_id
-        })
-        .expect("materialized call edge for libc::open");
-    assert_eq!(
-        materialized_direct_edge(open_edge).extern_marshals.as_deref(),
-        Some(&[ExternTy::CString, ExternTy::I64, ExternTy::I64][..]),
-        "materialization should freeze the exact C marshal classes for a variadic extern callsite",
-    );
-    assert!(
-        main_plan.effects.observable,
-        "calling a variadic extern should make the executable plan externally observable",
     );
 }
 
@@ -3351,373 +2236,6 @@ fn compiler2_import_only_exact_fn_refs_lower_as_function_ids_without_provider_bo
 }
 
 #[test]
-fn compiler2_emission_ready_projects_only_the_closed_quicksort_inventory() {
-    let tel = ConfiguredTelemetry::new();
-    let capture = Capture::new();
-    tel.attach(&[], capture.handler());
-    let outputs = OutputCapture::new();
-    tel.attach(&["fz", "compiler2", "job"], outputs.handler());
-    let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function"], functions.handler());
-    let emission_ready = EmissionReadyProgramCapture::new();
-    tel.attach(
-        &["fz", "compiler2", "emission_ready_program", "defined"],
-        emission_ready.handler(),
-    );
-
-    let mut compiler = Compiler2::new(&tel);
-    compiler.submit_code(CodeSubmission {
-        name: Some("fixtures/quicksort_plus_foo.fz".to_string()),
-        text: include_str!("../../fixtures2/00001_quicksort_plus_foo.fz").to_string(),
-    });
-    let root_id = compiler.submit_root(RootSubmission {
-        module_name: None,
-        name: "main".to_string(),
-        arity: 0,
-        need: ExecutableNeed::Value,
-    });
-
-    assert_resolved(
-        compiler.drive(),
-        "emission-ready projection should publish only the closed quicksort executable inventory",
-    );
-
-    let program = emission_ready.last(root_id).program;
-    let main_id = function_id(&functions, "main", 0);
-    let qsort_id = function_id(&functions, "qsort", 1);
-    let partition_id = function_id(&functions, "partition", 4);
-    let append_id = function_id(&functions, "append", 2);
-    let foo_id = function_id(&functions, "foo", 0);
-    let executable_ids = program
-        .executables
-        .iter()
-        .map(|executable| executable.key.activation.function)
-        .collect::<HashSet<_>>();
-    assert_eq!(
-        program.executables[program.entry].key.activation.function, main_id,
-        "the emission-ready entry should point at the main/0 executable inventory slot",
-    );
-    assert!(
-        executable_ids.contains(&main_id)
-            && executable_ids.contains(&qsort_id)
-            && executable_ids.contains(&partition_id)
-            && executable_ids.contains(&append_id),
-        "emission inventory should keep the closed quicksort executable frontier",
-    );
-    assert!(
-        !executable_ids.contains(&foo_id),
-        "emission inventory should keep uncalled foo/0 out of the backend handoff",
-    );
-    assert!(
-        program.callable_entries.is_empty(),
-        "quicksort should not produce callable-entry inventory",
-    );
-
-    let (_, main_exec) = emission_ready_executable(&program, main_id);
-    let qsort_edge = main_exec
-        .call_edges
-        .iter()
-        .find(|edge| {
-            program.executables[*local_call_target(&emission_ready_direct_edge(edge).callee)]
-                .key
-                .activation
-                .function
-                == qsort_id
-        })
-        .expect("emission-ready main/0 -> qsort/1 call edge");
-    assert_eq!(
-        program.executables[*local_call_target(&emission_ready_direct_edge(qsort_edge).callee)]
-            .key
-            .activation
-            .function,
-        qsort_id,
-        "emission-ready call edges should resolve through executable inventory ids",
-    );
-
-    let emission_outputs = outputs
-        .take(Job::DeriveEmissionReady(root_id))
-        .expect("DeriveEmissionReady job effects for quicksort root");
-    assert!(
-        emission_outputs
-            .iter()
-            .all(|(fact, _)| *fact == FactKey::EmissionReadyProgram(root_id)),
-        "emission-ready projection should publish only the emission-ready fact",
-    );
-    assert!(
-        capture.find(&["fz", "planner"]).is_empty() && capture.find(&["fz", "codegen"]).is_empty(),
-        "deriving emission inventory should not wake the legacy planner or codegen pipelines",
-    );
-    assert!(
-        capture
-            .find(&["fz", "compiler2", "emission_ready_program", "defined"])
-            .into_iter()
-            .all(|event| event.metadata.len() == 0),
-        "generic capture should not durable-copy opaque emission-ready metadata",
-    );
-}
-
-#[test]
-fn compiler2_emission_ready_keeps_direct_only_enum_reduce_out_of_callable_inventory() {
-    let tel = ConfiguredTelemetry::new();
-    let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function"], functions.handler());
-    let modules = ModuleCapture::new();
-    tel.attach(&["fz", "compiler2", "module", "defined"], modules.handler());
-    let emission_ready = EmissionReadyProgramCapture::new();
-    tel.attach(
-        &["fz", "compiler2", "emission_ready_program", "defined"],
-        emission_ready.handler(),
-    );
-
-    let mut compiler = Compiler2::new(&tel);
-    compiler.submit_code(CodeSubmission {
-        name: Some("fixtures/enum_reduce_runtime_graph.fz".to_string()),
-        text: include_str!("../../fixtures2/00010_enum_reduce_main.fz").to_string(),
-    });
-    let root_id = compiler.submit_root(RootSubmission {
-        module_name: None,
-        name: "main".to_string(),
-        arity: 0,
-        need: ExecutableNeed::Value,
-    });
-
-    assert_resolved(
-        compiler.drive(),
-        "emission-ready projection should keep direct-only Enum.reduce reducers out of first-class callable inventory",
-    );
-
-    let main_id = function_id(&functions, "main", 0);
-    let enum_reduce_id = function_id_in_module(&functions, &modules, "Enum", "reduce", 3);
-    let user_reducer_id = generated_functions_owned_by(&functions, main_id)
-        .into_iter()
-        .next()
-        .expect("generated user reducer")
-        .function_id;
-    let bridge_reducer_id = generated_functions_owned_by(&functions, enum_reduce_id)
-        .into_iter()
-        .next()
-        .expect("generated bridge reducer")
-        .function_id;
-
-    let program = emission_ready.last(root_id).program;
-    assert!(
-        program.callable_entries.is_empty(),
-        "direct-only reducer transport should not survive as emission-ready callable-entry inventory",
-    );
-    let executable_functions = program
-        .executables
-        .iter()
-        .map(|executable| executable.key.activation.function)
-        .collect::<HashSet<_>>();
-    assert!(
-        executable_functions.is_superset(&HashSet::from([user_reducer_id, bridge_reducer_id])),
-        "the user reducer and bridge reducer should still survive in the executable inventory",
-    );
-}
-
-#[test]
-fn compiler2_emission_ready_revision_stays_stable_for_identical_recompute() {
-    let tel = ConfiguredTelemetry::new();
-    let emission_ready = EmissionReadyProgramCapture::new();
-    tel.attach(
-        &["fz", "compiler2", "emission_ready_program", "defined"],
-        emission_ready.handler(),
-    );
-
-    let mut compiler = Compiler2::new(&tel);
-    compiler.submit_code(CodeSubmission {
-        name: Some("fixtures/quicksort_plus_foo.fz".to_string()),
-        text: include_str!("../../fixtures2/00001_quicksort_plus_foo.fz").to_string(),
-    });
-    let root_id = compiler.submit_root(RootSubmission {
-        module_name: None,
-        name: "main".to_string(),
-        arity: 0,
-        need: ExecutableNeed::Value,
-    });
-
-    assert_resolved(
-        compiler.drive(),
-        "initial emission-ready derivation should settle for quicksort",
-    );
-    assert!(
-        compiler.demand(Job::DeriveEmissionReady(root_id)),
-        "explicitly re-demanding unchanged emission inventory should enqueue one fresh derivation",
-    );
-    assert_resolved(
-        compiler.drive(),
-        "re-deriving unchanged emission inventory should resolve without bumping the revision",
-    );
-
-    let records = emission_ready.records(root_id);
-    assert_eq!(
-        records.len(),
-        2,
-        "the emission-ready program should have one initial definition and one unchanged re-derivation",
-    );
-    assert!(
-        records[0].changed && !records[1].changed,
-        "initial derivation should be changed=true; re-derivation of identical state should be changed=false",
-    );
-    assert_eq!(
-        records[0].program, records[1].program,
-        "identical emission-ready recomputation should produce byte-for-byte equal program facts",
-    );
-}
-
-#[test]
-fn compiler2_artifact_ladder_consumes_only_the_previous_rung() {
-    let tel = ConfiguredTelemetry::new();
-    let outputs = OutputCapture::new();
-    tel.attach(&["fz", "compiler2", "job"], outputs.handler());
-
-    let mut compiler = Compiler2::new(&tel);
-    compiler.submit_code(CodeSubmission {
-        name: Some("fixtures/quicksort_plus_foo.fz".to_string()),
-        text: include_str!("../../fixtures2/00001_quicksort_plus_foo.fz").to_string(),
-    });
-    let root_id = compiler.submit_root(RootSubmission {
-        module_name: None,
-        name: "main".to_string(),
-        arity: 0,
-        need: ExecutableNeed::Value,
-    });
-
-    // Native lowering is demand-only, so drive the root explicitly to the
-    // native rung to exercise the full one-way ladder.
-    compiler.demand(Job::LowerNativeProgram(root_id));
-    assert_resolved(
-        compiler.drive(),
-        "artifact projection should settle as a one-way ladder over the closed quicksort root",
-    );
-
-    let materialize = outputs.effects(Job::MaterializeRoot(root_id));
-    assert_eq!(
-        materialize.reads[..2],
-        vec![
-            settled_fact(FactKey::SemanticClosed(root_id)),
-            settled_fact(FactKey::TransportPlan(root_id)),
-        ],
-        "materialization should consume the closed semantic root and its settled transport plan",
-    );
-    assert!(
-        materialize
-            .reads
-            .iter()
-            .skip(2)
-            .all(|fact| matches!(fact, FactUse::Settled(FactKey::RuntimeDemand(_)))),
-        "materialization should read per-executable runtime-demand facts directly after the closed semantic and transport rungs: {:?}",
-        materialize.reads,
-    );
-    assert!(
-        materialize.waits.is_empty(),
-        "materialization should not stay blocked once the closure is sealed",
-    );
-    assert_eq!(
-        materialize.follow_up,
-        vec![Job::DeriveAbiReady(root_id)],
-        "materialization should hand off directly to the ABI-ready projection",
-    );
-    assert!(
-        materialize
-            .outputs
-            .iter()
-            .all(|fact| *fact == FactKey::MaterializedProgram(root_id)),
-        "materialization should publish only the materialized artifact fact",
-    );
-
-    let abi_ready = outputs.effects(Job::DeriveAbiReady(root_id));
-    assert_eq!(
-        abi_ready.reads,
-        vec![settled_fact(FactKey::MaterializedProgram(root_id))],
-        "ABI-ready derivation should consume only the materialized artifact fact",
-    );
-    assert!(
-        abi_ready.waits.is_empty(),
-        "ABI-ready derivation should not reopen semantic or reachability work",
-    );
-    assert_eq!(
-        abi_ready.follow_up,
-        vec![Job::DeriveEmissionReady(root_id)],
-        "ABI-ready derivation should hand off directly to emission-ready inventory",
-    );
-    assert!(
-        abi_ready
-            .outputs
-            .iter()
-            .all(|fact| *fact == FactKey::AbiReadyProgram(root_id)),
-        "ABI-ready derivation should publish only the ABI-ready artifact fact",
-    );
-
-    let emission_ready = outputs.effects(Job::DeriveEmissionReady(root_id));
-    assert_eq!(
-        emission_ready.reads,
-        vec![settled_fact(FactKey::AbiReadyProgram(root_id))],
-        "emission-ready derivation should consume only the ABI-ready artifact fact",
-    );
-    assert!(
-        emission_ready.waits.is_empty(),
-        "emission-ready derivation should not ask semantic, type, or reachability questions upstream of the artifact ladder",
-    );
-    assert_eq!(
-        emission_ready.follow_up,
-        vec![Job::LowerBackendProgram(root_id)],
-        "emission-ready derivation should hand off directly to backend lowering",
-    );
-    assert!(
-        emission_ready
-            .outputs
-            .iter()
-            .all(|fact| *fact == FactKey::EmissionReadyProgram(root_id)),
-        "emission-ready derivation should publish only the emission-ready artifact fact",
-    );
-
-    let backend = outputs.effects(Job::LowerBackendProgram(root_id));
-    assert_eq!(
-        backend.reads,
-        vec![settled_fact(FactKey::EmissionReadyProgram(root_id))],
-        "backend lowering should consume only the emission-ready artifact fact",
-    );
-    assert!(
-        backend.waits.is_empty(),
-        "backend lowering should not reopen semantic or planner discovery upstream of the artifact ladder",
-    );
-    assert!(
-        backend.follow_up.is_empty(),
-        "backend lowering is the end of the demand-free ladder: native is produced only on explicit demand",
-    );
-    assert!(
-        backend
-            .outputs
-            .iter()
-            .all(|fact| *fact == FactKey::BackendProgram(root_id)),
-        "backend lowering should publish only the backend handoff fact",
-    );
-
-    let native = outputs.effects(Job::LowerNativeProgram(root_id));
-    assert_eq!(
-        native.reads,
-        vec![settled_fact(FactKey::BackendProgram(root_id))],
-        "native lowering should consume only the backend handoff fact",
-    );
-    assert!(
-        native.waits.is_empty(),
-        "native lowering should not reopen semantic, planner, or backend discovery work upstream of the artifact ladder",
-    );
-    assert!(
-        native.follow_up.is_empty(),
-        "native lowering should be the end of the current Compiler2-owned artifact ladder",
-    );
-    assert!(
-        native
-            .outputs
-            .iter()
-            .all(|fact| *fact == FactKey::NativeProgram(root_id)),
-        "native lowering should publish only the native handoff fact",
-    );
-}
-
-#[test]
 fn compiler2_seed_root_does_not_depend_on_its_own_root_fact() {
     let tel = ConfiguredTelemetry::new();
     let outputs = OutputCapture::new();
@@ -3734,7 +2252,6 @@ fn compiler2_seed_root_does_not_depend_on_its_own_root_fact() {
         arity: 0,
         need: ExecutableNeed::Value,
     });
-
     assert_resolved(
         compiler.drive(),
         "simple root should resolve so SeedRoot effects are captured",
@@ -3768,6 +2285,7 @@ fn compiler2_backend_program_keeps_only_the_closed_quicksort_inventory() {
         arity: 0,
         need: ExecutableNeed::Value,
     });
+    demand_backend_product(&mut compiler, root_id);
 
     assert_resolved(
         compiler.drive(),
@@ -3866,6 +2384,7 @@ fn main(), do: inc(41)
         arity: 0,
         need: ExecutableNeed::Value,
     });
+    demand_backend_product(&mut compiler, root_id);
 
     assert_resolved(
         compiler.drive(),
@@ -3920,6 +2439,7 @@ fn compiler2_backend_program_carries_return_payload_flow_before_native_lowering(
         arity: 0,
         need: ExecutableNeed::Value,
     });
+    demand_backend_product(&mut compiler, root_id);
 
     let drive = compiler.drive();
     if !matches!(drive, DriveOutcome::Resolved) {
@@ -3986,6 +2506,7 @@ fn compiler2_backend_program_keeps_direct_only_enum_reduce_out_of_callable_inven
         arity: 0,
         need: ExecutableNeed::Value,
     });
+    demand_backend_product(&mut compiler, root_id);
 
     assert_resolved(
         compiler.drive(),
@@ -4125,6 +2646,7 @@ fn compiler2_backend_program_preserves_variadic_extern_wire_classes() {
         arity: 0,
         need: ExecutableNeed::Value,
     });
+    demand_backend_product(&mut compiler, root_id);
 
     assert_resolved(
         compiler.drive(),
@@ -5505,6 +4027,7 @@ fn compiler2_backend_program_keeps_heap_stats_resume_values_as_runtime_lanes() {
         arity: 0,
         need: ExecutableNeed::Value,
     });
+    demand_backend_product(&mut compiler, root_id);
 
     let outcome = compiler.drive();
     assert!(
@@ -5570,6 +4093,7 @@ fn compiler2_backend_program_keeps_dbg_resumed_heap_stats_as_runtime_lanes() {
         arity: 0,
         need: ExecutableNeed::Value,
     });
+    demand_backend_product(&mut compiler, root_id);
 
     let outcome = compiler.drive();
     assert!(
@@ -6984,14 +5508,18 @@ fn compiler2_backend_program_revision_stays_stable_for_identical_recompute() {
         need: ExecutableNeed::Value,
     });
 
-    assert_resolved(compiler.drive(), "initial backend lowering should settle for quicksort");
     assert!(
-        compiler.demand(Job::LowerBackendProgram(root_id)),
-        "explicitly re-demanding unchanged backend lowering should enqueue one fresh derivation",
+        compiler.demand(Job::BuildBackendProduct(root_id)),
+        "backend product should be explicitly demandable"
+    );
+    assert_resolved(compiler.drive(), "initial backend product should settle for quicksort");
+    assert!(
+        compiler.demand(Job::BuildBackendProduct(root_id)),
+        "explicitly re-demanding unchanged backend product should enqueue one fresh derivation",
     );
     assert_resolved(
         compiler.drive(),
-        "re-lowering unchanged backend state should resolve without bumping the revision",
+        "rebuilding unchanged backend state should resolve without bumping the revision",
     );
 
     let records = backend.records(root_id);
@@ -7006,198 +5534,7 @@ fn compiler2_backend_program_revision_stays_stable_for_identical_recompute() {
     );
     assert_eq!(
         records[0].program, records[1].program,
-        "identical backend-program recomputation should produce byte-for-byte equal program facts",
-    );
-}
-
-#[test]
-fn compiler2_abi_ready_preserves_variadic_extern_marshals_and_integer_lanes() {
-    let tel = ConfiguredTelemetry::new();
-    let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function"], functions.handler());
-    let abi_ready = AbiReadyProgramCapture::new();
-    tel.attach(
-        &["fz", "compiler2", "abi_ready_program", "defined"],
-        abi_ready.handler(),
-    );
-
-    let mut compiler = Compiler2::new(&tel);
-    compiler.submit_code(CodeSubmission {
-        name: Some("fixtures/variadic_open_compiler2.fz".to_string()),
-        text: include_str!("../../fixtures2/00013_variadic_open.fz").to_string(),
-    });
-    let root_id = compiler.submit_root(RootSubmission {
-        module_name: None,
-        name: "main".to_string(),
-        arity: 0,
-        need: ExecutableNeed::Value,
-    });
-
-    assert_resolved(
-        compiler.drive(),
-        "ABI-ready projection should preserve extern marshals and derive raw integer lanes",
-    );
-
-    let program = abi_ready.last(root_id).program;
-    let main_id = function_id(&functions, "main", 0);
-    let open_id = function_id(&functions, "libc::open", 2);
-    let (_, open_plan) = abi_ready_executable(&program, open_id);
-    let (_, main_plan) = abi_ready_executable(&program, main_id);
-    assert_eq!(
-        open_plan.param_reprs,
-        vec![AbiValueRepr::ValueRef, AbiValueRepr::RawInt, AbiValueRepr::RawInt],
-        "variadic extern activations should expose the fixed and extra callsite lanes directly in ABI-ready form",
-    );
-    assert_eq!(
-        return_delivery_reprs(&program.transport, &open_plan.transport.executable),
-        vec![CodegenLaneRepr::RawInt],
-        "extern integer returns should be explicit raw integer return-delivery seam lanes",
-    );
-
-    let open_edge = main_plan
-        .call_edges
-        .values()
-        .find(|edge| {
-            local_call_target(&abi_ready_direct_edge(edge).callee)
-                .activation
-                .function
-                == open_id
-        })
-        .expect("ABI-ready call edge for libc::open");
-    assert_eq!(
-        abi_ready_direct_edge(open_edge).extern_marshals.as_deref(),
-        Some(&[ExternTy::CString, ExternTy::I64, ExternTy::I64][..]),
-        "ABI-ready call edges should preserve the frozen variadic marshal classes",
-    );
-    // The return contract is no longer duplicated on the call edge: it is read
-    // from the callee's transport-backed return-delivery seam facts.
-    assert_eq!(
-        local_call_target(&abi_ready_direct_edge(open_edge).callee)
-            .activation
-            .function,
-        open_id,
-        "the call edge resolves to libc::open, whose transport return facts carry the contract",
-    );
-}
-
-#[test]
-fn compiler2_emission_ready_preserves_variadic_extern_inventory_and_marshals() {
-    let tel = ConfiguredTelemetry::new();
-    let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function"], functions.handler());
-    let emission_ready = EmissionReadyProgramCapture::new();
-    tel.attach(
-        &["fz", "compiler2", "emission_ready_program", "defined"],
-        emission_ready.handler(),
-    );
-
-    let mut compiler = Compiler2::new(&tel);
-    compiler.submit_code(CodeSubmission {
-        name: Some("fixtures/variadic_open_compiler2.fz".to_string()),
-        text: include_str!("../../fixtures2/00013_variadic_open.fz").to_string(),
-    });
-    let root_id = compiler.submit_root(RootSubmission {
-        module_name: None,
-        name: "main".to_string(),
-        arity: 0,
-        need: ExecutableNeed::Value,
-    });
-
-    assert_resolved(
-        compiler.drive(),
-        "emission-ready projection should preserve the frozen variadic extern contract all the way to the final handoff",
-    );
-
-    let program = emission_ready.last(root_id).program;
-    let main_id = function_id(&functions, "main", 0);
-    let open_id = function_id(&functions, "libc::open", 2);
-    let (_, open_exec) = emission_ready_executable(&program, open_id);
-    let (_, main_exec) = emission_ready_executable(&program, main_id);
-    assert_eq!(
-        open_exec.param_reprs,
-        vec![AbiValueRepr::ValueRef, AbiValueRepr::RawInt, AbiValueRepr::RawInt],
-        "emission-ready inventory should preserve the fixed and variadic ABI lanes for libc::open",
-    );
-    assert_eq!(
-        return_delivery_reprs(&program.transport, &open_exec.transport.executable),
-        vec![CodegenLaneRepr::RawInt],
-        "emission-ready inventory should preserve the raw integer return lane for libc::open",
-    );
-
-    let open_edge = main_exec
-        .call_edges
-        .iter()
-        .find(|edge| {
-            program.executables[*local_call_target(&emission_ready_direct_edge(edge).callee)]
-                .key
-                .activation
-                .function
-                == open_id
-        })
-        .expect("emission-ready call edge for libc::open");
-    assert_eq!(
-        emission_ready_direct_edge(open_edge).extern_marshals.as_deref(),
-        Some(&[ExternTy::CString, ExternTy::I64, ExternTy::I64][..]),
-        "emission-ready call edges should preserve the frozen C marshal classes for a variadic extern callsite",
-    );
-    assert_eq!(
-        return_delivery_reprs(
-            &program.transport,
-            &program.executables[*local_call_target(&emission_ready_direct_edge(open_edge).callee)]
-                .transport
-                .executable,
-        ),
-        vec![CodegenLaneRepr::RawInt],
-        "emission-ready call edges should resolve through the callee inventory slot instead of re-deriving ABI",
-    );
-}
-
-#[test]
-fn compiler2_materialization_resolves_auto_variadic_marshals_from_value_types() {
-    let tel = ConfiguredTelemetry::new();
-    let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function"], functions.handler());
-    let materialized = MaterializedProgramCapture::new();
-    tel.attach(
-        &["fz", "compiler2", "materialized_program", "defined"],
-        materialized.handler(),
-    );
-
-    let mut compiler = Compiler2::new(&tel);
-    compiler.submit_code(CodeSubmission {
-        name: Some("fixtures/variadic_printf_compiler2.fz".to_string()),
-        text: include_str!("../../fixtures2/00021_variadic_printf.fz").to_string(),
-    });
-    let root_id = compiler.submit_root(RootSubmission {
-        module_name: None,
-        name: "main".to_string(),
-        arity: 0,
-        need: ExecutableNeed::Value,
-    });
-
-    assert_resolved(
-        compiler.drive(),
-        "materialization should resolve auto variadic marshal classes from settled caller value types",
-    );
-
-    let program = materialized.last(root_id).program;
-    let main_id = function_id(&functions, "main", 0);
-    let printf_id = function_id(&functions, "libc::printf", 1);
-    let (_, main_plan) = materialized_executable(&program, main_id);
-    let printf_edge = main_plan
-        .call_edges
-        .values()
-        .find(|edge| {
-            local_call_target(&materialized_direct_edge(edge).callee)
-                .activation
-                .function
-                == printf_id
-        })
-        .expect("materialized call edge for libc::printf");
-    assert_eq!(
-        materialized_direct_edge(printf_edge).extern_marshals.as_deref(),
-        Some(&[ExternTy::CString, ExternTy::I64][..]),
-        "a variadic extra integer should resolve to the I64 marshal class without an explicit ascription",
+        "identical backend-product recomputation should produce byte-for-byte equal program facts",
     );
 }
 
@@ -7336,7 +5673,7 @@ fn compiler2_semantic_analysis_derives_reachable_call_edges_and_tuple_return_nee
 }
 
 #[test]
-fn compiler2_materializes_closed_union_protocol_dispatch_as_call_edge() {
+fn compiler2_backend_product_lowers_closed_union_protocol_dispatch_as_call_edge() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
     tel.attach(&["fz", "diag", "error"], capture.handler());
@@ -7344,11 +5681,8 @@ fn compiler2_materializes_closed_union_protocol_dispatch_as_call_edge() {
     tel.attach(&["fz", "compiler2", "function"], functions.handler());
     let callsites = CallsiteCapture::new();
     tel.attach(&["fz", "compiler2", "callsite", "defined"], callsites.handler());
-    let materialized = MaterializedProgramCapture::new();
-    tel.attach(
-        &["fz", "compiler2", "materialized_program", "defined"],
-        materialized.handler(),
-    );
+    let backend = BackendProgramCapture::new();
+    tel.attach(&["fz", "compiler2", "backend_program", "defined"], backend.handler());
 
     let mut compiler = Compiler2::new(&tel);
     compiler.submit_code(CodeSubmission {
@@ -7383,17 +5717,21 @@ end
         arity: 0,
         need: ExecutableNeed::Value,
     });
+    assert!(
+        compiler.demand(Job::BuildBackendProduct(root_id)),
+        "closed-union protocol fixture should explicitly demand the backend product",
+    );
 
     match compiler.drive() {
         DriveOutcome::Resolved => {}
         DriveOutcome::Fatal { job } => panic!(
-            "closed-union protocol receivers should materialize as a dispatch call edge instead of dying with a missing direct edge: {job:?}; diag={:?}",
+            "closed-union protocol receivers should lower as a dispatch call edge instead of dying with a missing direct edge: {job:?}; diag={:?}",
             capture
                 .last(&["fz", "diag", "error"])
                 .map(|event| metadata_str(&event, "message").to_string())
         ),
         other => panic!(
-            "closed-union protocol receivers should materialize as a dispatch call edge instead of dying with a missing direct edge: {other:?}"
+            "closed-union protocol receivers should lower as a dispatch call edge instead of dying with a missing direct edge: {other:?}"
         ),
     }
 
@@ -7420,24 +5758,23 @@ end
         "describe/1 should record one semantic callsite fact with exactly two viable protocol impls",
     );
 
-    let program = materialized.last(root_id).program;
-    let (_, describe_exec) = materialized_executable(&program, describe_id);
-    let LoweredBody::Clauses { entries, .. } = &describe_exec.body else {
-        panic!("describe/1 should materialize as clauses");
+    let program = backend.last(root_id).program;
+    let (_, describe_exec) = backend_executable(&program, describe_id);
+    let crate::compiler2::BackendBody::Clauses { entries, .. } = &describe_exec.body else {
+        panic!("describe/1 should lower as clauses");
     };
-    let callsite = entries
+    let (callsite, edge) = entries
         .iter()
         .find_map(|entry| match &entry.tail {
-            LoweredTail::DirectCall { callsite, .. } => Some(*callsite),
+            BackendTail::DirectCall { callsite, target, .. } => Some((*callsite, target)),
             _ => None,
         })
-        .unwrap_or_else(|| panic!("materialized describe/1 should keep its original direct-call tail"));
-    let edge = describe_exec
-        .call_edges
-        .get(&callsite)
-        .unwrap_or_else(|| panic!("materialized call edge for describe/1 callsite {}", callsite.as_u32()));
-    let CallEdge::Dispatch(dispatch) = &edge.target else {
-        panic!("closed-union protocol receiver should materialize as a dispatch call edge");
+        .unwrap_or_else(|| panic!("backend describe/1 should keep its original direct-call tail"));
+    let CallEdge::Dispatch(dispatch) = edge else {
+        panic!(
+            "closed-union protocol receiver should lower as a dispatch call edge at callsite {}",
+            callsite.as_u32(),
+        );
     };
     assert_eq!(
         dispatch.plan.input_count, 1,
@@ -7446,22 +5783,23 @@ end
     assert_eq!(
         dispatch.arms.len(),
         2,
-        "closed-union protocol dispatch should materialize one call edge arm per viable impl",
+        "closed-union protocol dispatch should lower one call edge arm per viable impl",
     );
     let arm_targets = dispatch
         .arms
         .iter()
         .map(|arm| {
-            arm.callee
+            let index = arm
+                .callee
                 .local()
-                .expect("protocol dispatch arms should target local executables")
-                .activation
-                .function
+                .copied()
+                .unwrap_or_else(|| panic!("protocol dispatch arms should target local executables"));
+            program.executables[index].key.activation.function
         })
         .collect::<HashSet<_>>();
     assert_eq!(
         arm_targets, expected_targets,
-        "the dispatch call-edge arms should target the two settled impl executables from the semantic summary",
+        "the backend dispatch call-edge arms should target the two settled impl executables from the semantic summary",
     );
 }
 
@@ -7472,11 +5810,8 @@ fn compiler2_membership_operator_protocol_receivers_settle_to_direct_impls() {
     tel.attach(&["fz", "diag", "error"], capture.handler());
     let callsites = CallsiteCapture::new();
     tel.attach(&["fz", "compiler2", "callsite", "defined"], callsites.handler());
-    let materialized = MaterializedProgramCapture::new();
-    tel.attach(
-        &["fz", "compiler2", "materialized_program", "defined"],
-        materialized.handler(),
-    );
+    let backend = BackendProgramCapture::new();
+    tel.attach(&["fz", "compiler2", "backend_program", "defined"], backend.handler());
 
     let mut compiler = Compiler2::new(&tel);
     compiler.submit_code(CodeSubmission {
@@ -7489,48 +5824,54 @@ fn compiler2_membership_operator_protocol_receivers_settle_to_direct_impls() {
         arity: 0,
         need: ExecutableNeed::Value,
     });
+    assert!(
+        compiler.demand(Job::BuildBackendProduct(root_id)),
+        "membership operator fixture should explicitly demand the backend product",
+    );
 
     match compiler.drive() {
         DriveOutcome::Resolved => {}
         DriveOutcome::Fatal { job } => panic!(
-            "membership operator protocol calls should resolve without materialization failures: {job:?}; diag={:?}",
+            "membership operator protocol calls should resolve without backend-product failures: {job:?}; diag={:?}",
             capture
                 .last(&["fz", "diag", "error"])
                 .map(|event| metadata_str(&event, "message").to_string())
         ),
-        other => panic!("membership operator protocol calls should resolve through materialization, got {other:?}"),
+        other => panic!("membership operator protocol calls should resolve through backend lowering, got {other:?}"),
     }
 
-    let program = materialized.last(root_id).program;
+    let program = backend.last(root_id).program;
     let summaries = callsites.all();
     let mut found = false;
-    for (key, executable) in &program.executables {
-        for (callsite, edge) in &executable.call_edges {
-            let CallEdge::Dispatch(dispatch) = &edge.target else {
+    for executable in &program.executables {
+        let crate::compiler2::BackendBody::Clauses { entries, .. } = &executable.body else {
+            continue;
+        };
+        for entry in entries {
+            let BackendTail::DirectCall { callsite, target, .. } = &entry.tail else {
+                continue;
+            };
+            let CallEdge::Dispatch(dispatch) = target else {
                 continue;
             };
             let Some(summary) = summaries
                 .iter()
                 .rev()
-                .find(|record| record.key.activation == key.activation && record.key.callsite == *callsite)
+                .find(|record| record.key.activation == executable.key.activation && record.key.callsite == *callsite)
             else {
                 continue;
             };
             assert!(
                 dispatch.arms.len() > 1,
-                "multi-target summary should materialize as a multi-arm dispatch edge",
-            );
-            assert_eq!(
-                Some(edge.return_ty),
-                summary.summary.return_ty,
-                "dispatch call edges should use the summary-level joined return type, not require every arm return Ty to match",
+                "multi-target summary should lower as a multi-arm dispatch edge: {:?}",
+                summary.summary,
             );
             found = true;
         }
     }
     assert!(
         !found,
-        "membership_operator should now settle each protocol receiver to a direct impl instead of materializing a spurious dispatch edge",
+        "membership_operator should now settle each protocol receiver to a direct impl instead of lowering a spurious dispatch edge",
     );
 }
 
@@ -10242,25 +8583,6 @@ struct SemanticClosedRecord {
 }
 
 #[derive(Debug, Clone)]
-struct MaterializedProgramRecord {
-    root_id: crate::compiler2::RootId,
-    program: MaterializedProgram,
-}
-
-#[derive(Debug, Clone)]
-struct AbiReadyProgramRecord {
-    root_id: crate::compiler2::RootId,
-    program: AbiReadyProgram,
-}
-
-#[derive(Debug, Clone)]
-struct EmissionReadyProgramRecord {
-    root_id: crate::compiler2::RootId,
-    changed: bool,
-    program: EmissionReadyProgram,
-}
-
-#[derive(Debug, Clone)]
 struct BackendProgramRecord {
     root_id: crate::compiler2::RootId,
     changed: bool,
@@ -10298,18 +8620,6 @@ struct SemanticClosedCapture {
 
 struct ReturnTypeCapture {
     defs: ReturnTypeDefs,
-}
-
-struct MaterializedProgramCapture {
-    defs: MaterializedProgramDefs,
-}
-
-struct AbiReadyProgramCapture {
-    defs: AbiReadyProgramDefs,
-}
-
-struct EmissionReadyProgramCapture {
-    defs: EmissionReadyProgramDefs,
 }
 
 struct BackendProgramCapture {
@@ -10604,87 +8914,6 @@ impl ReturnTypeCapture {
     }
 }
 
-impl MaterializedProgramCapture {
-    fn new() -> Self {
-        Self {
-            defs: Rc::new(RefCell::new(Vec::new())),
-        }
-    }
-
-    fn handler(&self) -> Box<dyn Handler> {
-        Box::new(MaterializedProgramCaptureHandler {
-            defs: self.defs.clone(),
-        })
-    }
-
-    fn last(&self, root_id: crate::compiler2::RootId) -> MaterializedProgramRecord {
-        self.defs
-            .borrow()
-            .iter()
-            .rev()
-            .find(|record| record.root_id == root_id)
-            .cloned()
-            .unwrap_or_else(|| panic!("materialized_program.defined for {root_id:?}"))
-    }
-}
-
-impl AbiReadyProgramCapture {
-    fn new() -> Self {
-        Self {
-            defs: Rc::new(RefCell::new(Vec::new())),
-        }
-    }
-
-    fn handler(&self) -> Box<dyn Handler> {
-        Box::new(AbiReadyProgramCaptureHandler {
-            defs: self.defs.clone(),
-        })
-    }
-
-    fn last(&self, root_id: crate::compiler2::RootId) -> AbiReadyProgramRecord {
-        self.defs
-            .borrow()
-            .iter()
-            .rev()
-            .find(|record| record.root_id == root_id)
-            .cloned()
-            .unwrap_or_else(|| panic!("abi_ready_program.defined for {root_id:?}"))
-    }
-}
-
-impl EmissionReadyProgramCapture {
-    fn new() -> Self {
-        Self {
-            defs: Rc::new(RefCell::new(Vec::new())),
-        }
-    }
-
-    fn handler(&self) -> Box<dyn Handler> {
-        Box::new(EmissionReadyProgramCaptureHandler {
-            defs: self.defs.clone(),
-        })
-    }
-
-    fn last(&self, root_id: crate::compiler2::RootId) -> EmissionReadyProgramRecord {
-        self.defs
-            .borrow()
-            .iter()
-            .rev()
-            .find(|record| record.root_id == root_id)
-            .cloned()
-            .unwrap_or_else(|| panic!("emission_ready_program.defined for {root_id:?}"))
-    }
-
-    fn records(&self, root_id: crate::compiler2::RootId) -> Vec<EmissionReadyProgramRecord> {
-        self.defs
-            .borrow()
-            .iter()
-            .filter(|record| record.root_id == root_id)
-            .cloned()
-            .collect()
-    }
-}
-
 impl BackendProgramCapture {
     fn new() -> Self {
         Self {
@@ -10880,18 +9109,6 @@ struct SemanticClosedCaptureHandler {
 
 struct ReturnTypeCaptureHandler {
     defs: ReturnTypeDefs,
-}
-
-struct MaterializedProgramCaptureHandler {
-    defs: MaterializedProgramDefs,
-}
-
-struct AbiReadyProgramCaptureHandler {
-    defs: AbiReadyProgramDefs,
-}
-
-struct EmissionReadyProgramCaptureHandler {
-    defs: EmissionReadyProgramDefs,
 }
 
 struct BackendProgramCaptureHandler {
@@ -11168,91 +9385,6 @@ impl Handler for ReturnTypeCaptureHandler {
     }
 }
 
-impl Handler for MaterializedProgramCaptureHandler {
-    fn handle(&self, event: &Event<'_, '_, '_>) {
-        if event.name != ["fz", "compiler2", "materialized_program", "defined"] || event.kind != EventKind::Event {
-            return;
-        }
-        let Some(root_id) = event
-            .metadata
-            .get("root_id")
-            .and_then(|v| v.downcast_ref::<crate::compiler2::RootId>())
-            .copied()
-        else {
-            return;
-        };
-        let Some(program) = event
-            .metadata
-            .get("program")
-            .and_then(|value| value.downcast_ref::<MaterializedProgram>())
-        else {
-            return;
-        };
-        self.defs.borrow_mut().push(MaterializedProgramRecord {
-            root_id,
-            program: program.clone(),
-        });
-    }
-}
-
-impl Handler for AbiReadyProgramCaptureHandler {
-    fn handle(&self, event: &Event<'_, '_, '_>) {
-        if event.name != ["fz", "compiler2", "abi_ready_program", "defined"] || event.kind != EventKind::Event {
-            return;
-        }
-        let Some(root_id) = event
-            .metadata
-            .get("root_id")
-            .and_then(|v| v.downcast_ref::<crate::compiler2::RootId>())
-            .copied()
-        else {
-            return;
-        };
-        let Some(program) = event
-            .metadata
-            .get("program")
-            .and_then(|value| value.downcast_ref::<AbiReadyProgram>())
-        else {
-            return;
-        };
-        self.defs.borrow_mut().push(AbiReadyProgramRecord {
-            root_id,
-            program: program.clone(),
-        });
-    }
-}
-
-impl Handler for EmissionReadyProgramCaptureHandler {
-    fn handle(&self, event: &Event<'_, '_, '_>) {
-        if event.name != ["fz", "compiler2", "emission_ready_program", "defined"] || event.kind != EventKind::Event {
-            return;
-        }
-        let Some(root_id) = event
-            .metadata
-            .get("root_id")
-            .and_then(|v| v.downcast_ref::<crate::compiler2::RootId>())
-            .copied()
-        else {
-            return;
-        };
-        let Some(Value::U64(changed)) = event.measurements.get("changed") else {
-            return;
-        };
-        let Some(program) = event
-            .metadata
-            .get("program")
-            .and_then(|value| value.downcast_ref::<EmissionReadyProgram>())
-        else {
-            return;
-        };
-        self.defs.borrow_mut().push(EmissionReadyProgramRecord {
-            root_id,
-            changed: *changed != 0,
-            program: program.clone(),
-        });
-    }
-}
-
 impl Handler for BackendProgramCaptureHandler {
     fn handle(&self, event: &Event<'_, '_, '_>) {
         if event.name != ["fz", "compiler2", "backend_program", "defined"] || event.kind != EventKind::Event {
@@ -11465,71 +9597,6 @@ fn local_call_target<T>(target: &CallTarget<T>) -> &T {
             panic!("expected local call target, got provider-boundary function {function:?}")
         }
     }
-}
-
-fn materialized_direct_edge(edge: &MaterializedCallEdge) -> &DirectCallEdge<ExecutableKey> {
-    match &edge.target {
-        CallEdge::Direct(direct) => direct,
-        CallEdge::Dispatch(_) => panic!("expected materialized direct call edge, got dispatch"),
-    }
-}
-
-fn abi_ready_direct_edge(edge: &AbiReadyCallEdge) -> &DirectCallEdge<ExecutableKey> {
-    match &edge.target {
-        CallEdge::Direct(direct) => direct,
-        CallEdge::Dispatch(_) => panic!("expected ABI-ready direct call edge, got dispatch"),
-    }
-}
-
-fn emission_ready_direct_edge(edge: &EmissionReadyCallEdge) -> &DirectCallEdge<usize> {
-    match &edge.target {
-        CallEdge::Direct(direct) => direct,
-        CallEdge::Dispatch(_) => panic!("expected emission-ready direct call edge, got dispatch"),
-    }
-}
-
-fn materialized_executable(
-    program: &MaterializedProgram,
-    function: FunctionId,
-) -> (&ExecutableKey, &crate::compiler2::MaterializedExecutable) {
-    program
-        .executables
-        .iter()
-        .find(|(key, _)| key.activation.function == function)
-        .unwrap_or_else(|| panic!("materialized executable for {function:?}"))
-}
-
-fn abi_ready_executable(
-    program: &AbiReadyProgram,
-    function: FunctionId,
-) -> (&ExecutableKey, &crate::compiler2::AbiReadyExecutable) {
-    program
-        .executables
-        .iter()
-        .find(|(key, _)| key.activation.function == function)
-        .unwrap_or_else(|| panic!("ABI-ready executable for {function:?}"))
-}
-
-fn abi_ready_callable_entries(program: &AbiReadyProgram, function: FunctionId) -> Vec<&CallableEntry> {
-    let entries = program
-        .callable_entries
-        .iter()
-        .filter(|entry| entry.target.activation.function == function)
-        .collect::<Vec<_>>();
-    assert!(!entries.is_empty(), "ABI-ready callable entries for {function:?}");
-    entries
-}
-
-fn emission_ready_executable(
-    program: &EmissionReadyProgram,
-    function: FunctionId,
-) -> (usize, &crate::compiler2::EmissionReadyExecutable) {
-    program
-        .executables
-        .iter()
-        .enumerate()
-        .find(|(_, executable)| executable.key.activation.function == function)
-        .unwrap_or_else(|| panic!("emission-ready executable for {function:?}"))
 }
 
 fn backend_executable(program: &BackendProgram, function: FunctionId) -> (usize, &crate::compiler2::BackendExecutable) {
@@ -12106,13 +10173,7 @@ fn drive_until_fact(world: &mut World<'_>, fact: FactKey, demand: Job, message: 
 fn is_after_fact_consumer(job: &Job, fact: &FactKey) -> bool {
     matches!(
         (job, fact),
-        (Job::DeriveEmissionReady(candidate), FactKey::AbiReadyProgram(root))
-            | (Job::LowerBackendProgram(candidate), FactKey::AbiReadyProgram(root))
-            | (Job::LowerNativeProgram(candidate), FactKey::AbiReadyProgram(root))
-            | (Job::MaterializeRoot(candidate), FactKey::SemanticClosed(root))
-            | (Job::DeriveAbiReady(candidate), FactKey::SemanticClosed(root))
-            | (Job::DeriveEmissionReady(candidate), FactKey::SemanticClosed(root))
-            | (Job::LowerBackendProgram(candidate), FactKey::SemanticClosed(root))
+        (Job::BuildBackendProduct(candidate), FactKey::SemanticClosed(root))
             | (Job::LowerNativeProgram(candidate), FactKey::SemanticClosed(root))
             if candidate == root
     )

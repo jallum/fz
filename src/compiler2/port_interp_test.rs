@@ -119,7 +119,7 @@ fn zero_capture_lambda_no_heap_alloc() {
 
 // Ported from src/ir_interp/tests/typed_slot.rs: lambda capturing outer variable executes correctly with capture
 #[test]
-#[ignore = "compiler2 DeriveAbiReady fatal on captured-lambda fixture — unblock when closure ABI is wired"]
+#[ignore = "compiler2 backend product fatal on captured-lambda fixture - unblock when closure ABI is wired"]
 fn lambda_capturing_outer_variable_allocates_closure() {
     let tel = ConfiguredTelemetry::new();
     let mut compiler = Compiler2::new(&tel);

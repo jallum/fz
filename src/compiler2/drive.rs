@@ -40,10 +40,7 @@ pub enum Job {
     SealSemanticClosure(RootId),
     DeriveExecutableTransport(ExecutableKey),
     DeriveTransportPlan(RootId),
-    MaterializeRoot(RootId),
-    DeriveAbiReady(RootId),
-    DeriveEmissionReady(RootId),
-    LowerBackendProgram(RootId),
+    BuildBackendProduct(RootId),
     LowerNativeProgram(RootId),
 }
 
@@ -82,9 +79,6 @@ pub enum FactKey {
     SemanticClosed(RootId),
     ExecutableTransport(ExecutableKey),
     TransportPlan(RootId),
-    MaterializedProgram(RootId),
-    AbiReadyProgram(RootId),
-    EmissionReadyProgram(RootId),
     BackendProgram(RootId),
     NativeProgram(RootId),
 }

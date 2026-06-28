@@ -75,7 +75,7 @@ fn closure_with_captures_registers_typed_callable_entry() {
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    let _ = compiler.drive(); // DeriveAbiReady: pre-existing pipeline gap
+    let _ = compiler.drive(); // backend product: pre-existing pipeline gap
     // TODO: materialized program should have a one-capture wrapper callable entry for the lambda reducer
 }
 
@@ -496,7 +496,7 @@ fn enum_reduce_over_range_converges_to_int() {
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    let _ = compiler.drive(); // DeriveAbiReady: pre-existing pipeline gap for Range Enumerable
+    let _ = compiler.drive(); // backend product: pre-existing pipeline gap for Range Enumerable
     // TODO: Enum.reduce should have known int projection; Enumerable.Range.reduce known({:done, int})
 }
 
@@ -795,7 +795,7 @@ fn enum_count_on_range_returns_integer_per_declared_spec() {
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    let _ = compiler.drive(); // DeriveAbiReady: pre-existing pipeline gap for Range Enumerable
+    let _ = compiler.drive(); // backend product: pre-existing pipeline gap for Range Enumerable
     // TODO: declared return fact for Enum.count(range) should be integer
 }
 
@@ -814,7 +814,7 @@ fn enum_take_on_mixed_inputs_specializes_for_each_type() {
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    let _ = compiler.drive(); // DeriveAbiReady: pre-existing pipeline gap for Range Enumerable
+    let _ = compiler.drive(); // backend product: pre-existing pipeline gap for Range Enumerable
     // TODO: Enum.take specs should include a Range specialization for the range input
 }
 
@@ -833,7 +833,7 @@ fn enum_reduce_runtime_graph_reducer_returns_non_empty_type() {
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    let _ = compiler.drive(); // DeriveAbiReady: pre-existing pipeline gap for enum_take_drop_split
+    let _ = compiler.drive(); // backend product: pre-existing pipeline gap for enum_take_drop_split
     // TODO: declared return fact for Enum.reduce in Enum.drop_positive should be non-bottom
 }
 

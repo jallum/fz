@@ -129,7 +129,7 @@ internals:
 
 ```text
 cargo test --lib compiler2::drive_test::compiler2_enum_reduce_selects_list_protocol_impl_and_callable_reducer
-cargo test --lib compiler2::drive_test::compiler2_materialization_freezes_only_the_selected_enum_reduce_path
+cargo test --lib compiler2::drive_test::compiler2_backend_program_keeps_direct_only_enum_reduce_out_of_callable_inventory
 cargo test --lib compiler2::world_test::compiler2_resolve_spec_resolves_types_shapes_and_constraints_against_the_captured_namespace
 cargo test --test fixture_matrix enumerable_protocol_dispatch
 cargo test --lib compiler2::types::arrow_match

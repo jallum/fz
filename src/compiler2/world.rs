@@ -21,9 +21,7 @@ use crate::{FunctionSurface, measurements, metadata};
 
 use super::CodeId;
 use super::artifact::{
-    AbiReadyProgram, AbiReadyProgramMap, BackendProgram, BackendProgramMap, EmissionReadyProgram,
-    EmissionReadyProgramMap, MacroExecutable, MacroExecutableMap, MaterializedProgram, MaterializedProgramMap,
-    NativeProgram, NativeProgramMap,
+    BackendProgram, BackendProgramMap, MacroExecutable, MacroExecutableMap, NativeProgram, NativeProgramMap,
 };
 use super::body::{LoweredBody, LoweredBodyMap};
 use super::code::{CodeMap, CodeState, QuotedCodeSource};
@@ -239,9 +237,6 @@ pub struct World<'a> {
     callsites: CallSiteMap,
     callsite_targets: CallSiteTargetsMap,
     semantic_closures: SemanticClosureMap,
-    artifacts: MaterializedProgramMap,
-    abi_ready: AbiReadyProgramMap,
-    emission_ready: EmissionReadyProgramMap,
     backend: BackendProgramMap,
     macro_executables: MacroExecutableMap,
     native: NativeProgramMap,
@@ -309,9 +304,6 @@ impl<'a> World<'a> {
             callsites: CallSiteMap::new(),
             callsite_targets: CallSiteTargetsMap::new(),
             semantic_closures: SemanticClosureMap::new(),
-            artifacts: MaterializedProgramMap::new(),
-            abi_ready: AbiReadyProgramMap::new(),
-            emission_ready: EmissionReadyProgramMap::new(),
             backend: BackendProgramMap::new(),
             macro_executables: MacroExecutableMap::new(),
             native: NativeProgramMap::new(),
@@ -1396,105 +1388,6 @@ impl<'a> World<'a> {
             }
         }
         changed
-    }
-
-    pub(crate) fn define_materialized_program(&mut self, root: RootId, program: MaterializedProgram) -> bool {
-        let changed = self.artifacts.define(root, program);
-        let program = self
-            .artifacts
-            .get(root)
-            .expect("materialized programs should be readable right after they are defined");
-        self.tel.execute(
-            &["fz", "compiler2", "materialized_program", "defined"],
-            &measurements! {
-                root_id: root.as_u32(),
-                executable_count: program.executables.len(),
-            },
-            &metadata! {
-                program: opaque_debug(program),
-                root_id: opaque_debug(&root),
-            },
-        );
-        changed
-    }
-
-    pub(crate) fn materialized_program(&self, root: RootId) -> MaterializedProgram {
-        self.artifacts
-            .get(root)
-            .cloned()
-            .expect("materialized programs should only be read after their fact is defined")
-    }
-
-    pub(crate) fn define_abi_ready_program(&mut self, root: RootId, program: AbiReadyProgram) -> bool {
-        let changed = self.abi_ready.define(root, program);
-        let program = self
-            .abi_ready
-            .get(root)
-            .expect("ABI-ready programs should be readable right after they are defined");
-        let omitted_inputs = program
-            .executables
-            .values()
-            .flat_map(|executable| executable.transport.input_positions.iter())
-            .filter(|position| {
-                program.transport.position_shapes.iter().any(|(candidate, shape)| {
-                    candidate == *position
-                        && matches!(
-                            self.transport.interners().shape(*shape),
-                            super::transport::ShapeDescr::Nothing
-                        )
-                })
-            })
-            .count() as u64;
-        self.tel.execute(
-            &["fz", "compiler2", "abi_ready_program", "defined"],
-            &measurements! {
-                root_id: root.as_u32(),
-                executable_count: program.executables.len(),
-                callable_entry_count: program.callable_entries.len(),
-                omitted_inputs: omitted_inputs,
-            },
-            &metadata! {
-                program: opaque_debug(program),
-                root_id: opaque_debug(&root),
-            },
-        );
-        changed
-    }
-
-    pub(crate) fn abi_ready_program(&self, root: RootId) -> AbiReadyProgram {
-        self.abi_ready
-            .get(root)
-            .cloned()
-            .expect("ABI-ready programs should only be read after their fact is defined")
-    }
-
-    pub(crate) fn define_emission_ready_program(&mut self, root: RootId, program: EmissionReadyProgram) -> bool {
-        let changed = self.emission_ready.define(root, program);
-        let program = self
-            .emission_ready
-            .get(root)
-            .expect("emission-ready programs should be readable right after they are defined");
-        self.tel.execute(
-            &["fz", "compiler2", "emission_ready_program", "defined"],
-            &measurements! {
-                root_id: root.as_u32(),
-                executable_count: program.executables.len(),
-                callable_entry_count: program.callable_entries.len(),
-                changed: changed as u64,
-            },
-            &metadata! {
-                program: opaque_debug(program),
-                root_id: opaque_debug(&root),
-            },
-        );
-        changed
-    }
-
-    pub(crate) fn emission_ready_program(&self, root: RootId) -> EmissionReadyProgram {
-        self.emission_ready
-            .get(root)
-            .cloned()
-            .expect("emission-ready programs should only be read after their fact is defined")
     }
 
     pub(crate) fn define_backend_program(&mut self, root: RootId, program: BackendProgram) -> bool {

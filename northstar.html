@@ -338,12 +338,12 @@
     DeriveRecursive(FunctionId),
     DeriveDispatchMask(FunctionId),
     SeedRoot(RootId),
-    AnalyzeActivation(ActivationKey),
-    SealSemanticClosure(RootId),
-    MaterializeRoot(RootId),
-    DeriveAbiReady(RootId),
-    DeriveEmissionReady(RootId),
-}</code></pre>
+	    AnalyzeActivation(ActivationKey),
+	    SealSemanticClosure(RootId),
+	    DeriveTransportPlan(RootId),
+	    BuildBackendProduct(RootId),
+	    LowerNativeProgram(RootId),
+	}</code></pre>
       <p>
         <code>ScopeCode</code> then walks the parsed items in source order. The first pass reserves
         local functions and child modules so later definitions can reference them. The second pass
@@ -1071,12 +1071,11 @@ ReturnType(root, lambda#reduce_sum/2, [int, int]) = int</code></pre>
       <h2>Observability And Guideposts</h2>
       <p>
         Telemetry carries raw ids, facts, and opaque structures. Formatting belongs in handlers.
-        The compiler surface emits spans for <code>drive</code> and each <code>job</code>, plus
-        state-defining events such as <code>function.defined</code>,
-        <code>callsite.defined</code>, <code>semantic_closed.defined</code>,
-        <code>materialized_program.defined</code>, <code>abi_ready_program.defined</code>, and
-        <code>emission_ready_program.defined</code>. Tests observe those events instead of poking
-        through world internals.
+	        The compiler surface emits spans for <code>drive</code> and each <code>job</code>, plus
+	        state-defining events such as <code>function.defined</code>,
+	        <code>callsite.defined</code>, <code>semantic_closed.defined</code>,
+	        <code>backend_program.defined</code>, and <code>native_program.defined</code>. Tests
+	        observe those events instead of poking through world internals.
       </p>
       <div class="grid">
         <div class="card">
@@ -1084,7 +1083,7 @@ ReturnType(root, lambda#reduce_sum/2, [int, int]) = int</code></pre>
           <p>
             <code>src/compiler2/drive_test.rs</code> is the fast contract surface. The quicksort,
             <code>Enum.reduce</code>, and variadic-extern tests assert finite closure size, exact
-            reached callsites, absence of cold helpers, and the one-way artifact ladder.
+	            reached callsites, absence of cold helpers, and the pulled backend/native products.
           </p>
           <p class="small">
             Useful rerun: <code>cargo test --lib compiler2_ -- --nocapture</code>

@@ -889,15 +889,16 @@ impl<'a> ProductDriver<'a> {
                 }
                 if !settled {
                     self.session.discard_product_side_effects(&key);
-                    self.emit("waited", &key, 1);
-                    return PullOutcome::Waiting(vec![PullWait::Product(key)]);
+                    let waits = vec![PullWait::Product(key.clone())];
+                    self.emit_waited(&key, &waits);
+                    return PullOutcome::Waiting(waits);
                 }
                 self.emit("produced", &key, 0);
                 PullOutcome::Produced(value)
             }
             PullOutcome::Waiting(waits) => {
                 self.session.memo.unblock(&key);
-                self.emit("waited", &key, waits.len());
+                self.emit_waited(&key, &waits);
                 PullOutcome::Waiting(waits)
             }
         }
@@ -912,6 +913,20 @@ impl<'a> ProductDriver<'a> {
             &metadata! {
                 kind: key.kind(),
                 product: opaque_debug(key),
+            },
+        );
+    }
+
+    fn emit_waited(&self, key: &ProductKey, waits: &Vec<PullWait>) {
+        self.tel.execute(
+            &["fz", "compiler2", "pull", "product", "waited"],
+            &measurements! {
+                wait_count: waits.len(),
+            },
+            &metadata! {
+                kind: key.kind(),
+                product: opaque_debug(key),
+                waits: opaque_debug(waits),
             },
         );
     }

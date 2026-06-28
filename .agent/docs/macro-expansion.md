@@ -198,8 +198,8 @@ The job:
 1. waits for `FunctionDefined(function)`
 2. checks that the function surface is actually `is_macro`
 3. asks `World::macro_root(function)` for the hidden compile-time root
-4. waits on `BackendProgram(root)` with follow-up
-   `SeedRoot(root), LowerBackendProgram(root)`
+4. waits on `BackendProgram(root)` with producers
+   `SeedRoot(root), BuildBackendProduct(root)`
 5. publishes `MacroExecutable(function)`
 
 `World::macro_root(function)` builds a `RootEntry` with:
@@ -210,8 +210,8 @@ The job:
 - one `Any` slot per user-visible macro argument
 
 So macros share ordinary function definition, ordinary body lowering, and the
-ordinary backend artifact ladder. The special part is the hidden compile-time
-root and its ABI shape.
+ordinary backend product path. The special part is the hidden compile-time root
+and its ABI shape.
 
 ## How Macro Bodies Are Lowered
 

@@ -1,16 +1,12 @@
 //! Compiler2's artifact-side program projections.
 //!
-//! `MaterializedProgram` is the first backend-owned snapshot for one closed
-//! root. `AbiReadyProgram` is the next projection above it: the same closed
-//! executable frontier with ABI lanes and return contracts made explicit.
-//! `EmissionReadyProgram` is the final closed executable inventory before
-//! backend lowering. `BackendProgram` is the interpreter-ready handoff: the
-//! same closed inventory with settled clause-entry dispatch, direct
-//! executable references, callable-boundary obligations, and concrete extern
-//! wire classes attached to structured function bodies. Native codegen needs
-//! one more Compiler2-owned projection above that: `NativeProgram`, a
-//! codegen-ready CPS/native handoff that carries only backend-consumption
-//! facts and never rebuilds `ModulePlan`, `PlannedProgram`, or `AbiFacts`.
+//! `BackendProgram` is the interpreter-ready handoff for one root: a pulled
+//! executable inventory with settled clause-entry dispatch, direct executable
+//! references, callable-boundary obligations, and concrete extern wire classes
+//! attached to structured function bodies. Native codegen needs one more
+//! Compiler2-owned projection above that: `NativeProgram`, a codegen-ready
+//! CPS/native handoff that carries only backend-consumption facts and never
+//! rebuilds `ModulePlan`, `PlannedProgram`, or `AbiFacts`.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -55,15 +51,6 @@ impl<T: Copy> CallTarget<T> {
     pub fn copied_local(&self) -> Option<T> {
         self.local().copied()
     }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct MaterializedProgram {
-    pub semantic_revision: u64,
-    pub transport_revision: u64,
-    pub entry: ExecutableKey,
-    pub transport: MaterializedTransportPlan,
-    pub executables: HashMap<ExecutableKey, MaterializedExecutable>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -185,28 +172,8 @@ pub enum CallReturnFlow {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct AbiReadyProgram {
-    pub materialized_revision: u64,
-    pub transport_revision: u64,
-    pub entry: ExecutableKey,
-    pub transport: MaterializedTransportPlan,
-    pub executables: HashMap<ExecutableKey, AbiReadyExecutable>,
-    pub callable_entries: Vec<CallableEntry>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct EmissionReadyProgram {
-    pub abi_ready_revision: u64,
-    pub transport_revision: u64,
-    pub entry: usize,
-    pub transport: MaterializedTransportPlan,
-    pub executables: Vec<EmissionReadyExecutable>,
-    pub callable_entries: Vec<EmissionReadyCallableEntry>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
 pub struct BackendProgram {
-    pub emission_ready_revision: u64,
+    pub backend_revision: u64,
     pub transport_revision: u64,
     pub entry: usize,
     pub transport: MaterializedTransportPlan,
@@ -824,21 +791,6 @@ struct RootProjectionMap<T> {
 }
 
 #[derive(Debug, Default)]
-pub struct MaterializedProgramMap {
-    inner: RootProjectionMap<MaterializedProgram>,
-}
-
-#[derive(Debug, Default)]
-pub struct AbiReadyProgramMap {
-    inner: RootProjectionMap<AbiReadyProgram>,
-}
-
-#[derive(Debug, Default)]
-pub struct EmissionReadyProgramMap {
-    inner: RootProjectionMap<EmissionReadyProgram>,
-}
-
-#[derive(Debug, Default)]
 pub struct BackendProgramMap {
     inner: RootProjectionMap<BackendProgram>,
 }
@@ -851,48 +803,6 @@ pub(crate) struct MacroExecutableMap {
 #[derive(Debug, Default)]
 pub(crate) struct NativeProgramMap {
     slots: Vec<ProjectionState<NativeProgram>>,
-}
-
-impl MaterializedProgramMap {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn define(&mut self, root: RootId, program: MaterializedProgram) -> bool {
-        self.inner.define(root, program)
-    }
-
-    pub fn get(&self, root: RootId) -> Option<&MaterializedProgram> {
-        self.inner.get(root)
-    }
-}
-
-impl AbiReadyProgramMap {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn define(&mut self, root: RootId, program: AbiReadyProgram) -> bool {
-        self.inner.define(root, program)
-    }
-
-    pub fn get(&self, root: RootId) -> Option<&AbiReadyProgram> {
-        self.inner.get(root)
-    }
-}
-
-impl EmissionReadyProgramMap {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn define(&mut self, root: RootId, program: EmissionReadyProgram) -> bool {
-        self.inner.define(root, program)
-    }
-
-    pub fn get(&self, root: RootId) -> Option<&EmissionReadyProgram> {
-        self.inner.get(root)
-    }
 }
 
 impl BackendProgramMap {

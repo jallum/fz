@@ -100,10 +100,7 @@ fn job_kind_name(job: &Job) -> &'static str {
         SealSemanticClosure(_) => "SealSemanticClosure",
         DeriveExecutableTransport(_) => "DeriveExecutableTransport",
         DeriveTransportPlan(_) => "DeriveTransportPlan",
-        MaterializeRoot(_) => "MaterializeRoot",
-        DeriveAbiReady(_) => "DeriveAbiReady",
-        DeriveEmissionReady(_) => "DeriveEmissionReady",
-        LowerBackendProgram(_) => "LowerBackendProgram",
+        BuildBackendProduct(_) => "BuildBackendProduct",
         LowerNativeProgram(_) => "LowerNativeProgram",
     }
 }
