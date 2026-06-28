@@ -153,9 +153,6 @@ fn drive_product_fact_wait(world: &mut World<'_>, root_id: RootId, fact: FactUse
             ));
         }
     }
-    for job in deferred {
-        world.demand(job);
-    }
     Ok(())
 }
 

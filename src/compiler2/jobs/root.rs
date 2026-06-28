@@ -79,7 +79,9 @@ pub(super) fn seed_root(world: &mut World<'_>, root_id: RootId) -> Result<JobEff
     follow_up.push(Job::LowerFunction(root.function));
     follow_up.push(Job::PlanEntryDispatch(root.function));
     follow_up.push(Job::AnalyzeActivation(entry_activation.clone()));
-    follow_up.push(Job::SealSemanticClosure(root_id));
+    if root.kind != RootKind::Macro {
+        follow_up.push(Job::SealSemanticClosure(root_id));
+    }
     Ok(JobEffects {
         reads: settled_uses(reads),
         outputs,
