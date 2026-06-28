@@ -4,14 +4,16 @@
   "blocks": [
     "fz-go4.17.4"
   ],
+  "closed_at": "2026-06-28T17:50:12Z",
+  "close_reason": "Implemented honest pull forbidden-work telemetry. Replaced write-never PullSession root_scans/follow_ups with producer_pokes wired to product fact producer demands, instrumented root_executable_frontier as legacy telemetry, and updated product tests. Verification: cargo test -q --lib compiler2_pull_; cargo test -q --lib pull; cargo test -q --lib pull_session_finished_telemetry_reports_producer_pokes; cargo test -q --lib root_executable_frontier_emits_legacy_scan_telemetry; 00181 --log-telemetry showed submitted root producer_pokes=0 and legacy_root_frontier_events=0; pre-commit cargo fmt/check/clippy.",
   "created": "2026-06-28T15:52:27Z",
   "description": "Goal\nMake the pull artifact path measurable enough that zero means zero. The current PullSession root_scans/follow_ups counters are emitted but never incremented, so they do not prove absence of pass-shaped work or producer pokes.\n\nSignal\nFor fixtures2/00181_enum_reduce_operator_ref.fz no-dump interp, telemetry distinguishes public compiler jobs from product-internal forbidden work. Tests fail if the product path calls root_executable_frontier, consumes root TransportPlan as a dependency, scans fact tables for executable inclusion, or asks a consumer to schedule a producer. Product session counters are backed by increment sites and stay zero only when no such work occurred.\n\nStrategy\nAdd narrow instrumentation at the dangerous APIs and product driver boundaries before changing behavior: root executable frontier/fact-table scans, product fact producer pokes, legacy root transport/semantic dependency reads, and any product helper that expands a collection to discover work. Keep measurement names precise enough to tell local component iteration from root/global discovery.\n\nRemoval steps\n- Delete the current write-never PullSession root_scans/follow_ups fields or replace them with counters that are incremented at every guarded dangerous API.\n- Remove tests that assert those counters are zero unless the test also proves the relevant increment sites are wired.\n- Do not leave duplicate “temporary” counters beside the real counters. One signal source only.\n- If a dangerous API must remain for legacy diagnostics, wrap it in an explicitly named legacy path and emit telemetry when used.\n\nVerification\ncargo test -q --lib compiler2_pull_; focused telemetry test for 00181 asserting honest zero counters; post-process --log-telemetry no-dump interp and report job counts plus product forbidden-work counters.",
   "id": "fz-go4.17.3",
   "labels": [],
   "parent": "fz-go4.17",
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Pull path: make forbidden-work telemetry honest",
   "type": "bug",
-  "updated_at": "2026-06-28T17:44:40Z"
+  "updated_at": "2026-06-28T17:50:12Z"
 }
