@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-go4.17.10"
+  ],
   "blocks": [],
   "created": "2026-06-28T15:52:31Z",
   "description": "Goal\nUpdate durable docs after the implementation tickets so future agents do not stitch the old machinery back in. Current docs still contain false macro readiness text and normalize some legacy follow-up/seal behavior.\n\nSignal\nnorthstar.html, .agent/docs/pipeline.md, .agent/docs/fact-engine.md, .agent/docs/semantic-fixpoint.md, .agent/docs/macro-expansion.md, and .agent/docs/telemetry.md describe one current model: product-keyed artifact demand, exact waits, no producer follow-up in artifact products, EntryCapture/IncomingInputSlot/callable/boundary products, SCC-local effects, and legacy-only status for remaining seal/transport jobs.\n\nStrategy\nUpdate docs from code and telemetry only after the previous tickets land. Include the 00181 proof commands and the counters that are actually meaningful. Remove or rewrite stale references to macro producers SeedRoot + BuildBackendProduct and semantic_closed as a normal artifact signal.\n\nRemoval target\nDelete stale documentation language that describes the old root artifact ladder or follow-up producer pokes as normal for the product path.\n\nVerification\nrg docs for stale phrases; cargo fmt --all --check if docs touch generated snippets is irrelevant but run focused tests from the parent arc; include final 00181 telemetry numbers in the ticket close comment.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Pull docs: make northstar and agent docs match the corrected model",
   "type": "bug",
-  "updated_at": "2026-06-28T15:52:31Z"
+  "updated_at": "2026-06-28T15:52:34Z"
 }
