@@ -498,7 +498,11 @@ impl PullSession {
                 executable: edge.callee.clone(),
                 semantic_index: *semantic_index,
             };
-            changed |= push_unique(self.incoming_inputs.entry(slot).or_default(), source.clone());
+            let slot_changed = push_unique(self.incoming_inputs.entry(slot.clone()).or_default(), source.clone());
+            if slot_changed {
+                self.memo.remove(&ProductKey::IncomingInputSlot(slot));
+            }
+            changed |= slot_changed;
         }
         let edges = self.call_edges.entry(edge.caller.clone()).or_default();
         changed |= push_unique(edges, edge.clone());
@@ -1256,6 +1260,49 @@ mod tests {
             PullOutcome::Produced(ProductValue::IncomingInputSlot(Box::new([source])))
         );
         assert_eq!(driver.session().producer_pokes(), 0);
+    }
+
+    #[test]
+    fn incoming_input_slot_product_invalidates_when_outgoing_edge_records_source() {
+        let tel = ConfiguredTelemetry::new();
+        let root = RootId::for_test(61);
+        let caller = fake_executable(root);
+        let callee = fake_executable_with_function(root, 62);
+        let slot = InputSlot {
+            executable: callee.clone(),
+            semantic_index: 0,
+        };
+        let source = IncomingInputSource {
+            producer: caller.clone(),
+            value: ValueId::from_u32(11),
+        };
+        let mut driver = ProductDriver::new(&tel, root);
+        let mut world = World::new(&tel);
+
+        let empty = {
+            let mut producers = WorldProductProducers::new(&mut world);
+            driver.pull(&mut producers, ProductKey::IncomingInputSlot(slot.clone()))
+        };
+        assert_eq!(
+            empty,
+            PullOutcome::Produced(ProductValue::IncomingInputSlot(Box::new([])))
+        );
+
+        driver.session_mut().record_call_edge(DemandedCallEdge {
+            caller,
+            callsite: Some(CallSiteId::from_u32(1)),
+            callee,
+            inputs: vec![(slot.semantic_index, source.clone())],
+        });
+        let updated = {
+            let mut producers = WorldProductProducers::new(&mut world);
+            driver.pull(&mut producers, ProductKey::IncomingInputSlot(slot))
+        };
+
+        assert_eq!(
+            updated,
+            PullOutcome::Produced(ProductValue::IncomingInputSlot(Box::new([source])))
+        );
     }
 
     #[test]

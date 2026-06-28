@@ -9,8 +9,8 @@ use super::super::body::{
 use super::super::drive::{FactKey, Job, JobEffects, current_uses, settled_uses};
 use super::super::identity::{ActivationKey, ExecutableKey, ExecutableNeed, FunctionId, RootId};
 use super::super::pull::{
-    InputSlot, ProductKey, ProductValue, PullOutcome, PullSession, PullWait, TransportComponentInventory,
-    TransportShapeFact,
+    IncomingInputSource, InputSlot, ProductKey, ProductValue, PullOutcome, PullSession, PullWait,
+    TransportComponentInventory, TransportShapeFact,
 };
 use super::super::scheduler::FatalError;
 use super::super::semantic::{
@@ -1037,15 +1037,38 @@ fn project_transport_component_product(
 
     let mut runtime_demands = HashMap::from([(executable.clone(), demand)]);
     let mut executables = HashSet::from([executable]);
-    let mut wait_products = Vec::new();
-    while let Some(mut next) = expand_transport_product_executables(world, session, &executables, &runtime_demands) {
-        next.extend(expand_transport_product_incoming_producers(
-            world,
-            session,
-            &executables,
-        ));
+    while let Some(next) = expand_transport_product_executables(world, session, &executables, &runtime_demands) {
+        let mut wait_products = Vec::new();
         let mut changed = false;
         for executable in next {
+            if executables.insert(executable.clone()) {
+                changed = true;
+            }
+            if let std::collections::hash_map::Entry::Vacant(entry) = runtime_demands.entry(executable.clone()) {
+                if let Some(demand) = session.memo().runtime_demand(&executable).cloned() {
+                    entry.insert(demand);
+                } else {
+                    wait_products.push(ProductKey::RuntimeDemand(executable));
+                }
+            }
+        }
+        if !wait_products.is_empty() {
+            return Some(TransportProductProjection::Waiting(
+                wait_products.into_iter().map(PullWait::Product).collect(),
+            ));
+        }
+
+        let outgoing_waits = outgoing_input_edge_waits(world, session, &executables);
+        if !outgoing_waits.is_empty() {
+            return Some(TransportProductProjection::Waiting(outgoing_waits));
+        }
+
+        let incoming = match expand_transport_product_incoming_producers(world, session, &executables) {
+            Ok(incoming) => incoming,
+            Err(waits) => return Some(TransportProductProjection::Waiting(waits)),
+        };
+        let mut wait_products = Vec::new();
+        for executable in incoming {
             if executables.insert(executable.clone()) {
                 changed = true;
             }
@@ -1066,13 +1089,7 @@ fn project_transport_component_product(
             break;
         }
     }
-    let outgoing_waits = executables
-        .iter()
-        .filter_map(|executable| {
-            let key = ProductKey::OutgoingInputEdges(executable.clone());
-            session.memo().get(&key).is_none().then_some(PullWait::Product(key))
-        })
-        .collect::<Vec<_>>();
+    let outgoing_waits = outgoing_input_edge_waits(world, session, &executables);
     if !outgoing_waits.is_empty() {
         return Some(TransportProductProjection::Waiting(outgoing_waits));
     }
@@ -1096,7 +1113,9 @@ fn project_transport_component_product(
         ));
     }
 
-    install_session_incoming_inputs(world, session, &mut contexts);
+    if let Err(waits) = install_produced_incoming_inputs(world, session, &mut contexts) {
+        return Some(TransportProductProjection::Waiting(waits));
+    }
     let mut facts = TransportFactsBuilder::default();
     let mut shape_graph = ShapeConstraintGraph::default();
     let mut memo = ProjectionMemo::default();
@@ -1118,15 +1137,7 @@ fn project_transport_component_product(
     }
     collect_clause_parameter_equalities(&contexts, &ordered, &mut shape_graph, world.types());
     seed_callable_capture_inputs(world, &contexts, &mut facts, &mut shape_graph, &mut memo);
-    let call_arg_shapes = call_arg_shapes_from_anchors(world, &contexts, &ordered, &shape_graph);
-    collect_executable_input_constraints(
-        world,
-        &contexts,
-        &mut facts,
-        &ordered,
-        &call_arg_shapes,
-        &mut shape_graph,
-    );
+    collect_executable_input_constraints(world, &contexts, &mut facts, &ordered, &mut shape_graph);
 
     let union = shape_graph.build_union();
     if !union.indexes.contains_key(anchor) {
@@ -1206,24 +1217,51 @@ fn expand_transport_product_executables(
     Some(next)
 }
 
+fn outgoing_input_edge_waits(
+    world: &World<'_>,
+    session: &PullSession,
+    executables: &HashSet<ExecutableKey>,
+) -> Vec<PullWait> {
+    let mut ordered = executables.iter().collect::<Vec<_>>();
+    ordered.sort_by_key(|executable| executable_sort_key(executable, world.types()));
+    ordered
+        .into_iter()
+        .filter_map(|executable| {
+            let key = ProductKey::OutgoingInputEdges(executable.clone());
+            session.memo().get(&key).is_none().then_some(PullWait::Product(key))
+        })
+        .collect()
+}
+
 fn expand_transport_product_incoming_producers(
     world: &World<'_>,
     session: &PullSession,
     executables: &HashSet<ExecutableKey>,
-) -> Vec<ExecutableKey> {
+) -> Result<Vec<ExecutableKey>, Vec<PullWait>> {
     let mut next = Vec::new();
-    for executable in executables {
+    let mut waits = Vec::new();
+    let mut ordered = executables.iter().collect::<Vec<_>>();
+    ordered.sort_by_key(|executable| executable_sort_key(executable, world.types()));
+    for executable in ordered {
         for semantic_index in 0..executable.activation.input_len(world.types()) {
             let slot = InputSlot {
                 executable: executable.clone(),
                 semantic_index,
             };
-            for source in session.incoming_input_sources(&slot) {
+            let key = ProductKey::IncomingInputSlot(slot);
+            let Some(value) = session.memo().get(&key) else {
+                waits.push(PullWait::Product(key));
+                continue;
+            };
+            let ProductValue::IncomingInputSlot(sources) = value else {
+                panic!("incoming input slot product produced unexpected value {value:?}");
+            };
+            for source in sources.iter() {
                 push_executable_unique(&mut next, source.producer.clone());
             }
         }
     }
-    next
+    if waits.is_empty() { Ok(next) } else { Err(waits) }
 }
 
 fn push_executable_unique(target: &mut Vec<ExecutableKey>, executable: ExecutableKey) {
@@ -1232,19 +1270,30 @@ fn push_executable_unique(target: &mut Vec<ExecutableKey>, executable: Executabl
     }
 }
 
-fn install_session_incoming_inputs(world: &World<'_>, session: &PullSession, contexts: &mut TransportContexts) {
-    for executable in contexts.by_executable.keys() {
+fn install_produced_incoming_inputs(
+    world: &World<'_>,
+    session: &PullSession,
+    contexts: &mut TransportContexts,
+) -> Result<(), Vec<PullWait>> {
+    let mut waits = Vec::new();
+    let mut ordered = contexts.by_executable.keys().collect::<Vec<_>>();
+    ordered.sort_by_key(|executable| executable_sort_key(executable, world.types()));
+    for executable in ordered {
         let input_len = executable.activation.input_len(world.types());
         for semantic_index in 0..input_len {
             let slot = InputSlot {
                 executable: executable.clone(),
                 semantic_index,
             };
-            let sources = session
-                .incoming_input_sources(&slot)
-                .iter()
-                .map(|source| (source.producer.clone(), source.value))
-                .collect::<Vec<_>>();
+            let key = ProductKey::IncomingInputSlot(slot);
+            let Some(value) = session.memo().get(&key) else {
+                waits.push(PullWait::Product(key));
+                continue;
+            };
+            let ProductValue::IncomingInputSlot(slot_sources) = value else {
+                panic!("incoming input slot product produced unexpected value {value:?}");
+            };
+            let sources = incoming_slot_source_pairs(slot_sources);
             if !sources.is_empty() {
                 contexts
                     .incoming_input_sources
@@ -1252,6 +1301,14 @@ fn install_session_incoming_inputs(world: &World<'_>, session: &PullSession, con
             }
         }
     }
+    if waits.is_empty() { Ok(()) } else { Err(waits) }
+}
+
+fn incoming_slot_source_pairs(sources: &[IncomingInputSource]) -> Vec<(ExecutableKey, ValueId)> {
+    sources
+        .iter()
+        .map(|source| (source.producer.clone(), source.value))
+        .collect()
 }
 
 fn executable_key_for_transport_position(
@@ -1956,22 +2013,11 @@ fn finish_transport_plan(
 
     collect_clause_parameter_equalities(contexts, executables, &mut shape_graph, world.types());
     seed_callable_capture_inputs(world, contexts, &mut facts, &mut shape_graph, &mut memo);
-    // The input merge only needs each incoming CallArg's resolved shape, which
-    // is its argument value's anchor: every non-clause-parameter value is
-    // anchored directly in `project_one_executable`, and `solve()`'s
-    // agree-or-panic guarantees a position's component shape equals any anchor
-    // in it. So the pre-merge shapes are read straight from the anchors instead
-    // of a full pre-pass solve -- collapsing the former two global solves into
-    // one (the final solve below).
-    let call_arg_shapes = call_arg_shapes_from_anchors(world, contexts, executables, &shape_graph);
-    collect_executable_input_constraints(
-        world,
-        contexts,
-        &mut facts,
-        executables,
-        &call_arg_shapes,
-        &mut shape_graph,
-    );
+    // The input merge consumes each slot's produced `(producer, value)` sources.
+    // Producer values are anchored directly in `project_one_executable`, and
+    // each local CallArg is already equal to its value, so this avoids
+    // reconstructing caller positions by scanning every context.
+    collect_executable_input_constraints(world, contexts, &mut facts, executables, &mut shape_graph);
     let (positions, equivalents) = shape_graph.solve_with_equivalents();
     facts.expand_boundary_publications(&equivalents);
     facts.resolve_publication_source_boundaries(world);
@@ -2173,59 +2219,11 @@ fn effective_value_demands(
     demands
 }
 
-/// The resolved shape of each incoming `CallArg`, read directly from the
-/// anchors rather than a pre-pass solve. A `CallArg` is equated to its argument
-/// value in `project_one_executable`, and that value is anchored there (unless
-/// it is a clause parameter, which stays unanchored until the input merge --
-/// matching the pre-merge solve, which also leaves it unresolved). By
-/// `solve()`'s agree-or-panic invariant, a position's component shape equals any
-/// anchor in its component, so the value's own anchor is exactly what the
-/// pre-merge solve would report for the `CallArg`.
-fn call_arg_shapes_from_anchors(
-    world: &World<'_>,
-    contexts: &TransportContexts,
-    executables: &[ExecutableKey],
-    shape_graph: &ShapeConstraintGraph,
-) -> HashMap<TransportPosition, ShapeId> {
-    let anchor_index = shape_graph
-        .anchors
-        .iter()
-        .map(|(position, shape)| (position.clone(), *shape))
-        .collect::<HashMap<_, _>>();
-    let mut out = HashMap::new();
-    for executable in executables {
-        let symbol = executable_symbol(executable, world.types());
-        let Some(context) = contexts.get(executable) else {
-            continue;
-        };
-        for (callsite, args) in &context.callsite_args {
-            for (semantic_index, arg) in args.iter().enumerate() {
-                let value_position = TransportPosition::Value {
-                    executable: symbol.clone(),
-                    value: arg.value,
-                };
-                if let Some(&shape) = anchor_index.get(&value_position) {
-                    out.insert(
-                        TransportPosition::CallArg {
-                            executable: symbol.clone(),
-                            callsite: *callsite,
-                            semantic_index,
-                        },
-                        shape,
-                    );
-                }
-            }
-        }
-    }
-    out
-}
-
 fn collect_executable_input_constraints(
     world: &mut World<'_>,
     contexts: &TransportContexts,
     facts: &mut TransportFactsBuilder,
     executables: &[ExecutableKey],
-    call_arg_shapes: &HashMap<TransportPosition, ShapeId>,
     shape_graph: &mut ShapeConstraintGraph,
 ) {
     for executable in executables {
@@ -2289,7 +2287,7 @@ fn collect_executable_input_constraints(
             if let Some(incoming) = incoming {
                 let incoming_shapes = incoming
                     .iter()
-                    .map(|call_arg| call_arg_shapes.get(call_arg).copied())
+                    .map(|source| shape_graph.anchor_shape(source))
                     .collect::<Option<Vec<_>>>();
                 if let Some(incoming_shapes) = incoming_shapes {
                     // Every incoming shape has settled: union with the call args
@@ -3433,68 +3431,15 @@ fn incoming_executable_input_positions(
     executable: &ExecutableKey,
     semantic_index: usize,
 ) -> Option<Vec<TransportPosition>> {
-    let mut positions = Vec::new();
-    for (caller, context) in contexts.iter() {
-        if caller == executable {
-            continue;
-        }
-        for (callsite, args) in &context.callsite_args {
-            let Some(mode) = context.callsite_modes.get(callsite).copied() else {
-                continue;
-            };
-            let key = CallSiteKey {
-                activation: caller.activation.clone(),
-                callsite: *callsite,
-            };
-            let Some(summary) = world.callsite_summary(&key) else {
-                continue;
-            };
-            if !summary.targets.iter().any(|target| {
-                target.activation.as_ref() == Some(&executable.activation)
-                    && context
-                        .callsite_needs
-                        .get(callsite)
-                        .copied()
-                        .unwrap_or(ExecutableNeed::Value)
-                        == executable.need
-            }) {
-                continue;
-            }
-
-            let arg_index = explicit_arg_index_for_semantic_input(
-                mode,
-                executable.activation.input_len(world.types()),
-                args.len(),
-                semantic_index,
-            )?;
-            let position = TransportPosition::CallArg {
-                executable: executable_symbol(caller, world.types()),
-                callsite: *callsite,
-                semantic_index: arg_index,
-            };
-            positions.push(position);
-        }
-    }
+    let positions = contexts
+        .incoming_inputs(executable, semantic_index)
+        .iter()
+        .map(|(producer, value)| TransportPosition::Value {
+            executable: executable_symbol(producer, world.types()),
+            value: *value,
+        })
+        .collect::<Vec<_>>();
     (!positions.is_empty()).then_some(positions)
-}
-
-fn explicit_arg_index_for_semantic_input(
-    mode: CallInputMode,
-    callee_input_len: usize,
-    arg_count: usize,
-    semantic_index: usize,
-) -> Option<usize> {
-    match mode {
-        CallInputMode::Direct => (semantic_index < arg_count).then_some(semantic_index),
-        CallInputMode::Closure => {
-            let capture_prefix = callee_input_len.checked_sub(arg_count)?;
-            if semantic_index < capture_prefix {
-                None
-            } else {
-                Some(semantic_index - capture_prefix)
-            }
-        }
-    }
 }
 
 fn shape_for_source(
@@ -5227,6 +5172,19 @@ mod tests {
         )
     }
 
+    fn fake_executable(world: &mut World<'_>, root: u32, function: u32, inputs: &[Ty]) -> ExecutableKey {
+        let activation = ActivationKey::from_inputs(
+            RootId::for_test(root),
+            FunctionId::for_test(function),
+            inputs,
+            world.types_mut(),
+        );
+        ExecutableKey {
+            activation,
+            need: ExecutableNeed::Value,
+        }
+    }
+
     #[test]
     fn shape_constraint_graph_solves_independent_of_insertion_order() {
         let tel = ConfiguredTelemetry::new();
@@ -5251,6 +5209,32 @@ mod tests {
         assert_eq!(left_solved.get(&left_b), Some(&left_shape));
         assert_eq!(right_solved.get(&right_a), Some(&right_shape));
         assert_eq!(right_solved.get(&right_b), Some(&right_shape));
+    }
+
+    #[test]
+    fn incoming_input_positions_are_derived_from_slot_sources() {
+        let tel = ConfiguredTelemetry::new();
+        let mut world = World::new(&tel);
+        let int = world.types_mut().int();
+        let producer = fake_executable(&mut world, 81, 82, &[]);
+        let callee = fake_executable(&mut world, 81, 83, &[int]);
+        let value = ValueId::from_u32(9);
+        let mut contexts = TransportContexts::default();
+        contexts
+            .incoming_input_sources
+            .insert((callee.clone(), 0), vec![(producer.clone(), value)]);
+
+        let positions = incoming_executable_input_positions(&world, &contexts, &callee, 0)
+            .expect("slot source should produce one incoming input position");
+
+        assert_eq!(
+            positions,
+            vec![TransportPosition::Value {
+                executable: executable_symbol(&producer, world.types()),
+                value,
+            }],
+            "input source positions should come from the produced slot source, not from scanning caller contexts"
+        );
     }
 
     #[test]
