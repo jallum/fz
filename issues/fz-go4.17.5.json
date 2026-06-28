@@ -6,14 +6,16 @@
   "blocks": [
     "fz-go4.17.6"
   ],
+  "closed_at": "2026-06-28T18:09:37Z",
+  "close_reason": "Made product transport wait on produced IncomingInputSlot values, removed direct transport reads of PullSession incoming maps and caller-position reconstruction scans, added exact slot invalidation and focused tests, and passed compiler2_pull_ plus fmt/check/clippy.",
   "created": "2026-06-28T15:52:28Z",
   "description": "Goal\nTurn IncomingInputSlot(callee, slot) from nominal vocabulary into the pull dependency for callee input evidence. Transport projection must not reach directly into PullSession incoming maps while pretending the slot is a product.\n\nSignal\nA demanded caller records OutgoingInputEdges(E). A callee input transport shape waits on ProductKey::IncomingInputSlot(slot) and receives exactly the sources recorded by demanded callers. Tests prove no scan over all callers or all executables is used to recover incoming input evidence.\n\nStrategy\nRoute executable-input transport projection through IncomingInputSlot products. Keep OutgoingInputEdges caller-owned. The callee side reads only the slot key. Preserve current 00181 behavior and direct forwarded-input ABI coverage.\n\nRemoval steps\n- Remove direct production reads of PullSession::incoming_input_sources from transport/component helpers. The IncomingInputSlot producer is the only allowed reader.\n- Remove install_session_incoming_inputs or shrink it until it only consumes already-produced IncomingInputSlot product values.\n- Delete tests that pass by pre-populating session incoming maps and then bypassing the product.\n- Do not retain a fallback path that scans contexts or session call_edges when IncomingInputSlot is missing; missing means return PullWait::Product(IncomingInputSlot).\n\nVerification\nFocused IncomingInputSlot unit test; 00181 product transport test without legacy pre-settle; cargo test -q --lib compiler2_pull_.",
   "id": "fz-go4.17.5",
   "labels": [],
   "parent": "fz-go4.17",
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Pull transport: make IncomingInputSlot a real dependency",
   "type": "bug",
-  "updated_at": "2026-06-28T18:00:42Z"
+  "updated_at": "2026-06-28T18:09:37Z"
 }
