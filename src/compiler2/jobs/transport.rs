@@ -10,6 +10,7 @@ use super::super::drive::{FactKey, Job, JobEffects, current_uses, settled_uses};
 use super::super::identity::{ActivationKey, ExecutableKey, ExecutableNeed, FunctionId, RootId};
 use super::super::pull::{
     InputSlot, ProductKey, ProductValue, PullOutcome, PullSession, PullWait, TransportComponentInventory,
+    TransportShapeFact,
 };
 use super::super::scheduler::FatalError;
 use super::super::semantic::{
@@ -967,16 +968,22 @@ pub(crate) fn produce_transport_shape_product(
     session: &mut PullSession,
     position: &TransportPosition,
 ) -> PullOutcome {
-    if let Some(shape) = session.transport_shape(position) {
-        return PullOutcome::Produced(ProductValue::TransportShape(Some(shape)));
+    if let Some(fact) = session.transport_shape_fact(position) {
+        return PullOutcome::Produced(ProductValue::TransportShape(fact.clone()));
     }
+    let executable = executable_key_for_transport_position(session.root(), position, world.types_mut());
     let Some(projection) = project_transport_component_product(world, session, position) else {
-        return PullOutcome::Produced(ProductValue::TransportShape(None));
+        session.record_absent_transport_shape_for(&executable, position.clone());
+        return PullOutcome::Produced(ProductValue::TransportShape(TransportShapeFact::Absent));
     };
     match projection {
         TransportProductProjection::Waiting(waits) => PullOutcome::Waiting(waits),
-        TransportProductProjection::Produced { shape, .. } => {
-            PullOutcome::Produced(ProductValue::TransportShape(shape))
+        TransportProductProjection::Produced { shape: Some(shape), .. } => {
+            PullOutcome::Produced(ProductValue::TransportShape(TransportShapeFact::Shape(shape)))
+        }
+        TransportProductProjection::Produced { shape: None, .. } => {
+            session.record_absent_transport_shape_for(&executable, position.clone());
+            PullOutcome::Produced(ProductValue::TransportShape(TransportShapeFact::Absent))
         }
     }
 }

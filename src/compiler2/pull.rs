@@ -89,6 +89,21 @@ impl ProductKey {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TransportShapeFact {
+    Shape(ShapeId),
+    Absent,
+}
+
+impl TransportShapeFact {
+    pub fn shape(&self) -> Option<ShapeId> {
+        match self {
+            Self::Shape(shape) => Some(*shape),
+            Self::Absent => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum ProductValue {
     Unit,
@@ -99,7 +114,7 @@ pub enum ProductValue {
     ExecutableEffects(EffectSummary),
     RuntimeDemand(Box<ExecutableRuntimeDemand>),
     IncomingInputSlot(Box<[IncomingInputSource]>),
-    TransportShape(Option<ShapeId>),
+    TransportShape(TransportShapeFact),
     TransportComponent(TransportComponentInventory),
     CallableFacts(Option<CallableFacts>),
     BoundaryFacts(Option<BoundaryFacts>),
@@ -303,6 +318,7 @@ pub struct PullSession {
     abi_executables: HashMap<ExecutableKey, AbiReadyExecutable>,
     backend_executables: HashMap<ExecutableKey, SymbolicBackendExecutable>,
     demanded_transport_positions: HashSet<TransportPosition>,
+    transport_shape_facts: HashMap<TransportPosition, TransportShapeFact>,
     transport_shapes: HashMap<TransportPosition, ShapeId>,
     transport_components: HashMap<TransportPosition, TransportComponentInventory>,
     transport_positions_by_executable: HashMap<ExecutableKey, HashSet<TransportPosition>>,
@@ -332,6 +348,7 @@ impl PullSession {
             abi_executables: HashMap::new(),
             backend_executables: HashMap::new(),
             demanded_transport_positions: HashSet::new(),
+            transport_shape_facts: HashMap::new(),
             transport_shapes: HashMap::new(),
             transport_components: HashMap::new(),
             transport_positions_by_executable: HashMap::new(),
@@ -424,6 +441,10 @@ impl PullSession {
 
     pub fn transport_shape(&self, position: &TransportPosition) -> Option<ShapeId> {
         self.transport_shapes.get(position).copied()
+    }
+
+    pub fn transport_shape_fact(&self, position: &TransportPosition) -> Option<&TransportShapeFact> {
+        self.transport_shape_facts.get(position)
     }
 
     pub fn transport_shapes(&self) -> &HashMap<TransportPosition, ShapeId> {
@@ -534,6 +555,8 @@ impl PullSession {
 
     pub fn record_transport_shape(&mut self, position: TransportPosition, shape: ShapeId) {
         self.demanded_transport_positions.insert(position.clone());
+        self.transport_shape_facts
+            .insert(position.clone(), TransportShapeFact::Shape(shape));
         self.transport_shapes.insert(position, shape);
     }
 
@@ -548,7 +571,25 @@ impl PullSession {
             .entry(executable.clone())
             .or_default()
             .insert(position.clone());
+        self.transport_shape_facts
+            .insert(position.clone(), TransportShapeFact::Shape(shape));
         let changed = self.transport_shapes.insert(position, shape) != Some(shape);
+        if changed {
+            self.invalidate_artifact_products(executable);
+        }
+    }
+
+    pub fn record_absent_transport_shape_for(&mut self, executable: &ExecutableKey, position: TransportPosition) {
+        self.demanded_transport_positions.insert(position.clone());
+        self.transport_positions_by_executable
+            .entry(executable.clone())
+            .or_default()
+            .insert(position.clone());
+        let changed = self
+            .transport_shape_facts
+            .insert(position.clone(), TransportShapeFact::Absent)
+            != Some(TransportShapeFact::Absent);
+        self.transport_shapes.remove(&position);
         if changed {
             self.invalidate_artifact_products(executable);
         }
@@ -613,6 +654,7 @@ impl PullSession {
                 self.backend_executables.remove(executable);
             }
             ProductKey::TransportShape(position) => {
+                self.transport_shape_facts.remove(position);
                 self.transport_shapes.remove(position);
             }
             ProductKey::TransportComponent(position) => {
@@ -644,6 +686,7 @@ impl PullSession {
             return;
         };
         for position in &positions {
+            self.transport_shape_facts.remove(position);
             self.transport_shapes.remove(position);
             self.transport_components.remove(position);
             self.memo.remove(&ProductKey::TransportShape(position.clone()));
@@ -1268,7 +1311,7 @@ mod tests {
 
         assert_eq!(
             driver.pull(&mut producers, ProductKey::TransportShape(position.clone())),
-            PullOutcome::Produced(ProductValue::TransportShape(Some(shape)))
+            PullOutcome::Produced(ProductValue::TransportShape(TransportShapeFact::Shape(shape)))
         );
         assert_eq!(
             driver.pull(&mut producers, ProductKey::TransportComponent(position.clone())),

@@ -4,7 +4,8 @@ use std::rc::Rc;
 
 use super::body::{DeliveredValueSource, delivered_value_joins};
 use super::pull::{
-    ProductDriver, ProductKey, ProductValue, PullOutcome, PullWait, SymbolicBackendTail, WorldProductProducers,
+    ProductDriver, ProductKey, ProductValue, PullOutcome, PullWait, SymbolicBackendTail, TransportShapeFact,
+    WorldProductProducers,
 };
 use super::semantic::{CallableFlowFact, CallableSurface};
 use super::transport::{ActivationSymbol, ExecutableSymbol};
@@ -2666,7 +2667,7 @@ end
     driver.finish_session();
 
     let returned = match driver.session().memo().get(&ProductKey::TransportShape(main_return)) {
-        Some(ProductValue::TransportShape(Some(shape))) => *shape,
+        Some(ProductValue::TransportShape(TransportShapeFact::Shape(shape))) => *shape,
         other => panic!("main return transport product should contain a concrete shape, got {other:?}"),
     };
     let ShapeDescr::Tuple(items) = shape_descr(&world, returned) else {
@@ -4302,7 +4303,7 @@ fn pull_transport_shape_for_executables_in_order(
     }
 
     match driver.session().memo().get(&ProductKey::TransportShape(position)) {
-        Some(ProductValue::TransportShape(Some(shape))) => *shape,
+        Some(ProductValue::TransportShape(TransportShapeFact::Shape(shape))) => *shape,
         other => panic!("transport product should contain a concrete shape, got {other:?}"),
     }
 }

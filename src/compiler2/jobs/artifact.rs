@@ -79,7 +79,7 @@ pub(crate) fn produce_materialized_executable_product(
     let return_position = TransportPosition::ExecutableReturn {
         executable: transport_executable_symbol(executable, world.types()),
     };
-    if session.transport_shape(&return_position).is_none() {
+    if transport_shape_product_pending(session, &return_position) {
         waits.push(PullWait::Product(ProductKey::TransportShape(return_position)));
     }
     if !waits.is_empty() {
@@ -524,7 +524,7 @@ fn required_entry_capture_transport_waits(
                 entry: entry_id,
                 capture_index,
             };
-            if session.transport_shape(&position).is_none() {
+            if transport_shape_product_pending(session, &position) {
                 waits.push(PullWait::Product(ProductKey::TransportShape(position)));
             }
         }
@@ -555,9 +555,7 @@ fn required_executable_input_transport_waits(
                 executable: symbol.clone(),
                 semantic_index,
             };
-            session
-                .transport_shape(&position)
-                .is_none()
+            transport_shape_product_pending(session, &position)
                 .then_some(PullWait::Product(ProductKey::TransportShape(position)))
         })
         .collect()
@@ -654,7 +652,7 @@ fn required_resume_transport_waits(
             callsite: deliver_callsites.get(&entry_id).copied(),
             entry: entry_id,
         };
-        if session.transport_shape(&position).is_none() {
+        if transport_shape_product_pending(session, &position) {
             waits.push(PullWait::Product(ProductKey::TransportShape(position)));
         }
     }
@@ -682,7 +680,7 @@ fn required_local_backend_transport_waits(
             executable: symbol.clone(),
             value,
         };
-        if session.transport_shape(&position).is_none() {
+        if transport_shape_product_pending(session, &position) {
             waits.push(PullWait::Product(ProductKey::TransportShape(position)));
         }
     }
@@ -704,7 +702,7 @@ fn required_local_backend_transport_waits(
             executable: symbol.clone(),
             value,
         };
-        if session.transport_shape(&value_position).is_none() {
+        if transport_shape_product_pending(session, &value_position) {
             waits.push(PullWait::Product(ProductKey::TransportShape(value_position)));
         }
         for semantic_index in 0..args.len() {
@@ -713,7 +711,7 @@ fn required_local_backend_transport_waits(
                 callsite,
                 semantic_index,
             };
-            if session.transport_shape(&position).is_none() {
+            if transport_shape_product_pending(session, &position) {
                 waits.push(PullWait::Product(ProductKey::TransportShape(position)));
             }
         }
@@ -729,7 +727,7 @@ fn required_local_backend_transport_waits(
 }
 
 fn transport_shape_product_pending(session: &PullSession, position: &TransportPosition) -> bool {
-    session.transport_shape(position).is_none()
+    session.transport_shape_fact(position).is_none()
         && session
             .memo()
             .get(&ProductKey::TransportShape(position.clone()))
@@ -940,7 +938,7 @@ fn record_return_flow_transport_waits(
 }
 
 fn push_transport_shape_wait(session: &PullSession, waits: &mut HashSet<PullWait>, position: TransportPosition) {
-    if session.transport_shape(&position).is_none() {
+    if transport_shape_product_pending(session, &position) {
         waits.insert(PullWait::Product(ProductKey::TransportShape(position)));
     }
 }
