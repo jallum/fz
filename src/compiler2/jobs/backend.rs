@@ -3,7 +3,7 @@
 //! This module packages product-keyed symbolic backend executables into the
 //! backend-owned program consumed by the interpreter and native lowering.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crate::diag::Diagnostic;
 use crate::diag::codes;
@@ -34,8 +34,8 @@ use super::super::pull::{
 use super::super::scheduler::FatalError;
 use super::super::semantic::CallSiteKey;
 use super::super::transport::{
-    ActivationSymbol, BoundaryId, CodegenLaneRepr, CodegenSeam, CodegenSeamFact, ExecutableSymbol, LaneId, ShapeDescr,
-    ShapeId, TransportPosition,
+    ActivationSymbol, BoundaryFacts, BoundaryId, CallableFacts, CallableId, CodegenLaneRepr, CodegenSeam,
+    CodegenSeamFact, ExecutableSymbol, LaneId, ShapeDescr, ShapeId, TransportPosition,
 };
 use super::super::types::Ty;
 use super::super::world::World;
@@ -245,9 +245,15 @@ pub(crate) fn produce_root_backend_product(
         return PullOutcome::Waiting(keying_waits);
     }
     let entry = world.root_entry_executable(root);
+    let callable_fact_waits = callable_boundary_fact_waits(session);
+    if !callable_fact_waits.is_empty() {
+        return PullOutcome::Waiting(callable_fact_waits);
+    }
+    let produced_callables = produced_callable_facts(session);
+    let produced_boundaries = produced_boundary_facts(session);
     let mut reachable = HashSet::new();
     let mut stack = vec![entry.clone()];
-    stack.extend(boundary_resolution_executables(world, root, session));
+    stack.extend(boundary_resolution_executables(world, root, &produced_boundaries));
     let mut waits = Vec::new();
     while let Some(current) = stack.pop() {
         if !reachable.insert(current.clone()) {
@@ -287,9 +293,11 @@ pub(crate) fn produce_root_backend_product(
         })
         .collect::<Result<Vec<_>, _>>()
         .expect("root backend product should have complete symbolic executable inventory");
-    let callable_entries = package_backend_callable_entries(world, root, session, &executable_index)
-        .expect("root backend product should have complete callable-entry inventory");
-    let transport = symbolic_materialized_transport_plan(session, &entry, world);
+    let callable_entries =
+        package_backend_callable_entries(world, root, session, &executable_index, &produced_boundaries)
+            .expect("root backend product should have complete callable-entry inventory");
+    let transport =
+        symbolic_materialized_transport_plan(session, &entry, world, &produced_callables, &produced_boundaries);
     let entry_index = executable_index
         .get(&entry)
         .copied()
@@ -319,7 +327,13 @@ pub(crate) fn produce_backend_executable_product(
     let Some(abi) = session.abi_executable(executable).cloned() else {
         return PullOutcome::Waiting(vec![PullWait::Product(ProductKey::AbiExecutable(executable.clone()))]);
     };
-    let transport = symbolic_materialized_transport_plan(session, executable, world);
+    let transport = symbolic_materialized_transport_plan(
+        session,
+        executable,
+        world,
+        session.callable_facts_inventory(),
+        session.boundary_facts_inventory(),
+    );
     let mut lowerer = BackendLowerer::new(world, session.root(), &transport);
     let emission = symbolic_emission_ready_executable(executable.clone(), &abi);
     let lowered = lower_symbolic_body(&mut lowerer, &emission, &abi)
@@ -346,9 +360,57 @@ fn symbolic_call_edge_callees(target: &CallEdge<ExecutableKey>) -> Vec<&Executab
     }
 }
 
-fn boundary_resolution_executables(world: &mut World<'_>, root: RootId, session: &PullSession) -> Vec<ExecutableKey> {
+fn callable_boundary_fact_waits(session: &PullSession) -> Vec<PullWait> {
+    let callable_waits = session
+        .demanded_callables()
+        .iter()
+        .copied()
+        .filter(|callable| session.memo().get(&ProductKey::CallableFacts(*callable)).is_none())
+        .map(|callable| PullWait::Product(ProductKey::CallableFacts(callable)));
+    let boundary_waits = session
+        .demanded_boundaries()
+        .iter()
+        .copied()
+        .filter(|boundary| session.memo().get(&ProductKey::BoundaryFacts(*boundary)).is_none())
+        .map(|boundary| PullWait::Product(ProductKey::BoundaryFacts(boundary)));
+    callable_waits.chain(boundary_waits).collect()
+}
+
+fn produced_callable_facts(session: &PullSession) -> HashMap<CallableId, CallableFacts> {
+    session
+        .demanded_callables()
+        .iter()
+        .filter_map(
+            |callable| match session.memo().get(&ProductKey::CallableFacts(*callable)) {
+                Some(ProductValue::CallableFacts(Some(facts))) => Some((*callable, facts.clone())),
+                Some(ProductValue::CallableFacts(None)) | None => None,
+                Some(other) => panic!("callable facts product for {callable:?} produced unexpected value {other:?}"),
+            },
+        )
+        .collect()
+}
+
+fn produced_boundary_facts(session: &PullSession) -> HashMap<BoundaryId, BoundaryFacts> {
+    session
+        .demanded_boundaries()
+        .iter()
+        .filter_map(
+            |boundary| match session.memo().get(&ProductKey::BoundaryFacts(*boundary)) {
+                Some(ProductValue::BoundaryFacts(Some(facts))) => Some((*boundary, facts.clone())),
+                Some(ProductValue::BoundaryFacts(None)) | None => None,
+                Some(other) => panic!("boundary facts product for {boundary:?} produced unexpected value {other:?}"),
+            },
+        )
+        .collect()
+}
+
+fn boundary_resolution_executables(
+    world: &mut World<'_>,
+    root: RootId,
+    boundaries: &HashMap<BoundaryId, BoundaryFacts>,
+) -> Vec<ExecutableKey> {
     let mut out = Vec::new();
-    for facts in session.boundary_facts_inventory().values() {
+    for facts in boundaries.values() {
         for target in facts.resolutions.iter() {
             out.push(executable_key_for_symbol(root, target, world.types_mut()));
         }
@@ -578,9 +640,10 @@ fn package_backend_callable_entries(
     root: RootId,
     session: &PullSession,
     executable_index: &std::collections::HashMap<ExecutableKey, usize>,
+    boundaries: &HashMap<BoundaryId, BoundaryFacts>,
 ) -> Result<Vec<BackendCallableEntry>, FatalError> {
     let mut entries = Vec::new();
-    for (boundary, facts) in session.boundary_facts_inventory() {
+    for (boundary, facts) in boundaries {
         let boundary_descr = world.boundary(*boundary);
         for target_symbol in facts.resolutions.iter() {
             let Some(target) = executable_key_for_symbol_in_index(target_symbol, executable_index, world.types())
@@ -898,6 +961,8 @@ fn symbolic_materialized_transport_plan(
     session: &PullSession,
     executable: &ExecutableKey,
     world: &World<'_>,
+    callables: &HashMap<CallableId, CallableFacts>,
+    boundaries: &HashMap<BoundaryId, BoundaryFacts>,
 ) -> MaterializedTransportPlan {
     let mut position_shapes = session
         .transport_shapes()
@@ -905,8 +970,7 @@ fn symbolic_materialized_transport_plan(
         .map(|(position, shape)| (position.clone(), *shape))
         .collect::<Vec<_>>();
     position_shapes.sort_by_key(|(position, _)| format!("{position:?}"));
-    let mut publication_boundaries = session
-        .boundary_facts_inventory()
+    let mut publication_boundaries = boundaries
         .iter()
         .flat_map(|(boundary, facts)| facts.publications.iter().cloned().map(|position| (position, *boundary)))
         .collect::<Vec<_>>();
@@ -915,7 +979,7 @@ fn symbolic_materialized_transport_plan(
             .cmp(&format!("{:?}", right.0))
             .then_with(|| left.1.as_u32().cmp(&right.1.as_u32()))
     });
-    let codegen_seam_facts = symbolic_codegen_seam_facts(session, &position_shapes, world);
+    let codegen_seam_facts = symbolic_codegen_seam_facts(session, &position_shapes, world, boundaries);
     MaterializedTransportPlan {
         entry: ExecutableSymbol {
             activation: ActivationSymbol {
@@ -926,8 +990,8 @@ fn symbolic_materialized_transport_plan(
         },
         executable_membership: Box::default(),
         position_shapes,
-        callable_ids: session.demanded_callables().iter().copied().collect(),
-        boundary_ids: session.demanded_boundaries().iter().copied().collect(),
+        callable_ids: callables.keys().copied().collect(),
+        boundary_ids: boundaries.keys().copied().collect(),
         publication_boundaries,
         codegen_seam_facts,
     }
@@ -937,6 +1001,7 @@ fn symbolic_codegen_seam_facts(
     session: &PullSession,
     position_shapes: &[(TransportPosition, ShapeId)],
     world: &World<'_>,
+    boundaries: &HashMap<BoundaryId, BoundaryFacts>,
 ) -> Box<[CodegenSeamFact]> {
     let mut out = Vec::new();
     for (position, shape) in position_shapes {
@@ -1078,7 +1143,7 @@ fn symbolic_codegen_seam_facts(
             }
         }
     }
-    for boundary in session.boundary_facts_inventory().keys().copied() {
+    for boundary in boundaries.keys().copied() {
         push_symbolic_boundary_codegen_seams(session, world, boundary, &mut out);
     }
     out.sort_by_key(|fact| format!("{fact:?}"));

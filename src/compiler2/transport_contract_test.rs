@@ -2850,6 +2850,13 @@ fn compiler2_pull_root_backend_product_packages_and_runs_enum_reduce_operator_re
         capture.count(&["fz", "compiler2", "pull", "product", "produced"]) > 0,
         "root backend product path should emit product production telemetry"
     );
+    assert!(
+        capture.events().iter().any(
+            |event| event.name == ["fz", "compiler2", "pull", "product", "requested"]
+                && metadata_str(event, "kind") == "callable_facts"
+        ),
+        "root backend product path should explicitly request callable facts products"
+    );
     let component_event = capture
         .last(&["fz", "compiler2", "pull", "transport_component", "produced"])
         .expect("transport component product should emit component-size telemetry");
@@ -4807,6 +4814,13 @@ fn measurement_u64(event: &crate::telemetry::capture::OwnedEvent, key: &str) -> 
         panic!("expected u64 measurement {key} in {:?}", event.measurements)
     };
     *value
+}
+
+fn metadata_str<'a>(event: &'a crate::telemetry::capture::OwnedEvent, key: &str) -> &'a str {
+    let Some(Value::Str(value)) = event.metadata.get(key) else {
+        panic!("expected string metadata {key} in {:?}", event.metadata)
+    };
+    value
 }
 
 fn product_no_dump_interp_job_telemetry(source: &str) -> (super::RootId, JobTelemetry) {
