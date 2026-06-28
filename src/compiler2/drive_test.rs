@@ -1350,6 +1350,8 @@ fn compiler2_macro_executable_runs_quote_unquote_on_the_source_heap() {
     let tel = ConfiguredTelemetry::new();
     let outputs = OutputCapture::new();
     tel.attach(&["fz", "compiler2", "job"], outputs.handler());
+    let macro_defs = Capture::new();
+    tel.attach(&["fz", "compiler2", "macro_executable"], macro_defs.handler());
     let functions = FunctionCapture::new();
     tel.attach(&["fz", "compiler2", "function"], functions.handler());
 
@@ -1378,12 +1380,16 @@ fn compiler2_macro_executable_runs_quote_unquote_on_the_source_heap() {
         macro_outputs.contains(&presence(FactKey::MacroExecutable(inc), true)),
         "macro readiness should publish a first-class macro executable fact"
     );
+    let macro_defined = macro_defs
+        .last(&["fz", "compiler2", "macro_executable", "defined"])
+        .expect("macro readiness should define a backend-backed macro executable");
     assert!(
-        outputs
-            .all()
-            .into_iter()
-            .any(|(fact, _)| matches!(fact, FactKey::BackendProgram(_))),
-        "macro readiness should reuse the existing BackendProgram artifact, not a separate evaluator"
+        measurement_u64(&macro_defined, "backend_revision") > 0,
+        "macro readiness should reuse a BackendProgram revision, not a separate evaluator"
+    );
+    assert!(
+        measurement_u64(&macro_defined, "executable_count") > 0,
+        "macro readiness should carry a backend executable inventory"
     );
     assert!(
         !outputs

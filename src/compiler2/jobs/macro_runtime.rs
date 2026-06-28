@@ -33,11 +33,23 @@ pub(super) fn build_macro_executable(world: &mut World<'_>, function: FunctionId
 
     let root = world.macro_root(function);
     let backend_fact = FactKey::BackendProgram(root);
-    let Some(backend_revision) = world.fact_revision(&backend_fact) else {
-        return Ok(JobEffects::wait_on_settled(
-            backend_fact,
-            [Job::BuildBackendProduct(root)],
-        ));
+    let backend_revision = match world.fact_revision(&backend_fact) {
+        Some(revision) => revision,
+        None => {
+            let effects = super::backend::build_backend_product(world, root)?;
+            world.complete_job(Job::BuildBackendProduct(root), effects);
+            world.fact_revision(&backend_fact).ok_or_else(|| {
+                emit_macro_runtime_error(
+                    world,
+                    surface.span,
+                    format!(
+                        "compiler2 macro executable for `{}/{}` could not produce backend program",
+                        surface.name,
+                        surface.arity()
+                    ),
+                )
+            })?
+        }
     };
 
     let program = world.backend_program(root);
