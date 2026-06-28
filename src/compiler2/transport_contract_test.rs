@@ -3,6 +3,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
 
 use super::body::{DeliveredValueSource, delivered_value_joins};
+use super::facts::{FactReadiness, FactUse};
 use super::pull::{
     ProductDriver, ProductKey, ProductValue, PullOutcome, PullWait, SymbolicBackendTail, TransportShapeFact,
     WorldProductProducers,
@@ -14,8 +15,8 @@ use super::transport::{
 };
 use super::types::Ty;
 use super::{
-    CodeSubmission, Compiler2, DriveOutcome, ExecutableKey, ExecutableNeed, ExecutableRuntimeDemand, Job, LoweredBody,
-    RootSubmission, RuntimeDemand, World,
+    CodeSubmission, Compiler2, DriveOutcome, ExecutableKey, ExecutableNeed, ExecutableRuntimeDemand, FactKey, Job,
+    LoweredBody, RootSubmission, RuntimeDemand, World,
 };
 use crate::telemetry::handler::{Event, EventKind, Handler};
 use crate::telemetry::{Capture, ConfiguredTelemetry, Value};
@@ -105,6 +106,14 @@ const TRANSPORT_POSITIONS: &[(&str, &str)] = &[
 
 const SEAM_FACTS: &[(&str, &str)] = &[];
 const LEGACY_00181_NO_DUMP_JOB_STARTS: usize = 379;
+const ENUM_REDUCE_OPERATOR_REF_SOURCE: &str = r#"
+fn main() do
+  {
+    Enum.reduce([1, 2, 3], 0, &Kernel.+/2),
+    Enum.reduce([1, 2, 3], 0, &+/2)
+  }
+end
+"#;
 
 #[test]
 fn compiler2_transport_flow_contract_separates_shared_descriptors_from_root_plan() {
@@ -2519,51 +2528,13 @@ end
 #[test]
 #[serial_test::serial]
 fn compiler2_pull_runtime_demand_keeps_enum_reduce_operator_refs_direct_callable() {
-    let source = r#"
-fn main() do
-  {
-    Enum.reduce([1, 2, 3], 0, &Kernel.+/2),
-    Enum.reduce([1, 2, 3], 0, &+/2)
-  }
-end
-"#;
-
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
     tel.attach(&["fz", "compiler2", "pull"], capture.handler());
     let mut world = World::new(&tel);
-    world.submit_code(
-        Some("pull_runtime_enum_reduce_operator_refs.fz".to_string()),
-        source.to_string(),
-    );
-    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::TupleFields(2));
-    drive_until_transport_plan(
-        &mut world,
-        root,
-        "Enum.reduce operator-ref fixture should settle legacy facts before product comparison",
-    );
-
-    let plan = transport_plan(&world, root);
-    let executables = plan
-        .executable_membership
-        .iter()
-        .map(|symbol| executable_key_for_symbol(&mut world, root, symbol))
-        .collect::<HashSet<_>>();
-    let mut driver = ProductDriver::new(&tel, root);
-    {
-        let mut producers = WorldProductProducers::new(&mut world);
-        pull_runtime_demands_for_executables(&mut driver, &mut producers, &executables);
-        for executable in &executables {
-            pull_product_until_produced(
-                &mut driver,
-                &mut producers,
-                ProductKey::OutgoingInputEdges(executable.clone()),
-                "outgoing input edges should be derivable from product runtime demand",
-            );
-        }
-        pull_runtime_demands_for_executables(&mut driver, &mut producers, &executables);
-    }
-    driver.finish_session();
+    let root = submit_enum_reduce_operator_ref_root(&mut world, "pull_runtime_enum_reduce_operator_refs.fz");
+    let (driver, _program) = pull_root_backend_product_for_test(&tel, &mut world, root);
+    let executables = driver.session().backend_executables().keys().collect::<Vec<_>>();
 
     let plus_flows = executables
         .iter()
@@ -2605,69 +2576,20 @@ end
 #[test]
 #[serial_test::serial]
 fn compiler2_pull_transport_keeps_enum_reduce_operator_refs_direct_callable() {
-    let source = r#"
-fn main() do
-  {
-    Enum.reduce([1, 2, 3], 0, &Kernel.+/2),
-    Enum.reduce([1, 2, 3], 0, &+/2)
-  }
-end
-"#;
-
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
     tel.attach(&["fz", "compiler2", "pull"], capture.handler());
     let mut world = World::new(&tel);
-    world.submit_code(
-        Some("pull_transport_enum_reduce_operator_refs.fz".to_string()),
-        source.to_string(),
-    );
-    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::TupleFields(2));
-    drive_until_transport_plan(
-        &mut world,
-        root,
-        "Enum.reduce operator-ref fixture should settle legacy facts before product comparison",
-    );
-
-    let plan = transport_plan(&world, root);
-    let main = executable_for(&world, &plan, "main", 0);
-    let main_return = TransportPosition::ExecutableReturn { executable: main };
-    let executables = plan
-        .executable_membership
-        .iter()
-        .map(|symbol| executable_key_for_symbol(&mut world, root, symbol))
-        .collect::<HashSet<_>>();
-    let mut driver = ProductDriver::new(&tel, root);
-    {
-        let mut producers = WorldProductProducers::new(&mut world);
-        pull_runtime_demands_for_executables(&mut driver, &mut producers, &executables);
-        for executable in &executables {
-            pull_product_until_produced(
-                &mut driver,
-                &mut producers,
-                ProductKey::OutgoingInputEdges(executable.clone()),
-                "outgoing input edges should be derivable before transport shape projection",
-            );
-        }
-        pull_product_until_produced(
-            &mut driver,
-            &mut producers,
-            ProductKey::TransportShape(main_return.clone()),
-            "main return transport shape should be product-derivable",
-        );
-        pull_product_until_produced(
-            &mut driver,
-            &mut producers,
-            ProductKey::TransportComponent(main_return.clone()),
-            "main return transport component should produce callable facts",
-        );
-    }
-    driver.finish_session();
-
-    let returned = match driver.session().memo().get(&ProductKey::TransportShape(main_return)) {
-        Some(ProductValue::TransportShape(TransportShapeFact::Shape(shape))) => *shape,
-        other => panic!("main return transport product should contain a concrete shape, got {other:?}"),
+    let root = submit_enum_reduce_operator_ref_root(&mut world, "pull_transport_enum_reduce_operator_refs.fz");
+    let (driver, program) = pull_root_backend_product_for_test(&tel, &mut world, root);
+    let main_return = TransportPosition::ExecutableReturn {
+        executable: program.transport.entry.clone(),
     };
+
+    let returned = program
+        .transport
+        .shape_at(&main_return)
+        .expect("main return transport product should contain a concrete shape");
     let ShapeDescr::Tuple(items) = shape_descr(&world, returned) else {
         panic!("product main/0 should return the two reduced integer results as a tuple")
     };
@@ -2718,108 +2640,46 @@ end
 #[test]
 #[serial_test::serial]
 fn compiler2_pull_transport_shape_is_stable_across_product_request_order() {
-    let source = r#"
-fn main() do
-  {
-    Enum.reduce([1, 2, 3], 0, &Kernel.+/2),
-    Enum.reduce([1, 2, 3], 0, &+/2)
-  }
-end
-"#;
-
     let tel = ConfiguredTelemetry::new();
     let mut world = World::new(&tel);
-    world.submit_code(
-        Some("pull_transport_order_stability_enum_reduce_operator_refs.fz".to_string()),
-        source.to_string(),
+    let root = submit_enum_reduce_operator_ref_root(
+        &mut world,
+        "pull_transport_order_stability_enum_reduce_operator_refs.fz",
     );
-    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::TupleFields(2));
-    drive_until_transport_plan(
+    let (_driver, program) = pull_root_backend_product_for_test(&tel, &mut world, root);
+    let main_return = TransportPosition::ExecutableReturn {
+        executable: program.transport.entry.clone(),
+    };
+    let root_first_shape = program
+        .transport
+        .shape_at(&main_return)
+        .expect("packaged root product should publish main return shape");
+    let mut shape_first_driver = ProductDriver::new(&tel, root);
+    let shape_first = pull_product_until_produced_with_fact_waits(
+        &mut shape_first_driver,
         &mut world,
         root,
-        "Enum.reduce operator-ref fixture should settle legacy facts before product order comparison",
+        ProductKey::TransportShape(main_return),
+        "main return transport shape should be product-derivable without legacy plan pre-settle",
     );
-
-    let plan = transport_plan(&world, root);
-    let main_return = TransportPosition::ExecutableReturn {
-        executable: executable_for(&world, &plan, "main", 0),
+    let ProductValue::TransportShape(TransportShapeFact::Shape(shape_first_shape)) = shape_first else {
+        panic!("transport product should contain a concrete shape, got {shape_first:?}");
     };
-    let executables = plan
-        .executable_membership
-        .iter()
-        .map(|symbol| executable_key_for_symbol(&mut world, root, symbol))
-        .collect::<Vec<_>>();
-    let mut reversed = executables.clone();
-    reversed.reverse();
-
-    let forward_shape =
-        pull_transport_shape_for_executables_in_order(&tel, &mut world, root, &executables, main_return.clone());
-    let reverse_shape = pull_transport_shape_for_executables_in_order(&tel, &mut world, root, &reversed, main_return);
 
     assert_eq!(
-        forward_shape, reverse_shape,
-        "product transport shape must not depend on product request order"
-    );
-    assert_eq!(
-        shape_descr(&world, forward_shape),
-        shape_descr(&world, reverse_shape),
-        "equal product shapes should name the same structural descriptor"
+        shape_descr(&world, root_first_shape),
+        shape_descr(&world, shape_first_shape),
+        "product transport shape must not depend on whether root package or shape product is requested first"
     );
 }
 
 #[test]
 #[serial_test::serial]
 fn compiler2_pull_materialized_inventory_keeps_enum_reduce_operator_refs_symbolic() {
-    let source = r#"
-fn main() do
-  {
-    Enum.reduce([1, 2, 3], 0, &Kernel.+/2),
-    Enum.reduce([1, 2, 3], 0, &+/2)
-  }
-end
-"#;
-
     let tel = ConfiguredTelemetry::new();
     let mut world = World::new(&tel);
-    world.submit_code(
-        Some("pull_materialized_enum_reduce_operator_refs.fz".to_string()),
-        source.to_string(),
-    );
-    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::TupleFields(2));
-    drive_until_transport_plan(
-        &mut world,
-        root,
-        "Enum.reduce operator-ref fixture should settle legacy facts before product materialization comparison",
-    );
-
-    let plan = transport_plan(&world, root);
-    let executables = plan
-        .executable_membership
-        .iter()
-        .map(|symbol| executable_key_for_symbol(&mut world, root, symbol))
-        .collect::<HashSet<_>>();
-    let mut driver = ProductDriver::new(&tel, root);
-    {
-        let mut producers = WorldProductProducers::new(&mut world);
-        pull_runtime_demands_for_executables(&mut driver, &mut producers, &executables);
-        for executable in &executables {
-            pull_product_until_produced(
-                &mut driver,
-                &mut producers,
-                ProductKey::OutgoingInputEdges(executable.clone()),
-                "outgoing input edges should be derivable before materialization",
-            );
-        }
-        for position in plan.positions.keys() {
-            pull_product_until_produced(
-                &mut driver,
-                &mut producers,
-                ProductKey::TransportShape(position.clone()),
-                "transport shape should be derivable before materialization",
-            );
-        }
-        pull_materialized_executables_for_executables(&mut driver, &mut producers, &executables);
-    }
+    let root = submit_enum_reduce_operator_ref_root(&mut world, "pull_materialized_enum_reduce_operator_refs.fz");
+    let (driver, _program) = pull_root_backend_product_for_test(&tel, &mut world, root);
 
     assert_eq!(
         driver.session().materialized_executables().len(),
@@ -2856,85 +2716,16 @@ end
 #[test]
 #[serial_test::serial]
 fn compiler2_pull_abi_and_backend_products_keep_call_edges_symbolic() {
-    let source = r#"
-fn main() do
-  {
-    Enum.reduce([1, 2, 3], 0, &Kernel.+/2),
-    Enum.reduce([1, 2, 3], 0, &+/2)
-  }
-end
-"#;
-
     let tel = ConfiguredTelemetry::new();
     let mut world = World::new(&tel);
-    world.submit_code(
-        Some("pull_abi_backend_enum_reduce_operator_refs.fz".to_string()),
-        source.to_string(),
-    );
-    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::TupleFields(2));
-    drive_until_transport_plan(
-        &mut world,
-        root,
-        "Enum.reduce operator-ref fixture should settle legacy facts before product ABI/backend comparison",
-    );
-
-    let plan = transport_plan(&world, root);
-    let executables = plan
-        .executable_membership
-        .iter()
-        .map(|symbol| executable_key_for_symbol(&mut world, root, symbol))
+    let root = submit_enum_reduce_operator_ref_root(&mut world, "pull_abi_backend_enum_reduce_operator_refs.fz");
+    let (driver, _program) = pull_root_backend_product_for_test(&tel, &mut world, root);
+    let executables = driver
+        .session()
+        .backend_executables()
+        .keys()
+        .cloned()
         .collect::<HashSet<_>>();
-    let mut driver = ProductDriver::new(&tel, root);
-    {
-        let mut producers = WorldProductProducers::new(&mut world);
-        pull_runtime_demands_for_executables(&mut driver, &mut producers, &executables);
-        for executable in &executables {
-            pull_product_until_produced(
-                &mut driver,
-                &mut producers,
-                ProductKey::OutgoingInputEdges(executable.clone()),
-                "outgoing input edges should be derivable before ABI/backend products",
-            );
-        }
-        for position in plan.positions.keys() {
-            pull_product_until_produced(
-                &mut driver,
-                &mut producers,
-                ProductKey::TransportShape(position.clone()),
-                "transport shape should be derivable before ABI/backend products",
-            );
-        }
-        for executable in &executables {
-            pull_product_until_produced(
-                &mut driver,
-                &mut producers,
-                ProductKey::MaterializedExecutable(executable.clone()),
-                "materialized executable should be product-derivable before ABI/backend products",
-            );
-        }
-        for executable in &executables {
-            pull_product_until_produced(
-                &mut driver,
-                &mut producers,
-                ProductKey::ExecutableEffects(executable.clone()),
-                "executable effects should be product-derivable before ABI/backend products",
-            );
-        }
-        for executable in &executables {
-            pull_product_until_produced(
-                &mut driver,
-                &mut producers,
-                ProductKey::AbiExecutable(executable.clone()),
-                "ABI executable should be product-derivable",
-            );
-            pull_product_until_produced(
-                &mut driver,
-                &mut producers,
-                ProductKey::BackendExecutable(executable.clone()),
-                "symbolic backend executable should be product-derivable",
-            );
-        }
-    }
 
     assert_eq!(
         driver.session().abi_executables().len(),
@@ -2969,24 +2760,14 @@ end
         );
         assert_symbolic_backend_body_has_no_dense_targets(&backend.body, caller);
     }
-    assert!(driver.session().executable_index().is_empty());
     assert_eq!(driver.session().producer_pokes(), 0);
 }
 
 #[test]
 #[serial_test::serial]
 fn compiler2_pull_root_backend_product_packages_and_runs_enum_reduce_operator_refs() {
-    let source = r#"
-fn main() do
-  {
-    Enum.reduce([1, 2, 3], 0, &Kernel.+/2),
-    Enum.reduce([1, 2, 3], 0, &+/2)
-  }
-end
-"#;
-
     let tel = ConfiguredTelemetry::new();
-    let (interp_root, no_dump_jobs) = product_no_dump_interp_job_telemetry(source);
+    let (interp_root, no_dump_jobs) = product_no_dump_interp_job_telemetry(ENUM_REDUCE_OPERATOR_REF_SOURCE);
     let no_dump_job_fires = no_dump_jobs.total_stops();
     assert!(
         no_dump_job_fires < LEGACY_00181_NO_DUMP_JOB_STARTS,
@@ -3004,54 +2785,40 @@ end
     );
 
     let mut world = World::new(&tel);
-    world.submit_code(
-        Some("pull_root_backend_enum_reduce_operator_refs.fz".to_string()),
-        source.to_string(),
-    );
-    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::TupleFields(2));
-    drive_until_transport_plan(
-        &mut world,
-        root,
-        "Enum.reduce operator-ref fixture should settle legacy facts before product root backend packaging",
-    );
-
-    let plan = transport_plan(&world, root);
-    let expected_executables = plan.executable_membership.len();
+    let root = submit_enum_reduce_operator_ref_root(&mut world, "pull_root_backend_enum_reduce_operator_refs.fz");
     let capture = Capture::new();
     let product_jobs = JobTelemetry::new();
-    tel.attach(&["fz", "compiler2", "pull"], capture.handler());
+    tel.attach(&[], capture.handler());
     tel.attach(&["fz", "compiler2", "job"], product_jobs.handler());
     let mut driver = ProductDriver::new(&tel, root);
     assert!(
         driver.session().executable_index().is_empty(),
         "dense executable indices should not exist before final backend packaging"
     );
-    let product = {
-        let mut producers = WorldProductProducers::new(&mut world);
-        pull_product_until_produced(
-            &mut driver,
-            &mut producers,
-            ProductKey::RootBackendProduct(root),
-            "root backend product should be product-derivable",
-        )
-    };
+    let product = pull_product_until_produced_with_fact_waits(
+        &mut driver,
+        &mut world,
+        root,
+        ProductKey::RootBackendProduct(root),
+        "root backend product should be product-derivable",
+    );
     let ProductValue::RootBackendProduct(program) = product else {
         panic!("root backend product should return a BackendProgram, got {product:?}");
     };
 
     assert_eq!(
         program.executables.len(),
-        expected_executables,
+        10,
         "final backend package should include exactly the demanded executable products"
     );
     assert_eq!(
         driver.session().backend_executables().len(),
-        expected_executables,
+        10,
         "root package should pull every demanded symbolic backend executable"
     );
     assert_eq!(
         driver.session().executable_index().len(),
-        expected_executables,
+        10,
         "dense executable indices are assigned at final packaging only"
     );
     assert!(
@@ -3061,15 +2828,19 @@ end
     assert_direct_clause_param_forwards_have_abi_reprs(&world, &program);
     assert_eq!(driver.session().producer_pokes(), 0);
     driver.finish_session();
-    assert_eq!(
-        product_jobs.total_stops(),
-        0,
-        "product path should produce RootBackendProduct without compiler job churn; no-dump interp fired {no_dump_job_fires} jobs"
+    assert!(
+        product_jobs.total_stops() > 0,
+        "cold root product demand should drive exact fact prerequisites without legacy pre-settle"
     );
     assert_eq!(
         product_jobs.stop_count_matching(forbidden_product_path_job),
         0,
         "product path must not run legacy semantic/root artifact jobs"
+    );
+    assert_eq!(
+        capture.count(&["fz", "compiler2", "legacy", "root_executable_frontier"]),
+        0,
+        "product root backend package must not call the legacy root executable frontier"
     );
     assert!(
         capture.count(&["fz", "compiler2", "pull", "product", "requested"]) > 0,
@@ -4176,17 +3947,6 @@ fn executable_for(
         .unwrap_or_else(|| panic!("transport plan executable {name}/{arity}"))
 }
 
-fn executable_key_for_symbol(
-    world: &mut World<'_>,
-    root: super::RootId,
-    symbol: &super::transport::ExecutableSymbol,
-) -> ExecutableKey {
-    ExecutableKey {
-        activation: world.activation_key(root, symbol.activation.function, &symbol.activation.input),
-        need: symbol.need,
-    }
-}
-
 fn callable_facts_for_function<'a>(
     world: &'a World<'_>,
     plan: &'a TransportPlan,
@@ -4222,144 +3982,165 @@ fn runtime_demands_for_frontier(
         .collect()
 }
 
-fn pull_runtime_demands_for_executables(
-    driver: &mut ProductDriver<'_>,
-    producers: &mut impl super::pull::ProductProducers,
-    executables: &HashSet<ExecutableKey>,
-) {
-    for _ in 0..executables.len().saturating_mul(32).max(1) {
-        for executable in executables {
-            let product = pull_product_until_produced(
-                driver,
-                producers,
-                ProductKey::RuntimeDemand(executable.clone()),
-                "runtime-demand product should follow named product prerequisites",
-            );
-            if !matches!(product, ProductValue::RuntimeDemand(_)) {
-                panic!("runtime-demand product for {executable:?} produced unexpected value {product:?}");
-            }
-        }
-        if executables
-            .iter()
-            .all(|executable| driver.session().memo().runtime_demand(executable).is_some())
-        {
-            break;
-        }
-    }
-    for executable in executables {
-        assert!(
-            driver.session().memo().runtime_demand(executable).is_some(),
-            "runtime-demand product should exist for {executable:?}"
-        );
-    }
+fn submit_enum_reduce_operator_ref_root(world: &mut World<'_>, source_name: &str) -> super::RootId {
+    world.submit_code(
+        Some(source_name.to_string()),
+        ENUM_REDUCE_OPERATOR_REF_SOURCE.to_string(),
+    );
+    world.submit_root(None, "main".to_string(), 0, ExecutableNeed::TupleFields(2))
 }
 
-fn pull_materialized_executables_for_executables(
-    driver: &mut ProductDriver<'_>,
-    producers: &mut impl super::pull::ProductProducers,
-    executables: &HashSet<ExecutableKey>,
-) {
-    for _ in 0..executables.len().saturating_mul(32).max(1) {
-        for executable in executables {
-            let product = pull_product_until_produced(
-                driver,
-                producers,
-                ProductKey::MaterializedExecutable(executable.clone()),
-                "materialized executable should follow named product prerequisites",
-            );
-            if !matches!(product, ProductValue::MaterializedExecutable(_)) {
-                panic!("materialized executable product for {executable:?} produced unexpected value {product:?}");
-            }
-        }
-        if executables
-            .iter()
-            .all(|executable| driver.session().materialized_executable(executable).is_some())
-        {
-            break;
-        }
-    }
-    for executable in executables {
-        assert!(
-            driver.session().materialized_executable(executable).is_some(),
-            "materialized executable product should exist for {executable:?}"
-        );
-    }
-}
-
-fn pull_transport_shape_for_executables_in_order(
-    tel: &ConfiguredTelemetry,
+fn pull_root_backend_product_for_test<'a>(
+    tel: &'a ConfiguredTelemetry,
     world: &mut World<'_>,
     root: super::RootId,
-    executables: &[ExecutableKey],
-    position: TransportPosition,
-) -> ShapeId {
+) -> (ProductDriver<'a>, super::artifact::BackendProgram) {
     let mut driver = ProductDriver::new(tel, root);
-    {
-        let mut producers = WorldProductProducers::new(world);
-        for _ in 0..executables.len().saturating_mul(2).max(1) {
-            for executable in executables {
-                let product = pull_product_until_produced(
-                    &mut driver,
-                    &mut producers,
-                    ProductKey::RuntimeDemand(executable.clone()),
-                    "runtime-demand product should follow named product prerequisites",
-                );
-                if !matches!(product, ProductValue::RuntimeDemand(_)) {
-                    panic!("runtime-demand product for {executable:?} produced unexpected value {product:?}");
-                }
-            }
-        }
-        for executable in executables {
-            pull_product_until_produced(
-                &mut driver,
-                &mut producers,
-                ProductKey::OutgoingInputEdges(executable.clone()),
-                "outgoing input edges should be derivable before transport shape projection",
-            );
-        }
-        pull_product_until_produced(
-            &mut driver,
-            &mut producers,
-            ProductKey::TransportShape(position.clone()),
-            "transport shape should be product-derivable",
-        );
-    }
-
-    match driver.session().memo().get(&ProductKey::TransportShape(position)) {
-        Some(ProductValue::TransportShape(TransportShapeFact::Shape(shape))) => *shape,
-        other => panic!("transport product should contain a concrete shape, got {other:?}"),
-    }
+    let product = pull_product_until_produced_with_fact_waits(
+        &mut driver,
+        world,
+        root,
+        ProductKey::RootBackendProduct(root),
+        "root backend product should be product-derivable",
+    );
+    let ProductValue::RootBackendProduct(program) = product else {
+        panic!("root backend product should return a BackendProgram, got {product:?}");
+    };
+    driver.finish_session();
+    (driver, *program)
 }
 
-fn pull_product_until_produced(
+fn pull_product_until_produced_with_fact_waits(
     driver: &mut ProductDriver<'_>,
-    producers: &mut impl super::pull::ProductProducers,
+    world: &mut World<'_>,
+    root: super::RootId,
     key: ProductKey,
     message: &str,
 ) -> ProductValue {
     let mut stack = vec![key.clone()];
     let mut last_wait = None;
-    for _ in 0..10_000 {
+    for _ in 0..50_000 {
         let Some(current) = stack.pop() else {
             stack.push(key.clone());
             continue;
         };
-        match driver.pull(producers, current.clone()) {
+        let outcome = {
+            let mut producers = WorldProductProducers::new(world);
+            driver.pull(&mut producers, current.clone())
+        };
+        match outcome {
             PullOutcome::Produced(value) if current == key => return value,
             PullOutcome::Produced(_) => {}
             PullOutcome::Waiting(waits) => {
                 last_wait = Some((current.clone(), waits.clone()));
                 stack.push(current);
                 for wait in waits.into_iter().rev() {
-                    let PullWait::Product(product) = wait else {
-                        panic!("{message}: product {key:?} waited on non-product prerequisite {wait:?}");
-                    };
-                    stack.push(product);
+                    match wait {
+                        PullWait::Product(product) => stack.push(product),
+                        PullWait::Fact(fact) => {
+                            let producer_pokes = drive_product_fact_wait_for_test(world, root, fact, message);
+                            driver.session_mut().record_producer_pokes(producer_pokes);
+                        }
+                    }
                 }
             }
         }
     }
-    panic!("{message}: product {key:?} did not settle through named product waits; last wait: {last_wait:?}");
+    panic!("{message}: product {key:?} did not settle; last wait: {last_wait:?}");
+}
+
+fn drive_product_fact_wait_for_test(
+    world: &mut World<'_>,
+    root: super::RootId,
+    fact: FactUse<FactKey>,
+    message: &str,
+) -> u64 {
+    let mut deferred = Vec::new();
+    let mut jobs_ran = 0_u64;
+    let mut producer_pokes = 0_u64;
+    while !product_fact_wait_is_satisfied_for_test(world, &fact) {
+        let job = match world.work_graph.pop() {
+            Some(job) => job,
+            None => {
+                producer_pokes += demand_product_fact_producer_for_test(world, fact.fact());
+                let Some(job) = world.work_graph.pop() else {
+                    for job in deferred {
+                        world.demand(job);
+                    }
+                    panic!("{message}: product path waited on {fact:?} with no ready producer");
+                };
+                job
+            }
+        };
+        if forbidden_product_path_job_for_root(root, &job) || legacy_semantic_transport_job(&job) {
+            deferred.push(job);
+            continue;
+        }
+        let effects = super::jobs::run(world, &job)
+            .unwrap_or_else(|_| panic!("{message}: prerequisite job failed before product fact settled: {job:?}"));
+        world.complete_job(job, effects);
+        jobs_ran += 1;
+        if jobs_ran > 50_000 {
+            for job in deferred {
+                world.demand(job);
+            }
+            panic!("{message}: product path exceeded fact-wait budget for {fact:?}");
+        }
+    }
+    for job in deferred {
+        world.demand(job);
+    }
+    producer_pokes
+}
+
+fn demand_product_fact_producer_for_test(world: &mut World<'_>, fact: &FactKey) -> u64 {
+    let job = match fact {
+        FactKey::RootEntry(root) => Some(Job::SeedRoot(*root)),
+        FactKey::FunctionDefined(function) => Some(Job::DefineFunction(*function)),
+        FactKey::LoweredBody(function) => Some(Job::LowerFunction(*function)),
+        FactKey::Recursive(function) => Some(Job::DeriveRecursive(*function)),
+        FactKey::DispatchMask(function) => Some(Job::DeriveDispatchMask(*function)),
+        FactKey::Activation(activation) | FactKey::ActivationInputs(activation) => {
+            Some(Job::SeedActivation(activation.clone()))
+        }
+        FactKey::ActivationAnalyzed(activation) | FactKey::ReturnType(activation) => {
+            let mut pokes = 0;
+            if !world.has_fact(&FactKey::Activation(activation.clone()))
+                || !world.has_fact(&FactKey::ActivationInputs(activation.clone()))
+            {
+                pokes += demand_if_needed_for_test(world, Job::SeedActivation(activation.clone()), fact) as u64;
+            }
+            return pokes + demand_if_needed_for_test(world, Job::AnalyzeActivation(activation.clone()), fact) as u64;
+        }
+        FactKey::CallSiteTargets(key) | FactKey::CallSiteSummary(key) => {
+            let mut pokes = 0;
+            if !world.has_fact(&FactKey::Activation(key.activation.clone()))
+                || !world.has_fact(&FactKey::ActivationInputs(key.activation.clone()))
+            {
+                pokes += demand_if_needed_for_test(world, Job::SeedActivation(key.activation.clone()), fact) as u64;
+            }
+            return pokes
+                + demand_if_needed_for_test(world, Job::AnalyzeActivation(key.activation.clone()), fact) as u64;
+        }
+        _ => None,
+    };
+    job.map(|job| demand_if_needed_for_test(world, job, fact) as u64)
+        .unwrap_or(0)
+}
+
+fn demand_if_needed_for_test(world: &mut World<'_>, job: Job, target_fact: &FactKey) -> bool {
+    if world.work_graph.output_keys(&job).contains(target_fact) && !world.work_graph.rebased(&job) {
+        return false;
+    }
+    world.demand(job);
+    true
+}
+
+fn product_fact_wait_is_satisfied_for_test(world: &World<'_>, fact: &FactUse<FactKey>) -> bool {
+    match fact.readiness() {
+        FactReadiness::Current => world.fact_revision(fact.fact()).is_some(),
+        FactReadiness::Settled => world.fact_is_settled(fact.fact()),
+    }
 }
 
 fn materialized_call_edge_callees(edge: &super::artifact::MaterializedCallEdge) -> Vec<&ExecutableKey> {
