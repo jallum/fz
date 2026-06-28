@@ -2587,8 +2587,7 @@ end
             .all(|flow| flow.first_class_surfaces.is_empty() && !flow.opaque && !flow.escape),
         "operator refs used only as Enum.reduce reducers should not become first-class product demand: {plus_flows:?}"
     );
-    assert_eq!(driver.session().root_scans(), 0);
-    assert_eq!(driver.session().follow_ups(), 0);
+    assert_eq!(driver.session().producer_pokes(), 0);
     assert!(
         capture.count(&["fz", "compiler2", "pull", "product", "requested"]) > 0,
         "product path should emit product request telemetry"
@@ -2600,8 +2599,7 @@ end
     let finished = capture
         .last(&["fz", "compiler2", "pull", "session", "finished"])
         .expect("product path should emit final session telemetry");
-    assert_eq!(measurement_u64(&finished, "root_scans"), 0);
-    assert_eq!(measurement_u64(&finished, "follow_ups"), 0);
+    assert_eq!(measurement_u64(&finished, "producer_pokes"), 0);
 }
 
 #[test]
@@ -2710,8 +2708,7 @@ end
         plus_callables.iter().all(|(_, facts)| facts.boundary_ids.is_empty()),
         "product transport should not publish first-class boundaries for operator-ref reducers: {plus_callables:?}"
     );
-    assert_eq!(driver.session().root_scans(), 0);
-    assert_eq!(driver.session().follow_ups(), 0);
+    assert_eq!(driver.session().producer_pokes(), 0);
     assert!(
         capture.count(&["fz", "compiler2", "pull", "product", "requested"]) > 0,
         "product transport path should emit product request telemetry"
@@ -2853,8 +2850,7 @@ end
             }
         }
     }
-    assert_eq!(driver.session().root_scans(), 0);
-    assert_eq!(driver.session().follow_ups(), 0);
+    assert_eq!(driver.session().producer_pokes(), 0);
 }
 
 #[test]
@@ -2974,8 +2970,7 @@ end
         assert_symbolic_backend_body_has_no_dense_targets(&backend.body, caller);
     }
     assert!(driver.session().executable_index().is_empty());
-    assert_eq!(driver.session().root_scans(), 0);
-    assert_eq!(driver.session().follow_ups(), 0);
+    assert_eq!(driver.session().producer_pokes(), 0);
 }
 
 #[test]
@@ -3064,8 +3059,7 @@ end
         "operator refs in fixture 00181 should stay direct callable transport with no backend callable entries"
     );
     assert_direct_clause_param_forwards_have_abi_reprs(&world, &program);
-    assert_eq!(driver.session().root_scans(), 0);
-    assert_eq!(driver.session().follow_ups(), 0);
+    assert_eq!(driver.session().producer_pokes(), 0);
     driver.finish_session();
     assert_eq!(
         product_jobs.total_stops(),
@@ -3088,8 +3082,7 @@ end
     let finished = capture
         .last(&["fz", "compiler2", "pull", "session", "finished"])
         .expect("root backend product path should emit final session telemetry");
-    assert_eq!(measurement_u64(&finished, "root_scans"), 0);
-    assert_eq!(measurement_u64(&finished, "follow_ups"), 0);
+    assert_eq!(measurement_u64(&finished, "producer_pokes"), 0);
 
     assert!(
         no_dump_job_fires > 0,

@@ -2681,13 +2681,23 @@ impl<'a> World<'a> {
     }
 
     pub(crate) fn root_executable_frontier(&self, root: RootId) -> HashSet<ExecutableKey> {
-        self.work_graph
+        let frontier = self
+            .work_graph
             .fact_keys()
             .filter_map(|fact| match fact {
                 FactKey::Executable(executable) if executable.activation.root == root => Some(executable.clone()),
                 _ => None,
             })
-            .collect()
+            .collect::<HashSet<_>>();
+        self.tel.execute(
+            &["fz", "compiler2", "legacy", "root_executable_frontier"],
+            &measurements! {
+                root_id: root.as_u32(),
+                executable_count: frontier.len(),
+            },
+            &metadata! {},
+        );
+        frontier
     }
 
     pub(crate) fn root_entry_executable(&mut self, root: RootId) -> ExecutableKey {

@@ -195,7 +195,10 @@ impl<'a> Compiler2<'a> {
                     for wait in waits.into_iter().rev() {
                         match wait {
                             PullWait::Product(product) => stack.push(product),
-                            PullWait::Fact(fact) => self.drive_product_fact_wait(root, fact)?,
+                            PullWait::Fact(fact) => {
+                                let producer_pokes = self.drive_product_fact_wait(root, fact)?;
+                                driver.session_mut().record_producer_pokes(producer_pokes);
+                            }
                         }
                     }
                 }
@@ -207,14 +210,15 @@ impl<'a> Compiler2<'a> {
         ))
     }
 
-    fn drive_product_fact_wait(&mut self, root: RootId, fact: FactUse<FactKey>) -> Result<(), String> {
+    fn drive_product_fact_wait(&mut self, root: RootId, fact: FactUse<FactKey>) -> Result<u64, String> {
         let mut deferred = Vec::new();
         let mut jobs_ran = 0_u64;
+        let mut producer_pokes = 0_u64;
         while !self.product_fact_wait_is_satisfied(&fact) {
             let job = match self.world.work_graph.pop() {
                 Some(job) => job,
                 None => {
-                    self.demand_product_fact_producer(fact.fact());
+                    producer_pokes += self.demand_product_fact_producer(fact.fact());
                     let Some(job) = self.world.work_graph.pop() else {
                         for job in deferred {
                             self.world.demand(job);
@@ -274,10 +278,10 @@ impl<'a> Compiler2<'a> {
                 ));
             }
         }
-        Ok(())
+        Ok(producer_pokes)
     }
 
-    fn demand_product_fact_producer(&mut self, fact: &FactKey) {
+    fn demand_product_fact_producer(&mut self, fact: &FactKey) -> u64 {
         let job = match fact {
             FactKey::RootEntry(root) => Some(Job::SeedRoot(*root)),
             FactKey::FunctionDefined(function) => Some(Job::DefineFunction(*function)),
@@ -288,33 +292,37 @@ impl<'a> Compiler2<'a> {
                 Some(Job::SeedActivation(activation.clone()))
             }
             FactKey::ActivationAnalyzed(activation) | FactKey::ReturnType(activation) => {
+                let mut pokes = 0;
                 if !self.world.has_fact(&FactKey::Activation(activation.clone()))
                     || !self.world.has_fact(&FactKey::ActivationInputs(activation.clone()))
                 {
-                    self.demand_if_needed(Job::SeedActivation(activation.clone()), fact);
+                    pokes += self.demand_if_needed(Job::SeedActivation(activation.clone()), fact) as u64;
                 }
-                Some(Job::AnalyzeActivation(activation.clone()))
+                return pokes + self.demand_if_needed(Job::AnalyzeActivation(activation.clone()), fact) as u64;
             }
-            FactKey::CallSiteTargets(key) => {
+            FactKey::CallSiteTargets(key) | FactKey::CallSiteSummary(key) => {
+                let mut pokes = 0;
                 if !self.world.has_fact(&FactKey::Activation(key.activation.clone()))
                     || !self.world.has_fact(&FactKey::ActivationInputs(key.activation.clone()))
                 {
-                    self.demand_if_needed(Job::SeedActivation(key.activation.clone()), fact);
+                    pokes += self.demand_if_needed(Job::SeedActivation(key.activation.clone()), fact) as u64;
                 }
-                Some(Job::AnalyzeActivation(key.activation.clone()))
+                return pokes + self.demand_if_needed(Job::AnalyzeActivation(key.activation.clone()), fact) as u64;
             }
             _ => None,
         };
         if let Some(job) = job {
-            self.demand_if_needed(job, fact);
+            return self.demand_if_needed(job, fact) as u64;
         }
+        0
     }
 
-    fn demand_if_needed(&mut self, job: Job, target_fact: &FactKey) {
+    fn demand_if_needed(&mut self, job: Job, target_fact: &FactKey) -> bool {
         if self.world.work_graph.output_keys(&job).contains(target_fact) && !self.world.work_graph.rebased(&job) {
-            return;
+            return false;
         }
         self.world.demand(job);
+        true
     }
 
     fn product_fact_wait_is_satisfied(&self, fact: &FactUse<FactKey>) -> bool {

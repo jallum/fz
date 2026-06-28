@@ -328,8 +328,7 @@ pub struct PullSession {
     demanded_boundaries: HashSet<BoundaryId>,
     executable_index: HashMap<ExecutableKey, usize>,
     active_runtime_demands: HashSet<ExecutableKey>,
-    root_scans: u64,
-    follow_ups: u64,
+    producer_pokes: u64,
 }
 
 impl PullSession {
@@ -358,8 +357,7 @@ impl PullSession {
             demanded_boundaries: HashSet::new(),
             executable_index: HashMap::new(),
             active_runtime_demands: HashSet::new(),
-            root_scans: 0,
-            follow_ups: 0,
+            producer_pokes: 0,
         }
     }
 
@@ -487,12 +485,8 @@ impl PullSession {
         self.active_runtime_demands.contains(executable)
     }
 
-    pub fn root_scans(&self) -> u64 {
-        self.root_scans
-    }
-
-    pub fn follow_ups(&self) -> u64 {
-        self.follow_ups
+    pub fn producer_pokes(&self) -> u64 {
+        self.producer_pokes
     }
 
     pub fn record_call_edge(&mut self, edge: DemandedCallEdge) {
@@ -511,6 +505,10 @@ impl PullSession {
         if changed {
             self.invalidate_demand_derived_products(&edge.callee);
         }
+    }
+
+    pub fn record_producer_pokes(&mut self, count: u64) {
+        self.producer_pokes += count;
     }
 
     pub fn record_return_demand(&mut self, executable: ExecutableKey, demand: RuntimeDemand) {
@@ -745,8 +743,7 @@ impl PullSession {
                 transport_positions: self.demanded_transport_positions.len(),
                 callables: self.demanded_callables.len(),
                 boundaries: self.demanded_boundaries.len(),
-                follow_ups: self.follow_ups,
-                root_scans: self.root_scans,
+                producer_pokes: self.producer_pokes,
             },
             &metadata! {},
         );
@@ -1203,8 +1200,7 @@ mod tests {
             session.memo().get(&ProductKey::RuntimeDemand(callee)).is_none(),
             "recording a new incoming edge invalidates stale request-local callee runtime demand"
         );
-        assert_eq!(session.root_scans(), 0);
-        assert_eq!(session.follow_ups(), 0);
+        assert_eq!(session.producer_pokes(), 0);
     }
 
     #[test]
@@ -1259,8 +1255,7 @@ mod tests {
             outcome,
             PullOutcome::Produced(ProductValue::IncomingInputSlot(Box::new([source])))
         );
-        assert_eq!(driver.session().root_scans(), 0);
-        assert_eq!(driver.session().follow_ups(), 0);
+        assert_eq!(driver.session().producer_pokes(), 0);
     }
 
     #[test]
@@ -1324,8 +1319,7 @@ mod tests {
             driver.pull(&mut producers, ProductKey::CallableFacts(callable)),
             PullOutcome::Produced(ProductValue::CallableFacts(Some(callable_facts)))
         );
-        assert_eq!(driver.session().root_scans(), 0);
-        assert_eq!(driver.session().follow_ups(), 0);
+        assert_eq!(driver.session().producer_pokes(), 0);
     }
 
     #[test]
@@ -1388,8 +1382,7 @@ mod tests {
                 .executable_effects(&second)
                 .is_some_and(|effects| effects.allocates)
         );
-        assert_eq!(driver.session().root_scans(), 0);
-        assert_eq!(driver.session().follow_ups(), 0);
+        assert_eq!(driver.session().producer_pokes(), 0);
 
         fn fake_materialized_executable(
             body: super::super::LoweredBody,
@@ -1487,7 +1480,7 @@ mod tests {
     }
 
     #[test]
-    fn pull_session_finished_telemetry_reports_zero_push_counters() {
+    fn pull_session_finished_telemetry_reports_producer_pokes() {
         let tel = ConfiguredTelemetry::new();
         let capture = Capture::new();
         tel.attach(&[], capture.handler());
@@ -1500,14 +1493,31 @@ mod tests {
             driver.pull(&mut producers, ProductKey::RuntimeDemand(executable)),
             PullOutcome::Produced(ProductValue::Unit)
         );
+        driver.session_mut().record_producer_pokes(2);
         driver.finish_session();
 
         let finished = capture
             .last(&["fz", "compiler2", "pull", "session", "finished"])
             .expect("pull session should emit final inventory telemetry");
         assert_eq!(measurement_u64(&finished, "executables"), 1);
-        assert_eq!(measurement_u64(&finished, "follow_ups"), 0);
-        assert_eq!(measurement_u64(&finished, "root_scans"), 0);
+        assert_eq!(measurement_u64(&finished, "producer_pokes"), 2);
+    }
+
+    #[test]
+    fn root_executable_frontier_emits_legacy_scan_telemetry() {
+        let tel = ConfiguredTelemetry::new();
+        let capture = Capture::new();
+        tel.attach(&[], capture.handler());
+        let root = RootId::for_test(8);
+        let world = World::new(&tel);
+
+        assert!(world.root_executable_frontier(root).is_empty());
+
+        let event = capture
+            .last(&["fz", "compiler2", "legacy", "root_executable_frontier"])
+            .expect("root frontier scan should emit legacy telemetry");
+        assert_eq!(measurement_u64(&event, "root_id"), root.as_u32() as u64);
+        assert_eq!(measurement_u64(&event, "executable_count"), 0);
     }
 
     fn fake_executable(root: RootId) -> ExecutableKey {
