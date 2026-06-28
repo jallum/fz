@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-go4.17.3"
   ],
@@ -12,8 +12,8 @@
   "labels": [],
   "parent": "fz-go4.17",
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "Pull tests: stop pre-settling legacy transport plans",
   "type": "bug",
-  "updated_at": "2026-06-28T15:53:39Z"
+  "updated_at": "2026-06-28T17:50:19Z"
 }
