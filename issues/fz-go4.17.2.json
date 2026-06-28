@@ -2,14 +2,16 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-06-28T13:05:58Z",
+  "close_reason": "Fixed in 911334131: BuildMacroExecutable now drives/completes the macro BackendProgram product directly instead of scheduling BuildBackendProduct, and the macro test asserts the backend-backed macro executable telemetry rather than the old separate job shape.",
   "created": "2026-06-28T13:05:21Z",
   "description": "Goal\nRemove the remaining push-shaped macro backend readiness handoff: BuildMacroExecutable must not wait on BackendProgram(macro_root) by scheduling BuildBackendProduct(macro_root).\n\nSignal\nfixtures2/00181_enum_reduce_operator_ref.fz with --log-telemetry interp has BuildBackendProduct=0, SealSemanticClosure=0, DeriveTransportPlan=0, DeriveRuntimeDemand=0, and DeriveExecutableTransport=0. Macro executable tests still prove the macro runtime is backed by a BackendProgram revision/inventory, not a separate evaluator.\n\nStrategy\nWhen a macro backend fact is missing, BuildMacroExecutable may drive the product backend directly and complete the BackendProgram fact without adding a follow_up producer job. Update tests that pinned the old visible BuildBackendProduct job shape to assert the backend-backed macro executable artifact instead.\n\nVerification\ncompiler2 macro test, port macro tests, compiler2_pull_, 00181 telemetry, cargo fmt/check/clippy.",
   "id": "fz-go4.17.2",
   "labels": [],
   "parent": "fz-go4.17",
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "Macro executable readiness should not self-schedule backend products",
   "type": "bug",
-  "updated_at": "2026-06-28T13:05:21Z"
+  "updated_at": "2026-06-28T13:05:58Z"
 }
