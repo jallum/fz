@@ -2850,6 +2850,13 @@ fn compiler2_pull_root_backend_product_packages_and_runs_enum_reduce_operator_re
         capture.count(&["fz", "compiler2", "pull", "product", "produced"]) > 0,
         "root backend product path should emit product production telemetry"
     );
+    let component_event = capture
+        .last(&["fz", "compiler2", "pull", "transport_component", "produced"])
+        .expect("transport component product should emit component-size telemetry");
+    assert!(
+        measurement_u64(&component_event, "component_size") > 0,
+        "transport component telemetry should report the demanded component size"
+    );
     let finished = capture
         .last(&["fz", "compiler2", "pull", "session", "finished"])
         .expect("root backend product path should emit final session telemetry");

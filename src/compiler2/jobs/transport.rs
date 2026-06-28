@@ -26,6 +26,8 @@ use super::super::transport::{
 use super::super::types::{Ty, Types};
 use super::super::world::World;
 use super::semantic::executable_callsite_needs;
+use crate::telemetry::opaque_debug;
+use crate::{measurements, metadata};
 
 #[derive(Debug, Clone)]
 struct ExecutableContext {
@@ -971,21 +973,26 @@ pub(crate) fn produce_transport_shape_product(
     if let Some(fact) = session.transport_shape_fact(position) {
         return PullOutcome::Produced(ProductValue::TransportShape(fact.clone()));
     }
-    let executable = executable_key_for_transport_position(session.root(), position, world.types_mut());
-    let Some(projection) = project_transport_component_product(world, session, position) else {
-        session.record_absent_transport_shape_for(&executable, position.clone());
-        return PullOutcome::Produced(ProductValue::TransportShape(TransportShapeFact::Absent));
-    };
-    match projection {
-        TransportProductProjection::Waiting(waits) => PullOutcome::Waiting(waits),
-        TransportProductProjection::Produced { shape: Some(shape), .. } => {
-            PullOutcome::Produced(ProductValue::TransportShape(TransportShapeFact::Shape(shape)))
-        }
-        TransportProductProjection::Produced { shape: None, .. } => {
-            session.record_absent_transport_shape_for(&executable, position.clone());
-            PullOutcome::Produced(ProductValue::TransportShape(TransportShapeFact::Absent))
-        }
+    if session.transport_component(position).is_none() {
+        return PullOutcome::Waiting(vec![PullWait::Product(ProductKey::TransportComponent(
+            position.clone(),
+        ))]);
     }
+    let executable = executable_key_for_transport_position(session.root(), position, world.types_mut());
+    session.record_absent_transport_shape_for(&executable, position.clone());
+    PullOutcome::Produced(ProductValue::TransportShape(TransportShapeFact::Absent))
+}
+
+fn emit_transport_component_produced(world: &World<'_>, component: &TransportComponentInventory) {
+    world.tel().execute(
+        &["fz", "compiler2", "pull", "transport_component", "produced"],
+        &measurements! {
+            component_size: component.positions.len() as u64,
+        },
+        &metadata! {
+            anchor: opaque_debug(&component.anchor),
+        },
+    );
 }
 
 pub(crate) fn produce_transport_component_product(
@@ -994,6 +1001,7 @@ pub(crate) fn produce_transport_component_product(
     position: &TransportPosition,
 ) -> PullOutcome {
     if let Some(component) = session.transport_component(position).cloned() {
+        emit_transport_component_produced(world, &component);
         return PullOutcome::Produced(ProductValue::TransportComponent(component));
     }
     let Some(projection) = project_transport_component_product(world, session, position) else {
@@ -1002,11 +1010,13 @@ pub(crate) fn produce_transport_component_product(
             positions: vec![position.clone()],
         };
         session.record_transport_component(component.anchor.clone(), component.positions.clone());
+        emit_transport_component_produced(world, &component);
         return PullOutcome::Produced(ProductValue::TransportComponent(component));
     };
     match projection {
         TransportProductProjection::Waiting(waits) => PullOutcome::Waiting(waits),
         TransportProductProjection::Produced { component, .. } => {
+            emit_transport_component_produced(world, &component);
             PullOutcome::Produced(ProductValue::TransportComponent(component))
         }
     }
@@ -1014,10 +1024,7 @@ pub(crate) fn produce_transport_component_product(
 
 enum TransportProductProjection {
     Waiting(Vec<PullWait>),
-    Produced {
-        shape: Option<ShapeId>,
-        component: TransportComponentInventory,
-    },
+    Produced { component: TransportComponentInventory },
 }
 
 fn project_transport_component_product(
@@ -1146,7 +1153,7 @@ fn project_transport_component_product(
             positions: vec![anchor.clone()],
         };
         session.record_transport_component(component.anchor.clone(), component.positions.clone());
-        return Some(TransportProductProjection::Produced { shape: None, component });
+        return Some(TransportProductProjection::Produced { component });
     }
     let root = union.find_existing(anchor);
     let component_shapes = shape_graph.component_shapes(&union);
@@ -1178,7 +1185,7 @@ fn project_transport_component_product(
         positions,
     };
     session.record_transport_component(component.anchor.clone(), component.positions.clone());
-    Some(TransportProductProjection::Produced { shape, component })
+    Some(TransportProductProjection::Produced { component })
 }
 
 fn expand_transport_product_executables(

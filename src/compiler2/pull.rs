@@ -1306,6 +1306,25 @@ mod tests {
     }
 
     #[test]
+    fn world_product_transport_shape_waits_for_component_inventory() {
+        let tel = ConfiguredTelemetry::new();
+        let root = RootId::for_test(63);
+        let position = TransportPosition::ExecutableReturn {
+            executable: executable_symbol_for_test(&fake_executable(root)),
+        };
+        let mut driver = ProductDriver::new(&tel, root);
+        let mut world = World::new(&tel);
+        let mut producers = WorldProductProducers::new(&mut world);
+
+        let outcome = driver.pull(&mut producers, ProductKey::TransportShape(position.clone()));
+
+        assert_eq!(
+            outcome,
+            PullOutcome::wait_on_product(ProductKey::TransportComponent(position))
+        );
+    }
+
+    #[test]
     fn world_product_transport_artifacts_are_session_backed_not_self_waits() {
         use super::super::transport::{
             ActivationSymbol, CallableDescr, CallableFacts, ExecutableSymbol, LaneDescr, ShapeDescr, TransportClass,
