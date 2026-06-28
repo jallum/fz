@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-go4.17.8"
+  ],
   "blocks": [],
   "created": "2026-06-28T15:52:30Z",
   "description": "Goal\nMove native and dump front doors onto the same product-backed demand boundary as interp and macro readiness. Native must not wait on BackendProgram(root) by scheduling BuildBackendProduct(root), and dumps must not revive semantic/root artifact stages except where explicitly requested as legacy diagnostics.\n\nSignal\nLowerNativeProgram no longer returns follow_up [BuildBackendProduct(root)] for BackendProgram(root). Native/AOT obtains or drives RootBackendProduct through the product driver. DumpStage::Backend is product-backed. DumpStage::Semantic is either removed, renamed legacy, or documented as intentionally requesting the old semantic diagnostic path. 00181 no-dump and targeted dump telemetry do not show BuildBackendProduct self-scheduling.\n\nStrategy\nAdd a shared front-door helper for driving RootBackendProduct facts/products, then route native and backend dumps through it. Keep legacy semantic dump behavior only if tests and docs name it as legacy.\n\nRemoval target\nRemove BuildBackendProduct producer follow-up from native readiness. Remove stale tests that pin old visible BuildBackendProduct job shape.\n\nVerification\nNative/backend dump focused tests; macro executable test; port macro tests; 00181 --log-telemetry post-processing; cargo clippy --all-targets -- -D warnings.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Pull front doors: remove native and dump push handoffs",
   "type": "bug",
-  "updated_at": "2026-06-28T15:52:30Z"
+  "updated_at": "2026-06-28T15:52:33Z"
 }
