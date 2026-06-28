@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-go4.17.4"
+  ],
   "blocks": [],
   "created": "2026-06-28T15:52:28Z",
   "description": "Goal\nTurn IncomingInputSlot(callee, slot) from nominal vocabulary into the pull dependency for callee input evidence. Transport projection must not reach directly into PullSession incoming maps while pretending the slot is a product.\n\nSignal\nA demanded caller records OutgoingInputEdges(E). A callee input transport shape waits on ProductKey::IncomingInputSlot(slot) and receives exactly the sources recorded by demanded callers. Tests prove no scan over all callers or all executables is used to recover incoming input evidence.\n\nStrategy\nRoute executable-input transport projection through IncomingInputSlot products. Keep OutgoingInputEdges caller-owned. The callee side reads only the slot key. Preserve current 00181 behavior and direct forwarded-input ABI coverage.\n\nRemoval target\nRemove direct production reads of PullSession::incoming_input_sources from transport/component helpers except inside the IncomingInputSlot producer itself.\n\nVerification\nFocused IncomingInputSlot unit test; 00181 product transport test without legacy pre-settle; cargo test -q --lib compiler2_pull_.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Pull transport: make IncomingInputSlot a real dependency",
   "type": "bug",
-  "updated_at": "2026-06-28T15:52:28Z"
+  "updated_at": "2026-06-28T15:52:31Z"
 }
