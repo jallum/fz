@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-go4.17.7"
+  ],
   "blocks": [],
   "created": "2026-06-28T15:52:29Z",
   "description": "Goal\nReplace ExecutableEffects(E) reachable-subgraph fixed-point with a monotone SCC-local product. The current implementation walks every reachable materialized executable from E and loops the whole reachable set until stable.\n\nSignal\nExecutableEffects(E) computes local effects, pulls callee effects by symbolic key, and only re-evaluates the strongly connected component containing E when recursion requires a fixpoint. A fake mutual-recursion test proves convergence without root/reachable-subgraph iteration. Non-recursive effects pull only named callees.\n\nStrategy\nModel bottom effects explicitly. Build or reuse SCC identity from the demanded symbolic call edges, but keep the unit of convergence to the SCC, not the root/session inventory. Effects propagation must be demand-shaped: callers ask callees; no whole-root materialized executable scan.\n\nRemoval target\nDelete the reachable HashSet/stack plus whole-set loop in produce_executable_effects_product.\n\nVerification\nFocused SCC effects tests; 00181 product inventory/effects tests; telemetry proving no effects root/reachable pass counter increments.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Pull effects: replace reachable fixed-point with SCC-local product",
   "type": "bug",
-  "updated_at": "2026-06-28T15:52:29Z"
+  "updated_at": "2026-06-28T15:52:33Z"
 }
