@@ -2821,14 +2821,7 @@ end
                 "transport shape should be derivable before materialization",
             );
         }
-        for executable in &executables {
-            pull_product_until_produced(
-                &mut driver,
-                &mut producers,
-                ProductKey::MaterializedExecutable(executable.clone()),
-                "materialized executable should be product-derivable",
-            );
-        }
+        pull_materialized_executables_for_executables(&mut driver, &mut producers, &executables);
     }
 
     assert_eq!(
@@ -4259,6 +4252,38 @@ fn pull_runtime_demands_for_executables(
         assert!(
             driver.session().memo().runtime_demand(executable).is_some(),
             "runtime-demand product should exist for {executable:?}"
+        );
+    }
+}
+
+fn pull_materialized_executables_for_executables(
+    driver: &mut ProductDriver<'_>,
+    producers: &mut impl super::pull::ProductProducers,
+    executables: &HashSet<ExecutableKey>,
+) {
+    for _ in 0..executables.len().saturating_mul(32).max(1) {
+        for executable in executables {
+            let product = pull_product_until_produced(
+                driver,
+                producers,
+                ProductKey::MaterializedExecutable(executable.clone()),
+                "materialized executable should follow named product prerequisites",
+            );
+            if !matches!(product, ProductValue::MaterializedExecutable(_)) {
+                panic!("materialized executable product for {executable:?} produced unexpected value {product:?}");
+            }
+        }
+        if executables
+            .iter()
+            .all(|executable| driver.session().materialized_executable(executable).is_some())
+        {
+            break;
+        }
+    }
+    for executable in executables {
+        assert!(
+            driver.session().materialized_executable(executable).is_some(),
+            "materialized executable product should exist for {executable:?}"
         );
     }
 }
