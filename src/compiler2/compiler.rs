@@ -143,6 +143,8 @@ impl<'a> Compiler2<'a> {
 
     pub(crate) fn drive_root_to_dump_stage(&mut self, root: RootId, stage: DumpStage) -> Result<(), String> {
         match stage {
+            // Semantic dumps intentionally expose the legacy semantic-closure
+            // diagnostic surface. Backend dumps use the product path below.
             DumpStage::Semantic => self.drive_root_to(root, Job::SealSemanticClosure(root)),
             DumpStage::Backend => self.product_backend_program_for_root(root).map(|_| ()),
             DumpStage::Native => self.drive_root_to(root, Job::LowerNativeProgram(root)),

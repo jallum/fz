@@ -2680,6 +2680,10 @@ impl<'a> World<'a> {
         self.work_graph.facts().is_settled(key)
     }
 
+    /// Legacy diagnostic/root-planner scan over all known executable facts for
+    /// one root. Product artifact construction must stay on explicit demanded
+    /// products instead of using this ambient frontier; telemetry guards that
+    /// product drives do not reach this helper.
     pub(crate) fn root_executable_frontier(&self, root: RootId) -> HashSet<ExecutableKey> {
         let frontier = self
             .work_graph

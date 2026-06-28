@@ -48,6 +48,10 @@ pub(crate) fn run(world: &mut World<'_>, job: &Job) -> Result<JobEffects, FatalE
         Job::SeedRoot(root_id) => root::seed_root(world, *root_id),
         Job::SeedActivation(activation) => root::seed_activation(world, activation),
         Job::AnalyzeActivation(activation) => semantic::analyze_activation(world, activation),
+        // Legacy diagnostic/root-planner surface. The product backend path must
+        // not demand these jobs; tests guard that through forbidden-job
+        // telemetry. Keep them only for explicitly legacy semantic/transport
+        // dump and contract tests until those surfaces are removed.
         Job::DeriveRuntimeDemand(executable) => runtime_demand::derive_runtime_demand(world, executable),
         Job::SealSemanticClosure(root_id) => root::seal_semantic_closure(world, *root_id),
         Job::DeriveExecutableTransport(executable) => transport::derive_executable_transport(world, executable),

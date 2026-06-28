@@ -718,8 +718,12 @@ impl TransportFactsBuilder {
     }
 }
 
-/// Project one executable's intra-executable transport contribution into its
-/// own `ExecutableTransport(E)` fact. Gated on `SemanticReady` (Stage 1), so
+/// Legacy diagnostic/root-plan path: project one executable's intra-executable
+/// transport contribution into its own `ExecutableTransport(E)` fact.
+///
+/// Product backend artifacts use `TransportComponent`/`TransportShape` products
+/// instead; this job remains only for legacy transport-plan diagnostics/tests.
+/// Gated on `SemanticReady` (Stage 1), so
 /// the whole closure is settled without subscribing to the `SemanticClosed`
 /// payload. The job builds the full-closure contexts as a superset, then a
 /// throwaway recording projection of `executable` discovers the precise
@@ -876,6 +880,8 @@ fn cone_reads_for(
     current_reads.push(FactKey::InputSources(dispatch_key_for(executable)));
 }
 
+/// Legacy diagnostic/root-plan path. Product backend artifacts must not demand
+/// root `TransportPlan` facts.
 pub(super) fn derive_transport_plan(world: &mut World<'_>, root_id: RootId) -> Result<JobEffects, FatalError> {
     let closed_fact = FactKey::SemanticClosed(root_id);
     if !world.fact_is_settled(&closed_fact) {
