@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-go4.17.8"
   ],
@@ -12,8 +12,8 @@
   "labels": [],
   "parent": "fz-go4.17",
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "Pull front doors: remove native and dump push handoffs",
   "type": "bug",
-  "updated_at": "2026-06-28T15:53:40Z"
+  "updated_at": "2026-06-28T18:21:33Z"
 }
