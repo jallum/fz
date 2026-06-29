@@ -18,8 +18,8 @@
     }
   ],
   "priority": 1,
-  "status": "in_progress",
+  "status": "open",
   "title": "Re-green 8 native LowerNativeProgram tests and add a JIT/AOT legacy-ladder guard",
   "type": "bug",
-  "updated_at": "2026-06-29T14:29:23Z"
+  "updated_at": "2026-06-29T14:29:24Z"
 }
