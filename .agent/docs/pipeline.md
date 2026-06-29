@@ -573,6 +573,14 @@ Current conclusion from the code:
 - `Compiler2::compile_root_jit`, `run_root_jit`, and `compile_root_aot` now
   consume that same compiler2-owned backend path directly, using the world's
   interned type store instead of a fresh legacy one
+- the native/JIT/AOT front doors reach `NativeProgram(root)` through the same
+  guarded product boundary as interp: `native_program_for_root` runs the single
+  demanded `LowerNativeProgram(root)` job, which builds `BackendProgram(root)`
+  via the product driver (`build_backend_product`, which defers
+  `SealSemanticClosure`/`DeriveTransportPlan`). They never reopen the unguarded
+  full drive, so `SeedRoot -> SealSemanticClosure -> DeriveTransportPlan` and the
+  downstream `DeriveExecutableTransport`/`DeriveRuntimeDemand`/
+  `root_executable_frontier` legacy ladder do not run for the root
 - `fz2` is now the side-by-side outer shell for those front doors: `fz2 run`,
   `fz2 interp`, and `fz2 build` submit source directly to Compiler2, seed
   `main/0`, and never reopen old planner or type-infer work

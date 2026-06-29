@@ -86,8 +86,42 @@ impl<'a> Compiler2<'a> {
     }
 
     fn native_program_for_root(&mut self, root: RootId) -> Result<NativeProgram, String> {
-        self.drive_root_to(root, Job::LowerNativeProgram(root))?;
+        // Native/JIT/AOT reach the backend through the SAME guarded product
+        // boundary as interp. `LowerNativeProgram` builds the `BackendProgram`
+        // via the product driver (`build_backend_product`), which defers the
+        // legacy seal/transport ladder (`forbidden_product_path_job`), and then
+        // consumes only that product fact plus compiler-owned stores. Running it
+        // as a single demanded job — rather than reopening the unguarded full
+        // drive — keeps `SeedRoot -> SealSemanticClosure -> DeriveTransportPlan`
+        // (and its downstream `DeriveExecutableTransport` / `DeriveRuntimeDemand`
+        // / `root_executable_frontier`) from ever running for the root.
+        self.abort_on_zero_drive_timeout(root)?;
+        let job = Job::LowerNativeProgram(root);
+        let effects = super::jobs::run(&mut self.world, &job).map_err(|_| {
+            format!(
+                "compiler2 root {} native lowering failed before backend execution",
+                root.as_u32()
+            )
+        })?;
+        self.world.complete_job(job, effects);
         Ok(self.world.native_program(root))
+    }
+
+    /// Honors a zero-length drive budget before any product work runs, matching
+    /// the guarded interp/backend boundary. A configured `Duration::ZERO` aborts
+    /// the compile up front instead of building the backend product.
+    fn abort_on_zero_drive_timeout(&mut self, root: RootId) -> Result<(), String> {
+        if self.drive_timeout == Some(Duration::ZERO)
+            && let DriveOutcome::TimedOut { jobs_ran, pending_jobs } = self.world.drive_for(self.drive_timeout)
+        {
+            return Err(format!(
+                "compiler2 root {} exceeded 0 ms drive limit after {} jobs with {} pending",
+                root.as_u32(),
+                jobs_ran,
+                pending_jobs,
+            ));
+        }
+        Ok(())
     }
 
     fn compile_native_backend<B>(
@@ -147,7 +181,10 @@ impl<'a> Compiler2<'a> {
             // diagnostic surface. Backend dumps use the product path below.
             DumpStage::Semantic => self.drive_root_to(root, Job::SealSemanticClosure(root)),
             DumpStage::Backend => self.product_backend_program_for_root(root).map(|_| ()),
-            DumpStage::Native => self.drive_root_to(root, Job::LowerNativeProgram(root)),
+            // Native dumps share the front-door routing: the guarded product
+            // boundary plus a single `LowerNativeProgram` job, never the legacy
+            // seal/transport ladder.
+            DumpStage::Native => self.native_program_for_root(root).map(|_| ()),
         }
     }
 
@@ -161,16 +198,7 @@ impl<'a> Compiler2<'a> {
     }
 
     fn product_backend_program_for_root(&mut self, root: RootId) -> Result<BackendProgram, String> {
-        if self.drive_timeout == Some(Duration::ZERO)
-            && let DriveOutcome::TimedOut { jobs_ran, pending_jobs } = self.world.drive_for(self.drive_timeout)
-        {
-            return Err(format!(
-                "compiler2 root {} exceeded 0 ms drive limit after {} jobs with {} pending",
-                root.as_u32(),
-                jobs_ran,
-                pending_jobs,
-            ));
-        }
+        self.abort_on_zero_drive_timeout(root)?;
         let root_key = ProductKey::RootBackendProduct(root);
         let mut driver = ProductDriver::new(self.tel, root);
         let mut stack = vec![root_key.clone()];
