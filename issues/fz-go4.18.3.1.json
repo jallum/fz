@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-29T15:29:38Z",
+  "description": "Keystone of the native re-green (split out of fz-go4.18.3 after investigation proved the 8 failures span TWO independent convergence loci).\n\nSCOPE\nSource a delivered resume payload's STRUCTURAL transport shape from the producer (the callee's settled ExecutableReturn ABI), not from the consumer's oscillating value-demand. In project_one_executable's resume branch (transport.rs ~1970-2006), dispatch on the RuntimeDemand axes:\n- data return (!demand.is_callable()): union the resume position with the callee ExecutableReturn position (shape_graph.equal) — the producer-sourced anchoring the old is_ignore branch used, now generalized. A field this caller ignores is never erased to Nothing, because a TupleFields callee physically delivers every field regardless of the caller's [Whole,Ignore]\u003c-\u003e[Whole,Whole] demand oscillation. Subsumes the old is_ignore special case.\n- callable return (demand.is_callable()): keep the demand-driven resume_shape projection UNCHANGED — this is the direct-vs-first-class boundary selection the other tests assert. A callable return carries an empty data shape, so the axes never overlap; boundary selection is byte-for-byte unchanged.\n\nSIGNAL\n- Greens (deterministically, across repeated/ schedule-varied full runs): compiler2_native_program_jit_runs_enum_map_reduce_with_direct_closure_targets and compiler2_native_program_matches_tuple_field_call_continuations_to_the_callee_return_abi.\n- Adds compiler2_native_program_resume_payload_shape_is_schedule_independent: drives 00001_quicksort_plus_foo.fz 3x under varying wake order, asserts partition/4's tuple-field continuation stays structurally complete (extra_params==2, exactly one) every drive, observed via native_program telemetry. Fails pre-keystone, passes post.\n- No regression; callable-boundary selection behavior unchanged. cargo test --lib compiler2 = 931 passed / 6 failed, STABLE across 3 fresh runs (the 6 are the residual input-merge/membership locus -\u003e fz-go4.18.3.2). clippy -D warnings = 0; fmt clean.\n\nGUARDRAILS MET\nNo legacy seal/transport revival; no test weakening; correct-by-construction (physical shape owned by producer ABI; consumer demand may narrow representation, never erase delivered structure).",
+  "id": "fz-go4.18.3.1",
+  "labels": [],
+  "parent": "fz-go4.18.3",
+  "priority": 1,
+  "status": "open",
+  "title": "Keystone: source delivered resume-payload shape from callee ExecutableReturn ABI",
+  "type": "bug",
+  "updated_at": "2026-06-29T15:29:38Z"
+}
