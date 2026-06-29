@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-29T11:20:10Z",
+  "description": "fz-go4.17.11 (\"make northstar and agent docs match the corrected model\") and fz-go4.16.12 (\"archive pull-based plan artifact\") were closed, but the audit found stale/false doc claims that contradict the code.\n\nFIXES\n- README.md:493 lists dump kinds \"materialized\" and \"abi\" that DO NOT EXIST. dump.rs (DumpKind enum + parse_dump_kind, ~lines 17-23 / 247-254) supports only activations, types, backend, native, fnir, clif -- the code's own error string enumerates exactly those. Drop materialized and abi from the doc.\n- pipeline.md:79-81 states \"The temporary planning artifact ../pull-based.html has been retired\" but the file still physically exists (../pull-based.html, ~81 KB). Either actually archive/delete it (fz-go4.16.12 was closed claiming this) or correct the doc to point at where it lives.\n- semantic-fixpoint.md:22-23 carries a stale forward-reference: \"the result side is a none() sentinel today and becomes the addressed result r0 in fz-hwn.27.6.\" The code already mints r0 (identity.rs:98-104 via types.result_alpha(); doc-comment at 77-82 already says r0, NOT none()). fz-hwn.27.6 landed; delete the none()-today claim.\n\nSIGNAL\nEvery dump kind / artifact / result-slot claim in the docs is backed by current code. rg for \"materialized\" and \"abi\" dump kinds in README finds nothing.",
+  "id": "fz-go4.20",
+  "labels": [],
+  "parent": "fz-go4",
+  "priority": 2,
+  "status": "open",
+  "title": "Fix stale pull-path docs: README dump kinds, retired pull-based.html claim, semantic-fixpoint none() ref",
+  "type": "bug",
+  "updated_at": "2026-06-29T11:20:10Z"
+}
