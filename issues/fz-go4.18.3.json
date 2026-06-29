@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-go4.18.2"
+  ],
   "blocks": [],
   "created": "2026-06-29T11:19:28Z",
   "description": "PROBLEM\nThe branch regressed the lib suite. Base a705cec2 = 936 passed / 0 failed; HEAD = 926 / 8 failed, deterministic across two runs. All 8 are native LowerNativeProgram Fatals:\n- compiler2_native_program_carries_published_callable_boundary_targets_into_closure_calls\n- compiler2_native_program_adapts_delivered_calls_from_callee_return_lanes\n- compiler2_native_program_does_not_fabricate_nil_for_zero_width_resume_payloads\n- compiler2_native_program_jit_adapts_callable_raw_returns_back_to_value_refs\n- compiler2_native_program_jit_runs_enum_map_reduce_with_direct_closure_targets\n- compiler2_native_program_matches_tuple_field_call_continuations_to_the_callee_return_abi\n- compiler2_native_program_resource_fixture_shapes_callable_boundaries_explicitly\n- escaping_destructor_keys_its_activation_at_the_grounded_boundary_surface\nThey fail via assert_resolved (drive_test.rs:10148) with Fatal { job: LowerNativeProgram(RootId(0)) } on callable-boundary / Enum.take fixtures. This is NOT fz-f98.14 (that is a schedule-dependent slow drive; base was green and these are deterministic Fatals).\n\nGOAL (depends on the native cutover landing)\nAll 8 tests green. Add the regression guard that would have caught this: strengthen assert_no_legacy_planner_or_type_infer (compiler2_test.rs:286) -- or add a sibling assertion -- so JIT/AOT runs also forbid the compiler2 legacy ladder (SealSemanticClosure, DeriveTransportPlan, DeriveExecutableTransport, root_executable_frontier), not just the pre-compiler2 fz.type_infer / fz.planner.\n\nSIGNAL\ncargo test --lib compiler2 = 0 failed. A JIT/AOT regression test asserts zero legacy-ladder job fires.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Re-green 8 native LowerNativeProgram tests and add a JIT/AOT legacy-ladder guard",
   "type": "bug",
-  "updated_at": "2026-06-29T11:19:28Z"
+  "updated_at": "2026-06-29T11:19:35Z"
 }
