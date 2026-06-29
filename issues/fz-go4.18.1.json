@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [
     "fz-go4.18.2"
@@ -10,8 +10,8 @@
   "labels": [],
   "parent": "fz-go4.18",
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "Native callable-boundary lowering: source facts from pull products, not the legacy world.transport_plan",
   "type": "bug",
-  "updated_at": "2026-06-29T11:19:35Z"
+  "updated_at": "2026-06-29T11:22:47Z"
 }
