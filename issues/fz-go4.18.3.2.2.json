@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-29T16:40:12Z",
+  "description": "Family B of the residual 6 (split from fz-go4.18.3.2). Sibling of the keystone fz-go4.18.3.1. Tests: compiler2_native_program_jit_adapts_callable_raw_returns_back_to_value_refs, compiler2_native_program_does_not_fabricate_nil_for_zero_width_resume_payloads, compiler2_native_program_resource_fixture_shapes_callable_boundaries_explicitly, escaping_destructor_keys_its_activation_at_the_grounded_boundary_surface.\n\nROOT CAUSE (shape layer — NOT the Family-A round-trip; instrumented globally, zero round-trip mismatches on these drives)\nA continuation/resume position decodes to Shape(Nothing) and native fatals materializing the decoded Absent (native.rs:3235), or the test observes a zero-width continuation not retained / \"resource return is not transported\". This is a SECOND locus adjacent to the keystone's resume-shape territory: the keystone (.18.3.1) producer-sourced the DATA-return resume (!demand.is_callable()); a CALLABLE-return continuation and/or a genuine zero-width resume field still collapses to Nothing.\n\nFIX DIRECTION (emulate the keystone — producer-sourced, solve-time constraint, provably monotone)\nDiagnose precisely which continuation/resume positions still take their shape from a non-monotone demand snapshot rather than the producer's settled ABI, and source them as a solve-time constraint to the producer position (as the keystone did for data returns), preserving callable-boundary selection. Distinguish a genuinely zero-width field (legitimately Nothing, must be RETAINED as a zero-width continuation per does_not_fabricate_nil) from an erased-by-under-demand field. escaping_destructor fails full-run-only (schedule-dependent).\nTESTS: schedule-independence guard (model on compiler2_native_program_resume_payload_shape_is_schedule_independent) over the affected fixtures; the 4 tests green; 0 failed across \u003e=3 fresh full runs.\nGUARDRAILS: no legacy revival; no test weakening; build on the keystone; do not regress the data-return resume shape.\nNOTE: independent of Family A (.18.3.2.1) — no ordering dependency; may be done first (more tractable, keystone pattern).",
+  "id": "fz-go4.18.3.2.2",
+  "labels": [],
+  "parent": "fz-go4.18.3.2",
+  "priority": 1,
+  "status": "open",
+  "title": "Family B: producer-source continuation/resume Shape(Nothing) for callable-return and zero-width resume (keystone sibling)",
+  "type": "bug",
+  "updated_at": "2026-06-29T16:40:12Z"
+}
