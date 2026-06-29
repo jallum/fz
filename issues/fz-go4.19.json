@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-29T11:20:09Z",
+  "description": "The pull-drive machinery was copy-pasted rather than shared, introducing untracked duplication (CLAUDE.md: scaffolding/debt added on the fly must be ticketed).\n\nDUPLICATES\n- Two near-identical pull-drive loops: compiler.rs:163 (product_backend_program_for_root, returns in-memory BackendProgram, String errors) vs jobs/backend.rs:45 (build_backend_product, publishes the BackendProgram fact, FatalError).\n- Five helpers duplicated verbatim between compiler.rs and jobs/backend.rs: drive_product_fact_wait, demand_product_fact_producer, demand_if_needed, product_fact_wait_is_satisfied, forbidden_product_path_job.\n- forbidden_product_path_job has two MORE copies in transport_contract_test.rs (4902, 4919). The lists can already drift between sites.\n\nGOAL\nOne shared pull-drive runner + one shared fact-wait helper kit (parameterized over the error type / whether to publish a fact), consumed by both the interp front door and the BuildBackendProduct job. One definition of forbidden_product_path_job (or, after fz-go4.18.4 deletes the legacy spine, none at all).\n\nNOTE\nSequence with fz-go4.18.4: if the legacy spine is deleted first, forbidden_product_path_job and much of the fact-wait poking may disappear entirely, shrinking what needs deduping. Prefer doing this after the epic, or coordinate.",
+  "id": "fz-go4.19",
+  "labels": [],
+  "parent": "fz-go4",
+  "priority": 2,
+  "status": "open",
+  "title": "Dedup the pull-drive loop and shared fact-wait helpers across compiler.rs and jobs/backend.rs",
+  "type": "task",
+  "updated_at": "2026-06-29T11:20:09Z"
+}
