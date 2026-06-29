@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-go4.18.3"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-go4.19"
+  ],
   "created": "2026-06-29T11:19:29Z",
   "description": "PROBLEM\nfz-go4.17.10 was supposed to delete-or-quarantine the legacy semantic/transport jobs so they are not ambient production vocabulary, and was closed -- but the spine is still live (it was only deferred on the interp pull path, and runs in full on the native path). Once the native cutover (this epic's earlier tickets) removes the last consumer, finish the deletion honestly.\n\nDELETE once proven to have no non-test consumer (work consumers-backward):\n- Job + match arms: SealSemanticClosure (root.rs:137), DeriveTransportPlan (transport.rs:885), DeriveExecutableTransport (transport.rs:847), DeriveRuntimeDemand (runtime_demand.rs). Remove their follow_up scheduling from seed_root (root.rs:83/365) and transport.rs:904/935.\n- FactKey variants + stores: SemanticReady, SemanticClosed (drive.rs:78-79; world.rs:1244), ExecutableTransport (drive.rs:80), TransportPlan + world.transport_plan/define_transport_plan (world.rs:448/1242).\n- World::root_executable_frontier (world.rs:2687) + its sole fact_keys() scan; or move strictly behind #[cfg(test)] with this ticket as the removal record.\n- DumpStage::Semantic (compiler.rs:148): keep ONLY if explicitly retained as a legacy diagnostic; otherwise delete. Decide and document.\n- The deferred-forever handling in the product fact-wait loops once nothing schedules the forbidden jobs (forbidden_product_path_job becomes unnecessary -- remove all copies).\n\nSIGNAL\nrg shows no production Job/FactKey/store for the legacy seal/transport spine; root_executable_frontier is absent from production; lib + matrix 0 failed. This is the deletion fz-go4.17.10 claimed.",
   "id": "fz-go4.18.4",
@@ -13,5 +15,5 @@
   "status": "open",
   "title": "Delete the legacy seal/transport spine after native cutover",
   "type": "bug",
-  "updated_at": "2026-06-29T11:19:36Z"
+  "updated_at": "2026-06-29T11:20:11Z"
 }
