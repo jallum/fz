@@ -4,14 +4,15 @@
   "blocks": [
     "fz-go4.18.2"
   ],
+  "closed_at": "2026-06-29T12:05:52Z",
   "created": "2026-06-29T11:19:27Z",
   "description": "Keystone of the native cutover.\n\nPROBLEM\nlower_native_program consumes the pull BackendProgram product (native.rs:54-59) but then reads callable-boundary facts from the legacy root TransportPlan store: self.world.transport_plan(self.root_id) at native.rs:2950 (settled_callable_boundary; Err incomplete_native_program if absent, :2954) and native.rs:3425 (callable_has_boundaries). The only writer of that store is the legacy DeriveTransportPlan job (transport.rs:961). The read is also undeclared: the job's reads are settled_uses([backend_fact]) only (native.rs:73).\n\nGOAL\nNative callable/boundary lowering obtains its facts from the pull products that already exist for exactly this purpose: CallableFacts (produce_callable_facts) and BoundaryFacts (produce_boundary_facts) in pull.rs/jobs, surfaced through the BackendProgram product (callable entries / boundary rows are already in the backend product per northstar). Remove both world.transport_plan reads from native.rs. If the backend product does not yet carry the boundary_ids native needs, extend the product (BackendExecutable/RootBackendProduct), not the legacy store.\n\nSIGNAL\nnative.rs has zero references to world.transport_plan; the data comes from the BackendProgram product. lower_native_program's declared reads match its actual reads. Native lowering for a fixture with callable boundaries (e.g. enum_reduce) succeeds without DeriveTransportPlan ever firing.\n\nGUARDRAILS\nNo new root scan. No reconstruction of boundaries by scanning types/bodies. Boundary/callable facts are read from the demanded products only.",
   "id": "fz-go4.18.1",
   "labels": [],
   "parent": "fz-go4.18",
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Native callable-boundary lowering: source facts from pull products, not the legacy world.transport_plan",
   "type": "bug",
-  "updated_at": "2026-06-29T11:22:47Z"
+  "updated_at": "2026-06-29T12:05:52Z"
 }
