@@ -2848,6 +2848,92 @@ fn compiler2_native_program_keeps_only_the_closed_quicksort_inventory() {
     );
 }
 
+/// fz-go4.18.3 schedule-independence guard for the producer-sourced resume
+/// shape. A destination-passing (`TupleFields`) callee physically delivers every
+/// field of its return ABI into the caller's continuation, so the delivered
+/// resume payload's structure is owned by the PRODUCER, never by the caller's
+/// (possibly under-demanding) value-demand. Before the keystone, the caller's
+/// `TupleFields([Whole, Ignore])` demand drove `project_callsite_return`, which
+/// projected the ignored field to `Nothing` and erased it from the continuation
+/// ABI -- so the tuple-field continuation collapsed to zero fields and native
+/// fatally materialized the absent delivered field. The keystone sources the
+/// delivered DATA return's structure from the callee `ExecutableReturn` ABI, so
+/// every delivered field survives.
+///
+/// In isolation this fixture collapses deterministically (the field is dropped
+/// on every drive), so this is primarily a structural-completeness guard; the
+/// schedule-dependence that made the regression intermittent bites suite-wide,
+/// where per-HashMap/per-process hash-seed variance picks job wake order. Either
+/// way the asserted invariant is the same: on EVERY drive, partition/4's
+/// tuple-field continuation is structurally complete -- it accepts both
+/// delivered fields (`extra_params: 2`), never a field erased to absent. The
+/// repeated drives also confirm the producer-sourced shape is stable across the
+/// fresh-`Compiler2` hash seeds. Observed through the `native_program`
+/// telemetry product, not an internal projection hook.
+#[test]
+fn compiler2_native_program_resume_payload_shape_is_schedule_independent() {
+    let delivered_tuple_field_continuation_arities = || -> Vec<usize> {
+        let tel = ConfiguredTelemetry::new();
+        let native = NativeProgramCapture::new();
+        tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
+
+        let mut compiler = Compiler2::new(&tel);
+        compiler.submit_code(CodeSubmission {
+            name: Some("fixtures/quicksort_plus_foo.fz".to_string()),
+            text: include_str!("../../fixtures2/00001_quicksort_plus_foo.fz").to_string(),
+        });
+        let root_id = compiler.submit_root(RootSubmission {
+            module_name: None,
+            name: "main".to_string(),
+            arity: 0,
+            need: ExecutableNeed::Value,
+        });
+        compiler.demand(Job::LowerNativeProgram(root_id));
+        assert_resolved(
+            compiler.drive(),
+            "quicksort native lowering should settle when reading the delivered resume payload shape",
+        );
+
+        let program = native.last(root_id).program;
+        let qsort_owners = program
+            .bodies
+            .iter()
+            .filter_map(|body| match &body.origin {
+                NativeBodyOrigin::Executable(_) if program.module.fn_by_id(body.fn_id).name.starts_with("qsort__e") => {
+                    Some(body.fn_id)
+                }
+                _ => None,
+            })
+            .collect::<HashSet<_>>();
+        program
+            .bodies
+            .iter()
+            .filter_map(|body| match body.origin {
+                NativeBodyOrigin::Continuation { owner, .. } if qsort_owners.contains(&owner) => match body.entry_abi {
+                    NativeEntryAbi::Continuation { extra_params } => Some(extra_params),
+                    NativeEntryAbi::Direct => None,
+                },
+                _ => None,
+            })
+            .collect()
+    };
+
+    // Three in-process drives under varying wake order: the delivered tuple-field
+    // continuation must be present and carry BOTH fields every time. A
+    // demand-sourced (oscillating) shape would erase the ignored field on some
+    // schedules, dropping the continuation to zero `extra_params` or omitting it.
+    for run in 1..=3 {
+        let arities = delivered_tuple_field_continuation_arities();
+        let tuple_field_conts = arities.iter().filter(|&&extra| extra == 2).count();
+        assert_eq!(
+            tuple_field_conts, 1,
+            "partition/4 delivers a two-field tuple, so the rooted quicksort frontier must keep exactly one \
+             structurally complete two-field continuation on every schedule (run {run}); saw continuation \
+             arities {arities:?}",
+        );
+    }
+}
+
 #[test]
 fn compiler2_native_program_matches_tuple_field_call_continuations_to_the_callee_return_abi() {
     let tel = ConfiguredTelemetry::new();

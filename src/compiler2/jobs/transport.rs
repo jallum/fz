@@ -1969,21 +1969,28 @@ fn project_one_executable(
             entry: resume.entry,
         };
         let demand = resume_demand(context, *resume);
-        // An ignored call result still arrives as the value the callee
-        // returns: a shared callee delivers its whole return regardless of
-        // this caller dropping it. Ignoring it must not mutate the
-        // transported shape, so union the resume with the callee return
-        // position instead of collapsing it to `Nothing`. The callee's own
-        // return anchor already carries divergence (`Nothing` when the
-        // callee never returns), so this stays correct for diverging calls.
-        // Demanded resumes keep their projection, which settles direct vs.
-        // first-class callable transport from the caller's use.
-        let shared_return = demand
-            .is_ignore()
+        // The physical shape of a delivered call result is owned by the
+        // PRODUCER: the callee's settled `ExecutableReturn` ABI. A DATA return
+        // (tuple or scalar) takes its STRUCTURE from that ABI, so a field this
+        // caller happens to ignore is never erased to `Nothing` -- the callee
+        // physically delivers every field regardless of this caller's use, and
+        // sourcing the structure from the (possibly under-demanding,
+        // oscillating) caller value-demand is exactly the defect that dropped a
+        // delivered field. Unioning the resume with the callee return position
+        // also stays correct for diverging callees (their return anchor is
+        // `Nothing`) and subsumes the ignored-result case (an ignored data
+        // return is the degenerate `Whole`-less data return).
+        //
+        // A CALLABLE return instead keeps the demand-driven projection, which
+        // settles direct vs. first-class callable transport from THIS caller's
+        // use -- the boundary selection the rest of the callable-boundary suite
+        // asserts. A callable return carries the empty data shape, so it has no
+        // delivered data field to erase; the two axes never overlap.
+        let producer_return = (!demand.is_callable())
             .then_some(resume.callsite)
             .flatten()
             .and_then(|callsite| callsite_callee_return_position(world, contexts, executable, context, callsite));
-        if let Some(callee_return) = shared_return {
+        if let Some(callee_return) = producer_return {
             shape_graph.equal(position, callee_return);
         } else {
             let shape = resume_shape(

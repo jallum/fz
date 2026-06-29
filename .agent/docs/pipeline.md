@@ -225,6 +225,12 @@ That makes local control explicit instead of positional.
   the resume payload ABI for that call target; backend may specialize the body
   to `Halt`, but it preserves the delivered-resume origin so native can build a
   well-typed continuation descriptor.
+  The structural shape of a delivered DATA payload is owned by the PRODUCER: the
+  callee's settled `ExecutableReturn` ABI. A destination-passing callee writes
+  every field of its return into the caller's continuation, so the resume's shape
+  is unioned with the callee return position and a field this caller ignores is
+  never erased — the caller's value-demand may select the callable-boundary lane
+  for a callable return, but it never drops delivered data structure.
 - `ControlEntryOrigin::LocalResume { value }` is where local control like
   `if` or `dispatch` delivers a value without creating a callable
   continuation boundary.
