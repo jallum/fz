@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-29T11:20:10Z",
+  "description": "port_type_infer_test.rs:213 (enum_reduce_operator_refs_settle_through_kernel_specs) only calls assert_resolved and carries '// TODO: assert main() return type is equivalent to {int, int}'. The {int,int} contract is currently only asserted by the inline-source transport contract tests; the file-based 00181 port leans on them. Remove the TODO by asserting the tuple-int return so the literal-fixture port stands on its own. Small.",
+  "id": "fz-go4.21",
+  "labels": [],
+  "parent": "fz-go4",
+  "priority": 3,
+  "status": "open",
+  "title": "Tighten 00181 port test to assert main() =\u003e {int, int} return (remove TODO)",
+  "type": "task",
+  "updated_at": "2026-06-29T11:20:10Z"
+}
