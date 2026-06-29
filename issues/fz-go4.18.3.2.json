@@ -9,9 +9,15 @@
   "id": "fz-go4.18.3.2",
   "labels": [],
   "parent": "fz-go4.18.3",
+  "comments": [
+    {
+      "text": "Lead (unverified): during fz-go4.18.3.1 a MORE AGGRESSIVE variant was explored but NOT committed (it leaked into the main checkout as uncommitted changes; saved at scratchpad/stray-aggressive-resume.diff). It drops the !demand.is_callable() gate entirely and unions EVERY resume that has a local callee return position (callable returns included) with the callee ExecutableReturn, plus a debug eprintln. The keystone deliberately kept callable returns on the demand-driven path to preserve boundary selection. Whether producer-sourcing callable resume returns helps the residual 6 is UNPROVEN (the residual signatures are input-merge/membership 'omitted semantic input' + 'missing ExecutableReturn position', not resume-callable). Treat only as a possible angle; the prime suspect remains collect_executable_input_constraints (transport.rs:2796) + the demanded-executable frontier.",
+      "timestamp": "2026-06-29T15:49:03Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "Transport input-merge / executable-membership demand monotonicity (re-green remaining 6 native tests)",
   "type": "bug",
-  "updated_at": "2026-06-29T15:29:39Z"
+  "updated_at": "2026-06-29T15:49:03Z"
 }
