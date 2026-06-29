@@ -58,13 +58,27 @@ pub struct MaterializedTransportPlan {
     pub entry: ExecutableSymbol,
     pub executable_membership: Box<[ExecutableSymbol]>,
     pub position_shapes: Vec<(TransportPosition, ShapeId)>,
-    pub callable_ids: Vec<CallableId>,
+    /// Per-callable settled boundary inventory, sourced from the `CallableFacts`
+    /// pull product (`CallableFacts.boundary_ids`). Native callable
+    /// materialization reads boundary selection from here; it never re-opens the
+    /// legacy root transport plan.
+    pub callable_boundaries: Vec<(CallableId, Box<[BoundaryId]>)>,
     pub boundary_ids: Vec<BoundaryId>,
     pub publication_boundaries: Vec<(TransportPosition, BoundaryId)>,
     pub codegen_seam_facts: Box<[CodegenSeamFact]>,
 }
 
 impl MaterializedTransportPlan {
+    /// Settled boundaries a callable value carries, as recorded by the
+    /// `CallableFacts` pull product. `None` means the callable was never
+    /// demanded for this program (no facts), distinct from an empty boundary
+    /// list.
+    pub fn callable_boundary_ids(&self, callable: CallableId) -> Option<&[BoundaryId]> {
+        self.callable_boundaries
+            .iter()
+            .find_map(|(candidate, boundaries)| (*candidate == callable).then_some(&boundaries[..]))
+    }
+
     pub fn shape_at(&self, position: &TransportPosition) -> Option<ShapeId> {
         self.position_shapes
             .iter()

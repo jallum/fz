@@ -990,7 +990,14 @@ fn symbolic_materialized_transport_plan(
         },
         executable_membership: Box::default(),
         position_shapes,
-        callable_ids: callables.keys().copied().collect(),
+        callable_boundaries: {
+            let mut rows = callables
+                .iter()
+                .map(|(callable, facts)| (*callable, facts.boundary_ids.clone()))
+                .collect::<Vec<_>>();
+            rows.sort_by_key(|(callable, _)| callable.as_u32());
+            rows
+        },
         boundary_ids: boundaries.keys().copied().collect(),
         publication_boundaries,
         codegen_seam_facts,

@@ -2548,6 +2548,81 @@ fn compiler2_backend_program_keeps_direct_only_enum_reduce_out_of_callable_inven
     );
 }
 
+#[test]
+fn compiler2_backend_program_surfaces_per_callable_boundary_association() {
+    // fz-go4.18.1: native callable materialization reads each callable's settled
+    // boundaries from the BackendProgram product (`CallableFacts.boundary_ids`
+    // surfaced through `MaterializedTransportPlan.callable_boundaries`), never
+    // from the legacy root transport plan. This guards that the product actually
+    // carries the per-callable boundary association the native consumer reads.
+    //
+    // Fixture 00181 is the canonical green pull fixture: its operator references
+    // (`&Kernel.+/2`, `&+/2`) are demanded callables, so the product surfaces a
+    // non-empty `callable_boundaries`. The refs are direct-callable, so their
+    // boundary lists are empty -- which is exactly the load-bearing distinction:
+    // a demanded callable resolves to `Some(&[])`, not `None`. End-to-end
+    // assertion over a callable carrying NON-EMPTY boundaries is deferred to
+    // fz-go4.18.3, because the published-boundary fixtures (e.g. Enum.take)
+    // currently fatal upstream in `artifact.rs` `materialize_call_edges` while
+    // building the backend product itself.
+    let tel = ConfiguredTelemetry::new();
+    let backend = BackendProgramCapture::new();
+    tel.attach(&["fz", "compiler2", "backend_program", "defined"], backend.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/00181_enum_reduce_operator_ref.fz".to_string()),
+        text: include_str!("../../fixtures2/00181_enum_reduce_operator_ref.fz").to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    demand_backend_product(&mut compiler, root_id);
+
+    assert_resolved(
+        compiler.drive(),
+        "operator-ref reducers should settle the backend product cleanly",
+    );
+
+    let program = backend.last(root_id).program;
+    assert!(
+        !program.transport.callable_boundaries.is_empty(),
+        "the backend product must surface per-callable boundary facts so native lowering never reads the legacy root transport plan",
+    );
+    for (callable, boundaries) in &program.transport.callable_boundaries {
+        assert_eq!(
+            program.transport.callable_boundary_ids(*callable),
+            Some(boundaries.as_ref()),
+            "callable_boundary_ids should return the product-surfaced boundary association (Some, never None) for {callable:?}",
+        );
+    }
+    for entry in &program.callable_entries {
+        let owning_callable = program
+            .transport
+            .callable_boundaries
+            .iter()
+            .find(|(_, boundaries)| boundaries.contains(&entry.boundary))
+            .map(|(callable, _)| *callable)
+            .unwrap_or_else(|| {
+                panic!(
+                    "published boundary {:?} should be reachable from a callable's product boundary facts",
+                    entry.boundary,
+                )
+            });
+        assert!(
+            program
+                .transport
+                .callable_boundary_ids(owning_callable)
+                .is_some_and(|ids| ids.contains(&entry.boundary)),
+            "callable_boundary_ids should return published boundary {:?} for {owning_callable:?}",
+            entry.boundary,
+        );
+    }
+}
+
 // fz-hwn.23: the Halt-specialized-DeliveredResume regression guard once aggravated by
 // `00010_enum_reduce_main` is RETIRED. Its precondition — a resume continuation whose
 // body specialized to `Halt` because its delivered value was a value-template (absent)

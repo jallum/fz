@@ -2947,9 +2947,8 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
         shape: ShapeId,
         origin: &NativeBodyOrigin,
     ) -> Result<NativeCallableBoundaryId, FatalError> {
-        let plan = self.world.transport_plan(self.root_id);
-        let boundary_ids: Vec<BoundaryId> = match plan.and_then(|plan| plan.callables.get(&callable)) {
-            Some(facts) => facts.boundary_ids.to_vec(),
+        let boundary_ids: Vec<BoundaryId> = match self.program.transport.callable_boundary_ids(callable) {
+            Some(boundaries) => boundaries.to_vec(),
             None => {
                 return Err(incomplete_native_program(
                     self.world,
@@ -3421,10 +3420,10 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
     }
 
     fn callable_has_boundaries(&self, callable: super::super::transport::CallableId) -> bool {
-        self.world
-            .transport_plan(self.root_id)
-            .and_then(|plan| plan.callables.get(&callable))
-            .is_some_and(|facts| !facts.boundary_ids.is_empty())
+        self.program
+            .transport
+            .callable_boundary_ids(callable)
+            .is_some_and(|boundaries| !boundaries.is_empty())
     }
 
     fn closure_fast_path_arg_is_structural(&self, value: &NativeBoundValue, shape: ShapeId) -> bool {

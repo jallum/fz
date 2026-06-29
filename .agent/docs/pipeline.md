@@ -449,7 +449,11 @@ When a concrete callable is materialized while crossing a first-class
 publication seam, native lowering uses the publication position as the first
 boundary discriminator. If that position is a generic publication rather than a
 native callable entry, native falls back to the callable's transport facts and
-narrows same-function candidates by the callable value's semantic surface.
+narrows same-function candidates by the callable value's semantic surface. Those
+per-callable boundary facts (`CallableFacts.boundary_ids`) are surfaced through
+the `BackendProgram` product as `MaterializedTransportPlan.callable_boundaries`;
+native reads them from the product it already consumes and never reopens the
+legacy root transport plan.
 Joined callable publications carry concrete resolutions only from source
 positions/shapes recorded while projecting the join; transport must not recover
 them later by scanning unrelated same-surface boundaries.
