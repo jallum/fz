@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-go4.18.1"
+  ],
   "blocks": [],
   "created": "2026-06-29T11:19:28Z",
   "description": "PROBLEM\nnative_program_for_root (compiler.rs:88-91) drives Job::LowerNativeProgram through drive_root_to -\u003e world.drive_for, the UNGUARDED full drive loop. Because submit_root enqueues SeedRoot (world.rs:513) which self-schedules SealSemanticClosure -\u003e DeriveTransportPlan, the entire legacy semantic+transport ladder executes on every JIT/AOT compile, in parallel with the pull product build. compile_root_jit/run_root_jit (compiler.rs:339/353) and compile_root_aot (compiler.rs:414) all route through this.\n\nGOAL (depends on the native lowering no longer reading world.transport_plan)\nRoute native/JIT/AOT through the same guarded product boundary as interp. Native must build the BackendProgram via the product driver (build_backend_product) and then lower it, without driving SeedRoot -\u003e SealSemanticClosure -\u003e DeriveTransportPlan. Either guard the native drive with forbidden_product_path_job, or have native demand only LowerNativeProgram whose sole prerequisite is the BackendProgram product fact.\n\nSIGNAL\nA JIT and an AOT compile of enum_reduce show zero SealSemanticClosure, DeriveTransportPlan, DeriveExecutableTransport, DeriveRuntimeDemand, and root_executable_frontier job/telemetry fires for the root. Interp, JIT, and AOT all reach LowerNativeProgram/BackendProgram through one product path (three-path parity).\n\nNOTE\nThis is also the real fix behind fz-go4.14 (backend-only roots should not enqueue native lowering) on the demand-purity side.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Route native/JIT/AOT front doors through the guarded product driver",
   "type": "bug",
-  "updated_at": "2026-06-29T11:19:28Z"
+  "updated_at": "2026-06-29T11:19:35Z"
 }
