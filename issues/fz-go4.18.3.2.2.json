@@ -19,7 +19,7 @@
   ],
   "priority": 1,
   "status": "open",
-  "title": "Refine keystone resume gate: destination-passing vs by-value (retain zero-width for ignored by-value returns)",
+  "title": "Land destination-passing-vs-discard resume guard + #2 zero-width retention (after .2.3 provides a reliable consumption signal)",
   "type": "bug",
-  "updated_at": "2026-06-30T13:45:17Z"
+  "updated_at": "2026-06-30T13:45:18Z"
 }
