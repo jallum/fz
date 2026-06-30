@@ -14,8 +14,8 @@
     }
   ],
   "priority": 1,
-  "status": "in_progress",
+  "status": "open",
   "title": "Family B: producer-source continuation/resume Shape(Nothing) for callable-return and zero-width resume (keystone sibling)",
   "type": "bug",
-  "updated_at": "2026-06-30T13:06:24Z"
+  "updated_at": "2026-06-30T13:06:27Z"
 }
