@@ -9,9 +9,15 @@
   "id": "fz-go4.18.3.2.3",
   "labels": [],
   "parent": "fz-go4.18.3.2",
+  "comments": [
+    {
+      "text": "SCOPE EXPANDED: now also covers #2 (does_not_fabricate_nil). The Family-B investigation proved #1 and #2 are ENTANGLED through the same under-reported is_ignore consumption axis (see fz-go4.18.3.2.2's CRITICAL FINDING comment: the shape-only #2 fix stably regresses 10 tests across 3 runs; the keystone's broad gate is correct for consumed returns). UNIFYING ROOT for #1/#2/#3/#4: demand under-/over-reporting of resume-value consumption. The linchpin is a RELIABLE CONSUMPTION SIGNAL -- actual resume-value use-edges in the lowered body -- replacing is_ignore, so the gate can distinguish genuinely-discarded (retain zero-width, #2) from consumed-but-under-demanded (producer-source, #1 + the 10 tail-recursion/range/map tests). Plus typed-boundary return_demand monotonicity (#3/#4). .2.2 (the guard test + #2 retention) is now BLOCKED BY this ticket. The 2 Family-A fixtures (adapts_delivered/carries_published) also need this continuation/consumption fix on top of Family A (.2.1).",
+      "timestamp": "2026-06-30T13:45:19Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "Demand-layer: callable-dispatch consumed-result under-demand (#1) + typed-boundary return_demand over-report \u0026 schedule-dependent keying (#3/#4)",
   "type": "bug",
-  "updated_at": "2026-06-30T13:45:18Z"
+  "updated_at": "2026-06-30T13:45:19Z"
 }
