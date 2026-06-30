@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-30T13:38:12Z",
+  "description": "Follow-up guidepost from fz-go4.18.3.2.1 (audit nit B). The Family-A fix made convergence_collapse_tuple_fields push the Variant(k) discriminator like the canonical addresser, fixing the round-trip. But convergence_collapse mints a DISTINCT fresh address-var per variant position (u0/u1/u2) via convergence_class_at, whereas the canonical address_inputs/address_remap DEDUPES a shared cross-variant variable (u0 reused). Proven round-trip-IDEMPOTENT (from_inputs(collapsed)==collapsed) and NON-FRAGMENTING (audit: the deduped form only ever arises as precise-evidence addressing, never as a competing dispatch key; one executable always keys off the collapse output; both reconstruction sites round-trip the collapsed symbol) -- so this is NOT a correctness bug, zero regressions observed. It is a fidelity divergence from fz-hwn.27's 'one recursive key' deduped form and slightly widens the address set (mild fz-y6w over-specialization breadth, unobserved in practice). OPTION B (deferred): thread a first-occurrence dedup map through convergence_collapse_ty so the collapse output is bit-identical to address_inputs. Do this only if a spec-count-sensitive fixture surfaces over-specialization attributable to this. Low priority.",
+  "id": "fz-go4.18.5",
+  "labels": [],
+  "parent": "fz-go4.18",
+  "priority": 3,
+  "status": "open",
+  "title": "convergence_collapse mints variant-distinct address vars vs address_inputs' deduped shared var",
+  "type": "task",
+  "updated_at": "2026-06-30T13:38:12Z"
+}
