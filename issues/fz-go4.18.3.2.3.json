@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-30T13:06:25Z",
+  "description": "Split from fz-go4.18.3.2 after the Family-B investigation proved 3 of its 4 tests are demand-layer, not shape-layer. See the full breakdown in fz-go4.18.3.2.2's comment. Covers: #1 compiler2_native_program_jit_adapts_callable_raw_returns_back_to_value_refs (a CONSUMED callable-dispatch result left is_ignore -\u003e Shape(Nothing) -\u003e native fatal on delivered Ty(21); needs a callable-dispatch producer source for the boxed-ValueRef return ABI, or correction of the under-reported demand); #3 compiler2_native_program_resource_fixture_shapes_callable_boundaries_explicitly (fz_make_resource/2 ExecutableReturn anchored from its own return_demand=Whole even though every caller discards the handle; spurious Whole enters via the callable/typed-boundary return-demand path, NOT call_return_demand_contributions which already drops is_ignore at runtime_demand.rs:689); #4 escaping_destructor_keys_its_activation_at_the_grounded_boundary_surface (same 00026_make_resource.fz fixture, schedule-dependent full-run-only PoisonError, boundary-surface activation keying entangled with #3). LIKELY shares a core demand/identity convergence root with Family A (.18.3.2.1, canonical addressed-arrow round-trip) -- coordinate with the Family A spike result before implementing. Correct-by-construction + provably monotone; no test weakening; no legacy revival.",
+  "id": "fz-go4.18.3.2.3",
+  "labels": [],
+  "parent": "fz-go4.18.3.2",
+  "priority": 1,
+  "status": "open",
+  "title": "Demand-layer: callable-dispatch consumed-result under-demand (#1) + typed-boundary return_demand over-report \u0026 schedule-dependent keying (#3/#4)",
+  "type": "bug",
+  "updated_at": "2026-06-30T13:06:25Z"
+}
