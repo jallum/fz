@@ -4,6 +4,7 @@
     "fz-go4.18.3.2.3"
   ],
   "blocks": [],
+  "closed_at": "2026-06-30T17:12:57Z",
   "created": "2026-06-29T16:40:12Z",
   "description": "Re-scoped after the Family-B investigation (see this ticket's comment for the full 3-mechanism breakdown). SHAPE-LAYER, the only clean Family-B-scope fix. ONLY covers #2 compiler2_native_program_does_not_fabricate_nil_for_zero_width_resume_payloads. #1/#3/#4 moved to demand-layer ticket fz-go4.18.3.2.3.\n\nPROBLEM\nThe landed keystone (fz-go4.18.3.1) gates producer-sourcing on !demand.is_callable(), which OVER-REACHES onto fully-ignored by-value (non-destination-passing) returns: the genuinely-discarded Enum.each element-call resume (is_ignore demand, single-Function callee) gets producer-sourced to Lane(13), ERASING the zero-width continuation #2 requires.\n\nFIX (correct-by-construction)\nDistinguish DESTINATION-PASSING returns (callee writes fields into the caller frame, e.g. ExecutableNeed::TupleFields -- must keep its slots even when a field is ignored) from BY-VALUE returns (returned by value, can be discarded -\u003e stays zero-width/Nothing when ignored). Producer-source the former; retain zero-width for an ignored by-value return. (Proven proxy: experimental gate !demand.is_callable() \u0026\u0026 !demand.is_ignore() greens #2 with no observed effect on the keystone's 2 greens or on #1/#3 -- implement the principled destination-passing-vs-by-value version, not the bare is_ignore proxy.)\n\nSIGNAL\n#2 green; keystone greens (jit_runs_enum_map_reduce, matches_tuple_field_call_continuations) STAY green; no new failures. Expected 932 passed / 5 failed (remaining 5 = Family A #2tests + demand cluster #1/#3/#4), STABLE across \u003e=3 fresh full runs. Schedule-independence guard for zero-width retention. No test weakening; no legacy revival.",
   "id": "fz-go4.18.3.2.2",
@@ -20,8 +21,8 @@
     }
   ],
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "Land destination-passing-vs-discard resume guard + #2 zero-width retention (after .2.3 provides a reliable consumption signal)",
   "type": "bug",
-  "updated_at": "2026-06-30T13:45:20Z"
+  "updated_at": "2026-06-30T17:12:57Z"
 }
