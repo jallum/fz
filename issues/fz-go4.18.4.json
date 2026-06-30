@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-go4.18.3"
   ],
@@ -12,8 +12,8 @@
   "labels": [],
   "parent": "fz-go4.18",
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "Delete the legacy seal/transport spine after native cutover",
   "type": "bug",
-  "updated_at": "2026-06-29T11:20:11Z"
+  "updated_at": "2026-06-30T18:13:11Z"
 }
