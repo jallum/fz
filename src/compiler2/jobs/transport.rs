@@ -3,8 +3,8 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 
 use super::super::artifact::MaterializedExecutable;
 use super::super::body::{
-    CallArg, CallSiteId, ControlDestination, ControlEntryId, DeliveredValueSource, LoweredBitSize, LoweredBody,
-    LoweredStep, LoweredTail, ValueId, delivered_value_joins,
+    CallArg, CallSiteId, ControlDestination, ControlEntryId, DeliveredValueSource, LoweredBody, LoweredStep,
+    LoweredTail, ValueId, body_consumed_values, delivered_value_joins,
 };
 use super::super::drive::{FactKey, Job, JobEffects, current_uses, settled_uses};
 use super::super::identity::{ActivationKey, ExecutableKey, ExecutableNeed, FunctionId, RootId};
@@ -3394,136 +3394,6 @@ fn collect_resume_entries(
             })
         })
         .collect()
-}
-
-/// Every value the lowered body actually CONSUMES: read as an operand by some
-/// step or tail, or captured into a continuation. This is a static,
-/// schedule-independent property of the settled lowered body -- unlike a value's
-/// `RuntimeDemand`, whose `is_ignore` axis transiently UNDER-reports a consumed
-/// delivered result while the demand fixpoint is still ascending. A resume
-/// payload whose delivered value is consumed must therefore carry a real shape
-/// (producer-sourced, or floored off `ignore`); one that is genuinely discarded
-/// stays zero-width. Over-reporting (a value read only on a dead path) is the
-/// safe direction -- it can only retain structure, never erase it.
-fn body_consumed_values(body: &LoweredBody) -> HashSet<ValueId> {
-    let mut consumed = HashSet::new();
-    let LoweredBody::Clauses { clauses, entries, .. } = body else {
-        return consumed;
-    };
-    for clause in clauses {
-        for step in &clause.projections {
-            collect_step_reads(step, &mut consumed);
-        }
-    }
-    for entry in entries {
-        consumed.extend(entry.captures.iter().copied());
-        consumed.extend(entry.reusable_cons_captures.iter().map(|cons| cons.source));
-        for step in &entry.steps {
-            collect_step_reads(step, &mut consumed);
-        }
-        collect_tail_reads(&entry.tail, &mut consumed);
-    }
-    consumed
-}
-
-fn collect_step_reads(step: &LoweredStep, consumed: &mut HashSet<ValueId>) {
-    match step {
-        LoweredStep::Const { .. } | LoweredStep::FunctionRef { .. } => {}
-        LoweredStep::Tuple { items, .. } => consumed.extend(items.iter().copied()),
-        LoweredStep::List { items, tail, .. } => {
-            consumed.extend(items.iter().copied());
-            consumed.extend(tail.iter().copied());
-        }
-        LoweredStep::Map { entries, .. } => {
-            for (key, value) in entries {
-                consumed.insert(key.value);
-                consumed.insert(*value);
-            }
-        }
-        LoweredStep::MapUpdate { base, entries, .. } => {
-            consumed.insert(*base);
-            for (key, value) in entries {
-                consumed.insert(key.value);
-                consumed.insert(*value);
-            }
-        }
-        LoweredStep::Struct { fields, .. } => consumed.extend(fields.iter().map(|(_, value)| *value)),
-        LoweredStep::Bitstring { fields, .. } => {
-            for field in fields {
-                consumed.insert(field.value);
-                if let Some(LoweredBitSize::Value(size)) = field.spec.size {
-                    consumed.insert(size);
-                }
-            }
-        }
-        LoweredStep::Lambda { captures, .. } => consumed.extend(captures.iter().copied()),
-        LoweredStep::BinaryOp { left, right, .. } => {
-            consumed.insert(*left);
-            consumed.insert(*right);
-        }
-        LoweredStep::UnaryOp { input, .. } => {
-            consumed.insert(*input);
-        }
-        LoweredStep::MapIndex { base, key, .. } => {
-            consumed.insert(*base);
-            consumed.insert(key.value);
-        }
-        LoweredStep::FieldAccess { base, .. } => {
-            consumed.insert(*base);
-        }
-        LoweredStep::AssertLiteral { source, .. }
-        | LoweredStep::AssertStruct { source, .. }
-        | LoweredStep::RequireMapValue { source, .. }
-        | LoweredStep::AssertTuple { source, .. }
-        | LoweredStep::TupleField { source, .. }
-        | LoweredStep::AssertEmptyList { source }
-        | LoweredStep::SplitList { source, .. }
-        | LoweredStep::BitstringInit { source, .. } => {
-            consumed.insert(*source);
-        }
-        LoweredStep::AssertSame { source, value } => {
-            consumed.insert(*source);
-            consumed.insert(*value);
-        }
-        LoweredStep::BitstringRead { reader, spec, .. } => {
-            consumed.insert(*reader);
-            if let Some(LoweredBitSize::Value(size)) = spec.size {
-                consumed.insert(size);
-            }
-        }
-        LoweredStep::AssertBitstringDone { reader } => {
-            consumed.insert(*reader);
-        }
-    }
-}
-
-fn collect_tail_reads(tail: &LoweredTail, consumed: &mut HashSet<ValueId>) {
-    match tail {
-        LoweredTail::Value { value, .. } => {
-            consumed.insert(*value);
-        }
-        LoweredTail::DirectCall { args, .. } => consumed.extend(args.iter().map(|arg| arg.value)),
-        LoweredTail::ClosureCall { callee, args, .. } => {
-            consumed.insert(*callee);
-            consumed.extend(args.iter().map(|arg| arg.value));
-        }
-        LoweredTail::If { cond, .. } => {
-            consumed.insert(*cond);
-        }
-        LoweredTail::Dispatch { inputs, bindings, .. } => {
-            consumed.extend(inputs.iter().copied());
-            consumed.extend(bindings.pinned.iter().copied());
-            consumed.extend(bindings.prepared.iter().copied());
-        }
-        LoweredTail::Receive(receive) => {
-            if let Some(after) = &receive.after {
-                consumed.insert(after.timeout);
-            }
-            consumed.extend(receive.bindings.pinned.iter().copied());
-            consumed.extend(receive.bindings.prepared.iter().copied());
-        }
-        LoweredTail::Halt { .. } => {}
-    }
 }
 
 fn original_entry_id(context: &ExecutableContext, entry_index: usize) -> ControlEntryId {

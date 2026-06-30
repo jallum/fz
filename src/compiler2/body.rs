@@ -4,7 +4,7 @@
 //! pattern/destructure steps, and compiler-generated lambda definitions, but
 //! it stops above old-world CPS IR and planner concerns.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::ast::{BinOp, BitType, Endian, TypeExprBody, UnOp};
 use crate::dispatch_matrix::pattern::PatternDispatchPlan;
@@ -202,6 +202,153 @@ pub(crate) fn delivered_value_joins(body: &LoweredBody) -> HashMap<ControlEntryI
             Some((entry, DeliveredValueJoin { value, sources }))
         })
         .collect()
+}
+
+/// The set of local values a body actually reads (consumes) in any step or
+/// tail. This is a deterministic static artifact of the lowered body — it does
+/// not depend on demand convergence or evaluation schedule — so it is a
+/// reliable consumption signal where the demand lattice would under-report a
+/// value whose downstream consumer is itself under-demanded.
+pub(crate) fn body_consumed_values(body: &LoweredBody) -> HashSet<ValueId> {
+    let mut consumed = HashSet::new();
+    let LoweredBody::Clauses { clauses, entries, .. } = body else {
+        return consumed;
+    };
+    for clause in clauses {
+        for step in &clause.projections {
+            collect_step_reads(step, &mut consumed);
+        }
+    }
+    for entry in entries {
+        consumed.extend(entry.captures.iter().copied());
+        consumed.extend(entry.reusable_cons_captures.iter().map(|cons| cons.source));
+        for step in &entry.steps {
+            collect_step_reads(step, &mut consumed);
+        }
+        collect_tail_reads(&entry.tail, &mut consumed);
+    }
+    consumed
+}
+
+/// The value each callsite's return is bound to in the lowered body. A call's
+/// return is "consumed" exactly when this value appears in
+/// [`body_consumed_values`] (a later step reads it, or it is delivered into a
+/// continuation that reads it). A return that is neither read nor re-demanded
+/// by the executable's own return is genuinely discarded.
+pub(crate) fn callsite_return_values(body: &LoweredBody) -> HashMap<CallSiteId, ValueId> {
+    let mut out = HashMap::new();
+    let LoweredBody::Clauses { entries, .. } = body else {
+        return out;
+    };
+    for entry in entries {
+        match &entry.tail {
+            LoweredTail::DirectCall { value, callsite, .. } | LoweredTail::ClosureCall { value, callsite, .. } => {
+                out.insert(*callsite, *value);
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+fn collect_step_reads(step: &LoweredStep, consumed: &mut HashSet<ValueId>) {
+    match step {
+        LoweredStep::Const { .. } | LoweredStep::FunctionRef { .. } => {}
+        LoweredStep::Tuple { items, .. } => consumed.extend(items.iter().copied()),
+        LoweredStep::List { items, tail, .. } => {
+            consumed.extend(items.iter().copied());
+            consumed.extend(tail.iter().copied());
+        }
+        LoweredStep::Map { entries, .. } => {
+            for (key, value) in entries {
+                consumed.insert(key.value);
+                consumed.insert(*value);
+            }
+        }
+        LoweredStep::MapUpdate { base, entries, .. } => {
+            consumed.insert(*base);
+            for (key, value) in entries {
+                consumed.insert(key.value);
+                consumed.insert(*value);
+            }
+        }
+        LoweredStep::Struct { fields, .. } => consumed.extend(fields.iter().map(|(_, value)| *value)),
+        LoweredStep::Bitstring { fields, .. } => {
+            for field in fields {
+                consumed.insert(field.value);
+                if let Some(LoweredBitSize::Value(size)) = field.spec.size {
+                    consumed.insert(size);
+                }
+            }
+        }
+        LoweredStep::Lambda { captures, .. } => consumed.extend(captures.iter().copied()),
+        LoweredStep::BinaryOp { left, right, .. } => {
+            consumed.insert(*left);
+            consumed.insert(*right);
+        }
+        LoweredStep::UnaryOp { input, .. } => {
+            consumed.insert(*input);
+        }
+        LoweredStep::MapIndex { base, key, .. } => {
+            consumed.insert(*base);
+            consumed.insert(key.value);
+        }
+        LoweredStep::FieldAccess { base, .. } => {
+            consumed.insert(*base);
+        }
+        LoweredStep::AssertLiteral { source, .. }
+        | LoweredStep::AssertStruct { source, .. }
+        | LoweredStep::RequireMapValue { source, .. }
+        | LoweredStep::AssertTuple { source, .. }
+        | LoweredStep::TupleField { source, .. }
+        | LoweredStep::AssertEmptyList { source }
+        | LoweredStep::SplitList { source, .. }
+        | LoweredStep::BitstringInit { source, .. } => {
+            consumed.insert(*source);
+        }
+        LoweredStep::AssertSame { source, value } => {
+            consumed.insert(*source);
+            consumed.insert(*value);
+        }
+        LoweredStep::BitstringRead { reader, spec, .. } => {
+            consumed.insert(*reader);
+            if let Some(LoweredBitSize::Value(size)) = spec.size {
+                consumed.insert(size);
+            }
+        }
+        LoweredStep::AssertBitstringDone { reader } => {
+            consumed.insert(*reader);
+        }
+    }
+}
+
+fn collect_tail_reads(tail: &LoweredTail, consumed: &mut HashSet<ValueId>) {
+    match tail {
+        LoweredTail::Value { value, .. } => {
+            consumed.insert(*value);
+        }
+        LoweredTail::DirectCall { args, .. } => consumed.extend(args.iter().map(|arg| arg.value)),
+        LoweredTail::ClosureCall { callee, args, .. } => {
+            consumed.insert(*callee);
+            consumed.extend(args.iter().map(|arg| arg.value));
+        }
+        LoweredTail::If { cond, .. } => {
+            consumed.insert(*cond);
+        }
+        LoweredTail::Dispatch { inputs, bindings, .. } => {
+            consumed.extend(inputs.iter().copied());
+            consumed.extend(bindings.pinned.iter().copied());
+            consumed.extend(bindings.prepared.iter().copied());
+        }
+        LoweredTail::Receive(receive) => {
+            if let Some(after) = &receive.after {
+                consumed.insert(after.timeout);
+            }
+            consumed.extend(receive.bindings.pinned.iter().copied());
+            consumed.extend(receive.bindings.prepared.iter().copied());
+        }
+        LoweredTail::Halt { .. } => {}
+    }
 }
 
 fn collect_tail_deliveries(

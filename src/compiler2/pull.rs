@@ -312,6 +312,14 @@ pub struct PullSession {
     incoming_inputs: HashMap<InputSlot, Vec<IncomingInputSource>>,
     runtime_demand_dependents: HashMap<ExecutableKey, HashSet<ExecutableKey>>,
     latest_runtime_demands: HashMap<ExecutableKey, ExecutableRuntimeDemand>,
+    // Per-caller return-demand evidence, keyed `caller -> (callee -> demand)`.
+    // A callee present here is OBSERVED (even when its demand is the bottom
+    // `ignore` discard marker); a callee absent is not-yet-observed. The derived
+    // `return_demands` join is rebuilt from these contributions on every change
+    // so a caller can RETRACT a stale (transiently whole) contribution -- the
+    // join is not a monotone accumulator.
+    return_demand_contributions: HashMap<ExecutableKey, HashMap<ExecutableKey, RuntimeDemand>>,
+    return_demand_contributors: HashMap<ExecutableKey, HashSet<ExecutableKey>>,
     return_demands: HashMap<ExecutableKey, RuntimeDemand>,
     materialized_executables: HashMap<ExecutableKey, MaterializedExecutable>,
     executable_effects: HashMap<ExecutableKey, EffectSummary>,
@@ -341,6 +349,8 @@ impl PullSession {
             incoming_inputs: HashMap::new(),
             runtime_demand_dependents: HashMap::new(),
             latest_runtime_demands: HashMap::new(),
+            return_demand_contributions: HashMap::new(),
+            return_demand_contributors: HashMap::new(),
             return_demands: HashMap::new(),
             materialized_executables: HashMap::new(),
             executable_effects: HashMap::new(),
@@ -519,16 +529,73 @@ impl PullSession {
         self.producer_pokes += count;
     }
 
-    pub fn record_return_demand(&mut self, executable: ExecutableKey, demand: RuntimeDemand) {
-        if demand.is_ignore() {
-            return;
+    /// Replace `caller`'s full set of return-demand contributions. Every callee
+    /// the caller names becomes (or stays) OBSERVED; any callee the caller named
+    /// on a previous run but not this one has its contribution withdrawn. Each
+    /// affected callee's joined return demand is rebuilt from all current
+    /// contributors and its demand-derived products are invalidated when the join
+    /// changes -- so a contribution that DROPS (e.g. a forwarder collapsing from
+    /// its transient whole-by-need seed to an observed discard) retracts cleanly
+    /// instead of baking into a monotone accumulator.
+    pub fn replace_return_demand_contributions(
+        &mut self,
+        caller: ExecutableKey,
+        contributions: HashMap<ExecutableKey, RuntimeDemand>,
+    ) {
+        let previous = self.return_demand_contributions.remove(&caller).unwrap_or_default();
+        let mut affected: HashSet<ExecutableKey> = HashSet::new();
+        for target in previous.keys() {
+            affected.insert(target.clone());
+            if let Some(contributors) = self.return_demand_contributors.get_mut(target) {
+                contributors.remove(&caller);
+            }
         }
-        self.demanded_executables.insert(executable.clone());
-        let entry = self.return_demands.entry(executable.clone()).or_default();
-        let before = entry.clone();
-        entry.join_assign(&demand);
-        if *entry != before {
-            self.invalidate_demand_derived_products(&executable);
+        for target in contributions.keys() {
+            affected.insert(target.clone());
+            self.return_demand_contributors
+                .entry(target.clone())
+                .or_default()
+                .insert(caller.clone());
+        }
+        if !contributions.is_empty() {
+            self.return_demand_contributions.insert(caller, contributions);
+        }
+        for target in affected {
+            self.recompute_return_demand(&target);
+        }
+    }
+
+    fn recompute_return_demand(&mut self, target: &ExecutableKey) {
+        let joined = self
+            .return_demand_contributors
+            .get(target)
+            .into_iter()
+            .flatten()
+            .filter_map(|caller| {
+                self.return_demand_contributions
+                    .get(caller)
+                    .and_then(|contributions| contributions.get(target))
+            })
+            .fold(None::<RuntimeDemand>, |acc, demand| match acc {
+                Some(mut acc) => {
+                    acc.join_assign(demand);
+                    Some(acc)
+                }
+                None => Some(demand.clone()),
+            });
+        let changed = self.return_demands.get(target) != joined.as_ref();
+        match joined {
+            Some(demand) => {
+                self.demanded_executables.insert(target.clone());
+                self.return_demands.insert(target.clone(), demand);
+            }
+            None => {
+                self.return_demand_contributors.remove(target);
+                self.return_demands.remove(target);
+            }
+        }
+        if changed {
+            self.invalidate_demand_derived_products(target);
         }
     }
 
@@ -1213,23 +1280,69 @@ mod tests {
 
     #[test]
     fn pull_session_invalidates_runtime_demand_when_return_demand_grows() {
-        let executable = fake_executable(RootId::for_test(5));
+        let caller = fake_executable(RootId::for_test(5));
+        let callee = fake_executable(RootId::for_test(5));
         let mut session = PullSession::new(RootId::for_test(5));
         session.memo.finish(
-            &ProductKey::RuntimeDemand(executable.clone()),
+            &ProductKey::RuntimeDemand(callee.clone()),
             ProductValue::RuntimeDemand(Box::default()),
         );
 
-        session.record_return_demand(executable.clone(), RuntimeDemand::whole());
+        session.replace_return_demand_contributions(caller, HashMap::from([(callee.clone(), RuntimeDemand::whole())]));
 
         assert_eq!(
-            session.return_demand(&executable),
+            session.return_demand(&callee),
             Some(&RuntimeDemand::whole()),
             "the joined return demand should be retained for the next pull"
         );
         assert!(
-            session.memo().get(&ProductKey::RuntimeDemand(executable)).is_none(),
+            session.memo().get(&ProductKey::RuntimeDemand(callee)).is_none(),
             "recording a stronger return demand invalidates stale request-local runtime demand"
+        );
+    }
+
+    #[test]
+    fn pull_session_retracts_return_demand_when_a_caller_collapses_to_a_discard() {
+        // The "unknown is not none" guard at the session layer: a forwarder that
+        // first contributes `whole` off its transient whole-by-need seed and
+        // later collapses to an observed discard must DROP its callee's joined
+        // demand, not bake the stale `whole`. An observed discard is the bottom
+        // `ignore` cell -- still present (observed), distinct from a callee no
+        // caller has named (absent -> None).
+        let caller = fake_executable(RootId::for_test(7));
+        let callee = fake_executable(RootId::for_test(7));
+        let mut session = PullSession::new(RootId::for_test(7));
+
+        session.replace_return_demand_contributions(
+            caller.clone(),
+            HashMap::from([(callee.clone(), RuntimeDemand::whole())]),
+        );
+        assert_eq!(session.return_demand(&callee), Some(&RuntimeDemand::whole()));
+
+        session.memo.finish(
+            &ProductKey::RuntimeDemand(callee.clone()),
+            ProductValue::RuntimeDemand(Box::default()),
+        );
+        session.replace_return_demand_contributions(
+            caller.clone(),
+            HashMap::from([(callee.clone(), RuntimeDemand::ignore())]),
+        );
+
+        assert_eq!(
+            session.return_demand(&callee),
+            Some(&RuntimeDemand::ignore()),
+            "a collapsed forwarder retracts its callee's whole demand down to the observed discard"
+        );
+        assert!(
+            session.memo().get(&ProductKey::RuntimeDemand(callee.clone())).is_none(),
+            "retracting a callee's return demand invalidates its stale request-local runtime demand"
+        );
+
+        session.replace_return_demand_contributions(caller, HashMap::new());
+        assert_eq!(
+            session.return_demand(&callee),
+            None,
+            "withdrawing the last contributor leaves the callee not-yet-observed (distinct from an observed discard)"
         );
     }
 

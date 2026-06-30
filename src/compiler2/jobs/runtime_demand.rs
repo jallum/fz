@@ -2,7 +2,8 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 
 use super::super::body::{
     CallArg, CallSiteId, ControlDestination, ControlEntryId, DeliveredValueJoin, DeliveredValueSource, LoweredBody,
-    LoweredEntry, LoweredStep, LoweredTail, ValueId, delivered_value_joins,
+    LoweredEntry, LoweredStep, LoweredTail, ValueId, body_consumed_values, callsite_return_values,
+    delivered_value_joins,
 };
 use super::super::drive::{FactKey, Job, JobEffects, current_uses};
 use super::super::facts::FactUse;
@@ -273,6 +274,17 @@ pub(crate) fn produce_runtime_demand_product(
 
     let mut demands = HashMap::new();
     let mut self_demand = empty_runtime_demand(executable, world.types());
+    // The return-demand seed distinguishes three states (an "unknown is not
+    // none" cell): a callee OBSERVED by at least one caller uses the joined
+    // observed demand -- which is the bottom `ignore` when every caller discards
+    // its return, collapsing the return; a callee NO caller has observed yet
+    // falls back to the whole-by-need seed, the load-bearing bootstrap that lets
+    // a continuation/recursion cycle (never named by a return-demand
+    // contribution) keep its return alive. Observation is monotone and the
+    // joined demand is rebuilt from current contributions on every change
+    // (`replace_return_demand_contributions`), so a transient whole-by-need seed
+    // forwarded by a not-yet-observed forwarder is RETRACTED once the forwarder
+    // is observed -- nothing bakes.
     self_demand.return_demand = session
         .return_demand(executable)
         .cloned()
@@ -313,9 +325,14 @@ pub(crate) fn produce_runtime_demand_product(
         return product_waits(waits);
     }
 
+    let mut contributions = HashMap::<ExecutableKey, RuntimeDemand>::new();
     for (target, demand) in return_demand_contributions.into_iter().chain(boundary_return_demands) {
-        session.record_return_demand(target, demand);
+        contributions
+            .entry(target)
+            .and_modify(|current| current.join_assign(&demand))
+            .or_insert(demand);
     }
+    session.replace_return_demand_contributions(executable.clone(), contributions);
     derived.demand.ground_callable_surfaces(world.types());
     PullOutcome::Produced(ProductValue::RuntimeDemand(Box::new(derived.demand)))
 }
@@ -676,30 +693,54 @@ fn call_return_demand_contributions(
     facts: &ExecutableFacts,
     observed_returns: HashMap<CallSiteId, RuntimeDemand>,
 ) -> Vec<(ExecutableKey, RuntimeDemand)> {
+    // A caller's contribution names EVERY local callee it calls, including the
+    // ones whose return it discards -- so the iteration is over the static call
+    // graph (`facts.callsites`), not the lossy `observed_returns` (which omits a
+    // callsite entirely once its demand collapses to `ignore`). A discarded
+    // callee contributes the bottom `ignore` demand: a distinct cell from "no
+    // caller has called this callee yet". `produce_runtime_demand_product` keys
+    // its seed off that distinction -- an observed-but-discarded callee collapses
+    // its return, whereas a not-yet-observed callee (a continuation/recursion
+    // entry reached only by delivery, or an escaped callable) falls back to the
+    // whole-by-need seed so its cycle can still bootstrap (see the seed comment).
+    let consumed = body_consumed_values(&facts.body);
+    let callsite_returns = callsite_return_values(&facts.body);
     let mut out = Vec::new();
-    for (callsite, observed) in observed_returns {
+    for (callsite, summary) in &facts.callsites {
         let need = facts
             .callsite_needs
-            .get(&callsite)
+            .get(callsite)
             .copied()
             .unwrap_or(ExecutableNeed::Value);
+        let observed = observed_returns
+            .get(callsite)
+            .cloned()
+            .unwrap_or_else(RuntimeDemand::ignore);
         let delivered = match need {
+            // Destination-passing delivery writes fields into the caller frame,
+            // so its slots are retained even when a field is ignored.
             ExecutableNeed::TupleFields(_) => tuple_return_demand_for_observed_need(need, observed),
-            ExecutableNeed::Value => {
-                if observed.is_ignore() {
-                    continue;
+            ExecutableNeed::Value if observed.is_ignore() => {
+                // The demand lattice reports nothing for this callsite's return.
+                // Trust the static body fact instead of `is_ignore`: a return the
+                // body actually reads is consumed-but-under-demanded (floor it to
+                // `whole` so the callee does not collapse), while a return the
+                // body never reads is genuinely discarded (the bottom marker that
+                // makes the callee an observed discard).
+                let consumed_return = callsite_returns
+                    .get(callsite)
+                    .is_some_and(|value| consumed.contains(value));
+                if consumed_return {
+                    RuntimeDemand::whole()
+                } else {
+                    RuntimeDemand::ignore()
                 }
-                observed
             }
+            ExecutableNeed::Value => observed,
         };
-        let Some(summary) = facts.callsites.get(&callsite) else {
-            continue;
-        };
-        out.extend(
-            local_call_targets(summary, need)
-                .into_iter()
-                .map(|target| (target, delivered.clone())),
-        );
+        for target in local_call_targets(summary, need) {
+            out.push((target, delivered.clone()));
+        }
     }
     out
 }
