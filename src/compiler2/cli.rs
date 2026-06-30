@@ -19,7 +19,7 @@ use crate::ir_codegen::{ir_text_record_enable, ir_text_record_take};
 use crate::notify_fixture_execution_start;
 use crate::telemetry::{ConfiguredTelemetry, Event, Handler, JsonlBackend, StatsHandler, Value};
 
-use super::dump::{DumpSpec, install_dump_handlers, max_requested_stage, parse_dump_spec};
+use super::dump::{DumpKind, DumpSpec, install_dump_handlers, max_requested_stage, parse_dump_spec};
 use super::{CodeSubmission, Compiler2, ExecutableNeed, RootId, RootSubmission};
 
 // Keep the frontdoor drive budget aligned with the slowest fixture path budget;
@@ -335,6 +335,17 @@ fn emit_requested_root_dumps(compiler: &mut Compiler2<'_>, root: RootId, dumps: 
     if let Some(stage) = max_requested_stage(dumps) {
         compiler
             .drive_root_to_dump_stage(root, stage)
+            .map_err(|error| format!("fz2 dump prep: {error}"))?;
+    }
+    // The types/activations dumps are served from the product-path activation
+    // inventory, independently of any backend/native stage drive above, so they
+    // never depend on the legacy semantic-closure seal.
+    if dumps
+        .iter()
+        .any(|spec| matches!(spec.kind, DumpKind::Types | DumpKind::Activations))
+    {
+        compiler
+            .emit_product_semantic_dumps(root)
             .map_err(|error| format!("fz2 dump prep: {error}"))?;
     }
     Ok(())

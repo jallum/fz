@@ -149,43 +149,39 @@ impl<'a> Compiler2<'a> {
         super::native_codegen::compile_with_backend_native_program(self.world.types_mut(), program, backend, tel)
     }
 
-    fn drive_root_to(&mut self, root: RootId, job: Job) -> Result<(), String> {
-        self.world.demand(job);
-        match self.world.drive_for(self.drive_timeout) {
-            DriveOutcome::Resolved => Ok(()),
-            DriveOutcome::Unresolved { waits } => Err(format!(
-                "compiler2 root {} stayed unresolved: {:?}",
-                root.as_u32(),
-                waits
-            )),
-            DriveOutcome::Fatal { job } => Err(format!(
-                "compiler2 root {} failed before backend execution: {:?}",
-                root.as_u32(),
-                job
-            )),
-            DriveOutcome::TimedOut { jobs_ran, pending_jobs } => Err(format!(
-                "compiler2 root {} exceeded {} ms drive limit after {} jobs with {} pending",
-                root.as_u32(),
-                self.drive_timeout
-                    .expect("timed out drives should have a configured timeout")
-                    .as_millis(),
-                jobs_ran,
-                pending_jobs,
-            )),
-        }
-    }
-
     pub(crate) fn drive_root_to_dump_stage(&mut self, root: RootId, stage: DumpStage) -> Result<(), String> {
         match stage {
-            // Semantic dumps intentionally expose the legacy semantic-closure
-            // diagnostic surface. Backend dumps use the product path below.
-            DumpStage::Semantic => self.drive_root_to(root, Job::SealSemanticClosure(root)),
             DumpStage::Backend => self.product_backend_program_for_root(root).map(|_| ()),
             // Native dumps share the front-door routing: the guarded product
             // boundary plus a single `LowerNativeProgram` job, never the legacy
             // seal/transport ladder.
             DumpStage::Native => self.native_program_for_root(root).map(|_| ()),
         }
+    }
+
+    /// Serves the `types`/`activations` CLI dumps from the product-path
+    /// activation inventory rather than the legacy semantic-closure seal.
+    ///
+    /// The product backend drive enumerates the executables it MATERIALIZES —
+    /// the activations actually compiled into the program, analyzed through the
+    /// world facts the dump reads. That set coincides with the seal's
+    /// fully-reached semantic closure (the demand frontier may briefly over-ask
+    /// for dispatch-sibling activations that never materialize; those are not
+    /// part of the program and must not appear in the dump). Walking the
+    /// materialized inventory and emitting the SAME per-activation dump events
+    /// keeps the dump content identical while severing its dependency on
+    /// `SealSemanticClosure` / `World::define_semantic_closure`.
+    pub(crate) fn emit_product_semantic_dumps(&mut self, root: RootId) -> Result<(), String> {
+        let (_program, driver) = self.drive_root_backend_product(root)?;
+        let activations: Vec<_> = driver
+            .session()
+            .materialized_executables()
+            .keys()
+            .map(|executable| executable.activation.clone())
+            .collect();
+        super::dump::emit_product_semantic_dump_events(&self.world, root, activations);
+        driver.finish_session();
+        Ok(())
     }
 
     /// Drives one root to `BackendProgram` and runs it through the shared
@@ -198,6 +194,16 @@ impl<'a> Compiler2<'a> {
     }
 
     fn product_backend_program_for_root(&mut self, root: RootId) -> Result<BackendProgram, String> {
+        let (program, driver) = self.drive_root_backend_product(root)?;
+        driver.finish_session();
+        Ok(program)
+    }
+
+    /// Drives one root to its `BackendProgram` through the guarded product
+    /// boundary and returns the program together with the finished-but-not-yet
+    /// emitted driver, so callers can also read the demanded activation/executable
+    /// inventory the drive accumulated (the CLI dump path reads it).
+    fn drive_root_backend_product(&mut self, root: RootId) -> Result<(BackendProgram, ProductDriver<'a>), String> {
         self.abort_on_zero_drive_timeout(root)?;
         let root_key = ProductKey::RootBackendProduct(root);
         let mut driver = ProductDriver::new(self.tel, root);
@@ -214,8 +220,7 @@ impl<'a> Compiler2<'a> {
             };
             match outcome {
                 PullOutcome::Produced(ProductValue::RootBackendProduct(program)) if current == root_key => {
-                    driver.finish_session();
-                    return Ok(*program);
+                    return Ok((*program, driver));
                 }
                 PullOutcome::Produced(_) => {}
                 PullOutcome::Waiting(waits) => {

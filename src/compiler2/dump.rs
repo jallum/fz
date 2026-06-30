@@ -31,7 +31,6 @@ pub(crate) struct DumpSpec {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum DumpStage {
-    Semantic,
     Backend,
     Native,
 }
@@ -56,10 +55,12 @@ pub(crate) struct ClifDumpEntry {
 impl DumpKind {
     pub(crate) fn required_stage(self) -> Option<DumpStage> {
         match self {
-            Self::Activations | Self::Types => Some(DumpStage::Semantic),
+            // Types/Activations dumps are served from the product-path activation
+            // inventory (see `Compiler2::emit_product_semantic_dumps`), not from a
+            // staged drive, so they request no `DumpStage`.
+            Self::Activations | Self::Types | Self::Clif => None,
             Self::Backend => Some(DumpStage::Backend),
             Self::Native | Self::Fnir => Some(DumpStage::Native),
-            Self::Clif => None,
         }
     }
 }
@@ -129,9 +130,28 @@ pub(crate) fn install_dump_handlers(tel: &ConfiguredTelemetry, root: RootId, spe
     }
 }
 
+/// Emits the per-activation types/activations dump events for the legacy
+/// semantic-closure activation set (the seal path).
 pub(crate) fn emit_semantic_dump_events(world: &World<'_>, root: RootId, closure: &SemanticClosure) {
+    emit_dump_events(world, root, closure.activations.iter().cloned());
+}
+
+/// Emits the same per-activation dump events sourced from the product-path
+/// activation inventory (the demanded executables' activations). The dump
+/// content is identical to the seal path — only the SET source differs.
+pub(crate) fn emit_product_semantic_dump_events(
+    world: &World<'_>,
+    root: RootId,
+    activations: impl IntoIterator<Item = ActivationKey>,
+) {
+    emit_dump_events(world, root, activations);
+}
+
+fn emit_dump_events(world: &World<'_>, root: RootId, activations: impl IntoIterator<Item = ActivationKey>) {
+    let activations = root_owned_activations(world, root, activations);
+
     let types = TypesDump {
-        text: render_types_dump(world, root, closure),
+        text: render_types_dump(world, &activations),
     };
     world.tel().execute(
         &["fz", "compiler2", "dump", "types"],
@@ -140,7 +160,7 @@ pub(crate) fn emit_semantic_dump_events(world: &World<'_>, root: RootId, closure
     );
 
     let activations = ActivationsDump {
-        text: render_activations_dump(world, root, closure),
+        text: render_activations_dump(world, &activations),
     };
     world.tel().execute(
         &["fz", "compiler2", "dump", "activations"],
@@ -260,8 +280,8 @@ fn event_matches_root(ev: &crate::telemetry::Event<'_, '_, '_>, root: RootId) ->
     matches!(ev.measurements.get("root_id"), Some(Value::U64(value)) if *value == root.as_u32() as u64)
 }
 
-fn render_types_dump(world: &World<'_>, root: RootId, closure: &SemanticClosure) -> String {
-    let mut activations = root_owned_activations(world, root, closure);
+fn render_types_dump(world: &World<'_>, activations: &[ActivationKey]) -> String {
+    let mut activations = activations.to_vec();
     activations.sort_by_cached_key(|activation| activation_sort_key(world, activation));
     let mut out = String::new();
     for activation in activations {
@@ -274,8 +294,8 @@ fn render_types_dump(world: &World<'_>, root: RootId, closure: &SemanticClosure)
     out
 }
 
-fn render_activations_dump(world: &World<'_>, root: RootId, closure: &SemanticClosure) -> String {
-    let mut activations = root_owned_activations(world, root, closure);
+fn render_activations_dump(world: &World<'_>, activations: &[ActivationKey]) -> String {
+    let mut activations = activations.to_vec();
     activations.sort_by_cached_key(|activation| activation_sort_key(world, activation));
     let mut out = String::new();
     for activation in activations {
@@ -321,13 +341,21 @@ fn render_activations_dump(world: &World<'_>, root: RootId, closure: &SemanticCl
     out
 }
 
-fn root_owned_activations(world: &World<'_>, root: RootId, closure: &SemanticClosure) -> Vec<ActivationKey> {
+/// Filters an activation stream to the root's own code unit (the top-level
+/// functions defined alongside the root entry) and deduplicates it. The
+/// product inventory yields one entry per demanded executable, so several
+/// executables may share an activation; the dump lists each activation once.
+fn root_owned_activations(
+    world: &World<'_>,
+    root: RootId,
+    activations: impl IntoIterator<Item = ActivationKey>,
+) -> Vec<ActivationKey> {
     let root_code = world.function_definition(world.root_function(root)).0.code;
-    closure
-        .activations
-        .iter()
+    let mut seen = std::collections::HashSet::new();
+    activations
+        .into_iter()
         .filter(|activation| world.function_definition(activation.function).0.code == root_code)
-        .cloned()
+        .filter(|activation| seen.insert(activation.clone()))
         .collect()
 }
 

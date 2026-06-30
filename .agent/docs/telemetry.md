@@ -253,8 +253,12 @@ baseline, `legacy_semantic_transport_job_starts=0`,
 `root_frontier_legacy_events=0`, and root session measurements
 `executables=10`, `transport_positions=160`, `callables=2`, `boundaries=0`,
 `producer_pokes=0`. Backend dumps may be requested with `--dump
-backend=/tmp/fz-00181.backend`; semantic `types` / `activations` dumps
-intentionally use the legacy semantic diagnostic surface.
+backend=/tmp/fz-00181.backend`; the `types` / `activations` dumps are served
+from the product-path activation inventory
+(`Compiler2::emit_product_semantic_dumps`, which walks the demanded session's
+materialized executables), so requesting them fires no `SealSemanticClosure`
+job and emits no `[fz, compiler2, semantic_closed, defined]` event — the dump
+no longer depends on the legacy semantic-closure seal.
 
 Transport product construction emits `[fz, compiler2, transport_flow, defined]`
 for the legacy root transport signal and `[fz, compiler2, pull, product, *]` for
