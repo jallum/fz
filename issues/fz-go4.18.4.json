@@ -11,9 +11,15 @@
   "id": "fz-go4.18.4",
   "labels": [],
   "parent": "fz-go4.18",
+  "comments": [
+    {
+      "text": "INVESTIGATION (no commit; STOPPED for authorization — the deletion cascades beyond scope into a live CLI feature + 64 real tests).\n\nCLEANLY DELETABLE (zero production consumers, proven; native confirmed off the spine — rg native.rs for transport_plan/SemanticClosed/SemanticReady/root_executable_frontier/executable_transport = nothing): Job::DeriveExecutableTransport, Job::DeriveTransportPlan, Job::DeriveRuntimeDemand, Job::SealSemanticClosure + arms; FactKey::ExecutableTransport, TransportPlan, SemanticReady, SemanticClosed; world.transport_plan/define/remove + TransportPlanMap + executable_transport store; root_executable_frontier (+ its sole fact_keys scan); forbidden_product_path_job (compiler.rs:449, backend.rs:215, +2 test copies) + drive_root_to's Semantic arm.\n\nHIDDEN-SURPRISE CASCADE (not in ticket list, but required for -D warnings): FactKey::RuntimeDemand + world.runtime_demand store + define_runtime_demand become legacy-only after deletion (product path uses session.memo().runtime_demand exclusively; world store read only by seal/derive_runtime_demand/legacy transport/define_semantic_closure). In-scope for deletion.\n\nDECISION 1 — DumpStage::Semantic is a LIVE CLI consumer: fz2 build --dump types|activations -\u003e required_stage Semantic (dump.rs:59) -\u003e drive_root_to(SealSemanticClosure) (compiler.rs:182) -\u003e seal -\u003e define_semantic_closure -\u003e emit_semantic_dump_events (world.rs:1201). cli.rs:337. The dump data is per-activation facts but the activation SET comes only from the seal's SemanticClosure -\u003e cannot be served without the spine absent a new product-path activation enumerator. Options: (A) delete the types/activations dump kinds + DumpStage::Semantic + emit_semantic_dump_events + SemanticClosure store, file a re-serve-from-product follow-up; (B) build the product-path enumerator now (feature, scope creep).\n\nDECISION 2 — BLOCKER: deleting world.transport_plan makes transport_contract_test.rs (4944 lines, 64 tests) uncompilable (they drive legacy DeriveTransportPlan via drive_until_transport_plan and assert world.transport_plan shape/lane/boundary contracts); semantic_analysis_test.rs (18 refs) + drive_test.rs (43 refs) also affected. The 'keep 941/0' gate is impossible alongside the mandated deletion. Options: (A) delete the legacy-plan tests + file a ticket to port the fine-grained contract assertions onto the product TransportPlan (session_transport_plan); execution-level coverage remains via drive_test + fixture matrix; contract-granularity coverage temporarily drops. (B) retarget the 64 tests to the product TransportPlan now (preserves coverage, larger error-prone migration). (C) PORT-FIRST sequencing: do the port (dump + 64 tests -\u003e product path) as a prerequisite ticket, THEN delete the spine cleanly (correct-by-construction: migrate consumers before deleting). \n\nRecommendation under discussion with owner before execution.",
+      "timestamp": "2026-06-30T18:24:28Z"
+    }
+  ],
   "priority": 1,
   "status": "in_progress",
   "title": "Delete the legacy seal/transport spine after native cutover",
   "type": "bug",
-  "updated_at": "2026-06-30T18:13:11Z"
+  "updated_at": "2026-06-30T18:24:28Z"
 }
