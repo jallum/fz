@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-06-30T18:30:51Z",
+  "description": "Prerequisite for the spine deletion fz-go4.18.4 (Decision 1). Re-serve the CLI semantic dumps from the product path so deleting the legacy seal spine does NOT remove a user-facing feature.\n\nCURRENT (legacy, to be severed)\nfz2 build --dump types|activations -\u003e DumpKind::{Types,Activations} -\u003e required_stage = DumpStage::Semantic (dump.rs:59) -\u003e drive_root_to(Job::SealSemanticClosure) (compiler.rs:182) -\u003e seal_semantic_closure -\u003e world.define_semantic_closure -\u003e emit_semantic_dump_events (world.rs:1201). The dump DATA is per-activation facts (types, activation analysis, callsites); the activation SET it iterates comes ONLY from the seal's SemanticClosure.\n\nGOAL\nServe the types/activations dumps from the PRODUCT-PATH activation/executable inventory (the PullSession demanded_executables / product driver inventory that run_root_interp / the product backend already build), emitting the same per-activation dump events without driving the seal. After this, DumpStage::Semantic no longer needs SealSemanticClosure, and the dumps work with the legacy spine absent.\n\nAPPROACH (correct-by-construction)\nThe product session already enumerates exactly the demanded executables/activations. Add a product-path dump producer that walks that inventory and emits the existing semantic-dump events (reuse emit_semantic_dump_events' per-activation formatting; only the SET source changes from SemanticClosure to the product inventory). Route DumpKind::{Types,Activations} through the product backend drive instead of DumpStage::Semantic.\n\nSIGNAL\nfz2 build --dump types=/tmp/t.txt --dump activations=/tmp/a.txt on a representative fixture (e.g. fixtures2/00181_enum_reduce_operator_ref.fz and a destination-passing one) produces equivalent dump content via the product path; no SealSemanticClosure job fires for the dump; the dump path has zero dependency on world.define_semantic_closure / the seal. Add a test that the types/activations dump is produced through the product path (telemetry: no seal job). lib green; clippy -D warnings = 0.\n\nGUARDRAILS\nNo legacy spine revival. Keep dump output semantically equivalent (the user-facing feature must not silently degrade). If the product inventory genuinely lacks a datum the old dump showed, surface it (do not fabricate). Blocks fz-go4.18.4.",
+  "id": "fz-go4.18.7",
+  "labels": [],
+  "parent": "fz-go4.18",
+  "priority": 1,
+  "status": "open",
+  "title": "Re-serve types/activations CLI dumps from the product-path activation inventory",
+  "type": "bug",
+  "updated_at": "2026-06-30T18:30:51Z"
+}
