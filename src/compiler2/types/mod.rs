@@ -652,11 +652,32 @@ impl Types {
         if d.tuples.is_empty() {
             return self.convergence_collapse_ignored_leaf(&ty, path, collapse_concrete_ignored);
         }
+        // Discriminate tuple alternatives by their `Variant(k)` step exactly as
+        // the canonical addresser does (`address_remap_children`): when a slot is
+        // a union of more than one tuple alternative, each alternative's fields
+        // address under `Variant(k)` so the collapsed arrow is CANONICALLY
+        // addressed and round-trips through `from_inputs` by construction
+        // (fz-hwn.27 — `address_inputs` is the single source of truth). Without
+        // this the mint emits `a_..._j` where re-addressing emits `a_..._uk_j`,
+        // so `executable_key_for_transport_position` reconstructs a distinct key
+        // (fz-go4.18.3.2.1).
+        let tuple_alternatives = d
+            .tuples
+            .iter()
+            .map(|conj| conj.pos.len() + conj.neg.len())
+            .sum::<usize>();
+        let discriminate_tuple_alternatives = tuple_alternatives > 1;
+        let mut tuple_alternative = 0_u16;
         for conj in &mut d.tuples {
             for sig in conj.pos.iter_mut().chain(conj.neg.iter_mut()) {
+                let alternative = tuple_alternative;
+                tuple_alternative = tuple_alternative.saturating_add(1);
                 for (index, elem) in sig.elems.iter_mut().enumerate() {
                     let demand = fields.get(&(index as u32)).unwrap_or(&DispatchDemand::Ignore);
                     let mut child = path.to_vec();
+                    if discriminate_tuple_alternatives {
+                        child.push(AddrStep::Variant(alternative));
+                    }
                     child.push(AddrStep::Field(index as u16));
                     *elem = self.convergence_collapse_ty(*elem, demand, &child, collapse_concrete_ignored);
                 }

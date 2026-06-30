@@ -955,6 +955,43 @@ macro_rules! semantic_helper_conformance_tests {
             }
 
             #[test]
+            fn convergence_collapse_tuple_union_arrow_roundtrips_through_address_inputs() {
+                // A multi-alternative tagged union slot collapsed by the recursive
+                // dispatch-key mint MUST round-trip through `address_inputs` (the
+                // canonical addresser, fz-hwn.27): the collapsed arrow is already
+                // canonically addressed, so re-addressing it is the identity. This
+                // fails if `convergence_collapse` omits the per-variant `Variant(k)`
+                // discriminator that `address_inputs` inserts when alternatives > 1
+                // (fz-go4.18.3.2.1).
+                let mut t = $ctor;
+                let elem = t.type_var(TypeVarId(0));
+                let payload = t.list(elem); // [T]
+                let cont = {
+                    let tag = t.atom_lit("cont");
+                    t.tuple(&[tag, payload])
+                };
+                let halt = {
+                    let tag = t.atom_lit("halt");
+                    t.tuple(&[tag, payload])
+                };
+                let union = t.union(cont, halt); // {:cont,[T]} | {:halt,[T]}
+                let sentinel = t.none();
+                let arrow = t.arrow(&[union], sentinel);
+                let mut fields = BTreeMap::new();
+                fields.insert(0, DispatchDemand::Whole); // tag dispatches, payload ignored
+                let collapsed = t.convergence_collapse(arrow, &[DispatchDemand::TupleFields(fields)]);
+
+                let params = t.arrow_params(&collapsed);
+                let readdressed = t.address_inputs(&params);
+                assert_eq!(
+                    readdressed, params,
+                    "collapsed union slot must be canonically addressed (round-trip): {} vs {}",
+                    t.display(&readdressed[0]),
+                    t.display(&params[0]),
+                );
+            }
+
+            #[test]
             fn evidence_collapse_only_widens_variable_non_dispatch_payloads() {
                 let mut t = $ctor;
                 let int = t.int();

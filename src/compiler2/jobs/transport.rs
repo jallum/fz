@@ -5206,6 +5206,70 @@ mod tests {
     }
 
     #[test]
+    fn executable_key_for_transport_position_roundtrips_recursive_union_key() {
+        // The reconstruction site re-mints an ExecutableKey from a transport
+        // position's symbol via `from_inputs`. For a RECURSIVE activation whose
+        // input is a tuple union, the key arrow is the convergence-collapsed
+        // evidence (the recursive branch of `World::canonical_activation_key`).
+        // That collapsed arrow MUST already be canonically addressed so the
+        // reconstruction recovers the SAME key; otherwise the transport cone
+        // never anchors the input and native lowering reports an omitted semantic
+        // input (fz-go4.18.3.2.1). This guards the actual site where the defect
+        // lived, so a future change to symbol minting cannot silently reintroduce
+        // it.
+        use crate::compiler2::keying::DispatchDemand;
+        use crate::types::TypeVarId;
+        let tel = ConfiguredTelemetry::new();
+        let mut world = World::new(&tel);
+        let root = RootId::for_test(7);
+        let function = FunctionId::for_test(185);
+
+        // Evidence input: {:cont, {[T], int}} | {:halt, {[T], int}} — the reducer
+        // continuation union whose shared list element triggered the defect.
+        let t = world.types_mut();
+        let elem = t.type_var(TypeVarId(0));
+        let inner = {
+            let list = t.list(elem);
+            let int = t.int();
+            t.tuple(&[list, int])
+        };
+        let cont = {
+            let tag = t.atom_lit("cont");
+            t.tuple(&[tag, inner])
+        };
+        let halt = {
+            let tag = t.atom_lit("halt");
+            t.tuple(&[tag, inner])
+        };
+        let union = t.union(cont, halt);
+
+        // Mint the recursive dispatch key as `canonical_activation_key` does:
+        // address the evidence, then collapse non-dispatch subtrees. The tag
+        // (field 0) dispatches; the payload (field 1) is ignored and collapses.
+        let base = ActivationKey::from_inputs(root, function, &[union], t);
+        let mut fields = std::collections::BTreeMap::new();
+        fields.insert(0, DispatchDemand::Whole);
+        let arrow = t.convergence_collapse(base.arrow, &[DispatchDemand::TupleFields(fields)]);
+        let key = ExecutableKey {
+            activation: ActivationKey { arrow, ..base },
+            need: ExecutableNeed::Value,
+        };
+
+        // Production symbol mint, then the reconstruction site under test.
+        let symbol = executable_symbol(&key, t);
+        let position = TransportPosition::ExecutableInput {
+            executable: symbol,
+            semantic_index: 0,
+        };
+        let reconstructed = executable_key_for_transport_position(root, &position, t);
+
+        assert_eq!(
+            reconstructed, key,
+            "reconstructing a recursive tuple-union executable key must recover the minted key"
+        );
+    }
+
+    #[test]
     fn shape_constraint_graph_solves_independent_of_insertion_order() {
         let tel = ConfiguredTelemetry::new();
         let mut left_world = World::new(&tel);
