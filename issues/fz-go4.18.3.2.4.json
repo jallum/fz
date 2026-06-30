@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-06-30T16:54:57Z",
@@ -8,8 +8,8 @@
   "labels": [],
   "parent": "fz-go4.18.3.2",
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "Typed-boundary return-demand over-report: discarded forwarding/extern callee transports its return (#3/#4)",
   "type": "bug",
-  "updated_at": "2026-06-30T16:54:57Z"
+  "updated_at": "2026-06-30T17:13:32Z"
 }
