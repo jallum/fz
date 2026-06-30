@@ -2934,6 +2934,112 @@ fn compiler2_native_program_resume_payload_shape_is_schedule_independent() {
     }
 }
 
+/// fz-go4.18.3.2.3 -- the reliable CONSUMPTION SIGNAL must draw exactly one
+/// distinction, the same way on every schedule: a delivered resume whose value
+/// the body consumes (or which a destination-passing callee physically fills)
+/// keeps its full structure, while a genuinely-discarded by-value resume stays
+/// zero-width and is never fabricated into a nil.
+///
+/// `partition/4` in quicksort delivers a two-field tuple continuation the
+/// recursive sort then reads (destination-passing -> `extra_params == 2`).
+/// `Enum.each`'s element call discards its mapped result (by-value, read
+/// nowhere -> a zero-width `extra_params == 0` continuation with no nil const).
+/// The signal is derived from the static lowered body, so the distinction holds
+/// across repeated in-process drives -- a demand-`is_ignore`-sourced shape would
+/// flip one of these on some schedule (collapsing the consumed tuple field to
+/// `Nothing`, or erasing the discarded zero-width continuation).
+#[test]
+fn compiler2_native_program_resume_shape_distinguishes_destination_passing_from_ignored_by_value() {
+    let destination_passing_tuple_field_arities = || -> Vec<usize> {
+        let tel = ConfiguredTelemetry::new();
+        let native = NativeProgramCapture::new();
+        tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
+        let mut compiler = Compiler2::new(&tel);
+        compiler.submit_code(CodeSubmission {
+            name: Some("fixtures/quicksort_plus_foo.fz".to_string()),
+            text: include_str!("../../fixtures2/00001_quicksort_plus_foo.fz").to_string(),
+        });
+        let root_id = compiler.submit_root(RootSubmission {
+            module_name: None,
+            name: "main".to_string(),
+            arity: 0,
+            need: ExecutableNeed::Value,
+        });
+        compiler.demand(Job::LowerNativeProgram(root_id));
+        assert_resolved(compiler.drive(), "quicksort native lowering should settle");
+        let program = native.last(root_id).program;
+        let qsort_owners = program
+            .bodies
+            .iter()
+            .filter_map(|body| match &body.origin {
+                NativeBodyOrigin::Executable(_) if program.module.fn_by_id(body.fn_id).name.starts_with("qsort__e") => {
+                    Some(body.fn_id)
+                }
+                _ => None,
+            })
+            .collect::<HashSet<_>>();
+        program
+            .bodies
+            .iter()
+            .filter_map(|body| match body.origin {
+                NativeBodyOrigin::Continuation { owner, .. } if qsort_owners.contains(&owner) => match body.entry_abi {
+                    NativeEntryAbi::Continuation { extra_params } => Some(extra_params),
+                    NativeEntryAbi::Direct => None,
+                },
+                _ => None,
+            })
+            .collect()
+    };
+
+    let discarded_by_value_zero_width = || -> (usize, bool) {
+        let tel = ConfiguredTelemetry::new();
+        let native = NativeProgramCapture::new();
+        tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
+        let mut compiler = Compiler2::new(&tel);
+        compiler.submit_code(CodeSubmission {
+            name: Some("fixtures/enum_each_zero_width_payload.fz".to_string()),
+            text: r#"fn main(), do: Enum.each([1, 2, 3], fn (x) -> x end)"#.to_string(),
+        });
+        let root_id = compiler.submit_root(RootSubmission {
+            module_name: None,
+            name: "main".to_string(),
+            arity: 0,
+            need: ExecutableNeed::Value,
+        });
+        compiler.demand(Job::LowerNativeProgram(root_id));
+        assert_resolved(compiler.drive(), "Enum.each native lowering should settle");
+        let program = native.last(root_id).program;
+        let zero_width = program
+            .bodies
+            .iter()
+            .filter(|body| body.entry_abi == NativeEntryAbi::Continuation { extra_params: 0 })
+            .collect::<Vec<_>>();
+        let fabricated = zero_width
+            .iter()
+            .any(|body| native_function_contains_nil_const(&program, body.fn_id));
+        (zero_width.len(), fabricated)
+    };
+
+    for run in 1..=3 {
+        let dp = destination_passing_tuple_field_arities();
+        assert_eq!(
+            dp.iter().filter(|&&extra| extra == 2).count(),
+            1,
+            "a CONSUMED destination-passing tuple continuation must stay structurally complete on every schedule \
+             (run {run}); saw {dp:?}",
+        );
+        let (zero_width, fabricated) = discarded_by_value_zero_width();
+        assert!(
+            zero_width >= 1,
+            "a genuinely-discarded by-value resume must retain its zero-width continuation on every schedule (run {run})",
+        );
+        assert!(
+            !fabricated,
+            "a retained zero-width continuation must never fabricate a nil value (run {run})",
+        );
+    }
+}
+
 #[test]
 fn compiler2_native_program_matches_tuple_field_call_continuations_to_the_callee_return_abi() {
     let tel = ConfiguredTelemetry::new();

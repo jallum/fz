@@ -3,8 +3,8 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 
 use super::super::artifact::MaterializedExecutable;
 use super::super::body::{
-    CallArg, CallSiteId, ControlDestination, ControlEntryId, DeliveredValueSource, LoweredBody, LoweredStep,
-    LoweredTail, ValueId, delivered_value_joins,
+    CallArg, CallSiteId, ControlDestination, ControlEntryId, DeliveredValueSource, LoweredBitSize, LoweredBody,
+    LoweredStep, LoweredTail, ValueId, delivered_value_joins,
 };
 use super::super::drive::{FactKey, Job, JobEffects, current_uses, settled_uses};
 use super::super::identity::{ActivationKey, ExecutableKey, ExecutableNeed, FunctionId, RootId};
@@ -1962,6 +1962,7 @@ fn project_one_executable(
         }
     }
 
+    let consumed_values = body_consumed_values(&context.body);
     for resume in &context.resume_entries {
         let position = TransportPosition::ResumePayload {
             executable: symbol.clone(),
@@ -1969,30 +1970,57 @@ fn project_one_executable(
             entry: resume.entry,
         };
         let demand = resume_demand(context, *resume);
+        let is_consumed = consumed_values.contains(&resume.value);
         // The physical shape of a delivered call result is owned by the
-        // PRODUCER: the callee's settled `ExecutableReturn` ABI. A DATA return
-        // (tuple or scalar) takes its STRUCTURE from that ABI, so a field this
-        // caller happens to ignore is never erased to `Nothing` -- the callee
-        // physically delivers every field regardless of this caller's use, and
-        // sourcing the structure from the (possibly under-demanding,
-        // oscillating) caller value-demand is exactly the defect that dropped a
-        // delivered field. Unioning the resume with the callee return position
-        // also stays correct for diverging callees (their return anchor is
-        // `Nothing`) and subsumes the ignored-result case (an ignored data
-        // return is the degenerate `Whole`-less data return).
+        // PRODUCER: the callee's settled `ExecutableReturn` ABI. We source the
+        // resume STRUCTURE from that producer ABI in two cases:
         //
-        // A CALLABLE return instead keeps the demand-driven projection, which
+        //  - DESTINATION-PASSING (`ExecutableNeed::TupleFields`): the callee
+        //    physically writes every field into the caller frame, so a field
+        //    this caller ignores is never erased to `Nothing`. Reliably
+        //    ABI-derivable from the callsite need.
+        //  - CONSUMED by-value: the body actually reads the delivered value, so
+        //    its structure must survive. Consumption is read from the static
+        //    lowered body (`body_consumed_values`), NOT from `demand.is_ignore()`
+        //    -- the value-demand fixpoint transiently UNDER-reports a consumed
+        //    delivered result (e.g. a tail-recursion accumulator), and sourcing
+        //    structure from that oscillating demand is exactly the defect that
+        //    dropped a delivered field.
+        //
+        // A GENUINELY-DISCARDED by-value return (read nowhere, not
+        // destination-passing -- e.g. an `Enum.each` element call) is left on the
+        // demand-driven path, where its `ignore` demand keeps the zero-width
+        // continuation the runtime needs instead of fabricating a value.
+        //
+        // A CALLABLE return keeps the demand-driven projection regardless, which
         // settles direct vs. first-class callable transport from THIS caller's
         // use -- the boundary selection the rest of the callable-boundary suite
-        // asserts. A callable return carries the empty data shape, so it has no
-        // delivered data field to erase; the two axes never overlap.
-        let producer_return = (!demand.is_callable())
+        // asserts. A callable return carries the empty data shape, so the two
+        // axes never overlap.
+        let destination_passing = resume
+            .callsite
+            .and_then(|callsite| context.callsite_needs.get(&callsite))
+            .is_some_and(|need| matches!(need, ExecutableNeed::TupleFields(_)));
+        let producer_return = (!demand.is_callable() && (destination_passing || is_consumed))
             .then_some(resume.callsite)
             .flatten()
             .and_then(|callsite| callsite_callee_return_position(world, contexts, executable, context, callsite));
         if let Some(callee_return) = producer_return {
             shape_graph.equal(position, callee_return);
         } else {
+            // No single producer ABI to source from (callable dispatch,
+            // multi-target, or a diverging callee), or a genuinely-discarded
+            // by-value return. A discarded return keeps its demand-driven shape
+            // (zero-width when ignored). A CONSUMED return whose value-demand
+            // still under-reports as `ignore` is floored to `Whole`, so its
+            // delivered value materializes as a real (boxed) shape rather than
+            // collapsing to `Nothing` -- this is monotone: the floor only raises
+            // an `ignore` toward `Whole`, and consumption is a stable body fact.
+            let effective_demand = if is_consumed && demand.is_ignore() {
+                RuntimeDemand::whole()
+            } else {
+                demand.clone()
+            };
             let shape = resume_shape(
                 world,
                 contexts,
@@ -2000,7 +2028,7 @@ fn project_one_executable(
                 executable,
                 context,
                 *resume,
-                &demand,
+                &effective_demand,
                 Some(position.clone()),
                 memo,
             );
@@ -3366,6 +3394,136 @@ fn collect_resume_entries(
             })
         })
         .collect()
+}
+
+/// Every value the lowered body actually CONSUMES: read as an operand by some
+/// step or tail, or captured into a continuation. This is a static,
+/// schedule-independent property of the settled lowered body -- unlike a value's
+/// `RuntimeDemand`, whose `is_ignore` axis transiently UNDER-reports a consumed
+/// delivered result while the demand fixpoint is still ascending. A resume
+/// payload whose delivered value is consumed must therefore carry a real shape
+/// (producer-sourced, or floored off `ignore`); one that is genuinely discarded
+/// stays zero-width. Over-reporting (a value read only on a dead path) is the
+/// safe direction -- it can only retain structure, never erase it.
+fn body_consumed_values(body: &LoweredBody) -> HashSet<ValueId> {
+    let mut consumed = HashSet::new();
+    let LoweredBody::Clauses { clauses, entries, .. } = body else {
+        return consumed;
+    };
+    for clause in clauses {
+        for step in &clause.projections {
+            collect_step_reads(step, &mut consumed);
+        }
+    }
+    for entry in entries {
+        consumed.extend(entry.captures.iter().copied());
+        consumed.extend(entry.reusable_cons_captures.iter().map(|cons| cons.source));
+        for step in &entry.steps {
+            collect_step_reads(step, &mut consumed);
+        }
+        collect_tail_reads(&entry.tail, &mut consumed);
+    }
+    consumed
+}
+
+fn collect_step_reads(step: &LoweredStep, consumed: &mut HashSet<ValueId>) {
+    match step {
+        LoweredStep::Const { .. } | LoweredStep::FunctionRef { .. } => {}
+        LoweredStep::Tuple { items, .. } => consumed.extend(items.iter().copied()),
+        LoweredStep::List { items, tail, .. } => {
+            consumed.extend(items.iter().copied());
+            consumed.extend(tail.iter().copied());
+        }
+        LoweredStep::Map { entries, .. } => {
+            for (key, value) in entries {
+                consumed.insert(key.value);
+                consumed.insert(*value);
+            }
+        }
+        LoweredStep::MapUpdate { base, entries, .. } => {
+            consumed.insert(*base);
+            for (key, value) in entries {
+                consumed.insert(key.value);
+                consumed.insert(*value);
+            }
+        }
+        LoweredStep::Struct { fields, .. } => consumed.extend(fields.iter().map(|(_, value)| *value)),
+        LoweredStep::Bitstring { fields, .. } => {
+            for field in fields {
+                consumed.insert(field.value);
+                if let Some(LoweredBitSize::Value(size)) = field.spec.size {
+                    consumed.insert(size);
+                }
+            }
+        }
+        LoweredStep::Lambda { captures, .. } => consumed.extend(captures.iter().copied()),
+        LoweredStep::BinaryOp { left, right, .. } => {
+            consumed.insert(*left);
+            consumed.insert(*right);
+        }
+        LoweredStep::UnaryOp { input, .. } => {
+            consumed.insert(*input);
+        }
+        LoweredStep::MapIndex { base, key, .. } => {
+            consumed.insert(*base);
+            consumed.insert(key.value);
+        }
+        LoweredStep::FieldAccess { base, .. } => {
+            consumed.insert(*base);
+        }
+        LoweredStep::AssertLiteral { source, .. }
+        | LoweredStep::AssertStruct { source, .. }
+        | LoweredStep::RequireMapValue { source, .. }
+        | LoweredStep::AssertTuple { source, .. }
+        | LoweredStep::TupleField { source, .. }
+        | LoweredStep::AssertEmptyList { source }
+        | LoweredStep::SplitList { source, .. }
+        | LoweredStep::BitstringInit { source, .. } => {
+            consumed.insert(*source);
+        }
+        LoweredStep::AssertSame { source, value } => {
+            consumed.insert(*source);
+            consumed.insert(*value);
+        }
+        LoweredStep::BitstringRead { reader, spec, .. } => {
+            consumed.insert(*reader);
+            if let Some(LoweredBitSize::Value(size)) = spec.size {
+                consumed.insert(size);
+            }
+        }
+        LoweredStep::AssertBitstringDone { reader } => {
+            consumed.insert(*reader);
+        }
+    }
+}
+
+fn collect_tail_reads(tail: &LoweredTail, consumed: &mut HashSet<ValueId>) {
+    match tail {
+        LoweredTail::Value { value, .. } => {
+            consumed.insert(*value);
+        }
+        LoweredTail::DirectCall { args, .. } => consumed.extend(args.iter().map(|arg| arg.value)),
+        LoweredTail::ClosureCall { callee, args, .. } => {
+            consumed.insert(*callee);
+            consumed.extend(args.iter().map(|arg| arg.value));
+        }
+        LoweredTail::If { cond, .. } => {
+            consumed.insert(*cond);
+        }
+        LoweredTail::Dispatch { inputs, bindings, .. } => {
+            consumed.extend(inputs.iter().copied());
+            consumed.extend(bindings.pinned.iter().copied());
+            consumed.extend(bindings.prepared.iter().copied());
+        }
+        LoweredTail::Receive(receive) => {
+            if let Some(after) = &receive.after {
+                consumed.insert(after.timeout);
+            }
+            consumed.extend(receive.bindings.pinned.iter().copied());
+            consumed.extend(receive.bindings.prepared.iter().copied());
+        }
+        LoweredTail::Halt { .. } => {}
+    }
 }
 
 fn original_entry_id(context: &ExecutableContext, entry_index: usize) -> ControlEntryId {
