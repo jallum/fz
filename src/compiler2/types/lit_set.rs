@@ -158,3 +158,37 @@ pub(crate) fn closure_var_id(fn_id: FnId, position: usize) -> TypeVarId {
 pub(crate) fn closure_ret_var_id(fn_id: FnId) -> TypeVarId {
     TypeVarId(fn_id.0 * VAR_STRIDE_PER_FN + MAX_CLOSURE_ARG_VAR)
 }
+
+/// The structural position a closure-surface var addresses within its owner's
+/// arrow: an argument slot, or the dedicated return slot.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ClosureSurfacePos {
+    Arg(u32),
+    Ret,
+}
+
+/// Invert [`closure_var_id`]/[`closure_ret_var_id`]: recover the owning `FnId`
+/// and structural position packed into a free var id. Returns `None` for a
+/// structural address (its tag is set, so it is not a closure-surface free var
+/// and never uses this `fn_id * 64 + pos` encoding).
+///
+/// This is the decode half of the closure-var encoding, kept beside the encode
+/// half so the stride is defined in exactly one place. It does not by itself
+/// prove the id *is* a closure-surface var — a resolver encounter var or
+/// typedef param also lives in the untagged space — so callers gate the result
+/// against the owner's real arity before trusting the decode.
+#[cfg(test)]
+pub(crate) fn decode_closure_surface_var(id: TypeVarId) -> Option<(FnId, ClosureSurfacePos)> {
+    if id.0 & super::addressed::ADDRESS_TAG != 0 {
+        return None;
+    }
+    let fn_id = FnId(id.0 / VAR_STRIDE_PER_FN);
+    let pos = id.0 % VAR_STRIDE_PER_FN;
+    let position = if pos == MAX_CLOSURE_ARG_VAR {
+        ClosureSurfacePos::Ret
+    } else {
+        ClosureSurfacePos::Arg(pos)
+    };
+    Some((fn_id, position))
+}

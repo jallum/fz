@@ -1984,6 +1984,14 @@ impl<'a> World<'a> {
         self.functions.reference_for(function)
     }
 
+    /// The reverse reference for `function`, or `None` when it is not a known
+    /// function slot. Lets a caller probe an id of uncertain provenance (e.g. a
+    /// decoded closure-surface var id) without panicking on an out-of-range id.
+    #[cfg(test)]
+    pub(crate) fn try_function_ref(&self, function: FunctionId) -> Option<&super::identity::FunctionRef> {
+        self.functions.try_reference_for(function)
+    }
+
     pub(crate) fn function_is_provider_boundary(&self, function: FunctionId) -> bool {
         let function_ref = self.function_ref(function);
         if function_ref.module.is_global()

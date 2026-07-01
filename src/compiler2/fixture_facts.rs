@@ -16,6 +16,7 @@ use crate::source::Span;
 use super::body::{CallSiteId, LoweredBody, LoweredTail};
 use super::identity::{ActivationKey, FunctionId, RootId};
 use super::semantic::{CallSiteSummary, SelectedCallee};
+use super::types::{ClosureSurfacePos, TypeVarId, decode_closure_surface_var};
 use super::world::World;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -118,17 +119,17 @@ fn canonical_call_edge_fact(
                 input_types: target
                     .surface_inputs
                     .iter()
-                    .map(|ty| stable_type_text(world.types().display(ty)))
+                    .map(|ty| stable_type_text(world, world.types().display(ty)))
                     .collect(),
                 return_ty: target
                     .return_ty
-                    .map(|ty| stable_type_text(world.types().display(&ty)))
+                    .map(|ty| stable_type_text(world, world.types().display(&ty)))
                     .unwrap_or_else(|| "none".to_string()),
             })
             .collect(),
         return_ty: summary
             .return_ty
-            .map(|ty| stable_type_text(world.types().display(&ty)))
+            .map(|ty| stable_type_text(world, world.types().display(&ty)))
             .unwrap_or_else(|| "none".to_string()),
     }
 }
@@ -202,7 +203,7 @@ fn activation_label(world: &World<'_>, activation: &ActivationKey, labels: &mut 
         activation
             .inputs(world.types())
             .iter()
-            .map(|ty| stable_type_text(world.types().display(ty)))
+            .map(|ty| stable_type_text(world, world.types().display(ty)))
             .collect::<Vec<_>>()
             .join(", ")
     )
@@ -292,17 +293,63 @@ fn provenance_span_label(start: u32, end: u32) -> String {
     format!("@{}-{}", start, end)
 }
 
-fn stable_type_text(rendered: String) -> String {
+fn stable_type_text(world: &World<'_>, rendered: String) -> String {
     let mut out = String::with_capacity(rendered.len());
     let mut chars = rendered.chars().peekable();
     while let Some(ch) = chars.next() {
         if ch == '#' && chars.peek().is_some_and(|next| next.is_ascii_digit()) {
+            // Drop the volatile interned-id / closure-literal suffix (`…#14`).
             while chars.peek().is_some_and(|next| next.is_ascii_digit()) {
                 let _ = chars.next();
             }
             continue;
         }
+        if ch == 'α' && chars.peek().is_some_and(|next| next.is_ascii_digit()) {
+            // Project a free var id onto its stable owner-relative label.
+            let mut var_id = 0_u32;
+            while let Some(digit) = chars.peek().and_then(|next| next.to_digit(10)) {
+                var_id = var_id.saturating_mul(10).saturating_add(digit);
+                let _ = chars.next();
+            }
+            out.push_str(&stable_var_label(world, var_id));
+            continue;
+        }
         out.push(ch);
     }
     out
+}
+
+/// Decode a bare free type-variable id (the `N` in a rendered `αN`) into a
+/// STABLE, definition-order-independent label.
+///
+/// A closure-surface var packs `N = fn_id * 64 + position` (`closure_var_id`),
+/// and `fn_id` is a registration-order counter — so the raw `αN` drifts
+/// whenever an unrelated function is defined ahead of the owning lambda. This
+/// projects the id back onto the owner's stable source provenance (the same
+/// owner-relative coordinate the call-edge labels already use): `α4352` renders
+/// as `main::lambda[@5-20]/1:a0`, and `:r` for the dedicated return slot, so a
+/// snapshot survives id churn.
+///
+/// A free var whose decoded owner/position does not resolve to a real function
+/// slot with a matching arity is not a closure-surface var we can attribute, so
+/// it keeps the bare `αN`. (A future keying change that tags closure-surface
+/// vars distinctly — as structural addresses already are — would remove that
+/// residual ambiguity; this decoder is the seam such a change would refine.)
+fn stable_var_label(world: &World<'_>, var_id: u32) -> String {
+    let bare = || format!("α{var_id}");
+    let Some((fn_id, position)) = decode_closure_surface_var(TypeVarId(var_id)) else {
+        return bare();
+    };
+    let function = FunctionId::from_fn_id(fn_id);
+    let Some(function_ref) = world.try_function_ref(function) else {
+        return bare();
+    };
+    let arity = function_ref.arity;
+    let slot = match position {
+        ClosureSurfacePos::Ret => "r".to_string(),
+        ClosureSurfacePos::Arg(pos) if (pos as usize) < arity => format!("a{pos}"),
+        ClosureSurfacePos::Arg(_) => return bare(),
+    };
+    let label = canonical_function_label(world, function, &mut HashMap::new());
+    format!("{label}:{slot}")
 }

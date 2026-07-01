@@ -37,6 +37,8 @@ pub use arrow_match::ArrowMatch;
 use addressed::AddrStep;
 use conj::Conj;
 use descr::Descr;
+#[cfg(test)]
+pub(crate) use lit_set::{ClosureSurfacePos, decode_closure_surface_var};
 use lit_set::{LiteralSet, closure_ret_var_id, closure_var_id};
 use sigs::{ArrowSig, ClosureLit, ListSig, MergeSig};
 

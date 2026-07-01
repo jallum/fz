@@ -639,6 +639,15 @@ impl FunctionMap {
             .get(id.0 as usize)
             .expect("function ids should be known before reading reverse references")
     }
+
+    /// The reverse reference for `id`, or `None` when `id` is not a known
+    /// function slot. Unlike [`reference_for`](Self::reference_for) this does
+    /// not assume the id is in range, so a caller decoding an id of uncertain
+    /// provenance (e.g. a packed closure-surface var) can probe it safely.
+    #[cfg(test)]
+    pub fn try_reference_for(&self, id: FunctionId) -> Option<&FunctionRef> {
+        self.refs.get(id.0 as usize)
+    }
 }
 
 #[derive(Debug, Default)]

@@ -91,6 +91,52 @@ end
     );
 }
 
+/// A bare closure-surface var id (`αN`, `N = fn_id * 64 + position`) survived
+/// into a rendered fact — the drift-prone token this projection dissolves.
+fn contains_bare_var_id(snapshot: &str) -> bool {
+    let mut chars = snapshot.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == 'α' && chars.peek().is_some_and(|next| next.is_ascii_digit()) {
+            return true;
+        }
+    }
+    false
+}
+
+#[test]
+fn closure_surface_vars_render_by_stable_owner_relative_provenance() {
+    // A function that RETURNS a closure exposes the lambda's raw surface arrow
+    // in the caller's return type — the one place a closure-surface var reaches
+    // a rendered fact instead of being addressed or grounded away. Its id packs
+    // `fn_id * 64 + position`, and `fn_id` is a registration-order counter, so
+    // the raw `αN` drifts whenever unrelated (e.g. prelude) functions are
+    // defined ahead of the lambda. The fact must instead key the var on the
+    // lambda's owner-relative source provenance, which is invariant under that
+    // churn — stable by construction, no re-bless treadmill.
+    let source = r#"
+fn add(x) do
+  fn y -> x + y end
+end
+
+fn main() do
+  add(1)
+end
+"#;
+    let snapshot = product_call_edge_snapshot(source);
+
+    // The returned closure's argument and return vars carry owner-relative
+    // provenance (`<owner>::lambda[@span]/arity:a{pos}`, `:r`), keyed on the
+    // lambda's name/arity + source span + position — never the raw id.
+    assert!(
+        snapshot.contains("add/1::lambda[@16-33]/1:a0") && snapshot.contains("add/1::lambda[@16-33]/1:r"),
+        "closure-surface vars should render by owner-relative provenance + position: {snapshot}"
+    );
+    assert!(
+        !contains_bare_var_id(&snapshot),
+        "no closure-surface var should render as a bare drift-prone αN id: {snapshot}"
+    );
+}
+
 #[test]
 fn lowered_callsites_keep_source_span_identity() {
     let source = r#"
