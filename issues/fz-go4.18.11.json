@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-07-01T15:28:25Z",
+  "description": "Surfaced by fz-go4.18.8. compiler2_adding_a_defimpl_reprojects_only_the_cone_its_dispatch_reaches observes the LEGACY executable_transport.derived telemetry (world.define_executable_transport / Job::DeriveExecutableTransport). The native/product path deliberately does NOT emit it (native cutover moved off the legacy transport spine), and fz-go4.18.4 deletes DeriveExecutableTransport + ExecutableTransport. fz-go4.18.8 ported the test off Job::DeriveTransportPlan (driver now Job::LowerNativeProgram) and #[ignore]'d it with full assertions intact. TASK: add a product-path observable for per-executable transport (re)projection so the cone-scoped bounded-blast-radius property (adding an unrelated defimpl must NOT re-derive lonely's transport) is assertable on the shipping path; then un-ignore/retarget the test.",
+  "id": "fz-go4.18.11",
+  "labels": [],
+  "parent": "fz-go4.18",
+  "priority": 2,
+  "status": "open",
+  "title": "Re-establish the fz-g2f/fz-bfh.5.5 bounded-blast-radius signal on the product path",
+  "type": "bug",
+  "updated_at": "2026-07-01T15:28:25Z"
+}
