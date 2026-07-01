@@ -17,9 +17,9 @@
       "timestamp": "2026-07-01T15:37:06Z"
     }
   ],
-  "priority": 2,
+  "priority": 1,
   "status": "open",
   "title": "Add a lighter product transport accessor (stop at the transport-shape product, not the full RootBackendProduct)",
   "type": "task",
-  "updated_at": "2026-07-01T15:37:06Z"
+  "updated_at": "2026-07-01T15:37:07Z"
 }
