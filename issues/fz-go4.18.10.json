@@ -15,11 +15,15 @@
     {
       "text": "REFRAME (owner): \u003e1s on tiny fixtures is a CORRECTNESS signal, not perf. Two distinct correctness issues, neither a 'perf backlog' item: (1) the test information-flow doing too much work — driving the full RootBackendProduct (native build) to read a transport fact — is a correctness/design defect being FIXED by the fz-go4.18.8 redo (read only the split transport facts actually consumed). (2) the residual \u003e1s on enum_take_drop_split=00420 / enum_predicate_search after the excess work is removed is the fz-f98.14 convergence bug (non-monotone schedule-dependent Seal\u003c-\u003eDeriveRuntimeDemand\u003c-\u003eTransport cycle) — a CORRECTNESS defect. Once the .18.8 redo lands: tiny non-convergence fixtures MUST derive transport facts \u003c1s (correctness gate, not a nicety); any test still \u003e1s is blocked on the fz-f98.14 correctness bug and #[ignore]'d referencing THAT (not 'perf'). This ticket closes as subsumed-by-.18.8 for the excess-work half; the residual is fz-f98.14.",
       "timestamp": "2026-07-01T15:37:06Z"
+    },
+    {
+      "text": "Folded INTO the fz-go4.18.8 clean redo (the lighter accessor is required for .18.8 to land without _program/dead full-backend pulls, per owner directive). Will close as subsumed once .18.8 lands with zero backend/native jobs on transport-fact tests.",
+      "timestamp": "2026-07-01T16:09:57Z"
     }
   ],
   "priority": 1,
   "status": "open",
   "title": "Add a lighter product transport accessor (stop at the transport-shape product, not the full RootBackendProduct)",
   "type": "task",
-  "updated_at": "2026-07-01T15:37:07Z"
+  "updated_at": "2026-07-01T16:09:57Z"
 }
