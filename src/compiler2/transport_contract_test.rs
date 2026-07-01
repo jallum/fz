@@ -17,7 +17,7 @@ use super::transport::{
 use super::types::Ty;
 use super::{
     CodeSubmission, Compiler2, DriveOutcome, ExecutableKey, ExecutableNeed, ExecutableRuntimeDemand, FactKey, Job,
-    LoweredBody, RootSubmission, RuntimeDemand, World,
+    LoweredBody, RootSubmission, RuntimeDemand, ShapeDemand, World,
 };
 use crate::telemetry::handler::{Event, EventKind, Handler};
 use crate::telemetry::{Capture, ConfiguredTelemetry, Value};
@@ -2107,6 +2107,622 @@ fn compiler2_pull_runtime_demand_keeps_enum_reduce_operator_refs_direct_callable
     assert_eq!(measurement_u64(&finished, "producer_pokes"), 0);
 }
 
+// ---------------------------------------------------------------------------
+// Runtime-demand behavioral contracts, observed on the product path.
+//
+// Each test pins one callable-boundary semantic of the per-executable
+// `RuntimeDemand` product: the fixture and the assertions are unchanged from
+// the store-era tests; only the observation source moved — a transport-facts
+// product drive (`drive_transport_facts_for_test`, no ABI/backend/native jobs)
+// settles the demand closure, and each demand is read through
+// `session.memo().runtime_demand(executable)` over the session's demanded
+// inventory. The legacy signal's aggregate counters (omitted/direct/
+// first-class/opaque) are folds over those same product facts.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn compiler2_runtime_demand_leaves_an_unused_callable_input_omitted() {
+    // INTENT: a semantically-present but unused callable input claims no runtime
+    // demand — its lane is omitted from transport instead of shipping a dead
+    // closure value.
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new(&tel);
+    world.submit_code(
+        Some("unused_callable_input.fz".to_string()),
+        r#"
+fn ignore(f), do: 1
+fn main() do
+  id = fn x -> x end
+  ignore(id)
+end
+"#
+        .to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    let driver = drive_transport_facts_for_test(&tel, &mut world, root);
+    let session = driver.session();
+
+    let demand = product_runtime_demand_for_function(&world, session, "ignore", 1);
+    assert_eq!(
+        demand.input_demands,
+        vec![RuntimeDemand::ignore()],
+        "semantic inputs stay present, but an unused callable input should not claim runtime demand",
+    );
+    let omitted_inputs = runtime_demands_for_frontier(session)
+        .values()
+        .flat_map(|demand| demand.input_demands.iter())
+        .filter(|input| input.is_ignore())
+        .count();
+    assert!(
+        omitted_inputs >= 1,
+        "the product demand inventory should keep omitted inputs countable",
+    );
+}
+
+#[test]
+fn compiler2_runtime_demand_records_the_exact_surface_for_a_direct_lambda_call() {
+    // INTENT: a lambda that is only ever invoked directly keeps exactly one
+    // resolved call surface — no escape, no opacity, no boxed materialization.
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new(&tel);
+    world.submit_code(
+        Some("direct_lambda_call.fz".to_string()),
+        r#"
+fn main() do
+  add1 = fn x -> x + 1 end
+  add1.(1)
+end
+"#
+        .to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    let driver = drive_transport_facts_for_test(&tel, &mut world, root);
+    let demands = runtime_demands_for_frontier(driver.session());
+
+    let direct_callable_flows = demands
+        .values()
+        .flat_map(|demand| demand.callable_flows.values())
+        .filter(|flow| !flow.direct_surfaces.is_empty())
+        .count();
+    assert!(
+        direct_callable_flows >= 1,
+        "the product demand inventory should report direct callable flow",
+    );
+    assert!(
+        demands.values().any(|demand| {
+            has_callable_flow(demand, |flow| {
+                !flow.escape && !flow.opaque && flow.direct_surfaces.len() == 1
+            })
+        }),
+        "a directly-invoked lambda should keep one exact resolved surface",
+    );
+}
+
+#[test]
+fn compiler2_runtime_demand_delivers_boundary_return_demand_to_escaped_callable_target() {
+    // INTENT: an escaped callable's first-class edge names a resolved executable
+    // target, and boundary return demand reaches that target before transport —
+    // the callee's return is not left ignore-shaped just because the call goes
+    // through a boundary.
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new(&tel);
+    world.submit_code(
+        Some("escaped_callable_boundary_return.fz".to_string()),
+        r#"
+fn make_adder(a), do: fn (x) -> x + a end
+fn main() do
+  f = make_adder(10)
+  f.(1)
+  f
+end
+"#
+        .to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    let driver = drive_transport_facts_for_test(&tel, &mut world, root);
+    let session = driver.session();
+
+    let demands = runtime_demands_for_frontier(session);
+    let target = demands
+        .values()
+        .flat_map(|demand| demand.callable_flows.values())
+        .flat_map(|flow| flow.first_class_edges.iter())
+        .map(|edge| edge.resolution.clone())
+        .next()
+        .expect("escaped callable should publish a first-class executable target");
+    let target_demand = session.memo().runtime_demand(&target).unwrap_or_else(|| {
+        panic!("first-class callable target should be part of the settled demand closure: {target:?}")
+    });
+    assert!(
+        !target_demand.return_demand.is_ignore(),
+        "callable boundary return demand should reach the escaped callable target before transport: {target:?} -> {target_demand:?}",
+    );
+}
+
+#[test]
+fn compiler2_runtime_demand_marks_an_escaped_callable_first_class() {
+    // INTENT: a callable that escapes its definer with no known call surface is
+    // a first-class runtime obligation — escaped but not opaque, with exactly
+    // one first-class surface and one canonical executable resolution.
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new(&tel);
+    world.submit_code(
+        Some("escaped_callable.fz".to_string()),
+        r#"
+fn make() do
+  fn x -> x + 1 end
+end
+fn main(), do: make()
+"#
+        .to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    let driver = drive_transport_facts_for_test(&tel, &mut world, root);
+    let session = driver.session();
+
+    let demand = product_runtime_demand_for_function(&world, session, "make", 0);
+    assert!(
+        has_callable_flow(&demand, |flow| flow.escape && !flow.opaque),
+        "a callable that escapes should be first-class at runtime: {demand:?}",
+    );
+    assert!(
+        demand.callable_flows.values().any(|flow| {
+            flow.escape
+                && !flow.opaque
+                && flow.direct_surfaces.is_empty()
+                && flow.first_class_surfaces.len() == 1
+                && flow.resolutions.len() == 1
+        }),
+        "an escaped callable with no known call surface should publish a first-class surface and canonical resolution upstream: {demand:?}",
+    );
+    let first_class_callable_flows = runtime_demands_for_frontier(session)
+        .values()
+        .flat_map(|demand| demand.callable_flows.values())
+        .filter(|flow| !flow.first_class_surfaces.is_empty())
+        .count();
+    assert!(
+        first_class_callable_flows >= 1,
+        "the product demand inventory should keep first-class callable flows countable",
+    );
+}
+
+#[test]
+fn compiler2_runtime_demand_keeps_a_returned_direct_callable_out_of_first_class_inventory() {
+    // INTENT: a returned callable that every consumer calls directly stays a
+    // direct callable flow — returning it does not force a first-class boxed
+    // callable object.
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new(&tel);
+    world.submit_code(
+        Some("returned_direct_callable_transport.fz".to_string()),
+        r#"
+fn apply(fun), do: fun.(41)
+
+fn make_adder(a), do: fn x -> x + a end
+
+fn main(), do: apply(make_adder(1))
+"#
+        .to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    let driver = drive_transport_facts_for_test(&tel, &mut world, root);
+
+    let demand = product_runtime_demand_for_function(&world, driver.session(), "make_adder", 1);
+    assert!(
+        has_callable_flow(&demand, |flow| {
+            !flow.escape && !flow.opaque && !flow.direct_surfaces.is_empty()
+        }),
+        "make_adder/1 should still publish direct callable flow for transport",
+    );
+    assert!(
+        !has_callable_flow(&demand, |flow| flow.escape || flow.opaque),
+        "direct-only returned callable transport should not require a first-class callable object",
+    );
+}
+
+#[test]
+fn compiler2_runtime_demand_makes_opaque_callable_use_explicit() {
+    // INTENT: calling an unresolved closure input keeps the opacity explicit —
+    // the input demand carries the opaque callable obligation together with the
+    // one observed call surface instead of collapsing to a plain value demand.
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new(&tel);
+    world.submit_code(
+        Some("opaque_callable_use.fz".to_string()),
+        "fn main(f), do: f.(1)\n".to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 1, ExecutableNeed::Value);
+    let driver = drive_transport_facts_for_test(&tel, &mut world, root);
+    let session = driver.session();
+
+    let demand = product_runtime_demand_for_function(&world, session, "main", 1);
+    assert!(
+        matches!(
+            demand.input_demands.as_slice(),
+            [input] if !input.callable.is_empty()
+                && input.callable.opaque
+                && input.callable.resolved.len() == 1
+                && input.callable.resolved.iter().any(|surface| surface.inputs.len() == 1)
+        ),
+        "an unresolved closure call should keep opaque callable demand and its observed surface explicit: {demand:?}",
+    );
+    let opaque_callable_demands = runtime_demands_for_frontier(session)
+        .values()
+        .flat_map(|demand| demand.input_demands.iter())
+        .filter(|input| input.callable.opaque)
+        .count();
+    assert!(
+        opaque_callable_demands >= 1,
+        "the product demand inventory should keep opaque callable demands countable",
+    );
+}
+
+#[test]
+fn compiler2_runtime_demand_marks_callable_arguments_to_opaque_calls_first_class() {
+    // INTENT: a local lambda handed to an opaque closure call escapes — the
+    // call-argument demand records the escape, and the lambda's callable flow
+    // becomes a first-class obligation with a canonical resolution.
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new(&tel);
+    world.submit_code(
+        Some("opaque_call_callable_argument.fz".to_string()),
+        r#"
+fn main(f) do
+  g = fn (x) -> x + 1 end
+  f.(g)
+end
+"#
+        .to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 1, ExecutableNeed::Value);
+    let driver = drive_transport_facts_for_test(&tel, &mut world, root);
+
+    let demand = product_runtime_demand_for_function(&world, driver.session(), "main", 1);
+    assert!(
+        demand.call_arg_demands.values().any(|demands| {
+            matches!(
+                demands.as_slice(),
+                [arg] if !arg.callable.is_empty()
+                    && arg.callable.escape && !arg.callable.opaque && arg.callable.resolved.is_empty()
+            )
+        }),
+        "opaque closure-call argument demand should preserve callable escape before transport runs: {demand:?}",
+    );
+    assert!(
+        has_callable_flow(&demand, |flow| {
+            flow.escape
+                && !flow.opaque
+                && flow.direct_surfaces.is_empty()
+                && flow.first_class_surfaces.len() == 1
+                && flow.resolutions.len() == 1
+        }),
+        "the local lambda passed through the opaque call should be a first-class runtime obligation: {demand:?}",
+    );
+}
+
+#[test]
+fn compiler2_runtime_demand_marks_joined_function_refs_first_class_before_reduce_boundary() {
+    // INTENT: named function refs that join across branches before feeding
+    // Enum.reduce stay directly callable AND publish first-class obligations,
+    // and the delivered joined value itself carries the escaped callable demand
+    // with its arity-2 surface before downstream lowering.
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new(&tel);
+    world.submit_code(
+        Some("opaque_fn_value_join.fz".to_string()),
+        include_str!("../../fixtures2/behavior/opaque_fn_value_join.fz").to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    let driver = drive_transport_facts_for_test(&tel, &mut world, root);
+    let session = driver.session();
+
+    let demands = runtime_demands_for_frontier(session);
+    let (main_executable, demand) = demands
+        .iter()
+        .find(|(executable, _)| function_is(&world, executable.activation.function, "main", 0))
+        .expect("product runtime demand for main/0");
+    for branch in ["add_a", "add_b"] {
+        assert!(
+            demand.callable_flows.values().any(|flow| {
+                function_is(&world, flow.function, branch, 2)
+                    && flow.direct_surfaces.iter().any(|surface| surface.inputs.len() == 2)
+                    && flow
+                        .first_class_surfaces
+                        .iter()
+                        .any(|surface| surface.inputs.len() == 2)
+                    && flow.escape
+            }),
+            "a branch function ref that joins before Enum.reduce must remain directly callable and also publish a first-class runtime obligation: {demand:?}",
+        );
+    }
+
+    let body = world.lowered_body(main_executable.activation.function);
+    let joined_value = delivered_value_joins(&body)
+        .values()
+        .find_map(|join| {
+            let producer_functions = join
+                .sources
+                .iter()
+                .filter_map(|source| match source {
+                    DeliveredValueSource::LocalValue(value) => {
+                        demand.callable_flows.get(value).map(|flow| flow.function)
+                    }
+                    DeliveredValueSource::CallsiteReturn(_) => None,
+                })
+                .collect::<Vec<_>>();
+            (producer_functions
+                .iter()
+                .any(|function| function_is(&world, *function, "add_a", 2))
+                && producer_functions
+                    .iter()
+                    .any(|function| function_is(&world, *function, "add_b", 2)))
+            .then_some(join.value)
+        })
+        .expect("main should have a delivered join fed by add_a/2 and add_b/2 function refs");
+    let joined_demand = demand
+        .value_demands
+        .get(&joined_value)
+        .unwrap_or_else(|| panic!("joined callable value {joined_value:?} should have runtime demand"));
+    if joined_demand.callable.is_empty() {
+        panic!("joined value {joined_value:?} should be callable-demanded: {demand:?}");
+    }
+    let joined_callable = &joined_demand.callable;
+    assert!(
+        joined_callable.escape && joined_callable.resolved.iter().any(|surface| surface.inputs.len() == 2),
+        "the delivered joined callable value itself must publish a first-class discriminator before downstream lowering: {joined_callable:?}",
+    );
+}
+
+#[test]
+fn compiler2_runtime_demand_resolves_enum_take_first_class_reducer_surfaces_before_transport() {
+    // INTENT: Enum.take's internal reducer callables settle to first-class
+    // surfaces whose upstream executable edges are resolved before transport
+    // consumes them — no surface reaches transport without its edges.
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new(&tel);
+    world.submit_code(
+        Some("runtime_demand_enum_take_reducer_surfaces.fz".to_string()),
+        "fn main() do\n  xs = [1, 2, 3, 4, 5]\n  dbg(Enum.take(xs, 3))\nend\n".to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    let driver = drive_transport_facts_for_test(&tel, &mut world, root);
+
+    let demands = runtime_demands_for_frontier(driver.session());
+    let first_class_flows = demands
+        .values()
+        .flat_map(|demand| demand.callable_flows.values())
+        .filter(|flow| !flow.first_class_surfaces.is_empty())
+        .collect::<Vec<_>>();
+
+    assert!(
+        !first_class_flows.is_empty(),
+        "Enum.take should publish first-class callable-flow surfaces before transport: {demands:?}",
+    );
+    assert!(
+        first_class_flows.iter().all(|flow| !flow.first_class_edges.is_empty()),
+        "every first-class callable-flow surface must carry upstream executable edges before transport consumes it: {first_class_flows:?}",
+    );
+}
+
+#[test]
+fn compiler2_runtime_demand_preserves_tuple_return_shape_for_escaped_callable_boundaries() {
+    // INTENT: an escaped callable's boundary return demand preserves the
+    // recursive tuple structure — `{{1, 2}, 3}` stays TupleFields([TupleFields,
+    // Whole]) upstream instead of flattening to an opaque whole value.
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new(&tel);
+    world.submit_code(
+        Some("runtime_demand_boundary_tuple_return.fz".to_string()),
+        r#"
+fn make_pairer(), do: fn (x) -> {{1, 2}, 3} end
+fn main(), do: make_pairer()
+"#
+        .to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    let driver = drive_transport_facts_for_test(&tel, &mut world, root);
+
+    let runtime_demands = runtime_demands_for_frontier(driver.session());
+    let tuple_return_demands = runtime_demands
+        .iter()
+        .filter_map(|(executable, demand)| {
+            let function_ref = world.function_ref(executable.activation.function);
+            (function_ref.name.starts_with("#lambda:") && function_ref.arity == 1).then_some(&demand.return_demand)
+        })
+        .collect::<Vec<_>>();
+    let lambda_return_predicates = runtime_demands
+        .keys()
+        .filter_map(|executable| {
+            let function_ref = world.function_ref(executable.activation.function);
+            (function_ref.name.starts_with("#lambda:") && function_ref.arity == 1)
+                .then(|| world.activation_return(&executable.activation))
+                .flatten()
+        })
+        .map(|ty| world.types().runtime_type_predicate(&ty))
+        .collect::<Vec<_>>();
+    assert!(
+        tuple_return_demands.iter().any(|demand| {
+            demand.callable.is_empty()
+                && matches!(
+                    &demand.shape,
+                    ShapeDemand::TupleFields(fields)
+                        if fields.len() == 2
+                            && fields[0].callable.is_empty()
+                            && matches!(&fields[0].shape, ShapeDemand::TupleFields(inner) if inner.len() == 2)
+                            && fields[1].callable.is_empty()
+                            && matches!(&fields[1].shape, ShapeDemand::Whole)
+                )
+        }),
+        "escaped callable boundary return demand should preserve recursive tuple fields upstream: {:?}",
+        (tuple_return_demands, lambda_return_predicates)
+    );
+}
+
+#[test]
+fn compiler2_runtime_demand_records_recursive_tuple_resume_value_demand() {
+    // INTENT: the value resumed from a recursive call that is immediately
+    // destructured carries tuple-field demand upstream, so the recursive return
+    // can be delivered field-wise instead of as a boxed whole.
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new(&tel);
+    world.submit_code(
+        Some("runtime_demand_recursive_tuple_resume.fz".to_string()),
+        r#"
+fn pair_down(0), do: {0, 1}
+fn pair_down(n) do
+  {left, right} = pair_down(n - 1)
+  {left, right}
+end
+
+fn main() do
+  {left, right} = pair_down(2)
+  left + right
+end
+"#
+        .to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    let driver = drive_transport_facts_for_test(&tel, &mut world, root);
+
+    let resume_demands = runtime_demands_for_frontier(driver.session())
+        .iter()
+        .filter_map(|(executable, demand)| {
+            function_is(&world, executable.activation.function, "pair_down", 1).then_some(demand.value_demands.clone())
+        })
+        .flat_map(|demands| demands.into_values())
+        .collect::<Vec<_>>();
+    assert!(
+        resume_demands.iter().any(|demand| {
+            demand.callable.is_empty() && matches!(&demand.shape, ShapeDemand::TupleFields(fields) if fields.len() == 2)
+        }),
+        "recursive call resume value should carry tuple-field demand upstream: {resume_demands:?}"
+    );
+}
+
+#[test]
+fn compiler2_runtime_demand_preserves_reducer_surface_when_suspend_continuation_escapes() {
+    // INTENT: when a suspend-shaped Enumerable.reduce continuation escapes, the
+    // user reducer's direct arity-2 surface survives with canonical (not
+    // type-template) executable resolutions — the escape of the continuation
+    // must not erase the reducer's proven call surface.
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new(&tel);
+    world.submit_code(
+        Some("runtime_demand_enumerable_reduce_suspend_continuation.fz".to_string()),
+        r#"
+fn make() do
+  fn () ->
+    Enumerable.reduce([1, 2, 3], {:suspend, 0}, fn (x, acc) -> {:cont, acc + x} end)
+  end
+end
+
+fn main(), do: make()
+"#
+        .to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    let driver = drive_transport_facts_for_test(&tel, &mut world, root);
+    let session = driver.session();
+
+    let reducer_executables = session
+        .demanded_executables()
+        .iter()
+        .filter(|executable| {
+            let function_ref = world.function_ref(executable.activation.function);
+            function_ref.name.starts_with("#lambda:")
+                && function_ref.arity == 2
+                && executable.activation.input_len(world.types()) == 2
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    assert!(
+        !reducer_executables.is_empty(),
+        "the settled demand closure should include the user reducer lambda executable before transport"
+    );
+    assert!(
+        reducer_executables.iter().all(|executable| {
+            let inputs = executable.activation.inputs(world.types());
+            inputs[0] == inputs[1]
+        }),
+        "the settled demand closure should hold canonical reducer activations, not type-template inputs: {reducer_executables:?}"
+    );
+
+    let demands = runtime_demands_for_frontier(session);
+    assert!(
+        demands.values().any(|demand| {
+            has_callable_flow(demand, |flow| {
+                !flow.opaque && flow.direct_surfaces.iter().any(|surface| surface.inputs.len() == 2)
+            })
+        }),
+        "the reducer direct-call surface should be proven upstream before transport: {demands:?}",
+    );
+    assert!(
+        demands.values().any(|demand| {
+            demand.callable_flows.values().any(|flow| {
+                flow.direct_surfaces.iter().any(|surface| surface.inputs.len() == 2)
+                    && !flow.resolutions.is_empty()
+                    && flow.resolutions.iter().all(|resolution| {
+                        let inputs = resolution.activation.inputs(world.types());
+                        inputs.len() == 2 && inputs[0] == inputs[1]
+                    })
+            })
+        }),
+        "the reducer callable-flow fact should carry direct surfaces and canonical executable resolutions upstream: {demands:?}",
+    );
+}
+
+#[test]
+fn compiler2_runtime_demand_keeps_dbg_inputs_live_when_the_return_is_ignored() {
+    // INTENT: dbg/1 demands its input as a whole runtime value even when the
+    // caller discards the return, and the continuation after `dbg(stats)` keeps
+    // the captured value live for the later field access.
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new(&tel);
+    world.submit_code(
+        Some("heap_stats_dbg_resume.fz".to_string()),
+        r#"
+fn main() do
+  stats = Process.heap_alloc_stats()
+  dbg(stats)
+  dbg(stats[:list_cons_allocs])
+end
+"#
+        .to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    let driver = drive_transport_facts_for_test(&tel, &mut world, root);
+    let session = driver.session();
+
+    // The per-executable product makes every dbg/1 activation individually
+    // observable; the store-era test asserted one map entry — every activation
+    // must satisfy the same contract.
+    let dbg_input_demands = runtime_demands_for_frontier(session)
+        .iter()
+        .filter(|(executable, _)| function_is(&world, executable.activation.function, "dbg", 1))
+        .map(|(_, demand)| demand.input_demands.clone())
+        .collect::<Vec<_>>();
+    assert!(
+        !dbg_input_demands.is_empty(),
+        "dbg/1 should be part of the settled demand closure"
+    );
+    for input_demands in &dbg_input_demands {
+        assert_eq!(
+            input_demands,
+            &vec![RuntimeDemand::whole()],
+            "Kernel.dbg/1 must still demand its input as a runtime value even when callers ignore the returned value",
+        );
+    }
+
+    let main_demand = product_runtime_demand_for_function(&world, session, "main", 0);
+    assert!(
+        main_demand
+            .entry_capture_demands
+            .values()
+            .any(|demands| demands.as_slice() == [RuntimeDemand::whole()]),
+        "the continuation after dbg(stats) must keep one captured runtime value live for the later field access: {main_demand:?}",
+    );
+}
+
 #[test]
 #[serial_test::serial]
 fn compiler2_pull_transport_keeps_enum_reduce_operator_refs_direct_callable() {
@@ -3377,6 +3993,28 @@ fn runtime_demands_for_frontier(session: &PullSession) -> HashMap<ExecutableKey,
                 .map(|demand| (executable.clone(), demand.clone()))
         })
         .collect()
+}
+
+/// The settled `RuntimeDemand` product for the named function's executable:
+/// locate the executable in the session's demanded inventory and read its demand
+/// from the product memo — the same read every downstream product consumer
+/// performs (`session.memo().runtime_demand`).
+fn product_runtime_demand_for_function(
+    world: &World<'_>,
+    session: &PullSession,
+    name: &str,
+    arity: usize,
+) -> ExecutableRuntimeDemand {
+    session
+        .demanded_executables()
+        .iter()
+        .find(|executable| function_is(world, executable.activation.function, name, arity))
+        .and_then(|executable| session.memo().runtime_demand(executable).cloned())
+        .unwrap_or_else(|| panic!("product runtime demand for {name}/{arity}"))
+}
+
+fn has_callable_flow(demand: &ExecutableRuntimeDemand, predicate: impl Fn(&CallableFlowFact) -> bool) -> bool {
+    demand.callable_flows.values().any(predicate)
 }
 
 fn submit_enum_reduce_operator_ref_root(world: &mut World<'_>, source_name: &str) -> super::RootId {
