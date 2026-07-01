@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-07-01T23:31:06Z",
+  "description": "The last determinism question gating fz-go4.18.4's closure (carried from fz-go4.18.14's critical sub-question). compiler2_quicksort_root_closes_with_a_finite_recursive_frontier (drive_test.rs, un-ignored at HEAD) pins the addressed activation-keying convergence: rooted_reachable_frontier == exactly 21 activations, qsort/append collapse to one key. PROVEN: 20/20 isolated passes; converges_identically = 20 in-process schedule permutations all ==21. REPORTED (two independent agents): rare failures under PARALLEL suite load / bundled runs — which in-process schedule permutation does NOT cover (parallel tests share the process; per-process hash seeds + thread interleaving differ).\n\nQUESTION: is the SETTLED frontier genuinely deterministic (and the flake an observation/test-harness artifact, e.g. cross-test interference through shared state), or does parallel load perturb the fixpoint into a different settled frontier (a REAL convergence non-determinism, fz-f98.14 family — 'unknown is not none' / non-monotone join)?\n\nMETHOD: reproduce under contention (run the full suite repeatedly with high parallelism, and/or the single test with a parallel load generator); on a failure, capture WHAT differed (frontier size? which extra/missing activation key? via the test's own diagnostics + --log-telemetry post-proc per project memory). Classify: (a) cross-test shared-state interference -\u003e fix the isolation; (b) real fixpoint non-determinism -\u003e a correctness bug, diagnose the non-monotone join (do NOT ignore/loosen; the test comment says 'if this test ever flakes, the design has a hole and the flake has found it'). If it cannot be reproduced in a bounded campaign (e.g. 50+ contended suite runs), document the campaign and accept as unreproduced-with-evidence.\n\nBlocks fz-go4.18.4 closure.",
+  "id": "fz-go4.18.16",
+  "labels": [],
+  "parent": "fz-go4.18",
+  "priority": 1,
+  "status": "open",
+  "title": "Diagnose finite-frontier flake under parallel load: is the settled activation frontier deterministic?",
+  "type": "bug",
+  "updated_at": "2026-07-01T23:31:06Z"
+}
