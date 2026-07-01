@@ -6,6 +6,7 @@
     "fz-go4.18.8"
   ],
   "blocks": [
+    "fz-go4.18.12",
     "fz-go4.19"
   ],
   "created": "2026-06-29T11:19:29Z",
@@ -23,5 +24,5 @@
   "status": "in_progress",
   "title": "Delete the legacy seal/transport spine after native cutover",
   "type": "bug",
-  "updated_at": "2026-06-30T18:30:54Z"
+  "updated_at": "2026-07-01T16:36:34Z"
 }
