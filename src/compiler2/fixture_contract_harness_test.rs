@@ -111,10 +111,14 @@ fn evaluate_fixture(fixture: &ContractFixture) -> EvaluatedFixture {
     let prefix = fixture_frontmatter_prefix_bytes(&fixture.source)
         .expect("fixture frontmatter prefix")
         .unwrap_or(0);
-    let facts = normalize_fact_spans(canonical_call_edge_facts(&world, root_id), prefix);
-    let snapshot = render_canonical_call_edge_snapshot(&facts);
     let root_code = world.function_definition(world.root_function(root_id)).0.code;
     let frontier = world.root_executable_frontier(root_id);
+    let inventory = frontier
+        .iter()
+        .map(|executable| executable.activation.clone())
+        .collect::<Vec<_>>();
+    let facts = normalize_fact_spans(canonical_call_edge_facts(&world, root_id, &inventory), prefix);
+    let snapshot = render_canonical_call_edge_snapshot(&facts);
     let local_activations = frontier
         .iter()
         .map(|executable| &executable.activation)

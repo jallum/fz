@@ -7,7 +7,7 @@ use super::artifact::BackendProgram;
 use super::code::CodeId;
 use super::dump::DumpStage;
 use super::facts::{FactReadiness, FactUse};
-use super::identity::{FunctionId, RootId};
+use super::identity::{ActivationKey, FunctionId, RootId};
 use super::pull::{ProductDriver, ProductKey, ProductValue, PullOutcome, PullWait, WorldProductProducers};
 use super::scheduler::DriveOutcome;
 use super::world::World;
@@ -166,16 +166,39 @@ impl<'a> Compiler2<'a> {
     /// inventory and emitting the per-activation dump events keeps the dump
     /// content sourced entirely from demanded products.
     pub(crate) fn emit_product_semantic_dumps(&mut self, root: RootId) -> Result<(), String> {
+        let activations = self.product_activation_inventory(root)?;
+        super::dump::emit_product_semantic_dump_events(&self.world, root, activations);
+        Ok(())
+    }
+
+    /// Drives one root to its backend product and returns the settled
+    /// product-path activation inventory: the activations the product actually
+    /// materializes.
+    ///
+    /// The product drive discovers executables through runtime demand and
+    /// callable flow, not just static callsites, so this set includes
+    /// escaped/opaque callables — e.g. a generated lambda reached only through
+    /// an `f.(x)` boundary. That is the frontier the CLI semantic dump reads,
+    /// and the frontier fixture call-edge oracles source so latent
+    /// runtime-demand-reached provenance is observable.
+    pub(crate) fn product_activation_inventory(&mut self, root: RootId) -> Result<Vec<ActivationKey>, String> {
         let (_program, driver) = self.drive_root_backend_product(root)?;
-        let activations: Vec<_> = driver
+        let activations = driver
             .session()
             .materialized_executables()
             .keys()
             .map(|executable| executable.activation.clone())
-            .collect();
-        super::dump::emit_product_semantic_dump_events(&self.world, root, activations);
+            .collect::<Vec<_>>();
         driver.finish_session();
-        Ok(())
+        Ok(activations)
+    }
+
+    /// Read-only access to the compiler's settled world, so tests can read the
+    /// facts a product drive published (activation analyses, callsite
+    /// summaries) alongside the returned activation inventory.
+    #[cfg(test)]
+    pub(crate) fn world(&self) -> &World<'a> {
+        &self.world
     }
 
     /// Drives one root to `BackendProgram` and runs it through the shared

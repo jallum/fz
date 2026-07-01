@@ -1,8 +1,12 @@
 //! Canonical compiler2 facts for fixtures2 compiler contracts.
 //!
-//! These facts are derived from compiler2's settled semantic closure rather
-//! than old-world dump text. Stable fixture-facing identity comes from
-//! source provenance: callsite spans and owner-relative lambda provenance.
+//! These facts are derived over a caller-supplied activation inventory (the
+//! set of activations a root reaches) rather than old-world dump text. Callers
+//! source that inventory from the product path — e.g.
+//! `Compiler2::product_activation_inventory` — so runtime-demand/callable-flow
+//! reached executables (escaped lambdas) are included. Stable fixture-facing
+//! identity comes from source provenance: callsite spans and owner-relative
+//! lambda provenance.
 
 use std::collections::HashMap;
 
@@ -30,14 +34,14 @@ pub struct CanonicalCallTargetFact {
     pub return_ty: String,
 }
 
-pub(crate) fn canonical_call_edge_facts(world: &World<'_>, root: RootId) -> Vec<CanonicalCallEdgeFact> {
+pub(crate) fn canonical_call_edge_facts(
+    world: &World<'_>,
+    root: RootId,
+    inventory: &[ActivationKey],
+) -> Vec<CanonicalCallEdgeFact> {
     let root_code = world.function_definition(world.root_function(root)).0.code;
     let mut labels = HashMap::new();
-    let mut activations = world
-        .root_executable_frontier(root)
-        .into_iter()
-        .map(|executable| executable.activation)
-        .collect::<Vec<_>>();
+    let mut activations = inventory.to_vec();
     activations.sort_by_key(|activation| (activation.root.as_u32(), activation.function.as_u32(), activation.arrow));
     activations.dedup();
     activations.retain(|activation| world.function_definition(activation.function).0.code == root_code);
