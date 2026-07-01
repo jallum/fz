@@ -6,7 +6,7 @@
 # assert.metric.semantic.callsites: 3
 # assert.metric.call_edges.count: 3
 # assert.metric.return_type.widened: 0
-# assert.edge: apply1/2[(α0) -> α1, int] | @21-26 | closure | main/0::lambda[@50-67]/1
+# assert.edge: apply1/2[(a0_p0) -> a0_r, int] | @21-26 | closure | main/0::lambda[@50-67]/1
 # assert.edge: main/0[] | @70-86 | direct | apply1/2
 # assert.edge: main/0::lambda[@50-67]/1[int] | @58-63 | direct | Kernel.+/2
 # snapshot.call_edges: call_edges

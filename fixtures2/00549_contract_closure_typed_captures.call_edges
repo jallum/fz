@@ -1,8 +1,6 @@
 add_to/2::lambda[@21-44]/1[int, int, int] | @31-36 | direct | Kernel.+/2(int, int) => int => int
 add_to/2::lambda[@21-44]/1[int, int, int] | @31-40 | direct | Kernel.+/2(int, int) => int => int
-add_to/2::lambda[@21-44]/1[int, int, α0] | @31-36 | direct | Kernel.+/2(int, int) => int => int
-add_to/2::lambda[@21-44]/1[int, int, α0] | @31-40 | direct | Kernel.+/2(int, α0) => none => none
-apply1/2[(α0) -> α1, int] | @66-71 | closure | add_to/2::lambda[@21-44]/1(int, int, int) => int => int
+apply1/2[(a0_p0) -> a0_r, int] | @66-71 | closure | add_to/2::lambda[@21-44]/1(int) => int => int
 main/0[] | @88-119 | direct | Kernel.dbg/1(int) => int => int
-main/0[] | @92-118 | direct | apply1/2((α0) -> α1, int) => int => int
-main/0[] | @99-113 | direct | add_to/2(int, int) => (α0) -> α1 => (α0) -> α1
+main/0[] | @92-118 | direct | apply1/2((a0_p0) -> a0_r, int) => int => int
+main/0[] | @99-113 | direct | add_to/2(int, int) => (add_to/2::lambda[@21-44]/1:a0) -> add_to/2::lambda[@21-44]/1:r => (add_to/2::lambda[@21-44]/1:a0) -> add_to/2::lambda[@21-44]/1:r
