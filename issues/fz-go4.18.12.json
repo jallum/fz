@@ -14,11 +14,15 @@
     {
       "text": "SHARPENED CHARTER (owner): minimality is not just the minimal DRIVE ENDPOINT (pull only what's read) — it is minimal COMPUTATION PERFORMED ALONG the drive. Every job fired, fact derived, activation seeded/analyzed, and re-derivation performed on the way must be NECESSARY to construct the correct end product; stopping at the right product is insufficient if the path to it churned. Concretely the audit judges the WHOLE trace: (a) per-(kind,key) fire counts — any key fired more than its correct construction requires is churn; (b) facts produced that no consumer reads; (c) widen-then-retract / derive-then-discard arcs inside the mini-fixpoints (type convergence, return/lane, membership); (d) cross-run trace variance (schedule-dependence); (e) per-span timing. Expected-work statements per fixture remain the baseline to diff against.",
       "timestamp": "2026-07-01T23:06:14Z"
+    },
+    {
+      "text": "FEEDSTOCK (measured during fz-go4.18.15's spot-check; pre-existing, none introduced by that change): on the 2-function escaped_callable fixture driven only to transport facts — (1) RuntimeDemand product produced 3x per executable (requested up to 8x) and MaterializedExecutable 2x = demand-fixpoint invalidation iterations on a trivial fixture; (2) TransportShape products uniformly produced 2x per position; (3) the macro-runtime/quoted-expansion root (RootId(1), built inline via macro_runtime.rs build_backend_product) had FunctionId(1)'s DeriveDispatchMask/DeriveRecursive/LowerFunction/PlanEntryDispatch each firing 2x (duplicate derivation). These are concrete along-the-drive churn counts to diagnose: each key should fire the number of times its correct construction requires — a 2-function fixture plausibly needs 1x for most of these.",
+      "timestamp": "2026-07-01T23:19:16Z"
     }
   ],
   "priority": 1,
   "status": "open",
   "title": "Telemetry minimality audit of the demand fixpoint sub-arcs (type-convergence, return/lane, membership)",
   "type": "bug",
-  "updated_at": "2026-07-01T23:06:14Z"
+  "updated_at": "2026-07-01T23:19:16Z"
 }
