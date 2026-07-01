@@ -7,9 +7,15 @@
   "id": "fz-go4.18.10",
   "labels": [],
   "parent": "fz-go4.18",
+  "comments": [
+    {
+      "text": "Largely SUBSUMED by the fz-go4.18.8 redo: reading the split product surfaces directly (program.transport + session facts) and driving only to transport facts means tests don't build the full RootBackendProduct at all — 'don't build what you don't read'. After the redo, re-evaluate: if the 2 perf tests are sub-second, un-ignore and close this; the residual \u003e1s on enum_take_drop_split=00420 / enum_predicate_search is the fz-f98.14 convergence bug (route there), not this ticket.",
+      "timestamp": "2026-07-01T14:32:47Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "Add a lighter product transport accessor (stop at the transport-shape product, not the full RootBackendProduct)",
   "type": "task",
-  "updated_at": "2026-06-30T19:31:35Z"
+  "updated_at": "2026-07-01T14:32:47Z"
 }
