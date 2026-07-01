@@ -11,11 +11,15 @@
     {
       "text": "Largely SUBSUMED by the fz-go4.18.8 redo: reading the split product surfaces directly (program.transport + session facts) and driving only to transport facts means tests don't build the full RootBackendProduct at all — 'don't build what you don't read'. After the redo, re-evaluate: if the 2 perf tests are sub-second, un-ignore and close this; the residual \u003e1s on enum_take_drop_split=00420 / enum_predicate_search is the fz-f98.14 convergence bug (route there), not this ticket.",
       "timestamp": "2026-07-01T14:32:47Z"
+    },
+    {
+      "text": "REFRAME (owner): \u003e1s on tiny fixtures is a CORRECTNESS signal, not perf. Two distinct correctness issues, neither a 'perf backlog' item: (1) the test information-flow doing too much work — driving the full RootBackendProduct (native build) to read a transport fact — is a correctness/design defect being FIXED by the fz-go4.18.8 redo (read only the split transport facts actually consumed). (2) the residual \u003e1s on enum_take_drop_split=00420 / enum_predicate_search after the excess work is removed is the fz-f98.14 convergence bug (non-monotone schedule-dependent Seal\u003c-\u003eDeriveRuntimeDemand\u003c-\u003eTransport cycle) — a CORRECTNESS defect. Once the .18.8 redo lands: tiny non-convergence fixtures MUST derive transport facts \u003c1s (correctness gate, not a nicety); any test still \u003e1s is blocked on the fz-f98.14 correctness bug and #[ignore]'d referencing THAT (not 'perf'). This ticket closes as subsumed-by-.18.8 for the excess-work half; the residual is fz-f98.14.",
+      "timestamp": "2026-07-01T15:37:06Z"
     }
   ],
   "priority": 2,
   "status": "open",
   "title": "Add a lighter product transport accessor (stop at the transport-shape product, not the full RootBackendProduct)",
   "type": "task",
-  "updated_at": "2026-07-01T14:32:47Z"
+  "updated_at": "2026-07-01T15:37:06Z"
 }
