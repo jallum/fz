@@ -13,11 +13,15 @@
     {
       "text": "REDO required — the first commit (97e3207/c147371f, reset off-branch) used a FABRICATED artifact and is superseded. product_transport assembled a legacy-shaped TransportPlan from the session AND spliced codegen_seam_facts from a DIFFERENT product (program.transport / MaterializedTransportPlan) onto it — a combined object no production consumer produces or reads, purely to keep ~50 old test bodies unchanged. That violates 'tests use production paths' (a test-only shim) and the ShapeId-is-pure-layout / split-artifact principle, AND forced pulling the full RootBackendProduct (full native build) to get program.transport -\u003e the \u003e1s tiny-fixture builds.\n\nCORRECT APPROACH (the actual 'new information flow', as compiler2_pull_transport_* already do): each test reads the product's GENUINE split surfaces, no reconstructed plan:\n- shapes / positions / codegen seams -\u003e program.transport (MaterializedTransportPlan) directly (shape_at(pos), codegen_seam_facts);\n- callable / boundary contracts -\u003e session.callable_facts_inventory() / session.boundary_facts_inventory() (+ world.boundary(id));\n- membership -\u003e session.demanded_executables().\nRewrite the assertion helpers that take \u0026TransportPlan to take the real product surfaces. Delete the session_transport_plan-assembly-in-tests + the codegen_seam_facts splice. Drive only as far as the transport facts (materialization), NOT the full backend/native — this reads only what's needed, so tiny fixtures derive sub-second (subsumes fz-go4.18.10's 'lighter accessor'; residual \u003e1s on enum_take_drop_split/enum_predicate_search is the separate fz-f98.14 convergence bug). Same ASSERTIONS preserved (still option C, port intent, not weaken).",
       "timestamp": "2026-07-01T14:32:46Z"
+    },
+    {
+      "text": "REDO AGAIN (owner directive): the redo's KEEP tests bind _program (unused) from pull_root_backend_product_for_test — that underscore keeps the FULL backend build (RootBackendProduct + its whole job subtree) alive for tests that never read program. That is net-new dead code + dead work, and _-prefixing to dodge the unused warning is 'mark it to avoid deleting' — UNACCEPTABLE. No test needs the full RootBackendProduct: the MaterializedTransportPlan (carrying codegen_seam_facts) is built from SESSION FACTS ALONE (symbolic_materialized_transport_plan), so a lighter accessor can build (materialized_plan, session) from a transport-facts-only drive and serve BOTH the session-only tests and the seam tests with ZERO _program bindings and zero backend/native jobs. Fold fz-go4.18.10's lighter accessor INTO this so .18.8 lands clean: no _program, no unused bindings, no #[allow(dead_code)], no cfg(test) retention-to-avoid-deletion. Acceptance: session-only transport-fact tests fire NO abi/backend/native jobs (verify via --log-telemetry job trace), tiny fixtures \u003c1s, green, rg-zero.",
+      "timestamp": "2026-07-01T16:09:57Z"
     }
   ],
   "priority": 1,
   "status": "in_progress",
   "title": "Port transport-contract tests to the product TransportPlan flow (intent-by-intent, keep/drop ledger)",
   "type": "bug",
-  "updated_at": "2026-07-01T14:32:46Z"
+  "updated_at": "2026-07-01T16:09:57Z"
 }
