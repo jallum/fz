@@ -449,19 +449,6 @@ impl<'a> World<'a> {
         self.transport.plans().get(root)
     }
 
-    #[cfg(test)]
-    pub(crate) fn remove_transport_plan(&mut self, root: RootId) {
-        self.transport.plans_mut().remove(root);
-    }
-
-    #[cfg(test)]
-    pub(crate) fn add_transport_plan_test_handler(
-        &mut self,
-        handler: Box<dyn super::transport_validation::TransportPlanTestHandler + 'a>,
-    ) {
-        self.transport_plan_test_handlers.push(handler);
-    }
-
     pub fn submit_code(&mut self, name: Option<String>, text: String) -> CodeId {
         let bytes = text.len();
         let code_id = self.code.define(name, text);

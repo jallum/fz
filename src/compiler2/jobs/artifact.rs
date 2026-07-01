@@ -332,25 +332,7 @@ pub(crate) fn produce_abi_executable_product(
         materialized.effects = effects;
     }
     materialized.transport = session_materialized_executable_transport(session, executable, world.types());
-    waits.extend(required_executable_input_transport_waits(
-        session,
-        executable,
-        &materialized,
-        world.types(),
-    ));
-    waits.extend(required_entry_capture_transport_waits(
-        session,
-        executable,
-        &materialized,
-        world.types(),
-    ));
-    waits.extend(required_resume_transport_waits(
-        session,
-        executable,
-        &materialized,
-        world.types(),
-    ));
-    waits.extend(required_local_backend_transport_waits(
+    waits.extend(required_executable_transport_facts_waits(
         session,
         executable,
         &materialized,
@@ -617,6 +599,47 @@ fn required_entry_capture_transport_waits(
             }
         }
     }
+    waits
+}
+
+/// Every transport-shape product an executable's ABI must have settled before it
+/// can be lowered: its input, entry-capture, resume, and local-backend positions
+/// (its return position is already driven by the materialized product). Pulling
+/// these `TransportShape` products records the executable's shapes and, through
+/// the transport component projection, publishes the callable/boundary facts and
+/// grows the demand closure. The ABI product drives them before building the ABI
+/// struct; the transport-facts-only path drives them without building anything.
+pub(crate) fn required_executable_transport_facts_waits(
+    session: &PullSession,
+    executable: &ExecutableKey,
+    materialized: &MaterializedExecutable,
+    types: &Types,
+) -> Vec<PullWait> {
+    let mut waits = Vec::new();
+    waits.extend(required_executable_input_transport_waits(
+        session,
+        executable,
+        materialized,
+        types,
+    ));
+    waits.extend(required_entry_capture_transport_waits(
+        session,
+        executable,
+        materialized,
+        types,
+    ));
+    waits.extend(required_resume_transport_waits(
+        session,
+        executable,
+        materialized,
+        types,
+    ));
+    waits.extend(required_local_backend_transport_waits(
+        session,
+        executable,
+        materialized,
+        types,
+    ));
     waits
 }
 

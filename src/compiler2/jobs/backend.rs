@@ -418,7 +418,7 @@ fn boundary_resolution_executables(
     out
 }
 
-fn executable_key_for_symbol(
+pub(crate) fn executable_key_for_symbol(
     root: RootId,
     symbol: &ExecutableSymbol,
     types: &mut super::super::Types,
@@ -957,7 +957,7 @@ fn symbolic_emission_ready_executable(key: ExecutableKey, abi: &AbiReadyExecutab
     }
 }
 
-fn symbolic_materialized_transport_plan(
+pub(crate) fn symbolic_materialized_transport_plan(
     session: &PullSession,
     executable: &ExecutableKey,
     world: &World<'_>,
