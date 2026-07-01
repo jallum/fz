@@ -10,9 +10,15 @@
   "id": "fz-go4.18.12",
   "labels": [],
   "parent": "fz-go4.18",
+  "comments": [
+    {
+      "text": "SHARPENED CHARTER (owner): minimality is not just the minimal DRIVE ENDPOINT (pull only what's read) — it is minimal COMPUTATION PERFORMED ALONG the drive. Every job fired, fact derived, activation seeded/analyzed, and re-derivation performed on the way must be NECESSARY to construct the correct end product; stopping at the right product is insufficient if the path to it churned. Concretely the audit judges the WHOLE trace: (a) per-(kind,key) fire counts — any key fired more than its correct construction requires is churn; (b) facts produced that no consumer reads; (c) widen-then-retract / derive-then-discard arcs inside the mini-fixpoints (type convergence, return/lane, membership); (d) cross-run trace variance (schedule-dependence); (e) per-span timing. Expected-work statements per fixture remain the baseline to diff against.",
+      "timestamp": "2026-07-01T23:06:14Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "Telemetry minimality audit of the demand fixpoint sub-arcs (type-convergence, return/lane, membership)",
   "type": "bug",
-  "updated_at": "2026-07-01T16:36:34Z"
+  "updated_at": "2026-07-01T23:06:14Z"
 }
