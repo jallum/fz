@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-07-01T18:37:23Z",
+  "description": "fz-go4.18.4 deleted the seal, whose runtime-demand-frontier walk was the ONLY thing that analyzed and published Executable facts for LATENT executables (escaped/opaque callables reached only through the runtime-demand frontier, e.g. a lambda passed as a reducer). Two #[cfg(test)] observability paths depended on it:\n\n1. fixture_facts::canonical_call_edge_facts + World::root_executable_frontier over a legacy full world.drive(). It now sees only the entry cone, so latent generated-lambda executables are invisible. Also feeds fixture_contract_harness_test semantic.activations/executables metrics.\n2. The addressed-keying convergence observation (fz-y6w / fz-f98.14.10.2): asserts qsort/append collapse to one key, partition inputs fold, \u003c=26 activations -- its substance is the analyzed-activation inventory that lived on the deleted seal's SemanticClosure.\n\nProduction is UNAFFECTED -- the product path discovers these executables via the RuntimeDemand product; the fixtures interp/compile correctly. Only legacy test-observability was removed with the seal.\n\nIGNORED awaiting this ticket (each carries the record in its #[ignore] reason):\n- fixture_facts_test::canonical_call_edge_facts_preserve_source_spans_and_hide_generated_ids\n- drive_test::compiler2_quicksort_root_closes_with_a_finite_recursive_frontier\n\nDONE = re-base the oracle (and these two tests) on a product-path activation inventory (drive to RootBackendProduct, read session.materialized_executables() -- same source Compiler2::emit_product_semantic_dumps uses), migrate fixture_contract_harness_test off root_executable_frontier, then delete the #[cfg(test)] World::root_executable_frontier legacy ambient-scan helper entirely.",
+  "id": "fz-go4.18.13",
+  "labels": [],
+  "parent": "fz-go4.18",
+  "priority": 2,
+  "status": "open",
+  "title": "Re-base fixture call-edge oracle + finite-frontier convergence observation onto product-path activation inventory",
+  "type": "bug",
+  "updated_at": "2026-07-01T18:37:23Z"
+}
