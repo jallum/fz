@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-07-01T19:08:33Z",
+  "description": "Prerequisite for the fz-go4.18.4 spine deletion (like .18.7 moved the dumps and .18.8 moved the transport tests OFF the seal — the seal is also a TEST OBSERVATION POINT with consumers that must migrate before deletion).\n\nTWO tests observed the seal's SemanticClosure as their deterministic FINAL snapshot:\n- compiler2_quicksort_root_closes_with_a_finite_recursive_frontier (asserts a FINITE recursive frontier: qsort/append collapse to one key, partition inputs fold to [a2_e]/[a3_e], \u003c=26 activations — the fz-y6w/fz-f98.14.10.2 over-specialization guard; its own comment: 'if this test ever flakes, the design has a hole and the flake has found it — do not loosen it').\n- a generated-lambda provenance test.\n\nThe .18.4 deletion attempt re-pointed them at the RAW activation_analysis.defined telemetry STREAM, which republishes activation keys across fixpoint rounds -\u003e the captured set is schedule-dependent -\u003e the assertion flakes. The agent's #[ignore] is the REJECTED 'mark to avoid' shortcut and contradicts the test's 'do not loosen' contract.\n\nCORRECT FIX: observe the FINAL SETTLED product activation inventory deterministically — the session's demanded/materialized executable set AFTER the drive quiesces (session.demanded_executables() / materialized_executables()), NOT the raw intermediate telemetry stream. Re-point both tests to that, preserving their assertions (finite frontier \u003c=26, key collapse, lambda provenance). Do this on CURRENT HEAD (862262ee, seal still present) so it lands green+stable independent of the deletion; then .18.4 deletes the seal with these tests already off it (no #[ignore]).\n\nCRITICAL SUB-QUESTION (correctness): is the FINAL settled inventory itself deterministic across runs, or does it vary? If it's deterministic (finite, stable) -\u003e clean port, deletion proceeds. If the FINAL inventory varies -\u003e the deletion exposed a REAL convergence non-determinism (activation-key republish churn is not just observation noise) -\u003e that is a correctness bug (route to fz-f98.14 / the fz-go4.18.12 minimality audit) that BLOCKS the deletion until fixed. Report which. No #[ignore] to force green.",
+  "id": "fz-go4.18.14",
+  "labels": [],
+  "parent": "fz-go4.18",
+  "priority": 1,
+  "status": "open",
+  "title": "Re-point seal-snapshot tests (finite-frontier, lambda-provenance) at the deterministic product activation inventory",
+  "type": "bug",
+  "updated_at": "2026-07-01T19:08:33Z"
+}
