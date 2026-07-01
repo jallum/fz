@@ -871,7 +871,7 @@ fn reduce_cont_clause_links_list_param_to_accumulator_result() {
         arity: 3,
         need: ExecutableNeed::Value,
     });
-    let _ = compiler.drive(); // Unresolved/SealSemanticClosure: pre-existing pipeline gap for defmodule-only roots
+    let _ = compiler.drive(); // Unresolved: pre-existing pipeline gap for defmodule-only roots
     // TODO: propagate the selected reducer contract far enough to tie param 0 to the result.
 }
 

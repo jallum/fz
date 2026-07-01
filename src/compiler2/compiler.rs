@@ -86,15 +86,10 @@ impl<'a> Compiler2<'a> {
     }
 
     fn native_program_for_root(&mut self, root: RootId) -> Result<NativeProgram, String> {
-        // Native/JIT/AOT reach the backend through the SAME guarded product
-        // boundary as interp. `LowerNativeProgram` builds the `BackendProgram`
-        // via the product driver (`build_backend_product`), which defers the
-        // legacy seal/transport ladder (`forbidden_product_path_job`), and then
-        // consumes only that product fact plus compiler-owned stores. Running it
-        // as a single demanded job — rather than reopening the unguarded full
-        // drive — keeps `SeedRoot -> SealSemanticClosure -> DeriveTransportPlan`
-        // (and its downstream `DeriveExecutableTransport` / `DeriveRuntimeDemand`
-        // / `root_executable_frontier`) from ever running for the root.
+        // Native/JIT/AOT reach the backend through the SAME product boundary as
+        // interp. `LowerNativeProgram` builds the `BackendProgram` via the
+        // product driver (`build_backend_product`), then consumes only that
+        // product fact plus compiler-owned stores.
         self.abort_on_zero_drive_timeout(root)?;
         let job = Job::LowerNativeProgram(root);
         let effects = super::jobs::run(&mut self.world, &job).map_err(|_| {
@@ -160,17 +155,16 @@ impl<'a> Compiler2<'a> {
     }
 
     /// Serves the `types`/`activations` CLI dumps from the product-path
-    /// activation inventory rather than the legacy semantic-closure seal.
+    /// activation inventory.
     ///
     /// The product backend drive enumerates the executables it MATERIALIZES —
     /// the activations actually compiled into the program, analyzed through the
-    /// world facts the dump reads. That set coincides with the seal's
-    /// fully-reached semantic closure (the demand frontier may briefly over-ask
-    /// for dispatch-sibling activations that never materialize; those are not
-    /// part of the program and must not appear in the dump). Walking the
-    /// materialized inventory and emitting the SAME per-activation dump events
-    /// keeps the dump content identical while severing its dependency on
-    /// `SealSemanticClosure` / `World::define_semantic_closure`.
+    /// world facts the dump reads. That set is exactly the fully-reached
+    /// reachable closure (the demand frontier may briefly over-ask for
+    /// dispatch-sibling activations that never materialize; those are not part
+    /// of the program and must not appear in the dump). Walking the materialized
+    /// inventory and emitting the per-activation dump events keeps the dump
+    /// content sourced entirely from demanded products.
     pub(crate) fn emit_product_semantic_dumps(&mut self, root: RootId) -> Result<(), String> {
         let (_program, driver) = self.drive_root_backend_product(root)?;
         let activations: Vec<_> = driver
@@ -245,7 +239,6 @@ impl<'a> Compiler2<'a> {
     }
 
     fn drive_product_fact_wait(&mut self, root: RootId, fact: FactUse<FactKey>) -> Result<u64, String> {
-        let mut deferred = Vec::new();
         let mut jobs_ran = 0_u64;
         let mut producer_pokes = 0_u64;
         while !self.product_fact_wait_is_satisfied(&fact) {
@@ -254,9 +247,6 @@ impl<'a> Compiler2<'a> {
                 None => {
                     producer_pokes += self.demand_product_fact_producer(fact.fact());
                     let Some(job) = self.world.work_graph.pop() else {
-                        for job in deferred {
-                            self.world.demand(job);
-                        }
                         return Err(format!(
                             "compiler2 root {} product path waited on {:?} with no ready producer; unresolved={:?}",
                             root.as_u32(),
@@ -267,10 +257,6 @@ impl<'a> Compiler2<'a> {
                     job
                 }
             };
-            if forbidden_product_path_job(root, &job) {
-                deferred.push(job);
-                continue;
-            }
             let job_span = self.tel.span(
                 &["fz", "compiler2", "job"],
                 metadata! {
@@ -290,9 +276,6 @@ impl<'a> Compiler2<'a> {
                 }
                 Err(_) => {
                     job_span.stop_with(&measurements! {}, &metadata! {});
-                    for job in deferred {
-                        self.world.demand(job);
-                    }
                     return Err(format!(
                         "compiler2 root {} product path failed while producing {:?}: {:?}",
                         root.as_u32(),
@@ -302,9 +285,6 @@ impl<'a> Compiler2<'a> {
                 }
             }
             if jobs_ran > 50_000 {
-                for job in deferred {
-                    self.world.demand(job);
-                }
                 return Err(format!(
                     "compiler2 root {} product path exceeded fact-wait budget for {:?}",
                     root.as_u32(),
@@ -449,14 +429,4 @@ impl<'a> Compiler2<'a> {
         self.compile_native_backend(root, &program, super::native_codegen::AotBackend::new(obj_name))
             .map_err(|err| format!("compiler2 root {} AOT compile failed: {err}", root.as_u32()))
     }
-}
-
-fn forbidden_product_path_job(root: RootId, job: &Job) -> bool {
-    matches!(
-        job,
-        Job::SealSemanticClosure(candidate)
-            | Job::DeriveTransportPlan(candidate)
-            | Job::BuildBackendProduct(candidate)
-            if *candidate == root
-    )
 }

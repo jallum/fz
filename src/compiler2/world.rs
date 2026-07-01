@@ -34,7 +34,6 @@ use super::identity::{
     FunctionSource, ModuleId, ModuleMap, ModuleSourceKind, ModuleState, NotedTypeDecl, PendingFunctionSourceMap,
     RootEntry, RootId, RootKind, RootMap, TypeDeclMap, TypeName, TypeRefMap,
 };
-use super::jobs::transport::ExecutableTransportFacts;
 use super::keying::{DispatchDemand, DispatchMaskMap, RecursiveMap};
 use super::module_interface::{InterfaceCallableKind, InterfaceExpectation, InterfaceRequester, ModuleInterface};
 use super::namespace::{Namespace, NamespaceStore, NamespaceSymbol};
@@ -44,22 +43,18 @@ use super::protocol::{
 };
 use super::quoted_surface::{ReservedSourceDefinition, ScopeForm, reserved_source_definition};
 use super::runtime::{self, RuntimeModuleCode};
-use super::runtime_demand_facts::RuntimeDemandMap;
 use super::scheduler::FatalError;
 use super::scope::ScopeSnapshot;
 use super::semantic::{
     ActivationAnalysis, ActivationInputMap, ActivationMap, CallSiteKey, CallSiteMap, CallSiteSummary, CallSiteTargets,
-    CallSiteTargetsMap, CallableDemand, ContributionReplace, ExecutableRuntimeDemand, JoinContribution,
-    ReturnDemandMap, RuntimeDemand, SemanticClosure, SemanticClosureMap, ShapeDemand, TransportInputKey,
-    TransportInputSourceMap, TransportInputSources,
+    CallSiteTargetsMap, ContributionReplace, ReturnDemandMap, RuntimeDemand,
 };
 use super::source::{
     QuotedLexicalContext, QuotedLexicalContextKind, QuotedSourceBuilder, QuotedSourceError, QuotedSourceMetadata,
     QuotedSourceRoot,
 };
 use super::transport::{
-    BoundaryDescr, BoundaryId, CallableDescr, CallableId, CodegenLaneRepr, CodegenSeam, CodegenSeamFact, LaneDescr,
-    LaneId, ShapeDescr, ShapeId, TransportPlan, TransportStore,
+    BoundaryDescr, BoundaryId, CallableDescr, CallableId, LaneDescr, LaneId, ShapeDescr, ShapeId, TransportStore,
 };
 use super::typedef::{TypeDef, TypeDefMap};
 use super::types::{ClosureTarget, MapKey, Ty, Types};
@@ -101,114 +96,6 @@ enum CallableMatchScore {
     Exact,
 }
 
-fn count_tuple_field_demands(demand: &RuntimeDemand) -> u64 {
-    match &demand.shape {
-        ShapeDemand::Ignore | ShapeDemand::Whole => 0,
-        ShapeDemand::TupleFields(fields) => {
-            fields.len() as u64 + fields.iter().map(count_tuple_field_demands).sum::<u64>()
-        }
-    }
-}
-
-/// Count, across a demand and every nested tuple-field demand, the callable
-/// axes for which `bit` holds (e.g. `opaque` or `escape`).
-fn count_callable_axis(demand: &RuntimeDemand, bit: fn(&CallableDemand) -> bool) -> u64 {
-    let here = bit(&demand.callable) as u64;
-    let nested = match &demand.shape {
-        ShapeDemand::Ignore | ShapeDemand::Whole => 0,
-        ShapeDemand::TupleFields(fields) => fields.iter().map(|field| count_callable_axis(field, bit)).sum(),
-    };
-    here + nested
-}
-
-fn count_opaque_callable_demands(demand: &RuntimeDemand) -> u64 {
-    count_callable_axis(demand, |callable| callable.opaque)
-}
-
-fn count_escaped_callable_demands(demand: &RuntimeDemand) -> u64 {
-    count_callable_axis(demand, |callable| callable.escape)
-}
-
-fn format_codegen_seam_fact(fact: &CodegenSeamFact) -> String {
-    let seam = match &fact.seam {
-        CodegenSeam::FunctionEntry {
-            executable,
-            semantic_index,
-        } => {
-            format!(
-                "FunctionEntry(function {}, input {})",
-                executable.activation.function.as_u32(),
-                semantic_index
-            )
-        }
-        CodegenSeam::BlockParam { executable, entry } => {
-            format!(
-                "BlockParam(function {}, entry {})",
-                executable.activation.function.as_u32(),
-                entry.as_u32()
-            )
-        }
-        CodegenSeam::ReturnDelivery { executable } => {
-            format!("ReturnDelivery(function {})", executable.activation.function.as_u32())
-        }
-        CodegenSeam::ContinuationEntry {
-            executable,
-            callsite,
-            entry,
-        } => {
-            format!(
-                "ContinuationEntry(function {}, callsite {}, entry {})",
-                executable.activation.function.as_u32(),
-                callsite.as_u32(),
-                entry.as_u32()
-            )
-        }
-        CodegenSeam::ReturnContinuation { executable, callsite } => {
-            format!(
-                "ReturnContinuation(function {}, callsite {})",
-                executable.activation.function.as_u32(),
-                callsite.as_u32()
-            )
-        }
-        CodegenSeam::TailCall { executable, callsite } => {
-            format!(
-                "TailCall(function {}, callsite {})",
-                executable.activation.function.as_u32(),
-                callsite.as_u32()
-            )
-        }
-        CodegenSeam::CallableBoundary { boundary } => {
-            format!("CallableBoundary(boundary {})", boundary.as_u32())
-        }
-        CodegenSeam::ExternBoundary { executable } => {
-            format!("ExternBoundary(function {})", executable.activation.function.as_u32())
-        }
-        CodegenSeam::FirstClassPublication { boundary } => {
-            format!("FirstClassPublication(boundary {})", boundary.as_u32())
-        }
-    };
-    let shape = fact
-        .shape
-        .map(|shape| format!("S{}", shape.as_u32()))
-        .unwrap_or_else(|| "none".to_string());
-    format!(
-        "seam {}; shape {}; lane L{}; repr {}",
-        seam,
-        shape,
-        fact.lane.as_u32(),
-        format_codegen_lane_repr(fact.repr)
-    )
-}
-
-fn format_codegen_lane_repr(repr: CodegenLaneRepr) -> &'static str {
-    match repr {
-        CodegenLaneRepr::ValueRef => "ValueRef",
-        CodegenLaneRepr::RawInt => "RawInt",
-        CodegenLaneRepr::RawF64 => "RawF64",
-        CodegenLaneRepr::RawAtom => "RawAtom",
-    }
-}
-
 pub struct World<'a> {
     tel: &'a dyn Telemetry,
     code: CodeMap,
@@ -232,11 +119,8 @@ pub struct World<'a> {
     activations: ActivationMap,
     activation_inputs: ActivationInputMap<Job>,
     return_demands: ReturnDemandMap<Job>,
-    input_sources: TransportInputSourceMap<Job>,
-    runtime_demands: RuntimeDemandMap,
     callsites: CallSiteMap,
     callsite_targets: CallSiteTargetsMap,
-    semantic_closures: SemanticClosureMap,
     backend: BackendProgramMap,
     macro_executables: MacroExecutableMap,
     native: NativeProgramMap,
@@ -245,15 +129,12 @@ pub struct World<'a> {
     namespaces: NamespaceStore,
     types: Types,
     transport: TransportStore,
-    executable_transport: HashMap<ExecutableKey, ExecutableTransportFacts>,
     runtime_prelude: CodeId,
     runtime_modules: HashMap<ModuleId, RuntimeModuleCode>,
     reported_unresolved: HashSet<UnresolvedIssueKey>,
     reported_warnings: HashSet<WarningDiagnosticKey>,
     warning_diagnostics: Vec<Diagnostic>,
     pub(crate) work_graph: WorkGraph,
-    #[cfg(test)]
-    transport_plan_test_handlers: Vec<Box<dyn super::transport_validation::TransportPlanTestHandler + 'a>>,
 }
 
 impl std::fmt::Debug for World<'_> {
@@ -299,11 +180,8 @@ impl<'a> World<'a> {
             activations: ActivationMap::new(),
             activation_inputs: ActivationInputMap::new(),
             return_demands: ReturnDemandMap::new(),
-            input_sources: TransportInputSourceMap::new(),
-            runtime_demands: RuntimeDemandMap::new(),
             callsites: CallSiteMap::new(),
             callsite_targets: CallSiteTargetsMap::new(),
-            semantic_closures: SemanticClosureMap::new(),
             backend: BackendProgramMap::new(),
             macro_executables: MacroExecutableMap::new(),
             native: NativeProgramMap::new(),
@@ -312,15 +190,12 @@ impl<'a> World<'a> {
             namespaces: NamespaceStore::new(),
             types: Types::new(),
             transport: TransportStore::new(),
-            executable_transport: HashMap::new(),
             runtime_prelude: CodeId::ZERO,
             runtime_modules: HashMap::new(),
             reported_unresolved: HashSet::new(),
             reported_warnings: HashSet::new(),
             warning_diagnostics: Vec::new(),
             work_graph: WorkGraph::new(),
-            #[cfg(test)]
-            transport_plan_test_handlers: super::transport_validation::default_transport_plan_test_handlers(),
         };
         world.runtime_modules = runtime::bootstrap(&mut world.modules);
         world.runtime_prelude = world.code.define(
@@ -443,12 +318,6 @@ impl<'a> World<'a> {
         self.transport.interners().boundaries()
     }
 
-    // ---- Transport plan access ------------------------------------------
-
-    pub fn transport_plan(&self, root: RootId) -> Option<&TransportPlan> {
-        self.transport.plans().get(root)
-    }
-
     pub fn submit_code(&mut self, name: Option<String>, text: String) -> CodeId {
         let bytes = text.len();
         let code_id = self.code.define(name, text);
@@ -548,13 +417,6 @@ impl<'a> World<'a> {
                 _ => None,
             })
             .collect::<HashSet<_>>();
-        let previous_input_source_outputs = previous_output_keys
-            .into_iter()
-            .filter_map(|fact| match fact {
-                FactKey::InputSources(key) => Some(key),
-                _ => None,
-            })
-            .collect::<HashSet<_>>();
         let ContributionReplace {
             output_keys: activation_input_outputs,
             changed_keys: activation_input_changed,
@@ -600,37 +462,13 @@ impl<'a> World<'a> {
         } else {
             self.extend_return_demand_contributions(&job, effects.return_demand_contributions)
         };
-        let ContributionReplace {
-            output_keys: input_source_outputs,
-            changed_keys: input_source_changed,
-        } = if waits.is_empty() {
-            self.conclude_input_source_contributions(
-                &job,
-                previous_input_source_outputs,
-                effects.input_source_contributions,
-                rebased,
-            )
-        } else {
-            self.extend_input_source_contributions(&job, effects.input_source_contributions)
-        };
         let mut outputs = effects.outputs;
         outputs.extend(activation_input_outputs.into_iter().map(FactKey::ActivationInputs));
         outputs.extend(return_demand_outputs.into_iter().map(FactKey::ReturnDemand));
-        outputs.extend(input_source_outputs.into_iter().map(FactKey::InputSources));
-        let mut runtime_demand_changed = Vec::new();
-        for (executable, demand) in effects.runtime_demands {
-            let changed = self.define_runtime_demand(executable.clone(), demand);
-            outputs.push(FactKey::RuntimeDemand(executable.clone()));
-            if changed {
-                runtime_demand_changed.push(FactKey::RuntimeDemand(executable));
-            }
-        }
         let outputs = dedupe_job_facts(outputs);
         let mut changed = effects.changed;
         changed.extend(activation_input_changed.into_iter().map(FactKey::ActivationInputs));
         changed.extend(return_demand_changed.into_iter().map(FactKey::ReturnDemand));
-        changed.extend(input_source_changed.into_iter().map(FactKey::InputSources));
-        changed.extend(runtime_demand_changed);
         let changed = dedupe_job_facts(changed);
         let step = self
             .work_graph
@@ -731,69 +569,6 @@ impl<'a> World<'a> {
 
     pub fn activation_analysis(&self, key: &ActivationKey) -> Option<&ActivationAnalysis> {
         self.activations.get(key).and_then(|slot| slot.analysis())
-    }
-
-    /// The representable GROUND SIBLING SURFACE for a value-template call surface:
-    /// the same function's activation whose surface (its inputs past the leading
-    /// `captures_len` capture slots) grounds every unrepresentable position of
-    /// `template_surface` while keeping every other position identical. Returns
-    /// that grounded surface, so a boxed callable's resolution can point at the
-    /// real runtime instance instead of the dead generic one whose body cannot be
-    /// materialized (fz-hwn.23).
-    ///
-    /// Only the surface is matched; the CAPTURES are preserved by the caller. A
-    /// capture carries the boxed callable's closure identity, which refines across
-    /// activations (`(α,α)->α` generic vs `(binary,int)->binary` at a ground call),
-    /// so it is neither equal nor safely subsumable — the caller threads its own
-    /// captures through unchanged. `None` when `template_surface` is already
-    /// representable, or is a genuine polymorphic escape with no ground instance.
-    pub(crate) fn ground_surface_for_template(
-        &mut self,
-        root: RootId,
-        function: FunctionId,
-        captures_len: usize,
-        template_surface: &[Ty],
-    ) -> Option<Vec<Ty>> {
-        if !self.types.key_is_value_template(template_surface) {
-            return None;
-        }
-        let candidates: Vec<Vec<Ty>> = self
-            .activations
-            .keys()
-            .filter(|key| key.root == root && key.function == function)
-            .map(|key| key.inputs(&self.types))
-            .filter(|inputs| inputs.len() >= captures_len)
-            .collect();
-        for inputs in candidates {
-            // The sibling's own-surface — its inputs past the leading capture
-            // slots, re-addressed into the standalone surface frame so it
-            // compares to the template by address, not by raw position
-            // (fz-hwn.27.8).
-            let sibling_surface = self.types.own_surface(&inputs, captures_len);
-            if self.is_ground_instance_of_template(&sibling_surface, template_surface) {
-                return Some(sibling_surface);
-            }
-        }
-        None
-    }
-
-    /// True when `sibling` is the SAME activation as `template` with its
-    /// unrepresentable positions grounded. A value-template position (a bare
-    /// scalar / tuple-with-bare-field) may be grounded to any representable type;
-    /// every OTHER position must be IDENTICAL. Identity, not subsumption, on
-    /// representable positions: a captured callable carries its closure-target
-    /// identity, and a sibling with a different capture is a distinct runtime
-    /// callable, not a grounding.
-    fn is_ground_instance_of_template(&self, sibling: &[Ty], template: &[Ty]) -> bool {
-        sibling.len() == template.len()
-            && !self.types.key_is_value_template(sibling)
-            && sibling.iter().zip(template).all(|(&s, &t)| {
-                if self.types.is_value_template(&t) {
-                    !self.types.is_value_template(&s)
-                } else {
-                    s == t
-                }
-            })
     }
 
     /// The activation's current return EVIDENCE. `None` means the claim is
@@ -955,70 +730,6 @@ impl<'a> World<'a> {
         next
     }
 
-    pub(crate) fn return_demand(&self, key: &ExecutableKey) -> RuntimeDemand {
-        self.return_demands
-            .get(key)
-            .cloned()
-            .unwrap_or_else(RuntimeDemand::ignore)
-    }
-
-    fn conclude_input_source_contributions(
-        &mut self,
-        job: &Job,
-        previous_output_keys: HashSet<TransportInputKey>,
-        contributions: Vec<(TransportInputKey, TransportInputSources)>,
-        rebased: bool,
-    ) -> ContributionReplace<TransportInputKey> {
-        let next = self.normalize_input_source_contributions(contributions);
-        // Transport input sources are cumulative: within an epoch the set of
-        // sources feeding a transport input only grows as the closure ascends,
-        // so a source transiently absent from one rerun is not a retraction.
-        // Only a rebased (ground-shifted) publisher withdraws a stale source.
-        if rebased {
-            self.input_sources
-                .conclude(&mut (), job.clone(), previous_output_keys, next, true)
-        } else {
-            self.input_sources
-                .conclude_preserving_frontier(&mut (), job.clone(), previous_output_keys, next)
-        }
-    }
-
-    fn extend_input_source_contributions(
-        &mut self,
-        job: &Job,
-        contributions: Vec<(TransportInputKey, TransportInputSources)>,
-    ) -> ContributionReplace<TransportInputKey> {
-        let next = self.normalize_input_source_contributions(contributions);
-        self.input_sources.extend(&mut (), job.clone(), next)
-    }
-
-    fn normalize_input_source_contributions(
-        &mut self,
-        contributions: Vec<(TransportInputKey, TransportInputSources)>,
-    ) -> HashMap<TransportInputKey, TransportInputSources> {
-        let mut next = HashMap::<TransportInputKey, TransportInputSources>::new();
-        for (key, sources) in contributions {
-            next.entry(key)
-                .and_modify(|current| current.join_assign(&sources, &mut ()))
-                .or_insert(sources);
-        }
-        next
-    }
-
-    pub(crate) fn input_sources(&self, key: &TransportInputKey) -> Option<&TransportInputSources> {
-        self.fact_revision(&FactKey::InputSources(*key))?;
-        self.input_sources.get(key)
-    }
-
-    pub(crate) fn define_runtime_demand(&mut self, key: ExecutableKey, demand: ExecutableRuntimeDemand) -> bool {
-        self.runtime_demands.define(key, demand)
-    }
-
-    pub(crate) fn runtime_demand(&self, key: &ExecutableKey) -> Option<&ExecutableRuntimeDemand> {
-        self.fact_revision(&FactKey::RuntimeDemand(key.clone()))?;
-        self.runtime_demands.get(key)
-    }
-
     pub fn define_activation_return(&mut self, key: &ActivationKey, evidence: Option<Ty>) -> bool {
         // Return evidence is produced in the activation's addressed frame (clause
         // returns over addressed inputs), so it is already canonical — the old
@@ -1103,278 +814,6 @@ impl<'a> World<'a> {
 
     pub fn callsite_targets(&self, key: &CallSiteKey) -> Option<&CallSiteTargets> {
         self.callsite_targets.get(key)
-    }
-
-    pub(crate) fn define_semantic_closure(&mut self, root: RootId, closure: SemanticClosure) -> bool {
-        let changed = self.semantic_closures.define(root, closure);
-        let closure = self
-            .semantic_closures
-            .get(root)
-            .expect("semantic closures should be readable right after they are defined");
-        self.tel.execute(
-            &["fz", "compiler2", "semantic_closed", "defined"],
-            &measurements! {
-                root_id: root.as_u32(),
-            },
-            &metadata! {
-                closure: opaque_debug(closure),
-                root_id: opaque_debug(&root),
-            },
-        );
-        let runtime_demands = closure
-            .executables
-            .iter()
-            .filter_map(|executable| {
-                self.runtime_demand(executable)
-                    .cloned()
-                    .map(|demand| (executable.clone(), demand))
-            })
-            .collect::<HashMap<_, _>>();
-        self.tel.execute(
-            &["fz", "compiler2", "runtime_demand", "defined"],
-            &measurements! {
-                root_id: root.as_u32(),
-                executables: runtime_demands.len() as u64,
-                demanded_inputs: runtime_demands
-                    .values()
-                    .map(|demand| demand.input_demands.iter().filter(|demand| !demand.is_ignore()).count() as u64)
-                    .sum::<u64>(),
-                omitted_inputs: runtime_demands
-                    .values()
-                    .map(|demand| demand.input_demands.iter().filter(|demand| demand.is_ignore()).count() as u64)
-                    .sum::<u64>(),
-                demanded_values: runtime_demands
-                    .values()
-                    .map(|demand| demand.value_demands.values().filter(|demand| !demand.is_ignore()).count() as u64)
-                    .sum::<u64>(),
-                tuple_field_demands: runtime_demands
-                    .values()
-                    .map(|demand| demand.value_demands.values().map(count_tuple_field_demands).sum::<u64>())
-                    .sum::<u64>(),
-                direct_callable_flows: runtime_demands
-                    .values()
-                    .map(|demand| {
-                        demand
-                            .callable_flows
-                            .values()
-                            .filter(|flow| !flow.direct_surfaces.is_empty())
-                            .count() as u64
-                    })
-                    .sum::<u64>(),
-                first_class_callable_flows: runtime_demands
-                    .values()
-                    .map(|demand| {
-                        demand
-                            .callable_flows
-                            .values()
-                            .filter(|flow| flow.escape || flow.opaque)
-                            .count() as u64
-                    })
-                    .sum::<u64>(),
-                opaque_callable_demands: runtime_demands
-                    .values()
-                    .map(|demand| demand.value_demands.values().map(count_opaque_callable_demands).sum::<u64>())
-                    .sum::<u64>(),
-                escaped_callable_demands: runtime_demands
-                    .values()
-                    .map(|demand| demand.value_demands.values().map(count_escaped_callable_demands).sum::<u64>())
-                    .sum::<u64>(),
-            },
-            &metadata! {
-                root_id: opaque_debug(&root),
-                runtime_demands: opaque_debug(&runtime_demands),
-            },
-        );
-        super::dump::emit_semantic_dump_events(self, root, closure);
-        changed
-    }
-
-    /// Store one executable's transport contribution (the `ExecutableTransport`
-    /// fact content). Returns whether it changed, so the work graph bumps the
-    /// fact's revision only on real movement -- the blast-radius signal the
-    /// fan-in subscribes to.
-    pub(crate) fn define_executable_transport(
-        &mut self,
-        executable: ExecutableKey,
-        facts: ExecutableTransportFacts,
-    ) -> bool {
-        let changed = match self.executable_transport.get(&executable) {
-            Some(existing) if existing == &facts => false,
-            _ => {
-                self.executable_transport.insert(executable.clone(), facts);
-                true
-            }
-        };
-        // The blast-radius signal: one event per executable whose transport was
-        // (re)projected this drive, regardless of whether the content moved.
-        // A re-run that exits early on a wait never reaches here, so the captured
-        // executable set is exactly the projection work a drive performed.
-        self.tel.execute(
-            &["fz", "compiler2", "executable_transport", "derived"],
-            &measurements! {
-                root_id: executable.activation.root.as_u32(),
-                changed: changed as u64,
-            },
-            &metadata! {
-                executable: opaque_debug(&executable),
-            },
-        );
-        changed
-    }
-
-    pub(crate) fn executable_transport(&self, executable: &ExecutableKey) -> Option<&ExecutableTransportFacts> {
-        self.executable_transport.get(executable)
-    }
-
-    pub(crate) fn define_transport_plan(&mut self, root: RootId, plan: TransportPlan) -> bool {
-        let semantic_revision = self
-            .fact_revision(&FactKey::SemanticClosed(root))
-            .expect("transport plans should only be defined from settled semantic closures");
-        let changed = self.transport.plans_mut().define(root, plan);
-        let plan = self
-            .transport
-            .plans()
-            .get(root)
-            .expect("transport plans should be readable right after they are defined");
-        let interners = self.transport.interners();
-        let nothing_shape_count = interners
-            .shapes()
-            .filter(|(_, descr)| matches!(descr, super::transport::ShapeDescr::Nothing))
-            .count() as u64;
-        let tuple_shape_count = interners
-            .shapes()
-            .filter(|(_, descr)| matches!(descr, super::transport::ShapeDescr::Tuple(_)))
-            .count() as u64;
-        let callable_shape_count = interners
-            .shapes()
-            .filter(|(_, descr)| matches!(descr, super::transport::ShapeDescr::Callable(_)))
-            .count() as u64;
-        let direct_callable_count = plan
-            .callables
-            .values()
-            .filter(|facts| !facts.direct_surfaces.is_empty())
-            .count() as u64;
-        let first_class_callable_count = plan
-            .callables
-            .values()
-            .filter(|facts| !facts.boundary_ids.is_empty())
-            .count() as u64;
-        let omitted_position_count = plan
-            .positions
-            .values()
-            .filter(|shape| matches!(interners.shape(**shape), super::transport::ShapeDescr::Nothing))
-            .count() as u64;
-        let resume_payload_position_count = plan
-            .positions
-            .keys()
-            .filter(|position| matches!(position, super::transport::TransportPosition::ResumePayload { .. }))
-            .count() as u64;
-        let return_payload_position_count = plan
-            .positions
-            .keys()
-            .filter(|position| matches!(position, super::transport::TransportPosition::ReturnPayload { .. }))
-            .count() as u64;
-        let call_result_payload_position_count = resume_payload_position_count + return_payload_position_count;
-        let codegen_seam_facts = plan
-            .codegen_seam_facts
-            .iter()
-            .map(format_codegen_seam_fact)
-            .collect::<Vec<_>>();
-        let codegen_function_entry_seam_fact_count = plan
-            .codegen_seam_facts
-            .iter()
-            .filter(|fact| matches!(fact.seam, CodegenSeam::FunctionEntry { .. }))
-            .count() as u64;
-        let codegen_block_param_seam_fact_count = plan
-            .codegen_seam_facts
-            .iter()
-            .filter(|fact| matches!(fact.seam, CodegenSeam::BlockParam { .. }))
-            .count() as u64;
-        let codegen_return_delivery_seam_fact_count = plan
-            .codegen_seam_facts
-            .iter()
-            .filter(|fact| matches!(fact.seam, CodegenSeam::ReturnDelivery { .. }))
-            .count() as u64;
-        let codegen_continuation_entry_seam_fact_count = plan
-            .codegen_seam_facts
-            .iter()
-            .filter(|fact| matches!(fact.seam, CodegenSeam::ContinuationEntry { .. }))
-            .count() as u64;
-        let codegen_return_continuation_seam_fact_count = plan
-            .codegen_seam_facts
-            .iter()
-            .filter(|fact| matches!(fact.seam, CodegenSeam::ReturnContinuation { .. }))
-            .count() as u64;
-        let codegen_tail_call_seam_fact_count = plan
-            .codegen_seam_facts
-            .iter()
-            .filter(|fact| matches!(fact.seam, CodegenSeam::TailCall { .. }))
-            .count() as u64;
-        let codegen_callable_boundary_seam_fact_count = plan
-            .codegen_seam_facts
-            .iter()
-            .filter(|fact| matches!(fact.seam, CodegenSeam::CallableBoundary { .. }))
-            .count() as u64;
-        let codegen_extern_boundary_seam_fact_count = plan
-            .codegen_seam_facts
-            .iter()
-            .filter(|fact| matches!(fact.seam, CodegenSeam::ExternBoundary { .. }))
-            .count() as u64;
-        let codegen_first_class_publication_seam_fact_count = plan
-            .codegen_seam_facts
-            .iter()
-            .filter(|fact| matches!(fact.seam, CodegenSeam::FirstClassPublication { .. }))
-            .count() as u64;
-        self.tel.execute(
-            &["fz", "compiler2", "transport_flow", "defined"],
-            &measurements! {
-                root_id: root.as_u32(),
-                semantic_revision: semantic_revision,
-                executable_count: plan.executable_membership.len() as u64,
-                transport_position_count: plan.positions.len() as u64,
-                shape_descriptor_count: interners.shape_count() as u64,
-                lane_descriptor_count: interners.lane_count() as u64,
-                callable_descriptor_count: interners.callable_count() as u64,
-                boundary_descriptor_count: interners.boundary_count() as u64,
-                nothing_shape_count: nothing_shape_count,
-                tuple_shape_count: tuple_shape_count,
-                callable_shape_count: callable_shape_count,
-                direct_callable_count: direct_callable_count,
-                first_class_callable_count: first_class_callable_count,
-                boundary_publication_count: plan.boundaries.len() as u64,
-                omitted_position_count: omitted_position_count,
-                resume_payload_position_count: resume_payload_position_count,
-                return_payload_position_count: return_payload_position_count,
-                call_result_payload_position_count: call_result_payload_position_count,
-                codegen_seam_fact_count: plan.codegen_seam_facts.len() as u64,
-                codegen_function_entry_seam_fact_count: codegen_function_entry_seam_fact_count,
-                codegen_block_param_seam_fact_count: codegen_block_param_seam_fact_count,
-                codegen_return_delivery_seam_fact_count: codegen_return_delivery_seam_fact_count,
-                codegen_continuation_entry_seam_fact_count: codegen_continuation_entry_seam_fact_count,
-                codegen_return_continuation_seam_fact_count: codegen_return_continuation_seam_fact_count,
-                codegen_tail_call_seam_fact_count: codegen_tail_call_seam_fact_count,
-                codegen_callable_boundary_seam_fact_count: codegen_callable_boundary_seam_fact_count,
-                codegen_extern_boundary_seam_fact_count: codegen_extern_boundary_seam_fact_count,
-                codegen_first_class_publication_seam_fact_count: codegen_first_class_publication_seam_fact_count,
-            },
-            &metadata! {
-                entry_executable_symbol: opaque_debug(&plan.entry),
-                executable_membership: opaque_debug(&plan.executable_membership),
-                transport_positions: opaque_debug(&plan.positions),
-                shape_descriptors: opaque_debug(&interners.shapes().map(|(id, descr)| (id, descr.clone())).collect::<Vec<_>>()),
-                lane_descriptors: opaque_debug(&interners.lanes().map(|(id, descr)| (id, descr.clone())).collect::<Vec<_>>()),
-                callable_facts: opaque_debug(&plan.callables),
-                boundary_facts: opaque_debug(&plan.boundaries),
-                seam_facts: codegen_seam_facts,
-            },
-        );
-        #[cfg(test)]
-        {
-            for handler in &self.transport_plan_test_handlers {
-                handler.transport_plan_defined(self, root);
-            }
-        }
-        changed
     }
 
     pub(crate) fn define_backend_program(&mut self, root: RootId, program: BackendProgram) -> bool {
@@ -2667,10 +2106,11 @@ impl<'a> World<'a> {
         self.work_graph.facts().is_settled(key)
     }
 
-    /// Legacy diagnostic/root-planner scan over all known executable facts for
-    /// one root. Product artifact construction must stay on explicit demanded
-    /// products instead of using this ambient frontier; telemetry guards that
-    /// product drives do not reach this helper.
+    /// Test-only ambient scan over the published `Executable` facts for one root,
+    /// backing the fixture call-edge oracle. Production artifact construction
+    /// stays on explicitly demanded products; the emitted telemetry lets tests
+    /// assert product drives never reach this ambient frontier.
+    #[cfg(test)]
     pub(crate) fn root_executable_frontier(&self, root: RootId) -> HashSet<ExecutableKey> {
         let frontier = self
             .work_graph

@@ -88,7 +88,6 @@ pub(crate) fn build_backend_product(world: &mut World<'_>, root_id: RootId) -> R
 }
 
 fn drive_product_fact_wait(world: &mut World<'_>, root_id: RootId, fact: FactUse<FactKey>) -> Result<u64, FatalError> {
-    let mut deferred = Vec::new();
     let mut jobs_ran = 0_u64;
     let mut producer_pokes = 0_u64;
     while !product_fact_wait_is_satisfied(world, &fact) {
@@ -97,9 +96,6 @@ fn drive_product_fact_wait(world: &mut World<'_>, root_id: RootId, fact: FactUse
             None => {
                 producer_pokes += demand_product_fact_producer(world, fact.fact());
                 let Some(job) = world.work_graph.pop() else {
-                    for job in deferred {
-                        world.demand(job);
-                    }
                     return Err(emit_backend_product_error(
                         world,
                         Span::DUMMY,
@@ -113,10 +109,6 @@ fn drive_product_fact_wait(world: &mut World<'_>, root_id: RootId, fact: FactUse
                 job
             }
         };
-        if forbidden_product_path_job(root_id, &job) {
-            deferred.push(job);
-            continue;
-        }
         let job_span = world.tel().span(
             &["fz", "compiler2", "job"],
             metadata! {
@@ -136,16 +128,10 @@ fn drive_product_fact_wait(world: &mut World<'_>, root_id: RootId, fact: FactUse
             }
             Err(err) => {
                 job_span.stop_with(&measurements! {}, &metadata! {});
-                for job in deferred {
-                    world.demand(job);
-                }
                 return Err(err);
             }
         }
         if jobs_ran > 50_000 {
-            for job in deferred {
-                world.demand(job);
-            }
             return Err(emit_backend_product_error(
                 world,
                 Span::DUMMY,
@@ -210,14 +196,6 @@ fn product_fact_wait_is_satisfied(world: &World<'_>, fact: &FactUse<FactKey>) ->
         FactReadiness::Current => world.fact_revision(fact.fact()).is_some(),
         FactReadiness::Settled => world.fact_is_settled(fact.fact()),
     }
-}
-
-fn forbidden_product_path_job(root: RootId, job: &Job) -> bool {
-    matches!(
-        job,
-        Job::SealSemanticClosure(candidate) | Job::DeriveTransportPlan(candidate) | Job::BuildBackendProduct(candidate)
-            if *candidate == root
-    )
 }
 
 fn emit_backend_product_error(world: &World<'_>, span: Span, message: impl Into<String>) -> FatalError {

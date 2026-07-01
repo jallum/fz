@@ -74,8 +74,12 @@ BackendExecutable(E)
 `RootBackendProduct(root)` is the final assembly boundary. It keys the root
 entry, pulls `BackendExecutable(entry)`, follows symbolic backend call edges and
 callable entries already recorded in the request-local `PullSession`, assigns
-dense executable indices, and packages the `BackendProgram`. It does not consume
-`SemanticClosed(root)`, `TransportPlan(root)`, or the old root projection stack.
+dense executable indices, and packages the `BackendProgram`. There is no root
+semantic-closure seal or root transport-plan fact: the legacy
+`SealSemanticClosure`/`DeriveTransportPlan`/`DeriveExecutableTransport`/
+`DeriveRuntimeDemand` jobs and their `SemanticClosed`/`TransportPlan`/
+`ExecutableTransport`/`RuntimeDemand`/`InputSources` facts were deleted
+(`fz-go4.18.4`); the product pull path is the only artifact path.
 The temporary planning artifact `../pull-based.html` has been retired; this
 doc, `northstar.html`, and the closed `fz-go4.16.*` tickets are the durable
 source of truth for the pull artifact path.
@@ -338,13 +342,14 @@ with no ground sibling keeps its template). It is the authoritative surface-set
 operation, applied at the demand→representation seam — `CallableFlowFact`
 first-class surfaces at construction and every callable axis at demand
 finalization (`ExecutableRuntimeDemand::ground_callable_surfaces`) — so transport
-never re-derives or relitigates the choice. The demand signal
-`fz.compiler2.runtime_demand.defined` and its representation twin
-`fz.compiler2.transport_flow.defined` each carry a drift-guarded field contract
-(pinned in `semantic_analysis_test.rs` and `transport_contract_test.rs`), so the
-five distinctions this model keeps separate — omitted lanes, tuple-field
-transport, direct-callable transport, first-class materialization, and
-callable-entry publication — stay individually observable across the seam.
+never re-derives or relitigates the choice. The legacy root telemetry twins
+`fz.compiler2.runtime_demand.defined` and `fz.compiler2.transport_flow.defined`
+were deleted with the seal/transport spine (`fz-go4.18.4`); the five distinctions
+this model keeps separate — omitted lanes, tuple-field transport,
+direct-callable transport, first-class materialization, and callable-entry
+publication — stay individually observable through the demanded `RuntimeDemand`
+product and the per-position transport products pinned in
+`transport_contract_test.rs`.
 
 A transport `ShapeId` is a faithful, total description of *physical runtime
 layout* and nothing else. A boxed first-class callable's VALUE shape is
@@ -580,13 +585,10 @@ Current conclusion from the code:
   consume that same compiler2-owned backend path directly, using the world's
   interned type store instead of a fresh legacy one
 - the native/JIT/AOT front doors reach `NativeProgram(root)` through the same
-  guarded product boundary as interp: `native_program_for_root` runs the single
-  demanded `LowerNativeProgram(root)` job, which builds `BackendProgram(root)`
-  via the product driver (`build_backend_product`, which defers
-  `SealSemanticClosure`/`DeriveTransportPlan`). They never reopen the unguarded
-  full drive, so `SeedRoot -> SealSemanticClosure -> DeriveTransportPlan` and the
-  downstream `DeriveExecutableTransport`/`DeriveRuntimeDemand`/
-  `root_executable_frontier` legacy ladder do not run for the root
+  product boundary as interp: `native_program_for_root` runs the single demanded
+  `LowerNativeProgram(root)` job, which builds `BackendProgram(root)` via the
+  product driver (`build_backend_product`). There is no legacy seal/transport
+  ladder to avoid: those jobs were deleted (`fz-go4.18.4`)
 - `fz2` is now the side-by-side outer shell for those front doors: `fz2 run`,
   `fz2 interp`, and `fz2 build` submit source directly to Compiler2, seed
   `main/0`, and never reopen old planner or type-infer work

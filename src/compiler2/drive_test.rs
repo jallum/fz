@@ -7,7 +7,7 @@ use crate::compiler2::{
     AbiValueRepr, ActivationKey, BackendEntryOrigin, BackendProgram, BackendStep, CallSiteId, CallSiteKey,
     CallSiteSummary, CallTarget, ControlEntryOrigin, ExecutableKey, FactKey, FactUse, FunctionId, FunctionRef,
     LoweredBody, LoweredStep, LoweredTail, ModuleId, ModuleState, QuotedSourceHeap, QuotedSourceMetadata,
-    SelectedCallee, SemanticClosure, Ty, TypeName, TypeVarId, Types, ValueId, World, parse_quoted_program,
+    SelectedCallee, Ty, TypeName, TypeVarId, Types, ValueId, parse_quoted_program,
 };
 use crate::diag::codes;
 use crate::dispatch_matrix::Region;
@@ -38,7 +38,6 @@ type FunctionDefs = Rc<RefCell<HashMap<FunctionId, FunctionDefinedRecord>>>;
 type SourceNotes = Rc<RefCell<Vec<FunctionRef>>>;
 type ModuleDefs = Rc<RefCell<HashMap<ModuleId, Vec<ModuleState>>>>;
 type CallsiteDefs = Rc<RefCell<Vec<CallsiteDefinedRecord>>>;
-type SemanticClosedDefs = Rc<RefCell<Vec<SemanticClosedRecord>>>;
 type BackendProgramDefs = Rc<RefCell<Vec<BackendProgramRecord>>>;
 type NativeProgramDefs = Rc<RefCell<Vec<NativeProgramRecord>>>;
 type ReturnTypeDefs = Rc<RefCell<Vec<ReturnTypeRecord>>>;
@@ -563,10 +562,9 @@ fn compiler2_nested_defimpl_resolves_protocol_and_target_through_namespace() {
     );
 
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
-    drive_until_fact(
-        &mut world,
-        FactKey::SemanticClosed(root),
-        Job::SealSemanticClosure(root),
+    world.demand(Job::BuildBackendProduct(root));
+    assert_resolved(
+        world.drive(),
         "main should settle when nested defimpl resolves against the declared protocol identity",
     );
 
@@ -1037,8 +1035,6 @@ fn compiler2_submit_root_pulls_scope_and_seeds_entry_semantics_without_warming_f
     tel.attach(&[], capture.handler());
     let outputs = OutputCapture::new();
     tel.attach(&["fz", "compiler2", "job"], outputs.handler());
-    let work_graph = WorkGraphCapture::new();
-    tel.attach(&["fz", "compiler2", "work_graph", "applied"], work_graph.handler());
     let functions = FunctionCapture::new();
     tel.attach(&["fz", "compiler2", "function"], functions.handler());
 
@@ -1056,13 +1052,6 @@ fn compiler2_submit_root_pulls_scope_and_seeds_entry_semantics_without_warming_f
     assert_resolved(
         compiler.drive(),
         "root submission should pull the source surface through to the entry seed",
-    );
-    assert!(
-        work_graph
-            .all()
-            .into_iter()
-            .any(|step| step.coalesced.contains(&Job::SealSemanticClosure(root_id))),
-        "work-graph telemetry should report coalesced closure checks instead of hiding duplicate wakeups"
     );
 
     let root_submitted = capture
@@ -1134,49 +1123,6 @@ fn compiler2_submit_root_pulls_scope_and_seeds_entry_semantics_without_warming_f
         "SeedRoot should publish the entry executable request"
     );
 
-    let closure_outputs = outputs
-        .take(Job::SealSemanticClosure(root_id))
-        .expect("SealSemanticClosure job effects");
-    assert!(
-        !closure_outputs
-            .iter()
-            .any(|(fact, _)| matches!(fact, FactKey::Activation(_))),
-        "semantic closure should read activation facts rather than publish them"
-    );
-    assert!(
-        closure_outputs
-            .iter()
-            .any(|(fact, _)| matches!(fact, FactKey::Executable(_))),
-        "semantic closure should publish the executable frontier it derives from activation-local facts"
-    );
-    assert!(
-        !closure_outputs.iter().any(|(fact, _)| {
-            matches!(
-                fact,
-                FactKey::Activation(ActivationKey {
-                    function,
-                    ..
-                }) if *function == foo_id
-            ) || matches!(
-                fact,
-                FactKey::Executable(ExecutableKey {
-                    activation: ActivationKey {
-                        function,
-                        ..
-                    },
-                    ..
-                }) if *function == foo_id
-            )
-        }),
-        "submitting a root should keep uncalled foo/0 semantically cold"
-    );
-    assert!(
-        closure_outputs
-            .iter()
-            .any(|(fact, _)| *fact == FactKey::SemanticClosed(root_id)),
-        "semantic closure should publish once the seeded entry facts exist"
-    );
-
     assert!(
         !outputs
             .stops_matching(|job| matches!(job, Job::ScopeCode(_)))
@@ -1186,12 +1132,6 @@ fn compiler2_submit_root_pulls_scope_and_seeds_entry_semantics_without_warming_f
     assert!(
         outputs.stops_matching(|job| matches!(job, Job::SeedRoot(_))).len() >= 2,
         "root submission should let SeedRoot retry while the entry definition and keying facts settle"
-    );
-    assert!(
-        !outputs
-            .stops_matching(|job| matches!(job, Job::SealSemanticClosure(_)))
-            .is_empty(),
-        "root submission should run semantic closure checks while the entry frontier settles"
     );
     assert!(
         outputs
@@ -1871,12 +1811,15 @@ fn compiler2_enum_reduce_selects_list_protocol_impl_and_callable_reducer() {
     tel.attach(&["fz", "compiler2", "module", "defined"], modules.handler());
     let callsites = CallsiteCapture::new();
     tel.attach(&["fz", "compiler2", "callsite", "defined"], callsites.handler());
-    let semantic = SemanticClosedCapture::new();
-    tel.attach(&["fz", "compiler2", "semantic_closed", "defined"], semantic.handler());
     let returns = ReturnTypeCapture::new();
     tel.attach(&["fz", "compiler2", "return_type", "defined"], returns.handler());
     let bodies = LoweredBodyCapture::new();
     tel.attach(&["fz", "compiler2", "lowered_body", "defined"], bodies.handler());
+    let analyzed = ActivationAnalysisCapture::new();
+    tel.attach(
+        &["fz", "compiler2", "activation_analysis", "defined"],
+        analyzed.handler(),
+    );
 
     let mut compiler = Compiler2::new(&tel);
     compiler.submit_code(CodeSubmission {
@@ -1916,8 +1859,6 @@ fn compiler2_enum_reduce_selects_list_protocol_impl_and_callable_reducer() {
 
     let main_id = function_id(&functions, "main", 0);
     let enum_reduce_id = function_id_in_module(&functions, &modules, "Enum", "reduce", 3);
-    let enum_map_id = function_id_in_module(&functions, &modules, "Enum", "map", 2);
-    let enum_reverse_id = function_id_in_module(&functions, &modules, "Enum", "reverse", 1);
     let enumerable_list_id = module_id(&modules, "Enumerable.List");
 
     let main_generated = generated_functions_owned_by(&functions, main_id);
@@ -1983,23 +1924,33 @@ fn compiler2_enum_reduce_selects_list_protocol_impl_and_callable_reducer() {
         "the bridge reducer should activate the user reducer closure directly",
     );
 
-    let activation_ids = semantic
-        .last(root_id)
-        .activations
-        .iter()
+    // The settled root keeps the whole reached reduce path live and leaves
+    // unrelated Enum functions cold. Observed through the per-activation
+    // `activation_analysis.defined` signal (the product-path successor to the
+    // deleted seal's closure inventory): a reached activation publishes it,
+    // while a defined-but-unreached function never does.
+    let analyzed_functions = analyzed
+        .keys_for_root(root_id)
+        .into_iter()
         .map(|activation| activation.function)
         .collect::<HashSet<_>>();
+    for (function, label) in [
+        (main_id, "main/0"),
+        (enum_reduce_id, "Enum.reduce/3"),
+        (list_impl_reduce_id, "the selected List-backed protocol impl"),
+        (bridge_reducer_id, "the bridge reducer lambda"),
+        (user_reducer_id, "the user reducer lambda"),
+    ] {
+        assert!(
+            analyzed_functions.contains(&function),
+            "the settled root should keep {label} in the analyzed activation frontier",
+        );
+    }
+    let enum_map_id = function_id_in_module(&functions, &modules, "Enum", "map", 2);
+    let enum_reverse_id = function_id_in_module(&functions, &modules, "Enum", "reverse", 1);
     assert!(
-        activation_ids.contains(&main_id)
-            && activation_ids.contains(&enum_reduce_id)
-            && activation_ids.contains(&list_impl_reduce_id)
-            && activation_ids.contains(&bridge_reducer_id)
-            && activation_ids.contains(&user_reducer_id),
-        "the settled root should keep the public reduce path, selected protocol impl, bridge lambda, and user reducer activation live",
-    );
-    assert!(
-        !activation_ids.contains(&enum_map_id) && !activation_ids.contains(&enum_reverse_id),
-        "unrelated Enum functions should stay outside the settled semantic closure",
+        !analyzed_functions.contains(&enum_map_id) && !analyzed_functions.contains(&enum_reverse_id),
+        "unrelated Enum functions must stay outside the settled activation frontier",
     );
 
     let defined_modules = sorted_strings(modules.defined_names());
@@ -2051,10 +2002,13 @@ fn compiler2_enum_reduce_operator_ref_activates_kernel_plus() {
     tel.attach(&["fz", "compiler2", "module", "defined"], modules.handler());
     let callsites = CallsiteCapture::new();
     tel.attach(&["fz", "compiler2", "callsite", "defined"], callsites.handler());
-    let semantic = SemanticClosedCapture::new();
-    tel.attach(&["fz", "compiler2", "semantic_closed", "defined"], semantic.handler());
     let returns = ReturnTypeCapture::new();
     tel.attach(&["fz", "compiler2", "return_type", "defined"], returns.handler());
+    let analyzed = ActivationAnalysisCapture::new();
+    tel.attach(
+        &["fz", "compiler2", "activation_analysis", "defined"],
+        analyzed.handler(),
+    );
 
     let mut compiler = Compiler2::new(&tel);
     compiler.submit_code(CodeSubmission {
@@ -2074,7 +2028,6 @@ fn compiler2_enum_reduce_operator_ref_activates_kernel_plus() {
 
     let main_id = function_id(&functions, "main", 0);
     let enum_reduce_id = function_id_in_module(&functions, &modules, "Enum", "reduce", 3);
-    let enum_map_id = function_id_in_module(&functions, &modules, "Enum", "map", 2);
     let kernel_plus_id = function_id_in_module(&functions, &modules, "Kernel", "+", 2);
     let enumerable_list_id = module_id(&modules, "Enumerable.List");
     let list_impl_reduce = functions
@@ -2103,22 +2056,29 @@ fn compiler2_enum_reduce_operator_ref_activates_kernel_plus() {
         "function-ref reducers should surface Kernel.+/2 as an ordinary callable edge",
     );
 
-    let closed = semantic.last(root_id);
-    let activation_ids = closed
-        .activations
-        .iter()
+    // The operator-ref root keeps Kernel.+/2 live alongside the selected reduce
+    // path and leaves unrelated Enum functions cold — read off the settled
+    // per-activation `activation_analysis.defined` frontier.
+    let analyzed_functions = analyzed
+        .keys_for_root(root_id)
+        .into_iter()
         .map(|activation| activation.function)
         .collect::<HashSet<_>>();
+    for (function, label) in [
+        (main_id, "main/0"),
+        (enum_reduce_id, "Enum.reduce/3"),
+        (list_impl_reduce_id, "the selected List-backed protocol impl"),
+        (kernel_plus_id, "Kernel.+/2"),
+    ] {
+        assert!(
+            analyzed_functions.contains(&function),
+            "the settled operator-ref root should keep {label} in the analyzed activation frontier",
+        );
+    }
+    let enum_map_id = function_id_in_module(&functions, &modules, "Enum", "map", 2);
     assert!(
-        activation_ids.contains(&main_id)
-            && activation_ids.contains(&enum_reduce_id)
-            && activation_ids.contains(&list_impl_reduce_id)
-            && activation_ids.contains(&kernel_plus_id),
-        "the settled operator-ref root should keep Kernel.+/2 live alongside the selected reduce path",
-    );
-    assert!(
-        !activation_ids.contains(&enum_map_id),
-        "unrelated Enum functions should stay outside the operator-ref semantic closure",
+        !analyzed_functions.contains(&enum_map_id),
+        "unrelated Enum functions must stay outside the operator-ref activation frontier",
     );
 
     let main_return = returns.last_for_function(root_id, main_id).return_ty;
@@ -4600,12 +4560,12 @@ end
     });
 
     assert!(
-        compiler.demand(Job::SealSemanticClosure(root_id)),
-        "semantic closure should be demandable for the Enum.find root",
+        compiler.demand(Job::BuildBackendProduct(root_id)),
+        "the backend product should be demandable for the Enum.find root",
     );
     assert_resolved(
         compiler.drive(),
-        "Enum.find semantic closure should converge with runtime library activations",
+        "Enum.find semantic analysis should converge with runtime library activations",
     );
 
     let find_id = function_id_in_module(&functions, &modules, "Enum", "find", 3);
@@ -5867,8 +5827,6 @@ fn compiler2_semantic_analysis_derives_reachable_call_edges_and_tuple_return_nee
     tel.attach(&["fz", "compiler2", "function"], functions.handler());
     let callsites = CallsiteCapture::new();
     tel.attach(&["fz", "compiler2", "callsite", "defined"], callsites.handler());
-    let semantic = SemanticClosedCapture::new();
-    tel.attach(&["fz", "compiler2", "semantic_closed", "defined"], semantic.handler());
 
     let mut compiler = Compiler2::new(&tel);
     compiler.submit_code(CodeSubmission {
@@ -5893,7 +5851,6 @@ fn compiler2_semantic_analysis_derives_reachable_call_edges_and_tuple_return_nee
     let append_id = function_id(&functions, "append", 2);
     let foo_id = function_id(&functions, "foo", 0);
     let callsites = callsites.all();
-    let closed = semantic.last(root_id);
 
     assert!(
         callsites.iter().any(|record| {
@@ -5910,14 +5867,6 @@ fn compiler2_semantic_analysis_derives_reachable_call_edges_and_tuple_return_nee
                 && summary_is_single_callee(&record.summary, SelectedCallee::Function(partition_id))
         }),
         "semantic analysis should publish qsort/1's reachable partition/4 direct edge"
-    );
-    assert!(
-        closed
-            .executables
-            .iter()
-            .any(|executable| executable.activation.function == partition_id
-                && executable.need == ExecutableNeed::TupleFields(2)),
-        "the closed executable frontier should keep partition/4 under tuple-fields demand"
     );
     assert!(
         callsites.iter().any(|record| {
@@ -6151,25 +6100,18 @@ fn compiler2_membership_operator_protocol_receivers_settle_to_direct_impls() {
 #[test]
 fn compiler2_quicksort_root_closes_with_a_finite_recursive_frontier() {
     let tel = ConfiguredTelemetry::new();
-    let semantic = SemanticClosedCapture::new();
-    tel.attach(&["fz", "compiler2", "semantic_closed", "defined"], semantic.handler());
     let functions = FunctionCapture::new();
     tel.attach(&["fz", "compiler2", "function"], functions.handler());
 
-    let mut compiler = Compiler2::new(&tel);
-    compiler.submit_code(CodeSubmission {
-        name: Some("fixtures/quicksort_plus_foo.fz".to_string()),
-        text: include_str!("../../fixtures2/00001_quicksort_plus_foo.fz").to_string(),
-    });
-    let root_id = compiler.submit_root(RootSubmission {
-        module_name: None,
-        name: "main".to_string(),
-        arity: 0,
-        need: ExecutableNeed::Value,
-    });
-
+    let mut world = crate::compiler2::World::new(&tel);
+    world.submit_code(
+        Some("quicksort_plus_foo.fz".to_string()),
+        include_str!("../../fixtures2/00001_quicksort_plus_foo.fz").to_string(),
+    );
+    let root_id = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    world.demand(Job::BuildBackendProduct(root_id));
     assert_resolved(
-        compiler.drive(),
+        world.drive(),
         "quicksort root should settle to a finite semantic frontier",
     );
 
@@ -6179,11 +6121,18 @@ fn compiler2_quicksort_root_closes_with_a_finite_recursive_frontier() {
     let append_id = function_id(&functions, "append", 2);
     let foo_id = function_id(&functions, "foo", 0);
 
-    let closed = semantic.last(root_id);
-    let activations = closed.activations.iter().cloned().collect::<HashSet<_>>();
+    // The rooted, reachability-pruned activation frontier the deleted seal's
+    // `SemanticClosure.activations` inventory used to hand back is reconstructed
+    // by walking the SETTLED call graph from the entry (see
+    // `rooted_reachable_frontier`). Reachability over the unique least fixpoint
+    // is schedule-free, and each callsite resolves to its settled callee, so the
+    // mid-convergence intermediates that a raw `activation_analysis` snapshot
+    // would leak (e.g. an `append([], [a1_e])` key seeded before `qsort`'s
+    // return widened) are never reached and never counted.
+    let activations = rooted_reachable_frontier(&mut world, root_id, main_id);
 
-    let entry_activation = ActivationKey::from_inputs(root_id, main_id, &[], compiler.types_mut_for_test());
-    let types = compiler.types_for_test();
+    let entry_activation = ActivationKey::from_inputs(root_id, main_id, &[], world.types_mut());
+    let types = world.types();
     assert!(
         activations.contains(&entry_activation),
         "root closure should keep the entry activation in the settled frontier"
@@ -6244,222 +6193,191 @@ fn compiler2_quicksort_root_closes_with_a_finite_recursive_frontier() {
         "append/2 should stay keyed on its two inputs"
     );
     // Honest argument evidence keys non-recursive runtime helpers
-    // per-callsite (the designed behavior); the old any-defaults
-    // accidentally merged those keys. The frontier stays small and finite —
-    // the runaway grew it without bound.
-    assert!(
-        activations.len() <= 26,
-        "quicksort should settle to a small finite rooted activation frontier, including reached runtime helpers"
+    // per-callsite (the designed behavior); the old any-defaults accidentally
+    // merged those keys. The reachable frontier is a small, finite, EXACT
+    // fixpoint — the runaway grew it without bound. 21 is the measured minimum
+    // (main/0, the single qsort/partition/append keys, and the reached runtime
+    // helpers), schedule-invariant across fresh drives; if it moves, the keying
+    // convergence moved and that is the signal, not a headroom breach.
+    assert_eq!(
+        activations.len(),
+        21,
+        "quicksort should settle to its exact minimal rooted activation frontier (main + the collapsed \
+         qsort/partition/append keys + reached runtime helpers)"
     );
     assert!(
         !activations.iter().any(|activation| activation.function == foo_id),
         "quicksort root should not activate the uncalled foo/0"
     );
-    assert!(
-        closed
-            .executables
-            .iter()
-            .all(|executable| executable.activation.function != foo_id),
-        "uncalled foo/0 should not appear in the closed executable frontier"
-    );
+}
+
+/// Reconstructs the ROOTED, reachability-pruned activation frontier the deleted
+/// seal's `SemanticClosure.activations` inventory used to hand back: starting at
+/// the root's entry activation, follow the SETTLED call graph — each activation's
+/// `callsites`, resolved through `callsite_targets`, name the callee activations
+/// it actually reaches. Callers: the redefinition tests below, plus the
+/// single-drive frontier test and the every-schedule convergence test.
+///
+/// A raw `activation_analysis.defined` snapshot is NOT enough on its own here:
+/// that store is a monotone GLOBAL cache that never retracts an activation once
+/// analyzed, so a root that STOPS reaching a function keeps its stale facts
+/// there (and the backend product is not rebuilt on redefinition either). The
+/// seal, by contrast, published a per-root REACHABILITY walk. Walking the entry's
+/// live call graph is what prunes back to the currently reachable closure, so
+/// this reconstruction tracks the seal's rooted inventory across redefinitions.
+fn rooted_reachable_frontier(
+    world: &mut crate::compiler2::World,
+    root: crate::compiler2::RootId,
+    entry_function: FunctionId,
+) -> HashSet<ActivationKey> {
+    let entry = ActivationKey::from_inputs(root, entry_function, &[], world.types_mut());
+    let mut seen = HashSet::new();
+    let mut stack = vec![entry];
+    while let Some(key) = stack.pop() {
+        if !seen.insert(key.clone()) {
+            continue;
+        }
+        let Some(analysis) = world.activation_analysis(&key) else {
+            continue;
+        };
+        let callsites = analysis.callsites.clone();
+        for callsite in callsites {
+            let callsite_key = CallSiteKey {
+                activation: key.clone(),
+                callsite,
+            };
+            if let Some(targets) = world.callsite_targets(&callsite_key) {
+                for callee in targets.targets.iter().filter_map(|edge| edge.activation.clone()) {
+                    stack.push(callee);
+                }
+            }
+        }
+    }
+    seen
 }
 
 #[test]
 fn compiler2_redefining_uncalled_foo_does_not_reopen_quicksort_root() {
+    // After a quicksort root settles, redefining the UNCALLED `foo/0` must not
+    // perturb the rooted settled activation frontier: `foo` is never reached, so
+    // swapping its body has no bearing on which activations the root closes over.
+    // The deleted seal proved this by not republishing its SemanticClosure
+    // record; we prove the same INTENT directly against the reconstructed
+    // rooted reachable frontier — incremental stability under an irrelevant
+    // redefinition.
     let tel = ConfiguredTelemetry::new();
-    let semantic = SemanticClosedCapture::new();
-    tel.attach(&["fz", "compiler2", "semantic_closed", "defined"], semantic.handler());
+    let functions = FunctionCapture::new();
+    tel.attach(&["fz", "compiler2", "function"], functions.handler());
 
-    let mut compiler = Compiler2::new(&tel);
-    compiler.submit_code(CodeSubmission {
-        name: Some("fixtures/quicksort_plus_foo_v1.fz".to_string()),
-        text: include_str!("../../fixtures2/00001_quicksort_plus_foo.fz").to_string(),
-    });
-    let root_id = compiler.submit_root(RootSubmission {
-        module_name: None,
-        name: "main".to_string(),
-        arity: 0,
-        need: ExecutableNeed::Value,
-    });
+    let mut world = crate::compiler2::World::new(&tel);
+    world.submit_code(
+        Some("quicksort_plus_foo_v1.fz".to_string()),
+        include_str!("../../fixtures2/00001_quicksort_plus_foo.fz").to_string(),
+    );
+    let root_id = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    world.demand(Job::BuildBackendProduct(root_id));
+    assert_resolved(world.drive(), "initial quicksort root should settle");
 
-    assert_resolved(compiler.drive(), "initial quicksort root should settle");
-    let closed_before = semantic.last(root_id);
-    let count_before = semantic.count(root_id);
+    let main_id = function_id(&functions, "main", 0);
+    let qsort_id = function_id(&functions, "qsort", 1);
+    let foo_id = function_id(&functions, "foo", 0);
+    let frontier_before = rooted_reachable_frontier(&mut world, root_id, main_id);
+    let functions_before = frontier_before
+        .iter()
+        .map(|activation| activation.function)
+        .collect::<HashSet<_>>();
+    assert!(
+        functions_before.contains(&qsort_id) && !functions_before.contains(&foo_id),
+        "the initial quicksort frontier should reach qsort and never the uncalled foo/0"
+    );
 
-    compiler.submit_code(CodeSubmission {
-        name: Some("fixtures/quicksort_plus_foo_v2.fz".to_string()),
-        text: include_str!("../../fixtures2/00027_foo_99.fz").to_string(),
-    });
+    world.submit_code(
+        Some("quicksort_plus_foo_v2.fz".to_string()),
+        include_str!("../../fixtures2/00027_foo_99.fz").to_string(),
+    );
+    world.demand(Job::BuildBackendProduct(root_id));
     assert_resolved(
-        compiler.drive(),
+        world.drive(),
         "redefining uncalled foo/0 should not reopen the quicksort root",
     );
 
+    let frontier_after = rooted_reachable_frontier(&mut world, root_id, main_id);
     assert_eq!(
-        semantic.count(root_id),
-        count_before,
-        "uncalled foo/0 redefinition should not republish semantic closure for the rooted quicksort frontier"
-    );
-    assert_eq!(
-        semantic.last(root_id).activations.into_iter().collect::<HashSet<_>>(),
-        closed_before.activations.into_iter().collect::<HashSet<_>>(),
-        "uncalled foo/0 redefinition should leave the rooted activation frontier unchanged"
+        frontier_after, frontier_before,
+        "uncalled foo/0 redefinition should leave the rooted reachable activation frontier unchanged"
     );
 }
 
 #[test]
 fn compiler2_redefining_main_retracts_the_old_root_frontier_and_activates_foo() {
+    // Redefining `main/0` so it drops qsort and instead calls foo/0 must RETRACT
+    // the old recursive frontier: the rooted reachable frontier must become
+    // exactly {main, foo} and no longer reach qsort/partition/append.
+    //
+    // The retraction is observed by re-walking the settled call graph from the
+    // entry, NOT by re-reading the raw `activation_analysis` snapshot. The seal's
+    // old `SemanticClosure` inventory was a per-root REACHABILITY walk, so a root
+    // that stopped reaching qsort simply omitted it. The modern activation store
+    // is a monotone GLOBAL cache: qsort/partition/append are still defined (00008
+    // only redefines `main`+`foo`), so their first-drive analysis facts stay live
+    // and un-pruned there — and the backend product is not rebuilt on this
+    // redefinition. Reachability from the (re-analyzed) entry is what prunes the
+    // frontier, matching the seal's rooted inventory.
     let tel = ConfiguredTelemetry::new();
-    let semantic = SemanticClosedCapture::new();
-    tel.attach(&["fz", "compiler2", "semantic_closed", "defined"], semantic.handler());
     let functions = FunctionCapture::new();
     tel.attach(&["fz", "compiler2", "function"], functions.handler());
 
-    let mut compiler = Compiler2::new(&tel);
-    compiler.submit_code(CodeSubmission {
-        name: Some("fixtures/quicksort_plus_foo_v1.fz".to_string()),
-        text: include_str!("../../fixtures2/00001_quicksort_plus_foo.fz").to_string(),
-    });
-    let root_id = compiler.submit_root(RootSubmission {
-        module_name: None,
-        name: "main".to_string(),
-        arity: 0,
-        need: ExecutableNeed::Value,
-    });
+    let mut world = crate::compiler2::World::new(&tel);
+    world.submit_code(
+        Some("quicksort_plus_foo_v1.fz".to_string()),
+        include_str!("../../fixtures2/00001_quicksort_plus_foo.fz").to_string(),
+    );
+    let root_id = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    world.demand(Job::BuildBackendProduct(root_id));
+    assert_resolved(world.drive(), "initial quicksort root should settle");
 
-    assert_resolved(compiler.drive(), "initial quicksort root should settle");
-
+    let main_id = function_id(&functions, "main", 0);
     let qsort_id = function_id(&functions, "qsort", 1);
     let partition_id = function_id(&functions, "partition", 4);
     let append_id = function_id(&functions, "append", 2);
     let foo_id = function_id(&functions, "foo", 0);
 
-    compiler.submit_code(CodeSubmission {
-        name: Some("fixtures/quicksort_plus_foo_v2.fz".to_string()),
-        text: include_str!("../../fixtures2/00008_callsite_fact_surface.fz").to_string(),
-    });
-    assert_resolved(
-        compiler.drive(),
-        "redefining main/0 should retract the old quicksort root frontier",
-    );
-
-    let closed_after = semantic.last(root_id);
-    let activation_functions = closed_after
-        .activations
+    // Before: the entry reaches the full recursive quicksort frontier.
+    let functions_before = rooted_reachable_frontier(&mut world, root_id, main_id)
         .iter()
         .map(|activation| activation.function)
         .collect::<HashSet<_>>();
-    let executable_functions = closed_after
-        .executables
-        .iter()
-        .map(|executable| executable.activation.function)
-        .collect::<HashSet<_>>();
-
-    assert_eq!(
-        activation_functions,
-        HashSet::from([function_id(&functions, "main", 0), foo_id]),
-        "redefining main/0 should leave only main/0 and foo/0 in the rooted activation frontier"
-    );
-    assert_eq!(
-        executable_functions,
-        HashSet::from([function_id(&functions, "main", 0), foo_id]),
-        "redefining main/0 should leave only main/0 and foo/0 in the rooted executable frontier"
-    );
     assert!(
-        !closed_after.activations.iter().any(
-            |activation| matches!(activation.function, id if id == qsort_id || id == partition_id || id == append_id)
-        ),
-        "redefining main/0 should retract the old quicksort recursive frontier"
+        functions_before.contains(&qsort_id)
+            && functions_before.contains(&partition_id)
+            && functions_before.contains(&append_id),
+        "the initial quicksort frontier should reach the recursive qsort/partition/append closure"
     );
-}
 
-#[test]
-fn compiler2_helper_redefinition_leaves_semantic_frontiers_closed_when_reachability_is_unchanged() {
-    let tel = ConfiguredTelemetry::new();
-    let outputs = OutputCapture::new();
-    tel.attach(&["fz", "compiler2", "job"], outputs.handler());
-    let semantic = SemanticClosedCapture::new();
-    tel.attach(&["fz", "compiler2", "semantic_closed", "defined"], semantic.handler());
-
-    let mut compiler = Compiler2::new(&tel);
-    compiler.submit_code(CodeSubmission {
-        name: Some("fixtures/helper_roots_v1.fz".to_string()),
-        text: include_str!("../../fixtures2/00028_helper_roots.fz").to_string(),
-    });
-    let main_root = compiler.submit_root(RootSubmission {
-        module_name: None,
-        name: "main".to_string(),
-        arity: 0,
-        need: ExecutableNeed::Value,
-    });
-    let other_root = compiler.submit_root(RootSubmission {
-        module_name: None,
-        name: "other_main".to_string(),
-        arity: 0,
-        need: ExecutableNeed::Value,
-    });
-
-    assert_resolved(compiler.drive(), "initial rooted helper users should settle");
-    let main_closed_before = semantic.last(main_root);
-    let other_closed_before = semantic.last(other_root);
-    let main_seal_stops_before = outputs
-        .stops_matching(|job| matches!(job, Job::SealSemanticClosure(root) if *root == main_root))
-        .len();
-    let other_seal_stops_before = outputs
-        .stops_matching(|job| matches!(job, Job::SealSemanticClosure(root) if *root == other_root))
-        .len();
-
-    compiler.submit_code(CodeSubmission {
-        name: Some("fixtures/helper_roots_v2.fz".to_string()),
-        text: include_str!("../../fixtures2/00029_positive_gte.fz").to_string(),
-    });
+    world.submit_code(
+        Some("quicksort_plus_foo_v2.fz".to_string()),
+        include_str!("../../fixtures2/00008_callsite_fact_surface.fz").to_string(),
+    );
+    world.demand(Job::BuildBackendProduct(root_id));
     assert_resolved(
-        compiler.drive(),
-        "redefining a helper should keep semantic frontiers closed when rooted reachability stays the same",
+        world.drive(),
+        "redefining main/0 should retract the old quicksort root frontier",
     );
 
-    assert!(
-        outputs
-            .stops_matching(|job| matches!(job, Job::SealSemanticClosure(root) if *root == main_root))
-            .len()
-            > main_seal_stops_before,
-        "helper guard changes should re-check the dependent root closure",
-    );
+    let functions_after = rooted_reachable_frontier(&mut world, root_id, main_id)
+        .iter()
+        .map(|activation| activation.function)
+        .collect::<HashSet<_>>();
     assert_eq!(
-        outputs
-            .stops_matching(|job| matches!(job, Job::SealSemanticClosure(root) if *root == other_root))
-            .len(),
-        other_seal_stops_before,
-        "helper guard changes should not reopen independent root closure sealing"
+        functions_after,
+        HashSet::from([main_id, foo_id]),
+        "redefining main/0 should leave only main/0 and foo/0 in the rooted reachable frontier"
     );
     assert!(
-        outputs
-            .stops_matching(|job| matches!(job, Job::SealSemanticClosure(root) if *root == main_root))
-            .into_iter()
-            .skip(main_seal_stops_before)
-            .filter_map(|stop| stop.effects)
-            .all(|effects| !output_facts(&effects).contains(&presence(FactKey::SemanticClosed(main_root), true))),
-        "helper guard changes should not republish semantic closure when the dependent frontier is unchanged",
-    );
-    assert_eq!(
-        semantic.last(main_root).activations,
-        main_closed_before.activations,
-        "helper guard changes should leave the dependent rooted activation frontier unchanged"
-    );
-    assert_eq!(
-        semantic.last(main_root).executables,
-        main_closed_before.executables,
-        "helper guard changes should leave the dependent rooted executable frontier unchanged"
-    );
-    assert_eq!(
-        semantic.last(other_root).activations,
-        other_closed_before.activations,
-        "helper guard changes should leave the independent rooted activation frontier unchanged"
-    );
-    assert_eq!(
-        semantic.last(other_root).executables,
-        other_closed_before.executables,
-        "helper guard changes should leave the independent rooted executable frontier unchanged"
+        !functions_after.contains(&qsort_id)
+            && !functions_after.contains(&partition_id)
+            && !functions_after.contains(&append_id),
+        "redefining main/0 should retract the old quicksort recursive frontier"
     );
 }
 
@@ -6604,9 +6522,6 @@ fn compiler2_submit_code_after_root_auto_scopes_new_definitions_without_reseedin
         need: ExecutableNeed::Value,
     });
     assert_resolved(compiler.drive(), "first drive should seed the initial root");
-    let closure_checks_before = outputs
-        .stops_matching(|job| matches!(job, Job::SealSemanticClosure(_)))
-        .len();
     let lowered_before = outputs.stops_matching(|job| matches!(job, Job::LowerFunction(_))).len();
     let seed_stops_before = outputs.stops_matching(|job| matches!(job, Job::SeedRoot(_))).len();
     assert!(
@@ -6647,13 +6562,6 @@ fn compiler2_submit_code_after_root_auto_scopes_new_definitions_without_reseedin
         outputs.stops_matching(|job| matches!(job, Job::SeedRoot(_))).len(),
         seed_stops_before,
         "late unrelated code should not reseed the existing root"
-    );
-    assert_eq!(
-        outputs
-            .stops_matching(|job| matches!(job, Job::SealSemanticClosure(_)))
-            .len(),
-        closure_checks_before,
-        "late unrelated code should not reopen semantic closure for the existing root"
     );
     assert_eq!(
         outputs.stops_matching(|job| matches!(job, Job::LowerFunction(_))).len(),
@@ -6777,8 +6685,13 @@ fn compiler2_recursive_keying_sees_recursion_through_generated_lambdas() {
     tel.attach(&["fz", "compiler2", "job"], outputs.handler());
     let functions = FunctionCapture::new();
     tel.attach(&["fz", "compiler2", "function"], functions.handler());
-    let semantic = SemanticClosedCapture::new();
-    tel.attach(&["fz", "compiler2", "semantic_closed", "defined"], semantic.handler());
+    let analyzed = ActivationAnalysisCapture::new();
+    tel.attach(
+        &["fz", "compiler2", "activation_analysis", "defined"],
+        analyzed.handler(),
+    );
+    let returns = ReturnTypeCapture::new();
+    tel.attach(&["fz", "compiler2", "return_type", "defined"], returns.handler());
 
     let mut compiler = Compiler2::new(&tel);
     compiler.submit_code(CodeSubmission {
@@ -6818,20 +6731,26 @@ fn compiler2_recursive_keying_sees_recursion_through_generated_lambdas() {
         "deriving recursion should inspect the generated lambda body instead of peeking only at build/2",
     );
 
-    let closed = semantic.last(root_id);
-    let build_activations = closed
-        .activations
-        .iter()
-        .filter(|activation| activation.function == build_id)
-        .collect::<Vec<_>>();
+    // Recursive non-dispatch inputs collapse to ONE build/2 activation key, and
+    // it still carries the recursive accumulator slot. Read off the settled
+    // per-activation `activation_analysis.defined` frontier — the product-path
+    // successor to the deleted seal's closure inventory — keeping only keys that
+    // earned a converged return (dropping mid-convergence intermediates).
+    let settled_returns = returns.settled_activations(root_id);
+    let build_activations = analyzed
+        .keys_for_root(root_id)
+        .into_iter()
+        .filter(|activation| activation.function == build_id && settled_returns.contains(activation))
+        .collect::<HashSet<_>>();
     assert_eq!(
         build_activations.len(),
         1,
         "recursive non-dispatch inputs should collapse to one build/2 activation key",
     );
-
     assert!(
-        build_activations[0].input_len(compiler.types_for_test()) != 0,
+        build_activations
+            .iter()
+            .all(|activation| activation.input_len(compiler.types_for_test()) != 0),
         "the collapsed build/2 activation should still carry the recursive accumulator slot",
     );
 }
@@ -8849,13 +8768,6 @@ struct CallsiteDefinedRecord {
 }
 
 #[derive(Debug, Clone)]
-struct SemanticClosedRecord {
-    root_id: crate::compiler2::RootId,
-    activations: HashSet<ActivationKey>,
-    executables: HashSet<ExecutableKey>,
-}
-
-#[derive(Debug, Clone)]
 struct BackendProgramRecord {
     root_id: crate::compiler2::RootId,
     changed: bool,
@@ -8885,10 +8797,6 @@ pub(crate) struct ModuleCapture {
 
 struct CallsiteCapture {
     defs: CallsiteDefs,
-}
-
-struct SemanticClosedCapture {
-    defs: SemanticClosedDefs,
 }
 
 struct ReturnTypeCapture {
@@ -9131,38 +9039,6 @@ impl CallsiteCapture {
     }
 }
 
-impl SemanticClosedCapture {
-    fn new() -> Self {
-        Self {
-            defs: Rc::new(RefCell::new(Vec::new())),
-        }
-    }
-
-    fn handler(&self) -> Box<dyn Handler> {
-        Box::new(SemanticClosedCaptureHandler {
-            defs: self.defs.clone(),
-        })
-    }
-
-    fn last(&self, root_id: crate::compiler2::RootId) -> SemanticClosedRecord {
-        self.defs
-            .borrow()
-            .iter()
-            .rev()
-            .find(|record| record.root_id == root_id)
-            .cloned()
-            .unwrap_or_else(|| panic!("semantic_closed.defined for {root_id:?}"))
-    }
-
-    fn count(&self, root_id: crate::compiler2::RootId) -> usize {
-        self.defs
-            .borrow()
-            .iter()
-            .filter(|record| record.root_id == root_id)
-            .count()
-    }
-}
-
 impl ReturnTypeCapture {
     fn new() -> Self {
         Self {
@@ -9184,6 +9060,21 @@ impl ReturnTypeCapture {
             .find(|record| record.activation.root == root_id && record.activation.function == function_id)
             .cloned()
             .unwrap_or_else(|| panic!("return_type.defined for root={root_id:?} function={function_id:?}"))
+    }
+
+    /// The distinct activation keys under `root_id` that ever earned a settled
+    /// (`Some`) return through `return_type.defined`. Intersecting this with the
+    /// `activation_analysis.defined` keys keeps only converged activations —
+    /// mid-convergence intermediates that never settle a return drop out — a
+    /// telemetry-only stand-in for `world.activation_return(..).is_some()` where
+    /// the test drives through `Compiler2` and has no direct `World` handle.
+    fn settled_activations(&self, root_id: crate::compiler2::RootId) -> HashSet<ActivationKey> {
+        self.defs
+            .borrow()
+            .iter()
+            .filter(|record| record.activation.root == root_id)
+            .map(|record| record.activation.clone())
+            .collect()
     }
 }
 
@@ -9374,10 +9265,6 @@ struct ModuleCaptureHandler {
 
 struct CallsiteCaptureHandler {
     defs: CallsiteDefs,
-}
-
-struct SemanticClosedCaptureHandler {
-    defs: SemanticClosedDefs,
 }
 
 struct ReturnTypeCaptureHandler {
@@ -9596,34 +9483,6 @@ impl Handler for CallsiteCaptureHandler {
         self.defs.borrow_mut().push(CallsiteDefinedRecord {
             key: key.clone(),
             summary: summary.clone(),
-        });
-    }
-}
-
-impl Handler for SemanticClosedCaptureHandler {
-    fn handle(&self, event: &Event<'_, '_, '_>) {
-        if event.name != ["fz", "compiler2", "semantic_closed", "defined"] || event.kind != EventKind::Event {
-            return;
-        }
-        let Some(root_id) = event
-            .metadata
-            .get("root_id")
-            .and_then(|v| v.downcast_ref::<crate::compiler2::RootId>())
-            .copied()
-        else {
-            return;
-        };
-        let Some(closure) = event
-            .metadata
-            .get("closure")
-            .and_then(|value| value.downcast_ref::<SemanticClosure>())
-        else {
-            return;
-        };
-        self.defs.borrow_mut().push(SemanticClosedRecord {
-            root_id,
-            activations: closure.activations.clone(),
-            executables: closure.executables.clone(),
         });
     }
 }
@@ -10415,45 +10274,59 @@ pub(crate) fn assert_resolved(outcome: DriveOutcome<Job, FactKey>, message: &str
     assert!(matches!(outcome, DriveOutcome::Resolved), "{message}: {outcome:?}");
 }
 
-fn drive_until_fact(world: &mut World<'_>, fact: FactKey, demand: Job, message: &str) {
-    world.demand(demand);
-    let mut ran = 0;
-    let mut deferred = Vec::new();
-    while !world.fact_is_settled(&fact) && ran < 10_000 {
-        let Some(job) = world.work_graph.pop() else {
-            break;
-        };
-        if is_after_fact_consumer(&job, &fact) {
-            deferred.push(job);
-            continue;
-        }
-        let effects =
-            super::jobs::run(world, &job).unwrap_or_else(|_| panic!("{message}; prerequisite job failed: {job:?}"));
-        world.complete_job(job, effects);
-        ran += 1;
-    }
-    for job in deferred {
-        world.demand(job);
-    }
-    assert!(
-        world.fact_is_settled(&fact),
-        "{message}; fact {fact:?} was not settled after {ran} prerequisite jobs; pending={}; unresolved={:?}",
-        world.work_graph.pending_jobs(),
-        world.work_graph.unresolved()
-    );
-}
-
-fn is_after_fact_consumer(job: &Job, fact: &FactKey) -> bool {
-    matches!(
-        (job, fact),
-        (Job::BuildBackendProduct(candidate), FactKey::SemanticClosed(root))
-            | (Job::LowerNativeProgram(candidate), FactKey::SemanticClosed(root))
-            if candidate == root
-    )
-}
-
 pub(crate) fn function_id(capture: &FunctionCapture, name: &str, arity: u64) -> FunctionId {
     capture.id(name, arity)
+}
+
+/// Records every `ActivationKey` the semantic pass publishes through
+/// `activation_analysis.defined`. A key can be republished across rounds (and,
+/// before convergence, a transient key can appear); callers dedup by key and
+/// filter to the live frontier via `world.activation_analysis` to recover the
+/// settled analyzed-activation set the deleted seal used to hand back directly.
+struct ActivationAnalysisCapture {
+    keys: Rc<RefCell<Vec<ActivationKey>>>,
+}
+
+impl ActivationAnalysisCapture {
+    fn new() -> Self {
+        Self {
+            keys: Rc::new(RefCell::new(Vec::new())),
+        }
+    }
+
+    fn handler(&self) -> Box<dyn Handler> {
+        Box::new(ActivationAnalysisCaptureHandler {
+            keys: self.keys.clone(),
+        })
+    }
+
+    fn keys_for_root(&self, root: crate::compiler2::RootId) -> Vec<ActivationKey> {
+        self.keys
+            .borrow()
+            .iter()
+            .filter(|key| key.root == root)
+            .cloned()
+            .collect()
+    }
+}
+
+struct ActivationAnalysisCaptureHandler {
+    keys: Rc<RefCell<Vec<ActivationKey>>>,
+}
+
+impl Handler for ActivationAnalysisCaptureHandler {
+    fn handle(&self, event: &Event<'_, '_, '_>) {
+        if event.name != ["fz", "compiler2", "activation_analysis", "defined"] || event.kind != EventKind::Event {
+            return;
+        }
+        if let Some(activation) = event
+            .metadata
+            .get("activation")
+            .and_then(|value| value.downcast_ref::<ActivationKey>())
+        {
+            self.keys.borrow_mut().push(activation.clone());
+        }
+    }
 }
 
 fn generated_functions_owned_by(capture: &FunctionCapture, owner: FunctionId) -> Vec<FunctionDefinedRecord> {
@@ -10609,8 +10482,6 @@ fn compiler2_never_returning_function_settles_with_empty_evidence() {
     let tel = ConfiguredTelemetry::new();
     let functions = FunctionCapture::new();
     tel.attach(&["fz", "compiler2", "function"], functions.handler());
-    let semantic = SemanticClosedCapture::new();
-    tel.attach(&["fz", "compiler2", "semantic_closed", "defined"], semantic.handler());
 
     let mut world = crate::compiler2::World::new(&tel);
     world.submit_code(
@@ -10618,17 +10489,27 @@ fn compiler2_never_returning_function_settles_with_empty_evidence() {
         concat!("fn forever(), do: forever()\n", "fn main(), do: forever()\n").to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 0, crate::compiler2::ExecutableNeed::Value);
+    world.demand(Job::BuildBackendProduct(root));
     assert_resolved(world.drive(), "a never-returning program still quiesces");
 
-    let closure = semantic.last(root);
-    assert!(!closure.activations.is_empty());
-    for activation in &closure.activations {
-        assert_eq!(
-            world.activation_return(activation),
-            None,
-            "settled evidence for a never-returning activation stays empty",
-        );
-    }
+    // The two reachable activations both have bottom returns: analysis reaches
+    // them (main/0 calls forever/0, forever/0 calls itself) but neither ever
+    // produces a value, so their settled return evidence stays absent — at the
+    // fixpoint "no evidence" IS the fact "never returns".
+    let main_id = function_id(&functions, "main", 0);
+    let forever_id = function_id(&functions, "forever", 0);
+    let main_activation = ActivationKey::from_inputs(root, main_id, &[], world.types_mut());
+    let forever_activation = ActivationKey::from_inputs(root, forever_id, &[], world.types_mut());
+    assert_eq!(
+        world.activation_return(&main_activation),
+        None,
+        "settled evidence for the never-returning main/0 activation stays empty",
+    );
+    assert_eq!(
+        world.activation_return(&forever_activation),
+        None,
+        "settled evidence for the never-returning forever/0 activation stays empty",
+    );
 }
 
 #[test]
@@ -10831,14 +10712,18 @@ fn compiler2_quicksort_converges_identically_on_every_schedule() {
     // The runaway was bimodal: per-process hash seeds picked the wake order,
     // and one order in a handful locked the engine into a period-2
     // oscillation. Monotone joins make the least fixpoint unique and the
-    // schedule irrelevant: twenty fresh drives must do identical work and
-    // settle identical frontiers. If this test ever flakes, the design has
-    // a hole and the flake has found it — do not loosen it.
-    let mut shapes = Vec::new();
+    // schedule irrelevant: twenty fresh drives that each pull the whole
+    // backend product must do identical, bounded work AND settle the exact
+    // same activation frontier. If this test ever flakes, the design has a
+    // hole and the flake has found it — do not loosen it. The frontier is the
+    // rooted, reachability-pruned settled call graph (see
+    // `rooted_reachable_frontier`) — the schedule-free successor to the deleted
+    // seal's SemanticClosure inventory, and the same reconstruction
+    // `compiler2_quicksort_root_closes_with_a_finite_recursive_frontier` pins to
+    // its exact size.
+    let mut shapes: Vec<(u64, usize)> = Vec::new();
     for _ in 0..20 {
         let tel = ConfiguredTelemetry::new();
-        let semantic = SemanticClosedCapture::new();
-        tel.attach(&["fz", "compiler2", "semantic_closed", "defined"], semantic.handler());
         let jobs_ran: Rc<RefCell<u64>> = Rc::new(RefCell::new(0));
         let sink = Rc::clone(&jobs_ran);
         tel.attach(
@@ -10856,100 +10741,27 @@ fn compiler2_quicksort_converges_identically_on_every_schedule() {
             include_str!("../../fixtures2/00001_quicksort_plus_foo.fz").to_string(),
         );
         let root = world.submit_root(None, "main".to_string(), 0, crate::compiler2::ExecutableNeed::Value);
+        world.demand(Job::BuildBackendProduct(root));
         assert_resolved(world.drive(), "every schedule converges");
-        let closed = semantic.last(root);
-        shapes.push((*jobs_ran.borrow(), closed.activations.len(), closed.executables.len()));
+        let entry = world.root_function(root);
+        let frontier = rooted_reachable_frontier(&mut world, root, entry);
+        shapes.push((*jobs_ran.borrow(), frontier.len()));
     }
-    // The fixpoint is unique: every schedule settles the exact same
-    // frontier. The WORK to reach it may vary slightly (a different
-    // interleaving costs a few extra quiet joins), but stays in a tight
-    // band — the runaway did 54,000+ jobs where these do ~300.
-    let frontier = (shapes[0].1, shapes[0].2);
+    // The fixpoint is unique: every schedule settles the exact same frontier
+    // (21 — the same minimum the single-drive frontier test pins), and the WORK
+    // to reach it may vary slightly (a different interleaving costs a few extra
+    // quiet joins) but stays in a tight band — the runaway did 54,000+ jobs
+    // where these do bounded work.
     assert!(
-        shapes.iter().all(|shape| (shape.1, shape.2) == frontier),
-        "all schedules must settle identical frontiers: {shapes:?}",
+        shapes.iter().all(|(_, size)| *size == 21),
+        "all schedules must settle the same exact activation frontier size (21): {shapes:?}",
     );
-    let min_jobs = shapes.iter().map(|shape| shape.0).min().expect("runs");
-    let max_jobs = shapes.iter().map(|shape| shape.0).max().expect("runs");
+    let min_jobs = shapes.iter().map(|(jobs, _)| *jobs).min().expect("runs");
+    let max_jobs = shapes.iter().map(|(jobs, _)| *jobs).max().expect("runs");
     assert!(
         max_jobs <= min_jobs + min_jobs / 10 && max_jobs < 1000,
         "work must stay in a tight band across schedules: {shapes:?}",
     );
-}
-
-#[test]
-#[ignore = "red-worklist fz-f98.14: 00420 drive is a 1.3s monolithic per-root reseal over a \
-            several-hundred-activation closure; re-enable when the seal is incremental (fz-f98.14.1) \
-            and partial-publication churn is settled-gated (fz-f98.14.2)"]
-fn compiler2_enum_take_drop_split_seals_without_reseal_runaway() {
-    // The fz-bfh.6 case the general `JobBudgetGuard` deliberately refuses to
-    // bake a tolerance for: 00420 drives the whole Enum.take/drop/split family
-    // over List+Range. The drive CONVERGES, but re-derives wildly — measured at
-    // ~5,600 jobs and ~1.3s, with `SealSemanticClosure(root)` alone re-firing
-    // ~334x and dragging `DeriveRuntimeDemand` (~1,731x), `AnalyzeActivation`
-    // (~1,737x) and `DeriveExecutableTransport` (~587x) with it. The job count
-    // is schedule-dependent across process hash seeds (5,598–5,702), the
-    // signature of a non-monotone join in the seal/demand/transport cycle:
-    // a unique least fixpoint would do identical, bounded work on every
-    // schedule (cf. `compiler2_quicksort_converges_identically_on_every_schedule`).
-    //
-    // An incremental per-root seal re-fires a small bounded number of times,
-    // not once per upstream type ascent. These caps are the tight,
-    // fixture-specific measurement `job_budget_guard.rs` documents as belonging
-    // in its own test — they pin the runaway so a monotone fix proves itself.
-    let tel = ConfiguredTelemetry::new();
-    let counts: Rc<RefCell<HashMap<&'static str, u64>>> = Rc::new(RefCell::new(HashMap::new()));
-    let sink = Rc::clone(&counts);
-    tel.attach(
-        &["fz", "compiler2", "job"],
-        Box::new(move |event: &Event<'_, '_, '_>| {
-            if event.kind != EventKind::SpanStart {
-                return;
-            }
-            let Some(job) = event.metadata.get("job").and_then(|value| value.downcast_ref::<Job>()) else {
-                return;
-            };
-            let kind = match job {
-                Job::SealSemanticClosure(_) => "SealSemanticClosure",
-                Job::DeriveRuntimeDemand(_) => "DeriveRuntimeDemand",
-                Job::DeriveExecutableTransport(_) => "DeriveExecutableTransport",
-                Job::AnalyzeActivation(_) => "AnalyzeActivation",
-                _ => "other",
-            };
-            *sink.borrow_mut().entry(kind).or_default() += 1;
-        }),
-    );
-
-    let mut world = crate::compiler2::World::new(&tel);
-    world.submit_code(
-        Some("enum_take_drop_split.fz".to_string()),
-        include_str!("../../fixtures2/00420_enum_take_drop_split.fz").to_string(),
-    );
-    world.submit_root(None, "main".to_string(), 0, crate::compiler2::ExecutableNeed::Value);
-    // The reseal runaway is the primary signal; the non-monotone cycle also
-    // currently lands a `Fatal LowerNativeProgram` (inconsistent transport
-    // shapes), so capture the outcome and gate on the churn first, then require
-    // the drive to actually converge once the join is monotone.
-    let outcome = world.drive();
-
-    let counts = counts.borrow();
-    let seal = counts.get("SealSemanticClosure").copied().unwrap_or(0);
-    let total: u64 = counts.values().sum();
-    // The per-root seal is a barrier, not a per-ascent recompute: it must settle
-    // in a small bounded number of re-runs. 334 is a reseal ladder.
-    assert!(
-        seal <= 32,
-        "SealSemanticClosure re-fired {seal}x on the take/drop/split root — the per-root seal \
-         must converge incrementally, not reseal on every upstream ascent. Job counts: {:?}",
-        *counts,
-    );
-    assert!(
-        total < 1500,
-        "the take/drop/split drive ran {total} jobs — a converging fixpoint over ~30 calls does \
-         bounded work, not a reseal runaway. Job counts: {:?}",
-        *counts,
-    );
-    assert_resolved(outcome, "the take/drop/split family converges");
 }
 
 #[test]

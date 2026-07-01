@@ -36,10 +36,6 @@ pub enum Job {
     SeedRoot(RootId),
     SeedActivation(ActivationKey),
     AnalyzeActivation(ActivationKey),
-    DeriveRuntimeDemand(ExecutableKey),
-    SealSemanticClosure(RootId),
-    DeriveExecutableTransport(ExecutableKey),
-    DeriveTransportPlan(RootId),
     BuildBackendProduct(RootId),
     LowerNativeProgram(RootId),
 }
@@ -73,25 +69,20 @@ pub enum FactKey {
     CallSiteSummary(CallSiteKey),
     Executable(ExecutableKey),
     ReturnDemand(ExecutableKey),
-    RuntimeDemand(ExecutableKey),
-    InputSources(super::semantic::TransportInputKey),
-    SemanticReady(RootId),
-    SemanticClosed(RootId),
-    ExecutableTransport(ExecutableKey),
-    TransportPlan(RootId),
     BackendProgram(RootId),
     NativeProgram(RootId),
 }
 
 impl ClaimShape for FactKey {
-    /// The two fixpoint-evidence facts whose stores maintain a monotone join:
-    /// an activation's return ascends by union (`ActivationMap::define_return`)
-    /// and its body-input evidence ascends by the cross-publisher widen
-    /// (`ActivationInputMap`). Every other fact's content overwrites.
+    /// The fixpoint-evidence facts whose stores maintain a monotone join: an
+    /// activation's return ascends by union (`ActivationMap::define_return`), its
+    /// body-input evidence ascends by the cross-publisher widen
+    /// (`ActivationInputMap`), and its return demand ascends by the demand join.
+    /// Every other fact's content overwrites.
     fn is_cumulative(&self) -> bool {
         matches!(
             self,
-            FactKey::ReturnType(_) | FactKey::ActivationInputs(_) | FactKey::ReturnDemand(_) | FactKey::InputSources(_)
+            FactKey::ReturnType(_) | FactKey::ActivationInputs(_) | FactKey::ReturnDemand(_)
         )
     }
 }
@@ -106,11 +97,6 @@ pub(crate) struct JobEffects {
     pub(crate) changed: Vec<FactKey>,
     pub(crate) activation_input_contributions: Vec<(ActivationKey, Vec<super::types::Ty>)>,
     pub(crate) return_demand_contributions: Vec<(ExecutableKey, super::semantic::RuntimeDemand)>,
-    pub(crate) input_source_contributions: Vec<(
-        super::semantic::TransportInputKey,
-        super::semantic::TransportInputSources,
-    )>,
-    pub(crate) runtime_demands: Vec<(ExecutableKey, super::semantic::ExecutableRuntimeDemand)>,
     pub(crate) follow_up: Vec<Job>,
 }
 
@@ -118,14 +104,6 @@ impl JobEffects {
     pub(crate) fn wait_on_current(fact: FactKey, follow_up: impl IntoIterator<Item = Job>) -> Self {
         Self {
             waits: vec![FactUse::current(fact)],
-            follow_up: follow_up.into_iter().collect(),
-            ..Self::default()
-        }
-    }
-
-    pub(crate) fn wait_on_settled(fact: FactKey, follow_up: impl IntoIterator<Item = Job>) -> Self {
-        Self {
-            waits: vec![FactUse::settled(fact)],
             follow_up: follow_up.into_iter().collect(),
             ..Self::default()
         }

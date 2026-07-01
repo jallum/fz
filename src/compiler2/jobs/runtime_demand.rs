@@ -5,13 +5,12 @@ use super::super::body::{
     LoweredEntry, LoweredStep, LoweredTail, ValueId, body_consumed_values, callsite_return_values,
     delivered_value_joins,
 };
-use super::super::drive::{FactKey, Job, JobEffects, current_uses};
+use super::super::drive::FactKey;
 use super::super::facts::FactUse;
 use super::super::identity::{ExecutableKey, ExecutableNeed, FunctionId, RootId};
 use super::super::pull::{
     DemandedCallEdge, IncomingInputSource, ProductKey, ProductValue, PullOutcome, PullSession, PullWait,
 };
-use super::super::scheduler::FatalError;
 use super::super::semantic::{
     ActivationAnalysis, CallSiteKey, CallSiteSummary, CallableDemand, CallableFlowEdge, CallableFlowFact,
     CallableSurface, ExecutableRuntimeDemand, RuntimeDemand, ShapeDemand, ground_dispatch_surfaces,
@@ -155,111 +154,6 @@ impl CallableFlowBuilder {
             }
         }
     }
-}
-
-pub(super) fn derive_runtime_demand(
-    world: &mut World<'_>,
-    executable: &ExecutableKey,
-) -> Result<JobEffects, FatalError> {
-    let mut reads = Vec::new();
-    let mut waits = HashSet::new();
-    let mut follow_up = HashSet::new();
-
-    let executable_fact = FactKey::Executable(executable.clone());
-    if world.has_fact(&executable_fact) {
-        reads.push(executable_fact);
-    } else {
-        reads.push(executable_fact);
-        return Ok(JobEffects {
-            reads: current_uses(reads),
-            ..JobEffects::default()
-        });
-    }
-
-    let Some(facts) = collect_one_executable_facts(world, executable, &mut reads, &mut follow_up) else {
-        return Ok(JobEffects {
-            reads: current_uses(reads),
-            follow_up: follow_up.into_iter().collect(),
-            ..JobEffects::default()
-        });
-    };
-
-    let return_demand_fact = FactKey::ReturnDemand(executable.clone());
-    reads.push(return_demand_fact);
-    let mut demands = HashMap::new();
-    let mut self_demand = world
-        .runtime_demand(executable)
-        .cloned()
-        .unwrap_or_else(|| empty_runtime_demand(executable, world.types()));
-    self_demand.return_demand = world.return_demand(executable);
-    demands.insert(executable.clone(), self_demand);
-
-    for target in direct_local_targets(&facts) {
-        reads.push(FactKey::RuntimeDemand(target.clone()));
-        demands.entry(target.clone()).or_insert_with(|| {
-            world
-                .runtime_demand(&target)
-                .cloned()
-                .unwrap_or_else(|| empty_runtime_demand(&target, world.types()))
-        });
-    }
-    if let Some(current) = demands.get(executable).cloned() {
-        for target in current
-            .callable_flows
-            .values()
-            .flat_map(|flow| flow.resolutions.iter().cloned())
-        {
-            reads.push(FactKey::RuntimeDemand(target.clone()));
-            follow_up.insert(Job::DeriveRuntimeDemand(target.clone()));
-            demands.entry(target.clone()).or_insert_with(|| {
-                world
-                    .runtime_demand(&target)
-                    .cloned()
-                    .unwrap_or_else(|| empty_runtime_demand(&target, world.types()))
-            });
-        }
-    }
-
-    let mut derived = derive_executable_runtime_demand(world, executable, &facts, &demands);
-    let mut return_demand_contributions = call_return_demand_contributions(&facts, derived.call_return_demands);
-    derive_callable_flow_facts_for_executable(
-        world,
-        executable,
-        &facts,
-        &derived.callable_flows,
-        &mut derived.demand,
-        &mut reads,
-        &mut waits,
-        &mut follow_up,
-    );
-    return_demand_contributions.extend(callable_boundary_return_demand_contributions(
-        world,
-        &facts,
-        &derived.demand,
-        &mut reads,
-        &mut follow_up,
-    ));
-    if !waits.is_empty() {
-        return Ok(JobEffects {
-            reads: current_uses(reads),
-            waits: current_uses(waits),
-            return_demand_contributions,
-            follow_up: follow_up.into_iter().collect(),
-            ..JobEffects::default()
-        });
-    }
-    // Seal the published demand to ground dispatch surfaces. Reverse propagation
-    // and type-derived boundaries can leave a phantom polymorphic template beside
-    // the concrete surface a real call instantiates; a consumer that published a
-    // boundary per surface would put several boundaries on one boxed value.
-    derived.demand.ground_callable_surfaces(world.types());
-    Ok(JobEffects {
-        reads: current_uses(reads),
-        runtime_demands: vec![(executable.clone(), derived.demand)],
-        return_demand_contributions,
-        follow_up: follow_up.into_iter().collect(),
-        ..JobEffects::default()
-    })
 }
 
 pub(crate) fn produce_runtime_demand_product(
@@ -567,79 +461,6 @@ fn record_tail_call_mode(tail: &LoweredTail, out: &mut HashMap<CallSiteId, CallI
     }
 }
 
-fn collect_one_executable_facts(
-    world: &mut World<'_>,
-    executable: &ExecutableKey,
-    reads: &mut Vec<FactKey>,
-    follow_up: &mut HashSet<Job>,
-) -> Option<ExecutableFacts> {
-    let activation = &executable.activation;
-    let analyzed_fact = FactKey::ActivationAnalyzed(activation.clone());
-    if !read_settled(world, analyzed_fact, reads) {
-        follow_up.insert(Job::AnalyzeActivation(activation.clone()));
-        return None;
-    }
-    let lowered_fact = FactKey::LoweredBody(activation.function);
-    if !read_settled(world, lowered_fact, reads) {
-        follow_up.insert(Job::LowerFunction(activation.function));
-        return None;
-    }
-    let return_fact = FactKey::ReturnType(activation.clone());
-    if !read_settled(world, return_fact, reads) {
-        follow_up.insert(Job::AnalyzeActivation(activation.clone()));
-        return None;
-    }
-
-    let analysis = world
-        .activation_analysis(activation)
-        .expect("settled activation analysis fact should have analysis")
-        .clone();
-    let body = world.lowered_body(activation.function);
-    let mut callsites = HashMap::new();
-    for callsite in &analysis.callsites {
-        let key = CallSiteKey {
-            activation: activation.clone(),
-            callsite: *callsite,
-        };
-        let callsite_fact = FactKey::CallSiteSummary(key.clone());
-        if !read_settled(world, callsite_fact, reads) {
-            follow_up.insert(Job::AnalyzeActivation(activation.clone()));
-            continue;
-        }
-        if let Some(summary) = world.callsite_summary(&key).cloned() {
-            callsites.insert(*callsite, summary);
-        }
-    }
-    if callsites.len() != analysis.callsites.len() {
-        return None;
-    }
-
-    let delivered_value_joins = delivered_value_joins(&body);
-    let local_callable_producers = local_callable_producers(&body);
-    let entry_dispatch_inputs =
-        executable_dispatch_input_ordinals(world, activation.function, analysis.reachable_clauses.clone());
-    let callsite_needs = executable_callsite_needs(&body, &analysis.reachable_clauses, executable.need);
-    Some(ExecutableFacts {
-        analysis,
-        body,
-        entry_dispatch_inputs,
-        callsites,
-        callsite_needs,
-        delivered_value_joins,
-        local_callable_producers,
-    })
-}
-
-fn read_settled(world: &World<'_>, fact: FactKey, reads: &mut Vec<FactKey>) -> bool {
-    if world.fact_is_settled(&fact) {
-        reads.push(fact);
-        true
-    } else {
-        reads.push(fact);
-        false
-    }
-}
-
 fn empty_runtime_demand(executable: &ExecutableKey, types: &Types) -> ExecutableRuntimeDemand {
     ExecutableRuntimeDemand {
         input_demands: vec![RuntimeDemand::ignore(); executable.activation.input_len(types)],
@@ -758,93 +579,6 @@ fn tuple_return_demand_for_observed_need(need: ExecutableNeed, observed: Runtime
     delivered
 }
 
-fn derive_callable_flow_facts_for_executable(
-    world: &mut World<'_>,
-    executable: &ExecutableKey,
-    facts: &ExecutableFacts,
-    callable_flows: &CallableFlowBuilder,
-    demand: &mut ExecutableRuntimeDemand,
-    reads: &mut Vec<FactKey>,
-    waits: &mut HashSet<FactKey>,
-    follow_up: &mut HashSet<Job>,
-) {
-    demand.callable_flows.clear();
-    for (value, producer) in facts.local_callable_producers.clone() {
-        let Some(value_demand) = demand.value_demands.get(&value) else {
-            continue;
-        };
-        if !value_demand.is_callable() {
-            continue;
-        }
-        // A `CallableFlowFact` is a runtime fact: every first-class surface it
-        // carries names a published boundary contract, so the publication
-        // surfaces are grounded to the concrete dispatch shapes the runtime
-        // actually invokes (see `ground_dispatch_surfaces`).
-        let raw_direct_surfaces = callable_flows.direct_surfaces(value);
-        let direct_edges = callable_flow_resolution_edges(
-            world,
-            executable,
-            facts,
-            &producer,
-            &raw_direct_surfaces,
-            reads,
-            waits,
-            follow_up,
-        );
-        let direct_surfaces = direct_edges
-            .iter()
-            .map(|edge| edge.surface.clone())
-            .collect::<BTreeSet<_>>();
-        let first_class_surfaces = ground_dispatch_surfaces(
-            world.types(),
-            &callable_flows.first_class_surfaces(value),
-            &direct_surfaces,
-        );
-        let mut first_class_edges = callable_flow_resolution_edges(
-            world,
-            executable,
-            facts,
-            &producer,
-            &first_class_surfaces,
-            reads,
-            waits,
-            follow_up,
-        );
-        // A resolution that is a value-template phantom — a bare-variable
-        // activation that a ground sibling resolution already covers — is not a
-        // real runtime target (fz-hwn.23), exactly as `ground_dispatch_surfaces`
-        // drops a phantom surface beside its ground dispatch. A genuinely
-        // polymorphic escape (no ground sibling) is kept: it is boxed, not
-        // monomorphized. Drop the phantom so it is never demanded as a latent
-        // executable and never reaches the backend.
-        let phantoms = phantom_resolution_keys(world, direct_edges.iter().chain(first_class_edges.iter()));
-        first_class_edges.retain(|edge| !phantoms.contains(&edge.resolution));
-        let mut resolutions = Vec::new();
-        extend_unique(
-            &mut resolutions,
-            direct_edges
-                .iter()
-                .chain(first_class_edges.iter())
-                .map(|edge| edge.resolution.clone())
-                .collect(),
-        );
-        demand.callable_flows.insert(
-            value,
-            CallableFlowFact {
-                function: producer.function,
-                captures: producer.captures,
-                direct_surfaces,
-                first_class_surfaces,
-                direct_edges,
-                first_class_edges,
-                opaque: value_demand.callable.opaque,
-                escape: value_demand.callable.escape,
-                resolutions,
-            },
-        );
-    }
-}
-
 fn derive_callable_flow_facts_for_executable_product(
     world: &mut World<'_>,
     session: &PullSession,
@@ -918,56 +652,6 @@ fn derive_callable_flow_facts_for_executable_product(
     }
 }
 
-fn callable_boundary_return_demand_contributions(
-    world: &mut World<'_>,
-    facts: &ExecutableFacts,
-    demand: &ExecutableRuntimeDemand,
-    reads: &mut Vec<FactKey>,
-    follow_up: &mut HashSet<Job>,
-) -> Vec<(ExecutableKey, RuntimeDemand)> {
-    let mut required = Vec::new();
-    for (value, flow) in &demand.callable_flows {
-        for edge in &flow.direct_edges {
-            if let Some(demand) = callable_flow_edge_return_demand(
-                world,
-                facts,
-                *value,
-                &edge.resolution,
-                &edge.surface,
-                reads,
-                follow_up,
-            ) {
-                required.push((edge.resolution.clone(), demand));
-            }
-        }
-        if flow.first_class_surfaces.is_empty() {
-            continue;
-        }
-        for surface in &flow.first_class_surfaces {
-            for resolution in &flow.resolutions {
-                let resolution_inputs = resolution.activation.inputs(world.types());
-                if resolution.activation.function != flow.function || resolution_inputs.len() < surface.inputs.len() {
-                    continue;
-                }
-                // Match `surface` as the own-surface suffix in the addressed
-                // frame: project the suffix past the capture prefix and compare
-                // to the canonical surface (fz-hwn.27.6, A; fz-hwn.27.8).
-                let captures_len = resolution_inputs.len() - surface.inputs.len();
-                let own_surface = world.types_mut().own_surface(&resolution_inputs, captures_len);
-                if own_surface != surface.inputs {
-                    continue;
-                }
-                if let Some(demand) =
-                    callable_flow_edge_return_demand(world, facts, *value, resolution, surface, reads, follow_up)
-                {
-                    required.push((resolution.clone(), demand));
-                }
-            }
-        }
-    }
-    required
-}
-
 fn callable_boundary_return_demand_contributions_product(
     world: &mut World<'_>,
     facts: &ExecutableFacts,
@@ -1006,37 +690,6 @@ fn callable_boundary_return_demand_contributions_product(
         }
     }
     required
-}
-
-fn callable_flow_edge_return_demand(
-    world: &mut World<'_>,
-    facts: &ExecutableFacts,
-    value: ValueId,
-    resolution: &ExecutableKey,
-    surface: &CallableSurface,
-    reads: &mut Vec<FactKey>,
-    follow_up: &mut HashSet<Job>,
-) -> Option<RuntimeDemand> {
-    let surface_return_ty = callable_surface_return_ty(world, facts, value, surface);
-    let return_fact = FactKey::ReturnType(resolution.activation.clone());
-    reads.push(return_fact.clone());
-    let return_fact_settled = world.fact_is_settled(&return_fact);
-    let activation_return_ty = world.activation_return(&resolution.activation);
-    let surface_demand = surface_return_ty.and_then(|return_ty| informative_boundary_return_demand(world, return_ty));
-    let activation_demand =
-        activation_return_ty.and_then(|return_ty| informative_boundary_return_demand(world, return_ty));
-    if let Some(demand) = choose_boundary_return_demand(surface_demand, activation_demand) {
-        return Some(demand);
-    }
-    if return_fact_settled
-        && let Some(return_ty) = activation_return_ty.or(surface_return_ty)
-        && !world.types().is_empty(&return_ty)
-        && return_ty != world.types_mut().any()
-    {
-        return Some(boundary_runtime_demand(world, return_ty));
-    }
-    follow_up.insert(Job::AnalyzeActivation(resolution.activation.clone()));
-    None
 }
 
 fn callable_flow_edge_return_demand_product(
@@ -2706,81 +2359,6 @@ fn runtime_demand_for_executable_need(need: ExecutableNeed) -> RuntimeDemand {
         ExecutableNeed::Value => RuntimeDemand::whole(),
         ExecutableNeed::TupleFields(arity) => RuntimeDemand::tuple_fields(vec![RuntimeDemand::whole(); arity]),
     }
-}
-
-pub(super) fn demanded_callable_executables(
-    executables: &HashSet<ExecutableKey>,
-    demands: &HashMap<ExecutableKey, ExecutableRuntimeDemand>,
-) -> HashSet<ExecutableKey> {
-    let mut latent = HashSet::new();
-    for executable in executables {
-        let demand = demands
-            .get(executable)
-            .expect("runtime demand closure should produce a plan for every executable");
-        for flow in demand.callable_flows.values() {
-            if flow.direct_surfaces.is_empty() && flow.first_class_surfaces.is_empty() && !flow.escape && !flow.opaque {
-                continue;
-            }
-            latent.extend(flow.resolutions.iter().cloned());
-        }
-    }
-    latent
-}
-
-fn callable_flow_resolution_edges(
-    world: &mut World<'_>,
-    executable: &ExecutableKey,
-    facts: &ExecutableFacts,
-    producer: &LocalCallableProducer,
-    surfaces: &BTreeSet<CallableSurface>,
-    reads: &mut Vec<FactKey>,
-    waits: &mut HashSet<FactKey>,
-    follow_up: &mut HashSet<Job>,
-) -> Vec<CallableFlowEdge> {
-    if surfaces.is_empty() {
-        return Vec::new();
-    }
-    if !world.require_activation_key_facts(producer.function, reads, waits, follow_up) {
-        return Vec::new();
-    }
-    let Some(capture_tys) = producer
-        .captures
-        .iter()
-        .copied()
-        .map(|capture| facts.analysis.value_types.get(&capture).copied())
-        .collect::<Option<Vec<_>>>()
-    else {
-        return Vec::new();
-    };
-    let root = executable.activation.root;
-    let captures_len = capture_tys.len();
-    surfaces
-        .iter()
-        .map(|surface| {
-            // A boxed callable resolves at runtime to its GROUND instances, never
-            // to the dead generic activation whose body cannot materialize an
-            // unrepresentable parameter (fz-hwn.23). When this call surface grounds
-            // to a representable sibling elsewhere in the root, point the resolution
-            // at that real instance; the local flow has no ground evidence (the
-            // generic activation never sees a concrete element), so the sibling
-            // search is whole-root. Captures are threaded through unchanged — they
-            // carry the callable's identity. A genuine escape with no ground
-            // sibling keeps its template and is lowered boxed.
-            let surface_inputs = world
-                .ground_surface_for_template(root, producer.function, captures_len, &surface.inputs)
-                .unwrap_or_else(|| surface.inputs.clone());
-            let mut inputs = capture_tys.clone();
-            inputs.extend(surface_inputs.clone());
-            let resolution = ExecutableKey {
-                activation: world.activation_key(root, producer.function, &inputs),
-                need: ExecutableNeed::Value,
-            };
-            CallableFlowEdge {
-                surface: CallableSurface::new(surface_inputs, world.types_mut()),
-                resolution,
-            }
-        })
-        .collect()
 }
 
 fn callable_flow_resolution_edges_product(

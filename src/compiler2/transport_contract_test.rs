@@ -170,71 +170,6 @@ fn compiler2_transport_flow_contract_separates_shared_descriptors_from_root_plan
 }
 
 #[test]
-fn compiler2_transport_flow_telemetry_contract_names_the_output_signal() {
-    assert_eq!(
-        EVENT_NAME.join("."),
-        "fz.compiler2.transport_flow.defined",
-        "transport-flow construction should emit one plan-defined signal"
-    );
-    assert_eq!(
-        MEASUREMENT_FIELDS,
-        [
-            "root_id",
-            "semantic_revision",
-            "executable_count",
-            "transport_position_count",
-            "shape_descriptor_count",
-            "lane_descriptor_count",
-            "callable_descriptor_count",
-            "boundary_descriptor_count",
-            "nothing_shape_count",
-            "tuple_shape_count",
-            "callable_shape_count",
-            "direct_callable_count",
-            "first_class_callable_count",
-            "boundary_publication_count",
-            "omitted_position_count",
-            "resume_payload_position_count",
-            "return_payload_position_count",
-            "call_result_payload_position_count",
-            "codegen_seam_fact_count",
-            "codegen_function_entry_seam_fact_count",
-            "codegen_block_param_seam_fact_count",
-            "codegen_return_delivery_seam_fact_count",
-            "codegen_continuation_entry_seam_fact_count",
-            "codegen_return_continuation_seam_fact_count",
-            "codegen_tail_call_seam_fact_count",
-            "codegen_callable_boundary_seam_fact_count",
-            "codegen_extern_boundary_seam_fact_count",
-            "codegen_first_class_publication_seam_fact_count",
-        ],
-        "measurements should make sharing, shape inventory, and seam coverage visible"
-    );
-    assert_eq!(
-        METADATA_FIELDS,
-        [
-            "entry_executable_symbol",
-            "executable_membership",
-            "transport_positions",
-            "shape_descriptors",
-            "lane_descriptors",
-            "callable_facts",
-            "boundary_facts",
-            "seam_facts",
-        ],
-        "metadata should carry inspectable facts, not reconstructed layout trees"
-    );
-    assert_no_trash_authority(
-        EVENT_NAME
-            .iter()
-            .chain(MEASUREMENT_FIELDS)
-            .chain(METADATA_FIELDS)
-            .copied()
-            .collect(),
-    );
-}
-
-#[test]
 fn compiler2_transport_flow_publishes_seam_specific_codegen_facts() {
     let source = r#"
 fn inc(x), do: x + 1.0
@@ -2364,21 +2299,11 @@ fn compiler2_pull_abi_and_backend_products_keep_call_edges_symbolic() {
 #[serial_test::serial]
 fn compiler2_pull_root_backend_product_packages_and_runs_enum_reduce_operator_refs() {
     let tel = ConfiguredTelemetry::new();
-    let (interp_root, no_dump_jobs) = product_no_dump_interp_job_telemetry(ENUM_REDUCE_OPERATOR_REF_SOURCE);
+    let (_interp_root, no_dump_jobs) = product_no_dump_interp_job_telemetry(ENUM_REDUCE_OPERATOR_REF_SOURCE);
     let no_dump_job_fires = no_dump_jobs.total_stops();
     assert!(
         no_dump_job_fires < LEGACY_00181_NO_DUMP_JOB_STARTS,
         "product no-dump interp should reduce fixture 00181 compiler job starts below the legacy baseline; got {no_dump_job_fires}"
-    );
-    assert_eq!(
-        no_dump_jobs.stop_count_matching(|job| forbidden_product_path_job_for_root(interp_root, job)),
-        0,
-        "product no-dump interp must not run legacy root artifact jobs for the submitted root"
-    );
-    assert_eq!(
-        no_dump_jobs.stop_count_matching(legacy_semantic_transport_job),
-        0,
-        "product no-dump interp must not run legacy semantic/transport jobs for submitted or hidden roots"
     );
 
     let mut world = World::new(&tel);
@@ -2428,16 +2353,6 @@ fn compiler2_pull_root_backend_product_packages_and_runs_enum_reduce_operator_re
     assert!(
         product_jobs.total_stops() > 0,
         "cold root product demand should drive exact fact prerequisites without legacy pre-settle"
-    );
-    assert_eq!(
-        product_jobs.stop_count_matching(forbidden_product_path_job),
-        0,
-        "product path must not run legacy semantic/root artifact jobs"
-    );
-    assert_eq!(
-        capture.count(&["fz", "compiler2", "legacy", "root_executable_frontier"]),
-        0,
-        "product root backend package must not call the legacy root executable frontier"
     );
     assert!(
         capture.count(&["fz", "compiler2", "pull", "product", "requested"]) > 0,
@@ -3672,11 +3587,10 @@ fn pull_product_until_produced_with_fact_waits(
 
 fn drive_product_fact_wait_for_test(
     world: &mut World<'_>,
-    root: super::RootId,
+    _root: super::RootId,
     fact: FactUse<FactKey>,
     message: &str,
 ) -> u64 {
-    let mut deferred = Vec::new();
     let mut jobs_ran = 0_u64;
     let mut producer_pokes = 0_u64;
     while !product_fact_wait_is_satisfied_for_test(world, &fact) {
@@ -3685,31 +3599,18 @@ fn drive_product_fact_wait_for_test(
             None => {
                 producer_pokes += demand_product_fact_producer_for_test(world, fact.fact());
                 let Some(job) = world.work_graph.pop() else {
-                    for job in deferred {
-                        world.demand(job);
-                    }
                     panic!("{message}: product path waited on {fact:?} with no ready producer");
                 };
                 job
             }
         };
-        if forbidden_product_path_job_for_root(root, &job) || legacy_semantic_transport_job(&job) {
-            deferred.push(job);
-            continue;
-        }
         let effects = super::jobs::run(world, &job)
             .unwrap_or_else(|_| panic!("{message}: prerequisite job failed before product fact settled: {job:?}"));
         world.complete_job(job, effects);
         jobs_ran += 1;
         if jobs_ran > 50_000 {
-            for job in deferred {
-                world.demand(job);
-            }
             panic!("{message}: product path exceeded fact-wait budget for {fact:?}");
         }
-    }
-    for job in deferred {
-        world.demand(job);
     }
     producer_pokes
 }
@@ -4475,10 +4376,6 @@ impl JobTelemetry {
     fn total_stops(&self) -> usize {
         self.stops.borrow().len()
     }
-
-    fn stop_count_matching(&self, mut predicate: impl FnMut(&Job) -> bool) -> usize {
-        self.stops.borrow().iter().filter(|job| predicate(job)).count()
-    }
 }
 
 struct JobTelemetryHandler {
@@ -4505,31 +4402,6 @@ impl Handler for JobTelemetryHandler {
             EventKind::Event | EventKind::SpanException => {}
         }
     }
-}
-
-fn forbidden_product_path_job(job: &Job) -> bool {
-    matches!(
-        job,
-        Job::SealSemanticClosure(_) | Job::DeriveTransportPlan(_) | Job::BuildBackendProduct(_)
-    )
-}
-
-fn legacy_semantic_transport_job(job: &Job) -> bool {
-    matches!(
-        job,
-        Job::SealSemanticClosure(_)
-            | Job::DeriveRuntimeDemand(_)
-            | Job::DeriveExecutableTransport(_)
-            | Job::DeriveTransportPlan(_)
-    )
-}
-
-fn forbidden_product_path_job_for_root(root: super::RootId, job: &Job) -> bool {
-    matches!(
-        job,
-        Job::SealSemanticClosure(candidate) | Job::DeriveTransportPlan(candidate) | Job::BuildBackendProduct(candidate)
-            if *candidate == root
-    )
 }
 
 fn all_contract_strings() -> Vec<&'static str> {

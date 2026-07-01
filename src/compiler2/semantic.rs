@@ -8,7 +8,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::hash::Hash;
 
 use super::body::{CallSiteId, ControlEntryId, ValueId};
-use super::identity::{ActivationKey, ExecutableKey, ExecutableNeed, FunctionId, RootId};
+use super::identity::{ActivationKey, ExecutableKey, FunctionId, RootId};
 use super::types::{Ty, Types};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -628,77 +628,6 @@ pub type ActivationInputMap<P> = ContributionMap<ActivationKey, P, Vec<Ty>>;
 /// The return-demand contribution store: per-caller `ReturnDemand(E)` evidence,
 /// joined by the demand lattice's least upper bound.
 pub type ReturnDemandMap<P> = ContributionMap<ExecutableKey, P, RuntimeDemand>;
-
-/// The dispatch identity an incoming transport input edge targets: a callee is
-/// matched by `(function, arrow, need)` -- never its full input types -- which
-/// is exactly the criterion the former backward caller scan used. Several
-/// input-distinct callee executables can share one key; each resolves its own
-/// semantic-index slot from the contributed argument vector via its own arity.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct TransportInputKey {
-    pub function: FunctionId,
-    pub arrow: Ty,
-    pub need: ExecutableNeed,
-}
-
-/// One producer's contribution of values flowing into a callee dispatch key.
-/// `CallArgs` is a callsite's full argument vector consumed by ANY callee
-/// sharing the `(function, arrow, need)` key. Direct calls bind the first
-/// explicit argument to semantic input 0; closure calls bind explicit arguments
-/// after the callee's capture prefix. `Captures` is a callable flow's capture
-/// vector bound to the EXACT resolution executable (indexed directly by
-/// semantic position); a sibling that merely shares the dispatch key skips it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TransportInputKind {
-    CallArgs {
-        args: Box<[ValueId]>,
-        direct: bool,
-    },
-    Captures {
-        target: Box<ExecutableKey>,
-        captures: Box<[ValueId]>,
-    },
-}
-
-/// One incoming edge: the producing executable plus the values it feeds.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TransportInputEdge {
-    pub producer: ExecutableKey,
-    pub kind: TransportInputKind,
-}
-
-/// The joined incoming transport-input evidence for one callee dispatch key:
-/// the union of every producer's edges. This is the forward push inverse of the
-/// former backward whole-closure scan -- each producer contributes its outgoing
-/// edges, so a callee reads its feeders without enumerating the closure.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct TransportInputSources {
-    pub edges: Vec<TransportInputEdge>,
-}
-
-impl JoinContribution for TransportInputSources {
-    type Ctx = ();
-
-    fn bottom() -> Self {
-        Self::default()
-    }
-
-    /// Monotone union of edges. Contributions only ever add feeders; a producer
-    /// that goes away withdraws its whole contribution through the store's
-    /// rebase path, never by mutating a surviving edge.
-    fn join_assign(&mut self, other: &Self, _ctx: &mut ()) {
-        for edge in &other.edges {
-            if !self.edges.contains(edge) {
-                self.edges.push(edge.clone());
-            }
-        }
-    }
-}
-
-/// The transport input-source contribution store: per-producer outgoing edges,
-/// joined by union into each callee dispatch key. The push inverse of the
-/// closure scan, mirroring [`ReturnDemandMap`].
-pub type TransportInputSourceMap<P> = ContributionMap<TransportInputKey, P, TransportInputSources>;
 
 /// One publisher's entry for a key in a conclusion's `next` map.
 enum SlotEntry<V> {

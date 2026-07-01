@@ -6,22 +6,19 @@ use super::super::body::{
     CallArg, CallSiteId, ControlDestination, ControlEntryId, DeliveredValueSource, LoweredBody, LoweredStep,
     LoweredTail, ValueId, body_consumed_values, delivered_value_joins,
 };
-use super::super::drive::{FactKey, Job, JobEffects, current_uses, settled_uses};
+use super::super::drive::FactKey;
 use super::super::identity::{ActivationKey, ExecutableKey, ExecutableNeed, FunctionId, RootId};
 use super::super::pull::{
     IncomingInputSource, InputSlot, ProductKey, ProductValue, PullOutcome, PullSession, PullWait,
     TransportComponentInventory, TransportShapeFact,
 };
-use super::super::scheduler::FatalError;
 use super::super::semantic::{
     ActivationAnalysis, CallSiteKey, CallableDemand, CallableFlowFact, CallableSurface, ExecutableRuntimeDemand,
-    RuntimeDemand, SelectedCallee, ShapeDemand, TransportInputEdge, TransportInputKey, TransportInputKind,
-    TransportInputSources,
+    RuntimeDemand, SelectedCallee, ShapeDemand,
 };
 use super::super::transport::{
     ActivationSymbol, BoundaryDescr, BoundaryFacts, BoundaryId, CallableDescr, CallableDirectEdge, CallableFacts,
-    CallableId, CodegenLaneRepr, CodegenSeam, CodegenSeamFact, ExecutableSymbol, LaneId, ShapeDescr, ShapeId,
-    TransportClass, TransportPlan, TransportPosition,
+    CallableId, CodegenLaneRepr, ExecutableSymbol, LaneId, ShapeDescr, ShapeId, TransportClass, TransportPosition,
 };
 use super::super::types::{Ty, Types};
 use super::super::world::World;
@@ -280,20 +277,6 @@ struct ShapeConstraintGraph {
     )>,
 }
 
-/// One executable's transport contribution -- the content of an
-/// [`FactKey::ExecutableTransport`] fact. It is the intra-executable slice of
-/// the projection (anchors, equality edges, callable/boundary drafts) that
-/// `derive_executable_transport` produces and `derive_transport_plan` fans in.
-/// The cross-executable closure (input merge, boundary expansion, the solves,
-/// codegen seam) stays in the fan-in, which merges these contributions in
-/// executable-sort order so the assembled plan is byte identical to the former
-/// single-pass projection.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) struct ExecutableTransportFacts {
-    graph: ShapeConstraintGraph,
-    facts: TransportFactsBuilder,
-}
-
 impl ShapeConstraintGraph {
     fn anchor(&mut self, position: TransportPosition, shape: ShapeId) {
         self.anchors.push((position, shape));
@@ -302,15 +285,6 @@ impl ShapeConstraintGraph {
     #[track_caller]
     fn equal(&mut self, left: TransportPosition, right: TransportPosition) {
         self.equalities.push((left, right, std::panic::Location::caller()));
-    }
-
-    /// Append another graph's anchors and equality edges. Both vectors are
-    /// order-preserving, so fanning the per-executable graphs in a fixed
-    /// executable order reproduces the single-pass insertion order the solver
-    /// saw before the projection was split.
-    fn extend(&mut self, other: ShapeConstraintGraph) {
-        self.anchors.extend(other.anchors);
-        self.equalities.extend(other.equalities);
     }
 
     fn has_anchor(&self, position: &TransportPosition) -> bool {
@@ -370,6 +344,7 @@ impl ShapeConstraintGraph {
         component_shapes
     }
 
+    #[cfg(test)]
     fn positions_for(
         union: &PositionUnion,
         component_shapes: &HashMap<usize, ShapeId>,
@@ -407,23 +382,6 @@ impl ShapeConstraintGraph {
         let union = self.build_union();
         let component_shapes = self.component_shapes(&union);
         Self::positions_for(&union, &component_shapes)
-    }
-
-    /// Resolve shapes and equivalence classes together, building the union-find
-    /// once. The fan-in needs both; computing them separately would build the
-    /// same union twice.
-    fn solve_with_equivalents(
-        &self,
-    ) -> (
-        HashMap<TransportPosition, ShapeId>,
-        HashMap<TransportPosition, Vec<TransportPosition>>,
-    ) {
-        let union = self.build_union();
-        let component_shapes = self.component_shapes(&union);
-        (
-            Self::positions_for(&union, &component_shapes),
-            Self::equivalents_for(&union),
-        )
     }
 }
 
@@ -718,259 +676,6 @@ impl TransportFactsBuilder {
     }
 }
 
-/// Legacy diagnostic/root-plan path: project one executable's intra-executable
-/// transport contribution into its own `ExecutableTransport(E)` fact.
-///
-/// Product backend artifacts use `TransportComponent`/`TransportShape` products
-/// instead; this job remains only for legacy transport-plan diagnostics/tests.
-/// Gated on `SemanticReady` (Stage 1), so
-/// the whole closure is settled without subscribing to the `SemanticClosed`
-/// payload. The job builds the full-closure contexts as a superset, then a
-/// throwaway recording projection of `executable` discovers the precise
-/// dependency cone its projection actually reads. It narrows the contexts and
-/// the read subscription to that cone (plus `executable`) and runs the real
-/// projection over the narrowed contexts, so the published fact subscribes to
-/// ONLY its precise cone -- an incremental re-drive re-projects an executable
-/// only when its own cone changes. The `SemanticReady` gate moves with semantic
-/// closure content so stalled projections still rebase without coupling every
-/// transport job to the whole closure payload.
-pub(super) fn derive_executable_transport(
-    world: &mut World<'_>,
-    executable: &ExecutableKey,
-) -> Result<JobEffects, FatalError> {
-    let root_id = executable.activation.root;
-    let ready_fact = FactKey::SemanticReady(root_id);
-    if !world.fact_is_settled(&ready_fact) {
-        return Ok(JobEffects::wait_on_settled(
-            ready_fact,
-            [Job::SealSemanticClosure(root_id)],
-        ));
-    }
-
-    let executables = world.root_executable_frontier(root_id);
-    let mut superset_reads = Vec::new();
-    let mut wait_facts = HashSet::new();
-    let mut contexts =
-        collect_transport_contexts(world, &executables, None, None, &mut superset_reads, &mut wait_facts);
-
-    if !wait_facts.is_empty() {
-        // While the closure's facts are still settling, re-run the whole gather
-        // on the frontier: the cone is not yet computable. Subscribe to the seal
-        // here too so an unsettled-prerequisite re-run still wakes.
-        return Ok(JobEffects {
-            reads: settled_uses(superset_reads),
-            waits: settled_uses(wait_facts.into_iter().chain([ready_fact])),
-            follow_up: vec![Job::DeriveExecutableTransport(executable.clone())],
-            ..JobEffects::default()
-        });
-    }
-
-    // This executable feeds its callees' inputs: contribute its outgoing edges
-    // so each callee's `InputSources` slot accumulates them. The incoming index
-    // this projection consumes is read back from those same facts (current reads
-    // so the job re-runs as siblings contribute and the input fixpoint ascends).
-    let input_source_contributions = contexts
-        .get(executable)
-        .map(|context| outgoing_input_contributions(world, executable, context))
-        .unwrap_or_default();
-    // The incoming index is built over the full superset so the recording pass
-    // resolves producers exactly as production does; the subscription it induces
-    // is rebuilt cone-only below.
-    let mut superset_input_reads = Vec::new();
-    contexts.incoming_input_sources =
-        incoming_input_sources_from_facts(world, &contexts.by_executable, &mut superset_input_reads);
-
-    // Discover the precise cone: a throwaway recording projection of `executable`
-    // records every neighbor context it dereferences. The throwaway builder /
-    // graph / memo are dropped -- only the recorded set is kept. The cone is the
-    // recorded set plus `executable` itself (always projected). A missing context
-    // means the executable left the closure on a rebase; the cone is then just
-    // itself and an empty contribution is published.
-    let mut accessed = HashSet::from([executable.clone()]);
-    if let Some(context) = contexts.get(executable).cloned() {
-        *contexts.accessed.borrow_mut() = Some(HashSet::from([executable.clone()]));
-        let mut throwaway_facts = TransportFactsBuilder::default();
-        let mut throwaway_graph = ShapeConstraintGraph::default();
-        let mut throwaway_memo = ProjectionMemo::default();
-        project_one_executable(
-            world,
-            executable,
-            &context,
-            &contexts,
-            &mut throwaway_facts,
-            &mut throwaway_graph,
-            &mut throwaway_memo,
-        );
-        accessed = contexts.accessed.replace(None).unwrap_or_default();
-    }
-
-    // Narrow contexts to the cone and rebuild reads to ONLY the cone's facts. A
-    // reachable-but-unaccessed neighbor never changes projection output, so
-    // dropping it keeps the result byte identical to the whole-closure gather
-    // while shrinking the subscription to the precise cone.
-    contexts.by_executable.retain(|key, _| accessed.contains(key));
-    let mut reads = Vec::new();
-    let mut current_reads = Vec::new();
-    for key in &accessed {
-        cone_reads_for(world, key, &mut reads, &mut current_reads);
-    }
-
-    let mut facts = TransportFactsBuilder::default();
-    let mut shape_graph = ShapeConstraintGraph::default();
-    let mut memo = ProjectionMemo::default();
-    if let Some(context) = contexts.get(executable).cloned() {
-        project_one_executable(
-            world,
-            executable,
-            &context,
-            &contexts,
-            &mut facts,
-            &mut shape_graph,
-            &mut memo,
-        );
-    }
-
-    let changed = world.define_executable_transport(
-        executable.clone(),
-        ExecutableTransportFacts {
-            graph: shape_graph,
-            facts,
-        },
-    );
-
-    Ok(JobEffects {
-        reads: settled_uses(reads)
-            .into_iter()
-            .chain(current_uses(current_reads))
-            .collect(),
-        input_source_contributions,
-        outputs: vec![FactKey::ExecutableTransport(executable.clone())],
-        changed: changed
-            .then_some(FactKey::ExecutableTransport(executable.clone()))
-            .into_iter()
-            .collect(),
-        ..JobEffects::default()
-    })
-}
-
-/// The precise per-executable facts one cone member contributes to the job's
-/// subscription: its `ActivationAnalyzed`, `ReturnType`, every `CallSiteSummary`
-/// its analysis names, and its `RuntimeDemand` are settled reads; its
-/// `InputSources` slot is a current read (the input fixpoint ascends, so the job
-/// re-runs as producers contribute). These are exactly the facts the cone's
-/// context build and incoming-index lookup consume, so subscribing to only them
-/// re-projects the executable iff its own cone changes.
-fn cone_reads_for(
-    world: &World<'_>,
-    executable: &ExecutableKey,
-    reads: &mut Vec<FactKey>,
-    current_reads: &mut Vec<FactKey>,
-) {
-    reads.push(FactKey::ActivationAnalyzed(executable.activation.clone()));
-    reads.push(FactKey::ReturnType(executable.activation.clone()));
-    reads.push(FactKey::RuntimeDemand(executable.clone()));
-    if let Some(analysis) = world.activation_analysis(&executable.activation) {
-        for callsite in &analysis.callsites {
-            reads.push(FactKey::CallSiteSummary(CallSiteKey {
-                activation: executable.activation.clone(),
-                callsite: *callsite,
-            }));
-        }
-    }
-    current_reads.push(FactKey::InputSources(dispatch_key_for(executable)));
-}
-
-/// Legacy diagnostic/root-plan path. Product backend artifacts must not demand
-/// root `TransportPlan` facts.
-pub(super) fn derive_transport_plan(world: &mut World<'_>, root_id: RootId) -> Result<JobEffects, FatalError> {
-    let closed_fact = FactKey::SemanticClosed(root_id);
-    if !world.fact_is_settled(&closed_fact) {
-        return Ok(JobEffects::wait_on_settled(
-            closed_fact,
-            [Job::SealSemanticClosure(root_id)],
-        ));
-    }
-
-    let entry = world.root_entry_executable(root_id);
-    let executables = world.root_executable_frontier(root_id);
-    let mut reads = vec![closed_fact];
-    let mut wait_facts = HashSet::new();
-    let mut contexts = collect_transport_contexts(world, &executables, None, None, &mut reads, &mut wait_facts);
-
-    if !wait_facts.is_empty() {
-        return Ok(JobEffects {
-            reads: settled_uses(reads),
-            waits: settled_uses(wait_facts),
-            follow_up: vec![Job::DeriveTransportPlan(root_id)],
-            ..JobEffects::default()
-        });
-    }
-
-    // The fan-in's closure tail also projects input sources, so it reads the
-    // same contributed index. By the time every `ExecutableTransport(E)` has
-    // settled (awaited below) each producer has contributed, so this index is
-    // complete and byte-identical to the former whole-closure scan.
-    let mut current_reads = Vec::new();
-    contexts.incoming_input_sources =
-        incoming_input_sources_from_facts(world, &contexts.by_executable, &mut current_reads);
-
-    let mut executables = executables.into_iter().collect::<Vec<_>>();
-    executables.sort_by_key(|e| executable_sort_key(e, world.types()));
-
-    // Fan-in: each executable's transport contribution is its own settled fact.
-    // Seed the missing ones and wait; the scheduler re-runs this job when they
-    // settle, and reading them subscribes the plan to their revisions.
-    let mut transport_waits = HashSet::new();
-    let mut follow_up = Vec::new();
-    for executable in &executables {
-        let fact = FactKey::ExecutableTransport(executable.clone());
-        if world.fact_is_settled(&fact) {
-            reads.push(fact);
-        } else {
-            transport_waits.insert(fact);
-            follow_up.push(Job::DeriveExecutableTransport(executable.clone()));
-        }
-    }
-    if !transport_waits.is_empty() {
-        follow_up.push(Job::DeriveTransportPlan(root_id));
-        return Ok(JobEffects {
-            reads: settled_uses(reads)
-                .into_iter()
-                .chain(current_uses(current_reads))
-                .collect(),
-            waits: settled_uses(transport_waits),
-            follow_up,
-            ..JobEffects::default()
-        });
-    }
-
-    let per_executable = executables
-        .iter()
-        .map(|executable| {
-            (
-                executable.clone(),
-                world
-                    .executable_transport(executable)
-                    .cloned()
-                    .expect("settled ExecutableTransport fact should have a readable payload"),
-            )
-        })
-        .collect::<HashMap<_, _>>();
-    let plan = assemble_transport_plan(world, &entry, &executables, &contexts, &per_executable);
-
-    let changed = world.define_transport_plan(root_id, plan);
-
-    Ok(JobEffects {
-        reads: settled_uses(reads)
-            .into_iter()
-            .chain(current_uses(current_reads))
-            .collect(),
-        outputs: vec![FactKey::TransportPlan(root_id)],
-        changed: changed.then_some(FactKey::TransportPlan(root_id)).into_iter().collect(),
-        ..JobEffects::default()
-    })
-}
-
 pub(crate) fn produce_transport_shape_product(
     world: &mut World<'_>,
     session: &mut PullSession,
@@ -1112,8 +817,8 @@ fn project_transport_component_product(
     let mut contexts = collect_transport_contexts(
         world,
         &executables,
-        Some(&runtime_demands),
-        Some(session.materialized_executables()),
+        &runtime_demands,
+        session.materialized_executables(),
         &mut reads,
         &mut wait_facts,
     );
@@ -1347,8 +1052,8 @@ fn executable_key_for_transport_position(
 fn collect_transport_contexts(
     world: &mut World<'_>,
     executables: &HashSet<ExecutableKey>,
-    runtime_demands: Option<&HashMap<ExecutableKey, ExecutableRuntimeDemand>>,
-    materialized_executables: Option<&HashMap<ExecutableKey, MaterializedExecutable>>,
+    runtime_demands: &HashMap<ExecutableKey, ExecutableRuntimeDemand>,
+    materialized_executables: &HashMap<ExecutableKey, MaterializedExecutable>,
     reads: &mut Vec<FactKey>,
     wait_facts: &mut HashSet<FactKey>,
 ) -> TransportContexts {
@@ -1375,25 +1080,12 @@ fn collect_transport_contexts(
         let return_ty = world
             .activation_return(&executable.activation)
             .unwrap_or_else(|| world.types_mut().none());
-        let materialized = materialized_executables.and_then(|materialized| materialized.get(executable));
+        let materialized = materialized_executables.get(executable);
         let uses_materialized_body = materialized.is_some();
         let (body, original_entry_ids) = materialized
             .map(|materialized| (materialized.body.clone(), materialized.original_entry_ids.clone()))
             .unwrap_or_else(|| (world.lowered_body(executable.activation.function), Vec::new()));
-        let runtime_demand = if let Some(runtime_demands) = runtime_demands {
-            runtime_demands.get(executable).cloned().unwrap_or_default()
-        } else {
-            let runtime_fact = FactKey::RuntimeDemand(executable.clone());
-            if !world.fact_is_settled(&runtime_fact) {
-                wait_facts.insert(runtime_fact);
-                continue;
-            }
-            reads.push(runtime_fact);
-            world
-                .runtime_demand(executable)
-                .cloned()
-                .expect("settled runtime-demand fact should have a readable payload")
-        };
+        let runtime_demand = runtime_demands.get(executable).cloned().unwrap_or_default();
         let reachable_clauses = if uses_materialized_body {
             local_clause_ids(&body)
         } else {
@@ -1454,193 +1146,6 @@ fn collect_transport_contexts(
         incoming_input_sources: HashMap::new(),
         accessed: RefCell::new(None),
     }
-}
-
-/// The dispatch identity a callee is matched by: `(function, arrow, need)`,
-/// input-type-blind. Both the contributed `InputSources` key and the callee's
-/// own lookup use this, so several input-distinct executables share one slot.
-fn dispatch_key_for(executable: &ExecutableKey) -> TransportInputKey {
-    TransportInputKey {
-        function: executable.activation.function,
-        arrow: executable.activation.arrow,
-        need: executable.need,
-    }
-}
-
-/// One producer executable's outgoing transport-input edges, keyed by the callee
-/// dispatch key each feeds. This is the per-producer slice of the former forward
-/// index, computed from the producer's OWN facts alone (its callsite args +
-/// summaries, its callable-flow captures) -- no closure scan -- so it can be
-/// contributed as a fact that callees join. Call-arg edges target every callee
-/// sharing the callsite target's `(function, arrow)` under the callsite need;
-/// capture edges bind the exact resolution executable.
-fn outgoing_input_contributions(
-    world: &World<'_>,
-    producer: &ExecutableKey,
-    context: &ExecutableContext,
-) -> Vec<(TransportInputKey, TransportInputSources)> {
-    let mut by_key: HashMap<TransportInputKey, TransportInputSources> = HashMap::new();
-    let mut push = |key: TransportInputKey, edge: TransportInputEdge| {
-        let sources = by_key.entry(key).or_default();
-        if !sources.edges.contains(&edge) {
-            sources.edges.push(edge);
-        }
-    };
-
-    let mut callsite_args = context.callsite_args.iter().collect::<Vec<_>>();
-    callsite_args.sort_by_key(|(callsite, _)| callsite.as_u32());
-    for (callsite, args) in callsite_args {
-        let need = context
-            .callsite_needs
-            .get(callsite)
-            .copied()
-            .unwrap_or(ExecutableNeed::Value);
-        let key = CallSiteKey {
-            activation: producer.activation.clone(),
-            callsite: *callsite,
-        };
-        let Some(summary) = world.callsite_summary(&key) else {
-            continue;
-        };
-        let arg_values = args.iter().map(|arg| arg.value).collect::<Box<[_]>>();
-        let mut fed = HashSet::new();
-        for target in &summary.targets {
-            let Some(activation) = target.activation.as_ref() else {
-                continue;
-            };
-            let dispatch = TransportInputKey {
-                function: activation.function,
-                arrow: activation.arrow,
-                need,
-            };
-            if !fed.insert(dispatch) {
-                continue;
-            }
-            let direct = context
-                .callsite_modes
-                .get(callsite)
-                .copied()
-                .is_some_and(|mode| mode == CallInputMode::Direct);
-            push(
-                dispatch,
-                TransportInputEdge {
-                    producer: producer.clone(),
-                    kind: TransportInputKind::CallArgs {
-                        args: arg_values.clone(),
-                        direct,
-                    },
-                },
-            );
-        }
-    }
-
-    let mut flows = context.runtime_demand.callable_flows.values().collect::<Vec<_>>();
-    flows.sort_by_key(|flow| {
-        (
-            flow.function.as_u32(),
-            flow.captures.iter().map(|value| value.as_u32()).collect::<Vec<_>>(),
-        )
-    });
-    for flow in flows {
-        let captures = flow.captures.iter().copied().collect::<Box<[_]>>();
-        let mut bound = HashSet::new();
-        for resolution in &flow.resolutions {
-            if !bound.insert(resolution.clone()) {
-                continue;
-            }
-            push(
-                dispatch_key_for(resolution),
-                TransportInputEdge {
-                    producer: producer.clone(),
-                    kind: TransportInputKind::Captures {
-                        target: Box::new(resolution.clone()),
-                        captures: captures.clone(),
-                    },
-                },
-            );
-        }
-    }
-
-    by_key.into_iter().collect()
-}
-
-/// Build the per-callee incoming-source index from the contributed `InputSources`
-/// facts. Each closure executable's dispatch-key slot is read (subscribing the
-/// reader to its revisions so it re-runs as producers contribute) and resolved
-/// against that executable's own arity. Byte-identical to a whole-closure scan
-/// once every producer has contributed.
-fn incoming_input_sources_from_facts(
-    world: &World<'_>,
-    contexts: &HashMap<ExecutableKey, ExecutableContext>,
-    current_reads: &mut Vec<FactKey>,
-) -> HashMap<(ExecutableKey, usize), Vec<(ExecutableKey, ValueId)>> {
-    let mut index = HashMap::new();
-    for executable in contexts.keys() {
-        let key = dispatch_key_for(executable);
-        current_reads.push(FactKey::InputSources(key));
-        let Some(sources) = world.input_sources(&key) else {
-            continue;
-        };
-        let input_len = executable.activation.input_len(world.types());
-        for semantic_index in 0..input_len {
-            let resolved = resolve_incoming_input_slot(world, sources, executable, semantic_index);
-            if !resolved.is_empty() {
-                index.insert((executable.clone(), semantic_index), resolved);
-            }
-        }
-    }
-    index
-}
-
-/// Resolve one callee input slot from its dispatch key's contributed edges:
-/// call-arg edges (self-call excluded, as the backward scan did) apply the
-/// callee's capture prefix; capture edges consume only when bound to this exact
-/// executable. Sorted (producer sort key, value) for determinism.
-fn resolve_incoming_input_slot(
-    world: &World<'_>,
-    sources: &TransportInputSources,
-    executable: &ExecutableKey,
-    semantic_index: usize,
-) -> Vec<(ExecutableKey, ValueId)> {
-    let input_len = executable.activation.input_len(world.types());
-    let mut out = Vec::new();
-    for edge in &sources.edges {
-        match &edge.kind {
-            TransportInputKind::CallArgs { args, direct } => {
-                if &edge.producer == executable {
-                    continue;
-                }
-                let arg_index = if *direct {
-                    semantic_index
-                } else {
-                    let Some(capture_prefix) = input_len.checked_sub(args.len()) else {
-                        continue;
-                    };
-                    if semantic_index < capture_prefix {
-                        continue;
-                    }
-                    semantic_index - capture_prefix
-                };
-                if let Some(value) = args.get(arg_index).copied() {
-                    out.push((edge.producer.clone(), value));
-                }
-            }
-            TransportInputKind::Captures { target, captures } => {
-                if target.as_ref() != executable {
-                    continue;
-                }
-                if let Some(value) = captures.get(semantic_index).copied() {
-                    out.push((edge.producer.clone(), value));
-                }
-            }
-        }
-    }
-    out.sort_by(|(left, left_value), (right, right_value)| {
-        executable_sort_key(left, world.types())
-            .cmp(&executable_sort_key(right, world.types()))
-            .then(left_value.as_u32().cmp(&right_value.as_u32()))
-    });
-    out
 }
 
 /// Project one executable's intra-executable transport contribution into
@@ -1872,75 +1377,6 @@ fn project_one_executable(
             shape_graph.anchor(position, shape);
         }
     }
-}
-
-/// Close the merged per-executable contributions into a finished plan: the
-/// cross-executable tail that was always run once per root. It seeds clause
-/// parameter and callable-flow equalities, runs the two solves with the input
-/// merge between them, expands and resolves boundary publications, and derives
-/// the codegen seam. `memo` is fresh here because every projection it needs is
-/// pure; the per-executable warm cache contributes nothing to the result.
-fn finish_transport_plan(
-    world: &mut World<'_>,
-    entry_executable: &ExecutableKey,
-    executables: &[ExecutableKey],
-    contexts: &TransportContexts,
-    mut facts: TransportFactsBuilder,
-    mut shape_graph: ShapeConstraintGraph,
-) -> TransportPlan {
-    let entry = executable_symbol(entry_executable, world.types());
-    let executable_membership = executables
-        .iter()
-        .map(|e| executable_symbol(e, world.types()))
-        .collect::<Vec<_>>()
-        .into_boxed_slice();
-    let mut memo = ProjectionMemo::default();
-
-    collect_clause_parameter_equalities(contexts, executables, &mut shape_graph, world.types());
-    seed_callable_capture_inputs(world, contexts, &mut facts, &mut shape_graph, &mut memo);
-    // The input merge consumes each slot's produced `(producer, value)` sources.
-    // Producer values are anchored directly in `project_one_executable`, and
-    // each local CallArg is already equal to its value, so this avoids
-    // reconstructing caller positions by scanning every context.
-    collect_executable_input_constraints(world, contexts, &mut facts, executables, &mut shape_graph);
-    let (positions, equivalents) = shape_graph.solve_with_equivalents();
-    facts.expand_boundary_publications(&equivalents);
-    facts.resolve_publication_source_boundaries(world);
-
-    let (callables, boundaries) = facts.finish();
-    let codegen_seam_facts = derive_codegen_seam_facts(world, contexts, &positions, &boundaries);
-
-    TransportPlan {
-        entry,
-        executable_membership,
-        positions,
-        callables,
-        boundaries,
-        codegen_seam_facts,
-    }
-}
-
-/// Fan the settled per-executable `ExecutableTransport` contributions into one
-/// plan. Merging in executable-sort order reproduces the single-pass insertion
-/// order the solver and the additive fact builder saw before the projection was
-/// split per executable.
-fn assemble_transport_plan(
-    world: &mut World<'_>,
-    entry_executable: &ExecutableKey,
-    executables: &[ExecutableKey],
-    contexts: &TransportContexts,
-    per_executable: &HashMap<ExecutableKey, ExecutableTransportFacts>,
-) -> TransportPlan {
-    let mut facts = TransportFactsBuilder::default();
-    let mut shape_graph = ShapeConstraintGraph::default();
-    for executable in executables {
-        let contribution = per_executable
-            .get(executable)
-            .expect("fan-in requires one settled ExecutableTransport fact per executable");
-        shape_graph.extend(contribution.graph.clone());
-        facts.merge(&contribution.facts);
-    }
-    finish_transport_plan(world, entry_executable, executables, contexts, facts, shape_graph)
 }
 
 /// Anchor every callable resolution's capture-prefix inputs to the closure's
@@ -2276,292 +1712,6 @@ fn collect_clause_parameter_equalities(
     }
 }
 
-fn derive_codegen_seam_facts(
-    world: &World<'_>,
-    contexts: &TransportContexts,
-    positions: &HashMap<TransportPosition, ShapeId>,
-    boundaries: &HashMap<BoundaryId, BoundaryFacts>,
-) -> Box<[CodegenSeamFact]> {
-    let mut out = Vec::new();
-    for (position, shape) in positions {
-        for (leaf_shape, lane) in lanes_for_codegen_seam_shape(world, *shape) {
-            match position {
-                TransportPosition::ExecutableInput {
-                    executable,
-                    semantic_index,
-                } => {
-                    let repr = codegen_repr_for_lane(world, lane);
-                    out.push(CodegenSeamFact {
-                        seam: CodegenSeam::FunctionEntry {
-                            executable: executable.clone(),
-                            semantic_index: *semantic_index,
-                        },
-                        shape: Some(leaf_shape),
-                        lane,
-                        repr,
-                    });
-                    if executable_context_for_symbol(contexts, executable, world.types())
-                        .is_some_and(|context| matches!(context.body, LoweredBody::Extern { .. }))
-                    {
-                        out.push(CodegenSeamFact {
-                            seam: CodegenSeam::ExternBoundary {
-                                executable: executable.clone(),
-                            },
-                            shape: Some(leaf_shape),
-                            lane,
-                            repr,
-                        });
-                    }
-                }
-                TransportPosition::ExecutableReturn { executable } => {
-                    let repr = codegen_repr_for_lane(world, lane);
-                    out.push(CodegenSeamFact {
-                        seam: CodegenSeam::ReturnDelivery {
-                            executable: executable.clone(),
-                        },
-                        shape: Some(leaf_shape),
-                        lane,
-                        repr,
-                    });
-                    if executable_context_for_symbol(contexts, executable, world.types())
-                        .is_some_and(|context| matches!(context.body, LoweredBody::Extern { .. }))
-                    {
-                        out.push(CodegenSeamFact {
-                            seam: CodegenSeam::ExternBoundary {
-                                executable: executable.clone(),
-                            },
-                            shape: Some(leaf_shape),
-                            lane,
-                            repr,
-                        });
-                    }
-                }
-                TransportPosition::ResumePayload { executable, entry, .. } => {
-                    let repr = block_param_codegen_repr_for_lane(world, lane);
-                    out.push(CodegenSeamFact {
-                        seam: CodegenSeam::BlockParam {
-                            executable: executable.clone(),
-                            entry: *entry,
-                        },
-                        shape: Some(leaf_shape),
-                        lane,
-                        repr,
-                    });
-                    if let TransportPosition::ResumePayload {
-                        callsite: Some(callsite),
-                        ..
-                    } = position
-                    {
-                        out.push(CodegenSeamFact {
-                            seam: CodegenSeam::ContinuationEntry {
-                                executable: executable.clone(),
-                                callsite: *callsite,
-                                entry: *entry,
-                            },
-                            shape: Some(leaf_shape),
-                            lane,
-                            repr,
-                        });
-                    }
-                }
-                TransportPosition::ReturnPayload { executable, callsite } => {
-                    let repr = codegen_repr_for_lane(world, lane);
-                    out.push(CodegenSeamFact {
-                        seam: CodegenSeam::ReturnContinuation {
-                            executable: executable.clone(),
-                            callsite: *callsite,
-                        },
-                        shape: Some(leaf_shape),
-                        lane,
-                        repr,
-                    });
-                }
-                TransportPosition::EntryCapture { executable, entry, .. } => {
-                    let repr = block_param_codegen_repr_for_lane(world, lane);
-                    out.push(CodegenSeamFact {
-                        seam: CodegenSeam::BlockParam {
-                            executable: executable.clone(),
-                            entry: *entry,
-                        },
-                        shape: Some(leaf_shape),
-                        lane,
-                        repr,
-                    });
-                    if let Some(callsite) = executable_context_for_symbol(contexts, executable, world.types())
-                        .and_then(|context| resume_callsite_for_entry(context, *entry))
-                    {
-                        out.push(CodegenSeamFact {
-                            seam: CodegenSeam::ContinuationEntry {
-                                executable: executable.clone(),
-                                callsite,
-                                entry: *entry,
-                            },
-                            shape: Some(leaf_shape),
-                            lane,
-                            repr,
-                        });
-                    }
-                }
-                TransportPosition::CallArg {
-                    executable, callsite, ..
-                } => {
-                    let repr = codegen_repr_for_lane(world, lane);
-                    if executable_context_for_symbol(contexts, executable, world.types())
-                        .and_then(|context| context.callsite_dests.get(callsite))
-                        .is_some_and(|dest| matches!(dest, ControlDestination::Return))
-                    {
-                        out.push(CodegenSeamFact {
-                            seam: CodegenSeam::TailCall {
-                                executable: executable.clone(),
-                                callsite: *callsite,
-                            },
-                            shape: Some(leaf_shape),
-                            lane,
-                            repr,
-                        });
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-    for boundary in boundaries.keys().copied() {
-        let descr = world.boundary(boundary);
-        // A callable-boundary lane carries the target body's own grounded repr.
-        // The boxed closure-apply wrapper is the sole boxing seam: it accepts the
-        // uniform `i64` closure-apply ABI from any first-class caller and unboxes
-        // each lane to the body's repr before tail-calling it. Because the
-        // wrapper tail-calls, it cannot rebox the return — and it does not need
-        // to: the continuation that consumes the result is itself derived from
-        // the body's grounded return repr (`ReturnDelivery` / `ReturnContinuation`
-        // are both `codegen_repr_for_lane`). Forcing these lanes to `ValueRef`
-        // therefore only desynchronizes the wrapper's declared return from the
-        // body's actual return; the lanes stay grounded.
-        for lane in descr
-            .published_capture_lanes
-            .iter()
-            .chain(descr.published_arg_lanes.iter())
-            .chain(descr.published_return_lanes.iter())
-            .copied()
-        {
-            out.push(CodegenSeamFact {
-                seam: CodegenSeam::CallableBoundary { boundary },
-                shape: None,
-                lane,
-                repr: codegen_repr_for_lane(world, lane),
-            });
-        }
-        if let Some(facts) = boundaries.get(&boundary)
-            && !facts.publications.is_empty()
-        {
-            out.push(CodegenSeamFact {
-                seam: CodegenSeam::FirstClassPublication { boundary },
-                shape: None,
-                lane: descr.published_value_lane,
-                repr: CodegenLaneRepr::ValueRef,
-            });
-            for publication in facts.publications.iter() {
-                match publication {
-                    TransportPosition::ExecutableInput {
-                        executable,
-                        semantic_index,
-                    } => {
-                        out.push(CodegenSeamFact {
-                            seam: CodegenSeam::FunctionEntry {
-                                executable: executable.clone(),
-                                semantic_index: *semantic_index,
-                            },
-                            shape: None,
-                            lane: descr.published_value_lane,
-                            repr: CodegenLaneRepr::ValueRef,
-                        });
-                    }
-                    TransportPosition::ResumePayload {
-                        executable,
-                        callsite: Some(callsite),
-                        entry,
-                    } => {
-                        out.push(CodegenSeamFact {
-                            seam: CodegenSeam::ContinuationEntry {
-                                executable: executable.clone(),
-                                callsite: *callsite,
-                                entry: *entry,
-                            },
-                            shape: None,
-                            lane: descr.published_value_lane,
-                            repr: CodegenLaneRepr::ValueRef,
-                        });
-                    }
-                    TransportPosition::ReturnPayload { executable, callsite } => {
-                        out.push(CodegenSeamFact {
-                            seam: CodegenSeam::ReturnContinuation {
-                                executable: executable.clone(),
-                                callsite: *callsite,
-                            },
-                            shape: None,
-                            lane: descr.published_value_lane,
-                            repr: CodegenLaneRepr::ValueRef,
-                        });
-                    }
-                    TransportPosition::ExecutableReturn { executable } => {
-                        out.push(CodegenSeamFact {
-                            seam: CodegenSeam::ReturnDelivery {
-                                executable: executable.clone(),
-                            },
-                            shape: None,
-                            lane: descr.published_value_lane,
-                            repr: CodegenLaneRepr::ValueRef,
-                        });
-                    }
-                    TransportPosition::ResumePayload {
-                        executable,
-                        callsite: None,
-                        entry,
-                    } => {
-                        out.push(CodegenSeamFact {
-                            seam: CodegenSeam::BlockParam {
-                                executable: executable.clone(),
-                                entry: *entry,
-                            },
-                            shape: None,
-                            lane: descr.published_value_lane,
-                            repr: CodegenLaneRepr::ValueRef,
-                        });
-                    }
-                    TransportPosition::EntryCapture { executable, entry, .. } => {
-                        out.push(CodegenSeamFact {
-                            seam: CodegenSeam::BlockParam {
-                                executable: executable.clone(),
-                                entry: *entry,
-                            },
-                            shape: None,
-                            lane: descr.published_value_lane,
-                            repr: CodegenLaneRepr::ValueRef,
-                        });
-                        if let Some(callsite) = executable_context_for_symbol(contexts, executable, world.types())
-                            .and_then(|context| resume_callsite_for_entry(context, *entry))
-                        {
-                            out.push(CodegenSeamFact {
-                                seam: CodegenSeam::ContinuationEntry {
-                                    executable: executable.clone(),
-                                    callsite,
-                                    entry: *entry,
-                                },
-                                shape: None,
-                                lane: descr.published_value_lane,
-                                repr: CodegenLaneRepr::ValueRef,
-                            });
-                        }
-                    }
-                    TransportPosition::CallArg { .. } | TransportPosition::Value { .. } => {}
-                }
-            }
-        }
-    }
-    out.sort_by_key(codegen_seam_fact_sort_key);
-    out.into_boxed_slice()
-}
-
 /// The `ExecutableReturn` position a call result is produced from, when the
 /// call settles to exactly one known callee executable. Resume payloads and
 /// return payloads are callsite result positions, so they share the producer
@@ -2596,21 +1746,6 @@ fn callsite_callee_return_position(
         .then(|| TransportPosition::ExecutableReturn {
             executable: executable_symbol(&callee, world.types()),
         })
-}
-
-fn resume_callsite_for_entry(context: &ExecutableContext, entry: ControlEntryId) -> Option<CallSiteId> {
-    context
-        .resume_entries
-        .iter()
-        .find_map(|resume| (resume.entry == entry).then_some(resume.callsite).flatten())
-}
-
-fn executable_context_for_symbol<'a>(
-    contexts: &'a TransportContexts,
-    symbol: &ExecutableSymbol,
-    types: &Types,
-) -> Option<&'a ExecutableContext> {
-    contexts.context_for_symbol(symbol, types).map(|(_, context)| context)
 }
 
 fn lanes_for_codegen_seam_shape(world: &World<'_>, shape: ShapeId) -> Vec<(ShapeId, LaneId)> {
@@ -2658,13 +1793,6 @@ fn boxed_value_return(world: &World<'_>, shape: ShapeId) -> bool {
     matches!(world.shape(shape), ShapeDescr::Lane(lane) if codegen_repr_for_lane(world, *lane) == CodegenLaneRepr::ValueRef)
 }
 
-fn block_param_codegen_repr_for_lane(world: &World<'_>, lane: LaneId) -> CodegenLaneRepr {
-    match raw_codegen_repr_for_lane(world, lane) {
-        Some(repr @ (CodegenLaneRepr::RawInt | CodegenLaneRepr::RawAtom)) => repr,
-        Some(CodegenLaneRepr::RawF64 | CodegenLaneRepr::ValueRef) | None => CodegenLaneRepr::ValueRef,
-    }
-}
-
 // The EXECUTABLE VISITATION key (`executable_sort_key`) is a CANONICAL STRUCTURAL
 // render of its input types (`Vec<String>`), not the raw interned `Ty(u32)` ids.
 // The upstream type fixpoint mints `Ty` ids in process-hash-dependent order, so a
@@ -2681,66 +1809,11 @@ fn block_param_codegen_repr_for_lane(world: &World<'_>, lane: LaneId) -> Codegen
 // lane, which is a layout regression, not a determinism fix.
 type ExecutableSortKey = (u32, Vec<String>, u8, usize);
 type ExecutableSymbolSortKey = (u32, Vec<Ty>, u8, usize);
-type CodegenSeamFactSortKey = (u8, ExecutableSymbolSortKey, u32, u32, usize, u32, u8);
-
-fn empty_executable_symbol_sort_key() -> ExecutableSymbolSortKey {
-    (0, Vec::new(), 0, 0)
-}
 
 /// Canonical structural render of an input type vector — the schedule-free
 /// projection used as the executable visitation secondary sort key.
 fn input_structure_key(inputs: &[Ty], types: &Types) -> Vec<String> {
     inputs.iter().map(|ty| types.display(ty)).collect()
-}
-
-fn codegen_seam_fact_sort_key(fact: &CodegenSeamFact) -> CodegenSeamFactSortKey {
-    let (kind, executable, boundary, entry, index) = match &fact.seam {
-        CodegenSeam::FunctionEntry {
-            executable,
-            semantic_index,
-        } => (0, executable_symbol_sort_key(executable), 0, 0, *semantic_index),
-        CodegenSeam::BlockParam { executable, entry } => {
-            (1, executable_symbol_sort_key(executable), 0, entry.as_u32(), 0)
-        }
-        CodegenSeam::ReturnDelivery { executable } => (2, executable_symbol_sort_key(executable), 0, 0, 0),
-        CodegenSeam::ContinuationEntry {
-            executable,
-            callsite,
-            entry,
-        } => (
-            3,
-            executable_symbol_sort_key(executable),
-            0,
-            entry.as_u32(),
-            callsite.as_u32() as usize,
-        ),
-        CodegenSeam::ReturnContinuation { executable, callsite } => (
-            4,
-            executable_symbol_sort_key(executable),
-            0,
-            0,
-            callsite.as_u32() as usize,
-        ),
-        CodegenSeam::TailCall { executable, callsite } => (
-            5,
-            executable_symbol_sort_key(executable),
-            0,
-            0,
-            callsite.as_u32() as usize,
-        ),
-        CodegenSeam::CallableBoundary { boundary } => (6, empty_executable_symbol_sort_key(), boundary.as_u32(), 0, 0),
-        CodegenSeam::ExternBoundary { executable } => (7, executable_symbol_sort_key(executable), 0, 0, 0),
-        CodegenSeam::FirstClassPublication { boundary } => {
-            (8, empty_executable_symbol_sort_key(), boundary.as_u32(), 0, 0)
-        }
-    };
-    let repr = match fact.repr {
-        CodegenLaneRepr::ValueRef => 0,
-        CodegenLaneRepr::RawInt => 1,
-        CodegenLaneRepr::RawF64 => 2,
-        CodegenLaneRepr::RawAtom => 3,
-    };
-    (kind, executable, boundary, entry, index, fact.lane.as_u32(), repr)
 }
 
 fn executable_sort_key(executable: &ExecutableKey, types: &Types) -> ExecutableSortKey {
@@ -5026,13 +4099,6 @@ mod tests {
         value_lane_shape(world, ty)
     }
 
-    fn lane_for_shape(world: &World<'_>, shape: ShapeId) -> LaneId {
-        let ShapeDescr::Lane(lane) = world.shape(shape) else {
-            panic!("test shape should be one lane")
-        };
-        *lane
-    }
-
     fn test_positions(world: &mut World<'_>) -> (TransportPosition, TransportPosition) {
         world.submit_code(None, "fn main(x), do: x".to_string());
         let root = world.submit_root(None, "main".to_string(), 1, ExecutableNeed::Value);
@@ -5201,55 +4267,5 @@ mod tests {
         graph.equal(a, b.clone());
         graph.anchor(b, right_shape);
         let _ = graph.solve();
-    }
-
-    #[test]
-    fn codegen_seam_sort_key_distinguishes_executable_symbol_identity() {
-        let tel = ConfiguredTelemetry::new();
-        let mut world = World::new(&tel);
-        world.submit_code(None, "fn main(x), do: x".to_string());
-        let root = world.submit_root(None, "main".to_string(), 1, ExecutableNeed::Value);
-        let function = world.root_entry(root).function;
-        let int = world.types_mut().int();
-        let any = world.types_mut().any();
-        let shape = value_lane_shape(&mut world, int);
-        let lane = lane_for_shape(&world, shape);
-
-        let value_symbol = ExecutableSymbol {
-            activation: ActivationSymbol {
-                function,
-                input: vec![int].into_boxed_slice(),
-            },
-            need: ExecutableNeed::Value,
-        };
-        let tuple_symbol = ExecutableSymbol {
-            activation: ActivationSymbol {
-                function,
-                input: vec![any].into_boxed_slice(),
-            },
-            need: ExecutableNeed::TupleFields(1),
-        };
-        let value_fact = CodegenSeamFact {
-            seam: CodegenSeam::ReturnDelivery {
-                executable: value_symbol,
-            },
-            shape: Some(shape),
-            lane,
-            repr: CodegenLaneRepr::ValueRef,
-        };
-        let tuple_fact = CodegenSeamFact {
-            seam: CodegenSeam::ReturnDelivery {
-                executable: tuple_symbol,
-            },
-            shape: Some(shape),
-            lane,
-            repr: CodegenLaneRepr::ValueRef,
-        };
-
-        assert_ne!(
-            codegen_seam_fact_sort_key(&value_fact),
-            codegen_seam_fact_sort_key(&tuple_fact),
-            "codegen seam fact ordering must be stable for multiple activations/needs of the same function"
-        );
     }
 }

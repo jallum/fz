@@ -96,10 +96,6 @@ fn job_kind_name(job: &Job) -> &'static str {
         SeedRoot(_) => "SeedRoot",
         SeedActivation(_) => "SeedActivation",
         AnalyzeActivation(_) => "AnalyzeActivation",
-        DeriveRuntimeDemand(_) => "DeriveRuntimeDemand",
-        SealSemanticClosure(_) => "SealSemanticClosure",
-        DeriveExecutableTransport(_) => "DeriveExecutableTransport",
-        DeriveTransportPlan(_) => "DeriveTransportPlan",
         BuildBackendProduct(_) => "BuildBackendProduct",
         LowerNativeProgram(_) => "LowerNativeProgram",
     }

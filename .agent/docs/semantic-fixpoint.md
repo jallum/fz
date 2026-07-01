@@ -10,8 +10,9 @@ semantic side still publishes facts with two readiness levels:
   consume it as complete for now.
 
 `SeedRoot`, `SeedActivation`, and `AnalyzeActivation` shape those local facts.
-`SealSemanticClosure` and `SemanticClosed(root)` remain legacy/root-artifact
-compatibility machinery, not the target model for new artifact work.
+There is no root semantic-closure seal: the `SealSemanticClosure` job and its
+`SemanticClosed(root)`/`SemanticReady(root)` facts were deleted (`fz-go4.18.4`).
+Artifact readiness is pulled entirely by product keys.
 
 ## What an activation is today
 

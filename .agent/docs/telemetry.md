@@ -165,7 +165,7 @@ formatting, no processing, no allocation, no calculation, and no cloning. It
 passes O(1) reads of existing state — ids and stored counts in measurements;
 borrowed `&str`s and `opaque`/`opaque_debug` borrows of compiler-owned
 structures in metadata (`Job`, `JobEffects`, `AppliedStep<Job, FactKey>`,
-`FunctionRef`, `CallSiteSummary`, `SemanticClosure`, `BackendProgram`,
+`FunctionRef`, `CallSiteSummary`, `BackendProgram`,
 `NativeProgram`, `TypeDef` with the `Types` interner beside it,
 `Vec<ArgRepr>`, …). Handlers do any rendering, counting, or projection at event
 time. If an emit site has to
@@ -241,73 +241,32 @@ cargo run -q -- --log-telemetry /tmp/fz-00181.jsonl \
 jq -sr '
   def nm: .name|join(".");
   "job_starts=\([.[] | select(nm=="fz.compiler2.job" and .kind=="span_start")] | length)",
-  "legacy_semantic_transport_job_starts=\([.[] | select(nm=="fz.compiler2.job" and .kind=="span_start" and (.metadata.job.debug|test("SealSemanticClosure|DeriveRuntimeDemand|DeriveExecutableTransport|DeriveTransportPlan")))] | length)",
-  "root_frontier_legacy_events=\([.[] | select(nm=="fz.compiler2.legacy.root_executable_frontier")] | length)",
   "root_session=\([.[] | select(nm=="fz.compiler2.pull.session.finished" and .measurements.root_id==0)] | last | .measurements)"
 ' /tmp/fz-00181.jsonl
 ```
 
-Current expected signal for `fixtures2/00181_enum_reduce_operator_ref.fz`:
-`job_starts=246` against the `LEGACY_00181_NO_DUMP_JOB_STARTS=379` test
-baseline, `legacy_semantic_transport_job_starts=0`,
-`root_frontier_legacy_events=0`, and root session measurements
+The job trace is minimal by construction: the legacy `SealSemanticClosure` /
+`DeriveRuntimeDemand` / `DeriveExecutableTransport` / `DeriveTransportPlan` jobs
+were deleted (`fz-go4.18.4`), so no job debug string can name them and the
+`[fz, compiler2, legacy, root_executable_frontier]` scan is gone from production
+(it survives only as `#[cfg(test)]` support for the fixture call-edge oracle).
+Root session measurements for `fixtures2/00181_enum_reduce_operator_ref.fz` are
 `executables=10`, `transport_positions=160`, `callables=2`, `boundaries=0`,
 `producer_pokes=0`. Backend dumps may be requested with `--dump
 backend=/tmp/fz-00181.backend`; the `types` / `activations` dumps are served
 from the product-path activation inventory
 (`Compiler2::emit_product_semantic_dumps`, which walks the demanded session's
-materialized executables), so requesting them fires no `SealSemanticClosure`
-job and emits no `[fz, compiler2, semantic_closed, defined]` event — the dump
-no longer depends on the legacy semantic-closure seal.
+materialized executables).
 
-Transport product construction emits `[fz, compiler2, transport_flow, defined]`
-for the legacy root transport signal and `[fz, compiler2, pull, product, *]` for
-per-position product demand. The product path treats `RuntimeDemand(E)` as
-pre-transport evidence; `TransportPosition -> ShapeId`, `CallableId` facts,
-`BoundaryId` contracts, and `CodegenSeamFact` rows are produced for the
-positions and boundaries named by demanded executable products.
-
-The transport-flow measurements are:
-
-```
-root_id
-semantic_revision
-executable_count
-transport_position_count
-shape_descriptor_count
-lane_descriptor_count
-callable_descriptor_count
-boundary_descriptor_count
-nothing_shape_count
-tuple_shape_count
-callable_shape_count
-direct_callable_count
-first_class_callable_count
-boundary_publication_count
-omitted_position_count
-resume_payload_position_count
-return_payload_position_count
-call_result_payload_position_count
-codegen_seam_fact_count
-codegen_function_entry_seam_fact_count
-codegen_block_param_seam_fact_count
-codegen_return_delivery_seam_fact_count
-codegen_continuation_entry_seam_fact_count
-codegen_return_continuation_seam_fact_count
-codegen_tail_call_seam_fact_count
-codegen_callable_boundary_seam_fact_count
-codegen_extern_boundary_seam_fact_count
-codegen_first_class_publication_seam_fact_count
-```
-
-`omitted_position_count` counts root positions settled to `Shape::Nothing`.
-`resume_payload_position_count`, `return_payload_position_count`, and
-`call_result_payload_position_count` count named call result payload positions:
-`ResumePayload` for `Deliver(entry)` and `ReturnPayload` for `Return`. The
-metadata exposes the committed facts (`transport_positions`,
-`shape_descriptors`, `lane_descriptors`, `callable_facts`, `boundary_facts`,
-and `seam_facts`) for inspection; tests should assert ShapeId relationships
-from the plan when correctness depends on sharing.
+Transport product construction emits `[fz, compiler2, pull, product, *]` for
+per-position product demand. There is no root-wide `transport_flow` signal: the
+legacy `DeriveTransportPlan` job that emitted it — and its `TransportPlan(root)`
+fact — were deleted (`fz-go4.18.4`). The product path treats the
+`RuntimeDemand(E)` product as pre-transport evidence; `TransportPosition ->
+ShapeId`, `CallableId` facts, `BoundaryId` contracts, and `CodegenSeamFact` rows
+are produced for the positions and boundaries named by demanded executable
+products. Tests assert ShapeId relationships from the demanded
+`MaterializedTransportPlan` when correctness depends on sharing.
 
 Macro executable readiness also emits
 `[fz, compiler2, macro_executable, defined]` with raw `function_id`,

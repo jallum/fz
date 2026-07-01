@@ -8,15 +8,12 @@ use super::dump::{DumpKind, DumpSpec, install_dump_handlers};
 use super::{CodeSubmission, Compiler2, DriveOutcome, ExecutableNeed, RootSubmission};
 
 /// The user-facing `types`/`activations` dumps are served from the PRODUCT-PATH
-/// activation inventory, never the legacy semantic-closure seal. This pins that
-/// boundary by telemetry: driving the dump producer emits the per-activation
-/// dump events while `SealSemanticClosure` (the only emitter of the
-/// `semantic_closed`/`runtime_demand` `defined` events) never fires. If a future
-/// change re-routed the dump back through the seal, the seal events would
-/// reappear and this test would go red — the regression the spine deletion
-/// (fz-go4.18.4) depends on staying severed.
+/// activation inventory (`emit_product_semantic_dumps`). There is no legacy
+/// semantic-closure seal to route around — it was deleted (fz-go4.18.4). This
+/// pins that the product dump producer emits the per-activation dump events and
+/// that they carry the real root-owned activation facts.
 #[test]
-fn semantic_dumps_serve_from_product_path_without_the_seal() {
+fn semantic_dumps_serve_from_the_product_path() {
     let capture = Capture::new();
     let tel = ConfiguredTelemetry::new();
     tel.attach(&[], capture.handler());
@@ -85,20 +82,6 @@ fn semantic_dumps_serve_from_product_path_without_the_seal() {
         "product-path activations dump should carry per-activation return facts"
     );
     std::fs::remove_dir_all(&dir).ok();
-
-    // The seal never ran: `SealSemanticClosure` is the sole emitter of these
-    // events, so their absence proves the dump path has zero dependency on
-    // `World::define_semantic_closure`.
-    assert_eq!(
-        capture.count(&["fz", "compiler2", "semantic_closed", "defined"]),
-        0,
-        "the dump path must not drive SealSemanticClosure / define_semantic_closure"
-    );
-    assert_eq!(
-        capture.count(&["fz", "compiler2", "runtime_demand", "defined"]),
-        0,
-        "the dump path must not drive the seal's runtime-demand projection"
-    );
 }
 
 #[test]

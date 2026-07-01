@@ -10,7 +10,6 @@ use crate::telemetry::{ConfiguredTelemetry, Handler, Value, opaque};
 
 use super::artifact::{BackendProgram, NativeProgram};
 use super::identity::{ActivationKey, ExecutableKey, FunctionId, RootId};
-use super::semantic::SemanticClosure;
 use super::world::World;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -130,15 +129,8 @@ pub(crate) fn install_dump_handlers(tel: &ConfiguredTelemetry, root: RootId, spe
     }
 }
 
-/// Emits the per-activation types/activations dump events for the legacy
-/// semantic-closure activation set (the seal path).
-pub(crate) fn emit_semantic_dump_events(world: &World<'_>, root: RootId, closure: &SemanticClosure) {
-    emit_dump_events(world, root, closure.activations.iter().cloned());
-}
-
-/// Emits the same per-activation dump events sourced from the product-path
-/// activation inventory (the demanded executables' activations). The dump
-/// content is identical to the seal path — only the SET source differs.
+/// Emits the per-activation types/activations dump events sourced from the
+/// product-path activation inventory (the demanded executables' activations).
 pub(crate) fn emit_product_semantic_dump_events(
     world: &World<'_>,
     root: RootId,

@@ -494,50 +494,20 @@ fn compiler2_compile_root_aot_consumes_native_program_without_legacy_prepare() {
     }
 }
 
-fn assert_legacy_seal_transport_ladder_silent(jobs: &JobCapture, capture: &Capture, context: &str) {
-    let fires = jobs.fires_matching(|job| {
-        matches!(
-            job,
-            Job::SealSemanticClosure(_)
-                | Job::DeriveTransportPlan(_)
-                | Job::DeriveExecutableTransport(_)
-                | Job::DeriveRuntimeDemand(_)
-        )
-    });
-    assert!(
-        fires.is_empty(),
-        "{context}: the legacy seal/transport ladder must not run on the native path, but observed: {fires:?}",
-    );
-    assert!(
-        capture
-            .find(&["fz", "compiler2", "legacy", "root_executable_frontier"])
-            .is_empty(),
-        "{context}: root_executable_frontier must not fire on the native path",
-    );
-}
-
 #[test]
-fn compiler2_native_front_doors_do_not_drive_the_legacy_seal_transport_ladder() {
-    // enum_reduce exercises a callable boundary (Enum.reduce takes a closure),
-    // so its native lowering historically depended on the legacy transport plan.
-    // The JIT and AOT front doors now reach the BackendProgram through the same
-    // guarded product driver as interp, which defers SealSemanticClosure /
-    // DeriveTransportPlan; nothing downstream of the seal
-    // (DeriveExecutableTransport, DeriveRuntimeDemand, root_executable_frontier)
-    // may run for the root. We observe the legacy jobs through the same
-    // `fz.compiler2.job` span family that the production drive loops emit.
+fn compiler2_native_front_doors_jit_and_aot_enum_reduce_through_the_product_path() {
+    // enum_reduce exercises a callable boundary (Enum.reduce takes a closure).
+    // The JIT and AOT front doors reach the BackendProgram through the same
+    // product driver as interp (`build_backend_product`); the legacy
+    // seal/transport ladder no longer exists (fz-go4.18.4).
     let source = include_str!("../../fixtures2/00010_enum_reduce_main.fz");
 
     // JIT front door.
     {
         let tel = ConfiguredTelemetry::new();
-        let capture = Capture::new();
-        tel.attach(&[], capture.handler());
-        let jobs = JobCapture::new();
-        tel.attach(&["fz", "compiler2", "job"], jobs.handler());
         let mut compiler = Compiler2::new(&tel);
         compiler.submit_code(CodeSubmission {
-            name: Some("fixtures/enum_reduce_legacy_silence_jit.fz".to_string()),
+            name: Some("fixtures/enum_reduce_native_front_door_jit.fz".to_string()),
             text: source.to_string(),
         });
         let root = compiler.submit_root(super::RootSubmission {
@@ -548,25 +518,20 @@ fn compiler2_native_front_doors_do_not_drive_the_legacy_seal_transport_ladder() 
         });
         let (compiled, entry) = compiler
             .compile_root_jit(root)
-            .expect("enum_reduce should JIT-compile through the guarded product path");
+            .expect("enum_reduce should JIT-compile through the product path");
         assert_eq!(
             compiled.run(&tel, entry),
             15,
-            "enum_reduce should preserve its JIT result through the guarded native front door",
+            "enum_reduce should preserve its JIT result through the native front door",
         );
-        assert_legacy_seal_transport_ladder_silent(&jobs, &capture, "JIT front door");
     }
 
     // AOT front door.
     {
         let tel = ConfiguredTelemetry::new();
-        let capture = Capture::new();
-        tel.attach(&[], capture.handler());
-        let jobs = JobCapture::new();
-        tel.attach(&["fz", "compiler2", "job"], jobs.handler());
         let mut compiler = Compiler2::new(&tel);
         compiler.submit_code(CodeSubmission {
-            name: Some("fixtures/enum_reduce_legacy_silence_aot.fz".to_string()),
+            name: Some("fixtures/enum_reduce_native_front_door_aot.fz".to_string()),
             text: source.to_string(),
         });
         let root = compiler.submit_root(super::RootSubmission {
@@ -576,13 +541,12 @@ fn compiler2_native_front_doors_do_not_drive_the_legacy_seal_transport_ladder() 
             need: super::ExecutableNeed::Value,
         });
         let artifact = compiler
-            .compile_root_aot(root, "enum_reduce_legacy_silence")
-            .expect("enum_reduce should AOT-compile through the guarded product path");
+            .compile_root_aot(root, "enum_reduce_native_front_door")
+            .expect("enum_reduce should AOT-compile through the product path");
         assert!(
             !artifact.object.is_empty(),
-            "enum_reduce should produce a non-empty AOT object through the guarded native front door",
+            "enum_reduce should produce a non-empty AOT object through the native front door",
         );
-        assert_legacy_seal_transport_ladder_silent(&jobs, &capture, "AOT front door");
     }
 }
 
@@ -689,19 +653,6 @@ impl JobCapture {
 
     fn stop_count(&self, job: Job) -> usize {
         self.stops.borrow().iter().filter(|stop| stop.job == job).count()
-    }
-
-    /// Every job whose span closed and whose `Job` matches `predicate`. Used to
-    /// observe key-erased job families (e.g. the legacy seal/transport ladder,
-    /// whose `DeriveExecutableTransport`/`DeriveRuntimeDemand` members are keyed
-    /// by `ExecutableKey`) without naming each key.
-    fn fires_matching(&self, predicate: impl Fn(&Job) -> bool) -> Vec<Job> {
-        self.stops
-            .borrow()
-            .iter()
-            .filter(|stop| predicate(&stop.job))
-            .map(|stop| stop.job.clone())
-            .collect()
     }
 }
 
