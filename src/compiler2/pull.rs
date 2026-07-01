@@ -1686,23 +1686,6 @@ mod tests {
         assert_eq!(measurement_u64(&finished, "producer_pokes"), 2);
     }
 
-    #[test]
-    fn root_executable_frontier_emits_legacy_scan_telemetry() {
-        let tel = ConfiguredTelemetry::new();
-        let capture = Capture::new();
-        tel.attach(&[], capture.handler());
-        let root = RootId::for_test(8);
-        let world = World::new(&tel);
-
-        assert!(world.root_executable_frontier(root).is_empty());
-
-        let event = capture
-            .last(&["fz", "compiler2", "legacy", "root_executable_frontier"])
-            .expect("root frontier scan should emit legacy telemetry");
-        assert_eq!(measurement_u64(&event, "root_id"), root.as_u32() as u64);
-        assert_eq!(measurement_u64(&event, "executable_count"), 0);
-    }
-
     fn fake_executable(root: RootId) -> ExecutableKey {
         fake_executable_with_function(root, root.as_u32() + 10)
     }

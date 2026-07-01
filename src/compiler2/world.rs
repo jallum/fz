@@ -2106,31 +2106,6 @@ impl<'a> World<'a> {
         self.work_graph.facts().is_settled(key)
     }
 
-    /// Test-only ambient scan over the published `Executable` facts for one root,
-    /// backing the fixture call-edge oracle. Production artifact construction
-    /// stays on explicitly demanded products; the emitted telemetry lets tests
-    /// assert product drives never reach this ambient frontier.
-    #[cfg(test)]
-    pub(crate) fn root_executable_frontier(&self, root: RootId) -> HashSet<ExecutableKey> {
-        let frontier = self
-            .work_graph
-            .fact_keys()
-            .filter_map(|fact| match fact {
-                FactKey::Executable(executable) if executable.activation.root == root => Some(executable.clone()),
-                _ => None,
-            })
-            .collect::<HashSet<_>>();
-        self.tel.execute(
-            &["fz", "compiler2", "legacy", "root_executable_frontier"],
-            &measurements! {
-                root_id: root.as_u32(),
-                executable_count: frontier.len(),
-            },
-            &metadata! {},
-        );
-        frontier
-    }
-
     pub(crate) fn root_entry_executable(&mut self, root: RootId) -> ExecutableKey {
         let entry = self.root_entry(root);
         ExecutableKey {

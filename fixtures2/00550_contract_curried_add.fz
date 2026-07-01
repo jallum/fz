@@ -1,10 +1,10 @@
 #---
 # purpose: nested currying keeps each closure application and continuation boundary explicit
 # root: main/0
-# assert.metric.semantic.activations: 9
-# assert.metric.semantic.executables: 9
-# assert.metric.semantic.callsites: 15
-# assert.metric.call_edges.count: 15
+# assert.metric.semantic.activations: 6
+# assert.metric.semantic.executables: 6
+# assert.metric.semantic.callsites: 12
+# assert.metric.call_edges.count: 12
 # assert.metric.return_type.widened: 0
 # assert.edge: apply/2[(α0) -> α1, int] | @72-77 | closure | add3/1::lambda[@16-51]/1
 # assert.edge: apply/2[(α0) -> α1, int] | @72-77 | closure | add3/1::lambda[@16-51]/1::lambda[@25-47]/1

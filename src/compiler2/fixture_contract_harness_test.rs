@@ -2,7 +2,7 @@ use super::fixture_facts::{canonical_call_edge_facts, render_canonical_call_edge
 use super::fixture_metadata::{
     EdgeAssertion, FixtureMetadata, MetricAssertion, fixture_frontmatter_prefix_bytes, parse_fixture_metadata,
 };
-use super::{DriveOutcome, ExecutableNeed, FactKey, Job};
+use super::{CodeSubmission, Compiler2, ExecutableNeed, RootSubmission};
 use crate::telemetry::ConfiguredTelemetry;
 use crate::telemetry::handler::{Event, Handler};
 use std::collections::BTreeMap;
@@ -44,10 +44,6 @@ impl ReturnWideningCounter {
     fn get(&self) -> u64 {
         *self.count.lock().expect("return widening counter lock")
     }
-}
-
-fn assert_resolved(outcome: DriveOutcome<Job, FactKey>, message: &str) {
-    assert!(matches!(outcome, DriveOutcome::Resolved), "{message}: {outcome:?}");
 }
 
 fn discover_contract_fixtures() -> Vec<ContractFixture> {
@@ -100,33 +96,43 @@ fn evaluate_fixture(fixture: &ContractFixture) -> EvaluatedFixture {
     let widened = ReturnWideningCounter::default();
     tel.attach(&["fz", "compiler2", "return_type", "widened"], widened.handler());
 
-    let mut world = crate::compiler2::World::new(&tel);
-    world.submit_code(Some(fixture.path.display().to_string()), fixture.source.clone());
-    let root_id = world.submit_root(None, root.name.clone(), root.arity, ExecutableNeed::Value);
-    assert_resolved(
-        world.drive(),
-        &format!("fixture {} should compile and settle", fixture.name),
-    );
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some(fixture.path.display().to_string()),
+        text: fixture.source.clone(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: root.name.clone(),
+        arity: root.arity,
+        need: ExecutableNeed::Value,
+    });
+    let executables = compiler.product_executable_inventory(root_id).unwrap_or_else(|error| {
+        panic!(
+            "fixture {} should compile and settle through the product path: {error}",
+            fixture.name
+        )
+    });
+    let world = compiler.world();
 
     let prefix = fixture_frontmatter_prefix_bytes(&fixture.source)
         .expect("fixture frontmatter prefix")
         .unwrap_or(0);
     let root_code = world.function_definition(world.root_function(root_id)).0.code;
-    let frontier = world.root_executable_frontier(root_id);
-    let inventory = frontier
+    let inventory = executables
         .iter()
         .map(|executable| executable.activation.clone())
         .collect::<Vec<_>>();
-    let facts = normalize_fact_spans(canonical_call_edge_facts(&world, root_id, &inventory), prefix);
+    let facts = normalize_fact_spans(canonical_call_edge_facts(world, root_id, &inventory), prefix);
     let snapshot = render_canonical_call_edge_snapshot(&facts);
-    let local_activations = frontier
+    let local_activations = executables
         .iter()
         .map(|executable| &executable.activation)
         .collect::<std::collections::HashSet<_>>()
         .into_iter()
         .filter(|activation| world.function_definition(activation.function).0.code == root_code)
         .count() as u64;
-    let local_executables = frontier
+    let local_executables = executables
         .iter()
         .filter(|executable| world.function_definition(executable.activation.function).0.code == root_code)
         .count() as u64;

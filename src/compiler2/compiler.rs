@@ -7,7 +7,7 @@ use super::artifact::BackendProgram;
 use super::code::CodeId;
 use super::dump::DumpStage;
 use super::facts::{FactReadiness, FactUse};
-use super::identity::{ActivationKey, FunctionId, RootId};
+use super::identity::{ActivationKey, ExecutableKey, FunctionId, RootId};
 use super::pull::{ProductDriver, ProductKey, ProductValue, PullOutcome, PullWait, WorldProductProducers};
 use super::scheduler::DriveOutcome;
 use super::world::World;
@@ -182,15 +182,30 @@ impl<'a> Compiler2<'a> {
     /// and the frontier fixture call-edge oracles source so latent
     /// runtime-demand-reached provenance is observable.
     pub(crate) fn product_activation_inventory(&mut self, root: RootId) -> Result<Vec<ActivationKey>, String> {
+        let executables = self.product_executable_inventory(root)?;
+        Ok(executables
+            .into_iter()
+            .map(|executable| executable.activation)
+            .collect())
+    }
+
+    /// Drives one root to its backend product and returns the settled
+    /// product-path executable inventory: the `ExecutableKey`s the product
+    /// actually materializes (each an activation paired with its need). This is
+    /// the executable-grained counterpart of `product_activation_inventory` —
+    /// multiple executables can share one activation under different needs — and
+    /// is the canonical source of the semantic executable/activation metrics the
+    /// fixture contract harness asserts.
+    pub(crate) fn product_executable_inventory(&mut self, root: RootId) -> Result<Vec<ExecutableKey>, String> {
         let (_program, driver) = self.drive_root_backend_product(root)?;
-        let activations = driver
+        let executables = driver
             .session()
             .materialized_executables()
             .keys()
-            .map(|executable| executable.activation.clone())
+            .cloned()
             .collect::<Vec<_>>();
         driver.finish_session();
-        Ok(activations)
+        Ok(executables)
     }
 
     /// Read-only access to the compiler's settled world, so tests can read the
