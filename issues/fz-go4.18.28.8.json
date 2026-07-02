@@ -2,14 +2,15 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-07-02T23:47:32Z",
   "created": "2026-07-02T23:15:50Z",
   "description": "Next child in the .28 census+burn-down arc, filed after .28.7 (backend_executable unit-cost) folded at 057700e15. Per the umbrella's mini re-census, materialized_executable + abi_executable production is now the dominant named mechanism on every remaining \u003e0.1s fixture: enum_predicate_search 5.5s (3.2s materialized_executable + 1.4s abi_executable); 00420_enum_take_drop_split 3.60s (1.6s+0.8s) / behavior twin 3.62s; enum_map_family 0.81s (0.37s+0.18s); 00277 0.56s.\n\nTASK: apply the same diagnose-first method .28.7 used successfully -- profile ONE production on 00420 (or enum_predicate_search, whichever isolates the mechanism more cleanly) and enum_map_family; classify the cost as volume (many productions, each cheap) vs unit-cost (few productions, each expensive, likely scaling with something global); find the file:line mechanism. If it's the same disease class (a per-production rebuild of something that should be settled/shared, especially any format!(\"{:?}\") comparator key or full-set clone), fix it the same way .28.7 did: read only what's actually consumed, hoist any genuinely-global computation to run once per root/closure, delete the dead accessor left behind.\n\nCAUTION: 00420/behavior-take-drop-split are CONFIRMED run-to-run nondeterministic (ambiguous-callable-entries errors with different entry ids each run) both before and after .28.7 -- this is pre-existing (tracked by fz-8b0/project_fz_f98_convergence_runaway memory, and by .28.5's wait-order-dependent plan completeness). Do not treat that nondeterminism as this ticket's target; profile the STABLE cost (wall-clock/gap-sum of materialized_executable+abi_executable production itself), not the flaky output. If the investigation reveals materialized_executable/abi_executable production timing itself is schedule-dependent (not just 00420's final answer), that is a NEW finding worth surfacing to .28.5, not something to paper over here.\n\nACCEPTANCE: gap-sum before/after table for the profiled fixtures; mechanism identified with file:line; fix landed in one coherent commit (or a clear STOP-and-report if it doesn't decompose that cleanly); interp output byte-identical on deterministic fixtures; suite green 3x fresh, whole-lib clippy/fmt clean; mini re-census of the residual tier as closing evidence.",
   "id": "fz-go4.18.28.8",
   "labels": [],
   "parent": "fz-go4.18.28",
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "materialized_executable + abi_executable production cost: diagnose the residual bottleneck",
   "type": "task",
-  "updated_at": "2026-07-02T23:15:53Z"
+  "updated_at": "2026-07-02T23:47:32Z"
 }
