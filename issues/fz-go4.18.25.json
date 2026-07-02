@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-07-02T13:22:31Z",
+  "description": "Watch-item from the .18.19 correctness audit (nit 1). The coalesce invariant 'concluded + un-rebased =\u003e byte-identical re-run' is only as strong as 'every input is a recorded fact read, or its mutation has a dedicated unscreened wake'. PublishFunctionSource's stash is compensated (world.rs:1446 public enqueue gated on has_fact||is_waited). But a concluded protocol-kind DefineModule records reads: Vec::new() (source_publish.rs:222) — no change wave can ever re-run or rebase it, and follow_up demands are now suppressed too. TODAY this is fine: impl growth flows through impl-module jobs (each publishes ProtocolDispatch through its own conclusion), and the probed {ModuleDefined present, ProtocolDispatch absent, concluded-as-protocol} state is unreachable (publish_protocol_surface outputs ProtocolDispatch unconditionally in its single Complete return, source_publish.rs:215/219). IF module-level redefinition (a module changing source kind, or a protocol body replaced wholesale) ever becomes a path, it needs its own unscreened wake analogous to world.rs:1446. Add a debug assertion or doc note at the DefineModule conclusion site when that path is designed.",
+  "id": "fz-go4.18.25",
+  "labels": [],
+  "parent": "fz-go4.18",
+  "priority": 3,
+  "status": "open",
+  "title": "Zero-read concluders (protocol DefineModule) have no re-run path — needs an unscreened wake if module-level redefinition becomes a path",
+  "type": "task",
+  "updated_at": "2026-07-02T13:22:31Z"
+}
