@@ -2,14 +2,15 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-07-02T21:43:18Z",
   "created": "2026-07-02T21:36:28Z",
   "description": "From the .18.28.3 removable-code audit (2026-07-02, at 2c4f681f3). The .18.28.3 DNF hygiene (duplicate-clause drop + P-and-not-P contradiction drop) landed in dnf.rs::dnf_intersect/dnf_neg — but Types::intersect (the PUBLIC API, mod.rs:751) routes through intersect_descr -\u003e intersect_dnf (mod.rs:1498-1530), a PARALLEL MergeSig-based clause product with NEITHER protection and a Vec::with_capacity(a.len()*b.len()) allocation. The hygiene invariant is therefore partial by construction: iterated Types::intersect can still snowball duplicate/contradictory clause lists (the same exponential seed .18.28.3 fixed on the dnf.rs path). Direct Conj::pos_of pushes (descr.rs:131-183) also bypass it. WORK: either (a) give intersect_dnf the same construction hygiene (preferred — one invariant, and evaluate whether the two intersect implementations should UNIFY: two parallel clause-product routines is itself a smell), or (b) if the split is load-bearing, document exactly which constructors carry the invariant. Either way fix the doc overclaim: .agent/docs/set-theoretic-types.md:55 lead sentence says 'DNF construction keeps clause lists hygienic' as if global — scope it to the dnf.rs operations (or make it true). ACCEPTANCE: no DNF construction path can build duplicate or P-and-not-P clauses (property test over Types::intersect chains), or the invariant boundary is precisely documented; suite green; clippy 0.",
   "id": "fz-go4.18.28.4",
   "labels": [],
   "parent": "fz-go4.18.28",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "intersect_dnf is an unhygienic sibling of dnf_intersect — extend the DNF hygiene or document the split",
   "type": "bug",
-  "updated_at": "2026-07-02T21:36:28Z"
+  "updated_at": "2026-07-02T21:43:18Z"
 }
