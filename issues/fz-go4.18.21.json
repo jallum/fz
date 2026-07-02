@@ -11,9 +11,15 @@
   "id": "fz-go4.18.21",
   "labels": [],
   "parent": "fz-go4.18",
+  "comments": [
+    {
+      "text": "Re-scoped context: schedule-dependent arrow keys are plausibly keys minted from MID-ASCENT demand values (the .18.22 founding defect). Post-.18.22 demand is deterministic (unique least fixpoint) — re-run the 2-run histogram diff on 00001 first; the orphaned provisional-arrow demand should also vanish. Diagnose only what survives.",
+      "timestamp": "2026-07-02T12:17:33Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "Activation arrow keying is schedule-dependent on 00001; demanded executable at retracted arrow is orphaned",
   "type": "bug",
-  "updated_at": "2026-07-02T03:01:04Z"
+  "updated_at": "2026-07-02T12:17:33Z"
 }
