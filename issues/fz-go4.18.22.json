@@ -18,11 +18,15 @@
     {
       "text": "-m",
       "timestamp": "2026-07-02T07:46:22Z"
+    },
+    {
+      "text": "PROBE RESULT (fz-go4.18.22.1): GO-WITH-CONSTRAINTS. Design inputs binding on the implementation: (1) SCC derivation from SETTLED call-edge facts (materialized call edges + callable-flow resolutions), never from live demand reads — probe measured SCC membership drift on fz_f98 via mid-ascent keying; (2) the demand-edge graph = direct callee reads UNION callable-flow/boundary-resolution contribution edges (17% of edges are the latter; 57/00420 targets invisible at the :193 read site); (3) whole-program SCCs are the NORM (75-97% of demanded set) and ACCEPTED because ascent depth \u003c= ~5 (probe-measured; median 1) — add a debug ascent-round budget (e.g. assert \u003c= 32) instead of widening; (4) the no-contributor case (delivery-reached continuations) KEEPS the whole-by-need bootstrap AT SETTLE TIME (absence is a distinct cell and was never the bug — the bug is the MID-ASCENT active-seed + floor); (5) expected payoffs to MEASURE and report: 00420 churn 3588 productions -\u003e bounded rounds (if its drive drops toward \u003c1s that is the fz-f98.14 headline), the 9-fixture cycling census -\u003e 0, matrix redness collapse.",
+      "timestamp": "2026-07-02T13:44:07Z"
     }
   ],
   "priority": 1,
   "status": "in_progress",
   "title": "Model RuntimeDemand as an SCC-settled monotone fixpoint (the ExecutableEffects pattern); delete the seed/floor/in-flight-retraction compensators",
   "type": "bug",
-  "updated_at": "2026-07-02T13:04:22Z"
+  "updated_at": "2026-07-02T13:44:07Z"
 }
