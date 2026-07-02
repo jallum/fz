@@ -10,9 +10,15 @@
   "id": "fz-go4.18.28.1",
   "labels": [],
   "parent": "fz-go4.18.28",
+  "comments": [
+    {
+      "text": "LANDED at fefa3e0d2 (parent 0cb890e95, branch fz-go4.1/frontdoor-cli-ownership worktree, NOT pushed). Solve-per-epoch achieved: 3 closure_solved per fixture (vs 427/492/1205/1785 per-anchor solves). Walls (release interp, outputs byte-identical to base): range_map 5.95-\u003e0.95s, range_enumerable 3.06-\u003e0.71s, map_enumerable 5.45-\u003e0.78s, enum_map_family 36.4-\u003e4.5s, enum_predicate_search 115.9-\u003e15.8s (same 'backend value 6 is unbound' failure), 00420 timeout-\u003e22.4s (completes; fails with the take-family's pre-existing 'ambiguous across callable entries', reproduced at base on 00419/00230/00183 which all keep identical stdout/exit and drop 7-8.3s -\u003e ~0.9s). Suite 935/0 x3 (95.7/96.2/102.1s vs 109.5s base), whole lib 1133/0, clippy -D warnings clean. Plan positions inventory grows ~4% (867-\u003e903, 1147-\u003e1185): components now carry FULL membership from the shared solve where per-anchor closures recorded subsets; shapes agree, executables/callables/boundaries/pokes counts identical. Follow-up findings ticketed: fz-go4.18.28.5 (wait-order-dependent plan completeness), fz-go4.18.28.6 (backend dump / ReturnType run-to-run nondeterminism at base).",
+      "timestamp": "2026-07-02T22:11:33Z"
+    }
+  ],
   "priority": 1,
   "status": "in_progress",
   "title": "Transport: solve the shape graph once per settled closure; record ALL components, not just the anchor's",
   "type": "bug",
-  "updated_at": "2026-07-02T20:51:25Z"
+  "updated_at": "2026-07-02T22:11:33Z"
 }
