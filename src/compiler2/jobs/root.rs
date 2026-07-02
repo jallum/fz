@@ -71,8 +71,13 @@ pub(super) fn seed_root(world: &mut World<'_>, root_id: RootId) -> Result<JobEff
         need: root.need,
     };
     outputs.push(FactKey::Executable(entry_executable));
-    follow_up.push(Job::LowerFunction(root.function));
-    follow_up.push(Job::PlanEntryDispatch(root.function));
+    // LowerFunction/PlanEntryDispatch are not re-emitted here: reaching this
+    // point means `require_activation_key_facts` above already observed both
+    // `Recursive(function)` and `DispatchMask(function)` settled, and their
+    // producers (`derive_recursive`, `derive_dispatch_mask`) only conclude
+    // after `LoweredBody`/`EntryDispatch` exist -- so those jobs have already
+    // run. First-run demand for them lives in DeriveRecursive/DeriveDispatchMask;
+    // later change waves reach them via the normal wake mechanism.
     follow_up.push(Job::AnalyzeActivation(entry_activation.clone()));
     Ok(JobEffects {
         reads: settled_uses(reads),
