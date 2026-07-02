@@ -577,15 +577,6 @@ impl PullSession {
             })
     }
 
-    /// Test-only: production code reaches settled return demand exclusively
-    /// through `external_return_demand`'s cross-member join. This raw
-    /// per-key getter exists only so unit tests can assert the joined
-    /// aggregate `replace_settled_return_demand_contributions` produces.
-    #[cfg(test)]
-    pub fn return_demand(&self, executable: &ExecutableKey) -> Option<&RuntimeDemand> {
-        self.return_demands.get(executable)
-    }
-
     pub fn materialized_executable(&self, executable: &ExecutableKey) -> Option<&MaterializedExecutable> {
         self.materialized_executables.get(executable)
     }
@@ -1686,8 +1677,8 @@ mod tests {
         );
 
         assert_eq!(
-            session.return_demand(&callee),
-            Some(&RuntimeDemand::whole()),
+            session.external_return_demand(&callee, &HashSet::new()),
+            Some(RuntimeDemand::whole()),
             "the joined return demand should be retained for the next pull"
         );
         assert!(
@@ -1713,7 +1704,10 @@ mod tests {
             HashMap::from([(callee.clone(), RuntimeDemand::whole())]),
             &HashSet::new(),
         );
-        assert_eq!(session.return_demand(&callee), Some(&RuntimeDemand::whole()));
+        assert_eq!(
+            session.external_return_demand(&callee, &HashSet::new()),
+            Some(RuntimeDemand::whole())
+        );
 
         session.memo.finish(
             &ProductKey::RuntimeDemand(callee.clone()),
@@ -1726,8 +1720,8 @@ mod tests {
         );
 
         assert_eq!(
-            session.return_demand(&callee),
-            Some(&RuntimeDemand::ignore()),
+            session.external_return_demand(&callee, &HashSet::new()),
+            Some(RuntimeDemand::ignore()),
             "a collapsed caller retracts its callee's whole demand down to the observed discard"
         );
         assert!(
@@ -1737,7 +1731,7 @@ mod tests {
 
         session.replace_settled_return_demand_contributions(caller, HashMap::new(), &HashSet::new());
         assert_eq!(
-            session.return_demand(&callee),
+            session.external_return_demand(&callee, &HashSet::new()),
             None,
             "withdrawing the last contributor leaves the callee not-yet-observed (distinct from an observed discard)"
         );
