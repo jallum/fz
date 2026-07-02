@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-07-02T22:41:26Z",
+  "description": "The census watch item (4), promoted after the .18.28.1 keystone: with the transport solve fixed, backend_executable production is THE uniform next bottleneck — it dominates every remaining \u003e0.1s fixture trace (minimalism-lane gap-sums at fefa3e0d2: 23.5s of 00420's 27.8s; 20.6s of behavior-take's 24.2s; 12.5s of predicate_search's 18.2s; 4.4s of 00277's 5.15s; 3.6s of enum_map_family's 4.58s; 640-725ms of the ~1s take fixtures; 366ms of range_map's 519ms). Second place everywhere: materialized_executable (2.2s on 00420; 3.6s on predicate). Census-measured unit cost scales with GLOBAL executable count (6ms avg @small -\u003e 43ms @large, 126ms max single production on 00420) — the same scales-with-global signature the transport solve had, suggesting a per-production whole-closure read or the format-in-comparator pattern (check symbolic_call_edge_callees + any executable_sort_key-family usage in jobs/backend.rs, and what produce_backend_executable reads per production). WORK: trace one production's internals on 00420 (what dominates the 126ms?); classify volume-vs-unit-cost; fix correct-by-construction under the sorting/minimal-work laws. ACCEPTANCE: every census fixture completes in ms-tenths (the per-fixture law) or the residual is attributed to a named next mechanism; products byte-identical; suite green 3x. This is the last named blocker on the fz-go4.22 matrix-timeout bucket after .28.1.",
+  "id": "fz-go4.18.28.7",
+  "labels": [],
+  "parent": "fz-go4.18.28",
+  "priority": 1,
+  "status": "open",
+  "title": "backend_executable production dominates every remaining slow fixture (scales with global size)",
+  "type": "bug",
+  "updated_at": "2026-07-02T22:41:26Z"
+}
