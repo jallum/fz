@@ -1,7 +1,8 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-go4.18.17"
+    "fz-go4.18.17",
+    "fz-go4.18.22"
   ],
   "blocks": [],
   "created": "2026-07-02T01:11:03Z",
@@ -13,5 +14,5 @@
   "status": "open",
   "title": "First MaterializedExecutable production is a discarded under-filled placeholder (2x per executable)",
   "type": "bug",
-  "updated_at": "2026-07-02T01:11:05Z"
+  "updated_at": "2026-07-02T03:01:03Z"
 }
