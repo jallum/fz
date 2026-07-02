@@ -9,9 +9,15 @@
   "id": "fz-go4.19",
   "labels": [],
   "parent": "fz-go4",
+  "comments": [
+    {
+      "text": "ENRICHED by the .18.19 removable-code audit (2026-07-02): the duplication is worse than filed — backend.rs:149-200 and compiler.rs:336-385 are a byte-for-byte copy-paste pair (demand_product_fact_producer + demand_if_needed + product_fact_wait_is_satisfied + the twin 50_000-budget drive loops at backend.rs:89-146 / compiler.rs:279-333), AND demand_if_needed's guard (output_keys contains target \u0026\u0026 !rebased) is now a THIRD variant of the 'standing producer, don't re-run' predicate alongside Scheduler::conclusion_stands (scheduler.rs:250-252) and the agenda dedupe. Unification should consider a single coalescing World::demand seam — but semantics differ subtly (fact-targeted vs job-level; the poke-loop 'no ready producer' error path), so not a mechanical fold. NOTE: fz-go4.18.4's deletion already removed forbidden_product_path_job; re-verify remaining scope vs HEAD before implementing.",
+      "timestamp": "2026-07-02T13:09:39Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "Dedup the pull-drive loop and shared fact-wait helpers across compiler.rs and jobs/backend.rs",
   "type": "task",
-  "updated_at": "2026-06-29T11:20:11Z"
+  "updated_at": "2026-07-02T13:09:39Z"
 }
