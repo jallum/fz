@@ -6,6 +6,7 @@
     "fz-go4.18.18",
     "fz-go4.18.20",
     "fz-go4.18.21",
+    "fz-go4.18.24",
     "fz-go4.22"
   ],
   "created": "2026-07-02T03:01:02Z",
@@ -23,5 +24,5 @@
   "status": "in_progress",
   "title": "Model RuntimeDemand as an SCC-settled monotone fixpoint (the ExecutableEffects pattern); delete the seed/floor/in-flight-retraction compensators",
   "type": "bug",
-  "updated_at": "2026-07-02T12:17:33Z"
+  "updated_at": "2026-07-02T13:04:22Z"
 }
