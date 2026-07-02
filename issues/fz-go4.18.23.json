@@ -2,6 +2,7 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-07-02T05:54:38Z",
   "created": "2026-07-02T03:01:02Z",
   "description": "The independently-provable pieces of the fz-go4.18.17 attempt (WIP patch preserved; extract ONLY these, leave the demand-loop gating out): (1) ExecutableEffects gating on the effect-relevant projection (local EffectSummary, local callee set) in record_materialized_executable — measured: identical effect re-productions 14/14, 21/21, 6/6, 5/5 -\u003e 0/0/0/0 across the 4 audit fixtures, suite green, composes with base demand topology (never touches the demand loop). (2) The identical:bool measurement on pull.product.produced (ProductMemo keeps displaced values on invalidation) — the direct telemetry for all minimality work. (3) FactTable::epoch / World::facts_epoch(). Standard gates: suite green 3x, clippy 0, fmt, trace before/after showing the effects counts drop and NOTHING else changes (end products byte-identical; RuntimeDemand counts unchanged from base — explicitly NOT in scope).",
   "id": "fz-go4.18.23",
@@ -14,8 +15,8 @@
     }
   ],
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Land the .18.17 salvage: ExecutableEffects projection gating + identical-reproduction telemetry + facts epoch",
   "type": "task",
-  "updated_at": "2026-07-02T04:23:42Z"
+  "updated_at": "2026-07-02T05:54:38Z"
 }
