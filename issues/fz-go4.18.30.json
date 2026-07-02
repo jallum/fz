@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-07-02T23:04:03Z",
+  "description": "Removable-code audit of fz-go4.18.11 (2026-07-02) found .agent/docs/telemetry.md documents neither the pre-existing transport_component.produced signal nor the new executable_transport.projected signal added at 458bec93a (transport.rs emit_transport_component_materialized). Not a regression fz-go4.18.11 introduced (produced was already undocumented), but the ticket's own fold is the natural place to have closed the gap and didn't. Add telemetry.md entries for both topics: shape (ExecutableKey metadata), emission site, and what property each lets a test observe (cache-hit vs fresh-materialize distinction for the projected signal).",
+  "id": "fz-go4.18.30",
+  "labels": [],
+  "parent": "fz-go4.18",
+  "priority": 3,
+  "status": "open",
+  "title": "telemetry.md missing entries for transport_component.produced and executable_transport.projected",
+  "type": "task",
+  "updated_at": "2026-07-02T23:04:03Z"
+}
