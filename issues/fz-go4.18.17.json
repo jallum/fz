@@ -21,11 +21,15 @@
     {
       "text": "STOPPED per stop-clause; re-scoped. The attempt proved the 'redundant' wipes are LOAD-BEARING: the return-demand join has a period-2 orbit (see the new root ticket fz-go4.18.22 for full evidence) and base termination depends on the unconditional cone wipe freezing it. The wavefront gate is correct memoization hygiene but is BLOCKED on the join being made convergent by construction (fz-go4.18.22). Salvageable pieces split to fz-go4.18.23 (ExecutableEffects projection gating -\u003e 0 identical re-productions, identical-telemetry, facts-epoch). WIP patch (547 lines) preserved in session scratchpad as fz-go4.18.17-wip.patch; agent's full evidence comment is on this ticket.",
       "timestamp": "2026-07-02T03:01:04Z"
+    },
+    {
+      "text": "Re-scoped context: fz-go4.18.22 is now the northstar-alignment redesign (SCC-settled demand fixpoint). Post-.18.22, values only ascend to a unique fixpoint, so this gate becomes trivially sound AND largely unnecessary (identical re-productions should vanish at the source). Re-verify this ticket's remaining scope against the post-.18.22 trace before implementing — it may close as subsumed. The preserved WIP gate patch doubles as .18.22's acceptance probe (apply on top; must not livelock).",
+      "timestamp": "2026-07-02T12:17:31Z"
     }
   ],
   "priority": 1,
   "status": "open",
   "title": "Demand invalidation wipes the dependent cone unconditionally; stop propagation at unchanged nodes",
   "type": "bug",
-  "updated_at": "2026-07-02T03:01:05Z"
+  "updated_at": "2026-07-02T12:17:31Z"
 }
