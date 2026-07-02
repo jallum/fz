@@ -5,7 +5,7 @@
   ],
   "blocks": [],
   "created": "2026-07-02T04:23:43Z",
-  "description": "Surfaced by the fz-go4.18.23 audit (2026-07-02): fixture_matrix has ~27 pre-existing failures at BOTH 014aa505f and its parent on fz-go4.1/frontdoor-cli-ownership (byte-identical outputs at both commits — NOT caused by the recent .18.x work, but the lib-only gate means matrix state hasn't been part of recent evidence). Buckets: (1) stale append oracle — reductions_remaining 3997 vs expected 3998 (oracle needs re-blessing or a real off-by-one found); (2) actor_ring interp 'no settled callable entry'; (3) reusable-cons stat asserts; (4) a 3s-timeout family; (5) enum_take_drop_split / enum_predicate_search AOT builds grinding 15-18+ min CPU (the fz-f98.14 convergence-runaway family — route those there). Needs triage: which are stale oracles vs real regressions vs the known convergence bug; per project memory the matrix oracle was last restored via a legacy runtime snapshot (fz-rh2.16.6.1, dies with the old world).",
+  "description": "Fixture_matrix triage (state as of 2026-07-02 at 0cb890e95; this description is authoritative and supersedes prior comment history).\n\nSTATE: matrix ~293 passed / ~27 failed (stable count through the .18.15-.18.22 arc; the failing SET drifts run-to-run). The census + .18.22 work classified the redness into buckets:\n1. AOT/BUILD-GRIND: enum_take_drop_split + enum_predicate_search build trials grind in the COMPILE phase (\u003e15min; the matrix timeout does not cover compile). ROOT = the transport per-anchor global re-solve, keystone fix fz-go4.18.28.1 (expected: 00420 \u003e30min -\u003e seconds). TRIAGE THIS TICKET AFTER .18.28.1 LANDS — this bucket should collapse.\n2. NON-DETERMINISM: repr_seam_enum_count_after_reduce2 flips its wrong answer run-to-run (arrival-order devirtualization) — fix staged behind fz-go4.18.29 -\u003e fz-go4.18.21. The 3934-vs-3906/3998-vs-3997 reductions_remaining oracle drifts on quicksort/reverse/append are plausibly the same schedule-dependent-products family (products differ per run) — re-check after .18.21 lands before re-blessing any oracle.\n3. DETERMINISTIC REDS: actor_ring::interp 'no settled callable entry'; the JIT 'no settled callable boundary' family (f98.14 territory; note .18.21's fix makes JIT/AOT COMPILE again on repr_seam, leaving deterministic-wrong — cleaner signal); reusable-cons stat asserts; the 3s-timeout family.\n4. NOTE: 143/556 fixtures exit nonzero under RAW interp (census datum; no matrix defer/annotation context — not a defect count, but worth a sanity pass during triage).\n\nWORK (after .18.28.1 and ideally .18.21): re-run the matrix; bucket the survivors; stale oracles get ONE re-bless with provenance; real bugs get tickets; timeout family re-measured against the per-fixture law (ms-tenths).",
   "id": "fz-go4.22",
   "labels": [],
   "parent": "fz-go4",
@@ -31,5 +31,5 @@
   "status": "open",
   "title": "fixture_matrix is red on the branch (pre-existing): stale append oracle, actor_ring interp, timeout family, f98.14 AOT grind",
   "type": "bug",
-  "updated_at": "2026-07-02T20:48:48Z"
+  "updated_at": "2026-07-02T20:51:10Z"
 }
