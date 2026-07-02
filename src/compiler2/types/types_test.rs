@@ -1415,6 +1415,57 @@ impl_types_conformance_tests!(
     Types::new()
 );
 
+// fz-go4.18.28.3 — tuple-clause emptiness must prune, not fan out.
+//
+// A tuple type minus a union of overlapping tuple negations drives
+// `emptiness::phi_tuple`. Each negation below constrains exactly one coordinate
+// (the others are `any`), so an unpruned phi recursion visits
+// `arity ^ |negs|` leaves (4^14 here) before concluding — the shape that made
+// 00277_enum_tier0_fixture burn >120s inside one `is_subtype` query. With
+// empty-product and disjoint-negation pruning the same query is linear in the
+// negation count. The intent captured: the ANSWERS are the emptiness semantics
+// (unchanged), and the query completes in bounded time.
+#[test]
+fn tuple_emptiness_under_many_overlapping_negations_is_tractable() {
+    let mut t = Types::new();
+    let int = t.int();
+    let atom = t.atom();
+    let elem = t.union(int, atom);
+    let any = t.any();
+    let none = t.none();
+    let arity = 4;
+    let big = t.tuple(&vec![elem; arity]);
+
+    let mut cover = none;
+    for i in 0..14 {
+        let a = t.atom_lit(&format!("a{i}"));
+        let mut elems = vec![any; arity];
+        elems[i % arity] = a;
+        let neg = t.tuple(&elems);
+        cover = t.union(cover, neg);
+    }
+
+    let start = std::time::Instant::now();
+    // `{int, int, int, int}` inhabits `big` and no negation covers it: the
+    // difference is non-empty, so `big` is NOT a subtype of the cover.
+    assert!(
+        !t.is_subtype(&big, &cover),
+        "an all-int tuple escapes every single-coordinate atom negation"
+    );
+    // And with a top tuple added, the cover is total: the difference IS empty.
+    let full = t.tuple(&vec![any; arity]);
+    let cover_full = t.union(cover, full);
+    assert!(
+        t.is_subtype(&big, &cover_full),
+        "adding the top tuple covers everything"
+    );
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(5),
+        "tuple emptiness under many negations must be tractable, took {:?}",
+        start.elapsed()
+    );
+}
+
 mod smoke {
     use super::*;
 

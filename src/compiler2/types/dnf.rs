@@ -72,20 +72,40 @@ pub(crate) fn normalize_empty_nonempty_list_unions(clauses: Vec<Conj<ListSig>>) 
 }
 
 pub(crate) fn dnf_intersect<T: Clone + PartialEq>(a: &[Conj<T>], b: &[Conj<T>]) -> Vec<Conj<T>> {
-    let mut out = Vec::with_capacity(a.len() * b.len());
+    // fz-go4.18.28.3 — the clause product is kept hygienic as it is built:
+    // clauses containing a literal both positively and negatively are empty
+    // (`P ∧ ¬P = ∅`, sound structurally without any semantic query), and
+    // duplicate clauses collapse (`A ∨ A = A`, mirroring `dnf_union`).
+    // Without this, iterated intersections snowball, and one `dnf_neg` over
+    // the result distributes into millions of clauses (00277 built 2^21).
+    let mut out = Vec::with_capacity(a.len().max(b.len()));
     for c1 in a {
         for c2 in b {
-            out.push(merge_clauses(c1, c2));
+            let merged = merge_clauses(c1, c2);
+            if merged.pos.iter().any(|p| merged.neg.contains(p)) {
+                continue;
+            }
+            if !out.contains(&merged) {
+                out.push(merged);
+            }
         }
     }
     out
 }
 
 /// ¬(⋁ Cᵢ) = ⋀ ¬Cᵢ. Each ¬Cᵢ is a DNF (disjunction of single-literal
-/// clauses); we intersect them all together.
+/// clauses); we intersect them all together. Duplicate clauses contribute
+/// duplicate factors (`¬A ∧ ¬A = ¬A`) and are skipped — the product is
+/// exponential in the factor count, so idempotence is applied to the input,
+/// not just the output.
 pub(crate) fn dnf_neg<T: Clone + PartialEq>(d: &[Conj<T>]) -> Vec<Conj<T>> {
     let mut acc: Vec<Conj<T>> = vec![Conj::top()]; // start with "true"
+    let mut seen: Vec<&Conj<T>> = Vec::with_capacity(d.len());
     for c in d {
+        if seen.contains(&c) {
+            continue;
+        }
+        seen.push(c);
         let neg_c = neg_clause(c);
         acc = dnf_intersect(&acc, &neg_c);
     }

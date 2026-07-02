@@ -52,6 +52,14 @@ axis at top, `none()` every axis at bottom, and `is_empty` holds when every axis
 empty (structural clauses checked recursively, with a coinductive memo for recursive
 shapes).
 
+DNF construction keeps clause lists hygienic by boolean identity (`dnf.rs`):
+`dnf_union` and `dnf_intersect` drop duplicate clauses (`A ∨ A = A`),
+`dnf_intersect` drops clauses holding a literal both positively and negatively
+(`P ∧ ¬P = ∅`), and `dnf_neg` skips duplicate factors. The tuple-emptiness
+recursion (`emptiness::phi_tuple`) returns early on an empty coordinate and
+drops negations disjoint from the product, so it explores only inhabited
+splits instead of fanning out `arity^|negs|` branches (fz-go4.18.28.3).
+
 ## One implementation, shared trait
 
 Consumers ask type questions through the `Types` trait (`src/types/mod.rs`), not by

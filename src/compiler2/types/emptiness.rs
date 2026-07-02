@@ -7,6 +7,10 @@ use super::descr::Descr;
 use super::sigs::{ArrowSig, ClosureLit, ListSig, MapSig, ResourceSig, TupleSig};
 use super::{MapKey, TyCtx};
 
+/// Coinductive assumption set for one top-level emptiness query. Emptiness
+/// over recursive descriptors is a greatest fixpoint: a query that re-enters a
+/// descriptor already `in_flight` assumes it empty, and the assumption is
+/// discharged if the whole cycle checks out.
 #[derive(Default)]
 pub(crate) struct Memo {
     pub(super) in_flight: HashSet<Descr>,
@@ -36,11 +40,25 @@ pub(crate) fn tuple_clause_empty(cx: TyCtx<'_>, c: &Conj<TupleSig>, memo: &mut M
 }
 
 fn phi_tuple(cx: TyCtx<'_>, t: &[Descr], n: &[Vec<Descr>], memo: &mut Memo) -> bool {
-    if n.is_empty() {
-        return t.iter().any(|d| d.is_empty_memo(cx, memo));
+    // One empty coordinate empties the whole product — no negation needed.
+    // Checking at entry prunes every recursive branch whose diff/intersect
+    // zeroed a coordinate; without this the recursion only discovers the
+    // emptiness at the leaves, after fanning out arity^|negs| branches.
+    if t.iter().any(|d| d.is_empty_memo(cx, memo)) {
+        return true;
     }
-    let head = &n[0];
-    let rest = &n[1..];
+    let Some((head, rest)) = n.split_first() else {
+        return false;
+    };
+    // A negation disjoint from the product on any coordinate subtracts
+    // nothing: drop it instead of splitting on it.
+    if head
+        .iter()
+        .zip(t)
+        .any(|(h, ti)| ti.intersect(h).is_empty_memo(cx, memo))
+    {
+        return phi_tuple(cx, t, rest, memo);
+    }
     for i in 0..t.len() {
         let mut t_split = t.to_vec();
         for j in 0..i {
