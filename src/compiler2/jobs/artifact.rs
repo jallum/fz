@@ -197,7 +197,7 @@ fn collect_effect_cone(session: &PullSession, executable: &ExecutableKey) -> Res
         let callees = materialized
             .call_edges
             .values()
-            .flat_map(local_call_edge_callees)
+            .flat_map(|edge| edge.target.local_callees())
             .cloned()
             .collect::<Vec<_>>();
         for callee in &callees {
@@ -2047,13 +2047,6 @@ fn call_edge_calls_provider_boundary(edge: &MaterializedCallEdge) -> bool {
             .arms
             .iter()
             .any(|arm| matches!(arm.callee, CallTarget::ProviderBoundary(_))),
-    }
-}
-
-fn local_call_edge_callees(edge: &MaterializedCallEdge) -> Vec<&ExecutableKey> {
-    match &edge.target {
-        CallEdge::Direct(direct) => direct.callee.local().into_iter().collect(),
-        CallEdge::Dispatch(dispatch) => dispatch.arms.iter().filter_map(|arm| arm.callee.local()).collect(),
     }
 }
 

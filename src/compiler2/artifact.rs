@@ -141,6 +141,19 @@ pub enum CallEdge<T> {
     Dispatch(DispatchCallEdge<T>),
 }
 
+impl<T> CallEdge<T> {
+    /// Every local callee the edge can reach: the direct target, or all
+    /// dispatch arms. This is the single callee-extraction both the effects
+    /// producer's cone traversal and the session's effect-dependents reverse
+    /// edges are derived from, so the two stay in agreement by construction.
+    pub fn local_callees(&self) -> Vec<&T> {
+        match self {
+            Self::Direct(direct) => direct.callee.local().into_iter().collect(),
+            Self::Dispatch(dispatch) => dispatch.arms.iter().filter_map(|arm| arm.callee.local()).collect(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DirectCallEdge<T> {
     pub callee: CallTarget<T>,
