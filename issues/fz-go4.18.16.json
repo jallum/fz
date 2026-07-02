@@ -10,9 +10,15 @@
   "id": "fz-go4.18.16",
   "labels": [],
   "parent": "fz-go4.18",
+  "comments": [
+    {
+      "text": "DIAGNOSIS COMPLETE — classification (c): UNREPRODUCED after a documented contended campaign, with the historical reports explained as an observation artifact of the deleted raw-telemetry capture.\n\nCAMPAIGN (base 014aa505f, 14-core darwin, debug test binary):\n- 32 full-suite contended runs, ALL '0 failed': 26 compiler2-filtered runs alternating --test-threads=14/28 (4 of them as TWO suite instances racing each other), + 3 full unfiltered lib runs (1120 tests, the bundled configuration). Most ran with a concurrent single-test hammer adding load.\n- 327 fresh-process runs of finite_recursive_frontier + converges_identically_on_every_schedule, executed CONCURRENTLY with the suite runs — 327/327 passed. Fresh process = fresh hash seeds; converges_identically drives 20 worlds per run, so ~6,800 independent drives all settled the exact 21-activation frontier under load.\n\nSTATIC ANALYSIS (no isolation channel exists on this test's path):\n- World owns all state per-instance (Types::new() per world; single-threaded drive; drive() passes deadline=None — no time dependence); fixture is include_str!.\n- ConfiguredTelemetry is RefCell/Cell-based (not Sync); FunctionCapture/JobBudgetGuard are per-test Rc\u003cRefCell\u003e.\n- Crate-wide sweep for static mut/OnceLock/lazy_static/Mutex/atomics/env: only cross-test statics reachable from compiler2 tests are the cfg(test) DTOR_* atomics + tests_support_lock (ir_interp/extern_call.rs), used by three OTHER tests; a poison cascade there manifests as PoisonError, not a frontier diff, and this test never touches them. diag/style_test mutates NO_COLOR (styling only). No JIT/global-symbol involvement in BuildBackendProduct.\n\nPROVENANCE OF THE REPORTS: per fz-go4.18.14's own record, the flaking version of this test observed the RAW activation_analysis.defined telemetry stream (republishes keys across rounds — schedule-dependent by construction). The current test walks the SETTLED graph via rooted_reachable_frontier and reads only quiesced facts. The reported flakes match the old observation method, not the current fixpoint.\n\nDISPOSITION (user agreed): accept as unreproduced-with-evidence; unblock fz-go4.18.4. Re-open on next observation — any future capture must include the panic text (the assert prints the actual frontier) to distinguish a frontier diff (real bug) from a PoisonError cascade (isolation). No code changed; tree clean at 014aa505f.",
+      "timestamp": "2026-07-02T00:46:04Z"
+    }
+  ],
   "priority": 1,
   "status": "closed",
   "title": "Diagnose finite-frontier flake under parallel load: is the settled activation frontier deterministic?",
   "type": "bug",
-  "updated_at": "2026-07-02T00:43:25Z"
+  "updated_at": "2026-07-02T00:46:04Z"
 }
