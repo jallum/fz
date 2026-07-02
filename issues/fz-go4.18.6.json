@@ -2,14 +2,15 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-07-02T23:20:24Z",
   "created": "2026-06-30T18:12:07Z",
   "description": "Audit follow-up from fz-go4.18.3.2.4 (non-blocking). The retraction scheme's distinct-cell guarantee rests on return_demand_contributors[t] and return_demands keeping lockstep (a target is in one iff in the other). recompute_return_demand maintains this, but it's a CONVENTION, not enforced — a future caller mutating one map without the other would silently desync and reintroduce the unknown-is-not-none conflation. Add a debug_assert tying contributors[t] non-emptiness to return_demands.contains(t) (and vice versa) so the invariant is enforced rather than conventional. Trivial, defensive.",
   "id": "fz-go4.18.6",
   "labels": [],
   "parent": "fz-go4.18",
   "priority": 3,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Enforce PullSession return-demand map-lockstep invariant with a debug-assert",
   "type": "task",
-  "updated_at": "2026-07-02T23:15:54Z"
+  "updated_at": "2026-07-02T23:20:24Z"
 }
