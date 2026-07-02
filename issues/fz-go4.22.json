@@ -17,11 +17,15 @@
     {
       "text": "Dep added: blocked by fz-go4.18.22 (the census proved the matrix redness is near-totally the RuntimeDemand cycling family; triage AFTER the redesign lands — most should collapse; what remains is genuinely stale oracles / the AOT-grind family).",
       "timestamp": "2026-07-02T12:17:33Z"
+    },
+    {
+      "text": "F2 EVIDENCE (from the fz-go4.18.22 rework): fixtures2/behavior/repr_seam_enum_count_after_reduce2 is NOT a deterministic moved miscompile — it is a pre-existing SCHEDULE-DEPENDENT one, unchanged by 18.22 and by its F1 rework. 10-run interp distributions: parent f92375bc6 = 8x'10,10' / 2x'2,2'; 0810fcb89 = 6x'10,10' / 4x'2,2'; F1-fixed = both shapes too. Expected '10,2'; both wrong shapes print ONE closure-call's result for BOTH dbg callsites (reduce reducer vs count predicate conflated at a callable seam; which side wins is a coin flip). The backend program differs on EVERY run of the SAME build (4 runs -\u003e 4 distinct dumps: generated FunctionIds 161/162 swap, transport position orderings churn) — fz-go4.18.21's schedule-dependent arrow keying territory. The JIT path fails identically and deterministically on all three commits: 'codegen: native callable value Var(3) has no settled callable boundary' (fz-f98.14 family). RuntimeDemand itself is clean on this fixture on both 0810fcb89 and the rework: 3 productions, 0 identical re-productions, and the rework's stale-caller re-settle loop never fires on it — the residual is downstream of demand.",
+      "timestamp": "2026-07-02T16:58:48Z"
     }
   ],
   "priority": 2,
   "status": "open",
   "title": "fixture_matrix is red on the branch (pre-existing): stale append oracle, actor_ring interp, timeout family, f98.14 AOT grind",
   "type": "bug",
-  "updated_at": "2026-07-02T12:17:33Z"
+  "updated_at": "2026-07-02T16:58:48Z"
 }
