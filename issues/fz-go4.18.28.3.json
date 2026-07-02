@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-07-02T20:48:47Z",
@@ -8,8 +8,8 @@
   "labels": [],
   "parent": "fz-go4.18.28",
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "Tuple-clause emptiness: exponential phi_tuple self-recursion times out 00277",
   "type": "bug",
-  "updated_at": "2026-07-02T20:48:47Z"
+  "updated_at": "2026-07-02T20:51:25Z"
 }
