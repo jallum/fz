@@ -11,9 +11,15 @@
   "id": "fz-go4.18.17",
   "labels": [],
   "parent": "fz-go4.18",
+  "comments": [
+    {
+      "text": "STOP per stop-clause: the redundant wipes are LOAD-BEARING for convergence, not pure memoization slack. Findings (all measured on this branch, WIP patch preserved at /tmp/fz-go4.18.17-wip.patch, base 014aa505f):\n(1) Pure wavefront gating (mark only the changed node's demand stale; propagate only on value change) LIVELOCKS: fz_f98_range_map_converges has a period-2 orbit — FunctionId(174)'s joined return demand flips Whole \u003c-\u003e TupleFields([Whole,Whole]) forever, driven by FunctionId(201)'s alternating contribution. Base terminates ONLY because its unconditional cone wipe removes both cycle members' demand memos SIMULTANEOUSLY, routing in-SCC reads through the fixed active-seed bootstrap (clamped values -\u003e unchanged -\u003e freeze). The freeze is a schedule-frozen state, not a monotone fixpoint.\n(2) Narrower damping (SCC over runtime_demand_dependents only) MISCOMPILES the same fixture (backend value unbound at encode_call_args) — the frozen state goes inconsistent across products. The true demand dependency graph is reads UNION join-contributions, and in that graph EVERY caller-callee pair is a 2-cycle (caller contributes return demand to callee; caller reads callee's demand), so correct simultaneity-damping degenerates to marking essentially the whole connected call graph per join wobble: measured WORSE than base (00181 identical demand re-productions 110 vs base ~58; escaped_callable 18 vs ~6). Suite IS green in that configuration (922/0/28) and end products byte-identical, but the acceptance metric regresses.\n(3) The ~0 target for RuntimeDemand identical re-productions is therefore BLOCKED on making the return-demand join iteration convergent by construction (fz-f98.14 / fz-go4.18.21 / fz-rh2 family). Until then, every join wobble must re-derive its feedback cone to keep the frozen state consistent.\n(4) SALVAGEABLE INDEPENDENT WIN (proved on this branch): ExecutableEffects gating. Effects read only (local EffectSummary, local callee set) per materialized executable; gating effect-cone invalidation on that projection (session-side, in record_materialized_executable) drops identical effect re-productions 14/14, 21/21, 6/6, 5/5 -\u003e 0/0/0/0 with the suite green — and it composes with BASE demand topology (it does not touch the demand loop). Recommend splitting that into its own ticket and re-scoping this one behind the join-convergence fix. Also reusable: ProductMemo displaced-value tracking + 'identical' measurement on pull.product.produced (the direct telemetry for this audit), and the facts-epoch (FactTable::epoch) for future demand memoization.",
+      "timestamp": "2026-07-02T02:59:19Z"
+    }
+  ],
   "priority": 1,
   "status": "in_progress",
   "title": "Demand invalidation wipes the dependent cone unconditionally; stop propagation at unchanged nodes",
   "type": "bug",
-  "updated_at": "2026-07-02T01:11:42Z"
+  "updated_at": "2026-07-02T02:59:19Z"
 }
