@@ -15,11 +15,15 @@
     {
       "text": "Re-scoped context: schedule-dependent arrow keys are plausibly keys minted from MID-ASCENT demand values (the .18.22 founding defect). Post-.18.22 demand is deterministic (unique least fixpoint) — re-run the 2-run histogram diff on 00001 first; the orphaned provisional-arrow demand should also vanish. Diagnose only what survives.",
       "timestamp": "2026-07-02T12:17:33Z"
+    },
+    {
+      "text": "Corroborating evidence from the fz-go4.18.22 rework (F2 root-cause): on fixtures2/behavior/repr_seam_enum_count_after_reduce2, the BackendProgram differs on every run of the same build — generated FunctionIds (161/162) swap between the two lambda executables and transport position orderings churn — and the interp answer flips {'10,10'|'2,2'} accordingly (both wrong; expected '10,2'; the two dbg callsites print one conflated closure result). Present identically on f92375bc6, 0810fcb89, and the F1-fixed rework; demand productions are 3/0-identical on all, so the non-determinism is in arrow/executable keying + backend assembly, not in RuntimeDemand.",
+      "timestamp": "2026-07-02T16:58:59Z"
     }
   ],
   "priority": 1,
   "status": "open",
   "title": "Activation arrow keying is schedule-dependent on 00001; demanded executable at retracted arrow is orphaned",
   "type": "bug",
-  "updated_at": "2026-07-02T12:17:33Z"
+  "updated_at": "2026-07-02T16:58:59Z"
 }
