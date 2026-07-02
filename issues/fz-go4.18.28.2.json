@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-07-02T20:48:47Z",
+  "description": "Census phase-2 unit-cost sub-mechanism (~50% of per-solve time; 4101/8170 samples on 00420): executable_sort_key (transport.rs:1819) -\u003e input_structure_key (:1815) calls types.display PER INPUT and builds Vec\u003cString\u003e keys, recomputed per comparison by sort_by_key; outgoing_input_edge_waits (:938-952) sorts the ENTIRE executable set just to order waits, on every expansion iteration (:779, :810); same sorts at :840, :961, :997. FIX: structural Ty-id/interned keys or sort_by_cached_key; sort the waits, not the world. Mostly subsumed by the keystone (one solve instead of hundreds) but still correct hygiene — display-string sort keys also encode interner fragility (ShapeId-is-pure-layout doctrine). Re-measure after the keystone lands; implement what remains.",
+  "id": "fz-go4.18.28.2",
+  "labels": [],
+  "parent": "fz-go4.18.28",
+  "priority": 2,
+  "status": "open",
+  "title": "Transport sorts format types into display-string keys per comparison",
+  "type": "bug",
+  "updated_at": "2026-07-02T20:48:47Z"
+}
