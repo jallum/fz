@@ -12,9 +12,15 @@
   "id": "fz-go4.18.22",
   "labels": [],
   "parent": "fz-go4.18",
+  "comments": [
+    {
+      "text": "-m",
+      "timestamp": "2026-07-02T07:46:22Z"
+    }
+  ],
   "priority": 1,
   "status": "in_progress",
   "title": "Return-demand join is non-convergent (period-2 orbit); base termination relies on schedule-frozen cone wipes — make the join convergent by construction",
   "type": "bug",
-  "updated_at": "2026-07-02T05:54:39Z"
+  "updated_at": "2026-07-02T07:46:22Z"
 }
