@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [
     "fz-go4.18.21"
@@ -10,8 +10,8 @@
   "labels": [],
   "parent": "fz-go4.18",
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "Late follow_up enqueue re-runs concluded producers identically (LowerFunction/PlanEntryDispatch/DeriveDispatchMask/BuildMacroExecutable 2x)",
   "type": "bug",
-  "updated_at": "2026-07-02T01:11:06Z"
+  "updated_at": "2026-07-02T12:35:25Z"
 }
