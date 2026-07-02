@@ -14,11 +14,15 @@
     {
       "text": "Re-scoped context: the discarded-placeholder materialization is a PREMATURE-READ symptom of the .18.22 founding defect (artifact reads demand before its SCC settles). Post-.18.22, materialization waits on settled demand by construction — re-measure before implementing; expected to close as subsumed.",
       "timestamp": "2026-07-02T12:17:32Z"
+    },
+    {
+      "text": "Census re-measure at 0cb890e95: MaterializedExecutable identical re-productions are 6/364, 7/683, 3/336 across the violator traces — NEAR-COLLAPSED at this base (the .18.22 epoch gating largely dissolved the placeholder double-production, contradicting the earlier 32/12 measurement at 0810fcb89 pre-rework). Re-measure on 00181 with the standard method and close-as-dissolved if 1x/exec holds; implement only a remainder.",
+      "timestamp": "2026-07-02T20:48:49Z"
     }
   ],
   "priority": 1,
   "status": "open",
   "title": "First MaterializedExecutable production is a discarded under-filled placeholder (2x per executable)",
   "type": "bug",
-  "updated_at": "2026-07-02T12:17:32Z"
+  "updated_at": "2026-07-02T20:48:49Z"
 }
