@@ -8,6 +8,7 @@
     "fz-go4.18.20",
     "fz-go4.18.21"
   ],
+  "closed_at": "2026-07-02T17:18:10Z",
   "created": "2026-07-02T01:11:03Z",
   "description": "fz-go4.18.12 finding 1 (dominant churn). A changed demand triggers invalidate_runtime_demand_dependents -\u003e invalidate_demand_derived_products_one, which wipes dependents' memo entries UNCONDITIONALLY; they recompute to the same value. Measured (2x runs, 4 fixtures): RuntimeDemand re-productions byte-identical 58/65 (00181), 60/64 (00001), 13/15 (00026), 6/8 (escaped_callable); ExecutableEffects re-productions 100% identical (14/14, 21/21, 6/6, 5/5 — invalidate_artifact_products wipes them on every demand wobble). The equality check that exists (record_latest_runtime_demand) is used to START propagation but never to STOP it at unchanged hops. FIX: gate each propagation hop on the changed-check — an invalidation that recomputes to an identical value must not propagate further (monotone, semantics-preserving; this is memoization hygiene, not a lattice change). Locus: pull.rs invalidate_runtime_demand_dependents / invalidate_demand_derived_products_one / invalidate_artifact_products. ACCEPTANCE (minimal-job-trace doctrine): identical re-production counts drop to ~0 on the 4-fixture corpus; suite green 3x; job totals drop (00181 baseline 247).",
   "id": "fz-go4.18.17",
@@ -28,8 +29,8 @@
     }
   ],
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "Demand invalidation wipes the dependent cone unconditionally; stop propagation at unchanged nodes",
   "type": "bug",
-  "updated_at": "2026-07-02T12:17:31Z"
+  "updated_at": "2026-07-02T17:18:10Z"
 }
