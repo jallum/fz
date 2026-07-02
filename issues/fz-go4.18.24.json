@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-07-02T13:04:21Z",
+  "description": "Owner's law (2026-07-02): follow_up is an anti-northstar SMELL — a job imperatively enqueueing other jobs is control-flow smuggled into a dataflow engine. The northstar admits exactly two reasons work runs: a consumer WAITS on a named fact/product (pull), or a CHANGED REVISION wakes a recorded reader. Every .18.12-family pathology (duplicate fires, late-enqueue re-runs, the deleted seal's self-scheduling) is a push symptom; the .18.19 concluded-coalesce is a SCREEN on the push, not a cure — its removal criterion is zero emissions.\n\nINVENTORY (2026-07-02, post-spine-deletion; production emissions): jobs/body.rs (~72 refs — DeriveTypeDef, ReifyGuardDispatch pushes from lowering), jobs/semantic.rs (~66), jobs/root.rs (SeedRoot pushes LowerFunction/PlanEntryDispatch/AnalyzeActivation + gated_follow_up), jobs/dispatch.rs (DeriveTypeDef/ReifyGuardDispatch/DefineFunction), jobs/keying.rs (DefineFunction/LowerFunction), jobs/contract.rs (DeriveTypeDef), jobs/types.rs, jobs/source.rs, source_publish.rs, quoted_expander.rs, world.rs. The artifact/product layer is already pull (pull.rs has 1 residual ref).\n\nTHE MIGRATION SHAPE (proven in-tree): consumers express missing prerequisites as FACT WAITS; the driver's fact-\u003eproducer map (demand_product_fact_producer, compiler.rs / jobs/backend.rs) demands the single producer for a missing FactKey. Extend that map to cover the semantic facts (TypeDefined, GuardDispatchReified, FunctionDefined, LoweredBody, EntryDispatch, ActivationAnalyzed, ...); convert each emission site to a wait; SeedRoot shrinks to publishing root facts only (demand pulls the rest). Work consumers-backward per family (DeriveTypeDef pushes first — they are the most numerous and most mechanical), one commit per family, trace-proven per the minimal-job-trace gate (job counts must drop or hold; no behavior change; products byte-identical).\n\nDONE = rg shows zero production follow_up emissions; JobEffects::follow_up field deleted; the .18.19 coalesce screen deleted (nothing left to screen); scheduler wake paths = changed-revision only; docs updated (fact-engine.md drops 'legacy jobs may enqueue follow-ups').\n\nSEQUENCING: blocked by fz-go4.18.22 (the demand redesign reworks the same semantic files; migrating around an oscillating fixpoint would churn). The in-flight .18.19 removable-code audit's emission classification (KEEP/REMOVE/CONDITIONAL) is the starting inventory — attach its findings here.",
+  "id": "fz-go4.18.24",
+  "labels": [],
+  "parent": "fz-go4.18",
+  "priority": 1,
+  "status": "open",
+  "title": "Migrate the semantic layer off follow_up: work runs only via waits (pull) or changed-revision wakes",
+  "type": "task",
+  "updated_at": "2026-07-02T13:04:21Z"
+}
