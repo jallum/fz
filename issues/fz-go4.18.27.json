@@ -2,14 +2,15 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-07-02T23:09:59Z",
   "created": "2026-07-02T16:04:36Z",
   "description": "From the .18.22 removable-code audit (2026-07-02, at 0810fcb89). The world-level return-demand fact plumbing is WRITE-ONLY — consumers-backward proof: only 4 FactKey::ReturnDemand occurrences in src/, all write-side (publish outputs/changed + previous-output retraction filter world.rs:416); ZERO FactUse reads/waits in any job; not in the compiler.rs fact-\u003ejob demand map (changed-events inert); no getter on the world map (only .conclude/.extend at world.rs:703/706/717). It was ALREADY write-only at parent f92375bc6 (pre-existing orphan, hence follow-up not fold-blocker). Also semantically redundant: seed_root's contribution (jobs/root.rs:88-93 runtime_demand_for_need) duplicates the settle's whole-by-need bootstrap (runtime_demand.rs:479 runtime_demand_for_executable_need).\n\nSWEEP LIST (one commit, consumers-backward): world.rs return_demands field (:121) + conclude/extend/normalize_return_demand_contributions (:690-731) + the output/changed extension; FactKey::ReturnDemand (drive.rs:71) + its is_cumulative arm (:85); JobEffects.return_demand_contributions (drive.rs:99); seed_root's contribution + private runtime_demand_for_need (root.rs:82-93); the semantic.rs:630 alias + its 4 alias unit tests (semantic.rs:1503-1625); the mod.rs re-export. RIDE-ALONGS: PullSession::return_demand getter (pull.rs:539) became test-only in .18.22 — #[cfg(test)] it or rewrite its 4 tests against public state; optional ProductMemo::record_settled_member to centralize the displaced/identical invariant record_settled_runtime_demand hand-rolls (pull.rs:480-495); stale comment native_codegen/env.rs:122 ('ReturnDemand::TupleFields' — no such type; it's ExecutableNeed::TupleFields). ACCEPTANCE: rg=0 on the swept names; suite green 3x; job trace unchanged (the facts were inert).",
   "id": "fz-go4.18.27",
   "labels": [],
   "parent": "fz-go4.18",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Delete the write-only ReturnDemandMap / FactKey::ReturnDemand world spine (+ demand-era leftovers sweep)",
   "type": "task",
-  "updated_at": "2026-07-02T22:52:07Z"
+  "updated_at": "2026-07-02T23:09:59Z"
 }
