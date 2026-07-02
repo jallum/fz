@@ -2,14 +2,15 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-07-02T21:43:19Z",
   "created": "2026-07-02T21:36:28Z",
   "description": "Pre-existing (present at 0cb890e95 and earlier; surfaced by the .18.28.3 removable-code audit). dnf.rs:1 module header mentions 'subsumption dedup' and dnf.rs:22 claims subsumption dedup 'runs as a post-pass at Descr::union' — no such pass exists anywhere in types/ (grep subsumption/clause-subsumes: nothing; Descr::union at descr.rs:388 has none). Either the pass was removed and the comments outlived it, or it was never built. WORK: delete/correct the comments to present-tense fact (agent-docs law); if subsumption dedup is actually WANTED (it would compound the .18.28.3 hygiene), that is a separate design decision — do not build it under this ticket.",
   "id": "fz-go4.23",
   "labels": [],
   "parent": "fz-go4",
   "priority": 3,
-  "status": "open",
+  "status": "closed",
   "title": "Stale fz-et8 comment in dnf.rs describes a subsumption post-pass that does not exist",
   "type": "task",
-  "updated_at": "2026-07-02T21:36:28Z"
+  "updated_at": "2026-07-02T21:43:19Z"
 }
