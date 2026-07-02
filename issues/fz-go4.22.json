@@ -7,9 +7,15 @@
   "id": "fz-go4.22",
   "labels": [],
   "parent": "fz-go4",
+  "comments": [
+    {
+      "text": "CORRELATION (fz-go4.18.22 diagnosis, 2026-07-02): the matrix redness on this machine IS (near-totally) the oscillation family. Census with a per-key value-history detector: 215 cycling re-productions across the matrix sweep, 100% RuntimeDemand keys, 9 fixtures — enum_predicate_search(84), fz_f98_range_reduce_scalar(48), opaque_fn_value_join(26), map_enumerable(20), enum_map_family(10), tailcall_closure_captures(9), repr_seam_enum_count_after_reduce2(6), range_enumerable(6), native_tuple_accumulator_tail(6) — overlap with the ~22 drifting matrix failures near-total. Also proven: the cycling fixtures' PRODUCTS are not schedule-deterministic (3-run fingerprint diffs on the Enum.reduce/reverse cone), i.e. the stale-oracle failures (3934 vs 3906 reduction pins etc.) are plausibly the compiler shipping schedule-dependent products, NOT stale goldens. TRIAGE THIS TICKET AFTER fz-go4.18.22's fix lands — most of it should collapse; whatever remains is genuinely stale oracles / the AOT-grind family.",
+      "timestamp": "2026-07-02T07:48:40Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "fixture_matrix is red on the branch (pre-existing): stale append oracle, actor_ring interp, timeout family, f98.14 AOT grind",
   "type": "bug",
-  "updated_at": "2026-07-02T04:23:43Z"
+  "updated_at": "2026-07-02T07:48:40Z"
 }
