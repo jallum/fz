@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-07-02T22:11:01Z",
+  "description": "Found while landing fz-go4.18.28.1 (measured at fefa3e0d2). The transport product path's WAIT EMISSION ORDER is load-bearing for plan completeness: with unordered waits (HashSet order) from the closure expansion (outgoing_input_edge_waits / incoming-slot waits / RuntimeDemand waits), compiler2_membership_operator_protocol_receivers_settle_to_direct_impls fails with 'transport plan is missing required call return-flow position ReturnPayload{...}' — the shape for a caller's ReturnPayload is only recorded when SOME component pull lands in an epoch whose graph still contains that position (the union SHRINKS as materialized bodies displace lowered bodies: observed 826-\u003e785 positions across epochs on that fixture), and the wait order steers which epoch each pull lands in. Canonical structural wait ordering (restored in fz-go4.18.28.1 via sorted_executable_waits) protects one schedule; the underlying contract — every plan-required position's shape must be recorded regardless of pull schedule — is not enforced by construction. Evidence: instrumented run log in fz-go4.18.28.1's session; repro = drop the sorted_executable_waits calls in src/compiler2/jobs/transport.rs and run that test. Direction: make the plan's required positions an explicit product-level demand (each required position waits until its shape fact is Shape or provably Absent-for-the-FINAL-epoch), or record return-payload shapes from the materialization seam itself instead of relying on epoch timing.",
+  "id": "fz-go4.18.28.5",
+  "labels": [],
+  "parent": "fz-go4.18.28",
+  "priority": 2,
+  "status": "open",
+  "title": "Transport plan completeness is pull-wait-order dependent (schedule-protected path dependence)",
+  "type": "bug",
+  "updated_at": "2026-07-02T22:11:01Z"
+}
