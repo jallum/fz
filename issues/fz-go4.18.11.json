@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-07-01T15:28:25Z",
@@ -8,8 +8,8 @@
   "labels": [],
   "parent": "fz-go4.18",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "Re-establish the fz-g2f/fz-bfh.5.5 bounded-blast-radius signal on the product path",
   "type": "bug",
-  "updated_at": "2026-07-01T15:28:25Z"
+  "updated_at": "2026-07-02T22:52:07Z"
 }
