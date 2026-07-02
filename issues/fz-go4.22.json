@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-07-02T04:23:43Z",
+  "description": "Surfaced by the fz-go4.18.23 audit (2026-07-02): fixture_matrix has ~27 pre-existing failures at BOTH 014aa505f and its parent on fz-go4.1/frontdoor-cli-ownership (byte-identical outputs at both commits — NOT caused by the recent .18.x work, but the lib-only gate means matrix state hasn't been part of recent evidence). Buckets: (1) stale append oracle — reductions_remaining 3997 vs expected 3998 (oracle needs re-blessing or a real off-by-one found); (2) actor_ring interp 'no settled callable entry'; (3) reusable-cons stat asserts; (4) a 3s-timeout family; (5) enum_take_drop_split / enum_predicate_search AOT builds grinding 15-18+ min CPU (the fz-f98.14 convergence-runaway family — route those there). Needs triage: which are stale oracles vs real regressions vs the known convergence bug; per project memory the matrix oracle was last restored via a legacy runtime snapshot (fz-rh2.16.6.1, dies with the old world).",
+  "id": "fz-go4.22",
+  "labels": [],
+  "parent": "fz-go4",
+  "priority": 2,
+  "status": "open",
+  "title": "fixture_matrix is red on the branch (pre-existing): stale append oracle, actor_ring interp, timeout family, f98.14 AOT grind",
+  "type": "bug",
+  "updated_at": "2026-07-02T04:23:43Z"
+}
