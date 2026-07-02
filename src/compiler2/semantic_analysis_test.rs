@@ -34,14 +34,17 @@ struct CallsiteCapture {
     defs: CallsiteDefs,
 }
 
-/// Captures the executable behind every `executable_transport.derived` event:
-/// the set of executables a drive actually re-projected. `clear()` between
-/// drives isolates one drive's blast radius from the next.
-struct TransportDerivedCapture {
+/// Captures the executable behind every `executable_transport.projected`
+/// event: the set of executables whose transport component was freshly
+/// materialized by a drive (a cache-served pull emits nothing). `clear()`
+/// between drives isolates one drive's blast radius from the next. This is
+/// the product-path successor to the legacy `executable_transport.derived`
+/// signal (native cutover moved off that spine; see fz-go4.18.11).
+struct TransportProjectedCapture {
     executables: Rc<RefCell<Vec<ExecutableKey>>>,
 }
 
-impl TransportDerivedCapture {
+impl TransportProjectedCapture {
     fn new() -> Self {
         Self {
             executables: Rc::new(RefCell::new(Vec::new())),
@@ -49,7 +52,7 @@ impl TransportDerivedCapture {
     }
 
     fn handler(&self) -> Box<dyn Handler> {
-        Box::new(TransportDerivedCaptureHandler {
+        Box::new(TransportProjectedCaptureHandler {
             executables: self.executables.clone(),
         })
     }
@@ -63,13 +66,13 @@ impl TransportDerivedCapture {
     }
 }
 
-struct TransportDerivedCaptureHandler {
+struct TransportProjectedCaptureHandler {
     executables: Rc<RefCell<Vec<ExecutableKey>>>,
 }
 
-impl Handler for TransportDerivedCaptureHandler {
+impl Handler for TransportProjectedCaptureHandler {
     fn handle(&self, event: &Event<'_, '_, '_>) {
-        if event.name != ["fz", "compiler2", "executable_transport", "derived"] || event.kind != EventKind::Event {
+        if event.name != ["fz", "compiler2", "executable_transport", "projected"] || event.kind != EventKind::Event {
             return;
         }
         let Some(executable) = event
@@ -486,18 +489,13 @@ end
     );
 }
 #[test]
-#[ignore = "fz-go4.18.11: the bounded-blast-radius signal observes the legacy \
-            executable_transport.derived telemetry (Job::DeriveExecutableTransport), which the \
-            native/product path does not emit and fz-go4.18.4 deletes; ported off \
-            Job::DeriveTransportPlan (now drives Job::LowerNativeProgram) with assertions intact, \
-            un-ignore once the product path publishes a per-executable transport-projection signal."]
 fn compiler2_adding_a_defimpl_reprojects_only_the_cone_its_dispatch_reaches() {
     let tel = crate::telemetry::ConfiguredTelemetry::new();
     let functions = FunctionCapture::new();
     tel.attach(&["fz", "compiler2", "function"], functions.handler());
-    let transport = TransportDerivedCapture::new();
+    let transport = TransportProjectedCapture::new();
     tel.attach(
-        &["fz", "compiler2", "executable_transport", "derived"],
+        &["fz", "compiler2", "executable_transport", "projected"],
         transport.handler(),
     );
     // Livelock backstop: if cone-scoped re-derivation ever loops, this names the

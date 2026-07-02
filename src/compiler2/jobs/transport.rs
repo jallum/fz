@@ -706,6 +706,30 @@ fn emit_transport_component_produced(world: &World<'_>, component: &TransportCom
     );
 }
 
+/// Fires exactly when an executable's transport component is freshly
+/// materialized from a covering solve -- i.e. this pull was NOT served from
+/// the session's `transport_components` product cache (the early-return
+/// branch in `produce_transport_component_product` above never reaches this
+/// point). This is the product-path replacement for the legacy
+/// `executable_transport.derived` signal: "this executable's transport was
+/// (re)projected on this drive," observable without forcing any extra
+/// recomputation -- it rides the materialize path that already runs.
+fn emit_transport_component_materialized(
+    world: &World<'_>,
+    executable: &ExecutableKey,
+    component: &TransportComponentInventory,
+) {
+    world.tel().execute(
+        &["fz", "compiler2", "executable_transport", "projected"],
+        &measurements! {
+            component_size: component.positions.len() as u64,
+        },
+        &metadata! {
+            executable: opaque_debug(executable),
+        },
+    );
+}
+
 fn emit_transport_closure_solved(world: &World<'_>, closure: &SolvedTransportClosure) {
     world.tel().execute(
         &["fz", "compiler2", "pull", "transport_component", "closure_solved"],
@@ -735,6 +759,7 @@ pub(crate) fn produce_transport_component_product(
     }
     let component = materialize_transport_component(world, session, &executable, position);
     emit_transport_component_produced(world, &component);
+    emit_transport_component_materialized(world, &executable, &component);
     PullOutcome::Produced(ProductValue::TransportComponent(component))
 }
 
