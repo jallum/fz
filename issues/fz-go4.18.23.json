@@ -7,9 +7,15 @@
   "id": "fz-go4.18.23",
   "labels": [],
   "parent": "fz-go4.18",
+  "comments": [
+    {
+      "text": "AUDIT FAIL — under-invalidation hole in path (c); rework required before fold. The effect cone (invalidate_effect_cone) walks runtime_demand_dependents, but that graph is populated at exactly ONE site (runtime_demand.rs:192) from direct_local_targets (CallSiteSummary targets only) — materialized CLOSURE-call edges (transport-shape/boundary-resolved, incl. cross-need e.g. TupleFields(2) caller -\u003e Value callee) are NEVER registered. Instrumented: 20 effect-graph edges permanently missing from the final dependents graph across 10 real lib tests + matrix fixtures. If such a callee's effect projection moves after a dependent settles, the stale effects are unreachable by any wipe. The parent was protected only by the per-wobble self-wipe this commit removes -\u003e exposure strictly increases. Latent (zero end-of-session freshness violations across 925 lib tests + 295 matrix drives) but schedule-protected = the .18.22 'frozen, not monotone' bug pattern. FIX: (1) record reverse-EFFECT-edges from MATERIALIZED call edges (all local callees incl. closure/boundary-resolved) into a dedicated map; walk THAT in invalidate_effect_cone (soundness invariant: effect-dependents graph superset-of reverse effect graph, by construction from the same call_edges the effects producer reads); (2) land the auditor's end-of-session freshness check as a debug assertion (cheap; converts latent to loud). Everything else in the audit was CLEAN: no smuggling (demand loop byte-identical), trace exact (effects identical-reproductions 0, RuntimeDemand unchanged), tests meaningful, hygiene clean.",
+      "timestamp": "2026-07-02T04:23:42Z"
+    }
+  ],
   "priority": 1,
   "status": "in_progress",
   "title": "Land the .18.17 salvage: ExecutableEffects projection gating + identical-reproduction telemetry + facts epoch",
   "type": "task",
-  "updated_at": "2026-07-02T03:01:47Z"
+  "updated_at": "2026-07-02T04:23:42Z"
 }
