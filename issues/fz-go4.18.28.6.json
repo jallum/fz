@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-07-02T22:11:14Z",
+  "description": "Found while trying to byte-fingerprint products for fz-go4.18.28.1 (base 0cb890e95, release fz2 interp --dump). (1) backend dump: 4 base runs of map_enumerable produce 4 DIFFERENT dump hashes — backend program content (lane/shape id numbering, entry lists) varies per run, making byte-level product fingerprinting impossible. (2) activations dump: Kernel.dbg/1([int]|[]) return type flips between '[int] | []' and 'int | float | binary | atom | opaque | brand | var | any | ... ' across runs of fz_f98_range_map_converges AT BASE (hashes c43e0bd4/0eafbf4e both observed from the base binary and from the fz-go4.18.28.1 binary) — the ReturnType fixpoint end-state is schedule-dependent, and one of the two states is a WIDENED (any-carrying) return. Interp outputs are stable; the wobble is in the settled fact/product content. Related: the 'backend callable N ambiguous across callable entries [..]' failure ids on the take-family fixtures (00419/00420) also vary run to run. Diagnose with the minimal-job-trace gate; the widened-dbg state may also be a correctness/perf signal (any-lane boxing).",
+  "id": "fz-go4.18.28.6",
+  "labels": [],
+  "parent": "fz-go4.18.28",
+  "priority": 3,
+  "status": "open",
+  "title": "Backend dump and activation return types are run-to-run nondeterministic at base",
+  "type": "bug",
+  "updated_at": "2026-07-02T22:11:14Z"
+}
