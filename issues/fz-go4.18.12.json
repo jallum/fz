@@ -5,6 +5,7 @@
     "fz-go4.18.8"
   ],
   "blocks": [],
+  "closed_at": "2026-07-02T01:11:41Z",
   "created": "2026-07-01T16:36:33Z",
   "description": "Telemetry-driven MINIMALITY audit of the compiler2 demand fixpoint. Screw-tightening follow-up: gross job-count checks (feedback_minimal_job_trace_acceptance) catch coarse excess; this goes one level deeper, into the mini-fixpoint sub-arcs INSIDE the larger demand fixpoint.\n\nGOAL\nFor a representative set of tiny fixtures (e.g. fixtures2/00181_enum_reduce_operator_ref.fz, 00001_quicksort_plus_foo.fz, a destination-passing one, a typed-boundary one), capture the full --log-telemetry job/activation/fact trace and prove each convergence sub-arc does the MINIMAL work necessary to construct a correct product: no fact produced, activation seeded/keyed, or job run beyond what is NECESSARY. Extra work = a correctness bug (over-demand / redundant re-derivation / non-monotone churn), not perf.\n\nSUB-ARCS TO ANALYZE (each a 'mini fixpoint' within the demand fixpoint)\n- Type convergence / activation keying: is any activation key derived, widened, or re-derived more times than the closure requires? Duplicate/over-specialized activations for the same role (fz-y6w over-specialization territory)? Type inference recomputed after settle?\n- Return-demand calculation: does return demand ascend once and settle, or churn (the non-monotone Seal\u003c-\u003eDeriveRuntimeDemand\u003c-\u003eTransport cycle, fz-f98.14)? Any executable's return demand recomputed after it should be settled?\n- Lane / transport shape calculation: per-position shapes solved once, or re-solved across component re-solves (the 185-oscillation family)? Redundant TransportShape/component products?\n- Executable membership / frontier: any executable demanded then never reached (over-demand), or seeded cold and never used (fz-go4.15 cold FunctionSource overproduction)?\n- General: duplicate job fires for the same key; facts produced that no consumer reads; jobs run whose output is discarded.\n\nMETHOD\nPost-process --log-telemetry: group job spans by (job kind, key); count fires per key; flag any key fired \u003e1 (or \u003eexpected) as churn; diff demanded-executables vs actually-materialized/reached (over-demand); check per-span timing for heavy jobs; run each fixture \u003e=2x and diff the trace for schedule-dependence. For each fixture, state EXPECTED work (the executables/activations/positions the product genuinely needs) and diff actual vs expected. Every excess -\u003e a named correctness ticket (route convergence churn to fz-f98.14 / the f98 epic; over-specialization to fz-y6w; cold overproduction to fz-go4.15) or confirmed minimal.\n\nSEQUENCING\nRun AFTER the path is clean: after fz-go4.18.8 (test excess removed) and fz-go4.18.4 (legacy spine deleted, so the trace has no deferred-legacy-job noise). Auditing before .18.4 would flag the deferred seal/transport jobs as excess (which .18.4 removes).\n\nOUTPUT\nA per-sub-arc minimality report (expected vs actual jobs/facts/activations per fixture, each excess flagged + ticketed or confirmed minimal). This is a correctness gate, not a perf pass.",
   "id": "fz-go4.18.12",
@@ -21,8 +22,8 @@
     }
   ],
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Telemetry minimality audit of the demand fixpoint sub-arcs (type-convergence, return/lane, membership)",
   "type": "bug",
-  "updated_at": "2026-07-02T00:43:50Z"
+  "updated_at": "2026-07-02T01:11:41Z"
 }
