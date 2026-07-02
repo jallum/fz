@@ -10,9 +10,15 @@
   "id": "fz-go4.18.20",
   "labels": [],
   "parent": "fz-go4.18",
+  "comments": [
+    {
+      "text": "Re-scoped context: much of the re-analysis churn is downstream of the .18.22 oscillation/wipes. Re-measure the AnalyzeActivation/callsite re-publication counts after .18.22 lands; implement only what remains.",
+      "timestamp": "2026-07-02T12:17:32Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "Per-callee-revision whole-caller re-analysis: batch/granularize activation re-inference",
   "type": "bug",
-  "updated_at": "2026-07-02T03:01:03Z"
+  "updated_at": "2026-07-02T12:17:32Z"
 }
