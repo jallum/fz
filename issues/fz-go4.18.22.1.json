@@ -2,6 +2,7 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-07-02T13:44:07Z",
   "created": "2026-07-02T12:17:31Z",
   "description": "Bounded, diagnosis-only precursor to the fz-go4.18.22 implementation. Measure, per fixture across fixtures2/ (INCLUDING 00420 enum_take_drop_split, the known runaway — run it last with a timeout): (1) the size distribution of demand SCCs (callers\u003c-\u003ecallees over the true dependency graph = reads UNION join-contributions — expect every mutual-recursion web to be one SCC; how big is the largest?); (2) the ascent depth a bottom-start monotone Kleene iteration needs to reach the demand fixpoint per SCC (instrument a prototype ascent or count value-changes per key in the existing trace as a proxy); (3) the lattice-height bound in practice for RuntimeDemand values on real programs (shape depth x callable growth — is the finite-height argument comfortable, esp. TupleFields nesting?); (4) whether any demand SCC spans the WHOLE program on any fixture (which would make per-SCC settling effectively root-wide — acceptable if the ascent is shallow, but must be known). Deliverable: the numbers + a go/no-go on the effects-pattern implementation + any surprises (e.g. an unbounded-looking ascent = a lattice hole to fix first). No production changes; instrumentation reverted.",
   "id": "fz-go4.18.22.1",
@@ -14,8 +15,8 @@
     }
   ],
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Feasibility probe: demand-SCC sizes and ascent depth across the corpus (no fix)",
   "type": "task",
-  "updated_at": "2026-07-02T13:42:37Z"
+  "updated_at": "2026-07-02T13:44:07Z"
 }
