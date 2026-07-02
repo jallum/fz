@@ -7,9 +7,15 @@
   "id": "fz-go4.15",
   "labels": [],
   "parent": "fz-go4",
+  "comments": [
+    {
+      "text": "fz-go4.18.12 audit re-confirmed with counts at 014aa505f: FunctionSource facts stashed vs functions actually expanded = 224 vs 13 (00181), 72/13 (00001), 67/5 (00026), 66/7 (escaped_callable). The cold-overproduction magnitude is ~5-17x.",
+      "timestamp": "2026-07-02T01:11:07Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "Compiler2 runtime module definition should not publish cold function-source facts",
   "type": "task",
-  "updated_at": "2026-06-25T21:39:29Z"
+  "updated_at": "2026-07-02T01:11:07Z"
 }
