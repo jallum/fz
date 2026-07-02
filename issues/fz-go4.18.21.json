@@ -3,7 +3,8 @@
   "blocked_by": [
     "fz-go4.18.17",
     "fz-go4.18.19",
-    "fz-go4.18.22"
+    "fz-go4.18.22",
+    "fz-go4.18.29"
   ],
   "blocks": [],
   "created": "2026-07-02T01:11:04Z",
@@ -37,5 +38,5 @@
   "status": "in_progress",
   "title": "Activation arrow keying is schedule-dependent on 00001; demanded executable at retracted arrow is orphaned",
   "type": "bug",
-  "updated_at": "2026-07-02T20:32:50Z"
+  "updated_at": "2026-07-02T20:33:58Z"
 }
