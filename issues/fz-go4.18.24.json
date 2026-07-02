@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-go4.18.22"
   ],
@@ -16,8 +16,8 @@
     }
   ],
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "Migrate the semantic layer off follow_up: work runs only via waits (pull) or changed-revision wakes",
   "type": "task",
-  "updated_at": "2026-07-02T20:51:10Z"
+  "updated_at": "2026-07-02T23:15:53Z"
 }
