@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-07-02T22:41:26Z",
@@ -8,8 +8,8 @@
   "labels": [],
   "parent": "fz-go4.18.28",
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "backend_executable production dominates every remaining slow fixture (scales with global size)",
   "type": "bug",
-  "updated_at": "2026-07-02T22:41:26Z"
+  "updated_at": "2026-07-02T22:43:46Z"
 }
