@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-07-02T20:09:33Z",
+  "description": "Owner law (2026-07-02, two tiers): an INDIVIDUAL fixture completes in MILLISECONDS TO TENTHS OF A SECOND; ~2m bounds the overall suite run. Even a passing fixture over its bound is a FAILURE — long runtime is pure too-much-work signal (see feedback memory tiny-fixture-slowness-is-correctness).\n\nKNOWN VIOLATIONS at 0cb890e95 (post-demand-redesign; interp wall times from the .18.22 audits): fz_f98_range_map_converges ~6s (trace dominated by transport_component production — 427 productions, top gaps 50-60ms each); range_enumerable 3.3s; enum_map_family ~38s; enum_predicate_search ~115s (then fails with the pre-existing 'backend value 6 is unbound'); 00420_enum_take_drop_split \u003e30min (demand now clean — 3 productions — the grind is transport/materialization). Demand is FIXED (fz-go4.18.22); the multi-second family is TRANSPORT/MATERIALIZATION-bound — the downstream-monolith root (project memory fz-downstream-monolith / fz-8b0), now the dominant wall-time defect.\n\nWORK: (1) CENSUS — sweep fixtures2/*.fz interp under timeout, record wall time + the dominant trace component for every fixture over ~0.5s (the .18.12 method: --log-telemetry post-proc, per-kind gap analysis); produce the ranked violation table. (2) ROOT the dominant mechanism (expected: transport_component/TransportShape production volume + per-production cost — is it excess WORK (re-solves, over-production: check identical re-production counts for transport kinds, the .18.23 telemetry now covers all product kinds) or genuinely-needed work done expensively (algorithmic)? The minimality doctrine says find the excess first). (3) Burn-down tickets per mechanism found, same pattern as the demand arc: diagnosis -\u003e keystone -\u003e compensator deletion. Relates to fz-go4.18.9 (transport-plan completeness) and fz-go4.22 (matrix timeout family — the AOT-grind bucket is this same monolith).",
+  "id": "fz-go4.18.28",
+  "labels": [],
+  "parent": "fz-go4.18",
+  "priority": 1,
+  "status": "open",
+  "title": "Per-fixture runtime census + burn-down: every fixture completes in ms-to-tenths (the multi-second family is the transport monolith)",
+  "type": "bug",
+  "updated_at": "2026-07-02T20:09:33Z"
+}
