@@ -2,6 +2,7 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [
+    "fz-go4.18.28.2",
     "fz-go4.18.9"
   ],
   "created": "2026-07-02T20:48:46Z",
@@ -13,5 +14,5 @@
   "status": "open",
   "title": "Transport: solve the shape graph once per settled closure; record ALL components, not just the anchor's",
   "type": "bug",
-  "updated_at": "2026-07-02T20:48:47Z"
+  "updated_at": "2026-07-02T20:48:48Z"
 }
