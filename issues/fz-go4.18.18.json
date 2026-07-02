@@ -6,7 +6,7 @@
   ],
   "blocks": [],
   "created": "2026-07-02T01:11:03Z",
-  "description": "fz-go4.18.12 finding 2. MaterializedExecutable is produced 2x per executable on ALL fixtures; diffing a re-production pair shows the FIRST is under-filled (empty input/value transport positions) and discarded — an artifact pulled before its demand inputs settle, then rebuilt. FIX direction: order/gate the artifact pull so materialization happens once, after the demand it reads has settled (or make the first production wait rather than produce a placeholder). Interacts with finding 1 (the wipe cascade) — fix 1 first and re-measure; this may partially collapse. ACCEPTANCE: MaterializedExecutable produced 1x per executable on the 4-fixture corpus (unless a genuine input revision requires re-materialization, which must be justified by a changed payload); suite green 3x.",
+  "description": "RE-MEASURE AND LIKELY CLOSE (2026-07-02 state; this description supersedes all prior framing). Original finding (.18.12 audit at 014aa505f): MaterializedExecutable produced 2x per executable on all fixtures — the first production under-filled (empty input/value transport positions) and discarded, an artifact pulled before demand settles.\n\nCURRENT STATE at 0cb890e95: the fz-go4.18.22 demand redesign (SCC-settled demand + epoch-only invalidation) appears to have dissolved most of it — the .18.28 census traces show MaterializedExecutable identical re-productions at 6/364, 7/683, 3/336 on the violator fixtures (vs the near-universal 2x at the original measurement). Earlier post-.18.22 measurements (32/12 at 0810fcb89, pre-rework) conflict; the census at the final commit is the most recent datum.\n\nWORK: re-measure on 00181/00001/00026 with the standard method (per-key produced counts + the identical flag). If 1x-per-executable holds (modulo justified epoch re-materializations with changed payloads), CLOSE as dissolved-by-.18.22 with the measurement. If a remainder exists, its acceptance stands: MaterializedExecutable produced once per executable unless a genuine input revision justifies re-materialization (changed payload required as proof).",
   "id": "fz-go4.18.18",
   "labels": [],
   "parent": "fz-go4.18",
@@ -24,5 +24,5 @@
   "status": "open",
   "title": "First MaterializedExecutable production is a discarded under-filled placeholder (2x per executable)",
   "type": "bug",
-  "updated_at": "2026-07-02T20:48:49Z"
+  "updated_at": "2026-07-02T20:50:21Z"
 }
