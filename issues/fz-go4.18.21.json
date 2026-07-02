@@ -32,6 +32,10 @@
     {
       "text": "-m",
       "timestamp": "2026-07-02T20:32:50Z"
+    },
+    {
+      "text": "DIAGNOSIS COMPLETE (2026-07-02; full narrative in the agent report + prior comment). ROOT: arrival-order-becomes-identity at the two callee-only coalesce sites (semantic.rs:142, jobs/semantic.rs:1732 — merge_target_activation first-arrival-wins). Ty-id renaming confirmed BENIGN (structural multiset identical). FIX (callee+activation identity) proven correct but WITHHELD: regresses legitimately-polymorphic joined callables because interp runtime dispatch is brand-blind (fz-bsx) — now BLOCKED BY fz-go4.18.29 (value-identity dispatch at the boxed-callable boundary). Fix diff preserved in session scratchpad. Timing findings routed to .18.28: repr_seam interp 2.1-2.4s per run on a 6-line fixture (monolith family); full matrix exceeds 120s (384/386 at cap, stragglers enum_take_drop_split/enum_predicate_search build).",
+      "timestamp": "2026-07-02T20:33:58Z"
     }
   ],
   "priority": 1,
