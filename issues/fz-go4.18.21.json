@@ -27,11 +27,15 @@
     {
       "text": "PARTIAL (diagnosis agent stopped by owner mid-run, 2026-07-02): Q3 ANSWERED — the orphaned provisional-arrow demand (append demanded at a retracted arrow on 00001) NO LONGER OCCURS post-.18.22; the widen-then-retract arc was demand-side and is fixed. Remaining scope narrows to: (a) Ty-id renaming across runs (same structural arrow interned at different ids) and (b) the answer-changing seam (repr_seam lambda-id swap conflating reducer/predicate at a callable boundary). The agent's candidate fix direction at stop time (UNVERIFIED — treat as a lead, not a finding): 'make call-target identity variant-distinct (callee + activation) in the two coalesce sites.' Worktree preserved at agent-afe4ed67b73426813 (may contain instrumentation).",
       "timestamp": "2026-07-02T17:52:59Z"
+    },
+    {
+      "text": "-m",
+      "timestamp": "2026-07-02T20:32:50Z"
     }
   ],
   "priority": 1,
   "status": "in_progress",
   "title": "Activation arrow keying is schedule-dependent on 00001; demanded executable at retracted arrow is orphaned",
   "type": "bug",
-  "updated_at": "2026-07-02T17:52:59Z"
+  "updated_at": "2026-07-02T20:32:50Z"
 }
