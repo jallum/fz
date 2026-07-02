@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-go4.18.17"
+  ],
   "blocks": [],
   "created": "2026-07-02T01:11:03Z",
   "description": "fz-go4.18.12 finding 2. MaterializedExecutable is produced 2x per executable on ALL fixtures; diffing a re-production pair shows the FIRST is under-filled (empty input/value transport positions) and discarded — an artifact pulled before its demand inputs settle, then rebuilt. FIX direction: order/gate the artifact pull so materialization happens once, after the demand it reads has settled (or make the first production wait rather than produce a placeholder). Interacts with finding 1 (the wipe cascade) — fix 1 first and re-measure; this may partially collapse. ACCEPTANCE: MaterializedExecutable produced 1x per executable on the 4-fixture corpus (unless a genuine input revision requires re-materialization, which must be justified by a changed payload); suite green 3x.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "First MaterializedExecutable production is a discarded under-filled placeholder (2x per executable)",
   "type": "bug",
-  "updated_at": "2026-07-02T01:11:03Z"
+  "updated_at": "2026-07-02T01:11:05Z"
 }
