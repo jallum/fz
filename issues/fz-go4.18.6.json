@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-06-30T18:12:07Z",
@@ -8,8 +8,8 @@
   "labels": [],
   "parent": "fz-go4.18",
   "priority": 3,
-  "status": "open",
+  "status": "in_progress",
   "title": "Enforce PullSession return-demand map-lockstep invariant with a debug-assert",
   "type": "task",
-  "updated_at": "2026-06-30T18:12:07Z"
+  "updated_at": "2026-07-02T23:15:54Z"
 }
