@@ -3512,6 +3512,64 @@ fn compiler2_interp_runs_range_and_map_to_list_from_backend_artifacts() {
 }
 
 #[test]
+fn compiler2_runtime_demand_settles_the_f98_orbit_fixture_without_cycling() {
+    // INTENT (fz-go4.18.22): RuntimeDemand settles as an SCC-local monotone
+    // fixpoint inside its producer -- the whole demand cone is solved by one
+    // bottom-start Kleene ascent and only the settled fixpoint is published.
+    // This fixture previously drove the period-2 seed/floor/retraction orbit
+    // (hundreds of RuntimeDemand re-productions, the value history cycling
+    // between repeated states). With the compensators deleted, each demand key
+    // produces at most once per epoch and NO produced value ever repeats a
+    // displaced one (`identical` stays false -- the value-history detector).
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&["fz", "compiler2", "pull", "product", "produced"], capture.handler());
+    let dbg = DbgCapture::new();
+    tel.attach(&[], dbg.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures2/behavior/fz_f98_range_map_converges.fz".to_string()),
+        text: include_str!("../../fixtures2/behavior/fz_f98_range_map_converges.fz").to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    compiler
+        .run_root_interp(root_id)
+        .expect("the orbit fixture should settle and run");
+    assert_eq!(dbg.lines().as_slice(), ["[1, 3, 5, 7]", "[{1, :a}]"]);
+
+    let demand_productions = capture
+        .find(&["fz", "compiler2", "pull", "product", "produced"])
+        .into_iter()
+        .filter(
+            |event| matches!(event.metadata.get("kind"), Some(Value::Str(kind)) if kind.as_ref() == "runtime_demand"),
+        )
+        .collect::<Vec<_>>();
+    assert!(
+        !demand_productions.is_empty(),
+        "the run should settle at least one demand cone"
+    );
+    let identical = demand_productions
+        .iter()
+        .filter(|event| matches!(event.measurements.get("identical"), Some(Value::Bool(true))))
+        .count();
+    assert_eq!(
+        identical, 0,
+        "no RuntimeDemand production may repeat a displaced value: the orbit is gone at the source"
+    );
+    assert!(
+        demand_productions.len() <= 8,
+        "RuntimeDemand settles whole cones at once: expected a handful of productions, got {}",
+        demand_productions.len()
+    );
+}
+
+#[test]
 fn compiler2_native_program_preserves_variadic_extern_wrappers_and_marshals() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();

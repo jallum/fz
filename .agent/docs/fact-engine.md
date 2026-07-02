@@ -139,7 +139,16 @@ PullWait = Product(ProductKey) | Fact(FactUse<FactKey>)
 
 The pull driver is the only code that expands a product wait into its producer.
 A producer may say "I need `AbiExecutable(E)`" or "I need settled
-`ReturnType(A)`"; it may not schedule unrelated work under another name. Fact
+`ReturnType(A)`"; it may not schedule unrelated work under another name.
+Cyclic products settle their SCC inside one producer: `ExecutableEffects(E)`
+and `RuntimeDemand(E)` each discover the dependency group containing `E` from
+settled call-edge facts, run a bottom-start monotone ascent to the fixpoint,
+and memoize the settled value for every member at once. A memoized product is
+served from the session cache; settled demand retracts only on an epoch event
+(re-materialization resolving a call edge outside the settlement's callee
+inventory) or when a settlement's own publication grows the join of an
+external input it consumed — then the producer re-collects with the displaced
+external absorbed and re-settles the grown cone before memoizing. Fact
 waits are satisfied at the Compiler2 front door by driving only the direct fact
 producer needed for that exact fact, while deferring forbidden root artifact
 jobs for the submitted root.

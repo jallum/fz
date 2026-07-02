@@ -3982,6 +3982,112 @@ fn executable_for(world: &World<'_>, session: &PullSession, name: &str, arity: u
         .unwrap_or_else(|| panic!("transport plan executable {name}/{arity}"))
 }
 
+#[test]
+fn compiler2_runtime_demand_resettles_a_member_whose_contribution_grows_an_external_callee() {
+    // INTENT (fz-go4.18.22 rework, F1 — the stale-caller window): a NON-anchor
+    // cone member whose settled contribution GROWS the joined return demand of
+    // a callee settled EARLIER (outside the cone) must not memoize a demand
+    // derived against that callee's pre-growth input demands.
+    //
+    // The anchor alone is already covered: the invalidation walk from the
+    // moved callee climbs the dependency chain back to the in-progress anchor,
+    // whose production the memo discards (`invalidated_in_progress`) and the
+    // driver re-pulls. The window is the MEMBER: its stale memo is recorded
+    // after the walk and stands — and the anchor's re-pull then reads it as a
+    // settled EXTERNAL, laundering the pre-growth demand into the anchor while
+    // the displaced callee re-settles larger with nothing re-deriving its
+    // caller. The fix refuses to memoize a cone whose publication displaced
+    // one of its own external inputs: it re-collects (the displaced callee is
+    // memo-less and joins as a member) and settles the grown cone together.
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new(&tel);
+    world.submit_code(
+        Some("runtime_demand_stale_caller_window.fz".to_string()),
+        r#"
+fn id(x), do: x
+fn mid(q), do: id(q)
+fn caller(p), do: mid(p)
+fn main(), do: caller(1)
+"#
+        .to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    // Settle every World fact once; the window itself is re-constructed in a
+    // FRESH session below, where the pull order is controlled explicitly.
+    let warm = drive_transport_facts_for_test(&tel, &mut world, root);
+    let id_exec = demanded_executable_for_function(&world, warm.session(), "id", 1);
+    let mid_exec = demanded_executable_for_function(&world, warm.session(), "mid", 1);
+    let caller_exec = demanded_executable_for_function(&world, warm.session(), "caller", 1);
+    let phantom_caller = world.root_entry_executable(root);
+
+    let mut driver = ProductDriver::new(&tel, root);
+    // An earlier settle observed `id` only as a discarded call: its joined
+    // return demand is the bottom `ignore` (an observed discard, not absence),
+    // so `id` settles with its input undemanded.
+    driver.session_mut().replace_settled_return_demand_contributions(
+        phantom_caller,
+        HashMap::from([(id_exec.clone(), RuntimeDemand::ignore())]),
+        &HashSet::new(),
+    );
+    pull_product_until_produced_with_fact_waits(
+        &mut driver,
+        &mut world,
+        root,
+        ProductKey::RuntimeDemand(id_exec.clone()),
+        "id demand should settle from the discard evidence",
+    );
+    assert_eq!(
+        driver
+            .session()
+            .memo()
+            .runtime_demand(&id_exec)
+            .map(|demand| demand.input_demands.clone()),
+        Some(vec![RuntimeDemand::ignore()]),
+        "premise: id settles EARLIER with its input undemanded",
+    );
+
+    // `caller` anchors a {caller, mid} cone that reads `id` as an external
+    // input; `mid`'s contribution (the cone's bootstrapped-whole return demand
+    // flowing down the chain) grows `id`'s join past the earlier settle.
+    pull_product_until_produced_with_fact_waits(
+        &mut driver,
+        &mut world,
+        root,
+        ProductKey::RuntimeDemand(caller_exec.clone()),
+        "caller demand should settle",
+    );
+
+    for (name, executable) in [("caller", &caller_exec), ("mid", &mid_exec), ("id", &id_exec)] {
+        let demand = driver
+            .session()
+            .memo()
+            .runtime_demand(executable)
+            .unwrap_or_else(|| panic!("{name} demand should be memoized by the re-settled cone"))
+            .clone();
+        assert_eq!(
+            demand.input_demands,
+            vec![RuntimeDemand::whole()],
+            "{name}'s settled input demand must reflect id's POST-growth input demand \
+             (whole flows caller -> mid -> id and back up the argument chain), \
+             not the displaced pre-growth ignore",
+        );
+    }
+}
+
+fn demanded_executable_for_function(
+    world: &World<'_>,
+    session: &PullSession,
+    name: &str,
+    arity: usize,
+) -> ExecutableKey {
+    session
+        .demanded_executables()
+        .iter()
+        .find(|executable| function_is(world, executable.activation.function, name, arity))
+        .cloned()
+        .unwrap_or_else(|| panic!("demanded executable for {name}/{arity}"))
+}
+
 fn runtime_demands_for_frontier(session: &PullSession) -> HashMap<ExecutableKey, ExecutableRuntimeDemand> {
     session
         .demanded_executables()

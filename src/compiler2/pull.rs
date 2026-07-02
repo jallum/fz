@@ -332,7 +332,18 @@ pub struct PullSession {
     call_edges: HashMap<ExecutableKey, Vec<DemandedCallEdge>>,
     incoming_inputs: HashMap<InputSlot, Vec<IncomingInputSource>>,
     runtime_demand_dependents: HashMap<ExecutableKey, HashSet<ExecutableKey>>,
-    latest_runtime_demands: HashMap<ExecutableKey, ExecutableRuntimeDemand>,
+    // Reverse callable-flow demand edges `resolution -> producers`, kept apart
+    // from `runtime_demand_dependents` (direct callsite reads) so the
+    // edge-derived transport invalidation walks only the direct graph while
+    // the demand EPOCH wipe reaches flow-coupled members too.
+    demand_flow_dependents: HashMap<ExecutableKey, HashSet<ExecutableKey>>,
+    // The demand-relevant callee set each executable's demand settle used (its
+    // cone edges). Re-materialization is the demand epoch gate: a materialized
+    // call-edge set that escapes this settled set re-keys the call graph, so
+    // the executable's demand cone is invalidated and re-settled -- the ONLY
+    // path that retracts settled demand, mirroring how the effect projection
+    // gate re-settles effects.
+    settled_demand_callees: HashMap<ExecutableKey, HashSet<ExecutableKey>>,
     // The effect-relevant projection (local effect summary + local callee
     // set) of the latest materialized executable recorded per key. Effect
     // products are invalidated only when this projection moves; re-derived
@@ -350,12 +361,15 @@ pub struct PullSession {
     // carries CallSiteSummary direct-target edges and MUST NOT be used for
     // effect invalidation.
     effect_dependents: HashMap<ExecutableKey, HashSet<ExecutableKey>>,
-    // Per-caller return-demand evidence, keyed `caller -> (callee -> demand)`.
-    // A callee present here is OBSERVED (even when its demand is the bottom
-    // `ignore` discard marker); a callee absent is not-yet-observed. The derived
-    // `return_demands` join is rebuilt from these contributions on every change
-    // so a caller can RETRACT a stale (transiently whole) contribution -- the
-    // join is not a monotone accumulator.
+    // Per-caller SETTLED return-demand evidence, keyed `caller -> (callee ->
+    // demand)` -- the cross-settle channel a demand cone reads as external
+    // caller input (`external_return_demand`). A callee present here is
+    // OBSERVED (even when its demand is the bottom `ignore` discard marker); a
+    // callee absent is not-yet-observed. Every entry is a settled fixpoint
+    // value: producers replace their contributions only at settle time, and a
+    // re-settled caller whose contribution DROPS (an epoch event) retracts
+    // cleanly because the `return_demands` join is rebuilt from current
+    // contributions -- the join is not a monotone accumulator.
     return_demand_contributions: HashMap<ExecutableKey, HashMap<ExecutableKey, RuntimeDemand>>,
     return_demand_contributors: HashMap<ExecutableKey, HashSet<ExecutableKey>>,
     return_demands: HashMap<ExecutableKey, RuntimeDemand>,
@@ -373,7 +387,6 @@ pub struct PullSession {
     demanded_callables: HashSet<CallableId>,
     demanded_boundaries: HashSet<BoundaryId>,
     executable_index: HashMap<ExecutableKey, usize>,
-    active_runtime_demands: HashSet<ExecutableKey>,
     producer_pokes: u64,
 }
 
@@ -386,7 +399,8 @@ impl PullSession {
             call_edges: HashMap::new(),
             incoming_inputs: HashMap::new(),
             runtime_demand_dependents: HashMap::new(),
-            latest_runtime_demands: HashMap::new(),
+            demand_flow_dependents: HashMap::new(),
+            settled_demand_callees: HashMap::new(),
             latest_effect_inputs: HashMap::new(),
             effect_dependents: HashMap::new(),
             return_demand_contributions: HashMap::new(),
@@ -406,7 +420,6 @@ impl PullSession {
             demanded_callables: HashSet::new(),
             demanded_boundaries: HashSet::new(),
             executable_index: HashMap::new(),
-            active_runtime_demands: HashSet::new(),
             producer_pokes: 0,
         }
     }
@@ -445,10 +458,82 @@ impl PullSession {
             .insert(dependent);
     }
 
-    fn record_latest_runtime_demand(&mut self, executable: ExecutableKey, demand: ExecutableRuntimeDemand) -> bool {
-        let changed = self.latest_runtime_demands.get(&executable) != Some(&demand);
-        self.latest_runtime_demands.insert(executable, demand);
-        changed
+    /// Record a callable-flow demand dependency `resolution <- producer`. These
+    /// edges join the demand EPOCH wipe's walk only; they never widen the
+    /// edge-derived transport invalidation.
+    pub fn record_demand_flow_dependency(&mut self, dependency: ExecutableKey, dependent: ExecutableKey) {
+        if dependency == dependent {
+            return;
+        }
+        self.demand_flow_dependents
+            .entry(dependency)
+            .or_default()
+            .insert(dependent);
+    }
+
+    /// Memoize one cone member's settled runtime demand. The demand SCC settles
+    /// inside its producer, so every member is published here at once -- only
+    /// the settled fixpoint is ever observable. A re-settle that changes a
+    /// member's value invalidates the member's transport and artifact products
+    /// (they consumed the displaced demand); an unchanged re-settle leaves them
+    /// standing.
+    pub fn record_settled_runtime_demand(&mut self, executable: ExecutableKey, demand: ExecutableRuntimeDemand) {
+        let key = ProductKey::RuntimeDemand(executable.clone());
+        let previous = match self.memo.produced.get(&key).or_else(|| self.memo.displaced.get(&key)) {
+            Some(ProductValue::RuntimeDemand(previous)) => Some(previous.as_ref().clone()),
+            _ => None,
+        };
+        let changed = previous.is_some_and(|previous| previous != demand);
+        self.memo.displaced.remove(&key);
+        self.memo
+            .produced
+            .insert(key, ProductValue::RuntimeDemand(Box::new(demand)));
+        if changed {
+            self.invalidate_transport_products(&executable);
+            self.invalidate_artifact_products(&executable);
+        }
+    }
+
+    /// Record the demand-relevant callee set a settle derived for `executable`
+    /// -- the epoch baseline `record_materialized_executable` gates on.
+    pub fn record_settled_demand_callees(&mut self, executable: ExecutableKey, callees: HashSet<ExecutableKey>) {
+        self.settled_demand_callees.insert(executable, callees);
+    }
+
+    /// The demand-relevant callee set recorded for `executable`, including any
+    /// materialized call edges an epoch gate folded in -- a settled call-edge
+    /// fact source for demand-cone discovery.
+    pub fn settled_demand_callees(&self, executable: &ExecutableKey) -> Option<&HashSet<ExecutableKey>> {
+        self.settled_demand_callees.get(executable)
+    }
+
+    /// The joined return demand contributed to `target` by settled contributors
+    /// OUTSIDE `members` -- the cross-settle evidence a cone consumes as an
+    /// external input. Contributions from `members` are excluded: they are
+    /// re-derived inside the ascent, and a member's stored entry may belong to
+    /// a displaced epoch.
+    pub fn external_return_demand(
+        &self,
+        target: &ExecutableKey,
+        members: &HashSet<ExecutableKey>,
+    ) -> Option<RuntimeDemand> {
+        self.return_demand_contributors
+            .get(target)
+            .into_iter()
+            .flatten()
+            .filter(|contributor| !members.contains(*contributor))
+            .filter_map(|contributor| {
+                self.return_demand_contributions
+                    .get(contributor)
+                    .and_then(|contributions| contributions.get(target))
+            })
+            .fold(None::<RuntimeDemand>, |acc, demand| match acc {
+                Some(mut acc) => {
+                    acc.join_assign(demand);
+                    Some(acc)
+                }
+                None => Some(demand.clone()),
+            })
     }
 
     pub fn return_demand(&self, executable: &ExecutableKey) -> Option<&RuntimeDemand> {
@@ -535,10 +620,6 @@ impl PullSession {
         &self.executable_index
     }
 
-    pub fn runtime_demand_is_active(&self, executable: &ExecutableKey) -> bool {
-        self.active_runtime_demands.contains(executable)
-    }
-
     pub fn producer_pokes(&self) -> u64 {
         self.producer_pokes
     }
@@ -561,7 +642,11 @@ impl PullSession {
         let edges = self.call_edges.entry(edge.caller.clone()).or_default();
         changed |= push_unique(edges, edge.clone());
         if changed {
-            self.invalidate_demand_derived_products(&edge.callee);
+            // A new incoming edge feeds the callee's input SLOTS -- a transport
+            // input, not a demand input (the demand cone derives its edges from
+            // settled facts, not from this session inventory), so settled
+            // demand stands and only shape-consuming products re-derive.
+            self.invalidate_edge_derived_products(&edge.callee);
         }
     }
 
@@ -569,19 +654,31 @@ impl PullSession {
         self.producer_pokes += count;
     }
 
-    /// Replace `caller`'s full set of return-demand contributions. Every callee
-    /// the caller names becomes (or stays) OBSERVED; any callee the caller named
-    /// on a previous run but not this one has its contribution withdrawn. Each
-    /// affected callee's joined return demand is rebuilt from all current
-    /// contributors and its demand-derived products are invalidated when the join
-    /// changes -- so a contribution that DROPS (e.g. a forwarder collapsing from
-    /// its transient whole-by-need seed to an observed discard) retracts cleanly
-    /// instead of baking into a monotone accumulator.
-    pub fn replace_return_demand_contributions(
+    /// Replace `caller`'s full set of SETTLED return-demand contributions.
+    /// Every callee the caller names becomes (or stays) OBSERVED; any callee the
+    /// caller named on a previous settle but not this one has its contribution
+    /// withdrawn. Each affected callee's joined return demand is rebuilt from
+    /// all current contributors.
+    ///
+    /// Retraction is epoch-scoped by construction: within one settlement the
+    /// joins are quiescent (`settled_members` carries the cone that was just
+    /// solved together, and its members' joins equal the fixpoint the settle
+    /// computed), so only a NON-member target whose join moves -- a settled
+    /// executable outside the re-settled cone consuming displaced evidence --
+    /// has its demand-derived products invalidated and re-settled.
+    ///
+    /// Returns every executable whose demand-derived products the moved joins
+    /// displaced (the moved targets plus their transitive demand readers). The
+    /// publishing producer inspects this set: a displaced executable it
+    /// consumed as an EXTERNAL input means its just-settled members were
+    /// derived against pre-growth demands, and the cone must re-settle with
+    /// the displaced executable absorbed (the stale-caller window).
+    pub fn replace_settled_return_demand_contributions(
         &mut self,
         caller: ExecutableKey,
         contributions: HashMap<ExecutableKey, RuntimeDemand>,
-    ) {
+        settled_members: &HashSet<ExecutableKey>,
+    ) -> HashSet<ExecutableKey> {
         let previous = self.return_demand_contributions.remove(&caller).unwrap_or_default();
         let mut affected: HashSet<ExecutableKey> = HashSet::new();
         for target in previous.keys() {
@@ -600,12 +697,18 @@ impl PullSession {
         if !contributions.is_empty() {
             self.return_demand_contributions.insert(caller, contributions);
         }
+        let mut displaced = HashSet::new();
         for target in affected {
-            self.recompute_return_demand(&target);
+            displaced.extend(self.recompute_return_demand(&target, settled_members));
         }
+        displaced
     }
 
-    fn recompute_return_demand(&mut self, target: &ExecutableKey) {
+    fn recompute_return_demand(
+        &mut self,
+        target: &ExecutableKey,
+        settled_members: &HashSet<ExecutableKey>,
+    ) -> HashSet<ExecutableKey> {
         let joined = self
             .return_demand_contributors
             .get(target)
@@ -634,13 +737,35 @@ impl PullSession {
                 self.return_demands.remove(target);
             }
         }
-        if changed {
-            self.invalidate_demand_derived_products(target);
+        if changed && !settled_members.contains(target) {
+            self.invalidate_demand_derived_products(target)
+        } else {
+            HashSet::new()
         }
     }
 
     pub fn record_materialized_executable(&mut self, executable: ExecutableKey, materialized: MaterializedExecutable) {
         self.demanded_executables.insert(executable.clone());
+        // The demand epoch gate: materialization resolving a call edge the
+        // demand settle never derived means the settled cone was keyed against
+        // a smaller call graph -- re-key and re-settle it. Edges within the
+        // settled callee set (the overwhelming case: the cone over-approximates
+        // from settled facts) leave settled demand standing.
+        if let Some(settled_callees) = self.settled_demand_callees.get(&executable) {
+            let materialized_callees: HashSet<ExecutableKey> = materialized
+                .call_edges
+                .values()
+                .flat_map(|edge| edge.target.local_callees())
+                .cloned()
+                .collect();
+            if !materialized_callees.is_subset(settled_callees) {
+                self.settled_demand_callees
+                    .entry(executable.clone())
+                    .or_default()
+                    .extend(materialized_callees);
+                self.invalidate_demand_derived_products(&executable);
+            }
+        }
         let effect_inputs = effect_relevant_inputs(&materialized);
         let effect_inputs_changed = self.latest_effect_inputs.get(&executable) != Some(&effect_inputs);
         let previous = self.latest_effect_inputs.insert(executable.clone(), effect_inputs);
@@ -761,33 +886,47 @@ impl PullSession {
         self.executable_index.insert(executable, index);
     }
 
-    fn invalidate_demand_derived_products(&mut self, executable: &ExecutableKey) {
+    /// The demand EPOCH wipe: settled demand retracts only here. Walks the
+    /// demand-read dependents (callers) transitively, displacing each member's
+    /// RuntimeDemand memo plus the transport/artifact products derived from it,
+    /// so the next demand pull re-settles the affected cone against the new
+    /// call graph. Returns the displaced executables.
+    fn invalidate_demand_derived_products(&mut self, executable: &ExecutableKey) -> HashSet<ExecutableKey> {
         let mut stack = vec![executable.clone()];
         let mut seen = HashSet::new();
         while let Some(current) = stack.pop() {
             if !seen.insert(current.clone()) {
                 continue;
             }
-            self.invalidate_demand_derived_products_one(&current);
+            self.memo.remove(&ProductKey::RuntimeDemand(current.clone()));
+            self.invalidate_transport_products(&current);
+            self.invalidate_artifact_products(&current);
+            if let Some(dependents) = self.runtime_demand_dependents.get(&current).cloned() {
+                stack.extend(dependents);
+            }
+            if let Some(dependents) = self.demand_flow_dependents.get(&current).cloned() {
+                stack.extend(dependents);
+            }
+        }
+        seen
+    }
+
+    /// New incoming call edges change transport inputs, never settled demand:
+    /// wipe the shape/artifact products of the callee and its transitive
+    /// demand readers, leaving every RuntimeDemand memo standing.
+    fn invalidate_edge_derived_products(&mut self, executable: &ExecutableKey) {
+        let mut stack = vec![executable.clone()];
+        let mut seen = HashSet::new();
+        while let Some(current) = stack.pop() {
+            if !seen.insert(current.clone()) {
+                continue;
+            }
+            self.invalidate_transport_products(&current);
+            self.invalidate_artifact_products(&current);
             if let Some(dependents) = self.runtime_demand_dependents.get(&current).cloned() {
                 stack.extend(dependents);
             }
         }
-    }
-
-    fn invalidate_runtime_demand_dependents(&mut self, executable: &ExecutableKey) {
-        let Some(dependents) = self.runtime_demand_dependents.get(executable).cloned() else {
-            return;
-        };
-        for dependent in dependents {
-            self.invalidate_demand_derived_products_one(&dependent);
-        }
-    }
-
-    fn invalidate_demand_derived_products_one(&mut self, executable: &ExecutableKey) {
-        self.memo.remove(&ProductKey::RuntimeDemand(executable.clone()));
-        self.invalidate_transport_products(executable);
-        self.invalidate_artifact_products(executable);
     }
 
     fn discard_product_side_effects(&mut self, key: &ProductKey) {
@@ -913,14 +1052,6 @@ impl PullSession {
             self.transport_components.remove(&anchor);
             self.memo.remove(&ProductKey::TransportComponent(anchor));
         }
-    }
-
-    fn enter_runtime_demand(&mut self, executable: &ExecutableKey) {
-        self.active_runtime_demands.insert(executable.clone());
-    }
-
-    fn finish_runtime_demand(&mut self, executable: &ExecutableKey) {
-        self.active_runtime_demands.remove(executable);
     }
 
     fn note_product_request(&mut self, key: &ProductKey) {
@@ -1092,19 +1223,13 @@ impl<'a> ProductDriver<'a> {
     pub fn pull(&mut self, producers: &mut impl ProductProducers, key: ProductKey) -> PullOutcome {
         self.emit("requested", &key, 0);
         self.session.note_product_request(&key);
-        if !matches!(key, ProductKey::RuntimeDemand(_))
-            && let Some(value) = self.session.memo.get(&key)
-        {
+        if let Some(value) = self.session.memo.get(&key) {
             self.emit("cache_hit", &key, 0);
             return PullOutcome::Produced(value.clone());
         }
         if !self.session.memo.begin(key.clone()) {
             self.emit("reentered", &key, 1);
             return PullOutcome::Waiting(vec![PullWait::Product(key)]);
-        }
-
-        if let ProductKey::RuntimeDemand(executable) = &key {
-            self.session.enter_runtime_demand(executable);
         }
 
         let outcome = match &key {
@@ -1135,17 +1260,6 @@ impl<'a> ProductDriver<'a> {
         match outcome {
             PullOutcome::Produced(value) => {
                 let finish = self.session.memo.finish(&key, value.clone());
-                if let ProductKey::RuntimeDemand(executable) = &key {
-                    self.session.finish_runtime_demand(executable);
-                    if finish.settled
-                        && let ProductValue::RuntimeDemand(demand) = &value
-                        && self
-                            .session
-                            .record_latest_runtime_demand(executable.clone(), demand.as_ref().clone())
-                    {
-                        self.session.invalidate_runtime_demand_dependents(executable);
-                    }
-                }
                 if !finish.settled {
                     self.session.discard_product_side_effects(&key);
                     let waits = vec![PullWait::Product(key.clone())];
@@ -1430,8 +1544,8 @@ mod tests {
             std::slice::from_ref(&source)
         );
         assert!(
-            session.memo().get(&ProductKey::RuntimeDemand(callee)).is_none(),
-            "recording a new incoming edge invalidates stale request-local callee runtime demand"
+            session.memo().get(&ProductKey::RuntimeDemand(callee)).is_some(),
+            "recording an incoming edge feeds transport input slots and must leave settled demand standing"
         );
         assert_eq!(session.producer_pokes(), 0);
     }
@@ -1446,7 +1560,11 @@ mod tests {
             ProductValue::RuntimeDemand(Box::default()),
         );
 
-        session.replace_return_demand_contributions(caller, HashMap::from([(callee.clone(), RuntimeDemand::whole())]));
+        session.replace_settled_return_demand_contributions(
+            caller,
+            HashMap::from([(callee.clone(), RuntimeDemand::whole())]),
+            &HashSet::new(),
+        );
 
         assert_eq!(
             session.return_demand(&callee),
@@ -1455,25 +1573,26 @@ mod tests {
         );
         assert!(
             session.memo().get(&ProductKey::RuntimeDemand(callee)).is_none(),
-            "recording a stronger return demand invalidates stale request-local runtime demand"
+            "an epoch contribution that grows a non-member target's return demand re-settles it"
         );
     }
 
     #[test]
     fn pull_session_retracts_return_demand_when_a_caller_collapses_to_a_discard() {
-        // The "unknown is not none" guard at the session layer: a forwarder that
-        // first contributes `whole` off its transient whole-by-need seed and
-        // later collapses to an observed discard must DROP its callee's joined
-        // demand, not bake the stale `whole`. An observed discard is the bottom
-        // `ignore` cell -- still present (observed), distinct from a callee no
-        // caller has named (absent -> None).
+        // The "unknown is not none" guard at the session layer, epoch-scoped: a
+        // caller re-settled across an epoch whose contribution collapses to an
+        // observed discard must DROP its callee's joined demand, not bake the
+        // stale `whole`. An observed discard is the bottom `ignore` cell --
+        // still present (observed), distinct from a callee no caller has named
+        // (absent -> None).
         let caller = fake_executable(RootId::for_test(7));
         let callee = fake_executable(RootId::for_test(7));
         let mut session = PullSession::new(RootId::for_test(7));
 
-        session.replace_return_demand_contributions(
+        session.replace_settled_return_demand_contributions(
             caller.clone(),
             HashMap::from([(callee.clone(), RuntimeDemand::whole())]),
+            &HashSet::new(),
         );
         assert_eq!(session.return_demand(&callee), Some(&RuntimeDemand::whole()));
 
@@ -1481,22 +1600,23 @@ mod tests {
             &ProductKey::RuntimeDemand(callee.clone()),
             ProductValue::RuntimeDemand(Box::default()),
         );
-        session.replace_return_demand_contributions(
+        session.replace_settled_return_demand_contributions(
             caller.clone(),
             HashMap::from([(callee.clone(), RuntimeDemand::ignore())]),
+            &HashSet::new(),
         );
 
         assert_eq!(
             session.return_demand(&callee),
             Some(&RuntimeDemand::ignore()),
-            "a collapsed forwarder retracts its callee's whole demand down to the observed discard"
+            "a collapsed caller retracts its callee's whole demand down to the observed discard"
         );
         assert!(
             session.memo().get(&ProductKey::RuntimeDemand(callee.clone())).is_none(),
-            "retracting a callee's return demand invalidates its stale request-local runtime demand"
+            "retracting a non-member callee's return demand re-settles its runtime demand"
         );
 
-        session.replace_return_demand_contributions(caller, HashMap::new());
+        session.replace_settled_return_demand_contributions(caller, HashMap::new(), &HashSet::new());
         assert_eq!(
             session.return_demand(&callee),
             None,

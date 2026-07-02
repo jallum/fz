@@ -2,8 +2,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 
 use super::super::body::{
     CallArg, CallSiteId, ControlDestination, ControlEntryId, DeliveredValueJoin, DeliveredValueSource, LoweredBody,
-    LoweredEntry, LoweredStep, LoweredTail, ValueId, body_consumed_values, callsite_return_values,
-    delivered_value_joins,
+    LoweredEntry, LoweredStep, LoweredTail, ValueId, delivered_value_joins,
 };
 use super::super::drive::FactKey;
 use super::super::facts::FactUse;
@@ -156,69 +155,408 @@ impl CallableFlowBuilder {
     }
 }
 
+/// Settle the demand SCC containing `executable` as one monotone fixpoint — the
+/// ExecutableEffects pattern generalized to the richer demand lattice.
+///
+/// Demand dependencies run BOTH ways along every call edge (a caller reads its
+/// callees' input demands; a callee's return demand joins its callers'
+/// contributions), so the demand dependency graph is symmetric and the SCC
+/// containing the anchor is exactly the anchor's call cone (stopping at
+/// executables whose demand is already settled — those are external inputs,
+/// like effects treats already-settled callee effects). The cone is discovered
+/// from SETTLED facts only: `CallSiteSummary` direct targets, type-derived
+/// callable-flow resolutions, and any previously materialized call edges —
+/// never from live demand reads, so cone membership cannot drift mid-ascent.
+///
+/// The whole cone is then solved by a bottom-start Kleene ascent inside this
+/// one producer: per round every member's demand is re-derived from the
+/// previous round's iterates (input demands down edges, return-demand
+/// contributions up edges, `ShapeDemand::join`), until nothing changes. Members
+/// with no contributor at the fixpoint (the entry, escaped closure bodies) get
+/// the whole-by-need bootstrap — absence is a distinct settled cell — and the
+/// ascent continues monotonically. Only the settled fixpoint is ever published:
+/// every member is memoized, so no other product can observe a mid-ascent
+/// value. There is no active-SCC seed (the SCC is solved together and never
+/// re-entered) and no consumed-return floor: at the fixpoint the callee's real
+/// input demand is present, so the demand is derived. A statically consumed
+/// return may honestly settle at `ignore` — static consumption over-reports
+/// liveness when the consuming position is itself undemanded (e.g. an argument
+/// the settled callee ignores); transport's resume gate owns that value's
+/// physical soundness from the static body fact, independent of demand.
+///
+/// Publication closes the stale-caller window: when a member's settled
+/// contribution GROWS the joined return demand of an executable settled
+/// earlier OUTSIDE this cone, that external's memo (and its dependents') is
+/// displaced — but the members were derived reading the external's PRE-growth
+/// input demands, and nothing downstream re-derives a caller of a re-settled
+/// callee. So the producer refuses to memoize a cone that displaced one of its
+/// own external inputs: it re-collects (the displaced external has no memo and
+/// is reachable through the very edge that carried the contribution, so it is
+/// absorbed as a member) and re-settles the grown cone together. Each re-cycle
+/// strictly grows the member set — memos are only recorded once publication is
+/// quiescent, members never leave the cone, and at least the moved external
+/// joins — so the loop terminates within the finite demanded universe; the
+/// growth invariant is enforced as a hard assertion in all builds.
 pub(crate) fn produce_runtime_demand_product(
     world: &mut World<'_>,
     session: &mut PullSession,
     executable: &ExecutableKey,
 ) -> PullOutcome {
-    let mut waits = HashSet::new();
-    let Some(facts) = collect_one_executable_facts_product(world, executable, &mut waits) else {
-        return product_waits(waits);
-    };
-
-    let mut demands = HashMap::new();
-    let mut self_demand = empty_runtime_demand(executable, world.types());
-    // The return-demand seed distinguishes three states (an "unknown is not
-    // none" cell): a callee OBSERVED by at least one caller uses the joined
-    // observed demand -- which is the bottom `ignore` when every caller discards
-    // its return, collapsing the return; a callee NO caller has observed yet
-    // falls back to the whole-by-need seed, the load-bearing bootstrap that lets
-    // a continuation/recursion cycle (never named by a return-demand
-    // contribution) keep its return alive. Observation is monotone and the
-    // joined demand is rebuilt from current contributions on every change
-    // (`replace_return_demand_contributions`), so a transient whole-by-need seed
-    // forwarded by a not-yet-observed forwarder is RETRACTED once the forwarder
-    // is observed -- nothing bakes.
-    self_demand.return_demand = session
-        .return_demand(executable)
-        .cloned()
-        .unwrap_or_else(|| runtime_demand_for_executable_need(executable.need));
-    demands.insert(executable.clone(), self_demand);
-
-    for target in direct_local_targets(&facts) {
-        if target == *executable {
+    if let Some(demand) = session.memo().runtime_demand(executable) {
+        return PullOutcome::Produced(ProductValue::RuntimeDemand(Box::new(demand.clone())));
+    }
+    let mut settled_member_count = 0_usize;
+    loop {
+        let graph = match collect_demand_cone(world, session, executable) {
+            Ok(graph) => graph,
+            Err(waits) => return product_waits(waits),
+        };
+        let members: HashSet<ExecutableKey> = graph.facts.keys().cloned().collect();
+        assert!(
+            members.len() > settled_member_count,
+            "re-collecting the demand cone for {executable:?} must absorb the displaced external \
+             it re-settles for; the cone stalled at {} members",
+            members.len()
+        );
+        settled_member_count = members.len();
+        let settled = match settle_demand_cone(world, session, &graph) {
+            Ok(settled) => settled,
+            Err(waits) => return product_waits(waits),
+        };
+        // Persist the settled evidence FIRST: the per-caller contribution store is
+        // the cross-settle channel (a later cone anchored elsewhere reads these as
+        // external caller evidence) and the change-driven retraction wavefront in
+        // `recompute_return_demand` fires only for NON-member targets — within this
+        // settlement the joins are quiescent by construction, so recording the
+        // members' memos afterwards cannot be wiped by their own contributions.
+        let mut displaced: HashSet<ExecutableKey> = HashSet::new();
+        for (member, contributions) in settled.contributions {
+            displaced.extend(session.replace_settled_return_demand_contributions(member, contributions, &members));
+        }
+        // The epoch baseline is everything this settlement accounted for: a
+        // member's own call edges plus the WHOLE group's callable-flow resolutions
+        // and external (already-settled) callees. Materialization resolves closure
+        // callsites at the CALLER, but the demand evidence for such an edge flows
+        // through the closure PRODUCER's flow contributions -- so an edge onto any
+        // group-known resolution carries no demand information the fixpoint missed.
+        // Only an edge escaping the settlement entirely re-keys the call graph.
+        let mut group_resolutions: HashSet<ExecutableKey> = graph.external.keys().cloned().collect();
+        group_resolutions.extend(settled.demands.values().flat_map(|member_demand| {
+            member_demand
+                .callable_flows
+                .values()
+                .flat_map(|flow| flow.resolutions.iter().cloned())
+        }));
+        for (member, edges) in &graph.edges {
+            let mut callees: HashSet<ExecutableKey> = edges.iter().cloned().collect();
+            callees.extend(group_resolutions.iter().cloned());
+            session.record_settled_demand_callees(member.clone(), callees);
+        }
+        // The stale-caller window: this settlement read the external's settled
+        // demand as an input AND its publication moved that external's join, so
+        // every member was derived against a displaced value. Do not memoize —
+        // re-collect and settle the grown cone (the displaced external is now
+        // memo-less and joins as a member). The exact predicate is membership
+        // in `graph.external` — the set of demand values this settlement READ.
+        // A displaced executable outside it (a pure downstream dependent, or a
+        // withdrawn-contribution target the cone never read) cannot have staled
+        // the members; it re-settles on its own next pull, exactly like any
+        // cross-settle displacement. A withdrawn target that IS a read external
+        // conservatively re-collects too — terminating by the same strict-growth
+        // argument, and honest: its retraction changed an input we consumed.
+        if displaced.iter().any(|key| graph.external.contains_key(key)) {
             continue;
         }
-        session.record_runtime_demand_dependency(target.clone(), executable.clone());
-        if let Some(demand) = session.memo().runtime_demand(&target).cloned() {
-            demands.insert(target, demand);
-        } else if session.runtime_demand_is_active(&target) {
-            demands.insert(target.clone(), active_runtime_demand_seed(world, &target));
-        } else {
-            waits.insert(PullWait::Product(ProductKey::RuntimeDemand(target)));
+        let demand = settled
+            .demands
+            .get(executable)
+            .cloned()
+            .expect("requested executable should belong to its demand cone");
+        for (member, member_demand) in settled.demands {
+            if member == *executable {
+                continue;
+            }
+            session.record_settled_runtime_demand(member, member_demand);
+        }
+        return PullOutcome::Produced(ProductValue::RuntimeDemand(Box::new(demand)));
+    }
+}
+
+/// The demand cone: per-member settled facts, the demand-relevant edge set per
+/// member, and the settled demands of callees outside the cone.
+struct DemandGraph {
+    facts: HashMap<ExecutableKey, ExecutableFacts>,
+    edges: HashMap<ExecutableKey, HashSet<ExecutableKey>>,
+    external: HashMap<ExecutableKey, ExecutableRuntimeDemand>,
+}
+
+struct SettledDemandCone {
+    demands: HashMap<ExecutableKey, ExecutableRuntimeDemand>,
+    contributions: HashMap<ExecutableKey, HashMap<ExecutableKey, RuntimeDemand>>,
+}
+
+fn collect_demand_cone(
+    world: &mut World<'_>,
+    session: &mut PullSession,
+    anchor: &ExecutableKey,
+) -> Result<DemandGraph, HashSet<PullWait>> {
+    let mut facts: HashMap<ExecutableKey, ExecutableFacts> = HashMap::new();
+    let mut edges: HashMap<ExecutableKey, HashSet<ExecutableKey>> = HashMap::new();
+    let mut external = HashMap::new();
+    let mut waits = HashSet::new();
+    let mut stack = vec![anchor.clone()];
+    let mut seen = HashSet::new();
+    loop {
+        // Phase A: close over the direct callsite targets (and any callee set a
+        // previous epoch recorded) -- the demand-independent call graph.
+        while let Some(current) = stack.pop() {
+            if !seen.insert(current.clone()) {
+                continue;
+            }
+            if current != *anchor
+                && let Some(demand) = session.memo().runtime_demand(&current)
+            {
+                external.insert(current, demand.clone());
+                continue;
+            }
+            let Some(current_facts) = collect_one_executable_facts_product(world, &current, &mut waits) else {
+                continue;
+            };
+            let mut targets = direct_local_targets(&current_facts);
+            if let Some(callees) = session.settled_demand_callees(&current) {
+                targets.extend(callees.iter().cloned());
+            }
+            for target in &targets {
+                if *target != current {
+                    session.record_runtime_demand_dependency(target.clone(), current.clone());
+                }
+                stack.push(target.clone());
+            }
+            edges.insert(current.clone(), targets.into_iter().collect());
+            facts.insert(current, current_facts);
+        }
+        // Phase B: fold in the type-derived callable-flow resolution edges,
+        // grounding template surfaces against the full direct closure so the
+        // cone keys canonical (not type-template) resolutions. New resolutions
+        // re-open phase A; the loop closes when no member adds an edge.
+        let members: HashSet<ExecutableKey> = facts.keys().cloned().collect();
+        let flow_targets = facts
+            .iter()
+            .map(|(member, member_facts)| {
+                (
+                    member.clone(),
+                    type_derived_flow_resolutions(world, session, &members, member, member_facts, &mut waits),
+                )
+            })
+            .collect::<Vec<_>>();
+        let mut grew = false;
+        for (member, targets) in flow_targets {
+            for target in targets {
+                if target != member {
+                    session.record_demand_flow_dependency(target.clone(), member.clone());
+                }
+                if !seen.contains(&target) {
+                    stack.push(target.clone());
+                    grew = true;
+                }
+                grew |= edges.entry(member.clone()).or_default().insert(target);
+            }
+        }
+        if !grew {
+            break;
         }
     }
-    if !waits.is_empty() {
-        return product_waits(waits);
+    if waits.is_empty() {
+        Ok(DemandGraph { facts, edges, external })
+    } else {
+        Err(waits)
     }
+}
 
-    let mut derived = derive_executable_runtime_demand(world, executable, &facts, &demands);
-    let return_demand_contributions = call_return_demand_contributions(&facts, derived.call_return_demands);
+/// The callable-flow resolution edges derivable from settled facts alone: each
+/// local callable producer resolved at the call surfaces its VALUE TYPE proves
+/// (`callable_value_clauses` over the settled activation analysis). This is the
+/// demand-independent projection of the flow edges the ascent derives — the
+/// contribution edges invisible at the direct callsite read (probe: 17% of
+/// contribution edges), included so a closure body settles inside the same
+/// cone as the producer whose captures read its input demands.
+fn type_derived_flow_resolutions(
+    world: &mut World<'_>,
+    session: &PullSession,
+    sibling_candidates: &HashSet<ExecutableKey>,
+    executable: &ExecutableKey,
+    facts: &ExecutableFacts,
+    waits: &mut HashSet<PullWait>,
+) -> HashSet<ExecutableKey> {
+    let mut resolutions = HashSet::new();
+    for (value, producer) in &facts.local_callable_producers {
+        let Some(type_demand) = callable_value_type_demand(world, facts, *value) else {
+            continue;
+        };
+        if !require_activation_key_facts_product(world, producer.function, waits) {
+            continue;
+        }
+        let edges = callable_flow_resolution_edges_product(
+            world,
+            session,
+            sibling_candidates,
+            executable,
+            facts,
+            producer,
+            &type_demand.callable.resolved,
+            waits,
+        );
+        resolutions.extend(edges.into_iter().map(|edge| edge.resolution).filter(|resolution| {
+            !world
+                .types()
+                .key_is_value_template(&resolution.activation.inputs(world.types()))
+        }));
+    }
+    resolutions
+}
+
+fn settle_demand_cone(
+    world: &mut World<'_>,
+    session: &mut PullSession,
+    graph: &DemandGraph,
+) -> Result<SettledDemandCone, HashSet<PullWait>> {
+    let mut members: Vec<ExecutableKey> = graph.facts.keys().cloned().collect();
+    members.sort_by_key(|key| {
+        (
+            key.activation.function.as_u32(),
+            key.activation.arrow,
+            executable_need_order(key.need),
+        )
+    });
+    let member_set: HashSet<ExecutableKey> = members.iter().cloned().collect();
+    let mut iterates: HashMap<ExecutableKey, ExecutableRuntimeDemand> = members
+        .iter()
+        .map(|member| (member.clone(), empty_runtime_demand(member, world.types())))
+        .collect();
+    let mut contributions: HashMap<ExecutableKey, HashMap<ExecutableKey, RuntimeDemand>> = HashMap::new();
+    let mut bootstrapped: HashSet<ExecutableKey> = HashSet::new();
+    let mut rounds = 0_u32;
+    loop {
+        rounds += 1;
+        let mut reads = graph.external.clone();
+        for member in &members {
+            let mut demand = iterates.get(member).cloned().expect("every cone member has an iterate");
+            demand.return_demand = round_return_demand(session, member, &member_set, &contributions, &bootstrapped);
+            reads.insert(member.clone(), demand);
+        }
+        let mut next = HashMap::new();
+        let mut next_contributions = HashMap::new();
+        let mut waits = HashSet::new();
+        for member in &members {
+            let facts = graph.facts.get(member).expect("every cone member has facts");
+            let (demand, member_contributions) =
+                derive_member_demand(world, session, &member_set, member, facts, &reads, &mut waits);
+            next.insert(member.clone(), demand);
+            next_contributions.insert(member.clone(), member_contributions);
+        }
+        if !waits.is_empty() {
+            return Err(waits);
+        }
+        if next == iterates && next_contributions == contributions {
+            let unnamed: Vec<ExecutableKey> = members
+                .iter()
+                .filter(|member| {
+                    !bootstrapped.contains(*member)
+                        && !next_contributions
+                            .values()
+                            .any(|contributions| contributions.contains_key(*member))
+                        && session.external_return_demand(member, &member_set).is_none()
+                })
+                .cloned()
+                .collect();
+            if unnamed.is_empty() {
+                return Ok(SettledDemandCone {
+                    demands: next,
+                    contributions: next_contributions,
+                });
+            }
+            // No contributor names these members: they are reached outside the
+            // contribution graph (the entry, delivery-reached continuations,
+            // escaped closure bodies). Absence is a distinct settled cell — the
+            // whole-by-need bootstrap applies AT the fixpoint, and sticks: it
+            // only ever raises, so the ascent stays monotone.
+            bootstrapped.extend(unnamed);
+        }
+        // A hard budget in every build: the ascent is monotone over a
+        // finite-height lattice, so exceeding the probe-measured bound means a
+        // non-monotone regression — fail loudly instead of hanging in release.
+        if rounds >= DEMAND_ASCENT_ROUND_BUDGET {
+            let moving: Vec<&ExecutableKey> = members
+                .iter()
+                .filter(|member| {
+                    next.get(*member) != iterates.get(*member)
+                        || next_contributions.get(*member) != contributions.get(*member)
+                })
+                .collect();
+            panic!(
+                "demand ascent exceeded its round budget ({DEMAND_ASCENT_ROUND_BUDGET}) settling a \
+                 {}-member cone: the demand lattice has an ascent hole; still-moving members: {moving:?}",
+                members.len()
+            );
+        }
+        iterates = next;
+        contributions = next_contributions;
+    }
+}
+
+const DEMAND_ASCENT_ROUND_BUDGET: u32 = 32;
+
+fn executable_need_order(need: ExecutableNeed) -> (u8, usize) {
+    match need {
+        ExecutableNeed::Value => (0, 0),
+        ExecutableNeed::TupleFields(arity) => (1, arity),
+    }
+}
+
+fn round_return_demand(
+    session: &PullSession,
+    member: &ExecutableKey,
+    members: &HashSet<ExecutableKey>,
+    contributions: &HashMap<ExecutableKey, HashMap<ExecutableKey, RuntimeDemand>>,
+    bootstrapped: &HashSet<ExecutableKey>,
+) -> RuntimeDemand {
+    let mut joined = session
+        .external_return_demand(member, members)
+        .unwrap_or_else(RuntimeDemand::ignore);
+    for member_contributions in contributions.values() {
+        if let Some(demand) = member_contributions.get(member) {
+            joined.join_assign(demand);
+        }
+    }
+    if bootstrapped.contains(member) {
+        joined.join_assign(&runtime_demand_for_executable_need(member.need));
+    }
+    joined
+}
+
+fn derive_member_demand(
+    world: &mut World<'_>,
+    session: &PullSession,
+    members: &HashSet<ExecutableKey>,
+    member: &ExecutableKey,
+    facts: &ExecutableFacts,
+    reads: &HashMap<ExecutableKey, ExecutableRuntimeDemand>,
+    waits: &mut HashSet<PullWait>,
+) -> (ExecutableRuntimeDemand, HashMap<ExecutableKey, RuntimeDemand>) {
+    let mut derived = derive_executable_runtime_demand(world, member, facts, reads);
+    let return_demand_contributions = call_return_demand_contributions(facts, derived.call_return_demands);
     derive_callable_flow_facts_for_executable_product(
         world,
         session,
-        executable,
-        &facts,
+        members,
+        member,
+        facts,
         &derived.callable_flows,
         &mut derived.demand,
-        &mut waits,
+        waits,
     );
     let boundary_return_demands =
-        callable_boundary_return_demand_contributions_product(world, &facts, &derived.demand, &mut waits);
-    if !waits.is_empty() {
-        return product_waits(waits);
-    }
-
+        callable_boundary_return_demand_contributions_product(world, facts, &derived.demand, waits);
     let mut contributions = HashMap::<ExecutableKey, RuntimeDemand>::new();
     for (target, demand) in return_demand_contributions.into_iter().chain(boundary_return_demands) {
         contributions
@@ -226,9 +564,8 @@ pub(crate) fn produce_runtime_demand_product(
             .and_modify(|current| current.join_assign(&demand))
             .or_insert(demand);
     }
-    session.replace_return_demand_contributions(executable.clone(), contributions);
     derived.demand.ground_callable_surfaces(world.types());
-    PullOutcome::Produced(ProductValue::RuntimeDemand(Box::new(derived.demand)))
+    (derived.demand, contributions)
 }
 
 pub(crate) fn produce_outgoing_input_edges_product(
@@ -468,35 +805,6 @@ fn empty_runtime_demand(executable: &ExecutableKey, types: &Types) -> Executable
     }
 }
 
-fn active_runtime_demand_seed(world: &mut World<'_>, executable: &ExecutableKey) -> ExecutableRuntimeDemand {
-    let inputs = executable.activation.inputs(world.types());
-    ExecutableRuntimeDemand {
-        input_demands: inputs
-            .into_iter()
-            .enumerate()
-            .map(|(semantic_index, ty)| {
-                // Active direct-call cycles need one concrete receiver lane to
-                // keep forwarded state bindable. Other slots must wait for
-                // normal demand evidence so callable reducers do not become
-                // first-class merely because the cycle is open.
-                if semantic_index != 0 {
-                    return RuntimeDemand::ignore();
-                }
-                let boundary = boundary_runtime_demand(world, ty);
-                if !boundary.callable.is_empty() {
-                    RuntimeDemand::ignore()
-                } else {
-                    RuntimeDemand {
-                        shape: boundary.shape,
-                        callable: CallableDemand::default(),
-                    }
-                }
-            })
-            .collect(),
-        ..ExecutableRuntimeDemand::default()
-    }
-}
-
 fn direct_local_targets(facts: &ExecutableFacts) -> HashSet<ExecutableKey> {
     let mut targets = HashSet::new();
     for (callsite, summary) in &facts.callsites {
@@ -519,13 +827,10 @@ fn call_return_demand_contributions(
     // graph (`facts.callsites`), not the lossy `observed_returns` (which omits a
     // callsite entirely once its demand collapses to `ignore`). A discarded
     // callee contributes the bottom `ignore` demand: a distinct cell from "no
-    // caller has called this callee yet". `produce_runtime_demand_product` keys
-    // its seed off that distinction -- an observed-but-discarded callee collapses
-    // its return, whereas a not-yet-observed callee (a continuation/recursion
-    // entry reached only by delivery, or an escaped callable) falls back to the
-    // whole-by-need seed so its cycle can still bootstrap (see the seed comment).
-    let consumed = body_consumed_values(&facts.body);
-    let callsite_returns = callsite_return_values(&facts.body);
+    // caller has named this callee at all" -- an observed-but-discarded callee
+    // collapses its return at the settled fixpoint, whereas a member no
+    // contributor ever names gets the whole-by-need bootstrap at settle time
+    // (see `settle_demand_cone`).
     let mut out = Vec::new();
     for (callsite, summary) in &facts.callsites {
         let need = facts
@@ -541,22 +846,6 @@ fn call_return_demand_contributions(
             // Destination-passing delivery writes fields into the caller frame,
             // so its slots are retained even when a field is ignored.
             ExecutableNeed::TupleFields(_) => tuple_return_demand_for_observed_need(need, observed),
-            ExecutableNeed::Value if observed.is_ignore() => {
-                // The demand lattice reports nothing for this callsite's return.
-                // Trust the static body fact instead of `is_ignore`: a return the
-                // body actually reads is consumed-but-under-demanded (floor it to
-                // `whole` so the callee does not collapse), while a return the
-                // body never reads is genuinely discarded (the bottom marker that
-                // makes the callee an observed discard).
-                let consumed_return = callsite_returns
-                    .get(callsite)
-                    .is_some_and(|value| consumed.contains(value));
-                if consumed_return {
-                    RuntimeDemand::whole()
-                } else {
-                    RuntimeDemand::ignore()
-                }
-            }
             ExecutableNeed::Value => observed,
         };
         for target in local_call_targets(summary, need) {
@@ -582,6 +871,7 @@ fn tuple_return_demand_for_observed_need(need: ExecutableNeed, observed: Runtime
 fn derive_callable_flow_facts_for_executable_product(
     world: &mut World<'_>,
     session: &PullSession,
+    sibling_candidates: &HashSet<ExecutableKey>,
     executable: &ExecutableKey,
     facts: &ExecutableFacts,
     callable_flows: &CallableFlowBuilder,
@@ -600,6 +890,7 @@ fn derive_callable_flow_facts_for_executable_product(
         let direct_edges = callable_flow_resolution_edges_product(
             world,
             session,
+            sibling_candidates,
             executable,
             facts,
             &producer,
@@ -618,6 +909,7 @@ fn derive_callable_flow_facts_for_executable_product(
         let mut first_class_edges = callable_flow_resolution_edges_product(
             world,
             session,
+            sibling_candidates,
             executable,
             facts,
             &producer,
@@ -2364,6 +2656,7 @@ fn runtime_demand_for_executable_need(need: ExecutableNeed) -> RuntimeDemand {
 fn callable_flow_resolution_edges_product(
     world: &mut World<'_>,
     session: &PullSession,
+    sibling_candidates: &HashSet<ExecutableKey>,
     executable: &ExecutableKey,
     facts: &ExecutableFacts,
     producer: &LocalCallableProducer,
@@ -2392,6 +2685,7 @@ fn callable_flow_resolution_edges_product(
             let surface_inputs = ground_surface_for_template_in_session(
                 world,
                 session,
+                sibling_candidates,
                 root,
                 producer.function,
                 capture_tys.len(),
@@ -2415,6 +2709,7 @@ fn callable_flow_resolution_edges_product(
 fn ground_surface_for_template_in_session(
     world: &mut World<'_>,
     session: &PullSession,
+    sibling_candidates: &HashSet<ExecutableKey>,
     root: RootId,
     function: FunctionId,
     captures_len: usize,
@@ -2426,6 +2721,7 @@ fn ground_surface_for_template_in_session(
     let candidates = session
         .demanded_executables()
         .iter()
+        .chain(sibling_candidates.iter())
         .filter(|key| key.activation.root == root && key.activation.function == function)
         .map(|key| key.activation.inputs(world.types()))
         .filter(|inputs| inputs.len() >= captures_len)

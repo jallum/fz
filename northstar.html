@@ -475,7 +475,7 @@ enum FactValue {
           <tr>
             <td>Representation products</td>
             <td><code>RuntimeDemand(E)</code>, <code>ExecutableEffects(E)</code>, <code>TransportShape(position)</code>, <code>CallableFacts</code>, <code>BoundaryFacts</code></td>
-            <td>Request-local representation and transport answers pulled only for positions and callable boundaries named by demanded executables.</td>
+            <td>Request-local representation and transport answers pulled only for positions and callable boundaries named by demanded executables. <code>RuntimeDemand</code> and <code>ExecutableEffects</code> are SCC-settled: each producer discovers its cyclic dependency group from settled call-edge facts, runs a bottom-start monotone ascent to the fixpoint entirely inside the producer, and publishes the settled value for every member at once — no mid-ascent value is ever observable.</td>
           </tr>
         </tbody>
       </table>
@@ -663,9 +663,16 @@ MaterializedExecutable(E)
       <p>
         Backend-required transport positions wait for produced
         <code>TransportShape(position)</code> values, not just demanded position membership.
-        Transport shapes are demand-derived: when an executable's runtime demand or incoming
-        input evidence changes, the request session invalidates that executable's cached transport
-        shapes/components before rebuilding its materialized, ABI, and backend products. Actual
+        Transport shapes are demand-derived. <code>RuntimeDemand(E)</code> settles its demand
+        SCC inside one producer (the <code>ExecutableEffects</code> pattern): the cone is
+        discovered from settled call-edge facts, a bottom-start monotone ascent solves every
+        member together, and only the settled fixpoint is memoized — there is no whole-by-need
+        mid-ascent seed, no consumed-return floor, and no in-flight retraction. New incoming
+        call edges invalidate an executable's cached transport shapes/components (and the
+        materialized, ABI, and backend products built on them) but leave settled demand
+        standing; settled demand retracts only when re-materialization resolves a call edge
+        outside the settlement's callee inventory, which re-keys and re-settles the affected
+        cone. Actual
         call arguments inherit the selected callee input demand during transport projection, so a
         recursive caller cannot omit a local argument value that the callee input will decode.
       </p>

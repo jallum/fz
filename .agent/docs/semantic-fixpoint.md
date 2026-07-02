@@ -120,10 +120,34 @@ symbolic call edges and callable entries recorded by already demanded products.
 There is no `SemanticClosed(root)` prerequisite on the product path and no
 root-wide semantic scan that decides artifact membership.
 
-`RuntimeDemand(E)` is also a product on the new path. It derives demand from
-the current session's incoming inputs, local callable-flow facts, and named
-callee/callable products. It does not rebuild a global runtime-demand map from
-all semantic facts.
+`RuntimeDemand(E)` is a product that settles its whole demand SCC inside one
+producer, the same pattern `ExecutableEffects` uses. Demand dependencies run
+both ways along every call edge (callers read callee input demands; callee
+return demands join caller contributions), so the demand SCC containing `E` is
+`E`'s call cone, discovered from settled facts only: `CallSiteSummary` direct
+targets, type-derived callable-flow resolutions, and any callee set a previous
+epoch recorded. The producer runs a bottom-start monotone Kleene ascent over
+the whole cone (return demands join up edges, input demands flow down edges,
+`ShapeDemand::join` per round) until nothing changes, then memoizes the settled
+fixpoint for every member at once. Members no contributor names at the fixpoint
+(the entry, delivery-reached continuations, escaped closure bodies) get the
+whole-by-need bootstrap at settle time — absence is a distinct settled cell.
+No mid-ascent value is ever observable outside the producer: there is no
+active-SCC seed, no consumed-return contribution floor, and no in-flight
+retraction. Settled demand retracts only on an epoch event — materialization
+resolving a call edge outside the settled callee inventory re-keys and
+re-settles the affected cone.
+
+Publication closes the stale-caller window: when a settling cone's
+contributions grow the joined return demand of an executable settled earlier
+OUTSIDE the cone, that external's memo is displaced while the cone's members
+were derived against its pre-growth input demands. The producer refuses to
+memoize such a cone; it re-collects (the displaced external is memo-less and
+joins as a member through the edge that carried the contribution) and settles
+the grown group together. Each re-cycle strictly grows the member set —
+enforced as a hard assertion — so the loop terminates within the finite
+demanded universe. The per-cone ascent round budget is likewise a hard failure
+in every build (a non-monotone regression fails loudly instead of hanging).
 
 ## Current vs settled is the key boundary
 

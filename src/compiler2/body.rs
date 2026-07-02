@@ -230,27 +230,6 @@ pub(crate) fn body_consumed_values(body: &LoweredBody) -> HashSet<ValueId> {
     consumed
 }
 
-/// The value each callsite's return is bound to in the lowered body. A call's
-/// return is "consumed" exactly when this value appears in
-/// [`body_consumed_values`] (a later step reads it, or it is delivered into a
-/// continuation that reads it). A return that is neither read nor re-demanded
-/// by the executable's own return is genuinely discarded.
-pub(crate) fn callsite_return_values(body: &LoweredBody) -> HashMap<CallSiteId, ValueId> {
-    let mut out = HashMap::new();
-    let LoweredBody::Clauses { entries, .. } = body else {
-        return out;
-    };
-    for entry in entries {
-        match &entry.tail {
-            LoweredTail::DirectCall { value, callsite, .. } | LoweredTail::ClosureCall { value, callsite, .. } => {
-                out.insert(*callsite, *value);
-            }
-            _ => {}
-        }
-    }
-    out
-}
-
 fn collect_step_reads(step: &LoweredStep, consumed: &mut HashSet<ValueId>) {
     match step {
         LoweredStep::Const { .. } | LoweredStep::FunctionRef { .. } => {}
