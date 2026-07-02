@@ -1015,7 +1015,7 @@ end
     );
     assert_eq!(
         *f_shape, apply1_callable_input,
-        "artifact must read the direct-callable executable input shape from TransportPlan"
+        "artifact must read the direct-callable executable input shape from the product transport plan"
     );
     let callable_facts = session
         .callable_facts_inventory()

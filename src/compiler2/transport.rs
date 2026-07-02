@@ -1,8 +1,9 @@
 //! Shared transport descriptor vocabulary.
 //!
-//! This module is deliberately below any root-scoped `TransportPlan`: it owns
-//! immutable descriptor interners and root-independent symbols only. Positions
-//! may mention semantic body evidence, but descriptor keys must not.
+//! This module is deliberately below the root-scoped `MaterializedTransportPlan`
+//! (`artifact.rs`): it owns immutable descriptor interners and root-independent
+//! symbols only. Positions may mention semantic body evidence, but descriptor
+//! keys must not.
 
 use std::collections::HashMap;
 use std::hash::Hash;
@@ -10,7 +11,7 @@ use std::marker::PhantomData;
 use std::ops::Range;
 
 use super::body::{CallSiteId, ControlEntryId, ValueId};
-use super::identity::{ExecutableNeed, FunctionId, RootId};
+use super::identity::{ExecutableNeed, FunctionId};
 use super::types::Ty;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -267,20 +268,9 @@ pub enum TransportPosition {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TransportPlan {
-    pub entry: ExecutableSymbol,
-    pub executable_membership: Box<[ExecutableSymbol]>,
-    pub positions: HashMap<TransportPosition, ShapeId>,
-    pub callables: HashMap<CallableId, CallableFacts>,
-    pub boundaries: HashMap<BoundaryId, BoundaryFacts>,
-    pub codegen_seam_facts: Box<[CodegenSeamFact]>,
-}
-
 #[derive(Debug, Default)]
 pub struct TransportStore {
     interners: TransportInterners,
-    plans: TransportPlanMap,
 }
 
 impl TransportStore {
@@ -294,14 +284,6 @@ impl TransportStore {
 
     pub fn interners_mut(&mut self) -> &mut TransportInterners {
         &mut self.interners
-    }
-
-    pub fn plans(&self) -> &TransportPlanMap {
-        &self.plans
-    }
-
-    pub fn plans_mut(&mut self) -> &mut TransportPlanMap {
-        &mut self.plans
     }
 }
 
@@ -481,39 +463,5 @@ where
             .iter()
             .enumerate()
             .map(|(index, descr)| (I::from_u32(index as u32), descr))
-    }
-}
-
-#[derive(Debug, Default)]
-pub struct TransportPlanMap {
-    slots: Vec<Option<TransportPlan>>,
-}
-
-impl TransportPlanMap {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn define(&mut self, root: RootId, plan: TransportPlan) -> bool {
-        self.ensure(root);
-        let slot = &mut self.slots[root.as_u32() as usize];
-        let changed = !matches!(slot, Some(existing) if existing == &plan);
-        *slot = Some(plan);
-        changed
-    }
-
-    pub fn get(&self, root: RootId) -> Option<&TransportPlan> {
-        self.slots.get(root.as_u32() as usize).and_then(|slot| slot.as_ref())
-    }
-
-    pub fn remove(&mut self, root: RootId) -> Option<TransportPlan> {
-        self.slots.get_mut(root.as_u32() as usize).and_then(Option::take)
-    }
-
-    fn ensure(&mut self, root: RootId) {
-        let needed = root.as_u32() as usize + 1;
-        if self.slots.len() < needed {
-            self.slots.resize_with(needed, || None);
-        }
     }
 }

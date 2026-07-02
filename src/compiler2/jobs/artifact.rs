@@ -439,12 +439,11 @@ fn session_materialized_executable_transport(
 }
 
 /// A per-production view onto the session's already-settled transport facts,
-/// borrowed straight from `PullSession` instead of cloned into an owned
-/// `TransportPlan`. Every consumer in this file does single-key lookups or a
-/// linear scan of `codegen_seam_facts`; none of them read `TransportPlan`'s
-/// `entry` or `executable_membership` fields (those exist for the root-level
-/// plan, built once per root, not for this per-executable path), so this
-/// lookup carries only what materialized/ABI production actually reads.
+/// borrowed straight from `PullSession` instead of cloned. Every consumer in
+/// this file does single-key lookups or a linear scan of `codegen_seam_facts`,
+/// so this lookup carries only what materialized/ABI production actually
+/// reads (contrast `MaterializedTransportPlan`, the root-scoped product built
+/// once per root in `jobs/backend.rs`, which carries the fuller shape).
 struct ArtifactTransportLookup<'a> {
     positions: &'a HashMap<TransportPosition, ShapeId>,
     callables: &'a HashMap<CallableId, CallableFacts>,

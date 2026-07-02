@@ -3809,7 +3809,7 @@ fn annotate_back_edges(module: &mut crate::fz_ir::Module) {
 
 /// Native lowering cache for already-emitted IR artifacts.
 ///
-/// Shape and lane layout stay in `TransportPlan`; this cache only remembers
+/// Shape and lane layout stay in `MaterializedTransportPlan`; this cache only remembers
 /// whether a semantic value is already materialized as one runtime var, is a
 /// direct callable represented by its transport callable id plus capture lanes,
 /// or has no transported value.

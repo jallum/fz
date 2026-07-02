@@ -1,6 +1,6 @@
 //! Unit tests for the transport descriptor vocabulary: the interners for
-//! shapes, lanes, callables, and boundaries. Behavioral tests of a projected
-//! [`TransportPlan`] live in `transport_contract_test`.
+//! shapes, lanes, callables, and boundaries. Behavioral tests of the
+//! product-path transport plan live in `transport_contract_test`.
 
 use super::ExecutableNeed;
 use super::body::ValueId;
