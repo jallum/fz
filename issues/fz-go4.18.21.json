@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-go4.18.19"
+  ],
   "blocks": [],
   "created": "2026-07-02T01:11:04Z",
   "description": "fz-go4.18.12 finding 5 — the correctness-critical one (non-determinism doctrine). On fixtures2/00001_quicksort_plus_foo.fz, two identical runs differ in 21 (job kind, key) histogram entries: the activation arrow Ty ids THEMSELVES differ per schedule (Ty(64) vs Ty(65) for the same role) — program output identical, but activation keys are schedule-dependent. Also: append is demanded at TWO arrows (Ty(59), Ty(61)); Ty(59)'s RuntimeDemand is produced then never materialized — a widen-then-retract activation-keying arc leaving an orphaned demand. DIAGNOSE: why does the same role key to different interned arrows under different schedules (interning order leaking into key identity? provisional arrow minted pre-settlement? relates to fz-hwn.27 canonical addressed arrows + the fz-go4.18.3.2.1 canonicalization + fz-y6w convergence_class)? The orphaned provisional demand is the widen-then-retract shape the minimality doctrine flags. Related note: 00001 materializes fz_op_add_if x3 / fz_op_add_ff x2 in an ALL-INTEGER program — map-value erasure at stats[:k] widens + to any+any, materializing the whole overload web (fz-y6w/fz-3bb territory; may share the provisional-arrow root). Sequencing: findings 1-3 (trace churn) land first so this diagnosis reads a clean trace. ACCEPTANCE for the diagnosis: root cause named with evidence; 0 histogram diff keys across runs on 00001 after the fix (or a proven-benign classification of residual variance).",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Activation arrow keying is schedule-dependent on 00001; demanded executable at retracted arrow is orphaned",
   "type": "bug",
-  "updated_at": "2026-07-02T01:11:04Z"
+  "updated_at": "2026-07-02T01:11:06Z"
 }
