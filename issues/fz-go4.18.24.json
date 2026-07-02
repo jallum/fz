@@ -9,9 +9,15 @@
   "id": "fz-go4.18.24",
   "labels": [],
   "parent": "fz-go4.18",
+  "comments": [
+    {
+      "text": "STARTING INVENTORY from the .18.19 removable-code audit (2026-07-02, at 424b2ae6a): (1) FIRST REMOVAL, proof complete: seed_root's LowerFunction + PlanEntryDispatch follow_ups (root.rs:75-76) are provably ALWAYS-COALESCED — the concluding branch requires Recursive+DispatchMask facts, whose producers (keying.rs:148-152 -\u003e body.rs:287; keying.rs:84-90 -\u003e dispatch.rs:169) must therefore have concluded; first-run demand already lives in DeriveRecursive/DeriveDispatchMask; change waves handle re-runs. Safe to delete as this arc's first family (own commit). (2) KEEP-classified: root.rs:77/:112 AnalyzeActivation (genuine first-run demand for a just-minted activation); ALL other emissions are absence-gated wait+demand pairs (semantic.rs:219/1257/1301/1492/1647/2265, dispatch, body, keying, source, world.rs:2094/2102, quoted_expander, source_publish) — these are the wait-implies-demand conversion targets. (3) Product-side jobs (artifact/runtime_demand/transport/backend/native) emit ZERO follow_ups already. (4) Minor: the coalesced telemetry channel conflates agenda-dedupe (scheduler.rs:257) with standing-conclusion suppression (scheduler.rs:228-232) — split the observability when this arc lands. (5) Watch item from the cross-lane note: semantic.rs:1255-1258 demands DefineModule(protocol) while waiting on ProtocolDispatch — the one site where a follow_up forced a concluded job's re-run as a wait-unblocking mechanism; resolve its real producer relationship during migration.",
+      "timestamp": "2026-07-02T13:09:39Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "Migrate the semantic layer off follow_up: work runs only via waits (pull) or changed-revision wakes",
   "type": "task",
-  "updated_at": "2026-07-02T13:04:22Z"
+  "updated_at": "2026-07-02T13:09:39Z"
 }
