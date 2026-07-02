@@ -84,24 +84,6 @@ impl MaterializedTransportPlan {
             .iter()
             .find_map(|(candidate, shape)| (candidate == position).then_some(*shape))
     }
-
-    pub fn executable_value_shape(
-        &self,
-        executable: &MaterializedExecutableTransport,
-        value: ValueId,
-    ) -> Option<ShapeId> {
-        let mut positions = executable.value_positions.iter().filter(
-            |position| matches!(position, TransportPosition::Value { value: candidate, .. } if *candidate == value),
-        );
-        let position = positions.next()?;
-        assert!(
-            positions.next().is_none(),
-            "transport should publish one local value position for {:?} in {:?}",
-            value,
-            executable.executable
-        );
-        self.shape_at(position)
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

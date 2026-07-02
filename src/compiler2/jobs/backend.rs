@@ -21,7 +21,7 @@ use super::super::artifact::{
 };
 use super::super::body::{
     CallArg, CallSiteId, ControlDestination, ControlEntryId, ControlEntryOrigin, LoweredBody, LoweredEntry,
-    LoweredStep, LoweredTail,
+    LoweredStep, LoweredTail, ValueId,
 };
 use super::super::drive::{FactKey, Job, JobEffects};
 use super::super::facts::{FactReadiness, FactUse};
@@ -305,14 +305,8 @@ pub(crate) fn produce_backend_executable_product(
     let Some(abi) = session.abi_executable(executable).cloned() else {
         return PullOutcome::Waiting(vec![PullWait::Product(ProductKey::AbiExecutable(executable.clone()))]);
     };
-    let transport = symbolic_materialized_transport_plan(
-        session,
-        executable,
-        world,
-        session.callable_facts_inventory(),
-        session.boundary_facts_inventory(),
-    );
-    let mut lowerer = BackendLowerer::new(world, session.root(), &transport);
+    let value_shapes = executable_value_shapes(session, &abi);
+    let mut lowerer = BackendLowerer::new(world, session.root(), value_shapes);
     let emission = symbolic_emission_ready_executable(executable.clone(), &abi);
     let lowered = lower_symbolic_body(&mut lowerer, &emission, &abi)
         .expect("symbolic backend lowering should be complete after ABI product exists");
@@ -329,6 +323,31 @@ pub(crate) fn produce_backend_executable_product(
     };
     session.record_backend_executable(executable.clone(), backend.clone());
     PullOutcome::Produced(ProductValue::BackendExecutable(Box::new(backend)))
+}
+
+/// Shapes for this executable's own local value positions, looked up directly
+/// in the session's settled transport-shape inventory. This is everything
+/// backend lowering consumes from transport; the global
+/// `MaterializedTransportPlan` is built once per root, never per executable.
+fn executable_value_shapes(session: &PullSession, abi: &AbiReadyExecutable) -> HashMap<ValueId, ShapeId> {
+    let mut shapes = HashMap::new();
+    for position in abi.transport.value_positions.iter() {
+        let TransportPosition::Value { value, .. } = position else {
+            continue;
+        };
+        let shape = session.transport_shapes().get(position).copied();
+        let previous = shapes.insert(*value, shape);
+        assert!(
+            previous.is_none(),
+            "transport should publish one local value position for {:?} in {:?}",
+            value,
+            abi.transport.executable
+        );
+    }
+    shapes
+        .into_iter()
+        .filter_map(|(value, shape)| Some((value, shape?)))
+        .collect()
 }
 
 fn symbolic_call_edge_callees(target: &CallEdge<ExecutableKey>) -> Vec<&ExecutableKey> {
@@ -751,7 +770,7 @@ fn abi_value_repr_for_lane(
 }
 
 fn lower_symbolic_body(
-    lowerer: &mut BackendLowerer<'_, '_, '_>,
+    lowerer: &mut BackendLowerer<'_, '_>,
     emission: &EmissionReadyExecutable,
     abi: &AbiReadyExecutable,
 ) -> Result<SymbolicBackendBody, FatalError> {
@@ -773,7 +792,7 @@ fn lower_symbolic_body(
                         projections: clause
                             .projections
                             .iter()
-                            .map(|step| lowerer.lower_step(emission, step))
+                            .map(|step| lowerer.lower_step(step))
                             .collect::<Result<Vec<_>, _>>()?,
                         entry: clause.entry,
                     })
@@ -790,7 +809,7 @@ fn lower_symbolic_body(
 }
 
 fn lower_symbolic_entry(
-    lowerer: &mut BackendLowerer<'_, '_, '_>,
+    lowerer: &mut BackendLowerer<'_, '_>,
     emission: &EmissionReadyExecutable,
     abi: &AbiReadyExecutable,
     entry_index: usize,
@@ -814,7 +833,7 @@ fn lower_symbolic_entry(
         steps: entry
             .steps
             .iter()
-            .map(|step| lowerer.lower_step(emission, step))
+            .map(|step| lowerer.lower_step(step))
             .collect::<Result<Vec<_>, _>>()?,
         tail: lower_symbolic_tail(lowerer, emission, abi, &entry.tail).unwrap_or_else(|_| {
             panic!(
@@ -826,7 +845,7 @@ fn lower_symbolic_entry(
 }
 
 fn lower_symbolic_tail(
-    lowerer: &mut BackendLowerer<'_, '_, '_>,
+    lowerer: &mut BackendLowerer<'_, '_>,
     emission: &EmissionReadyExecutable,
     abi: &AbiReadyExecutable,
     tail: &LoweredTail,
@@ -1377,18 +1396,18 @@ fn block_param_codegen_repr_for_lane(world: &World<'_>, lane: LaneId) -> Codegen
     }
 }
 
-struct BackendLowerer<'a, 'plan, 'tel> {
+struct BackendLowerer<'a, 'tel> {
     world: &'a mut World<'tel>,
     root_id: RootId,
-    transport: &'plan MaterializedTransportPlan,
+    value_shapes: HashMap<ValueId, ShapeId>,
 }
 
-impl<'a, 'plan, 'tel> BackendLowerer<'a, 'plan, 'tel> {
-    fn new(world: &'a mut World<'tel>, root_id: RootId, transport: &'plan MaterializedTransportPlan) -> Self {
+impl<'a, 'tel> BackendLowerer<'a, 'tel> {
+    fn new(world: &'a mut World<'tel>, root_id: RootId, value_shapes: HashMap<ValueId, ShapeId>) -> Self {
         Self {
             world,
             root_id,
-            transport,
+            value_shapes,
         }
     }
 
@@ -1428,18 +1447,14 @@ impl<'a, 'plan, 'tel> BackendLowerer<'a, 'plan, 'tel> {
         Ok(positions)
     }
 
-    fn lower_step(
-        &mut self,
-        executable: &super::super::artifact::EmissionReadyExecutable,
-        step: &LoweredStep,
-    ) -> Result<BackendStep, FatalError> {
+    fn lower_step(&mut self, step: &LoweredStep) -> Result<BackendStep, FatalError> {
         Ok(match step {
             LoweredStep::Const { value, literal } => BackendStep::Const {
                 value: *value,
                 literal: literal.clone(),
             },
             LoweredStep::Tuple { value, items } => {
-                if self.value_is_proven_runtime_absent(executable, *value) {
+                if self.value_is_proven_runtime_absent(*value) {
                     BackendStep::Omitted { value: *value }
                 } else {
                     BackendStep::Tuple {
@@ -1449,7 +1464,7 @@ impl<'a, 'plan, 'tel> BackendLowerer<'a, 'plan, 'tel> {
                 }
             }
             LoweredStep::List { value, items, tail } => {
-                if self.value_is_proven_runtime_absent(executable, *value) {
+                if self.value_is_proven_runtime_absent(*value) {
                     BackendStep::Omitted { value: *value }
                 } else {
                     BackendStep::List {
@@ -1574,14 +1589,10 @@ impl<'a, 'plan, 'tel> BackendLowerer<'a, 'plan, 'tel> {
         })
     }
 
-    fn value_is_proven_runtime_absent(
-        &self,
-        executable: &super::super::artifact::EmissionReadyExecutable,
-        value: super::super::body::ValueId,
-    ) -> bool {
-        self.transport
-            .executable_value_shape(&executable.transport, value)
-            .is_some_and(|shape| matches!(self.world.shape(shape), ShapeDescr::Nothing))
+    fn value_is_proven_runtime_absent(&self, value: ValueId) -> bool {
+        self.value_shapes
+            .get(&value)
+            .is_some_and(|shape| matches!(self.world.shape(*shape), ShapeDescr::Nothing))
     }
 
     fn lower_call_args(
