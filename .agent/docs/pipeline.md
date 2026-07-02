@@ -300,6 +300,30 @@ Because transport shapes are demand-derived, a changed executable demand or
 incoming-input edge invalidates that executable's cached transport
 shapes/components along with its materialized/ABI/backend products.
 
+The shape-constraint graph behind those products is solved ONCE per settled
+executable closure, not once per pulled position. The first component pull
+whose executable has no covering solve expands the closure, projects every
+member, solves the whole union, and records the complete result — every
+connected component (member positions, canonical representative, agreed
+shape) plus all callable/boundary facts — as a `SolvedTransportClosure` in
+the session, emitting `pull.transport_component.closure_solved`. Every later
+`TransportComponent(position)` pull for a covered executable materializes its
+component from that record (a covered position absent from the solve is
+proven unconstrained and gets a singleton), so solve count tracks closure
+EPOCHS, not positions. The singleton proof rests on a load-bearing lemma:
+within an epoch a materialized body is a position-preserving PRUNE of the
+lowered body in original-id space (`prune_lowered_body` keeps value/callsite
+ids and maps entries through `original_entry_ids`), so a body swap can only
+REMOVE positions and edges, never add them — absence from the epoch's solve
+therefore stays a proof of unconstrained. If pruning ever renumbers values or
+synthesizes positions, this proof breaks. Any transport invalidation (a
+settled-demand change, a new incoming call edge) is an epoch boundary: it
+clears all recorded solves, and the next pull re-solves against the moved
+graph. Wait-emission order in the solve's expansion is part of the pull
+schedule and stays in canonical structural executable order (sorted only over
+the waiting subset, keys computed once) — that this order is load-bearing for
+plan completeness is the fz-go4.18.28.5 defect, not a design intent.
+
 Runtime demand is what makes that line precise for *representation*. A semantic
 fact — an activation, a callsite summary, an exact callable surface — is
 evidence about what the program *means*; it is never an obligation to

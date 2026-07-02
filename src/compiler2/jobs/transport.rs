@@ -1,5 +1,5 @@
 use std::cell::RefCell;
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use super::super::artifact::MaterializedExecutable;
 use super::super::body::{
@@ -10,7 +10,7 @@ use super::super::drive::FactKey;
 use super::super::identity::{ActivationKey, ExecutableKey, ExecutableNeed, FunctionId, RootId};
 use super::super::pull::{
     IncomingInputSource, InputSlot, ProductKey, ProductValue, PullOutcome, PullSession, PullWait,
-    TransportComponentInventory, TransportShapeFact,
+    SolvedTransportClosure, SolvedTransportComponent, TransportComponentInventory, TransportShapeFact,
 };
 use super::super::semantic::{
     ActivationAnalysis, CallSiteKey, CallableDemand, CallableFlowFact, CallableSurface, ExecutableRuntimeDemand,
@@ -701,8 +701,20 @@ fn emit_transport_component_produced(world: &World<'_>, component: &TransportCom
             component_size: component.positions.len() as u64,
         },
         &metadata! {
-            anchor: opaque_debug(&component.anchor),
+            representative: opaque_debug(&component.representative),
         },
+    );
+}
+
+fn emit_transport_closure_solved(world: &World<'_>, closure: &SolvedTransportClosure) {
+    world.tel().execute(
+        &["fz", "compiler2", "pull", "transport_component", "closure_solved"],
+        &measurements! {
+            executables: closure.executables.len(),
+            components: closure.components.len(),
+            positions: closure.component_of.len(),
+        },
+        &metadata! {},
     );
 }
 
@@ -715,46 +727,71 @@ pub(crate) fn produce_transport_component_product(
         emit_transport_component_produced(world, &component);
         return PullOutcome::Produced(ProductValue::TransportComponent(component));
     }
-    let Some(projection) = project_transport_component_product(world, session, position) else {
-        let component = TransportComponentInventory {
-            anchor: position.clone(),
-            positions: vec![position.clone()],
-        };
-        session.record_transport_component(component.anchor.clone(), component.positions.clone());
-        emit_transport_component_produced(world, &component);
-        return PullOutcome::Produced(ProductValue::TransportComponent(component));
-    };
-    match projection {
-        TransportProductProjection::Waiting(waits) => PullOutcome::Waiting(waits),
-        TransportProductProjection::Produced { component, .. } => {
-            emit_transport_component_produced(world, &component);
-            PullOutcome::Produced(ProductValue::TransportComponent(component))
-        }
+    let executable = executable_key_for_transport_position(session.root(), position, world.types_mut());
+    if !session.transport_closure_covers(&executable)
+        && let Err(waits) = solve_transport_closure(world, session, &executable)
+    {
+        return PullOutcome::Waiting(waits);
     }
+    let component = materialize_transport_component(world, session, &executable, position);
+    emit_transport_component_produced(world, &component);
+    PullOutcome::Produced(ProductValue::TransportComponent(component))
 }
 
-enum TransportProductProjection {
-    Waiting(Vec<PullWait>),
-    Produced { component: TransportComponentInventory },
-}
-
-fn project_transport_component_product(
+/// Materialize `position`'s component from the covering solve into the
+/// session's product-visible inventories: every member's shape is recorded and
+/// the pulled position's inventory carries the component's canonical
+/// representative and full membership. A position the covering solve never
+/// constrained is proven unconstrained by that same solve -- it gets a
+/// singleton component, never a re-solve.
+fn materialize_transport_component(
     world: &mut World<'_>,
     session: &mut PullSession,
-    anchor: &TransportPosition,
-) -> Option<TransportProductProjection> {
-    let executable = executable_key_for_transport_position(session.root(), anchor, world.types_mut());
-    let demand = match session.memo().runtime_demand(&executable).cloned() {
+    executable: &ExecutableKey,
+    position: &TransportPosition,
+) -> TransportComponentInventory {
+    let Some(solved) = session.solved_transport_component(executable, position).cloned() else {
+        let component = TransportComponentInventory {
+            representative: position.clone(),
+            positions: vec![position.clone()],
+        };
+        session.record_transport_component(position.clone(), component.clone());
+        return component;
+    };
+    if let Some(shape) = solved.shape {
+        for member in &solved.positions {
+            let member_executable = executable_key_for_transport_position(session.root(), member, world.types_mut());
+            session.record_transport_shape_for(&member_executable, member.clone(), shape);
+        }
+    }
+    let component = TransportComponentInventory {
+        representative: solved.representative,
+        positions: solved.positions,
+    };
+    session.record_transport_component(position.clone(), component.clone());
+    component
+}
+
+/// Solve the shape-constraint graph for the settled executable closure seeded
+/// at `executable` ONCE, and record the complete result -- every connected
+/// component plus all callable and boundary facts -- into the session. Any
+/// later component pull for any position of any covered executable
+/// materializes from this record; the solve never repeats until a transport
+/// invalidation (an epoch event) clears the recorded solves.
+fn solve_transport_closure(
+    world: &mut World<'_>,
+    session: &mut PullSession,
+    executable: &ExecutableKey,
+) -> Result<(), Vec<PullWait>> {
+    let demand = match session.memo().runtime_demand(executable).cloned() {
         Some(demand) => demand,
         None => {
-            return Some(TransportProductProjection::Waiting(vec![PullWait::Product(
-                ProductKey::RuntimeDemand(executable),
-            )]));
+            return Err(vec![PullWait::Product(ProductKey::RuntimeDemand(executable.clone()))]);
         }
     };
 
     let mut runtime_demands = HashMap::from([(executable.clone(), demand)]);
-    let mut executables = HashSet::from([executable]);
+    let mut executables = HashSet::from([executable.clone()]);
     while let Some(next) = expand_transport_product_executables(world, session, &executables, &runtime_demands) {
         let mut wait_products = Vec::new();
         let mut changed = false;
@@ -766,25 +803,21 @@ fn project_transport_component_product(
                 if let Some(demand) = session.memo().runtime_demand(&executable).cloned() {
                     entry.insert(demand);
                 } else {
-                    wait_products.push(ProductKey::RuntimeDemand(executable));
+                    let wait = PullWait::Product(ProductKey::RuntimeDemand(executable.clone()));
+                    wait_products.push((executable, wait));
                 }
             }
         }
         if !wait_products.is_empty() {
-            return Some(TransportProductProjection::Waiting(
-                wait_products.into_iter().map(PullWait::Product).collect(),
-            ));
+            return Err(sorted_executable_waits(wait_products, world.types()));
         }
 
         let outgoing_waits = outgoing_input_edge_waits(world, session, &executables);
         if !outgoing_waits.is_empty() {
-            return Some(TransportProductProjection::Waiting(outgoing_waits));
+            return Err(outgoing_waits);
         }
 
-        let incoming = match expand_transport_product_incoming_producers(world, session, &executables) {
-            Ok(incoming) => incoming,
-            Err(waits) => return Some(TransportProductProjection::Waiting(waits)),
-        };
+        let incoming = expand_transport_product_incoming_producers(world, session, &executables)?;
         let mut wait_products = Vec::new();
         for executable in incoming {
             if executables.insert(executable.clone()) {
@@ -794,14 +827,13 @@ fn project_transport_component_product(
                 if let Some(demand) = session.memo().runtime_demand(&executable).cloned() {
                     entry.insert(demand);
                 } else {
-                    wait_products.push(ProductKey::RuntimeDemand(executable));
+                    let wait = PullWait::Product(ProductKey::RuntimeDemand(executable.clone()));
+                    wait_products.push((executable, wait));
                 }
             }
         }
         if !wait_products.is_empty() {
-            return Some(TransportProductProjection::Waiting(
-                wait_products.into_iter().map(PullWait::Product).collect(),
-            ));
+            return Err(sorted_executable_waits(wait_products, world.types()));
         }
         if !changed {
             break;
@@ -809,7 +841,7 @@ fn project_transport_component_product(
     }
     let outgoing_waits = outgoing_input_edge_waits(world, session, &executables);
     if !outgoing_waits.is_empty() {
-        return Some(TransportProductProjection::Waiting(outgoing_waits));
+        return Err(outgoing_waits);
     }
 
     let mut reads = Vec::new();
@@ -823,22 +855,31 @@ fn project_transport_component_product(
         &mut wait_facts,
     );
     if !wait_facts.is_empty() {
-        return Some(TransportProductProjection::Waiting(
-            wait_facts
-                .into_iter()
-                .map(|fact| PullWait::Fact(super::super::facts::FactUse::settled(fact)))
-                .collect(),
-        ));
+        return Err(wait_facts
+            .into_iter()
+            .map(|fact| PullWait::Fact(super::super::facts::FactUse::settled(fact)))
+            .collect());
     }
 
-    if let Err(waits) = install_produced_incoming_inputs(world, session, &mut contexts) {
-        return Some(TransportProductProjection::Waiting(waits));
-    }
+    install_produced_incoming_inputs(world, session, &mut contexts)?;
     let mut facts = TransportFactsBuilder::default();
     let mut shape_graph = ShapeConstraintGraph::default();
     let mut memo = ProjectionMemo::default();
-    let mut ordered = executables.iter().cloned().collect::<Vec<_>>();
-    ordered.sort_by_key(|executable| executable_sort_key(executable, world.types()));
+    // Canonical visitation over the COMPLETED closure: order is a property of
+    // the container (a BTreeMap keyed by the schedule-free structural render),
+    // with each key computed once per member -- never a comparison-time sort
+    // over an in-flight set. Distinct executables whose renders collide all
+    // keep their slot (the value is a bucket, not a single member).
+    let ordered = {
+        let mut by_key: BTreeMap<ExecutableSortKey, Vec<ExecutableKey>> = BTreeMap::new();
+        for executable in &executables {
+            by_key
+                .entry(executable_sort_key(executable, world.types()))
+                .or_default()
+                .push(executable.clone());
+        }
+        by_key.into_values().flatten().collect::<Vec<_>>()
+    };
     for executable in &ordered {
         let Some(context) = contexts.get(executable).cloned() else {
             continue;
@@ -858,45 +899,65 @@ fn project_transport_component_product(
     collect_executable_input_constraints(world, &contexts, &mut facts, &ordered, &mut shape_graph);
 
     let union = shape_graph.build_union();
-    if !union.indexes.contains_key(anchor) {
-        let component = TransportComponentInventory {
-            anchor: anchor.clone(),
-            positions: vec![anchor.clone()],
-        };
-        session.record_transport_component(component.anchor.clone(), component.positions.clone());
-        return Some(TransportProductProjection::Produced { component });
-    }
-    let root = union.find_existing(anchor);
     let component_shapes = shape_graph.component_shapes(&union);
-    let shape = component_shapes.get(&root).copied();
-    let positions = union
-        .positions()
-        .filter(|position| union.find_existing(position) == root)
-        .cloned()
-        .collect::<Vec<_>>();
     let equivalents = ShapeConstraintGraph::equivalents_for(&union);
     facts.expand_boundary_publications(&equivalents);
     facts.resolve_publication_source_boundaries(world);
     let (callables, boundaries) = facts.finish();
-
-    for position in &positions {
-        if let Some(shape) = shape {
-            let executable = executable_key_for_transport_position(session.root(), position, world.types_mut());
-            session.record_transport_shape_for(&executable, position.clone(), shape);
-        }
-    }
     for (callable, facts) in callables {
         session.record_callable_facts(callable, facts);
     }
     for (boundary, facts) in boundaries {
         session.record_boundary_facts(boundary, facts);
     }
-    let component = TransportComponentInventory {
-        anchor: anchor.clone(),
-        positions,
+
+    let closure = solved_closure_from_union(executables, &union, &component_shapes, world.types());
+    emit_transport_closure_solved(world, &closure);
+    session.record_solved_transport_closure(closure);
+    Ok(())
+}
+
+/// Fold the solved union into per-component records: member positions, the
+/// component's agreed shape, and the canonical representative -- a running min
+/// under the structural position order, never a sort.
+fn solved_closure_from_union(
+    executables: HashSet<ExecutableKey>,
+    union: &PositionUnion,
+    component_shapes: &HashMap<usize, ShapeId>,
+    types: &Types,
+) -> SolvedTransportClosure {
+    let mut closure = SolvedTransportClosure {
+        executables,
+        ..Default::default()
     };
-    session.record_transport_component(component.anchor.clone(), component.positions.clone());
-    Some(TransportProductProjection::Produced { component })
+    let mut index_of_root: HashMap<usize, usize> = HashMap::new();
+    let mut representative_keys: Vec<TransportPositionSortKey> = Vec::new();
+    for position in union.positions() {
+        let root = union.find_existing(position);
+        let key = transport_position_sort_key(position, types);
+        let index = match index_of_root.entry(root) {
+            std::collections::hash_map::Entry::Occupied(entry) => {
+                let index = *entry.get();
+                if key < representative_keys[index] {
+                    representative_keys[index] = key;
+                    closure.components[index].representative = position.clone();
+                }
+                index
+            }
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                closure.components.push(SolvedTransportComponent {
+                    representative: position.clone(),
+                    positions: Vec::new(),
+                    shape: component_shapes.get(&root).copied(),
+                });
+                representative_keys.push(key);
+                *entry.insert(closure.components.len() - 1)
+            }
+        };
+        closure.components[index].positions.push(position.clone());
+        closure.component_of.insert(position.clone(), index);
+    }
+    closure
 }
 
 fn expand_transport_product_executables(
@@ -935,20 +996,39 @@ fn expand_transport_product_executables(
     Some(next)
 }
 
+// Wait emission order is part of the pull schedule: the driver services waits
+// in order, and that schedule steers which epoch each downstream product lands
+// in. That this order is LOAD-BEARING for plan completeness is a DEFECT tracked
+// by fz-go4.18.28.5 (the plan's position union shrinks across epochs, so which
+// pull lands first decides what gets recorded) -- removing this sort reopens
+// that hole; deleting it is .28.5's job once completeness is order-independent.
+// Until then the producers below emit waits in the canonical structural
+// executable order -- derived by sorting only the (usually small) WAITING
+// subset, its key computed once per element, never by ordering the whole
+// closure as a precondition of the scan.
+fn sorted_executable_waits(waits: Vec<(ExecutableKey, PullWait)>, types: &Types) -> Vec<PullWait> {
+    let mut waits = waits;
+    waits.sort_by_cached_key(|(executable, _)| executable_sort_key(executable, types));
+    waits.into_iter().map(|(_, wait)| wait).collect()
+}
+
 fn outgoing_input_edge_waits(
     world: &World<'_>,
     session: &PullSession,
     executables: &HashSet<ExecutableKey>,
 ) -> Vec<PullWait> {
-    let mut ordered = executables.iter().collect::<Vec<_>>();
-    ordered.sort_by_key(|executable| executable_sort_key(executable, world.types()));
-    ordered
-        .into_iter()
+    let waits = executables
+        .iter()
         .filter_map(|executable| {
             let key = ProductKey::OutgoingInputEdges(executable.clone());
-            session.memo().get(&key).is_none().then_some(PullWait::Product(key))
+            session
+                .memo()
+                .get(&key)
+                .is_none()
+                .then(|| (executable.clone(), PullWait::Product(key)))
         })
-        .collect()
+        .collect::<Vec<_>>();
+    sorted_executable_waits(waits, world.types())
 }
 
 fn expand_transport_product_incoming_producers(
@@ -958,9 +1038,7 @@ fn expand_transport_product_incoming_producers(
 ) -> Result<Vec<ExecutableKey>, Vec<PullWait>> {
     let mut next = Vec::new();
     let mut waits = Vec::new();
-    let mut ordered = executables.iter().collect::<Vec<_>>();
-    ordered.sort_by_key(|executable| executable_sort_key(executable, world.types()));
-    for executable in ordered {
+    for executable in executables {
         for semantic_index in 0..executable.activation.input_len(world.types()) {
             let slot = InputSlot {
                 executable: executable.clone(),
@@ -968,7 +1046,7 @@ fn expand_transport_product_incoming_producers(
             };
             let key = ProductKey::IncomingInputSlot(slot);
             let Some(value) = session.memo().get(&key) else {
-                waits.push(PullWait::Product(key));
+                waits.push((executable.clone(), PullWait::Product(key)));
                 continue;
             };
             let ProductValue::IncomingInputSlot(sources) = value else {
@@ -979,7 +1057,11 @@ fn expand_transport_product_incoming_producers(
             }
         }
     }
-    if waits.is_empty() { Ok(next) } else { Err(waits) }
+    if waits.is_empty() {
+        Ok(next)
+    } else {
+        Err(sorted_executable_waits(waits, world.types()))
+    }
 }
 
 fn push_executable_unique(target: &mut Vec<ExecutableKey>, executable: ExecutableKey) {
@@ -994,9 +1076,8 @@ fn install_produced_incoming_inputs(
     contexts: &mut TransportContexts,
 ) -> Result<(), Vec<PullWait>> {
     let mut waits = Vec::new();
-    let mut ordered = contexts.by_executable.keys().collect::<Vec<_>>();
-    ordered.sort_by_key(|executable| executable_sort_key(executable, world.types()));
-    for executable in ordered {
+    let mut installed = Vec::new();
+    for executable in contexts.by_executable.keys() {
         let input_len = executable.activation.input_len(world.types());
         for semantic_index in 0..input_len {
             let slot = InputSlot {
@@ -1005,7 +1086,7 @@ fn install_produced_incoming_inputs(
             };
             let key = ProductKey::IncomingInputSlot(slot);
             let Some(value) = session.memo().get(&key) else {
-                waits.push(PullWait::Product(key));
+                waits.push((executable.clone(), PullWait::Product(key)));
                 continue;
             };
             let ProductValue::IncomingInputSlot(slot_sources) = value else {
@@ -1013,13 +1094,15 @@ fn install_produced_incoming_inputs(
             };
             let sources = incoming_slot_source_pairs(slot_sources);
             if !sources.is_empty() {
-                contexts
-                    .incoming_input_sources
-                    .insert((executable.clone(), semantic_index), sources);
+                installed.push(((executable.clone(), semantic_index), sources));
             }
         }
     }
-    if waits.is_empty() { Ok(()) } else { Err(waits) }
+    if !waits.is_empty() {
+        return Err(sorted_executable_waits(waits, world.types()));
+    }
+    contexts.incoming_input_sources.extend(installed);
+    Ok(())
 }
 
 fn incoming_slot_source_pairs(sources: &[IncomingInputSource]) -> Vec<(ExecutableKey, ValueId)> {
@@ -1800,7 +1883,13 @@ fn boxed_value_return(world: &World<'_>, shape: ShapeId) -> bool {
 // that visitation order drives the non-monotone anchor/union gate in
 // `collect_executable_input_constraints`, which is the schedule-dependent source
 // of the transport.rs shape-anchor panic. A structural render is a pure function
-// of input STRUCTURE: total, deterministic, and interning-order-free.
+// of input STRUCTURE: total, deterministic, and interning-order-free. The key is
+// computed ONCE per closure member at the completed-closure boundary (a BTreeMap
+// insert in `solve_transport_closure`), never re-rendered per comparison.
+//
+// The COMPONENT REPRESENTATIVE key (`transport_position_sort_key`) extends the
+// same structural render to positions; the representative is the running MIN
+// under this order while the solved union is folded into components.
 //
 // The fact-OUTPUT keys below (`executable_symbol_sort_key` etc.) stay raw-`Ty`
 // keyed: they order published resolution/codegen-seam lists, not the union
@@ -1809,6 +1898,7 @@ fn boxed_value_return(world: &World<'_>, shape: ShapeId) -> bool {
 // lane, which is a layout regression, not a determinism fix.
 type ExecutableSortKey = (u32, Vec<String>, u8, usize);
 type ExecutableSymbolSortKey = (u32, Vec<Ty>, u8, usize);
+type TransportPositionSortKey = (u8, u32, Vec<String>, u8, usize, u64, u64, usize);
 
 /// Canonical structural render of an input type vector — the schedule-free
 /// projection used as the executable visitation secondary sort key.
@@ -1826,6 +1916,58 @@ fn executable_sort_key(executable: &ExecutableKey, types: &Types) -> ExecutableS
         input_structure_key(&executable.activation.inputs(types), types),
         need.0,
         need.1,
+    )
+}
+
+/// Canonical structural order over transport positions: position kind, then
+/// the owning executable's structural render, then the position's body-local
+/// ids. Schedule-free for the same reason `executable_sort_key` is.
+fn transport_position_sort_key(position: &TransportPosition, types: &Types) -> TransportPositionSortKey {
+    let (rank, executable, first, second, index) = match position {
+        TransportPosition::ExecutableInput {
+            executable,
+            semantic_index,
+        } => (0, executable, 0, 0, *semantic_index),
+        TransportPosition::ExecutableReturn { executable } => (1, executable, 0, 0, 0),
+        TransportPosition::ResumePayload {
+            executable,
+            callsite,
+            entry,
+        } => (
+            2,
+            executable,
+            callsite.map_or(0, |callsite| u64::from(callsite.as_u32()) + 1),
+            u64::from(entry.as_u32()),
+            0,
+        ),
+        TransportPosition::ReturnPayload { executable, callsite } => {
+            (3, executable, u64::from(callsite.as_u32()), 0, 0)
+        }
+        TransportPosition::CallArg {
+            executable,
+            callsite,
+            semantic_index,
+        } => (4, executable, u64::from(callsite.as_u32()), 0, *semantic_index),
+        TransportPosition::EntryCapture {
+            executable,
+            entry,
+            capture_index,
+        } => (5, executable, u64::from(entry.as_u32()), 0, *capture_index),
+        TransportPosition::Value { executable, value } => (6, executable, u64::from(value.as_u32()), 0, 0),
+    };
+    let need = match executable.need {
+        ExecutableNeed::Value => (0, 0),
+        ExecutableNeed::TupleFields(arity) => (1, arity),
+    };
+    (
+        rank,
+        executable.activation.function.as_u32(),
+        input_structure_key(&executable.activation.input, types),
+        need.0,
+        need.1,
+        first,
+        second,
+        index,
     )
 }
 

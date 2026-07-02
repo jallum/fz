@@ -243,6 +243,69 @@ fn main(), do: inc(1.0)
     );
 }
 
+/// INTENT (fz-go4.18.28.1): the transport shape-constraint graph is solved
+/// ONCE per settled executable closure. The single solve records EVERY
+/// connected component, indexed by member position, so all later component
+/// pulls -- across positions, across components, across executables of the
+/// closure -- are served from the record without re-expanding or re-solving
+/// anything. A full multi-executable backend drive therefore emits exactly one
+/// `closure_solved` while producing many `transport_component` products, and
+/// re-pulling every demanded position afterwards adds zero solves.
+#[test]
+fn compiler2_transport_component_closure_solves_once_and_serves_every_member() {
+    let source = r#"
+fn add(a, b), do: a + b
+fn twice(x), do: add(x, x)
+
+fn main() do
+  y = twice(2)
+  add(y, 3)
+end
+"#;
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&["fz", "compiler2", "pull"], capture.handler());
+    let mut world = World::new(&tel);
+    world.submit_code(Some("transport_once_per_closure.fz".to_string()), source.to_string());
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    let mut driver = pull_root_backend_driver_for_test(&tel, &mut world, root);
+
+    const CLOSURE_SOLVED: &[&str] = &["fz", "compiler2", "pull", "transport_component", "closure_solved"];
+    let solves = capture.count(CLOSURE_SOLVED);
+    let produced = capture.count(&["fz", "compiler2", "pull", "transport_component", "produced"]);
+    assert_eq!(
+        solves, 2,
+        "one shape-graph solve per closure EPOCH: this drive has exactly two -- the pre-edge seed \
+         epoch (first component demand lands before any caller has recorded its call edges) and \
+         the settled full-closure epoch after `record_call_edge` displaces it"
+    );
+    assert!(
+        produced > solves,
+        "the single solve must serve every component production ({produced} productions from {solves} solve)"
+    );
+
+    let positions = driver.session().transport_shapes().keys().cloned().collect::<Vec<_>>();
+    assert!(
+        positions.len() > 1,
+        "the drive should demand positions across several components"
+    );
+    for position in positions {
+        let outcome = {
+            let mut producers = WorldProductProducers::new(&mut world);
+            driver.pull(&mut producers, ProductKey::TransportComponent(position.clone()))
+        };
+        assert!(
+            matches!(outcome, PullOutcome::Produced(ProductValue::TransportComponent(_))),
+            "a member position's pull must be served from the record: {position:?}"
+        );
+    }
+    assert_eq!(
+        capture.count(CLOSURE_SOLVED),
+        solves,
+        "member pulls after the solve must never re-solve the closure"
+    );
+}
+
 #[test]
 fn compiler2_transport_flow_names_tail_return_payload_position() {
     let source = r#"

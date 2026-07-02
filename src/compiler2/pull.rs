@@ -320,8 +320,33 @@ pub struct DemandedCallEdge {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TransportComponentInventory {
-    pub anchor: TransportPosition,
+    /// The canonical component representative: the running-min member position
+    /// under the structural position order. Every member's pull materializes
+    /// an inventory carrying this same representative and membership.
+    pub representative: TransportPosition,
     pub positions: Vec<TransportPosition>,
+}
+
+/// One connected component of a solved transport shape-constraint closure: its
+/// canonical representative, every member position, and the component's agreed
+/// shape (`None` when no anchor grounded the component).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SolvedTransportComponent {
+    pub representative: TransportPosition,
+    pub positions: Vec<TransportPosition>,
+    pub shape: Option<ShapeId>,
+}
+
+/// The full result of ONE shape-constraint solve over a settled executable
+/// closure: every connected component, indexed by member position, plus the
+/// executable cover the solve projected. A position of a covered executable
+/// that is absent from `component_of` was proven unconstrained by this same
+/// solve -- it needs a singleton component, not a re-solve.
+#[derive(Debug, Default)]
+pub struct SolvedTransportClosure {
+    pub executables: HashSet<ExecutableKey>,
+    pub component_of: HashMap<TransportPosition, usize>,
+    pub components: Vec<SolvedTransportComponent>,
 }
 
 #[derive(Debug)]
@@ -381,6 +406,19 @@ pub struct PullSession {
     transport_shape_facts: HashMap<TransportPosition, TransportShapeFact>,
     transport_shapes: HashMap<TransportPosition, ShapeId>,
     transport_components: HashMap<TransportPosition, TransportComponentInventory>,
+    // Solved-closure inventory: each shape-constraint solve records every
+    // component it computed, keyed by a session-unique closure id, with
+    // `transport_closure_cover` mapping each projected executable to the solve
+    // that covered it. Closures are valid for exactly one transport-graph
+    // EPOCH: any transport invalidation (a settled-demand change, a new
+    // incoming call edge) clears the whole inventory, so a cover can never
+    // answer from a graph the movement outgrew -- the same events that
+    // displaced per-anchor memos before, now displacing the shared solve.
+    // Within an epoch closures are kept disjoint: recording a solve drops any
+    // prior solve sharing a member.
+    solved_transport_closures: HashMap<u64, SolvedTransportClosure>,
+    transport_closure_cover: HashMap<ExecutableKey, u64>,
+    transport_closure_counter: u64,
     transport_positions_by_executable: HashMap<ExecutableKey, HashSet<TransportPosition>>,
     callable_facts: HashMap<CallableId, CallableFacts>,
     boundary_facts: HashMap<BoundaryId, BoundaryFacts>,
@@ -414,6 +452,9 @@ impl PullSession {
             transport_shape_facts: HashMap::new(),
             transport_shapes: HashMap::new(),
             transport_components: HashMap::new(),
+            solved_transport_closures: HashMap::new(),
+            transport_closure_cover: HashMap::new(),
+            transport_closure_counter: 0,
             transport_positions_by_executable: HashMap::new(),
             callable_facts: HashMap::new(),
             boundary_facts: HashMap::new(),
@@ -588,8 +629,31 @@ impl PullSession {
         &self.transport_shapes
     }
 
-    pub fn transport_component(&self, anchor: &TransportPosition) -> Option<&TransportComponentInventory> {
-        self.transport_components.get(anchor)
+    pub fn transport_component(&self, position: &TransportPosition) -> Option<&TransportComponentInventory> {
+        self.transport_components.get(position)
+    }
+
+    /// Whether `executable` was projected by a still-valid shape-constraint
+    /// solve. A covered executable's positions never re-solve: they read the
+    /// recorded solve (or are proven unconstrained by it).
+    pub fn transport_closure_covers(&self, executable: &ExecutableKey) -> bool {
+        self.transport_closure_cover.contains_key(executable)
+    }
+
+    /// The solved component holding `position`, from the closure covering
+    /// `executable`. `None` under a valid cover means the solve proved the
+    /// position unconstrained (singleton component).
+    pub fn solved_transport_component(
+        &self,
+        executable: &ExecutableKey,
+        position: &TransportPosition,
+    ) -> Option<&SolvedTransportComponent> {
+        let id = self.transport_closure_cover.get(executable)?;
+        let closure = &self.solved_transport_closures[id];
+        closure
+            .component_of
+            .get(position)
+            .map(|index| &closure.components[*index])
     }
 
     pub fn callable_facts(&self, callable: CallableId) -> Option<&CallableFacts> {
@@ -822,11 +886,56 @@ impl PullSession {
         self.backend_executables.insert(executable, backend);
     }
 
-    pub fn record_transport_component(&mut self, anchor: TransportPosition, positions: Vec<TransportPosition>) {
-        self.demanded_transport_positions.insert(anchor.clone());
-        self.demanded_transport_positions.extend(positions.iter().cloned());
-        self.transport_components
-            .insert(anchor.clone(), TransportComponentInventory { anchor, positions });
+    /// Record the component inventory a position's pull materialized. The key
+    /// is the PULLED position (the product identity); the value carries the
+    /// component's canonical representative and full membership from the
+    /// covering solve.
+    pub fn record_transport_component(&mut self, position: TransportPosition, component: TransportComponentInventory) {
+        self.demanded_transport_positions.insert(position.clone());
+        self.demanded_transport_positions
+            .extend(component.positions.iter().cloned());
+        self.transport_components.insert(position, component);
+    }
+
+    /// Record the full result of one shape-constraint solve. Within the epoch,
+    /// closures stay disjoint by construction: any prior closure sharing a
+    /// member executable is dropped whole before the new cover is installed.
+    pub fn record_solved_transport_closure(&mut self, closure: SolvedTransportClosure) {
+        let displaced = closure
+            .executables
+            .iter()
+            .filter_map(|member| self.transport_closure_cover.get(member).copied())
+            .collect::<HashSet<u64>>();
+        for id in displaced {
+            self.drop_solved_transport_closure(id);
+        }
+        let id = self.transport_closure_counter;
+        self.transport_closure_counter += 1;
+        for member in &closure.executables {
+            self.transport_closure_cover.insert(member.clone(), id);
+        }
+        self.solved_transport_closures.insert(id, closure);
+    }
+
+    fn drop_solved_transport_closure(&mut self, id: u64) {
+        let Some(closure) = self.solved_transport_closures.remove(&id) else {
+            return;
+        };
+        for member in &closure.executables {
+            if self.transport_closure_cover.get(member) == Some(&id) {
+                self.transport_closure_cover.remove(member);
+            }
+        }
+    }
+
+    /// The transport-graph EPOCH boundary: a solve input moved somewhere, so
+    /// every recorded solve is displaced at once. Product-visible inventories
+    /// (shapes, produced components) stand -- exactly the products the
+    /// pre-movement graph already answered -- and are displaced separately by
+    /// the targeted product invalidation walks.
+    fn clear_solved_transport_closures(&mut self) {
+        self.solved_transport_closures.clear();
+        self.transport_closure_cover.clear();
     }
 
     pub fn record_transport_shape(&mut self, position: TransportPosition, shape: ShapeId) {
@@ -1026,6 +1135,11 @@ impl PullSession {
     }
 
     fn invalidate_transport_products(&mut self, executable: &ExecutableKey) {
+        // Transport invalidation is only ever rooted at a solve-input movement
+        // (settled-demand change, new incoming edge), so it is an epoch
+        // boundary: every recorded solve is displaced, and the next component
+        // pull re-solves against the moved graph.
+        self.clear_solved_transport_closures();
         let Some(positions) = self.transport_positions_by_executable.remove(executable) else {
             return;
         };
@@ -1040,17 +1154,17 @@ impl PullSession {
         let stale_components = self
             .transport_components
             .iter()
-            .filter_map(|(anchor, component)| {
+            .filter_map(|(member, component)| {
                 component
                     .positions
                     .iter()
                     .any(|position| positions.contains(position))
-                    .then_some(anchor.clone())
+                    .then_some(member.clone())
             })
             .collect::<Vec<_>>();
-        for anchor in stale_components {
-            self.transport_components.remove(&anchor);
-            self.memo.remove(&ProductKey::TransportComponent(anchor));
+        for member in stale_components {
+            self.transport_components.remove(&member);
+            self.memo.remove(&ProductKey::TransportComponent(member));
         }
     }
 
@@ -1757,9 +1871,13 @@ mod tests {
         };
         let mut driver = ProductDriver::new(&tel, root);
         driver.session_mut().record_transport_shape(position.clone(), shape);
-        driver
-            .session_mut()
-            .record_transport_component(position.clone(), vec![position.clone()]);
+        driver.session_mut().record_transport_component(
+            position.clone(),
+            TransportComponentInventory {
+                representative: position.clone(),
+                positions: vec![position.clone()],
+            },
+        );
         driver
             .session_mut()
             .record_callable_facts(callable, callable_facts.clone());
@@ -1772,7 +1890,7 @@ mod tests {
         assert_eq!(
             driver.pull(&mut producers, ProductKey::TransportComponent(position.clone())),
             PullOutcome::Produced(ProductValue::TransportComponent(TransportComponentInventory {
-                anchor: position.clone(),
+                representative: position.clone(),
                 positions: vec![position],
             }))
         );
@@ -2427,6 +2545,126 @@ mod tests {
             },
             need: executable.need,
         }
+    }
+
+    /// INTENT: a recorded solve serves EVERY member position of EVERY
+    /// component -- any member's lookup through the executable cover reaches
+    /// its component (with the canonical representative), and a covered
+    /// position absent from the solve is proven unconstrained (`None`), so no
+    /// pull path ever needs a second solve within the epoch.
+    #[test]
+    fn solved_transport_closure_serves_every_member_position() {
+        let root = RootId::for_test(21);
+        let executable = fake_executable(root);
+        let symbol = executable_symbol_for_test(&executable);
+        let representative = TransportPosition::ExecutableInput {
+            executable: symbol.clone(),
+            semantic_index: 0,
+        };
+        let member = TransportPosition::ExecutableReturn {
+            executable: symbol.clone(),
+        };
+        let unconstrained = TransportPosition::Value {
+            executable: symbol,
+            value: ValueId::from_u32(7),
+        };
+        let mut closure = SolvedTransportClosure::default();
+        closure.executables.insert(executable.clone());
+        closure.components.push(SolvedTransportComponent {
+            representative: representative.clone(),
+            positions: vec![representative.clone(), member.clone()],
+            shape: None,
+        });
+        closure.component_of.insert(representative.clone(), 0);
+        closure.component_of.insert(member.clone(), 0);
+        let mut session = PullSession::new(root);
+
+        session.record_solved_transport_closure(closure);
+
+        assert!(session.transport_closure_covers(&executable));
+        let by_member = session
+            .solved_transport_component(&executable, &member)
+            .expect("a member position's lookup should reach its solved component");
+        assert_eq!(by_member.representative, representative);
+        assert_eq!(
+            session.solved_transport_component(&executable, &representative),
+            session.solved_transport_component(&executable, &member),
+            "every member should read the one solved component"
+        );
+        assert!(
+            session
+                .solved_transport_component(&executable, &unconstrained)
+                .is_none(),
+            "a covered position outside the solve is proven unconstrained, not unsolved"
+        );
+    }
+
+    /// INTENT: the SOLVE is the coherent epoch unit. A settled-demand change on
+    /// ANY member executable drops the whole recorded closure, so no other
+    /// member keeps answering component pulls from the displaced solve.
+    #[test]
+    fn solved_transport_closure_drops_whole_on_any_member_epoch_event() {
+        let root = RootId::for_test(22);
+        let first = fake_executable_with_function(root, 220);
+        let second = fake_executable_with_function(root, 221);
+        let position = TransportPosition::ExecutableReturn {
+            executable: executable_symbol_for_test(&second),
+        };
+        let mut closure = SolvedTransportClosure::default();
+        closure.executables.insert(first.clone());
+        closure.executables.insert(second.clone());
+        closure.components.push(SolvedTransportComponent {
+            representative: position.clone(),
+            positions: vec![position.clone()],
+            shape: None,
+        });
+        closure.component_of.insert(position.clone(), 0);
+        let mut session = PullSession::new(root);
+        session.record_solved_transport_closure(closure);
+        assert!(session.transport_closure_covers(&first));
+        assert!(session.transport_closure_covers(&second));
+        assert!(session.solved_transport_component(&second, &position).is_some());
+
+        let settled = ExecutableRuntimeDemand::default();
+        let mut moved = ExecutableRuntimeDemand::default();
+        moved.input_demands.push(RuntimeDemand::default());
+        session.record_settled_runtime_demand(first.clone(), settled);
+        session.record_settled_runtime_demand(first.clone(), moved);
+
+        assert!(
+            !session.transport_closure_covers(&first),
+            "the epoch member's cover must drop"
+        );
+        assert!(
+            !session.transport_closure_covers(&second),
+            "the whole closure must drop with it -- no member may serve the displaced solve"
+        );
+        assert!(session.solved_transport_component(&second, &position).is_none());
+    }
+
+    /// INTENT: closures stay disjoint -- recording a solve that absorbs a
+    /// member of an older solve displaces the older solve entirely, so a
+    /// single cover always answers for an executable.
+    #[test]
+    fn solved_transport_closure_recording_displaces_overlapping_closures() {
+        let root = RootId::for_test(23);
+        let shared = fake_executable_with_function(root, 230);
+        let old_only = fake_executable_with_function(root, 231);
+        let mut old = SolvedTransportClosure::default();
+        old.executables.insert(shared.clone());
+        old.executables.insert(old_only.clone());
+        let mut new = SolvedTransportClosure::default();
+        new.executables.insert(shared.clone());
+        let mut session = PullSession::new(root);
+
+        session.record_solved_transport_closure(old);
+        session.record_solved_transport_closure(new);
+
+        assert!(session.transport_closure_covers(&shared));
+        assert!(
+            !session.transport_closure_covers(&old_only),
+            "the displaced closure's other members must not keep a stale cover"
+        );
     }
 
     fn measurement_u64(event: &crate::telemetry::capture::OwnedEvent, key: &str) -> u64 {
