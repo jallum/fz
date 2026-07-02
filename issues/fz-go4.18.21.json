@@ -23,11 +23,15 @@
     {
       "text": "RE-PRIORITIZED: after .18.22 (demand now byte-clean and schedule-stable), this is the DOMINANT open non-determinism. Fresh evidence from the .18.22 audits: repr_seam_enum_count_after_reduce2 flips its (wrong) answer 10,10 \u003c-\u003e 2,2 run-to-run on ALL commits (10-run distributions; two lambdas' generated FunctionIds 161/162 swap per run; BackendProgram dumps differ on every run of the same build); fz_f98 materialization wobbles at arrow Ty(319)/Ty(320) for FunctionId(174). Demand productions are 3/0-identical in every run while the OUTPUT varies — the non-determinism is squarely in activation-arrow/generated-id keying, not demand. The original 00001 histogram-diff evidence stands. Diagnose on the post-.18.22 trace (clean now).",
       "timestamp": "2026-07-02T17:18:11Z"
+    },
+    {
+      "text": "PARTIAL (diagnosis agent stopped by owner mid-run, 2026-07-02): Q3 ANSWERED — the orphaned provisional-arrow demand (append demanded at a retracted arrow on 00001) NO LONGER OCCURS post-.18.22; the widen-then-retract arc was demand-side and is fixed. Remaining scope narrows to: (a) Ty-id renaming across runs (same structural arrow interned at different ids) and (b) the answer-changing seam (repr_seam lambda-id swap conflating reducer/predicate at a callable boundary). The agent's candidate fix direction at stop time (UNVERIFIED — treat as a lead, not a finding): 'make call-target identity variant-distinct (callee + activation) in the two coalesce sites.' Worktree preserved at agent-afe4ed67b73426813 (may contain instrumentation).",
+      "timestamp": "2026-07-02T17:52:59Z"
     }
   ],
   "priority": 1,
   "status": "in_progress",
   "title": "Activation arrow keying is schedule-dependent on 00001; demanded executable at retracted arrow is orphaned",
   "type": "bug",
-  "updated_at": "2026-07-02T17:18:53Z"
+  "updated_at": "2026-07-02T17:52:59Z"
 }
