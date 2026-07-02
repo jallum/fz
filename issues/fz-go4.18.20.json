@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-07-02T01:11:04Z",
+  "description": "fz-go4.18.12 finding 4. Each callee return-type revision triggers a FULL re-inference of every caller body: AnalyzeActivation(main) fired 22x on 00001 (12 distinct analyses, 10 no-change); callsite.defined 133 fires / 26 keys with 76 byte-identical re-publications; return_type.defined 45 fires / only 8 changed on 00181. FIX direction (design work): batch callee revisions before re-analyzing a caller, and/or granularize analysis so only the affected callsite's contribution is recomputed; at minimum suppress identical re-publications (interacts with T1's stop-at-unchanged). Re-measure after findings 1-3 land — the counts may drop substantially. ACCEPTANCE: identical callsite/return_type re-publications ~0 on the corpus; AnalyzeActivation fire counts justified by distinct input revisions.",
+  "id": "fz-go4.18.20",
+  "labels": [],
+  "parent": "fz-go4.18",
+  "priority": 2,
+  "status": "open",
+  "title": "Per-callee-revision whole-caller re-analysis: batch/granularize activation re-inference",
+  "type": "bug",
+  "updated_at": "2026-07-02T01:11:04Z"
+}
