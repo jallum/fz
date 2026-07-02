@@ -47,7 +47,7 @@ use super::scheduler::FatalError;
 use super::scope::ScopeSnapshot;
 use super::semantic::{
     ActivationAnalysis, ActivationInputMap, ActivationMap, CallSiteKey, CallSiteMap, CallSiteSummary, CallSiteTargets,
-    CallSiteTargetsMap, ContributionReplace, ReturnDemandMap, RuntimeDemand,
+    CallSiteTargetsMap, ContributionReplace,
 };
 use super::source::{
     QuotedLexicalContext, QuotedLexicalContextKind, QuotedSourceBuilder, QuotedSourceError, QuotedSourceMetadata,
@@ -118,7 +118,6 @@ pub struct World<'a> {
     protocol_impl_providers: ProtocolImplProviderMap,
     activations: ActivationMap,
     activation_inputs: ActivationInputMap<Job>,
-    return_demands: ReturnDemandMap<Job>,
     callsites: CallSiteMap,
     callsite_targets: CallSiteTargetsMap,
     backend: BackendProgramMap,
@@ -179,7 +178,6 @@ impl<'a> World<'a> {
             protocol_impl_providers: ProtocolImplProviderMap::new(),
             activations: ActivationMap::new(),
             activation_inputs: ActivationInputMap::new(),
-            return_demands: ReturnDemandMap::new(),
             callsites: CallSiteMap::new(),
             callsite_targets: CallSiteTargetsMap::new(),
             backend: BackendProgramMap::new(),
@@ -410,13 +408,6 @@ impl<'a> World<'a> {
                 _ => None,
             })
             .collect::<HashSet<_>>();
-        let previous_return_demand_outputs = previous_output_keys
-            .iter()
-            .filter_map(|fact| match fact {
-                FactKey::ReturnDemand(executable) => Some(executable.clone()),
-                _ => None,
-            })
-            .collect::<HashSet<_>>();
         let ContributionReplace {
             output_keys: activation_input_outputs,
             changed_keys: activation_input_changed,
@@ -449,26 +440,11 @@ impl<'a> World<'a> {
                 );
             }
         }
-        let ContributionReplace {
-            output_keys: return_demand_outputs,
-            changed_keys: return_demand_changed,
-        } = if waits.is_empty() {
-            self.conclude_return_demand_contributions(
-                &job,
-                previous_return_demand_outputs,
-                effects.return_demand_contributions,
-                rebased,
-            )
-        } else {
-            self.extend_return_demand_contributions(&job, effects.return_demand_contributions)
-        };
         let mut outputs = effects.outputs;
         outputs.extend(activation_input_outputs.into_iter().map(FactKey::ActivationInputs));
-        outputs.extend(return_demand_outputs.into_iter().map(FactKey::ReturnDemand));
         let outputs = dedupe_job_facts(outputs);
         let mut changed = effects.changed;
         changed.extend(activation_input_changed.into_iter().map(FactKey::ActivationInputs));
-        changed.extend(return_demand_changed.into_iter().map(FactKey::ReturnDemand));
         let changed = dedupe_job_facts(changed);
         let step = self
             .work_graph
@@ -683,49 +659,6 @@ impl<'a> World<'a> {
                     }
                 }
             }
-        }
-        next
-    }
-
-    fn conclude_return_demand_contributions(
-        &mut self,
-        job: &Job,
-        previous_output_keys: HashSet<ExecutableKey>,
-        contributions: Vec<(ExecutableKey, RuntimeDemand)>,
-        rebased: bool,
-    ) -> ContributionReplace<ExecutableKey> {
-        let next = self.normalize_return_demand_contributions(contributions);
-        // Return-demand contributions are cumulative caller evidence: within an
-        // epoch a caller's demand frontier only grows as its inputs ascend, so a
-        // key transiently absent from one rerun is not a retraction. Only a
-        // rebased (ground-shifted) publisher withdraws a genuinely stale key.
-        if rebased {
-            self.return_demands
-                .conclude(&mut (), job.clone(), previous_output_keys, next, true)
-        } else {
-            self.return_demands
-                .conclude_preserving_frontier(&mut (), job.clone(), previous_output_keys, next)
-        }
-    }
-
-    fn extend_return_demand_contributions(
-        &mut self,
-        job: &Job,
-        contributions: Vec<(ExecutableKey, RuntimeDemand)>,
-    ) -> ContributionReplace<ExecutableKey> {
-        let next = self.normalize_return_demand_contributions(contributions);
-        self.return_demands.extend(&mut (), job.clone(), next)
-    }
-
-    fn normalize_return_demand_contributions(
-        &mut self,
-        contributions: Vec<(ExecutableKey, RuntimeDemand)>,
-    ) -> HashMap<ExecutableKey, RuntimeDemand> {
-        let mut next = HashMap::<ExecutableKey, RuntimeDemand>::new();
-        for (executable, demand) in contributions {
-            next.entry(executable)
-                .and_modify(|current| current.join_assign(&demand))
-                .or_insert(demand);
         }
         next
     }

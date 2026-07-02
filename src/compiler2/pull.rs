@@ -577,6 +577,11 @@ impl PullSession {
             })
     }
 
+    /// Test-only: production code reaches settled return demand exclusively
+    /// through `external_return_demand`'s cross-member join. This raw
+    /// per-key getter exists only so unit tests can assert the joined
+    /// aggregate `replace_settled_return_demand_contributions` produces.
+    #[cfg(test)]
     pub fn return_demand(&self, executable: &ExecutableKey) -> Option<&RuntimeDemand> {
         self.return_demands.get(executable)
     }

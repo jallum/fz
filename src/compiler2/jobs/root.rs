@@ -6,9 +6,8 @@ use crate::diag::driver::emit_through;
 use crate::source::Span;
 
 use super::super::drive::{FactKey, Job, JobEffects, settled_uses};
-use super::super::identity::{ActivationKey, ExecutableKey, ExecutableNeed, RootId, RootKind};
+use super::super::identity::{ActivationKey, ExecutableKey, RootId, RootKind};
 use super::super::scheduler::FatalError;
-use super::super::semantic::RuntimeDemand;
 use super::super::world::World;
 
 /// Seeds one semantic root once its entry definition exists.
@@ -71,7 +70,7 @@ pub(super) fn seed_root(world: &mut World<'_>, root_id: RootId) -> Result<JobEff
         activation: entry_activation.clone(),
         need: root.need,
     };
-    outputs.push(FactKey::Executable(entry_executable.clone()));
+    outputs.push(FactKey::Executable(entry_executable));
     follow_up.push(Job::LowerFunction(root.function));
     follow_up.push(Job::PlanEntryDispatch(root.function));
     follow_up.push(Job::AnalyzeActivation(entry_activation.clone()));
@@ -79,17 +78,9 @@ pub(super) fn seed_root(world: &mut World<'_>, root_id: RootId) -> Result<JobEff
         reads: settled_uses(reads),
         outputs,
         activation_input_contributions: vec![(entry_activation, root.input.clone())],
-        return_demand_contributions: vec![(entry_executable, runtime_demand_for_need(root.need))],
         follow_up,
         ..JobEffects::default()
     })
-}
-
-fn runtime_demand_for_need(need: ExecutableNeed) -> RuntimeDemand {
-    match need {
-        ExecutableNeed::Value => RuntimeDemand::whole(),
-        ExecutableNeed::TupleFields(arity) => RuntimeDemand::tuple_fields(vec![RuntimeDemand::whole(); arity]),
-    }
 }
 
 /// Seeds the existence facts for a latent executable's activation — one reached

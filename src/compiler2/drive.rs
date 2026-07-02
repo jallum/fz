@@ -68,22 +68,17 @@ pub enum FactKey {
     CallSiteTargets(CallSiteKey),
     CallSiteSummary(CallSiteKey),
     Executable(ExecutableKey),
-    ReturnDemand(ExecutableKey),
     BackendProgram(RootId),
     NativeProgram(RootId),
 }
 
 impl ClaimShape for FactKey {
     /// The fixpoint-evidence facts whose stores maintain a monotone join: an
-    /// activation's return ascends by union (`ActivationMap::define_return`), its
-    /// body-input evidence ascends by the cross-publisher widen
-    /// (`ActivationInputMap`), and its return demand ascends by the demand join.
-    /// Every other fact's content overwrites.
+    /// activation's return ascends by union (`ActivationMap::define_return`), and
+    /// its body-input evidence ascends by the cross-publisher widen
+    /// (`ActivationInputMap`). Every other fact's content overwrites.
     fn is_cumulative(&self) -> bool {
-        matches!(
-            self,
-            FactKey::ReturnType(_) | FactKey::ActivationInputs(_) | FactKey::ReturnDemand(_)
-        )
+        matches!(self, FactKey::ReturnType(_) | FactKey::ActivationInputs(_))
     }
 }
 
@@ -96,7 +91,6 @@ pub(crate) struct JobEffects {
     pub(crate) outputs: Vec<FactKey>,
     pub(crate) changed: Vec<FactKey>,
     pub(crate) activation_input_contributions: Vec<(ActivationKey, Vec<super::types::Ty>)>,
-    pub(crate) return_demand_contributions: Vec<(ExecutableKey, super::semantic::RuntimeDemand)>,
     pub(crate) follow_up: Vec<Job>,
 }
 

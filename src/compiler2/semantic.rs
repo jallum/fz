@@ -586,8 +586,7 @@ struct ContributionSlot<P, V> {
 }
 
 /// A multi-publisher contribution store: each key's value is the join over
-/// every publisher's contribution. `ActivationInputMap` and `ReturnDemandMap`
-/// are its two instances, differing only in (key, value, join context).
+/// every publisher's contribution. `ActivationInputMap` is its instance.
 ///
 /// The store does NOT own a per-publisher output-key index. The scheduler's
 /// work graph already tracks every job's published facts under the identical
@@ -624,10 +623,6 @@ impl<K> Default for ContributionReplace<K> {
 /// The activation-input contribution store: per-publisher body input evidence,
 /// joined pointwise by union over the shared type store.
 pub type ActivationInputMap<P> = ContributionMap<ActivationKey, P, Vec<Ty>>;
-
-/// The return-demand contribution store: per-caller `ReturnDemand(E)` evidence,
-/// joined by the demand lattice's least upper bound.
-pub type ReturnDemandMap<P> = ContributionMap<ExecutableKey, P, RuntimeDemand>;
 
 /// One publisher's entry for a key in a conclusion's `next` map.
 enum SlotEntry<V> {
@@ -1092,15 +1087,6 @@ mod tests {
         ActivationKey::from_inputs(root, function, &[any, any], world.types_mut())
     }
 
-    fn test_executable(world: &mut World<'_>, name: &str) -> ExecutableKey {
-        let root = world.submit_root(None, name.to_string(), 0, ExecutableNeed::Value);
-        let function = world.root_function(root);
-        ExecutableKey {
-            activation: ActivationKey::from_inputs(root, function, &[], world.types_mut()),
-            need: ExecutableNeed::Value,
-        }
-    }
-
     #[test]
     fn callsite_targets_ignore_type_payload_ascent() {
         let tel = ConfiguredTelemetry::new();
@@ -1496,133 +1482,6 @@ mod tests {
                 escape: true,
             }),
             "whole-value callable demand must keep any exact surfaces we already proved",
-        );
-    }
-
-    #[test]
-    fn return_demand_map_joins_two_publishers_by_lub() {
-        let tel = ConfiguredTelemetry::new();
-        let mut world = World::new(&tel);
-        let mut demands = ReturnDemandMap::new();
-        let executable = test_executable(&mut world, "joined");
-        let int = world.types_mut().int();
-        let shape_demand = RuntimeDemand::tuple_fields(vec![RuntimeDemand::whole(), RuntimeDemand::ignore()]);
-        let callable_demand = RuntimeDemand::callable(resolved_surface(&[int], world.types_mut()));
-
-        let first = demands.conclude(
-            &mut (),
-            "caller_a",
-            HashSet::new(),
-            HashMap::from([(executable.clone(), shape_demand.clone())]),
-            false,
-        );
-        assert!(
-            first.changed_keys.contains(&executable),
-            "first contribution moves the aggregate off bottom",
-        );
-
-        let second = demands.conclude(
-            &mut (),
-            "caller_b",
-            HashSet::new(),
-            HashMap::from([(executable.clone(), callable_demand.clone())]),
-            false,
-        );
-
-        assert!(
-            second.changed_keys.contains(&executable),
-            "a second publisher's independent callable axis must move the joined demand",
-        );
-        assert_eq!(
-            demands.get(&executable).cloned().unwrap_or_else(RuntimeDemand::ignore),
-            shape_demand.join(&callable_demand),
-            "ReturnDemand(E) is the lub over every caller contribution",
-        );
-    }
-
-    #[test]
-    fn return_demand_map_retracts_one_publisher_and_reports_only_real_aggregate_moves() {
-        let tel = ConfiguredTelemetry::new();
-        let mut world = World::new(&tel);
-        let mut demands = ReturnDemandMap::new();
-        let executable = test_executable(&mut world, "retract");
-
-        let caller_a = demands.conclude(
-            &mut (),
-            "caller_a",
-            HashSet::new(),
-            HashMap::from([(executable.clone(), RuntimeDemand::whole())]),
-            false,
-        );
-        let caller_b = demands.conclude(
-            &mut (),
-            "caller_b",
-            HashSet::new(),
-            HashMap::from([(executable.clone(), RuntimeDemand::whole())]),
-            false,
-        );
-
-        let redundant_retract = demands.conclude(&mut (), "caller_b", caller_b.output_keys, HashMap::new(), false);
-        assert!(
-            !redundant_retract.changed_keys.contains(&executable),
-            "removing one of two equal top contributions leaves the aggregate unchanged",
-        );
-        assert_eq!(
-            demands.get(&executable).cloned().unwrap_or_else(RuntimeDemand::ignore),
-            RuntimeDemand::whole()
-        );
-
-        let final_retract = demands.conclude(&mut (), "caller_a", caller_a.output_keys, HashMap::new(), false);
-        assert!(
-            final_retract.changed_keys.contains(&executable),
-            "removing the final publisher moves the aggregate to bottom",
-        );
-        assert_eq!(
-            demands.get(&executable).cloned().unwrap_or_else(RuntimeDemand::ignore),
-            RuntimeDemand::ignore(),
-            "empty ReturnDemand join is bottom",
-        );
-    }
-
-    #[test]
-    fn return_demand_map_extend_never_lowers_a_standing_contribution() {
-        let tel = ConfiguredTelemetry::new();
-        let mut world = World::new(&tel);
-        let mut demands = ReturnDemandMap::new();
-        let executable = test_executable(&mut world, "extend");
-
-        demands.extend(
-            &mut (),
-            "blocked_caller",
-            HashMap::from([(executable.clone(), RuntimeDemand::whole())]),
-        );
-        let lowered = demands.extend(
-            &mut (),
-            "blocked_caller",
-            HashMap::from([(executable.clone(), RuntimeDemand::ignore())]),
-        );
-
-        assert!(
-            !lowered.changed_keys.contains(&executable),
-            "a waiting publisher extends by join and cannot recant an existing demand",
-        );
-        assert_eq!(
-            demands.get(&executable).cloned().unwrap_or_else(RuntimeDemand::ignore),
-            RuntimeDemand::whole()
-        );
-    }
-
-    #[test]
-    fn return_demand_map_missing_key_reads_as_bottom() {
-        let tel = ConfiguredTelemetry::new();
-        let mut world = World::new(&tel);
-        let demands = ReturnDemandMap::<&'static str>::new();
-        let executable = test_executable(&mut world, "bottom");
-
-        assert_eq!(
-            demands.get(&executable).cloned().unwrap_or_else(RuntimeDemand::ignore),
-            RuntimeDemand::ignore(),
-            "ReturnDemand(E) starts at the lattice bottom before any caller contributes",
         );
     }
 

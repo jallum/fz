@@ -266,7 +266,6 @@ pub(super) fn analyze_activation(world: &mut World<'_>, activation: &ActivationK
         changed: dedupe_facts(changed),
         activation_input_contributions,
         follow_up: follow_up.into_iter().collect(),
-        ..JobEffects::default()
     })
 }
 
