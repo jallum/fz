@@ -797,6 +797,16 @@ impl PullSession {
                 self.return_demands.remove(target);
             }
         }
+        debug_assert_eq!(
+            self.return_demand_contributors
+                .get(target)
+                .is_some_and(|c| !c.is_empty()),
+            self.return_demands.contains_key(target),
+            "return_demand_contributors[target] and return_demands must stay in lockstep: a \
+             target is present in one iff present in the other (absent from both = \
+             not-yet-observed; present in both = observed, possibly joined to an `ignore` \
+             marker). A target present in only one map means the two fell out of sync."
+        );
         if changed && !settled_members.contains(target) {
             self.invalidate_demand_derived_products(target)
         } else {
