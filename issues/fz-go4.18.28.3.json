@@ -2,14 +2,15 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-07-02T22:34:38Z",
   "created": "2026-07-02T20:48:47Z",
   "description": "Census phase-2, the one non-transport timeout: 00277_enum_tier0_fixture goes telemetry-silent at 0.30s then burns 120s+ (census exit 124) inside analyze_activation -\u003e define_callsite_summary -\u003e Types::is_equivalent -\u003e is_subtype -\u003e Descr::is_empty_memo -\u003e emptiness::tuple_clause_empty -\u003e SELF-RECURSIVE phi_tuple (6606/6673 samples) churning Descr::diff/intersect/dnf_intersect — an exponential tuple-emptiness blowup in src/compiler2/types/emptiness.rs. is_empty_memo memoizes only at the top; the recursion re-derives per phi node. FIX direction: memoize/canonicalize per recursive phi node, or worklist-bound the diff-based emptiness (finite Descr universe). Acceptance: 00277 sub-second; no other fixture's emptiness answers change (types-layer unit tests + suite green). Single-query blowup, NOT fixpoint churn — the census explicitly distinguished it from the convergence-runaway family.",
   "id": "fz-go4.18.28.3",
   "labels": [],
   "parent": "fz-go4.18.28",
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Tuple-clause emptiness: exponential phi_tuple self-recursion times out 00277",
   "type": "bug",
-  "updated_at": "2026-07-02T20:51:25Z"
+  "updated_at": "2026-07-02T22:34:38Z"
 }
