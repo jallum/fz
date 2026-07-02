@@ -10,9 +10,15 @@
   "id": "fz-go4.18.18",
   "labels": [],
   "parent": "fz-go4.18",
+  "comments": [
+    {
+      "text": "Re-scoped context: the discarded-placeholder materialization is a PREMATURE-READ symptom of the .18.22 founding defect (artifact reads demand before its SCC settles). Post-.18.22, materialization waits on settled demand by construction — re-measure before implementing; expected to close as subsumed.",
+      "timestamp": "2026-07-02T12:17:32Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "First MaterializedExecutable production is a discarded under-filled placeholder (2x per executable)",
   "type": "bug",
-  "updated_at": "2026-07-02T03:01:03Z"
+  "updated_at": "2026-07-02T12:17:32Z"
 }
