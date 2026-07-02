@@ -5,6 +5,7 @@
     "fz-go4.18.28.2",
     "fz-go4.18.9"
   ],
+  "closed_at": "2026-07-02T22:43:25Z",
   "created": "2026-07-02T20:48:46Z",
   "description": "The census keystone (fz-go4.18.28 phase 2; measured at 0cb890e95). project_transport_component_product (jobs/transport.rs:741-900) performs, FOR EVERY ANCHOR POSITION, a global re-solve: expands the full executable closure, rebuilds the whole ShapeConstraintGraph (:842-858), solves the whole union (:860), computes shapes for ALL components (:870) — then keeps only the anchor's component and DISCARDS the rest; record_transport_component (pull.rs:825) memoizes anchor-key-only. Measured: per-solve cost is FLAT vs component size and LINEAR in global executable count (12.5ms@60 execs -\u003e 26ms@146 -\u003e 54ms@272 -\u003e ~105ms) =\u003e O(components x global) quadratic; transport_component gap-sums dominate every violator (range_map 5.33/5.87s wall over 427 solves; map_family 31.2/36.2s over 1205; predicate_search 96.4/117s over 1785; 00420 1113 solves @105ms unfinished at cap = the \u003e30min). identical=0, duplicates=0 — pure volume x unit cost, NOT churn.\n\nFIX: solve once per settled closure (epoch), record EVERY component's shape/callable/boundary facts from that one solve, and index the memo by member position instead of anchor-only. The solve already computes everything it discards — this is recording, not new derivation. Acceptance (minimal-work doctrine): global-solve count ~1 per closure epoch per fixture trace; end products byte-identical; per-fixture walls: range_map -5.3s, range_enumerable -2.3s, map_family -31s, predicate_search -96s, 00420 timeout -\u003e seconds; census violation tier shrinks accordingly; suite green 3x under the 2m bound; clippy 0. SEQUENCING: blocks fz-go4.18.9 (same producer). Collapses the fz-go4.22 AOT-grind bucket.",
   "id": "fz-go4.18.28.1",
@@ -17,8 +18,8 @@
     }
   ],
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Transport: solve the shape graph once per settled closure; record ALL components, not just the anchor's",
   "type": "bug",
-  "updated_at": "2026-07-02T22:11:33Z"
+  "updated_at": "2026-07-02T22:43:25Z"
 }
