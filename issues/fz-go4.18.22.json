@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [
     "fz-go4.18.17",
@@ -13,8 +13,8 @@
   "labels": [],
   "parent": "fz-go4.18",
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "Return-demand join is non-convergent (period-2 orbit); base termination relies on schedule-frozen cone wipes — make the join convergent by construction",
   "type": "bug",
-  "updated_at": "2026-07-02T03:01:04Z"
+  "updated_at": "2026-07-02T05:54:39Z"
 }
