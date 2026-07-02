@@ -22,11 +22,15 @@
     {
       "text": "PROBE RESULT (fz-go4.18.22.1): GO-WITH-CONSTRAINTS. Design inputs binding on the implementation: (1) SCC derivation from SETTLED call-edge facts (materialized call edges + callable-flow resolutions), never from live demand reads — probe measured SCC membership drift on fz_f98 via mid-ascent keying; (2) the demand-edge graph = direct callee reads UNION callable-flow/boundary-resolution contribution edges (17% of edges are the latter; 57/00420 targets invisible at the :193 read site); (3) whole-program SCCs are the NORM (75-97% of demanded set) and ACCEPTED because ascent depth \u003c= ~5 (probe-measured; median 1) — add a debug ascent-round budget (e.g. assert \u003c= 32) instead of widening; (4) the no-contributor case (delivery-reached continuations) KEEPS the whole-by-need bootstrap AT SETTLE TIME (absence is a distinct cell and was never the bug — the bug is the MID-ASCENT active-seed + floor); (5) expected payoffs to MEASURE and report: 00420 churn 3588 productions -\u003e bounded rounds (if its drive drops toward \u003c1s that is the fz-f98.14 headline), the 9-fixture cycling census -\u003e 0, matrix redness collapse.",
       "timestamp": "2026-07-02T13:44:07Z"
+    },
+    {
+      "text": "CORRECTNESS AUDIT: PASS-WITH-NITS overall, but finding F1 is REWORK-BEFORE-FOLD by the epic's own standard (latent schedule-protected under-demand = the bug pattern; exposure is NEW vs parent since the deleted wavefront hook covered it). F1 — STALE-CALLER WINDOW: inside produce_runtime_demand_product, replace_settled_return_demand_contributions runs BEFORE record_settled_runtime_demand; when member M's contribution moves an EXTERNAL callee K's join, invalidate_demand_derived_products(K) transitively walks runtime_demand_dependents back into the members — a no-op on M (memo not yet written) — then M's memo is recorded carrying a value derived against K_old's input demands; K re-settles larger; NOTHING re-derives M (the old record_latest_runtime_demands/invalidate_runtime_demand_dependents hook is deleted; K's re-settle cone walks callees, M is a caller). The in-code ordering comment covers only direct member targets, not the transitive walk from a changed non-member. Fix shape (auditor's): track invalidations landing on members during the contribution-publication step and REFUSE to memoize those members (leave absent -\u003e next pull re-settles the cone against K_new), or re-settle in place. N1: DEMAND_ASCENT_ROUND_BUDGET is debug_assert-only — release-mode non-monotone regression is a silent hang; make it a hard error. N2 confirmed: fz_f98 arrow-keying wobble (Ty(319)/Ty(320)) is .18.21's open residual. Unadvertised win recorded: parent PANICS on fz2 build of fz_f98 (fn_ctx.rs:844 OOB); this commit builds it clean. All else sound: falsified-assertion fallout verified two-layer-covered in transport; monotonicity + sticky bootstrap sound; epoch gate sound; 930/0/28 x2.",
+      "timestamp": "2026-07-02T16:14:45Z"
     }
   ],
   "priority": 1,
   "status": "in_progress",
   "title": "Model RuntimeDemand as an SCC-settled monotone fixpoint (the ExecutableEffects pattern); delete the seed/floor/in-flight-retraction compensators",
   "type": "bug",
-  "updated_at": "2026-07-02T13:44:07Z"
+  "updated_at": "2026-07-02T16:14:45Z"
 }
