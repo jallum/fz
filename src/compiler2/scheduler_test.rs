@@ -412,6 +412,146 @@ fn compiler2_scheduler_complete_enqueues_follow_up_jobs_once() {
 }
 
 #[test]
+fn compiler2_scheduler_follow_up_of_standing_conclusion_coalesces_instead_of_rerunning() {
+    let mut scheduler = TestScheduler::new();
+    let producer = 1_u32;
+    let requester = 2_u32;
+
+    // The producer concludes; its facts stand and none of its reads move.
+    complete(
+        &mut scheduler,
+        producer,
+        HashSet::from([current("src")]),
+        HashSet::new(),
+        vec!["fact"],
+        vec!["fact"],
+        Vec::new(),
+    );
+
+    // A late demand for the same producer must coalesce with the standing
+    // conclusion: a re-run would be byte-identical (the fact already exists,
+    // no read revision moved, nothing rebased it).
+    let step = complete(
+        &mut scheduler,
+        requester,
+        HashSet::new(),
+        HashSet::new(),
+        Vec::new(),
+        Vec::new(),
+        vec![producer],
+    );
+
+    assert!(
+        step.enqueued.is_empty(),
+        "a concluded producer with unmoved reads must not re-run on a late follow-up demand"
+    );
+    assert_eq!(
+        step.coalesced,
+        vec![producer],
+        "the late demand should be reported as coalescing with the standing conclusion"
+    );
+    assert_eq!(scheduler.pop(), None, "no work should reach the agenda");
+}
+
+#[test]
+fn compiler2_scheduler_follow_up_reruns_producer_whose_read_revision_moved() {
+    let mut scheduler = TestScheduler::new();
+    let source = 1_u32;
+    let producer = 2_u32;
+    let requester = 3_u32;
+
+    complete(
+        &mut scheduler,
+        source,
+        HashSet::new(),
+        HashSet::new(),
+        vec!["src"],
+        vec!["src"],
+        Vec::new(),
+    );
+    complete(
+        &mut scheduler,
+        producer,
+        HashSet::from([current("src")]),
+        HashSet::new(),
+        vec!["fact"],
+        vec!["fact"],
+        Vec::new(),
+    );
+
+    // The producer's read moves: the change wave enqueues (and rebases) it.
+    let moved = complete(
+        &mut scheduler,
+        source,
+        HashSet::new(),
+        HashSet::new(),
+        vec!["src"],
+        vec!["src"],
+        Vec::new(),
+    );
+    assert_eq!(
+        moved.enqueued,
+        vec![producer],
+        "a changed read revision must wake the reader"
+    );
+    assert_eq!(scheduler.pop(), Some(producer));
+    assert!(
+        scheduler.rebased(&producer),
+        "a replacing content change shifts the reader"
+    );
+
+    // The producer popped but has not re-concluded from the shifted ground:
+    // a follow-up demand must still run it.
+    let step = complete(
+        &mut scheduler,
+        requester,
+        HashSet::new(),
+        HashSet::new(),
+        Vec::new(),
+        Vec::new(),
+        vec![producer],
+    );
+    assert_eq!(
+        step.enqueued,
+        vec![producer],
+        "a rebased producer has no standing conclusion; the demand must run it"
+    );
+}
+
+#[test]
+fn compiler2_scheduler_follow_up_reruns_waiting_producer() {
+    let mut scheduler = TestScheduler::new();
+    let producer = 1_u32;
+    let requester = 2_u32;
+
+    // The producer's last completion was a wait, not a conclusion.
+    complete(
+        &mut scheduler,
+        producer,
+        HashSet::from([current("src")]),
+        HashSet::from([current("dep")]),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    );
+
+    let step = complete(
+        &mut scheduler,
+        requester,
+        HashSet::new(),
+        HashSet::new(),
+        Vec::new(),
+        Vec::new(),
+        vec![producer],
+    );
+    assert_eq!(
+        step.enqueued,
+        vec![producer],
+        "a waiting producer has not concluded; a follow-up demand must run it"
+    );
+}
+
+#[test]
 fn compiler2_scheduler_reports_blocked_exact_facts() {
     let mut scheduler = TestScheduler::new();
 

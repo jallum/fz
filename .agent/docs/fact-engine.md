@@ -45,6 +45,11 @@ follow_up legacy jobs to enqueue now
 A job that cannot proceed records `waits` and returns. Legacy jobs may also
 name `follow_up` jobs, but new artifact producers must not use that mechanism:
 artifact work is demanded by `ProductKey` through the pull driver below.
+A follow-up is a demand that a producer run, not a changed-revision wake: one
+naming a job whose conclusion still stands — it concluded and no fact it reads
+moved since (`Scheduler::conclusion_stands`) — coalesces with that standing
+conclusion instead of re-running it byte-identically. First runs, waiting
+jobs, and rebased jobs still enqueue.
 Blocked work is not an error; exact waits are how ordering emerges without a
 separate phase schedule.
 
@@ -97,6 +102,7 @@ while let Some(job) = agenda.pop():
         else      replace reads/waits/claims (retraction final)
         classify each change: ascent -> wake; shift -> rebase + wake
         enqueue dependents, then legacy follow_ups
+            (a follow_up whose target's conclusion stands coalesces, no re-run)
 ```
 
 The loop ends as `Resolved` (agenda empty, no waiters), `Unresolved { waits }`
