@@ -7,9 +7,15 @@
   "id": "fz-go4.18.22.1",
   "labels": [],
   "parent": "fz-go4.18.22",
+  "comments": [
+    {
+      "text": "-m",
+      "timestamp": "2026-07-02T13:42:37Z"
+    }
+  ],
   "priority": 1,
   "status": "in_progress",
   "title": "Feasibility probe: demand-SCC sizes and ascent depth across the corpus (no fix)",
   "type": "task",
-  "updated_at": "2026-07-02T13:25:10Z"
+  "updated_at": "2026-07-02T13:42:37Z"
 }
