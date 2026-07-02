@@ -29,8 +29,8 @@ use super::super::pull::{ProductKey, ProductValue, PullOutcome, PullSession, Pul
 use super::super::scheduler::FatalError;
 use super::super::semantic::{ActivationAnalysis, CallSiteKey, CallTargetSummary, SelectedCallee, ShapeDemand};
 use super::super::transport::{
-    ActivationSymbol, CodegenLaneRepr, CodegenSeam, CodegenSeamFact, ExecutableSymbol, LaneId, ShapeDescr, ShapeId,
-    TransportPlan, TransportPosition,
+    ActivationSymbol, BoundaryFacts, BoundaryId, CallableFacts, CallableId, CodegenLaneRepr, CodegenSeam,
+    CodegenSeamFact, ExecutableSymbol, LaneId, ShapeDescr, ShapeId, TransportPosition,
 };
 use super::super::types::{Ty, Types};
 use super::super::world::World;
@@ -111,7 +111,8 @@ pub(crate) fn produce_materialized_executable_product(
     if !waits.is_empty() {
         return PullOutcome::Waiting(waits);
     }
-    let transport_plan = session_transport_plan(world, session, executable);
+    let codegen_seam_facts = session_codegen_publication_seam_facts(world, session);
+    let transport_plan = session_transport_lookup(session, &codegen_seam_facts);
     let call_edges = materialize_call_edges(
         world,
         session.root(),
@@ -341,8 +342,12 @@ pub(crate) fn produce_abi_executable_product(
     if !waits.is_empty() {
         return PullOutcome::Waiting(waits);
     }
-    materialized.transport = session_materialized_executable_transport(session, executable, world.types());
-    let transport_plan = session_transport_plan(world, session, executable);
+    // `required_executable_transport_facts_waits` only reads `session`, so the
+    // transport recorded above is still current: nothing settled in between
+    // that would change it, and recomputing it here would just repeat the same
+    // per-production scan for an identical answer.
+    let codegen_seam_facts = session_codegen_publication_seam_facts(world, session);
+    let transport_plan = session_transport_lookup(session, &codegen_seam_facts);
     let plan = build_executable_abi_plan(world, executable, &materialized, &transport_plan);
     let abi = build_abi_executable(&materialized, &plan)
         .expect("per-executable ABI derivation should not require root fan-in");
@@ -362,7 +367,7 @@ struct PrunedLoweredBody {
 }
 
 fn materialized_executable_transport(
-    positions_by_executable: &HashMap<ExecutableSymbol, Vec<TransportPosition>>,
+    positions: impl Iterator<Item = TransportPosition>,
     executable: &ExecutableKey,
     types: &Types,
 ) -> MaterializedExecutableTransport {
@@ -374,12 +379,8 @@ fn materialized_executable_transport(
     let mut entry_capture_positions = Vec::new();
     let mut call_arg_positions = Vec::new();
     let mut value_positions = Vec::new();
-    for position in positions_by_executable
-        .get(&symbol)
-        .map(Vec::as_slice)
-        .unwrap_or_default()
-    {
-        match position {
+    for position in positions {
+        match &position {
             TransportPosition::ExecutableInput { .. } => input_positions.push(position.clone()),
             TransportPosition::ExecutableReturn { .. } => return_position = Some(position.clone()),
             TransportPosition::ResumePayload { .. } => resume_positions.push(position.clone()),
@@ -414,43 +415,51 @@ fn session_materialized_executable_transport(
     executable: &ExecutableKey,
     types: &Types,
 ) -> MaterializedExecutableTransport {
-    let mut positions_by_executable = HashMap::<ExecutableSymbol, Vec<TransportPosition>>::new();
-    let mut positions = session.transport_shapes().keys().cloned().collect::<HashSet<_>>();
+    let symbol = transport_executable_symbol(executable, types);
+    let mut positions = session
+        .transport_shapes()
+        .keys()
+        .filter(|position| *transport_position_executable(position) == symbol)
+        .cloned()
+        .collect::<HashSet<_>>();
     positions.extend(
         session
             .demanded_transport_positions()
             .iter()
             .filter(|position| {
-                matches!(
-                    position,
-                    TransportPosition::EntryCapture { .. } | TransportPosition::ResumePayload { .. }
-                )
+                *transport_position_executable(position) == symbol
+                    && matches!(
+                        position,
+                        TransportPosition::EntryCapture { .. } | TransportPosition::ResumePayload { .. }
+                    )
             })
             .cloned(),
     );
-    for position in positions {
-        positions_by_executable
-            .entry(transport_position_executable(&position).clone())
-            .or_default()
-            .push(position);
-    }
-    materialized_executable_transport(&positions_by_executable, executable, types)
+    materialized_executable_transport(positions.into_iter(), executable, types)
 }
 
-fn session_transport_plan(world: &World<'_>, session: &PullSession, entry_executable: &ExecutableKey) -> TransportPlan {
-    let mut executable_membership = session
-        .demanded_executables()
-        .iter()
-        .map(|executable| transport_executable_symbol(executable, world.types()))
-        .collect::<Vec<_>>();
-    executable_membership.sort_by_key(transport_executable_sort_key);
-    let codegen_seam_facts = session_codegen_publication_seam_facts(world, session);
-    TransportPlan {
-        entry: transport_executable_symbol(entry_executable, world.types()),
-        executable_membership: executable_membership.into_boxed_slice(),
-        positions: session.transport_shapes().clone(),
-        callables: session.callable_facts_inventory().clone(),
-        boundaries: session.boundary_facts_inventory().clone(),
+/// A per-production view onto the session's already-settled transport facts,
+/// borrowed straight from `PullSession` instead of cloned into an owned
+/// `TransportPlan`. Every consumer in this file does single-key lookups or a
+/// linear scan of `codegen_seam_facts`; none of them read `TransportPlan`'s
+/// `entry` or `executable_membership` fields (those exist for the root-level
+/// plan, built once per root, not for this per-executable path), so this
+/// lookup carries only what materialized/ABI production actually reads.
+struct ArtifactTransportLookup<'a> {
+    positions: &'a HashMap<TransportPosition, ShapeId>,
+    callables: &'a HashMap<CallableId, CallableFacts>,
+    boundaries: &'a HashMap<BoundaryId, BoundaryFacts>,
+    codegen_seam_facts: &'a [CodegenSeamFact],
+}
+
+fn session_transport_lookup<'a>(
+    session: &'a PullSession,
+    codegen_seam_facts: &'a [CodegenSeamFact],
+) -> ArtifactTransportLookup<'a> {
+    ArtifactTransportLookup {
+        positions: session.transport_shapes(),
+        callables: session.callable_facts_inventory(),
+        boundaries: session.boundary_facts_inventory(),
         codegen_seam_facts,
     }
 }
@@ -489,8 +498,69 @@ fn session_codegen_publication_seam_facts(world: &World<'_>, session: &PullSessi
             push_session_publication_codegen_seam(publication, descr.published_value_lane, &mut out);
         }
     }
-    out.sort_by_key(|fact| format!("{fact:?}"));
+    // A structural key, not a `format!("{fact:?}")` comparator: the fields
+    // already carry stable numeric/interned identity, so comparing them
+    // directly gives the same deterministic order without formatting (and
+    // allocating a `String` for) every fact on every production.
+    out.sort_by_key(codegen_seam_fact_sort_key);
     out.into_boxed_slice()
+}
+
+type CodegenSeamOwnerKey = (u8, u32, Vec<Ty>, u8, usize, u32);
+type CodegenSeamSortKey = (u8, CodegenSeamOwnerKey, u32, u32, u32, u32, u8);
+
+fn codegen_seam_fact_sort_key(fact: &CodegenSeamFact) -> CodegenSeamSortKey {
+    let (kind, owner, secondary, tertiary) = codegen_seam_kind_key(&fact.seam);
+    (
+        kind,
+        owner,
+        secondary,
+        tertiary,
+        fact.shape.map(ShapeId::as_u32).unwrap_or(u32::MAX),
+        fact.lane.as_u32(),
+        codegen_lane_repr_rank(fact.repr),
+    )
+}
+
+fn executable_owner_key(executable: &ExecutableSymbol) -> CodegenSeamOwnerKey {
+    let (function, inputs, need0, need1) = transport_executable_sort_key(executable);
+    (0, function, inputs, need0, need1, 0)
+}
+
+fn boundary_owner_key(boundary: BoundaryId) -> CodegenSeamOwnerKey {
+    (1, 0, Vec::new(), 0, 0, boundary.as_u32())
+}
+
+fn codegen_seam_kind_key(seam: &CodegenSeam) -> (u8, CodegenSeamOwnerKey, u32, u32) {
+    match seam {
+        CodegenSeam::FunctionEntry {
+            executable,
+            semantic_index,
+        } => (0, executable_owner_key(executable), *semantic_index as u32, 0),
+        CodegenSeam::BlockParam { executable, entry } => (1, executable_owner_key(executable), entry.as_u32(), 0),
+        CodegenSeam::ReturnDelivery { executable } => (2, executable_owner_key(executable), 0, 0),
+        CodegenSeam::ContinuationEntry {
+            executable,
+            callsite,
+            entry,
+        } => (3, executable_owner_key(executable), callsite.as_u32(), entry.as_u32()),
+        CodegenSeam::ReturnContinuation { executable, callsite } => {
+            (4, executable_owner_key(executable), callsite.as_u32(), 0)
+        }
+        CodegenSeam::TailCall { executable, callsite } => (5, executable_owner_key(executable), callsite.as_u32(), 0),
+        CodegenSeam::CallableBoundary { boundary } => (6, boundary_owner_key(*boundary), 0, 0),
+        CodegenSeam::ExternBoundary { executable } => (7, executable_owner_key(executable), 0, 0),
+        CodegenSeam::FirstClassPublication { boundary } => (8, boundary_owner_key(*boundary), 0, 0),
+    }
+}
+
+fn codegen_lane_repr_rank(repr: CodegenLaneRepr) -> u8 {
+    match repr {
+        CodegenLaneRepr::ValueRef => 0,
+        CodegenLaneRepr::RawInt => 1,
+        CodegenLaneRepr::RawF64 => 2,
+        CodegenLaneRepr::RawAtom => 3,
+    }
 }
 
 fn push_session_publication_codegen_seam(
@@ -1158,7 +1228,7 @@ fn transport_executable_sort_key(executable: &ExecutableSymbol) -> TransportExec
 fn materialize_call_edges(
     world: &mut World<'_>,
     root_id: RootId,
-    transport_plan: &TransportPlan,
+    transport_plan: &ArtifactTransportLookup<'_>,
     executable: &ExecutableKey,
     analysis: &ActivationAnalysis,
     body: &LoweredBody,
@@ -1220,7 +1290,7 @@ fn materialize_call_edges(
 fn materialize_direct_call_edge(
     world: &mut World<'_>,
     root_id: RootId,
-    transport_plan: &TransportPlan,
+    transport_plan: &ArtifactTransportLookup<'_>,
     executable: &ExecutableKey,
     analysis: &ActivationAnalysis,
     need: ExecutableNeed,
@@ -1315,7 +1385,7 @@ fn materialize_direct_call_edge(
 fn materialize_closure_call_edge(
     world: &mut World<'_>,
     root_id: RootId,
-    transport_plan: &TransportPlan,
+    transport_plan: &ArtifactTransportLookup<'_>,
     executable: &ExecutableKey,
     analysis: &ActivationAnalysis,
     need: ExecutableNeed,
@@ -1371,7 +1441,7 @@ fn materialize_closure_call_edge(
 fn materialize_transport_closure_call_edge(
     world: &mut World<'_>,
     root_id: RootId,
-    transport_plan: &TransportPlan,
+    transport_plan: &ArtifactTransportLookup<'_>,
     executable: &ExecutableKey,
     analysis: &ActivationAnalysis,
     callsite: CallSiteId,
@@ -1468,7 +1538,7 @@ fn materialize_transport_closure_call_edge(
 
 fn boundary_resolutions_for_closure_call(
     world: &World<'_>,
-    transport_plan: &TransportPlan,
+    transport_plan: &ArtifactTransportLookup<'_>,
     caller_symbol: &ExecutableSymbol,
     callsite: CallSiteId,
     args: &[CallArg],
@@ -1521,7 +1591,7 @@ fn direct_edge_resolutions_for_surface(
 fn lower_materialized_call_target(
     world: &mut World<'_>,
     root_id: RootId,
-    transport_plan: &TransportPlan,
+    transport_plan: &ArtifactTransportLookup<'_>,
     executable: &ExecutableKey,
     analysis: &ActivationAnalysis,
     need: ExecutableNeed,
@@ -1584,7 +1654,7 @@ fn lower_materialized_call_target(
 fn call_return_flow(
     world: &World<'_>,
     root_id: RootId,
-    transport_plan: &TransportPlan,
+    transport_plan: &ArtifactTransportLookup<'_>,
     executable: &ExecutableKey,
     callee: &CallTarget<ExecutableKey>,
     callsite: CallSiteId,
@@ -1642,7 +1712,7 @@ fn call_return_flow(
 fn require_transport_position(
     world: &World<'_>,
     root_id: RootId,
-    transport_plan: &TransportPlan,
+    transport_plan: &ArtifactTransportLookup<'_>,
     position: &TransportPosition,
 ) -> Result<ShapeId, FatalError> {
     transport_plan.positions.get(position).copied().ok_or_else(|| {
@@ -2054,7 +2124,7 @@ fn build_executable_abi_plan(
     world: &mut World<'_>,
     _key: &ExecutableKey,
     executable: &MaterializedExecutable,
-    transport_plan: &TransportPlan,
+    transport_plan: &ArtifactTransportLookup<'_>,
 ) -> ExecutableAbiPlan {
     let param_reprs = executable
         .transport
@@ -2069,7 +2139,7 @@ fn build_executable_abi_plan(
                 return Vec::new();
             };
             let publication_reprs =
-                function_entry_publication_reprs(&transport_plan.codegen_seam_facts, symbol, *semantic_index);
+                function_entry_publication_reprs(transport_plan.codegen_seam_facts, symbol, *semantic_index);
             if !publication_reprs.is_empty() {
                 return publication_reprs;
             }
@@ -2082,7 +2152,7 @@ fn build_executable_abi_plan(
                 .map(|(leaf_shape, lane)| {
                     seam_repr_for_lane_or_default(
                         world,
-                        &transport_plan.codegen_seam_facts,
+                        transport_plan.codegen_seam_facts,
                         |seam| {
                             matches!(
                                 seam,
@@ -2127,13 +2197,13 @@ fn build_executable_abi_plan(
                         continue;
                     };
                     let publication_reprs =
-                        function_entry_publication_reprs(&transport_plan.codegen_seam_facts, symbol, *semantic_index);
+                        function_entry_publication_reprs(transport_plan.codegen_seam_facts, symbol, *semantic_index);
                     let repr = if let [repr] = publication_reprs.as_slice() {
                         *repr
                     } else {
                         seam_repr_for_lane_or_default(
                             world,
-                            &transport_plan.codegen_seam_facts,
+                            transport_plan.codegen_seam_facts,
                             |seam| {
                                 matches!(
                                     seam,
