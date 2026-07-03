@@ -4071,17 +4071,10 @@ fn compiler2_transport_plan_publishes_enum_take_reduce_while_multi_surface_calla
             if !publications.is_empty() {
                 return None;
             }
-            let function_name = match position {
-                TransportPosition::ExecutableInput { executable, .. }
-                | TransportPosition::ExecutableReturn { executable }
-                | TransportPosition::CallArg { executable, .. }
-                | TransportPosition::Value { executable, .. }
-                | TransportPosition::EntryCapture { executable, .. }
-                | TransportPosition::ResumePayload { executable, .. }
-                | TransportPosition::ReturnPayload { executable, .. } => {
-                    world.function_ref(executable.activation.function).name.clone()
-                }
-            };
+            let function_name = world
+                .function_ref(position.executable().activation.function)
+                .name
+                .clone();
             function_name.contains("reduce_while").then_some((
                 function_name,
                 position.clone(),
@@ -5184,7 +5177,7 @@ fn assert_plan_executable_references_are_root_scoped(
         "the root plan entry must be part of executable membership: {membership:?}"
     );
     for position in session.transport_shapes().keys() {
-        let executable = position_executable(position);
+        let executable = position.executable();
         assert!(
             membership.contains(executable),
             "transport position should reference only root-member executables: {position:?}"
@@ -5206,18 +5199,6 @@ fn assert_plan_executable_references_are_root_scoped(
                 fact.seam
             );
         }
-    }
-}
-
-fn position_executable(position: &TransportPosition) -> &super::transport::ExecutableSymbol {
-    match position {
-        TransportPosition::ExecutableInput { executable, .. }
-        | TransportPosition::ExecutableReturn { executable }
-        | TransportPosition::ResumePayload { executable, .. }
-        | TransportPosition::ReturnPayload { executable, .. }
-        | TransportPosition::CallArg { executable, .. }
-        | TransportPosition::EntryCapture { executable, .. }
-        | TransportPosition::Value { executable, .. } => executable,
     }
 }
 

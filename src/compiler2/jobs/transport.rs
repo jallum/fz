@@ -1252,15 +1252,7 @@ fn executable_key_for_transport_position(
     position: &TransportPosition,
     types: &mut Types,
 ) -> ExecutableKey {
-    let symbol = match position {
-        TransportPosition::ExecutableInput { executable, .. }
-        | TransportPosition::ExecutableReturn { executable }
-        | TransportPosition::ResumePayload { executable, .. }
-        | TransportPosition::ReturnPayload { executable, .. }
-        | TransportPosition::CallArg { executable, .. }
-        | TransportPosition::EntryCapture { executable, .. }
-        | TransportPosition::Value { executable, .. } => executable,
-    };
+    let symbol = position.executable();
     ExecutableKey {
         activation: ActivationKey::from_inputs(root, symbol.activation.function, &symbol.activation.input, types),
         need: symbol.need,

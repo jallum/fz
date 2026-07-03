@@ -733,7 +733,7 @@ impl PullSession {
 
     /// Every position with a recorded shape whose OWNING executable is
     /// `symbol` -- the keyed view maintained in lockstep with
-    /// `transport_shapes`, replacing the per-production filter-scan of the
+    /// `transport_shapes`, avoiding a per-production filter-scan of the
     /// whole inventory.
     pub fn transport_shape_positions_for(&self, symbol: &ExecutableSymbol) -> impl Iterator<Item = &TransportPosition> {
         self.transport_shapes_by_symbol.get(symbol).into_iter().flatten()
