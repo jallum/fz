@@ -117,10 +117,11 @@ contribution/callsite normalizers (`normalize_contributions`,
 `define_callsite_summary`) call the *same* `address_inputs`, so every
 compiler2-side surface lands in one canonical frame.
 
-The activation key's result side is currently a `none()` placeholder: a key is
-minted from inputs only, dispatch is on inputs, and nothing keys on the result.
-The activation's real pending return lives in the `ReturnType` fact (an
-`Option`, where "unknown" is distinct from the type `none`). `from_inputs` is the
+The activation key's result side is the addressed result var `r0`
+(`types.result_alpha()`) — an unknown to resolve, never a `none()` fallback: a
+key is minted from inputs only, dispatch is on inputs, and nothing keys on the
+result. The activation's real pending return lives in the `ReturnType` fact
+(an `Option`, where "unknown" is distinct from the type `none`). `from_inputs` is the
 single mint shared by `World::canonical_activation_key` and every other
 key-construction site; `realpha_inputs` carries a key minted elsewhere (a flow
 edge, a cloned summary) back onto the canonical addresses, and is idempotent on

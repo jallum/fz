@@ -19,8 +19,9 @@ Artifact readiness is pulled entirely by product keys.
 An **activation** is `ActivationKey { root, function, arrow: Ty }`: one
 function specialized for one root at one canonical input shape. The canonical
 inputs are the parameter side of an interned arrow type (`arrow_params`); the
-result side is a `none()` sentinel today and becomes the addressed result `r0`
-in fz-hwn.27.6. Read the inputs with `key.inputs(types)` / `key.input_len(types)`
+result side is the addressed result var `r0` — "return not yet known", an
+unknown to resolve, never a `none()` fallback. Read the inputs with
+`key.inputs(types)` / `key.input_len(types)`
 and build a key from raw inputs with `ActivationKey::from_inputs`. Demand and
 evidence are separate facts:
 

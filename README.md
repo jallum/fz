@@ -490,8 +490,8 @@ fz2 run --dump native=/tmp/quicksort.native fixtures2/behavior/quicksort.fz
 ```
 
 Compiler2 dumps are file sinks installed on a `run`, `interp`, or `build`
-command. The supported dump kinds are `activations`, `types`, `materialized`,
-`abi`, `backend`, `native`, `fnir`, and `clif`.
+command. The supported dump kinds are `activations`, `types`, `backend`,
+`native`, `fnir`, and `clif`.
 
 Run/build/interp commands always submit the root source directly to compiler2.
 If the program pulls in built-in runtime modules such as `Utf8` or `Enum`, the

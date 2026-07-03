@@ -80,9 +80,10 @@ semantic-closure seal or root transport-plan fact: the legacy
 `DeriveRuntimeDemand` jobs and their `SemanticClosed`/`TransportPlan`/
 `ExecutableTransport`/`RuntimeDemand`/`InputSources` facts were deleted
 (`fz-go4.18.4`); the product pull path is the only artifact path.
-The temporary planning artifact `../pull-based.html` has been retired; this
-doc, `northstar.html`, and the closed `fz-go4.16.*` tickets are the durable
-source of truth for the pull artifact path.
+The planning artifact `../pull-based.html` documents the pull-based design
+and remains available as a reference; this doc, `northstar.html`, and the
+closed `fz-go4.16.*` tickets are the durable source of truth for the pull
+artifact path as built.
 
 `RootEntry.kind` decides where a root is allowed to go:
 
