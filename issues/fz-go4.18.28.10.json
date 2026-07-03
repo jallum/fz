@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-07-03T00:45:20Z",
@@ -8,8 +8,8 @@
   "labels": [],
   "parent": "fz-go4.18.28",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "session_materialized_executable_transport scans the whole transport_shapes inventory + runs 6 sorts per production",
   "type": "task",
-  "updated_at": "2026-07-03T00:45:20Z"
+  "updated_at": "2026-07-03T00:50:33Z"
 }
