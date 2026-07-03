@@ -27,7 +27,7 @@ impl ModuleId {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct FunctionId(u32);
 
 impl FunctionId {
@@ -56,7 +56,7 @@ pub(crate) fn function_id_of_closure_target(ct: ClosureTarget) -> FunctionId {
     FunctionId(ct.0)
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct RootId(u32);
 
 impl RootId {
@@ -70,7 +70,7 @@ impl RootId {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ActivationKey {
     pub root: RootId,
     pub function: FunctionId,
@@ -118,13 +118,13 @@ impl ActivationKey {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ExecutableNeed {
     Value,
     TupleFields(usize),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ExecutableKey {
     pub activation: ActivationKey,
     pub need: ExecutableNeed,

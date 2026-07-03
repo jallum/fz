@@ -15,7 +15,7 @@ use crate::type_expr::ResolvedSpecDecl;
 use super::identity::{FunctionId, ModuleId};
 use super::types::Ty;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ValueId(u32);
 
 impl ValueId {

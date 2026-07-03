@@ -641,11 +641,11 @@ impl TransportFactsBuilder {
             .callables
             .into_iter()
             .map(|(id, mut draft)| {
-                draft.resolutions.sort_by_key(executable_symbol_sort_key);
+                draft.resolutions.sort_by_cached_key(executable_symbol_sort_key);
                 draft
                     .direct_surfaces
-                    .sort_by_key(|surface| surface.iter().map(|shape| shape.as_u32()).collect::<Vec<_>>());
-                draft.direct_edges.sort_by_key(callable_direct_edge_sort_key);
+                    .sort_by_cached_key(|surface| surface.iter().map(|shape| shape.as_u32()).collect::<Vec<_>>());
+                draft.direct_edges.sort_by_cached_key(callable_direct_edge_sort_key);
                 draft.boundary_ids.sort_by_key(|boundary| boundary.as_u32());
                 (
                     id,
@@ -662,7 +662,7 @@ impl TransportFactsBuilder {
             .boundaries
             .into_iter()
             .map(|(id, mut draft)| {
-                draft.resolutions.sort_by_key(executable_symbol_sort_key);
+                draft.resolutions.sort_by_cached_key(executable_symbol_sort_key);
                 (
                     id,
                     BoundaryFacts {
@@ -1501,25 +1501,24 @@ fn seed_callable_capture_inputs(
     shape_graph: &mut ShapeConstraintGraph,
     memo: &mut ProjectionMemo,
 ) {
-    let mut flows = contexts
+    // Keyed by (executable, capture-producing value) -- `callable_flows` is
+    // already a `HashMap<ValueId, CallableFlowFact>` per executable, so that
+    // pair is a structural identity with no collisions to arbitrate: unlike a
+    // display-string or partial-field sort key feeding a dedup, this ordering
+    // can never merge two DIFFERENT flows or need a tie-break between them.
+    // The `BTreeMap` gives deterministic visitation order (both `contexts` and
+    // `callable_flows` are hash-order today) without a per-comparison sort.
+    let flows: BTreeMap<(ExecutableKey, ValueId), (&ExecutableKey, &ExecutableContext, &CallableFlowFact)> = contexts
         .iter()
         .flat_map(|(executable, context)| {
             context
                 .runtime_demand
                 .callable_flows
-                .values()
-                .map(move |flow| (executable, context, flow))
+                .iter()
+                .map(move |(value, flow)| ((executable.clone(), *value), (executable, context, flow)))
         })
-        .collect::<Vec<_>>();
-    flows.sort_by_key(|(executable, _, flow)| {
-        (
-            executable.activation.function.as_u32(),
-            executable.activation.arrow,
-            flow.function.as_u32(),
-            flow.captures.iter().map(|value| value.as_u32()).collect::<Vec<_>>(),
-        )
-    });
-    flows.dedup_by(|left, right| left.0 == right.0 && left.2 == right.2);
+        .collect();
+    let flows = flows.into_values().collect::<Vec<_>>();
 
     for (executable, context, flow) in flows {
         if flow.captures.is_empty() || flow.resolutions.is_empty() {
@@ -2241,7 +2240,7 @@ fn collect_delivered_value_sources(body: &LoweredBody) -> HashMap<ValueId, Trans
                     DeliveredValueSource::CallsiteReturn(callsite) => TransportSource::CallsiteReturn(callsite),
                 })
                 .collect::<Vec<_>>();
-            sources.sort_by_key(transport_source_sort_key);
+            sources.sort_by_key(delivered_value_source_sort_key);
             sources.dedup();
             let source = match sources.as_slice() {
                 [source] => source.clone(),
@@ -2252,8 +2251,23 @@ fn collect_delivered_value_sources(body: &LoweredBody) -> HashMap<ValueId, Trans
         .collect()
 }
 
-fn transport_source_sort_key(source: &TransportSource) -> String {
-    format!("{source:?}")
+/// Canonical structural order over the two `TransportSource` variants this
+/// function ever constructs (`LocalValue`/`CallsiteReturn`, straight from
+/// `DeliveredValueSource`). Sorting on this -- not on the `Debug` render --
+/// makes `TransportSource::Join` identity a pure function of the source SET:
+/// the same set of local values/callsite returns always canonicalizes to the
+/// same slice regardless of which order the join discovered them in, so two
+/// joins over the same set always compare equal and hash equal. The variant
+/// tag plus its raw id is exactly the structural content a `Debug` string
+/// would have spelled out, without allocating one per comparison.
+fn delivered_value_source_sort_key(source: &TransportSource) -> (u8, u32) {
+    match source {
+        TransportSource::LocalValue(value) => (0, value.as_u32()),
+        TransportSource::CallsiteReturn(callsite) => (1, callsite.as_u32()),
+        other => unreachable!(
+            "collect_delivered_value_sources only ever constructs LocalValue/CallsiteReturn sources, found {other:?}"
+        ),
+    }
 }
 
 fn collect_value_sources(body: &LoweredBody) -> HashMap<ValueId, TransportSource> {
@@ -3403,7 +3417,7 @@ fn surface_shapes(
                 .into_boxed_slice()
         })
         .collect::<Vec<_>>();
-    rendered.sort_by_key(|surface| surface.iter().map(|shape| shape.as_u32()).collect::<Vec<_>>());
+    rendered.sort_by_cached_key(|surface| surface.iter().map(|shape| shape.as_u32()).collect::<Vec<_>>());
     rendered
 }
 
