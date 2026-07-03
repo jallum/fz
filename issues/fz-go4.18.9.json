@@ -4,14 +4,15 @@
     "fz-go4.18.28.1"
   ],
   "blocks": [],
+  "closed_at": "2026-07-03T01:15:36Z",
   "created": "2026-06-30T19:31:35Z",
   "description": "Surfaced while porting transport-contract tests to the product flow (fz-go4.18.8). Three tests assert EAGER-COMPLETENESS properties that the demand-driven product TransportPlan does not currently reproduce. Determine for EACH whether it is (a) a RECONSTRUCTION gap (the shape exists in the per-executable products but session_transport_plan / session.transport_shapes() doesn't aggregate it -\u003e fix the product accessor), (b) a REAL PRODUCT GAP (the product genuinely under-derives the shape -\u003e a latent correctness gap in the path native/JIT/AOT now depend on -\u003e fix the product), or (c) the product is correctly LEANER and the eager-completeness assertion is a legacy artifact -\u003e retarget the test to the correct per-executable product surface. These were ported to the product flow but #[ignore]'d (NOT dropped, NOT weakened) pending this investigation; un-ignore as each is resolved.\n\nTHE 3 (precise divergences, from the .18.8 port):\n1. compiler2_transport_plan_proves_protocol_dispatched_escaped_continuation_capture_surface — product runtime-demand for run/2[1] yields surface Ty(53) (non-int) vs legacy int; product session.demanded_executables() frontier appears to include a different/generic run/2 activation than the legacy root_executable_frontier.\n2. compiler2_transport_plan_keeps_callable_resolution_capture_abi_correlated — a callable resolution's ExecutableInput capture-shape position (FunctionId 174) is ABSENT from the product plan positions (session.transport_shapes()); legacy eagerly shaped it.\n3. compiler2_transport_plan_preserves_enumerable_suspend_continuation_captures — the product boundary for the suspended callable publishes a published_return_shape WITHOUT the callable-return child the legacy plan carried.\n\nPossibly connected to the callable boxing seam / hwn grounding work. Blocks nothing (the .18.8 bulk + .18.4 deletion proceed with these #[ignore]'d), but it is a real product-completeness question worth resolving — P1 because it may indicate the shipped product path under-derives advanced-callable transport.",
   "id": "fz-go4.18.9",
   "labels": [],
   "parent": "fz-go4.18",
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Product transport-plan completeness for advanced callable captures (escaped-continuation / callable-resolution / suspend-continuation)",
   "type": "bug",
-  "updated_at": "2026-07-03T00:50:33Z"
+  "updated_at": "2026-07-03T01:15:36Z"
 }
