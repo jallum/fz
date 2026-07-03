@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-07-03T20:07:13Z",
+  "description": "Two adjacent items named by the fz-go4.18.33 removable-code audit (at b5b341bff), both in transport_contract_test.rs, both out of that ticket's blast radius. (1) seam_executable (~:5205, single caller) matches CodegenSeam — a DIFFERENT enum with no executable() accessor and two None-returning arms (CallableBoundary, FirstClassPublication). Add impl CodegenSeam { fn executable(\u0026self) -\u003e Option\u003c\u0026ExecutableSymbol\u003e } for parity with TransportPosition::executable and route seam_executable through it. (2) transport_position_is_semantic (~:5218, single caller at :2317) exhaustively matches all 7 TransportPosition variants and returns true in every arm — tautological today (audit proved by deletion: suite stayed 963/0/24). It is load-bearing ONLY as a future-variant guard (a new variant would force explicit true/false classification). Decide: delete it, or keep with a comment stating it exists solely to force classification of future variants. Test-only; two-lane audit.",
+  "id": "fz-go4.18.37",
+  "labels": [],
+  "parent": "fz-go4.18",
+  "priority": 3,
+  "status": "open",
+  "title": "CodegenSeam::executable accessor + review the tautological transport_position_is_semantic guard",
+  "type": "task",
+  "updated_at": "2026-07-03T20:07:13Z"
+}
