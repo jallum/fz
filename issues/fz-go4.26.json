@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-07-03T14:57:18Z",
@@ -8,8 +8,8 @@
   "labels": [],
   "parent": "fz-go4",
   "priority": 3,
-  "status": "open",
+  "status": "in_progress",
   "title": "MapSig has no persistence-boundary hygiene: map DNFs can accumulate duplicate/subsumed/empty clauses",
   "type": "task",
-  "updated_at": "2026-07-03T14:57:18Z"
+  "updated_at": "2026-07-03T16:28:45Z"
 }
