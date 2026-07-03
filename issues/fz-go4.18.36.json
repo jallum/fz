@@ -2,14 +2,15 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-07-03T21:36:51Z",
   "created": "2026-07-03T20:07:13Z",
   "description": "DONE (folded 2026-07-03, two-lane audited PASS/PASS). Hoisted the redundant per-arm executable binding out of transport_position_sort_key (jobs/transport.rs): let executable = position.executable() once, then the 7-arm match yields only (rank, first, second, index). Byte-identity proven per-variant by both the implementer and the correctness audit: the final 8-tuple (rank, executable.activation.function.as_u32(), input_structure_key, need.0, need.1, first, second, index) is character-for-character identical to parent; the secondary keys never referenced executable; position.executable() returns the same \u0026ExecutableSymbol borrow type. Both matches exhaustive (no wildcard) so a future variant fails to compile in both places. Net -11 lines; sort-order-stability tests green. Now two call sites of TransportPosition::executable in jobs/transport.rs, matching the fz-go4.18.33 single-accessor pattern.",
   "id": "fz-go4.18.36",
   "labels": [],
   "parent": "fz-go4.18",
   "priority": 3,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Delegate symbol extraction in transport_position_sort_key to TransportPosition::executable",
   "type": "task",
-  "updated_at": "2026-07-03T21:36:50Z"
+  "updated_at": "2026-07-03T21:36:51Z"
 }
