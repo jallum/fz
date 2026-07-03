@@ -405,6 +405,15 @@ pub struct SolvedTransportClosure {
     /// answers a pull -- see `covering_solve_consumed_revisions` and the
     /// freshness gate in `jobs::transport`.
     pub consumed_fact_revisions: HashMap<FactKey, u64>,
+    /// Owners of SESSION-product reads (`ClosureConsultLedger::executables`
+    /// in `jobs::transport`) this solve consulted while discovering
+    /// `executables`. Installed into the session's
+    /// `transport_closure_consult_dependents` ledger as the dense product
+    /// `consulted x executables` (see `record_solved_transport_closure`) and
+    /// retracted as that SAME product the moment this closure is dropped
+    /// (`drop_solved_transport_closure`) -- the ledger tracks exactly the
+    /// live closure's discovery graph, never a union of historical solves.
+    pub consulted: HashSet<ExecutableKey>,
 }
 
 #[derive(Debug)]
@@ -500,18 +509,28 @@ pub struct PullSession {
     // Reverse consulted-facts edges `consulted -> members`: every closure
     // solve that reads a session-channel fact (a RuntimeDemand product and
     // its callable_flows, or an IncomingInputSlot) belonging to `consulted`
-    // registers every member of the resulting closure here (see
-    // `record_transport_closure_consult`). `invalidate_transport_products`
-    // walks this index transitively so that ANY invalidation reaching a
-    // consulted executable also reaches every closure that consulted it --
-    // the discovery graph a closure solve reads and the invalidation graph
-    // that retracts stale products are the SAME graph by construction, not
-    // two independently-maintained channels that can drift out of step with
-    // the pull schedule. World facts (activation analyses, callsite
-    // summaries, lowered bodies, return types) have no push into the session;
-    // their movement is caught by the solve's revision snapshot
-    // (`SolvedTransportClosure::consumed_fact_revisions`), validated whenever
-    // a recorded solve answers a pull.
+    // installs every member of the resulting closure here, as the dense
+    // product `SolvedTransportClosure::consulted x SolvedTransportClosure::
+    // executables` (see `record_solved_transport_closure`).
+    // `invalidate_transport_products` walks this index transitively so that
+    // ANY invalidation reaching a consulted executable also reaches every
+    // closure that consulted it -- the discovery graph a closure solve reads
+    // and the invalidation graph that retracts stale products are the SAME
+    // graph by construction, not two independently-maintained channels that
+    // can drift out of step with the pull schedule. World facts (activation
+    // analyses, callsite summaries, lowered bodies, return types) have no
+    // push into the session; their movement is caught by the solve's
+    // revision snapshot (`SolvedTransportClosure::consumed_fact_revisions`),
+    // validated whenever a recorded solve answers a pull.
+    //
+    // LIFETIME: kept in lockstep with `solved_transport_closures` -- a
+    // closure installs its edges exactly when it enters the cover
+    // (`record_solved_transport_closure`) and every one of those edges is
+    // retracted exactly when the closure leaves the cover
+    // (`drop_solved_transport_closure`, including the displacement path and
+    // the epoch-wide `clear_solved_transport_closures` sweep). The ledger
+    // therefore always reflects the LIVE closures' discovery graph, never an
+    // accumulation of historical solves whose membership has since moved.
     transport_closure_consult_dependents: HashMap<ExecutableKey, HashSet<ExecutableKey>>,
     transport_positions_by_executable: HashMap<ExecutableKey, HashSet<TransportPosition>>,
     callable_facts: HashMap<CallableId, CallableFacts>,
@@ -1028,25 +1047,68 @@ impl PullSession {
         self.transport_components.insert(position, component);
     }
 
-    /// Register that a closure solve consulted `consulted`'s session-channel
-    /// facts (its RuntimeDemand product with callable_flows, or an
-    /// IncomingInputSlot) while discovering `member`, one of the closure's
-    /// own members. Called once per (consulted, member) pair for every
-    /// executable a solve reads -- see the `ClosureConsultLedger` in
-    /// `jobs::transport::solve_transport_closure`.
-    pub(crate) fn record_transport_closure_consult(&mut self, consulted: ExecutableKey, member: ExecutableKey) {
-        if consulted == member {
-            return;
-        }
+    /// Total `(consulted, member)` edge count currently live in
+    /// `transport_closure_consult_dependents` -- test/telemetry
+    /// observability for the ledger's lockstep pruning: bounded by the
+    /// LIVE closures' membership, never by the session's full solve
+    /// history.
+    #[cfg(test)]
+    pub(crate) fn transport_closure_consult_edge_count(&self) -> usize {
         self.transport_closure_consult_dependents
-            .entry(consulted)
-            .or_default()
-            .insert(member);
+            .values()
+            .map(HashSet::len)
+            .sum()
+    }
+
+    /// Install the dense consult product `closure.consulted x
+    /// closure.executables` into `transport_closure_consult_dependents`:
+    /// every `(consulted, member)` pair the closure's solve read while
+    /// discovering its membership. The mirror of
+    /// `remove_transport_closure_consult_edges` -- called only from
+    /// `record_solved_transport_closure`, so the two stay in lockstep by
+    /// construction (one call site installs, one call site retracts, both
+    /// keyed off the SAME closure value).
+    fn insert_transport_closure_consult_edges(&mut self, closure: &SolvedTransportClosure) {
+        for consulted in &closure.consulted {
+            let dependents = self
+                .transport_closure_consult_dependents
+                .entry(consulted.clone())
+                .or_default();
+            for member in &closure.executables {
+                if member != consulted {
+                    dependents.insert(member.clone());
+                }
+            }
+            if dependents.is_empty() {
+                self.transport_closure_consult_dependents.remove(consulted);
+            }
+        }
+    }
+
+    /// Retract exactly the edges `insert_transport_closure_consult_edges`
+    /// installed for this closure. Since closures are kept disjoint (a
+    /// member belongs to at most one recorded closure at a time), this
+    /// closure owns these `(consulted, member)` pairs outright -- no other
+    /// live closure can have contributed the same edge, so removal is safe
+    /// without a reference count.
+    fn remove_transport_closure_consult_edges(&mut self, closure: &SolvedTransportClosure) {
+        for consulted in &closure.consulted {
+            let Some(dependents) = self.transport_closure_consult_dependents.get_mut(consulted) else {
+                continue;
+            };
+            for member in &closure.executables {
+                dependents.remove(member);
+            }
+            if dependents.is_empty() {
+                self.transport_closure_consult_dependents.remove(consulted);
+            }
+        }
     }
 
     /// Record the full result of one shape-constraint solve. Within the epoch,
     /// closures stay disjoint by construction: any prior closure sharing a
-    /// member executable is dropped whole before the new cover is installed.
+    /// member executable is dropped whole -- cover AND consult edges -- before
+    /// the new cover and its own consult edges are installed.
     pub fn record_solved_transport_closure(&mut self, closure: SolvedTransportClosure) {
         let displaced = closure
             .executables
@@ -1061,6 +1123,7 @@ impl PullSession {
         for member in &closure.executables {
             self.transport_closure_cover.insert(member.clone(), id);
         }
+        self.insert_transport_closure_consult_edges(&closure);
         self.solved_transport_closures.insert(id, closure);
     }
 
@@ -1073,6 +1136,7 @@ impl PullSession {
                 self.transport_closure_cover.remove(member);
             }
         }
+        self.remove_transport_closure_consult_edges(&closure);
     }
 
     /// The transport-graph EPOCH boundary: a solve input moved somewhere, so
@@ -1080,9 +1144,20 @@ impl PullSession {
     /// (shapes, produced components) stand -- exactly the products the
     /// pre-movement graph already answered -- and are displaced separately by
     /// the targeted product invalidation walks.
-    fn clear_solved_transport_closures(&mut self) {
-        self.solved_transport_closures.clear();
+    ///
+    /// Consult edges are NOT retracted here: the caller
+    /// (`invalidate_transport_products`) still needs
+    /// `transport_closure_consult_dependents` intact to walk from the moved
+    /// executable to every closure that consulted it. The drained closures
+    /// are handed back so the caller can retract their edges once that walk
+    /// has finished -- deferred pruning, not skipped pruning.
+    #[must_use]
+    fn clear_solved_transport_closures(&mut self) -> Vec<SolvedTransportClosure> {
         self.transport_closure_cover.clear();
+        self.solved_transport_closures
+            .drain()
+            .map(|(_, closure)| closure)
+            .collect()
     }
 
     pub fn record_transport_shape(&mut self, position: TransportPosition, shape: ShapeId) {
@@ -1384,8 +1459,15 @@ impl PullSession {
     /// premature-absent hole: the discovery graph a closure solve reads and
     /// this invalidation graph are the SAME graph by construction, so a stale
     /// verdict can never survive the movement of a fact it was read from.
+    ///
+    /// The consult ledger itself is pruned AFTER the walk below finishes
+    /// reading it (see `clear_solved_transport_closures`): every closure this
+    /// movement displaces is drained up front, walked from as before, and
+    /// only then has its consult edges retracted -- so a closure that gets
+    /// re-solved later with different membership does not leave this
+    /// movement's edges standing forever.
     fn invalidate_transport_products(&mut self, executable: &ExecutableKey) {
-        self.clear_solved_transport_closures();
+        let displaced_closures = self.clear_solved_transport_closures();
         let mut stack = vec![executable.clone()];
         let mut seen = HashSet::new();
         while let Some(current) = stack.pop() {
@@ -1409,6 +1491,9 @@ impl PullSession {
                         .cloned(),
                 );
             }
+        }
+        for closure in &displaced_closures {
+            self.remove_transport_closure_consult_edges(closure);
         }
     }
 
@@ -3036,6 +3121,123 @@ mod tests {
         assert!(
             !session.transport_closure_covers(&old_only),
             "the displaced closure's other members must not keep a stale cover"
+        );
+    }
+
+    /// INTENT (fz-go4.18.28.13): a re-solve that shares a member with an
+    /// older closure but has DIFFERENT overall membership must displace the
+    /// older closure's consult edges along with its cover -- precisely,
+    /// leaving an unrelated LIVE closure's own edges untouched. Before this
+    /// fix, `record_transport_closure_consult` only ever grew the ledger:
+    /// `drop_solved_transport_closure` evicted the cover but never the
+    /// consult edges the dropped closure had installed, so a fact only the
+    /// old, now-gone membership ever consulted kept a dangling edge forever.
+    #[test]
+    fn transport_closure_consult_ledger_prunes_displaced_closure_on_resolve() {
+        let root = RootId::for_test(24);
+        let consulted_only_by_old = fake_executable_with_function(root, 240);
+        let shared_consulted = fake_executable_with_function(root, 241);
+        let shared_member = fake_executable_with_function(root, 242);
+        let old_only_member = fake_executable_with_function(root, 243);
+        let new_only_member = fake_executable_with_function(root, 244);
+        let untouched_member = fake_executable_with_function(root, 245);
+        let mut session = PullSession::new(root);
+
+        // An unrelated live closure elsewhere in the session -- shares no
+        // member with `old`, so `record_solved_transport_closure`'s
+        // disjointness rule must never touch it.
+        let mut untouched = SolvedTransportClosure::default();
+        untouched.executables.insert(untouched_member.clone());
+        untouched.consulted.insert(shared_consulted.clone());
+        session.record_solved_transport_closure(untouched);
+
+        // The old closure: two members, consulted by both
+        // `consulted_only_by_old` (exclusively) and `shared_consulted`.
+        let mut old = SolvedTransportClosure::default();
+        old.executables.insert(shared_member.clone());
+        old.executables.insert(old_only_member.clone());
+        old.consulted.insert(consulted_only_by_old);
+        old.consulted.insert(shared_consulted.clone());
+        session.record_solved_transport_closure(old);
+
+        assert_eq!(
+            session.transport_closure_consult_edge_count(),
+            5,
+            "untouched(1 consulted x 1 member) + old(2 consulted x 2 members) = 5 live edges"
+        );
+
+        // Re-solve `shared_member` with DIFFERENT membership: `old_only_member`
+        // drops out, `new_only_member` joins, and this closure was only ever
+        // consulted through `shared_consulted` -- `consulted_only_by_old` was
+        // never read by this solve. This is exactly the re-solve
+        // `jobs::transport::solve_transport_closure` performs: same
+        // `record_solved_transport_closure` call, sharing `shared_member`
+        // with the prior cover so the disjointness rule displaces `old`.
+        let mut new = SolvedTransportClosure::default();
+        new.executables.insert(shared_member.clone());
+        new.executables.insert(new_only_member.clone());
+        new.consulted.insert(shared_consulted);
+        session.record_solved_transport_closure(new);
+
+        assert!(session.transport_closure_covers(&shared_member));
+        assert!(session.transport_closure_covers(&new_only_member));
+        assert!(
+            !session.transport_closure_covers(&old_only_member),
+            "the displaced closure's dropped-out member must not keep a stale cover"
+        );
+        assert!(
+            session.transport_closure_covers(&untouched_member),
+            "the unrelated live closure must survive a disjoint re-solve"
+        );
+
+        assert_eq!(
+            session.transport_closure_consult_edge_count(),
+            3,
+            "untouched(1) + new(1 consulted x 2 members) = 3 live edges -- `old`'s edges from \
+             `consulted_only_by_old` (exclusive to the dropped membership) and its stale \
+             `shared_consulted -> old_only_member` edge must both be gone, not accumulated on \
+             top of `new`'s edges"
+        );
+    }
+
+    /// INTENT (fz-go4.18.28.13): the epoch-wide invalidation
+    /// (`invalidate_transport_products`) displaces every recorded closure at
+    /// once via `clear_solved_transport_closures`. The consult ledger must
+    /// track that SAME epoch boundary -- once the invalidation walk that
+    /// still needs the pre-clear edges has finished, every displaced
+    /// closure's edges must be retracted, not left to accumulate release
+    /// over release for the rest of the session (the `.28.5` audit's
+    /// "monotonically grows for the whole session" finding).
+    #[test]
+    fn transport_closure_consult_ledger_prunes_on_epoch_invalidation() {
+        let root = RootId::for_test(25);
+        let consulted = fake_executable_with_function(root, 250);
+        let member = fake_executable_with_function(root, 251);
+        let mut closure = SolvedTransportClosure::default();
+        closure.executables.insert(member.clone());
+        closure.consulted.insert(consulted);
+        let mut session = PullSession::new(root);
+        session.record_solved_transport_closure(closure);
+        assert_eq!(session.transport_closure_consult_edge_count(), 1);
+
+        // The epoch trigger: `member`'s settled demand moves, which routes
+        // through `invalidate_transport_products` -> `clear_solved_transport_
+        // closures`. The walk it drives still needs the pre-clear ledger (to
+        // reach `member` itself, a self-consult skip aside, and any other
+        // closure `consulted` fed into); once that walk finishes, the
+        // displaced closure's edges must be gone.
+        let settled = ExecutableRuntimeDemand::default();
+        let mut moved = ExecutableRuntimeDemand::default();
+        moved.input_demands.push(RuntimeDemand::default());
+        session.record_settled_runtime_demand(member.clone(), settled);
+        session.record_settled_runtime_demand(member, moved);
+
+        assert_eq!(
+            session.transport_closure_consult_edge_count(),
+            0,
+            "an epoch-wide invalidation must retract the displaced closure's consult edges too, \
+             not just clear its cover -- otherwise the ledger keeps growing forever across \
+             epochs even though no closure is left to justify the edge"
         );
     }
 

@@ -835,10 +835,11 @@ fn displace_covering_solve_if_stale(world: &World<'_>, session: &mut PullSession
 /// kind retracts:
 ///
 ///  - `executables`: owners of SESSION-product reads (RuntimeDemand values,
-///    IncomingInputSlot values). Cross-registered against the closure's
-///    membership (`record_transport_closure_consult`) so the session-side
-///    push events (`record_settled_runtime_demand`, `record_call_edge`)
-///    reach every member through `invalidate_transport_products`' walk.
+///    IncomingInputSlot values). Installed as `SolvedTransportClosure::
+///    consulted` and cross-registered against the closure's membership by
+///    `record_solved_transport_closure` so the session-side push events
+///    (`record_settled_runtime_demand`, `record_call_edge`) reach every
+///    member through `invalidate_transport_products`' walk.
 ///  - `fact_revisions`: WORLD-fact reads at the revision consumed
 ///    (first-read-wins; 0 = read before first publication, so a later
 ///    publication mismatches -- "not yet published" is a distinct state, not
@@ -886,7 +887,7 @@ fn solve_transport_closure(
     // this solve reads is recorded AT THE READ SITE -- session-product reads
     // register their owning executable, world-fact reads snapshot their
     // revision -- and on completion both channels are installed with the
-    // closure (`record_transport_closure_consult` +
+    // closure (`SolvedTransportClosure::consulted` +
     // `SolvedTransportClosure::consumed_fact_revisions`). The discovery graph
     // and the retraction graph are thereby the SAME graph by construction:
     // any movement of any consulted fact displaces every member this solve
@@ -1042,12 +1043,8 @@ fn solve_transport_closure(
 
     let mut closure = solved_closure_from_union(executables, &union, &component_shapes, world.types());
     closure.consumed_fact_revisions = ledger.fact_revisions;
+    closure.consulted = ledger.executables;
     emit_transport_closure_solved(world, &closure);
-    for consulted_executable in &ledger.executables {
-        for member in &closure.executables {
-            session.record_transport_closure_consult(consulted_executable.clone(), member.clone());
-        }
-    }
     session.record_solved_transport_closure(closure);
     Ok(())
 }
