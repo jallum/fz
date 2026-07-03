@@ -38,6 +38,7 @@ use super::super::transport::{
 };
 use super::super::types::Ty;
 use super::super::world::World;
+use super::artifact::{codegen_seam_fact_sort_key, transport_position_global_sort_key};
 
 const UNREACHABLE_CONTROL_ATOM: &str = "compiler2_unreachable_control";
 
@@ -920,16 +921,17 @@ pub(crate) fn symbolic_materialized_transport_plan(
         .iter()
         .map(|(position, shape)| (position.clone(), *shape))
         .collect::<Vec<_>>();
-    position_shapes.sort_by_key(|(position, _)| format!("{position:?}"));
+    // Structural keys, not `format!("{position:?}")` comparators: these are
+    // final-packaging sorts over the GLOBAL position set, and Debug-string
+    // keys recomputed per comparison were ~21% of the release compile. Cached
+    // because the key allocates (interned input types).
+    position_shapes.sort_by_cached_key(|(position, _)| transport_position_global_sort_key(position));
     let mut publication_boundaries = boundaries
         .iter()
         .flat_map(|(boundary, facts)| facts.publications.iter().cloned().map(|position| (position, *boundary)))
         .collect::<Vec<_>>();
-    publication_boundaries.sort_by(|left, right| {
-        format!("{:?}", left.0)
-            .cmp(&format!("{:?}", right.0))
-            .then_with(|| left.1.as_u32().cmp(&right.1.as_u32()))
-    });
+    publication_boundaries
+        .sort_by_cached_key(|(position, boundary)| (transport_position_global_sort_key(position), boundary.as_u32()));
     let codegen_seam_facts = symbolic_codegen_seam_facts(session, &position_shapes, world, boundaries);
     MaterializedTransportPlan {
         entry: ExecutableSymbol {
@@ -1104,7 +1106,10 @@ fn symbolic_codegen_seam_facts(
     for boundary in boundaries.keys().copied() {
         push_symbolic_boundary_codegen_seams(session, world, boundary, &mut out);
     }
-    out.sort_by_key(|fact| format!("{fact:?}"));
+    // Same structural key the session's codegen-seam-fact product uses
+    // (`jobs/artifact.rs`), so the plan's facts and the session product share
+    // one canonical order.
+    out.sort_by_cached_key(codegen_seam_fact_sort_key);
     out.into_boxed_slice()
 }
 

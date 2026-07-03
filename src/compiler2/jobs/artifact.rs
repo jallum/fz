@@ -526,15 +526,16 @@ fn session_codegen_publication_seam_facts(world: &World<'_>, session: &PullSessi
     // A structural key, not a `format!("{fact:?}")` comparator: the fields
     // already carry stable numeric/interned identity, so comparing them
     // directly gives the same deterministic order without formatting (and
-    // allocating a `String` for) every fact on every production.
-    out.sort_by_key(codegen_seam_fact_sort_key);
+    // allocating a `String` for) every fact on every production. Cached
+    // because the key still allocates its owner `Vec<Ty>` per element.
+    out.sort_by_cached_key(codegen_seam_fact_sort_key);
     out.into_boxed_slice()
 }
 
-type CodegenSeamOwnerKey = (u8, u32, Vec<Ty>, u8, usize, u32);
-type CodegenSeamSortKey = (u8, CodegenSeamOwnerKey, u32, u32, u32, u32, u8);
+pub(crate) type CodegenSeamOwnerKey = (u8, u32, Vec<Ty>, u8, usize, u32);
+pub(crate) type CodegenSeamSortKey = (u8, CodegenSeamOwnerKey, u32, u32, u32, u32, u8);
 
-fn codegen_seam_fact_sort_key(fact: &CodegenSeamFact) -> CodegenSeamSortKey {
+pub(crate) fn codegen_seam_fact_sort_key(fact: &CodegenSeamFact) -> CodegenSeamSortKey {
     let (kind, owner, secondary, tertiary) = codegen_seam_kind_key(&fact.seam);
     (
         kind,
@@ -1179,8 +1180,8 @@ fn sort_transport_positions(positions: &mut [TransportPosition]) {
     positions.sort_by_key(transport_position_local_sort_key);
 }
 
-type TransportPositionLocalSortKey = (u32, u32, usize);
-type TransportExecutableSortKey = (u32, Vec<Ty>, u8, usize);
+pub(crate) type TransportPositionLocalSortKey = (u32, u32, usize);
+pub(crate) type TransportExecutableSortKey = (u32, Vec<Ty>, u8, usize);
 
 fn transport_position_local_sort_key(position: &TransportPosition) -> TransportPositionLocalSortKey {
     match position {
@@ -1214,6 +1215,31 @@ fn transport_executable_sort_key(executable: &ExecutableSymbol) -> TransportExec
         executable.activation.input.to_vec(),
         need.0,
         need.1,
+    )
+}
+
+pub(crate) type TransportPositionGlobalSortKey = (TransportExecutableSortKey, u8, TransportPositionLocalSortKey);
+
+/// Canonical packaging order for a GLOBAL (cross-executable) set of
+/// `TransportPosition`s: the owning executable's structural key, then the
+/// variant discriminant, then the variant-local discriminants. Structural on
+/// interned ids, so PER-PROCESS deterministic -- the same guarantee the old
+/// `format!("{position:?}")` keys gave (Debug prints those same interned ids)
+/// without formatting every position on every comparison.
+pub(crate) fn transport_position_global_sort_key(position: &TransportPosition) -> TransportPositionGlobalSortKey {
+    let variant = match position {
+        TransportPosition::ExecutableInput { .. } => 0,
+        TransportPosition::ExecutableReturn { .. } => 1,
+        TransportPosition::ResumePayload { .. } => 2,
+        TransportPosition::ReturnPayload { .. } => 3,
+        TransportPosition::CallArg { .. } => 4,
+        TransportPosition::EntryCapture { .. } => 5,
+        TransportPosition::Value { .. } => 6,
+    };
+    (
+        transport_executable_sort_key(position.executable()),
+        variant,
+        transport_position_local_sort_key(position),
     )
 }
 
