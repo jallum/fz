@@ -2,14 +2,15 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-07-03T14:57:00Z",
   "created": "2026-07-02T21:41:03Z",
   "description": "Provenance hunt behind fz-go4.18.28.3 (measured at 0cb890e95 + .28.3 fix, via temp INTERN-SMELL instrumentation in TypeInterner::intern on 00277): 24 distinct descrs interned with smelly tuple DNFs — duplicate clauses, multi-pos clauses (up to 45 clauses/descr) — constructed by Types::intersect (15 hits) and Types::union (9 hits) from jobs/semantic.rs refine_call_return / refine_observed_return / join_evidence. Three concrete leaks, all at the Types persistence boundary where \u0026mut interner access exists:\n\n(1) intersect_dnf (mod.rs:1498-1530) does not dedup output clauses (A-or-A=A) or drop P-and-not-P contradictions — the unhygienic PARALLEL SIBLING of the dnf.rs hygiene landed in .28.3 (independently found by the .28.3 removable-code audit). Types::intersect, the PUBLIC API (mod.rs:751), routes through it, so the .28.3 invariant is partial by construction. Fix: give it the same construction hygiene AND evaluate UNIFYING the two clause-product implementations (two parallel intersect routines is itself a smell). Ride-along: the doc lead at .agent/docs/set-theoretic-types.md:55 ('DNF construction keeps clause lists hygienic') currently overclaims — make it true or scope it precisely.\n\n(2) TupleSig::intersect_pos (sigs.rs) merges same-arity tuples WITHOUT checking coordinate emptiness — unlike ListSig/ResourceSig which drop empty merges — so provably-empty clauses persist; arity-MISMATCHED pos pairs are pushed as 2-pos clauses (intersect_clauses mod.rs:1508 fallback) which are empty by construction yet persist and double every dnf_neg factor (the 20 two-pos clauses = the 2^20 in the 00277 census).\n\n(3) the fz-et8 semantic subsumption post-pass at union (absorption A-subset-B =\u003e A-or-B=B, old-world commit faab5aef5c) was DROPPED in the old-world-\u003ecompiler2 port while its comment survived — near-duplicate evidence-join clauses accumulate unboundedly across fixpoint iterations (39 clauses, 15 distinct). Decide restore-vs-not; either way correct the stale dnf.rs comments (dnf.rs:1 module header 'subsumption dedup' + dnf.rs:22 'runs as a post-pass at Descr::union' — no such pass exists in types/) to present-tense fact.\n\nACCEPTANCE: an interned descr never carries a duplicate, provably-empty, or subsumed tuple clause (assert-worthy invariant at intern in debug); 00277's biggest interned tuple DNF drops from 45 clauses to the distinct-and-live count; emptiness answers unchanged (lib green, fixture outputs byte-identical); the doc + comments read as present-tense facts. Relates: fz-go4.18.28.3 (downstream symptom fixed — its dnf.rs hygiene remains correct defense-in-depth since ephemeral in-query descrs never pass the interner). CONSOLIDATES former fz-go4.18.28.4 and fz-go4.23.",
   "id": "fz-go4.24",
   "labels": [],
   "parent": "fz-go4",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Types-layer persistence leaks garbage tuple clauses: duplicates, empty arity-mismatch multi-pos clauses, no subsumption (the 39-clause union behind the 00277 emptiness blowup)",
   "type": "bug",
-  "updated_at": "2026-07-03T14:10:23Z"
+  "updated_at": "2026-07-03T14:57:00Z"
 }
