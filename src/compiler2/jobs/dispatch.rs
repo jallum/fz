@@ -106,7 +106,7 @@ pub(super) fn plan_entry_dispatch(world: &mut World<'_>, function: FunctionId) -
         if world.has_fact(&module_fact) {
             reads.push(module_fact);
         } else {
-            return Ok(JobEffects::wait_on_current(module_fact, []));
+            return Ok(JobEffects::wait_on_current(module_fact));
         }
     }
     let mut waits = HashSet::new();

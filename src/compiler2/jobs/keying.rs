@@ -76,7 +76,7 @@ pub(super) fn derive_dispatch_mask(world: &mut World<'_>, function: FunctionId) 
     if !world.has_fact(&dispatch_fact) {
         // `EntryDispatch`'s sole producer arm is `Job::PlanEntryDispatch`
         // (`World::demand_fact_producer`).
-        return Ok(JobEffects::wait_on_current(dispatch_fact, []));
+        return Ok(JobEffects::wait_on_current(dispatch_fact));
     }
 
     let plan = world.entry_dispatch(function);

@@ -65,23 +65,11 @@ because a caller already knows which job to name.
 Blocked work is not an error; exact waits are how ordering emerges without a
 separate phase schedule.
 
-The scheduler still carries a `follow_up: Vec<Job>` field on `JobEffects` and
-a coalescing step in `Scheduler::complete` that enqueues it — a follow-up
-naming a job whose conclusion still stands (`Scheduler::conclusion_stands`)
-coalesces with that standing conclusion instead of re-running it
-byte-identically. No job constructs a non-empty `follow_up`; every production
-site that would once have named a producer directly instead records a bare
-wait (`JobEffects::wait_on_current(fact, [])`) and lets the fact->producer map
-restart it. This holds for every non-test call site, including the two
-call-through paths that used to build the `follow_up` list dynamically
-(`World::wait_for_function_definition`, `World::wait_for_type_decl`) and
-`World::demand_function_scope`, which now returns the bare `Vec<FactKey>` its
-one remaining caller (`publish_function_source_job`) actually reads instead of
-a `Vec<(FactKey, Job)>` whose job half nothing consumed.
-With every production `follow_up` list empty, the `follow_up` field itself,
-`Scheduler::complete`'s enqueue loop over it, and `Scheduler::conclusion_stands`
-are dead code ready for deletion — kept in place pending a follow-on commit
-that removes them, rather than deleted alongside this one.
+No job names another job to run. A job that cannot proceed records a bare
+wait (`JobEffects::wait_on_current(fact)`) and returns; the fact->producer map
+is what restarts it. `JobEffects` has no `follow_up` field — nothing in the
+engine or `World` enqueues a job by name from inside another job's
+completion.
 
 A job must record `reads` unconditionally for every fact its conclusion
 consulted, including a fact that was absent at read time. A read gated on

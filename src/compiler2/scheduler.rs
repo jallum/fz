@@ -138,7 +138,6 @@ where
         waits: HashSet<FactUse<F>>,
         outputs: Vec<F>,
         changed: Vec<F>,
-        follow_up: Vec<J>,
     ) -> AppliedStep<J, F> {
         let waiting = !waits.is_empty();
         // A conclusion discharges the rebase; a blocked run has not yet
@@ -231,37 +230,12 @@ where
                 );
             }
         }
-        for follow_up in follow_up {
-            // A follow-up is a demand that a producer run, not a
-            // changed-revision wake. When the producer's conclusion still
-            // stands, a re-run would be byte-identical, so the demand
-            // coalesces with the standing conclusion (job keys coalesce;
-            // changed revisions wake exactly the jobs that read them). First
-            // runs, waiting jobs, and rebased jobs all still enqueue.
-            if self.conclusion_stands(&follow_up) {
-                if coalesced_seen.insert(follow_up.clone()) {
-                    coalesced.push(follow_up);
-                }
-                continue;
-            }
-            self.enqueue_step(follow_up, &mut enqueued, &mut coalesced, &mut coalesced_seen);
-        }
-
         AppliedStep {
             changed: replaced.changed,
             enqueued,
             coalesced,
             blocked,
         }
-    }
-
-    /// Whether `job`'s last conclusion still describes the current ground: it
-    /// concluded, and no fact it reads has moved since — a replacing change or
-    /// retraction would have marked it rebased, and any content change
-    /// re-enqueued it the instant the change landed (`enqueue_dependents`), so
-    /// a concluded, un-rebased job would re-run byte-identically.
-    fn conclusion_stands(&self, job: &J) -> bool {
-        self.deps.concluded(job) && !self.rebased.contains(job)
     }
 
     fn enqueue_step(&mut self, job: J, enqueued: &mut Vec<J>, coalesced: &mut Vec<J>, coalesced_seen: &mut HashSet<J>) {

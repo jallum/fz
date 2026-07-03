@@ -91,14 +91,12 @@ pub(crate) struct JobEffects {
     pub(crate) outputs: Vec<FactKey>,
     pub(crate) changed: Vec<FactKey>,
     pub(crate) activation_input_contributions: Vec<(ActivationKey, Vec<super::types::Ty>)>,
-    pub(crate) follow_up: Vec<Job>,
 }
 
 impl JobEffects {
-    pub(crate) fn wait_on_current(fact: FactKey, follow_up: impl IntoIterator<Item = Job>) -> Self {
+    pub(crate) fn wait_on_current(fact: FactKey) -> Self {
         Self {
             waits: vec![FactUse::current(fact)],
-            follow_up: follow_up.into_iter().collect(),
             ..Self::default()
         }
     }
@@ -129,7 +127,7 @@ impl World<'_> {
     /// `NativeProgram`) have no arm: their demand rides the mapped facts that
     /// gate the job that co-produces them. Every fact with a single
     /// sole-producing job gets an arm here, even when that job is also the
-    /// blocked branch of a `wait_on_current(fact, [])` bare wait elsewhere —
+    /// blocked branch of a `wait_on_current(fact)` bare wait elsewhere —
     /// naming the producer once, in this map, is what keeps every such wait a
     /// pull instead of a job pushing another job by name.
     /// Returns how many producers were actually demanded.

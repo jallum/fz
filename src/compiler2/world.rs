@@ -477,9 +477,7 @@ impl<'a> World<'a> {
                 _ => None,
             })
             .collect();
-        let step = self
-            .work_graph
-            .complete(&job, reads, waits, outputs, changed, effects.follow_up);
+        let step = self.work_graph.complete(&job, reads, waits, outputs, changed);
         for key in analyzed_published {
             if self.fact_is_settled(&FactKey::ActivationAnalyzed(key.clone())) {
                 self.activation_frontier.remove(&key);
@@ -2082,7 +2080,7 @@ impl<'a> World<'a> {
     /// (`World::demand_fact_producer`); this bare wait lets the fact->producer
     /// map restart it instead of naming the job directly.
     pub(crate) fn wait_for_function_definition(&mut self, function: FunctionId) -> JobEffects {
-        JobEffects::wait_on_current(FactKey::FunctionDefined(function), [])
+        JobEffects::wait_on_current(FactKey::FunctionDefined(function))
     }
 
     /// Demands and waits on the module whose definition notes `module`'s
@@ -2093,7 +2091,7 @@ impl<'a> World<'a> {
     /// `ModuleDefined`; `ModuleDefined`'s sole producer arm is `Job::DefineModule`.
     pub(crate) fn wait_for_type_decl(&mut self, module: ModuleId) -> JobEffects {
         self.ensure_runtime_module(module);
-        JobEffects::wait_on_current(FactKey::ModuleDefined(module), [])
+        JobEffects::wait_on_current(FactKey::ModuleDefined(module))
     }
 
     pub fn fact_revision(&self, key: &FactKey) -> Option<u64> {

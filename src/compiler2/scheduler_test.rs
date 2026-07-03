@@ -31,9 +31,8 @@ fn complete(
     waits: HashSet<FactUse<&'static str>>,
     outputs: Vec<&'static str>,
     changed: Vec<&'static str>,
-    follow_up: Vec<u32>,
 ) -> AppliedStep<u32, &'static str> {
-    scheduler.complete(&job, reads, waits, outputs, changed, follow_up)
+    scheduler.complete(&job, reads, waits, outputs, changed)
 }
 
 #[test]
@@ -49,7 +48,6 @@ fn compiler2_scheduler_settled_presence_ignores_content_revision_bumps() {
         HashSet::from([settled_presence("summary")]),
         Vec::new(),
         Vec::new(),
-        Vec::new(),
     );
     let appeared = complete(
         &mut scheduler,
@@ -58,7 +56,6 @@ fn compiler2_scheduler_settled_presence_ignores_content_revision_bumps() {
         HashSet::new(),
         vec!["summary"],
         vec!["summary"],
-        Vec::new(),
     );
     assert_eq!(
         appeared.enqueued,
@@ -73,7 +70,6 @@ fn compiler2_scheduler_settled_presence_ignores_content_revision_bumps() {
         HashSet::new(),
         Vec::new(),
         Vec::new(),
-        Vec::new(),
     );
 
     let moved = complete(
@@ -83,7 +79,6 @@ fn compiler2_scheduler_settled_presence_ignores_content_revision_bumps() {
         HashSet::new(),
         vec!["summary"],
         vec!["summary"],
-        Vec::new(),
     );
     assert!(
         !moved.enqueued.contains(&waiter),
@@ -132,7 +127,6 @@ fn compiler2_scheduler_wakes_on_content_change_suppresses_stable_republication()
         HashSet::new(),
         Vec::new(),
         Vec::new(),
-        Vec::new(),
     );
     assert!(
         subscribe.changed.is_empty(),
@@ -154,7 +148,6 @@ fn compiler2_scheduler_wakes_on_content_change_suppresses_stable_republication()
         HashSet::new(),
         vec![fact],
         vec![fact],
-        Vec::new(),
     );
     assert_eq!(first.enqueued, vec![subscriber]);
     assert_eq!(
@@ -170,7 +163,6 @@ fn compiler2_scheduler_wakes_on_content_change_suppresses_stable_republication()
         HashSet::new(),
         HashSet::new(),
         vec![fact],
-        Vec::new(),
         Vec::new(),
     );
     assert!(
@@ -189,7 +181,6 @@ fn compiler2_scheduler_wakes_on_content_change_suppresses_stable_republication()
         HashSet::new(),
         vec![fact],
         vec![fact],
-        Vec::new(),
     );
     assert_eq!(third.enqueued, vec![subscriber]);
     assert_eq!(
@@ -213,7 +204,6 @@ fn compiler2_scheduler_retracts_outputs_a_job_stops_publishing() {
         HashSet::new(),
         Vec::new(),
         Vec::new(),
-        Vec::new(),
     );
     complete(
         &mut scheduler,
@@ -222,7 +212,6 @@ fn compiler2_scheduler_retracts_outputs_a_job_stops_publishing() {
         HashSet::new(),
         vec![fact],
         vec![fact],
-        Vec::new(),
     );
     assert_eq!(scheduler.facts().revision(&fact), Some(1));
     let _ = scheduler.pop();
@@ -232,7 +221,6 @@ fn compiler2_scheduler_retracts_outputs_a_job_stops_publishing() {
         writer,
         HashSet::new(),
         HashSet::new(),
-        Vec::new(),
         Vec::new(),
         Vec::new(),
     );
@@ -262,7 +250,6 @@ fn compiler2_scheduler_wakes_waiters_when_a_matching_fact_appears() {
         HashSet::from([current("foo")]),
         Vec::new(),
         Vec::new(),
-        Vec::new(),
     );
     let result = complete(
         &mut scheduler,
@@ -271,7 +258,6 @@ fn compiler2_scheduler_wakes_waiters_when_a_matching_fact_appears() {
         HashSet::new(),
         vec!["foo"],
         vec!["foo"],
-        Vec::new(),
     );
     assert_eq!(result.enqueued, vec![waiter]);
 }
@@ -288,7 +274,6 @@ fn compiler2_scheduler_parks_waiters_until_their_full_wait_set_is_satisfied() {
         HashSet::from([current("foo"), current("bar")]),
         Vec::new(),
         Vec::new(),
-        Vec::new(),
     );
 
     let foo = complete(
@@ -298,7 +283,6 @@ fn compiler2_scheduler_parks_waiters_until_their_full_wait_set_is_satisfied() {
         HashSet::new(),
         vec!["foo"],
         vec!["foo"],
-        Vec::new(),
     );
     assert!(
         foo.enqueued.is_empty(),
@@ -317,7 +301,6 @@ fn compiler2_scheduler_parks_waiters_until_their_full_wait_set_is_satisfied() {
         HashSet::new(),
         vec!["bar"],
         vec!["bar"],
-        Vec::new(),
     );
     assert_eq!(
         bar.enqueued,
@@ -342,7 +325,6 @@ fn compiler2_scheduler_has_unresolved_tracks_waiter_presence_without_materializi
         HashSet::from([current("foo")]),
         Vec::new(),
         Vec::new(),
-        Vec::new(),
     );
     assert!(
         scheduler.has_unresolved(),
@@ -356,7 +338,6 @@ fn compiler2_scheduler_has_unresolved_tracks_waiter_presence_without_materializi
         HashSet::new(),
         vec!["foo"],
         vec!["foo"],
-        Vec::new(),
     );
     assert_eq!(
         scheduler.pop(),
@@ -370,184 +351,10 @@ fn compiler2_scheduler_has_unresolved_tracks_waiter_presence_without_materializi
         HashSet::new(),
         Vec::new(),
         Vec::new(),
-        Vec::new(),
     );
     assert!(
         !scheduler.has_unresolved(),
         "once the waited-for fact appears and the waiter reruns, unresolved should clear"
-    );
-}
-
-#[test]
-fn compiler2_scheduler_complete_enqueues_follow_up_jobs_once() {
-    let mut scheduler = TestScheduler::new();
-    assert!(scheduler.enqueue(1));
-    assert!(scheduler.enqueue(2));
-
-    let step = complete(
-        &mut scheduler,
-        1,
-        HashSet::new(),
-        HashSet::new(),
-        Vec::new(),
-        Vec::new(),
-        vec![3, 3, 4],
-    );
-
-    assert_eq!(
-        step.enqueued,
-        vec![3, 4],
-        "follow-up jobs should be coalesced before they hit the agenda"
-    );
-    assert_eq!(
-        step.coalesced,
-        vec![3],
-        "duplicate follow-up jobs should be reported as coalesced work"
-    );
-    assert_eq!(scheduler.pop(), Some(1));
-    assert_eq!(scheduler.pop(), Some(2));
-    assert_eq!(scheduler.pop(), Some(3));
-    assert_eq!(scheduler.pop(), Some(4));
-    assert_eq!(scheduler.pop(), None);
-}
-
-#[test]
-fn compiler2_scheduler_follow_up_of_standing_conclusion_coalesces_instead_of_rerunning() {
-    let mut scheduler = TestScheduler::new();
-    let producer = 1_u32;
-    let requester = 2_u32;
-
-    // The producer concludes; its facts stand and none of its reads move.
-    complete(
-        &mut scheduler,
-        producer,
-        HashSet::from([current("src")]),
-        HashSet::new(),
-        vec!["fact"],
-        vec!["fact"],
-        Vec::new(),
-    );
-
-    // A late demand for the same producer must coalesce with the standing
-    // conclusion: a re-run would be byte-identical (the fact already exists,
-    // no read revision moved, nothing rebased it).
-    let step = complete(
-        &mut scheduler,
-        requester,
-        HashSet::new(),
-        HashSet::new(),
-        Vec::new(),
-        Vec::new(),
-        vec![producer],
-    );
-
-    assert!(
-        step.enqueued.is_empty(),
-        "a concluded producer with unmoved reads must not re-run on a late follow-up demand"
-    );
-    assert_eq!(
-        step.coalesced,
-        vec![producer],
-        "the late demand should be reported as coalescing with the standing conclusion"
-    );
-    assert_eq!(scheduler.pop(), None, "no work should reach the agenda");
-}
-
-#[test]
-fn compiler2_scheduler_follow_up_reruns_producer_whose_read_revision_moved() {
-    let mut scheduler = TestScheduler::new();
-    let source = 1_u32;
-    let producer = 2_u32;
-    let requester = 3_u32;
-
-    complete(
-        &mut scheduler,
-        source,
-        HashSet::new(),
-        HashSet::new(),
-        vec!["src"],
-        vec!["src"],
-        Vec::new(),
-    );
-    complete(
-        &mut scheduler,
-        producer,
-        HashSet::from([current("src")]),
-        HashSet::new(),
-        vec!["fact"],
-        vec!["fact"],
-        Vec::new(),
-    );
-
-    // The producer's read moves: the change wave enqueues (and rebases) it.
-    let moved = complete(
-        &mut scheduler,
-        source,
-        HashSet::new(),
-        HashSet::new(),
-        vec!["src"],
-        vec!["src"],
-        Vec::new(),
-    );
-    assert_eq!(
-        moved.enqueued,
-        vec![producer],
-        "a changed read revision must wake the reader"
-    );
-    assert_eq!(scheduler.pop(), Some(producer));
-    assert!(
-        scheduler.rebased(&producer),
-        "a replacing content change shifts the reader"
-    );
-
-    // The producer popped but has not re-concluded from the shifted ground:
-    // a follow-up demand must still run it.
-    let step = complete(
-        &mut scheduler,
-        requester,
-        HashSet::new(),
-        HashSet::new(),
-        Vec::new(),
-        Vec::new(),
-        vec![producer],
-    );
-    assert_eq!(
-        step.enqueued,
-        vec![producer],
-        "a rebased producer has no standing conclusion; the demand must run it"
-    );
-}
-
-#[test]
-fn compiler2_scheduler_follow_up_reruns_waiting_producer() {
-    let mut scheduler = TestScheduler::new();
-    let producer = 1_u32;
-    let requester = 2_u32;
-
-    // The producer's last completion was a wait, not a conclusion.
-    complete(
-        &mut scheduler,
-        producer,
-        HashSet::from([current("src")]),
-        HashSet::from([current("dep")]),
-        Vec::new(),
-        Vec::new(),
-        Vec::new(),
-    );
-
-    let step = complete(
-        &mut scheduler,
-        requester,
-        HashSet::new(),
-        HashSet::new(),
-        Vec::new(),
-        Vec::new(),
-        vec![producer],
-    );
-    assert_eq!(
-        step.enqueued,
-        vec![producer],
-        "a waiting producer has not concluded; a follow-up demand must run it"
     );
 }
 
@@ -560,7 +367,6 @@ fn compiler2_scheduler_reports_blocked_exact_facts() {
         1_u32,
         HashSet::new(),
         HashSet::from([current("module_surface"), current("function_defined")]),
-        Vec::new(),
         Vec::new(),
         Vec::new(),
     );
@@ -593,7 +399,6 @@ fn compiler2_scheduler_stable_recompute_wakes_settled_waiters_without_revision_b
         HashSet::new(),
         Vec::new(),
         Vec::new(),
-        Vec::new(),
     );
     complete(
         &mut scheduler,
@@ -602,7 +407,6 @@ fn compiler2_scheduler_stable_recompute_wakes_settled_waiters_without_revision_b
         HashSet::new(),
         vec!["bar"],
         vec!["bar"],
-        Vec::new(),
     );
     assert!(scheduler.facts().is_settled(&"bar"));
     let _ = scheduler.pop();
@@ -614,7 +418,6 @@ fn compiler2_scheduler_stable_recompute_wakes_settled_waiters_without_revision_b
         HashSet::new(),
         vec!["foo"],
         vec!["foo"],
-        Vec::new(),
     );
     assert_eq!(
         upstream_change.enqueued,
@@ -635,7 +438,6 @@ fn compiler2_scheduler_stable_recompute_wakes_settled_waiters_without_revision_b
         HashSet::from([settled("bar")]),
         Vec::new(),
         Vec::new(),
-        Vec::new(),
     );
     assert!(scheduler.has_unresolved(), "a dirty fact should block settled waiters");
 
@@ -645,7 +447,6 @@ fn compiler2_scheduler_stable_recompute_wakes_settled_waiters_without_revision_b
         HashSet::from([current("foo")]),
         HashSet::new(),
         vec!["bar"],
-        Vec::new(),
         Vec::new(),
     );
     assert_eq!(
@@ -672,7 +473,6 @@ fn compiler2_scheduler_multi_publisher_fact_settles_only_when_every_publisher_is
         HashSet::new(),
         vec!["shared"],
         vec!["shared"],
-        Vec::new(),
     );
     complete(
         &mut scheduler,
@@ -680,7 +480,6 @@ fn compiler2_scheduler_multi_publisher_fact_settles_only_when_every_publisher_is
         HashSet::from([current("b")]),
         HashSet::new(),
         vec!["shared"],
-        Vec::new(),
         Vec::new(),
     );
     assert!(scheduler.facts().is_settled(&"shared"));
@@ -692,7 +491,6 @@ fn compiler2_scheduler_multi_publisher_fact_settles_only_when_every_publisher_is
         HashSet::new(),
         vec!["a"],
         vec!["a"],
-        Vec::new(),
     );
     assert!(
         !scheduler.facts().is_settled(&"shared"),
@@ -706,7 +504,6 @@ fn compiler2_scheduler_multi_publisher_fact_settles_only_when_every_publisher_is
         HashSet::new(),
         vec!["b"],
         vec!["b"],
-        Vec::new(),
     );
     assert!(!scheduler.facts().is_settled(&"shared"));
 
@@ -716,7 +513,6 @@ fn compiler2_scheduler_multi_publisher_fact_settles_only_when_every_publisher_is
         HashSet::from([current("a")]),
         HashSet::new(),
         vec!["shared"],
-        Vec::new(),
         Vec::new(),
     );
     assert!(
@@ -730,7 +526,6 @@ fn compiler2_scheduler_multi_publisher_fact_settles_only_when_every_publisher_is
         HashSet::from([current("b")]),
         HashSet::new(),
         vec!["shared"],
-        Vec::new(),
         Vec::new(),
     );
     assert!(scheduler.facts().is_settled(&"shared"));
@@ -748,7 +543,6 @@ fn compiler2_scheduler_waiting_completion_preserves_standing_claims() {
         HashSet::new(),
         vec!["fact"],
         vec!["fact"],
-        Vec::new(),
     );
     assert_eq!(scheduler.facts().revision(&"fact"), Some(1));
     assert!(scheduler.facts().is_settled(&"fact"));
@@ -761,7 +555,6 @@ fn compiler2_scheduler_waiting_completion_preserves_standing_claims() {
         job,
         HashSet::new(),
         HashSet::from([current("gate")]),
-        Vec::new(),
         Vec::new(),
         Vec::new(),
     );
@@ -783,7 +576,6 @@ fn compiler2_scheduler_waiting_completion_preserves_standing_claims() {
         HashSet::new(),
         vec!["fact"],
         Vec::new(),
-        Vec::new(),
     );
     assert_eq!(scheduler.facts().revision(&"fact"), Some(1));
     assert!(scheduler.facts().is_settled(&"fact"));
@@ -802,7 +594,6 @@ fn compiler2_scheduler_waiting_completion_keeps_subscriptions() {
         HashSet::new(),
         Vec::new(),
         Vec::new(),
-        Vec::new(),
     );
     // A partial run reads less than the conclusion did. Its standing claims
     // still depend on the earlier reads, so the subscription must survive.
@@ -811,7 +602,6 @@ fn compiler2_scheduler_waiting_completion_keeps_subscriptions() {
         reader,
         HashSet::new(),
         HashSet::from([current("gate")]),
-        Vec::new(),
         Vec::new(),
         Vec::new(),
     );
@@ -823,7 +613,6 @@ fn compiler2_scheduler_waiting_completion_keeps_subscriptions() {
         HashSet::new(),
         vec!["foo"],
         vec!["foo"],
-        Vec::new(),
     );
     assert!(
         step.enqueued.contains(&reader),
@@ -844,7 +633,6 @@ fn compiler2_scheduler_waiting_completion_publishes_alongside_the_wait() {
         HashSet::new(),
         HashSet::from([current("gate")]),
         vec!["root"],
-        Vec::new(),
         Vec::new(),
     );
     assert_eq!(
@@ -874,7 +662,6 @@ fn compiler2_scheduler_replacing_change_rebases_readers_without_retracting() {
         HashSet::new(),
         vec!["claim"],
         vec!["claim"],
-        Vec::new(),
     );
     // First appearance is an ascent: news, not a shift.
     let step = complete(
@@ -884,7 +671,6 @@ fn compiler2_scheduler_replacing_change_rebases_readers_without_retracting() {
         HashSet::new(),
         vec!["def"],
         vec!["def"],
-        Vec::new(),
     );
     assert!(step.enqueued.contains(&reader));
     assert!(
@@ -901,7 +687,6 @@ fn compiler2_scheduler_replacing_change_rebases_readers_without_retracting() {
         HashSet::new(),
         vec!["def"],
         vec!["def"],
-        Vec::new(),
     );
     assert!(step.enqueued.contains(&reader));
     assert!(
@@ -932,7 +717,6 @@ fn compiler2_scheduler_cumulative_ascent_wakes_without_rebasing() {
         HashSet::new(),
         Vec::new(),
         Vec::new(),
-        Vec::new(),
     );
     complete(
         &mut scheduler,
@@ -941,7 +725,6 @@ fn compiler2_scheduler_cumulative_ascent_wakes_without_rebasing() {
         HashSet::new(),
         vec!["cum_ret"],
         vec!["cum_ret"],
-        Vec::new(),
     );
     let _ = scheduler.pop();
     let step = complete(
@@ -951,7 +734,6 @@ fn compiler2_scheduler_cumulative_ascent_wakes_without_rebasing() {
         HashSet::new(),
         vec!["cum_ret"],
         vec!["cum_ret"],
-        Vec::new(),
     );
     assert!(step.enqueued.contains(&reader));
     assert!(
@@ -973,7 +755,6 @@ fn compiler2_scheduler_retraction_always_shifts() {
         HashSet::new(),
         Vec::new(),
         Vec::new(),
-        Vec::new(),
     );
     complete(
         &mut scheduler,
@@ -982,7 +763,6 @@ fn compiler2_scheduler_retraction_always_shifts() {
         HashSet::new(),
         vec!["cum_ret"],
         vec!["cum_ret"],
-        Vec::new(),
     );
     let _ = scheduler.pop();
     // The writer concludes without the fact: retraction, even of a cumulative
@@ -992,7 +772,6 @@ fn compiler2_scheduler_retraction_always_shifts() {
         writer,
         HashSet::new(),
         HashSet::new(),
-        Vec::new(),
         Vec::new(),
         Vec::new(),
     );
@@ -1015,7 +794,6 @@ fn compiler2_scheduler_rebased_conclusion_propagates_changes_as_shifts() {
         HashSet::new(),
         Vec::new(),
         Vec::new(),
-        Vec::new(),
     );
     complete(
         &mut scheduler,
@@ -1024,7 +802,6 @@ fn compiler2_scheduler_rebased_conclusion_propagates_changes_as_shifts() {
         HashSet::new(),
         vec!["cum_mid"],
         vec!["cum_mid"],
-        Vec::new(),
     );
     complete(
         &mut scheduler,
@@ -1033,7 +810,6 @@ fn compiler2_scheduler_rebased_conclusion_propagates_changes_as_shifts() {
         HashSet::new(),
         vec!["def"],
         vec!["def"],
-        Vec::new(),
     );
     while scheduler.pop().is_some() {}
     // Shift middle via a def content change.
@@ -1044,7 +820,6 @@ fn compiler2_scheduler_rebased_conclusion_propagates_changes_as_shifts() {
         HashSet::new(),
         vec!["def"],
         vec!["def"],
-        Vec::new(),
     );
     assert!(scheduler.rebased(&middle));
 
@@ -1057,7 +832,6 @@ fn compiler2_scheduler_rebased_conclusion_propagates_changes_as_shifts() {
         HashSet::new(),
         vec!["cum_mid"],
         vec!["cum_mid"],
-        Vec::new(),
     );
     assert!(step.enqueued.contains(&downstream));
     assert!(
@@ -1081,7 +855,6 @@ fn compiler2_scheduler_rebased_equal_conclusion_stops_the_cone() {
         HashSet::new(),
         Vec::new(),
         Vec::new(),
-        Vec::new(),
     );
     complete(
         &mut scheduler,
@@ -1090,7 +863,6 @@ fn compiler2_scheduler_rebased_equal_conclusion_stops_the_cone() {
         HashSet::new(),
         vec!["cum_mid"],
         vec!["cum_mid"],
-        Vec::new(),
     );
     complete(
         &mut scheduler,
@@ -1099,7 +871,6 @@ fn compiler2_scheduler_rebased_equal_conclusion_stops_the_cone() {
         HashSet::new(),
         vec!["def"],
         vec!["def"],
-        Vec::new(),
     );
     while scheduler.pop().is_some() {}
     complete(
@@ -1109,7 +880,6 @@ fn compiler2_scheduler_rebased_equal_conclusion_stops_the_cone() {
         HashSet::new(),
         vec!["def"],
         vec!["def"],
-        Vec::new(),
     );
     assert!(scheduler.rebased(&middle));
 
@@ -1121,7 +891,6 @@ fn compiler2_scheduler_rebased_equal_conclusion_stops_the_cone() {
         HashSet::from([current("def")]),
         HashSet::new(),
         vec!["cum_mid"],
-        Vec::new(),
         Vec::new(),
     );
     assert!(
@@ -1145,7 +914,6 @@ fn compiler2_scheduler_waiting_keeps_rebase_pending() {
         HashSet::new(),
         Vec::new(),
         Vec::new(),
-        Vec::new(),
     );
     complete(
         &mut scheduler,
@@ -1154,7 +922,6 @@ fn compiler2_scheduler_waiting_keeps_rebase_pending() {
         HashSet::new(),
         vec!["def"],
         vec!["def"],
-        Vec::new(),
     );
     let _ = scheduler.pop();
     complete(
@@ -1164,7 +931,6 @@ fn compiler2_scheduler_waiting_keeps_rebase_pending() {
         HashSet::new(),
         vec!["def"],
         vec!["def"],
-        Vec::new(),
     );
     assert!(scheduler.rebased(&reader));
 
@@ -1175,7 +941,6 @@ fn compiler2_scheduler_waiting_keeps_rebase_pending() {
         reader,
         HashSet::new(),
         HashSet::from([current("gate")]),
-        Vec::new(),
         Vec::new(),
         Vec::new(),
     );

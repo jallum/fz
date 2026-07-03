@@ -120,15 +120,6 @@ where
         self.waits.get(job).cloned().unwrap_or_default()
     }
 
-    /// Whether `job`'s most recent completion was a conclusion. Every
-    /// conclusion records the job's read set (`replace_reads` inserts even an
-    /// empty one) and clears its waits, while a waiting completion always
-    /// leaves a non-empty wait set standing — so recorded reads plus no
-    /// standing waits is exactly "last completed by concluding".
-    pub fn concluded(&self, job: &J) -> bool {
-        self.reads.contains_key(job) && self.waits.get(job).is_none_or(HashSet::is_empty)
-    }
-
     /// Whether `job`'s most recent completion left waits standing.
     pub fn blocked(&self, job: &J) -> bool {
         self.waits.get(job).is_some_and(|waits| !waits.is_empty())

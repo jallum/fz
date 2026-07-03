@@ -490,8 +490,10 @@ enum FactValue {
       <h2>Work Graph</h2>
       <p>
         The work graph is one agenda, one fact table, and one dependency index. Jobs record what
-        they read, what they could not read yet, and what they output. Legacy jobs may enqueue
-        follow-up jobs, but new artifact producers return product/fact waits instead.
+        they read, what they could not read yet, and what they output. No job enqueues a
+        follow-up job of its own; a job that cannot proceed records a bare wait, and the
+        fact-&gt;producer map (<code>World::demand_fact_producer</code>) is the sole path that
+        restarts blocked work.
       </p>
       <pre><code>struct Scheduler&lt;Job, Fact&gt; {
     agenda: Agenda&lt;Job&gt;,
@@ -510,8 +512,6 @@ struct Agenda&lt;Job&gt; {
     changed facts wake:
       - subscribers that previously read them
       - waiters that previously blocked on them
-
-    legacy follow-up jobs are deduped into the same agenda
 }</code></pre>
       <p>
         The outer drive loop has only three outcomes:

@@ -1065,7 +1065,7 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
         // `World::demand_fact_producer` (Job::DefineModule when the module has
         // source state or is a runtime module, else Job::DefineModuleInterface)
         // -- the same selection this site used to push directly.
-        JobEffects::wait_on_current(FactKey::ModuleInterface(module), [])
+        JobEffects::wait_on_current(FactKey::ModuleInterface(module))
     }
 
     fn record_required_remote_macros(&mut self, callables: &[ModuleInterfaceCallable]) {

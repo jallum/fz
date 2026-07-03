@@ -51,7 +51,7 @@ pub(crate) trait QuotedExpansionCtx<'tel> {
         // `World::demand_fact_producer` (Job::DefineModule when the module has
         // source state or is a runtime module, else Job::DefineModuleInterface)
         // -- the same selection this site used to push directly.
-        JobEffects::wait_on_current(FactKey::ModuleInterface(module), [])
+        JobEffects::wait_on_current(FactKey::ModuleInterface(module))
     }
 
     fn expand_root(
@@ -266,7 +266,6 @@ pub(crate) trait QuotedExpansionCtx<'tel> {
             // it here.
             return Ok(Some(ExpandedValue::Blocked(Box::new(JobEffects::wait_on_current(
                 FactKey::ModuleDefined(module),
-                [],
             )))));
         }
         self.note_read(FactKey::ModuleDefined(module));
@@ -337,7 +336,6 @@ pub(crate) trait QuotedExpansionCtx<'tel> {
             // (`World::demand_fact_producer`).
             return Ok(ExpandedValue::Blocked(Box::new(JobEffects::wait_on_current(
                 macro_fact,
-                [],
             ))));
         }
         self.note_read(macro_fact);

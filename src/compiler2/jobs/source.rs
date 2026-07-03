@@ -72,7 +72,7 @@ pub(super) fn index_code(world: &mut World<'_>, code_id: CodeId) -> Result<JobEf
 /// asks for `IndexCode`. When the scope is complete, it publishes `CodeScoped`.
 pub(super) fn scope_code(world: &mut World<'_>, code_id: CodeId) -> Result<JobEffects, FatalError> {
     let Some(source) = world.code_source(code_id) else {
-        return Ok(JobEffects::wait_on_current(FactKey::CodeIndexed(code_id), []));
+        return Ok(JobEffects::wait_on_current(FactKey::CodeIndexed(code_id)));
     };
     let mut reads = Vec::new();
     let base_namespace = if world.is_runtime_prelude(code_id) {
@@ -81,7 +81,7 @@ pub(super) fn scope_code(world: &mut World<'_>, code_id: CodeId) -> Result<JobEf
         let prelude = world.runtime_prelude();
         let prelude_fact = FactKey::CodeScoped(prelude);
         if !world.has_fact(&prelude_fact) {
-            return Ok(JobEffects::wait_on_current(prelude_fact, []));
+            return Ok(JobEffects::wait_on_current(prelude_fact));
         }
         reads.push(prelude_fact);
         world.prelude_head()
@@ -171,29 +171,29 @@ pub(super) fn define_module(world: &mut World<'_>, module_id: ModuleId) -> Resul
 
     if let Some((code_id, parent_module)) = world.module_indexed_parent(module_id) {
         if parent_module.is_global() {
-            return Ok(JobEffects::wait_on_current(FactKey::CodeScoped(code_id), []));
+            return Ok(JobEffects::wait_on_current(FactKey::CodeScoped(code_id)));
         }
-        return Ok(JobEffects::wait_on_current(FactKey::ModuleDefined(parent_module), []));
+        return Ok(JobEffects::wait_on_current(FactKey::ModuleDefined(parent_module)));
     }
 
     if let Some(parent_module) = world.module_named_parent(module_id) {
-        return Ok(JobEffects::wait_on_current(FactKey::ModuleDefined(parent_module), []));
+        return Ok(JobEffects::wait_on_current(FactKey::ModuleDefined(parent_module)));
     }
 
     if let Some(code_id) = world.ensure_runtime_module(module_id) {
-        return Ok(JobEffects::wait_on_current(FactKey::CodeIndexed(code_id), []));
+        return Ok(JobEffects::wait_on_current(FactKey::CodeIndexed(code_id)));
     }
 
-    Ok(JobEffects::wait_on_current(FactKey::ModuleIndexed(module_id), []))
+    Ok(JobEffects::wait_on_current(FactKey::ModuleIndexed(module_id)))
 }
 
 pub(super) fn define_module_interface(world: &mut World<'_>, module_id: ModuleId) -> Result<JobEffects, FatalError> {
     if world.module_scope(module_id).is_some() {
-        return Ok(JobEffects::wait_on_current(FactKey::ModuleInterface(module_id), []));
+        return Ok(JobEffects::wait_on_current(FactKey::ModuleInterface(module_id)));
     }
 
     let Some(interface) = world.module_interface_if_present(module_id) else {
-        return Ok(JobEffects::wait_on_current(FactKey::ModuleIndexed(module_id), []));
+        return Ok(JobEffects::wait_on_current(FactKey::ModuleIndexed(module_id)));
     };
     let interface = world.merge_module_interface_expectations(module_id, interface);
     world.validate_module_interface_expectations(module_id, &interface)?;
@@ -213,13 +213,12 @@ pub(super) fn define_function(
     function_id: super::super::FunctionId,
 ) -> Result<JobEffects, FatalError> {
     let Some(expanded_source) = world.expanded_function_source(function_id) else {
-        return Ok(JobEffects::wait_on_current(
-            FactKey::ExpandedFunctionSource(function_id),
-            [],
-        ));
+        return Ok(JobEffects::wait_on_current(FactKey::ExpandedFunctionSource(
+            function_id,
+        )));
     };
     let Some(raw_source) = world.function_source(function_id) else {
-        return Ok(JobEffects::wait_on_current(FactKey::FunctionSource(function_id), []));
+        return Ok(JobEffects::wait_on_current(FactKey::FunctionSource(function_id)));
     };
 
     let surface = crate::compiler2::quoted_function::derive_function_surface(
@@ -293,7 +292,7 @@ pub(super) fn expand_function_source(
     function_id: super::super::FunctionId,
 ) -> Result<JobEffects, FatalError> {
     let Some(source) = world.function_source(function_id) else {
-        return Ok(JobEffects::wait_on_current(FactKey::FunctionSource(function_id), []));
+        return Ok(JobEffects::wait_on_current(FactKey::FunctionSource(function_id)));
     };
     match FunctionSourceExpander::new(world, function_id, &source).expand(&source)? {
         FunctionSourceExpansion::Complete { source, reads } => {

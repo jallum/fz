@@ -72,11 +72,11 @@ pub(super) fn analyze_activation(world: &mut World<'_>, activation: &ActivationK
         // conclude-by-omission with no subscription to re-wake it; a bare
         // wait lets the ordinary blocked-waiter expansion
         // (`demand_blocked_wait_producers`) carry it instead.
-        return Ok(JobEffects::wait_on_current(activation_fact, []));
+        return Ok(JobEffects::wait_on_current(activation_fact));
     }
     let activation_inputs_fact = FactKey::ActivationInputs(activation.clone());
     let Some(inputs) = world.activation_inputs(activation) else {
-        return Ok(JobEffects::wait_on_current(activation_inputs_fact, []));
+        return Ok(JobEffects::wait_on_current(activation_inputs_fact));
     };
 
     let function = activation.function;
@@ -89,14 +89,14 @@ pub(super) fn analyze_activation(world: &mut World<'_>, activation: &ActivationK
     if !world.has_fact(&lowered_fact) {
         // `LoweredBody`'s sole producer arm is `Job::LowerFunction`
         // (`World::demand_fact_producer`).
-        return Ok(JobEffects::wait_on_current(lowered_fact, []));
+        return Ok(JobEffects::wait_on_current(lowered_fact));
     }
 
     let dispatch_fact = FactKey::EntryDispatch(function);
     if !world.has_fact(&dispatch_fact) {
         // `EntryDispatch`'s sole producer arm is `Job::PlanEntryDispatch`
         // (`World::demand_fact_producer`).
-        return Ok(JobEffects::wait_on_current(dispatch_fact, []));
+        return Ok(JobEffects::wait_on_current(dispatch_fact));
     }
 
     let mut reads = vec![
@@ -260,7 +260,6 @@ pub(super) fn analyze_activation(world: &mut World<'_>, activation: &ActivationK
         outputs: dedupe_facts(outputs),
         changed: dedupe_facts(changed),
         activation_input_contributions,
-        ..JobEffects::default()
     })
 }
 
