@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-07-03T17:32:02Z",
@@ -8,8 +8,8 @@
   "labels": [],
   "parent": "fz-go4.18.28",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "settle_demand_cone sorts ascent members by raw interned Ty (process-hash-dependent convergence order)",
   "type": "task",
-  "updated_at": "2026-07-03T17:32:02Z"
+  "updated_at": "2026-07-03T22:38:01Z"
 }
