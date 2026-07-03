@@ -3,7 +3,7 @@
   "blocked_by": [],
   "blocks": [],
   "created": "2026-07-03T23:10:25Z",
-  "description": "Named by the fz-go4.18.28.14 audit (at ef4043a97). settle_demand_cone sorts its ascent members, but the audit PROVED the sort is purely cosmetic: it is a Jacobi fixpoint (order-irrelevant to answer AND round count), and the sorted members Vec is NOT consumed by the return value — callers iterate the result HashMaps directly. The sort's only observable effects are internal round-processing sequence (order-irrelevant) and the ordering of a never-hit round-budget panic diagnostic. Per the project 'sorting is a barrier' law (mid-flow sorts are findings unless final-packaging), the holistic fix is to DELETE the sort entirely (zero behavioral effect, proven) rather than the fz-go4.18.28.14 stopgap of re-keying it on display(). If the panic-diagnostic order is worth keeping deterministic, sort ONLY there (at the panic site), or collect members into a BTreeSet at the one consuming site. This also moots the display()-key's latent closure-tie nondeterminism. Acceptance: sort deleted (or moved to the sole consumer); answer + round count unchanged; matrix set unchanged; byte-identical products; suite green 3x.",
+  "description": "DONE (folded 2026-07-03 as 26946c500; COORDINATOR-VERIFIED, not independently multi-lane audited — the API was 529-overloaded and subagent audit lanes could not spawn; the deletion's safety was ALREADY independently proven by the fz-go4.18.28.14 audit, and can be re-audited if desired). Deleted the cosmetic members sort in settle_demand_cone (jobs/runtime_demand.rs) + the now-dead executable_need_order helper the sort was the sole user of. The fz-go4.18.28.14 audit PROVED the sort order-irrelevant (Jacobi fixpoint: frozen prev-round snapshot, commutative/associative semilattice join, value-driven dirty set — answer AND round count order-invariant) and that the sorted members Vec is not consumed by the return value (callers iterate the result HashMaps). So per sorting-is-a-barrier the sort decided nothing and fed no output; replaced with a plain graph.facts.keys().collect() + an order-invariance comment. Coordinator verification: full lib 1162/0/24 (1161 + the .18.31 ride-along test), clippy clean; activation dumps on fz_f98_range_map_converges byte-identical across 3 runs (determinism preserved — the dumps never depended on this sort). This also moots the display()-key's latent closure-tie nondeterminism (fz-go4.34) at THIS site.",
   "id": "fz-go4.18.28.16",
   "labels": [],
   "parent": "fz-go4.18.28",
@@ -11,5 +11,5 @@
   "status": "in_progress",
   "title": "Delete the cosmetic members sort in settle_demand_cone (sorting-is-a-barrier)",
   "type": "task",
-  "updated_at": "2026-07-03T23:30:19Z"
+  "updated_at": "2026-07-03T23:47:51Z"
 }
