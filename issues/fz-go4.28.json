@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-07-03T16:40:42Z",
+  "description": "src/compiler2/semantic_analysis_test.rs:29-139 defines its own private FunctionCapture/FunctionCaptureHandler, duplicating drive_test.rs's FunctionCapture (which fz-go4.21 made pub(crate) and is now the reuse target for port_type_infer_test.rs). Pre-existing duplication surfaced by the fz-go4.21 removable-code audit. Consolidate on one implementation (likely drive_test.rs's, or a shared test-support module if a third consumer appears via the port-test TODO sweep); delete the other. Test-only change, two-lane audit sufficient.",
+  "id": "fz-go4.28",
+  "labels": [],
+  "parent": "fz-go4",
+  "priority": 3,
+  "status": "open",
+  "title": "Consolidate duplicate FunctionCapture test machinery",
+  "type": "task",
+  "updated_at": "2026-07-03T16:40:42Z"
+}
