@@ -3,7 +3,7 @@
   "blocked_by": [],
   "blocks": [],
   "created": "2026-07-03T18:46:17Z",
-  "description": "Found by the fz-go4.18.28.5 re-audit (at 1c4c22964): the world-fact revision gate — ClosureConsultLedger.fact_revisions -\u003e SolvedTransportClosure::consumed_fact_revisions, validated by displace_covering_solve_if_stale at the top of produce_transport_component_product and produce_transport_shape_product — has ZERO test coverage. Neutering the gate to a no-op passes the entire lib suite (1151/0/24) AND the full fixture matrix byte-identically. The mechanism is the fix for the unledgered world-fact reads (ActivationAnalyzed/LoweredBody/CallSiteSummary/ReturnType feeding closure membership); it is well-argued (same discipline as DemandFactsCache) but unproven. TASK: add a contract test mirroring compiler2_transport_consult_ledger_displaces_co_members_on_demand_movement but driving a WORLD-fact revision bump (e.g. re-publish an ActivationAnalyzed or CallSiteSummary so its FactSlot revision moves) between pulls, asserting the covering solve displaces and re-solves with the new fact. Acceptance: test red with the gate neutered (5x), green on real code (5x); no production changes needed unless the test finds the gate actually broken — in which case that is the bug this ticket exists to catch.",
+  "description": "DONE (81391b6a6, two-lane audited PASS/PASS 2026-07-03). The transport world-channel freshness gate (displace_covering_solve_if_stale validating SolvedTransportClosure::consumed_fact_revisions) is now load-bearing-tested: compiler2_transport_world_fact_ledger_displaces_co_members_on_return_type_movement drives a cached multi-member closure solve, widens one member's ReturnType through the SAME production pairing analyze_activation uses (define_activation_return + complete_job replaying the job's prior output_keys with only ReturnType changed — auditor confirmed a real re-run can produce exactly that effect set), then asserts the co-member's next pull triggers a fresh closure_solved AND reproduces the original shape. Mutation-verified independently by the audit: gate neutered = red 5/5 (fails on the fresh-solve count assertion, proving it is the load-bearing check); session-channel consult ledger neutered = this test green while the demand-channel sibling goes red (clean channel separation); 10x flake-free. At fold: the byte-duplicated by-cover selection idiom was extracted into two_executables_covered_by_one_solve + CO_MEMBER_CLOSURE_SOURCE (both displacement tests now share them) and one strictly-subsumed assertion dropped. LATENT FRAGILITY (noted, acceptable now): the closure_solved capture count is process-wide, not solve-scoped — fine on this single-root fixture; would need scoping if the fixture ever grows more roots.",
   "id": "fz-go4.18.28.15",
   "labels": [],
   "parent": "fz-go4.18.28",
@@ -11,5 +11,5 @@
   "status": "in_progress",
   "title": "Contract test for the transport world-channel freshness gate (displace_covering_solve_if_stale)",
   "type": "task",
-  "updated_at": "2026-07-03T19:25:07Z"
+  "updated_at": "2026-07-03T19:44:36Z"
 }
