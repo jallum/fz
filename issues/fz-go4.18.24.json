@@ -4,6 +4,7 @@
     "fz-go4.18.22"
   ],
   "blocks": [],
+  "closed_at": "2026-07-03T21:51:47Z",
   "created": "2026-07-02T13:04:21Z",
   "description": "DONE — the follow_up-elimination arc is COMPLETE (final commit 0ff5649c0, arc-close three-lane audited PASS/PASS/PASS 2026-07-03). Work in compiler2 now runs ONLY via waits (pull) or changed-revision wakes. follow_up is not merely unused — it is STRUCTURALLY ELIMINATED.\n\nTHE ARC (families 1-8 + pump residual + arc-close):\n- Families 1-7: converted the literal follow_up.insert pushes to bare waits + demand_fact_producer arms; scheduler demand-on-stall keystone; standing root/activation-frontier demands (has_run pre-filter load-bearing).\n- Pump residual (2e431abfc): resolve_protocol_call subscribes to monotone-growing ProtocolImplProviders unconditionally; the TEMPORARY PUMP deleted (concluded producers skipped outright).\n- Family 8 (74276cd23): caught the pushes rg missed — wait_on_current(fact, [Job]) threads its 2nd arg into follow_up. SIX new sole-producer arms (EntryDispatch/MacroExecutable/FunctionSource/ExpandedFunctionSource/CodeScoped/ModuleInterface), all red-first-verified; emptied the arm-backed redundant ones; deleted the ensure_*_source dynamic-list helpers; fixed the collect_static_graph ensure_runtime_module regression; simplified demand_function_scope. (Family 8's first cut FAILED audit on a false rg-based completion claim — the audits caught it, three findings, reworked.)\n- Arc-close (0ff5649c0): DELETED the dead carrier — JobEffects::follow_up field, wait_on_current's param (-\u003e single-arg), Scheduler::complete's follow_up param + enqueue loop, conclusion_stands, the transitively-dead DependencyIndex::concluded, the [] arg at 25 call sites, the 4 scheduler follow_up-mechanism tests. Audit-proven: follow_up was ALREADY dead before deletion (all parent call sites passed []; world.rs:482 the sole complete() caller passed it unmutated), so no live wake was removed; job counts bit-identical on deterministic fixtures; nothing newly stalls; -290 net lines. northstar.html tolerance clause + fact-engine.md updated to present-tense fact (follow_up eliminated; fact-\u003eproducer map is the sole restart path).\n\nSCHEDULER WAKE PATHS ARE NOW: changed-revision wakes (enqueue_dependents), the demand_fact_producer arm map (pull-on-stall), standing root + activation-frontier demands, blocked-waiter expansion, and the single submit_root ignition. No pushes.\n\nFOLLOW-ONS (all ticketed, none blocking): coalesced-telemetry split + Scheduler::blocked/has_run visibility sweep (new ticket, deferred-but-verified-live); build_macro_executable's inline complete_job (fz-go4.18.38 — a NON-follow_up push the rg sweeps miss, the arc's next frontier); fz-go4.18.31 (AnalyzeActivation churn SCC) now unblocked (was sequenced AFTER arc-close).",
   "id": "fz-go4.18.24",
@@ -16,8 +17,8 @@
     }
   ],
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Migrate the semantic layer off follow_up: work runs only via waits (pull) or changed-revision wakes",
   "type": "task",
-  "updated_at": "2026-07-03T21:51:46Z"
+  "updated_at": "2026-07-03T21:51:47Z"
 }
