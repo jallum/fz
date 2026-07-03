@@ -105,13 +105,19 @@ while let Some(job) = agenda.pop():
             (a follow_up whose target's conclusion stands coalesces, no re-run)
 ```
 
-When the agenda drains, standing demands expand before the drive ends:
-every submitted root demands its entry activation's analysis
-(`World::demand_root_entry_analyses` — first-run ignition only; wakes carry
-every later revision), and every blocked waiter's fact names its single
-producer through the fact->producer map (`World::demand_fact_producer` — the
-same expansion the product fact-wait loops reach through
-`World::next_ready_job`). A stall pass only re-demands a blocked fact after
+When the agenda drains, standing demands expand before the drive ends: every
+submitted root demands its entry activation's analysis
+(`World::demand_root_entry_analyses`), every discovered callee activation
+demands its own analysis (`World::demand_activation_frontier_analyses`), and
+every blocked waiter's fact names its single producer through the
+fact->producer map (`World::demand_fact_producer` — the same expansion the
+product fact-wait loops reach through `World::next_ready_job`). Both
+activation-analysis expansions are first-run ignition only: each checks
+`Scheduler::has_run` for its `AnalyzeActivation` job and skips a key that has
+already run at least once, because the graph's own read/wait subscriptions
+carry every later revision from there — a key whose first run blocked without
+settling stays reachable through the blocked-waiter expansion instead, never
+through repeated re-demand. A stall pass only re-demands a blocked fact after
 some fact content changed, so byte-identical re-runs cannot loop. The loop
 ends only when nothing can be demanded: `Resolved` (no waiters),
 `Unresolved { waits }` (blocked facts with no mapped producer), or

@@ -238,17 +238,47 @@ impl World<'_> {
         demanded
     }
 
-    /// Pops the next ready job, expanding the two standing demand sources
-    /// when the agenda has drained: the roots' entry-analysis demands and the
-    /// blocked waiters' fact->producer expansions. Every job loop (the bare
-    /// drive and the product fact-wait loops) pulls through this, so
-    /// first-run ignition is owned by the scheduler boundary, not by any
-    /// job's follow-up.
+    /// Expands the standing demand every discovered callee activation
+    /// carries: an `Activation(key)` fact published without a settled
+    /// `ActivationAnalyzed(key)` is a standing demand for that activation's
+    /// analysis, the non-root analogue of `demand_root_entry_analyses`. Like
+    /// the root expansion, this only ignites first-run analysis — the
+    /// `has_run` check is load-bearing, not an optimization: a callee whose
+    /// first run blocked (waiting on some other fact, never claiming
+    /// `ActivationAnalyzed`) stays perpetually `rebased` while blocked, and
+    /// `demand_fact_producer`'s rebased branch re-enqueues unconditionally on
+    /// every call — without this guard a permanently blocked-but-rebased
+    /// callee would be re-run every stall pass forever. Once a callee has
+    /// run at all, its own read/wait subscriptions (an unresolved wait's
+    /// fact is separately covered by `demand_blocked_wait_producers`) carry
+    /// every later revision, exactly as `demand_root_entry_analyses` relies
+    /// on for roots. Retires each such key from the frontier so the working
+    /// set stays bounded. Returns how many analyses were demanded.
+    pub(crate) fn demand_activation_frontier_analyses(&mut self) -> u64 {
+        let mut demanded = 0_u64;
+        for key in self.activation_frontier_keys() {
+            if self.work_graph.has_run(&Job::AnalyzeActivation(key.clone())) {
+                self.retire_activation_frontier(&key);
+                continue;
+            }
+            demanded += self.demand_fact_producer(&FactKey::ActivationAnalyzed(key));
+        }
+        demanded
+    }
+
+    /// Pops the next ready job, expanding the three standing demand sources
+    /// when the agenda has drained: the roots' entry-analysis demands, the
+    /// discovered callees' activation-frontier demands, and the blocked
+    /// waiters' fact->producer expansions. Every job loop (the bare drive and
+    /// the product fact-wait loops) pulls through this, so first-run
+    /// ignition is owned by the scheduler boundary, not by any job's
+    /// follow-up.
     pub(crate) fn next_ready_job(&mut self) -> Option<Job> {
         if let Some(job) = self.work_graph.pop() {
             return Some(job);
         }
-        if self.demand_root_entry_analyses() > 0
+        let ignited = self.demand_root_entry_analyses() + self.demand_activation_frontier_analyses();
+        if ignited > 0
             && let Some(job) = self.work_graph.pop()
         {
             return Some(job);
@@ -347,10 +377,12 @@ impl World<'_> {
                     }
                 }
             }
-            // The agenda drained. Two standing demand sources remain, both
-            // pulls: every submitted root demands its entry analysis, and
-            // every blocked waiter's fact names its single producer through
-            // the fact->producer map — the same expansion the product drivers
+            // The agenda drained. Three standing demand sources remain, all
+            // pulls: every submitted root demands its entry analysis, every
+            // discovered callee activation not yet analyzed demands its own
+            // analysis (`demand_activation_frontier_analyses`), and every
+            // blocked waiter's fact names its single producer through the
+            // fact->producer map — the same expansion the product drivers
             // perform when a fact wait finds an empty agenda. Only a genuine
             // drain reaches this pass, so it is event-driven, never a
             // per-iteration sweep, and demanding producers is commutative, so
@@ -358,7 +390,7 @@ impl World<'_> {
             if std::mem::take(&mut changed_since_stall) {
                 stall_demanded.clear();
             }
-            let mut producer_pokes = self.demand_root_entry_analyses();
+            let mut producer_pokes = self.demand_root_entry_analyses() + self.demand_activation_frontier_analyses();
             let mut demanded_facts: Vec<FactKey> = Vec::new();
             for wait in self.work_graph.unresolved() {
                 if stall_demanded.insert(wait.fact.fact().clone()) {

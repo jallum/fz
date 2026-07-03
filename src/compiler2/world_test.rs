@@ -591,9 +591,22 @@ fn compiler2_drive_demands_the_blocked_facts_producer_on_stall() {
     // Take the submit-root ignition out of the agenda: this test isolates the
     // stall pass, so nothing may be ready when the drive starts.
     assert_eq!(world.work_graph.pop(), Some(Job::SeedRoot(root)));
-    let function = world.reference_function(ModuleId::GLOBAL, "loop", 1);
-    assert!(world.define_recursive(function, false));
-    assert!(world.define_dispatch_mask(function, vec![DispatchDemand::Whole]));
+    world.submit_code(Some("stall.fz".to_string()), "fn echoval(a), do: a\n".to_string());
+    let function = world.reference_function(ModuleId::GLOBAL, "echoval", 1);
+    // Settle echoval/1's own facts up front (outside the isolated stall pass
+    // below): the activation frontier now demands full analysis for every
+    // discovered activation, so `key_a`'s later `AnalyzeActivation` needs a
+    // real, fully-lowered callee to conclude against.
+    world.demand(Job::DefineFunction(function));
+    world.demand(Job::LowerFunction(function));
+    world.demand(Job::PlanEntryDispatch(function));
+    world.demand(Job::DeriveRecursive(function));
+    world.demand(Job::DeriveDispatchMask(function));
+    assert_eq!(
+        world.drive(),
+        DriveOutcome::Resolved,
+        "echoval/1's own facts should settle before the isolated stall-pass setup",
+    );
     let input_a = world.types_mut().atom_lit("a");
     let input_b = world.types_mut().atom_lit("b");
     let key_a = world.activation_key(root, function, &[input_a]);

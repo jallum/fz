@@ -70,7 +70,17 @@ Executable(callee_key, need)
 ```
 
 That publication is how executable demand grows. No separate sweep discovers
-reachable callees. `ActivationInputs(a)` is cumulative for semantic-analysis
+reachable callees. Publishing `Activation(callee_key)` is also the record site
+for `World`'s activation frontier: `World::complete_job` folds the key into
+`activation_frontier` unless `ActivationAnalyzed(callee_key)` has already
+settled, and `World::demand_activation_frontier_analyses` — the non-root
+analogue of `demand_root_entry_analyses` — demands the callee's own
+`AnalyzeActivation` the next time the agenda drains. `analyze_activation`
+itself never schedules the callee directly: `prepare_function_call` only
+`reads` the callee's `ReturnType` (so mutual recursion cannot deadlock), so
+nothing about discovering a callee blocks on its analysis, and the frontier is
+the only thing that ignites a callee's first analysis pass.
+`ActivationInputs(a)` is cumulative for semantic-analysis
 publishers: if an `AnalyzeActivation` rerun temporarily stops seeing a callsite,
 the publisher keeps its prior activation-input frontier and only adds/widens new
 entries. Source/root publishers still use ordinary replacement so real external
@@ -216,7 +226,13 @@ the basis for the remaining type-system tickets.
   `Executable` demand facts.
 - `AnalyzeActivation(a)` owns `ActivationAnalyzed(a)`, `ReturnType(a)`,
   `CallSiteTargets(...)`, `CallSiteSummary(...)`, and any callee demand facts it
-  publishes.
+  publishes. It schedules no follow-up job of its own: publishing
+  `Activation(callee_key)` is what feeds `World`'s activation frontier.
+- `World` owns the `activation_frontier` standing-demand set alongside the
+  scheduler it wraps. `World::complete_job` is its sole maintenance site
+  (insert on an `Activation(key)` publish, retire once `ActivationAnalyzed(key)`
+  settles or once `AnalyzeActivation(key)` has run at all), and
+  `World::demand_activation_frontier_analyses` is its sole reader.
 - Product artifact producers own request-local `ProductValue`s in
   `PullSession`, not scheduler facts. They wait on settled semantic facts by
   exact key and must not publish activation facts or schedule follow-up jobs.

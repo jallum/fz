@@ -50,7 +50,6 @@ struct CallEmission {
 struct ActivationContribution {
     key: ActivationKey,
     inputs: Vec<Ty>,
-    already_present: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -110,7 +109,6 @@ pub(super) fn analyze_activation(world: &mut World<'_>, activation: &ActivationK
         dispatch_fact,
     ];
     let mut waits = HashSet::new();
-    let mut follow_up = HashSet::new();
     let mut outputs = Vec::new();
     let mut changed = Vec::new();
 
@@ -210,26 +208,13 @@ pub(super) fn analyze_activation(world: &mut World<'_>, activation: &ActivationK
             }
             outputs.push(FactKey::ActivationInputs(callee_activation.key.clone()));
             activation_input_contributions.push((callee_activation.key.clone(), callee_activation.inputs.clone()));
-            if !callee_activation.already_present {
-                // NOT a wait+push pair: there is no genuine wait to hang a
-                // drive.rs producer arm off. `prepare_function_call` only
-                // `reads` the callee's `ReturnType` (so mutual recursion
-                // cannot deadlock); nothing ever blocks on the callee's
-                // analysis itself. This is activation-discovery/frontier
-                // expansion — the non-root analogue of
-                // `World::demand_root_entry_analyses` — not the standard
-                // absence-gated wait this family converts. Bare `world.drive()`
-                // walks the whole reachable call graph only because this push
-                // exists; removing it (verified empirically: commenting out
-                // this insert failed 16 compiler2 lib tests, e.g.
-                // `compiler2_semantic_analysis_derives_reachable_call_edges_and_tuple_return_need`,
-                // with non-root activations never analyzed) needs a proper
-                // standing "activation frontier" demand structure in `World`,
-                // expanded by `next_ready_job` the way roots are. This push
-                // stays only until that structure exists; it is not settled
-                // design.
-                follow_up.insert(Job::AnalyzeActivation(callee_activation.key.clone()));
-            }
+            // No wait+push pair here: `prepare_function_call` only `reads`
+            // the callee's `ReturnType` (so mutual recursion cannot
+            // deadlock), so nothing ever blocks on the callee's analysis
+            // itself. Publishing `Activation(callee_activation.key)` above is
+            // the frontier's own record site — `World::complete_job` folds it
+            // into `activation_frontier`, and `demand_activation_frontier_analyses`
+            // ignites the callee's first analysis when the agenda drains.
         }
         for executable in &call.latent_executables {
             if emitted_executables.insert(executable.clone()) {
@@ -277,7 +262,7 @@ pub(super) fn analyze_activation(world: &mut World<'_>, activation: &ActivationK
         outputs: dedupe_facts(outputs),
         changed: dedupe_facts(changed),
         activation_input_contributions,
-        follow_up: follow_up.into_iter().collect(),
+        ..JobEffects::default()
     })
 }
 
@@ -1106,8 +1091,7 @@ fn call_emission_for_function(
             latent_executables: Vec::new(),
         }));
     }
-    let Some((activation, already_present, return_ty)) =
-        prepare_function_call(world, caller, function, &input_types, reads, waits)
+    let Some((activation, return_ty)) = prepare_function_call(world, caller, function, &input_types, reads, waits)
     else {
         return Ok(None);
     };
@@ -1115,7 +1099,6 @@ fn call_emission_for_function(
     let activations = vec![ActivationContribution {
         key: activation.clone(),
         inputs: input_types.clone(),
-        already_present,
     }];
     Ok(Some(CallEmission {
         key,
@@ -1170,7 +1153,7 @@ fn resolve_function_call(
             Some(return_ty),
         ));
     }
-    let Some((activation, already_present, return_evidence)) =
+    let Some((activation, return_evidence)) =
         prepare_function_call(world, caller, function, &input_types, reads, waits)
     else {
         return Ok((None, Vec::new(), None));
@@ -1189,7 +1172,6 @@ fn resolve_function_call(
         vec![ActivationContribution {
             key: activation,
             inputs: input_types.clone(),
-            already_present,
         }],
         return_ty,
     ))
@@ -1297,7 +1279,7 @@ fn resolve_protocol_call(
         else {
             return Ok((None, Vec::new(), None));
         };
-        let Some((activation, already_present, observed_return)) =
+        let Some((activation, observed_return)) =
             prepare_function_call(world, caller, selected.function, &refined_inputs, reads, waits)
         else {
             return Ok((None, Vec::new(), None));
@@ -1313,7 +1295,6 @@ fn resolve_protocol_call(
         activations.push(ActivationContribution {
             key: activation,
             inputs: refined_inputs.clone(),
-            already_present,
         });
     }
     Ok((Some(CallSiteSummary { targets, return_ty }), activations, return_ty))
@@ -1571,20 +1552,19 @@ fn prepare_function_call(
     arg_types: &[Ty],
     reads: &mut Vec<FactKey>,
     waits: &mut HashSet<FactKey>,
-) -> Option<(ActivationKey, bool, Option<Ty>)> {
+) -> Option<(ActivationKey, Option<Ty>)> {
     if !world.require_activation_key_facts(function, reads, waits) {
         return None;
     }
 
     let activation = world.activation_key(caller.root, function, arg_types);
-    let already_present = world.has_fact(&FactKey::Activation(activation.clone()));
     // The read is the subscription that re-wakes this caller when the
     // callee's return evidence rises — chaotic iteration needs no wait here,
     // so mutual recursion cannot deadlock. Absent evidence stays absent: it
     // is the ascent's bottom, never the type `none`.
     reads.push(FactKey::ReturnType(activation.clone()));
     let return_evidence = world.activation_return(&activation);
-    Some((activation, already_present, return_evidence))
+    Some((activation, return_evidence))
 }
 
 /// VERDICT (fz-rh2.17.5.9): body readiness. A runtime module's defimpls

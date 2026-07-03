@@ -133,6 +133,13 @@ pub struct World<'a> {
     reported_unresolved: HashSet<UnresolvedIssueKey>,
     reported_warnings: HashSet<WarningDiagnosticKey>,
     warning_diagnostics: Vec<Diagnostic>,
+    /// Discovered callee activations whose `ActivationAnalyzed` fact is not
+    /// yet settled: the standing demand `drive::demand_activation_frontier_analyses`
+    /// expands, the non-root analogue of the roots' own standing demand.
+    /// `complete_job` is the sole maintenance site — it inserts a key when a
+    /// job outputs `Activation(key)` (unless already settled) and removes it
+    /// once `ActivationAnalyzed(key)` settles.
+    activation_frontier: HashSet<ActivationKey>,
     pub(crate) work_graph: WorkGraph,
 }
 
@@ -193,6 +200,7 @@ impl<'a> World<'a> {
             reported_unresolved: HashSet::new(),
             reported_warnings: HashSet::new(),
             warning_diagnostics: Vec::new(),
+            activation_frontier: HashSet::new(),
             work_graph: WorkGraph::new(),
         };
         world.runtime_modules = runtime::bootstrap(&mut world.modules);
@@ -450,9 +458,36 @@ impl<'a> World<'a> {
         let mut changed = effects.changed;
         changed.extend(activation_input_changed.into_iter().map(FactKey::ActivationInputs));
         let changed = dedupe_job_facts(changed);
+        // Captured before `outputs` moves into `complete`: the two record
+        // sites that keep `activation_frontier` in lockstep with the fact
+        // table, mirrored on the publish/settle pair the way
+        // `insert_transport_shape`/`remove_transport_shape` keep their own
+        // by-symbol index coherent.
+        let activation_published: Vec<ActivationKey> = outputs
+            .iter()
+            .filter_map(|fact| match fact {
+                FactKey::Activation(key) => Some(key.clone()),
+                _ => None,
+            })
+            .collect();
+        let analyzed_published: Vec<ActivationKey> = outputs
+            .iter()
+            .filter_map(|fact| match fact {
+                FactKey::ActivationAnalyzed(key) => Some(key.clone()),
+                _ => None,
+            })
+            .collect();
         let step = self
             .work_graph
             .complete(&job, reads, waits, outputs, changed, effects.follow_up);
+        for key in analyzed_published {
+            if self.fact_is_settled(&FactKey::ActivationAnalyzed(key.clone())) {
+                self.activation_frontier.remove(&key);
+            }
+        }
+        for key in activation_published {
+            self.note_activation_frontier(key);
+        }
         self.tel.event(
             &["fz", "compiler2", "work_graph", "applied"],
             metadata! {
@@ -461,6 +496,29 @@ impl<'a> World<'a> {
             },
         );
         step
+    }
+
+    /// The SOLE insertion point into `activation_frontier`: a discovered
+    /// `Activation(key)` publish becomes a standing analysis demand unless
+    /// its `ActivationAnalyzed` fact has already settled.
+    fn note_activation_frontier(&mut self, key: ActivationKey) {
+        if !self.fact_is_settled(&FactKey::ActivationAnalyzed(key.clone())) {
+            self.activation_frontier.insert(key);
+        }
+    }
+
+    /// The activations `drive::demand_activation_frontier_analyses` still
+    /// owes a first-run demand. Order carries no meaning — demanding
+    /// producers is commutative — so no sort applies.
+    pub(crate) fn activation_frontier_keys(&self) -> Vec<ActivationKey> {
+        self.activation_frontier.iter().cloned().collect()
+    }
+
+    /// Drops a key `demand_activation_frontier_analyses` has determined no
+    /// longer needs first-run ignition (already analyzed at least once, or
+    /// settled).
+    pub(crate) fn retire_activation_frontier(&mut self, key: &ActivationKey) {
+        self.activation_frontier.remove(key);
     }
 
     pub fn demand(&mut self, job: Job) -> bool {
