@@ -217,6 +217,22 @@ When one settles to a changed value, only those recorded dependents are
 invalidated; if a product is invalidated while in progress, the pull driver
 rejects that stale result and returns an explicit product wait for the same key.
 
+`BackendProgram(root)` is a co-output-only fact (no arm in
+`World::demand_fact_producer`): its sole producer is this bounded product-pull
+drive, `drive_root_backend_product`, never an agenda job. A job that needs a
+root's `BackendProgram` as an ordinary prerequisite of its own conclusion --
+`Job::BuildMacroExecutable` (`jobs/macro_runtime.rs`, building the executable
+for a macro's hidden compile-time root) and `Job::LowerNativeProgram`
+(`jobs/native.rs`, lowering a root's backend program to native) -- runs this
+same bounded drive inline when the fact is absent and registers its result
+through `complete_job`, exactly as `product_drive::drive_product_fact_wait`
+already does for jobs it runs inside its own bounded fact-wait loop. This is
+the second sanctioned non-wait work-start alongside `submit_root`'s `SeedRoot`
+ignition: `submit_root` starts work because the root does not exist yet to be
+waited on, while this starts work because the fact it needs has no producer a
+wait could ever name -- both are bounded, self-contained drives invoked
+directly rather than a job commanding another job to run.
+
 ## Tiny walkthrough
 
 ```text

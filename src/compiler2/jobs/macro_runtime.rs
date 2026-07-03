@@ -33,6 +33,26 @@ pub(super) fn build_macro_executable(world: &mut World<'_>, function: FunctionId
 
     let root = world.macro_root(function);
     let backend_fact = FactKey::BackendProgram(root);
+    // `BackendProgram` is a co-output-only fact (`World::demand_fact_producer`,
+    // drive.rs): it has no arm in the fact->producer map, so returning
+    // `wait_on_current(backend_fact)` here would name a fact nothing can ever
+    // be demanded to produce, i.e. a permanent stall rather than a resumable
+    // wait. Its one real producer is the already-sanctioned bounded
+    // product-pull driver (`drive_root_backend_product`, product_drive.rs) --
+    // the same self-contained inner pull-drive `Compiler2::run_root_interp`
+    // and `product_drive::drive_product_fact_wait` already run synchronously
+    // to completion (see "Product pulls for artifacts",
+    // .agent/docs/fact-engine.md). Calling it inline and registering its
+    // result through `complete_job` is invoking that sanctioned mechanism
+    // directly, not commanding an unrelated job to run out of turn:
+    // `Job::BuildBackendProduct` is never enqueued on the agenda in
+    // production (only `world.demand` in tests seeds it there); it exists
+    // solely as the claim identity `complete_job` needs to register the
+    // pull-driver's result into the fact table. `jobs::lower_native_program`
+    // (jobs/native.rs) does the identical inline pull for the same fact and
+    // the same reason: both jobs need one root's `BackendProgram` as an
+    // ordinary prerequisite of their own conclusion, and that fact's sole
+    // producer is a bounded product-drive, not another agenda job.
     let backend_revision = match world.fact_revision(&backend_fact) {
         Some(revision) => revision,
         None => {
