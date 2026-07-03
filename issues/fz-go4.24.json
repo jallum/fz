@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-07-02T21:41:03Z",
@@ -8,8 +8,8 @@
   "labels": [],
   "parent": "fz-go4",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "Types-layer persistence leaks garbage tuple clauses: duplicates, empty arity-mismatch multi-pos clauses, no subsumption (the 39-clause union behind the 00277 emptiness blowup)",
   "type": "bug",
-  "updated_at": "2026-07-02T21:43:17Z"
+  "updated_at": "2026-07-03T14:10:23Z"
 }
