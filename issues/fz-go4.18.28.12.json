@@ -2,14 +2,15 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-07-03T14:31:45Z",
   "created": "2026-07-03T03:07:55Z",
   "description": "Named by fz-go4.18.28.11 (2026-07-02) and independently VALIDATED by its minimalism audit (release samply @10kHz on enum_predicate_search at d78b32b62): produce_root_backend_product is 25.5% inclusive of the whole release compile; fmt machinery on-stack under it = 21.0% of ALL compile samples; TransportPosition's Debug::fmt alone = 12.8%. With the demand-settling fix landed, this is the single biggest cost in the compile.\n\nMECHANISM (src/compiler2/jobs/backend.rs, verified at d78b32b62): symbolic_materialized_transport_plan sorts the global position-shape set with sort_by_key(|(position,_)| format!(\"{position:?}\")) (line ~923, key REFORMATTED PER COMPARISON -- sort_by_key recomputes, no caching) plus a second format!-comparator at ~928-930; symbolic_codegen_seam_facts sorts with out.sort_by_key(|fact| format!(\"{fact:?}\")) (~1107). Call site (~232) runs once per root per successful production -- the \"once per root, final packaging\" classification from .28.7/.28.8 was correct about FREQUENCY but wrong about COST: one root-level sort of the full global set with Debug-string keys recomputed per comparison is O(n log n) full-structure formattings of every TransportPosition/CodegenSeamFact in the program.\n\nFIX (the .28.10 pattern, already proven twice): replace the format! keys with structural sort keys. artifact.rs already has codegen_seam_fact_sort_key (from .28.8) and transport_position_local_sort_key / transport_executable_sort_key (from .28.10) -- backend.rs's copies of these sorts should reuse or mirror those keys (watch: backend.rs sorts the GLOBAL set, so the cross-executable key component is needed here, unlike .28.10's per-partition localization; transport_executable_sort_key is the existing cross-executable structural key). Determinism claim discipline per .28.2's precedent: structural keys on interned ids give per-process determinism -- state exactly that, no more. Verify against the same law: these sorts are final packaging (product field order), order must not decide semantics.\n\nACCEPTANCE: zero format!()-based sort keys in backend.rs (rg-verified); release-profile fmt-on-stack under produce_root_backend_product drops from ~21% to noise; interp/JIT output byte-identical on deterministic fixtures; suite green 3x; clippy/fmt clean.",
   "id": "fz-go4.18.28.12",
   "labels": [],
   "parent": "fz-go4.18.28",
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "backend.rs format!()-key sorts are ~21% of the release compile (once-per-root is no longer cheap)",
   "type": "task",
-  "updated_at": "2026-07-03T14:10:23Z"
+  "updated_at": "2026-07-03T14:31:45Z"
 }
