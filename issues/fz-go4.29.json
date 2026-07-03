@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-07-03T19:30:32Z",
@@ -8,8 +8,8 @@
   "labels": [],
   "parent": "fz-go4",
   "priority": 3,
-  "status": "open",
+  "status": "in_progress",
   "title": "Strip backward-looking ticket-ID citations from .agent/docs",
   "type": "task",
-  "updated_at": "2026-07-03T19:30:32Z"
+  "updated_at": "2026-07-03T19:57:35Z"
 }
