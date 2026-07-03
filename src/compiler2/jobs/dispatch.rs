@@ -7,7 +7,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use super::super::drive::{FactKey, Job, JobEffects, current_uses};
+use super::super::drive::{FactKey, JobEffects, current_uses};
 use super::super::identity::{FunctionId, FunctionSource};
 use super::super::namespace::{Namespace, NamespaceSymbol};
 use super::super::scheduler::FatalError;
@@ -60,23 +60,13 @@ pub(super) fn reify_guard_dispatch(world: &mut World<'_>, function: FunctionId) 
 
     let mut reads = Vec::new();
     let mut waits = HashSet::new();
-    let mut follow_up = HashSet::new();
     let mut seen = HashSet::new();
     let mut stack = Vec::new();
-    collect_requirements(
-        world,
-        function,
-        &mut reads,
-        &mut waits,
-        &mut follow_up,
-        &mut seen,
-        &mut stack,
-    )?;
+    collect_requirements(world, function, &mut reads, &mut waits, &mut seen, &mut stack)?;
     if !waits.is_empty() {
         return Ok(JobEffects {
             reads: current_uses(reads),
             waits: current_uses(waits),
-            follow_up: follow_up.into_iter().collect(),
             ..JobEffects::default()
         });
     }
@@ -116,18 +106,16 @@ pub(super) fn plan_entry_dispatch(world: &mut World<'_>, function: FunctionId) -
         if world.has_fact(&module_fact) {
             reads.push(module_fact);
         } else {
-            return Ok(JobEffects::wait_on_current(module_fact, [Job::DefineModule(module)]));
+            return Ok(JobEffects::wait_on_current(module_fact, []));
         }
     }
     let mut waits = HashSet::new();
-    let mut follow_up = HashSet::new();
     for referenced in world.function_type_refs(function).iter().cloned() {
-        let fact = FactKey::TypeDefined(referenced.clone());
+        let fact = FactKey::TypeDefined(referenced);
         if world.has_fact(&fact) {
             reads.push(fact);
         } else {
             waits.insert(fact);
-            follow_up.insert(Job::DeriveTypeDef(referenced));
         }
     }
     for call in collect_guard_calls_in_guards(&surface)
@@ -139,14 +127,12 @@ pub(super) fn plan_entry_dispatch(world: &mut World<'_>, function: FunctionId) -
             reads.push(fact);
         } else {
             waits.insert(fact);
-            follow_up.insert(Job::ReifyGuardDispatch(callee));
         }
     }
     if !waits.is_empty() {
         return Ok(JobEffects {
             reads: current_uses(reads),
             waits: current_uses(waits),
-            follow_up: follow_up.into_iter().collect(),
             ..JobEffects::default()
         });
     }
@@ -180,7 +166,6 @@ fn collect_requirements(
     function: FunctionId,
     reads: &mut Vec<FactKey>,
     waits: &mut HashSet<FactKey>,
-    follow_up: &mut HashSet<Job>,
     seen: &mut HashSet<FunctionId>,
     stack: &mut Vec<FunctionId>,
 ) -> Result<(), FatalError> {
@@ -192,7 +177,6 @@ fn collect_requirements(
     }
     let Some(_) = world.function_defined_revision(function) else {
         waits.insert(FactKey::FunctionDefined(function));
-        follow_up.insert(Job::DefineFunction(function));
         return Ok(());
     };
     reads.push(FactKey::FunctionDefined(function));
@@ -202,7 +186,7 @@ fn collect_requirements(
         .map_err(|span| emit_guard_dispatch_error(world, function, span, SourcePatternError::UnsupportedGuardExpr))?
     {
         let callee = resolve_guard_callee(world, source.namespace, &call)?;
-        collect_requirements(world, callee, reads, waits, follow_up, seen, stack)?;
+        collect_requirements(world, callee, reads, waits, seen, stack)?;
     }
     stack.pop();
     Ok(())

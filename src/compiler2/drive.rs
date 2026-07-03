@@ -131,6 +131,7 @@ impl World<'_> {
         let job = match fact {
             FactKey::RootEntry(root) => Some(Job::SeedRoot(*root)),
             FactKey::FunctionDefined(function) => Some(Job::DefineFunction(*function)),
+            FactKey::ModuleDefined(module) => Some(Job::DefineModule(*module)),
             FactKey::TypeDefined(name) => Some(Job::DeriveTypeDef(name.clone())),
             FactKey::GuardDispatch(function) => Some(Job::ReifyGuardDispatch(*function)),
             FactKey::LoweredBody(function) => Some(Job::LowerFunction(*function)),

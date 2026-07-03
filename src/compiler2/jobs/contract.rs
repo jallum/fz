@@ -12,7 +12,7 @@ use crate::extern_contract::extern_semantic_contract;
 use crate::type_expr::ResolvedSpecDecl;
 
 use super::super::contract::FunctionContract;
-use super::super::drive::{FactKey, Job, JobEffects, current_uses};
+use super::super::drive::{FactKey, JobEffects, current_uses};
 use super::super::identity::FunctionId;
 use super::super::scheduler::FatalError;
 use super::super::world::World;
@@ -44,21 +44,18 @@ pub(super) fn derive_function_contract(world: &mut World<'_>, function: Function
 
     let mut reads = vec![FactKey::FunctionDefined(function)];
     let mut waits = Vec::new();
-    let mut follow_up = Vec::new();
     for referenced in world.function_type_refs(function).iter().cloned() {
-        let fact = FactKey::TypeDefined(referenced.clone());
+        let fact = FactKey::TypeDefined(referenced);
         if world.has_fact(&fact) {
             reads.push(fact);
         } else {
             waits.push(fact);
-            follow_up.push(Job::DeriveTypeDef(referenced));
         }
     }
     if !waits.is_empty() {
         return Ok(JobEffects {
             reads: current_uses(reads),
             waits: current_uses(waits),
-            follow_up,
             ..JobEffects::default()
         });
     }

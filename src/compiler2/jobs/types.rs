@@ -10,7 +10,7 @@ use crate::diag::Diagnostic;
 use crate::diag::codes;
 use crate::diag::driver::emit_through;
 
-use super::super::drive::{FactKey, Job, JobEffects, current_uses};
+use super::super::drive::{FactKey, JobEffects, current_uses};
 use super::super::identity::TypeName;
 use super::super::scheduler::FatalError;
 use super::super::world::World;
@@ -31,17 +31,14 @@ pub(super) fn derive_type_def(world: &mut World<'_>, name: &TypeName) -> Result<
     // Wait on the `TypeDefined` of every type the body names before resolving.
     let refs = world.type_def_refs(name).to_vec();
     let mut waits = Vec::new();
-    let mut follow_up = Vec::new();
     for referenced in &refs {
         if !world.has_fact(&FactKey::TypeDefined(referenced.clone())) {
             waits.push(FactKey::TypeDefined(referenced.clone()));
-            follow_up.push(Job::DeriveTypeDef(referenced.clone()));
         }
     }
     if !waits.is_empty() {
         return Ok(JobEffects {
             waits: current_uses(waits),
-            follow_up,
             ..JobEffects::default()
         });
     }
