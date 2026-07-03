@@ -744,6 +744,7 @@ impl<'a> World<'a> {
                 function_id: key.function.as_u32(),
                 ascents: outcome.ascents,
                 rebased: rebased,
+                changed: outcome.changed as u64,
             },
             &metadata! {
                 activation: opaque_debug(key),

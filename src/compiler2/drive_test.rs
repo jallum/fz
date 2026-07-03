@@ -1993,6 +1993,87 @@ fn compiler2_enum_reduce_selects_list_protocol_impl_and_callable_reducer() {
     );
 }
 
+/// fz-go4.18.31: `return_type.defined` carries a `changed` measurement mirroring
+/// `callsite.defined`'s — "did this publication actually move the fact", not a
+/// Ty-id-churn proxy (re-publishing an equal `Ty` value can still mint a fresh
+/// id). On quicksort (00001) `main/0`'s activation fires across several ascent
+/// rounds as callees settle; only rounds that actually widen the join should
+/// read `changed=true`, and every re-publication of an already-settled value
+/// (including the redundant cross-round re-runs fz-go4.18.20/.18.12 measured)
+/// must read `changed=false`.
+#[test]
+fn compiler2_return_type_defined_changed_field_matches_actual_fact_movement() {
+    let tel = ConfiguredTelemetry::new();
+    let functions = FunctionCapture::new();
+    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    let returns = ReturnTypeCapture::new();
+    tel.attach(&["fz", "compiler2", "return_type", "defined"], returns.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/quicksort_plus_foo.fz".to_string()),
+        text: include_str!("../../fixtures2/00001_quicksort_plus_foo.fz").to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    assert_resolved(compiler.drive(), "quicksort should settle to one semantic closure");
+
+    let main_id = function_id(&functions, "main", 0);
+    let records = returns.records_for_function(root_id, main_id);
+    assert!(
+        !records.is_empty(),
+        "main/0 should publish at least one return_type.defined record",
+    );
+    assert!(
+        records.iter().any(|record| record.changed),
+        "at least one round should actually move main/0's return fact (changed=true)",
+    );
+
+    // Walk emission order and confirm `changed` matches whether the published
+    // Ty actually differs from the immediately preceding published Ty for the
+    // same activation — the exact signal `outcome.changed` reports from
+    // `ActivationMap::define_return` (semantic.rs), not a byproduct of Ty id
+    // churn on re-publication of an equal value.
+    let mut previous: Option<Ty> = None;
+    for record in &records {
+        let is_equivalent_to_previous =
+            previous.is_some_and(|prev| compiler.types_equivalent_for_test(prev, record.return_ty));
+        if is_equivalent_to_previous {
+            assert!(
+                !record.changed,
+                "re-publishing an equivalent return Ty for main/0 must read changed=false, got a record for {:?} equivalent to the prior one but marked changed=true",
+                record.return_ty,
+            );
+        }
+        previous = Some(record.return_ty);
+    }
+
+    // Re-drive with byte-identical code: any further main/0 return_type.defined
+    // firing must be a redundant re-publication of the already-settled value
+    // and must therefore read changed=false.
+    let settled_return = returns.last_for_function(root_id, main_id);
+    assert!(!settled_return.changed || records.len() == 1);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/quicksort_plus_foo.fz".to_string()),
+        text: include_str!("../../fixtures2/00001_quicksort_plus_foo.fz").to_string(),
+    });
+    assert_resolved(
+        compiler.drive(),
+        "re-submitting byte-identical code should resolve without changing the settled shape",
+    );
+    let after_replay = returns.records_for_function(root_id, main_id);
+    for record in &after_replay[records.len()..] {
+        assert!(
+            !record.changed,
+            "a byte-identical re-publication of main/0's already-settled return must read changed=false",
+        );
+    }
+}
+
 #[test]
 fn compiler2_enum_reduce_operator_ref_activates_kernel_plus() {
     let tel = ConfiguredTelemetry::new();
@@ -8843,6 +8924,7 @@ struct NativeProgramRecord {
 pub(crate) struct ReturnTypeRecord {
     activation: ActivationKey,
     pub(crate) return_ty: Ty,
+    pub(crate) changed: bool,
 }
 
 pub(crate) struct FunctionCapture {
@@ -9122,6 +9204,23 @@ impl ReturnTypeCapture {
             .find(|record| record.activation.root == root_id && record.activation.function == function_id)
             .cloned()
             .unwrap_or_else(|| panic!("return_type.defined for root={root_id:?} function={function_id:?}"))
+    }
+
+    /// Every `return_type.defined` record for one activation, in emission order —
+    /// used to inspect the `changed` split (fz-go4.18.31) directly rather than
+    /// through the Ty-id-churn proxy (a re-published Ty can carry a fresh id even
+    /// when the fact did not move).
+    pub(crate) fn records_for_function(
+        &self,
+        root_id: crate::compiler2::RootId,
+        function_id: FunctionId,
+    ) -> Vec<ReturnTypeRecord> {
+        self.defs
+            .borrow()
+            .iter()
+            .filter(|record| record.activation.root == root_id && record.activation.function == function_id)
+            .cloned()
+            .collect()
     }
 
     /// The distinct activation keys under `root_id` that ever earned a settled
@@ -9572,9 +9671,13 @@ impl Handler for ReturnTypeCaptureHandler {
         else {
             return;
         };
+        let Some(Value::U64(changed)) = event.measurements.get("changed") else {
+            return;
+        };
         self.defs.borrow_mut().push(ReturnTypeRecord {
             activation: activation.clone(),
             return_ty,
+            changed: *changed != 0,
         });
     }
 }
