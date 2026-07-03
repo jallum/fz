@@ -2064,37 +2064,26 @@ fn executable_sort_key(executable: &ExecutableKey, types: &Types) -> ExecutableS
 /// the owning executable's structural render, then the position's body-local
 /// ids. Schedule-free for the same reason `executable_sort_key` is.
 fn transport_position_sort_key(position: &TransportPosition, types: &Types) -> TransportPositionSortKey {
-    let (rank, executable, first, second, index) = match position {
-        TransportPosition::ExecutableInput {
-            executable,
-            semantic_index,
-        } => (0, executable, 0, 0, *semantic_index),
-        TransportPosition::ExecutableReturn { executable } => (1, executable, 0, 0, 0),
-        TransportPosition::ResumePayload {
-            executable,
-            callsite,
-            entry,
-        } => (
+    let executable = position.executable();
+    let (rank, first, second, index) = match position {
+        TransportPosition::ExecutableInput { semantic_index, .. } => (0, 0, 0, *semantic_index),
+        TransportPosition::ExecutableReturn { .. } => (1, 0, 0, 0),
+        TransportPosition::ResumePayload { callsite, entry, .. } => (
             2,
-            executable,
             callsite.map_or(0, |callsite| u64::from(callsite.as_u32()) + 1),
             u64::from(entry.as_u32()),
             0,
         ),
-        TransportPosition::ReturnPayload { executable, callsite } => {
-            (3, executable, u64::from(callsite.as_u32()), 0, 0)
-        }
+        TransportPosition::ReturnPayload { callsite, .. } => (3, u64::from(callsite.as_u32()), 0, 0),
         TransportPosition::CallArg {
-            executable,
             callsite,
             semantic_index,
-        } => (4, executable, u64::from(callsite.as_u32()), 0, *semantic_index),
+            ..
+        } => (4, u64::from(callsite.as_u32()), 0, *semantic_index),
         TransportPosition::EntryCapture {
-            executable,
-            entry,
-            capture_index,
-        } => (5, executable, u64::from(entry.as_u32()), 0, *capture_index),
-        TransportPosition::Value { executable, value } => (6, executable, u64::from(value.as_u32()), 0, 0),
+            entry, capture_index, ..
+        } => (5, u64::from(entry.as_u32()), 0, *capture_index),
+        TransportPosition::Value { value, .. } => (6, u64::from(value.as_u32()), 0, 0),
     };
     let need = match executable.need {
         ExecutableNeed::Value => (0, 0),
