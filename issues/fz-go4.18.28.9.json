@@ -2,14 +2,15 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-07-03T00:45:03Z",
   "created": "2026-07-02T23:47:29Z",
   "description": "Job/work-minimalism audit of fz-go4.18.28.8 (2026-07-02, at 8cdbf0439) found the fix left one piece of the disease uncured. session_codegen_publication_seam_facts (src/compiler2/jobs/artifact.rs:466) no longer sorts with a format!(\"{:?}\") string key (that part is fixed -- real structural tuple key codegen_seam_fact_sort_key), but it still iterates ALL of session.boundary_facts_inventory() and rebuilds+sorts the whole Box\u003c[CodegenSeamFact]\u003e from scratch on EVERY call, and it is called from both produce_materialized_executable_product (artifact.rs:114) and produce_abi_executable_product (artifact.rs:349) -- i.e. still once per executable production, not once per root. Contrast the sibling fix in fz-go4.18.28.7 (057700e15), which hoisted the equivalent global plan into produce_root_backend_product, a genuine once-per-root product, driving backend_executable's gap-sum to ~0.002-0.005s. .28.8 has no such root-scoped home for this data yet, so its post-fix numbers (2.98s/1.25s materialized_executable+abi_executable on enum_predicate_search) are still substantial rather than near-zero.\n\nWHY NOT FIXED INLINE: this needs a genuine new memoized per-root product (a new ProductKey variant, e.g. ProductKey::RootCodegenSeamFacts(RootId) or folded into an existing root-scoped product), with correct epoch/invalidation wiring in the pull-based fact engine -- not a bare cache, which would risk staleness bugs across a session's incremental re-derivation. That's real design work, not a bolt-on to an already-landed commit.\n\nDIRECTION: add a root-scoped product (or extend an existing one, e.g. RootBackendProduct in backend.rs, if seam facts belong there) that computes session_codegen_publication_seam_facts once per root and is read (not recomputed) by both produce_materialized_executable_product and produce_abi_executable_product. Verify invalidation: the seam-fact set must be recomputed if any settled BoundaryFacts/CallableFacts entry it draws from changes within the root's epoch. Re-measure enum_predicate_search/00420/enum_map_family/00277 gap-sums after landing; expect them to approach the near-zero range .28.7 achieved for backend_executable.\n\nACCEPTANCE: new root-scoped product for codegen_seam_facts; produce_materialized_executable_product/produce_abi_executable_product read it instead of recomputing; correct epoch invalidation (proven, not assumed); gap-sum on the residual-tier fixtures drops toward .28.7's near-zero range; suite green 3x, clippy/fmt clean.",
   "id": "fz-go4.18.28.9",
   "labels": [],
   "parent": "fz-go4.18.28",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "codegen_seam_facts still rebuilt+sorted once per executable production, not once per root",
   "type": "task",
-  "updated_at": "2026-07-03T00:17:21Z"
+  "updated_at": "2026-07-03T00:45:03Z"
 }
