@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-07-03T21:51:46Z",
+  "description": "Deferred from the fz-go4.18.24 arc-close (verified as still-live, NOT dead, by the arc-close removable+correctness audits at 3ab805761, so correctly out of the follow_up-deletion commit). Two separate hygiene items: (1) The coalesced-telemetry channel (AppliedStep::coalesced) is still fed by enqueue_step's already-in-agenda dedup path (scheduler.rs:241-247, reached from enqueue_dependents on every change wave) — but it originally CONFLATED two meanings: agenda-dedupe vs the (now-deleted) standing-conclusion follow_up coalescing. With conclusion_stands gone, the channel now carries only agenda-dedupe; confirm the telemetry topic name/docs still describe it accurately and split the observability if any consumer distinguished the two sources. (2) Scheduler::blocked/has_run are pub with production callers (drive.rs:184/202/255/282) — the arc epic wanted a visibility sweep to confirm they're at the minimum needed scope (pub vs pub(crate)); grep callers and tighten if over-exposed. Both small, non-urgent; NOT blocking anything.",
+  "id": "fz-go4.18.39",
+  "labels": [],
+  "parent": "fz-go4.18",
+  "priority": 3,
+  "status": "open",
+  "title": "Split the coalesced-telemetry channel + sweep Scheduler::blocked/has_run visibility",
+  "type": "task",
+  "updated_at": "2026-07-03T21:51:46Z"
+}
