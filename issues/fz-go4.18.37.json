@@ -2,14 +2,15 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-07-03T21:41:28Z",
   "created": "2026-07-03T20:07:13Z",
   "description": "DONE (folded 2026-07-03, two-lane audited PASS/PASS). PART 1: added CodegenSeam::executable(\u0026self) -\u003e Option\u003c\u0026ExecutableSymbol\u003e in transport.rs (Some for the 7 executable-bearing variants FunctionEntry/BlockParam/ReturnDelivery/ContinuationEntry/ReturnContinuation/TailCall/ExternBoundary; None for the 2 boundary-keyed CallableBoundary/FirstClassPublication), arm-for-arm identical to the deleted seam_executable free fn, all 9 variants covered, no wildcard. Marked #[cfg(test)] pub(crate): every production CodegenSeam match needs additional per-variant fields (callsite/entry/semantic_index/boundary) for correlation/ordering so none can consume a bare executable-extractor; plain pub(crate) empirically dead-code-fails clippy -D warnings; matches the file's ShapeId::for_test/BoundaryId::for_test precedent. Routed seam_executable's single call site through it. Return is Option (not full parity with TransportPosition::executable's \u0026ExecutableSymbol) because 2 variants carry no executable — honest 'mirrors', not literal-identical. PART 2: chose DELETE — removed the whole test compiler2_transport_plan_does_not_publish_synthetic_boundary_positions + the tautological transport_position_is_semantic helper (returned true for all 7 TransportPosition variants; only assertion was the tautology, which could never fail since no synthetic-position variant exists; no other test guards 'synthetic boundary positions'). Suite 1169-\u003e1168; net -37 lines.",
   "id": "fz-go4.18.37",
   "labels": [],
   "parent": "fz-go4.18",
   "priority": 3,
-  "status": "in_progress",
+  "status": "closed",
   "title": "CodegenSeam::executable accessor + review the tautological transport_position_is_semantic guard",
   "type": "task",
-  "updated_at": "2026-07-03T21:41:27Z"
+  "updated_at": "2026-07-03T21:41:28Z"
 }
