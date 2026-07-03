@@ -1,14 +1,13 @@
-use crate::telemetry::{Telemetry, TelemetryExt as _, opaque_debug};
-use crate::{measurements, metadata};
+use crate::telemetry::{Telemetry, TelemetryExt as _};
 use std::time::Duration;
 
 use super::NativeProgram;
 use super::artifact::BackendProgram;
 use super::code::CodeId;
 use super::dump::DumpStage;
-use super::facts::{FactReadiness, FactUse};
+use super::facts::FactUse;
 use super::identity::{ActivationKey, ExecutableKey, FunctionId, RootId};
-use super::pull::{ProductDriver, ProductKey, ProductValue, PullOutcome, PullWait, WorldProductProducers};
+use super::pull::{ProductDriver, ProductKey, PullWait};
 use super::scheduler::DriveOutcome;
 use super::world::World;
 use super::{ExecutableNeed, ModuleId, ModuleInterface};
@@ -20,7 +19,6 @@ use super::{FactKey, Job};
 /// identity immediately, and can then seed root-scoped semantic work without
 /// invoking the legacy lowering or planner pipeline.
 pub struct Compiler2<'a> {
-    tel: &'a dyn Telemetry,
     world: World<'a>,
     drive_timeout: Option<Duration>,
 }
@@ -42,7 +40,6 @@ pub struct RootSubmission {
 impl<'a> Compiler2<'a> {
     pub fn new(tel: &'a dyn Telemetry) -> Self {
         Self {
-            tel,
             world: World::new(tel),
             drive_timeout: None,
         }
@@ -237,107 +234,7 @@ impl<'a> Compiler2<'a> {
     /// inventory the drive accumulated (the CLI dump path reads it).
     fn drive_root_backend_product(&mut self, root: RootId) -> Result<(BackendProgram, ProductDriver<'a>), String> {
         self.abort_on_zero_drive_timeout(root)?;
-        let root_key = ProductKey::RootBackendProduct(root);
-        let mut driver = ProductDriver::new(self.tel, root);
-        let mut stack = vec![root_key.clone()];
-        let mut last_wait = None;
-        for _ in 0..50_000 {
-            let Some(current) = stack.pop() else {
-                stack.push(root_key.clone());
-                continue;
-            };
-            let outcome = {
-                let mut producers = WorldProductProducers::new(&mut self.world);
-                driver.pull(&mut producers, current.clone())
-            };
-            match outcome {
-                PullOutcome::Produced(ProductValue::RootBackendProduct(program)) if current == root_key => {
-                    return Ok((*program, driver));
-                }
-                PullOutcome::Produced(_) => {}
-                PullOutcome::Waiting(waits) => {
-                    last_wait = Some((current.clone(), waits.clone()));
-                    stack.push(current);
-                    for wait in waits.into_iter().rev() {
-                        match wait {
-                            PullWait::Product(product) => stack.push(product),
-                            PullWait::Fact(fact) => {
-                                let producer_pokes = self.drive_product_fact_wait(root, fact)?;
-                                driver.session_mut().record_producer_pokes(producer_pokes);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        Err(format!(
-            "compiler2 root {} product backend did not settle; last wait: {last_wait:?}",
-            root.as_u32()
-        ))
-    }
-
-    fn drive_product_fact_wait(&mut self, root: RootId, fact: FactUse<FactKey>) -> Result<u64, String> {
-        let mut jobs_ran = 0_u64;
-        let mut producer_pokes = 0_u64;
-        while !self.product_fact_wait_is_satisfied(&fact) {
-            let job = match self.world.next_ready_job() {
-                Some(job) => job,
-                None => {
-                    producer_pokes += self.world.demand_fact_producer(fact.fact());
-                    let Some(job) = self.world.work_graph.pop() else {
-                        return Err(format!(
-                            "compiler2 root {} product path waited on {:?} with no ready producer; unresolved={:?}",
-                            root.as_u32(),
-                            fact,
-                            self.world.work_graph.unresolved()
-                        ));
-                    };
-                    job
-                }
-            };
-            let job_span = self.tel.span(
-                &["fz", "compiler2", "job"],
-                metadata! {
-                    job: opaque_debug(&job),
-                },
-            );
-            match super::jobs::run(&mut self.world, &job) {
-                Ok(effects) => {
-                    jobs_ran += 1;
-                    job_span.stop_with(
-                        &measurements! {},
-                        &metadata! {
-                            effects: opaque_debug(&effects),
-                        },
-                    );
-                    self.world.complete_job(job, effects);
-                }
-                Err(_) => {
-                    job_span.stop_with(&measurements! {}, &metadata! {});
-                    return Err(format!(
-                        "compiler2 root {} product path failed while producing {:?}: {:?}",
-                        root.as_u32(),
-                        fact,
-                        job
-                    ));
-                }
-            }
-            if jobs_ran > 50_000 {
-                return Err(format!(
-                    "compiler2 root {} product path exceeded fact-wait budget for {:?}",
-                    root.as_u32(),
-                    fact
-                ));
-            }
-        }
-        Ok(producer_pokes)
-    }
-
-    fn product_fact_wait_is_satisfied(&self, fact: &FactUse<FactKey>) -> bool {
-        match fact.readiness() {
-            FactReadiness::Current => self.world.fact_revision(fact.fact()).is_some(),
-            FactReadiness::Settled => self.world.fact_is_settled(fact.fact()),
-        }
+        super::product_drive::drive_root_backend_product(&mut self.world, root)
     }
 
     /// Drives one root to `NativeProgram` and JIT-compiles it through the
@@ -422,5 +319,51 @@ impl<'a> Compiler2<'a> {
         let program = self.native_program_for_root(root)?;
         self.compile_native_backend(root, &program, super::native_codegen::AotBackend::new(obj_name))
             .map_err(|err| format!("compiler2 root {} AOT compile failed: {err}", root.as_u32()))
+    }
+}
+
+/// Reports `RootBackendProduct` pull-drive failures as plain `String`s for
+/// the in-memory front door (`run_root_interp`, `product_executable_inventory`,
+/// the CLI dump paths). Unlike the backend job's `FatalError` counterpart,
+/// this path does not emit a diagnostic — it never has, and the drive-loop
+/// unification is not the place to change that.
+impl super::product_drive::ProductDriveError for String {
+    fn job_failed(
+        _world: &World<'_>,
+        root: RootId,
+        fact: &FactUse<FactKey>,
+        job: &Job,
+        _source: super::scheduler::FatalError,
+    ) -> Self {
+        format!(
+            "compiler2 root {} product path failed while producing {:?}: {:?}",
+            root.as_u32(),
+            fact,
+            job
+        )
+    }
+
+    fn no_ready_producer(world: &World<'_>, root: RootId, fact: &FactUse<FactKey>) -> Self {
+        format!(
+            "compiler2 root {} product path waited on {:?} with no ready producer; unresolved={:?}",
+            root.as_u32(),
+            fact,
+            world.work_graph.unresolved()
+        )
+    }
+
+    fn fact_wait_budget_exceeded(_world: &World<'_>, root: RootId, fact: &FactUse<FactKey>) -> Self {
+        format!(
+            "compiler2 root {} product path exceeded fact-wait budget for {:?}",
+            root.as_u32(),
+            fact
+        )
+    }
+
+    fn did_not_settle(_world: &World<'_>, root: RootId, last_wait: Option<(ProductKey, Vec<PullWait>)>) -> Self {
+        format!(
+            "compiler2 root {} product backend did not settle; last wait: {last_wait:?}",
+            root.as_u32()
+        )
     }
 }

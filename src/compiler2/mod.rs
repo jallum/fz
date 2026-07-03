@@ -19,6 +19,7 @@ mod keying;
 mod module_interface;
 mod namespace;
 mod native_codegen;
+mod product_drive;
 mod protocol;
 #[doc(hidden)]
 pub mod pull;
@@ -147,6 +148,8 @@ mod port_planner_test;
 mod port_resolve_test;
 #[cfg(test)]
 mod port_type_infer_test;
+#[cfg(test)]
+mod product_drive_test;
 #[cfg(test)]
 mod quoted_function_test;
 #[cfg(test)]

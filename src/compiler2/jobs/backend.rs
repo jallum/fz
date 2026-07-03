@@ -11,8 +11,6 @@ use crate::diag::driver::emit_through;
 use crate::dispatch_matrix::pattern::{PatternDispatchPlan, PatternGuardDispatch, PatternGuardExpr};
 use crate::dispatch_matrix::{ComparisonValue, DispatchConst, DispatchNode, ProjectionKind, Region, SubjectSource};
 use crate::source::Span;
-use crate::telemetry::{TelemetryExt as _, opaque_debug};
-use crate::{measurements, metadata};
 
 use super::super::artifact::{
     AbiReadyExecutable, BackendBody, BackendCallArg, BackendCallableEntry, BackendClause, BackendEntry,
@@ -23,13 +21,13 @@ use super::super::body::{
     CallArg, CallSiteId, ControlDestination, ControlEntryId, ControlEntryOrigin, LoweredBody, LoweredEntry,
     LoweredStep, LoweredTail, ValueId,
 };
-use super::super::drive::{FactKey, JobEffects};
-use super::super::facts::{FactReadiness, FactUse};
+use super::super::drive::{FactKey, Job, JobEffects};
+use super::super::facts::FactUse;
 use super::super::identity::RootId;
 use super::super::identity::{ActivationKey, ExecutableKey, ExecutableNeed};
 use super::super::pull::{
-    ProductDriver, ProductKey, ProductValue, PullOutcome, PullSession, PullWait, SymbolicBackendBody,
-    SymbolicBackendClause, SymbolicBackendEntry, SymbolicBackendExecutable, SymbolicBackendTail, WorldProductProducers,
+    ProductKey, ProductValue, PullOutcome, PullSession, PullWait, SymbolicBackendBody, SymbolicBackendClause,
+    SymbolicBackendEntry, SymbolicBackendExecutable, SymbolicBackendTail,
 };
 use super::super::scheduler::FatalError;
 use super::super::transport::{
@@ -44,112 +42,55 @@ const UNREACHABLE_CONTROL_ATOM: &str = "compiler2_unreachable_control";
 
 pub(crate) fn build_backend_product(world: &mut World<'_>, root_id: RootId) -> Result<JobEffects, FatalError> {
     let backend_fact = FactKey::BackendProgram(root_id);
-    let root_key = ProductKey::RootBackendProduct(root_id);
-    let mut driver = ProductDriver::new(world.tel(), root_id);
-    let mut stack = vec![root_key.clone()];
-    for _ in 0..50_000 {
-        let Some(current) = stack.pop() else {
-            stack.push(root_key.clone());
-            continue;
-        };
-        let outcome = {
-            let mut producers = WorldProductProducers::new(world);
-            driver.pull(&mut producers, current.clone())
-        };
-        match outcome {
-            PullOutcome::Produced(ProductValue::RootBackendProduct(_)) if current == root_key => {
-                driver.finish_session();
-                return Ok(JobEffects {
-                    outputs: vec![backend_fact.clone()],
-                    changed: vec![backend_fact],
-                    ..JobEffects::default()
-                });
-            }
-            PullOutcome::Produced(_) => {}
-            PullOutcome::Waiting(waits) => {
-                stack.push(current);
-                for wait in waits.into_iter().rev() {
-                    match wait {
-                        PullWait::Product(product) => stack.push(product),
-                        PullWait::Fact(fact) => {
-                            let producer_pokes = drive_product_fact_wait(world, root_id, fact)?;
-                            driver.session_mut().record_producer_pokes(producer_pokes);
-                        }
-                    }
-                }
-            }
-        }
-    }
-    Err(emit_backend_product_error(
-        world,
-        Span::DUMMY,
-        format!("compiler2 backend product for root {} did not settle", root_id.as_u32()),
-    ))
+    let (_program, driver) = super::super::product_drive::drive_root_backend_product::<FatalError>(world, root_id)?;
+    driver.finish_session();
+    Ok(JobEffects {
+        outputs: vec![backend_fact.clone()],
+        changed: vec![backend_fact],
+        ..JobEffects::default()
+    })
 }
 
-fn drive_product_fact_wait(world: &mut World<'_>, root_id: RootId, fact: FactUse<FactKey>) -> Result<u64, FatalError> {
-    let mut jobs_ran = 0_u64;
-    let mut producer_pokes = 0_u64;
-    while !product_fact_wait_is_satisfied(world, &fact) {
-        let job = match world.next_ready_job() {
-            Some(job) => job,
-            None => {
-                producer_pokes += world.demand_fact_producer(fact.fact());
-                let Some(job) = world.work_graph.pop() else {
-                    return Err(emit_backend_product_error(
-                        world,
-                        Span::DUMMY,
-                        format!(
-                            "compiler2 backend product for root {} waited on {:?} with no ready producer",
-                            root_id.as_u32(),
-                            fact
-                        ),
-                    ));
-                };
-                job
-            }
-        };
-        let job_span = world.tel().span(
-            &["fz", "compiler2", "job"],
-            metadata! {
-                job: opaque_debug(&job),
-            },
-        );
-        match super::run(world, &job) {
-            Ok(effects) => {
-                jobs_ran += 1;
-                job_span.stop_with(
-                    &measurements! {},
-                    &metadata! {
-                        effects: opaque_debug(&effects),
-                    },
-                );
-                world.complete_job(job, effects);
-            }
-            Err(err) => {
-                job_span.stop_with(&measurements! {}, &metadata! {});
-                return Err(err);
-            }
-        }
-        if jobs_ran > 50_000 {
-            return Err(emit_backend_product_error(
-                world,
-                Span::DUMMY,
-                format!(
-                    "compiler2 backend product for root {} exceeded fact-wait budget for {:?}",
-                    root_id.as_u32(),
-                    fact
-                ),
-            ));
-        }
+/// Reports `RootBackendProduct` pull-drive failures as `FatalError`,
+/// emitting the diagnostic the fatal-error contract requires. The
+/// `job_failed` hook forwards the job's own `FatalError` unchanged — a job
+/// that fails through `jobs::run` has already emitted its own diagnostic, so
+/// this boundary must not emit a second one for the same failure.
+impl super::super::product_drive::ProductDriveError for FatalError {
+    fn job_failed(_world: &World<'_>, _root: RootId, _fact: &FactUse<FactKey>, _job: &Job, source: FatalError) -> Self {
+        source
     }
-    Ok(producer_pokes)
-}
 
-fn product_fact_wait_is_satisfied(world: &World<'_>, fact: &FactUse<FactKey>) -> bool {
-    match fact.readiness() {
-        FactReadiness::Current => world.fact_revision(fact.fact()).is_some(),
-        FactReadiness::Settled => world.fact_is_settled(fact.fact()),
+    fn no_ready_producer(world: &World<'_>, root: RootId, fact: &FactUse<FactKey>) -> Self {
+        emit_backend_product_error(
+            world,
+            Span::DUMMY,
+            format!(
+                "compiler2 backend product for root {} waited on {:?} with no ready producer",
+                root.as_u32(),
+                fact
+            ),
+        )
+    }
+
+    fn fact_wait_budget_exceeded(world: &World<'_>, root: RootId, fact: &FactUse<FactKey>) -> Self {
+        emit_backend_product_error(
+            world,
+            Span::DUMMY,
+            format!(
+                "compiler2 backend product for root {} exceeded fact-wait budget for {:?}",
+                root.as_u32(),
+                fact
+            ),
+        )
+    }
+
+    fn did_not_settle(world: &World<'_>, root: RootId, _last_wait: Option<(ProductKey, Vec<PullWait>)>) -> Self {
+        emit_backend_product_error(
+            world,
+            Span::DUMMY,
+            format!("compiler2 backend product for root {} did not settle", root.as_u32()),
+        )
     }
 }
 
