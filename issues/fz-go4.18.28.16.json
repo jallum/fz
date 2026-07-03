@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-07-03T23:10:25Z",
+  "description": "Named by the fz-go4.18.28.14 audit (at ef4043a97). settle_demand_cone sorts its ascent members, but the audit PROVED the sort is purely cosmetic: it is a Jacobi fixpoint (order-irrelevant to answer AND round count), and the sorted members Vec is NOT consumed by the return value — callers iterate the result HashMaps directly. The sort's only observable effects are internal round-processing sequence (order-irrelevant) and the ordering of a never-hit round-budget panic diagnostic. Per the project 'sorting is a barrier' law (mid-flow sorts are findings unless final-packaging), the holistic fix is to DELETE the sort entirely (zero behavioral effect, proven) rather than the fz-go4.18.28.14 stopgap of re-keying it on display(). If the panic-diagnostic order is worth keeping deterministic, sort ONLY there (at the panic site), or collect members into a BTreeSet at the one consuming site. This also moots the display()-key's latent closure-tie nondeterminism. Acceptance: sort deleted (or moved to the sole consumer); answer + round count unchanged; matrix set unchanged; byte-identical products; suite green 3x.",
+  "id": "fz-go4.18.28.16",
+  "labels": [],
+  "parent": "fz-go4.18.28",
+  "priority": 3,
+  "status": "open",
+  "title": "Delete the cosmetic members sort in settle_demand_cone (sorting-is-a-barrier)",
+  "type": "task",
+  "updated_at": "2026-07-03T23:10:25Z"
+}
