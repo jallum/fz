@@ -102,17 +102,24 @@ impl ProductKey {
     }
 }
 
+/// A transport position's shape verdict. `AbsentForClosure` is never a
+/// terminal claim -- it names the closure solve (`transport_closure_cover`
+/// id) that failed to ground the position, so `invalidate_transport_products`
+/// can retract it the moment that SAME solve is displaced (a settled-demand
+/// change or a new incoming edge touching anything the solve consulted).
+/// There is no bare "permanently absent" variant: every absence is provisional
+/// on the closure that produced it, by construction.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TransportShapeFact {
     Shape(ShapeId),
-    Absent,
+    AbsentForClosure(u64),
 }
 
 impl TransportShapeFact {
     pub fn shape(&self) -> Option<ShapeId> {
         match self {
             Self::Shape(shape) => Some(*shape),
-            Self::Absent => None,
+            Self::AbsentForClosure(_) => None,
         }
     }
 }
@@ -389,6 +396,15 @@ pub struct SolvedTransportClosure {
     pub executables: HashSet<ExecutableKey>,
     pub component_of: HashMap<TransportPosition, usize>,
     pub components: Vec<SolvedTransportComponent>,
+    /// Every WORLD fact the solve consumed, at the revision it read (0 = the
+    /// fact had never been published when the solve read through its
+    /// accessor). Session-product reads travel the push channel
+    /// (`record_settled_runtime_demand`/`record_call_edge` reach the consult
+    /// ledger); world facts have no push into the session, so a recorded
+    /// solve must be revision-validated against this snapshot before it
+    /// answers a pull -- see `covering_solve_consumed_revisions` and the
+    /// freshness gate in `jobs::transport`.
+    pub consumed_fact_revisions: HashMap<FactKey, u64>,
 }
 
 #[derive(Debug)]
@@ -481,6 +497,22 @@ pub struct PullSession {
     solved_transport_closures: HashMap<u64, SolvedTransportClosure>,
     transport_closure_cover: HashMap<ExecutableKey, u64>,
     transport_closure_counter: u64,
+    // Reverse consulted-facts edges `consulted -> members`: every closure
+    // solve that reads a session-channel fact (a RuntimeDemand product and
+    // its callable_flows, or an IncomingInputSlot) belonging to `consulted`
+    // registers every member of the resulting closure here (see
+    // `record_transport_closure_consult`). `invalidate_transport_products`
+    // walks this index transitively so that ANY invalidation reaching a
+    // consulted executable also reaches every closure that consulted it --
+    // the discovery graph a closure solve reads and the invalidation graph
+    // that retracts stale products are the SAME graph by construction, not
+    // two independently-maintained channels that can drift out of step with
+    // the pull schedule. World facts (activation analyses, callsite
+    // summaries, lowered bodies, return types) have no push into the session;
+    // their movement is caught by the solve's revision snapshot
+    // (`SolvedTransportClosure::consumed_fact_revisions`), validated whenever
+    // a recorded solve answers a pull.
+    transport_closure_consult_dependents: HashMap<ExecutableKey, HashSet<ExecutableKey>>,
     transport_positions_by_executable: HashMap<ExecutableKey, HashSet<TransportPosition>>,
     callable_facts: HashMap<CallableId, CallableFacts>,
     boundary_facts: HashMap<BoundaryId, BoundaryFacts>,
@@ -520,6 +552,7 @@ impl PullSession {
             solved_transport_closures: HashMap::new(),
             transport_closure_cover: HashMap::new(),
             transport_closure_counter: 0,
+            transport_closure_consult_dependents: HashMap::new(),
             transport_positions_by_executable: HashMap::new(),
             callable_facts: HashMap::new(),
             boundary_facts: HashMap::new(),
@@ -595,8 +628,10 @@ impl PullSession {
             .produced
             .insert(key, ProductValue::RuntimeDemand(Box::new(demand)));
         if changed {
+            // Artifact products displace inside the transport walk
+            // (`invalidate_transport_products` owns them for every reached
+            // executable, root included) -- no second call here.
             self.invalidate_transport_products(&executable);
-            self.invalidate_artifact_products(&executable);
         }
     }
 
@@ -993,6 +1028,22 @@ impl PullSession {
         self.transport_components.insert(position, component);
     }
 
+    /// Register that a closure solve consulted `consulted`'s session-channel
+    /// facts (its RuntimeDemand product with callable_flows, or an
+    /// IncomingInputSlot) while discovering `member`, one of the closure's
+    /// own members. Called once per (consulted, member) pair for every
+    /// executable a solve reads -- see the `ClosureConsultLedger` in
+    /// `jobs::transport::solve_transport_closure`.
+    pub(crate) fn record_transport_closure_consult(&mut self, consulted: ExecutableKey, member: ExecutableKey) {
+        if consulted == member {
+            return;
+        }
+        self.transport_closure_consult_dependents
+            .entry(consulted)
+            .or_default()
+            .insert(member);
+    }
+
     /// Record the full result of one shape-constraint solve. Within the epoch,
     /// closures stay disjoint by construction: any prior closure sharing a
     /// member executable is dropped whole before the new cover is installed.
@@ -1060,20 +1111,58 @@ impl PullSession {
         }
     }
 
-    pub fn record_absent_transport_shape_for(&mut self, executable: &ExecutableKey, position: TransportPosition) {
+    /// Record a provisional absence: `position` has no grounded shape under
+    /// the closure solve identified by `closure` (the id
+    /// `transport_closure_id_covering` returned for `position`'s owning
+    /// executable at the time of the query). The verdict stands only until
+    /// that closure is displaced -- see `TransportShapeFact::AbsentForClosure`.
+    pub fn record_absent_transport_shape_for(
+        &mut self,
+        executable: &ExecutableKey,
+        position: TransportPosition,
+        closure: u64,
+    ) {
         self.note_demanded_transport_position(&position);
         self.transport_positions_by_executable
             .entry(executable.clone())
             .or_default()
             .insert(position.clone());
-        let changed = self
-            .transport_shape_facts
-            .insert(position.clone(), TransportShapeFact::Absent)
-            != Some(TransportShapeFact::Absent);
+        let fact = TransportShapeFact::AbsentForClosure(closure);
+        let changed = self.transport_shape_facts.insert(position.clone(), fact.clone()) != Some(fact);
         self.remove_transport_shape(&position);
         if changed {
             self.invalidate_artifact_products(executable);
         }
+    }
+
+    /// The closure id covering `executable`, if any -- the provenance a
+    /// caller records into `TransportShapeFact::AbsentForClosure` when this
+    /// solve fails to ground one of `executable`'s positions.
+    pub fn transport_closure_id_covering(&self, executable: &ExecutableKey) -> Option<u64> {
+        self.transport_closure_cover.get(executable).copied()
+    }
+
+    /// The world-fact revision snapshot of the solve covering `executable`,
+    /// if a recorded solve covers it. Serving paths compare this snapshot to
+    /// the world's current revisions before trusting the solve: world facts
+    /// never push into the session, so read-time validation is their only
+    /// retraction channel (the same discipline `DemandFactsCache` applies to
+    /// demand-cone facts).
+    pub(crate) fn covering_solve_consumed_revisions(
+        &self,
+        executable: &ExecutableKey,
+    ) -> Option<&HashMap<FactKey, u64>> {
+        let id = self.transport_closure_cover.get(executable)?;
+        Some(&self.solved_transport_closures.get(id)?.consumed_fact_revisions)
+    }
+
+    /// Displace the transport products derived from the (stale) solve
+    /// covering `executable`: the full invalidation walk, so every member the
+    /// solve consulted loses its shape/component/artifact products and the
+    /// next pull re-solves against the moved facts. Over-reaching is
+    /// conservative-correct; a member left standing is the stale-verdict bug.
+    pub(crate) fn displace_transport_closure_for(&mut self, executable: &ExecutableKey) {
+        self.invalidate_transport_products(executable);
     }
 
     /// The SOLE insertion point into `transport_shapes`: keeps the by-symbol
@@ -1156,8 +1245,9 @@ impl PullSession {
                 continue;
             }
             self.memo.remove(&ProductKey::RuntimeDemand(current.clone()));
+            // The transport walk artifact-invalidates every node it reaches,
+            // `current` included -- no separate artifact wipe is needed here.
             self.invalidate_transport_products(&current);
-            self.invalidate_artifact_products(&current);
             if let Some(dependents) = self.runtime_demand_dependents.get(&current).cloned() {
                 stack.extend(dependents);
             }
@@ -1178,8 +1268,9 @@ impl PullSession {
             if !seen.insert(current.clone()) {
                 continue;
             }
+            // The transport walk artifact-invalidates every node it reaches,
+            // `current` included -- no separate artifact wipe is needed here.
             self.invalidate_transport_products(&current);
-            self.invalidate_artifact_products(&current);
             if let Some(dependents) = self.runtime_demand_dependents.get(&current).cloned() {
                 stack.extend(dependents);
             }
@@ -1283,12 +1374,45 @@ impl PullSession {
         }
     }
 
+    /// The transport-graph EPOCH boundary, extended to the consulted-facts
+    /// ledger: a movement at `executable` displaces every recorded solve
+    /// (`clear_solved_transport_closures`), `executable`'s own shape/component
+    /// products, AND -- transitively, via `transport_closure_consult_dependents`
+    /// -- every closure member whose solve consulted `executable`'s facts even
+    /// when that member never became a `runtime_demand_dependents`/
+    /// `demand_flow_dependents` edge of `executable`. This is what closes the
+    /// premature-absent hole: the discovery graph a closure solve reads and
+    /// this invalidation graph are the SAME graph by construction, so a stale
+    /// verdict can never survive the movement of a fact it was read from.
     fn invalidate_transport_products(&mut self, executable: &ExecutableKey) {
-        // Transport invalidation is only ever rooted at a solve-input movement
-        // (settled-demand change, new incoming edge), so it is an epoch
-        // boundary: every recorded solve is displaced, and the next component
-        // pull re-solves against the moved graph.
         self.clear_solved_transport_closures();
+        let mut stack = vec![executable.clone()];
+        let mut seen = HashSet::new();
+        while let Some(current) = stack.pop() {
+            if !seen.insert(current.clone()) {
+                continue;
+            }
+            self.invalidate_transport_products_for_one(&current);
+            // This walk OWNS artifact invalidation for every node it reaches
+            // (callers do not double-invalidate): a consult-only member has
+            // no other path back to its artifact products, and without this
+            // its cleared transport positions would never be re-demanded --
+            // the stale MaterializedExecutable/AbiExecutable/BackendExecutable
+            // would keep answering from the pre-movement transport, so the
+            // cleared position would simply vanish instead of re-deriving.
+            self.invalidate_artifact_products(&current);
+            if let Some(dependents) = self.transport_closure_consult_dependents.get(&current) {
+                stack.extend(
+                    dependents
+                        .iter()
+                        .filter(|dependent| !seen.contains(*dependent))
+                        .cloned(),
+                );
+            }
+        }
+    }
+
+    fn invalidate_transport_products_for_one(&mut self, executable: &ExecutableKey) {
         let Some(positions) = self.transport_positions_by_executable.remove(executable) else {
             return;
         };
@@ -3023,7 +3147,7 @@ mod tests {
         session.record_transport_shape_for(&executable, position.clone(), ShapeId::for_test(0));
         assert_eq!(session.transport_shape_positions_for(&symbol).count(), 1);
 
-        session.record_absent_transport_shape_for(&executable, position.clone());
+        session.record_absent_transport_shape_for(&executable, position.clone(), 0);
 
         assert!(session.transport_shape(&position).is_none());
         assert_eq!(

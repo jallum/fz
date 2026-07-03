@@ -681,6 +681,8 @@ pub(crate) fn produce_transport_shape_product(
     session: &mut PullSession,
     position: &TransportPosition,
 ) -> PullOutcome {
+    let executable = executable_key_for_transport_position(session.root(), position, world.types_mut());
+    displace_covering_solve_if_stale(world, session, &executable);
     if let Some(fact) = session.transport_shape_fact(position) {
         return PullOutcome::Produced(ProductValue::TransportShape(fact.clone()));
     }
@@ -689,9 +691,17 @@ pub(crate) fn produce_transport_shape_product(
             position.clone(),
         ))]);
     }
-    let executable = executable_key_for_transport_position(session.root(), position, world.types_mut());
-    session.record_absent_transport_shape_for(&executable, position.clone());
-    PullOutcome::Produced(ProductValue::TransportShape(TransportShapeFact::Absent))
+    let closure = session.transport_closure_id_covering(&executable).unwrap_or_else(|| {
+        panic!(
+            "transport shape queried for {position:?} owned by {executable:?} with a materialized \
+             component but no covering closure -- produce_transport_component_product must establish \
+             the cover before materialize_transport_component runs"
+        )
+    });
+    session.record_absent_transport_shape_for(&executable, position.clone(), closure);
+    PullOutcome::Produced(ProductValue::TransportShape(TransportShapeFact::AbsentForClosure(
+        closure,
+    )))
 }
 
 fn emit_transport_component_produced(world: &World<'_>, component: &TransportComponentInventory) {
@@ -747,11 +757,12 @@ pub(crate) fn produce_transport_component_product(
     session: &mut PullSession,
     position: &TransportPosition,
 ) -> PullOutcome {
+    let executable = executable_key_for_transport_position(session.root(), position, world.types_mut());
+    displace_covering_solve_if_stale(world, session, &executable);
     if let Some(component) = session.transport_component(position).cloned() {
         emit_transport_component_produced(world, &component);
         return PullOutcome::Produced(ProductValue::TransportComponent(component));
     }
-    let executable = executable_key_for_transport_position(session.root(), position, world.types_mut());
     if !session.transport_closure_covers(&executable)
         && let Err(waits) = solve_transport_closure(world, session, &executable)
     {
@@ -797,6 +808,60 @@ fn materialize_transport_component(
     component
 }
 
+/// Read-time freshness gate for the WORLD facts a recorded solve consumed.
+/// Session products push their movement into the session
+/// (`record_settled_runtime_demand`, `record_call_edge`, the materialization
+/// epoch gate), but world facts have no push channel -- so before a recorded
+/// solve answers a pull, its revision snapshot is compared against the
+/// world's current revisions, and any moved fact displaces the whole
+/// covering solve (the full invalidation walk over the consult ledger). The
+/// same validated-at-read discipline `DemandFactsCache` applies to
+/// demand-cone facts.
+fn displace_covering_solve_if_stale(world: &World<'_>, session: &mut PullSession, executable: &ExecutableKey) {
+    let stale = session
+        .covering_solve_consumed_revisions(executable)
+        .is_some_and(|snapshot| {
+            snapshot
+                .iter()
+                .any(|(fact, revision)| world.fact_revision(fact).unwrap_or(0) != *revision)
+        });
+    if stale {
+        session.displace_transport_closure_for(executable);
+    }
+}
+
+/// The consulted-facts ledger ONE closure solve accumulates, then registers
+/// into the session on completion. Two channels, matched to how each fact
+/// kind retracts:
+///
+///  - `executables`: owners of SESSION-product reads (RuntimeDemand values,
+///    IncomingInputSlot values). Cross-registered against the closure's
+///    membership (`record_transport_closure_consult`) so the session-side
+///    push events (`record_settled_runtime_demand`, `record_call_edge`)
+///    reach every member through `invalidate_transport_products`' walk.
+///  - `fact_revisions`: WORLD-fact reads at the revision consumed
+///    (first-read-wins; 0 = read before first publication, so a later
+///    publication mismatches -- "not yet published" is a distinct state, not
+///    an absent entry). World facts have no push into the session; the
+///    snapshot is validated whenever the recorded solve answers a pull
+///    (`displace_covering_solve_if_stale`).
+#[derive(Default)]
+struct ClosureConsultLedger {
+    executables: HashSet<ExecutableKey>,
+    fact_revisions: HashMap<FactKey, u64>,
+}
+
+impl ClosureConsultLedger {
+    fn consult_executable(&mut self, executable: &ExecutableKey) {
+        self.executables.insert(executable.clone());
+    }
+
+    fn consult_fact(&mut self, world: &World<'_>, fact: FactKey) {
+        let revision = world.fact_revision(&fact).unwrap_or(0);
+        self.fact_revisions.entry(fact).or_insert(revision);
+    }
+}
+
 /// Solve the shape-constraint graph for the settled executable closure seeded
 /// at `executable` ONCE, and record the complete result -- every connected
 /// component plus all callable and boundary facts -- into the session. Any
@@ -817,7 +882,47 @@ fn solve_transport_closure(
 
     let mut runtime_demands = HashMap::from([(executable.clone(), demand)]);
     let mut executables = HashSet::from([executable.clone()]);
-    while let Some(next) = expand_transport_product_executables(world, session, &executables, &runtime_demands) {
+    // THE CONSULTED-FACTS LEDGER (see `ClosureConsultLedger`). Every fact
+    // this solve reads is recorded AT THE READ SITE -- session-product reads
+    // register their owning executable, world-fact reads snapshot their
+    // revision -- and on completion both channels are installed with the
+    // closure (`record_transport_closure_consult` +
+    // `SolvedTransportClosure::consumed_fact_revisions`). The discovery graph
+    // and the retraction graph are thereby the SAME graph by construction:
+    // any movement of any consulted fact displaces every member this solve
+    // produced, so wait-emission order is unconstrained -- completeness never
+    // depends on which wait the driver services first.
+    //
+    // MAINTENANCE OBLIGATION: any fact read added to this solve (here, the
+    // expansion helpers, `collect_transport_contexts`,
+    // `install_produced_incoming_inputs`, or the projection phase) that can
+    // influence closure membership or recorded shapes MUST be recorded in
+    // this ledger at the read site -- `consult_executable` for a session
+    // product, `consult_fact` for a world fact -- or be exempted here with a
+    // stated reason. Current exemptions:
+    //  - `world.types()` / `world.shape()` / `world.lane()`: interned
+    //    identities are append-only and immutable -- an id never changes
+    //    meaning, so there is nothing to retract.
+    //  - the `OutgoingInputEdges` presence probe in
+    //    `outgoing_input_edge_waits`: a scheduling gate only; the product's
+    //    DATA reaches this solve exclusively through the ledgered
+    //    `IncomingInputSlot` reads (its production `record_call_edge`s into
+    //    the session inventory those slots serve).
+    //  - the projection phase's direct `world.callsite_summary` reads: keyed
+    //    by (member activation, callsite) pairs drawn from the member's
+    //    lowered body, the same key set `collect_transport_contexts` already
+    //    snapshots from the member's settled `analysis.callsites` -- covered
+    //    by subsumption, no second snapshot.
+    //  - `session.materialized_executables` bodies: session products whose
+    //    movement pushes through `record_materialized_executable`'s epoch
+    //    gate, rooted at the owning member itself (a ledgered executable).
+    //  - `session.transport_closure_id_covering` (read by the shape
+    //    producer, not this solve): the session's own solve record, displaced
+    //    together with the closure it names.
+    let mut ledger = ClosureConsultLedger::default();
+    while let Some(next) =
+        expand_transport_product_executables(world, session, &executables, &runtime_demands, &mut ledger)
+    {
         let mut wait_products = Vec::new();
         let mut changed = false;
         for executable in next {
@@ -828,21 +933,20 @@ fn solve_transport_closure(
                 if let Some(demand) = session.memo().runtime_demand(&executable).cloned() {
                     entry.insert(demand);
                 } else {
-                    let wait = PullWait::Product(ProductKey::RuntimeDemand(executable.clone()));
-                    wait_products.push((executable, wait));
+                    wait_products.push(PullWait::Product(ProductKey::RuntimeDemand(executable)));
                 }
             }
         }
         if !wait_products.is_empty() {
-            return Err(sorted_executable_waits(wait_products, world.types()));
+            return Err(wait_products);
         }
 
-        let outgoing_waits = outgoing_input_edge_waits(world, session, &executables);
+        let outgoing_waits = outgoing_input_edge_waits(session, &executables);
         if !outgoing_waits.is_empty() {
             return Err(outgoing_waits);
         }
 
-        let incoming = expand_transport_product_incoming_producers(world, session, &executables)?;
+        let incoming = expand_transport_product_incoming_producers(world, session, &executables, &mut ledger)?;
         let mut wait_products = Vec::new();
         for executable in incoming {
             if executables.insert(executable.clone()) {
@@ -852,19 +956,18 @@ fn solve_transport_closure(
                 if let Some(demand) = session.memo().runtime_demand(&executable).cloned() {
                     entry.insert(demand);
                 } else {
-                    let wait = PullWait::Product(ProductKey::RuntimeDemand(executable.clone()));
-                    wait_products.push((executable, wait));
+                    wait_products.push(PullWait::Product(ProductKey::RuntimeDemand(executable)));
                 }
             }
         }
         if !wait_products.is_empty() {
-            return Err(sorted_executable_waits(wait_products, world.types()));
+            return Err(wait_products);
         }
         if !changed {
             break;
         }
     }
-    let outgoing_waits = outgoing_input_edge_waits(world, session, &executables);
+    let outgoing_waits = outgoing_input_edge_waits(session, &executables);
     if !outgoing_waits.is_empty() {
         return Err(outgoing_waits);
     }
@@ -878,6 +981,7 @@ fn solve_transport_closure(
         session.materialized_executables(),
         &mut reads,
         &mut wait_facts,
+        &mut ledger,
     );
     if !wait_facts.is_empty() {
         return Err(wait_facts
@@ -886,7 +990,7 @@ fn solve_transport_closure(
             .collect());
     }
 
-    install_produced_incoming_inputs(world, session, &mut contexts)?;
+    install_produced_incoming_inputs(world, session, &mut contexts, &mut ledger)?;
     let mut facts = TransportFactsBuilder::default();
     let mut shape_graph = ShapeConstraintGraph::default();
     let mut memo = ProjectionMemo::default();
@@ -936,8 +1040,14 @@ fn solve_transport_closure(
         session.record_boundary_facts(boundary, facts);
     }
 
-    let closure = solved_closure_from_union(executables, &union, &component_shapes, world.types());
+    let mut closure = solved_closure_from_union(executables, &union, &component_shapes, world.types());
+    closure.consumed_fact_revisions = ledger.fact_revisions;
     emit_transport_closure_solved(world, &closure);
+    for consulted_executable in &ledger.executables {
+        for member in &closure.executables {
+            session.record_transport_closure_consult(consulted_executable.clone(), member.clone());
+        }
+    }
     session.record_solved_transport_closure(closure);
     Ok(())
 }
@@ -990,25 +1100,40 @@ fn expand_transport_product_executables(
     session: &PullSession,
     executables: &HashSet<ExecutableKey>,
     runtime_demands: &HashMap<ExecutableKey, ExecutableRuntimeDemand>,
+    ledger: &mut ClosureConsultLedger,
 ) -> Option<Vec<ExecutableKey>> {
     let mut next = Vec::new();
     for executable in executables {
         let demand = runtime_demands
             .get(executable)
             .or_else(|| session.memo().runtime_demand(executable))?;
+        // The RuntimeDemand read above is a session product (callable_flows
+        // feeds membership); its owner joins the executables channel. The
+        // world-fact reads below each snapshot their revision: the activation
+        // analysis (callsites and reachable_clauses feed membership), the
+        // lowered body (via `executable_callsite_needs` it decides the `need`
+        // component of the member keys pushed -- membership identity, not
+        // just shapes), and each CallSiteSummary (targets feed membership).
+        // A read added here MUST join the ledger the same way (see the
+        // obligation in `solve_transport_closure`).
+        ledger.consult_executable(executable);
         for flow in demand.callable_flows.values() {
             for resolution in &flow.resolutions {
                 push_executable_unique(&mut next, resolution.clone());
             }
         }
+        ledger.consult_fact(world, FactKey::ActivationAnalyzed(executable.activation.clone()));
         let analysis = world.activation_analysis(&executable.activation)?;
+        ledger.consult_fact(world, FactKey::LoweredBody(executable.activation.function));
         let body = world.lowered_body(executable.activation.function);
         let callsite_needs = executable_callsite_needs(&body, &analysis.reachable_clauses, executable.need);
         for callsite in &analysis.callsites {
-            let summary = world.callsite_summary(&CallSiteKey {
+            let key = CallSiteKey {
                 activation: executable.activation.clone(),
                 callsite: *callsite,
-            })?;
+            };
+            ledger.consult_fact(world, FactKey::CallSiteSummary(key.clone()));
+            let summary = world.callsite_summary(&key)?;
             let need = callsite_needs.get(callsite).copied().unwrap_or(ExecutableNeed::Value);
             for target in &summary.targets {
                 let Some(activation) = target.activation.clone() else {
@@ -1021,45 +1146,25 @@ fn expand_transport_product_executables(
     Some(next)
 }
 
-// Wait emission order is part of the pull schedule: the driver services waits
-// in order, and that schedule steers which epoch each downstream product lands
-// in. That this order is LOAD-BEARING for plan completeness is a DEFECT tracked
-// by fz-go4.18.28.5 (the plan's position union shrinks across epochs, so which
-// pull lands first decides what gets recorded) -- removing this sort reopens
-// that hole; deleting it is .28.5's job once completeness is order-independent.
-// Until then the producers below emit waits in the canonical structural
-// executable order -- derived by sorting only the (usually small) WAITING
-// subset, its key computed once per element, never by ordering the whole
-// closure as a precondition of the scan.
-fn sorted_executable_waits(waits: Vec<(ExecutableKey, PullWait)>, types: &Types) -> Vec<PullWait> {
-    let mut waits = waits;
-    waits.sort_by_cached_key(|(executable, _)| executable_sort_key(executable, types));
-    waits.into_iter().map(|(_, wait)| wait).collect()
-}
-
-fn outgoing_input_edge_waits(
-    world: &World<'_>,
-    session: &PullSession,
-    executables: &HashSet<ExecutableKey>,
-) -> Vec<PullWait> {
-    let waits = executables
+// The `OutgoingInputEdges` probe is a scheduling gate, not a data read: it
+// only tests presence to emit waits, and the product's data reaches the solve
+// exclusively through the ledger-covered `IncomingInputSlot` reads. Exempt
+// from the consulted-facts ledger for that reason.
+fn outgoing_input_edge_waits(session: &PullSession, executables: &HashSet<ExecutableKey>) -> Vec<PullWait> {
+    executables
         .iter()
         .filter_map(|executable| {
             let key = ProductKey::OutgoingInputEdges(executable.clone());
-            session
-                .memo()
-                .get(&key)
-                .is_none()
-                .then(|| (executable.clone(), PullWait::Product(key)))
+            session.memo().get(&key).is_none().then_some(PullWait::Product(key))
         })
-        .collect::<Vec<_>>();
-    sorted_executable_waits(waits, world.types())
+        .collect()
 }
 
 fn expand_transport_product_incoming_producers(
     world: &World<'_>,
     session: &PullSession,
     executables: &HashSet<ExecutableKey>,
+    ledger: &mut ClosureConsultLedger,
 ) -> Result<Vec<ExecutableKey>, Vec<PullWait>> {
     let mut next = Vec::new();
     let mut waits = Vec::new();
@@ -1071,9 +1176,14 @@ fn expand_transport_product_incoming_producers(
             };
             let key = ProductKey::IncomingInputSlot(slot);
             let Some(value) = session.memo().get(&key) else {
-                waits.push((executable.clone(), PullWait::Product(key)));
+                waits.push(PullWait::Product(key));
                 continue;
             };
+            // The read IncomingInputSlot is a session product owned by
+            // `executable`: a later change to its producer set
+            // (`record_call_edge`) must reach this closure, so its owner
+            // joins the executables channel.
+            ledger.consult_executable(executable);
             let ProductValue::IncomingInputSlot(sources) = value else {
                 panic!("incoming input slot product produced unexpected value {value:?}");
             };
@@ -1082,11 +1192,7 @@ fn expand_transport_product_incoming_producers(
             }
         }
     }
-    if waits.is_empty() {
-        Ok(next)
-    } else {
-        Err(sorted_executable_waits(waits, world.types()))
-    }
+    if waits.is_empty() { Ok(next) } else { Err(waits) }
 }
 
 fn push_executable_unique(target: &mut Vec<ExecutableKey>, executable: ExecutableKey) {
@@ -1099,6 +1205,7 @@ fn install_produced_incoming_inputs(
     world: &World<'_>,
     session: &PullSession,
     contexts: &mut TransportContexts,
+    ledger: &mut ClosureConsultLedger,
 ) -> Result<(), Vec<PullWait>> {
     let mut waits = Vec::new();
     let mut installed = Vec::new();
@@ -1111,9 +1218,12 @@ fn install_produced_incoming_inputs(
             };
             let key = ProductKey::IncomingInputSlot(slot);
             let Some(value) = session.memo().get(&key) else {
-                waits.push((executable.clone(), PullWait::Product(key)));
+                waits.push(PullWait::Product(key));
                 continue;
             };
+            // The consumed IncomingInputSlot values feed the recorded shapes,
+            // so the slot-owning member joins the executables channel here too.
+            ledger.consult_executable(executable);
             let ProductValue::IncomingInputSlot(slot_sources) = value else {
                 panic!("incoming input slot product produced unexpected value {value:?}");
             };
@@ -1124,7 +1234,7 @@ fn install_produced_incoming_inputs(
         }
     }
     if !waits.is_empty() {
-        return Err(sorted_executable_waits(waits, world.types()));
+        return Err(waits);
     }
     contexts.incoming_input_sources.extend(installed);
     Ok(())
@@ -1164,14 +1274,24 @@ fn collect_transport_contexts(
     materialized_executables: &HashMap<ExecutableKey, MaterializedExecutable>,
     reads: &mut Vec<FactKey>,
     wait_facts: &mut HashSet<FactKey>,
+    ledger: &mut ClosureConsultLedger,
 ) -> TransportContexts {
     let mut contexts = HashMap::new();
     for executable in executables {
+        // EVERY fact read in this member's block is keyed by `executable`.
+        // Session products (the runtime-demand snapshot, a materialized body)
+        // register the member in the executables channel; world facts (the
+        // settled activation analysis, return type, per-callsite summaries,
+        // and the lowered-body fallback) each snapshot their revision. A read
+        // keyed by a different executable MUST record its own owner (see the
+        // ledger obligation in `solve_transport_closure`).
+        ledger.consult_executable(executable);
         let activation_fact = FactKey::ActivationAnalyzed(executable.activation.clone());
         if !world.fact_is_settled(&activation_fact) {
             wait_facts.insert(activation_fact);
             continue;
         }
+        ledger.consult_fact(world, activation_fact.clone());
         reads.push(activation_fact);
 
         let return_fact = FactKey::ReturnType(executable.activation.clone());
@@ -1179,6 +1299,7 @@ fn collect_transport_contexts(
             wait_facts.insert(return_fact);
             continue;
         }
+        ledger.consult_fact(world, return_fact.clone());
         reads.push(return_fact);
 
         let analysis = world
@@ -1190,6 +1311,9 @@ fn collect_transport_contexts(
             .unwrap_or_else(|| world.types_mut().none());
         let materialized = materialized_executables.get(executable);
         let uses_materialized_body = materialized.is_some();
+        if !uses_materialized_body {
+            ledger.consult_fact(world, FactKey::LoweredBody(executable.activation.function));
+        }
         let (body, original_entry_ids) = materialized
             .map(|materialized| (materialized.body.clone(), materialized.original_entry_ids.clone()))
             .unwrap_or_else(|| (world.lowered_body(executable.activation.function), Vec::new()));
@@ -1214,6 +1338,7 @@ fn collect_transport_contexts(
                 wait_facts.insert(fact);
                 continue;
             }
+            ledger.consult_fact(world, fact.clone());
             reads.push(fact);
         }
         let resume_entries = collect_resume_entries(&body, &analysis, &original_entry_ids);

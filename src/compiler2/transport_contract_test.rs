@@ -306,6 +306,125 @@ end
     );
 }
 
+/// INTENT: the consulted-facts ledger makes the discovery graph and the
+/// retraction graph the same graph. When executable X's settled demand moves,
+/// every co-member of any closure whose solve consulted X's facts must lose
+/// its recorded transport shapes -- even a co-member Y that never became a
+/// `runtime_demand_dependents` edge of X (the schedule-dependent stale-verdict
+/// hole this ledger closes). This drives a real multi-member closure (direct
+/// calls + a first-class flow), picks two distinct covered executables X and
+/// Y from the SAME recorded solve, moves X's settled demand, and requires
+/// Y's shape facts and TransportShape memos to displace; restoring X's
+/// original demand and re-pulling must re-derive Y's original shapes. The
+/// test goes red if solves stop recording consult edges OR if the
+/// invalidation walk stops following them.
+#[test]
+fn compiler2_transport_consult_ledger_displaces_co_members_on_demand_movement() {
+    let source = r#"
+fn add(a, b), do: a + b
+fn twice(x), do: add(x, x)
+fn apply1(f, x), do: f.(x)
+fn make_adder(a), do: fn (x) -> x + a end
+
+fn main() do
+  y = twice(2)
+  z = apply1(make_adder(1), y)
+  add(y, z)
+end
+"#;
+
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new(&tel);
+    world.submit_code(Some("consult_ledger.fz".to_string()), source.to_string());
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    let mut driver = pull_root_backend_driver_for_test(&tel, &mut world, root);
+
+    // Group every shaped position under its owning executable's covering
+    // solve, then pick two distinct executables covered by the SAME solve.
+    let mut by_cover: BTreeMap<u64, HashMap<ExecutableKey, Vec<(TransportPosition, ShapeId)>>> = BTreeMap::new();
+    let shaped = driver
+        .session()
+        .transport_shapes()
+        .iter()
+        .map(|(position, shape)| (position.clone(), *shape))
+        .collect::<Vec<_>>();
+    for (position, shape) in shaped {
+        let executable =
+            super::jobs::backend::executable_key_for_symbol(root, position.executable(), world.types_mut());
+        let Some(cover) = driver.session().transport_closure_id_covering(&executable) else {
+            continue;
+        };
+        by_cover
+            .entry(cover)
+            .or_default()
+            .entry(executable)
+            .or_default()
+            .push((position, shape));
+    }
+    let (moved_executable, standing_executable, standing_positions) = by_cover
+        .values()
+        .find_map(|members| {
+            let mut keys = members.keys().cloned().collect::<Vec<_>>();
+            keys.sort_by_key(|key| key.activation.function.as_u32());
+            let [first, second, ..] = keys.as_slice() else {
+                return None;
+            };
+            Some((first.clone(), second.clone(), members[second].clone()))
+        })
+        .expect("the drive should record one solve covering at least two shaped executables");
+
+    let original_demand = driver
+        .session()
+        .memo()
+        .runtime_demand(&moved_executable)
+        .expect("a covered executable's settled demand should be memoized")
+        .clone();
+    let mut moved_demand = original_demand.clone();
+    moved_demand.input_demands.push(RuntimeDemand::default());
+    assert_ne!(original_demand, moved_demand, "the movement must be a genuine change");
+
+    driver
+        .session_mut()
+        .record_settled_runtime_demand(moved_executable.clone(), moved_demand);
+
+    for (position, _) in &standing_positions {
+        assert!(
+            driver.session().transport_shape_fact(position).is_none(),
+            "co-member {standing_executable:?} position {position:?} must displace when a consulted \
+             executable's demand moves, even without a runtime_demand_dependents edge"
+        );
+        assert!(
+            driver
+                .session()
+                .memo()
+                .get(&ProductKey::TransportShape(position.clone()))
+                .is_none(),
+            "the displaced position's TransportShape memo must not keep answering: {position:?}"
+        );
+    }
+
+    // Restoring the original demand displaces again; a re-pull must re-derive
+    // the original shapes from a fresh solve, proving the displacement left a
+    // re-derivable session, not a hole.
+    driver
+        .session_mut()
+        .record_settled_runtime_demand(moved_executable, original_demand);
+    for (position, original_shape) in &standing_positions {
+        let value = pull_product_until_produced_with_fact_waits(
+            &mut driver,
+            &mut world,
+            root,
+            ProductKey::TransportShape(position.clone()),
+            "displaced transport shape should re-derive",
+        );
+        assert_eq!(
+            value,
+            ProductValue::TransportShape(TransportShapeFact::Shape(*original_shape)),
+            "re-derivation under the restored demand must reproduce the original shape at {position:?}"
+        );
+    }
+}
+
 #[test]
 fn compiler2_transport_flow_names_tail_return_payload_position() {
     let source = r#"

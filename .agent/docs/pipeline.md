@@ -319,10 +319,28 @@ therefore stays a proof of unconstrained. If pruning ever renumbers values or
 synthesizes positions, this proof breaks. Any transport invalidation (a
 settled-demand change, a new incoming call edge) is an epoch boundary: it
 clears all recorded solves, and the next pull re-solves against the moved
-graph. Wait-emission order in the solve's expansion is part of the pull
-schedule and stays in canonical structural executable order (sorted only over
-the waiting subset, keys computed once) — that this order is load-bearing for
-plan completeness is the fz-go4.18.28.5 defect, not a design intent.
+graph.
+
+Plan completeness is order-independent by construction. Every fact a closure
+solve reads is recorded in a consulted-facts ledger at the read site, split by
+retraction channel. Session-product reads (RuntimeDemand values,
+IncomingInputSlot values) register their owning executable; on completion the
+solve cross-registers those owners against its membership
+(`PullSession::record_transport_closure_consult`), and
+`invalidate_transport_products` walks that reverse index transitively — so a
+session-side movement (`record_settled_runtime_demand`, `record_call_edge`)
+displaces every member of every solve that consulted the moved executable's
+facts, including that member's artifact products, which the walk owns. World
+facts (activation analyses, callsite summaries, lowered bodies, return types)
+have no push channel into the session; the solve snapshots each one's
+revision into `SolvedTransportClosure::consumed_fact_revisions`, and the
+shape/component producers validate the snapshot before a recorded solve
+answers a pull, displacing the whole solve on any mismatch. A position the
+solve fails to ground records `TransportShapeFact::AbsentForClosure(id)` —
+provenance naming the solve, never a bare terminal absence — so the verdict
+dies with the solve that produced it. Because the discovery graph and the
+retraction graph are the same graph, the solve's expansion emits waits in
+whatever order the waiting subset iterates: no schedule is load-bearing.
 
 Runtime demand is what makes that line precise for *representation*. A semantic
 fact — an activation, a callsite summary, an exact callable surface — is
