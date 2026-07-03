@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-07-03T00:26:27Z",
@@ -8,8 +8,8 @@
   "labels": [],
   "parent": "fz-go4.18",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "SCC/round-settledness-gated re-analysis: collapse cross-round AnalyzeActivation churn",
   "type": "task",
-  "updated_at": "2026-07-03T00:26:27Z"
+  "updated_at": "2026-07-03T23:30:18Z"
 }
