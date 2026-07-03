@@ -3,7 +3,7 @@
   "blocked_by": [],
   "blocks": [],
   "created": "2026-07-03T01:16:02Z",
-  "description": "Named by fz-go4.18.28.10's removable-code audit (2026-07-02, at 2c057aca3). That commit moved owning-symbol extraction to TransportPosition::executable (src/compiler2/transport.rs:285) and deleted jobs/artifact.rs's transport_position_executable helper -- but jobs/transport.rs:1140 (executable_key_for_transport_position) still hand-rolls the identical 7-arm owning-symbol match, and test-file copies exist at transport_contract_test.rs:3712/4898. Left untouched by .28.10 only because jobs/transport.rs was sibling-owned that round (scope discipline, not a judgment that the duplication is fine).\n\nTASK: route jobs/transport.rs:1140 and the two test-file copies through TransportPosition::executable. Pure mechanical unification; watch only that executable_key_for_transport_position may layer extra conversion (symbol -\u003e ExecutableKey) on top of the extraction -- keep that layering, replace just the match. Also sweep for any other hand-rolled copies (rg for the 7-variant match shape). Ride-along: pull.rs:689's doc comment says 'replacing the per-production filter-scan' -- migration narration in a permanent doc; rephrase to present-tense fact.\n\nACCEPTANCE: one owning-symbol extraction in the codebase; rg shows no duplicate match; suite green 3x; clippy/fmt clean.",
+  "description": "DONE (b5b341bff, two-lane audited PASS/PASS 2026-07-03). Owning-symbol extraction is now a SINGLE accessor, TransportPosition::executable (src/compiler2/transport.rs:285, a 7-variant or-pattern returning \u0026ExecutableSymbol, exhaustive — no wildcard, so a future variant forces a compile error rather than silent mis-extraction). Three hand-rolled duplicate matches routed through it: jobs/transport.rs::executable_key_for_transport_position (kept its ActivationKey::from_inputs + need layering, replaced just the match); transport_contract_test.rs:4074 inline match; transport_contract_test.rs position_executable helper (deleted, sole caller inlined). Identity proven byte-for-byte before replacing (same borrowed type, no clone added/dropped; the one differently-ordered copy is harmless — or-patterns are order-independent). Ride-along: pull.rs doc comment 'replacing the per-production filter-scan' -\u003e 'avoiding' (migration narration -\u003e present-tense fact, comment-only). Net -27 lines. Sweep confirmed the remaining full-variant matches (transport_position_sort_key, artifact.rs/backend.rs seam+sort-key matches) carry genuinely different per-arm logic, not pure extraction — left as-is; two follow-ups filed for adjacent redundancy.",
   "id": "fz-go4.18.33",
   "labels": [],
   "parent": "fz-go4.18",
@@ -11,5 +11,5 @@
   "status": "in_progress",
   "title": "Unify the hand-rolled owning-symbol matches onto TransportPosition::executable",
   "type": "task",
-  "updated_at": "2026-07-03T19:57:35Z"
+  "updated_at": "2026-07-03T20:07:12Z"
 }
