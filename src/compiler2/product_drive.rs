@@ -26,7 +26,7 @@ use super::{BackendProgram, Job};
 /// A retry-budgeted stack expansion of this size backs both the outer product
 /// pull and the inner fact-wait job drive, matching the pre-unification
 /// budgets in both call sites.
-const PRODUCT_DRIVE_BUDGET: u64 = 50_000;
+pub(super) const PRODUCT_DRIVE_BUDGET: u64 = 50_000;
 
 /// Reports one of the four ways a `RootBackendProduct` pull-drive can fail.
 ///
@@ -58,11 +58,27 @@ pub(crate) fn drive_root_backend_product<'a, E: ProductDriveError>(
     world: &mut World<'a>,
     root: RootId,
 ) -> Result<(BackendProgram, ProductDriver<'a>), E> {
+    drive_root_backend_product_with_budgets(world, root, PRODUCT_DRIVE_BUDGET, PRODUCT_DRIVE_BUDGET)
+}
+
+/// The loop `drive_root_backend_product` runs, parameterized on the outer
+/// product-stack budget and the inner per-fact-wait job budget. This is a
+/// test-only seam: `drive_root_backend_product` always passes
+/// `PRODUCT_DRIVE_BUDGET` for both, so production behavior is byte-identical
+/// to before the split. Tests pass a small budget to force
+/// `did_not_settle`/`fact_wait_budget_exceeded` on a genuine drive without
+/// spending the real 50,000-job budget doing it.
+pub(super) fn drive_root_backend_product_with_budgets<'a, E: ProductDriveError>(
+    world: &mut World<'a>,
+    root: RootId,
+    product_stack_budget: u64,
+    fact_wait_budget: u64,
+) -> Result<(BackendProgram, ProductDriver<'a>), E> {
     let root_key = ProductKey::RootBackendProduct(root);
     let mut driver = ProductDriver::new(world.tel(), root);
     let mut stack = vec![root_key.clone()];
     let mut last_wait = None;
-    for _ in 0..PRODUCT_DRIVE_BUDGET {
+    for _ in 0..product_stack_budget {
         let Some(current) = stack.pop() else {
             stack.push(root_key.clone());
             continue;
@@ -83,7 +99,7 @@ pub(crate) fn drive_root_backend_product<'a, E: ProductDriveError>(
                     match wait {
                         PullWait::Product(product) => stack.push(product),
                         PullWait::Fact(fact) => {
-                            let producer_pokes = drive_product_fact_wait::<E>(world, root, fact)?;
+                            let producer_pokes = drive_product_fact_wait::<E>(world, root, fact, fact_wait_budget)?;
                             driver.session_mut().record_producer_pokes(producer_pokes);
                         }
                     }
@@ -98,6 +114,7 @@ fn drive_product_fact_wait<E: ProductDriveError>(
     world: &mut World<'_>,
     root: RootId,
     fact: FactUse<FactKey>,
+    fact_wait_budget: u64,
 ) -> Result<u64, E> {
     let mut jobs_ran = 0_u64;
     let mut producer_pokes = 0_u64;
@@ -134,7 +151,7 @@ fn drive_product_fact_wait<E: ProductDriveError>(
                 return Err(E::job_failed(world, root, &fact, &job, err));
             }
         }
-        if jobs_ran > PRODUCT_DRIVE_BUDGET {
+        if jobs_ran > fact_wait_budget {
             return Err(E::fact_wait_budget_exceeded(world, root, &fact));
         }
     }
