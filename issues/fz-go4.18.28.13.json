@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-07-03T17:32:01Z",
@@ -8,8 +8,8 @@
   "labels": [],
   "parent": "fz-go4.18.28",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "Prune the transport consult ledger on closure re-solve (monotone dense over-invalidation)",
   "type": "task",
-  "updated_at": "2026-07-03T17:32:01Z"
+  "updated_at": "2026-07-03T22:38:01Z"
 }
