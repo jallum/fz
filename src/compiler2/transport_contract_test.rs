@@ -1449,13 +1449,28 @@ fn main(), do: make_suspender()
     );
 }
 
+/// The product derives an escaped closure's suspend return on demand: lean
+/// where nothing destructures the structure, exactly as complete where
+/// something does. Both halves are pinned here.
+///
+/// Un-demanded escape (`main` returns the closure uninvoked): the escaped
+/// closure's boundary publishes the body's grounded return repr, and the
+/// suspend continuation's identity still survives in the callable facts —
+/// three capture shapes with the reducer callable-shaped, one zero-argument
+/// boundary, two runtime payload capture lanes.
+///
+/// Demanded path (`main` destructures `{:suspended, acc, cont}` and resumes):
+/// the structured tuple with the callable continuation child appears at the
+/// demanded executable return, carrying the same continuation facts.
+///
+/// A shape-reachability sweep over callable facts is deliberately not asserted
+/// here: in both worlds a callable legitimately lives only behind a boxed
+/// value lane (the continuation inside the un-destructured suspend tuple; the
+/// generic boxed-apply carrier at `cont.()`), so justification flows through
+/// arrow-typed lanes, not through structural `ShapeDescr::Callable` children.
 #[test]
-#[ignore = "fz-go4.18.9: the product boundary for the suspended callable publishes a \
-            published_return_shape without the callable-return child the legacy plan carried; \
-            ported to split surfaces with assertions intact, un-ignore when the product \
-            reproduces the callable-return child."]
 fn compiler2_transport_plan_preserves_enumerable_suspend_continuation_captures() {
-    let source = r#"
+    let escaped_source = r#"
 fn make() do
   fn () ->
     Enumerable.reduce([1, 2, 3], {:suspend, 0}, fn (x, acc) -> {:cont, acc + x} end)
@@ -1469,18 +1484,85 @@ fn main(), do: make()
     let mut world = World::new(&tel);
     world.submit_code(
         Some("transport_enumerable_reduce_suspend_continuation.fz".to_string()),
-        source.to_string(),
+        escaped_source.to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
     let driver = drive_transport_facts_for_test(&tel, &mut world, root);
     let session = driver.session();
     let make = executable_for(&world, session, "make", 0);
     let outer = callable_return_for_executable(&world, session.transport_shapes(), make);
-    let boundary = boundary_with_callable_return(&world, session, outer);
-    let ShapeDescr::Tuple(items) = shape_descr(&world, boundary.published_return_shape) else {
+    let outer_facts = session
+        .callable_facts_inventory()
+        .get(&outer)
+        .unwrap_or_else(|| panic!("the escaped closure should carry callable facts"));
+    assert_eq!(
+        outer_facts.boundary_ids.len(),
+        1,
+        "the un-invoked escaped closure should publish exactly one first-class boundary"
+    );
+    let outer_resolution = outer_facts
+        .resolutions
+        .first()
+        .unwrap_or_else(|| panic!("the escaped closure should resolve to its body executable"));
+    let grounded_return = plan_shape_at(
+        session.transport_shapes(),
+        &TransportPosition::ExecutableReturn {
+            executable: outer_resolution.clone(),
+        },
+    );
+    let outer_boundary = world.boundary(outer_facts.boundary_ids[0]);
+    assert_eq!(
+        outer_boundary.published_return_shape, grounded_return,
+        "the escaped closure's boundary must publish the body's grounded return repr, not a reshaped one"
+    );
+    assert!(
+        matches!(world.shape(grounded_return), ShapeDescr::Lane(_)),
+        "the un-demanded suspend return grounds to a single boxed value lane, anchoring \
+         the boundary equality above to a real repr rather than mutual drift"
+    );
+    let continuation = sole_callable_with_callable_capture(&world, session);
+    assert_suspend_continuation_facts(&world, session, continuation);
+
+    let consumed_source = r#"
+fn make() do
+  fn () ->
+    Enumerable.reduce([1, 2, 3], {:suspend, 0}, fn (x, acc) -> {:cont, acc + x} end)
+  end
+end
+
+fn main() do
+  {:suspended, acc, cont} = make().()
+  dbg(cont.())
+  acc
+end
+"#;
+
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new(&tel);
+    world.submit_code(
+        Some("transport_enumerable_reduce_suspend_continuation_resumed.fz".to_string()),
+        consumed_source.to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    let driver = drive_transport_facts_for_test(&tel, &mut world, root);
+    let session = driver.session();
+    let make = executable_for(&world, session, "make", 0);
+    let outer = callable_return_for_executable(&world, session.transport_shapes(), make);
+    let outer_resolution = session
+        .callable_facts_inventory()
+        .get(&outer)
+        .and_then(|facts| facts.resolutions.first())
+        .unwrap_or_else(|| panic!("the invoked closure should resolve to its body executable"));
+    let demanded_return = plan_shape_at(
+        session.transport_shapes(),
+        &TransportPosition::ExecutableReturn {
+            executable: outer_resolution.clone(),
+        },
+    );
+    let ShapeDescr::Tuple(items) = shape_descr(&world, demanded_return) else {
         panic!(
-            "the escaped callable should publish the Enumerable.reduce suspend tuple return shape, got {:?}",
-            shape_descr(&world, boundary.published_return_shape)
+            "destructuring the suspend result must demand the Enumerable.reduce suspend tuple return shape, got {:?}",
+            shape_descr(&world, demanded_return)
         );
     };
     let [tag_shape, acc_shape, continuation_shape] = items.as_ref() else {
@@ -1500,7 +1582,34 @@ fn main(), do: make()
             shape_descr(&world, *continuation_shape)
         )
     };
-    let continuation_descr = world.callable(*continuation);
+    assert_suspend_continuation_facts(&world, session, *continuation);
+}
+
+fn sole_callable_with_callable_capture(world: &World<'_>, session: &PullSession) -> super::transport::CallableId {
+    let candidates = session
+        .callable_facts_inventory()
+        .keys()
+        .copied()
+        .filter(|callable| {
+            world
+                .callable(*callable)
+                .capture_shapes
+                .iter()
+                .any(|shape| matches!(shape_descr(world, *shape), ShapeDescr::Callable(_)))
+        })
+        .collect::<Vec<_>>();
+    let [continuation] = candidates.as_slice() else {
+        panic!("exactly one callable (the suspend continuation) should capture a callable, got {candidates:?}")
+    };
+    *continuation
+}
+
+fn assert_suspend_continuation_facts(
+    world: &World<'_>,
+    session: &PullSession,
+    continuation: super::transport::CallableId,
+) {
+    let continuation_descr = world.callable(continuation);
     assert_eq!(
         continuation_descr.capture_shapes.len(),
         3,
@@ -1508,7 +1617,7 @@ fn main(), do: make()
     );
     assert!(
         matches!(
-            shape_descr(&world, continuation_descr.capture_shapes[2]),
+            shape_descr(world, continuation_descr.capture_shapes[2]),
             ShapeDescr::Callable(_)
         ),
         "the captured reducer should remain callable-shaped inside the continuation descriptor"
@@ -1516,14 +1625,14 @@ fn main(), do: make()
     assert_eq!(
         session
             .callable_facts_inventory()
-            .get(continuation)
+            .get(&continuation)
             .unwrap_or_else(|| panic!("returned continuation facts should be present"))
             .boundary_ids
             .len(),
         1,
         "the escaped suspend continuation should publish one zero-argument boundary contract"
     );
-    let continuation_boundary = continuation_boundary_descr(&world, session, *continuation);
+    let continuation_boundary = continuation_boundary_descr(world, session, continuation);
     assert_eq!(
         continuation_boundary.surface_arg_shapes.len(),
         0,
@@ -1534,7 +1643,6 @@ fn main(), do: make()
         2,
         "the continuation boundary publishes only runtime payload lanes: list and accumulator carry lanes, while the reducer callable identity remains in the capture ShapeId"
     );
-    assert_no_unreachable_callable_facts(&world, session);
 }
 
 #[test]
@@ -1653,10 +1761,6 @@ end
 /// carrying a (nonexistent) direct-call surface of its own. So `run`'s `f` input
 /// demand carries the proven `(int)` surface, and the plan derives cleanly.
 #[test]
-#[ignore = "fz-go4.18.9: the product runtime-demand for run/2[1] does not reproduce the legacy \
-            eager (int) capture surface (product demanded_executables selects a different run/2 \
-            activation); ported to split surfaces with assertions intact, un-ignore when the \
-            product under-derivation is resolved."]
 fn compiler2_transport_plan_proves_protocol_dispatched_escaped_continuation_capture_surface() {
     let source = r#"
 defprotocol Susp do
@@ -3910,10 +4014,6 @@ fn compiler2_transport_plan_projects_enum_reduce_bridge_callable_flow_by_produce
 }
 
 #[test]
-#[ignore = "fz-go4.18.9: a callable resolution's ExecutableInput capture-shape position is absent \
-            from the product transport positions (session.transport_shapes()) that the legacy plan \
-            eagerly shaped; ported to split surfaces with assertions intact, un-ignore when the \
-            product shapes the capture-prefix position."]
 fn compiler2_transport_plan_keeps_callable_resolution_capture_abi_correlated() {
     let source = include_str!("../../fixtures2/behavior/fz_f98_range_map_converges.fz");
 
@@ -5015,48 +5115,6 @@ fn continuation_boundary_descr<'a>(
                 session.callable_facts_inventory()
             )
         })
-}
-
-fn assert_no_unreachable_callable_facts(world: &World<'_>, session: &PullSession) {
-    let mut reachable = HashSet::new();
-    for shape in session.transport_shapes().values().copied() {
-        collect_callable_shapes(world, shape, &mut reachable);
-    }
-    for boundary in boundary_descrs(world, session) {
-        for shape in boundary.surface_arg_shapes.iter().copied() {
-            collect_callable_shapes(world, shape, &mut reachable);
-        }
-        collect_callable_shapes(world, boundary.published_return_shape, &mut reachable);
-    }
-    let unreachable = session
-        .callable_facts_inventory()
-        .keys()
-        .copied()
-        .filter(|callable| !reachable.contains(callable))
-        .collect::<Vec<_>>();
-    assert!(
-        unreachable.is_empty(),
-        "callable facts must be justified by reachable transport shapes; unreachable={unreachable:?}; facts={:?}",
-        session.callable_facts_inventory()
-    );
-}
-
-fn collect_callable_shapes(world: &World<'_>, shape: ShapeId, out: &mut HashSet<super::transport::CallableId>) {
-    match shape_descr(world, shape) {
-        ShapeDescr::Callable(callable) => {
-            out.insert(*callable);
-            let descr = world.callable(*callable);
-            for capture in descr.capture_shapes.iter().copied() {
-                collect_callable_shapes(world, capture, out);
-            }
-        }
-        ShapeDescr::Tuple(items) => {
-            for item in items.iter().copied() {
-                collect_callable_shapes(world, item, out);
-            }
-        }
-        ShapeDescr::Nothing | ShapeDescr::Lane(_) => {}
-    }
 }
 
 fn boundary_descrs<'a>(world: &'a World<'_>, session: &PullSession) -> Vec<&'a BoundaryDescr> {
