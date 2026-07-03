@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-07-03T19:30:32Z",
+  "description": "Found by the fz-go4.20 sweep (at f7ef1d4e1). Project law: .agent/docs are present-tense facts about built subsystems, no tickets/plans. The forward-looking stale claims were fixed by fz-go4.20, but ~15 BACKWARD-looking ticket-ID citations remain ('X was deleted by fz-...'): addressed-arrow.md (fz-y6w), compiler2-migration.md (fz-rh2.16.3, fz-rh2.16.7, fz-bin.16, fz-bin.11), quoted-source.md (fz-rh2.11.7), semantic-fixpoint.md (fz-go4.18.4, fz-rh2.17.5.9), telemetry.md (fz-00181 x4, fz-go4.18.4 x2, fz-compiler2), pipeline.md (fz-go4.18.4 x3, fz-go4.16). None contradict code; they are provenance narration. TASK: rewrite each sentence to state the present-tense fact without the ticket citation (the fact stands on the code; git history carries provenance). Mechanical, docs-only, single fact-check audit lane.",
+  "id": "fz-go4.29",
+  "labels": [],
+  "parent": "fz-go4",
+  "priority": 3,
+  "status": "open",
+  "title": "Strip backward-looking ticket-ID citations from .agent/docs",
+  "type": "task",
+  "updated_at": "2026-07-03T19:30:32Z"
+}
