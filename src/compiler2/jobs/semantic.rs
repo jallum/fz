@@ -68,10 +68,10 @@ pub(super) fn analyze_activation(world: &mut World<'_>, activation: &ActivationK
     if !world.has_fact(&activation_fact) {
         // Mirrors the `ActivationInputs` gate just below: absence of the seed
         // fact is a genuine block on `Job::SeedActivation`, not a conclusion.
-        // Returning an empty `JobEffects` here used to be a silent
-        // conclude-by-omission that only re-ran through the drive.rs
-        // TEMPORARY PUMP; a bare wait lets the ordinary blocked-waiter
-        // expansion (`demand_blocked_wait_producers`) carry it instead.
+        // Returning an empty `JobEffects` here would be a silent
+        // conclude-by-omission with no subscription to re-wake it; a bare
+        // wait lets the ordinary blocked-waiter expansion
+        // (`demand_blocked_wait_producers`) carry it instead.
         return Ok(JobEffects::wait_on_current(activation_fact, []));
     }
     let activation_inputs_fact = FactKey::ActivationInputs(activation.clone());
@@ -1238,14 +1238,14 @@ fn resolve_protocol_call(
         // time (including built-ins co-located with the protocol, and impls in a
         // module the program never otherwise reaches by name). Demand the impl
         // module whose target overlaps the receiver — the impl is the unit of
-        // demand. The index is a settled surface fact, so this read re-wakes the
-        // call when a `defimpl` is discovered; the demand runs only here, when a
-        // concrete receiver actually needs the impl. There is no receiver-type
-        // module-name scan: referencing the protocol is the single discovery path.
-        let providers_fact = FactKey::ProtocolImplProviders(protocol);
-        if world.has_fact(&providers_fact) {
-            reads.push(providers_fact);
-        }
+        // demand. The provider index grows across the drive as more source is
+        // scoped (every module containing a `defimpl` for this protocol is a
+        // separate publisher), so the read must be registered unconditionally —
+        // even before any provider has been indexed — or a later `defimpl`
+        // discovery would never re-wake this callsite. There is no
+        // receiver-type module-name scan: referencing the protocol is the
+        // single discovery path.
+        reads.push(FactKey::ProtocolImplProviders(protocol));
         for (target, provider) in world.protocol_impl_providers(protocol) {
             let target_ty = world.module_impl_target_ty(target);
             if !protocol_receiver_target_overlaps(world, receiver_ty, target_ty) {

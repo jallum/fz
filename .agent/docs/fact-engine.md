@@ -53,6 +53,22 @@ jobs, and rebased jobs still enqueue.
 Blocked work is not an error; exact waits are how ordering emerges without a
 separate phase schedule.
 
+A job must record `reads` unconditionally for every fact its conclusion
+consulted, including a fact that was absent at read time. A read gated on
+`has_fact` (or any other presence check) drops the subscription exactly when
+it is needed most: a conclusion reached because a fact was still empty is a
+legitimate current answer, but without the read it can never be re-derived
+once that fact's producer publishes later. This matters most for
+growing indices with many independent publishers over the course of a
+drive — a protocol's implementation-provider index gains an entry per
+`defimpl` as more source is scoped, so a callsite that reads it while empty
+still needs the standing subscription to re-wake when the next `defimpl`
+lands. `demand_producer_if_needed` (`drive.rs`) relies on every producer
+observing this: a job that has already run and concluded without claiming a
+given fact is never re-demanded to produce it — it is skipped outright,
+because a real subscription (not a stall-poke) is what re-runs it once that
+fact appears.
+
 ## Waiting extends, concluding replaces
 
 A completion's meaning bifurcates on its waits (`Scheduler::complete`):

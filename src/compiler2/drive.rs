@@ -162,38 +162,41 @@ impl World<'_> {
     }
 
     fn demand_producer_if_needed(&mut self, job: Job, target_fact: &FactKey) -> bool {
-        if !self.work_graph.rebased(&job) {
-            if self.work_graph.output_keys(&job).contains(target_fact) {
-                // The producer claims the fact and its ground stands: a
-                // re-run would republish byte-identically.
-                return false;
-            }
-            if self.work_graph.blocked(&job) {
-                // The producer already ran on standing ground and paused on
-                // waits: those standing waits make it wake-reachable the
-                // moment its missing facts land, and every missing fact is
-                // itself a blocked wait whose producer the drain expansion
-                // demands. Re-demanding the paused job would only re-run it
-                // byte-identically.
-                return false;
-            }
+        if !self.work_graph.has_run(&job) {
+            // Never run: no wake source exists yet, so only a fresh demand
+            // can start it.
+            self.demand(job);
+            return true;
         }
-        // TEMPORARY PUMP: a producer that ran, concluded, and did NOT claim
-        // the fact falls through to a re-demand. Exactly one conclude-by-
-        // omission site still relies on it: `resolve_protocol_call`'s
-        // `matches.is_empty()` branch (jobs/semantic.rs) can conclude a
-        // *callsite* with no wait at all when
-        // `FactKey::ProtocolImplProviders(protocol)` doesn't exist yet at the
-        // time of the read — the `reads.push` there is conditional on
-        // `has_fact`, so the very first pass drops the subscription that
-        // would otherwise re-wake the callsite once a provider is indexed.
-        // Fixing that needs a real wait on `ProtocolImplProviders`, which
-        // first needs settling whether that fact is once-and-done or
-        // monotone-growing (a genuine wait on an ever-growing fact might
-        // never resolve). Once that is resolved, tighten this to skip
-        // concluded producers outright.
-        self.demand(job);
-        true
+        if self.work_graph.rebased(&job) {
+            // Ground shifted since its last conclusion: its claims are
+            // unsettled whether or not it names `target_fact` or is
+            // currently paused on waits, so it must re-run to re-derive them.
+            self.demand(job);
+            return true;
+        }
+        if self.work_graph.output_keys(&job).contains(target_fact) {
+            // The producer claims the fact and its ground stands: a
+            // re-run would republish byte-identically.
+            return false;
+        }
+        if self.work_graph.blocked(&job) {
+            // The producer already ran on standing ground and paused on
+            // waits: those standing waits make it wake-reachable the
+            // moment its missing facts land, and every missing fact is
+            // itself a blocked wait whose producer the drain expansion
+            // demands. Re-demanding the paused job would only re-run it
+            // byte-identically.
+            return false;
+        }
+        // A producer that ran, concluded, and did not claim `target_fact`
+        // holds a live subscription on every fact its conclusion read —
+        // including ones absent at read time, since every producer reads
+        // (rather than conditionally reads) the facts its conclusion
+        // depends on. It re-runs through the graph's own wake the moment
+        // `target_fact` appears; re-demanding it here would only repeat a
+        // byte-identical run.
+        false
     }
 
     /// Expands every blocked waiter's missing fact to its producer through

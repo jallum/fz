@@ -675,3 +675,51 @@ fn compiler2_drive_reports_unmapped_blocked_facts_as_unresolved() {
         "the unresolved report should carry the unmapped blocked fact: {waits:?}",
     );
 }
+
+/// A protocol callsite whose first pass finds no matching `defimpl` must hold
+/// a live subscription on `ProtocolImplProviders(protocol)`, so a `defimpl`
+/// discovered in a later-submitted source unit re-wakes and resolves the
+/// callsite through the graph's own wake, with no stall-pass poke involved
+/// (the drive between the two submissions never has anything blocked to
+/// stall on).
+#[test]
+fn compiler2_protocol_impl_discovered_after_first_pass_rewakes_the_callsite() {
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new(&tel);
+    let root = world.submit_root(None, "main".to_string(), 0, super::ExecutableNeed::Value);
+    world.submit_code(
+        Some("protocol.fz".to_string()),
+        "defprotocol Integerish do\n  fn id(value)\nend\n\nfn main(), do: Integerish.id(41)\n".to_string(),
+    );
+    assert_eq!(
+        world.drive(),
+        DriveOutcome::Resolved,
+        "the protocol and its callsite should settle even with zero impls indexed",
+    );
+
+    let function = world.reference_function(ModuleId::GLOBAL, "main", 0);
+    let main_key = world.activation_key(root, function, &[]);
+    assert!(
+        world.activation_return(&main_key).is_none(),
+        "no `defimpl` exists yet: main's call to Integerish.id cannot resolve a return type",
+    );
+
+    // The provider shows up in a later, separately-submitted source unit —
+    // exactly how a real program's impls arrive relative to their protocol's
+    // callers (a different file, indexed and scoped after the caller).
+    world.submit_code(
+        Some("impl.fz".to_string()),
+        "defimpl Integerish, for: Integer do\n  fn id(value), do: value + 1\nend\n".to_string(),
+    );
+    assert_eq!(
+        world.drive(),
+        DriveOutcome::Resolved,
+        "indexing the later-discovered impl should settle without stalling",
+    );
+
+    assert!(
+        world.activation_return(&main_key).is_some(),
+        "the callsite's standing subscription on ProtocolImplProviders(Integerish) should have re-woken \
+         main's analysis once the `defimpl` was discovered, resolving its return type",
+    );
+}
