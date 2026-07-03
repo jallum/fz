@@ -197,6 +197,22 @@ pub enum CodegenSeam {
     },
 }
 
+impl CodegenSeam {
+    #[cfg(test)]
+    pub(crate) fn executable(&self) -> Option<&ExecutableSymbol> {
+        match self {
+            Self::FunctionEntry { executable, .. }
+            | Self::BlockParam { executable, .. }
+            | Self::ReturnDelivery { executable }
+            | Self::ContinuationEntry { executable, .. }
+            | Self::ReturnContinuation { executable, .. }
+            | Self::TailCall { executable, .. }
+            | Self::ExternBoundary { executable } => Some(executable),
+            Self::CallableBoundary { .. } | Self::FirstClassPublication { .. } => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct CodegenSeamFact {
     pub seam: CodegenSeam,

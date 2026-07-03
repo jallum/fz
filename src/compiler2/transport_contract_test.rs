@@ -2294,34 +2294,6 @@ fn main(), do: make(1, 2)
 }
 
 #[test]
-fn compiler2_transport_plan_does_not_publish_synthetic_boundary_positions() {
-    let source = r#"
-fn main(f) do
-  g = fn (x) -> x + 1 end
-  f.(g)
-end
-"#;
-
-    let tel = ConfiguredTelemetry::new();
-    let mut world = World::new(&tel);
-    world.submit_code(
-        Some("transport_no_synthetic_boundary_position.fz".to_string()),
-        source.to_string(),
-    );
-    let root = world.submit_root(None, "main".to_string(), 1, ExecutableNeed::Value);
-    let driver = drive_transport_facts_for_test(&tel, &mut world, root);
-    let session = driver.session();
-    for facts in session.boundary_facts_inventory().values() {
-        for publication in facts.publications.iter() {
-            assert!(
-                transport_position_is_semantic(publication),
-                "boundary publications must name semantic positions, not synthetic self-positions: {publication:?}"
-            );
-        }
-    }
-}
-
-#[test]
 fn compiler2_transport_plan_publishes_boundary_returns_per_surface() {
     let source = r#"
 fn main() do
@@ -5192,38 +5164,13 @@ fn assert_plan_executable_references_are_root_scoped(
         }
     }
     for fact in transport.codegen_seam_facts.iter() {
-        if let Some(executable) = seam_executable(&fact.seam) {
+        if let Some(executable) = fact.seam.executable() {
             assert!(
                 membership.contains(executable),
                 "codegen seam facts should reference only root-member executables: {:?}",
                 fact.seam
             );
         }
-    }
-}
-
-fn seam_executable(seam: &CodegenSeam) -> Option<&super::transport::ExecutableSymbol> {
-    match seam {
-        CodegenSeam::FunctionEntry { executable, .. }
-        | CodegenSeam::BlockParam { executable, .. }
-        | CodegenSeam::ReturnDelivery { executable }
-        | CodegenSeam::ContinuationEntry { executable, .. }
-        | CodegenSeam::ReturnContinuation { executable, .. }
-        | CodegenSeam::TailCall { executable, .. }
-        | CodegenSeam::ExternBoundary { executable } => Some(executable),
-        CodegenSeam::CallableBoundary { .. } | CodegenSeam::FirstClassPublication { .. } => None,
-    }
-}
-
-fn transport_position_is_semantic(position: &TransportPosition) -> bool {
-    match position {
-        TransportPosition::ExecutableInput { .. }
-        | TransportPosition::ExecutableReturn { .. }
-        | TransportPosition::ResumePayload { .. }
-        | TransportPosition::ReturnPayload { .. }
-        | TransportPosition::CallArg { .. }
-        | TransportPosition::EntryCapture { .. }
-        | TransportPosition::Value { .. } => true,
     }
 }
 
