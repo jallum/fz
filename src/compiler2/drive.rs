@@ -131,6 +131,8 @@ impl World<'_> {
         let job = match fact {
             FactKey::RootEntry(root) => Some(Job::SeedRoot(*root)),
             FactKey::FunctionDefined(function) => Some(Job::DefineFunction(*function)),
+            FactKey::TypeDefined(name) => Some(Job::DeriveTypeDef(name.clone())),
+            FactKey::GuardDispatch(function) => Some(Job::ReifyGuardDispatch(*function)),
             FactKey::LoweredBody(function) => Some(Job::LowerFunction(*function)),
             FactKey::Recursive(function) => Some(Job::DeriveRecursive(*function)),
             FactKey::DispatchMask(function) => Some(Job::DeriveDispatchMask(*function)),
@@ -157,11 +159,48 @@ impl World<'_> {
     }
 
     fn demand_producer_if_needed(&mut self, job: Job, target_fact: &FactKey) -> bool {
-        if self.work_graph.output_keys(&job).contains(target_fact) && !self.work_graph.rebased(&job) {
-            return false;
+        if !self.work_graph.rebased(&job) {
+            if self.work_graph.output_keys(&job).contains(target_fact) {
+                // The producer claims the fact and its ground stands: a
+                // re-run would republish byte-identically.
+                return false;
+            }
+            if self.work_graph.blocked(&job) {
+                // The producer already ran on standing ground and paused on
+                // waits: those standing waits make it wake-reachable the
+                // moment its missing facts land, and every missing fact is
+                // itself a blocked wait whose producer the drain expansion
+                // demands. Re-demanding the paused job would only re-run it
+                // byte-identically.
+                return false;
+            }
         }
+        // TEMPORARY PUMP (fz-go4.18.24): a producer that ran, concluded, and
+        // did NOT claim the fact falls through to a re-demand. The unconverted
+        // semantic layer's `AnalyzeActivation` concludes with zero
+        // outputs/waits and relies on this pump for re-derivation (measured:
+        // 0 re-demands on healthy fixtures, ~37/compile on
+        // enum_take_drop_split). Once the jobs/semantic.rs family converts
+        // conclude-by-omission to explicit claims, tighten this to skip
+        // concluded producers outright.
         self.demand(job);
         true
+    }
+
+    /// Expands every blocked waiter's missing fact to its producer through
+    /// the fact->producer map. This is the drain-time pull: a blocked wait is
+    /// a standing demand for the fact, and the fact names its single
+    /// producer. A producer that is itself paused on waits is not re-demanded
+    /// — its missing facts are themselves blocked waits, so chains expand one
+    /// frontier per pass. Returns how many producers were demanded.
+    pub(crate) fn demand_blocked_wait_producers(&mut self) -> u64 {
+        let facts: std::collections::HashSet<FactKey> = self
+            .work_graph
+            .unresolved()
+            .into_iter()
+            .map(|wait| wait.fact.fact().clone())
+            .collect();
+        facts.into_iter().map(|fact| self.demand_fact_producer(&fact)).sum()
     }
 
     /// Expands the standing demand every submitted root carries: a root is an
@@ -190,15 +229,22 @@ impl World<'_> {
         demanded
     }
 
-    /// Pops the next ready job, expanding the roots' standing entry-analysis
-    /// demands when the agenda has drained. Every job loop (the bare drive and
-    /// the product fact-wait loops) pulls through this, so first-run ignition
-    /// is owned by the scheduler boundary, not by any job's follow-up.
+    /// Pops the next ready job, expanding the two standing demand sources
+    /// when the agenda has drained: the roots' entry-analysis demands and the
+    /// blocked waiters' fact->producer expansions. Every job loop (the bare
+    /// drive and the product fact-wait loops) pulls through this, so
+    /// first-run ignition is owned by the scheduler boundary, not by any
+    /// job's follow-up.
     pub(crate) fn next_ready_job(&mut self) -> Option<Job> {
         if let Some(job) = self.work_graph.pop() {
             return Some(job);
         }
-        if self.demand_root_entry_analyses() > 0 {
+        if self.demand_root_entry_analyses() > 0
+            && let Some(job) = self.work_graph.pop()
+        {
+            return Some(job);
+        }
+        if self.demand_blocked_wait_producers() > 0 {
             return self.work_graph.pop();
         }
         None

@@ -27,7 +27,7 @@ use super::super::body::{
     Literal, LoweredBitField, LoweredBitFieldSpec, LoweredBitSize, LoweredBody, LoweredClause, LoweredEntry,
     LoweredExtern, LoweredMapKey, LoweredStep, LoweredTail, ReceiveAfter, ReceiveClause, ReusableConsCapture, ValueId,
 };
-use super::super::drive::{FactKey, Job, JobEffects, current_uses};
+use super::super::drive::{FactKey, JobEffects, current_uses};
 use super::super::identity::{FunctionId, FunctionSource};
 use super::super::module_interface::{InterfaceCallableKind, InterfaceRequester};
 use super::super::namespace::{Namespace, NamespaceSymbol};
@@ -240,43 +240,26 @@ pub(super) fn lower_function(world: &mut World<'_>, function: FunctionId) -> Res
 
     let mut reads = vec![FactKey::FunctionDefined(function)];
     let mut waits = HashSet::new();
-    let mut follow_up = HashSet::new();
     if surface.extern_abi.is_some() {
         for referenced in world.function_type_refs(function).iter().cloned() {
-            let fact = FactKey::TypeDefined(referenced.clone());
+            let fact = FactKey::TypeDefined(referenced);
             if world.has_fact(&fact) {
                 reads.push(fact);
             } else {
                 waits.insert(fact);
-                follow_up.insert(Job::DeriveTypeDef(referenced));
             }
         }
     }
     for clause in &surface.clauses {
         if let Some(guard) = &clause.guard {
-            collect_local_dispatch_requirements(
-                world,
-                source.namespace,
-                guard,
-                &mut reads,
-                &mut waits,
-                &mut follow_up,
-            )?;
+            collect_local_dispatch_requirements(world, source.namespace, guard, &mut reads, &mut waits)?;
         }
-        collect_local_dispatch_requirements(
-            world,
-            source.namespace,
-            &clause.body,
-            &mut reads,
-            &mut waits,
-            &mut follow_up,
-        )?;
+        collect_local_dispatch_requirements(world, source.namespace, &clause.body, &mut reads, &mut waits)?;
     }
     if !waits.is_empty() {
         return Ok(JobEffects {
             reads: current_uses(reads),
             waits: current_uses(waits),
-            follow_up: follow_up.into_iter().collect(),
             ..JobEffects::default()
         });
     }
@@ -319,112 +302,111 @@ fn collect_local_dispatch_requirements(
     expr: &Spanned<Expr>,
     reads: &mut Vec<FactKey>,
     waits: &mut HashSet<FactKey>,
-    follow_up: &mut HashSet<Job>,
 ) -> Result<(), FatalError> {
     match &expr.node {
         Expr::Case(subject, clauses) => {
             if let Some(subject) = subject {
-                collect_local_dispatch_requirements(world, namespace, subject, reads, waits, follow_up)?;
+                collect_local_dispatch_requirements(world, namespace, subject, reads, waits)?;
             }
             for clause in clauses {
                 if let Some(guard) = &clause.guard {
-                    collect_local_guard_requirements(world, namespace, guard, reads, waits, follow_up)?;
+                    collect_local_guard_requirements(world, namespace, guard, reads, waits)?;
                 }
-                collect_local_dispatch_requirements(world, namespace, &clause.body, reads, waits, follow_up)?;
+                collect_local_dispatch_requirements(world, namespace, &clause.body, reads, waits)?;
             }
         }
         Expr::With(bindings, body, else_clauses) => {
             for binding in bindings {
                 match binding {
                     WithBinding::Match(_, expr) | WithBinding::Bare(expr) => {
-                        collect_local_dispatch_requirements(world, namespace, expr, reads, waits, follow_up)?;
+                        collect_local_dispatch_requirements(world, namespace, expr, reads, waits)?;
                     }
                 }
             }
-            collect_local_dispatch_requirements(world, namespace, body, reads, waits, follow_up)?;
+            collect_local_dispatch_requirements(world, namespace, body, reads, waits)?;
             for clause in else_clauses {
                 if let Some(guard) = &clause.guard {
-                    collect_local_guard_requirements(world, namespace, guard, reads, waits, follow_up)?;
+                    collect_local_guard_requirements(world, namespace, guard, reads, waits)?;
                 }
-                collect_local_dispatch_requirements(world, namespace, &clause.body, reads, waits, follow_up)?;
+                collect_local_dispatch_requirements(world, namespace, &clause.body, reads, waits)?;
             }
         }
         Expr::If(cond, then_expr, else_expr) => {
-            collect_local_dispatch_requirements(world, namespace, cond, reads, waits, follow_up)?;
-            collect_local_dispatch_requirements(world, namespace, then_expr, reads, waits, follow_up)?;
+            collect_local_dispatch_requirements(world, namespace, cond, reads, waits)?;
+            collect_local_dispatch_requirements(world, namespace, then_expr, reads, waits)?;
             if let Some(else_expr) = else_expr {
-                collect_local_dispatch_requirements(world, namespace, else_expr, reads, waits, follow_up)?;
+                collect_local_dispatch_requirements(world, namespace, else_expr, reads, waits)?;
             }
         }
         Expr::Cond(arms) => {
             for (cond, body) in arms {
-                collect_local_dispatch_requirements(world, namespace, cond, reads, waits, follow_up)?;
-                collect_local_dispatch_requirements(world, namespace, body, reads, waits, follow_up)?;
+                collect_local_dispatch_requirements(world, namespace, cond, reads, waits)?;
+                collect_local_dispatch_requirements(world, namespace, body, reads, waits)?;
             }
         }
         Expr::Receive { clauses, after } => {
             for clause in clauses {
                 if let Some(guard) = &clause.guard {
-                    collect_local_guard_requirements(world, namespace, guard, reads, waits, follow_up)?;
+                    collect_local_guard_requirements(world, namespace, guard, reads, waits)?;
                 }
-                collect_local_dispatch_requirements(world, namespace, &clause.body, reads, waits, follow_up)?;
+                collect_local_dispatch_requirements(world, namespace, &clause.body, reads, waits)?;
             }
             if let Some(after) = after {
-                collect_local_dispatch_requirements(world, namespace, &after.timeout, reads, waits, follow_up)?;
-                collect_local_dispatch_requirements(world, namespace, &after.body, reads, waits, follow_up)?;
+                collect_local_dispatch_requirements(world, namespace, &after.timeout, reads, waits)?;
+                collect_local_dispatch_requirements(world, namespace, &after.body, reads, waits)?;
             }
         }
         Expr::Match(_, rhs) | Expr::Ascribe(rhs, _) | Expr::UnOp(_, rhs) | Expr::Capture(rhs) | Expr::Unquote(rhs) => {
-            collect_local_dispatch_requirements(world, namespace, rhs, reads, waits, follow_up)?;
+            collect_local_dispatch_requirements(world, namespace, rhs, reads, waits)?;
         }
         Expr::Quote(rhs) => {
-            collect_unquote_dispatch_requirements(world, namespace, rhs, reads, waits, follow_up)?;
+            collect_unquote_dispatch_requirements(world, namespace, rhs, reads, waits)?;
         }
         Expr::BinOp(_, left, right) | Expr::Index(left, right) => {
-            collect_local_dispatch_requirements(world, namespace, left, reads, waits, follow_up)?;
-            collect_local_dispatch_requirements(world, namespace, right, reads, waits, follow_up)?;
+            collect_local_dispatch_requirements(world, namespace, left, reads, waits)?;
+            collect_local_dispatch_requirements(world, namespace, right, reads, waits)?;
         }
         Expr::Call(target, args) | Expr::ClosureCall(target, args) => {
-            collect_local_dispatch_requirements(world, namespace, target, reads, waits, follow_up)?;
+            collect_local_dispatch_requirements(world, namespace, target, reads, waits)?;
             for arg in args {
-                collect_local_dispatch_requirements(world, namespace, arg, reads, waits, follow_up)?;
+                collect_local_dispatch_requirements(world, namespace, arg, reads, waits)?;
             }
         }
         Expr::List(items, tail) => {
             for item in items {
-                collect_local_dispatch_requirements(world, namespace, item, reads, waits, follow_up)?;
+                collect_local_dispatch_requirements(world, namespace, item, reads, waits)?;
             }
             if let Some(tail) = tail {
-                collect_local_dispatch_requirements(world, namespace, tail, reads, waits, follow_up)?;
+                collect_local_dispatch_requirements(world, namespace, tail, reads, waits)?;
             }
         }
         Expr::Tuple(items) => {
             for item in items {
-                collect_local_dispatch_requirements(world, namespace, item, reads, waits, follow_up)?;
+                collect_local_dispatch_requirements(world, namespace, item, reads, waits)?;
             }
         }
         Expr::Bitstring(fields) => {
             for field in fields {
-                collect_local_dispatch_requirements(world, namespace, &field.value, reads, waits, follow_up)?;
+                collect_local_dispatch_requirements(world, namespace, &field.value, reads, waits)?;
             }
         }
         Expr::Map(entries) | Expr::MapUpdate(_, entries) => {
             if let Expr::MapUpdate(base, _) = &expr.node {
-                collect_local_dispatch_requirements(world, namespace, base, reads, waits, follow_up)?;
+                collect_local_dispatch_requirements(world, namespace, base, reads, waits)?;
             }
             for (key, value) in entries {
-                collect_local_dispatch_requirements(world, namespace, key, reads, waits, follow_up)?;
-                collect_local_dispatch_requirements(world, namespace, value, reads, waits, follow_up)?;
+                collect_local_dispatch_requirements(world, namespace, key, reads, waits)?;
+                collect_local_dispatch_requirements(world, namespace, value, reads, waits)?;
             }
         }
         Expr::Struct { fields, .. } => {
             for (_, value) in fields {
-                collect_local_dispatch_requirements(world, namespace, value, reads, waits, follow_up)?;
+                collect_local_dispatch_requirements(world, namespace, value, reads, waits)?;
             }
         }
         Expr::Block(exprs) => {
             for expr in exprs {
-                collect_local_dispatch_requirements(world, namespace, expr, reads, waits, follow_up)?;
+                collect_local_dispatch_requirements(world, namespace, expr, reads, waits)?;
             }
         }
         Expr::Lambda(_) => {}
@@ -447,22 +429,21 @@ fn collect_unquote_dispatch_requirements(
     expr: &Spanned<Expr>,
     reads: &mut Vec<FactKey>,
     waits: &mut HashSet<FactKey>,
-    follow_up: &mut HashSet<Job>,
 ) -> Result<(), FatalError> {
     match &expr.node {
-        Expr::Unquote(inner) => collect_local_dispatch_requirements(world, namespace, inner, reads, waits, follow_up),
+        Expr::Unquote(inner) => collect_local_dispatch_requirements(world, namespace, inner, reads, waits),
         Expr::Ascribe(inner, _) | Expr::Quote(inner) => {
-            collect_unquote_dispatch_requirements(world, namespace, inner, reads, waits, follow_up)
+            collect_unquote_dispatch_requirements(world, namespace, inner, reads, waits)
         }
         Expr::Case(subject, clauses) => {
             if let Some(subject) = subject {
-                collect_unquote_dispatch_requirements(world, namespace, subject, reads, waits, follow_up)?;
+                collect_unquote_dispatch_requirements(world, namespace, subject, reads, waits)?;
             }
             for clause in clauses {
                 if let Some(guard) = &clause.guard {
-                    collect_unquote_dispatch_requirements(world, namespace, guard, reads, waits, follow_up)?;
+                    collect_unquote_dispatch_requirements(world, namespace, guard, reads, waits)?;
                 }
-                collect_unquote_dispatch_requirements(world, namespace, &clause.body, reads, waits, follow_up)?;
+                collect_unquote_dispatch_requirements(world, namespace, &clause.body, reads, waits)?;
             }
             Ok(())
         }
@@ -470,101 +451,101 @@ fn collect_unquote_dispatch_requirements(
             for binding in bindings {
                 match binding {
                     WithBinding::Match(_, expr) | WithBinding::Bare(expr) => {
-                        collect_unquote_dispatch_requirements(world, namespace, expr, reads, waits, follow_up)?;
+                        collect_unquote_dispatch_requirements(world, namespace, expr, reads, waits)?;
                     }
                 }
             }
-            collect_unquote_dispatch_requirements(world, namespace, body, reads, waits, follow_up)?;
+            collect_unquote_dispatch_requirements(world, namespace, body, reads, waits)?;
             for clause in else_clauses {
                 if let Some(guard) = &clause.guard {
-                    collect_unquote_dispatch_requirements(world, namespace, guard, reads, waits, follow_up)?;
+                    collect_unquote_dispatch_requirements(world, namespace, guard, reads, waits)?;
                 }
-                collect_unquote_dispatch_requirements(world, namespace, &clause.body, reads, waits, follow_up)?;
+                collect_unquote_dispatch_requirements(world, namespace, &clause.body, reads, waits)?;
             }
             Ok(())
         }
         Expr::If(cond, then_expr, else_expr) => {
-            collect_unquote_dispatch_requirements(world, namespace, cond, reads, waits, follow_up)?;
-            collect_unquote_dispatch_requirements(world, namespace, then_expr, reads, waits, follow_up)?;
+            collect_unquote_dispatch_requirements(world, namespace, cond, reads, waits)?;
+            collect_unquote_dispatch_requirements(world, namespace, then_expr, reads, waits)?;
             if let Some(else_expr) = else_expr {
-                collect_unquote_dispatch_requirements(world, namespace, else_expr, reads, waits, follow_up)?;
+                collect_unquote_dispatch_requirements(world, namespace, else_expr, reads, waits)?;
             }
             Ok(())
         }
         Expr::Cond(arms) => {
             for (cond, body) in arms {
-                collect_unquote_dispatch_requirements(world, namespace, cond, reads, waits, follow_up)?;
-                collect_unquote_dispatch_requirements(world, namespace, body, reads, waits, follow_up)?;
+                collect_unquote_dispatch_requirements(world, namespace, cond, reads, waits)?;
+                collect_unquote_dispatch_requirements(world, namespace, body, reads, waits)?;
             }
             Ok(())
         }
         Expr::Receive { clauses, after } => {
             for clause in clauses {
                 if let Some(guard) = &clause.guard {
-                    collect_unquote_dispatch_requirements(world, namespace, guard, reads, waits, follow_up)?;
+                    collect_unquote_dispatch_requirements(world, namespace, guard, reads, waits)?;
                 }
-                collect_unquote_dispatch_requirements(world, namespace, &clause.body, reads, waits, follow_up)?;
+                collect_unquote_dispatch_requirements(world, namespace, &clause.body, reads, waits)?;
             }
             if let Some(after) = after {
-                collect_unquote_dispatch_requirements(world, namespace, &after.timeout, reads, waits, follow_up)?;
-                collect_unquote_dispatch_requirements(world, namespace, &after.body, reads, waits, follow_up)?;
+                collect_unquote_dispatch_requirements(world, namespace, &after.timeout, reads, waits)?;
+                collect_unquote_dispatch_requirements(world, namespace, &after.body, reads, waits)?;
             }
             Ok(())
         }
         Expr::Match(_, rhs) | Expr::UnOp(_, rhs) | Expr::Capture(rhs) => {
-            collect_unquote_dispatch_requirements(world, namespace, rhs, reads, waits, follow_up)
+            collect_unquote_dispatch_requirements(world, namespace, rhs, reads, waits)
         }
         Expr::BinOp(_, left, right) | Expr::Index(left, right) => {
-            collect_unquote_dispatch_requirements(world, namespace, left, reads, waits, follow_up)?;
-            collect_unquote_dispatch_requirements(world, namespace, right, reads, waits, follow_up)
+            collect_unquote_dispatch_requirements(world, namespace, left, reads, waits)?;
+            collect_unquote_dispatch_requirements(world, namespace, right, reads, waits)
         }
         Expr::Call(target, args) | Expr::ClosureCall(target, args) => {
-            collect_unquote_dispatch_requirements(world, namespace, target, reads, waits, follow_up)?;
+            collect_unquote_dispatch_requirements(world, namespace, target, reads, waits)?;
             for arg in args {
-                collect_unquote_dispatch_requirements(world, namespace, arg, reads, waits, follow_up)?;
+                collect_unquote_dispatch_requirements(world, namespace, arg, reads, waits)?;
             }
             Ok(())
         }
         Expr::List(items, tail) => {
             for item in items {
-                collect_unquote_dispatch_requirements(world, namespace, item, reads, waits, follow_up)?;
+                collect_unquote_dispatch_requirements(world, namespace, item, reads, waits)?;
             }
             if let Some(tail) = tail {
-                collect_unquote_dispatch_requirements(world, namespace, tail, reads, waits, follow_up)?;
+                collect_unquote_dispatch_requirements(world, namespace, tail, reads, waits)?;
             }
             Ok(())
         }
         Expr::Tuple(items) => {
             for item in items {
-                collect_unquote_dispatch_requirements(world, namespace, item, reads, waits, follow_up)?;
+                collect_unquote_dispatch_requirements(world, namespace, item, reads, waits)?;
             }
             Ok(())
         }
         Expr::Bitstring(fields) => {
             for field in fields {
-                collect_unquote_dispatch_requirements(world, namespace, &field.value, reads, waits, follow_up)?;
+                collect_unquote_dispatch_requirements(world, namespace, &field.value, reads, waits)?;
             }
             Ok(())
         }
         Expr::Map(entries) | Expr::MapUpdate(_, entries) => {
             if let Expr::MapUpdate(base, _) = &expr.node {
-                collect_unquote_dispatch_requirements(world, namespace, base, reads, waits, follow_up)?;
+                collect_unquote_dispatch_requirements(world, namespace, base, reads, waits)?;
             }
             for (key, value) in entries {
-                collect_unquote_dispatch_requirements(world, namespace, key, reads, waits, follow_up)?;
-                collect_unquote_dispatch_requirements(world, namespace, value, reads, waits, follow_up)?;
+                collect_unquote_dispatch_requirements(world, namespace, key, reads, waits)?;
+                collect_unquote_dispatch_requirements(world, namespace, value, reads, waits)?;
             }
             Ok(())
         }
         Expr::Struct { fields, .. } => {
             for (_, value) in fields {
-                collect_unquote_dispatch_requirements(world, namespace, value, reads, waits, follow_up)?;
+                collect_unquote_dispatch_requirements(world, namespace, value, reads, waits)?;
             }
             Ok(())
         }
         Expr::Block(exprs) => {
             for expr in exprs {
-                collect_unquote_dispatch_requirements(world, namespace, expr, reads, waits, follow_up)?;
+                collect_unquote_dispatch_requirements(world, namespace, expr, reads, waits)?;
             }
             Ok(())
         }
@@ -587,7 +568,6 @@ fn collect_local_guard_requirements(
     guard: &Spanned<Expr>,
     reads: &mut Vec<FactKey>,
     waits: &mut HashSet<FactKey>,
-    follow_up: &mut HashSet<Job>,
 ) -> Result<(), FatalError> {
     let mut calls = Vec::new();
     collect_guard_calls_in_expr(guard, &mut calls).map_err(|span| {
@@ -607,7 +587,6 @@ fn collect_local_guard_requirements(
             reads.push(fact);
         } else {
             waits.insert(fact);
-            follow_up.insert(Job::ReifyGuardDispatch(callee));
         }
     }
     Ok(())

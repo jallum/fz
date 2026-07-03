@@ -105,6 +105,11 @@ where
         self.deps.has_run(job)
     }
 
+    /// Whether `job`'s most recent completion left waits standing.
+    pub fn blocked(&self, job: &J) -> bool {
+        self.deps.blocked(job)
+    }
+
     pub fn unresolved(&self) -> Vec<UnresolvedWait<J, F>> {
         self.deps.unresolved()
     }
