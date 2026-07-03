@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-07-03T19:41:01Z",
+  "description": "Two independent findings from the 2026-07-03 batch, both in src/compiler2/transport_contract_test.rs, both n\u003e=2 duplication: (1) fz-go4.19's inventory found a THIRD near-verbatim copy of the product pull-drive loop as test scaffolding — drive_root_backend_product_for_test / pull_product_until_produced_with_fact_waits / drive_product_fact_wait_for_test / product_fact_wait_is_satisfied_for_test (~lines 4558-4644 at bcc1ac3d0; panic-based instead of Result-based). Production copies were unified into compiler2::product_drive (ProductDriveError trait) by fz-go4.19; evaluate whether the test scaffold can consume the shared runner (a panic-based ProductDriveError impl) instead of keeping a fork. (2) The fz-go4.18.28.15 removable-code audit found the by-cover co-member selection idiom (fixture source + driver bootstrap + BTreeMap by_cover grouping + find_map selection of two co-covered executables) duplicated byte-identically (~50 of 52 lines) between compiler2_transport_consult_ledger_displaces_co_members_on_demand_movement and compiler2_transport_world_fact_ledger_displaces_co_members_on_return_type_movement — extract a shared helper now that two consumers exist. Test-only, two-lane audit.",
+  "id": "fz-go4.30",
+  "labels": [],
+  "parent": "fz-go4",
+  "priority": 3,
+  "status": "open",
+  "title": "Dedup transport_contract_test.rs scaffolding: third drive-loop copy + by-cover selection idiom",
+  "type": "task",
+  "updated_at": "2026-07-03T19:41:01Z"
+}
