@@ -85,9 +85,8 @@ tree
 
 Most are allocation-stat or path-golden questions. `bsx_guard_eq` needs a
 semantic check because fz2 interp returns a different branch.
-After `fz-rh2.16.3`, `enum_reduce_suspend` also runs through fz2
-run/interp/build but needs fz2-specific allocation goldens before it can enter
-the matrix.
+`enum_reduce_suspend` is deferred on all three matrix paths: native returned
+suspend continuations lose settled callable boundaries.
 
 **Source-surface gaps.** The Elixir-surface parser batch for keyword lists,
 no-parens calls, trailing `do`, quoted keyword keys, and keyword-boundary
@@ -95,19 +94,25 @@ diagnostics is now covered directly by compiler2's `fixtures2/00532`-`00546`
 corpus. The remaining item-surface fixtures still called out in the sweep are
 `sample_tests` and `sample_tests_module`.
 
-**Callable/protocol/Enum artifact gaps.** `fz-rh2.16.3` fixed the closed
-callable-entry side of this class by deriving latent callable executables from
-reachable value types and by matching callable inventory against compatible
-closed activation keys instead of raw capture `Ty` ids. `fz-rh2.16.7` closes
-the remaining multi-target protocol dispatch gap for union receivers by
-materializing local dispatch from the settled multi-target semantic fact, so
-`enum_map_family`, `enum_take_drop_split`, `enum_tier0`,
-`enumerable_protocol_dispatch`, `map_enumerable`, `membership_operator`, and
-`range_enumerable` all run through fz2 again.
+**Callable/protocol/Enum artifact gaps.** The closed callable-entry side of
+this class derives latent callable executables from reachable value types and
+matches callable inventory against compatible closed activation keys instead
+of raw capture `Ty` ids. The multi-target protocol dispatch gap for union
+receivers is closed by materializing local dispatch from the settled
+multi-target semantic fact. Under that mechanism the union-receiver fixtures
+sit at mixed matrix coverage: `enum_take_drop_split` and `range_enumerable`
+run through fz2 on all three paths (run, interp, build); `enum_map_family`
+runs on interp only (its build and run paths are deferred on a native-codegen
+`ReturnLanes` arity mismatch); `map_enumerable` runs on run and build (its
+interp path is deferred on the same `ReturnLanes` mismatch); and `enum_tier0`,
+`enumerable_protocol_dispatch`, and `membership_operator` are deferred on all
+three paths (`enum_tier0` on the shared `Enum.reduce*` bridge over non-List
+Enumerables, the other two pending nominal struct-vs-map protocol-dispatch
+tests).
 
-`fz-bin.16` re-enables `enum_take_drop_split` as a full run/interp/build matrix
-fixture. The take/drop/split runtime functions that carry tuple accumulators now
-use `Enum.reduce_while/3` directly with single-clause callbacks, avoiding the
+`enum_take_drop_split` runs as a full run/interp/build matrix fixture. The
+take/drop/split runtime functions that carry tuple accumulators use
+`Enum.reduce_while/3` directly with single-clause callbacks, avoiding the
 shared `Enum.reduce/3` bridge for those reducer shapes. Transport projection
 also seeds capture-prefix executable inputs from upstream callable-flow facts
 before the generic callable fallback, so reducer callbacks that capture a
@@ -118,8 +123,8 @@ lowering.
 `resource_lifecycle`, `tail_recursion` on `fz2 interp`, `utf8_pattern_match` on
 `fz2 interp`, and `enum_predicate_search` on `fz2 interp`.
 
-`fz-bin.11` closes the `bsx_guard_eq` interpreter gap. Dispatch guard constants
-now materialize `DispatchConst::Utf8Binary` values in the backend interpreter,
+The `bsx_guard_eq` interpreter gap is closed: dispatch guard constants
+materialize `DispatchConst::Utf8Binary` values in the backend interpreter,
 so guards such as `s == "hi"` compare through the same brand-blind runtime
 equality path as ordinary `==`.
 

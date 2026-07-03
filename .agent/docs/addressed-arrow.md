@@ -147,7 +147,7 @@ Key != evidence is intentional. The precise arrow stays in the
 `ActivationInputs` fact; the collapsed arrow is the `HashMap` dispatch key.
 Recursive activation-input evidence uses the same demand shape, but only widens
 variable-bearing ignored payloads so concrete caller evidence is not lowered by
-key convergence. This is the fz-y6w bounded-specialization control, and it is
+key convergence. This is a bounded-specialization control, and it is
 one whole-arrow operation on the interned arrow — not a per-input pre-pass.
 
 ## Matching is subsumption — the trichotomy calculator

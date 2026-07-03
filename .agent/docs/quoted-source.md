@@ -1,7 +1,6 @@
 # Quoted Source
 
-`src/compiler2/source.rs` is the compiler2-owned quoted-source substrate for
-the `fz-rh2.11.7.*` arc.
+`src/compiler2/source.rs` is the compiler2-owned quoted-source substrate.
 
 ## What It Owns
 

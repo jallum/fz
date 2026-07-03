@@ -78,12 +78,11 @@ dense executable indices, and packages the `BackendProgram`. There is no root
 semantic-closure seal or root transport-plan fact: the legacy
 `SealSemanticClosure`/`DeriveTransportPlan`/`DeriveExecutableTransport`/
 `DeriveRuntimeDemand` jobs and their `SemanticClosed`/`TransportPlan`/
-`ExecutableTransport`/`RuntimeDemand`/`InputSources` facts were deleted
-(`fz-go4.18.4`); the product pull path is the only artifact path.
+`ExecutableTransport`/`RuntimeDemand`/`InputSources` facts do not exist;
+the product pull path is the only artifact path.
 The planning artifact `../pull-based.html` documents the pull-based design
-and remains available as a reference; this doc, `northstar.html`, and the
-closed `fz-go4.16.*` tickets are the durable source of truth for the pull
-artifact path as built.
+and remains available as a reference; this doc and `northstar.html` are the
+durable source of truth for the pull artifact path as built.
 
 `RootEntry.kind` decides where a root is allowed to go:
 
@@ -387,7 +386,7 @@ first-class surfaces at construction and every callable axis at demand
 finalization (`ExecutableRuntimeDemand::ground_callable_surfaces`) — so transport
 never re-derives or relitigates the choice. The legacy root telemetry twins
 `fz.compiler2.runtime_demand.defined` and `fz.compiler2.transport_flow.defined`
-were deleted with the seal/transport spine (`fz-go4.18.4`); the five distinctions
+do not exist; the five distinctions
 this model keeps separate — omitted lanes, tuple-field transport,
 direct-callable transport, first-class materialization, and callable-entry
 publication — stay individually observable through the demanded `RuntimeDemand`
@@ -631,7 +630,7 @@ Current conclusion from the code:
   product boundary as interp: `native_program_for_root` runs the single demanded
   `LowerNativeProgram(root)` job, which builds `BackendProgram(root)` via the
   product driver (`build_backend_product`). There is no legacy seal/transport
-  ladder to avoid: those jobs were deleted (`fz-go4.18.4`)
+  ladder to avoid: those jobs do not exist
 - `fz2` is now the side-by-side outer shell for those front doors: `fz2 run`,
   `fz2 interp`, and `fz2 build` submit source directly to Compiler2, seed
   `main/0`, and never reopen old planner or type-infer work

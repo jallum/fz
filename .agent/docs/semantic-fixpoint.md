@@ -11,7 +11,7 @@ semantic side still publishes facts with two readiness levels:
 
 `SeedRoot`, `SeedActivation`, and `AnalyzeActivation` shape those local facts.
 There is no root semantic-closure seal: the `SealSemanticClosure` job and its
-`SemanticClosed(root)`/`SemanticReady(root)` facts were deleted (`fz-go4.18.4`).
+`SemanticClosed(root)`/`SemanticReady(root)` facts do not exist.
 Artifact readiness is pulled entirely by product keys.
 
 ## What an activation is today
@@ -238,7 +238,7 @@ the basis for the remaining type-system tickets.
   `PullSession`, not scheduler facts. They wait on settled semantic facts by
   exact key and must not publish activation facts or schedule follow-up jobs.
 
-## Module facts at the walk's gates (fz-rh2.17.5.9)
+## Module facts at the walk's gates
 
 `ModuleDefined(m)` means m's body has been scoped and published;
 `ModuleInterface(m)` means m's exported callable surface is available. The

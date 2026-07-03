@@ -265,7 +265,7 @@ jq -sr '
 
 The job trace is minimal by construction: the legacy `SealSemanticClosure` /
 `DeriveRuntimeDemand` / `DeriveExecutableTransport` / `DeriveTransportPlan` jobs
-were deleted (`fz-go4.18.4`), so no job debug string can name them and the
+do not exist, so no job debug string can name them and the
 `[fz, compiler2, legacy, root_executable_frontier]` scan is gone from production
 (it survives only as `#[cfg(test)]` support for the fixture call-edge oracle).
 Root session measurements for `fixtures2/00181_enum_reduce_operator_ref.fz` are
@@ -279,7 +279,7 @@ materialized executables).
 Transport product construction emits `[fz, compiler2, pull, product, *]` for
 per-position product demand. There is no root-wide `transport_flow` signal: the
 legacy `DeriveTransportPlan` job that emitted it — and its `TransportPlan(root)`
-fact — were deleted (`fz-go4.18.4`). The product path treats the
+fact — do not exist. The product path treats the
 `RuntimeDemand(E)` product as pre-transport evidence; `TransportPosition ->
 ShapeId`, `CallableId` facts, `BoundaryId` contracts, and `CodegenSeamFact` rows
 are produced for the positions and boundaries named by demanded executable
