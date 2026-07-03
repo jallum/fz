@@ -10,6 +10,11 @@ use super::facts::{ClaimShape, FactChange, FactTable, FactUse};
 pub struct AppliedStep<J, F> {
     pub changed: Vec<FactChange<F>>,
     pub enqueued: Vec<J>,
+    /// Jobs this wave woke that were already pending in the agenda from an
+    /// earlier wake this same `complete` call (agenda dedupe: `Agenda::enqueue`
+    /// returned false because the job was already queued). This is the only
+    /// source — there is no standing-conclusion coalescing left to conflate it
+    /// with.
     pub coalesced: Vec<J>,
     pub blocked: Vec<FactUse<F>>,
 }
@@ -101,12 +106,12 @@ where
     /// recorded, even empty) or blocked (waits are standing). A job that has
     /// run is reachable by the graph's own wakes; a never-run job has no wake
     /// source, so only a fresh demand can start it.
-    pub fn has_run(&self, job: &J) -> bool {
+    pub(crate) fn has_run(&self, job: &J) -> bool {
         self.deps.has_run(job)
     }
 
     /// Whether `job`'s most recent completion left waits standing.
-    pub fn blocked(&self, job: &J) -> bool {
+    pub(crate) fn blocked(&self, job: &J) -> bool {
         self.deps.blocked(job)
     }
 
