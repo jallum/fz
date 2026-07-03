@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-go4.18.28.1"
   ],
@@ -10,8 +10,8 @@
   "labels": [],
   "parent": "fz-go4.18.28",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "Transport sorts format types into display-string keys per comparison",
   "type": "bug",
-  "updated_at": "2026-07-02T22:19:13Z"
+  "updated_at": "2026-07-03T00:19:13Z"
 }
