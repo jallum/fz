@@ -78,6 +78,14 @@ pub(super) fn seed_root(world: &mut World<'_>, root_id: RootId) -> Result<JobEff
     // after `LoweredBody`/`EntryDispatch` exist -- so those jobs have already
     // run. First-run demand for them lives in DeriveRecursive/DeriveDispatchMask;
     // later change waves reach them via the normal wake mechanism.
+    //
+    // This push survives only for the bare-scheduler entry point
+    // (`World::drive_for` with no product demanded), which has no
+    // FactKey -> producer demand-on-stall map -- on every product-driven
+    // path it is provably redundant (`demand_product_fact_producer`
+    // co-demands `AnalyzeActivation` when a consumer waits on
+    // `ActivationAnalyzed`/`ReturnType`). Deleting it requires giving the
+    // core scheduler that demand map: fz-go4.18.24 carries the full trace.
     follow_up.push(Job::AnalyzeActivation(entry_activation.clone()));
     Ok(JobEffects {
         reads: settled_uses(reads),
@@ -98,6 +106,15 @@ pub(super) fn seed_root(world: &mut World<'_>, root_id: RootId) -> Result<JobEff
 /// ordinary settled callee. Seeding belongs in a concluding job: a *blocked*
 /// publisher's claims never settle, so a job that both published and gated on a
 /// latent activation would wait on its own perpetually-dirty output forever.
+///
+/// `AnalyzeActivation` is not pushed as a follow-up: this job is itself only
+/// ever demanded by `demand_product_fact_producer`'s (compiler.rs,
+/// jobs/backend.rs) `Activation`/`ActivationInputs`, `ActivationAnalyzed`/
+/// `ReturnType`, or `CallSiteSummary`/`CallSiteTargets` arms, and every one of
+/// those arms that reaches here also demands `AnalyzeActivation` for this same
+/// activation in the very same call -- co-demanded, not chained through a
+/// push. First-run demand is genuinely pulled by whichever product wait
+/// triggered the seed.
 pub(super) fn seed_activation(world: &mut World<'_>, activation: &ActivationKey) -> Result<JobEffects, FatalError> {
     Ok(JobEffects {
         outputs: vec![
@@ -105,7 +122,6 @@ pub(super) fn seed_activation(world: &mut World<'_>, activation: &ActivationKey)
             FactKey::ActivationInputs(activation.clone()),
         ],
         activation_input_contributions: vec![(activation.clone(), activation.inputs(world.types()))],
-        follow_up: vec![Job::AnalyzeActivation(activation.clone())],
         ..JobEffects::default()
     })
 }
