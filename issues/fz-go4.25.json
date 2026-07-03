@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-07-02T21:47:17Z",
@@ -8,8 +8,8 @@
   "labels": [],
   "parent": "fz-go4",
   "priority": 3,
-  "status": "open",
+  "status": "in_progress",
   "title": "list_clause_empty elem-fold conflates 'exact-empty sig seen' with 'unconstrained' (unknown-is-not-none in the types layer)",
   "type": "bug",
-  "updated_at": "2026-07-02T21:47:17Z"
+  "updated_at": "2026-07-03T02:11:35Z"
 }
