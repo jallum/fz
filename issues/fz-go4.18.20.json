@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-go4.18.17",
     "fz-go4.18.22"
@@ -17,8 +17,8 @@
     }
   ],
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "Per-callee-revision whole-caller re-analysis: batch/granularize activation re-inference",
   "type": "bug",
-  "updated_at": "2026-07-02T12:17:32Z"
+  "updated_at": "2026-07-03T00:19:14Z"
 }
