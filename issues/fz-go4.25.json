@@ -2,14 +2,15 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-07-03T02:31:18Z",
   "created": "2026-07-02T21:47:17Z",
   "description": "Found by the .18.28.3 correctness audit's 37,128-answer differential matrix (2026-07-02). emptiness.rs list_clause_empty's elem fold has the arm (None, Some(elem)) =\u003e Some(elem): the accumulator cell None means BOTH 'no element evidence yet' AND 'only exact-empty sigs seen so far', so folding a later nonempty-elem sig over an exact-empty sig LOSES the emptiness evidence — the classic unknown-is-not-none cell conflation (cf. the feedback memory), here in the set-theoretic types layer. CONSEQUENCE: conservative-direction only (judges some empty list types non-empty; never the corrupting direction) — e.g. clause pos=[exact_empty, list(int)], neg=[list(atom) allowing empty] denotes the empty set but is judged non-empty. The .18.28.3 P-and-not-P drop masks the structurally-identical case; non-structural cases still fire. Pre-existing at 0cb890e95 and earlier (the audit proved the PARENT gave wrong subtype/disjoint answers on derived empty-list types that the .28.3 child now gets right). FIX: give the fold a three-state cell (no-evidence / empty-evidence / inhabited-evidence) so exact-empty evidence survives joins. ACCEPTANCE: the audit's matrix cases (empty_list-and-not-empty_list, empty_list-diff-empty_list and the pos/neg mixed case above) all judged empty; emptiness stays sound (types module + suite green; fixture outputs unchanged). Contributes to the fz-go4.24 clause-garbage picture (unrecognized-empty clauses persist).",
   "id": "fz-go4.25",
   "labels": [],
   "parent": "fz-go4",
   "priority": 3,
-  "status": "in_progress",
+  "status": "closed",
   "title": "list_clause_empty elem-fold conflates 'exact-empty sig seen' with 'unconstrained' (unknown-is-not-none in the types layer)",
   "type": "bug",
-  "updated_at": "2026-07-03T02:11:35Z"
+  "updated_at": "2026-07-03T02:31:18Z"
 }
