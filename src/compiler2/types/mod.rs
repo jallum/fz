@@ -37,10 +37,11 @@ pub use arrow_match::ArrowMatch;
 use addressed::AddrStep;
 use conj::Conj;
 use descr::Descr;
+use dnf::{dnf_intersect_with, tuple_clause_subsumed};
 #[cfg(test)]
 pub(crate) use lit_set::{ClosureSurfacePos, decode_closure_surface_var};
 use lit_set::{LiteralSet, closure_ret_var_id, closure_var_id};
-use sigs::{ArrowSig, ClosureLit, ListSig, MergeSig};
+use sigs::{ArrowSig, ClosureLit, ListSig, MergeSig, PosMeet, TupleSig};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(transparent)]
@@ -123,6 +124,8 @@ impl TypeInterner {
         if let Some(ty) = self.index.get(&d) {
             return *ty;
         }
+        #[cfg(debug_assertions)]
+        self.debug_assert_tuple_axis_hygienic(&d);
         let raw = self.arena.len();
         assert!(u32::try_from(raw).is_ok(), "type interner exhausted ids");
         let ty = Ty(raw as u32);
@@ -140,6 +143,29 @@ impl TypeInterner {
 
     fn descr(&self, t: &Ty) -> &Descr {
         self.ctx().descr(t)
+    }
+
+    /// The interned-tuple-DNF invariant: a descriptor entering the
+    /// arena never carries a duplicate, provably-empty, or subsumed tuple
+    /// clause. `Types::intern` establishes it by canonicalizing the axis; this
+    /// sweep verifies it for every intern in debug builds, so any construction
+    /// route leaking garbage clauses fails loudly instead of accumulating.
+    #[cfg(debug_assertions)]
+    fn debug_assert_tuple_axis_hygienic(&self, d: &Descr) {
+        let cx = self.ctx();
+        for (i, c) in d.tuples.iter().enumerate() {
+            let mut memo = emptiness::Memo::default();
+            debug_assert!(
+                !emptiness::tuple_clause_empty(cx, c, &mut memo),
+                "interned descr carries a provably-empty tuple clause"
+            );
+            for (j, other) in d.tuples.iter().enumerate() {
+                debug_assert!(
+                    i == j || !tuple_clause_subsumed(c, other, |x, y| { cx.descr(x).is_subtype(cx, cx.descr(y)) }),
+                    "interned descr carries a subsumed (or duplicate) tuple clause"
+                );
+            }
+        }
     }
 }
 
@@ -181,8 +207,49 @@ impl Types {
             .or_else(|| self.as_atom_singleton(a).map(MapKey::Atom))
     }
 
-    fn intern(&mut self, d: Descr) -> Ty {
+    fn intern(&mut self, mut d: Descr) -> Ty {
+        self.canonicalize_tuple_axis(&mut d);
         self.interner.intern(d)
+    }
+
+    /// The persistence boundary keeps the tuples axis of every
+    /// interned descriptor canonical: provably-empty clauses are dropped
+    /// (`A ∨ ∅ = A`) and subsumed clauses are absorbed (`A ⊆ B ⇒ A ∨ B = B`,
+    /// restoring the fz-et8 absorption lost in the compiler2 port). Both drop
+    /// rules preserve the denoted set exactly, so emptiness and subtyping
+    /// answers are unchanged — only the clause list shrinks. Running once at
+    /// intern covers every construction route (union, intersect, difference,
+    /// substitution) with one pass, and keeps garbage from accumulating across
+    /// fixpoint iterations or doubling `dnf_neg` factors downstream.
+    fn canonicalize_tuple_axis(&self, d: &mut Descr) {
+        if d.tuples.is_empty() {
+            return;
+        }
+        let clauses = std::mem::take(&mut d.tuples);
+        let mut out: Vec<Conj<TupleSig>> = Vec::with_capacity(clauses.len());
+        for c in clauses {
+            if self.tuple_clause_provably_empty(&c) {
+                continue;
+            }
+            let cached_subtype = |x: &Ty, y: &Ty| self.is_subtype(x, y);
+            if out.iter().any(|kept| tuple_clause_subsumed(&c, kept, cached_subtype)) {
+                continue;
+            }
+            out.retain(|kept| !tuple_clause_subsumed(kept, &c, cached_subtype));
+            out.push(c);
+        }
+        d.tuples = out;
+    }
+
+    fn tuple_clause_provably_empty(&self, c: &Conj<TupleSig>) -> bool {
+        // Plain single-positive clauses (the overwhelmingly common shape) are
+        // empty iff a coordinate is — decidable through the memoized
+        // comparison cache without cloning descriptors.
+        if let ([p], []) = (c.pos.as_slice(), c.neg.as_slice()) {
+            return p.elems.iter().any(|e| self.is_empty(e));
+        }
+        let mut memo = emptiness::Memo::default();
+        emptiness::tuple_clause_empty(self.ctx(), c, &mut memo)
     }
 
     fn ctx(&self) -> TyCtx<'_> {
@@ -1496,24 +1563,25 @@ fn intersect_descr(types: &mut Types, a: &Descr, b: &Descr) -> Descr {
 }
 
 fn intersect_dnf<T: MergeSig>(types: &mut Types, a: &[Conj<T>], b: &[Conj<T>]) -> Vec<Conj<T>> {
-    let mut out = Vec::with_capacity(a.len() * b.len());
-    for c1 in a {
-        for c2 in b {
-            out.push(intersect_clauses(types, c1, c2));
-        }
-    }
-    out
+    dnf_intersect_with(a, b, |c1, c2| intersect_clauses(types, c1, c2))
 }
 
-fn intersect_clauses<T: MergeSig>(types: &mut Types, a: &Conj<T>, b: &Conj<T>) -> Conj<T> {
+/// `None` means the merged clause is empty by construction (a positive-sig
+/// pair proved disjoint): `∅` contributes nothing to a DNF and must not
+/// persist — every garbage clause doubles a `dnf_neg` factor.
+fn intersect_clauses<T: MergeSig>(types: &mut Types, a: &Conj<T>, b: &Conj<T>) -> Option<Conj<T>> {
     let mut pos = a.pos.clone();
     for new_sig in &b.pos {
         let mut merged = false;
         for slot in pos.iter_mut() {
-            if let Some(narrowed) = T::intersect_pos(types, slot, new_sig) {
-                *slot = narrowed;
-                merged = true;
-                break;
+            match T::intersect_pos(types, slot, new_sig) {
+                PosMeet::Merged(narrowed) => {
+                    *slot = narrowed;
+                    merged = true;
+                    break;
+                }
+                PosMeet::Empty => return None,
+                PosMeet::Distinct => {}
             }
         }
         if !merged && !pos.contains(new_sig) {
@@ -1526,7 +1594,7 @@ fn intersect_clauses<T: MergeSig>(types: &mut Types, a: &Conj<T>, b: &Conj<T>) -
             neg.push(sig.clone());
         }
     }
-    Conj { pos, neg }
+    Some(Conj { pos, neg })
 }
 
 fn list_element_type(cx: TyCtx<'_>, d: &Descr) -> Descr {

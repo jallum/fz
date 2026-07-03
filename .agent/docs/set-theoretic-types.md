@@ -52,13 +52,24 @@ axis at top, `none()` every axis at bottom, and `is_empty` holds when every axis
 empty (structural clauses checked recursively, with a coinductive memo for recursive
 shapes).
 
-DNF construction keeps clause lists hygienic by boolean identity (`dnf.rs`):
-`dnf_union` and `dnf_intersect` drop duplicate clauses (`A ∨ A = A`),
-`dnf_intersect` drops clauses holding a literal both positively and negatively
-(`P ∧ ¬P = ∅`), and `dnf_neg` skips duplicate factors. The tuple-emptiness
-recursion (`emptiness::phi_tuple`) returns early on an empty coordinate and
-drops negations disjoint from the product, so it explores only inhabited
-splits instead of fanning out `arity^|negs|` branches (fz-go4.18.28.3).
+DNF construction keeps clause lists hygienic by boolean identity. One clause-
+product skeleton (`dnf.rs::dnf_intersect_with`) serves both intersections —
+the structural kernel (`Descr::intersect`) and the semantic path
+(`Types::intersect`, which collapses same-shape positives through `MergeSig`)
+— and it drops duplicate clauses (`A ∨ A = A`), clauses holding a literal
+both positively and negatively (`P ∧ ¬P = ∅`), and clauses a `MergeSig` merge
+proves empty (`PosMeet::Empty`: tuple arity mismatch, an empty tuple
+coordinate or resource payload, a non-empty list sig with no element left).
+`dnf_union` drops duplicate clauses and `dnf_neg` skips duplicate factors.
+The persistence boundary (`Types::intern`) canonicalizes the tuples axis of
+every descriptor entering the interner: provably-empty clauses are dropped
+(`A ∨ ∅ = A`) and subsumed clauses absorbed (`A ⊆ B ⇒ A ∨ B = B`, via
+`dnf.rs::tuple_clause_subsumed` over the memoized comparison cache), and a
+debug-build assert in `TypeInterner::intern` sweeps every intern for the
+invariant. The tuple-emptiness recursion
+(`emptiness::phi_tuple`) returns early on an empty coordinate and drops
+negations disjoint from the product, so it explores only inhabited splits
+instead of fanning out `arity^|negs|` branches.
 
 ## One implementation, shared trait
 

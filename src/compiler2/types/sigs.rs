@@ -111,15 +111,28 @@ pub(crate) struct MapSig {
     pub fields: BTreeMap<MapKey, Ty>,
 }
 
+/// The outcome of intersecting two same-axis positive sigs inside one clause.
+pub(crate) enum PosMeet<T> {
+    /// The pair collapsed to one narrower sig (`A ∩ B` on this axis).
+    Merged(T),
+    /// The pair is provably disjoint, so the WHOLE clause (which conjoins
+    /// both) is `∅` and must not persist.
+    Empty,
+    /// The pair cannot be collapsed or refuted structurally; the clause keeps
+    /// both sigs as separate positive conjuncts.
+    Distinct,
+}
+
 /// Same-shape positive clauses in an intersection should collapse to one
 /// narrower clause. This keeps semantic meets stable instead of piling up
-/// conjunctive structure on every repeated refinement.
+/// conjunctive structure on every repeated refinement, and lets a merge that
+/// proves emptiness drop the clause instead of persisting garbage (fz-go4.24).
 pub(crate) trait MergeSig: Clone + PartialEq {
-    fn intersect_pos(types: &mut Types, a: &Self, b: &Self) -> Option<Self>;
+    fn intersect_pos(types: &mut Types, a: &Self, b: &Self) -> PosMeet<Self>;
 }
 
 impl MergeSig for ListSig {
-    fn intersect_pos(types: &mut Types, a: &Self, b: &Self) -> Option<Self> {
+    fn intersect_pos(types: &mut Types, a: &Self, b: &Self) -> PosMeet<Self> {
         let elem = match (a.elem, b.elem) {
             (Some(a), Some(b)) => {
                 let elem = types.intersect(a, b);
@@ -127,51 +140,64 @@ impl MergeSig for ListSig {
             }
             _ => None,
         };
-        Some(ListSig {
-            empty: a.empty && b.empty,
-            elem,
-        })
+        let empty = a.empty && b.empty;
+        // A non-empty list needs a head in the element intersection; with no
+        // element left and `[]` excluded, the merged sig denotes `∅`.
+        if !empty && elem.is_none() {
+            return PosMeet::Empty;
+        }
+        PosMeet::Merged(ListSig { empty, elem })
     }
 }
 
 impl MergeSig for ResourceSig {
-    fn intersect_pos(types: &mut Types, a: &Self, b: &Self) -> Option<Self> {
+    fn intersect_pos(types: &mut Types, a: &Self, b: &Self) -> PosMeet<Self> {
+        // `res(A) ∩ res(B) = res(A ∩ B)`, and `res(∅) = ∅` (a resource always
+        // carries a payload; `Descr::resource_of` refuses an empty one).
         let payload = types.intersect(a.payload, b.payload);
         if types.is_empty(&payload) {
-            None
+            PosMeet::Empty
         } else {
-            Some(ResourceSig { payload })
+            PosMeet::Merged(ResourceSig { payload })
         }
     }
 }
 
 impl MergeSig for TupleSig {
-    fn intersect_pos(types: &mut Types, a: &Self, b: &Self) -> Option<Self> {
+    fn intersect_pos(types: &mut Types, a: &Self, b: &Self) -> PosMeet<Self> {
+        // Tuples of different arity are disjoint products: `A₁×…×Aₙ ∩
+        // B₁×…×Bₘ = ∅` for `n ≠ m` (a tuple value has exactly one arity —
+        // the same rule `emptiness::tuple_clause_empty` decides by).
         if a.elems.len() != b.elems.len() {
-            return None;
+            return PosMeet::Empty;
         }
-        Some(TupleSig {
-            elems: a
-                .elems
-                .iter()
-                .zip(b.elems.iter())
-                .map(|(x, y)| types.intersect(*x, *y))
-                .collect(),
-        })
+        // `∏Aᵢ ∩ ∏Bᵢ = ∏(Aᵢ ∩ Bᵢ)`; a product with an empty factor is `∅`.
+        let elems: Vec<Ty> = a
+            .elems
+            .iter()
+            .zip(b.elems.iter())
+            .map(|(x, y)| types.intersect(*x, *y))
+            .collect();
+        if elems.iter().any(|e| types.is_empty(e)) {
+            return PosMeet::Empty;
+        }
+        PosMeet::Merged(TupleSig { elems })
     }
 }
 
 impl MergeSig for ArrowSig {
-    fn intersect_pos(types: &mut Types, a: &Self, b: &Self) -> Option<Self> {
+    fn intersect_pos(types: &mut Types, a: &Self, b: &Self) -> PosMeet<Self> {
+        // An unmergeable arrow pair stays Distinct, never Empty: a conjunction
+        // of arrows is an overload, which is inhabited in general.
         if a.args.len() != b.args.len() {
-            return None;
+            return PosMeet::Distinct;
         }
         match (&a.lit, &b.lit) {
             (Some(la), Some(lb)) => {
                 if la.fn_id != lb.fn_id || la.kind != lb.kind || la.captures.len() != lb.captures.len() {
-                    return None;
+                    return PosMeet::Distinct;
                 }
-                Some(ArrowSig {
+                PosMeet::Merged(ArrowSig {
                     args: a
                         .args
                         .iter()
@@ -191,9 +217,9 @@ impl MergeSig for ArrowSig {
                     }),
                 })
             }
-            (Some(_), None) => Some(specialize_lit_arrow(types, a, b)),
-            (None, Some(_)) => Some(specialize_lit_arrow(types, b, a)),
-            (None, None) => Some(ArrowSig {
+            (Some(_), None) => PosMeet::Merged(specialize_lit_arrow(types, a, b)),
+            (None, Some(_)) => PosMeet::Merged(specialize_lit_arrow(types, b, a)),
+            (None, None) => PosMeet::Merged(ArrowSig {
                 args: a
                     .args
                     .iter()
@@ -221,7 +247,7 @@ fn specialize_lit_arrow(types: &mut Types, lit: &ArrowSig, surface: &ArrowSig) -
 }
 
 impl MergeSig for MapSig {
-    fn intersect_pos(types: &mut Types, a: &Self, b: &Self) -> Option<Self> {
+    fn intersect_pos(types: &mut Types, a: &Self, b: &Self) -> PosMeet<Self> {
         let mut fields = a.fields.clone();
         for (key, value) in &b.fields {
             fields
@@ -229,6 +255,6 @@ impl MergeSig for MapSig {
                 .and_modify(|current| *current = types.intersect(*current, *value))
                 .or_insert(*value);
         }
-        Some(MapSig { fields })
+        PosMeet::Merged(MapSig { fields })
     }
 }

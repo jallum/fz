@@ -1466,6 +1466,114 @@ fn tuple_emptiness_under_many_overlapping_negations_is_tractable() {
     );
 }
 
+// fz-go4.24 — the tuples axis of an interned descriptor is hygienic by
+// construction: the clause product dedups (`A ∨ A = A`), drops clauses that are
+// empty by construction (arity mismatch, empty coordinate — a product with an
+// empty factor is `∅`), and the persistence boundary absorbs subsumed clauses
+// (`A ⊆ B ⇒ A ∨ B = B`). Without this, evidence-join traffic accumulates
+// garbage clauses unboundedly (00277 interned a 60-clause tuple DNF with 54
+// provably-empty clauses) and every garbage clause doubles a `dnf_neg` factor.
+mod tuple_dnf_hygiene {
+    use super::*;
+
+    /// The clause product of two overlapping tuple unions yields the same
+    /// merged clause from symmetric pairs; idempotence collapses them and
+    /// absorption drops the clause the wider survivors already contain.
+    #[test]
+    fn intersect_product_dedups_and_absorbs() {
+        let mut t = Types::new();
+        let int = t.int();
+        let any = t.any();
+        let str_t = t.str_t();
+        let float = t.float();
+
+        let x = t.tuple(&[int, any]);
+        let y = t.tuple(&[any, int]);
+        let ss = t.tuple(&[str_t, str_t]);
+        let ff = t.tuple(&[float, float]);
+
+        let a = {
+            let xy = t.union(x, y);
+            t.union(xy, ss)
+        };
+        let b = {
+            let yx = t.union(y, x);
+            t.union(yx, ff)
+        };
+        let meet = t.intersect(a, b);
+
+        // Product pairs: X∧Y = Y∧X = {int,int} (duplicate, and subsumed by
+        // both survivors), X∧X = {int,any}, Y∧Y = {any,int}; every pair
+        // involving {str,str} or {float,float} has an empty coordinate.
+        let d = t.descr(&meet);
+        assert_eq!(
+            d.tuples.len(),
+            2,
+            "expected exactly the two live clauses {{int,any}} and {{any,int}}, got {}",
+            t.display(&meet)
+        );
+        let expected = t.union(x, y);
+        assert!(t.is_equivalent(&meet, &expected), "hygiene must not change the set");
+    }
+
+    /// Tuples of different arity are disjoint products: their conjunction is
+    /// `∅` by construction and must not persist as a multi-pos clause.
+    #[test]
+    fn arity_mismatched_tuple_intersection_persists_no_clause() {
+        let mut t = Types::new();
+        let int = t.int();
+        let one = t.tuple(&[int]);
+        let two = t.tuple(&[int, int]);
+        let meet = t.intersect(one, two);
+        assert!(t.descr(&meet).tuples.is_empty(), "∅ must persist no tuple clause");
+        assert!(t.is_empty(&meet));
+
+        // A mixed-arity union intersect keeps exactly the matching arity.
+        let three = t.tuple(&[int, int, int]);
+        let a = t.union(one, two);
+        let b = t.union(two, three);
+        let meet = t.intersect(a, b);
+        assert_eq!(t.descr(&meet).tuples.len(), 1);
+        assert!(t.is_equivalent(&meet, &two));
+    }
+
+    /// `∏Aᵢ ∩ ∏Bᵢ = ∏(Aᵢ∩Bᵢ)`: one empty coordinate empties the product, so
+    /// the merged clause is dropped instead of persisting provably-empty.
+    #[test]
+    fn empty_coordinate_tuple_intersection_persists_no_clause() {
+        let mut t = Types::new();
+        let int = t.int();
+        let str_t = t.str_t();
+        let a = t.tuple(&[int, int]);
+        let b = t.tuple(&[str_t, int]);
+        let meet = t.intersect(a, b);
+        assert!(t.descr(&meet).tuples.is_empty(), "∅ must persist no tuple clause");
+        assert!(t.is_empty(&meet));
+    }
+
+    /// Absorption at union: `A ⊆ B ⇒ A ∨ B = B`. Near-duplicate evidence-join
+    /// clauses collapse instead of accumulating across fixpoint iterations.
+    #[test]
+    fn union_absorbs_subsumed_tuple_clauses() {
+        let mut t = Types::new();
+        let int = t.int();
+        let str_t = t.str_t();
+        let any = t.any();
+        let narrow = t.tuple(&[int, int]);
+        let wide_elem = t.union(int, str_t);
+        let wide = t.tuple(&[wide_elem, any]);
+
+        let joined = t.union(narrow, wide);
+        assert_eq!(t.descr(&joined).tuples.len(), 1, "narrow ⊆ wide ⇒ narrow ∨ wide = wide");
+        assert!(t.is_equivalent(&joined, &wide));
+
+        // Symmetric order: the wider clause survives regardless of position.
+        let joined = t.union(wide, narrow);
+        assert_eq!(t.descr(&joined).tuples.len(), 1);
+        assert!(t.is_equivalent(&joined, &wide));
+    }
+}
+
 // fz-go4.25 — list-clause emptiness: exact-empty evidence must survive the
 // positive elem fold.
 //

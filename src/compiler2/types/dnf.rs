@@ -1,11 +1,12 @@
-//! DNF operations: union, intersection, negation, subsumption dedup, and
-//! the list-axis empty/nonempty normalization pass.
+//! DNF operations: union, intersection, negation, the tuple-clause
+//! subsumption predicate, and the list-axis empty/nonempty normalization pass.
 
+use super::Ty;
 use super::conj::Conj;
-use super::sigs::ListSig;
+use super::sigs::{ListSig, TupleSig};
 
 pub(crate) fn dnf_union<T: Clone + PartialEq>(a: &[Conj<T>], b: &[Conj<T>]) -> Vec<Conj<T>> {
-    // fz-sj6.1 — ∨ is idempotent. Dedup exact-duplicate clauses at
+    // ∨ is idempotent. Dedup exact-duplicate clauses at
     // union to keep the DNF in a canonical-enough form for diagnostic
     // output and downstream consumers. Without this, repeated unions
     // of equal Descrs pile up clauses (`/tmp/sum.fz` showed 15 copies
@@ -18,8 +19,9 @@ pub(crate) fn dnf_union<T: Clone + PartialEq>(a: &[Conj<T>], b: &[Conj<T>]) -> V
     // We do NOT merge same-shape clauses (`list(A) ∨ list(B) →
     // list(A∨B)`) — that's unsound for heterogeneous lists
     // (`[1, 2.0]` lives in `list(int∨float)` but not `list(int) ∨
-    // list(float)`). Subsumption-based dedup (`A ⊆ B ⇒ A ∨ B = B`,
-    // fz-et8) runs as a post-pass at `Descr::union`.
+    // list(float)`). Subsumption-based absorption (`A ⊆ B ⇒ A ∨ B = B`)
+    // is semantic, so it lives above the descriptor kernel: `Types::intern`
+    // canonicalizes the tuples axis at the persistence boundary.
     let mut out: Vec<Conj<T>> = Vec::with_capacity(a.len() + b.len());
     for c in a {
         if !out.contains(c) {
@@ -72,16 +74,32 @@ pub(crate) fn normalize_empty_nonempty_list_unions(clauses: Vec<Conj<ListSig>>) 
 }
 
 pub(crate) fn dnf_intersect<T: Clone + PartialEq>(a: &[Conj<T>], b: &[Conj<T>]) -> Vec<Conj<T>> {
-    // fz-go4.18.28.3 — the clause product is kept hygienic as it is built:
-    // clauses containing a literal both positively and negatively are empty
-    // (`P ∧ ¬P = ∅`, sound structurally without any semantic query), and
-    // duplicate clauses collapse (`A ∨ A = A`, mirroring `dnf_union`).
-    // Without this, iterated intersections snowball, and one `dnf_neg` over
-    // the result distributes into millions of clauses (00277 built 2^21).
+    dnf_intersect_with(a, b, |c1, c2| Some(merge_clauses(c1, c2)))
+}
+
+/// The one clause-product skeleton behind both intersections: the structural
+/// kernel (`Descr::intersect`, via [`dnf_intersect`]) concatenates clause
+/// literals, while the semantic path (`Types::intersect`) collapses same-shape
+/// positives through `MergeSig` and reports provably-empty merges as `None`.
+///
+/// The product is kept hygienic as it is built:
+/// merges that prove the clause empty are skipped (`merge` returns `None`),
+/// clauses containing a literal both positively and negatively are empty
+/// (`P ∧ ¬P = ∅`, sound structurally without any semantic query), and
+/// duplicate clauses collapse (`A ∨ A = A`, mirroring `dnf_union`).
+/// Without this, iterated intersections snowball, and one `dnf_neg` over
+/// the result distributes into millions of clauses (00277 built 2^21).
+pub(crate) fn dnf_intersect_with<T: Clone + PartialEq>(
+    a: &[Conj<T>],
+    b: &[Conj<T>],
+    mut merge: impl FnMut(&Conj<T>, &Conj<T>) -> Option<Conj<T>>,
+) -> Vec<Conj<T>> {
     let mut out = Vec::with_capacity(a.len().max(b.len()));
     for c1 in a {
         for c2 in b {
-            let merged = merge_clauses(c1, c2);
+            let Some(merged) = merge(c1, c2) else {
+                continue;
+            };
             if merged.pos.iter().any(|p| merged.neg.contains(p)) {
                 continue;
             }
@@ -91,6 +109,35 @@ pub(crate) fn dnf_intersect<T: Clone + PartialEq>(a: &[Conj<T>], b: &[Conj<T>]) 
         }
     }
     out
+}
+
+/// `A ⊆ B` for two tuple clauses, by sufficient conditions only (`false`
+/// means "not proven", never "proven not"). Used for absorption at the
+/// persistence boundary (`A ⊆ B ⇒ A ∨ B = B`):
+///
+/// - structurally, a clause with a superset of the other's literals denotes a
+///   subset (`⋀` of more constraints), covering exact duplicates and the
+///   saturated `Conj::top()` absorbing everything;
+/// - for plain single-positive clauses, products of non-empty sets compare
+///   coordinatewise: `∏Aᵢ ⊆ ∏Bᵢ ⟺ ∀i. Aᵢ ⊆ Bᵢ` — exact, given interned
+///   clauses never carry an empty coordinate.
+///
+/// `is_subtype` is injected so callers can route through the memoized
+/// comparison cache.
+pub(crate) fn tuple_clause_subsumed(
+    a: &Conj<TupleSig>,
+    b: &Conj<TupleSig>,
+    mut is_subtype: impl FnMut(&Ty, &Ty) -> bool,
+) -> bool {
+    if b.pos.iter().all(|p| a.pos.contains(p)) && b.neg.iter().all(|n| a.neg.contains(n)) {
+        return true;
+    }
+    match (a.pos.as_slice(), a.neg.as_slice(), b.pos.as_slice(), b.neg.as_slice()) {
+        ([pa], [], [pb], []) => {
+            pa.elems.len() == pb.elems.len() && pa.elems.iter().zip(pb.elems.iter()).all(|(x, y)| is_subtype(x, y))
+        }
+        _ => false,
+    }
 }
 
 /// ¬(⋁ Cᵢ) = ⋀ ¬Cᵢ. Each ¬Cᵢ is a DNF (disjunction of single-literal
