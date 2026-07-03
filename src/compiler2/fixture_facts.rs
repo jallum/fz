@@ -293,15 +293,47 @@ fn provenance_span_label(start: u32, end: u32) -> String {
     format!("@{}-{}", start, end)
 }
 
+/// Consume a `closure[...]` capture tag (balanced on `[`/`]`, since a
+/// captured type can itself be a list and so nest further `[`/`]` pairs),
+/// if one starts at the iterator's current position. A no-op (the iterator
+/// is left untouched) if the tag isn't present.
+fn drop_closure_capture_tag(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) {
+    const TAG: &str = "closure[";
+    let mut probe = chars.clone();
+    if !TAG.chars().all(|expected| probe.next() == Some(expected)) {
+        return;
+    }
+    let mut depth = 1_u32;
+    for ch in probe.by_ref() {
+        match ch {
+            '[' => depth += 1,
+            ']' => {
+                depth -= 1;
+                if depth == 0 {
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    *chars = probe;
+}
+
 fn stable_type_text(world: &World<'_>, rendered: String) -> String {
     let mut out = String::with_capacity(rendered.len());
     let mut chars = rendered.chars().peekable();
     while let Some(ch) = chars.next() {
         if ch == '#' && chars.peek().is_some_and(|next| next.is_ascii_digit()) {
-            // Drop the volatile interned-id / closure-literal suffix (`…#14`).
+            // Drop the volatile interned-id / closure-literal suffix (`…#14`,
+            // or `…#14closure[captures]` when the literal is an env-carrying
+            // closure — see `format_closure_lit_suffix` in
+            // `compiler2::types::format`). Call-edge snapshots key on source
+            // provenance (callsite spans, owner-relative lambda labels), not
+            // on closure-literal identity, so the whole suffix is noise here.
             while chars.peek().is_some_and(|next| next.is_ascii_digit()) {
                 let _ = chars.next();
             }
+            drop_closure_capture_tag(&mut chars);
             continue;
         }
         if ch == 'α' && chars.peek().is_some_and(|next| next.is_ascii_digit()) {

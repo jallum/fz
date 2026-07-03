@@ -1314,6 +1314,77 @@ macro_rules! closure_helper_conformance_tests {
             }
 
             #[test]
+            fn display_distinguishes_fn_ref_from_closure_on_same_fn_id() {
+                // fz-go4.18.28.14 audit finding: `ArrowSig`'s `lit: Option<ClosureLit>`
+                // is part of its `Eq`/`Hash` identity via `kind` + `fn_id` +
+                // `captures` (see `ClosureLit`'s doc comment in sigs.rs), but the
+                // old `format_arrow_clause` only ever rendered `lit.fn_id`,
+                // discarding `kind` and `captures` entirely. A `FnRef` lit and a
+                // `Closure` lit sharing one `fn_id` (`t.fn_ref_lit` and
+                // `t.closure_lit` both key their `args`/`ret` template vars off the
+                // same `fn_id`, so those match too) are distinct interned `Ty`s
+                // that used to render to the identical string.
+                let mut t = $ctor;
+                let fn_ref = t.fn_ref_lit(ClosureTarget(3), 1);
+                let closure = t.closure_lit(ClosureTarget(3), Vec::new(), 1);
+                assert_ne!(
+                    fn_ref, closure,
+                    "a FnRef lit and a Closure lit on the same fn_id must intern to distinct Tys"
+                );
+                assert_ne!(
+                    t.display(&fn_ref),
+                    t.display(&closure),
+                    "distinct ArrowSig identities (FnRef vs Closure on the same fn_id) must not collide on display(), \
+                     got fn_ref={} closure={}",
+                    t.display(&fn_ref),
+                    t.display(&closure)
+                );
+            }
+
+            #[test]
+            fn display_distinguishes_closure_lits_by_captures_on_same_fn_id() {
+                // Same audit finding, the other axis of `ClosureLit` identity:
+                // two `Closure` lits on the same `fn_id` with different
+                // `captures` are distinct by `ArrowSig`'s `Eq`/`Hash` (captures
+                // participate elementwise), but the old renderer never looked at
+                // `captures` at all, so both collapsed to the same `#{fn_id}`
+                // string.
+                let mut t = $ctor;
+                let one = t.atom_lit("one");
+                let two = t.atom_lit("two");
+                let closure_a = t.closure_lit(ClosureTarget(3), vec![one], 1);
+                let closure_b = t.closure_lit(ClosureTarget(3), vec![two], 1);
+                assert_ne!(
+                    closure_a, closure_b,
+                    "closures over the same fn_id with different captures must intern to distinct Tys"
+                );
+                assert_ne!(
+                    t.display(&closure_a),
+                    t.display(&closure_b),
+                    "distinct capture sets on the same fn_id must not collide on display(), \
+                     got closure_a={} closure_b={}",
+                    t.display(&closure_a),
+                    t.display(&closure_b)
+                );
+            }
+
+            #[test]
+            fn display_fn_ref_lit_rendering_is_unchanged() {
+                // The common, non-colliding case (a bare `FnRef` lit, which per
+                // `ClosureLit`'s invariant always carries empty `captures`) keeps
+                // its original `(args) -> ret#{fn_id}` rendering — the fix only
+                // adds a disambiguating suffix to `Closure` lits.
+                let mut t = $ctor;
+                let fn_ref = t.fn_ref_lit(ClosureTarget(3), 1);
+                let rendered = t.display(&fn_ref);
+                assert!(
+                    rendered.ends_with("#3"),
+                    "FnRef lit rendering should be unchanged, plain `#{{fn_id}}` suffix, got {}",
+                    rendered
+                );
+            }
+
+            #[test]
             fn tuple_contract_meet_keeps_a_single_specialized_tuple_shape() {
                 let mut t = $ctor;
                 let any = t.any();
