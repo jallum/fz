@@ -2,14 +2,15 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-07-03T21:33:39Z",
   "created": "2026-07-03T20:07:29Z",
   "description": "Found by the fz-go4.29 fact-check audit (pre-existing, not introduced by 186979d1b). .agent/docs/telemetry.md:269 claims the [fz, compiler2, legacy, root_executable_frontier] scan 'survives only as #[cfg(test)] support for the fixture call-edge oracle.' Verified: root_executable_frontier has ZERO occurrences anywhere in src/ (incl. tests) — it was fully deleted by commit 0a9f9a6fe ('delete root_executable_frontier; source harness metrics from the product inventory'). Rewrite or delete the sentence to match: the call-edge oracle now sources from the product activation inventory (per that commit and its sibling 65e2582c3). Docs-only; single fact-check lane.",
   "id": "fz-go4.32",
   "labels": [],
   "parent": "fz-go4",
   "priority": 3,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Stale telemetry.md sentence: root_executable_frontier scan no longer exists",
   "type": "task",
-  "updated_at": "2026-07-03T21:28:03Z"
+  "updated_at": "2026-07-03T21:33:39Z"
 }
