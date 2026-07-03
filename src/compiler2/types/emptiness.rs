@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, HashSet};
 use super::conj::Conj;
 use super::descr::Descr;
 use super::sigs::{ArrowSig, ClosureLit, ListSig, MapSig, ResourceSig, TupleSig};
-use super::{MapKey, TyCtx};
+use super::{MapKey, Ty, TyCtx};
 
 /// Coinductive assumption set for one top-level emptiness query. Emptiness
 /// over recursive descriptors is a greatest fixpoint: a query that re-enters a
@@ -72,26 +72,56 @@ fn phi_tuple(cx: TyCtx<'_>, t: &[Descr], n: &[Vec<Descr>], memo: &mut Memo) -> b
     true
 }
 
-pub(crate) fn list_clause_empty(cx: TyCtx<'_>, c: &Conj<ListSig>, memo: &mut Memo) -> bool {
-    let (empty, t) = if c.pos.is_empty() {
-        (true, Some(Descr::any()))
-    } else {
-        let mut empty = true;
-        let mut t: Option<Descr> = None;
-        for p in &c.pos {
-            empty &= p.empty;
-            t = match (t, p.elem) {
-                (None, None) => None,
-                (None, Some(elem)) => Some(cx.descr(&elem).clone()),
-                (Some(prev), None) => Some(prev),
-                (Some(prev), Some(elem)) => {
-                    let next = prev.intersect(cx.descr(&elem));
-                    if next.is_empty_memo(cx, memo) { None } else { Some(next) }
-                }
-            };
+/// The positive fold's evidence about the NONEMPTY fragment of a list-clause
+/// intersection ("unknown is not none"): before any sig is folded the
+/// fragment is unconstrained — a distinct state from proven-empty. An
+/// exact-empty sig (`elem: None`) admits no nonempty lists, so it forces
+/// `Empty`, and `Empty` absorbs everything folded after it.
+enum ElemEvidence {
+    Unconstrained,
+    Empty,
+    Inhabited(Box<Descr>),
+}
+
+impl ElemEvidence {
+    /// Fold one positive sig's element constraint into the cell. `Empty` is
+    /// absorbing; every other transition is a plain set intersection, so
+    /// inhabited evidence degrades to `Empty` only on genuine set facts (an
+    /// exact-empty sig, or an intersection that empties).
+    fn meet(self, cx: TyCtx<'_>, sig_elem: Option<Ty>, memo: &mut Memo) -> Self {
+        let Some(elem) = sig_elem else {
+            return Self::Empty;
+        };
+        let next = match self {
+            Self::Empty => return Self::Empty,
+            Self::Unconstrained => cx.descr(&elem).clone(),
+            Self::Inhabited(prev) => prev.intersect(cx.descr(&elem)),
+        };
+        if next.is_empty_memo(cx, memo) {
+            Self::Empty
+        } else {
+            Self::Inhabited(Box::new(next))
         }
-        (empty, t)
-    };
+    }
+
+    /// The fragment's element descriptor, `None` meaning ONLY "proven empty".
+    fn fragment(self) -> Option<Descr> {
+        match self {
+            Self::Unconstrained => Some(Descr::any()),
+            Self::Empty => None,
+            Self::Inhabited(d) => Some(*d),
+        }
+    }
+}
+
+pub(crate) fn list_clause_empty(cx: TyCtx<'_>, c: &Conj<ListSig>, memo: &mut Memo) -> bool {
+    let mut empty = true;
+    let mut evidence = ElemEvidence::Unconstrained;
+    for p in &c.pos {
+        empty &= p.empty;
+        evidence = evidence.meet(cx, p.elem, memo);
+    }
+    let t = evidence.fragment();
     if !empty && t.is_none() {
         return true;
     }

@@ -1466,6 +1466,130 @@ fn tuple_emptiness_under_many_overlapping_negations_is_tractable() {
     );
 }
 
+// fz-go4.25 — list-clause emptiness: exact-empty evidence must survive the
+// positive elem fold.
+//
+// A list clause's positive fold tracks the element type of the NONEMPTY
+// fragment of the intersection. An exact-empty sig (`elem: None`) admits no
+// nonempty lists, so once one is folded the nonempty fragment is proven void
+// — a later `elem: Some(_)` sig must not resurrect it. The old fold's single
+// `Option<Descr>` cell used `None` for both "no evidence yet" and "fragment
+// proven empty" (the unknown-is-not-none conflation), so
+// `[exact_empty, list(int)]` folded to `Some(int)` and the clause
+// `pos=[exact_empty, list(int)], neg=[list(atom)]` — which denotes ∅, since
+// the positive intersection is exactly `{[]}` and `list(atom)` covers `[]` —
+// was judged non-empty. Conservative direction only, but it poisons
+// subtype/disjoint answers built on it.
+//
+// The tests drive the clause shapes through the public Ty algebra:
+// `difference` uses the raw descriptor ops, so double negation stacks two
+// positive sigs into one clause without the MergeSig collapse that
+// `Types::intersect` applies.
+mod list_clause_emptiness_matrix {
+    use super::*;
+
+    /// `pos=[p1, p2]` as ONE list clause: `p1 ∩ ¬¬p2` — the raw descriptor
+    /// intersection concatenates positive sigs instead of merging them.
+    fn stacked_pos(t: &mut Types, p1: Ty, p2: Ty) -> Ty {
+        let any = t.any();
+        let not_p2 = t.difference(any, p2);
+        t.difference(p1, not_p2)
+    }
+
+    #[test]
+    fn exact_empty_then_elem_sig_keeps_empty_evidence() {
+        let mut t = Types::new();
+        let int = t.int();
+        let atom = t.atom();
+        let e = t.empty_list();
+        let li = t.list(int);
+        let la = t.list(atom);
+
+        // pos=[exact_empty, list(int)] denotes exactly {[]}: non-empty…
+        let mixed = stacked_pos(&mut t, e, li);
+        assert!(!t.is_empty(&mixed), "[] ∩ list(int) = {{[]}} is inhabited");
+        // …and {[]} ⊆ list(atom) (which allows []), so the difference is ∅.
+        let bad = t.difference(mixed, la);
+        assert!(
+            t.is_empty(&bad),
+            "([] ∩ list(int)) \\ list(atom) = {{[]}} \\ list(atom) = ∅"
+        );
+        assert!(
+            t.is_subtype(&mixed, &la),
+            "[] ∩ list(int) = {{[]}} is a subtype of list(atom)"
+        );
+    }
+
+    #[test]
+    fn elem_sig_then_exact_empty_keeps_empty_evidence() {
+        // Same clause, opposite fold order — pins the (inhabited, exact-empty)
+        // arm as well as the (empty-evidence, elem) arm.
+        let mut t = Types::new();
+        let int = t.int();
+        let atom = t.atom();
+        let e = t.empty_list();
+        let li = t.list(int);
+        let la = t.list(atom);
+
+        let mixed = stacked_pos(&mut t, li, e);
+        assert!(!t.is_empty(&mixed), "list(int) ∩ [] = {{[]}} is inhabited");
+        let bad = t.difference(mixed, la);
+        assert!(
+            t.is_empty(&bad),
+            "(list(int) ∩ []) \\ list(atom) = {{[]}} \\ list(atom) = ∅"
+        );
+    }
+
+    #[test]
+    fn empty_list_minus_empty_list_is_empty() {
+        // The audit's structurally-identical pair: P ∧ ¬P. The DNF builder's
+        // hygiene drop already catches this shape; the answer is pinned here
+        // so the semantic layer stays honest if that drop ever moves.
+        let mut t = Types::new();
+        let e = t.empty_list();
+        let d = t.difference(e, e);
+        assert!(t.is_empty(&d), "[] \\ [] = ∅");
+
+        // Non-structural variant that reaches list_clause_empty: [] minus a
+        // DIFFERENT sig that still covers [].
+        let atom = t.atom();
+        let la = t.list(atom);
+        let d2 = t.difference(e, la);
+        assert!(t.is_empty(&d2), "[] \\ list(atom) = ∅ (list(atom) allows [])");
+    }
+
+    // SOUNDNESS guards: the fix may only flip answers empty-ward for
+    // genuinely-empty sets. These pin inhabited neighbors of the fixed cases
+    // as non-empty — evidence that inhabited fragments are never dropped.
+    #[test]
+    fn inhabited_neighbors_stay_non_empty() {
+        let mut t = Types::new();
+        let int = t.int();
+        let atom = t.atom();
+        let e = t.empty_list();
+        let li = t.list(int);
+        let la = t.list(atom);
+        let nea = t.non_empty_list(atom);
+
+        // {[]} minus only the NONEMPTY atom lists keeps []: inhabited.
+        let mixed = stacked_pos(&mut t, e, li);
+        let keeps_nil = t.difference(mixed, nea);
+        assert!(
+            !t.is_empty(&keeps_nil),
+            "{{[]}} \\ non_empty_list(atom) still contains []"
+        );
+
+        // list(int) \ list(atom) keeps every nonempty int list: inhabited.
+        let ints_escape = t.difference(li, la);
+        assert!(!t.is_empty(&ints_escape), "list(int) \\ list(atom) contains [1]");
+
+        // And the fully-covered nonempty case still collapses: empty.
+        let nei = t.non_empty_list(int);
+        let covered = t.difference(nei, li);
+        assert!(t.is_empty(&covered), "non_empty_list(int) \\ list(int) = ∅");
+    }
+}
+
 mod smoke {
     use super::*;
 
