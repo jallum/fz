@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-07-03T18:46:17Z",
+  "description": "Found by the fz-go4.18.28.5 re-audit (at 1c4c22964): the world-fact revision gate — ClosureConsultLedger.fact_revisions -\u003e SolvedTransportClosure::consumed_fact_revisions, validated by displace_covering_solve_if_stale at the top of produce_transport_component_product and produce_transport_shape_product — has ZERO test coverage. Neutering the gate to a no-op passes the entire lib suite (1151/0/24) AND the full fixture matrix byte-identically. The mechanism is the fix for the unledgered world-fact reads (ActivationAnalyzed/LoweredBody/CallSiteSummary/ReturnType feeding closure membership); it is well-argued (same discipline as DemandFactsCache) but unproven. TASK: add a contract test mirroring compiler2_transport_consult_ledger_displaces_co_members_on_demand_movement but driving a WORLD-fact revision bump (e.g. re-publish an ActivationAnalyzed or CallSiteSummary so its FactSlot revision moves) between pulls, asserting the covering solve displaces and re-solves with the new fact. Acceptance: test red with the gate neutered (5x), green on real code (5x); no production changes needed unless the test finds the gate actually broken — in which case that is the bug this ticket exists to catch.",
+  "id": "fz-go4.18.28.15",
+  "labels": [],
+  "parent": "fz-go4.18.28",
+  "priority": 2,
+  "status": "open",
+  "title": "Contract test for the transport world-channel freshness gate (displace_covering_solve_if_stale)",
+  "type": "task",
+  "updated_at": "2026-07-03T18:46:17Z"
+}
