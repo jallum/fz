@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-07-03T20:07:13Z",
@@ -8,8 +8,8 @@
   "labels": [],
   "parent": "fz-go4.18",
   "priority": 3,
-  "status": "open",
+  "status": "in_progress",
   "title": "Delegate symbol extraction in transport_position_sort_key to TransportPosition::executable",
   "type": "task",
-  "updated_at": "2026-07-03T20:07:13Z"
+  "updated_at": "2026-07-03T21:28:04Z"
 }
