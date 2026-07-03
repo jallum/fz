@@ -3,7 +3,7 @@
   "blocked_by": [],
   "blocks": [],
   "created": "2026-07-03T21:51:46Z",
-  "description": "Deferred from the fz-go4.18.24 arc-close (verified as still-live, NOT dead, by the arc-close removable+correctness audits at 3ab805761, so correctly out of the follow_up-deletion commit). Two separate hygiene items: (1) The coalesced-telemetry channel (AppliedStep::coalesced) is still fed by enqueue_step's already-in-agenda dedup path (scheduler.rs:241-247, reached from enqueue_dependents on every change wave) — but it originally CONFLATED two meanings: agenda-dedupe vs the (now-deleted) standing-conclusion follow_up coalescing. With conclusion_stands gone, the channel now carries only agenda-dedupe; confirm the telemetry topic name/docs still describe it accurately and split the observability if any consumer distinguished the two sources. (2) Scheduler::blocked/has_run are pub with production callers (drive.rs:184/202/255/282) — the arc epic wanted a visibility sweep to confirm they're at the minimum needed scope (pub vs pub(crate)); grep callers and tighten if over-exposed. Both small, non-urgent; NOT blocking anything.",
+  "description": "DONE (folded 2026-07-03, single-lane audited PASS — small non-behavioral hygiene). ITEM 1: AppliedStep::coalesced now carries a SINGLE meaning — agenda-dedupe (enqueue_step's already-in-agenda branch), the only remaining source now that arc-close deleted conclusion_stands (the standing-conclusion follow_up coalescer). Confirmed by tree-wide grep (audit independently verified no second source survives). Added a doc comment on the field stating its single meaning; no split needed (sole consumer is scheduler_test.rs asserting is_empty, never distinguished sources); telemetry.md needed no change (it only references the opaque AppliedStep, never named the field's dual meaning). ITEM 2: tightened Scheduler::blocked and Scheduler::has_run from pub to pub(crate) — sole callers are drive.rs:184/202/255/282, all within-crate. (pub(super) would be the mathematically tighter bound since drive.rs/scheduler.rs are flat siblings under compiler2, but pub(crate) matches the module's dominant idiom — drive.rs has 15 pub(crate) items for identical intra-crate exposure; pub(super) appears in only 3 files codebase-wide.) 7+/2-, scheduler.rs only.",
   "id": "fz-go4.18.39",
   "labels": [],
   "parent": "fz-go4.18",
@@ -11,5 +11,5 @@
   "status": "in_progress",
   "title": "Split the coalesced-telemetry channel + sweep Scheduler::blocked/has_run visibility",
   "type": "task",
-  "updated_at": "2026-07-03T22:38:02Z"
+  "updated_at": "2026-07-03T22:48:09Z"
 }
