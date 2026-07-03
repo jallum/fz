@@ -138,6 +138,23 @@ retraction. Settled demand retracts only on an epoch event — materialization
 resolving a call edge outside the settled callee inventory re-keys and
 re-settles the affected cone.
 
+Two mechanical stores keep the producer's cost linear in the movement, without
+changing the iterates. Cone collection reads member facts through the
+session's `DemandFactsCache`: each entry is stamped with the exact settled
+world-fact revisions it consumed (activation analysis, lowered body, return
+type, entry dispatch, callsite summaries) and is validated at read — a moved
+or unsettled stamp drops the entry — so the retry-per-wait re-walk stops
+re-cloning every already-collected member. Inside the ascent, a round
+re-derives only the members whose reads moved: a member reads its own joined
+return demand, its cone-edge targets' demands, and (for a lambda producer)
+every executable of the produced function — the two reverse indexes over
+exactly those reads mark the dirty set when a member's iterate moves, and
+every skipped member would have derived an identical value. Both closures
+carry a maintenance obligation: a new world-fact read in the collect must be
+stamped, and a new mutable-round-state read in the derive must extend the
+reverse indexes — otherwise a cache entry or a skipped member silently serves
+a stale value.
+
 Publication closes the stale-caller window: when a settling cone's
 contributions grow the joined return demand of an executable settled earlier
 OUTSIDE the cone, that external's memo is displaced while the cone's members

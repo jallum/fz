@@ -393,13 +393,13 @@ fn materialized_executable_transport(
     let mut value_positions = Vec::new();
     for position in positions {
         match &position {
-            TransportPosition::ExecutableInput { .. } => input_positions.push(position.clone()),
-            TransportPosition::ExecutableReturn { .. } => return_position = Some(position.clone()),
-            TransportPosition::ResumePayload { .. } => resume_positions.push(position.clone()),
-            TransportPosition::ReturnPayload { .. } => return_payload_positions.push(position.clone()),
-            TransportPosition::EntryCapture { .. } => entry_capture_positions.push(position.clone()),
-            TransportPosition::CallArg { .. } => call_arg_positions.push(position.clone()),
-            TransportPosition::Value { .. } => value_positions.push(position.clone()),
+            TransportPosition::ExecutableInput { .. } => input_positions.push(position),
+            TransportPosition::ExecutableReturn { .. } => return_position = Some(position),
+            TransportPosition::ResumePayload { .. } => resume_positions.push(position),
+            TransportPosition::ReturnPayload { .. } => return_payload_positions.push(position),
+            TransportPosition::EntryCapture { .. } => entry_capture_positions.push(position),
+            TransportPosition::CallArg { .. } => call_arg_positions.push(position),
+            TransportPosition::Value { .. } => value_positions.push(position),
         }
     }
     sort_transport_positions(&mut input_positions);
@@ -1496,14 +1496,15 @@ fn materialize_transport_closure_call_edge(
         let surface_inputs = world.types_mut().address_inputs(&surface_inputs);
         resolutions = direct_edge_resolutions_for_surface(world, &direct_edges, &surface_inputs);
     }
-    resolutions.sort_by_key(transport_executable_sort_key);
-    resolutions.dedup();
-    if resolutions.is_empty() {
-        return Ok(None);
-    }
-    let [resolution] = resolutions.as_slice() else {
+    // Materialization needs ONE distinct resolution; several sources may name
+    // it several times. All-equal-to-first is the keyed-set read of that
+    // requirement — no sort-for-dedup (sorting is a barrier).
+    let Some((resolution, rest)) = resolutions.split_first() else {
         return Ok(None);
     };
+    if rest.iter().any(|candidate| candidate != resolution) {
+        return Ok(None);
+    }
     let activation = world.activation_key(
         root_id,
         resolution.activation.function,

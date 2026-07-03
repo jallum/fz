@@ -20,6 +20,7 @@ use super::body::{
 use super::drive::FactKey;
 use super::facts::FactUse;
 use super::identity::{ExecutableKey, RootId};
+use super::jobs::runtime_demand::DemandFactsCache;
 use super::semantic::{ExecutableRuntimeDemand, RuntimeDemand};
 use super::transport::{
     BoundaryFacts, BoundaryId, CallableFacts, CallableId, CodegenSeamFact, ExecutableSymbol, ShapeId, TransportPosition,
@@ -410,6 +411,10 @@ pub struct PullSession {
     // path that retracts settled demand, mirroring how the effect projection
     // gate re-settles effects.
     settled_demand_callees: HashMap<ExecutableKey, HashSet<ExecutableKey>>,
+    // Collected demand-cone facts, validated at read against the exact world
+    // fact revisions each entry consumed (see `DemandFactsCache`); no
+    // invalidation channel is needed, so no other session state touches it.
+    demand_facts: DemandFactsCache,
     // The effect-relevant projection (local effect summary + local callee
     // set) of the latest materialized executable recorded per key. Effect
     // products are invalidated only when this projection moves; re-derived
@@ -496,6 +501,7 @@ impl PullSession {
             runtime_demand_dependents: HashMap::new(),
             demand_flow_dependents: HashMap::new(),
             settled_demand_callees: HashMap::new(),
+            demand_facts: DemandFactsCache::default(),
             latest_effect_inputs: HashMap::new(),
             effect_dependents: HashMap::new(),
             return_demand_contributions: HashMap::new(),
@@ -605,6 +611,12 @@ impl PullSession {
     /// fact source for demand-cone discovery.
     pub fn settled_demand_callees(&self, executable: &ExecutableKey) -> Option<&HashSet<ExecutableKey>> {
         self.settled_demand_callees.get(executable)
+    }
+
+    /// The session's collected demand-cone facts store, revision-validated at
+    /// read by its owner (`collect_one_executable_facts_product`).
+    pub(crate) fn demand_facts_mut(&mut self) -> &mut DemandFactsCache {
+        &mut self.demand_facts
     }
 
     /// The joined return demand contributed to `target` by settled contributors

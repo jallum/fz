@@ -1,4 +1,5 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
+use std::rc::Rc;
 
 use super::super::body::{
     CallArg, CallSiteId, ControlDestination, ControlEntryId, DeliveredValueJoin, DeliveredValueSource, LoweredBody,
@@ -18,7 +19,6 @@ use super::super::types::{Ty, Types};
 use super::super::world::World;
 use super::semantic::executable_callsite_needs;
 
-#[derive(Clone)]
 struct ExecutableFacts {
     analysis: ActivationAnalysis,
     body: LoweredBody,
@@ -27,6 +27,60 @@ struct ExecutableFacts {
     callsite_needs: HashMap<CallSiteId, ExecutableNeed>,
     delivered_value_joins: HashMap<ControlEntryId, DeliveredValueJoin>,
     local_callable_producers: HashMap<ValueId, LocalCallableProducer>,
+}
+
+/// Session-scoped store of collected [`ExecutableFacts`], validated at read
+/// against the exact settled world facts each entry consumed. Demand-cone
+/// collection is iterative — a pull that waits is retried once the missing
+/// facts settle, and every retry re-walks the cone — so without this store
+/// each retry re-clones every already-collected member's analysis, body and
+/// callsite summaries (quadratic in cone size). An entry is recorded only
+/// for a fully materialized collection and is dropped the moment any of its
+/// fact stamps moved (revision bump) or unsettled, so a reader can never
+/// observe facts a re-published world fact displaced. The store lives and
+/// dies with its [`PullSession`].
+#[derive(Default)]
+pub(crate) struct DemandFactsCache {
+    entries: HashMap<ExecutableKey, CachedExecutableFacts>,
+}
+
+impl std::fmt::Debug for DemandFactsCache {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DemandFactsCache")
+            .field("entries", &self.entries.len())
+            .finish()
+    }
+}
+
+struct CachedExecutableFacts {
+    stamps: Box<[(FactKey, u64)]>,
+    facts: Rc<ExecutableFacts>,
+}
+
+impl DemandFactsCache {
+    fn validated(&mut self, world: &World<'_>, executable: &ExecutableKey) -> Option<Rc<ExecutableFacts>> {
+        let entry = self.entries.get(executable)?;
+        let valid = entry
+            .stamps
+            .iter()
+            .all(|(fact, revision)| world.fact_is_settled(fact) && world.fact_revision(fact) == Some(*revision));
+        if valid {
+            Some(Rc::clone(&entry.facts))
+        } else {
+            self.entries.remove(executable);
+            None
+        }
+    }
+
+    fn record(&mut self, executable: ExecutableKey, stamps: Vec<(FactKey, u64)>, facts: Rc<ExecutableFacts>) {
+        self.entries.insert(
+            executable,
+            CachedExecutableFacts {
+                stamps: stamps.into_boxed_slice(),
+                facts,
+            },
+        );
+    }
 }
 
 struct DerivedExecutableDemand {
@@ -285,7 +339,7 @@ pub(crate) fn produce_runtime_demand_product(
 /// The demand cone: per-member settled facts, the demand-relevant edge set per
 /// member, and the settled demands of callees outside the cone.
 struct DemandGraph {
-    facts: HashMap<ExecutableKey, ExecutableFacts>,
+    facts: HashMap<ExecutableKey, Rc<ExecutableFacts>>,
     edges: HashMap<ExecutableKey, HashSet<ExecutableKey>>,
     external: HashMap<ExecutableKey, ExecutableRuntimeDemand>,
 }
@@ -300,7 +354,7 @@ fn collect_demand_cone(
     session: &mut PullSession,
     anchor: &ExecutableKey,
 ) -> Result<DemandGraph, HashSet<PullWait>> {
-    let mut facts: HashMap<ExecutableKey, ExecutableFacts> = HashMap::new();
+    let mut facts: HashMap<ExecutableKey, Rc<ExecutableFacts>> = HashMap::new();
     let mut edges: HashMap<ExecutableKey, HashSet<ExecutableKey>> = HashMap::new();
     let mut external = HashMap::new();
     let mut waits = HashSet::new();
@@ -319,7 +373,9 @@ fn collect_demand_cone(
                 external.insert(current, demand.clone());
                 continue;
             }
-            let Some(current_facts) = collect_one_executable_facts_product(world, &current, &mut waits) else {
+            let Some(current_facts) =
+                collect_one_executable_facts_product(world, session.demand_facts_mut(), &current, &mut waits)
+            else {
                 continue;
             };
             let mut targets = direct_local_targets(&current_facts);
@@ -417,7 +473,7 @@ fn type_derived_flow_resolutions(
 
 fn settle_demand_cone(
     world: &mut World<'_>,
-    session: &mut PullSession,
+    session: &PullSession,
     graph: &DemandGraph,
 ) -> Result<SettledDemandCone, HashSet<PullWait>> {
     let mut members: Vec<ExecutableKey> = graph.facts.keys().cloned().collect();
@@ -429,50 +485,145 @@ fn settle_demand_cone(
         )
     });
     let member_set: HashSet<ExecutableKey> = members.iter().cloned().collect();
-    let mut iterates: HashMap<ExecutableKey, ExecutableRuntimeDemand> = members
+    // The external caller evidence is settled session state the ascent never
+    // mutates: join it once, not per member per round.
+    let external_return_demands: HashMap<ExecutableKey, RuntimeDemand> = members
         .iter()
-        .map(|member| (member.clone(), empty_runtime_demand(member, world.types())))
+        .filter_map(|member| {
+            session
+                .external_return_demand(member, &member_set)
+                .map(|demand| (member.clone(), demand))
+        })
         .collect();
+    // A member's derivation reads exactly three things out of the round's
+    // iterates: its own joined return demand, its call-edge targets' demands
+    // (`local_target_input_demands` over the same targets the cone's edges
+    // carry), and — for a member producing a lambda — the input demands of
+    // every executable of the produced function (the capture-prefix scan in
+    // `propagate_lambda_capture_demands`). These two reverse indexes name the
+    // readers a moved member must re-dirty; anything else re-derives
+    // identically and is skipped.
+    let mut edge_readers: HashMap<&ExecutableKey, Vec<&ExecutableKey>> = HashMap::new();
+    for (reader, targets) in &graph.edges {
+        for target in targets {
+            edge_readers.entry(target).or_default().push(reader);
+        }
+    }
+    let mut produced_function_readers: HashMap<FunctionId, Vec<&ExecutableKey>> = HashMap::new();
+    for member in &members {
+        let facts = graph.facts.get(member).expect("every cone member has facts");
+        for producer in facts.local_callable_producers.values() {
+            produced_function_readers
+                .entry(producer.function)
+                .or_default()
+                .push(member);
+        }
+    }
+    // `reads` is the Jacobi input view: the externals' settled demands plus
+    // every member's previous-round iterate, its `return_demand` overwritten
+    // with the round's joined value. It is maintained incrementally — the
+    // externals are cloned in once, and only members whose iterate moved are
+    // rewritten between rounds.
+    let mut reads: HashMap<ExecutableKey, ExecutableRuntimeDemand> = graph.external.clone();
+    let mut iterates: HashMap<ExecutableKey, ExecutableRuntimeDemand> = HashMap::new();
+    for member in &members {
+        let bottom = empty_runtime_demand(member, world.types());
+        reads.insert(member.clone(), bottom.clone());
+        iterates.insert(member.clone(), bottom);
+    }
     let mut contributions: HashMap<ExecutableKey, HashMap<ExecutableKey, RuntimeDemand>> = HashMap::new();
     let mut bootstrapped: HashSet<ExecutableKey> = HashSet::new();
+    let mut dirty: HashSet<&ExecutableKey> = members.iter().collect();
     let mut rounds = 0_u32;
     loop {
         rounds += 1;
-        let mut reads = graph.external.clone();
-        for member in &members {
-            let mut demand = iterates.get(member).cloned().expect("every cone member has an iterate");
-            demand.return_demand = round_return_demand(session, member, &member_set, &contributions, &bootstrapped);
-            reads.insert(member.clone(), demand);
+        // Invert the per-caller contribution store once per round: each
+        // member's joined return demand is then a single lookup instead of a
+        // scan over every member's contributions (quadratic in cone size).
+        let mut joined_contributions: HashMap<ExecutableKey, RuntimeDemand> = HashMap::new();
+        for member_contributions in contributions.values() {
+            for (target, demand) in member_contributions {
+                joined_contributions
+                    .entry(target.clone())
+                    .and_modify(|joined| joined.join_assign(demand))
+                    .or_insert_with(|| demand.clone());
+            }
         }
-        let mut next = HashMap::new();
-        let mut next_contributions = HashMap::new();
-        let mut waits = HashSet::new();
         for member in &members {
+            let mut joined = external_return_demands
+                .get(member)
+                .cloned()
+                .unwrap_or_else(RuntimeDemand::ignore);
+            if let Some(demand) = joined_contributions.get(member) {
+                joined.join_assign(demand);
+            }
+            if bootstrapped.contains(member) {
+                joined.join_assign(&runtime_demand_for_executable_need(member.need));
+            }
+            let cell = reads.get_mut(member).expect("every cone member has a read cell");
+            if cell.return_demand != joined {
+                cell.return_demand = joined;
+                dirty.insert(member);
+            }
+        }
+        // Re-derive the dirty members against the previous round's view; a
+        // member none of whose reads moved derives the identical value and is
+        // skipped. The Jacobi round structure is unchanged: derived values
+        // land in the shared view only after the whole round.
+        let mut waits = HashSet::new();
+        let mut moved: Vec<&ExecutableKey> = Vec::new();
+        let mut demand_moved: Vec<&ExecutableKey> = Vec::new();
+        let mut read_updates: Vec<(&ExecutableKey, ExecutableRuntimeDemand)> = Vec::new();
+        for member in &members {
+            if !dirty.contains(member) {
+                continue;
+            }
             let facts = graph.facts.get(member).expect("every cone member has facts");
             let (demand, member_contributions) =
                 derive_member_demand(world, session, &member_set, member, facts, &reads, &mut waits);
-            next.insert(member.clone(), demand);
-            next_contributions.insert(member.clone(), member_contributions);
+            let demand_changed = iterates.get(member) != Some(&demand);
+            if demand_changed {
+                demand_moved.push(member);
+                read_updates.push((member, demand.clone()));
+                iterates.insert(member.clone(), demand);
+            }
+            if demand_changed || contributions.get(member) != Some(&member_contributions) {
+                contributions.insert(member.clone(), member_contributions);
+                moved.push(member);
+            }
         }
         if !waits.is_empty() {
             return Err(waits);
         }
-        if next == iterates && next_contributions == contributions {
+        dirty.clear();
+        for (member, demand) in read_updates {
+            reads.insert(member.clone(), demand);
+        }
+        for member in &demand_moved {
+            if let Some(readers) = edge_readers.get(*member) {
+                dirty.extend(readers.iter().copied());
+            }
+            if let Some(readers) = produced_function_readers.get(&member.activation.function) {
+                dirty.extend(readers.iter().copied());
+            }
+        }
+        if moved.is_empty() {
+            // At the fixpoint the round's inverted join names exactly the
+            // members some contributor names in the settled contribution
+            // store.
             let unnamed: Vec<ExecutableKey> = members
                 .iter()
                 .filter(|member| {
                     !bootstrapped.contains(*member)
-                        && !next_contributions
-                            .values()
-                            .any(|contributions| contributions.contains_key(*member))
-                        && session.external_return_demand(member, &member_set).is_none()
+                        && !joined_contributions.contains_key(*member)
+                        && !external_return_demands.contains_key(*member)
                 })
                 .cloned()
                 .collect();
             if unnamed.is_empty() {
                 return Ok(SettledDemandCone {
-                    demands: next,
-                    contributions: next_contributions,
+                    demands: iterates,
+                    contributions,
                 });
             }
             // No contributor names these members: they are reached outside the
@@ -486,21 +637,12 @@ fn settle_demand_cone(
         // finite-height lattice, so exceeding the probe-measured bound means a
         // non-monotone regression — fail loudly instead of hanging in release.
         if rounds >= DEMAND_ASCENT_ROUND_BUDGET {
-            let moving: Vec<&ExecutableKey> = members
-                .iter()
-                .filter(|member| {
-                    next.get(*member) != iterates.get(*member)
-                        || next_contributions.get(*member) != contributions.get(*member)
-                })
-                .collect();
             panic!(
                 "demand ascent exceeded its round budget ({DEMAND_ASCENT_ROUND_BUDGET}) settling a \
-                 {}-member cone: the demand lattice has an ascent hole; still-moving members: {moving:?}",
+                 {}-member cone: the demand lattice has an ascent hole; still-moving members: {moved:?}",
                 members.len()
             );
         }
-        iterates = next;
-        contributions = next_contributions;
     }
 }
 
@@ -511,27 +653,6 @@ fn executable_need_order(need: ExecutableNeed) -> (u8, usize) {
         ExecutableNeed::Value => (0, 0),
         ExecutableNeed::TupleFields(arity) => (1, arity),
     }
-}
-
-fn round_return_demand(
-    session: &PullSession,
-    member: &ExecutableKey,
-    members: &HashSet<ExecutableKey>,
-    contributions: &HashMap<ExecutableKey, HashMap<ExecutableKey, RuntimeDemand>>,
-    bootstrapped: &HashSet<ExecutableKey>,
-) -> RuntimeDemand {
-    let mut joined = session
-        .external_return_demand(member, members)
-        .unwrap_or_else(RuntimeDemand::ignore);
-    for member_contributions in contributions.values() {
-        if let Some(demand) = member_contributions.get(member) {
-            joined.join_assign(demand);
-        }
-    }
-    if bootstrapped.contains(member) {
-        joined.join_assign(&runtime_demand_for_executable_need(member.need));
-    }
-    joined
 }
 
 fn derive_member_demand(
@@ -574,7 +695,8 @@ pub(crate) fn produce_outgoing_input_edges_product(
     executable: &ExecutableKey,
 ) -> PullOutcome {
     let mut waits = HashSet::new();
-    let Some(facts) = collect_one_executable_facts_product(world, executable, &mut waits) else {
+    let Some(facts) = collect_one_executable_facts_product(world, session.demand_facts_mut(), executable, &mut waits)
+    else {
         return product_waits(waits);
     };
     let Some(runtime_demand) = session.memo().runtime_demand(executable).cloned() else {
@@ -593,20 +715,32 @@ fn product_waits(waits: HashSet<PullWait>) -> PullOutcome {
 
 fn collect_one_executable_facts_product(
     world: &mut World<'_>,
+    cache: &mut DemandFactsCache,
     executable: &ExecutableKey,
     waits: &mut HashSet<PullWait>,
-) -> Option<ExecutableFacts> {
+) -> Option<Rc<ExecutableFacts>> {
+    if let Some(facts) = cache.validated(world, executable) {
+        return Some(facts);
+    }
+    let mut stamps: Vec<(FactKey, u64)> = Vec::new();
     let activation = &executable.activation;
     let analyzed_fact = FactKey::ActivationAnalyzed(activation.clone());
-    if !wait_settled(world, analyzed_fact, waits) {
+    if !wait_settled_stamped(world, analyzed_fact, waits, &mut stamps) {
         return None;
     }
     let lowered_fact = FactKey::LoweredBody(activation.function);
-    if !wait_settled(world, lowered_fact, waits) {
+    if !wait_settled_stamped(world, lowered_fact, waits, &mut stamps) {
         return None;
     }
     let return_fact = FactKey::ReturnType(activation.clone());
-    if !wait_settled(world, return_fact, waits) {
+    if !wait_settled_stamped(world, return_fact, waits, &mut stamps) {
+        return None;
+    }
+    // `executable_dispatch_input_ordinals` below consumes the entry-dispatch
+    // plan; stamp it so a re-published plan drops the cache entry even when
+    // the analysis itself re-derives byte-identically.
+    let dispatch_fact = FactKey::EntryDispatch(activation.function);
+    if !wait_settled_stamped(world, dispatch_fact, waits, &mut stamps) {
         return None;
     }
 
@@ -622,7 +756,7 @@ fn collect_one_executable_facts_product(
             callsite: *callsite,
         };
         let callsite_fact = FactKey::CallSiteSummary(key.clone());
-        if !wait_settled(world, callsite_fact, waits) {
+        if !wait_settled_stamped(world, callsite_fact, waits, &mut stamps) {
             continue;
         }
         if let Some(summary) = world.callsite_summary(&key).cloned() {
@@ -638,7 +772,7 @@ fn collect_one_executable_facts_product(
     let entry_dispatch_inputs =
         executable_dispatch_input_ordinals(world, activation.function, analysis.reachable_clauses.clone());
     let callsite_needs = executable_callsite_needs(&body, &analysis.reachable_clauses, executable.need);
-    Some(ExecutableFacts {
+    let facts = Rc::new(ExecutableFacts {
         analysis,
         body,
         entry_dispatch_inputs,
@@ -646,11 +780,22 @@ fn collect_one_executable_facts_product(
         callsite_needs,
         delivered_value_joins,
         local_callable_producers,
-    })
+    });
+    cache.record(executable.clone(), stamps, Rc::clone(&facts));
+    Some(facts)
 }
 
-fn wait_settled(world: &World<'_>, fact: FactKey, waits: &mut HashSet<PullWait>) -> bool {
+fn wait_settled_stamped(
+    world: &World<'_>,
+    fact: FactKey,
+    waits: &mut HashSet<PullWait>,
+    stamps: &mut Vec<(FactKey, u64)>,
+) -> bool {
     if world.fact_is_settled(&fact) {
+        let revision = world
+            .fact_revision(&fact)
+            .expect("a settled fact has at least one publisher, so it has a revision");
+        stamps.push((fact, revision));
         true
     } else {
         waits.insert(PullWait::Fact(FactUse::settled(fact)));
@@ -879,7 +1024,7 @@ fn derive_callable_flow_facts_for_executable_product(
     waits: &mut HashSet<PullWait>,
 ) {
     demand.callable_flows.clear();
-    for (value, producer) in facts.local_callable_producers.clone() {
+    for (&value, producer) in &facts.local_callable_producers {
         let Some(value_demand) = demand.value_demands.get(&value) else {
             continue;
         };
@@ -893,7 +1038,7 @@ fn derive_callable_flow_facts_for_executable_product(
             sibling_candidates,
             executable,
             facts,
-            &producer,
+            producer,
             &raw_direct_surfaces,
             waits,
         );
@@ -912,7 +1057,7 @@ fn derive_callable_flow_facts_for_executable_product(
             sibling_candidates,
             executable,
             facts,
-            &producer,
+            producer,
             &first_class_surfaces,
             waits,
         );
@@ -931,7 +1076,7 @@ fn derive_callable_flow_facts_for_executable_product(
             value,
             CallableFlowFact {
                 function: producer.function,
-                captures: producer.captures,
+                captures: producer.captures.clone(),
                 direct_surfaces,
                 first_class_surfaces,
                 direct_edges,
