@@ -6,7 +6,7 @@ use crate::dispatch_matrix::pattern::{PatternDispatchPlan, PatternGuardExpr};
 use crate::dispatch_matrix::{ListRegion, ProjectionKind, Region, RegionPredicate, Subject, SubjectId, SubjectSource};
 
 use super::super::body::{LoweredBody, LoweredStep, LoweredTail};
-use super::super::drive::{FactKey, Job, JobEffects, current_uses};
+use super::super::drive::{FactKey, JobEffects, current_uses};
 use super::super::identity::FunctionId;
 use super::super::keying::DispatchDemand;
 use super::super::scheduler::FatalError;
@@ -49,23 +49,13 @@ pub(super) fn derive_recursive(world: &mut World<'_>, function: FunctionId) -> R
 
     let mut reads = Vec::new();
     let mut waits = HashSet::new();
-    let mut follow_up = HashSet::new();
     let mut graph = HashMap::new();
     let mut seen = HashSet::new();
-    collect_static_graph(
-        world,
-        function,
-        &mut reads,
-        &mut waits,
-        &mut follow_up,
-        &mut graph,
-        &mut seen,
-    );
+    collect_static_graph(world, function, &mut reads, &mut waits, &mut graph, &mut seen);
     if !waits.is_empty() {
         return Ok(JobEffects {
             reads: current_uses(reads),
             waits: current_uses(waits),
-            follow_up: follow_up.into_iter().collect(),
             ..JobEffects::default()
         });
     }
@@ -84,10 +74,9 @@ pub(super) fn derive_recursive(world: &mut World<'_>, function: FunctionId) -> R
 pub(super) fn derive_dispatch_mask(world: &mut World<'_>, function: FunctionId) -> Result<JobEffects, FatalError> {
     let dispatch_fact = FactKey::EntryDispatch(function);
     if !world.has_fact(&dispatch_fact) {
-        return Ok(JobEffects::wait_on_current(
-            dispatch_fact,
-            [Job::PlanEntryDispatch(function)],
-        ));
+        // `EntryDispatch`'s sole producer arm is `Job::PlanEntryDispatch`
+        // (`World::demand_fact_producer`).
+        return Ok(JobEffects::wait_on_current(dispatch_fact, []));
     }
 
     let plan = world.entry_dispatch(function);
@@ -116,7 +105,6 @@ fn collect_static_graph(
     function: FunctionId,
     reads: &mut Vec<FactKey>,
     waits: &mut HashSet<FactKey>,
-    follow_up: &mut HashSet<Job>,
     graph: &mut HashMap<FunctionId, Vec<FunctionId>>,
     seen: &mut HashSet<FunctionId>,
 ) {
@@ -132,22 +120,28 @@ fn collect_static_graph(
         if !module.is_global() && world.module_defined_revision(module).is_none() {
             // Demand the scope that produces the `ModuleDefined` this site waits
             // on, not the body (fz-f98.14.5). The body is pulled below, once the
-            // function is defined.
+            // function is defined. `ModuleDefined`'s sole producer arm
+            // (`Job::DefineModule`, in `World::demand_fact_producer`) covers this
+            // wait; `demand_function_scope`'s only other branch (`CodeScoped`,
+            // for `module.is_global()`) is unreachable here -- the guard above
+            // already rules out a global module. `ensure_runtime_module` mirrors
+            // `demand_function_scope`'s non-global branch: it mints a runtime
+            // module's code the first time this graph reaches it, instead of
+            // leaving that submission to whenever `Job::DefineModule` happens to
+            // run.
+            world.ensure_runtime_module(module);
             waits.insert(FactKey::ModuleDefined(module));
-            for (_, job) in world.demand_function_scope(function) {
-                follow_up.insert(job);
-            }
             return;
         }
+        // `FunctionDefined`'s sole producer arm is `Job::DefineFunction`.
         waits.insert(FactKey::FunctionDefined(function));
-        follow_up.insert(Job::DefineFunction(function));
         return;
     }
 
     let lowered_fact = FactKey::LoweredBody(function);
     if !world.has_fact(&lowered_fact) {
+        // `LoweredBody`'s sole producer arm is `Job::LowerFunction`.
         waits.insert(lowered_fact);
-        follow_up.insert(Job::LowerFunction(function));
         return;
     }
     reads.push(lowered_fact);
@@ -163,7 +157,7 @@ fn collect_static_graph(
             continue;
         }
         ready_edges.push(target);
-        collect_static_graph(world, target, reads, waits, follow_up, graph, seen);
+        collect_static_graph(world, target, reads, waits, graph, seen);
     }
     ready_edges.sort_by_key(|function| function.as_u32());
     ready_edges.dedup();

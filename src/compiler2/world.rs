@@ -2048,21 +2048,14 @@ impl<'a> World<'a> {
         }
     }
 
-    /// A reached consumer always pulls a body through `PublishFunctionSource`:
-    /// it mints the `FunctionSource` fact for exactly this function from the
-    /// stash the owning scope walk left, and demands that scope when the stash
-    /// is not yet populated (fz-f98.14.5). The scope-walk fallback is owned by
-    /// `PublishFunctionSource` itself, so opening a scope never publishes a cold
-    /// body.
-    pub(crate) fn ensure_function_source(&mut self, function: FunctionId) -> Vec<Job> {
-        vec![Job::PublishFunctionSource(function)]
-    }
-
-    /// The scope walk that populates `function`'s pending source stash, as the
-    /// fact it produces plus the job that produces it. `PublishFunctionSource`
-    /// waits on this scope, not on `FunctionSource`, so it never waits on the
-    /// fact it is itself the sole producer of (fz-f98.14.5).
-    pub(crate) fn demand_function_scope(&mut self, function: FunctionId) -> Vec<(FactKey, Job)> {
+    /// The scope walk that populates `function`'s pending source stash, named
+    /// as the fact that gates it. `PublishFunctionSource` waits on this scope,
+    /// not on `FunctionSource`, so it never waits on the fact it is itself the
+    /// sole producer of (fz-f98.14.5). Every returned fact has a producer arm
+    /// in `World::demand_fact_producer` (`CodeScoped` -> `Job::ScopeCode`,
+    /// `ModuleDefined` -> `Job::DefineModule`), so naming the fact is enough —
+    /// callers do not also need the job.
+    pub(crate) fn demand_function_scope(&mut self, function: FunctionId) -> Vec<FactKey> {
         let module = self.function_module(function);
         if module.is_global() {
             let function_ref = self.function_ref(function).clone();
@@ -2073,32 +2066,34 @@ impl<'a> World<'a> {
                 .filter_map(|code_id| match self.code.get(code_id) {
                     CodeState::Pending => None,
                     CodeState::Indexed { source } if code_surface_can_publish_function(source, &function_ref) => {
-                        Some((FactKey::CodeScoped(code_id), Job::ScopeCode(code_id)))
+                        Some(FactKey::CodeScoped(code_id))
                     }
                     CodeState::Scoped { .. } | CodeState::Indexed { .. } => None,
                 })
                 .collect();
         }
         if self.module_has_source_state(module) || self.ensure_runtime_module(module).is_some() {
-            return vec![(FactKey::ModuleDefined(module), Job::DefineModule(module))];
+            return vec![FactKey::ModuleDefined(module)];
         }
         Vec::new()
     }
 
-    pub(crate) fn ensure_expanded_function_source(&mut self, function: FunctionId) -> Vec<Job> {
-        vec![Job::ExpandFunctionSource(function)]
-    }
-
+    /// `FunctionDefined`'s sole producer arm is `Job::DefineFunction`
+    /// (`World::demand_fact_producer`); this bare wait lets the fact->producer
+    /// map restart it instead of naming the job directly.
     pub(crate) fn wait_for_function_definition(&mut self, function: FunctionId) -> JobEffects {
-        JobEffects::wait_on_current(FactKey::FunctionDefined(function), vec![Job::DefineFunction(function)])
+        JobEffects::wait_on_current(FactKey::FunctionDefined(function), [])
     }
 
     /// Demands and waits on the module whose definition notes `module`'s
     /// `@type`s — the type-side mirror of `wait_for_function_definition`. Used
     /// only for non-global modules; a top-level type is noted by its code scope.
+    /// `ensure_runtime_module` mints the runtime module's code eagerly so its
+    /// `CodeIndexed`/`CodeScoped` chain starts before anything waits on
+    /// `ModuleDefined`; `ModuleDefined`'s sole producer arm is `Job::DefineModule`.
     pub(crate) fn wait_for_type_decl(&mut self, module: ModuleId) -> JobEffects {
         self.ensure_runtime_module(module);
-        JobEffects::wait_on_current(FactKey::ModuleDefined(module), vec![Job::DefineModule(module)])
+        JobEffects::wait_on_current(FactKey::ModuleDefined(module), [])
     }
 
     pub fn fact_revision(&self, key: &FactKey) -> Option<u64> {

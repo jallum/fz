@@ -31,27 +31,57 @@ loop drive parsing, lowering, type inference, and artifact emission.
 
 ## Jobs are rules; effects are their contract
 
-The generic scheduler still runs legacy/source/semantic jobs. A job returns
-`JobEffects`:
+Every job returns `JobEffects`:
 
 ```text
 reads     facts it used        -> "wake me when these change"   (subscriber)
 waits     facts it needed but  -> "wake me when these appear"   (waiter; also
           could not read yet       counts as unresolved work)
 outputs   (FactKey, FactValue) -> facts this job OWNS this run
-follow_up legacy jobs to enqueue now
 ```
 
-A job that cannot proceed records `waits` and returns. Legacy jobs may also
-name `follow_up` jobs, but new artifact producers must not use that mechanism:
-artifact work is demanded by `ProductKey` through the pull driver below.
-A follow-up is a demand that a producer run, not a changed-revision wake: one
-naming a job whose conclusion still stands — it concluded and no fact it reads
-moved since (`Scheduler::conclusion_stands`) — coalesces with that standing
-conclusion instead of re-running it byte-identically. First runs, waiting
-jobs, and rebased jobs still enqueue.
+A job that cannot proceed records `waits` and returns; it never names another
+job to run. Restarting blocked work is the fact->producer map's job, not the
+blocked job's: `World::demand_fact_producer` (`drive.rs`) maps a fact to its
+single producing job, and every path that discovers a blocked wait —
+`demand_blocked_wait_producers` at drain time, the standing activation and
+root-entry frontier expansions, and the product pull driver's fact waits —
+demands that producer through the map. A fact with more than one possible
+producer (for example `ModuleInterface`, produced by either `DefineModule` or
+`DefineModuleInterface` depending on whether the module has source state) maps
+through the same runtime condition a demanding caller would otherwise inspect
+itself, so the map still names exactly one producer for the fact's current
+ground. A fact whose producer publishes it only as a co-output of a broader
+job's conclusion (`ModuleIndexed`, `ProtocolDispatch`,
+`ProtocolImplProviders`, `Executable`, `BackendProgram`, `NativeProgram`) has
+no arm: its demand rides the mapped fact that gates the job that co-produces
+it. Every fact with one sole-producing job gets an arm — including
+`FunctionSource` (`Job::PublishFunctionSource`), `ExpandedFunctionSource`
+(`Job::ExpandFunctionSource`), `EntryDispatch` (`Job::PlanEntryDispatch`), and
+`MacroExecutable` (`Job::BuildMacroExecutable`), whose sole producers used to
+be named directly by the blocked wait instead of through this map. A fact is
+a co-output exception only when no single job is its sole producer, never
+because a caller already knows which job to name.
 Blocked work is not an error; exact waits are how ordering emerges without a
 separate phase schedule.
+
+The scheduler still carries a `follow_up: Vec<Job>` field on `JobEffects` and
+a coalescing step in `Scheduler::complete` that enqueues it — a follow-up
+naming a job whose conclusion still stands (`Scheduler::conclusion_stands`)
+coalesces with that standing conclusion instead of re-running it
+byte-identically. No job constructs a non-empty `follow_up`; every production
+site that would once have named a producer directly instead records a bare
+wait (`JobEffects::wait_on_current(fact, [])`) and lets the fact->producer map
+restart it. This holds for every non-test call site, including the two
+call-through paths that used to build the `follow_up` list dynamically
+(`World::wait_for_function_definition`, `World::wait_for_type_decl`) and
+`World::demand_function_scope`, which now returns the bare `Vec<FactKey>` its
+one remaining caller (`publish_function_source_job`) actually reads instead of
+a `Vec<(FactKey, Job)>` whose job half nothing consumed.
+With every production `follow_up` list empty, the `follow_up` field itself,
+`Scheduler::complete`'s enqueue loop over it, and `Scheduler::conclusion_stands`
+are dead code ready for deletion — kept in place pending a follow-on commit
+that removes them, rather than deleted alongside this one.
 
 A job must record `reads` unconditionally for every fact its conclusion
 consulted, including a fact that was absent at read time. A read gated on
@@ -117,8 +147,7 @@ while let Some(job) = agenda.pop():
         waiting?  extend reads/claims, dirty the job's claims
         else      replace reads/waits/claims (retraction final)
         classify each change: ascent -> wake; shift -> rebase + wake
-        enqueue dependents, then legacy follow_ups
-            (a follow_up whose target's conclusion stands coalesces, no re-run)
+        enqueue dependents
 ```
 
 When the agenda drains, standing demands expand before the drive ends: every

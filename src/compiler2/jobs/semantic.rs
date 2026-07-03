@@ -18,7 +18,7 @@ use super::super::body::{
     LoweredTail, ValueId,
 };
 use super::super::contract::FunctionContract;
-use super::super::drive::{FactKey, Job, JobEffects, current_uses};
+use super::super::drive::{FactKey, JobEffects, current_uses};
 use super::super::identity::{
     ActivationKey, ExecutableNeed, FunctionId, ModuleId, TypeName, function_id_of_closure_target,
 };
@@ -87,18 +87,16 @@ pub(super) fn analyze_activation(world: &mut World<'_>, activation: &ActivationK
 
     let lowered_fact = FactKey::LoweredBody(function);
     if !world.has_fact(&lowered_fact) {
-        return Ok(JobEffects::wait_on_current(
-            lowered_fact,
-            [Job::LowerFunction(function)],
-        ));
+        // `LoweredBody`'s sole producer arm is `Job::LowerFunction`
+        // (`World::demand_fact_producer`).
+        return Ok(JobEffects::wait_on_current(lowered_fact, []));
     }
 
     let dispatch_fact = FactKey::EntryDispatch(function);
     if !world.has_fact(&dispatch_fact) {
-        return Ok(JobEffects::wait_on_current(
-            dispatch_fact,
-            [Job::PlanEntryDispatch(function)],
-        ));
+        // `EntryDispatch`'s sole producer arm is `Job::PlanEntryDispatch`
+        // (`World::demand_fact_producer`).
+        return Ok(JobEffects::wait_on_current(dispatch_fact, []));
     }
 
     let mut reads = vec![

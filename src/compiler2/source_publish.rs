@@ -17,7 +17,7 @@ use crate::telemetry::opaque_debug;
 use crate::{measurements, metadata};
 
 use super::code::CodeId;
-use super::drive::{FactKey, Job, JobEffects, current_uses};
+use super::drive::{FactKey, JobEffects, current_uses};
 use super::identity::{FunctionId, FunctionSource, ModuleId, NotedTypeDecl, ProtocolImplSource, TypeName};
 use super::module_interface::{InterfaceCallableKind, InterfaceRequester, ModuleInterface, ModuleInterfaceCallable};
 use super::namespace::{Namespace, NamespaceSymbol};
@@ -1061,12 +1061,11 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
     }
 
     fn wait_for_module_interface(&self, module: ModuleId) -> JobEffects {
-        let follow_up = if self.world.module_has_source_state(module) || self.world.is_runtime_module(module) {
-            Job::DefineModule(module)
-        } else {
-            Job::DefineModuleInterface(module)
-        };
-        JobEffects::wait_on_current(FactKey::ModuleInterface(module), [follow_up])
+        // `FactKey::ModuleInterface`'s producer is demand-selected in
+        // `World::demand_fact_producer` (Job::DefineModule when the module has
+        // source state or is a runtime module, else Job::DefineModuleInterface)
+        // -- the same selection this site used to push directly.
+        JobEffects::wait_on_current(FactKey::ModuleInterface(module), [])
     }
 
     fn record_required_remote_macros(&mut self, callables: &[ModuleInterfaceCallable]) {

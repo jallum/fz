@@ -20,19 +20,19 @@ pub(super) fn seed_root(world: &mut World<'_>, root_id: RootId) -> Result<JobEff
     let root_fact = FactKey::RootEntry(root_id);
     let mut reads = Vec::new();
     let mut waits = HashSet::new();
-    let mut follow_up = Vec::new();
     let mut outputs = vec![root_fact];
 
     let function_fact = FactKey::FunctionDefined(root.function);
     let Some(_function_revision) = world.function_defined_revision(root.function) else {
+        // `FunctionDefined`'s sole producer arm (`Job::DefineFunction`, in
+        // `World::demand_fact_producer`) covers this wait; this call site no
+        // longer forwards the push half of the returned effects.
         let wait = world.wait_for_function_definition(root.function);
         waits.extend(wait.waits.into_iter().map(|fact_use| fact_use.into_fact()));
-        follow_up.extend(wait.follow_up);
         return Ok(JobEffects {
             reads: settled_uses(reads),
             waits: settled_uses(waits),
             outputs,
-            follow_up,
             ..JobEffects::default()
         });
     };
@@ -55,7 +55,6 @@ pub(super) fn seed_root(world: &mut World<'_>, root_id: RootId) -> Result<JobEff
             reads: settled_uses(reads),
             waits: settled_uses(waits),
             outputs,
-            follow_up,
             ..JobEffects::default()
         });
     }
@@ -87,7 +86,6 @@ pub(super) fn seed_root(world: &mut World<'_>, root_id: RootId) -> Result<JobEff
         reads: settled_uses(reads),
         outputs,
         activation_input_contributions: vec![(entry_activation, root.input.clone())],
-        follow_up,
         ..JobEffects::default()
     })
 }

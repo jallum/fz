@@ -9,7 +9,7 @@ use crate::telemetry::opaque_debug;
 use crate::{measurements, metadata};
 
 use super::code::CodeId;
-use super::drive::{FactKey, Job, JobEffects};
+use super::drive::{FactKey, JobEffects};
 use super::identity::{FunctionId, ModuleId};
 use super::namespace::NamespaceSymbol;
 use super::quoted_surface::{
@@ -47,12 +47,11 @@ pub(crate) trait QuotedExpansionCtx<'tel> {
     fn wait_for_callable_module_interface(&mut self, function: FunctionId) -> JobEffects {
         let world = self.world();
         let module = world.function_module(function);
-        let follow_up = if world.module_has_source_state(module) || world.is_runtime_module(module) {
-            Job::DefineModule(module)
-        } else {
-            Job::DefineModuleInterface(module)
-        };
-        JobEffects::wait_on_current(FactKey::ModuleInterface(module), [follow_up])
+        // `FactKey::ModuleInterface`'s producer is demand-selected in
+        // `World::demand_fact_producer` (Job::DefineModule when the module has
+        // source state or is a runtime module, else Job::DefineModuleInterface)
+        // -- the same selection this site used to push directly.
+        JobEffects::wait_on_current(FactKey::ModuleInterface(module), [])
     }
 
     fn expand_root(
@@ -259,14 +258,15 @@ pub(crate) trait QuotedExpansionCtx<'tel> {
             if self.world().is_runtime_module(module) {
                 return Ok(None);
             }
-            let follow_up = if module.is_global() {
-                Vec::new()
-            } else {
-                vec![Job::DefineModule(module)]
-            };
+            // `FactKey::ModuleDefined`'s sole producer arm is `Job::DefineModule`
+            // (`World::demand_fact_producer`); the `is_global()` split this bare
+            // wait used to make (never pushing for a global module) is defensive,
+            // not reachable in practice -- `ModuleId::GLOBAL` is defined before
+            // any expansion runs, so `module_defined.is_none()` is never true for
+            // it here.
             return Ok(Some(ExpandedValue::Blocked(Box::new(JobEffects::wait_on_current(
                 FactKey::ModuleDefined(module),
-                follow_up,
+                [],
             )))));
         }
         self.note_read(FactKey::ModuleDefined(module));
@@ -333,9 +333,11 @@ pub(crate) trait QuotedExpansionCtx<'tel> {
     ) -> Result<ExpandedValue, super::scheduler::FatalError> {
         let macro_fact = FactKey::MacroExecutable(function);
         if self.world().fact_revision(&macro_fact).is_none() {
+            // `MacroExecutable`'s sole producer arm is `Job::BuildMacroExecutable`
+            // (`World::demand_fact_producer`).
             return Ok(ExpandedValue::Blocked(Box::new(JobEffects::wait_on_current(
                 macro_fact,
-                [Job::BuildMacroExecutable(function)],
+                [],
             ))));
         }
         self.note_read(macro_fact);

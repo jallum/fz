@@ -123,9 +123,15 @@ impl World<'_> {
     /// drivers (a `PullWait::Fact` with an empty agenda) and the bare
     /// scheduler (`drive_until`'s demand-on-stall pass) consult it.
     ///
-    /// Facts whose producers publish them as co-outputs of broader jobs
-    /// (source-surface facts, protocol facts, executables, backend programs)
-    /// have no arm: their demand rides the mapped facts that gate them.
+    /// Facts whose producers publish them only as a co-output of a broader
+    /// job's conclusion (`ModuleIndexed`, `ProtocolDispatch`,
+    /// `ProtocolImplProviders`, `Executable`, `BackendProgram`,
+    /// `NativeProgram`) have no arm: their demand rides the mapped facts that
+    /// gate the job that co-produces them. Every fact with a single
+    /// sole-producing job gets an arm here, even when that job is also the
+    /// blocked branch of a `wait_on_current(fact, [])` bare wait elsewhere —
+    /// naming the producer once, in this map, is what keeps every such wait a
+    /// pull instead of a job pushing another job by name.
     /// Returns how many producers were actually demanded.
     pub(crate) fn demand_fact_producer(&mut self, fact: &FactKey) -> u64 {
         let job = match fact {
@@ -137,8 +143,23 @@ impl World<'_> {
             FactKey::CodeIndexed(code) => Some(Job::IndexCode(*code)),
             FactKey::GuardDispatch(function) => Some(Job::ReifyGuardDispatch(*function)),
             FactKey::LoweredBody(function) => Some(Job::LowerFunction(*function)),
+            FactKey::CodeScoped(code) => Some(Job::ScopeCode(*code)),
+            FactKey::ModuleInterface(module) => {
+                let module = *module;
+                Some(
+                    if self.module_has_source_state(module) || self.is_runtime_module(module) {
+                        Job::DefineModule(module)
+                    } else {
+                        Job::DefineModuleInterface(module)
+                    },
+                )
+            }
             FactKey::Recursive(function) => Some(Job::DeriveRecursive(*function)),
             FactKey::DispatchMask(function) => Some(Job::DeriveDispatchMask(*function)),
+            FactKey::EntryDispatch(function) => Some(Job::PlanEntryDispatch(*function)),
+            FactKey::MacroExecutable(function) => Some(Job::BuildMacroExecutable(*function)),
+            FactKey::FunctionSource(function) => Some(Job::PublishFunctionSource(*function)),
+            FactKey::ExpandedFunctionSource(function) => Some(Job::ExpandFunctionSource(*function)),
             FactKey::Activation(activation) | FactKey::ActivationInputs(activation) => {
                 Some(Job::SeedActivation(activation.clone()))
             }

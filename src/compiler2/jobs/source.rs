@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
 use super::super::code::CodeId;
-use super::super::drive::{FactKey, Job, JobEffects, current_uses};
+use super::super::drive::{FactKey, JobEffects, current_uses};
 use super::super::identity::{FunctionId, FunctionSource, ModuleId, ModuleSourceKind};
 use super::super::namespace::{Namespace, NamespaceSymbol};
 use super::super::quoted_expander::{
@@ -72,10 +72,7 @@ pub(super) fn index_code(world: &mut World<'_>, code_id: CodeId) -> Result<JobEf
 /// asks for `IndexCode`. When the scope is complete, it publishes `CodeScoped`.
 pub(super) fn scope_code(world: &mut World<'_>, code_id: CodeId) -> Result<JobEffects, FatalError> {
     let Some(source) = world.code_source(code_id) else {
-        return Ok(JobEffects::wait_on_current(
-            FactKey::CodeIndexed(code_id),
-            [Job::IndexCode(code_id)],
-        ));
+        return Ok(JobEffects::wait_on_current(FactKey::CodeIndexed(code_id), []));
     };
     let mut reads = Vec::new();
     let base_namespace = if world.is_runtime_prelude(code_id) {
@@ -84,7 +81,7 @@ pub(super) fn scope_code(world: &mut World<'_>, code_id: CodeId) -> Result<JobEf
         let prelude = world.runtime_prelude();
         let prelude_fact = FactKey::CodeScoped(prelude);
         if !world.has_fact(&prelude_fact) {
-            return Ok(JobEffects::wait_on_current(prelude_fact, [Job::ScopeCode(prelude)]));
+            return Ok(JobEffects::wait_on_current(prelude_fact, []));
         }
         reads.push(prelude_fact);
         world.prelude_head()
@@ -174,29 +171,17 @@ pub(super) fn define_module(world: &mut World<'_>, module_id: ModuleId) -> Resul
 
     if let Some((code_id, parent_module)) = world.module_indexed_parent(module_id) {
         if parent_module.is_global() {
-            return Ok(JobEffects::wait_on_current(
-                FactKey::CodeScoped(code_id),
-                [Job::ScopeCode(code_id)],
-            ));
+            return Ok(JobEffects::wait_on_current(FactKey::CodeScoped(code_id), []));
         }
-        return Ok(JobEffects::wait_on_current(
-            FactKey::ModuleDefined(parent_module),
-            [Job::DefineModule(parent_module)],
-        ));
+        return Ok(JobEffects::wait_on_current(FactKey::ModuleDefined(parent_module), []));
     }
 
     if let Some(parent_module) = world.module_named_parent(module_id) {
-        return Ok(JobEffects::wait_on_current(
-            FactKey::ModuleDefined(parent_module),
-            [Job::DefineModule(parent_module)],
-        ));
+        return Ok(JobEffects::wait_on_current(FactKey::ModuleDefined(parent_module), []));
     }
 
     if let Some(code_id) = world.ensure_runtime_module(module_id) {
-        return Ok(JobEffects::wait_on_current(
-            FactKey::CodeIndexed(code_id),
-            [Job::IndexCode(code_id)],
-        ));
+        return Ok(JobEffects::wait_on_current(FactKey::CodeIndexed(code_id), []));
     }
 
     Ok(JobEffects::wait_on_current(FactKey::ModuleIndexed(module_id), []))
@@ -204,10 +189,7 @@ pub(super) fn define_module(world: &mut World<'_>, module_id: ModuleId) -> Resul
 
 pub(super) fn define_module_interface(world: &mut World<'_>, module_id: ModuleId) -> Result<JobEffects, FatalError> {
     if world.module_scope(module_id).is_some() {
-        return Ok(JobEffects::wait_on_current(
-            FactKey::ModuleInterface(module_id),
-            [Job::DefineModule(module_id)],
-        ));
+        return Ok(JobEffects::wait_on_current(FactKey::ModuleInterface(module_id), []));
     }
 
     let Some(interface) = world.module_interface_if_present(module_id) else {
@@ -233,14 +215,11 @@ pub(super) fn define_function(
     let Some(expanded_source) = world.expanded_function_source(function_id) else {
         return Ok(JobEffects::wait_on_current(
             FactKey::ExpandedFunctionSource(function_id),
-            world.ensure_expanded_function_source(function_id),
+            [],
         ));
     };
     let Some(raw_source) = world.function_source(function_id) else {
-        return Ok(JobEffects::wait_on_current(
-            FactKey::FunctionSource(function_id),
-            world.ensure_function_source(function_id),
-        ));
+        return Ok(JobEffects::wait_on_current(FactKey::FunctionSource(function_id), []));
     };
 
     let surface = crate::compiler2::quoted_function::derive_function_surface(
@@ -276,8 +255,9 @@ pub(super) fn define_function(
 /// body cold. This job promotes the one stashed source a consumer asked for,
 /// so opening a scope produces no cold body work: a function the program never
 /// reaches never reaches this job. If the owning scope has not been walked yet
-/// the stash is empty, so it waits on that scope first — the same fallback
-/// `ensure_function_source` chooses.
+/// the stash is empty, so it waits on that scope first. `FunctionSource`'s sole
+/// producer arm (`World::demand_fact_producer`) is this job, so any consumer
+/// blocked on `FunctionSource` restarts it through that map rather than a push.
 pub(super) fn publish_function_source_job(
     world: &mut World<'_>,
     function_id: super::super::FunctionId,
@@ -286,15 +266,15 @@ pub(super) fn publish_function_source_job(
         // The owning scope has not been walked yet, so the stash is empty. Wait
         // on that scope and re-run once it has stashed this body; never wait on
         // `FunctionSource`, the fact this job is the sole producer of.
-        let mut waits = Vec::new();
-        let mut follow_up = Vec::new();
-        for (fact, job) in world.demand_function_scope(function_id) {
-            waits.push(fact);
-            follow_up.push(job);
-        }
+        //
+        // `demand_function_scope` names each fact directly rather than pushing a
+        // job: a global-module function waits on `CodeScoped(code_id)` (sole
+        // producer `Job::ScopeCode`), a scoped function waits on
+        // `ModuleDefined(module)` (sole producer `Job::DefineModule`) -- both are
+        // arms in `World::demand_fact_producer`.
+        let waits: Vec<FactKey> = world.demand_function_scope(function_id);
         return Ok(JobEffects {
             waits: current_uses(waits),
-            follow_up,
             ..JobEffects::default()
         });
     };
@@ -313,10 +293,7 @@ pub(super) fn expand_function_source(
     function_id: super::super::FunctionId,
 ) -> Result<JobEffects, FatalError> {
     let Some(source) = world.function_source(function_id) else {
-        return Ok(JobEffects::wait_on_current(
-            FactKey::FunctionSource(function_id),
-            world.ensure_function_source(function_id),
-        ));
+        return Ok(JobEffects::wait_on_current(FactKey::FunctionSource(function_id), []));
     };
     match FunctionSourceExpander::new(world, function_id, &source).expand(&source)? {
         FunctionSourceExpansion::Complete { source, reads } => {
