@@ -429,24 +429,10 @@ fn session_materialized_executable_transport(
 ) -> MaterializedExecutableTransport {
     let symbol = transport_executable_symbol(executable, types);
     let mut positions = session
-        .transport_shapes()
-        .keys()
-        .filter(|position| *transport_position_executable(position) == symbol)
+        .transport_shape_positions_for(&symbol)
         .cloned()
         .collect::<HashSet<_>>();
-    positions.extend(
-        session
-            .demanded_transport_positions()
-            .iter()
-            .filter(|position| {
-                *transport_position_executable(position) == symbol
-                    && matches!(
-                        position,
-                        TransportPosition::EntryCapture { .. } | TransportPosition::ResumePayload { .. }
-                    )
-            })
-            .cloned(),
-    );
+    positions.extend(session.demanded_capture_resume_positions_for(&symbol).cloned());
     materialized_executable_transport(positions.into_iter(), executable, types)
 }
 
@@ -1183,71 +1169,38 @@ fn transport_executable_symbol(executable: &ExecutableKey, types: &Types) -> Exe
     }
 }
 
-fn transport_position_executable(position: &TransportPosition) -> &ExecutableSymbol {
-    match position {
-        TransportPosition::ExecutableInput { executable, .. }
-        | TransportPosition::ExecutableReturn { executable }
-        | TransportPosition::ResumePayload { executable, .. }
-        | TransportPosition::ReturnPayload { executable, .. }
-        | TransportPosition::CallArg { executable, .. }
-        | TransportPosition::EntryCapture { executable, .. }
-        | TransportPosition::Value { executable, .. } => executable,
-    }
-}
-
+/// Canonical packaging order for one MaterializedExecutableTransport field
+/// vector. Every call site sorts a single-variant, single-executable
+/// partition (the six category vectors `materialized_executable_transport`
+/// builds), so the key carries only the variant-local STRUCTURAL
+/// discriminants -- semantic indexes, callsites, entries -- and no
+/// executable component (constant within the vector) and no interned types.
 fn sort_transport_positions(positions: &mut [TransportPosition]) {
-    positions.sort_by_key(transport_position_sort_key);
+    positions.sort_by_key(transport_position_local_sort_key);
 }
 
+type TransportPositionLocalSortKey = (u32, u32, usize);
 type TransportExecutableSortKey = (u32, Vec<Ty>, u8, usize);
-type TransportPositionSortKey = (u8, TransportExecutableSortKey, u32, u32, usize);
 
-fn transport_position_sort_key(position: &TransportPosition) -> TransportPositionSortKey {
+fn transport_position_local_sort_key(position: &TransportPosition) -> TransportPositionLocalSortKey {
     match position {
-        TransportPosition::ExecutableInput {
-            executable,
-            semantic_index,
-        } => (0, transport_executable_sort_key(executable), 0, 0, *semantic_index),
-        TransportPosition::ExecutableReturn { executable } => (1, transport_executable_sort_key(executable), 0, 0, 0),
-        TransportPosition::ResumePayload {
-            executable,
-            callsite,
-            entry,
-        } => (
-            2,
-            transport_executable_sort_key(executable),
+        TransportPosition::ExecutableInput { semantic_index, .. } => (0, 0, *semantic_index),
+        TransportPosition::ExecutableReturn { .. } => (0, 0, 0),
+        TransportPosition::ResumePayload { callsite, entry, .. } => (
             callsite.map(|callsite| callsite.as_u32()).unwrap_or(u32::MAX),
             entry.as_u32(),
             0,
         ),
-        TransportPosition::ReturnPayload { executable, callsite } => {
-            (3, transport_executable_sort_key(executable), callsite.as_u32(), 0, 0)
-        }
+        TransportPosition::ReturnPayload { callsite, .. } => (callsite.as_u32(), 0, 0),
         TransportPosition::EntryCapture {
-            executable,
-            entry,
-            capture_index,
-        } => (
-            4,
-            transport_executable_sort_key(executable),
-            0,
-            entry.as_u32(),
-            *capture_index,
-        ),
+            entry, capture_index, ..
+        } => (0, entry.as_u32(), *capture_index),
         TransportPosition::CallArg {
-            executable,
             callsite,
             semantic_index,
-        } => (
-            5,
-            transport_executable_sort_key(executable),
-            callsite.as_u32(),
-            0,
-            *semantic_index,
-        ),
-        TransportPosition::Value { executable, value } => {
-            (6, transport_executable_sort_key(executable), value.as_u32(), 0, 0)
-        }
+            ..
+        } => (callsite.as_u32(), 0, *semantic_index),
+        TransportPosition::Value { value, .. } => (value.as_u32(), 0, 0),
     }
 }
 
@@ -2485,42 +2438,36 @@ mod tests {
     use crate::telemetry::ConfiguredTelemetry;
 
     #[test]
-    fn transport_position_sort_key_distinguishes_executable_symbol_identity() {
+    fn sort_transport_positions_orders_one_partition_by_structural_discriminants() {
+        // Each MaterializedExecutableTransport field vector holds ONE variant
+        // of ONE executable by construction (positions are gathered from the
+        // per-symbol index and partitioned by variant), so packaging order is
+        // decided purely by the variant-local structural discriminants --
+        // here CallArg's (callsite, semantic_index) -- independent of
+        // arrival order and of any interned-type identity.
         let tel = ConfiguredTelemetry::new();
         let mut world = World::new(&tel);
         world.submit_code(None, "fn main(x), do: x".to_string());
         let root = world.submit_root(None, "main".to_string(), 1, ExecutableNeed::Value);
         let function = world.root_entry(root).function;
         let int = world.types_mut().int();
-        let any = world.types_mut().any();
-
-        let value_symbol = ExecutableSymbol {
+        let symbol = ExecutableSymbol {
             activation: ActivationSymbol {
                 function,
                 input: vec![int].into_boxed_slice(),
             },
             need: ExecutableNeed::Value,
         };
-        let tuple_symbol = ExecutableSymbol {
-            activation: ActivationSymbol {
-                function,
-                input: vec![any].into_boxed_slice(),
-            },
-            need: ExecutableNeed::TupleFields(1),
+        let call_arg = |callsite: u32, semantic_index: usize| TransportPosition::CallArg {
+            executable: symbol.clone(),
+            callsite: CallSiteId::from_u32(callsite),
+            semantic_index,
         };
 
-        let value_position = TransportPosition::ExecutableReturn {
-            executable: value_symbol,
-        };
-        let tuple_position = TransportPosition::ExecutableReturn {
-            executable: tuple_symbol,
-        };
+        let mut positions = vec![call_arg(1, 1), call_arg(1, 0), call_arg(0, 1)];
+        sort_transport_positions(&mut positions);
 
-        assert_ne!(
-            transport_position_sort_key(&value_position),
-            transport_position_sort_key(&tuple_position),
-            "artifact handoff ordering must be stable for multiple activations/needs of the same function"
-        );
+        assert_eq!(positions, vec![call_arg(0, 1), call_arg(1, 0), call_arg(1, 1)]);
     }
 
     #[test]

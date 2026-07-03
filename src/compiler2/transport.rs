@@ -21,6 +21,11 @@ impl ShapeId {
     pub fn as_u32(self) -> u32 {
         self.0
     }
+
+    #[cfg(test)]
+    pub(crate) fn for_test(raw: u32) -> Self {
+        Self(raw)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -271,6 +276,23 @@ pub enum TransportPosition {
         executable: ExecutableSymbol,
         value: ValueId,
     },
+}
+
+impl TransportPosition {
+    /// The executable that OWNS this position -- the symbol every variant
+    /// carries. Per-executable views (the session's by-symbol transport
+    /// indexes, artifact packaging) key on this.
+    pub fn executable(&self) -> &ExecutableSymbol {
+        match self {
+            Self::ExecutableInput { executable, .. }
+            | Self::ExecutableReturn { executable }
+            | Self::ResumePayload { executable, .. }
+            | Self::ReturnPayload { executable, .. }
+            | Self::CallArg { executable, .. }
+            | Self::EntryCapture { executable, .. }
+            | Self::Value { executable, .. } => executable,
+        }
+    }
 }
 
 #[derive(Debug, Default)]

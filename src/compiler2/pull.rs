@@ -22,7 +22,7 @@ use super::facts::FactUse;
 use super::identity::{ExecutableKey, RootId};
 use super::semantic::{ExecutableRuntimeDemand, RuntimeDemand};
 use super::transport::{
-    BoundaryFacts, BoundaryId, CallableFacts, CallableId, CodegenSeamFact, ShapeId, TransportPosition,
+    BoundaryFacts, BoundaryId, CallableFacts, CallableId, CodegenSeamFact, ExecutableSymbol, ShapeId, TransportPosition,
 };
 use super::world::World;
 
@@ -444,8 +444,24 @@ pub struct PullSession {
     abi_executables: HashMap<ExecutableKey, AbiReadyExecutable>,
     backend_executables: HashMap<ExecutableKey, SymbolicBackendExecutable>,
     demanded_transport_positions: HashSet<TransportPosition>,
+    // By-symbol view of the EntryCapture/ResumePayload members of
+    // `demanded_transport_positions` -- the only variants
+    // `session_materialized_executable_transport` reads from the demanded
+    // set. The demanded set is monotone (positions are never retracted), so
+    // this index needs no invalidation story: it grows in lockstep inside
+    // `note_demanded_transport_position`, the single insertion point.
+    demanded_capture_resume_positions: HashMap<ExecutableSymbol, HashSet<TransportPosition>>,
     transport_shape_facts: HashMap<TransportPosition, TransportShapeFact>,
+    // `transport_shapes` and `transport_shapes_by_symbol` are one fact in two
+    // keyings: the flat position->shape map, and the per-owning-executable
+    // index `session_materialized_executable_transport` consumes instead of
+    // filter-scanning the whole inventory per production. They mutate ONLY
+    // through `insert_transport_shape`/`remove_transport_shape`, so the index
+    // lives and dies with the map by construction -- including the epoch
+    // removals in `invalidate_transport_products` and the displaced-product
+    // removals in `discard_product_side_effects`.
     transport_shapes: HashMap<TransportPosition, ShapeId>,
+    transport_shapes_by_symbol: HashMap<ExecutableSymbol, HashSet<TransportPosition>>,
     transport_components: HashMap<TransportPosition, TransportComponentInventory>,
     // Solved-closure inventory: each shape-constraint solve records every
     // component it computed, keyed by a session-unique closure id, with
@@ -490,8 +506,10 @@ impl PullSession {
             abi_executables: HashMap::new(),
             backend_executables: HashMap::new(),
             demanded_transport_positions: HashSet::new(),
+            demanded_capture_resume_positions: HashMap::new(),
             transport_shape_facts: HashMap::new(),
             transport_shapes: HashMap::new(),
+            transport_shapes_by_symbol: HashMap::new(),
             transport_components: HashMap::new(),
             solved_transport_closures: HashMap::new(),
             transport_closure_cover: HashMap::new(),
@@ -664,6 +682,24 @@ impl PullSession {
 
     pub fn transport_shapes(&self) -> &HashMap<TransportPosition, ShapeId> {
         &self.transport_shapes
+    }
+
+    /// Every position with a recorded shape whose OWNING executable is
+    /// `symbol` -- the keyed view maintained in lockstep with
+    /// `transport_shapes`, replacing the per-production filter-scan of the
+    /// whole inventory.
+    pub fn transport_shape_positions_for(&self, symbol: &ExecutableSymbol) -> impl Iterator<Item = &TransportPosition> {
+        self.transport_shapes_by_symbol.get(symbol).into_iter().flatten()
+    }
+
+    /// Every demanded EntryCapture/ResumePayload position owned by `symbol`.
+    /// Monotone alongside `demanded_transport_positions`; see the field
+    /// comment.
+    pub fn demanded_capture_resume_positions_for(
+        &self,
+        symbol: &ExecutableSymbol,
+    ) -> impl Iterator<Item = &TransportPosition> {
+        self.demanded_capture_resume_positions.get(symbol).into_iter().flatten()
     }
 
     pub fn transport_component(&self, position: &TransportPosition) -> Option<&TransportComponentInventory> {
@@ -938,9 +974,10 @@ impl PullSession {
     /// component's canonical representative and full membership from the
     /// covering solve.
     pub fn record_transport_component(&mut self, position: TransportPosition, component: TransportComponentInventory) {
-        self.demanded_transport_positions.insert(position.clone());
-        self.demanded_transport_positions
-            .extend(component.positions.iter().cloned());
+        self.note_demanded_transport_position(&position);
+        for member in &component.positions {
+            self.note_demanded_transport_position(member);
+        }
         self.transport_components.insert(position, component);
     }
 
@@ -986,10 +1023,10 @@ impl PullSession {
     }
 
     pub fn record_transport_shape(&mut self, position: TransportPosition, shape: ShapeId) {
-        self.demanded_transport_positions.insert(position.clone());
+        self.note_demanded_transport_position(&position);
         self.transport_shape_facts
             .insert(position.clone(), TransportShapeFact::Shape(shape));
-        self.transport_shapes.insert(position, shape);
+        self.insert_transport_shape(position, shape);
     }
 
     pub fn record_transport_shape_for(
@@ -998,21 +1035,21 @@ impl PullSession {
         position: TransportPosition,
         shape: ShapeId,
     ) {
-        self.demanded_transport_positions.insert(position.clone());
+        self.note_demanded_transport_position(&position);
         self.transport_positions_by_executable
             .entry(executable.clone())
             .or_default()
             .insert(position.clone());
         self.transport_shape_facts
             .insert(position.clone(), TransportShapeFact::Shape(shape));
-        let changed = self.transport_shapes.insert(position, shape) != Some(shape);
+        let changed = self.insert_transport_shape(position, shape);
         if changed {
             self.invalidate_artifact_products(executable);
         }
     }
 
     pub fn record_absent_transport_shape_for(&mut self, executable: &ExecutableKey, position: TransportPosition) {
-        self.demanded_transport_positions.insert(position.clone());
+        self.note_demanded_transport_position(&position);
         self.transport_positions_by_executable
             .entry(executable.clone())
             .or_default()
@@ -1021,9 +1058,49 @@ impl PullSession {
             .transport_shape_facts
             .insert(position.clone(), TransportShapeFact::Absent)
             != Some(TransportShapeFact::Absent);
-        self.transport_shapes.remove(&position);
+        self.remove_transport_shape(&position);
         if changed {
             self.invalidate_artifact_products(executable);
+        }
+    }
+
+    /// The SOLE insertion point into `transport_shapes`: keeps the by-symbol
+    /// index in lockstep. Returns whether the recorded shape changed.
+    fn insert_transport_shape(&mut self, position: TransportPosition, shape: ShapeId) -> bool {
+        self.transport_shapes_by_symbol
+            .entry(position.executable().clone())
+            .or_default()
+            .insert(position.clone());
+        self.transport_shapes.insert(position, shape) != Some(shape)
+    }
+
+    /// The SOLE removal point from `transport_shapes`: keeps the by-symbol
+    /// index in lockstep.
+    fn remove_transport_shape(&mut self, position: &TransportPosition) {
+        self.transport_shapes.remove(position);
+        if let Some(positions) = self.transport_shapes_by_symbol.get_mut(position.executable()) {
+            positions.remove(position);
+            if positions.is_empty() {
+                self.transport_shapes_by_symbol.remove(position.executable());
+            }
+        }
+    }
+
+    /// The SOLE insertion point into `demanded_transport_positions`: keeps the
+    /// by-symbol EntryCapture/ResumePayload index in lockstep. Both sets are
+    /// monotone, so lockstep insertion is the whole coherence story.
+    fn note_demanded_transport_position(&mut self, position: &TransportPosition) {
+        if !self.demanded_transport_positions.insert(position.clone()) {
+            return;
+        }
+        if matches!(
+            position,
+            TransportPosition::EntryCapture { .. } | TransportPosition::ResumePayload { .. }
+        ) {
+            self.demanded_capture_resume_positions
+                .entry(position.executable().clone())
+                .or_default()
+                .insert(position.clone());
         }
     }
 
@@ -1113,7 +1190,7 @@ impl PullSession {
             }
             ProductKey::TransportShape(position) => {
                 self.transport_shape_facts.remove(position);
-                self.transport_shapes.remove(position);
+                self.remove_transport_shape(position);
             }
             ProductKey::TransportComponent(position) => {
                 self.transport_components.remove(position);
@@ -1205,7 +1282,7 @@ impl PullSession {
         };
         for position in &positions {
             self.transport_shape_facts.remove(position);
-            self.transport_shapes.remove(position);
+            self.remove_transport_shape(position);
             self.transport_components.remove(position);
             self.memo.remove(&ProductKey::TransportShape(position.clone()));
             self.memo.remove(&ProductKey::TransportComponent(position.clone()));
@@ -1233,7 +1310,7 @@ impl PullSession {
             self.demanded_executables.insert(executable.clone());
         }
         if let Some(position) = key.transport_position() {
-            self.demanded_transport_positions.insert(position.clone());
+            self.note_demanded_transport_position(position);
         }
         match key {
             ProductKey::CallableFacts(callable) => {
@@ -2824,6 +2901,168 @@ mod tests {
             !session.transport_closure_covers(&old_only),
             "the displaced closure's other members must not keep a stale cover"
         );
+    }
+
+    /// INTENT: the by-symbol transport-shape index is a second KEYING of
+    /// `transport_shapes`, not a cache -- a symbol's lookup returns exactly
+    /// the recorded positions the old whole-inventory filter-scan would have
+    /// found for it, and nothing from any other executable.
+    #[test]
+    fn transport_shape_index_serves_exactly_the_owning_symbol() {
+        let root = RootId::for_test(31);
+        let first = fake_executable_with_function(root, 310);
+        let second = fake_executable_with_function(root, 311);
+        let first_position = TransportPosition::ExecutableReturn {
+            executable: executable_symbol_for_test(&first),
+        };
+        let second_position = TransportPosition::ExecutableReturn {
+            executable: executable_symbol_for_test(&second),
+        };
+        let shape = ShapeId::for_test(0);
+        let mut session = PullSession::new(root);
+
+        session.record_transport_shape_for(&first, first_position.clone(), shape);
+        session.record_transport_shape_for(&second, second_position.clone(), shape);
+
+        assert_eq!(
+            session
+                .transport_shape_positions_for(&executable_symbol_for_test(&first))
+                .collect::<Vec<_>>(),
+            vec![&first_position]
+        );
+        assert_eq!(
+            session
+                .transport_shape_positions_for(&executable_symbol_for_test(&second))
+                .collect::<Vec<_>>(),
+            vec![&second_position]
+        );
+    }
+
+    /// INTENT: the index lives and dies with `transport_shapes` across the
+    /// transport EPOCH boundary. Invalidation is keyed by the RECORDING
+    /// executable (`transport_positions_by_executable`), while the index is
+    /// keyed by each position's OWNING symbol -- a position recorded FOR one
+    /// executable but owned by another's symbol must still leave the index
+    /// when its recorder's epoch ends, and positions recorded by an
+    /// untouched executable must keep standing.
+    #[test]
+    fn transport_shape_index_dies_with_its_recorder_epoch() {
+        let root = RootId::for_test(32);
+        let invalidated = fake_executable_with_function(root, 320);
+        let untouched = fake_executable_with_function(root, 321);
+        let invalidated_symbol = executable_symbol_for_test(&invalidated);
+        let untouched_symbol = executable_symbol_for_test(&untouched);
+        let own_position = TransportPosition::ExecutableReturn {
+            executable: invalidated_symbol.clone(),
+        };
+        // Recorded FOR `invalidated`, but OWNED by `untouched`'s symbol --
+        // e.g. a CallArg on the caller solved by the callee's closure.
+        let cross_position = TransportPosition::CallArg {
+            executable: untouched_symbol.clone(),
+            callsite: CallSiteId::from_u32(0),
+            semantic_index: 0,
+        };
+        let standing_position = TransportPosition::ExecutableReturn {
+            executable: untouched_symbol.clone(),
+        };
+        let shape = ShapeId::for_test(0);
+        let mut session = PullSession::new(root);
+        session.record_transport_shape_for(&invalidated, own_position.clone(), shape);
+        session.record_transport_shape_for(&invalidated, cross_position.clone(), shape);
+        session.record_transport_shape_for(&untouched, standing_position.clone(), shape);
+
+        // The production epoch event: settled demand for `invalidated` moves.
+        let settled = ExecutableRuntimeDemand::default();
+        let mut moved = ExecutableRuntimeDemand::default();
+        moved.input_demands.push(RuntimeDemand::default());
+        session.record_settled_runtime_demand(invalidated.clone(), settled);
+        session.record_settled_runtime_demand(invalidated.clone(), moved);
+
+        assert!(session.transport_shape(&own_position).is_none());
+        assert!(session.transport_shape(&cross_position).is_none());
+        assert_eq!(
+            session
+                .transport_shape_positions_for(&invalidated_symbol)
+                .collect::<Vec<_>>(),
+            Vec::<&TransportPosition>::new(),
+            "the invalidated recorder's own position must leave the index with the map"
+        );
+        assert_eq!(
+            session
+                .transport_shape_positions_for(&untouched_symbol)
+                .collect::<Vec<_>>(),
+            vec![&standing_position],
+            "the cross-recorded position must leave the index, while the untouched recorder's position stands"
+        );
+    }
+
+    /// INTENT: a position re-recorded as ABSENT leaves `transport_shapes` and
+    /// must leave the index with it -- the artifact consumer packages only
+    /// positions that currently have a shape.
+    #[test]
+    fn transport_shape_index_drops_positions_rerecorded_absent() {
+        let root = RootId::for_test(33);
+        let executable = fake_executable_with_function(root, 330);
+        let symbol = executable_symbol_for_test(&executable);
+        let position = TransportPosition::ExecutableReturn {
+            executable: symbol.clone(),
+        };
+        let mut session = PullSession::new(root);
+        session.record_transport_shape_for(&executable, position.clone(), ShapeId::for_test(0));
+        assert_eq!(session.transport_shape_positions_for(&symbol).count(), 1);
+
+        session.record_absent_transport_shape_for(&executable, position.clone());
+
+        assert!(session.transport_shape(&position).is_none());
+        assert_eq!(
+            session.transport_shape_positions_for(&symbol).count(),
+            0,
+            "an absent re-record must remove the position from the by-symbol index"
+        );
+    }
+
+    /// INTENT: the demanded-position index carries exactly the
+    /// EntryCapture/ResumePayload variants the artifact consumer reads from
+    /// the demanded set, keyed by each position's own symbol; other variants
+    /// join the demanded set without joining the index.
+    #[test]
+    fn demanded_capture_resume_index_tracks_only_those_variants() {
+        let root = RootId::for_test(34);
+        let executable = fake_executable_with_function(root, 340);
+        let symbol = executable_symbol_for_test(&executable);
+        let capture = TransportPosition::EntryCapture {
+            executable: symbol.clone(),
+            entry: ControlEntryId::from_u32(0),
+            capture_index: 0,
+        };
+        let resume = TransportPosition::ResumePayload {
+            executable: symbol.clone(),
+            callsite: None,
+            entry: ControlEntryId::from_u32(1),
+        };
+        let input = TransportPosition::ExecutableInput {
+            executable: symbol.clone(),
+            semantic_index: 0,
+        };
+        let mut session = PullSession::new(root);
+        session.record_transport_component(
+            input.clone(),
+            TransportComponentInventory {
+                representative: input.clone(),
+                positions: vec![input.clone(), capture.clone(), resume.clone()],
+            },
+        );
+
+        assert!(session.demanded_transport_positions().contains(&input));
+        let mut indexed = session
+            .demanded_capture_resume_positions_for(&symbol)
+            .cloned()
+            .collect::<Vec<_>>();
+        indexed.sort_by_key(|position| match position {
+            TransportPosition::EntryCapture { .. } => 0,
+            _ => 1,
+        });
+        assert_eq!(indexed, vec![capture, resume]);
     }
 
     fn measurement_u64(event: &crate::telemetry::capture::OwnedEvent, key: &str) -> u64 {
