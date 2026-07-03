@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-07-03T17:32:01Z",
+  "description": "Found by the fz-go4.18.28.5 work-minimalism audit. PullSession::transport_closure_consult_dependents is written by record_transport_closure_consult as a FULL CROSS PRODUCT per closure solve (for consulted { for member in closure.executables { record } } — quicksort's 21-member closure ends the session at 420 edges; reverse 20-member at 380) and is NEVER pruned: record_solved_transport_closure/drop_solved_transport_closure evict stale closure cover but never touch the consult ledger, so it grows monotonically for the session. Consequences: (1) invalidation reaching ANY member of a large closure artifact-invalidates every other member in one hop, including members whose transport_positions entry is empty (invalidate_transport_products_for_one's early-return skips only the position clear, not the unconditional artifact eviction); (2) edges from displaced/re-solved closures with different membership keep getting walked forever. Safe (over-invalidation only) and invisible on single-shot fixture compiles (counts byte-identical to parent), but it is the conservative-correct-but-repeatedly-over-invalidates shape the seal/wake-amplifier history warns about for incremental/LSP-style sessions. FIX: drop a closure's consult edges when drop_solved_transport_closure fires (or rebuild the ledger per solve) so blast radius tracks LIVE membership; consider whether the dense cross product can be sparser (consulted-\u003emember star instead of complete graph). Acceptance: end-of-drive ledger sizes bounded by live closures; invalidation event counts unchanged on fresh compiles; a re-solve test showing stale edges gone.",
+  "id": "fz-go4.18.28.13",
+  "labels": [],
+  "parent": "fz-go4.18.28",
+  "priority": 2,
+  "status": "open",
+  "title": "Prune the transport consult ledger on closure re-solve (monotone dense over-invalidation)",
+  "type": "task",
+  "updated_at": "2026-07-03T17:32:01Z"
+}
