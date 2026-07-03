@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-07-03T01:16:02Z",
@@ -8,8 +8,8 @@
   "labels": [],
   "parent": "fz-go4.18",
   "priority": 3,
-  "status": "open",
+  "status": "in_progress",
   "title": "Unify the hand-rolled owning-symbol matches onto TransportPosition::executable",
   "type": "task",
-  "updated_at": "2026-07-03T01:16:02Z"
+  "updated_at": "2026-07-03T19:57:35Z"
 }
