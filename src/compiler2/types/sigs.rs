@@ -247,6 +247,20 @@ fn specialize_lit_arrow(types: &mut Types, lit: &ArrowSig, surface: &ArrowSig) -
 }
 
 impl MergeSig for MapSig {
+    // Always `Merged`, never `Empty`: a field intersected to `∅` (an
+    // uninhabited required field) makes the whole merged clause `∅` and
+    // ought to drop rather than persist, mirroring `TupleSig`'s empty-
+    // coordinate rule. Measured and left unfixed: an intern-smell probe (the
+    // same method that justified the tuples-axis fix) instrumented every
+    // `Types::intern` call for
+    // duplicate, provably-empty, or subsumed map clauses and found zero
+    // across the full fixture census and the lib suite — no live map DNF
+    // ever carries the garbage this would need to catch. Paying per-field
+    // emptiness on every map intersect to canonicalize an axis that stays
+    // clean in practice is not justified without a measured blowup (the
+    // tuples-axis fix was justified by one: a 60-clause tuple DNF with 54
+    // provably-empty clauses). Re-measure before adding this if map-heavy
+    // evidence-join traffic starts to matter.
     fn intersect_pos(types: &mut Types, a: &Self, b: &Self) -> PosMeet<Self> {
         let mut fields = a.fields.clone();
         for (key, value) in &b.fields {
