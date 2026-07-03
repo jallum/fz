@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-07-03T01:17:15Z",
+  "description": "Named by fz-go4.18.28.10's job-minimalism audit (2026-07-02, at 2c057aca3, folded). With artifact production cost eliminated (\u003c1% of samples), a 1ms sampling profile of enum_predicate_search (dev profile, 1404 samples, 2s window) shows the dominant term is runtime-demand settling under build_backend_product/ProductDriver::pull: produce_runtime_demand_product ~58% inclusive, settle_demand_cone ~37%, round_return_demand ~14%; top-of-stack is SipHash + memmove + alloc -- hashing and cloning inside the demand ascent loop, not algorithmic blowup. CAVEAT: dev-profile numbers (debug checks inflate memcpy/hash weight) -- re-profile in release before designing the fix; the ranking may compress.\n\nDIAGNOSE-FIRST (the arc's standard): profile release, classify volume (how many cone settles / rounds per fixture -- if rounds are excessive that's a convergence question, relate to fz-go4.18.22's DEMAND_ASCENT_ROUND_BUDGET) vs unit cost (what gets hashed/cloned per round -- ExecutableKey keys carry ActivationKey with Box\u003c[Ty]\u003e; HashMap re-hashing of heavy keys per round is the likely unit-cost suspect). Candidate cures if unit-cost: intern/short-key ExecutableKey within the session (a u32 handle map) so the ascent hashes u32s not Ty-slices; or restructure the cone's working maps to avoid re-cloning keys per round. Candidate cures if volume: check rounds-per-cone against the SCC structure (should be O(longest chain), not O(members)).\n\nDo NOT regress the .18.22 semantics (SCC-settled monotone fixpoint, bottom-start, unknown-is-not-none) -- this is a mechanical-cost ticket, not a redesign.\n\nRIDE-ALONG FINDINGS from the same audit (cheap, same files, land here or separately): (1) artifact.rs:1499 materialize_transport_closure_call_edge sorts a per-callsite resolutions list with the cross-executable key to feed dedup -- a mid-flow sort-for-dedup (latent sorting-law finding, pre-existing, tiny list; replace with keyed set semantics); (2) materialized_executable_transport (artifact.rs:394-402) clones each position twice (once into the HashSet, once inside a match that already owns it) -- ~26 small allocs/production, trivial cleanup.\n\nACCEPTANCE: release-profile before/after gap-sums on enum_predicate_search + enum_map_family; the mechanism named file:line; fix preserves .18.22 fixpoint semantics (suite green 3x incl. the demand contract tests); clippy/fmt clean.",
+  "id": "fz-go4.18.28.11",
+  "labels": [],
+  "parent": "fz-go4.18.28",
+  "priority": 2,
+  "status": "open",
+  "title": "Runtime-demand settling is the next census bottleneck: hashing/cloning inside settle_demand_cone",
+  "type": "task",
+  "updated_at": "2026-07-03T01:17:15Z"
+}
