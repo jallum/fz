@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-go4.18.28.1"
   ],
@@ -10,8 +10,8 @@
   "labels": [],
   "parent": "fz-go4.18",
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "Product transport-plan completeness for advanced callable captures (escaped-continuation / callable-resolution / suspend-continuation)",
   "type": "bug",
-  "updated_at": "2026-07-02T20:48:47Z"
+  "updated_at": "2026-07-03T00:50:33Z"
 }
