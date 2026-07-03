@@ -3,7 +3,7 @@
   "blocked_by": [],
   "blocks": [],
   "created": "2026-07-03T19:30:32Z",
-  "description": "Found by the fz-go4.20 sweep (at f7ef1d4e1). Project law: .agent/docs are present-tense facts about built subsystems, no tickets/plans. The forward-looking stale claims were fixed by fz-go4.20, but ~15 BACKWARD-looking ticket-ID citations remain ('X was deleted by fz-...'): addressed-arrow.md (fz-y6w), compiler2-migration.md (fz-rh2.16.3, fz-rh2.16.7, fz-bin.16, fz-bin.11), quoted-source.md (fz-rh2.11.7), semantic-fixpoint.md (fz-go4.18.4, fz-rh2.17.5.9), telemetry.md (fz-00181 x4, fz-go4.18.4 x2, fz-compiler2), pipeline.md (fz-go4.18.4 x3, fz-go4.16). None contradict code; they are provenance narration. TASK: rewrite each sentence to state the present-tense fact without the ticket citation (the fact stands on the code; git history carries provenance). Mechanical, docs-only, single fact-check audit lane.",
+  "description": "DONE (3bd54a5a3, fact-check audited then re-verified 2026-07-03). Stripped backward-looking ticket-ID provenance narration from six .agent/docs files (addressed-arrow, compiler2-migration, pipeline, quoted-source, semantic-fixpoint, telemetry), rewriting each citation to a standing present-tense fact verified against code. THE AUDIT CAUGHT (and this fix corrected) two INHERITED-FALSE claims that citation-stripping would have laundered into bare present-tense falsehoods: (1) compiler2-migration.md claimed 7 union-receiver fixtures 'all run through fz2' — actually only enum_take_drop_split + range_enumerable run all three paths; enum_map_family runs interp-only (build+run deferred on native ReturnLanes arity mismatch); map_enumerable runs run+build (interp deferred, same); enum_tier0 + enumerable_protocol_dispatch + membership_operator are deferred on ALL three paths. (2) enum_reduce_suspend claimed 'runs through fz2 run/interp/build' — actually deferred on all three (native returned suspend continuations lose settled callable boundaries). Corrected sentences cite tests/fixture_matrix.rs:115-155 (defer_for_path -\u003e ignored trial, Ok(()) without check()) + each fixture header's defer.* markers; coordinator re-verified all 8 fixtures' markers against ground truth before fold. Remaining .agent/docs 'fz-' hits are non-citations (externs.md 'fz-visible' term-of-art; telemetry.md fixture/log-path literals fz-00181, fz-compiler2-quicksort). LESSON: a docs sweep that strips citations MUST fact-verify each surviving claim, not just delete the ticket ID — inherited falsehoods are the trap. Two adjacent pre-existing findings ticketed: fz-go4.32 (telemetry.md root_executable_frontier stale). fact-engine.md confirmed citation-free (untouched, family-8 owns it).",
   "id": "fz-go4.29",
   "labels": [],
   "parent": "fz-go4",
@@ -11,5 +11,5 @@
   "status": "in_progress",
   "title": "Strip backward-looking ticket-ID citations from .agent/docs",
   "type": "task",
-  "updated_at": "2026-07-03T19:57:35Z"
+  "updated_at": "2026-07-03T20:11:16Z"
 }
