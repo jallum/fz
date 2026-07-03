@@ -3,7 +3,7 @@
   "blocked_by": [],
   "blocks": [],
   "created": "2026-07-03T17:32:02Z",
-  "description": "Found by the fz-go4.18.28.5 implementer, independently confirmed by the removable-code audit. runtime_demand.rs::settle_demand_cone (~:480) sorts ascent members by (function.as_u32(), key.activation.arrow, need_order) — arrow is Ty(u32), a RAW TYPE-INTERNER ID whose value depends on the sequence types get interned during the fixpoint, not on source-structural position. Classification: iteration-order-affecting-convergence — the same shape of risk as the .28.5 defect (schedule-derived key feeding an ascent). Unverified whether it is convergence-speed-only (Kleene ascent should reach the same fixpoint in any order if truly monotone) or a correctness leak (any non-monotone step would make the answer order-dependent). TASK: prove which. If speed-only, either document why the order is harmless or replace with a structural key anyway (sorting-law hygiene: sorts should not consume interner ids mid-flow); if correctness-affecting, this is a bug in the .28.6 nondeterminism family — connect to that ticket's mechanism (a fact consulted through a channel not wired into its invalidation). Sequencing: natural companion to fz-go4.18.28.6.",
+  "description": "DONE (folded 2026-07-03 as ef4043a97, audited PASS). settle_demand_cone's ascent-member sort keyed on key.activation.arrow (raw Ty(u32), a process-dependent interner id) — replaced with world.types().display(\u0026arrow), a structural (rendered-type) key that is per-process AND run-to-run deterministic. VERDICT from investigation+audit: SPEED-ONLY, provably order-IRRELEVANT — settle_demand_cone is a true Jacobi fixpoint (each round reads a FROZEN previous-round snapshot; contributions combine via the ShapeDemand/CallableDemand semilattice join, verified idempotent/commutative/associative; dirty-set is value-change-driven, never processing-order-driven), so members order cannot affect the settled answer OR round count. The audit found the sort is even MORE cosmetic than claimed: the sorted members Vec is not consumed by the return value at all (callers iterate the HashMaps directly) — its only effects are internal round-processing sequence and a never-hit round-budget panic diagnostic. Empirically: activation dumps byte-identical across 5+ runs both at base and post-fix on fz_f98_range_map_converges/quicksort/reverse; matrix set unchanged; 1159/0/24. Two follow-up nits ticketed (see below). Fixes the raw-interner-id nondeterminism; the display-key has a narrow latent tie (closure-typed members sharing fn_id) that is harmless to correctness and unobserved.",
   "id": "fz-go4.18.28.14",
   "labels": [],
   "parent": "fz-go4.18.28",
@@ -11,5 +11,5 @@
   "status": "in_progress",
   "title": "settle_demand_cone sorts ascent members by raw interned Ty (process-hash-dependent convergence order)",
   "type": "task",
-  "updated_at": "2026-07-03T22:38:01Z"
+  "updated_at": "2026-07-03T23:10:25Z"
 }
