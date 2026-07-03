@@ -50,9 +50,7 @@ pub(super) fn seed_root(world: &mut World<'_>, root_id: RootId) -> Result<JobEff
             ),
         ));
     }
-    let mut gated_follow_up = HashSet::new();
-    if !world.require_activation_key_facts(root.function, &mut reads, &mut waits, &mut gated_follow_up) {
-        follow_up.extend(gated_follow_up);
+    if !world.require_activation_key_facts(root.function, &mut reads, &mut waits) {
         return Ok(JobEffects {
             reads: settled_uses(reads),
             waits: settled_uses(waits),

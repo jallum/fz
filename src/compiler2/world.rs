@@ -2124,7 +2124,6 @@ impl<'a> World<'a> {
         function: FunctionId,
         reads: &mut Vec<FactKey>,
         waits: &mut HashSet<FactKey>,
-        follow_up: &mut HashSet<Job>,
     ) -> bool {
         let recursive = FactKey::Recursive(function);
         let recursive_ready = self.has_fact(&recursive);
@@ -2132,7 +2131,6 @@ impl<'a> World<'a> {
             reads.push(recursive);
         } else {
             waits.insert(recursive);
-            follow_up.insert(Job::DeriveRecursive(function));
         }
 
         let dispatch_mask = FactKey::DispatchMask(function);
@@ -2141,7 +2139,6 @@ impl<'a> World<'a> {
             reads.push(dispatch_mask);
         } else {
             waits.insert(dispatch_mask);
-            follow_up.insert(Job::DeriveDispatchMask(function));
         }
 
         recursive_ready && dispatch_mask_ready

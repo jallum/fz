@@ -133,6 +133,8 @@ impl World<'_> {
             FactKey::FunctionDefined(function) => Some(Job::DefineFunction(*function)),
             FactKey::ModuleDefined(module) => Some(Job::DefineModule(*module)),
             FactKey::TypeDefined(name) => Some(Job::DeriveTypeDef(name.clone())),
+            FactKey::FunctionContract(function) => Some(Job::DeriveFunctionContract(*function)),
+            FactKey::CodeIndexed(code) => Some(Job::IndexCode(*code)),
             FactKey::GuardDispatch(function) => Some(Job::ReifyGuardDispatch(*function)),
             FactKey::LoweredBody(function) => Some(Job::LowerFunction(*function)),
             FactKey::Recursive(function) => Some(Job::DeriveRecursive(*function)),
@@ -176,13 +178,19 @@ impl World<'_> {
                 return false;
             }
         }
-        // TEMPORARY PUMP (fz-go4.18.24): a producer that ran, concluded, and
-        // did NOT claim the fact falls through to a re-demand. The unconverted
-        // semantic layer's `AnalyzeActivation` concludes with zero
-        // outputs/waits and relies on this pump for re-derivation (measured:
-        // 0 re-demands on healthy fixtures, ~37/compile on
-        // enum_take_drop_split). Once the jobs/semantic.rs family converts
-        // conclude-by-omission to explicit claims, tighten this to skip
+        // TEMPORARY PUMP: a producer that ran, concluded, and did NOT claim
+        // the fact falls through to a re-demand. Exactly one conclude-by-
+        // omission site still relies on it: `resolve_protocol_call`'s
+        // `matches.is_empty()` branch (jobs/semantic.rs) can conclude a
+        // *callsite* with no wait at all when
+        // `FactKey::ProtocolImplProviders(protocol)` doesn't exist yet at the
+        // time of the read — the `reads.push` there is conditional on
+        // `has_fact`, so the very first pass drops the subscription that
+        // would otherwise re-wake the callsite once a provider is indexed.
+        // Fixing that needs a real wait on `ProtocolImplProviders`, which
+        // first needs settling whether that fact is once-and-done or
+        // monotone-growing (a genuine wait on an ever-growing fact might
+        // never resolve). Once that is resolved, tighten this to skip
         // concluded producers outright.
         self.demand(job);
         true

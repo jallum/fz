@@ -67,7 +67,13 @@ struct CoalescedCallEmission {
 pub(super) fn analyze_activation(world: &mut World<'_>, activation: &ActivationKey) -> Result<JobEffects, FatalError> {
     let activation_fact = FactKey::Activation(activation.clone());
     if !world.has_fact(&activation_fact) {
-        return Ok(JobEffects::default());
+        // Mirrors the `ActivationInputs` gate just below: absence of the seed
+        // fact is a genuine block on `Job::SeedActivation`, not a conclusion.
+        // Returning an empty `JobEffects` here used to be a silent
+        // conclude-by-omission that only re-ran through the drive.rs
+        // TEMPORARY PUMP; a bare wait lets the ordinary blocked-waiter
+        // expansion (`demand_blocked_wait_producers`) carry it instead.
+        return Ok(JobEffects::wait_on_current(activation_fact, []));
     }
     let activation_inputs_fact = FactKey::ActivationInputs(activation.clone());
     let Some(inputs) = world.activation_inputs(activation) else {
@@ -151,7 +157,6 @@ pub(super) fn analyze_activation(world: &mut World<'_>, activation: &ActivationK
                     activation,
                     &mut reads,
                     &mut waits,
-                    &mut follow_up,
                 )?;
                 merge_value_types(world, &mut value_types, &values);
                 let clause_return = analyze_entry(
@@ -165,30 +170,20 @@ pub(super) fn analyze_activation(world: &mut World<'_>, activation: &ActivationK
                     activation,
                     &mut reads,
                     &mut waits,
-                    &mut follow_up,
                 )?;
                 return_evidence = join_evidence(world, return_evidence, clause_return);
             }
         }
     }
 
-    if let Some(contract_return_ty) =
-        activation_contract_return(world, function, &inputs, &mut reads, &mut waits, &mut follow_up)?
-    {
+    if let Some(contract_return_ty) = activation_contract_return(world, function, &inputs, &mut reads, &mut waits)? {
         return_evidence = refine_call_return(world, return_evidence, Some(contract_return_ty));
     }
 
     // Waits no longer bail: a waiting completion extends the job's standing
     // claims (it cannot retract), so partial evidence publishes safely and
     // the waits simply ride the final effects.
-    analysis_calls = coalesce_call_emissions(
-        world,
-        activation,
-        analysis_calls,
-        &mut reads,
-        &mut waits,
-        &mut follow_up,
-    )?;
+    analysis_calls = coalesce_call_emissions(world, activation, analysis_calls, &mut reads, &mut waits)?;
 
     let mut emitted_activations = HashSet::new();
     let mut emitted_executables = HashSet::new();
@@ -216,6 +211,23 @@ pub(super) fn analyze_activation(world: &mut World<'_>, activation: &ActivationK
             outputs.push(FactKey::ActivationInputs(callee_activation.key.clone()));
             activation_input_contributions.push((callee_activation.key.clone(), callee_activation.inputs.clone()));
             if !callee_activation.already_present {
+                // NOT a wait+push pair: there is no genuine wait to hang a
+                // drive.rs producer arm off. `prepare_function_call` only
+                // `reads` the callee's `ReturnType` (so mutual recursion
+                // cannot deadlock); nothing ever blocks on the callee's
+                // analysis itself. This is activation-discovery/frontier
+                // expansion — the non-root analogue of
+                // `World::demand_root_entry_analyses` — not the standard
+                // absence-gated wait this family converts. Bare `world.drive()`
+                // walks the whole reachable call graph only because this push
+                // exists; removing it (verified empirically: commenting out
+                // this insert failed 16 compiler2 lib tests, e.g.
+                // `compiler2_semantic_analysis_derives_reachable_call_edges_and_tuple_return_need`,
+                // with non-root activations never analyzed) needs a proper
+                // standing "activation frontier" demand structure in `World`,
+                // expanded by `next_ready_job` the way roots are. This push
+                // stays only until that structure exists; it is not settled
+                // design.
                 follow_up.insert(Job::AnalyzeActivation(callee_activation.key.clone()));
             }
         }
@@ -280,21 +292,11 @@ fn analyze_entry(
     activation: &ActivationKey,
     reads: &mut Vec<FactKey>,
     waits: &mut HashSet<FactKey>,
-    follow_up: &mut HashSet<Job>,
 ) -> Result<Option<Ty>, FatalError> {
     reachable_entries.insert(entry_id);
     let entry = &entries[entry_id.as_u32() as usize];
     let mut local = values.clone();
-    apply_steps(
-        world,
-        &entry.steps,
-        &mut local,
-        calls,
-        activation,
-        reads,
-        waits,
-        follow_up,
-    )?;
+    apply_steps(world, &entry.steps, &mut local, calls, activation, reads, waits)?;
     merge_value_types(world, value_types, &local);
     analyze_tail(
         world,
@@ -307,7 +309,6 @@ fn analyze_entry(
         activation,
         reads,
         waits,
-        follow_up,
     )
 }
 
@@ -319,10 +320,9 @@ fn apply_steps(
     activation: &ActivationKey,
     reads: &mut Vec<FactKey>,
     waits: &mut HashSet<FactKey>,
-    follow_up: &mut HashSet<Job>,
 ) -> Result<(), FatalError> {
     for step in steps {
-        apply_step(world, step, values, calls, activation, reads, waits, follow_up)?;
+        apply_step(world, step, values, calls, activation, reads, waits)?;
     }
     Ok(())
 }
@@ -335,7 +335,6 @@ fn apply_step(
     _activation: &ActivationKey,
     reads: &mut Vec<FactKey>,
     waits: &mut HashSet<FactKey>,
-    follow_up: &mut HashSet<Job>,
 ) -> Result<(), FatalError> {
     match step {
         LoweredStep::Const { value, literal } => {
@@ -465,7 +464,7 @@ fn apply_step(
             let Some(source_ty) = value_ty(values, *source) else {
                 return Ok(());
             };
-            let asserted = struct_assertion_ty(world, *module, reads, waits, follow_up);
+            let asserted = struct_assertion_ty(world, *module, reads, waits);
             let refined = world.types_mut().intersect(source_ty, asserted);
             values.insert(*source, refined);
         }
@@ -578,7 +577,6 @@ fn analyze_branch(
     activation: &ActivationKey,
     reads: &mut Vec<FactKey>,
     waits: &mut HashSet<FactKey>,
-    follow_up: &mut HashSet<Job>,
 ) -> Result<Option<Ty>, FatalError> {
     let scope = entry_scope(entries, entry_id, values, None, params);
     analyze_entry(
@@ -592,7 +590,6 @@ fn analyze_branch(
         activation,
         reads,
         waits,
-        follow_up,
     )
 }
 
@@ -608,7 +605,6 @@ fn analyze_tail(
     activation: &ActivationKey,
     reads: &mut Vec<FactKey>,
     waits: &mut HashSet<FactKey>,
-    follow_up: &mut HashSet<Job>,
 ) -> Result<Option<Ty>, FatalError> {
     match tail {
         LoweredTail::Value { value, dest } => deliver_tail_value(
@@ -623,7 +619,6 @@ fn analyze_tail(
             activation,
             reads,
             waits,
-            follow_up,
         ),
         LoweredTail::DirectCall {
             value,
@@ -639,9 +634,8 @@ fn analyze_tail(
             else {
                 return Ok(None);
             };
-            let (emission, return_ty) = resolve_direct_call(
-                world, activation, *callsite, *callee, arg_types, reads, waits, follow_up,
-            )?;
+            let (emission, return_ty) =
+                resolve_direct_call(world, activation, *callsite, *callee, arg_types, reads, waits)?;
             if let Some(emission) = emission {
                 calls.push(emission);
             }
@@ -663,7 +657,6 @@ fn analyze_tail(
                 activation,
                 reads,
                 waits,
-                follow_up,
             )
         }
         LoweredTail::ClosureCall {
@@ -681,9 +674,8 @@ fn analyze_tail(
             ) else {
                 return Ok(None);
             };
-            let (emission, return_ty) = resolve_closure_call(
-                world, activation, *callsite, callee_ty, arg_types, reads, waits, follow_up,
-            )?;
+            let (emission, return_ty) =
+                resolve_closure_call(world, activation, *callsite, callee_ty, arg_types, reads, waits)?;
             if let Some(emission) = emission {
                 calls.push(emission);
             }
@@ -705,7 +697,6 @@ fn analyze_tail(
                 activation,
                 reads,
                 waits,
-                follow_up,
             )
         }
         LoweredTail::If {
@@ -723,7 +714,6 @@ fn analyze_tail(
                 activation,
                 reads,
                 waits,
-                follow_up,
             )?;
             let else_ty = analyze_branch(
                 world,
@@ -737,7 +727,6 @@ fn analyze_tail(
                 activation,
                 reads,
                 waits,
-                follow_up,
             )?;
             Ok(join_evidence(world, then_ty, else_ty))
         }
@@ -768,7 +757,6 @@ fn analyze_tail(
                     activation,
                     reads,
                     waits,
-                    follow_up,
                 )?;
                 merged = join_evidence(world, merged, arm_ty);
             }
@@ -784,7 +772,6 @@ fn analyze_tail(
                 activation,
                 reads,
                 waits,
-                follow_up,
             )?;
             Ok(join_evidence(world, merged, miss_ty))
         }
@@ -811,7 +798,6 @@ fn analyze_tail(
                     activation,
                     reads,
                     waits,
-                    follow_up,
                 )?;
                 merged = join_evidence(world, merged, clause_ty);
             }
@@ -828,7 +814,6 @@ fn analyze_tail(
                     activation,
                     reads,
                     waits,
-                    follow_up,
                 )?;
                 merged = join_evidence(world, merged, after_ty);
             }
@@ -852,7 +837,6 @@ fn deliver_tail_value(
     activation: &ActivationKey,
     reads: &mut Vec<FactKey>,
     waits: &mut HashSet<FactKey>,
-    follow_up: &mut HashSet<Job>,
 ) -> Result<Option<Ty>, FatalError> {
     // No evidence for the delivered value means no evidence for the path.
     let Some(delivered) = value_ty(values, value) else {
@@ -878,7 +862,6 @@ fn deliver_tail_value(
                 activation,
                 reads,
                 waits,
-                follow_up,
             )
         }
     }
@@ -925,7 +908,6 @@ fn resolve_direct_call(
     arg_types: Vec<Ty>,
     reads: &mut Vec<FactKey>,
     waits: &mut HashSet<FactKey>,
-    follow_up: &mut HashSet<Job>,
 ) -> Result<(Option<CallEmission>, Option<Ty>), FatalError> {
     // A proven-empty argument type is a real fact: no value can reach this
     // call, the path is dead. (Absence cannot arrive here — an unresolved
@@ -934,8 +916,7 @@ fn resolve_direct_call(
         return Ok((None, Some(none_ty(world))));
     }
 
-    let (summary, activations, return_ty) =
-        resolve_function_call(world, caller, function, arg_types, reads, waits, follow_up)?;
+    let (summary, activations, return_ty) = resolve_function_call(world, caller, function, arg_types, reads, waits)?;
     Ok((
         summary.map(|summary| CallEmission {
             key: CallSiteKey {
@@ -977,7 +958,6 @@ fn coalesce_call_emissions(
     calls: Vec<CallEmission>,
     reads: &mut Vec<FactKey>,
     waits: &mut HashSet<FactKey>,
-    follow_up: &mut HashSet<Job>,
 ) -> Result<Vec<CallEmission>, FatalError> {
     let mut order = Vec::new();
     let mut grouped = HashMap::<CallSiteKey, CoalescedCallEmission>::new();
@@ -1010,7 +990,6 @@ fn coalesce_call_emissions(
             grouped.call,
             reads,
             waits,
-            follow_up,
         )?);
     }
     Ok(coalesced)
@@ -1040,7 +1019,6 @@ fn rebuild_coalesced_call_emission(
     call: CallEmission,
     reads: &mut Vec<FactKey>,
     waits: &mut HashSet<FactKey>,
-    follow_up: &mut HashSet<Job>,
 ) -> Result<CallEmission, FatalError> {
     let Some(summary) = &call.summary else {
         return Ok(call);
@@ -1061,7 +1039,6 @@ fn rebuild_coalesced_call_emission(
                     target.surface_inputs.clone(),
                     reads,
                     waits,
-                    follow_up,
                 )?
                 else {
                     return Ok(call);
@@ -1105,10 +1082,9 @@ fn call_emission_for_function(
     input_types: Vec<Ty>,
     reads: &mut Vec<FactKey>,
     waits: &mut HashSet<FactKey>,
-    follow_up: &mut HashSet<Job>,
 ) -> Result<Option<CallEmission>, FatalError> {
     let Some((input_types, contract_return_ty)) =
-        refine_function_call_surface(world, function, input_types, reads, waits, follow_up)?
+        refine_function_call_surface(world, function, input_types, reads, waits)?
     else {
         return Ok(None);
     };
@@ -1131,7 +1107,7 @@ fn call_emission_for_function(
         }));
     }
     let Some((activation, already_present, return_ty)) =
-        prepare_function_call(world, caller, function, &input_types, reads, waits, follow_up)
+        prepare_function_call(world, caller, function, &input_types, reads, waits)
     else {
         return Ok(None);
     };
@@ -1164,25 +1140,15 @@ fn resolve_function_call(
     input_types: Vec<Ty>,
     reads: &mut Vec<FactKey>,
     waits: &mut HashSet<FactKey>,
-    follow_up: &mut HashSet<Job>,
 ) -> Result<ResolvedCall, FatalError> {
     if let Some(callback) = world.protocol_callback(function) {
-        return resolve_protocol_call(
-            world,
-            caller,
-            function,
-            callback.protocol,
-            input_types,
-            reads,
-            waits,
-            follow_up,
-        );
+        return resolve_protocol_call(world, caller, function, callback.protocol, input_types, reads, waits);
     }
-    if wait_for_unresolved_function_module(world, function, waits, follow_up) {
+    if wait_for_unresolved_function_module(world, function, waits) {
         return Ok((None, Vec::new(), None));
     }
     let Some((input_types, contract_return_ty)) =
-        refine_function_call_surface(world, function, input_types, reads, waits, follow_up)?
+        refine_function_call_surface(world, function, input_types, reads, waits)?
     else {
         return Ok((None, Vec::new(), None));
     };
@@ -1205,7 +1171,7 @@ fn resolve_function_call(
         ));
     }
     let Some((activation, already_present, return_evidence)) =
-        prepare_function_call(world, caller, function, &input_types, reads, waits, follow_up)
+        prepare_function_call(world, caller, function, &input_types, reads, waits)
     else {
         return Ok((None, Vec::new(), None));
     };
@@ -1237,7 +1203,6 @@ fn resolve_protocol_call(
     input_types: Vec<Ty>,
     reads: &mut Vec<FactKey>,
     waits: &mut HashSet<FactKey>,
-    follow_up: &mut HashSet<Job>,
 ) -> Result<ResolvedCall, FatalError> {
     // VERDICT (fz-rh2.17.5.9): body readiness, not interface visibility.
     // Defining the protocol module is what registers its callbacks and
@@ -1246,14 +1211,23 @@ fn resolve_protocol_call(
     // it is not a stand-in for ModuleInterface.
     let protocol_fact = FactKey::ModuleDefined(protocol);
     if world.module_defined_revision(protocol).is_none() {
-        wait_for_protocol_module(world, protocol, waits, follow_up);
+        wait_for_protocol_module(world, protocol, waits);
         return Ok((None, Vec::new(), None));
     }
     reads.push(protocol_fact);
     let dispatch_fact = FactKey::ProtocolDispatch(protocol);
     if !world.has_fact(&dispatch_fact) {
+        // `ProtocolDispatch` is a co-output of the same `Job::DefineModule`
+        // run that publishes `ModuleDefined` for a protocol module
+        // (`source_publish::publish_protocol_surface` pushes both into one
+        // `JobEffects`), so it carries no arm of its own in
+        // `demand_fact_producer` — its demand rides `ModuleDefined`'s. Since
+        // `module_defined_revision(protocol)` is already proven `Some` above,
+        // `Job::DefineModule(protocol)` has already run and already claimed
+        // this fact for a true protocol module; this branch is defensive
+        // (unreachable in practice) rather than provably dead by construction,
+        // so it stays a bare wait instead of an assert/panic.
         waits.insert(dispatch_fact);
-        follow_up.insert(Job::DefineModule(protocol));
         return Ok((None, Vec::new(), None));
     }
     reads.push(dispatch_fact);
@@ -1297,7 +1271,6 @@ fn resolve_protocol_call(
             }
             if world.module_defined_revision(provider).is_none() {
                 waits.insert(FactKey::ModuleDefined(provider));
-                follow_up.insert(Job::DefineModule(provider));
             }
         }
         return Ok((None, Vec::new(), None));
@@ -1314,25 +1287,19 @@ fn resolve_protocol_call(
         // every protocol call behind whole-module scoping is readiness the
         // call does not require. Gate per FUNCTION, exactly as the
         // direct-call path does.
-        if wait_for_unresolved_function_module(world, selected.function, waits, follow_up) {
+        if wait_for_unresolved_function_module(world, selected.function, waits) {
             return Ok((None, Vec::new(), None));
         }
 
         let refined_inputs = refine_protocol_target_inputs(world, &input_types, receiver_ty, overlap);
         let Some((refined_inputs, contract_return_ty)) =
-            refine_function_call_surface(world, selected.function, refined_inputs, reads, waits, follow_up)?
+            refine_function_call_surface(world, selected.function, refined_inputs, reads, waits)?
         else {
             return Ok((None, Vec::new(), None));
         };
-        let Some((activation, already_present, observed_return)) = prepare_function_call(
-            world,
-            caller,
-            selected.function,
-            &refined_inputs,
-            reads,
-            waits,
-            follow_up,
-        ) else {
+        let Some((activation, already_present, observed_return)) =
+            prepare_function_call(world, caller, selected.function, &refined_inputs, reads, waits)
+        else {
             return Ok((None, Vec::new(), None));
         };
         let target_return = refine_call_return(world, observed_return, contract_return_ty);
@@ -1387,7 +1354,6 @@ fn resolve_closure_call(
     arg_types: Vec<Ty>,
     reads: &mut Vec<FactKey>,
     waits: &mut HashSet<FactKey>,
-    follow_up: &mut HashSet<Job>,
 ) -> Result<(Option<CallEmission>, Option<Ty>), FatalError> {
     if world.types().is_empty(&callee_ty) || arg_types.iter().any(|arg| world.types().is_empty(arg)) {
         // Proven-empty callee or argument: the call site is dead. This is
@@ -1425,7 +1391,7 @@ fn resolve_closure_call(
         let mut inputs = closure.captures;
         inputs.extend(refined_args.clone());
         let (summary, clause_activations, observed_return) =
-            resolve_function_call(world, caller, function, inputs, reads, waits, follow_up)?;
+            resolve_function_call(world, caller, function, inputs, reads, waits)?;
         let clause_return = refine_call_return(world, observed_return, Some(clause.ret));
         return_ty = join_evidence(world, return_ty, clause_return);
 
@@ -1480,7 +1446,6 @@ fn refine_function_call_surface(
     input_types: Vec<Ty>,
     reads: &mut Vec<FactKey>,
     waits: &mut HashSet<FactKey>,
-    follow_up: &mut HashSet<Job>,
 ) -> Result<Option<RefinedCallSurface>, FatalError> {
     if !world.function_declares_contract(function) {
         return Ok(Some((input_types, None)));
@@ -1488,7 +1453,6 @@ fn refine_function_call_surface(
     let contract_fact = FactKey::FunctionContract(function);
     let Some(_) = world.function_contract_revision(function) else {
         waits.insert(contract_fact);
-        follow_up.insert(Job::DeriveFunctionContract(function));
         return Ok(None);
     };
     reads.push(contract_fact);
@@ -1521,10 +1485,9 @@ fn activation_contract_return(
     input_types: &[Ty],
     reads: &mut Vec<FactKey>,
     waits: &mut HashSet<FactKey>,
-    follow_up: &mut HashSet<Job>,
 ) -> Result<Option<Ty>, FatalError> {
     let Some((_, contract_return_ty)) =
-        refine_function_call_surface(world, function, input_types.to_vec(), reads, waits, follow_up)?
+        refine_function_call_surface(world, function, input_types.to_vec(), reads, waits)?
     else {
         return Ok(None);
     };
@@ -1608,9 +1571,8 @@ fn prepare_function_call(
     arg_types: &[Ty],
     reads: &mut Vec<FactKey>,
     waits: &mut HashSet<FactKey>,
-    follow_up: &mut HashSet<Job>,
 ) -> Option<(ActivationKey, bool, Option<Ty>)> {
-    if !world.require_activation_key_facts(function, reads, waits, follow_up) {
+    if !world.require_activation_key_facts(function, reads, waits) {
         return None;
     }
 
@@ -1629,21 +1591,14 @@ fn prepare_function_call(
 /// register during its definition, so a receiver type implying an unloaded
 /// runtime module genuinely needs DefineModule — this is demand
 /// bootstrapping, not a ModuleInterface stand-in.
-fn wait_for_protocol_module(
-    world: &mut World<'_>,
-    protocol: ModuleId,
-    waits: &mut HashSet<FactKey>,
-    follow_up: &mut HashSet<Job>,
-) {
+fn wait_for_protocol_module(world: &mut World<'_>, protocol: ModuleId, waits: &mut HashSet<FactKey>) {
     if let Some(code_id) = world.ensure_runtime_module(protocol) {
         let indexed_fact = FactKey::CodeIndexed(code_id);
         if !world.has_fact(&indexed_fact) {
             waits.insert(indexed_fact);
-            follow_up.insert(Job::IndexCode(code_id));
         }
     }
     waits.insert(FactKey::ModuleDefined(protocol));
-    follow_up.insert(Job::DefineModule(protocol));
 }
 
 /// VERDICT (fz-rh2.17.5.9): body readiness. The caller holds a FunctionId
@@ -1654,7 +1609,6 @@ fn wait_for_unresolved_function_module(
     world: &mut World<'_>,
     function: FunctionId,
     waits: &mut HashSet<FactKey>,
-    follow_up: &mut HashSet<Job>,
 ) -> bool {
     if world.function_defined_revision(function).is_some() {
         return false;
@@ -1669,11 +1623,14 @@ fn wait_for_unresolved_function_module(
     // This site needs the function's module DEFINED (its scope walked), not its
     // body published: a protocol callback has no body of its own, so pulling
     // `PublishFunctionSource` here would chase a source that never exists
-    // (fz-f98.14.5). Demand the scope that matches the `ModuleDefined` wait.
+    // (fz-f98.14.5). The wait names `ModuleDefined(module)` directly — its
+    // producer arm is `Job::DefineModule`, which bootstraps a runtime
+    // module's code (`World::ensure_runtime_module`) itself when it runs, so
+    // this site does not need to call `demand_function_scope` for that side
+    // effect. `demand_function_scope`'s `CodeScoped`/`ScopeCode` branch (for
+    // `module.is_global()`) is unreachable from here: the early return above
+    // already rules out a global module before this wait registers.
     waits.insert(FactKey::ModuleDefined(module));
-    for (_, job) in world.demand_function_scope(function) {
-        follow_up.insert(job);
-    }
     true
 }
 
@@ -2236,7 +2193,6 @@ fn struct_assertion_ty(
     module: ModuleId,
     reads: &mut Vec<FactKey>,
     waits: &mut HashSet<FactKey>,
-    follow_up: &mut HashSet<Job>,
 ) -> Ty {
     // Honor the struct's declared field types (`@type t`) so a destructure
     // recovers them even after a value crossed a protocol boundary that erased
@@ -2253,7 +2209,7 @@ fn struct_assertion_ty(
         arity: 0,
     };
     if world.type_decl(&name).is_some() {
-        let fact = FactKey::TypeDefined(name.clone());
+        let fact = FactKey::TypeDefined(name);
         if world.has_fact(&fact) {
             reads.push(fact);
             if let Some(declared) = world.declared_struct_value_ty(module) {
@@ -2261,7 +2217,6 @@ fn struct_assertion_ty(
             }
         } else {
             waits.insert(fact);
-            follow_up.insert(Job::DeriveTypeDef(name));
         }
     }
     let field_count = world.module_struct_fields(module).map_or(0, |fields| fields.len());
