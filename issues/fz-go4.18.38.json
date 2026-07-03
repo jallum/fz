@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-07-03T21:10:42Z",
+  "description": "Found by the fz-go4.18.24 family-8 re-audit correctness lane (at dff9b4685; pre-existing from fz-go4.17.2, untouched by family 8). jobs/macro_runtime.rs:59 (build_macro_executable) synchronously calls world.complete_job(Job::BuildBackendProduct(root), effects) INLINE rather than via a wait/wake. This is a push-shaped mechanism the follow_up-elimination arc's rg-based sweeps do not catch (it is not a follow_up at all — it is a direct nested complete_job). By the owner's law (work runs only via waits/pull or changed-revision wakes) this is a smuggled push. TASK: determine whether the macro-executable build genuinely needs a synchronous nested drive (macro expansion is a compile-time sub-computation, which may be a legitimate distinct case like submit_root's ignition) or whether it should be restructured as a demand+wait. If legitimate, DOCUMENT why in a comment + fact-engine.md (a sanctioned exception, like submit_root). If not, convert. Sequence AFTER arc-close (JobEffects::follow_up deletion) so the follow_up machinery is settled first. This is the northstar arc's next frontier beyond follow_up.",
+  "id": "fz-go4.18.38",
+  "labels": [],
+  "parent": "fz-go4.18",
+  "priority": 2,
+  "status": "open",
+  "title": "build_macro_executable synchronously completes BuildBackendProduct inline (non-follow_up push)",
+  "type": "task",
+  "updated_at": "2026-07-03T21:10:42Z"
+}
