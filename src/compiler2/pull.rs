@@ -21,7 +21,9 @@ use super::drive::FactKey;
 use super::facts::FactUse;
 use super::identity::{ExecutableKey, RootId};
 use super::semantic::{ExecutableRuntimeDemand, RuntimeDemand};
-use super::transport::{BoundaryFacts, BoundaryId, CallableFacts, CallableId, ShapeId, TransportPosition};
+use super::transport::{
+    BoundaryFacts, BoundaryId, CallableFacts, CallableId, CodegenSeamFact, ShapeId, TransportPosition,
+};
 use super::world::World;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -44,6 +46,14 @@ pub enum ProductKey {
     TransportComponent(TransportPosition),
     CallableFacts(CallableId),
     BoundaryFacts(BoundaryId),
+    /// The session's published codegen seam facts, over every boundary
+    /// recorded in `PullSession::boundary_facts_inventory` so far. Computed
+    /// once per root per invalidation epoch (see `record_boundary_facts`),
+    /// not once per executable production: both
+    /// `produce_materialized_executable_product` and
+    /// `produce_abi_executable_product` pull this instead of rebuilding and
+    /// sorting the full seam-fact set on every call.
+    CodegenSeamFacts(RootId),
 }
 
 impl ProductKey {
@@ -61,6 +71,7 @@ impl ProductKey {
             Self::TransportComponent(_) => "transport_component",
             Self::CallableFacts(_) => "callable_facts",
             Self::BoundaryFacts(_) => "boundary_facts",
+            Self::CodegenSeamFacts(_) => "codegen_seam_facts",
         }
     }
 
@@ -77,7 +88,8 @@ impl ProductKey {
             | Self::TransportShape(_)
             | Self::TransportComponent(_)
             | Self::CallableFacts(_)
-            | Self::BoundaryFacts(_) => None,
+            | Self::BoundaryFacts(_)
+            | Self::CodegenSeamFacts(_) => None,
         }
     }
 
@@ -118,6 +130,7 @@ pub enum ProductValue {
     TransportComponent(TransportComponentInventory),
     CallableFacts(Option<CallableFacts>),
     BoundaryFacts(Option<BoundaryFacts>),
+    CodegenSeamFacts(Box<[CodegenSeamFact]>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -257,6 +270,34 @@ impl ProductMemo {
                 | ProductValue::AbiExecutable(_)
                 | ProductValue::MaterializedExecutable(_)
                 | ProductValue::ExecutableEffects(_)
+                | ProductValue::IncomingInputSlot(_)
+                | ProductValue::TransportShape(_)
+                | ProductValue::TransportComponent(_)
+                | ProductValue::CallableFacts(_)
+                | ProductValue::BoundaryFacts(_)
+                | ProductValue::CodegenSeamFacts(_),
+            )
+            | None => None,
+        }
+    }
+
+    /// The session-wide codegen seam facts, once settled for the current
+    /// invalidation epoch. `None` means the product has not been produced
+    /// yet (or was displaced by `record_boundary_facts` observing a changed
+    /// boundary) -- the caller should wait on
+    /// `ProductKey::CodegenSeamFacts(root)`, exactly like `runtime_demand`
+    /// above.
+    pub fn codegen_seam_facts(&self, root: RootId) -> Option<&[CodegenSeamFact]> {
+        match self.produced.get(&ProductKey::CodegenSeamFacts(root)) {
+            Some(ProductValue::CodegenSeamFacts(facts)) => Some(facts.as_ref()),
+            Some(
+                ProductValue::Unit
+                | ProductValue::RootBackendProduct(_)
+                | ProductValue::BackendExecutable(_)
+                | ProductValue::AbiExecutable(_)
+                | ProductValue::MaterializedExecutable(_)
+                | ProductValue::ExecutableEffects(_)
+                | ProductValue::RuntimeDemand(_)
                 | ProductValue::IncomingInputSlot(_)
                 | ProductValue::TransportShape(_)
                 | ProductValue::TransportComponent(_)
@@ -993,7 +1034,19 @@ impl PullSession {
 
     pub fn record_boundary_facts(&mut self, boundary: BoundaryId, facts: BoundaryFacts) {
         self.demanded_boundaries.insert(boundary);
-        self.boundary_facts.insert(boundary, facts);
+        let changed = self.boundary_facts.insert(boundary, facts.clone()).as_ref() != Some(&facts);
+        // `session_codegen_publication_seam_facts` is the ONLY reader of
+        // `boundary_facts_inventory`/`boundary_facts` behind
+        // `ProductKey::CodegenSeamFacts`: a boundary whose recorded facts
+        // actually moved (a new boundary, or a re-solved closure whose
+        // publications changed) invalidates that memo so the next pull
+        // re-derives the seam-fact set instead of serving a snapshot that
+        // predates this boundary. An unchanged re-record (the common case:
+        // a shared boundary re-confirmed by another executable's closure
+        // solve) leaves the memo standing.
+        if changed {
+            self.memo.remove(&ProductKey::CodegenSeamFacts(self.root));
+        }
     }
 
     pub fn assign_executable_index(&mut self, executable: ExecutableKey, index: usize) {
@@ -1070,7 +1123,8 @@ impl PullSession {
             | ProductKey::OutgoingInputEdges(_)
             | ProductKey::IncomingInputSlot(_)
             | ProductKey::CallableFacts(_)
-            | ProductKey::BoundaryFacts(_) => {}
+            | ProductKey::BoundaryFacts(_)
+            | ProductKey::CodegenSeamFacts(_) => {}
         }
     }
 
@@ -1244,6 +1298,7 @@ pub trait ProductProducers {
     fn produce_transport_component(&mut self, session: &mut PullSession, position: &TransportPosition) -> PullOutcome;
     fn produce_callable_facts(&mut self, session: &mut PullSession, callable: CallableId) -> PullOutcome;
     fn produce_boundary_facts(&mut self, session: &mut PullSession, boundary: BoundaryId) -> PullOutcome;
+    fn produce_codegen_seam_facts(&mut self, session: &mut PullSession, root: RootId) -> PullOutcome;
 }
 
 pub struct WorldProductProducers<'w, 'a> {
@@ -1310,6 +1365,10 @@ impl ProductProducers for WorldProductProducers<'_, '_> {
     fn produce_boundary_facts(&mut self, session: &mut PullSession, boundary: BoundaryId) -> PullOutcome {
         PullOutcome::Produced(ProductValue::BoundaryFacts(session.boundary_facts(boundary).cloned()))
     }
+
+    fn produce_codegen_seam_facts(&mut self, session: &mut PullSession, root: RootId) -> PullOutcome {
+        super::jobs::artifact::produce_codegen_seam_facts_product(self.world, session, root)
+    }
 }
 
 pub struct ProductDriver<'a> {
@@ -1375,6 +1434,7 @@ impl<'a> ProductDriver<'a> {
             }
             ProductKey::CallableFacts(callable) => producers.produce_callable_facts(&mut self.session, *callable),
             ProductKey::BoundaryFacts(boundary) => producers.produce_boundary_facts(&mut self.session, *boundary),
+            ProductKey::CodegenSeamFacts(root) => producers.produce_codegen_seam_facts(&mut self.session, *root),
         };
 
         match outcome {
@@ -1445,6 +1505,8 @@ mod tests {
 
     use crate::telemetry::{Capture, ConfiguredTelemetry};
 
+    use super::super::identity::{ExecutableNeed, FunctionId};
+    use super::super::transport::{ActivationSymbol, ExecutableSymbol};
     use super::*;
 
     #[derive(Debug, Default)]
@@ -1554,6 +1616,10 @@ mod tests {
 
         fn produce_boundary_facts(&mut self, _session: &mut PullSession, boundary: BoundaryId) -> PullOutcome {
             self.produce(ProductKey::BoundaryFacts(boundary))
+        }
+
+        fn produce_codegen_seam_facts(&mut self, _session: &mut PullSession, root: RootId) -> PullOutcome {
+            self.produce(ProductKey::CodegenSeamFacts(root))
         }
     }
 
@@ -1668,6 +1734,90 @@ mod tests {
             "recording an incoming edge feeds transport input slots and must leave settled demand standing"
         );
         assert_eq!(session.producer_pokes(), 0);
+    }
+
+    #[test]
+    fn pull_session_leaves_codegen_seam_facts_standing_across_an_unchanged_boundary_rerecord() {
+        // The common case: a boundary shared by several executables' transport
+        // closures is re-confirmed (same value) each time its closure re-solves.
+        // `record_boundary_facts` must not treat this as a movement of the data
+        // `session_codegen_publication_seam_facts` reads.
+        let mut session = PullSession::new(RootId::for_test(9));
+        let boundary = BoundaryId::for_test(0);
+        let facts = BoundaryFacts {
+            publications: Box::default(),
+            resolutions: Box::default(),
+        };
+        session.record_boundary_facts(boundary, facts.clone());
+        session.memo.finish(
+            &ProductKey::CodegenSeamFacts(session.root()),
+            ProductValue::CodegenSeamFacts(Box::default()),
+        );
+
+        session.record_boundary_facts(boundary, facts);
+
+        assert!(
+            session.memo().codegen_seam_facts(session.root()).is_some(),
+            "an unchanged re-record of the same boundary facts must leave the codegen seam facts memo standing"
+        );
+    }
+
+    #[test]
+    fn pull_session_invalidates_codegen_seam_facts_when_a_boundary_actually_changes() {
+        // The hard case this ticket is about: `session_codegen_publication_seam_facts`
+        // is memoized behind `ProductKey::CodegenSeamFacts`, but it is still
+        // derived from `boundary_facts_inventory` -- a boundary whose recorded
+        // facts move (a brand-new boundary, or a re-solved closure whose
+        // publications changed) must displace the memo, or a later production
+        // would read a snapshot that predates the boundary it needs.
+        let mut session = PullSession::new(RootId::for_test(9));
+        let boundary_a = BoundaryId::for_test(0);
+        let boundary_b = BoundaryId::for_test(1);
+        let empty_facts = BoundaryFacts {
+            publications: Box::default(),
+            resolutions: Box::default(),
+        };
+        session.record_boundary_facts(boundary_a, empty_facts.clone());
+        session.memo.finish(
+            &ProductKey::CodegenSeamFacts(session.root()),
+            ProductValue::CodegenSeamFacts(Box::default()),
+        );
+        assert!(session.memo().codegen_seam_facts(session.root()).is_some());
+
+        // A brand-new boundary appearing in the inventory changes the set
+        // `session_codegen_publication_seam_facts` iterates over.
+        session.record_boundary_facts(boundary_b, empty_facts);
+        assert!(
+            session.memo().codegen_seam_facts(session.root()).is_none(),
+            "a newly recorded boundary must invalidate the memoized codegen seam facts product"
+        );
+
+        // Re-settle the memo, then re-solve `boundary_a` with DIFFERENT facts
+        // (e.g. its closure re-solved with a new publication) -- the value at
+        // an already-known key moving must invalidate too, not just new keys.
+        session.memo.finish(
+            &ProductKey::CodegenSeamFacts(session.root()),
+            ProductValue::CodegenSeamFacts(Box::default()),
+        );
+        let publication = TransportPosition::Value {
+            executable: ExecutableSymbol {
+                activation: ActivationSymbol {
+                    function: FunctionId::for_test(1),
+                    input: Box::default(),
+                },
+                need: ExecutableNeed::Value,
+            },
+            value: ValueId::from_u32(0),
+        };
+        let changed_facts = BoundaryFacts {
+            publications: Box::from([publication]),
+            resolutions: Box::default(),
+        };
+        session.record_boundary_facts(boundary_a, changed_facts);
+        assert!(
+            session.memo().codegen_seam_facts(session.root()).is_none(),
+            "a boundary whose recorded facts changed must invalidate the memoized codegen seam facts product"
+        );
     }
 
     #[test]

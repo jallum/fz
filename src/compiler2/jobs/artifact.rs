@@ -111,8 +111,14 @@ pub(crate) fn produce_materialized_executable_product(
     if !waits.is_empty() {
         return PullOutcome::Waiting(waits);
     }
-    let codegen_seam_facts = session_codegen_publication_seam_facts(world, session);
-    let transport_plan = session_transport_lookup(session, &codegen_seam_facts);
+    if session.memo().codegen_seam_facts(session.root()).is_none() {
+        return PullOutcome::Waiting(vec![PullWait::Product(ProductKey::CodegenSeamFacts(session.root()))]);
+    }
+    let codegen_seam_facts = session
+        .memo()
+        .codegen_seam_facts(session.root())
+        .expect("codegen seam facts product wait should have been satisfied");
+    let transport_plan = session_transport_lookup(session, codegen_seam_facts);
     let call_edges = materialize_call_edges(
         world,
         session.root(),
@@ -346,8 +352,14 @@ pub(crate) fn produce_abi_executable_product(
     // transport recorded above is still current: nothing settled in between
     // that would change it, and recomputing it here would just repeat the same
     // per-production scan for an identical answer.
-    let codegen_seam_facts = session_codegen_publication_seam_facts(world, session);
-    let transport_plan = session_transport_lookup(session, &codegen_seam_facts);
+    if session.memo().codegen_seam_facts(session.root()).is_none() {
+        return PullOutcome::Waiting(vec![PullWait::Product(ProductKey::CodegenSeamFacts(session.root()))]);
+    }
+    let codegen_seam_facts = session
+        .memo()
+        .codegen_seam_facts(session.root())
+        .expect("codegen seam facts product wait should have been satisfied");
+    let transport_plan = session_transport_lookup(session, codegen_seam_facts);
     let plan = build_executable_abi_plan(world, executable, &materialized, &transport_plan);
     let abi = build_abi_executable(&materialized, &plan)
         .expect("per-executable ABI derivation should not require root fan-in");
@@ -461,6 +473,34 @@ fn session_transport_lookup<'a>(
         boundaries: session.boundary_facts_inventory(),
         codegen_seam_facts,
     }
+}
+
+/// Produces `ProductKey::CodegenSeamFacts(root)`: the session-wide codegen
+/// seam-fact set, computed once per root per invalidation epoch and read
+/// (never recomputed) by both `produce_materialized_executable_product` and
+/// `produce_abi_executable_product`. This has no waits of its own -- like
+/// `produce_callable_facts`/`produce_boundary_facts`, it always succeeds
+/// immediately over whatever `BoundaryFacts` the session has recorded so far
+/// -- so its callers are responsible for having already waited on the
+/// specific boundaries/transport shapes THEY need before pulling this
+/// product (`required_call_edge_transport_waits` and
+/// `required_executable_transport_facts_waits` already do this). Staleness
+/// is instead prevented on the write side: `PullSession::record_boundary_facts`
+/// invalidates this product's memo entry whenever a boundary's recorded
+/// facts actually change, so a later pull that observes a newer boundary
+/// re-derives the set instead of serving a snapshot that predates it.
+pub(crate) fn produce_codegen_seam_facts_product(
+    world: &mut World<'_>,
+    session: &mut PullSession,
+    root: RootId,
+) -> PullOutcome {
+    debug_assert_eq!(
+        root,
+        session.root(),
+        "codegen seam facts are keyed by the session's own root"
+    );
+    let facts = session_codegen_publication_seam_facts(world, session);
+    PullOutcome::Produced(ProductValue::CodegenSeamFacts(facts))
 }
 
 fn session_codegen_publication_seam_facts(world: &World<'_>, session: &PullSession) -> Box<[CodegenSeamFact]> {
