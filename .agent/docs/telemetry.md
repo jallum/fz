@@ -265,9 +265,11 @@ jq -sr '
 
 The job trace is minimal by construction: the legacy `SealSemanticClosure` /
 `DeriveRuntimeDemand` / `DeriveExecutableTransport` / `DeriveTransportPlan` jobs
-do not exist, so no job debug string can name them and the
-`[fz, compiler2, legacy, root_executable_frontier]` scan is gone from production
-(it survives only as `#[cfg(test)]` support for the fixture call-edge oracle).
+do not exist, so no job debug string can name them. The fixture call-edge
+oracle sources its activation set from `Compiler2::product_executable_inventory`
+(`compiler.rs`), which drives the root through the product backend path and
+collects `driver.session().materialized_executables()` — there is no separate
+frontier scan.
 Root session measurements for `fixtures2/00181_enum_reduce_operator_ref.fz` are
 `executables=10`, `transport_positions=160`, `callables=2`, `boundaries=0`,
 `producer_pokes=0`. Backend dumps may be requested with `--dump
