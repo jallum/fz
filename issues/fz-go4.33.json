@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-07-03T20:22:21Z",
+  "description": "Named by the fz-go4.31 minimalism audit (at bb8f05925/ae1f3f123). fz-go4.31 added 8 end-to-end tests driving the real loop into each ProductDriveError hook with exact assert_eq on the surfaced message/diagnostic. That makes 5 of the 8 pre-existing direct hook-calling tests (from fz-go4.19) redundant — subsumed byte-for-byte: string_error_reports_no_ready_producer_with_unresolved_waits, fatal_error_diagnostic_reports_no_ready_producer, string_error_reports_job_failed_without_the_job_run_error_details, fatal_error_job_failed_forwards_the_jobs_run_error_unchanged, fatal_error_diagnostic_reports_did_not_settle_without_last_wait_detail. Auditor proved deletion safe (11 remaining tests pass). KEEP the other 3 (string_error_reports_fact_wait_budget_exceeded, fatal_error_diagnostic_reports_fact_wait_budget_exceeded, string_error_reports_did_not_settle_with_last_wait) — their e2e counterparts only .contains/.starts_with the prefix, not the exact {:?}-formatted fact/last_wait suffix (the small-budget drive's exact fact value isn't cheaply predictable). ALTERNATIVELY, tighten those 3 e2e assertions to full equality, which lets all 8 direct tests go — the larger, cleaner change. Also extract fn add1_world(tel) -\u003e (World, RootId): the add1.fz setup block is copy-pasted 4x (product_drive_test.rs:309/340/383/504, n\u003e=2 rule). Test-only; two-lane audit. (The pub(crate)-\u003epub(super) narrowing was already applied at the fz-go4.31 fold.)",
+  "id": "fz-go4.33",
+  "labels": [],
+  "parent": "fz-go4",
+  "priority": 3,
+  "status": "open",
+  "title": "Collapse redundant ProductDriveError hook tests + extract add1_world helper",
+  "type": "task",
+  "updated_at": "2026-07-03T20:22:21Z"
+}
