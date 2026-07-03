@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-07-03T23:10:26Z",
@@ -8,8 +8,8 @@
   "labels": [],
   "parent": "fz-go4",
   "priority": 3,
-  "status": "open",
+  "status": "in_progress",
   "title": "Types::display/format_arrow_clause elides closure kind+captures — display strings collide for distinct arrows",
   "type": "task",
-  "updated_at": "2026-07-03T23:10:26Z"
+  "updated_at": "2026-07-03T23:30:19Z"
 }
