@@ -2,14 +2,15 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-07-03T21:39:24Z",
   "created": "2026-07-03T20:22:21Z",
   "description": "DONE (folded 2026-07-03, two-lane audited PASS/PASS). Collapsed the ProductDriveError hook-test redundancy fz-go4.31 created. DELETED 5 direct hook-calling tests whose exact-template assert_eq is byte-for-byte subsumed by an end-to-end counterpart driving the real loop (correctness audit proved the 5-way subsumption side-by-side; deletion of the fatal job_failed test is actually STRENGTHENED by its e2e version asserting the diagnostic count stays exactly 1). KEPT 3 (string fact_wait_budget_exceeded, fatal fact_wait_budget_exceeded, string did_not_settle) — chose option (a) over tightening the e2e assertions because those messages embed interned Ty ids (ActivationKey.arrow: Ty(u32), Debug-printed as Ty(28)-shaped output whose value depends on interner allocation order); pinning them exactly in the e2e drive would make the test churn-flaky under unrelated compiler changes, violating tests-state-intent. The 3 kept direct tests use a synthetic stable fixture and are the only exact-template coverage for those shapes; their e2e counterparts deliberately .contains/.starts_with. Extracted add1_world(tel)-\u003e(World,RootId), routed the 4 byte-identical add1.fz setup sites through it (the no_ready_producer/job_failed sites use different fixtures+API, correctly left alone). Net -115 lines; product_drive_test 16-\u003e11; suite 1169-\u003e1164 on the fam8 baseline.",
   "id": "fz-go4.33",
   "labels": [],
   "parent": "fz-go4",
   "priority": 3,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Collapse redundant ProductDriveError hook tests + extract add1_world helper",
   "type": "task",
-  "updated_at": "2026-07-03T21:39:23Z"
+  "updated_at": "2026-07-03T21:39:24Z"
 }
