@@ -476,27 +476,14 @@ fn settle_demand_cone(
     session: &PullSession,
     graph: &DemandGraph,
 ) -> Result<SettledDemandCone, HashSet<PullWait>> {
-    let mut members: Vec<ExecutableKey> = graph.facts.keys().cloned().collect();
-    // A process-deterministic, run-to-run-reproducible member order: the Jacobi
-    // ascent below never reads this order (every round derives from a frozen
-    // previous-round snapshot, joined via commutative `join_assign`, so the
-    // settled fixpoint and round count are order-invariant by construction —
-    // see the ascent's doc comment). This sort exists only so `members` has a
-    // stable order across process runs of the SAME source, instead of the
-    // interning-sequence-dependent order `key.activation.arrow` (a raw `Ty`
-    // interner id) would give: two runs that intern the same structural types
-    // in a different sequence get different numeric ids for them, which would
-    // silently reorder this Vec run-to-run if sorted on the raw id. Sorting on
-    // the arrow's DISPLAYED (structural) form instead keys on the type's
-    // content, not its interning order, per the sorting law (sorts must never
-    // consume interner ids mid-flow, fz-go4.18.28.14).
-    members.sort_by_key(|key| {
-        (
-            key.activation.function.as_u32(),
-            world.types().display(&key.activation.arrow),
-            executable_need_order(key.need),
-        )
-    });
+    // `members` is only ever iterated, never indexed by position: the Jacobi
+    // ascent below reads it purely as a round-processing order, and every
+    // round derives from a frozen previous-round snapshot joined via
+    // commutative `join_assign`, so the settled fixpoint and round count are
+    // order-invariant by construction (see the ascent's doc comment below).
+    // HashMap-insertion order is exactly as good as any sorted order here —
+    // sorting it would decide nothing and feed no output.
+    let members: Vec<ExecutableKey> = graph.facts.keys().cloned().collect();
     let member_set: HashSet<ExecutableKey> = members.iter().cloned().collect();
     // The external caller evidence is settled session state the ascent never
     // mutates: join it once, not per member per round.
@@ -660,13 +647,6 @@ fn settle_demand_cone(
 }
 
 const DEMAND_ASCENT_ROUND_BUDGET: u32 = 32;
-
-fn executable_need_order(need: ExecutableNeed) -> (u8, usize) {
-    match need {
-        ExecutableNeed::Value => (0, 0),
-        ExecutableNeed::TupleFields(arity) => (1, arity),
-    }
-}
 
 fn derive_member_demand(
     world: &mut World<'_>,
