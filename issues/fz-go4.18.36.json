@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-07-03T20:07:13Z",
+  "description": "Named by the fz-go4.18.33 removable-code audit (at b5b341bff). jobs/transport.rs::transport_position_sort_key (~:2066) rebinds executable per-arm inside the same 7-arm match that derives the variant-specific secondary keys (rank/first/second/index). Hoist the symbol: let executable = position.executable(); then match only for the (rank, first, second, index) tuple — removes 7 redundant executable binds, strictly fewer tokens, keeps the per-arm secondary-key logic, mirrors the pattern fz-go4.18.33 established at the other three sites. Audit judged it clearly-better/low-risk. Mechanical; suite green 3x; two-lane audit.",
+  "id": "fz-go4.18.36",
+  "labels": [],
+  "parent": "fz-go4.18",
+  "priority": 3,
+  "status": "open",
+  "title": "Delegate symbol extraction in transport_position_sort_key to TransportPosition::executable",
+  "type": "task",
+  "updated_at": "2026-07-03T20:07:13Z"
+}
