@@ -8840,9 +8840,9 @@ struct NativeProgramRecord {
 }
 
 #[derive(Debug, Clone)]
-struct ReturnTypeRecord {
+pub(crate) struct ReturnTypeRecord {
     activation: ActivationKey,
-    return_ty: Ty,
+    pub(crate) return_ty: Ty,
 }
 
 pub(crate) struct FunctionCapture {
@@ -8857,7 +8857,7 @@ struct CallsiteCapture {
     defs: CallsiteDefs,
 }
 
-struct ReturnTypeCapture {
+pub(crate) struct ReturnTypeCapture {
     defs: ReturnTypeDefs,
 }
 
@@ -8962,13 +8962,13 @@ impl WorkGraphCapture {
 }
 
 impl FunctionCapture {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             defs: Rc::new(RefCell::new(HashMap::new())),
         }
     }
 
-    fn handler(&self) -> Box<dyn Handler> {
+    pub(crate) fn handler(&self) -> Box<dyn Handler> {
         Box::new(FunctionCaptureHandler {
             defs: self.defs.clone(),
         })
@@ -9098,19 +9098,23 @@ impl CallsiteCapture {
 }
 
 impl ReturnTypeCapture {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             defs: Rc::new(RefCell::new(Vec::new())),
         }
     }
 
-    fn handler(&self) -> Box<dyn Handler> {
+    pub(crate) fn handler(&self) -> Box<dyn Handler> {
         Box::new(ReturnTypeCaptureHandler {
             defs: self.defs.clone(),
         })
     }
 
-    fn last_for_function(&self, root_id: crate::compiler2::RootId, function_id: FunctionId) -> ReturnTypeRecord {
+    pub(crate) fn last_for_function(
+        &self,
+        root_id: crate::compiler2::RootId,
+        function_id: FunctionId,
+    ) -> ReturnTypeRecord {
         self.defs
             .borrow()
             .iter()

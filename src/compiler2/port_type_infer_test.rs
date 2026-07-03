@@ -1,5 +1,5 @@
 //! Ported tests from old-world — behaviour already captured; assertions filled in next pass.
-use super::drive_test::assert_resolved;
+use super::drive_test::{FunctionCapture, ReturnTypeCapture, assert_resolved, function_id};
 use super::{CodeSubmission, Compiler2, ExecutableNeed, RootSubmission};
 use crate::telemetry::ConfiguredTelemetry;
 
@@ -213,12 +213,17 @@ fn enum_reduce_range_settles_to_int() {
 #[test]
 fn enum_reduce_operator_refs_settle_through_kernel_specs() {
     let tel = ConfiguredTelemetry::new();
+    let functions = FunctionCapture::new();
+    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    let returns = ReturnTypeCapture::new();
+    tel.attach(&["fz", "compiler2", "return_type", "defined"], returns.handler());
+
     let mut compiler = Compiler2::new(&tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00181_enum_reduce_operator_ref.fz".to_string()),
         text: include_str!("../../fixtures2/00181_enum_reduce_operator_ref.fz").to_string(),
     });
-    compiler.submit_root(RootSubmission {
+    let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
         name: "main".to_string(),
         arity: 0,
@@ -228,7 +233,17 @@ fn enum_reduce_operator_refs_settle_through_kernel_specs() {
         compiler.drive(),
         "qualified and bare operator refs should both settle through kernel specs",
     );
-    // TODO: assert main() return type is equivalent to {int, int}
+
+    let main_id = function_id(&functions, "main", 0);
+    let main_return = returns.last_for_function(root_id, main_id).return_ty;
+    let int_ty = compiler.types_mut_for_test().int();
+    let expected_return = compiler.types_mut_for_test().tuple(&[int_ty, int_ty]);
+    assert!(
+        compiler.types_equivalent_for_test(main_return, expected_return),
+        "main/0 should settle to a return type equivalent to {{int, int}} once the qualified \
+         and bare operator refs both settle through kernel specs, got {}",
+        compiler.display_ty_for_test(main_return),
+    );
 }
 
 // Ported from src/type_infer/type_infer_test.rs: concrete caller witness preserved despite erased list surface type
