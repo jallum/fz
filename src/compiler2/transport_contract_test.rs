@@ -19,6 +19,7 @@ use super::{
     CodeSubmission, Compiler2, DriveOutcome, ExecutableKey, ExecutableNeed, ExecutableRuntimeDemand, FactKey, Job,
     LoweredBody, RootSubmission, RuntimeDemand, ShapeDemand, World,
 };
+use crate::compiler2::drive::JobEffects;
 use crate::telemetry::handler::{Event, EventKind, Handler};
 use crate::telemetry::{Capture, ConfiguredTelemetry, Value};
 
@@ -306,21 +307,10 @@ end
     );
 }
 
-/// INTENT: the consulted-facts ledger makes the discovery graph and the
-/// retraction graph the same graph. When executable X's settled demand moves,
-/// every co-member of any closure whose solve consulted X's facts must lose
-/// its recorded transport shapes -- even a co-member Y that never became a
-/// `runtime_demand_dependents` edge of X (the schedule-dependent stale-verdict
-/// hole this ledger closes). This drives a real multi-member closure (direct
-/// calls + a first-class flow), picks two distinct covered executables X and
-/// Y from the SAME recorded solve, moves X's settled demand, and requires
-/// Y's shape facts and TransportShape memos to displace; restoring X's
-/// original demand and re-pulling must re-derive Y's original shapes. The
-/// test goes red if solves stop recording consult edges OR if the
-/// invalidation walk stops following them.
-#[test]
-fn compiler2_transport_consult_ledger_displaces_co_members_on_demand_movement() {
-    let source = r#"
+/// Fixture shared by the consult-ledger displacement tests below: direct
+/// calls plus a first-class flow, enough to solve one transport closure
+/// covering several shaped executables.
+const CO_MEMBER_CLOSURE_SOURCE: &str = r#"
 fn add(a, b), do: a + b
 fn twice(x), do: add(x, x)
 fn apply1(f, x), do: f.(x)
@@ -333,14 +323,15 @@ fn main() do
 end
 "#;
 
-    let tel = ConfiguredTelemetry::new();
-    let mut world = World::new(&tel);
-    world.submit_code(Some("consult_ledger.fz".to_string()), source.to_string());
-    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
-    let mut driver = pull_root_backend_driver_for_test(&tel, &mut world, root);
-
-    // Group every shaped position under its owning executable's covering
-    // solve, then pick two distinct executables covered by the SAME solve.
+/// Groups every shaped position under its owning executable's covering solve
+/// and picks two distinct executables covered by the SAME solve: the first is
+/// the member whose fact a test moves; the second stands still and must
+/// displace with it.
+fn two_executables_covered_by_one_solve(
+    driver: &ProductDriver<'_>,
+    root: super::RootId,
+    world: &mut World<'_>,
+) -> (ExecutableKey, ExecutableKey, Vec<(TransportPosition, ShapeId)>) {
     let mut by_cover: BTreeMap<u64, HashMap<ExecutableKey, Vec<(TransportPosition, ShapeId)>>> = BTreeMap::new();
     let shaped = driver
         .session()
@@ -361,7 +352,7 @@ end
             .or_default()
             .push((position, shape));
     }
-    let (moved_executable, standing_executable, standing_positions) = by_cover
+    by_cover
         .values()
         .find_map(|members| {
             let mut keys = members.keys().cloned().collect::<Vec<_>>();
@@ -371,7 +362,34 @@ end
             };
             Some((first.clone(), second.clone(), members[second].clone()))
         })
-        .expect("the drive should record one solve covering at least two shaped executables");
+        .expect("the drive should record one solve covering at least two shaped executables")
+}
+
+/// INTENT: the consulted-facts ledger makes the discovery graph and the
+/// retraction graph the same graph. When executable X's settled demand moves,
+/// every co-member of any closure whose solve consulted X's facts must lose
+/// its recorded transport shapes -- even a co-member Y that never became a
+/// `runtime_demand_dependents` edge of X (the schedule-dependent stale-verdict
+/// hole this ledger closes). This drives a real multi-member closure (direct
+/// calls + a first-class flow), picks two distinct covered executables X and
+/// Y from the SAME recorded solve, moves X's settled demand, and requires
+/// Y's shape facts and TransportShape memos to displace; restoring X's
+/// original demand and re-pulling must re-derive Y's original shapes. The
+/// test goes red if solves stop recording consult edges OR if the
+/// invalidation walk stops following them.
+#[test]
+fn compiler2_transport_consult_ledger_displaces_co_members_on_demand_movement() {
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new(&tel);
+    world.submit_code(
+        Some("consult_ledger.fz".to_string()),
+        CO_MEMBER_CLOSURE_SOURCE.to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    let mut driver = pull_root_backend_driver_for_test(&tel, &mut world, root);
+
+    let (moved_executable, standing_executable, standing_positions) =
+        two_executables_covered_by_one_solve(&driver, root, &mut world);
 
     let original_demand = driver
         .session()
@@ -423,6 +441,128 @@ end
             "re-derivation under the restored demand must reproduce the original shape at {position:?}"
         );
     }
+}
+
+/// INTENT: the WORLD channel of the consulted-facts ledger
+/// (`ClosureConsultLedger::fact_revisions` / `SolvedTransportClosure::consumed_fact_revisions`)
+/// has no push into the session -- unlike the demand channel exercised above,
+/// a moved world fact only displaces a cached covering solve when the NEXT
+/// pull re-validates the snapshot via `displace_covering_solve_if_stale`. This
+/// drives a real multi-member closure to a solved, cached state, then
+/// genuinely moves one covered member's `ReturnType` world fact (a real ascent
+/// through the same `define_activation_return` + `complete_job` pair
+/// `analyze_activation` itself uses -- not a fabricated shim), and requires
+/// every other member covered by that same solve to lose its recorded
+/// transport shapes and re-derive on the next pull. The test goes red if
+/// `displace_covering_solve_if_stale` stops validating world-fact revisions.
+#[test]
+fn compiler2_transport_world_fact_ledger_displaces_co_members_on_return_type_movement() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&["fz", "compiler2", "pull"], capture.handler());
+    const CLOSURE_SOLVED: &[&str] = &["fz", "compiler2", "pull", "transport_component", "closure_solved"];
+    let mut world = World::new(&tel);
+    world.submit_code(
+        Some("world_fact_ledger.fz".to_string()),
+        CO_MEMBER_CLOSURE_SOURCE.to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    let mut driver = pull_root_backend_driver_for_test(&tel, &mut world, root);
+
+    let (moved_executable, standing_executable, standing_positions) =
+        two_executables_covered_by_one_solve(&driver, root, &mut world);
+
+    let return_fact = FactKey::ReturnType(moved_executable.activation.clone());
+    let consumed = driver
+        .session()
+        .covering_solve_consumed_revisions(&standing_executable)
+        .expect("the covering solve should have recorded a consumed-fact-revisions snapshot")
+        .clone();
+
+    let original_revision = world
+        .fact_revision(&return_fact)
+        .expect("a consulted return-type fact should be published");
+    assert_eq!(
+        consumed.get(&return_fact).copied(),
+        Some(original_revision),
+        "the solve's snapshot should match the world's revision before any movement"
+    );
+
+    // Move the world fact through the SAME production API `analyze_activation`
+    // itself uses: `define_activation_return` performs the real cumulative
+    // ascent (ReturnType is a `ClaimShape::is_cumulative` fact), and
+    // `complete_job` is the sole site that advances a `FactKey`'s revision --
+    // no test-only shim stands in for either. The job's full prior output set
+    // is replayed unchanged (only `ReturnType` is marked `changed`) so this
+    // does not retract the member's other published facts (ActivationAnalyzed,
+    // CallSiteSummary, ...), which stand as they were.
+    let analyze_job = Job::AnalyzeActivation(moved_executable.activation.clone());
+    let previous_outputs = world.work_graph.output_keys(&analyze_job);
+    assert!(
+        previous_outputs.contains(&return_fact),
+        "the activation's prior analysis run should have published its own return-type fact"
+    );
+    let original_return = world
+        .activation_return(&moved_executable.activation)
+        .expect("a consulted activation should have settled return evidence");
+    let probe_atom = world.types_mut().atom_lit("world_channel_probe_atom");
+    let widened_return = world.types_mut().union(original_return, probe_atom);
+    assert_ne!(
+        widened_return, original_return,
+        "the movement must be a genuine change, not a re-published identical value"
+    );
+    let content_changed = world.define_activation_return(&moved_executable.activation, Some(widened_return));
+    assert!(
+        content_changed,
+        "widening return evidence with a genuinely new atom must be a real ascent"
+    );
+    world.complete_job(
+        analyze_job,
+        JobEffects {
+            outputs: previous_outputs.into_iter().collect(),
+            changed: vec![return_fact.clone()],
+            ..JobEffects::default()
+        },
+    );
+    let moved_revision = world
+        .fact_revision(&return_fact)
+        .expect("the return-type fact should still be published after the ascent");
+    assert_ne!(
+        moved_revision, original_revision,
+        "publishing genuinely new return evidence must advance the fact's revision"
+    );
+
+    // Unlike the demand channel, the world channel has NO push into the
+    // session -- moving the fact above cannot itself clear any cached
+    // session state (`displace_covering_solve_if_stale` only runs at the top
+    // of a product pull). So the observable proof is pull-triggered: the very
+    // next pull for a co-member position must (a) register a fresh
+    // `closure_solved` -- proving the stale cached solve was displaced, not
+    // silently reused -- and (b) still reproduce the co-member's original
+    // shape, proving the displacement left a re-derivable session, not a
+    // hole, even though the world now carries the widened (but
+    // never-consulted-by-Y) return evidence for X.
+    let solves_before_move = capture.count(CLOSURE_SOLVED);
+    for (position, original_shape) in &standing_positions {
+        let value = pull_product_until_produced_with_fact_waits(
+            &mut driver,
+            &mut world,
+            root,
+            ProductKey::TransportShape(position.clone()),
+            "displaced transport shape should re-derive",
+        );
+        assert_eq!(
+            value,
+            ProductValue::TransportShape(TransportShapeFact::Shape(*original_shape)),
+            "re-derivation under the widened world fact must reproduce the original shape at {position:?}"
+        );
+    }
+    assert!(
+        capture.count(CLOSURE_SOLVED) > solves_before_move,
+        "co-member {standing_executable:?}'s first post-movement pull must trigger a fresh \
+         closure solve -- a stale cached solve answering unchanged would prove the world-fact \
+         gate never displaced it"
+    );
 }
 
 #[test]
