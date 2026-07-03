@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-07-03T19:52:21Z",
+  "description": "Named by the fz-go4.19 correctness audit (at 723126abe). product_drive_test.rs pins the four ProductDriveError hook message templates by calling the impls directly, but no test forces drive_root_backend_product itself into no_ready_producer / fact_wait_budget_exceeded / did_not_settle / job_failed through a real drive — the wiring (correct root/fact/job arguments passed from a genuine failure) is untested end-to-end. The test file's own doc comment discloses this. TASK: one production-path test per failure shape (e.g. artificially exhaust PRODUCT_DRIVE_BUDGET with a tiny budget override or an unresolvable fact; drive a real World to each failure), asserting the surfaced error/diagnostic matches the pinned template. Tests use production paths — no fabricated JobEffects states. Test-only, two-lane audit.",
+  "id": "fz-go4.31",
+  "labels": [],
+  "parent": "fz-go4",
+  "priority": 3,
+  "status": "open",
+  "title": "Production-path coverage for ProductDriveError failure hooks",
+  "type": "task",
+  "updated_at": "2026-07-03T19:52:21Z"
+}
