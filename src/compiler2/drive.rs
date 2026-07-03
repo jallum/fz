@@ -351,9 +351,11 @@ impl World<'_> {
                 stall_demanded.clear();
             }
             let mut producer_pokes = self.demand_root_entry_analyses();
+            let mut demanded_facts: Vec<FactKey> = Vec::new();
             for wait in self.work_graph.unresolved() {
                 if stall_demanded.insert(wait.fact.fact().clone()) {
                     producer_pokes += self.demand_fact_producer(wait.fact.fact());
+                    demanded_facts.push(wait.fact.fact().clone());
                 }
             }
             if producer_pokes == 0 {
@@ -364,6 +366,7 @@ impl World<'_> {
                 &["fz", "compiler2", "drive", "demand_on_stall"],
                 metadata! {
                     producer_pokes: producer_pokes,
+                    demanded_facts: opaque_debug(&demanded_facts),
                 },
             );
         }

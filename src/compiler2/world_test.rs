@@ -3,7 +3,7 @@ use super::keying::DispatchDemand;
 use super::{DriveOutcome, FactKey, Job, ModuleId, ModuleInterface, Namespace, TypeName, Types, World};
 use crate::ast::Attribute;
 use crate::compiler2::drive::JobEffects;
-use crate::telemetry::{Capture, ConfiguredTelemetry};
+use crate::telemetry::{Capture, ConfiguredTelemetry, Event, Value};
 
 #[test]
 #[should_panic(expected = "modules should be scoped before definition")]
@@ -570,6 +570,22 @@ fn compiler2_drive_demands_the_blocked_facts_producer_on_stall() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
     tel.attach(&["fz", "compiler2", "drive", "demand_on_stall"], capture.handler());
+    let demanded_facts: std::rc::Rc<std::cell::RefCell<Vec<Vec<FactKey>>>> =
+        std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let demanded_facts_sink = std::rc::Rc::clone(&demanded_facts);
+    tel.attach(
+        &["fz", "compiler2", "drive", "demand_on_stall"],
+        Box::new(move |event: &Event<'_, '_, '_>| {
+            let Some(facts) = event
+                .metadata
+                .get("demanded_facts")
+                .and_then(Value::downcast_ref::<Vec<FactKey>>)
+            else {
+                return;
+            };
+            demanded_facts_sink.borrow_mut().push(facts.clone());
+        }),
+    );
     let mut world = World::new(&tel);
     let root = world.submit_root(None, "main".to_string(), 0, super::ExecutableNeed::Value);
     // Take the submit-root ignition out of the agenda: this test isolates the
@@ -599,7 +615,7 @@ fn compiler2_drive_demands_the_blocked_facts_producer_on_stall() {
         "the stall pass should demand the blocked fact's mapped producer and complete the drive",
     );
     assert!(
-        world.has_fact(&FactKey::Activation(key_a)),
+        world.has_fact(&FactKey::Activation(key_a.clone())),
         "the demanded producer should have run and published the blocked fact",
     );
     assert!(
@@ -611,6 +627,13 @@ fn compiler2_drive_demands_the_blocked_facts_producer_on_stall() {
             .find(&["fz", "compiler2", "drive", "demand_on_stall"])
             .is_empty(),
         "the drive should report that the demand-on-stall pass fired",
+    );
+    assert!(
+        demanded_facts
+            .borrow()
+            .iter()
+            .any(|facts| facts.contains(&FactKey::Activation(key_a.clone()))),
+        "demand_on_stall should name the blocked fact it poked a producer for",
     );
 }
 

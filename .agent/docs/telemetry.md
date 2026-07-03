@@ -223,6 +223,24 @@ opaque metadata, the emitted log shows the actual precipitating `Job`,
 behind the final outcome. There is no extra "job_fatal" event and no redundant
 "fact_published" stream.
 
+When the agenda drains with unresolved waiters, `World::drive()`
+(`drive.rs`) runs its stall pass: it demands every submitted root's entry
+analysis and, for each blocked waiter's fact not already demanded since the
+last content change, pokes that fact's mapped producer through the
+fact->producer map (`demand_fact_producer`). If that expansion pokes at least
+one producer, the pass emits `[fz, compiler2, drive, demand_on_stall]`
+(payload-only `event`, no span; the `event` path carries everything as
+metadata). Metadata: `producer_pokes`, the total pokes this round, and
+`demanded_facts`, the
+`Vec<FactKey>` poked this round, as `opaque_debug` — this is what lets a test
+or trace tell *which* facts were stalled, not just that a stall-demand
+happened. A round with `producer_pokes == 0` is a genuine stall: the drive
+breaks out and reports `DriveOutcome::Unresolved` instead of emitting the
+event. Separately, `[fz, compiler2, drive, timed_out]` fires when a deadline
+passed to `drive` elapses mid-agenda, before any stall pass runs. Measurements:
+none (payload rides in metadata). Metadata: `pending_jobs`, `jobs_ran`,
+`timeout_ms`.
+
 Product artifact producers lean on pull telemetry as their contract surface. The
 tests assert that the interpreter front door requests `RootBackendProduct(root)`,
 that producers wait on exact `ProductKey` / `FactUse<FactKey>` prerequisites,
@@ -268,6 +286,59 @@ are produced for the positions and boundaries named by demanded executable
 products. Tests assert ShapeId relationships from the demanded
 `MaterializedTransportPlan` when correctness depends on sharing.
 
+`ProductDriver` (`pull.rs`) names four `[fz, compiler2, pull, product, *]` leaf
+events off one shared `key`/`kind` shape (`kind: key.kind()`,
+`product: opaque_debug(key)`), so a handler on the `[fz, compiler2, pull,
+product]` prefix sees every product pull without per-event wiring:
+`requested` and `cache_hit` fire from `ProductDriver::pull`'s entry/memo-hit checks,
+`reentered` fires when a product pull recurses into its own in-flight demand
+(`wait_count: 1`), `waited` fires whenever the producer body returns
+`PullOutcome::Waiting` (measurements: `wait_count`; metadata additionally
+carries `waits: opaque_debug(waits)`, the blocking `PullWait`s), and
+`produced` fires once the value settles (measurements: `wait_count: 0`,
+`identical` — whether the settled value repeats the prior demand). This is the
+cache-hit/re-solve signal for the product path: a test asserting bounded
+re-computation counts `produced`/`cache_hit` rather than re-deriving state
+from `World` internals.
+
+`[fz, compiler2, pull, transport_component, produced]`
+(`jobs/transport.rs::emit_transport_component_produced`) fires every time
+`produce_transport_component_product` resolves a position's transport
+component, whether served from the session's `transport_components` product
+cache or freshly materialized. Measurements carry `component_size` (the
+component's member-position count); metadata carries the component's
+`representative` position as `opaque_debug`. `[fz, compiler2,
+executable_transport, projected]`
+(`jobs/transport.rs::emit_transport_component_materialized`) fires only on the
+fresh-materialize path — never on the cache-hit early return — so it is the
+narrower signal: "this executable's transport was (re)projected on this
+drive." Measurements carry the same `component_size`; metadata carries the
+`ExecutableKey` as `opaque_debug`. Together the two events let a test
+distinguish a cache-hit pull (only `transport_component.produced` fires) from
+a fresh solve (both fire), which is the observable form of the cone-scoped
+bounded-blast-radius property: a position outside the demanded closure never
+re-triggers `executable_transport.projected`.
+
+`[fz, compiler2, pull, transport_component, closure_solved]`
+(`jobs/transport.rs::emit_transport_closure_solved`) fires when
+`solve_transport_closure` finishes covering an executable's transport
+closure. Measurements carry `executables`, `components`, and `positions`
+counts from the `SolvedTransportClosure`. It is the per-solve sizing signal
+for the covering solve that `transport_component.produced`/
+`executable_transport.projected` ride on.
+
+`[fz, compiler2, pull, session, finished]` (`pull.rs::PullSession::emit_finished`,
+called from `ProductDriver::finish_session`) fires once per pull session, when
+the driving front door finishes demanding the session's products. Measurements:
+`root_id`, `executables` (count of demanded `ExecutableKey`s),
+`transport_positions` (count of demanded `TransportPosition`s), `callables`
+(count of demanded `CallableId`s), `boundaries` (count of demanded
+`BoundaryId`s), and `producer_pokes` (the session's running count of
+`demand_fact_producer` calls the drive made while resolving this session's
+waits). No metadata. This is the root-level summary a test or CLI trace reads
+to assert product-path work stayed bounded — the `fz-00181` no-dump proof
+above keys off exactly these fields.
+
 Macro executable readiness also emits
 `[fz, compiler2, macro_executable, defined]` with raw `function_id`,
 `root_id`, backend revision, macro executable revision, and the backend program
@@ -300,6 +371,142 @@ the publication `revision`, the captured `namespace`, the quoted-source
 `__ENV__`. Literal functions, protocol callbacks, synthesized module-info
 functions, item-macro returned definitions, and explicit compiler-service forms
 all use this same event with `origin=fz_compiler`.
+
+Function surface/body publication emits three sibling events, each fired from
+the `World::define_*`/`note_*`/`stash_*` step that owns the corresponding
+store. `[fz, compiler2, function, source, noted]`
+(`world.rs::note_function_source`) fires when a function's `FunctionSource`
+becomes readable — the interface-tier signal a name-keyed observer watches for
+every scoped function, macro-expanded or not. `[fz, compiler2, function,
+source, stashed]` (`world.rs::stash_function_source`) mirrors that shape for a
+function whose identity/interface are published at scope time while its body
+stays cold until a reached consumer pulls it (the surface counterpart to
+`type.noted`); it carries no `changed` measurement because stashing does not
+touch the fact store. `[fz, compiler2, function, defined]`
+(`world.rs::define_function` and `world.rs::define_generated_function`, its
+macro-literal-return sibling) fires when
+a function's parsed surface is stored; both call sites share the measurement
+set `code_id`, `module_id`, `owner_module_id`, `function_id`, `arity`,
+`clauses`, `source_heap_id`, `source_root_ref` and the metadata set
+`function`/`function_ref`/`function_id`/`module_id`/`owner_module_id` as
+`opaque_debug`, with the macro-literal site adding `owner_function_id` to both
+channels. All three carry the code/module/function ids plus arity and clause
+count in measurements, and the `FunctionSource`/`FunctionState` value itself as
+`opaque_debug` metadata, so a handler can render the actual source without the
+emit site formatting anything.
+
+`[fz, compiler2, function_contract, defined]` (`world.rs::define_function_contract`)
+fires when a function's `FunctionContract` (its declared/inferred call
+contract) is stored. Measurements: `function_id`, `arity`, `changed`. Metadata:
+`function_ref`, `contract` as `opaque_debug`.
+
+Dispatch- and body-shape facts each emit one `[fz, compiler2, X, defined]` (or
+`derived`) event from their `World::define_*` step, all following the same
+shape: measurements carry the owning `code_id`/`module_id`/`function_id`/
+`arity` plus a size count specific to the fact, and metadata carries the
+`function_ref` and the stored value as `opaque_debug`.
+
+- `[fz, compiler2, entry_dispatch, defined]` (`world.rs::define_entry_dispatch`)
+  — measurements add `outcomes`, `guards`, `pinned` (from the
+  `PatternDispatchPlan`) and `source_root_ref`; metadata adds `plan`.
+- `[fz, compiler2, guard_dispatch, defined]` (`world.rs::define_guard_dispatch`)
+  — measurements add `bodies`, `guards`, `pinned`, `source_root_ref`; metadata
+  adds `dispatch`.
+- `[fz, compiler2, dispatch_mask, derived]` (`jobs/keying.rs::derive_dispatch_mask`)
+  — measurements are just `function_id`/`arity` (mask length); metadata carries
+  the derived `DispatchInputMask` as `mask`.
+- `[fz, compiler2, lowered_body, defined]` (`world.rs::define_lowered_body`) —
+  measurements add `clauses`, `generated`, `source_root_ref`; metadata carries
+  the `LoweredBody` as `body`.
+
+Activation-level analysis facts follow the same "define, then re-borrow, then
+emit" shape keyed by `ActivationKey` instead of `FunctionId`:
+
+- `[fz, compiler2, activation_analysis, defined]` (`world.rs::define_activation_analysis`)
+  — measurements: `root_id`, `function_id`, `reachable_clauses`, `callsites`,
+  `values` (sizes off the stored `ActivationAnalysis`). Metadata: `activation`,
+  `analysis` as `opaque_debug`.
+- `[fz, compiler2, activation_inputs, defined]` (`world.rs::conclude_activation_input_contributions`)
+  — fires once per activation whose input types changed this job completion.
+  Measurements: `root_id`, `function_id`, `input_arity`, `rebased` (whether
+  this settle narrowed rather than joined). Metadata: `activation`, `inputs`,
+  a rendered `inputs_display` (`Types::display` per input, for JSONL
+  readability), and `publisher` (the completing `Job`), all `opaque_debug`.
+- `[fz, compiler2, return_type, defined]` (`world.rs::define_activation_return`)
+  — measurements: `root_id`, `function_id`, `ascents` (join-step count),
+  `rebased`. Metadata: `activation`, `return_ty`. When the same settle widens
+  the return type rather than narrowing it, the same call site also emits
+  `[fz, compiler2, return_type, widened]` with the same `root_id`/
+  `function_id`/`ascents` measurements — the two together distinguish "the
+  return type advanced" from "the return type advanced by widening," which a
+  convergence-runaway diagnosis reads to tell a genuine narrowing settle from
+  a widening one.
+- `[fz, compiler2, callsite, defined]` (`world.rs::define_callsite_summary`) —
+  measurements: `root_id`, `function_id`, `callsite_id`, `input_arity`,
+  `target_count`, `changed`. Metadata: `callsite`, `summary` (the
+  `CallSiteSummary`) as `opaque_debug`.
+
+Module, root, and code identity emit their own definition events:
+`[fz, compiler2, module, defined]` (`world.rs::define_module`, measurements
+`code_id`/`module_id`, metadata `module`/`module_id`); `[fz, compiler2, root,
+submitted]` (`world.rs::submit_root`, measurements `root_id`, `module_id`,
+`function_id`, `arity`, `pending_codes`, metadata `root`/`function_ref`) fires
+when a caller submits a fresh compile root, ahead of any drive; `[fz,
+compiler2, code, submitted]` (`world.rs::submit_code`, measurements `code_id`,
+`bytes`, no metadata) fires when source text is registered, before indexing.
+
+Protocol wiring emits one definition event per store: `[fz, compiler2,
+protocol_callback, defined]` (`world.rs::define_protocol_callback`,
+measurements `protocol_id`/`function_id`/`arity`, metadata
+`callback`/`function_ref`); `[fz, compiler2, protocol_dispatch, defined]`
+(`world.rs::define_protocol_dispatch`, measurements `protocol_id`/`arms`/
+`changed`, metadata `dispatch`); `[fz, compiler2, protocol_impl, defined]`
+(`world.rs::define_protocol_impl`, measurements `protocol_id`/`target_id`/
+`callbacks`, metadata `key`/`protocol_impl`).
+
+Backend and native artifact definitions: `[fz, compiler2, backend_program,
+defined]` (`world.rs::define_backend_program`, measurements `root_id`,
+`atom_count`, `executable_count`, `callable_entry_count`, `changed`, metadata
+`program`/`root_id` as `opaque_debug`) fires when a root's `BackendProgram`
+is stored — the `--dump backend=` handler subscribes to this same event.
+`[fz, compiler2, native_program, defined]` (`world.rs::define_native_program`,
+measurements `root_id`, `body_count`, `callable_boundary_count`, `fn_count`,
+`changed`, metadata `program`/`root_id`) fires when the CPS/native lowering of
+a root's `BackendProgram` is stored — the `--dump native=`/`--dump fnir=`
+handlers subscribe to this event. `[fz, compiler2, native_program,
+reusable_cons]` (`jobs/native.rs::lower_native_program`) fires alongside it
+with measurements `root_id`, `birth_count`, `transport_count` — the counts
+`NativeLowerer` collects for cons cells that are constructed fresh versus
+reused across a transport boundary, no metadata.
+
+Type identity emits two narrower events than `[fz, compiler2, type,
+defined]` (the resolved `TypeDef`, exercised by `rendered_type_defs` above):
+`[fz, compiler2, type, noted]` (`world.rs::note_type_decl`) fires when an
+unresolved `@type` declaration becomes a referenceable identity, before
+`DeriveTypeDef` resolves it — measurements `module_id`/`arity`/`namespace`,
+metadata `name`/`decl`. `[fz, compiler2, type, referenced]`
+(`world.rs::emit_type_referenced`) fires from typedef/contract/dispatch
+resolution whenever one type name's resolution reaches another named type —
+measurements `ref_module_id`/`ref_arity`, metadata `ref_name`, `consumer_kind`,
+`consumer` (the referencing name), and `referenced` (the full `TypeName`) —
+the dependency-edge signal a type-cycle diagnostic reads.
+
+`--dump` output rides its own events rather than a side channel: `[fz,
+compiler2, dump, types]` and `[fz, compiler2, dump, activations]`
+(`dump.rs::emit_dump_events`, called from the product-path
+`emit_product_semantic_dump_events`) fire once each per root, carrying
+`root_id` in measurements and the rendered `TypesDump`/`ActivationsDump` text
+as a plain `opaque` metadata `dump` (not `opaque_debug` — the dump handler is
+the sole consumer and renders the text directly). `install_dump_handlers`
+attaches a one-shot writer to each dump kind's event, keyed by `--dump
+<kind>=<path>`; `Backend`/`Native`/`Fnir` dump kinds instead attach to the
+`backend_program.defined`/`native_program.defined` definition events above,
+so a dump never forces extra computation beyond what the product path already
+demanded. `[fz, compiler2, dump, clif]`
+(`native_codegen/driver.rs::lower_function`, gated on
+`ir_text_record_enabled()`) additionally fires per lowered function body when
+CLIF text recording is on, carrying `fn_id`/`spec_id` measurements and a
+`ClifDumpEntry` as plain `opaque` metadata.
 
 **Compiler2 tests should observe telemetry, not world internals.** The common
 captures live in `src/compiler2/drive_test.rs` and assert on emitted
