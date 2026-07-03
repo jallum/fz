@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-07-03T23:10:26Z",
+  "description": "Found by the fz-go4.18.28.14 audit (at ef4043a97). types/format.rs::format_arrow_clause (~:79-88) renders a closure literal as '{args-\u003eret}#{fn_id}', discarding ClosureLit.kind and .captures — but both are part of ArrowSig's Eq/Hash identity (types/sigs.rs:88-99). So two DISTINCT interned Tys (same fn_id, different capture set or CallableValueKind) render to the SAME display string. Harmless where display() is human-facing, but a latent determinism gap if display() is used as a load-bearing sort/dedup key (as fz-go4.18.28.14 now does in settle_demand_cone — two closure-typed members sharing fn_id get a key TIE resolved by RandomState HashMap iteration = run-to-run nondeterministic for that narrow case; currently harmless because that sort is order-irrelevant, but a trap for future reuse). TASK: make format_arrow_clause's closure-literal rendering include enough of kind/captures to be injective over ArrowSig identity (or document that display() is NOT injective and must not be used as a key). General Types::display hygiene, independent of any one sort.",
+  "id": "fz-go4.34",
+  "labels": [],
+  "parent": "fz-go4",
+  "priority": 3,
+  "status": "open",
+  "title": "Types::display/format_arrow_clause elides closure kind+captures — display strings collide for distinct arrows",
+  "type": "task",
+  "updated_at": "2026-07-03T23:10:26Z"
+}
