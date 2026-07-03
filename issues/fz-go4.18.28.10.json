@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-07-03T00:45:20Z",
+  "description": "Named by fz-go4.18.28.9's job-minimalism audit (2026-07-02, at 6a1134c0b) as the mechanism now dominating materialized_executable+abi_executable production (still 646+257 productions, ~0.33s wall on enum_predicate_search after the seam-facts hoist). Same disease shape the .28.7/.28.8/.28.9 arc has been curing, one layer deeper:\n\nMECHANISM: session_materialized_executable_transport (src/compiler2/jobs/artifact.rs ~425-450) scans the ENTIRE session.transport_shapes() inventory per production, filters by owning executable, clones into a HashSet -- an O(global positions) pass per O(per-executable) production. Then sort_transport_positions runs SIX times per production (artifact.rs:405-410) -- mid-flow sorts on the per-executable position sets. Secondary (reads only, cheaper): per-production linear scans of the seam slice in function_entry_publication_reprs (artifact.rs:2181, 2239; native.rs:4098, 4194).\n\nFIX DIRECTION (per the arc's established pattern): index transport shapes by owning ExecutableSymbol at RECORD time (when record_transport_shape/the closure solve writes them) so per-production access is a keyed lookup, not a global filter-scan -- the same read-what-you-consume cure as .28.7's executable_value_shapes. For the six sorts: classify each against the sorting law (deterministic-iteration -\u003e naturally-ordered container at insert; final-packaging -\u003e keep). Respect the position-set epoch semantics (.28.1's clear_solved_transport_closures) when adding any keyed index -- the index must invalidate with the shapes it derives from, same proof obligation .28.9 just discharged for boundary facts.\n\nACCEPTANCE: no per-production whole-inventory scan in session_materialized_executable_transport; the six per-production sorts classified and eliminated-or-justified per the law; gap-sum on enum_predicate_search materialized+abi drops further toward near-zero; invalidation of any new index proven (test, not assumed); suite green 3x, clippy/fmt clean.",
+  "id": "fz-go4.18.28.10",
+  "labels": [],
+  "parent": "fz-go4.18.28",
+  "priority": 2,
+  "status": "open",
+  "title": "session_materialized_executable_transport scans the whole transport_shapes inventory + runs 6 sorts per production",
+  "type": "task",
+  "updated_at": "2026-07-03T00:45:20Z"
+}
