@@ -2,14 +2,15 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-07-03T15:52:35Z",
   "created": "2026-07-02T23:04:03Z",
   "description": "Removable-code audit of fz-go4.18.11 (2026-07-02) found .agent/docs/telemetry.md documents neither the pre-existing transport_component.produced signal nor the new executable_transport.projected signal added at 458bec93a (transport.rs emit_transport_component_materialized). Not a regression fz-go4.18.11 introduced (produced was already undocumented), but the ticket's own fold is the natural place to have closed the gap and didn't. Add telemetry.md entries for both topics: shape (ExecutableKey metadata), emission site, and what property each lets a test observe (cache-hit vs fresh-materialize distinction for the projected signal).\n\nADDITIONS FROM LATER FOLDS (same sweep, one commit): (1) [fz,compiler2,drive,demand_on_stall] added by fz-go4.18.24 family 3 (drive.rs ~:317) -- fires when the agenda drains with blocked waiters and the fact-\u003eproducer expansion pokes producers; carries only producer_pokes (count). While documenting, consider enriching the event with which-fact/which-producer metadata (the .18.24-f3 removable-code audit flagged it as bare-ish for diagnosing a specific stall -- a count tells you THAT a stall-demand happened, not WHAT was stalled). (2) [fz,compiler2,pull,session,finished] fields (executables, producer_pokes) if undocumented -- check while in the file.",
   "id": "fz-go4.18.30",
   "labels": [],
   "parent": "fz-go4.18",
   "priority": 3,
-  "status": "in_progress",
+  "status": "closed",
   "title": "telemetry.md missing entries for transport_component.produced and executable_transport.projected",
   "type": "task",
-  "updated_at": "2026-07-03T15:33:50Z"
+  "updated_at": "2026-07-03T15:52:35Z"
 }
