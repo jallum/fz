@@ -799,6 +799,10 @@ impl RootMap {
     pub fn is_empty(&self) -> bool {
         self.slots.is_empty()
     }
+
+    pub fn ids(&self) -> impl Iterator<Item = RootId> + use<> {
+        (0..self.slots.len() as u32).map(RootId)
+    }
 }
 
 /// Reconciles a fact's value when it is (re)produced. `current` is `None`

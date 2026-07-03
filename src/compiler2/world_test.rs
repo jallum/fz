@@ -3,7 +3,7 @@ use super::keying::DispatchDemand;
 use super::{DriveOutcome, FactKey, Job, ModuleId, ModuleInterface, Namespace, TypeName, Types, World};
 use crate::ast::Attribute;
 use crate::compiler2::drive::JobEffects;
-use crate::telemetry::ConfiguredTelemetry;
+use crate::telemetry::{Capture, ConfiguredTelemetry};
 
 #[test]
 #[should_panic(expected = "modules should be scoped before definition")]
@@ -559,5 +559,83 @@ fn compiler2_waiting_job_keeps_activation_input_contributions() {
         world.activation_inputs(&key),
         Some(vec![input]),
         "a waiting completion must not withdraw the publisher's standing contributions",
+    );
+}
+
+/// The bare drive's demand-on-stall pass: a waiter blocked on a fact whose
+/// mapped producer has never run must not stall — the wait is the demand, the
+/// fact->producer map expands it, and the drive completes.
+#[test]
+fn compiler2_drive_demands_the_blocked_facts_producer_on_stall() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&["fz", "compiler2", "drive", "demand_on_stall"], capture.handler());
+    let mut world = World::new(&tel);
+    let root = world.submit_root(None, "main".to_string(), 0, super::ExecutableNeed::Value);
+    // Take the submit-root ignition out of the agenda: this test isolates the
+    // stall pass, so nothing may be ready when the drive starts.
+    assert_eq!(world.work_graph.pop(), Some(Job::SeedRoot(root)));
+    let function = world.reference_function(ModuleId::GLOBAL, "loop", 1);
+    assert!(world.define_recursive(function, false));
+    assert!(world.define_dispatch_mask(function, vec![DispatchDemand::Whole]));
+    let input_a = world.types_mut().atom_lit("a");
+    let input_b = world.types_mut().atom_lit("b");
+    let key_a = world.activation_key(root, function, &[input_a]);
+    let key_b = world.activation_key(root, function, &[input_b]);
+
+    // A real waiter blocks on a fact no enqueued or concluded job produces.
+    world.complete_job(
+        Job::SeedActivation(key_b.clone()),
+        JobEffects {
+            waits: vec![FactUse::settled(FactKey::Activation(key_a.clone()))],
+            ..JobEffects::default()
+        },
+    );
+    assert_eq!(world.work_graph.pending_jobs(), 0);
+
+    assert_eq!(
+        world.drive(),
+        DriveOutcome::Resolved,
+        "the stall pass should demand the blocked fact's mapped producer and complete the drive",
+    );
+    assert!(
+        world.has_fact(&FactKey::Activation(key_a)),
+        "the demanded producer should have run and published the blocked fact",
+    );
+    assert!(
+        world.has_fact(&FactKey::Activation(key_b)),
+        "the woken waiter should have concluded once its wait settled",
+    );
+    assert!(
+        !capture
+            .find(&["fz", "compiler2", "drive", "demand_on_stall"])
+            .is_empty(),
+        "the drive should report that the demand-on-stall pass fired",
+    );
+}
+
+/// A blocked fact with no fact->producer arm is the genuine stall: the drive
+/// must report it unresolved, never spin the demand-on-stall pass on it.
+#[test]
+fn compiler2_drive_reports_unmapped_blocked_facts_as_unresolved() {
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new(&tel);
+    let function = world.reference_function(ModuleId::GLOBAL, "main", 0);
+    world.complete_job(
+        Job::DeriveRecursive(function),
+        JobEffects {
+            waits: vec![FactUse::current(FactKey::GuardDispatch(function))],
+            ..JobEffects::default()
+        },
+    );
+
+    let DriveOutcome::Unresolved { waits } = world.drive() else {
+        panic!("a blocked fact with no mapped producer must surface as the genuine stall");
+    };
+    assert!(
+        waits
+            .iter()
+            .any(|wait| *wait.fact.fact() == FactKey::GuardDispatch(function)),
+        "the unresolved report should carry the unmapped blocked fact: {waits:?}",
     );
 }

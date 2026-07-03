@@ -105,8 +105,17 @@ while let Some(job) = agenda.pop():
             (a follow_up whose target's conclusion stands coalesces, no re-run)
 ```
 
-The loop ends as `Resolved` (agenda empty, no waiters), `Unresolved { waits }`
-(stuck waiters remain — a missing definition or demand), or `Fatal { job }`.
+When the agenda drains, standing demands expand before the drive ends:
+every submitted root demands its entry activation's analysis
+(`World::demand_root_entry_analyses` — first-run ignition only; wakes carry
+every later revision), and every blocked waiter's fact names its single
+producer through the fact->producer map (`World::demand_fact_producer` — the
+same expansion the product fact-wait loops reach through
+`World::next_ready_job`). A stall pass only re-demands a blocked fact after
+some fact content changed, so byte-identical re-runs cannot loop. The loop
+ends only when nothing can be demanded: `Resolved` (no waiters),
+`Unresolved { waits }` (blocked facts with no mapped producer), or
+`Fatal { job }`.
 
 **Errors are not facts.** A job returning `FatalError` aborts the whole drive;
 the diagnostic goes out through telemetry. Closure never masks an error, and

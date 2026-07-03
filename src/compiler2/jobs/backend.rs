@@ -23,7 +23,7 @@ use super::super::body::{
     CallArg, CallSiteId, ControlDestination, ControlEntryId, ControlEntryOrigin, LoweredBody, LoweredEntry,
     LoweredStep, LoweredTail, ValueId,
 };
-use super::super::drive::{FactKey, Job, JobEffects};
+use super::super::drive::{FactKey, JobEffects};
 use super::super::facts::{FactReadiness, FactUse};
 use super::super::identity::RootId;
 use super::super::identity::{ActivationKey, ExecutableKey, ExecutableNeed};
@@ -32,7 +32,6 @@ use super::super::pull::{
     SymbolicBackendClause, SymbolicBackendEntry, SymbolicBackendExecutable, SymbolicBackendTail, WorldProductProducers,
 };
 use super::super::scheduler::FatalError;
-use super::super::semantic::CallSiteKey;
 use super::super::transport::{
     ActivationSymbol, BoundaryFacts, BoundaryId, CallableFacts, CallableId, CodegenLaneRepr, CodegenSeam,
     CodegenSeamFact, ExecutableSymbol, LaneId, ShapeDescr, ShapeId, TransportPosition,
@@ -91,10 +90,10 @@ fn drive_product_fact_wait(world: &mut World<'_>, root_id: RootId, fact: FactUse
     let mut jobs_ran = 0_u64;
     let mut producer_pokes = 0_u64;
     while !product_fact_wait_is_satisfied(world, &fact) {
-        let job = match world.work_graph.pop() {
+        let job = match world.next_ready_job() {
             Some(job) => job,
             None => {
-                producer_pokes += demand_product_fact_producer(world, fact.fact());
+                producer_pokes += world.demand_fact_producer(fact.fact());
                 let Some(job) = world.work_graph.pop() else {
                     return Err(emit_backend_product_error(
                         world,
@@ -144,51 +143,6 @@ fn drive_product_fact_wait(world: &mut World<'_>, root_id: RootId, fact: FactUse
         }
     }
     Ok(producer_pokes)
-}
-
-fn demand_product_fact_producer(world: &mut World<'_>, fact: &FactKey) -> u64 {
-    let job = match fact {
-        FactKey::RootEntry(root) => Some(Job::SeedRoot(*root)),
-        FactKey::FunctionDefined(function) => Some(Job::DefineFunction(*function)),
-        FactKey::LoweredBody(function) => Some(Job::LowerFunction(*function)),
-        FactKey::Recursive(function) => Some(Job::DeriveRecursive(*function)),
-        FactKey::DispatchMask(function) => Some(Job::DeriveDispatchMask(*function)),
-        FactKey::Activation(activation) | FactKey::ActivationInputs(activation) => {
-            Some(Job::SeedActivation(activation.clone()))
-        }
-        FactKey::ActivationAnalyzed(activation) | FactKey::ReturnType(activation) => {
-            let mut pokes = 0;
-            if !world.has_fact(&FactKey::Activation(activation.clone()))
-                || !world.has_fact(&FactKey::ActivationInputs(activation.clone()))
-            {
-                pokes += demand_if_needed(world, Job::SeedActivation(activation.clone()), fact) as u64;
-            }
-            return pokes + demand_if_needed(world, Job::AnalyzeActivation(activation.clone()), fact) as u64;
-        }
-        FactKey::CallSiteTargets(CallSiteKey { activation, .. })
-        | FactKey::CallSiteSummary(CallSiteKey { activation, .. }) => {
-            let mut pokes = 0;
-            if !world.has_fact(&FactKey::Activation(activation.clone()))
-                || !world.has_fact(&FactKey::ActivationInputs(activation.clone()))
-            {
-                pokes += demand_if_needed(world, Job::SeedActivation(activation.clone()), fact) as u64;
-            }
-            return pokes + demand_if_needed(world, Job::AnalyzeActivation(activation.clone()), fact) as u64;
-        }
-        _ => None,
-    };
-    if let Some(job) = job {
-        return demand_if_needed(world, job, fact) as u64;
-    }
-    0
-}
-
-fn demand_if_needed(world: &mut World<'_>, job: Job, target_fact: &FactKey) -> bool {
-    if world.work_graph.output_keys(&job).contains(target_fact) && !world.work_graph.rebased(&job) {
-        return false;
-    }
-    world.demand(job);
-    true
 }
 
 fn product_fact_wait_is_satisfied(world: &World<'_>, fact: &FactUse<FactKey>) -> bool {

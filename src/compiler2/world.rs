@@ -364,6 +364,10 @@ impl<'a> World<'a> {
             need,
             kind: RootKind::Runtime,
         });
+        // The external ignition point: the root does not exist to be waited
+        // on before this call creates it. Everything downstream is pulled --
+        // the root's entry analysis via `demand_root_entry_analyses`, every
+        // other producer via the fact->producer map.
         self.work_graph.enqueue(Job::SeedRoot(root_id));
         let root = self.roots.get(root_id);
         let function_ref = self.functions.reference_for(function);
@@ -528,6 +532,10 @@ impl<'a> World<'a> {
 
     pub fn root_entry(&self, id: RootId) -> RootEntry {
         self.roots.get(id).clone()
+    }
+
+    pub(crate) fn root_ids(&self) -> impl Iterator<Item = RootId> + use<> {
+        self.roots.ids()
     }
 
     pub(crate) fn activation_key(&mut self, root: RootId, function: FunctionId, inputs: &[Ty]) -> ActivationKey {

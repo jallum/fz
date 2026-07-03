@@ -97,6 +97,14 @@ where
         self.deps.has_unresolved()
     }
 
+    /// Whether `job` has ever completed a run: it concluded (reads are
+    /// recorded, even empty) or blocked (waits are standing). A job that has
+    /// run is reachable by the graph's own wakes; a never-run job has no wake
+    /// source, so only a fresh demand can start it.
+    pub fn has_run(&self, job: &J) -> bool {
+        self.deps.has_run(job)
+    }
+
     pub fn unresolved(&self) -> Vec<UnresolvedWait<J, F>> {
         self.deps.unresolved()
     }

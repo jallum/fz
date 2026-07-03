@@ -280,10 +280,10 @@ impl<'a> Compiler2<'a> {
         let mut jobs_ran = 0_u64;
         let mut producer_pokes = 0_u64;
         while !self.product_fact_wait_is_satisfied(&fact) {
-            let job = match self.world.work_graph.pop() {
+            let job = match self.world.next_ready_job() {
                 Some(job) => job,
                 None => {
-                    producer_pokes += self.demand_product_fact_producer(fact.fact());
+                    producer_pokes += self.world.demand_fact_producer(fact.fact());
                     let Some(job) = self.world.work_graph.pop() else {
                         return Err(format!(
                             "compiler2 root {} product path waited on {:?} with no ready producer; unresolved={:?}",
@@ -331,50 +331,6 @@ impl<'a> Compiler2<'a> {
             }
         }
         Ok(producer_pokes)
-    }
-
-    fn demand_product_fact_producer(&mut self, fact: &FactKey) -> u64 {
-        let job = match fact {
-            FactKey::RootEntry(root) => Some(Job::SeedRoot(*root)),
-            FactKey::FunctionDefined(function) => Some(Job::DefineFunction(*function)),
-            FactKey::LoweredBody(function) => Some(Job::LowerFunction(*function)),
-            FactKey::Recursive(function) => Some(Job::DeriveRecursive(*function)),
-            FactKey::DispatchMask(function) => Some(Job::DeriveDispatchMask(*function)),
-            FactKey::Activation(activation) | FactKey::ActivationInputs(activation) => {
-                Some(Job::SeedActivation(activation.clone()))
-            }
-            FactKey::ActivationAnalyzed(activation) | FactKey::ReturnType(activation) => {
-                let mut pokes = 0;
-                if !self.world.has_fact(&FactKey::Activation(activation.clone()))
-                    || !self.world.has_fact(&FactKey::ActivationInputs(activation.clone()))
-                {
-                    pokes += self.demand_if_needed(Job::SeedActivation(activation.clone()), fact) as u64;
-                }
-                return pokes + self.demand_if_needed(Job::AnalyzeActivation(activation.clone()), fact) as u64;
-            }
-            FactKey::CallSiteTargets(key) | FactKey::CallSiteSummary(key) => {
-                let mut pokes = 0;
-                if !self.world.has_fact(&FactKey::Activation(key.activation.clone()))
-                    || !self.world.has_fact(&FactKey::ActivationInputs(key.activation.clone()))
-                {
-                    pokes += self.demand_if_needed(Job::SeedActivation(key.activation.clone()), fact) as u64;
-                }
-                return pokes + self.demand_if_needed(Job::AnalyzeActivation(key.activation.clone()), fact) as u64;
-            }
-            _ => None,
-        };
-        if let Some(job) = job {
-            return self.demand_if_needed(job, fact) as u64;
-        }
-        0
-    }
-
-    fn demand_if_needed(&mut self, job: Job, target_fact: &FactKey) -> bool {
-        if self.world.work_graph.output_keys(&job).contains(target_fact) && !self.world.work_graph.rebased(&job) {
-            return false;
-        }
-        self.world.demand(job);
-        true
     }
 
     fn product_fact_wait_is_satisfied(&self, fact: &FactUse<FactKey>) -> bool {

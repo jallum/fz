@@ -129,6 +129,17 @@ where
         self.reads.contains_key(job) && self.waits.get(job).is_none_or(HashSet::is_empty)
     }
 
+    /// Whether `job`'s most recent completion left waits standing.
+    pub fn blocked(&self, job: &J) -> bool {
+        self.waits.get(job).is_some_and(|waits| !waits.is_empty())
+    }
+
+    /// Whether `job` has ever completed a run: concluding records reads (even
+    /// an empty set), blocking records standing waits.
+    pub fn has_run(&self, job: &J) -> bool {
+        self.reads.contains_key(job) || self.blocked(job)
+    }
+
     pub fn has_unresolved(&self) -> bool {
         !self.waiters.is_empty()
     }
