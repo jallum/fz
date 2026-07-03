@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-07-03T14:57:18Z",
+  "description": "Named by fz-go4.24 (2026-07-03, at 6b3d7b58b/adb7e2ad4) as a deliberate scope exclusion, confirmed genuinely untouched by its hygiene audit. fz-go4.24 canonicalizes only the TUPLES axis at Types::intern (canonicalize_tuple_axis: provably-empty clause drops + subsumption absorption + debug_assert invariant). MapSig::intersect_pos (types/sigs.rs) got only the mechanical Option-\u003ePosMeet rewrap and always returns Merged, never Empty -- a map merge with a field intersected to empty still persists (map_clause_empty proves it later, downstream, repeatedly), and map DNFs can accumulate duplicate/subsumed/empty-by-required-key clauses the same way tuples did pre-fz-go4.24.\n\nWHY DEFERRED: symmetric PosMeet::Empty treatment for maps would cost per-field emptiness on every map intersect -- needs its own measurement before committing to it (the tuple fix was justified by the measured 00277 blowup; no equivalent map-axis blowup has been observed yet).\n\nTASK: (1) measure -- instrument TypeInterner::intern for smelly MAP DNFs (the fz-go4.24 INTERN-SMELL method) across the census fixtures + suite; if garbage accumulates, (2) extend canonicalization to the maps axis: PosMeet::Empty for empty-field merges, map-clause subsumption (sufficient-conditions, mirroring tuple_clause_subsumed's direction discipline), extend the intern debug_assert. If measurement shows maps stay clean in practice, close with the evidence and a comment in sigs.rs stating why maps are exempt.\n\nACCEPTANCE: measurement published either way; if fixed, same bar as fz-go4.24 (identities named per drop rule, suite green 3x, matrix failure set unchanged, byte-identical fixtures).",
+  "id": "fz-go4.26",
+  "labels": [],
+  "parent": "fz-go4",
+  "priority": 3,
+  "status": "open",
+  "title": "MapSig has no persistence-boundary hygiene: map DNFs can accumulate duplicate/subsumed/empty clauses",
+  "type": "task",
+  "updated_at": "2026-07-03T14:57:18Z"
+}
