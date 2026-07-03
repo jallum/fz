@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-07-03T01:16:02Z",
+  "description": "Named by fz-go4.18.28.10's removable-code audit (2026-07-02, at 2c057aca3). That commit moved owning-symbol extraction to TransportPosition::executable (src/compiler2/transport.rs:285) and deleted jobs/artifact.rs's transport_position_executable helper -- but jobs/transport.rs:1140 (executable_key_for_transport_position) still hand-rolls the identical 7-arm owning-symbol match, and test-file copies exist at transport_contract_test.rs:3712/4898. Left untouched by .28.10 only because jobs/transport.rs was sibling-owned that round (scope discipline, not a judgment that the duplication is fine).\n\nTASK: route jobs/transport.rs:1140 and the two test-file copies through TransportPosition::executable. Pure mechanical unification; watch only that executable_key_for_transport_position may layer extra conversion (symbol -\u003e ExecutableKey) on top of the extraction -- keep that layering, replace just the match. Also sweep for any other hand-rolled copies (rg for the 7-variant match shape). Ride-along: pull.rs:689's doc comment says 'replacing the per-production filter-scan' -- migration narration in a permanent doc; rephrase to present-tense fact.\n\nACCEPTANCE: one owning-symbol extraction in the codebase; rg shows no duplicate match; suite green 3x; clippy/fmt clean.",
+  "id": "fz-go4.18.33",
+  "labels": [],
+  "parent": "fz-go4.18",
+  "priority": 3,
+  "status": "open",
+  "title": "Unify the hand-rolled owning-symbol matches onto TransportPosition::executable",
+  "type": "task",
+  "updated_at": "2026-07-03T01:16:02Z"
+}
