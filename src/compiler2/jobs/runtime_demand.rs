@@ -477,10 +477,23 @@ fn settle_demand_cone(
     graph: &DemandGraph,
 ) -> Result<SettledDemandCone, HashSet<PullWait>> {
     let mut members: Vec<ExecutableKey> = graph.facts.keys().cloned().collect();
+    // A process-deterministic, run-to-run-reproducible member order: the Jacobi
+    // ascent below never reads this order (every round derives from a frozen
+    // previous-round snapshot, joined via commutative `join_assign`, so the
+    // settled fixpoint and round count are order-invariant by construction —
+    // see the ascent's doc comment). This sort exists only so `members` has a
+    // stable order across process runs of the SAME source, instead of the
+    // interning-sequence-dependent order `key.activation.arrow` (a raw `Ty`
+    // interner id) would give: two runs that intern the same structural types
+    // in a different sequence get different numeric ids for them, which would
+    // silently reorder this Vec run-to-run if sorted on the raw id. Sorting on
+    // the arrow's DISPLAYED (structural) form instead keys on the type's
+    // content, not its interning order, per the sorting law (sorts must never
+    // consume interner ids mid-flow, fz-go4.18.28.14).
     members.sort_by_key(|key| {
         (
             key.activation.function.as_u32(),
-            key.activation.arrow,
+            world.types().display(&key.activation.arrow),
             executable_need_order(key.need),
         )
     });
