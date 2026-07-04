@@ -3,7 +3,7 @@
   "blocked_by": [],
   "blocks": [],
   "created": "2026-07-03T16:40:42Z",
-  "description": "src/compiler2/semantic_analysis_test.rs:29-139 defines its own private FunctionCapture/FunctionCaptureHandler, duplicating drive_test.rs's FunctionCapture (which fz-go4.21 made pub(crate) and is now the reuse target for port_type_infer_test.rs). Pre-existing duplication surfaced by the fz-go4.21 removable-code audit. Consolidate on one implementation (likely drive_test.rs's, or a shared test-support module if a third consumer appears via the port-test TODO sweep); delete the other. Test-only change, two-lane audit sufficient.",
+  "description": "DONE (folded 2026-07-03 as 58b13ecbf, two-lane audited PASS/PASS). Consolidated semantic_analysis_test.rs's private FunctionCapture (+ also CallsiteCapture + assert_resolved, same-file duplication found in scope) onto drive_test.rs's canonical pub(crate) versions (bumping CallsiteCapture/CallsiteDefinedRecord to pub(crate) — all promotions proven load-bearing by the removable lane: reverting them yields 7 private-field errors). CRUX verified by the correctness lane: the two FunctionCapture versions listened for DIFFERENT source events (semantic's function.source.NOTED vs drive_test's function.source.STASHED), but the difference is non-load-bearing because the consolidated tests look up FULLY-DEFINED top-level functions (main/panic/dbg/lonely) resolved via function.defined in BOTH captures regardless of source event — coverage preserved for the reason claimed. Folds mutation-verified to still bite (swapped/negated lookups fail); CallsiteCapture/assert_resolved byte-identical. Net +14/-157. rg shows one FunctionCapture + one CallsiteCapture. 1190/0/12. Follow-up filed for assert_resolved's remaining triplication.",
   "id": "fz-go4.28",
   "labels": [],
   "parent": "fz-go4",
@@ -11,5 +11,5 @@
   "status": "in_progress",
   "title": "Consolidate duplicate FunctionCapture test machinery",
   "type": "task",
-  "updated_at": "2026-07-04T13:12:27Z"
+  "updated_at": "2026-07-04T13:42:21Z"
 }
