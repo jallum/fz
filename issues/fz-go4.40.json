@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-go4.18.28.6"
+  ],
   "blocks": [],
   "created": "2026-07-04T01:54:50Z",
   "description": "Found by the fz-go4.37 re-audit (2026-07-03, confirmed pre-existing — reproduced at parent dc26bf0b0, NOT caused by fz-go4.37). fixtures2/00277_enum_tier0_fixture.fz (builds %{2=\u003e:two,1=\u003e:one} and calls Enum.member?/reduce/count/to_list over it) engages max 5 return-type ascents, exceeding the pinned budget of \u003c=4 that sweep_corpus_for_return_widening asserts (drive_test.rs:~10846). It is SCHEDULE-DEPENDENT (parent showed max 4 on one run, max 5 on three repeats) — consistent with the known non-monotone Seal\u003c-\u003eDeriveRuntimeDemand\u003c-\u003eTransport convergence issue (project_fz_f98_convergence_runaway). Currently MASKED because 00277's home shard (index%4 in {0,1,3}) is #[ignore = red-worklist]; only shard_2 is active. TASK: this is the return-widening-over-budget symptom of the broader ReturnType-fixpoint nondeterminism (relate to fz-go4.18.28.6). Diagnose whether 00277's 5th ascent is genuine work or the convergence wobble; either bring it under budget or, if it's the .28.6 nondeterminism, fold into that ticket's fix. Do NOT just bump the budget to 5 (that masks the signal). Connect to fz-go4.18.28.6.",
@@ -17,5 +19,5 @@
   "status": "open",
   "title": "00277_enum_tier0_fixture engages 5 return-ascents, over the pinned budget of 4 (masked in ignored shard)",
   "type": "bug",
-  "updated_at": "2026-07-04T23:33:02Z"
+  "updated_at": "2026-07-04T23:33:03Z"
 }
