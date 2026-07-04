@@ -385,3 +385,79 @@ fn stable_var_label(world: &World<'_>, var_id: u32) -> String {
     let label = canonical_function_label(world, function, &mut HashMap::new());
     format!("{label}:{slot}")
 }
+
+#[cfg(test)]
+mod capture_tag_tests {
+    use super::{World, drop_closure_capture_tag, stable_type_text};
+    use crate::telemetry::ConfiguredTelemetry;
+
+    /// Runs `drop_closure_capture_tag` over `input` and returns what's left
+    /// in the iterator afterward, so tests can assert on the untouched tail
+    /// (empty when the whole rest of the input was consumed).
+    fn strip(input: &str) -> String {
+        let mut chars = input.chars().peekable();
+        drop_closure_capture_tag(&mut chars);
+        chars.collect()
+    }
+
+    #[test]
+    fn leaves_non_tag_text_untouched() {
+        assert_eq!(strip("int"), "int");
+    }
+
+    #[test]
+    fn leaves_partial_prefix_match_untouched() {
+        // `closureXYZ[...]` shares a prefix with the tag but isn't it: the
+        // exact literal `closure[` must match, not just `closure`.
+        assert_eq!(strip("closureXYZ[atom]"), "closureXYZ[atom]");
+    }
+
+    #[test]
+    fn strips_a_flat_capture() {
+        assert_eq!(strip("closure[int] rest"), " rest");
+    }
+
+    #[test]
+    fn balances_nested_capture_brackets() {
+        // A captured type can itself be a list (e.g. `closure[[int], atom]`),
+        // nesting further `[`/`]` pairs inside the tag. A naive "stop at the
+        // first `]`" strip would truncate at `closure[[int]` and leave
+        // `, atom] rest` dangling.
+        let input = "closure[[int], atom] rest";
+        assert_eq!(strip(input), " rest");
+
+        // Pin the bite: show what the naive (non-balanced) strip would have
+        // produced, and confirm it differs from the correct result above.
+        let naive_tag_end = input.find(']').expect("input has a `]`");
+        let naive_remainder = &input[naive_tag_end + 1..];
+        assert_eq!(naive_remainder, ", atom] rest");
+        assert_ne!(naive_remainder, strip(input));
+    }
+
+    #[test]
+    fn leaves_an_adjacent_unrelated_list_untouched() {
+        assert_eq!(strip("closure[int] [str]"), " [str]");
+    }
+
+    #[test]
+    fn on_unbalanced_input_consumes_to_end_of_string() {
+        // `format_closure_lit_suffix` (compiler2::types::format) always emits
+        // balanced brackets, so unbalanced input is unreachable from a real
+        // render today. This pins the current behavior — consume to
+        // end-of-string rather than backing off — rather than leaving it as
+        // an untested surprise, so a future refactor changes it on purpose
+        // or not at all.
+        assert_eq!(strip("closure[int, [int]"), "");
+    }
+
+    #[test]
+    fn stable_type_text_strips_the_capture_tag_call_edges_carry() {
+        // Mirrors the real shape a call-edge snapshot renders: a volatile
+        // `#<id>` suffix immediately followed by the closure literal's
+        // capture tag, both of which `stable_type_text` treats as noise.
+        let tel = ConfiguredTelemetry::new();
+        let world = World::new(&tel);
+        let rendered = "(a0_p0) -> a0_r#14closure[int, atom] => int".to_string();
+        assert_eq!(stable_type_text(&world, rendered), "(a0_p0) -> a0_r => int");
+    }
+}
