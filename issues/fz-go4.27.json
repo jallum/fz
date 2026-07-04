@@ -3,7 +3,7 @@
   "blocked_by": [],
   "blocks": [],
   "created": "2026-07-03T16:40:41Z",
-  "description": "fz-go4.21 (16d70b6d6) filled in ONE of the '// TODO: assert ... return type is equivalent to ...' comments in src/compiler2/port_type_infer_test.rs using drive_test.rs's ReturnTypeCapture/FunctionCapture machinery (now pub(crate)) + Compiler2::types_equivalent_for_test. The removable-code audit counted 34 sibling TODOs remaining (lines 151,170,189,209,376,441,504,526,545,564,586,608,630,652,674,696,715,737,759,781,803,825,847,866,885,904,923,942 at that commit). Fill them the same way. EXTRACT A SHARED HELPER (e.g. assert_main_return_equivalent) once 2-3 are done and the true shape of variation is known (function name, tuple vs non-tuple, not-yet-resolved cases) — do not extract from n=1, do not copy-paste the 5-line wiring 34 times. Each assertion mutate-tested (wrong type must fail readably).",
+  "description": "DONE (folded 2026-07-03 as dc26bf0b0, two-lane audited PASS/PASS). Filled 31 of ~34 return-type-equivalence TODOs in port_type_infer_test.rs — each asserts the function's settled return type via types_equivalent_for_test (delegates to production Types::is_equivalent mutual-subtype check, NOT a leniency shim), across int/str, module-qualified (Enum.reduce/3 vs Enumerable.List.reduce/3), tuples (flat/nested/mixed), unions (int|float), and CallableValueKind (FnRef vs Closure). Audit spot-checked 8 sites + mutation-tested (tuple-position wrongness, FnRef\u003c-\u003eClosure kind discrimination) — all bite. Helpers extracted after 3 conversions: attach_return_captures[_with_modules], assert_settles_to[_in_module] (31 sites), assert_closure_kind (3 sites — collapsed from two helpers at fold per the removable nit). pub(crate) bump of ModuleCapture::new/handler + function_id_in_module (all consumed). 3 TODOs left as DOCUMENTED FINDINGS (not forced false assertions): plain_spawn (child never activated, no return fact — correct to skip), and TWO CONFIRMED BEHAVIORAL BUGS ticketed below (guard-clause non-narrowing; map-pattern dead-clause leak). Baseline 1161/0/24 unchanged (strengthened assertions, no new tests). 8 remaining rg 'TODO' are out-of-scope (fixpoint-Known-return / activation-path / diagnostic checks), not return-type-equivalence.",
   "id": "fz-go4.27",
   "labels": [],
   "parent": "fz-go4",
@@ -11,5 +11,5 @@
   "status": "in_progress",
   "title": "Sweep the 34 remaining return-type TODOs in port_type_infer_test.rs",
   "type": "task",
-  "updated_at": "2026-07-03T23:30:20Z"
+  "updated_at": "2026-07-04T00:19:11Z"
 }
