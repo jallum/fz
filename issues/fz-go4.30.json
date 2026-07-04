@@ -7,9 +7,15 @@
   "id": "fz-go4.30",
   "labels": [],
   "parent": "fz-go4",
+  "comments": [
+    {
+      "text": "FOLDED as ecccd0efb. Anti-drift dedup: the fork's INNER fact-wait loop (drive_product_fact_wait_for_test + product_fact_wait_is_satisfied_for_test, ~66 lines re-implementing production's job-running/budget/satisfied logic) is DELETED; the 2 RootBackendProduct call sites now use product_drive::drive_root_backend_product::\u003cPanicProductDriveError\u003e, and the remaining fact-wait expansions use the shared product_drive::drive_product_fact_wait (bumped private-\u003epub(super), visibility-only). FINDING (reshapes ticket premise): the fork was NOT purely a RootBackendProduct copy -- 7 of 9 sites drive arbitrary ProductKeys (TransportShape/RuntimeDemand/MaterializedExecutable) production has no runner for, so the outer generic-key stack stays local (legitimately distinct capability, not dead duplication); only its inner loop was the true fork. Verified equivalence: PRODUCT_DRIVE_BUDGET==50_000 (== old hardcoded), zero panic-text assertions so the lost per-call-site messages change no outcome, module 73/0, lib 1197/0/9. Also dropped a now-dead tel param from 8 call sites. Single-lane audit self-covered (full diff read + equivalence checks). Test-only.",
+      "timestamp": "2026-07-04T23:40:56Z"
+    }
+  ],
   "priority": 3,
   "status": "open",
   "title": "Dedup transport_contract_test.rs scaffolding: third drive-loop copy + by-cover selection idiom",
   "type": "task",
-  "updated_at": "2026-07-03T19:44:37Z"
+  "updated_at": "2026-07-04T23:40:56Z"
 }
