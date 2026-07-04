@@ -2,6 +2,7 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-07-04T18:56:15Z",
   "created": "2026-07-04T13:18:26Z",
   "description": "Recommended by the fz-go4.15 verify-and-close investigation (2026-07-03). fz-go4.15 was a false alarm — a mislabeled measurement (function.source.stashed ∝ module size counted as if it were the real demand-minted FunctionSource fact ∝ reached functions). To prevent re-litigation AND to catch a REAL future regression (someone accidentally making FunctionSource eager again), add a telemetry-observing test (drive_test.rs or a source_test.rs) asserting the real-FunctionSource count equals the reached-function count on 2-3 fixtures: function.source.noted/expanded count == reached-function count (00181: 13, 00001: 13, 00026: 5), while function.source.stashed is allowed to be ∝ module size (the cheap bookkeeping). This is the same machine-checked-invariant pattern fz-go4.39 established for the push campaign — a running assertion that the demand-addressed FunctionSource split (fz-f98.14.5) stays intact. Test-only; two-lane audit. Confirm the exact telemetry event names (function.source.noted vs expanded vs stashed) against jobs/source.rs / source_publish.rs before asserting.",
   "id": "fz-go4.44",
@@ -14,7 +15,7 @@
     }
   ],
   "priority": 3,
-  "status": "open",
+  "status": "closed",
   "title": "Telemetry regression guard: FunctionSource noted-count == reached-function count (prevent cold-overproduction re-litigation)",
   "type": "task",
   "updated_at": "2026-07-04T18:56:15Z"
