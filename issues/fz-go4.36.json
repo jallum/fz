@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-07-04T00:19:12Z",
+  "description": "Found by the fz-go4.27 sweep, INDEPENDENTLY CONFIRMED by its correctness audit (at 2b431a3dd). Fixture guard_partition_selects_refined_clause (fixtures2, driven by port_type_infer_test.rs): pick({:ok,x}) when positive(x) returns x's refined value; pick({:ok,_}) -\u003e :fallback. Expected main/0 return {int, :fallback}; ACTUAL {int | :fallback, int | :fallback}. Guard-clause dispatch JOINS the union of every guard-selected leaf across the whole function instead of narrowing per-callsite. Contrast direct_calls_specialize_atom_pattern_dispatch_by_input, which correctly narrows plain-pattern dispatch per callsite. So guard-clause dispatch and plain-pattern dispatch DIVERGE in return-type precision — a real behavioral gap, not stale fixture wording (the audit reproduced the exact {int|:fallback, int|:fallback} by mutation). TASK: determine whether guard-clause dispatch SHOULD narrow per-callsite like plain patterns (and fix the type_infer/dispatch path if so), or whether the join is intentionally conservative for guards (document why + fix the fixture TODO's claim). When resolved, fill the port_type_infer_test.rs TODO with the correct assertion.",
+  "id": "fz-go4.36",
+  "labels": [],
+  "parent": "fz-go4",
+  "priority": 2,
+  "status": "open",
+  "title": "Guard-clause dispatch does not narrow return type per-callsite (unlike plain-pattern dispatch)",
+  "type": "bug",
+  "updated_at": "2026-07-04T00:19:12Z"
+}
