@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-07-04T13:40:15Z",
@@ -8,8 +8,8 @@
   "labels": [],
   "parent": "fz-go4.18",
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "00181 backend-product resolution stalls build-nondeterministically on the FunctionSourceStash chain — deadlock or ReturnType-nondeterminism?",
   "type": "bug",
-  "updated_at": "2026-07-04T13:40:15Z"
+  "updated_at": "2026-07-04T13:52:12Z"
 }
