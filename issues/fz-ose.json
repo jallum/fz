@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-bkx"
+  ],
   "blocks": [],
   "created": "2026-07-04T23:49:08Z",
   "description": "Sibling finding to fz-bkx (surfaced by the 2026-07-04 concordant-fold survey). FrontDoorError { msg: String, span: Span } (src/compiler2/frontdoor.rs:18) has From\u003cQuotedSourceError\u003e (frontdoor.rs:39-43) that drops the DiagCode AND discards the real span (substitutes Span::DUMMY) -- the same 'lossy From erases user/internal classification + diagnostic code' smell as fz-bkx, but in the frontdoor/lexer domain. NOT a type-fold (FrontDoorError carries a span QuotedFunctionError doesn't, so it's not a duplicate type) -- it's a diagnostic-fidelity bug: user errors lose their code and span through this boundary. FIX: preserve DiagCode and the source span when converting QuotedSourceError at the frontdoor. Single call-site problem. Relate to fz-bkx (do fz-bkx first; this may share the resolution pattern).",
@@ -10,5 +12,5 @@
   "status": "open",
   "title": "FrontDoorError's From\u003cQuotedSourceError\u003e drops DiagCode and real span (Span::DUMMY) -- same lossy-classification bug as fz-bkx, frontdoor domain",
   "type": "bug",
-  "updated_at": "2026-07-04T23:49:08Z"
+  "updated_at": "2026-07-04T23:49:09Z"
 }
