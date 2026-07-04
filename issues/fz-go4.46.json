@@ -2,6 +2,7 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-07-04T23:55:24Z",
   "created": "2026-07-04T23:49:07Z",
   "description": "Concordant-type fold (north star: reduce types). ReusableConsCapture is defined byte-for-byte TWICE: body::ReusableConsCapture (src/compiler2/body.rs:148-151, { head: ValueId, source: ValueId }) and artifact::ReusableConsCapture (src/compiler2/artifact.rs:559-562, identical). The nominal mismatch forces a pointless field-copy conversion at jobs/backend.rs:723-727 (map |capture| artifact::ReusableConsCapture { head: capture.head, source: capture.source }) and an import alias at jobs/native.rs:31 (ReusableConsCapture as BackendReusableConsCapture). FIX: keep body::ReusableConsCapture (earliest pipeline stage), delete artifact's copy and re-export/import body's; delete the backend.rs copy-conversion (use the value directly) and the native.rs alias. Concordance check: identical fields + semantics (a cons-cell reuse capture: which head value reused from which source), no invariant added at the Backend stage (unlike sibling capture_positions: Vec\u003cTransportPosition\u003e, which IS genuinely new at Backend and correctly stays). ~12 non-test refs (body/artifact/pull/jobs/{body,native,backend}). SAFE, mechanical. Directly serves fz-go4's 'remove unnecessary cloning/copying/conversions'. Two-lane audit (correctness + confirm no invariant lost).",
   "id": "fz-go4.46",
@@ -14,7 +15,7 @@
     }
   ],
   "priority": 3,
-  "status": "open",
+  "status": "closed",
   "title": "Fold the duplicate ReusableConsCapture: one definition in body.rs, delete artifact.rs's byte-identical copy",
   "type": "task",
   "updated_at": "2026-07-04T23:55:24Z"
