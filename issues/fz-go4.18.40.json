@@ -13,11 +13,15 @@
     {
       "text": "VERDICT (2026-07-04): (b) confirmed-mechanism / unconfirmed-exact-trigger. NOT the .28.6 ReturnType nondeterminism. demand_function_scope's global Pending arm returns None -\u003e PublishFunctionSource can be left waiting solely on the arm-less FunctionSourceStash = deadlock-by-construction. Investigation could NOT force the failing schedule locally (5 repeat runs of one binary, 6 perturbed rebuilds, --release all passed) and PROVED via FIFO (IndexCode enqueued before SeedRoot) that the gap cannot fire for FunctionId(0)/main in THIS harness shape -- so the exact 00181 trigger is unconfirmed, but the structural gap is real regardless. Structural fix ticketed as fz-go4.18.41 (blocks this). Keep the 3 tests #[ignore]'d until 00181 is INDEPENDENTLY deterministic; do not close .40 as 'fixes 00181'.",
       "timestamp": "2026-07-04T14:13:44Z"
+    },
+    {
+      "text": "RESOLVED. Verdict: NOT a scheduler bug and NOT ReturnType nondeterminism. The stall was a self-inflicted fixture truncation -- 6dd4bb48a (this session's fz-go4.22 re-ignore) emptied fixtures2/00181_enum_reduce_operator_ref.fz to 0 bytes; the include_str!-embedded empty source left main/0 undefined, so PublishFunctionSource(0) stalled solely on the arm-less FunctionSourceStash(0). There was never real build-nondeterminism (this ticket's own investigation got green on 11 runs of the non-empty-fixture build -- nothing to reproduce). Fixed by fz-go4.18.42 (restore fixture + un-ignore the 3 gate tests; deterministic green across perturbed rebuilds, lib 1195/0/9). The investigation ALSO surfaced a real but SEPARATE latent deadlock (global function with a still-Pending home) now fixed by fz-go4.18.41. Both children landed; closing.",
+      "timestamp": "2026-07-04T14:55:02Z"
     }
   ],
   "priority": 1,
   "status": "in_progress",
   "title": "00181 backend-product resolution stalls build-nondeterministically on the FunctionSourceStash chain — deadlock or ReturnType-nondeterminism?",
   "type": "bug",
-  "updated_at": "2026-07-04T14:13:44Z"
+  "updated_at": "2026-07-04T14:55:02Z"
 }
