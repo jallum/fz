@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-07-04T13:42:22Z",
+  "description": "Found by the fz-go4.28 audit (at 58b13ecbf, both lanes independently). After fz-go4.28 consolidated semantic_analysis_test.rs's assert_resolved onto drive_test.rs's pub(crate) one, two MORE byte-identical private copies remain: fixture_facts_test.rs:7 and transport_contract_test.rs:4326. Each: assert!(matches!(outcome, DriveOutcome::Resolved), '{message}: {outcome:?}'). Route both through drive_test.rs's pub(crate) assert_resolved (already the canonical home, consumed by semantic_analysis_test.rs + port_type_infer_test.rs). Test-only; two-lane audit. Trivial.",
+  "id": "fz-go4.45",
+  "labels": [],
+  "parent": "fz-go4",
+  "priority": 3,
+  "status": "open",
+  "title": "assert_resolved is triplicated in fixture_facts_test.rs + transport_contract_test.rs",
+  "type": "task",
+  "updated_at": "2026-07-04T13:42:22Z"
+}
