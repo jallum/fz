@@ -9,9 +9,15 @@
   "id": "fz-go4.18.40",
   "labels": [],
   "parent": "fz-go4.18",
+  "comments": [
+    {
+      "text": "VERDICT (2026-07-04): (b) confirmed-mechanism / unconfirmed-exact-trigger. NOT the .28.6 ReturnType nondeterminism. demand_function_scope's global Pending arm returns None -\u003e PublishFunctionSource can be left waiting solely on the arm-less FunctionSourceStash = deadlock-by-construction. Investigation could NOT force the failing schedule locally (5 repeat runs of one binary, 6 perturbed rebuilds, --release all passed) and PROVED via FIFO (IndexCode enqueued before SeedRoot) that the gap cannot fire for FunctionId(0)/main in THIS harness shape -- so the exact 00181 trigger is unconfirmed, but the structural gap is real regardless. Structural fix ticketed as fz-go4.18.41 (blocks this). Keep the 3 tests #[ignore]'d until 00181 is INDEPENDENTLY deterministic; do not close .40 as 'fixes 00181'.",
+      "timestamp": "2026-07-04T14:13:44Z"
+    }
+  ],
   "priority": 1,
   "status": "in_progress",
   "title": "00181 backend-product resolution stalls build-nondeterministically on the FunctionSourceStash chain — deadlock or ReturnType-nondeterminism?",
   "type": "bug",
-  "updated_at": "2026-07-04T14:13:43Z"
+  "updated_at": "2026-07-04T14:13:44Z"
 }
