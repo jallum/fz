@@ -4,6 +4,7 @@
     "fz-go4.18.41"
   ],
   "blocks": [],
+  "closed_at": "2026-07-04T14:55:02Z",
   "created": "2026-07-04T13:40:15Z",
   "description": "URGENT — touches fz-go4.38's just-landed FunctionSourceStash push-\u003epull conversion. Found 2026-07-03 (at 6dd4bb48a) when folding fz-go4.35 flipped 3 lib tests red: they DETERMINISTICALLY fail on the coordinator's build of 04b9bca39 but PASS on 0d6ee310b and on the fz-go4.35 audit build of the IDENTICAL source — i.e. BUILD-NONDETERMINISTIC (schedule/HashMap-seed/layout dependent, deterministic once built). All 3 drive fixtures2/00181_enum_reduce_operator_ref.fz and fail with the root function's FunctionSource dependency chain UNRESOLVED: SeedRoot(RootId(0)) waiting on Settled(FunctionDefined(0)); DeriveRecursive/DefineFunction/ExpandFunctionSource waiting on FunctionDefined(0)/ExpandedFunctionSource(0)/FunctionSource(0); and PublishFunctionSource(0) waiting on Current(FunctionSourceStash(0)). The drive stalls — 'product path waited on Settled(Recursive(FunctionId(0))) with no ready producer'. THE KEY QUESTION: is this (a) the known 00181 ReturnType-fixpoint schedule nondeterminism (fz-go4.18.28.6 / the f98 convergence-runaway) surfacing as a non-convergent STALL, or (b) a LATENT SCHEDULE-DEPENDENT DEADLOCK in the FunctionSourceStash wait/wake machinery fz-go4.38 introduced (a schedule where the FunctionSourceStash(0) wait never gets its wake, so PublishFunctionSource(0) never runs, so the whole root chain stalls)? (b) would be a real bug in the just-landed push-\u003epull conversion — the fz-go4.38 northstar audit mutation-tested the not-yet-scoped FunctionSourceStash wait and found it prevents a deadlock ON ITS SCHEDULE, but audits can't cover all schedules; this may be a residual fragility. DIAGNOSE: reproduce the stalling schedule (the coordinator build of 04b9bca39 stalls deterministically — build it, or find the seed); trace whether FunctionSourceStash(0) ever gets published in the stalling schedule and, if so, why PublishFunctionSource(0)'s wait doesn't wake; determine (a) vs (b). If (b), it is a fz-go4.38 correctness gap and P0. If (a), fold into fz-go4.18.28.6. The 3 tests (backend_program_surfaces_per_callable_boundary_association, enum_reduce_operator_refs_settle_through_kernel_specs, pull_only_guard_holds_for_enum_reduce_operator_ref) are #[ignore]'d at 6dd4bb48a pending this; re-enable when 00181 resolves deterministically. Also: fz-go4.22 re-enabled these as hard gates prematurely — the lib suite must not gate on 00181 until it is deterministic (this made every fold a build-dependent coin flip).",
   "id": "fz-go4.18.40",
@@ -20,7 +21,7 @@
     }
   ],
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "00181 backend-product resolution stalls build-nondeterministically on the FunctionSourceStash chain — deadlock or ReturnType-nondeterminism?",
   "type": "bug",
   "updated_at": "2026-07-04T14:55:02Z"
