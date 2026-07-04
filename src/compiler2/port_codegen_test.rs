@@ -142,7 +142,6 @@ fn enum_to_list_and_map_preserve_structure() {
 
 // Ported from src/ir_codegen/ir_codegen_test.rs: Enum tier-0 fixture exercises basic Enum operations end-to-end
 #[test]
-#[ignore = "red-worklist: triage + re-enable"]
 fn enum_tier0_fixture_exercises_basic_operations() {
     let tel = ConfiguredTelemetry::new();
     let mut compiler = Compiler2::new(&tel);
@@ -182,7 +181,6 @@ fn enum_count_predicate_closure_filters_correctly() {
 
 // Ported from src/ir_codegen/ir_codegen_test.rs: Enum.find and Enum.find_value with closures return correct results
 #[test]
-#[ignore = "red-worklist: triage + re-enable"]
 fn enum_find_and_find_value_with_closures() {
     let tel = ConfiguredTelemetry::new();
     let mut compiler = Compiler2::new(&tel);
@@ -280,7 +278,6 @@ fn enum_reduce_while_shape_changing_accumulator() {
 
 // Ported from src/ir_codegen/ir_codegen_test.rs: Enum.find early halt with default value returns first matching element
 #[test]
-#[ignore = "red-worklist: triage + re-enable"]
 fn enum_find_early_halt_returns_matching_element() {
     let tel = ConfiguredTelemetry::new();
     let mut compiler = Compiler2::new(&tel);
@@ -569,7 +566,6 @@ fn dbg_routes_value_through_runtime_output() {
 
 // Ported from src/ir_codegen/ir_codegen_test.rs: Process.heap_alloc_stats intrinsic returns map with allocation counts
 #[test]
-#[ignore = "fz-hwn.10: runtime-ref codegen now reaches LowerNativeProgram, which still references unbound values"]
 fn process_heap_alloc_stats_returns_allocation_map() {
     let tel = ConfiguredTelemetry::new();
     let mut compiler = Compiler2::new(&tel);

@@ -1,9 +1,6 @@
 #---
 # purpose: "membership operators desugar to Enum.member?/2 and match Elixir over List, Range, and Map"
 # oracle: oracle.exs
-# defer.build: fz-bv3 map+struct protocol dispatch still needs nominal struct-vs-map tests
-# defer.interp: fz-bv3 map+struct protocol dispatch still needs nominal struct-vs-map tests
-# defer.run: fz-bv3 map+struct protocol dispatch still needs nominal struct-vs-map tests
 #---
 #
 # Pins the Elixir-facing `in` / `not in` surface. The parser keeps these as

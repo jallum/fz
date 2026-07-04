@@ -2388,10 +2388,6 @@ fn compiler2_transport_plan_does_not_publish_dead_callable_input_boundaries() {
 }
 
 #[test]
-#[ignore = "fz-f98.14: the enum_predicate_search fixture's transport derivation does far more work \
-            than this assertion reads because the Seal<->DeriveRuntimeDemand<->Transport cycle does \
-            not converge monotonically (a correctness bug, not perf) -- >1s on a tiny fixture. \
-            Ported to split product surfaces; un-ignore when the convergence runaway is fixed."]
 fn compiler2_transport_plan_scopes_enum_predicate_callback_inputs_to_concrete_activations() {
     let source = include_str!("../../fixtures2/behavior/enum_predicate_search.fz");
 
@@ -3825,10 +3821,6 @@ end
 /// — the separately-ticketed fz-f98.14 reseal runaway — so this asserts the
 /// transport invariant under that variance, not byte-identity of the closure.)
 #[test]
-#[ignore = "red-worklist fz-f98.14.1: the multi-surface enum_take_drop_split fixture is ~13s/drive \
-            under the reseal runaway, so driving it repeatedly times out; the transport schedule-\
-            independence it asserts is already gated by the three now-stable transport.rs:338 tests. \
-            Re-enable when the per-root seal is incremental (fixture drive is fast)."]
 fn compiler2_transport_input_components_are_schedule_independent() {
     let source = include_str!("../../fixtures2/behavior/enum_take_drop_split.fz");
 
@@ -3881,10 +3873,6 @@ fn compiler2_transport_input_components_are_schedule_independent() {
 }
 
 #[test]
-#[ignore = "fz-f98.14: the enum_take_drop_split (00420) fixture's transport derivation does far \
-            more work than this assertion reads because the Seal<->DeriveRuntimeDemand<->Transport \
-            cycle does not converge monotonically (a correctness bug, not perf) -- >1s on a tiny \
-            fixture. Ported to split product surfaces; un-ignore when the convergence runaway is fixed."]
 fn compiler2_transport_plan_preserves_nested_enum_reduce_predicate_capture_shape() {
     let source = include_str!("../../fixtures2/behavior/enum_take_drop_split.fz");
 

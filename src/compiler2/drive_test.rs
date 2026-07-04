@@ -10850,7 +10850,6 @@ fn sweep_corpus_for_return_widening(shard: usize, shards: usize) {
 }
 
 #[test]
-#[ignore = "red-worklist: triage + re-enable"]
 fn compiler2_corpus_never_engages_return_widening_shard_0() {
     sweep_corpus_for_return_widening(0, 4);
 }
@@ -10867,7 +10866,6 @@ fn compiler2_corpus_never_engages_return_widening_shard_2() {
 }
 
 #[test]
-#[ignore = "red-worklist: triage + re-enable"]
 fn compiler2_corpus_never_engages_return_widening_shard_3() {
     sweep_corpus_for_return_widening(3, 4);
 }

@@ -119,7 +119,6 @@ fn zero_capture_lambda_no_heap_alloc() {
 
 // Ported from src/ir_interp/tests/typed_slot.rs: lambda capturing outer variable executes correctly with capture
 #[test]
-#[ignore = "compiler2 backend product fatal on captured-lambda fixture - unblock when closure ABI is wired"]
 fn lambda_capturing_outer_variable_allocates_closure() {
     let tel = ConfiguredTelemetry::new();
     let mut compiler = Compiler2::new(&tel);
@@ -177,7 +176,6 @@ fn enum_reduce_with_inline_lambda_accumulates() {
 
 // Ported from src/ir_interp/tests/typed_slot.rs: Enum.take with list and range in chained non-tail call sequence
 #[test]
-#[ignore = "red-worklist: triage + re-enable"]
 fn enum_take_chained_non_tail_calls_preserve_continuations() {
     let tel = ConfiguredTelemetry::new();
     let mut compiler = Compiler2::new(&tel);
@@ -197,7 +195,6 @@ fn enum_take_chained_non_tail_calls_preserve_continuations() {
 
 // Ported from src/ir_interp/tests/typed_slot.rs: case-joined function reference used as Enum.reduce reducer
 #[test]
-#[ignore = "fz-hwn.10: backend/native lowering for joined callable reducers still fails in LowerNativeProgram"]
 fn case_joined_fn_refs_callable_as_enum_reduce_reducer() {
     let tel = ConfiguredTelemetry::new();
     let mut compiler = Compiler2::new(&tel);

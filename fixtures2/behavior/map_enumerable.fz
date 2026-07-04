@@ -1,7 +1,6 @@
 #---
 # purpose: "Map implements Enumerable reduce/count/member?/slice callbacks"
 # oracle: oracle.exs
-# defer.interp: fz-9i4.7.3 compiler2 native codegen ReturnLanes arity mismatch
 #---
 #
 # Exercises the source `defimpl Enumerable, for: Map` callback surface through

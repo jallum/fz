@@ -297,7 +297,6 @@ fn enum_count_list_settles_to_int() {
 
 // Ported from src/type_infer/type_infer_test.rs: Enum.reduce and Enum.count settle to int over list and range
 #[test]
-#[ignore = "red-worklist: triage + re-enable"]
 fn enum_reduce_range_settles_to_int() {
     let tel = ConfiguredTelemetry::new();
     let (functions, modules, returns) = attach_return_captures_with_modules(&tel);
@@ -390,7 +389,6 @@ fn enum_reduce_erased_list_preserves_concrete_caller_witness() {
 
 // Ported from src/type_infer/type_infer_test.rs: Enum.take activates distinct list and range call paths
 #[test]
-#[ignore = "red-worklist: triage + re-enable"]
 fn mixed_enum_take_calls_preserve_list_and_range_activations() {
     let tel = ConfiguredTelemetry::new();
     let mut compiler = Compiler2::new(&tel);

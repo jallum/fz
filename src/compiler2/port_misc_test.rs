@@ -639,7 +639,6 @@ fn utf8_module_import_runs_through_linked_runtime() {
 
 // Ported from src/exec/ast_value_test.rs: Elixir-aligned binops round-trip through quoted-atom encoding
 #[test]
-#[ignore = "red-worklist: triage + re-enable"]
 fn elixir_aligned_binop_operators_resolve() {
     let tel = ConfiguredTelemetry::new();
     let mut compiler = Compiler2::new(&tel);
