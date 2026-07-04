@@ -2,14 +2,15 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-07-04T14:55:01Z",
   "created": "2026-07-04T14:52:53Z",
   "description": "ROOT CAUSE of the 'build-schedule nondeterministic 00181 stall' (fz-go4.18.40): commit 6dd4bb48a (fz-go4.22 test re-ignore) ACCIDENTALLY truncated fixtures2/00181_enum_reduce_operator_ref.fz from 476 bytes to 0. The commit message only describes re-ignoring 3 tests; the 14-line fixture deletion was unintended collateral (the working tree was already emptied when the red was observed, and the commit baked it in). The 3 tests include_str! the fixture at COMPILE time, so they drove EMPTY source -\u003e main/0 was never defined -\u003e demand_function_scope(0) returned empty -\u003e PublishFunctionSource(0) waited solely on the arm-less FunctionSourceStash(0) -\u003e the FunctionSource/SeedRoot chain deterministically stalled. This exactly matches the stall shape in fz-go4.18.40 (PublishFunctionSource(FunctionId(0)) waiting on Current(FunctionSourceStash(FunctionId(0))) alone).\n\nThere was NEVER real scheduler nondeterminism. The fz-go4.18.40 investigation built a commit with the NON-EMPTY fixture and got green on 11 runs (5 repeats + 6 rebuilds + release) and 'could not reproduce' -- because with real fixture content there is nothing to reproduce. The 'green on one build, red on another' was empty-working-tree vs committed-non-empty, not a hasher-seed/layout effect.\n\nFIX: restore the fixture to its pre-truncation content (git blob 0faabab61: main() returning {Enum.reduce([1,2,3],0,\u0026Kernel.+/2), Enum.reduce([1,2,3],0,\u0026+/2)}) and remove the 3 #[ignore] attributes 6dd4bb48a added -- a full reversal of 6dd4bb48a's damage. VERIFIED: with the fixture restored, all 3 tests pass deterministically across 3 layout-perturbed rebuilds.\n\nATTRIBUTION: this is NOT what fz-go4.18.41 fixed. fz-go4.18.41 closed a real but SEPARATE latent deadlock (global function whose home code is still Pending when PublishFunctionSource runs). With a non-empty 00181 fixture, main/0's home code indexes before SeedRoot (front-door FIFO), so demand_function_scope(0) hits the found-home branch and never exercises .41's new terminal path -- the 3 tests pass from fixture restoration, independent of .41. Both are real; they are unrelated.",
   "id": "fz-go4.18.42",
   "labels": [],
   "parent": "fz-go4.18",
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "Restore accidentally-truncated fixture 00181 and re-enable its 3 gate tests (fz-go4.22 collateral; there was no real nondeterminism)",
   "type": "bug",
-  "updated_at": "2026-07-04T14:52:53Z"
+  "updated_at": "2026-07-04T14:55:01Z"
 }
