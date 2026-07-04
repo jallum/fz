@@ -321,7 +321,6 @@ fn enum_reduce_range_settles_to_int() {
 
 // Ported from src/type_infer/type_infer_test.rs: qualified and bare operator refs both settle via kernel specs
 #[test]
-#[ignore = "00181 backend-product resolution is build-schedule nondeterministic: the FunctionSource/SeedRoot chain stalls unresolved on some builds. Re-enable when enum_reduce_operator_ref converges deterministically."]
 fn enum_reduce_operator_refs_settle_through_kernel_specs() {
     let tel = ConfiguredTelemetry::new();
     let functions = FunctionCapture::new();
