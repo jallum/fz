@@ -2,14 +2,15 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-07-04T03:04:18Z",
   "created": "2026-07-04T02:32:28Z",
   "description": "DONE (folded 2026-07-03 as d49562986, jointly with fz-go4.39 — the two are coupled: the guard could not be sound-and-green until this push was gone). ensure_runtime_module (world.rs) called submit_code from INSIDE three job bodies (jobs/source.rs index_module, jobs/semantic.rs wait_for_protocol_module, jobs/keying.rs collect_static_graph) to lazily mint builtin runtime modules — a job commanding submit_code mid-execution, tagged Ignition = a push mislabeled as the external front door. FOUND BY the fz-go4.39 work-start-attribution guard (Ignition fired 6x on quicksort vs the true external count of 2) — a push the earlier MANUAL push/pull regression audit had MISSED, validating the machine-check. FIX (correct-by-construction, sibling to fz-go4.38): submit_code split into register_code (source registration, NO enqueue) + the front-door enqueue; ensure_runtime_module now calls register_code and enqueues nothing; the existing wait_on_current(CodeIndexed) + demand_fact_producer's CodeIndexed-\u003eIndexCode arm mints the module via BlockedWaiterExpansion (pull). Mutation-verified: breaking the arm hard-stalls all fixtures (pull is the sole minting path). Ignition-site sweep confirmed only cli.rs/compiler.rs (external) remain — no other internal ignition. Bounded +3/+7 job-count round-trip (all in DefineModule block-resume; IndexCode/ScopeCode fire once per CodeId as before), zero new stalls, byte-identical output. BOTH surviving compiler2 pushes are now eliminated (fz-go4.38 stash_function_source + this).",
   "id": "fz-go4.41",
   "labels": [],
   "parent": "fz-go4",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "ensure_runtime_module calls submit_code from inside job bodies — a second hidden push (redundant with the CodeIndexed wait)",
   "type": "bug",
-  "updated_at": "2026-07-04T03:04:17Z"
+  "updated_at": "2026-07-04T03:04:18Z"
 }
