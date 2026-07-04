@@ -111,7 +111,10 @@ pub(super) fn drive_root_backend_product_with_budgets<'a, E: ProductDriveError>(
     Err(E::did_not_settle(world, root, last_wait))
 }
 
-fn drive_product_fact_wait<E: ProductDriveError>(
+/// The inner per-fact-wait job loop run while expanding a `PullWait::Fact`.
+/// `pub(super)` so test scaffolding driving a `ProductKey` this module has no
+/// dedicated runner for can still share this loop instead of forking it.
+pub(super) fn drive_product_fact_wait<E: ProductDriveError>(
     world: &mut World<'_>,
     root: RootId,
     fact: FactUse<FactKey>,

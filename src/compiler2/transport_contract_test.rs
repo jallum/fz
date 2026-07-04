@@ -5,7 +5,7 @@ use std::rc::Rc;
 use super::artifact::MaterializedTransportPlan;
 use super::body::{DeliveredValueSource, delivered_value_joins};
 use super::drive_test::assert_resolved;
-use super::facts::{FactReadiness, FactUse};
+use super::facts::FactUse;
 use super::pull::{
     ProductDriver, ProductKey, ProductValue, PullOutcome, PullSession, PullWait, SymbolicBackendTail,
     TransportShapeFact, WorldProductProducers,
@@ -235,7 +235,7 @@ fn main(), do: inc(1.0)
         source.to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
-    let (_, plan) = pull_root_backend_plan_for_test(&tel, &mut world, root);
+    let (_, plan) = pull_root_backend_plan_for_test(&mut world, root);
     assert!(
         plan.codegen_seam_facts
             .iter()
@@ -270,7 +270,7 @@ end
     let mut world = World::new(&tel);
     world.submit_code(Some("transport_once_per_closure.fz".to_string()), source.to_string());
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
-    let mut driver = pull_root_backend_driver_for_test(&tel, &mut world, root);
+    let mut driver = pull_root_backend_driver_for_test(&mut world, root);
 
     const CLOSURE_SOLVED: &[&str] = &["fz", "compiler2", "pull", "transport_component", "closure_solved"];
     let solves = capture.count(CLOSURE_SOLVED);
@@ -387,7 +387,7 @@ fn compiler2_transport_consult_ledger_displaces_co_members_on_demand_movement() 
         CO_MEMBER_CLOSURE_SOURCE.to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
-    let mut driver = pull_root_backend_driver_for_test(&tel, &mut world, root);
+    let mut driver = pull_root_backend_driver_for_test(&mut world, root);
 
     let (moved_executable, standing_executable, standing_positions) =
         two_executables_covered_by_one_solve(&driver, root, &mut world);
@@ -468,7 +468,7 @@ fn compiler2_transport_world_fact_ledger_displaces_co_members_on_return_type_mov
         CO_MEMBER_CLOSURE_SOURCE.to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
-    let mut driver = pull_root_backend_driver_for_test(&tel, &mut world, root);
+    let mut driver = pull_root_backend_driver_for_test(&mut world, root);
 
     let (moved_executable, standing_executable, standing_positions) =
         two_executables_covered_by_one_solve(&driver, root, &mut world);
@@ -746,7 +746,7 @@ fn main(), do: fz_float_id(1.0)
         source.to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
-    let (_, plan) = pull_root_backend_plan_for_test(&tel, &mut world, root);
+    let (_, plan) = pull_root_backend_plan_for_test(&mut world, root);
     assert!(
         plan.codegen_seam_facts
             .iter()
@@ -1065,7 +1065,7 @@ fn main(), do: fz_binary_id("hello")
         source.to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
-    let (driver, plan) = pull_root_backend_plan_for_test(&tel, &mut world, root);
+    let (driver, plan) = pull_root_backend_plan_for_test(&mut world, root);
     let session = driver.session();
     let extern_id = executable_for(&world, session, "fz_binary_id", 1);
     let extern_return = plan_shape_at(
@@ -3262,7 +3262,7 @@ fn compiler2_pull_abi_and_backend_products_keep_call_edges_symbolic() {
     let tel = ConfiguredTelemetry::new();
     let mut world = World::new(&tel);
     let root = submit_enum_reduce_operator_ref_root(&mut world, "pull_abi_backend_enum_reduce_operator_refs.fz");
-    let driver = pull_root_backend_driver_for_test(&tel, &mut world, root);
+    let driver = pull_root_backend_driver_for_test(&mut world, root);
     let executables = driver
         .session()
         .backend_executables()
@@ -3323,21 +3323,13 @@ fn compiler2_pull_root_backend_product_packages_and_runs_enum_reduce_operator_re
     let product_jobs = JobTelemetry::new();
     tel.attach(&[], capture.handler());
     tel.attach(&["fz", "compiler2", "job"], product_jobs.handler());
-    let mut driver = ProductDriver::new(&tel, root);
     assert!(
-        driver.session().executable_index().is_empty(),
+        ProductDriver::new(&tel, root).session().executable_index().is_empty(),
         "dense executable indices should not exist before final backend packaging"
     );
-    let product = pull_product_until_produced_with_fact_waits(
-        &mut driver,
-        &mut world,
-        root,
-        ProductKey::RootBackendProduct(root),
-        "root backend product should be product-derivable",
-    );
-    let ProductValue::RootBackendProduct(program) = product else {
-        panic!("root backend product should return a BackendProgram, got {product:?}");
-    };
+    let (program, driver) =
+        super::product_drive::drive_root_backend_product::<PanicProductDriveError>(&mut world, root)
+            .expect("panic-based ProductDriveError never returns Err");
 
     assert_eq!(
         program.executables.len(),
@@ -4521,12 +4513,13 @@ fn drive_transport_facts_for_test<'a>(
     root: super::RootId,
 ) -> ProductDriver<'a> {
     let mut driver = ProductDriver::new(tel, root);
-    let pokes = drive_product_fact_wait_for_test(
+    let pokes = super::product_drive::drive_product_fact_wait::<PanicProductDriveError>(
         world,
         root,
         FactUse::settled(FactKey::RootEntry(root)),
-        "transport facts should settle the root entry",
-    );
+        super::product_drive::PRODUCT_DRIVE_BUDGET,
+    )
+    .expect("panic-based ProductDriveError never returns Err");
     driver.session_mut().record_producer_pokes(pokes);
     let entry = world.root_entry_executable(root);
 
@@ -4626,11 +4619,10 @@ fn pull_transport_plan_for_test<'a>(
 /// `RootBackendProduct` so the session carries the backend executables, then read
 /// the plan the same way. The other seam tests need only the transport facts.
 fn pull_root_backend_plan_for_test<'a>(
-    tel: &'a ConfiguredTelemetry,
-    world: &mut World<'_>,
+    world: &mut World<'a>,
     root: super::RootId,
 ) -> (ProductDriver<'a>, MaterializedTransportPlan) {
-    let driver = pull_root_backend_driver_for_test(tel, world, root);
+    let driver = pull_root_backend_driver_for_test(world, root);
     let entry = world.root_entry_executable(root);
     let plan = super::jobs::backend::symbolic_materialized_transport_plan(
         driver.session(),
@@ -4645,23 +4637,54 @@ fn pull_root_backend_plan_for_test<'a>(
 /// Drive the full `RootBackendProduct` and return only the driven session. Used
 /// by the few tests whose intent is the ABI/backend-product inventory itself
 /// (call-edge symbolism), which genuinely require those artifacts.
-fn pull_root_backend_driver_for_test<'a>(
-    tel: &'a ConfiguredTelemetry,
-    world: &mut World<'_>,
-    root: super::RootId,
-) -> ProductDriver<'a> {
-    let mut driver = ProductDriver::new(tel, root);
-    pull_product_until_produced_with_fact_waits(
-        &mut driver,
-        world,
-        root,
-        ProductKey::RootBackendProduct(root),
-        "root backend product should be product-derivable",
-    );
+fn pull_root_backend_driver_for_test<'a>(world: &mut World<'a>, root: super::RootId) -> ProductDriver<'a> {
+    let (_program, driver) = super::product_drive::drive_root_backend_product::<PanicProductDriveError>(world, root)
+        .expect("panic-based ProductDriveError never returns Err");
     driver.finish_session();
     driver
 }
 
+/// Panics on all four `ProductDriveError` hooks instead of returning a value,
+/// so this file keeps its old fail-loudly ergonomics while sharing the one
+/// production pull-drive loop. No test asserts on the panic text.
+#[derive(Debug)]
+struct PanicProductDriveError;
+
+impl super::product_drive::ProductDriveError for PanicProductDriveError {
+    fn job_failed(
+        _world: &World<'_>,
+        root: super::RootId,
+        fact: &FactUse<FactKey>,
+        job: &Job,
+        source: super::scheduler::FatalError,
+    ) -> Self {
+        panic!(
+            "root {} job {job:?} failed producing {fact:?}: {source:?}",
+            root.as_u32()
+        );
+    }
+
+    fn no_ready_producer(_world: &World<'_>, root: super::RootId, fact: &FactUse<FactKey>) -> Self {
+        panic!("root {} no ready producer for {fact:?}", root.as_u32());
+    }
+
+    fn fact_wait_budget_exceeded(_world: &World<'_>, root: super::RootId, fact: &FactUse<FactKey>) -> Self {
+        panic!("root {} fact-wait budget exceeded for {fact:?}", root.as_u32());
+    }
+
+    fn did_not_settle(_world: &World<'_>, root: super::RootId, last_wait: Option<(ProductKey, Vec<PullWait>)>) -> Self {
+        panic!(
+            "root {} product did not settle; last wait: {last_wait:?}",
+            root.as_u32()
+        );
+    }
+}
+
+/// Pulls an arbitrary `ProductKey` to a settled `ProductValue`, expanding any
+/// `PullWait::Fact` through the shared `product_drive::drive_product_fact_wait`.
+/// Production only ever drives one fixed key (`RootBackendProduct`); these
+/// tests need transport shapes, runtime demands, and materialized executables
+/// too, so only the inner fact-wait loop is shared.
 fn pull_product_until_produced_with_fact_waits(
     driver: &mut ProductDriver<'_>,
     world: &mut World<'_>,
@@ -4690,7 +4713,14 @@ fn pull_product_until_produced_with_fact_waits(
                     match wait {
                         PullWait::Product(product) => stack.push(product),
                         PullWait::Fact(fact) => {
-                            let producer_pokes = drive_product_fact_wait_for_test(world, root, fact, message);
+                            let producer_pokes =
+                                super::product_drive::drive_product_fact_wait::<PanicProductDriveError>(
+                                    world,
+                                    root,
+                                    fact,
+                                    super::product_drive::PRODUCT_DRIVE_BUDGET,
+                                )
+                                .expect("panic-based ProductDriveError never returns Err");
                             driver.session_mut().record_producer_pokes(producer_pokes);
                         }
                     }
@@ -4699,44 +4729,6 @@ fn pull_product_until_produced_with_fact_waits(
         }
     }
     panic!("{message}: product {key:?} did not settle; last wait: {last_wait:?}");
-}
-
-fn drive_product_fact_wait_for_test(
-    world: &mut World<'_>,
-    _root: super::RootId,
-    fact: FactUse<FactKey>,
-    message: &str,
-) -> u64 {
-    let mut jobs_ran = 0_u64;
-    let mut producer_pokes = 0_u64;
-    while !product_fact_wait_is_satisfied_for_test(world, &fact) {
-        let job = match world.next_ready_job() {
-            Some(job) => job,
-            None => {
-                producer_pokes +=
-                    world.demand_fact_producer(fact.fact(), super::scheduler::WorkStartReason::BlockedWaiterExpansion);
-                let Some(job) = world.work_graph.pop() else {
-                    panic!("{message}: product path waited on {fact:?} with no ready producer");
-                };
-                job
-            }
-        };
-        let effects = super::jobs::run(world, &job)
-            .unwrap_or_else(|_| panic!("{message}: prerequisite job failed before product fact settled: {job:?}"));
-        world.complete_job(job, effects);
-        jobs_ran += 1;
-        if jobs_ran > 50_000 {
-            panic!("{message}: product path exceeded fact-wait budget for {fact:?}");
-        }
-    }
-    producer_pokes
-}
-
-fn product_fact_wait_is_satisfied_for_test(world: &World<'_>, fact: &FactUse<FactKey>) -> bool {
-    match fact.readiness() {
-        FactReadiness::Current => world.fact_revision(fact.fact()).is_some(),
-        FactReadiness::Settled => world.fact_is_settled(fact.fact()),
-    }
 }
 
 fn materialized_call_edge_callees(edge: &super::artifact::MaterializedCallEdge) -> Vec<&ExecutableKey> {
