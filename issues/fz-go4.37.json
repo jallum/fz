@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-07-04T00:19:13Z",
+  "description": "Found by the fz-go4.27 sweep, INDEPENDENTLY CONFIRMED by its correctness audit (at 2b431a3dd). Fixture map_pattern_binding_flows_into_selected_leaf (fixtures2, port_type_infer_test.rs): pick(%{id:x}) binds x; pick(:none) -\u003e :none; pick(_) -\u003e :unreachable is a DEAD catch-all (fixture comment: 'keeps the catch-all from contributing'). Expected main/0 return {int, :none}; ACTUAL {int | :unreachable, :none}. The dead catch-all leaks :unreachable into the FIRST tuple position but NOT the second (which correctly excludes it) — an ASYMMETRIC/positional leak, strengthening that this is a genuine defect in map-pattern proof narrowing (a clause proven dead should contribute nothing). The audit reproduced the exact {int|:unreachable, :none} by mutation. TASK: fix map-pattern narrowing so a provably-dead catch-all clause contributes to NO position (match the second-position behavior); then fill the port test TODO with {int, :none}. Likely related to how map-pattern reachability/deadness is proven vs how tuple-position return types are assembled.",
+  "id": "fz-go4.37",
+  "labels": [],
+  "parent": "fz-go4",
+  "priority": 2,
+  "status": "open",
+  "title": "Dead catch-all clause leaks :unreachable into first tuple position (map-pattern proof narrowing)",
+  "type": "bug",
+  "updated_at": "2026-07-04T00:19:13Z"
+}
