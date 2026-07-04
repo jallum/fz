@@ -83,7 +83,7 @@ pub use module_interface::{
 };
 pub use namespace::{BindingId, Namespace, NamespaceStore, NamespaceSymbol};
 pub use quoted_surface::SurfaceSourceContext;
-pub use scheduler::{AppliedStep, DriveOutcome, FatalError, Scheduler};
+pub use scheduler::{AppliedStep, DriveOutcome, FatalError, Scheduler, WorkStartReason, WorkStartTally};
 pub use scope::ScopeSnapshot;
 pub use semantic::{
     ActivationAnalysis, ActivationMap, ActivationSlot, CallSiteKey, CallSiteMap, CallSiteSummary, CallTargetSummary,
@@ -172,5 +172,7 @@ mod transport_contract_test;
 mod transport_test;
 #[cfg(test)]
 mod type_expr_test;
+#[cfg(test)]
+mod work_start_reason_test;
 #[cfg(test)]
 mod world_test;

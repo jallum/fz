@@ -19,7 +19,7 @@ use super::drive::FactKey;
 use super::facts::{FactReadiness, FactUse};
 use super::identity::RootId;
 use super::pull::{ProductDriver, ProductKey, ProductValue, PullOutcome, PullWait, WorldProductProducers};
-use super::scheduler::FatalError;
+use super::scheduler::{FatalError, WorkStartReason};
 use super::world::World;
 use super::{BackendProgram, Job};
 
@@ -89,6 +89,7 @@ pub(super) fn drive_root_backend_product_with_budgets<'a, E: ProductDriveError>(
         };
         match outcome {
             PullOutcome::Produced(ProductValue::RootBackendProduct(program)) if current == root_key => {
+                driver.session_mut().record_work_starts(world.work_start_tally());
                 return Ok((*program, driver));
             }
             PullOutcome::Produced(_) => {}
@@ -122,7 +123,7 @@ fn drive_product_fact_wait<E: ProductDriveError>(
         let job = match world.next_ready_job() {
             Some(job) => job,
             None => {
-                producer_pokes += world.demand_fact_producer(fact.fact());
+                producer_pokes += world.demand_fact_producer(fact.fact(), WorkStartReason::BlockedWaiterExpansion);
                 let Some(job) = world.work_graph.pop() else {
                     return Err(E::no_ready_producer(world, root, &fact));
                 };

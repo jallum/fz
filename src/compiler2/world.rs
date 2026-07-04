@@ -43,7 +43,7 @@ use super::protocol::{
 };
 use super::quoted_surface::{ReservedSourceDefinition, ScopeForm, reserved_source_definition};
 use super::runtime::{self, RuntimeModuleCode};
-use super::scheduler::FatalError;
+use super::scheduler::{FatalError, WorkStartReason, WorkStartTally};
 use super::scope::ScopeSnapshot;
 use super::semantic::{
     ActivationAnalysis, ActivationInputMap, ActivationMap, CallSiteKey, CallSiteMap, CallSiteSummary, CallSiteTargets,
@@ -324,13 +324,19 @@ impl<'a> World<'a> {
         self.transport.interners().boundaries()
     }
 
-    pub fn submit_code(&mut self, name: Option<String>, text: String) -> CodeId {
+    /// Registers submitted source text under a fresh id and emits the
+    /// `code.submitted` observation. This does NOT enqueue any indexing or
+    /// scoping job: it only makes the code demandable, so a wait on
+    /// `CodeIndexed(code_id)`/`CodeScoped(code_id)` reaches the minting job
+    /// through the fact->producer pull (`demand_fact_producer`'s
+    /// `CodeIndexed -> IndexCode`, `CodeScoped -> ScopeCode` arms). The eager
+    /// enqueue that turns registration into a driven work-start is the caller's
+    /// choice — `submit_code` (the external front door) drives it as
+    /// `Ignition`; internal runtime-module minting (`ensure_runtime_module`)
+    /// leaves it to be pulled.
+    fn register_code(&mut self, name: Option<String>, text: String) -> CodeId {
         let bytes = text.len();
         let code_id = self.code.define(name, text);
-        self.work_graph.enqueue(Job::IndexCode(code_id));
-        if !self.roots.is_empty() {
-            self.work_graph.enqueue(Job::ScopeCode(code_id));
-        }
         self.tel.execute(
             &["fz", "compiler2", "code", "submitted"],
             &measurements! {
@@ -342,10 +348,28 @@ impl<'a> World<'a> {
         code_id
     }
 
+    pub fn submit_code(&mut self, name: Option<String>, text: String) -> CodeId {
+        let code_id = self.register_code(name, text);
+        // External front door: the submitted code does not exist to be
+        // waited on before this call creates it, matching `submit_root`'s
+        // `SeedRoot` ignition below. This is the ONE place an `IndexCode`/
+        // `ScopeCode` work-start is a genuine external ignition; every internal
+        // (mid-job) runtime-module mint leaves the code to be pulled instead.
+        self.work_graph
+            .enqueue(Job::IndexCode(code_id), WorkStartReason::Ignition);
+        if !self.roots.is_empty() {
+            self.work_graph
+                .enqueue(Job::ScopeCode(code_id), WorkStartReason::Ignition);
+        }
+        code_id
+    }
+
     pub fn submit_module_interface(&mut self, module_name: String, interface: ModuleInterface) -> ModuleId {
         let module = self.reference_module(module_name);
         self.define_module_interface(module, interface);
-        self.work_graph.enqueue(Job::DefineModuleInterface(module));
+        // External front door: the same ignition shape as `submit_code`/`submit_root`.
+        self.work_graph
+            .enqueue(Job::DefineModuleInterface(module), WorkStartReason::Ignition);
         module
     }
 
@@ -376,7 +400,8 @@ impl<'a> World<'a> {
         // on before this call creates it. Everything downstream is pulled --
         // the root's entry analysis via `demand_root_entry_analyses`, every
         // other producer via the fact->producer map.
-        self.work_graph.enqueue(Job::SeedRoot(root_id));
+        self.work_graph
+            .enqueue(Job::SeedRoot(root_id), WorkStartReason::Ignition);
         let root = self.roots.get(root_id);
         let function_ref = self.functions.reference_for(function);
         self.tel.execute(
@@ -519,8 +544,22 @@ impl<'a> World<'a> {
         self.activation_frontier.remove(key);
     }
 
+    /// The manual, unattributed demand entry point: nothing here names a
+    /// sanctioned reason, so this always tallies `Unclassified`. Production
+    /// never calls this directly (the front door is `submit_code`/
+    /// `submit_module_interface`/`submit_root`, and every internal expansion
+    /// carries its own `WorkStartReason` through `work_graph.enqueue`
+    /// directly) -- it exists for tests that seed jobs without going through
+    /// submission.
     pub fn demand(&mut self, job: Job) -> bool {
-        self.work_graph.enqueue(job)
+        self.work_graph.enqueue(job, WorkStartReason::Unclassified)
+    }
+
+    /// The cumulative work-start attribution snapshot for this world: how many
+    /// jobs entered the agenda under each `WorkStartReason`, plus the
+    /// whole-fact-table-scan count. See `WorkStartReason` for the taxonomy.
+    pub fn work_start_tally(&self) -> WorkStartTally {
+        self.work_graph.work_start_tally()
     }
 
     pub(crate) fn emit_unresolved_diagnostics(&mut self, waits: &[UnresolvedWait<Job, FactKey>]) {
@@ -2081,9 +2120,12 @@ impl<'a> World<'a> {
     /// Demands and waits on the module whose definition notes `module`'s
     /// `@type`s — the type-side mirror of `wait_for_function_definition`. Used
     /// only for non-global modules; a top-level type is noted by its code scope.
-    /// `ensure_runtime_module` mints the runtime module's code eagerly so its
-    /// `CodeIndexed`/`CodeScoped` chain starts before anything waits on
-    /// `ModuleDefined`; `ModuleDefined`'s sole producer arm is `Job::DefineModule`.
+    /// `ensure_runtime_module` registers the runtime module's source (no eager
+    /// enqueue) so a runtime module is minted by the pull that expands this
+    /// `ModuleDefined` wait: `ModuleDefined`'s sole producer arm is
+    /// `Job::DefineModule`, and `define_module` re-registers the source and
+    /// waits on `CodeIndexed(code_id)` (producer arm `Job::IndexCode`), so the
+    /// whole chain reaches the minting job through `demand_fact_producer`.
     pub(crate) fn wait_for_type_decl(&mut self, module: ModuleId) -> JobEffects {
         self.ensure_runtime_module(module);
         JobEffects::wait_on_current(FactKey::ModuleDefined(module))
@@ -2406,7 +2448,16 @@ impl<'a> World<'a> {
         let name = slot.name;
         let source = slot.source;
         let source_name = format!("runtime:{name}.fz");
-        let code_id = self.submit_code(Some(source_name), source.to_string());
+        // Register the runtime module's source WITHOUT enqueuing IndexCode/
+        // ScopeCode. This runs mid-job (a callee type implying an unloaded
+        // runtime module), so an eager enqueue here would be a job commanding
+        // work to start — a push mislabeled as the external front door. Every
+        // caller registers a `wait_on_current(CodeIndexed(code_id))` (or a
+        // `ModuleDefined` wait that chains to it through `define_module`), and
+        // `demand_fact_producer` maps `CodeIndexed -> IndexCode`, so the
+        // drain/stall pull mints the module as a `BlockedWaiterExpansion` —
+        // the eager enqueue bought nothing.
+        let code_id = self.register_code(Some(source_name), source.to_string());
         self.runtime_modules
             .get_mut(&module)
             .expect("runtime module should still exist while recording its code id")

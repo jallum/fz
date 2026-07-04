@@ -335,11 +335,98 @@ the driving front door finishes demanding the session's products. Measurements:
 `root_id`, `executables` (count of demanded `ExecutableKey`s),
 `transport_positions` (count of demanded `TransportPosition`s), `callables`
 (count of demanded `CallableId`s), `boundaries` (count of demanded
-`BoundaryId`s), and `producer_pokes` (the session's running count of
+`BoundaryId`s), `producer_pokes` (the session's running count of
 `demand_fact_producer` calls the drive made while resolving this session's
-waits). No metadata. This is the root-level summary a test or CLI trace reads
-to assert product-path work stayed bounded — the `fz-00181` no-dump proof
-above keys off exactly these fields.
+waits), the per-reason work-start breakdown `work_starts_ignition`,
+`work_starts_changed_revision_wake`, `work_starts_standing_root_frontier`,
+`work_starts_activation_frontier`, `work_starts_blocked_waiter_expansion`
+(the world's cumulative agenda-entry counts under each sanctioned
+`WorkStartReason`), `unsanctioned_work_starts` (the count under
+`WorkStartReason::Unclassified`), and `root_scans` (the world's cumulative
+count of whole-fact-table scans taken through `Scheduler::fact_keys`). No
+metadata. This is the root-level summary a test or CLI trace reads to assert
+product-path work stayed bounded — the `fz-00181` no-dump proof above keys off
+exactly these fields, and `work_start_reason_test`'s
+`pull_only_guard_holds_for_*` cases assert `unsanctioned_work_starts == 0`,
+`root_scans == 0`, AND `ignition == 2` (the true external front-door count)
+for every fixture they drive.
+
+### Work-Start Attribution (`WorkStartReason`)
+
+`Scheduler::enqueue` (`scheduler.rs`) takes a `WorkStartReason` alongside the
+job, tagging every agenda insertion with why it started. Tagging is
+observation-only: it changes no scheduling decision, only which counter a
+work-start increments. The scheduler tallies starts per reason plus the
+whole-fact-table-scan count into a single `WorkStartTally` snapshot
+(`Scheduler::work_start_tally`), surfaced through `World::work_start_tally`,
+recorded onto the `PullSession` at finish time, and read back through the
+session's own `work_starts()`/`unsanctioned_work_starts()`/`root_scans()`
+accessors.
+
+The taxonomy holds exactly the pull-only northstar's sanctioned ways work can
+start (`../pull-based.html`):
+
+- `Ignition` — an EXTERNAL submission (`World::submit_code`,
+  `submit_module_interface`, `submit_root`) enqueuing the one job that begins
+  that submission's own work. "External" is load-bearing: the only production
+  callers of those three methods are the CLI front door (`cli.rs`) and the
+  public `Compiler2` API (`compiler.rs`) — a user/CLI request, never a job
+  body mid-execution. A job that needs source minted (e.g. an unloaded
+  runtime module) must NOT drive it through `submit_code`; it registers the
+  source (`World::register_code`, via `ensure_runtime_module`) and lets the
+  fact->producer pull mint it. The `ignition == 2` assertion in the guard is
+  what enforces this: a job that tried to mint source through `submit_code`
+  mid-execution would inflate the ignition count past the two external
+  front-door starts and trip the guard red.
+- `ChangedRevisionWake` — `Scheduler::complete`'s wake propagation
+  (`enqueue_dependents`/`enqueue_step`) re-running a job whose fact
+  subscription (read, wait, or settled-presence) just changed. This is the
+  core pull mechanism: readers wake because their ground moved, never because
+  a producer pushed them by name. This reason is never passed by a caller —
+  `enqueue_step` applies it internally, since it names the wake mechanism
+  itself.
+- `StandingRootFrontier` — `drive::demand_root_entry_analyses` expanding a
+  submitted root's standing entry-analysis demand through the fact->producer
+  map (`demand_fact_producer`).
+- `ActivationFrontier` — `drive::demand_activation_frontier_analyses`
+  expanding a discovered callee activation's standing analysis demand through
+  the same map.
+- `BlockedWaiterExpansion` — the fact->producer map expanding a blocked
+  waiter's missing fact to its single producer at a drain/stall point: both
+  the bare scheduler's `demand_blocked_wait_producers`/`drive_until` stall
+  pass and the bounded product-pull's own fact-wait loop
+  (`product_drive::drive_product_fact_wait`) use this. This is the reason
+  runtime-module minting now rides: an `ensure_runtime_module` caller waits on
+  `CodeIndexed(code_id)` (or a `ModuleDefined` wait that chains to it through
+  `define_module`), and the drain/stall pull expands it to `Job::IndexCode`.
+
+`Unclassified` is the catch-all default (`#[derive(Default)]` on
+`WorkStartReason`). A future enqueue call site that forgets to pass one of the
+reasons above — the shape a reintroduced `follow_up`-style push would take —
+lands here by construction, which is exactly what trips
+`unsanctioned_work_starts` above zero and fails the running guard.
+
+The two bounded inner product-pulls (`jobs::macro_runtime::build_macro_executable`,
+`jobs::native::lower_native_program`) drive their own fresh
+`RootBackendProduct` and register its result through `World::complete_job`
+directly — they never call `Scheduler::enqueue` for that work, so they carry
+no `WorkStartReason` at all; there is nothing on the shared agenda to
+misclassify.
+
+**The guard's boundary (honest limits).** The running guard catches an
+*untagged* enqueue: a future dev adds a new `Scheduler::enqueue` call site and
+omits the reason, so it defaults to `Unclassified` and
+`unsanctioned_work_starts` rises above zero — caught. It does NOT, by the
+`unsanctioned` counter alone, catch a deliberately *mislabeled* push: a new
+internal (mid-job) caller that hand-passes a sanctioned reason (say
+`Ignition`) would be counted as sanctioned. The `ignition == 2` assertion in
+`work_start_reason_test` is the specific backstop for that class — an internal
+caller mislabeling work as the external front door pushes the ignition count
+past the true external total and fails the guard. There is no general counter
+that catches an arbitrary mislabel to `ChangedRevisionWake`/`*Frontier`/
+`BlockedWaiterExpansion`; those remain a code-review responsibility, and the
+per-reason breakdown emitted on `pull.session.finished` is the observability
+that makes such a drift visible in a trace.
 
 Macro executable readiness also emits
 `[fz, compiler2, macro_executable, defined]` with raw `function_id`,

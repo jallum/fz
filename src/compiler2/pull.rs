@@ -21,6 +21,7 @@ use super::drive::FactKey;
 use super::facts::FactUse;
 use super::identity::{ExecutableKey, RootId};
 use super::jobs::runtime_demand::DemandFactsCache;
+use super::scheduler::WorkStartTally;
 use super::semantic::{ExecutableRuntimeDemand, RuntimeDemand};
 use super::transport::{
     BoundaryFacts, BoundaryId, CallableFacts, CallableId, CodegenSeamFact, ExecutableSymbol, ShapeId, TransportPosition,
@@ -539,6 +540,12 @@ pub struct PullSession {
     demanded_boundaries: HashSet<BoundaryId>,
     executable_index: HashMap<ExecutableKey, usize>,
     producer_pokes: u64,
+    /// The world's cumulative work-start attribution snapshot, recorded by the
+    /// caller that has `World` in scope at `finish_session` time (mirrors
+    /// `record_producer_pokes`'s pattern for the same reason: the session
+    /// itself never touches `World`). `unsanctioned_work_starts()` must be zero
+    /// on every production-driven path; see `WorkStartReason::Unclassified`.
+    work_starts: WorkStartTally,
 }
 
 impl PullSession {
@@ -579,6 +586,7 @@ impl PullSession {
             demanded_boundaries: HashSet::new(),
             executable_index: HashMap::new(),
             producer_pokes: 0,
+            work_starts: WorkStartTally::default(),
         }
     }
 
@@ -825,6 +833,22 @@ impl PullSession {
 
     pub fn producer_pokes(&self) -> u64 {
         self.producer_pokes
+    }
+
+    /// The recorded work-start attribution snapshot (per-reason agenda-entry
+    /// counts plus whole-fact-table scans). Zero until `record_work_starts`
+    /// runs at finish time.
+    pub fn work_starts(&self) -> WorkStartTally {
+        self.work_starts
+    }
+
+    /// Records the world's cumulative work-start attribution snapshot
+    /// (`World::work_start_tally`) so `emit_finished` and the guard can read
+    /// it. The caller is the pull-drive site that still has `World` in scope
+    /// (`ProductDriver::finish_session` cannot -- `PullSession` never holds a
+    /// `World` reference).
+    pub fn record_work_starts(&mut self, tally: WorkStartTally) {
+        self.work_starts = tally;
     }
 
     pub fn record_call_edge(&mut self, edge: DemandedCallEdge) {
@@ -1554,6 +1578,13 @@ impl PullSession {
                 callables: self.demanded_callables.len(),
                 boundaries: self.demanded_boundaries.len(),
                 producer_pokes: self.producer_pokes,
+                work_starts_ignition: self.work_starts.ignition,
+                work_starts_changed_revision_wake: self.work_starts.changed_revision_wake,
+                work_starts_standing_root_frontier: self.work_starts.standing_root_frontier,
+                work_starts_activation_frontier: self.work_starts.activation_frontier,
+                work_starts_blocked_waiter_expansion: self.work_starts.blocked_waiter_expansion,
+                unsanctioned_work_starts: self.work_starts.unclassified,
+                root_scans: self.work_starts.root_scans,
             },
             &metadata! {},
         );

@@ -205,6 +205,20 @@ impl<'a> Compiler2<'a> {
         Ok(executables)
     }
 
+    /// Drives one root to its backend product and returns the finished
+    /// session's work-start attribution snapshot, read back through the
+    /// session's own accessor. The running pull-only guard
+    /// (`work_start_reason_test`) asserts on this: `unsanctioned_work_starts()`
+    /// and `root_scans` must be zero, and `ignition` must equal the true
+    /// external front-door count (one `submit_code` + one `submit_root`).
+    #[cfg(test)]
+    pub(crate) fn drive_root_backend_work_starts(&mut self, root: RootId) -> Result<super::WorkStartTally, String> {
+        let (_program, driver) = self.drive_root_backend_product(root)?;
+        let tally = driver.session().work_starts();
+        driver.finish_session();
+        Ok(tally)
+    }
+
     /// Read-only access to the compiler's settled world, so tests can read the
     /// facts a product drive published (activation analyses, callsite
     /// summaries) alongside the returned activation inventory.

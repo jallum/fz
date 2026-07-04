@@ -4728,7 +4728,8 @@ fn drive_product_fact_wait_for_test(
         let job = match world.next_ready_job() {
             Some(job) => job,
             None => {
-                producer_pokes += world.demand_fact_producer(fact.fact());
+                producer_pokes +=
+                    world.demand_fact_producer(fact.fact(), super::scheduler::WorkStartReason::BlockedWaiterExpansion);
                 let Some(job) = world.work_graph.pop() else {
                     panic!("{message}: product path waited on {fact:?} with no ready producer");
                 };

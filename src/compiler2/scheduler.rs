@@ -1,10 +1,83 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
 use std::hash::Hash;
 
 use super::agenda::Agenda;
 use super::deps::{DependencyIndex, UnresolvedWait};
 use super::facts::{ClaimShape, FactChange, FactTable, FactUse};
+
+/// Why a job entered the agenda. This is observation-only: it never changes
+/// which job runs or in what order, it only tags each work-start so a running
+/// test can distinguish the compiler's sanctioned entry points from anything
+/// else.
+///
+/// The pull-based northstar (`../pull-based.html`, `.agent/docs/telemetry.md`)
+/// allows exactly these ways for a job to start:
+///
+/// - `Ignition`: an external submission (`World::submit_code`,
+///   `submit_module_interface`, `submit_root`) enqueuing the one job that
+///   begins that submission's own work. This is the front door, not a job
+///   commanding another job.
+/// - `ChangedRevisionWake`: `Scheduler::complete`'s wake propagation
+///   (`enqueue_dependents`/`enqueue_step`) re-running a job whose fact
+///   subscription (read, wait, or settled-presence) just changed. This is
+///   the core pull mechanism: readers wake because their ground moved, never
+///   because a producer pushed them by name.
+/// - `StandingRootFrontier`: `drive::demand_root_entry_analyses` expanding a
+///   submitted root's standing entry-analysis demand through the
+///   fact->producer map.
+/// - `ActivationFrontier`: `drive::demand_activation_frontier_analyses`
+///   expanding a discovered callee activation's standing analysis demand
+///   through the same map.
+/// - `BlockedWaiterExpansion`: the fact->producer map
+///   (`World::demand_fact_producer`) expanding a blocked waiter's missing
+///   fact to its single producer at a drain/stall point — both the bare
+///   scheduler's `demand_blocked_wait_producers`/`drive_until` stall pass and
+///   the bounded product-pull's own fact-wait loop
+///   (`product_drive::drive_product_fact_wait`) use this.
+///
+/// `Unclassified` is the catch-all default. A future enqueue call site that
+/// does not pass one of the reasons above — a reintroduced `follow_up`-style
+/// push, for instance — is counted here, which is exactly what trips the
+/// running pull-only guard (`work_start_reason_test`'s
+/// `pull_only_guard_holds_for_*` cases).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum WorkStartReason {
+    Ignition,
+    ChangedRevisionWake,
+    StandingRootFrontier,
+    ActivationFrontier,
+    BlockedWaiterExpansion,
+    #[default]
+    Unclassified,
+}
+
+/// A snapshot of a scheduler's cumulative work-start attribution: how many
+/// jobs entered the agenda under each `WorkStartReason`, plus how many
+/// whole-fact-table scans (`Scheduler::fact_keys`) were taken. Carried out of
+/// the scheduler as a single value so the pull session can record and emit the
+/// full per-reason breakdown (`pull.session.finished`) without reaching back
+/// into the world.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct WorkStartTally {
+    pub ignition: u64,
+    pub changed_revision_wake: u64,
+    pub standing_root_frontier: u64,
+    pub activation_frontier: u64,
+    pub blocked_waiter_expansion: u64,
+    pub unclassified: u64,
+    pub root_scans: u64,
+}
+
+impl WorkStartTally {
+    /// Jobs that entered the agenda with no attributable sanctioned reason.
+    /// Must stay zero on every sanctioned path: a reintroduced push (a
+    /// follow-up-style enqueue that forgets to name a reason) lands here by
+    /// construction, since `WorkStartReason` defaults to `Unclassified`.
+    pub fn unsanctioned_work_starts(&self) -> u64 {
+        self.unclassified
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct AppliedStep<J, F> {
@@ -40,6 +113,16 @@ pub struct Scheduler<J, F> {
     /// cumulative store values instead of joining, and its content changes
     /// propagate as shifts in turn. Cleared on conclusion; kept while waiting.
     rebased: HashSet<J>,
+    /// Work-start attribution tally: how many jobs actually entered the
+    /// agenda (deduped coalescing does not count) under each
+    /// `WorkStartReason`. Observation-only — see `WorkStartReason`.
+    work_starts: HashMap<WorkStartReason, u64>,
+    /// How many times a whole-fact-table scan (`fact_keys`) has been taken.
+    /// The pull-cutover anti-pattern is a producer discovering work by
+    /// scanning every fact instead of following named dependencies; this
+    /// must stay zero in production (`root_executable_frontier`, the one
+    /// production caller, was deleted in fz-go4.18.4-fix).
+    root_scans: u64,
 }
 
 impl<J, F> Default for Scheduler<J, F>
@@ -63,6 +146,24 @@ where
             facts: FactTable::new(),
             deps: DependencyIndex::new(),
             rebased: HashSet::new(),
+            work_starts: HashMap::new(),
+            root_scans: 0,
+        }
+    }
+
+    /// The cumulative work-start attribution snapshot: per-reason agenda-entry
+    /// counts (coalesced re-demands of an already-pending job do not count —
+    /// they are not a new work start) plus the whole-fact-table-scan count.
+    pub fn work_start_tally(&self) -> WorkStartTally {
+        let count = |reason| *self.work_starts.get(&reason).unwrap_or(&0);
+        WorkStartTally {
+            ignition: count(WorkStartReason::Ignition),
+            changed_revision_wake: count(WorkStartReason::ChangedRevisionWake),
+            standing_root_frontier: count(WorkStartReason::StandingRootFrontier),
+            activation_frontier: count(WorkStartReason::ActivationFrontier),
+            blocked_waiter_expansion: count(WorkStartReason::BlockedWaiterExpansion),
+            unclassified: count(WorkStartReason::Unclassified),
+            root_scans: self.root_scans,
         }
     }
 
@@ -79,7 +180,13 @@ where
         &self.facts
     }
 
-    pub fn fact_keys(&self) -> impl Iterator<Item = &F> {
+    /// Iterates every fact key in the table. This is the whole-table-scan
+    /// escape hatch the pull-cutover deleted from production
+    /// (`root_executable_frontier`); any future caller that reaches for it to
+    /// discover work by scanning instead of naming a dependency is the
+    /// "root scan" anti-pattern, so each call is tallied (`root_scans`).
+    pub fn fact_keys(&mut self) -> impl Iterator<Item = &F> {
+        self.root_scans += 1;
         self.facts.keys()
     }
 
@@ -119,8 +226,16 @@ where
         self.deps.unresolved()
     }
 
-    pub fn enqueue(&mut self, job: J) -> bool {
-        self.agenda.enqueue(job)
+    /// Enqueues `job`, tallying the work-start under `reason`. Returns
+    /// whether the job was newly enqueued (`false` means it was already
+    /// pending and this call coalesced into it — not a new work start, so
+    /// the tally does not count it).
+    pub fn enqueue(&mut self, job: J, reason: WorkStartReason) -> bool {
+        let started = self.agenda.enqueue(job);
+        if started {
+            *self.work_starts.entry(reason).or_insert(0) += 1;
+        }
+        started
     }
 
     pub fn pop(&mut self) -> Option<J> {
@@ -243,8 +358,16 @@ where
         }
     }
 
+    /// The changed-revision wake path: a subscriber's fact use changed, so it
+    /// re-enters the agenda under `WorkStartReason::ChangedRevisionWake` --
+    /// the one work-start reason that is never passed in by a caller, since
+    /// it names the wake mechanism itself, not an external demand.
     fn enqueue_step(&mut self, job: J, enqueued: &mut Vec<J>, coalesced: &mut Vec<J>, coalesced_seen: &mut HashSet<J>) {
         if self.agenda.enqueue(job.clone()) {
+            *self
+                .work_starts
+                .entry(WorkStartReason::ChangedRevisionWake)
+                .or_insert(0) += 1;
             enqueued.push(job);
         } else if coalesced_seen.insert(job.clone()) {
             coalesced.push(job);

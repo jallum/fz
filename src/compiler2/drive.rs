@@ -12,7 +12,7 @@ use crate::{measurements, metadata};
 use super::code::CodeId;
 use super::facts::{ClaimShape, FactUse};
 use super::identity::{ActivationKey, ExecutableKey, FunctionId, ModuleId, RootId, TypeName};
-use super::scheduler::{DriveOutcome, Scheduler};
+use super::scheduler::{DriveOutcome, Scheduler, WorkStartReason};
 use super::semantic::CallSiteKey;
 use super::world::World;
 
@@ -131,8 +131,12 @@ impl World<'_> {
     /// is also the blocked branch of a `wait_on_current(fact)` bare wait elsewhere —
     /// naming the producer once, in this map, is what keeps every such wait a
     /// pull instead of a job pushing another job by name.
-    /// Returns how many producers were actually demanded.
-    pub(crate) fn demand_fact_producer(&mut self, fact: &FactKey) -> u64 {
+    /// Returns how many producers were actually demanded. `reason` is the
+    /// work-start attribution for the demanded producer job -- it names
+    /// which standing-demand expansion drove this call (see
+    /// `WorkStartReason`), not the fact->producer mapping itself, since the
+    /// mapping is shared by every caller of this function.
+    pub(crate) fn demand_fact_producer(&mut self, fact: &FactKey, reason: WorkStartReason) -> u64 {
         let job = match fact {
             FactKey::RootEntry(root) => Some(Job::SeedRoot(*root)),
             FactKey::FunctionDefined(function) => Some(Job::DefineFunction(*function)),
@@ -171,28 +175,29 @@ impl World<'_> {
                 if !self.has_fact(&FactKey::Activation(activation.clone()))
                     || !self.has_fact(&FactKey::ActivationInputs(activation.clone()))
                 {
-                    pokes += self.demand_producer_if_needed(Job::SeedActivation(activation.clone()), fact) as u64;
+                    pokes +=
+                        self.demand_producer_if_needed(Job::SeedActivation(activation.clone()), fact, reason) as u64;
                 }
-                return pokes + self.demand_producer_if_needed(Job::AnalyzeActivation(activation), fact) as u64;
+                return pokes + self.demand_producer_if_needed(Job::AnalyzeActivation(activation), fact, reason) as u64;
             }
             _ => None,
         };
-        job.map(|job| self.demand_producer_if_needed(job, fact) as u64)
+        job.map(|job| self.demand_producer_if_needed(job, fact, reason) as u64)
             .unwrap_or(0)
     }
 
-    fn demand_producer_if_needed(&mut self, job: Job, target_fact: &FactKey) -> bool {
+    fn demand_producer_if_needed(&mut self, job: Job, target_fact: &FactKey, reason: WorkStartReason) -> bool {
         if !self.work_graph.has_run(&job) {
             // Never run: no wake source exists yet, so only a fresh demand
             // can start it.
-            self.demand(job);
+            self.work_graph.enqueue(job, reason);
             return true;
         }
         if self.work_graph.rebased(&job) {
             // Ground shifted since its last conclusion: its claims are
             // unsettled whether or not it names `target_fact` or is
             // currently paused on waits, so it must re-run to re-derive them.
-            self.demand(job);
+            self.work_graph.enqueue(job, reason);
             return true;
         }
         if self.work_graph.output_keys(&job).contains(target_fact) {
@@ -232,7 +237,10 @@ impl World<'_> {
             .into_iter()
             .map(|wait| wait.fact.fact().clone())
             .collect();
-        facts.into_iter().map(|fact| self.demand_fact_producer(&fact)).sum()
+        facts
+            .into_iter()
+            .map(|fact| self.demand_fact_producer(&fact, WorkStartReason::BlockedWaiterExpansion))
+            .sum()
     }
 
     /// Expands the standing demand every submitted root carries: a root is an
@@ -256,7 +264,10 @@ impl World<'_> {
             if self.work_graph.has_run(&Job::AnalyzeActivation(entry.clone())) {
                 continue;
             }
-            demanded += self.demand_fact_producer(&FactKey::ActivationAnalyzed(entry));
+            demanded += self.demand_fact_producer(
+                &FactKey::ActivationAnalyzed(entry),
+                WorkStartReason::StandingRootFrontier,
+            );
         }
         demanded
     }
@@ -284,7 +295,8 @@ impl World<'_> {
                 self.retire_activation_frontier(&key);
                 continue;
             }
-            demanded += self.demand_fact_producer(&FactKey::ActivationAnalyzed(key));
+            demanded +=
+                self.demand_fact_producer(&FactKey::ActivationAnalyzed(key), WorkStartReason::ActivationFrontier);
         }
         demanded
     }
@@ -417,7 +429,8 @@ impl World<'_> {
             let mut demanded_facts: Vec<FactKey> = Vec::new();
             for wait in self.work_graph.unresolved() {
                 if stall_demanded.insert(wait.fact.fact().clone()) {
-                    producer_pokes += self.demand_fact_producer(wait.fact.fact());
+                    producer_pokes +=
+                        self.demand_fact_producer(wait.fact.fact(), WorkStartReason::BlockedWaiterExpansion);
                     demanded_facts.push(wait.fact.fact().clone());
                 }
             }
