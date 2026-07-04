@@ -4,7 +4,7 @@
   "blocks": [],
   "closed_at": "2026-07-04T14:05:36Z",
   "created": "2026-07-04T13:42:22Z",
-  "description": "DONE (folded 2026-07-03 as \u003cfill\u003e, single-lane audited PASS — trivial test dedup). Routed the two remaining byte-identical private assert_resolved copies (fixture_facts_test.rs, transport_contract_test.rs) through drive_test.rs's canonical pub(crate) one (the home fz-go4.28 established). Byte-identity + same-nominal-type (super::Job/super::FactKey == compiler2::Job/FactKey via sibling modules) audit-confirmed; both routed call sites mutation-verified to still bite; now-unused imports dropped (DriveOutcome/FactKey/Job in fixture_facts_test, DriveOutcome in transport_contract_test, FactKey/Job correctly retained). rg shows ONE assert_resolved. 1190/0/12 unchanged. Collapses 3-\u003e1 copies of the panic-format string that would otherwise drift.",
+  "description": "\nDONE (folded 2026-07-03 as 924d972d2, single-lane audited PASS — trivial test dedup). Routed the two remaining byte-identical private assert_resolved copies (fixture_facts_test.rs, transport_contract_test.rs) through drive_test.rs's canonical pub(crate) one (the home fz-go4.28 established). Byte-identity + same-nominal-type (super::Job/super::FactKey == compiler2::Job/FactKey via sibling modules) audit-confirmed; both routed call sites mutation-verified to still bite; now-unused imports dropped (DriveOutcome/FactKey/Job in fixture_facts_test, DriveOutcome in transport_contract_test, FactKey/Job correctly retained). rg shows ONE assert_resolved. 1190/0/12 unchanged. Collapses 3-\u003e1 copies of the panic-format string that would otherwise drift.",
   "id": "fz-go4.45",
   "labels": [],
   "parent": "fz-go4",
@@ -12,5 +12,5 @@
   "status": "closed",
   "title": "assert_resolved is triplicated in fixture_facts_test.rs + transport_contract_test.rs",
   "type": "task",
-  "updated_at": "2026-07-04T14:05:36Z"
+  "updated_at": "2026-07-04T14:05:37Z"
 }
