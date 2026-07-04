@@ -2085,24 +2085,38 @@ impl<'a> World<'a> {
     /// not on `FunctionSource`, so it never waits on the fact it is itself the
     /// sole producer of (fz-f98.14.5). Every returned fact has a producer arm
     /// in `World::demand_fact_producer` (`CodeScoped` -> `Job::ScopeCode`,
-    /// `ModuleDefined` -> `Job::DefineModule`), so naming the fact is enough —
-    /// callers do not also need the job.
+    /// `CodeIndexed` -> `Job::IndexCode`, `ModuleDefined` -> `Job::DefineModule`),
+    /// so naming the fact is enough — callers do not also need the job.
+    ///
+    /// For a global-module function, the home code is discovered by scanning
+    /// every submitted code unit, so this returns at least one arm-covered
+    /// fact whenever any candidate home is still unresolved (`Pending`); it
+    /// only returns empty once every code is `Indexed` and none of them is
+    /// the home — the terminal dangling case, where the only remaining wait
+    /// (`FunctionSourceStash`, which has no producer arm) is legitimate.
     pub(crate) fn demand_function_scope(&mut self, function: FunctionId) -> Vec<FactKey> {
         let module = self.function_module(function);
         if module.is_global() {
             let function_ref = self.function_ref(function).clone();
-            return self
-                .code
-                .ids()
-                .into_iter()
-                .filter_map(|code_id| match self.code.get(code_id) {
-                    CodeState::Pending => None,
+            let mut homes = Vec::new();
+            let mut pending = Vec::new();
+            for code_id in self.code.ids() {
+                match self.code.get(code_id) {
+                    CodeState::Pending => pending.push(FactKey::CodeIndexed(code_id)),
                     CodeState::Indexed { source } if code_surface_can_publish_function(source, &function_ref) => {
-                        Some(FactKey::CodeScoped(code_id))
+                        homes.push(FactKey::CodeScoped(code_id))
                     }
-                    CodeState::Scoped { .. } | CodeState::Indexed { .. } => None,
-                })
-                .collect();
+                    // An Indexed code that cannot publish this function is not a
+                    // candidate. A Scoped home is unreachable here: this walk runs
+                    // only when the pending source stash is empty, and scoping a
+                    // code eagerly stashes every function it defines (source_publish),
+                    // so once the home reaches Scoped the caller never re-enters.
+                    CodeState::Scoped { .. } | CodeState::Indexed { .. } => {}
+                }
+            }
+            // A found home makes the other codes' indexing irrelevant to this
+            // function: waiting on them too would be over-demand.
+            return if !homes.is_empty() { homes } else { pending };
         }
         if self.module_has_source_state(module) || self.ensure_runtime_module(module).is_some() {
             return vec![FactKey::ModuleDefined(module)];

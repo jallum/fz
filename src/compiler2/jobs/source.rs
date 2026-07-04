@@ -267,18 +267,37 @@ pub(super) fn publish_function_source_job(
         // `FunctionSource`, the fact this job is the sole producer of.
         //
         // `demand_function_scope` names each fact directly rather than pushing a
-        // job: a global-module function waits on `CodeScoped(code_id)` (sole
-        // producer `Job::ScopeCode`), a scoped function waits on
-        // `ModuleDefined(module)` (sole producer `Job::DefineModule`) -- both are
-        // arms in `World::demand_fact_producer`. A global-module function whose
-        // owning code has not even been submitted yet has no such fact to name
-        // (`demand_function_scope` returns empty), so this also waits directly
-        // on `FunctionSourceStash(function_id)` (fz-go4.38): whichever scope
-        // eventually stashes this function's body -- first pass or a later
-        // (re)scope -- bumps that fact and rewakes this job through the
-        // standing changed-revision path, never a manual enqueue.
+        // job: a global-module function waits on `CodeIndexed(code_id)` for
+        // every still-`Pending` candidate home (sole producer `Job::IndexCode`)
+        // until a home is found, then narrows to that home's
+        // `CodeScoped(code_id)` (sole producer `Job::ScopeCode`); a scoped
+        // function waits on `ModuleDefined(module)` (sole producer
+        // `Job::DefineModule`) -- all three are arms in
+        // `World::demand_fact_producer`, and each is wake-coherent: satisfying
+        // it re-runs this job at the exact step the next scope fact appears.
+        // The satisfying `ScopeCode` co-produces `FunctionSourceStash` in the
+        // *same* `JobEffects` as `CodeScoped` (see `source_publish`), so the
+        // `CodeScoped`-triggered re-run already finds the stash present -- no
+        // separate wait on the stash is needed while a scope fact is named.
         let mut waits: Vec<FactKey> = world.demand_function_scope(function_id);
-        waits.push(FactKey::FunctionSourceStash(function_id));
+        if waits.is_empty() {
+            // Only the terminal case -- no code names this function's home yet
+            // (its owning code has not been submitted, or the reference is
+            // dangling) -- falls back to the arm-less
+            // `FunctionSourceStash(function_id)` (fz-go4.38). It is the ONLY
+            // arm-less wait, correct here because there is no arm-covered fact
+            // to name. It must NEVER be bundled with an arm-covered
+            // `CodeIndexed`/`CodeScoped` wait: the scheduler re-runs a waiter
+            // only when ALL its waits are satisfied (`enqueue_dependents`), so
+            // pairing an arm-covered fact (produced now by
+            // `IndexCode`/`ScopeCode`) with `FunctionSourceStash` (produced
+            // only by a later `ScopeCode`) would AND-block the wake and never
+            // fire. Whichever scope eventually stashes this function's body --
+            // first pass or a later (re)scope -- bumps this fact and rewakes
+            // the job through the standing changed-revision path, never a
+            // manual enqueue.
+            waits.push(FactKey::FunctionSourceStash(function_id));
+        }
         return Ok(JobEffects {
             waits: current_uses(waits),
             ..JobEffects::default()

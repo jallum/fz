@@ -723,3 +723,107 @@ fn compiler2_protocol_impl_discovered_after_first_pass_rewakes_the_callsite() {
          main's analysis once the `defimpl` was discovered, resolving its return type",
     );
 }
+
+/// `demand_function_scope`'s global-module branch must never return empty
+/// while a candidate home code is still `Pending` — that emptiness is exactly
+/// the shape `PublishFunctionSource` cannot recover from (its only other wait,
+/// `FunctionSourceStash`, has no producer arm). This exercises all three
+/// shapes: unresolved candidate (names `CodeIndexed`, an arm-covered fact
+/// that pulls indexing), found home (names `CodeScoped`), and the genuinely
+/// terminal case (every code indexed, none is the home).
+#[test]
+fn compiler2_demand_function_scope_never_empties_on_a_pending_global_home() {
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new(&tel);
+    let code_id = world.submit_code(
+        Some("global_fn.fz".to_string()),
+        "fn greet(name), do: name\n".to_string(),
+    );
+    let function = world.reference_function(ModuleId::GLOBAL, "greet", 1);
+
+    // Before the first drive, the code is still `Pending`: the home is
+    // unresolved, so the wait must name an arm-covered fact that pulls
+    // indexing forward, not go empty.
+    let waits = world.demand_function_scope(function);
+    assert!(
+        !waits.is_empty(),
+        "a pending candidate home must never leave demand_function_scope empty"
+    );
+    assert!(
+        waits.contains(&FactKey::CodeIndexed(code_id)),
+        "the pending code should be named as a CodeIndexed candidate, got {waits:?}"
+    );
+
+    super::drive_test::assert_resolved(world.drive(), "indexing the sole code unit should settle");
+
+    // Now that the code is indexed and it is the function's home, the wait
+    // narrows to the found home alone.
+    let waits = world.demand_function_scope(function);
+    assert_eq!(
+        waits,
+        vec![FactKey::CodeScoped(code_id)],
+        "once a home is found, only its CodeScoped wait should be named"
+    );
+
+    // The runtime prelude is itself a code unit in `self.code`, and it starts
+    // `Pending` too; index it so every code in the world is `Indexed` before
+    // checking the terminal case below.
+    let prelude = world.runtime_prelude();
+    assert!(
+        world.demand(Job::IndexCode(prelude)),
+        "the prelude should be demandable"
+    );
+    super::drive_test::assert_resolved(world.drive(), "indexing the prelude should settle");
+
+    // A function no code publishes is the terminal dangling case: every code
+    // is Indexed and none is the home, so the wait is legitimately empty
+    // (`PublishFunctionSource` falls back to its `FunctionSourceStash` wait).
+    let dangling = world.reference_function(ModuleId::GLOBAL, "nope", 0);
+    let waits = world.demand_function_scope(dangling);
+    assert!(
+        waits.is_empty(),
+        "a function published by no indexed code should have no scope wait, got {waits:?}"
+    );
+}
+
+/// Drives the actual deadlock: `PublishFunctionSource` runs while its
+/// global-module home code is still `Pending`, so its first execution records
+/// the `CodeIndexed(home)` wait. The pure `demand_function_scope` test proves
+/// that wait is named; this proves the WAKE closes — indexing the home must
+/// re-run the job, which re-derives the now-`Indexed` home, waits on
+/// `CodeScoped`, pulls `ScopeCode`, and publishes `FunctionSource`.
+///
+/// The pending-first schedule is reached through production paths alone:
+/// demanding `PublishFunctionSource(function)` BEFORE `submit_code` puts it on
+/// the agenda ahead of the `IndexCode` that submission enqueues, so its first
+/// run genuinely sees the `Pending` home. This is why the arm-covered
+/// `CodeIndexed` wait (never bundled with the arm-less `FunctionSourceStash`)
+/// matters: the scheduler wakes a waiter only when ALL its waits are satisfied,
+/// so a `{CodeIndexed, FunctionSourceStash}` pair would AND-block forever.
+#[test]
+fn compiler2_publish_function_source_wakes_when_a_pending_global_home_indexes() {
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new(&tel);
+
+    // Reference the function and demand its source BEFORE the code exists, so
+    // the job is agenda-ahead of the submission's IndexCode and runs first
+    // against the still-Pending home.
+    let function = world.reference_function(ModuleId::GLOBAL, "greet", 1);
+    assert!(
+        world.demand(Job::PublishFunctionSource(function)),
+        "publishing the function source should be demandable before its home code exists"
+    );
+    world.submit_code(
+        Some("global_fn.fz".to_string()),
+        "fn greet(name), do: name\n".to_string(),
+    );
+
+    super::drive_test::assert_resolved(
+        world.drive(),
+        "indexing the pending home must wake PublishFunctionSource and settle, not relocate the deadlock",
+    );
+    assert!(
+        world.has_fact(&FactKey::FunctionSource(function)),
+        "the woken job must publish the function's source once its home is indexed and scoped"
+    );
+}
