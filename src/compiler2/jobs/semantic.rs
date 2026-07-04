@@ -1836,7 +1836,45 @@ fn branch_possible(world: &mut World<'_>, predicate: &RegionPredicate<Ty>, sourc
             }
         }
         Region::Guard(_) => true,
-        Region::MapKeyPresent { .. } | Region::Bitstring(_) => true,
+        Region::MapKeyPresent { key } => {
+            // A map literal's sig is an open-record LOWER bound: "at least
+            // these keys, with these value types" (`types/sigs.rs`'s
+            // `MapSig` doc). So `source <: map({key: any})` is exactly the
+            // proof that every value of `source` carries `key` — the same
+            // shape-overlap/subtype pair `Region::Type` and `Region::TupleArity`
+            // already use above, just phrased over one required field instead
+            // of a whole type or arity. Reusing `intersect`/`is_subtype` here
+            // (rather than the previous unconditional `true`) lets a
+            // known-closed map (built from a literal `%{...}` at this
+            // callsite) prune the impossible "key is absent" miss edge,
+            // exactly as an atom literal already prunes its miss edge below.
+            //
+            // The prune only applies when the key resolves to a form the map
+            // lattice can carry as a required field: an atom singleton.
+            // `map_key` accepts int/float/string/nil map-pattern keys too
+            // (`dispatch_matrix/pattern.rs`), but the lattice erases numeric
+            // literals to their kind (`Types::int_lit`/`as_int_singleton` is a
+            // permanent stub) and has no singleton for float/string/nil keys,
+            // so `as_map_key` returns `None` for them. Absence of a resolvable
+            // key is absence of proof: we cannot show the key is present, so
+            // we must not prune either edge — falling back to the old
+            // unconditional `true` keeps those (valid, working) programs
+            // dispatching both ways.
+            let key_ty = dispatch_const_ty(world, key);
+            if let Some(map_key) = world.types().as_map_key(&key_ty) {
+                let any = world.types_mut().any();
+                let required = world.types_mut().map(&[(map_key, any)]);
+                if is_match {
+                    let overlap = world.types_mut().intersect(*source, required);
+                    !world.types().is_empty(&overlap)
+                } else {
+                    !world.types().is_subtype(source, &required)
+                }
+            } else {
+                true
+            }
+        }
+        Region::Bitstring(_) => true,
     }
 }
 

@@ -1,0 +1,19 @@
+# Map-pattern dispatch on non-atom keys. Int, float, and string map-pattern
+# keys are all valid (`dispatch_matrix/pattern.rs` accepts them), but the type
+# lattice erases numeric literals to their kind and has no singleton for
+# float/string keys, so their key-presence cannot be proven statically. The
+# dispatch-reachability walk visits every clause's key test, so all three
+# non-atom key predicates are exercised from a single call; the walk must keep
+# both edges live for an unprovable key instead of panicking on it.
+#
+# Expected: main() : any (int/float/string leaves plus the catch-all all stay
+# live because none of the non-atom keys can be proven present or absent).
+
+fn pick(%{1 => x}), do: x
+fn pick(%{3.14 => y}), do: y
+fn pick(%{"a" => z}), do: z
+fn pick(_), do: :other
+
+fn main() do
+  pick(%{1 => 10})
+end

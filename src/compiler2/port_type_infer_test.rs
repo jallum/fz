@@ -1298,28 +1298,38 @@ fn guard_partition_selects_refined_clause() {
         compiler.drive(),
         "guarded tuple clause should be selected when guard proof succeeds",
     );
-    // NOT FILLED (aspirational TODO): main/0 actually settles to
-    // `{int | :fallback, int | :fallback}`, not the claimed `{int, :fallback}`
-    // — both tuple positions get the *joined* union of every guard-selected
-    // leaf, rather than each call being refined to only the leaf its own
-    // guard proof selects. Confirmed via `types_equivalent_for_test` +
-    // `display_ty_for_test` while wiring this test up. Guard-clause dispatch
-    // does not currently narrow per-callsite the way plain pattern dispatch
-    // (see `direct_calls_specialize_atom_pattern_dispatch_by_input`) does;
-    // this looks like a real behavioural gap in guard-clause callsite
-    // narrowing, not just a stale TODO wording issue.
+    // NOT FILLED (aspirational TODO, diagnosed but not fixed): main/0
+    // actually settles to `{int | :fallback, int | :fallback}`, not the
+    // claimed `{int, :fallback}`. Root cause is architectural, not a local
+    // dispatch bug: `ActivationKey::from_inputs` (`identity.rs`) keys purely
+    // on argument `Ty`, and `Types::int_lit` (`types/mod.rs`) deliberately
+    // collapses every numeric literal to plain `int` ("numeric literals are
+    // VALUES, not types"). `pick({:ok, 1})` and `pick({:ok, 0})` therefore
+    // mint the exact same `ActivationKey` — one shared activation, one
+    // `reachable_clause_ids` computation, one joined `ReturnType` fact read
+    // by both call sites. There is no per-callsite literal identity left by
+    // the time `branch_possible`'s `Region::Guard` test runs to narrow
+    // against, unlike the atom case (`direct_calls_specialize_atom_pattern_
+    // dispatch_by_input`), where `atom_lit` singletons survive into the type
+    // lattice and genuinely mint distinct `ActivationKey`s. Narrowing this
+    // per callsite would need a new literal-value channel that survives
+    // tuple construction/projection independent of `Ty` (e.g. per-callsite
+    // guard re-evaluation against the caller's own literal operands) — a
+    // deliberate architecture change, not a point fix, so it is left
+    // diagnosed-not-fixed here rather than forced.
 }
 
 // Ported from src/type_infer/type_infer_test.rs: map pattern key binding flows matched value type into clause body
 #[test]
 fn map_pattern_binding_flows_into_selected_leaf() {
     let tel = ConfiguredTelemetry::new();
+    let (functions, returns) = attach_return_captures(&tel);
     let mut compiler = Compiler2::new(&tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00207_match_map_binding.fz".to_string()),
         text: include_str!("../../fixtures2/00207_match_map_binding.fz").to_string(),
     });
-    compiler.submit_root(RootSubmission {
+    let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
         name: "main".to_string(),
         arity: 0,
@@ -1329,15 +1339,63 @@ fn map_pattern_binding_flows_into_selected_leaf() {
         compiler.drive(),
         "map-pattern proof should flow matched key value into the clause leaf",
     );
-    // NOT FILLED (aspirational TODO): main/0 actually settles to
-    // `{int | :unreachable, :none}`, not the claimed `{int, :none}` — the
-    // first tuple position (`pick(%{id: 1})`) is widened by the dead
-    // `pick(_), do: :unreachable` catch-all, contradicting the fixture's
-    // "keeps the catch-all from contributing" comment. Confirmed via
-    // `types_equivalent_for_test` + `display_ty_for_test` while wiring this
-    // test up. The second position (`pick(:none)`) does settle exactly to
-    // `:none` as claimed. This looks like a real gap in how far map-pattern
-    // proof narrows the observed-activation frontier, not a stale TODO.
+
+    // main only reaches the map-shaped clause and the `:none` atom clause;
+    // main/0 settling to `{int, :none}` — not a wider union pulling in
+    // `:unreachable` — is the proof that the dead `pick(_)` catch-all does
+    // not contribute to either position.
+    let expected = {
+        let int_ty = compiler.types_mut_for_test().int();
+        let none_ty = compiler.types_mut_for_test().atom_lit("none");
+        compiler.types_mut_for_test().tuple(&[int_ty, none_ty])
+    };
+    assert_settles_to(
+        &compiler,
+        &functions,
+        &returns,
+        root_id,
+        "main",
+        0,
+        expected,
+        "{int, :none}",
+    );
+}
+
+// Regression guard: int, float, and string map-pattern keys are valid
+// (`dispatch_matrix/pattern.rs` accepts them), but the lattice cannot resolve
+// them to a prunable map-key singleton. The dispatch-reachability walk must
+// keep both edges live for such keys instead of panicking on an unprovable
+// key. main/0 settling (no panic) is the proof; because the keys are
+// unprovable, each catch-all legitimately contributes `:other`.
+#[test]
+fn map_pattern_dispatch_on_nonatom_keys_does_not_panic() {
+    let tel = ConfiguredTelemetry::new();
+    let (functions, returns) = attach_return_captures(&tel);
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures2/00553_match_map_nonatom_keys.fz".to_string()),
+        text: include_str!("../../fixtures2/00553_match_map_nonatom_keys.fz").to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    assert_resolved(
+        compiler.drive(),
+        "int/float/string map-pattern keys should compile without panicking",
+    );
+
+    // The single `pick(%{1 => 10})` call walks the whole dispatch graph, which
+    // carries a `MapKeyPresent` test for the int, float, AND string clauses —
+    // so all three non-atom key predicates are exercised (the naked-`.expect`
+    // pre-fix crash fires on the float/string ones). Because none of the
+    // non-atom keys can be proven present or absent, every clause leaf plus the
+    // catch-all stays live and the return settles to `any`. main/0 settling at
+    // all (no panic) is the regression guard.
+    let expected = compiler.types_mut_for_test().any();
+    assert_settles_to(&compiler, &functions, &returns, root_id, "main", 0, expected, "any");
 }
 
 // Ported from src/type_infer/type_infer_test.rs: tail-call, non-tail, capture-int, capture-closure, state-machine folds all settle to int
