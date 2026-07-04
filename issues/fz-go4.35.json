@@ -3,7 +3,7 @@
   "blocked_by": [],
   "blocks": [],
   "created": "2026-07-04T00:04:59Z",
-  "description": "Named by the fz-go4.34 correctness audit (at 29a3f3613). drop_closure_capture_tag (src/compiler2/fixture_facts.rs, the bracket-balanced stripper that swallows the closure[...] display tag from call-edge snapshots) has NO direct unit test — its coverage is entirely indirect via the 00547/00549/00550 golden fixtures. The audit wrote and exercised the exact cases (they drop into fixture_facts_test.rs almost verbatim): (1) doesn't fire on non-tag text / partial-prefix like closureXYZ[...]; (2) correctly bracket-balances nested [...] captures; (3) leaves an adjacent unrelated [str] list untouched after the tag; (4) LATENT edge case — on malformed/unbalanced input (closure[int, [int] with no closing bracket) it consumes to end-of-string rather than backing off. (4) is unreachable today (format_closure_lit_suffix always emits balanced brackets) but untested. TASK: add the direct unit tests; decide whether (4) should back off gracefully or assert the balanced-input invariant. Test-only, per feedback_no_silent_deferrals (indirect golden coverage is not enough for a hand-rolled parser). Two-lane audit sufficient.",
+  "description": "DONE (folded 2026-07-03, single-lane audited PASS — test-only). Added 7 direct unit tests for fixture_facts::drop_closure_capture_tag (the bracket-balanced stripper that swallows the closure[...] display tag from call-edge snapshots), which previously had ONLY indirect golden-fixture coverage. Tests (all mutation-verified to bite exactly): non-tag-untouched, partial-prefix-untouched (closureXYZ[...]), flat-capture-strip, nested-bracket-balance (bites via an independent find(']') naive-strip comparison — proven not a tautology), adjacent-unrelated-list-untouched, unbalanced-input-consumes-to-end (pinned+documented as unreachable — format_closure_lit_suffix always emits balanced brackets, audit-verified), and a happy-path via stable_type_text (integration on the real #\u003cid\u003eclosure[...] shape). Chose (a) pin-and-document the unbalanced edge over adding untested backoff for a dead path. drop_closure_capture_tag stayed private (no visibility widened); golden fixtures unchanged; 1193/0/9. Minor observation (non-blocking, no ticket): no test asserts format_closure_lit_suffix's always-balances invariant itself — worth a note if anyone touches that function.",
   "id": "fz-go4.35",
   "labels": [],
   "parent": "fz-go4",
@@ -11,5 +11,5 @@
   "status": "in_progress",
   "title": "Direct unit test for fixture_facts drop_closure_capture_tag (currently only golden-fixture coverage)",
   "type": "task",
-  "updated_at": "2026-07-04T13:12:28Z"
+  "updated_at": "2026-07-04T13:28:49Z"
 }
