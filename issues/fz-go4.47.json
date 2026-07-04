@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-07-04T23:49:07Z",
+  "description": "Concordant fold across the demand/transport fixpoint (north star: reduce concepts/code). CallInputMode { Direct, Closure } is defined TWICE (jobs/runtime_demand.rs:2496-2499 and jobs/transport.rs:46-49) and the identical HashMap\u003cCallSiteId,CallInputMode\u003e is computed from the SAME LoweredBody by two independently-written functions: runtime_demand.rs:895-935 (call_modes_by_callsite/record_tail_call_mode, flat iteration) and transport.rs:2150-2159+2286 (collect_callsite_modes/collect_tail_call_modes, recursive ControlDestination walk). The recursive walk is duplicated a THIRD time in transport.rs as collect_tail_call_dests/collect_tail_call_args (same recursion shape, different payload) -\u003e fold into one generic tail-walk. Also semantic_index is defined twice with the same 3-arg signature (callee_input_len, arg_count, arg_index): runtime_demand.rs:2500-2506 returns usize (assumes valid -\u003e latent panic/UB risk), transport.rs:50-58 returns Option\u003cusize\u003e (checked). FIX: one CallInputMode in a shared module (body.rs, beside LoweredTail::DirectCall/ClosureCall it classifies); one map-builder; absorb the CHECKED semantic_index (strictly safer). Concordance check: both consumers read the SAME LoweredTail Direct/Closure distinction to answer 'how do this callsite's args map onto the callee positional input space given the closure-capture prefix'; the only difference (checked vs unchecked) is an oversight, not a deliberate invariant. ~20 non-test refs, contained to two jobs/ files. MODERATE: touches fixpoint demand/transport facts -\u003e full green lib+matrix re-verify. Two/three-lane audit.",
+  "id": "fz-go4.47",
+  "labels": [],
+  "parent": "fz-go4",
+  "priority": 3,
+  "status": "open",
+  "title": "Fold duplicate CallInputMode enum + its two traversals + double semantic_index (runtime_demand.rs / transport.rs)",
+  "type": "task",
+  "updated_at": "2026-07-04T23:49:07Z"
+}
