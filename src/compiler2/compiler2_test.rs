@@ -596,6 +596,121 @@ fn compiler2_run_root_jit_executes_resources_without_legacy_prepare() {
     );
 }
 
+/// Overproduction guard: an interp drive demands only `BackendProgram`, so it
+/// must never lower a `NativeProgram` no consumer asked for -- the spreadsheet-
+/// model rule (produce only what the demander needs). The JIT and AOT front
+/// doors demand `NativeProgram` explicitly (`native_program_for_root` ->
+/// `Job::LowerNativeProgram`), so they must still produce it.
+///
+/// `Job::LowerNativeProgram` is run as a direct, synchronous call
+/// (`native_program_for_root`), not through the agenda's per-job
+/// `["fz","compiler2","job"]` span, so this counts the one telemetry event
+/// `lower_native_program` unconditionally emits per successful lowering
+/// (`["fz","compiler2","native_program","reusable_cons"]`) instead of tapping
+/// that span.
+#[test]
+fn compiler2_interp_never_lowers_native_program_while_jit_and_aot_still_do() {
+    let source = include_str!("../../fixtures2/00181_enum_reduce_operator_ref.fz");
+    const LOWERED: &[&str] = &["fz", "compiler2", "native_program", "reusable_cons"];
+
+    // Interp front door: BackendProgram only, NativeProgram absent.
+    {
+        let tel = ConfiguredTelemetry::new();
+        let capture = Capture::new();
+        tel.attach(&[], capture.handler());
+        let mut compiler = Compiler2::new(&tel);
+        compiler.submit_code(CodeSubmission {
+            name: Some("fixtures/interp_never_lowers_native.fz".to_string()),
+            text: source.to_string(),
+        });
+        let root = compiler.submit_root(super::RootSubmission {
+            module_name: None,
+            name: "main".to_string(),
+            arity: 0,
+            need: super::ExecutableNeed::Value,
+        });
+
+        compiler
+            .run_root_interp(root)
+            .unwrap_or_else(|error| panic!("enum_reduce_operator_ref should interp-run: {error}"));
+
+        assert_eq!(
+            capture.count(LOWERED),
+            0,
+            "an interp drive must never lower NativeProgram -- interp reads BackendProgram, \
+             never NativeProgram, so lowering native off the backend product is pure overproduction",
+        );
+        assert!(
+            !compiler.world().has_fact(&super::FactKey::NativeProgram(root)),
+            "an interp drive must leave NativeProgram absent -- no consumer on this path ever demands it",
+        );
+    }
+
+    // JIT front door: NativeProgram still produced, through one explicit demand.
+    {
+        let tel = ConfiguredTelemetry::new();
+        let capture = Capture::new();
+        tel.attach(&[], capture.handler());
+        let mut compiler = Compiler2::new(&tel);
+        compiler.submit_code(CodeSubmission {
+            name: Some("fixtures/jit_still_lowers_native.fz".to_string()),
+            text: source.to_string(),
+        });
+        let root = compiler.submit_root(super::RootSubmission {
+            module_name: None,
+            name: "main".to_string(),
+            arity: 0,
+            need: super::ExecutableNeed::Value,
+        });
+
+        compiler
+            .compile_root_jit(root)
+            .unwrap_or_else(|error| panic!("enum_reduce_operator_ref should JIT-compile: {error}"));
+
+        assert_eq!(
+            capture.count(LOWERED),
+            1,
+            "the JIT front door demands NativeProgram exactly once through compile_root_jit",
+        );
+        assert!(
+            compiler.world().has_fact(&super::FactKey::NativeProgram(root)),
+            "the JIT front door must still produce NativeProgram",
+        );
+    }
+
+    // AOT front door: NativeProgram still produced, through one explicit demand.
+    {
+        let tel = ConfiguredTelemetry::new();
+        let capture = Capture::new();
+        tel.attach(&[], capture.handler());
+        let mut compiler = Compiler2::new(&tel);
+        compiler.submit_code(CodeSubmission {
+            name: Some("fixtures/aot_still_lowers_native.fz".to_string()),
+            text: source.to_string(),
+        });
+        let root = compiler.submit_root(super::RootSubmission {
+            module_name: None,
+            name: "main".to_string(),
+            arity: 0,
+            need: super::ExecutableNeed::Value,
+        });
+
+        compiler
+            .compile_root_aot(root, "interp_never_lowers_native_aot")
+            .unwrap_or_else(|error| panic!("enum_reduce_operator_ref should AOT-compile: {error}"));
+
+        assert_eq!(
+            capture.count(LOWERED),
+            1,
+            "the AOT front door demands NativeProgram exactly once through compile_root_aot",
+        );
+        assert!(
+            compiler.world().has_fact(&super::FactKey::NativeProgram(root)),
+            "the AOT front door must still produce NativeProgram",
+        );
+    }
+}
+
 #[derive(Debug, Clone)]
 struct JobSpanStart {
     job: Job,
