@@ -28,7 +28,7 @@ use super::super::artifact::{
     AbiValueRepr, BackendBody, BackendClause, BackendEntry, BackendEntryOrigin, BackendExecutable, BackendProgram,
     BackendStep, BackendTail, CallEdge, CallReturnFlow, CallTarget, DispatchCallEdge, EffectSummary, NativeBody,
     NativeBodyOrigin, NativeCallableBoundary, NativeCallableBoundaryId, NativeEntryAbi, NativeProgram,
-    ReusableConsCapture as BackendReusableConsCapture,
+    ReusableConsCapture,
 };
 use super::super::body::{ControlDestination, ControlEntryId, Literal, LoweredExtern, ValueId};
 use super::super::drive::{FactKey, Job, JobEffects, settled_uses};
@@ -1577,7 +1577,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
         &mut self,
         executable: &BackendExecutable,
         entry: &BackendEntry,
-        reusable_cons_captures: &[BackendReusableConsCapture],
+        reusable_cons_captures: &[ReusableConsCapture],
     ) -> (Vec<Ty>, Vec<AbiValueRepr>, NativeEntryAbi) {
         let mut param_tys = entry
             .params

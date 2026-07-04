@@ -23,6 +23,7 @@ use crate::fz_ir::{
 };
 use crate::source::Span;
 
+pub use super::body::ReusableConsCapture;
 use super::body::{
     CallSiteId, ControlDestination, ControlDispatch, ControlEntryId, DispatchBindings, Literal, LoweredBitField,
     LoweredBitFieldSpec, LoweredBody, LoweredExtern, ReceiveAfter, ReceiveClause, ValueId,
@@ -553,12 +554,6 @@ pub struct BackendEntry {
     pub reusable_cons_captures: Vec<ReusableConsCapture>,
     pub steps: Vec<BackendStep>,
     pub tail: BackendTail,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ReusableConsCapture {
-    pub head: ValueId,
-    pub source: ValueId,
 }
 
 #[derive(Debug, Clone, PartialEq)]

@@ -718,14 +718,7 @@ fn lower_symbolic_entry(
         params: entry.params.clone(),
         captures: entry.captures.clone(),
         capture_positions: lowerer.capture_positions_for_entry(emission, entry_id, entry)?,
-        reusable_cons_captures: entry
-            .reusable_cons_captures
-            .iter()
-            .map(|capture| super::super::artifact::ReusableConsCapture {
-                head: capture.head,
-                source: capture.source,
-            })
-            .collect(),
+        reusable_cons_captures: entry.reusable_cons_captures.clone(),
         steps: entry
             .steps
             .iter()
