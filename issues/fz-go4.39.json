@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-07-04T01:17:09Z",
+  "description": "Found by the push/pull regression audit (2026-07-03, at dc26bf0b0). The pull-only invariant (compiler2 work runs only via waits/pull or changed-revision wakes; zero follow_up pushes) is currently provable ONLY by source inspection — there is NO machine-checked counter that would catch a future regression automatically. pull-based.html (lines 814-816) already SPECIFIES the contract: a fz.compiler2.pull.session.finished event carrying follow_ups and root_scans fields, with 'For the new path, follow_ups=0 and root_scans=0'. It is not implemented in the current PullSession/telemetry code (rg 'follow_ups|root_scans' finds nothing in production). TASK: implement the fz.compiler2.pull.session.finished telemetry event with follow_ups + root_scans counters (now that the follow_up field is DELETED, follow_ups is structurally 0 — but a counter that asserts/reports it, plus root_scans for any whole-root scan, makes the invariant a RUNNING check, not a one-time audit). Add a test asserting both are 0 on the corpus. This is the durable guard against push reinflation the campaign wants — a regression that reintroduces a push would trip a red test instead of needing a manual audit to catch. Consider whether an aggregate 'work-start reason' tally (wait vs changed-revision-wake vs the 2 sanctioned ignitions) is worth surfacing so any FUTURE unsanctioned work-start shows up in telemetry.",
+  "id": "fz-go4.39",
+  "labels": [],
+  "parent": "fz-go4",
+  "priority": 2,
+  "status": "open",
+  "title": "Implement the pull-session follow_ups==0 / root_scans==0 telemetry invariant (machine-check pull-only)",
+  "type": "task",
+  "updated_at": "2026-07-04T01:17:09Z"
+}
