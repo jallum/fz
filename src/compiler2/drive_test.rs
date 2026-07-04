@@ -8902,9 +8902,9 @@ struct FunctionDefinedRecord {
 }
 
 #[derive(Debug, Clone)]
-struct CallsiteDefinedRecord {
-    key: CallSiteKey,
-    summary: CallSiteSummary,
+pub(crate) struct CallsiteDefinedRecord {
+    pub(crate) key: CallSiteKey,
+    pub(crate) summary: CallSiteSummary,
 }
 
 #[derive(Debug, Clone)]
@@ -8936,7 +8936,7 @@ pub(crate) struct ModuleCapture {
     defs: ModuleDefs,
 }
 
-struct CallsiteCapture {
+pub(crate) struct CallsiteCapture {
     defs: CallsiteDefs,
 }
 
@@ -9163,19 +9163,19 @@ impl ModuleCapture {
 }
 
 impl CallsiteCapture {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             defs: Rc::new(RefCell::new(Vec::new())),
         }
     }
 
-    fn handler(&self) -> Box<dyn Handler> {
+    pub(crate) fn handler(&self) -> Box<dyn Handler> {
         Box::new(CallsiteCaptureHandler {
             defs: self.defs.clone(),
         })
     }
 
-    fn all(&self) -> Vec<CallsiteDefinedRecord> {
+    pub(crate) fn all(&self) -> Vec<CallsiteDefinedRecord> {
         self.defs.borrow().clone()
     }
 }

@@ -2,37 +2,10 @@ use std::cell::RefCell;
 use std::collections::HashSet;
 use std::rc::Rc;
 
+use super::drive_test::{CallsiteCapture, FunctionCapture, assert_resolved, function_id};
 use super::job_budget_guard::JobBudgetGuard;
-use super::{
-    CallSiteKey, CallSiteSummary, DriveOutcome, ExecutableKey, ExecutableNeed, FactKey, FunctionId, FunctionRef, Job,
-    RootId, SelectedCallee, World,
-};
-use crate::telemetry::Value;
+use super::{CallSiteSummary, ExecutableKey, ExecutableNeed, FactKey, FunctionId, Job, RootId, SelectedCallee, World};
 use crate::telemetry::handler::{Event, EventKind, Handler};
-
-type FunctionDefs = Rc<RefCell<Vec<FunctionDef>>>;
-type CallsiteDefs = Rc<RefCell<Vec<CallsiteDef>>>;
-
-#[derive(Debug, Clone)]
-struct FunctionDef {
-    id: FunctionId,
-    name: String,
-    arity: u64,
-}
-
-#[derive(Debug, Clone)]
-struct CallsiteDef {
-    key: CallSiteKey,
-    summary: CallSiteSummary,
-}
-
-struct FunctionCapture {
-    defs: FunctionDefs,
-}
-
-struct CallsiteCapture {
-    defs: CallsiteDefs,
-}
 
 /// Captures the executable behind every `executable_transport.projected`
 /// event: the set of executables whose transport component was freshly
@@ -84,122 +57,6 @@ impl Handler for TransportProjectedCaptureHandler {
         };
         self.executables.borrow_mut().push(executable.clone());
     }
-}
-
-impl FunctionCapture {
-    fn new() -> Self {
-        Self {
-            defs: Rc::new(RefCell::new(Vec::new())),
-        }
-    }
-
-    fn handler(&self) -> Box<dyn Handler> {
-        Box::new(FunctionCaptureHandler {
-            defs: self.defs.clone(),
-        })
-    }
-
-    fn id(&self, name: &str, arity: u64) -> FunctionId {
-        self.defs
-            .borrow()
-            .iter()
-            .rev()
-            .find(|def| def.name == name && def.arity == arity)
-            .map(|def| def.id)
-            .unwrap_or_else(|| panic!("function definition for {name}/{arity}"))
-    }
-}
-
-impl CallsiteCapture {
-    fn new() -> Self {
-        Self {
-            defs: Rc::new(RefCell::new(Vec::new())),
-        }
-    }
-
-    fn handler(&self) -> Box<dyn Handler> {
-        Box::new(CallsiteCaptureHandler {
-            defs: self.defs.clone(),
-        })
-    }
-
-    fn all(&self) -> Vec<CallsiteDef> {
-        self.defs.borrow().clone()
-    }
-}
-
-struct FunctionCaptureHandler {
-    defs: FunctionDefs,
-}
-
-struct CallsiteCaptureHandler {
-    defs: CallsiteDefs,
-}
-
-impl Handler for FunctionCaptureHandler {
-    fn handle(&self, event: &Event<'_, '_, '_>) {
-        if event.kind != EventKind::Event
-            || !matches!(
-                event.name,
-                ["fz", "compiler2", "function", "defined"] | ["fz", "compiler2", "function", "source", "noted"]
-            )
-        {
-            return;
-        }
-        let Some(id) = event
-            .metadata
-            .get("function_id")
-            .and_then(|value| value.downcast_ref::<FunctionId>())
-            .copied()
-        else {
-            return;
-        };
-        let Some(function_ref) = event
-            .metadata
-            .get("function_ref")
-            .and_then(|value| value.downcast_ref::<FunctionRef>())
-        else {
-            return;
-        };
-        let Some(Value::U64(arity)) = event.measurements.get("arity") else {
-            return;
-        };
-        self.defs.borrow_mut().push(FunctionDef {
-            id,
-            name: function_ref.name.clone(),
-            arity: *arity,
-        });
-    }
-}
-
-impl Handler for CallsiteCaptureHandler {
-    fn handle(&self, event: &Event<'_, '_, '_>) {
-        if event.name != ["fz", "compiler2", "callsite", "defined"] || event.kind != EventKind::Event {
-            return;
-        }
-        let Some(key) = event
-            .metadata
-            .get("callsite")
-            .and_then(|value| value.downcast_ref::<CallSiteKey>())
-        else {
-            return;
-        };
-        let Some(summary) = event
-            .metadata
-            .get("summary")
-            .and_then(|value| value.downcast_ref::<CallSiteSummary>())
-        else {
-            return;
-        };
-        self.defs.borrow_mut().push(CallsiteDef {
-            key: key.clone(),
-            summary: summary.clone(),
-        });
-    }
-}
-
-fn assert_resolved(outcome: DriveOutcome<Job, FactKey>, message: &str) {
-    assert!(matches!(outcome, DriveOutcome::Resolved), "{message}: {outcome:?}");
 }
 
 /// fz-hwn.19.2.4.12: a `defimpl` nested in a module the program never reaches by
@@ -466,9 +323,9 @@ end
         "a never-returning call should not keep its pipe continuation semantically live",
     );
 
-    let main = functions.id("main", 0);
-    let panic = functions.id("panic", 1);
-    let dbg = functions.id("dbg", 1);
+    let main = function_id(&functions, "main", 0);
+    let panic = function_id(&functions, "panic", 1);
+    let dbg = function_id(&functions, "dbg", 1);
     let main_calls = callsites
         .all()
         .into_iter()
@@ -539,7 +396,7 @@ end
         "drive 1 with one Shout impl should settle the transport plan",
     );
 
-    let lonely_id = functions.id("lonely", 2);
+    let lonely_id = function_id(&functions, "lonely", 2);
     let s1 = transport.executables();
     assert!(
         s1.iter().any(|executable| executable.activation.function == lonely_id),
@@ -589,7 +446,7 @@ fn compiler2_semantic_callsite_joins_duplicate_function_targets_before_artifact(
         "joined reducer function refs should settle to one semantic call target before artifact",
     );
 
-    let main = functions.id("main", 0);
+    let main = function_id(&functions, "main", 0);
     let duplicate = callsites
         .all()
         .into_iter()
