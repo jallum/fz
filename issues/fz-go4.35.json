@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-07-04T00:04:59Z",
+  "description": "Named by the fz-go4.34 correctness audit (at 29a3f3613). drop_closure_capture_tag (src/compiler2/fixture_facts.rs, the bracket-balanced stripper that swallows the closure[...] display tag from call-edge snapshots) has NO direct unit test — its coverage is entirely indirect via the 00547/00549/00550 golden fixtures. The audit wrote and exercised the exact cases (they drop into fixture_facts_test.rs almost verbatim): (1) doesn't fire on non-tag text / partial-prefix like closureXYZ[...]; (2) correctly bracket-balances nested [...] captures; (3) leaves an adjacent unrelated [str] list untouched after the tag; (4) LATENT edge case — on malformed/unbalanced input (closure[int, [int] with no closing bracket) it consumes to end-of-string rather than backing off. (4) is unreachable today (format_closure_lit_suffix always emits balanced brackets) but untested. TASK: add the direct unit tests; decide whether (4) should back off gracefully or assert the balanced-input invariant. Test-only, per feedback_no_silent_deferrals (indirect golden coverage is not enough for a hand-rolled parser). Two-lane audit sufficient.",
+  "id": "fz-go4.35",
+  "labels": [],
+  "parent": "fz-go4",
+  "priority": 3,
+  "status": "open",
+  "title": "Direct unit test for fixture_facts drop_closure_capture_tag (currently only golden-fixture coverage)",
+  "type": "task",
+  "updated_at": "2026-07-04T00:04:59Z"
+}
