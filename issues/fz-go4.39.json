@@ -2,14 +2,15 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-07-04T03:04:17Z",
   "created": "2026-07-04T01:17:09Z",
   "description": "DONE (folded 2026-07-03 as d49562986, three-lane re-audited PASS/PASS/PASS after a FAIL-and-rework where the guard caught a real push). The pull-only invariant is now a RUNNING MACHINE-CHECK, not a manual vigil. WorkStartReason tags every agenda enqueue (sanctioned: ChangedRevisionWake/StandingRootFrontier/ActivationFrontier/BlockedWaiterExpansion + external Ignition; else Unclassified by default). Scheduler tallies per-reason + root_scans; PullSession emits on pull.session.finished; 5-fixture corpus test asserts ignition==\u003cexternal count\u003e \u0026\u0026 unsanctioned_work_starts==0 \u0026\u0026 root_scans==0. NON-VACUOUS: a new enqueue added without a reason defaults to Unclassified -\u003e trips RED (mutation-verified independently at two sites, 43-137 unsanctioned). HONEST BOUNDARY (documented in telemetry.md): catches UNTAGGED enqueues automatically; does NOT catch a deliberately-MISLABELED push (the ignition==N assertion is the specific backstop for the front-door-mislabel class). Behavior-neutral tagging (job counts byte-identical for the tag itself). At fold: hoisted record_work_starts 4-\u003e1 into the shared drive_root_backend_product; deleted 2 dead PullSession getters; stripped ticket-IDs from telemetry.md (docs law). THE GUARD PAID FOR ITSELF ON ITS FIRST RUN — see fz-go4.41, the ensure_runtime_module push it caught, eliminated in this same commit.",
   "id": "fz-go4.39",
   "labels": [],
   "parent": "fz-go4",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Implement the pull-session follow_ups==0 / root_scans==0 telemetry invariant (machine-check pull-only)",
   "type": "task",
-  "updated_at": "2026-07-04T03:04:16Z"
+  "updated_at": "2026-07-04T03:04:17Z"
 }
