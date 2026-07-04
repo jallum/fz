@@ -2,6 +2,7 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-07-04T14:56:38Z",
   "created": "2026-06-25T21:39:20Z",
   "description": "VERIFIED-BUT-HELD (2026-07-03). The overproduction the ticket named is ALREADY GONE (like fz-go4.15): interp reaches BackendProgram alone; NativeProgram is demand-driven only by JIT/AOT via native_program_for_root's sanctioned inline product-pull (compiler.rs:85); demand_fact_producer has no NativeProgram arm (co-output, per fact-engine.md). No production fix needed. The implementer added a mutation-verified regression guard (compiler2_interp_never_lowers_native_program_while_jit_and_aot_still_do, on branch wt/go4-14 @ ca57d558c) asserting interp=0 native + NativeProgram absent, JIT/AOT=1 native + present — audit-PASS: claim independently verified, test bites both directions, the reusable_cons signal is a sound 1:1 per-lowering proxy (fires unconditionally, not per-reusable-cons).\n\nHELD — NOT FOLDED: the regression test drives fixtures2/00181_enum_reduce_operator_ref.fz in all 3 blocks, and 00181 resolves its backend product BUILD-NONDETERMINISTICALLY (fz-go4.18.40 — the FunctionSource/SeedRoot chain stalls on some builds), so folding this test as a hard gate would reintroduce the exact flakiness fz-go4.22's re-enabled 00181 tests caused (3 of which were just #[ignore]'d at 6dd4bb48a). TWO PATHS TO FOLD: (a) after fz-go4.18.40 makes 00181 deterministic, fold ca57d558c as-is; OR (b) rework the test onto a confirmed-stable JIT/AOT fixture (the property is fixture-independent — interp!=native, JIT/AOT=native — so any fixture that JIT/AOT-compiles deterministically works; needs identifying such a fixture, since the matrix has AOT-flaky ones). Prefer (a) — it's the root fix and keeps the 00181 signal the ticket cared about. The commit ca57d558c is preserved on branch wt/go4-14.",
   "id": "fz-go4.14",
@@ -14,8 +15,8 @@
     }
   ],
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Compiler2 backend-only roots should not enqueue native lowering",
   "type": "bug",
-  "updated_at": "2026-07-04T14:56:37Z"
+  "updated_at": "2026-07-04T14:56:38Z"
 }
