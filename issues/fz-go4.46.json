@@ -7,9 +7,15 @@
   "id": "fz-go4.46",
   "labels": [],
   "parent": "fz-go4",
+  "comments": [
+    {
+      "text": "FOLDED as 6c859c7e3. One definition: artifact.rs now 'pub use super::body::ReusableConsCapture' (deleted its byte-identical struct); jobs/backend.rs field-copy conversion replaced with entry.reusable_cons_captures.clone() (entry is \u0026LoweredEntry borrow, so clone is necessary + matches sibling entry.params/captures.clone() -- not an added clone, the old map-collect allocated identically); jobs/native.rs alias removed. Net -12 lines. Concordance verified: identical fields (head/source: ValueId) + derives (Debug/Clone/Copy/PartialEq/Eq/Hash), no invariant added at artifact stage (contrast sibling capture_positions: Vec\u003cTransportPosition\u003e which IS new at Backend and correctly untouched). Self-certified (SAFE mechanical fold; concordance + clone-necessity both verified by coordinator): lib 1197/0/9, non-test build + clippy -D warnings clean.",
+      "timestamp": "2026-07-04T23:55:24Z"
+    }
+  ],
   "priority": 3,
   "status": "open",
   "title": "Fold the duplicate ReusableConsCapture: one definition in body.rs, delete artifact.rs's byte-identical copy",
   "type": "task",
-  "updated_at": "2026-07-04T23:49:07Z"
+  "updated_at": "2026-07-04T23:55:24Z"
 }
