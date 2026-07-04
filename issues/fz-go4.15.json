@@ -2,6 +2,7 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-07-04T13:18:25Z",
   "created": "2026-06-25T21:39:29Z",
   "description": "CLOSED verify-and-close (2026-07-03, at 0d6ee310b — investigation + coordinator-verified). The premise is a MEASUREMENT MISLABEL, not a real defect: the ticket compared function.source.STASHED (a cheap, unconditional per-function bookkeeping event ∝ module size — 224/72/67) against function.source.NOTED/EXPANDED (the real consumable FunctionSource fact, ∝ reached functions — 13/13/5). These were never the same signal, so the '5-17x cold overproduction' was never real. The demand-addressed split the ticket asked to DESIGN already exists (built in fz-f98.14.5, 74b5940f2): (1) FactKey::FunctionSource(function) has a per-function sole-producer arm in demand_fact_producer (drive.rs:164 -\u003e Job::PublishFunctionSource) — the real fact is minted ONLY when demanded (ExpandFunctionSource/DefineFunction); (2) publish_scope outputs ONLY FactKey::FunctionSourceStash (source_publish.rs:211/679, a co-output no-arm fact), NEVER FactKey::FunctionSource — the code's own comment at source_publish.rs:1341 says 'Stash the body eagerly but leave it cold: the consumable FunctionSource fact is not published here; it is minted on demand by PublishFunctionSource (fz-f98.14.5)'; (3) ModuleInterface is built from ModuleInterfaceCallable (name/arity/kind), never touching FunctionSource bodies — exactly the 'lighter interface fact' the ticket wanted. The stash writes are O(1) HashMap inserts of interned-pointer clones that wake nothing (FunctionSourceStash's only subscriber is publish_function_source_job, for demanded functions). fz-go4.38 later hardened the stash's wake into a tracked FactKey::FunctionSourceStash revision (push-\u003epull), not a volume change. The prior 're-confirmation' at 014aa505f counted the wrong event name. NO code change needed. Follow-up filed for the missing machine-checked regression guard (so nobody re-litigates from a mislabeled count).",
   "id": "fz-go4.15",
@@ -14,7 +15,7 @@
     }
   ],
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Compiler2 runtime module definition should not publish cold function-source facts",
   "type": "task",
   "updated_at": "2026-07-04T13:18:25Z"
