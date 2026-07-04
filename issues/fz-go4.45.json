@@ -3,7 +3,7 @@
   "blocked_by": [],
   "blocks": [],
   "created": "2026-07-04T13:42:22Z",
-  "description": "Found by the fz-go4.28 audit (at 58b13ecbf, both lanes independently). After fz-go4.28 consolidated semantic_analysis_test.rs's assert_resolved onto drive_test.rs's pub(crate) one, two MORE byte-identical private copies remain: fixture_facts_test.rs:7 and transport_contract_test.rs:4326. Each: assert!(matches!(outcome, DriveOutcome::Resolved), '{message}: {outcome:?}'). Route both through drive_test.rs's pub(crate) assert_resolved (already the canonical home, consumed by semantic_analysis_test.rs + port_type_infer_test.rs). Test-only; two-lane audit. Trivial.",
+  "description": "DONE (folded 2026-07-03 as \u003cfill\u003e, single-lane audited PASS — trivial test dedup). Routed the two remaining byte-identical private assert_resolved copies (fixture_facts_test.rs, transport_contract_test.rs) through drive_test.rs's canonical pub(crate) one (the home fz-go4.28 established). Byte-identity + same-nominal-type (super::Job/super::FactKey == compiler2::Job/FactKey via sibling modules) audit-confirmed; both routed call sites mutation-verified to still bite; now-unused imports dropped (DriveOutcome/FactKey/Job in fixture_facts_test, DriveOutcome in transport_contract_test, FactKey/Job correctly retained). rg shows ONE assert_resolved. 1190/0/12 unchanged. Collapses 3-\u003e1 copies of the panic-format string that would otherwise drift.",
   "id": "fz-go4.45",
   "labels": [],
   "parent": "fz-go4",
@@ -11,5 +11,5 @@
   "status": "in_progress",
   "title": "assert_resolved is triplicated in fixture_facts_test.rs + transport_contract_test.rs",
   "type": "task",
-  "updated_at": "2026-07-04T13:52:12Z"
+  "updated_at": "2026-07-04T14:05:36Z"
 }
