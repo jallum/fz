@@ -227,7 +227,7 @@ pub(super) fn define_function(
         world.code_name(expanded_source.code),
         world.tel(),
     )
-    .map_err(|error| emit_internal_surface_error(world, format!("quoted function decode failed: {error}")))?;
+    .map_err(|error| emit_surface_read_error(world, "quoted function decode failed", &error))?;
     for diagnostic in crate::compiler2::source_diagnostics::function_warnings(&surface) {
         world.emit_warning_once(diagnostic);
     }

@@ -10,6 +10,8 @@ pub use super::diagnostic::DiagCode;
 
 pub const PARSE_EXPECTED_TOKEN: DiagCode = DiagCode("parse/expected-token");
 pub const PARSE_DANGLING_FUNCTION_ATTR: DiagCode = DiagCode("parse/dangling-function-attr");
+pub const PARSE_SPEC_NAME_MISMATCH: DiagCode = DiagCode("parse/spec-name-mismatch");
+pub const PARSE_SPEC_ARITY_MISMATCH: DiagCode = DiagCode("parse/spec-arity-mismatch");
 
 // ----- resolver -----
 

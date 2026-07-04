@@ -7,6 +7,8 @@ fn all_codes_follow_stage_slash_kind_format() {
     let codes: &[DiagCode] = &[
         PARSE_EXPECTED_TOKEN,
         PARSE_DANGLING_FUNCTION_ATTR,
+        PARSE_SPEC_NAME_MISMATCH,
+        PARSE_SPEC_ARITY_MISMATCH,
         RESOLVE_UNKNOWN_MODULE,
         RESOLVE_UNKNOWN_FUNCTION,
         RESOLVE_UNKNOWN_IMPORT,

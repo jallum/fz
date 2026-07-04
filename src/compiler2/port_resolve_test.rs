@@ -763,8 +763,8 @@ fn spec_arity_mismatch_is_parse_error() {
     );
     assert_last_error(
         &capture,
-        codes::INTERNAL_POST_RESOLUTION_LEFTOVER.0,
-        "quoted function decode failed: @spec arity 2 doesn't match function `add1/1`",
+        codes::PARSE_SPEC_ARITY_MISMATCH.0,
+        "@spec arity 2 doesn't match function `add1/1`",
     );
 }
 
@@ -791,8 +791,8 @@ fn spec_name_mismatch_is_parse_error() {
     );
     assert_last_error(
         &capture,
-        codes::INTERNAL_POST_RESOLUTION_LEFTOVER.0,
-        "quoted function decode failed: @spec name `other` doesn't match function `add1`",
+        codes::PARSE_SPEC_NAME_MISMATCH.0,
+        "@spec name `other` doesn't match function `add1`",
     );
 }
 
