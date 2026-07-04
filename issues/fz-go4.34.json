@@ -2,14 +2,15 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-07-04T00:04:59Z",
   "created": "2026-07-03T23:10:26Z",
   "description": "DONE (folded 2026-07-03 as 29a3f3613, two-lane audited PASS/PASS). Types arrow display (format_arrow_clause) was NON-INJECTIVE over ArrowSig identity: it rendered only #{fn_id}, dropping ClosureLit.kind (FnRef vs Closure) and captures:Vec\u003cTy\u003e, both of which ARE part of ArrowSig Eq/Hash. So two distinct interned Tys collided on display: (1) FnRef vs Closure on the same fn_id, (2) two Closures same fn_id / different captures. FIX (a): format_closure_lit_suffix makes it injective — FnRef arm byte-IDENTICAL (#{fn_id}, common readable case unchanged), Closure lits gain a closure[...] tag rendering captures recursively via display() (structural, no raw interner ids). Injectivity boundary: closes exactly the two ClosureLit-identity axes; the residual (two distinct Tys whose component text coincides) is a PRE-EXISTING display() property shared by args/ret/captures alike, not introduced here. 3 mutation-verified tests (fails-before/passes-after) in the closure_helper_conformance_tests! macro. NECESSARY SCOPE EXPANSION (audited safe): fixture_facts.rs::stable_type_text already stripped the old #{fn_id} suffix as volatile call-edge-snapshot noise; the new tag broke 3 golden fixtures (00547/00549/00550), so drop_closure_capture_tag extends the stripper with correct bracket-balancing (captures can be nested lists). Proven load-bearing (reverting it fails the golden harness) AND safe (golden files byte-UNCHANGED, not re-blessed; doesn't over-strip adjacent [int] lists; determinism preserved). 1164/0/24. Makes display() safe to reuse as a key (mooted at the fz-go4.18.28.14/.28.16 site, but the general gap is now closed). Direct-unit-test-for-the-stripper follow-up ticketed.",
   "id": "fz-go4.34",
   "labels": [],
   "parent": "fz-go4",
   "priority": 3,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Types::display/format_arrow_clause elides closure kind+captures — display strings collide for distinct arrows",
   "type": "task",
-  "updated_at": "2026-07-04T00:04:58Z"
+  "updated_at": "2026-07-04T00:04:59Z"
 }
