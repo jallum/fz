@@ -9,9 +9,15 @@
   "id": "fz-go4.18.41",
   "labels": [],
   "parent": "fz-go4.18",
+  "comments": [
+    {
+      "text": "AUDIT (correctness lane) found a BLOCKER, VERIFIED by me against scheduler.rs:397. The first cut (d56a1fa8d) is necessary-but-INSUFFICIENT.\n\nRoot: scheduler waiter re-enqueue is AND-semantics -- enqueue_dependents (scheduler.rs:395-406) re-runs a waiter ONLY when waits.iter().all(satisfies). publish_function_source_job (jobs/source.rs:281) UNCONDITIONALLY appends the arm-less FunctionSourceStash to demand_function_scope's result. So in the pending case the wait is {CodeIndexed(pending), FunctionSourceStash}: when IndexCode bumps CodeIndexed, all() fails (FunctionSourceStash still absent -- nothing scoped yet), the job never re-runs, never re-derives the now-Indexed home, ScopeCode is never pulled -\u003e deadlock RELOCATED (surfaces as DriveOutcome::Unresolved after indexing), not closed. The new test missed it because it calls demand_function_scope as a pure fn and never drives the blocked PublishFunctionSource job to wake.\n\nFIX (both halves required together): keep the demand_function_scope classification change AND make jobs/source.rs append FunctionSourceStash ONLY when demand_function_scope returns empty. This aligns the code with fz-go4.38's DOCUMENTED intent (the comment already says 'append when empty'; the code appended always). Then each wait set is single-producer-coherent: pending -\u003e {CodeIndexed} (wakes on index, re-runs, re-derives home, waits CodeScoped); found-home -\u003e {CodeScoped} (co-produces FunctionSourceStash atomically in ScopeCode -- VERIFIED source_publish.rs:679 flows through ScopePublication::Complete.outputs into scope_code's single JobEffects with CodeScoped, so the CodeScoped-triggered re-run finds the stash present); empty -\u003e {FunctionSourceStash} (first-arrival/dangling fallback, the ONLY legit arm-less wait). TEST must drive PublishFunctionSource end-to-end and assert it wakes+produces FunctionSource, not just snapshot demand_function_scope.\n\nMinimalism lane: CLEAN -- fan-out provably necessary (no home index), prelude-index not new work (scope_code unconditionally waits CodeScoped(prelude)). Nits to fold: discoverability comment on the Scoped=\u003e{} no-op arm.",
+      "timestamp": "2026-07-04T14:39:11Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "demand_function_scope global branch dead-ends PublishFunctionSource on the arm-less FunctionSourceStash when a candidate home code is still Pending",
   "type": "bug",
-  "updated_at": "2026-07-04T14:13:43Z"
+  "updated_at": "2026-07-04T14:39:11Z"
 }
