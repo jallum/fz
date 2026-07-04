@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-go4.18.22"
   ],
@@ -28,8 +28,8 @@
     }
   ],
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "fixture_matrix is red on the branch (pre-existing): stale append oracle, actor_ring interp, timeout family, f98.14 AOT grind",
   "type": "bug",
-  "updated_at": "2026-07-04T11:05:49Z"
+  "updated_at": "2026-07-04T11:13:21Z"
 }
