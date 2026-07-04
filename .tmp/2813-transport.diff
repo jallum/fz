@@ -1,0 +1,84 @@
+commit c8a28dbefc30bdc8e1c828eb5abeb04f9c953d22
+Author: Jason Allum <21417+jallum@users.noreply.github.com>
+Date:   Fri Jul 3 18:56:39 2026 -0400
+
+    fz-go4.18.28.13: prune the transport consult ledger to live closure membership
+    
+    record_transport_closure_consult built a full cross-product of consulted
+    executables x closure members and was never pruned when
+    drop_solved_transport_closure/clear_solved_transport_closures evicted the
+    closure cover, so the ledger grew monotonically for the session (quicksort
+    ~420 edges, reverse ~380, never reclaimed).
+    
+    SolvedTransportClosure now carries its own `consulted` set. Installing a
+    closure into the cover (record_solved_transport_closure) installs its
+    consult edges as the SAME dense product in lockstep; dropping a closure
+    (drop_solved_transport_closure, including the displacement path and the
+    epoch-wide clear_solved_transport_closures sweep) retracts exactly those
+    edges. clear_solved_transport_closures now hands back the drained closures
+    so invalidate_transport_products can defer the retraction until after its
+    walk (which still needs the pre-clear ledger to reach every consult
+    dependent) finishes.
+    
+    Kept the dense cross-product form: closures are disjoint by construction
+    (a member belongs to at most one live closure), so every edge is owned
+    outright by exactly one closure and precise removal needs no reference
+    counting. A sparser consulted->representative star risks under-invalidation
+    (a consulted fact's movement must retract every member's shape, not just
+    one), so density was kept and only the lifetime was fixed.
+    
+    Added two direct-construction unit tests
+    (transport_closure_consult_ledger_prunes_displaced_closure_on_resolve,
+    transport_closure_consult_ledger_prunes_on_epoch_invalidation) proving
+    edges are retracted precisely on both the disjoint re-solve path and the
+    epoch-wide invalidation path; both fail without the fix. Single-shot
+    fixture ledger sizes are unchanged (quicksort 420, reverse 380 -- no
+    re-solve happens in one compile), and the fixture matrix's pre-existing
+    21-name failure set is unchanged. Both .28.5 contract tests
+    (compiler2_transport_consult_ledger_displaces_co_members_on_demand_movement,
+    compiler2_transport_world_fact_ledger_displaces_co_members_on_return_type_movement)
+    stay green.
+
+diff --git a/src/compiler2/jobs/transport.rs b/src/compiler2/jobs/transport.rs
+index 97277d1de..7362e1304 100644
+--- a/src/compiler2/jobs/transport.rs
++++ b/src/compiler2/jobs/transport.rs
+@@ -835,10 +835,11 @@ fn displace_covering_solve_if_stale(world: &World<'_>, session: &mut PullSession
+ /// kind retracts:
+ ///
+ ///  - `executables`: owners of SESSION-product reads (RuntimeDemand values,
+-///    IncomingInputSlot values). Cross-registered against the closure's
+-///    membership (`record_transport_closure_consult`) so the session-side
+-///    push events (`record_settled_runtime_demand`, `record_call_edge`)
+-///    reach every member through `invalidate_transport_products`' walk.
++///    IncomingInputSlot values). Installed as `SolvedTransportClosure::
++///    consulted` and cross-registered against the closure's membership by
++///    `record_solved_transport_closure` so the session-side push events
++///    (`record_settled_runtime_demand`, `record_call_edge`) reach every
++///    member through `invalidate_transport_products`' walk.
+ ///  - `fact_revisions`: WORLD-fact reads at the revision consumed
+ ///    (first-read-wins; 0 = read before first publication, so a later
+ ///    publication mismatches -- "not yet published" is a distinct state, not
+@@ -886,7 +887,7 @@ fn solve_transport_closure(
+     // this solve reads is recorded AT THE READ SITE -- session-product reads
+     // register their owning executable, world-fact reads snapshot their
+     // revision -- and on completion both channels are installed with the
+-    // closure (`record_transport_closure_consult` +
++    // closure (`SolvedTransportClosure::consulted` +
+     // `SolvedTransportClosure::consumed_fact_revisions`). The discovery graph
+     // and the retraction graph are thereby the SAME graph by construction:
+     // any movement of any consulted fact displaces every member this solve
+@@ -1042,12 +1043,8 @@ fn solve_transport_closure(
+ 
+     let mut closure = solved_closure_from_union(executables, &union, &component_shapes, world.types());
+     closure.consumed_fact_revisions = ledger.fact_revisions;
++    closure.consulted = ledger.executables;
+     emit_transport_closure_solved(world, &closure);
+-    for consulted_executable in &ledger.executables {
+-        for member in &closure.executables {
+-            session.record_transport_closure_consult(consulted_executable.clone(), member.clone());
+-        }
+-    }
+     session.record_solved_transport_closure(closure);
+     Ok(())
+ }

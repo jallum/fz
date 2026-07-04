@@ -9099,13 +9099,13 @@ impl SourceNoteCapture {
 }
 
 impl ModuleCapture {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             defs: Rc::new(RefCell::new(HashMap::new())),
         }
     }
 
-    fn handler(&self) -> Box<dyn Handler> {
+    pub(crate) fn handler(&self) -> Box<dyn Handler> {
         Box::new(ModuleCaptureHandler {
             defs: self.defs.clone(),
         })
@@ -10502,7 +10502,7 @@ fn generated_functions_owned_by(capture: &FunctionCapture, owner: FunctionId) ->
         .collect()
 }
 
-fn function_id_in_module(
+pub(crate) fn function_id_in_module(
     functions: &FunctionCapture,
     modules: &ModuleCapture,
     module_name: &str,

@@ -1,0 +1,7 @@
+src/compiler2/pull.rs:1067:    /// `remove_transport_closure_consult_edges` -- called only from
+src/compiler2/pull.rs:1071:    fn insert_transport_closure_consult_edges(&mut self, closure: &SolvedTransportClosure) {
+src/compiler2/pull.rs:1088:    /// Retract exactly the edges `insert_transport_closure_consult_edges`
+src/compiler2/pull.rs:1094:    fn remove_transport_closure_consult_edges(&mut self, closure: &SolvedTransportClosure) {
+src/compiler2/pull.rs:1126:        self.insert_transport_closure_consult_edges(&closure);
+src/compiler2/pull.rs:1139:        self.remove_transport_closure_consult_edges(&closure);
+src/compiler2/pull.rs:1496:            self.remove_transport_closure_consult_edges(closure);

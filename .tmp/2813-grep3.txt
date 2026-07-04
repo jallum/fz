@@ -1,0 +1,6 @@
+src/compiler2/pull.rs:531:    // the epoch-wide `clear_solved_transport_closures` sweep). The ledger
+src/compiler2/pull.rs:1155:    fn clear_solved_transport_closures(&mut self) -> Vec<SolvedTransportClosure> {
+src/compiler2/pull.rs:1454:    /// (`clear_solved_transport_closures`), `executable`'s own shape/component
+src/compiler2/pull.rs:1464:    /// reading it (see `clear_solved_transport_closures`): every closure this
+src/compiler2/pull.rs:1470:        let displaced_closures = self.clear_solved_transport_closures();
+src/compiler2/pull.rs:3205:    /// once via `clear_solved_transport_closures`. The consult ledger must
