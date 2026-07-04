@@ -2,14 +2,15 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-07-04T13:42:22Z",
   "created": "2026-07-03T16:40:42Z",
   "description": "DONE (folded 2026-07-03 as 58b13ecbf, two-lane audited PASS/PASS). Consolidated semantic_analysis_test.rs's private FunctionCapture (+ also CallsiteCapture + assert_resolved, same-file duplication found in scope) onto drive_test.rs's canonical pub(crate) versions (bumping CallsiteCapture/CallsiteDefinedRecord to pub(crate) — all promotions proven load-bearing by the removable lane: reverting them yields 7 private-field errors). CRUX verified by the correctness lane: the two FunctionCapture versions listened for DIFFERENT source events (semantic's function.source.NOTED vs drive_test's function.source.STASHED), but the difference is non-load-bearing because the consolidated tests look up FULLY-DEFINED top-level functions (main/panic/dbg/lonely) resolved via function.defined in BOTH captures regardless of source event — coverage preserved for the reason claimed. Folds mutation-verified to still bite (swapped/negated lookups fail); CallsiteCapture/assert_resolved byte-identical. Net +14/-157. rg shows one FunctionCapture + one CallsiteCapture. 1190/0/12. Follow-up filed for assert_resolved's remaining triplication.",
   "id": "fz-go4.28",
   "labels": [],
   "parent": "fz-go4",
   "priority": 3,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Consolidate duplicate FunctionCapture test machinery",
   "type": "task",
-  "updated_at": "2026-07-04T13:42:21Z"
+  "updated_at": "2026-07-04T13:42:22Z"
 }
