@@ -698,12 +698,20 @@ impl PendingFunctionSourceMap {
         Self::default()
     }
 
-    pub fn stash(&mut self, function: FunctionId, source: FunctionSource) {
+    /// Stashes `source` for `function`, returning whether the content changed
+    /// against whatever was stashed before (a fresh entry always counts as
+    /// changed). This is the tracked-fact signal a re-scope moves: callers
+    /// fold the result into their job's `FactKey::FunctionSourceStash(function)`
+    /// output so `PublishFunctionSource`'s standing subscription rewakes on a
+    /// redefinition (fz-f98.14.5).
+    pub fn stash(&mut self, function: FunctionId, source: FunctionSource) -> bool {
         let index = function.as_u32() as usize;
         if self.slots.len() <= index {
             self.slots.resize_with(index + 1, || None);
         }
+        let changed = !matches!(&self.slots[index], Some(existing) if source_same(existing, &source));
         self.slots[index] = Some(source);
+        changed
     }
 
     pub fn get(&self, function: FunctionId) -> Option<&FunctionSource> {

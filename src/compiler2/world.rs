@@ -1399,7 +1399,15 @@ impl<'a> World<'a> {
     /// cold until a reached consumer pulls it through `PublishFunctionSource`. A
     /// function the program never reaches keeps its body cold here forever,
     /// exactly like an unreferenced `@type` decl.
-    pub(crate) fn stash_function_source(&mut self, function: FunctionId, source: FunctionSource) {
+    ///
+    /// Returns whether the stashed content changed. The caller — the scope
+    /// job's own conclusion — folds this into its `FactKey::FunctionSourceStash
+    /// (function)` output/changed pair (fz-go4.38): a (re)scope is the only
+    /// event that can supersede a body a consumer already pulled, and it must
+    /// flow to `PublishFunctionSource` the same way every other re-derivation
+    /// does, through a tracked fact's revision moving and waking the standing
+    /// reader that named it — never a job enqueuing another job by name.
+    pub(crate) fn stash_function_source(&mut self, function: FunctionId, source: FunctionSource) -> bool {
         let function_ref = self.functions.reference_for(function);
         let source_owner_module = source.owner_module;
         let source_module_id = function_ref.module;
@@ -1428,21 +1436,7 @@ impl<'a> World<'a> {
                 owner_module_id: opaque_debug(&source_owner_module),
             },
         );
-        self.pending_function_sources.stash(function, source);
-
-        // Demand-addressed publication is pulled, but a (re)scope is the only
-        // event that can satisfy a demand registered before the owning code
-        // existed, or supersede a body a consumer already pulled (fz-f98.14.5).
-        // Both cases are exactly the functions whose `FunctionSource` fact is
-        // already live or already waited on; for them, and only them, the scope
-        // re-pulls so the new body flows to its standing consumers — late code
-        // wakes the parked pull, and a redefinition propagates its retraction.
-        // A body no consumer reached has neither a fact nor a waiter, so it
-        // stays cold: opening a scope still does no cold body work.
-        let source_fact = FactKey::FunctionSource(function);
-        if self.has_fact(&source_fact) || self.work_graph.is_waited(&source_fact) {
-            self.work_graph.enqueue(Job::PublishFunctionSource(function));
-        }
+        self.pending_function_sources.stash(function, source)
     }
 
     pub(crate) fn pending_function_source(&self, function: FunctionId) -> Option<&FunctionSource> {

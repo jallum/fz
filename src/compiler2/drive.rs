@@ -48,6 +48,7 @@ pub enum FactKey {
     ModuleDefined(ModuleId),
     ModuleInterface(ModuleId),
     FunctionSource(FunctionId),
+    FunctionSourceStash(FunctionId),
     ExpandedFunctionSource(FunctionId),
     TypeDefined(TypeName),
     ProtocolDispatch(ModuleId),
@@ -124,10 +125,10 @@ impl World<'_> {
     /// Facts whose producers publish them only as a co-output of a broader
     /// job's conclusion (`ModuleIndexed`, `ProtocolDispatch`,
     /// `ProtocolImplProviders`, `Executable`, `BackendProgram`,
-    /// `NativeProgram`) have no arm: their demand rides the mapped facts that
-    /// gate the job that co-produces them. Every fact with a single
-    /// sole-producing job gets an arm here, even when that job is also the
-    /// blocked branch of a `wait_on_current(fact)` bare wait elsewhere —
+    /// `NativeProgram`, `FunctionSourceStash`) have no arm: their demand rides
+    /// the mapped facts that gate the job that co-produces them. Every fact
+    /// with a single sole-producing job gets an arm here, even when that job
+    /// is also the blocked branch of a `wait_on_current(fact)` bare wait elsewhere —
     /// naming the producer once, in this map, is what keeps every such wait a
     /// pull instead of a job pushing another job by name.
     /// Returns how many producers were actually demanded.

@@ -270,14 +270,28 @@ pub(super) fn publish_function_source_job(
         // job: a global-module function waits on `CodeScoped(code_id)` (sole
         // producer `Job::ScopeCode`), a scoped function waits on
         // `ModuleDefined(module)` (sole producer `Job::DefineModule`) -- both are
-        // arms in `World::demand_fact_producer`.
-        let waits: Vec<FactKey> = world.demand_function_scope(function_id);
+        // arms in `World::demand_fact_producer`. A global-module function whose
+        // owning code has not even been submitted yet has no such fact to name
+        // (`demand_function_scope` returns empty), so this also waits directly
+        // on `FunctionSourceStash(function_id)` (fz-go4.38): whichever scope
+        // eventually stashes this function's body -- first pass or a later
+        // (re)scope -- bumps that fact and rewakes this job through the
+        // standing changed-revision path, never a manual enqueue.
+        let mut waits: Vec<FactKey> = world.demand_function_scope(function_id);
+        waits.push(FactKey::FunctionSourceStash(function_id));
         return Ok(JobEffects {
             waits: current_uses(waits),
             ..JobEffects::default()
         });
     };
     Ok(JobEffects {
+        // Read the stash fact the scope job that just satisfied us co-produced
+        // (fz-go4.38): this is the standing subscription that lets a later
+        // (re)scope wake this job through the ordinary changed-revision path
+        // instead of a manual enqueue. `stash_function_source` bumps this
+        // fact's revision on redefinition, and the scheduler's rebased check
+        // re-demands every job whose recorded reads shifted.
+        reads: current_uses(vec![FactKey::FunctionSourceStash(function_id)]),
         outputs: vec![FactKey::FunctionSource(function_id)],
         changed: changed
             .then_some(FactKey::FunctionSource(function_id))

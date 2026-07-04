@@ -208,6 +208,10 @@ pub(crate) fn publish_protocol_surface(
     let function_id = world.reference_function(module_id, function.name.clone(), function.arity);
     scope = world.bind_namespace(scope, function.name.clone(), NamespaceSymbol::Function(function_id));
     let publication = publish_function_source(world, code_id, module_id, module_id, scope, &function, true, Vec::new());
+    outputs.push(FactKey::FunctionSourceStash(publication.function));
+    if publication.stashed_changed {
+        changed.push(FactKey::FunctionSourceStash(publication.function));
+    }
     if let Some(callable) = publication.callable {
         callables.push(callable);
     }
@@ -662,7 +666,7 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
         function: &FunctionForm,
         context: &FragmentPublicationContext,
     ) -> Result<FunctionPublication, FatalError> {
-        Ok(publish_function_source(
+        let publication = publish_function_source(
             self.world,
             self.code_id,
             function_module,
@@ -671,7 +675,12 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
             function,
             context.export_public,
             required_remote_macro_list(&self.required_remote_macros),
-        ))
+        );
+        self.outputs.push(FactKey::FunctionSourceStash(publication.function));
+        if publication.stashed_changed {
+            self.changed.push(FactKey::FunctionSourceStash(publication.function));
+        }
+        Ok(publication)
     }
 
     fn apply_item_macro_call(&mut self, macro_call: &MacroCallForm) -> Result<Option<JobEffects>, FatalError> {
@@ -1310,6 +1319,12 @@ fn required_remote_macro_list(required_remote_macros: &HashSet<FunctionId>) -> V
 struct FunctionPublication {
     function: FunctionId,
     callable: Option<ModuleInterfaceCallable>,
+    /// Whether this scope's stash changed `function`'s pending source. Callers
+    /// fold this into their job's `FactKey::FunctionSourceStash(function)`
+    /// output/changed pair so a (re)scope wakes `PublishFunctionSource` through
+    /// the standing changed-revision path rather than a manual enqueue
+    /// (fz-go4.38).
+    stashed_changed: bool,
 }
 
 fn publish_function_source(
@@ -1339,7 +1354,7 @@ fn publish_function_source(
         source: function.source.clone(),
     };
     emit_compiler_service_define(world, function_id, &source);
-    world.stash_function_source(function_id, source);
+    let stashed_changed = world.stash_function_source(function_id, source);
 
     let callable = (export_public && !function.is_private).then(|| ModuleInterfaceCallable {
         function: function_id,
@@ -1354,6 +1369,7 @@ fn publish_function_source(
     FunctionPublication {
         function: function_id,
         callable,
+        stashed_changed,
     }
 }
 
