@@ -7,9 +7,15 @@
   "id": "fz-go4.14",
   "labels": [],
   "parent": "fz-go4",
+  "comments": [
+    {
+      "text": "FOLDED via path (a): fz-go4.18.42 made 00181 deterministic (it was a truncated fixture, never real nondeterminism), so ca57d558c folds as-is. Cherry-picked to 0340b54e5; the regression guard passes as a hard gate (drives 00181 x3), full lib 1196/0/9. Branch wt/go4-14 consumed.",
+      "timestamp": "2026-07-04T14:56:37Z"
+    }
+  ],
   "priority": 2,
   "status": "in_progress",
   "title": "Compiler2 backend-only roots should not enqueue native lowering",
   "type": "bug",
-  "updated_at": "2026-07-04T13:43:48Z"
+  "updated_at": "2026-07-04T14:56:37Z"
 }
