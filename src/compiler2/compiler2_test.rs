@@ -6,7 +6,7 @@ use crate::ir_interp::{
 use crate::telemetry::handler::{Event, Handler};
 use crate::telemetry::{Capture, ConfiguredTelemetry, EventKind, Value};
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -858,5 +858,137 @@ fn compiler2_macro_ignoring_caller_runs_with_elided_caller_lane() {
             .expect("a macro ignoring __CALLER__ should expand and run"),
         42,
         "inc(41) should evaluate to 42 with the unused __CALLER__ lane elided",
+    );
+}
+
+/// Distinguishes two counts that fz-go4 has confused before: how many
+/// function bodies a module *stashes* (cheap bookkeeping, proportional to
+/// module size -- every function defined in a scoped module, reached or
+/// not) versus how many `FunctionSource` facts are actually *demand-minted*
+/// (proportional to the functions something in the program actually
+/// reaches, via `PublishFunctionSource`, fz-f98.14.5). Reading the stash
+/// count as if it were the demand-minted count produced a false alarm that
+/// this guard exists to foreclose. The real regression it catches: someone
+/// making `FunctionSource` eager again (minted at stash time instead of on
+/// pull) collapses minted into stash, which is exactly the shape this test
+/// asserts must NOT happen on `enum_reduce_operator_ref` (see below).
+/// Drives one fixture through the real front door (`submit_code` +
+/// `submit_root`) to its backend product and returns
+/// `(demand_minted_count, stash_count)`:
+/// - `demand_minted_count`: distinct functions whose consumable
+///   `FunctionSource` fact was demand-minted -- proportional to REACHED
+///   functions.
+/// - `stash_count`: `compiler_service.define` events -- proportional to
+///   MODULE SIZE (every function a scoped module defines, reached or not).
+///
+/// Both counts are read from production signal after a resolved drive: the
+/// stash count from the `compiler_service.define` events, the minted count
+/// from the settled fact table. A `FunctionSource` is minted ONLY if its
+/// body was stashed first -- `publish_function_source_job` succeeds solely
+/// when `publish_pending_function_source` finds the stash present -- so the
+/// minted set is a subset of the stashed set. Filtering the stashed
+/// function-ids to those for which `World::has_fact(FunctionSource(id))`
+/// holds therefore recovers exactly the demand-minted set, without parsing
+/// any Debug-oriented telemetry side channel.
+fn drive_and_count_function_source_production(name: &str, source: &str) -> (usize, usize) {
+    let tel = ConfiguredTelemetry::new();
+    let stash = Capture::new();
+    tel.attach(&["fz", "compiler2", "compiler_service", "define"], stash.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some(name.to_string()),
+        text: source.to_string(),
+    });
+    let root = compiler.submit_root(super::RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: super::ExecutableNeed::Value,
+    });
+    compiler
+        .drive_root_backend_work_starts(root)
+        .unwrap_or_else(|error| panic!("{name} should drive to its backend product: {error}"));
+
+    let define_events = stash.find(&["fz", "compiler2", "compiler_service", "define"]);
+    let stash_count = define_events.len();
+    let stashed: HashSet<super::FunctionId> = define_events
+        .iter()
+        .filter_map(|event| match event.measurements.get("function_id") {
+            Some(Value::U64(id)) => Some(super::FunctionId::for_test(*id as u32)),
+            _ => None,
+        })
+        .collect();
+    let minted = stashed
+        .iter()
+        .filter(|&&id| compiler.world().has_fact(&super::FactKey::FunctionSource(id)))
+        .count();
+
+    (minted, stash_count)
+}
+
+#[test]
+fn function_source_is_demand_minted_not_stash_eager() {
+    // quicksort_plus_foo: 4 named functions with several clauses (append,
+    // partition x3, qsort x2, main, foo) plus the reached slice of the
+    // Kernel/Enum prelude pulled in by list literals, comparisons, and
+    // `Process.heap_alloc_stats`/`dbg`. `foo/0` itself is never called from
+    // `main`, so even this fixture's own module contributes an unreached
+    // function to the stash/minted gap.
+    let (minted, stash) = drive_and_count_function_source_production(
+        "quicksort_plus_foo.fz",
+        include_str!("../../fixtures2/00001_quicksort_plus_foo.fz"),
+    );
+    assert_eq!(
+        minted, 13,
+        "quicksort_plus_foo: reached-function count drifted -- re-confirm against the fixture \
+         before assuming a regression",
+    );
+    assert!(
+        stash > minted,
+        "quicksort_plus_foo: stash ({stash}) should exceed demand-minted ({minted}) -- prelude \
+         functions this fixture never calls are still stashed",
+    );
+
+    // make_resource: the smallest of the three -- one extern declaration and
+    // one `main` calling `make_resource`/2 with a destructor closure. Still
+    // pulls enough of the runtime prelude to keep stash well above minted.
+    let (minted, stash) = drive_and_count_function_source_production(
+        "make_resource.fz",
+        include_str!("../../fixtures2/00026_make_resource.fz"),
+    );
+    assert_eq!(
+        minted, 5,
+        "make_resource: reached-function count drifted -- re-confirm against the fixture before \
+         assuming a regression",
+    );
+    assert!(
+        stash > minted,
+        "make_resource: stash ({stash}) should exceed demand-minted ({minted}) -- prelude \
+         functions this fixture never calls are still stashed",
+    );
+
+    // enum_reduce_operator_ref: THE BITE. `main` only ever reaches
+    // `Enum.reduce/3` and `Kernel.+/2` (by name and by `&.../2` reference),
+    // yet the Kernel/Enum module the prelude stashes wholesale defines
+    // dozens of other operators and Enum functions this program never
+    // touches. That gap between "everything the owning module stashed" (224
+    // events) and "only what `main` reached" (13 functions) is the widest of
+    // the three -- if `FunctionSource` were ever minted eagerly at stash
+    // time instead of on demand, `minted` would jump to equal `stash` here,
+    // and this assertion is what would catch it.
+    let (minted, stash) = drive_and_count_function_source_production(
+        "enum_reduce_operator_ref.fz",
+        include_str!("../../fixtures2/00181_enum_reduce_operator_ref.fz"),
+    );
+    assert_eq!(
+        minted, 13,
+        "enum_reduce_operator_ref: reached-function count drifted -- re-confirm against the \
+         fixture before assuming a regression",
+    );
+    assert!(
+        stash > minted,
+        "enum_reduce_operator_ref: stash ({stash}) should exceed demand-minted ({minted}) -- an \
+         eager FunctionSource regression would collapse this to stash == minted",
     );
 }
