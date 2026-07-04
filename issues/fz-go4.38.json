@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-07-04T01:17:09Z",
+  "description": "Found by the push/pull regression audit (2026-07-03, at dc26bf0b0). NOT introduced by the fz-go4.18.24 follow_up-elimination arc — predates it by ~dozens of commits (blame: 74b5940f2 'fz-f98.14.5: demand-addressed FunctionSource publication') — but it IS a surviving push and violates the owner's pull-only law. World::stash_function_source (src/compiler2/world.rs:1441-1443) runs synchronously inside publish_function_source (source_publish.rs:1315), which executes as part of the ScopeCode job's OWN conclusion, and directly does self.work_graph.enqueue(Job::PublishFunctionSource(function)) — one job enqueuing a DIFFERENT job by name, mid-execution, bypassing the demand_fact_producer map/dependency-index wake path. FactKey::FunctionSource already HAS a sanctioned arm in demand_fact_producer (drive.rs:158 -\u003e Job::PublishFunctionSource), so the standing pull mechanism exists; this call sidesteps it. ROOT: a code re-scope changes pending_function_sources (raw World state, NOT a tracked FactKey), so ordinary ascent/shift classification can never mark PublishFunctionSource 'rebased' — the manual enqueue is a workaround for that blind spot in the fact model. FIX (correct-by-construction, pull-shaped): fold code-rescope into a trackable fact/revision so a re-scope BUMPS a revision that the standing FunctionSource arm re-wakes via changed-revision (pull), deleting the manual enqueue. Acceptance: no raw enqueue from inside a job's execution; the re-scope-then-republish path driven by changed-revision wake; suite green; matrix set unchanged. This is exactly the 'push smuggled under a different name' class the campaign is eliminating — the last known one.",
+  "id": "fz-go4.38",
+  "labels": [],
+  "parent": "fz-go4",
+  "priority": 2,
+  "status": "open",
+  "title": "stash_function_source manually enqueues PublishFunctionSource — a push bypassing the fact-\u003eproducer map",
+  "type": "bug",
+  "updated_at": "2026-07-04T01:17:09Z"
+}
