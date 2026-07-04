@@ -7,9 +7,15 @@
   "id": "fz-go4.40",
   "labels": [],
   "parent": "fz-go4",
+  "comments": [
+    {
+      "text": "DIAGNOSIS (2026-07-04, read-only investigation at 311e70cf1): VERDICT (b) convergence wobble, SAME mechanism as fz-go4.18.28.6 (which already names 00277 as its flagship reproducer). Ascent counter is semantic.rs:681-743 ActivationMap::define_return (increments only on strict change; RETURN_WIDENING_BUDGET=8 internal), emitted at world.rs:769-807 as return_type.defined{ascents}. Distribution over 30 single-binary in-process drives: {5: ~22-27, 6: ~3-8} -- RUN-TO-RUN variance within one binary (scheduler-interleaving level), NOT deterministic-per-binary like 00181 was. Trace of the offending activation (an Enum stdlib activation fn 206, NOT user main): the stored return-type sequence is STRICTLY INCREASING and never re-visits a settled type (e.g. Ty360-\u003e396-\u003e547-\u003e578-\u003e698), so it is NOT naive 're-ascend a settled type' wobble. The 5-vs-6 difference is BATCHING GRANULARITY: whether two upstream contributions to fn 206's return land in one wake or two is schedule-dependent (578-\u003e698 in one hop vs 582-\u003e699-\u003e719 in two). Genuine multi-hop stdlib-dispatch depth + schedule-dependent step-counting = the .28.6 non-monotone convergence, not a new root cause. RECOMMENDATION: do NOT pin budget to 5/6 (the settled state itself is unstable per .28.6/fz-go4.24 which notes 00277 gives schedule-dependent WRONG answers too); keep 00277 parked in ignored shard_1 until .28.6's convergence fix lands, then re-run this sweep to re-derive the correct budget once the fixpoint is monotone.\n\nSHARD FACT CORRECTION (verified against drive_test.rs:10853-10869): the ticket text 'index%4 in {0,1,3} ignored, only shard_2 active' is INVERTED. Reality: ONLY shard_1 (fn compiler2_corpus_never_engages_return_widening_shard_1, line 10859) is #[ignore = red-worklist]; shards 0/2/3 are ACTIVE hard gates. 00277 is corpus index 213, 213%4==1 -\u003e shard_1, so it IS masked -- but via shard_1 alone, not {0,1,3}.",
+      "timestamp": "2026-07-04T23:33:02Z"
+    }
+  ],
   "priority": 3,
   "status": "open",
   "title": "00277_enum_tier0_fixture engages 5 return-ascents, over the pinned budget of 4 (masked in ignored shard)",
   "type": "bug",
-  "updated_at": "2026-07-04T01:54:50Z"
+  "updated_at": "2026-07-04T23:33:02Z"
 }
