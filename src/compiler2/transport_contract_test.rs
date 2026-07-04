@@ -4,6 +4,7 @@ use std::rc::Rc;
 
 use super::artifact::MaterializedTransportPlan;
 use super::body::{DeliveredValueSource, delivered_value_joins};
+use super::drive_test::assert_resolved;
 use super::facts::{FactReadiness, FactUse};
 use super::pull::{
     ProductDriver, ProductKey, ProductValue, PullOutcome, PullSession, PullWait, SymbolicBackendTail,
@@ -16,8 +17,8 @@ use super::transport::{
 };
 use super::types::Ty;
 use super::{
-    CodeSubmission, Compiler2, DriveOutcome, ExecutableKey, ExecutableNeed, ExecutableRuntimeDemand, FactKey, Job,
-    LoweredBody, RootSubmission, RuntimeDemand, ShapeDemand, World,
+    CodeSubmission, Compiler2, ExecutableKey, ExecutableNeed, ExecutableRuntimeDemand, FactKey, Job, LoweredBody,
+    RootSubmission, RuntimeDemand, ShapeDemand, World,
 };
 use crate::compiler2::drive::JobEffects;
 use crate::telemetry::handler::{Event, EventKind, Handler};
@@ -4321,10 +4322,6 @@ fn compiler2_transport_plan_keeps_unused_capture_on_specialized_activation_at_co
     let driver = drive_transport_facts_for_test(&tel, &mut world, root);
     let session = driver.session();
     assert_callable_resolution_capture_prefixes_match_descriptors(&world, session);
-}
-
-fn assert_resolved(outcome: DriveOutcome<super::Job, super::FactKey>, message: &str) {
-    assert!(matches!(outcome, DriveOutcome::Resolved), "{message}: {outcome:?}");
 }
 
 fn executable_symbol_for(world: &World<'_>, key: &ExecutableKey) -> ExecutableSymbol {

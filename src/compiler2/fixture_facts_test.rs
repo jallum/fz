@@ -1,12 +1,9 @@
+use super::drive_test::assert_resolved;
 use super::fixture_facts::{canonical_call_edge_facts, render_canonical_call_edge_snapshot};
 use super::identity::ActivationKey;
-use super::{CodeSubmission, Compiler2, DriveOutcome, ExecutableNeed, FactKey, Job, RootId, RootSubmission};
+use super::{CodeSubmission, Compiler2, ExecutableNeed, RootId, RootSubmission};
 use crate::source::Span;
 use crate::telemetry::ConfiguredTelemetry;
-
-fn assert_resolved(outcome: DriveOutcome<Job, FactKey>, message: &str) {
-    assert!(matches!(outcome, DriveOutcome::Resolved), "{message}: {outcome:?}");
-}
 
 /// Drives a fixture to its backend product and renders its canonical
 /// call-edge snapshot over the product-path activation inventory — the same
