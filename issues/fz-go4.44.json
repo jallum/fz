@@ -7,9 +7,15 @@
   "id": "fz-go4.44",
   "labels": [],
   "parent": "fz-go4",
+  "comments": [
+    {
+      "text": "FOLDED as 311e70cf1. Guard: function_source_is_demand_minted_not_stash_eager drives 00001/00026/00181 to backend product; asserts demand-minted FunctionSource == reached count (13/5/13) via post-drive world.has_fact(FunctionSource(id)) over the stash-event function-ids, and stash (compiler_service.define, ∝ module size) strictly exceeds minted (72/67/224). 00181 is the widest bite (224 vs 13). Mutation-checked: forcing minted==stash goes red. Audit (1 lane): SOUND, no correctness defects; SHOULD-FIX simplification applied at rework — replaced a ~130-line custom span-tracking handler with a direct fact-table read (minted ⊆ stashed invariant), net -53 lines, identical counts, deterministic across 3+ runs. Test-only, no production changes. lib 1197/0/9.",
+      "timestamp": "2026-07-04T18:56:15Z"
+    }
+  ],
   "priority": 3,
   "status": "open",
   "title": "Telemetry regression guard: FunctionSource noted-count == reached-function count (prevent cold-overproduction re-litigation)",
   "type": "task",
-  "updated_at": "2026-07-04T13:18:26Z"
+  "updated_at": "2026-07-04T18:56:15Z"
 }
