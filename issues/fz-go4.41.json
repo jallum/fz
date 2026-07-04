@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-07-04T02:32:28Z",
+  "description": "Found by the fz-go4.39 work-start-attribution guard's own correctness audit (2026-07-03, at 191aaf096) — a push the earlier MANUAL push/pull regression audit MISSED (strong validation of the machine-check). World::ensure_runtime_module (world.rs:2433, pre-existing since fz-rh2.7.1) calls self.submit_code(...) to lazily mint a builtin runtime module's source (Kernel/Enum/etc.) the first time a job discovers it needs one. Its three call sites — jobs/source.rs:183 (index_module), jobs/semantic.rs:1572 (wait_for_protocol_module), jobs/keying.rs:132 (collect_static_graph) — all run INSIDE job bodies mid-execution, NOT at a drain/stall pull point. submit_code enqueues (IndexCode/ScopeCode) tagged unconditionally as WorkStartReason::Ignition, so this internal job-triggered job creation is blessed as if it were the external front door — a job commanding another job = a push, mislabeled sanctioned. PROVABLY REDUNDANT: demand_fact_producer (drive.rs:146/149) already maps CodeIndexed/CodeScoped -\u003e IndexCode/ScopeCode, and each of the three call sites registers wait_on_current(FactKey::CodeIndexed(code_id)) right after calling ensure_runtime_module — so the pull mechanism (BlockedWaiterExpansion) reaches the same job anyway. The eager enqueue buys nothing. FIX (correct-by-construction, like fz-go4.38): delete ensure_runtime_module's redundant eager submit_code-driven enqueue; let the existing wait_on_current(CodeIndexed) mint the runtime module via pull. Mutation-verify the runtime modules still mint (no new stall, suite green). This makes Ignition sound (only the true external front door). BEING FIXED as part of the fz-go4.39 rework (the guard cannot be sound-and-green until this push is gone; the two are coupled). CROSS-REF: sibling to fz-go4.38 (stash_function_source push, eliminated). NOTE: if any OTHER submit_code/submit_module_interface caller is also internal (mid-job), it's the same class — sweep.",
+  "id": "fz-go4.41",
+  "labels": [],
+  "parent": "fz-go4",
+  "priority": 2,
+  "status": "open",
+  "title": "ensure_runtime_module calls submit_code from inside job bodies — a second hidden push (redundant with the CodeIndexed wait)",
+  "type": "bug",
+  "updated_at": "2026-07-04T02:32:28Z"
+}
