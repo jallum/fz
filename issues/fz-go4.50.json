@@ -2,6 +2,7 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-07-05T22:27:48Z",
   "created": "2026-07-05T16:34:40Z",
   "description": "Deferred nice-to-have from fz-go4.47. transport.rs has three structurally-identical recursive tail-walks that differ only in payload: collect_tail_call_modes (~:2267), collect_tail_call_dests, collect_tail_call_args -- same recursion following ControlDestination Deliver/If/Dispatch/Receive, different accumulator. Fold into one payload-generic tail-walk (closure/visitor over each tail). fz-go4.47 deferred this because generalizing the recursion would have obscured the primary enum/index/map-builder fold; it's clean to do on its own. ALSO (observation from fz-go4.47): runtime_demand.rs call_args_by_callsite/record_tail_call_args still iterates clause.entry AND then all entries -- the clause-entry pass is fully subsumed by the entries pass (same arena), so the first loop is dead (harmless idempotent HashMap insert). Drop the redundant pass. Both are concordant-code reductions (north star). Test-only-adjacent risk (pure helpers, no scheduling); lib + matrix no-new-regression re-verify. NOTE: after fz-go4.47, callsite_input_modes moved to body.rs as a flat scan -- consider whether collect_tail_call_dests/args should ALSO become flat scans over entries (same equivalence proof applies) rather than staying recursive, which may be simpler than a generic walk. Evaluate both options.",
   "id": "fz-go4.50",
@@ -14,7 +15,7 @@
     }
   ],
   "priority": 3,
-  "status": "open",
+  "status": "closed",
   "title": "Fold the triplicated tail-walk in transport.rs (collect_tail_call_modes/dests/args) into one payload-generic walk; simplify call_args_by_callsite double-iteration",
   "type": "task",
   "updated_at": "2026-07-05T22:27:48Z"
