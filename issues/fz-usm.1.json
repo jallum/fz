@@ -3,7 +3,8 @@
   "blocked_by": [],
   "blocks": [
     "fz-usm.2",
-    "fz-usm.3"
+    "fz-usm.3",
+    "fz-usm.4"
   ],
   "created": "2026-07-05T22:24:56Z",
   "description": "Step 1 of the fz-usm unification (plan 2026-07-05). Introduce a single registry table ConstructorEntry { name, arity: Arity(Fixed|Range), build: fn(\u0026mut Types,\u0026[Ty])-\u003eTy } in resolve.rs. Migrate the 12 nullary scalar builtins (nil/bool/integer/float/cpointer/binary/atom/any/never/utf8/pid/ref) to consult it; DELETE enum Builtin, builtin_from_name, NameClass::Builtin (all private to resolve.rs, zero external callers -- grep-confirmed). classify_name looks up by name then checks the entry's declared arity (single generic 'expected N args, got M' diagnostic replacing the bespoke messages). BYTE-IDENTICAL Ty output for all 12 names -- pure mechanical concordant fold, the core '3 ways -\u003e 1' reduction. SAFE, contained to resolve.rs. TDD: resolver-layer round-trip (resolve_type_expr_body) for each of the 12 names + one nullary-with-args negative test locking the uniform error text. No deps.",
@@ -14,5 +15,5 @@
   "status": "open",
   "title": "fz-usm registry: introduce ConstructorEntry table + migrate the 12 nullary scalars off Builtin/builtin_from_name",
   "type": "task",
-  "updated_at": "2026-07-05T22:24:59Z"
+  "updated_at": "2026-07-05T22:25:00Z"
 }

@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-usm.1"
+  ],
   "blocks": [],
   "created": "2026-07-05T22:24:57Z",
   "description": "Step 4. Parser: dispatch Tok::PercentLBrace in parse_primary (type_expr.rs ~:186, mirroring value-level map-literal grammar frontdoor.rs:981-992; lexer already has PercentLBrace/FatArrow) -\u003e TypeExpr::Map(Vec\u003c(TypeExpr,TypeExpr)\u003e). Resolver arm: resolve each key via Types::as_map_key (types/mod.rs:204-207) to a MapKey, call types.map(\u0026fields) -\u003e exact Descr::map_of. Parity with [T] for lists / %Mod{} for structs. No Ty change (exact-map Ty already exists). SAFE, additive. Depends fz-usm.1 (independent of .3; either order). TDD: %{ok: integer, err: atom} resolves to same Ty as hand-built types.map(\u0026[...]); non-literal key diagnoses via as_map_key None arm.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "fz-usm: add structural %{k=\u003ev} TypeExpr::Map variant + resolver arm targeting exact Types::map",
   "type": "task",
-  "updated_at": "2026-07-05T22:24:57Z"
+  "updated_at": "2026-07-05T22:25:00Z"
 }
