@@ -7,9 +7,15 @@
   "id": "fz-go4.50",
   "labels": [],
   "parent": "fz-go4",
+  "comments": [
+    {
+      "text": "FOLDED (SHA after cherry-pick below). Chose FLAT scan (not generic walk): verified payload (args/dest) is a direct field of entry.tail (context-free), so the fz-go4.47 'entries==reachable set' invariant applies -- old recursive walks also inserted tail-local payload and only recursed to VISIT, so flat==recursive byte-identically. Moved callsite_call_args + callsite_call_dests to body.rs beside callsite_input_modes (both genuinely shared: args used by transport+runtime_demand). Deleted 4 dead fns from transport.rs + 2 from runtime_demand.rs (incl. the redundant clause.entry-then-entries double pass). Net -101 lines, lib 1199/0/9, fixture_matrix failing-set IDENTICAL (325/19, same names). Self-certified (same proven equivalence class as fz-go4.47, context-freeness + old-walk tail-locality verified by coordinator). Third artifact.rs copy -\u003e follow-up.",
+      "timestamp": "2026-07-05T22:27:48Z"
+    }
+  ],
   "priority": 3,
   "status": "open",
   "title": "Fold the triplicated tail-walk in transport.rs (collect_tail_call_modes/dests/args) into one payload-generic walk; simplify call_args_by_callsite double-iteration",
   "type": "task",
-  "updated_at": "2026-07-05T16:34:40Z"
+  "updated_at": "2026-07-05T22:27:48Z"
 }
