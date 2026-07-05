@@ -2,6 +2,7 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-07-05T16:24:31Z",
   "created": "2026-07-05T00:06:04Z",
   "description": "Found by the fz-bkx audit (2026-07-04, at 199fb5687). DISTINCT from fz-bkx (which fixed DROPPING existing codes): these sites never HAD codes -- they use QuotedSourceError::new (no code) and so route to INTERNAL_POST_RESOLUTION_LEFTOVER via emit_surface_read_error's None arm, reporting plain USER TYPOS as internal compiler bugs. Confirmed user-reachable because no upstream stage validates these sub-grammars (frontdoor.rs captures @spec as an opaque token payload and parses bitstring segments as generic exprs; quoted_function.rs is the SOLE validator).\n\nBLOCKER-class sites -- @spec syntax parser decode_spec_attribute (quoted_function.rs:1186-1269) + shared FragmentCursor::expect*/expect (1451-1513). Example user typos each misreported as internal: '@spec foo(int,) :: int' (trailing comma, :1200); '@spec foo int' (missing parens, :1220); '@spec foo(int) ::' (missing return type, :1234); '... when' / '... when t' / '... when t:' (:1246/1250/1253-\u003e1507/1258); missing (/)/::/trailing garbage via expect_lparen/rparen/colon_colon/eof (:1194/1208/1230/1269 -\u003e generic expect() :1505-1511 'expected {label}, got {tok}').\n\nSHOULD-FIX sites -- bitstring modifier/size decoders: apply_bit_spec_modifier (:1284-1328, 'unsupported quoted bit-spec modifier' :1306, size overflow :1315), decode_bit_size (:1330-1348), decode_bit_unit (:1350-1352), apply_bit_modifier_name (:1355-1369, 'unknown bitstring modifier' :1369). Example: '\u003c\u003cx :: bogus\u003e\u003e' or '\u003c\u003cx :: size(99999999999999999)\u003e\u003e' -\u003e internal.\n\nFIX (concordant reuse, on-theme): the FragmentCursor::expect*/expect_eof sites are the SAME 'expected X, got Y' shape as the existing PARSE_EXPECTED_TOKEN code (diag/codes.rs:11, used by frontdoor.rs:29) -- REUSE it (don't mint a redundant code), fixing most @spec sites in ONE place (the shared helper). The few non-expect @spec sites (empty type-token list -\u003e 'expected type expression') use PARSE_EXPECTED_TOKEN or a single parse/spec-syntax code. Bitstring sites get parse/bitstring-* codes. Genuinely-internal shape sites (~20: if/case/cond/with/receive/lambda/clause-head/pattern shape invariants the front-end grammar already guarantees) stay QuotedSourceError::new (correct). TDD: real .fz fixtures (like 00086/00087) proving one @spec-syntax typo and one bitstring typo now surface as user diagnostics, not internal. Note: emit_surface_read_error uses Span::DUMMY, so the code+message are fixed but the span is still dummy (pre-existing, see fz-ose); out of scope here.",
   "id": "fz-go4.48",
@@ -14,7 +15,7 @@
     }
   ],
   "priority": 3,
-  "status": "open",
+  "status": "closed",
   "title": "User-reachable @spec-syntax and bitstring decode errors are misclassified as internal (missing user codes)",
   "type": "bug",
   "updated_at": "2026-07-05T16:24:31Z"
