@@ -510,6 +510,47 @@ pub(crate) fn callsite_input_modes(body: &LoweredBody) -> HashMap<CallSiteId, Ca
     out
 }
 
+/// The positional call args of every callsite in `body`, keyed by
+/// `CallSiteId`. A callsite's args are a direct field of the `DirectCall`/
+/// `ClosureCall` tail that names it -- never accumulated along a walk -- so
+/// this rides the same flat scan over `entries` as `callsite_input_modes`
+/// (see that function's doc comment for the reachability invariant that
+/// makes the flat scan sound).
+pub(crate) fn callsite_call_args(body: &LoweredBody) -> HashMap<CallSiteId, Vec<CallArg>> {
+    let mut out = HashMap::new();
+    let LoweredBody::Clauses { entries, .. } = body else {
+        return out;
+    };
+    for entry in entries {
+        if let LoweredTail::DirectCall { callsite, args, .. } | LoweredTail::ClosureCall { callsite, args, .. } =
+            &entry.tail
+        {
+            out.insert(*callsite, args.clone());
+        }
+    }
+    out
+}
+
+/// The `ControlDestination` every callsite in `body` delivers its result to,
+/// keyed by `CallSiteId`. Same reasoning as `callsite_call_args`: a
+/// callsite's destination is a direct field of its own tail, not something
+/// accumulated from the entries downstream of it, so the flat scan over
+/// `entries` is equivalent to a recursive walk of the destination graph.
+pub(crate) fn callsite_call_dests(body: &LoweredBody) -> HashMap<CallSiteId, ControlDestination> {
+    let mut out = HashMap::new();
+    let LoweredBody::Clauses { entries, .. } = body else {
+        return out;
+    };
+    for entry in entries {
+        if let LoweredTail::DirectCall { callsite, dest, .. } | LoweredTail::ClosureCall { callsite, dest, .. } =
+            &entry.tail
+        {
+            out.insert(*callsite, dest.clone());
+        }
+    }
+    out
+}
+
 /// A lowered map key position: the runtime value, plus the compile-time
 /// constant when the source wrote a literal. Map keys are VALUES — the
 /// carried literal is what lets analysis type the field precisely without

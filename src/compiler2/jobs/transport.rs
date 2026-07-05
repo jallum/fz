@@ -4,7 +4,8 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use super::super::artifact::MaterializedExecutable;
 use super::super::body::{
     CallArg, CallInputMode, CallSiteId, ControlDestination, ControlEntryId, DeliveredValueSource, LoweredBody,
-    LoweredStep, LoweredTail, ValueId, body_consumed_values, callsite_input_modes, delivered_value_joins,
+    LoweredStep, LoweredTail, ValueId, body_consumed_values, callsite_call_args, callsite_call_dests,
+    callsite_input_modes, delivered_value_joins,
 };
 use super::super::drive::FactKey;
 use super::super::identity::{ActivationKey, ExecutableKey, ExecutableNeed, FunctionId, RootId};
@@ -1327,9 +1328,9 @@ fn collect_transport_contexts(
         contexts.insert(
             executable.clone(),
             ExecutableContext {
-                callsite_args: collect_callsite_args(&body),
+                callsite_args: callsite_call_args(&body),
                 callsite_modes: callsite_input_modes(&body),
-                callsite_dests: collect_callsite_dests(&body),
+                callsite_dests: callsite_call_dests(&body),
                 local_sources,
                 return_sources: collect_return_sources(&body, &reachable_clauses, &reachable_entries),
                 resume_entries,
@@ -2116,123 +2117,6 @@ fn extend_unique<T: PartialEq>(target: &mut Vec<T>, values: Vec<T>) {
         if !target.contains(&value) {
             target.push(value);
         }
-    }
-}
-
-fn collect_callsite_args(body: &LoweredBody) -> HashMap<CallSiteId, Vec<CallArg>> {
-    let mut out = HashMap::new();
-    let LoweredBody::Clauses { clauses, entries, .. } = body else {
-        return out;
-    };
-    for clause in clauses {
-        collect_tail_call_args(&clause.entry, entries, &mut out);
-    }
-    out
-}
-
-fn collect_callsite_dests(body: &LoweredBody) -> HashMap<CallSiteId, ControlDestination> {
-    let mut out = HashMap::new();
-    let LoweredBody::Clauses { clauses, entries, .. } = body else {
-        return out;
-    };
-    for clause in clauses {
-        collect_tail_call_dests(&clause.entry, entries, &mut out);
-    }
-    out
-}
-
-fn collect_tail_call_dests(
-    entry_id: &ControlEntryId,
-    entries: &[super::super::body::LoweredEntry],
-    out: &mut HashMap<CallSiteId, ControlDestination>,
-) {
-    let entry = &entries[entry_id.as_u32() as usize];
-    match &entry.tail {
-        LoweredTail::DirectCall { callsite, dest, .. } | LoweredTail::ClosureCall { callsite, dest, .. } => {
-            out.insert(*callsite, dest.clone());
-            if let ControlDestination::Deliver(target) = dest {
-                collect_tail_call_dests(target, entries, out);
-            }
-        }
-        LoweredTail::If {
-            then_entry, else_entry, ..
-        } => {
-            collect_tail_call_dests(then_entry, entries, out);
-            collect_tail_call_dests(else_entry, entries, out);
-        }
-        LoweredTail::Dispatch { dispatch, .. } => {
-            for arm_entry in &dispatch.arm_entries {
-                collect_tail_call_dests(arm_entry, entries, out);
-            }
-            collect_tail_call_dests(&dispatch.miss_entry, entries, out);
-        }
-        LoweredTail::Receive(receive) => {
-            for clause in &receive.clauses {
-                collect_tail_call_dests(&clause.entry, entries, out);
-            }
-            if let Some(after) = &receive.after {
-                collect_tail_call_dests(&after.entry, entries, out);
-            }
-            if let ControlDestination::Deliver(target) = receive.dest {
-                collect_tail_call_dests(&target, entries, out);
-            }
-        }
-        LoweredTail::Value { dest, .. } => {
-            if let ControlDestination::Deliver(target) = dest {
-                collect_tail_call_dests(target, entries, out);
-            }
-        }
-        LoweredTail::Halt { .. } => {}
-    }
-}
-
-fn collect_tail_call_args(
-    entry_id: &ControlEntryId,
-    entries: &[super::super::body::LoweredEntry],
-    out: &mut HashMap<CallSiteId, Vec<CallArg>>,
-) {
-    let entry = &entries[entry_id.as_u32() as usize];
-    match &entry.tail {
-        LoweredTail::DirectCall {
-            callsite, args, dest, ..
-        }
-        | LoweredTail::ClosureCall {
-            callsite, args, dest, ..
-        } => {
-            out.insert(*callsite, args.clone());
-            if let ControlDestination::Deliver(target) = dest {
-                collect_tail_call_args(target, entries, out);
-            }
-        }
-        LoweredTail::If {
-            then_entry, else_entry, ..
-        } => {
-            collect_tail_call_args(then_entry, entries, out);
-            collect_tail_call_args(else_entry, entries, out);
-        }
-        LoweredTail::Dispatch { dispatch, .. } => {
-            for arm_entry in &dispatch.arm_entries {
-                collect_tail_call_args(arm_entry, entries, out);
-            }
-            collect_tail_call_args(&dispatch.miss_entry, entries, out);
-        }
-        LoweredTail::Receive(receive) => {
-            for clause in &receive.clauses {
-                collect_tail_call_args(&clause.entry, entries, out);
-            }
-            if let Some(after) = &receive.after {
-                collect_tail_call_args(&after.entry, entries, out);
-            }
-            if let ControlDestination::Deliver(target) = receive.dest {
-                collect_tail_call_args(&target, entries, out);
-            }
-        }
-        LoweredTail::Value { dest, .. } => {
-            if let ControlDestination::Deliver(target) = dest {
-                collect_tail_call_args(target, entries, out);
-            }
-        }
-        LoweredTail::Halt { .. } => {}
     }
 }
 

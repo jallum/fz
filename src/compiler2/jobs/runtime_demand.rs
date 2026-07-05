@@ -3,7 +3,8 @@ use std::rc::Rc;
 
 use super::super::body::{
     CallArg, CallInputMode, CallSiteId, ControlDestination, ControlEntryId, DeliveredValueJoin, DeliveredValueSource,
-    LoweredBody, LoweredEntry, LoweredStep, LoweredTail, ValueId, callsite_input_modes, delivered_value_joins,
+    LoweredBody, LoweredEntry, LoweredStep, LoweredTail, ValueId, callsite_call_args, callsite_input_modes,
+    delivered_value_joins,
 };
 use super::super::drive::FactKey;
 use super::super::facts::FactUse;
@@ -802,7 +803,7 @@ fn record_callsite_input_edges(
     executable: &ExecutableKey,
     facts: &ExecutableFacts,
 ) {
-    let call_args = call_args_by_callsite(&facts.body);
+    let call_args = callsite_call_args(&facts.body);
     let call_modes = callsite_input_modes(&facts.body);
     for (callsite, summary) in &facts.callsites {
         let Some(args) = call_args.get(callsite) else {
@@ -878,33 +879,6 @@ fn record_callable_capture_input_edges(
                 inputs,
             });
         }
-    }
-}
-
-fn call_args_by_callsite(body: &LoweredBody) -> HashMap<CallSiteId, Vec<CallArg>> {
-    let mut out = HashMap::new();
-    let LoweredBody::Clauses { clauses, entries, .. } = body else {
-        return out;
-    };
-    for clause in clauses {
-        record_tail_call_args(&entries[clause.entry.as_u32() as usize].tail, &mut out);
-    }
-    for entry in entries {
-        record_tail_call_args(&entry.tail, &mut out);
-    }
-    out
-}
-
-fn record_tail_call_args(tail: &LoweredTail, out: &mut HashMap<CallSiteId, Vec<CallArg>>) {
-    match tail {
-        LoweredTail::DirectCall { callsite, args, .. } | LoweredTail::ClosureCall { callsite, args, .. } => {
-            out.insert(*callsite, args.clone());
-        }
-        LoweredTail::Value { .. }
-        | LoweredTail::If { .. }
-        | LoweredTail::Dispatch { .. }
-        | LoweredTail::Receive(_)
-        | LoweredTail::Halt { .. } => {}
     }
 }
 
