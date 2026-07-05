@@ -12,9 +12,15 @@
   "id": "fz-usm.1",
   "labels": [],
   "parent": "fz-usm",
+  "comments": [
+    {
+      "text": "FOLDED as d1d2a7eb1. One CONSTRUCTORS registry table (ConstructorEntry{name,arity,build}); 12 nullary scalars migrated with byte-identical Ty (verified: utf8 brand-mint over str_t, pid/ref opaque_of, 9 direct). Deleted enum Builtin + builtin_from_name + builtin_ty + NameClass::Builtin. Uniform arity error ('expected 0 type argument(s), got N'); no test asserted old text. 2 resolver-layer tests added (Ty-parity + arity negative). lib 1201/0/9. FOLD-TIME NIT APPLIED: dropped the speculative Arity::Range variant + its #[allow(dead_code)] the first cut carried as scaffolding -- usm.1 now ships only the Fixed variant it uses; fz-usm.2 adds Range when list/resource migrate (correct-by-construction, no suppressed warning). Self-certified (contained to resolve.rs, Ty-fidelity verified + tested).",
+      "timestamp": "2026-07-05T22:37:19Z"
+    }
+  ],
   "priority": 3,
   "status": "open",
   "title": "fz-usm registry: introduce ConstructorEntry table + migrate the 12 nullary scalars off Builtin/builtin_from_name",
   "type": "task",
-  "updated_at": "2026-07-05T22:25:01Z"
+  "updated_at": "2026-07-05T22:37:19Z"
 }
