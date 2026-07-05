@@ -7,9 +7,15 @@
   "id": "fz-go4.48",
   "labels": [],
   "parent": "fz-go4",
+  "comments": [
+    {
+      "text": "FOLDED. Ambiguous fragment-kind fallback deferred to fz-go4.49.",
+      "timestamp": "2026-07-05T16:24:31Z"
+    }
+  ],
   "priority": 3,
   "status": "open",
   "title": "User-reachable @spec-syntax and bitstring decode errors are misclassified as internal (missing user codes)",
   "type": "bug",
-  "updated_at": "2026-07-05T00:06:04Z"
+  "updated_at": "2026-07-05T16:24:31Z"
 }
