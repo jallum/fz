@@ -4,7 +4,8 @@
     "fz-usm.1"
   ],
   "blocks": [
-    "fz-usm.5"
+    "fz-usm.5",
+    "fz-usm.6"
   ],
   "created": "2026-07-05T22:24:56Z",
   "description": "Step 3. Additive registry entry map=Arity::Fixed(0) -\u003e Types::map_top() (types/mod.rs:443-445, already exists; already the runtime Map module's type at world.rs:2759). Closes the ticket's literal headline symptom (':: map' currently errors 'unknown type name map'). No Ty/Descr change. SAFE, additive. Depends fz-usm.1. TDD: ':: map' resolves to map_top(), consistent with world.rs:2759.",
@@ -15,5 +16,5 @@
   "status": "open",
   "title": "fz-usm: add nullary 'map' -\u003e map_top() via the registry (closes ':: map' = unknown type)",
   "type": "task",
-  "updated_at": "2026-07-05T22:25:00Z"
+  "updated_at": "2026-07-05T22:25:02Z"
 }
