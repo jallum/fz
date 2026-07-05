@@ -444,6 +444,72 @@ pub enum LoweredTail {
     },
 }
 
+/// How a callsite's positional args map onto its callee's semantic input
+/// space. A direct call's args ARE the callee's inputs, one-for-one; a
+/// closure call's args follow a capture prefix supplied by the closure
+/// itself, so they land at `callee_input_len - arg_count + arg_index`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CallInputMode {
+    Direct,
+    Closure,
+}
+
+impl CallInputMode {
+    /// The callee-side semantic input index fed by this callsite's
+    /// `arg_index`'th argument, or `None` if the callsite is malformed for
+    /// this mode (more closure args than the callee has inputs, or a direct
+    /// arg beyond the callee's arity).
+    pub fn semantic_index(self, callee_input_len: usize, arg_count: usize, arg_index: usize) -> Option<usize> {
+        match self {
+            CallInputMode::Direct => (arg_index < callee_input_len).then_some(arg_index),
+            CallInputMode::Closure => callee_input_len
+                .checked_sub(arg_count)
+                .map(|capture_prefix| capture_prefix + arg_index),
+        }
+    }
+}
+
+/// The `CallInputMode` of every callsite in `body`, keyed by `CallSiteId`.
+///
+/// A `LoweredBody`'s `entries` arena holds exactly the control-flow nodes
+/// reachable from its clauses' entries: lowering only ever pushes an entry
+/// while planning a `Deliver` resume, an `If` branch, a `Dispatch` arm/miss,
+/// or a `Receive` clause/after (see `jobs::body::plan_block` and its call
+/// sites). So a flat scan of `entries` visits exactly the same callsites, in
+/// the same modes, that a recursive walk following those same
+/// `ControlDestination`/branch links from the clause entries would visit —
+/// and does it without recursion or having to hand-enumerate every tail
+/// variant's destinations.
+///
+/// This "`entries` == the set reachable from the clause entries" invariant is
+/// what makes the flat scan sound, and it has TWO producers that must both
+/// preserve it: `jobs::body::plan_block` (the original lowering) and
+/// `jobs::artifact::prune_lowered_body` (the pruned/reindexed body `transport`
+/// substitutes for a materialized executable). A future change to either that
+/// left a dangling or orphaned entry would silently break this scan.
+pub(crate) fn callsite_input_modes(body: &LoweredBody) -> HashMap<CallSiteId, CallInputMode> {
+    let mut out = HashMap::new();
+    let LoweredBody::Clauses { entries, .. } = body else {
+        return out;
+    };
+    for entry in entries {
+        match &entry.tail {
+            LoweredTail::DirectCall { callsite, .. } => {
+                out.insert(*callsite, CallInputMode::Direct);
+            }
+            LoweredTail::ClosureCall { callsite, .. } => {
+                out.insert(*callsite, CallInputMode::Closure);
+            }
+            LoweredTail::Value { .. }
+            | LoweredTail::If { .. }
+            | LoweredTail::Dispatch { .. }
+            | LoweredTail::Receive(_)
+            | LoweredTail::Halt { .. } => {}
+        }
+    }
+    out
+}
+
 /// A lowered map key position: the runtime value, plus the compile-time
 /// constant when the source wrote a literal. Map keys are VALUES — the
 /// carried literal is what lets analysis type the field precisely without

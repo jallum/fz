@@ -3,8 +3,8 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use super::super::artifact::MaterializedExecutable;
 use super::super::body::{
-    CallArg, CallSiteId, ControlDestination, ControlEntryId, DeliveredValueSource, LoweredBody, LoweredStep,
-    LoweredTail, ValueId, body_consumed_values, delivered_value_joins,
+    CallArg, CallInputMode, CallSiteId, ControlDestination, ControlEntryId, DeliveredValueSource, LoweredBody,
+    LoweredStep, LoweredTail, ValueId, body_consumed_values, callsite_input_modes, delivered_value_joins,
 };
 use super::super::drive::FactKey;
 use super::super::identity::{ActivationKey, ExecutableKey, ExecutableNeed, FunctionId, RootId};
@@ -40,23 +40,6 @@ struct ExecutableContext {
     callsite_dests: HashMap<CallSiteId, ControlDestination>,
     return_sources: Vec<TransportSource>,
     resume_entries: Vec<ResumeEntry>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CallInputMode {
-    Direct,
-    Closure,
-}
-
-impl CallInputMode {
-    fn semantic_index(self, callee_input_len: usize, arg_count: usize, arg_index: usize) -> Option<usize> {
-        match self {
-            CallInputMode::Direct => (arg_index < callee_input_len).then_some(arg_index),
-            CallInputMode::Closure => callee_input_len
-                .checked_sub(arg_count)
-                .map(|capture_prefix| capture_prefix + arg_index),
-        }
-    }
 }
 
 /// Key into the forward incoming-input-source index: a callee executable and
@@ -1345,7 +1328,7 @@ fn collect_transport_contexts(
             executable.clone(),
             ExecutableContext {
                 callsite_args: collect_callsite_args(&body),
-                callsite_modes: collect_callsite_modes(&body),
+                callsite_modes: callsite_input_modes(&body),
                 callsite_dests: collect_callsite_dests(&body),
                 local_sources,
                 return_sources: collect_return_sources(&body, &reachable_clauses, &reachable_entries),
@@ -2147,17 +2130,6 @@ fn collect_callsite_args(body: &LoweredBody) -> HashMap<CallSiteId, Vec<CallArg>
     out
 }
 
-fn collect_callsite_modes(body: &LoweredBody) -> HashMap<CallSiteId, CallInputMode> {
-    let mut out = HashMap::new();
-    let LoweredBody::Clauses { clauses, entries, .. } = body else {
-        return out;
-    };
-    for clause in clauses {
-        collect_tail_call_modes(&clause.entry, entries, &mut out);
-    }
-    out
-}
-
 fn collect_callsite_dests(body: &LoweredBody) -> HashMap<CallSiteId, ControlDestination> {
     let mut out = HashMap::new();
     let LoweredBody::Clauses { clauses, entries, .. } = body else {
@@ -2258,57 +2230,6 @@ fn collect_tail_call_args(
         LoweredTail::Value { dest, .. } => {
             if let ControlDestination::Deliver(target) = dest {
                 collect_tail_call_args(target, entries, out);
-            }
-        }
-        LoweredTail::Halt { .. } => {}
-    }
-}
-
-fn collect_tail_call_modes(
-    entry_id: &ControlEntryId,
-    entries: &[super::super::body::LoweredEntry],
-    out: &mut HashMap<CallSiteId, CallInputMode>,
-) {
-    let entry = &entries[entry_id.as_u32() as usize];
-    match &entry.tail {
-        LoweredTail::DirectCall { callsite, dest, .. } => {
-            out.insert(*callsite, CallInputMode::Direct);
-            if let ControlDestination::Deliver(target) = dest {
-                collect_tail_call_modes(target, entries, out);
-            }
-        }
-        LoweredTail::ClosureCall { callsite, dest, .. } => {
-            out.insert(*callsite, CallInputMode::Closure);
-            if let ControlDestination::Deliver(target) = dest {
-                collect_tail_call_modes(target, entries, out);
-            }
-        }
-        LoweredTail::If {
-            then_entry, else_entry, ..
-        } => {
-            collect_tail_call_modes(then_entry, entries, out);
-            collect_tail_call_modes(else_entry, entries, out);
-        }
-        LoweredTail::Dispatch { dispatch, .. } => {
-            for arm_entry in &dispatch.arm_entries {
-                collect_tail_call_modes(arm_entry, entries, out);
-            }
-            collect_tail_call_modes(&dispatch.miss_entry, entries, out);
-        }
-        LoweredTail::Receive(receive) => {
-            for clause in &receive.clauses {
-                collect_tail_call_modes(&clause.entry, entries, out);
-            }
-            if let Some(after) = &receive.after {
-                collect_tail_call_modes(&after.entry, entries, out);
-            }
-            if let ControlDestination::Deliver(target) = receive.dest {
-                collect_tail_call_modes(&target, entries, out);
-            }
-        }
-        LoweredTail::Value { dest, .. } => {
-            if let ControlDestination::Deliver(target) = dest {
-                collect_tail_call_modes(target, entries, out);
             }
         }
         LoweredTail::Halt { .. } => {}

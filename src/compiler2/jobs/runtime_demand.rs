@@ -2,8 +2,8 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
 
 use super::super::body::{
-    CallArg, CallSiteId, ControlDestination, ControlEntryId, DeliveredValueJoin, DeliveredValueSource, LoweredBody,
-    LoweredEntry, LoweredStep, LoweredTail, ValueId, delivered_value_joins,
+    CallArg, CallInputMode, CallSiteId, ControlDestination, ControlEntryId, DeliveredValueJoin, DeliveredValueSource,
+    LoweredBody, LoweredEntry, LoweredStep, LoweredTail, ValueId, callsite_input_modes, delivered_value_joins,
 };
 use super::super::drive::FactKey;
 use super::super::facts::FactUse;
@@ -803,7 +803,7 @@ fn record_callsite_input_edges(
     facts: &ExecutableFacts,
 ) {
     let call_args = call_args_by_callsite(&facts.body);
-    let call_modes = call_modes_by_callsite(&facts.body);
+    let call_modes = callsite_input_modes(&facts.body);
     for (callsite, summary) in &facts.callsites {
         let Some(args) = call_args.get(callsite) else {
             continue;
@@ -824,14 +824,16 @@ fn record_callsite_input_edges(
             let inputs = args
                 .iter()
                 .enumerate()
-                .map(|(index, arg)| {
-                    (
-                        mode.semantic_index(callee.activation.input_len(world.types()), args.len(), index),
+                .filter_map(|(index, arg)| {
+                    let semantic_index =
+                        mode.semantic_index(callee.activation.input_len(world.types()), args.len(), index)?;
+                    Some((
+                        semantic_index,
                         IncomingInputSource {
                             producer: executable.clone(),
                             value: arg.value,
                         },
-                    )
+                    ))
                 })
                 .collect();
             session.record_call_edge(DemandedCallEdge {
@@ -893,40 +895,10 @@ fn call_args_by_callsite(body: &LoweredBody) -> HashMap<CallSiteId, Vec<CallArg>
     out
 }
 
-fn call_modes_by_callsite(body: &LoweredBody) -> HashMap<CallSiteId, CallInputMode> {
-    let mut out = HashMap::new();
-    let LoweredBody::Clauses { clauses, entries, .. } = body else {
-        return out;
-    };
-    for clause in clauses {
-        record_tail_call_mode(&entries[clause.entry.as_u32() as usize].tail, &mut out);
-    }
-    for entry in entries {
-        record_tail_call_mode(&entry.tail, &mut out);
-    }
-    out
-}
-
 fn record_tail_call_args(tail: &LoweredTail, out: &mut HashMap<CallSiteId, Vec<CallArg>>) {
     match tail {
         LoweredTail::DirectCall { callsite, args, .. } | LoweredTail::ClosureCall { callsite, args, .. } => {
             out.insert(*callsite, args.clone());
-        }
-        LoweredTail::Value { .. }
-        | LoweredTail::If { .. }
-        | LoweredTail::Dispatch { .. }
-        | LoweredTail::Receive(_)
-        | LoweredTail::Halt { .. } => {}
-    }
-}
-
-fn record_tail_call_mode(tail: &LoweredTail, out: &mut HashMap<CallSiteId, CallInputMode>) {
-    match tail {
-        LoweredTail::DirectCall { callsite, .. } => {
-            out.insert(*callsite, CallInputMode::Direct);
-        }
-        LoweredTail::ClosureCall { callsite, .. } => {
-            out.insert(*callsite, CallInputMode::Closure);
         }
         LoweredTail::Value { .. }
         | LoweredTail::If { .. }
@@ -2467,10 +2439,21 @@ fn arg_demands_for_summary(
                 .get(index)
                 .copied()
                 .unwrap_or_else(|| world.types_mut().any());
+            // A malformed callsite (more closure args than the callee has
+            // inputs, or a direct arg past the callee's arity) falls back to
+            // the raw `index` -- the same offset the checked computation
+            // would have produced anyway for `Direct` (it returns `arg_index`
+            // verbatim when in range), and the same offset the old unchecked
+            // `Closure` arithmetic produced once its `saturating_sub`
+            // underflow-clip landed on zero. `target_demands.get(offset)`
+            // below treats an out-of-range offset as a miss regardless, so
+            // this is not a behavior change.
             let offset = target
                 .activation
                 .as_ref()
-                .map(|activation| input_mode.semantic_index(activation.input_len(world.types()), args.len(), index))
+                .and_then(|activation| {
+                    input_mode.semantic_index(activation.input_len(world.types()), args.len(), index)
+                })
                 .unwrap_or(index);
             let observed = target_demands
                 .get(offset)
@@ -2490,21 +2473,6 @@ fn arg_demands_for_summary(
         }
     }
     out
-}
-
-#[derive(Clone, Copy)]
-enum CallInputMode {
-    Direct,
-    Closure,
-}
-
-impl CallInputMode {
-    fn semantic_index(self, callee_input_len: usize, arg_count: usize, arg_index: usize) -> usize {
-        match self {
-            CallInputMode::Direct => arg_index,
-            CallInputMode::Closure => callee_input_len.saturating_sub(arg_count) + arg_index,
-        }
-    }
 }
 
 /// Seed an escaping callable argument's surface from the boundary it crosses.
