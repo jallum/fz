@@ -796,6 +796,72 @@ fn spec_name_mismatch_is_parse_error() {
     );
 }
 
+// fz-go4.48: an @spec syntax typo (missing return type after `::`) is a
+// USER-reachable mistake in the @spec sub-grammar -- quoted_function.rs is
+// the sole validator of @spec token payloads, so this must surface as a
+// PARSE_EXPECTED_TOKEN user diagnostic, not as
+// INTERNAL_POST_RESOLUTION_LEFTOVER (which is what
+// QuotedSourceError::new(..) routed it to before the reclassification).
+#[test]
+fn spec_missing_return_type_is_parse_error() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&[], capture.handler());
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures2/00554_spec_syntax_missing_return_type.fz".to_string()),
+        text: include_str!("../../fixtures2/00554_spec_syntax_missing_return_type.fz").to_string(),
+    });
+    compiler.submit_root(RootSubmission {
+        module_name: Some("M".to_string()),
+        name: "add1".to_string(),
+        arity: 1,
+        need: ExecutableNeed::Value,
+    });
+    assert!(
+        matches!(compiler.drive(), DriveOutcome::Fatal { .. }),
+        "@spec add1(integer) :: with no result type should fail during function surface decoding",
+    );
+    assert_last_error(
+        &capture,
+        codes::PARSE_EXPECTED_TOKEN.0,
+        "expected result type expression after `::` in @spec",
+    );
+}
+
+// fz-go4.48: an unrecognized bitstring modifier atom (e.g. `<<1::bogus>>`) is
+// a USER typo in the bitstring type-spec sub-grammar -- frontdoor.rs parses
+// bitstring segments as generic exprs and never validates modifier names, so
+// quoted_function.rs is the sole validator. Must surface as a
+// parse/bitstring-bad-modifier user diagnostic, not as
+// INTERNAL_POST_RESOLUTION_LEFTOVER.
+#[test]
+fn bitstring_bad_modifier_is_parse_error() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&[], capture.handler());
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures2/00555_bitstring_bad_modifier.fz".to_string()),
+        text: include_str!("../../fixtures2/00555_bitstring_bad_modifier.fz").to_string(),
+    });
+    compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    assert!(
+        matches!(compiler.drive(), DriveOutcome::Fatal { .. }),
+        "<<1::bogus>> should fail during bit-spec modifier decoding",
+    );
+    assert_last_error(
+        &capture,
+        codes::PARSE_BITSTRING_BAD_MODIFIER.0,
+        "unknown bitstring modifier: bogus",
+    );
+}
+
 // Ported from src/frontend/resolve_test.rs: @spec with no fn following it in the module is a parse-time error
 #[test]
 fn spec_without_following_fn_is_a_source_surface_error() {

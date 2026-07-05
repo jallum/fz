@@ -12,6 +12,8 @@ pub const PARSE_EXPECTED_TOKEN: DiagCode = DiagCode("parse/expected-token");
 pub const PARSE_DANGLING_FUNCTION_ATTR: DiagCode = DiagCode("parse/dangling-function-attr");
 pub const PARSE_SPEC_NAME_MISMATCH: DiagCode = DiagCode("parse/spec-name-mismatch");
 pub const PARSE_SPEC_ARITY_MISMATCH: DiagCode = DiagCode("parse/spec-arity-mismatch");
+pub const PARSE_BITSTRING_BAD_MODIFIER: DiagCode = DiagCode("parse/bitstring-bad-modifier");
+pub const PARSE_BITSTRING_BAD_SIZE: DiagCode = DiagCode("parse/bitstring-bad-size");
 
 // ----- resolver -----
 

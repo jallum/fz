@@ -1197,7 +1197,10 @@ fn decode_spec_attribute(payload: &QuotedSourceCursor) -> Result<Attribute, Quot
                 loop {
                     let tokens = parser.collect_type_tokens(TypeTokenBoundary::SpecParam);
                     if tokens.is_empty() {
-                        return Err(QuotedSourceError::new("expected type expression in @spec param list"));
+                        return Err(QuotedSourceError::user(
+                            crate::diag::codes::PARSE_EXPECTED_TOKEN,
+                            "expected type expression in @spec param list",
+                        ));
                     }
                     params.push(TypeExprBody(tokens));
                     if !parser.eat_comma() {
@@ -1210,17 +1213,24 @@ fn decode_spec_attribute(payload: &QuotedSourceCursor) -> Result<Attribute, Quot
         } else {
             let left = parser.collect_type_tokens(TypeTokenBoundary::SpecInfixOperand);
             if left.is_empty() {
-                return Err(QuotedSourceError::new(
+                return Err(QuotedSourceError::user(
+                    crate::diag::codes::PARSE_EXPECTED_TOKEN,
                     "expected type expression before operator in @spec",
                 ));
             }
             let name = parser
                 .bump()
                 .and_then(|tok| operator_token_name(&tok).map(str::to_string))
-                .ok_or_else(|| QuotedSourceError::new("expected `@spec name(` or `@spec T1 <op> T2`"))?;
+                .ok_or_else(|| {
+                    QuotedSourceError::user(
+                        crate::diag::codes::PARSE_EXPECTED_TOKEN,
+                        "expected `@spec name(` or `@spec T1 <op> T2`",
+                    )
+                })?;
             let right = parser.collect_type_tokens(TypeTokenBoundary::SpecInfixOperand);
             if right.is_empty() {
-                return Err(QuotedSourceError::new(
+                return Err(QuotedSourceError::user(
+                    crate::diag::codes::PARSE_EXPECTED_TOKEN,
                     "expected type expression after operator in @spec",
                 ));
             }
@@ -1230,7 +1240,8 @@ fn decode_spec_attribute(payload: &QuotedSourceCursor) -> Result<Attribute, Quot
     parser.expect_colon_colon("`::` in @spec")?;
     let result_body_tokens = parser.collect_type_tokens(TypeTokenBoundary::TypeBody);
     if result_body_tokens.is_empty() {
-        return Err(QuotedSourceError::new(
+        return Err(QuotedSourceError::user(
+            crate::diag::codes::PARSE_EXPECTED_TOKEN,
             "expected result type expression after `::` in @spec",
         ));
     }
@@ -1242,22 +1253,27 @@ fn decode_spec_attribute(payload: &QuotedSourceCursor) -> Result<Attribute, Quot
                 Some(Tok::Ident(name)) => (name, false),
                 Some(Tok::KwKey(name)) => (name, true),
                 Some(other) => {
-                    return Err(QuotedSourceError::new(format!(
-                        "expected type variable after `when`, got {:?}",
-                        other
-                    )));
+                    return Err(QuotedSourceError::user(
+                        crate::diag::codes::PARSE_EXPECTED_TOKEN,
+                        format!("expected type variable after `when`, got {:?}", other),
+                    ));
                 }
-                None => return Err(QuotedSourceError::new("expected type variable after `when`")),
+                None => {
+                    return Err(QuotedSourceError::user(
+                        crate::diag::codes::PARSE_EXPECTED_TOKEN,
+                        "expected type variable after `when`",
+                    ));
+                }
             };
             if !kw_colon {
                 parser.expect_colon("`:` after constrained type variable")?;
             }
             let body = parser.collect_type_tokens(TypeTokenBoundary::Constraint);
             if body.is_empty() {
-                return Err(QuotedSourceError::new(format!(
-                    "expected constraint type expression after `{}:`",
-                    var
-                )));
+                return Err(QuotedSourceError::user(
+                    crate::diag::codes::PARSE_EXPECTED_TOKEN,
+                    format!("expected constraint type expression after `{}:`", var),
+                ));
             }
             constraints.push((var, TypeExprBody(body)));
             if !parser.eat_comma() {
@@ -1302,17 +1318,22 @@ fn apply_bit_spec_modifier(cursor: &QuotedSourceCursor, spec: &mut BitFieldSpec)
                 Ok(())
             }
             name if args.is_empty() => apply_bit_modifier_name(spec, name),
-            other => Err(QuotedSourceError::new(format!(
-                "unsupported quoted bit-spec modifier `{other}`"
-            ))),
+            other => Err(QuotedSourceError::user(
+                crate::diag::codes::PARSE_BITSTRING_BAD_MODIFIER,
+                format!("unsupported quoted bit-spec modifier `{other}`"),
+            )),
         };
     }
 
     match cursor.root().tag() {
         fz_runtime::any_value::ValueKind::INT => {
             let raw = cursor.int_value()?;
-            let size = u32::try_from(raw)
-                .map_err(|_| QuotedSourceError::new(format!("bitstring size literal must fit in u32, got {raw}")))?;
+            let size = u32::try_from(raw).map_err(|_| {
+                QuotedSourceError::user(
+                    crate::diag::codes::PARSE_BITSTRING_BAD_SIZE,
+                    format!("bitstring size literal must fit in u32, got {raw}"),
+                )
+            })?;
             spec.size = Some(BitSize::Literal(size));
             Ok(())
         }
@@ -1329,9 +1350,12 @@ fn apply_bit_spec_modifier(cursor: &QuotedSourceCursor, spec: &mut BitFieldSpec)
 
 fn decode_bit_size(cursor: &QuotedSourceCursor) -> Result<BitSize, QuotedSourceError> {
     if let Ok(value) = cursor.int_value() {
-        return u32::try_from(value)
-            .map(BitSize::Literal)
-            .map_err(|_| QuotedSourceError::new(format!("bitstring size literal must fit in u32, got {value}")));
+        return u32::try_from(value).map(BitSize::Literal).map_err(|_| {
+            QuotedSourceError::user(
+                crate::diag::codes::PARSE_BITSTRING_BAD_SIZE,
+                format!("bitstring size literal must fit in u32, got {value}"),
+            )
+        });
     }
     if let Some(node) = cursor.ast_node()?
         && !is_list_like(&node.tail)
@@ -1340,16 +1364,21 @@ fn decode_bit_size(cursor: &QuotedSourceCursor) -> Result<BitSize, QuotedSourceE
     }
     match cursor.root().tag() {
         fz_runtime::any_value::ValueKind::ATOM => Ok(BitSize::Var(cursor.atom_name()?)),
-        other => Err(QuotedSourceError::new(format!(
-            "bitstring size expects int or variable, got {:?}",
-            other
-        ))),
+        other => Err(QuotedSourceError::user(
+            crate::diag::codes::PARSE_BITSTRING_BAD_SIZE,
+            format!("bitstring size expects int or variable, got {:?}", other),
+        )),
     }
 }
 
 fn decode_bit_unit(cursor: &QuotedSourceCursor) -> Result<u32, QuotedSourceError> {
     let raw = cursor.int_value()?;
-    u32::try_from(raw).map_err(|_| QuotedSourceError::new(format!("bitstring unit must fit in u32, got {raw}")))
+    u32::try_from(raw).map_err(|_| {
+        QuotedSourceError::user(
+            crate::diag::codes::PARSE_BITSTRING_BAD_SIZE,
+            format!("bitstring unit must fit in u32, got {raw}"),
+        )
+    })
 }
 
 fn apply_bit_modifier_name(spec: &mut BitFieldSpec, name: &str) -> Result<(), QuotedSourceError> {
@@ -1366,7 +1395,12 @@ fn apply_bit_modifier_name(spec: &mut BitFieldSpec, name: &str) -> Result<(), Qu
         "native" => spec.endian = Endian::Native,
         "signed" => spec.signed = true,
         "unsigned" => spec.signed = false,
-        other => return Err(QuotedSourceError::new(format!("unknown bitstring modifier: {other}"))),
+        other => {
+            return Err(QuotedSourceError::user(
+                crate::diag::codes::PARSE_BITSTRING_BAD_MODIFIER,
+                format!("unknown bitstring modifier: {other}"),
+            ));
+        }
     }
     Ok(())
 }
@@ -1471,7 +1505,10 @@ impl FragmentCursor {
                 self.pos += 1;
                 Ok(())
             }
-            Some(other) => Err(QuotedSourceError::new(format!("expected {label}, got {:?}", other))),
+            Some(other) => Err(QuotedSourceError::user(
+                crate::diag::codes::PARSE_EXPECTED_TOKEN,
+                format!("expected {label}, got {:?}", other),
+            )),
         }
     }
 
@@ -1505,8 +1542,14 @@ impl FragmentCursor {
     fn expect(&mut self, pred: impl FnOnce(&Tok) -> bool, label: &str) -> Result<(), QuotedSourceError> {
         match self.bump() {
             Some(tok) if pred(&tok) => Ok(()),
-            Some(other) => Err(QuotedSourceError::new(format!("expected {label}, got {:?}", other))),
-            None => Err(QuotedSourceError::new(format!("expected {label}, got eof"))),
+            Some(other) => Err(QuotedSourceError::user(
+                crate::diag::codes::PARSE_EXPECTED_TOKEN,
+                format!("expected {label}, got {:?}", other),
+            )),
+            None => Err(QuotedSourceError::user(
+                crate::diag::codes::PARSE_EXPECTED_TOKEN,
+                format!("expected {label}, got eof"),
+            )),
         }
     }
 }
