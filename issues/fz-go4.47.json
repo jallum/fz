@@ -7,9 +7,15 @@
   "id": "fz-go4.47",
   "labels": [],
   "parent": "fz-go4",
+  "comments": [
+    {
+      "text": "FOLDED as 8655ae348 (+doc-nit amend). All three duplications collapsed into body.rs: CallInputMode enum, semantic_index (kept the CHECKED Option\u003cusize\u003e), callsite_input_modes map-builder (kept flat scan). Net -52 lines, lib 1199/0/9, fixture_matrix failing-set IDENTICAL before/after (19 failed, same names -\u003e no new regressions). Audit (1 lane, adversarial) PROVEN SOUND on both crux risks: (1) flat==recursive equivalence -- entries is a DAG populated only by plan_block (jobs/body.rs) AND prune_lowered_body (jobs/artifact.rs, the materialized-body path), both preserving 'entries == reachable-from-clause-entries', no orphan/divergence shape exists; (2) semantic_index reconciliation -- dropped edges are dead out-of-range HashMap keys nobody queries, and the checked path CLOSES a latent bug (Closure overflow saturating to an in-range bogus key that was silently misread). Concordance: identical enums, no lost info. Applied audit SHOULD-FIX at fold: extended the callsite_input_modes doc to name BOTH invariant producers (plan_block + prune_lowered_body) as the guidepost future changes must preserve.",
+      "timestamp": "2026-07-05T16:34:39Z"
+    }
+  ],
   "priority": 3,
   "status": "open",
   "title": "Fold duplicate CallInputMode enum + its two traversals + double semantic_index (runtime_demand.rs / transport.rs)",
   "type": "task",
-  "updated_at": "2026-07-04T23:49:07Z"
+  "updated_at": "2026-07-05T16:34:39Z"
 }
