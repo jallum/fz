@@ -155,6 +155,8 @@ mod quoted_function_test;
 #[cfg(test)]
 mod quoted_surface_test;
 #[cfg(test)]
+mod resolve_test;
+#[cfg(test)]
 mod scheduler_test;
 #[cfg(test)]
 mod scope_test;

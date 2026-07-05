@@ -30,7 +30,7 @@ use super::identity::{NotedTypeDecl, TypeName};
 use super::namespace::Namespace;
 use super::type_expr::{NominalKind, TypeExpr, TypeExprError, parse_type_expr};
 use super::typedef::TypeDef;
-use super::types::{Ty, TypeVarId};
+use super::types::{Ty, TypeVarId, Types};
 use super::world::World;
 
 /// An `@spec` resolved against its captured namespace: hard compiler2 types in
@@ -49,8 +49,9 @@ enum NameClass {
     List,
     /// The `resource(T)` parametric opaque constructor.
     Resource,
-    /// A builtin scalar — minted directly, never namespace-resolved.
-    Builtin(Builtin),
+    /// A builtin constructor found in the [`CONSTRUCTORS`] registry — minted
+    /// directly, never namespace-resolved.
+    Builtin(&'static ConstructorEntry),
     /// A declared type, read from the `TypeDefined` store at this identity.
     Named(TypeName),
     /// A free type variable, bound to this id for the rest of the declaration.
@@ -59,20 +60,61 @@ enum NameClass {
     Unknown,
 }
 
-#[derive(Clone, Copy)]
-enum Builtin {
-    Nil,
-    Bool,
-    Integer,
-    Float,
-    CPointer,
-    Binary,
-    Atom,
-    Any,
-    Never,
-    Utf8,
-    Pid,
-    Ref,
+/// How many type arguments a registered constructor accepts. Every scalar
+/// registered so far is `Fixed(0)`; the parametric constructors (`list`,
+/// `resource`, ...) a later migration folds into this registry will extend
+/// this with their own variants when they arrive.
+enum Arity {
+    /// Exactly `n` arguments.
+    Fixed(usize),
+}
+
+impl Arity {
+    fn accepts(&self, n: usize) -> bool {
+        match self {
+            Arity::Fixed(k) => n == *k,
+        }
+    }
+}
+
+impl std::fmt::Display for Arity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Arity::Fixed(k) => write!(f, "{k}"),
+        }
+    }
+}
+
+/// One entry in the builtin type-constructor registry: a name in type
+/// position, the number of type arguments it accepts, and how to mint the
+/// `Ty` once those arguments are resolved and arity-checked.
+struct ConstructorEntry {
+    name: &'static str,
+    arity: Arity,
+    build: fn(&mut Types, &[Ty]) -> Ty,
+}
+
+/// The registry of builtin type-constructor names. Today this holds only the
+/// twelve nullary scalars; `list`/`resource` (still special-cased in
+/// [`World::classify_name`]) and `map` join it in later migrations.
+#[rustfmt::skip]
+const CONSTRUCTORS: &[ConstructorEntry] = &[
+    ConstructorEntry { name: "nil",      arity: Arity::Fixed(0), build: |t, _| t.nil() },
+    ConstructorEntry { name: "bool",     arity: Arity::Fixed(0), build: |t, _| t.bool() },
+    ConstructorEntry { name: "integer",  arity: Arity::Fixed(0), build: |t, _| t.int() },
+    ConstructorEntry { name: "float",    arity: Arity::Fixed(0), build: |t, _| t.float() },
+    ConstructorEntry { name: "cpointer", arity: Arity::Fixed(0), build: |t, _| t.cpointer() },
+    ConstructorEntry { name: "binary",   arity: Arity::Fixed(0), build: |t, _| t.str_t() },
+    ConstructorEntry { name: "atom",     arity: Arity::Fixed(0), build: |t, _| t.atom() },
+    ConstructorEntry { name: "any",      arity: Arity::Fixed(0), build: |t, _| t.any() },
+    ConstructorEntry { name: "never",    arity: Arity::Fixed(0), build: |t, _| t.none() },
+    ConstructorEntry { name: "utf8",     arity: Arity::Fixed(0), build: |t, _| { let inner = t.str_t(); t.mint_brand(inner, "utf8") } },
+    ConstructorEntry { name: "pid",      arity: Arity::Fixed(0), build: |t, _| t.opaque_of("pid") },
+    ConstructorEntry { name: "ref",      arity: Arity::Fixed(0), build: |t, _| t.opaque_of("ref") },
+];
+
+fn find_constructor(name: &str) -> Option<&'static ConstructorEntry> {
+    CONSTRUCTORS.iter().find(|entry| entry.name == name)
 }
 
 impl World<'_> {
@@ -299,11 +341,14 @@ impl World<'_> {
                 let inner_ty = arg_tys.into_iter().next().unwrap_or_else(|| self.types_mut().any());
                 Ok(self.types_mut().resource(inner_ty))
             }
-            NameClass::Builtin(builtin) => {
-                if !args.is_empty() {
-                    return Err(self.name_error(path, "a builtin type takes no type arguments"));
+            NameClass::Builtin(entry) => {
+                if !entry.arity.accepts(args.len()) {
+                    return Err(self.name_error(
+                        path,
+                        &format!("expected {} type argument(s), got {}", entry.arity, args.len()),
+                    ));
                 }
-                Ok(self.builtin_ty(builtin))
+                Ok((entry.build)(self.types_mut(), &arg_tys))
             }
             NameClass::Named(type_name) => {
                 let Some(def) = self.type_def(&type_name).cloned() else {
@@ -335,8 +380,8 @@ impl World<'_> {
             if name == "resource" {
                 return NameClass::Resource;
             }
-            if let Some(builtin) = builtin_from_name(name) {
-                return NameClass::Builtin(builtin);
+            if let Some(entry) = find_constructor(name) {
+                return NameClass::Builtin(entry);
             }
             if let Some(&id) = vars.get(name) {
                 return NameClass::Var(id);
@@ -365,49 +410,10 @@ impl World<'_> {
         ));
     }
 
-    fn builtin_ty(&mut self, builtin: Builtin) -> Ty {
-        let types = self.types_mut();
-        match builtin {
-            Builtin::Nil => types.nil(),
-            Builtin::Bool => types.bool(),
-            Builtin::Integer => types.int(),
-            Builtin::Float => types.float(),
-            Builtin::CPointer => types.cpointer(),
-            Builtin::Binary => types.str_t(),
-            Builtin::Atom => types.atom(),
-            Builtin::Any => types.any(),
-            Builtin::Never => types.none(),
-            Builtin::Utf8 => {
-                let inner = types.str_t();
-                types.mint_brand(inner, "utf8")
-            }
-            Builtin::Pid => types.opaque_of("pid"),
-            Builtin::Ref => types.opaque_of("ref"),
-        }
-    }
-
     fn name_error(&self, path: &[String], msg: &str) -> TypeExprError {
         TypeExprError {
             msg: format!("{} `{}`", msg, path.join(".")),
             span: Span::DUMMY,
         }
     }
-}
-
-fn builtin_from_name(name: &str) -> Option<Builtin> {
-    Some(match name {
-        "nil" => Builtin::Nil,
-        "bool" => Builtin::Bool,
-        "integer" => Builtin::Integer,
-        "float" => Builtin::Float,
-        "cpointer" => Builtin::CPointer,
-        "binary" => Builtin::Binary,
-        "atom" => Builtin::Atom,
-        "any" => Builtin::Any,
-        "never" => Builtin::Never,
-        "utf8" => Builtin::Utf8,
-        "pid" => Builtin::Pid,
-        "ref" => Builtin::Ref,
-        _ => return None,
-    })
 }
