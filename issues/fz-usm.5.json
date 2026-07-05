@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-07-05T22:24:58Z",
+  "description": "Step 5 -- DECISION TICKET, needs authorization before building (per no-silent-deferrals). map(k,v) with parametric key/value types has NO precise Ty to target: MapSig only models exact literal-keyed records + map_top (sigs.rs:102-105 explicit 'arbitrary-keyed maps fall back to map_top'). Two routes: (a) LOSSY -- registry Fixed(2), build resolves both args (so bad type names still error) but discards them, returns map_top(); accept-but-unenforce, doc it. SAFE. (b) DEEP -- add a homogeneous-map axis to MapSig/Descr with new emptiness/subtyping rules; real data-model addition. Reviewer decides after fz-usm.3/.4 land (so both existing map Ty shapes -- map_top + exact -- are visible). Depends fz-usm.3, fz-usm.4. Do NOT start until authorized.",
+  "id": "fz-usm.5",
+  "labels": [],
+  "parent": "fz-usm",
+  "priority": 3,
+  "status": "open",
+  "title": "fz-usm DECISION: homogeneous map(k,v) -- lossy map_top approximation vs a real homogeneous-map Ty axis",
+  "type": "task",
+  "updated_at": "2026-07-05T22:24:58Z"
+}
