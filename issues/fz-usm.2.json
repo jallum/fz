@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-usm.1"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-usm.6"
+  ],
   "created": "2026-07-05T22:24:56Z",
   "description": "Step 2. Retire the inline list/resource special-cases (resolve.rs classify_name ~:332-337 + resolve_name ~:291-301) into registry entries: list=Arity::Range(0,1), resource=Arity::Fixed(1). BEHAVIOR CHANGE (call out in commit): resource(A,B) currently silently drops B via .into_iter().next() (resolve.rs ~:299-300) -- the uniform arity check now DIAGNOSES it. Keep list/list(T) AND [T] all resolving to the same Ty (concordance: unify resolution target, NOT syntax; Elixir-parity source needs list(t) to keep working). Depends fz-usm.1. TDD: [T]/list/list(T) parity (same Ty); resource(A,B) now errors instead of truncating.",
   "id": "fz-usm.2",
@@ -13,5 +15,5 @@
   "status": "open",
   "title": "fz-usm registry: migrate list/resource off inline special-cases; fix resource silent arity truncation",
   "type": "task",
-  "updated_at": "2026-07-05T22:24:59Z"
+  "updated_at": "2026-07-05T22:25:02Z"
 }

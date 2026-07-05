@@ -1,7 +1,8 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-usm.1"
+    "fz-usm.1",
+    "fz-usm.2"
   ],
   "blocks": [],
   "created": "2026-07-05T22:24:58Z",
@@ -13,5 +14,5 @@
   "status": "open",
   "title": "fz-usm: parity audit across the constructor set + update type-resolution agent docs to name the registry as source of truth",
   "type": "task",
-  "updated_at": "2026-07-05T22:25:01Z"
+  "updated_at": "2026-07-05T22:25:02Z"
 }
