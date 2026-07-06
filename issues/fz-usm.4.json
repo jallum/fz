@@ -12,9 +12,15 @@
   "id": "fz-usm.4",
   "labels": [],
   "parent": "fz-usm",
+  "comments": [
+    {
+      "text": "FOLDED (SHA below). Structural %{k=\u003ev} (+ %{k: v} atom shorthand, mirroring value-level parse_map_entries) -\u003e exact Types::map, parity with [T]/List. TypeExpr::Map(Vec\u003c(TypeExpr,TypeExpr)\u003e) variant; resolve_ty arm + resolve_map_key helper. KEY INSIGHT (correct deviation from ticket wording): keys read DIRECTLY from AST AtomLit/IntLit shape, NOT via as_map_key(Ty) -- because the lattice keeps no numeric singletons (as_int_singleton always None), so a Ty built from an IntLit has forgotten its value; mirrors semantic.rs map-literal-key convention. Non-literal keys -\u003e clean TypeExprError (no map_top fallback; usm.5 territory stays out of scope). %{} -\u003e empty exact map (consistent with value-level). 2 exhaustive-match sites updated (resolve_ty, source_publish::collect_type_refs); rustc exhaustiveness guarantees none missed. +8 tests (4 parser, 4 resolver). lib 1209/0/9. Self-certified (additive, scope-clean, int-key risk caught+handled).",
+      "timestamp": "2026-07-06T15:12:37Z"
+    }
+  ],
   "priority": 3,
   "status": "open",
   "title": "fz-usm: add structural %{k=\u003ev} TypeExpr::Map variant + resolver arm targeting exact Types::map",
   "type": "task",
-  "updated_at": "2026-07-05T22:25:03Z"
+  "updated_at": "2026-07-06T15:12:37Z"
 }
