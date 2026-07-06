@@ -47,6 +47,10 @@ pub enum TypeExpr {
         module: Vec<String>,
         fields: Vec<(String, TypeExpr)>,
     },
+    /// `%{k => v, …}` — the structural map type, parity with `[T]` for
+    /// lists. Keys stay syntactic here; resolution requires each to be a
+    /// literal atom or int (the exact-map `Ty`'s key domain).
+    Map(Vec<(TypeExpr, TypeExpr)>),
     /// `:ok`.
     AtomLit(String),
     /// `42`.
@@ -188,6 +192,7 @@ impl<'a> TypeExprParser<'a> {
             Tok::LBrace => self.parse_tuple(),
             Tok::LParen => self.parse_paren_or_arrow(),
             Tok::Percent => self.parse_struct_record(),
+            Tok::PercentLBrace => self.parse_map(),
             Tok::Underscore => {
                 self.bump();
                 Ok(TypeExpr::Wildcard)
@@ -327,6 +332,46 @@ impl<'a> TypeExprParser<'a> {
         }
         self.expect(&Tok::RBrace, "`}` after struct-record fields")?;
         Ok(TypeExpr::StructRecord { module, fields })
+    }
+
+    /// `%{k => v, …}`, mirroring the value-level map literal's two key
+    /// forms (`frontdoor.rs::parse_map_entries`): an atom-shorthand `key:`
+    /// (bare atom/ident followed by `:`, or the pre-lexed `KwKey`) and the
+    /// canonical `key => value` for any other key expression.
+    fn parse_map(&mut self) -> Result<TypeExpr, TypeExprError> {
+        self.expect(&Tok::PercentLBrace, "`%{`")?;
+        let mut pairs = Vec::new();
+        if !matches!(self.peek(), Tok::RBrace) {
+            loop {
+                pairs.push(self.parse_map_pair()?);
+                if !matches!(self.peek(), Tok::Comma) {
+                    break;
+                }
+                self.bump();
+            }
+        }
+        self.expect(&Tok::RBrace, "`}` after map fields")?;
+        Ok(TypeExpr::Map(pairs))
+    }
+
+    fn parse_map_pair(&mut self) -> Result<(TypeExpr, TypeExpr), TypeExprError> {
+        if let Tok::KwKey(name) = self.peek().clone() {
+            self.bump();
+            let value = self.parse_union()?;
+            return Ok((TypeExpr::AtomLit(name), value));
+        }
+        if let Tok::Atom(name) | Tok::Ident(name) = self.peek().clone()
+            && matches!(self.tokens.get(self.pos + 1).map(|token| &token.tok), Some(Tok::Colon))
+        {
+            self.bump();
+            self.bump();
+            let value = self.parse_union()?;
+            return Ok((TypeExpr::AtomLit(name), value));
+        }
+        let key = self.parse_union()?;
+        self.expect(&Tok::FatArrow, "`=>` after map key")?;
+        let value = self.parse_union()?;
+        Ok((key, value))
     }
 
     fn parse_module_path(&mut self) -> Result<Vec<String>, TypeExprError> {

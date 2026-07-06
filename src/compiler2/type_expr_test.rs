@@ -105,6 +105,44 @@ fn a_struct_record_keeps_module_and_field_types() {
 }
 
 #[test]
+fn a_map_parses_its_key_value_pairs() {
+    // `%{k => v}`: parity with `[T]` for lists — the structural map type.
+    assert_eq!(
+        parse("%{ok => integer}"),
+        TypeExpr::Map(vec![(name(&["ok"], vec![]), name(&["integer"], vec![]))]),
+    );
+}
+
+#[test]
+fn a_map_key_shorthand_matches_the_struct_record_field_shorthand() {
+    // `key: T` is atom-shorthand for `:key => T`, mirroring both the
+    // struct-record field shorthand and the value-level map literal's
+    // `key: value` form.
+    assert_eq!(
+        parse("%{ok: integer, err: atom}"),
+        TypeExpr::Map(vec![
+            (TypeExpr::AtomLit("ok".to_string()), name(&["integer"], vec![])),
+            (TypeExpr::AtomLit("err".to_string()), name(&["atom"], vec![])),
+        ]),
+    );
+}
+
+#[test]
+fn a_map_key_can_be_any_type_expression_via_fat_arrow() {
+    // `1 => atom`: the canonical `=>` form accepts a key that is not a bare
+    // atom/ident, unlike the `:`-shorthand.
+    assert_eq!(
+        parse("%{1 => atom}"),
+        TypeExpr::Map(vec![(TypeExpr::IntLit(1), name(&["atom"], vec![]))]),
+    );
+}
+
+#[test]
+fn an_empty_map_parses_with_no_pairs() {
+    assert_eq!(parse("%{}"), TypeExpr::Map(vec![]));
+}
+
+#[test]
 fn a_refines_body_strips_the_nominal_prefix() {
     // `@type B :: refines integer` — the brand worked example. The inner is a
     // plain unresolved Name; the resolver mints the brand over it.

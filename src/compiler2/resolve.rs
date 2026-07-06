@@ -30,7 +30,7 @@ use super::identity::{NotedTypeDecl, TypeName};
 use super::namespace::Namespace;
 use super::type_expr::{NominalKind, TypeExpr, TypeExprError, parse_type_expr};
 use super::typedef::TypeDef;
-use super::types::{Ty, TypeVarId, Types};
+use super::types::{MapKey, Ty, TypeVarId, Types};
 use super::world::World;
 
 /// An `@spec` resolved against its captured namespace: hard compiler2 types in
@@ -290,6 +290,15 @@ impl World<'_> {
                     .collect::<Vec<_>>();
                 Ok(self.struct_value_ty(&module_name.dotted(), &ordered_names, &ordered_fields))
             }
+            TypeExpr::Map(pairs) => {
+                let mut fields = Vec::with_capacity(pairs.len());
+                for (key_expr, value_expr) in pairs {
+                    let map_key = self.resolve_map_key(key_expr)?;
+                    let value_ty = self.resolve_ty(namespace, value_expr, vars)?;
+                    fields.push((map_key, value_ty));
+                }
+                Ok(self.types_mut().map(&fields))
+            }
             TypeExpr::AtomLit(name) => Ok(self.types_mut().atom_lit(name)),
             // The lattice cannot express a numeric singleton (Elixir's
             // descr draws the same line): a literal in type position means
@@ -414,6 +423,28 @@ impl World<'_> {
         TypeExprError {
             msg: format!("{} `{}`", msg, path.join(".")),
             span: Span::DUMMY,
+        }
+    }
+
+    /// A `%{k => v}` key must be a literal atom or int — the exact-map
+    /// `Ty`'s only key domain. This reads the key straight off the
+    /// syntactic literal rather than resolving it to a `Ty` first: the
+    /// lattice keeps no numeric singletons (`Types::as_int_singleton` is
+    /// always `None`, by design — see its doc comment), so a `Ty` built
+    /// from an `IntLit` has already forgotten the literal's value. Any
+    /// other key shape (a name, a homogeneous key type, a nested
+    /// structure, …) cannot be represented by today's exact map and is a
+    /// clean resolution error, not a silent `map_top` fallback.
+    fn resolve_map_key(&self, key_expr: &TypeExpr) -> Result<MapKey, TypeExprError> {
+        match key_expr {
+            TypeExpr::AtomLit(name) => Ok(MapKey::Atom(name.clone())),
+            TypeExpr::IntLit(value) => Ok(MapKey::Int(*value)),
+            _ => Err(TypeExprError {
+                msg: "a map type key must be a literal atom or int (e.g. `%{ok: T}` or `%{1 => T}`); \
+                      a non-literal key type is not yet representable"
+                    .to_string(),
+                span: Span::DUMMY,
+            }),
         }
     }
 }

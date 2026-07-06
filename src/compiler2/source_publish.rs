@@ -1423,6 +1423,12 @@ fn collect_type_refs(world: &mut World<'_>, scope: Namespace, expr: &TypeExpr, o
                 collect_type_refs(world, scope, ty, out);
             }
         }
+        TypeExpr::Map(pairs) => {
+            for (key, value) in pairs {
+                collect_type_refs(world, scope, key, out);
+                collect_type_refs(world, scope, value, out);
+            }
+        }
         TypeExpr::EmptyList
         | TypeExpr::AtomLit(_)
         | TypeExpr::IntLit(_)
