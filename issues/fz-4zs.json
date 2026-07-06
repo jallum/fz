@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-07-06T20:01:22Z",
+  "description": "SURFACED by fz-yj0.3. Running 'cargo test --test fixture_matrix' in the DEFAULT parallel mode yields a NONDETERMINISTIC failure set: consecutive runs with zero code changes produced 27, then 21, then (single-threaded) 19 failures, with DIFFERENT fixture names appearing/disappearing (curried_add, defstruct_runtime, destructure_*). Root cause: fixtures carry wall-clock timeouts (e.g. tail_recursion::interp 'exceeded 3s') that buckle under CPU contention when many fixture processes run concurrently. 'cargo test --test fixture_matrix -- --test-threads=1' is DETERMINISTIC and yields a stable 19-failure baseline (the genuine pre-existing compiler2 native-lowering gaps on enum fixtures).\n\nIMPACT: the default parallel invocation is NOT a reliable green gate; it can both hide real regressions and invent phantom ones. Any 'fixture stays exactly N' check MUST use --test-threads=1 until fixed.\n\nDECIDE/FIX (holistic): either (a) make the per-fixture timeout contention-aware (scale by available parallelism / wall-clock budget, or use CPU-time not wall-time), (b) pin the harness to a bounded concurrency that fits the timeout, or (c) if specific fixtures are genuinely slow (cf. 'tiny-fixture slowness is correctness'), investigate those. Cross-check against the known enum_take_drop_split convergence slowness.\n\nVERIFY: 'cargo test --test fixture_matrix' (default parallel) produces the SAME failure set as --test-threads=1 across 5 consecutive runs. Non-blocking for the yj0 fold (which gates on --test-threads=1) but corrupts the CI signal; P2.",
+  "id": "fz-4zs",
+  "labels": [],
+  "priority": 2,
+  "status": "open",
+  "title": "fixture_matrix parallel runs are nondeterministic under CPU contention",
+  "type": "bug",
+  "updated_at": "2026-07-06T20:01:22Z"
+}
