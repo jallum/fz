@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-07-06T20:12:52Z",
+  "description": "SURFACED by fz-yj0.5 audit, cross-checked in fz-yj0.4. NOT a regression (pre-existing), now FIXABLE after the GroundValue fold.\n\nmaterialize_dispatch_const (src/compiler2/jobs/body.rs:~1970) maps DispatchConst::Utf8Binary(bytes) -\u003e GroundValue::Binary(bytes.clone()), DROPPING the UTF-8 brand. This was structurally forced before fz-yj0.4 (old body::Literal had no Utf8Binary variant, so Utf8Binary always became Literal::Binary -- verified identical pre/post .4, zero regression). Now that GroundValue HAS a Utf8Binary variant, the collapse is a fixable violation of ground_value.rs's own load-bearing doc ('Binary and Utf8Binary ... must never be collapsed').\n\nLATENT SPLIT: semantic.rs::dispatch_const_ty types a Utf8Binary dispatch const as str_t(), but the materialized VALUE carries no UTF-8 brand (it is a raw Binary). Type says str, value says raw bytes. No fixture catches this today (byte content is identical; brand is a type-level assertion), but it is a type/value inconsistency.\n\nFIX: materialize_dispatch_const should map Utf8Binary -\u003e GroundValue::Utf8Binary. This makes native.rs::lower_backend_literal's 'GroundValue::Utf8Binary =\u003e unreachable!()' arm (added by fz-yj0.4) LIVE, so it needs REAL backend handling -- route Utf8Binary through the same str/bitstring lowering path that receive.rs / dispatch_exec.rs already use for Utf8Binary dispatch consts. This is genuine new backend scope, deliberately NOT folded into .4 (which faithfully preserved pre-existing behavior).\n\nVERIFY: a fixture that pattern-matches or dispatches on a string literal and observes its str-brand end-to-end; lib green; single-threaded fixture_matrix still exactly 19 (no new red). Belongs to the fz-yj0 epic.",
+  "id": "fz-1cc",
+  "labels": [],
+  "priority": 2,
+  "status": "open",
+  "title": "Preserve the UTF-8 brand when materializing a Utf8Binary dispatch const (stop collapsing to Binary)",
+  "type": "bug",
+  "updated_at": "2026-07-06T20:12:52Z"
+}
