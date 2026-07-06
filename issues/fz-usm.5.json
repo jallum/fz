@@ -15,11 +15,15 @@
     {
       "text": "DECISION (user, 2026-07-06): DEEP -- add a real homogeneous-map Ty axis (not the lossy map_top approximation). User wants to DISCUSS the design before implementation. Producing a grounded design proposal (current MapSig/Descr/map_top model + the homogeneous axis's lattice rules: subtype/emptiness/join/meet + integration with exact-map and top + blast radius + sub-DAG) for review BEFORE any coding. Do NOT start implementation until the design is agreed.",
       "timestamp": "2026-07-06T15:36:03Z"
+    },
+    {
+      "text": "BLOCKER RESOLVED: fz-yj0 is COMPLETE (closed 2026-07-06). A real ground-literal key now exists: crate::ground_value::GroundValue {Int,Float(u64 bits),Atom,Bool,Nil,EmptyList,Binary,Utf8Binary}, and MapKey is now its {Atom,Int} projection (re-exported as crate::types::MapKey). The map re-evaluation this ticket defers can now proceed on the settled key model. Re-read questions (a) should map field keys become GroundValue (any ground value) rather than atom/int-only, and (b) does homogeneous map(k,v) still need a Ty axis (MapSig.rest) once richer literal keys reframe the key-domain question, against HEAD 927c4b752. Still DESIGN-FIRST per the earlier user decision.",
+      "timestamp": "2026-07-06T20:50:29Z"
     }
   ],
   "priority": 3,
   "status": "open",
   "title": "fz-usm DECISION: homogeneous map(k,v) -- DEFERRED behind the GroundValue fold; re-evaluate map keying with a real literal key",
   "type": "task",
-  "updated_at": "2026-07-06T17:42:34Z"
+  "updated_at": "2026-07-06T20:50:29Z"
 }
