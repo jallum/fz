@@ -11,9 +11,15 @@
   "id": "fz-usm.2",
   "labels": [],
   "parent": "fz-usm",
+  "comments": [
+    {
+      "text": "FOLDED as fb72514b9 (cherry-pick conflict in resolve_test.rs resolved by coordinator -- both usm.2 + usm.4 test sets preserved; git tangled the identical assert_eq!(display) tails). list+resource migrated into CONSTRUCTORS; byte-identical build fns (both reproduce a.first().copied().unwrap_or_else(||any) then t.list/t.resource -- verified against old NameClass arms). Deleted NameClass::List/Resource + their resolve_name arms + the if-name special-cases in classify_name. Arity::Range re-added (accepts + Display 'min to max'). RESOURCE DECISION: Range(0,1) not Fixed(1) -- the OLD NameClass::Resource arm had the SAME unwrap_or(any) fallback as list, so bare resource-\u003eresource(any) was LIVE behavior; Fixed(1) would regress it (verified from code, no fixture covered it). resource(A,B) now ERRORS ('expected 0 to 1 type argument(s), got 2 resource') -- the one intended behavior fix. Parity proven: [T]==list(T)==list, resource(T) unchanged. lib 1213/0/9, 60 resolver tests green. Concordance held: unified the resolution IMPL, [T]/list(T) syntaxes both stay.",
+      "timestamp": "2026-07-06T15:17:14Z"
+    }
+  ],
   "priority": 3,
   "status": "open",
   "title": "fz-usm registry: migrate list/resource off inline special-cases; fix resource silent arity truncation",
   "type": "task",
-  "updated_at": "2026-07-05T22:25:02Z"
+  "updated_at": "2026-07-06T15:17:14Z"
 }
