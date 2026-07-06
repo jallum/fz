@@ -12,9 +12,15 @@
   "id": "fz-usm.3",
   "labels": [],
   "parent": "fz-usm",
+  "comments": [
+    {
+      "text": "FOLDED (cherry-pick clean onto fb72514b9). One CONSTRUCTORS row: map=Arity::Fixed(0) -\u003e Types::map_top(); 'map' joined the table-driven nullary-parity test + a map(T)-errors test. Closes the headline gap (':: map' was 'unknown type name map'). map_top() confirmed consistent-by-construction with world.rs:2759 (runtime Map module already -\u003e map_top). map(T) errors uniformly (nullary-only; parametric map(k,v)=usm.5 stays unauthorized/rejected). No prior 'map' special-casing (fell to NameClass::Unknown). lib 1214/0/9.",
+      "timestamp": "2026-07-06T15:22:26Z"
+    }
+  ],
   "priority": 3,
   "status": "open",
   "title": "fz-usm: add nullary 'map' -\u003e map_top() via the registry (closes ':: map' = unknown type)",
   "type": "task",
-  "updated_at": "2026-07-05T22:25:02Z"
+  "updated_at": "2026-07-06T15:22:26Z"
 }
