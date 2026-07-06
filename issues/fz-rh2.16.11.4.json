@@ -5,6 +5,8 @@
     "fz-rh2.16.11.5"
   ],
   "blocks": [],
+  "closed_at": "2026-07-06T18:11:49Z",
+  "close_reason": "Closed by owner intent as superseded/rescoped: later definition-lifecycle work captured the main invariant; any residual direct-publication cleanup should be filed as a narrower current ticket.",
   "created": "2026-06-10T21:05:18Z",
   "description": "Close the arc by deleting the retired direct definition-publication machinery, shrinking scope publication to alias/import/require plus item-macro expansion and compiler callback application, and making the compiler prelude use the real callback path instead of a side channel. Update docs, telemetry, and tests so the staged boundary is explicit and enforceable.\n\nThis is the deletion and closeout ticket: remove obsolete reserve/discovery/publication code that only existed to support the parallel direct path, prove the bootstrap floor uses the same model as project code, and restate the invariants clearly.\n\nSignal: there is one compiler definition callback, one scope-shaping expansion model, raw `FunctionSource` stays lazy behind demand, and the remaining `fz-rh2.16.4` work sits above that seam.",
   "id": "fz-rh2.16.11.4",
@@ -17,8 +19,8 @@
     }
   ],
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "Compiler2 definition-macro closeout: delete direct publication, bootstrap honestly, and restate the invariants",
   "type": "task",
-  "updated_at": "2026-06-17T20:04:22Z"
+  "updated_at": "2026-07-06T18:11:49Z"
 }
