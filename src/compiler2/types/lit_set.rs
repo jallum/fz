@@ -1,107 +1,14 @@
-//! Finite-or-cofinite `LiteralSet<T>` and its primitive aliases.
+//! Primitive aliases over the shared finite-or-cofinite [`FiniteSet`].
 
-use std::collections::BTreeSet;
-
+use crate::finite_set::FiniteSet;
 use crate::fz_ir::FnId;
 
 use super::TypeVarId;
-/// A finite-or-cofinite set over `T`. `cofinite=false` means "exactly these";
-/// `cofinite=true` means "every value of T EXCEPT these". `(false, {})` is
-/// empty; `(true, {})` is the full universe of T.
-///
-/// Used to track singleton-type precision for atoms (and the atom-shaped
-/// nominal axes: opaques, brands, vars). Numbers deliberately have no
+
+/// Singleton-type precision for atoms (and the atom-shaped nominal axes:
+/// opaques, brands, vars — see [`VarSet`]). Numbers deliberately have no
 /// literal sets — numeric constants are values, not types.
-#[derive(Clone, PartialEq, Eq, Hash)]
-pub(crate) struct LiteralSet<T: Ord + Clone> {
-    pub set: BTreeSet<T>,
-    pub cofinite: bool,
-}
-
-impl<T: Ord + Clone> LiteralSet<T> {
-    pub(crate) fn none() -> Self {
-        Self {
-            set: BTreeSet::new(),
-            cofinite: false,
-        }
-    }
-    pub(crate) fn any() -> Self {
-        Self {
-            set: BTreeSet::new(),
-            cofinite: true,
-        }
-    }
-    pub(crate) fn lit(v: T) -> Self {
-        let mut s = BTreeSet::new();
-        s.insert(v);
-        Self {
-            set: s,
-            cofinite: false,
-        }
-    }
-    pub(crate) fn is_none(&self) -> bool {
-        !self.cofinite && self.set.is_empty()
-    }
-    pub(crate) fn is_any(&self) -> bool {
-        self.cofinite && self.set.is_empty()
-    }
-    pub(crate) fn finite(&self) -> Option<impl Iterator<Item = T> + '_> {
-        (!self.cofinite).then(|| self.set.iter().cloned())
-    }
-    pub(crate) fn finite_len(&self) -> Option<usize> {
-        (!self.cofinite).then_some(self.set.len())
-    }
-    pub(crate) fn union(&self, o: &Self) -> Self {
-        let (a, b) = (&self.set, &o.set);
-        match (self.cofinite, o.cofinite) {
-            (false, false) => Self {
-                set: a | b,
-                cofinite: false,
-            },
-            (false, true) => Self {
-                set: b - a,
-                cofinite: true,
-            },
-            (true, false) => Self {
-                set: a - b,
-                cofinite: true,
-            },
-            (true, true) => Self {
-                set: a & b,
-                cofinite: true,
-            },
-        }
-    }
-    pub(crate) fn intersect(&self, o: &Self) -> Self {
-        let (a, b) = (&self.set, &o.set);
-        match (self.cofinite, o.cofinite) {
-            (false, false) => Self {
-                set: a & b,
-                cofinite: false,
-            },
-            (false, true) => Self {
-                set: a - b,
-                cofinite: false,
-            },
-            (true, false) => Self {
-                set: b - a,
-                cofinite: false,
-            },
-            (true, true) => Self {
-                set: a | b,
-                cofinite: true,
-            },
-        }
-    }
-    pub(crate) fn neg(&self) -> Self {
-        Self {
-            set: self.set.clone(),
-            cofinite: !self.cofinite,
-        }
-    }
-}
-
-pub(crate) type AtomSet = LiteralSet<String>;
+pub(crate) type AtomSet = FiniteSet<String>;
 
 /// fz-try.5 — parametric type-variable identifier. Vars are nominal placeholders
 /// distinguished only by id; the lattice cannot tell them apart from opaques.
@@ -111,7 +18,7 @@ pub(crate) type AtomSet = LiteralSet<String>;
 /// Per-function scoping is handled by the planner, which renames at
 /// function-typing entry to ensure alpha-equivalence across signatures; the id
 /// itself carries no scope.
-pub(crate) type VarSet = LiteralSet<TypeVarId>;
+pub(crate) type VarSet = FiniteSet<TypeVarId>;
 
 /// fz-try.7 — deterministic var-id allocation for a closure's surface arrow.
 /// Vars in a closure's `(α₀, …, αₙ₋₁) -> β` signature are keyed by `(fn_id,

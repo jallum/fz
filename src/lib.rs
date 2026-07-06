@@ -5,6 +5,7 @@ mod diag;
 mod dispatch_matrix;
 mod exec;
 mod extern_contract;
+mod finite_set;
 mod function_surface;
 mod fz_ir;
 pub mod ground_value;

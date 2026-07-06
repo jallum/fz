@@ -1,11 +1,12 @@
 //! Primitive lowering helpers for codegen.
 
 use super::*;
+use crate::finite_set::FiniteSet;
 use crate::fz_ir::{
     BinOp, BitSizeIr, BlockId, CallsiteIdent, Const, ExternArg, ExternDecl, ExternId, ExternMarshalSite, ExternTy,
     FnId, Module, Prim, UnOp, Var,
 };
-use crate::runtime_type_predicate::{ListShape, ObservedSet, RuntimeTypePredicate};
+use crate::runtime_type_predicate::{ListShape, RuntimeTypePredicate};
 use cranelift_codegen::ir::{
     self, BlockArg, InstBuilder, MemFlags,
     condcodes::{FloatCC, IntCC},
@@ -1216,7 +1217,7 @@ fn emit_runtime_type_predicate_scalar_checks<M: cranelift_module::Module>(
             .enumerate()
             .map(|(i, name)| (name.as_str(), i as u32))
             .collect();
-        let atom_ids = ObservedSet {
+        let atom_ids = FiniteSet {
             cofinite: predicate.atoms.cofinite,
             values: predicate
                 .atoms
@@ -1322,7 +1323,7 @@ fn emit_runtime_type_predicate_struct_check<M: cranelift_module::Module>(
 fn emit_runtime_type_predicate_list_check<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, '_, M>,
     value: CodegenValue,
-    lists: &ObservedSet<ListShape>,
+    lists: &FiniteSet<ListShape>,
 ) -> Option<ir::Value> {
     if lists.is_none() {
         return None;
@@ -1379,7 +1380,7 @@ fn emit_kind_guarded_membership<M: cranelift_module::Module>(
     }
 }
 
-fn emit_i64_membership(b: &mut FunctionBuilder<'_>, raw: ir::Value, values: &ObservedSet<i64>) -> ir::Value {
+fn emit_i64_membership(b: &mut FunctionBuilder<'_>, raw: ir::Value, values: &FiniteSet<i64>) -> ir::Value {
     if values.is_any() {
         return b.ins().iconst(types::I8, 1);
     }
@@ -1395,7 +1396,7 @@ fn emit_i64_membership(b: &mut FunctionBuilder<'_>, raw: ir::Value, values: &Obs
     }
 }
 
-fn emit_u64_membership(b: &mut FunctionBuilder<'_>, raw: ir::Value, values: &ObservedSet<u64>) -> ir::Value {
+fn emit_u64_membership(b: &mut FunctionBuilder<'_>, raw: ir::Value, values: &FiniteSet<u64>) -> ir::Value {
     if values.is_any() {
         return b.ins().iconst(types::I8, 1);
     }
@@ -1470,7 +1471,7 @@ fn emit_struct_named_membership(
     b: &mut FunctionBuilder<'_>,
     schema64: ir::Value,
     named_schema_ids: &HashMap<String, u32>,
-    names: &ObservedSet<String>,
+    names: &FiniteSet<String>,
 ) -> ir::Value {
     if names.is_none() {
         return b.ins().iconst(types::I8, 0);

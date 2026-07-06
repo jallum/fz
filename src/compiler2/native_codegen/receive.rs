@@ -28,8 +28,9 @@ use crate::dispatch_matrix::{
     DispatchNode, EdgeEvidence, GraphNodeId, ListRegion, PinnedValueId, ProjectionKind, Region, SubjectId,
     SubjectSource,
 };
+use crate::finite_set::FiniteSet;
 use crate::fz_ir::{Module, ReceiveClause, Var};
-use crate::runtime_type_predicate::{ListShape, ObservedSet, RuntimeTypePredicate};
+use crate::runtime_type_predicate::{ListShape, RuntimeTypePredicate};
 use cranelift_codegen::ir::{self, AbiParam, InstBuilder, MemFlags, Signature, condcodes::IntCC, types};
 use cranelift_codegen::isa::CallConv;
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
@@ -731,7 +732,7 @@ fn emit_runtime_type_predicate_scalar_checks(
             .enumerate()
             .map(|(i, name)| (name.as_str(), i as u32))
             .collect();
-        let atom_ids = ObservedSet {
+        let atom_ids = FiniteSet {
             cofinite: predicate.atoms.cofinite,
             values: predicate
                 .atoms
@@ -836,7 +837,7 @@ fn emit_runtime_type_predicate_list_check(
     b: &mut FunctionBuilder<'_>,
     ctx: &DispatchCtx<'_>,
     value: ReceiveValue,
-    lists: &ObservedSet<ListShape>,
+    lists: &FiniteSet<ListShape>,
 ) -> Result<Option<ir::Value>, CodegenError> {
     if lists.is_none() {
         return Ok(None);
@@ -893,7 +894,7 @@ fn emit_receive_value_kind_flag(
     Ok(b.ins().icmp_imm(IntCC::Equal, tag64, kind.tag() as i64))
 }
 
-fn emit_receive_i64_membership(b: &mut FunctionBuilder<'_>, raw: ir::Value, values: &ObservedSet<i64>) -> ir::Value {
+fn emit_receive_i64_membership(b: &mut FunctionBuilder<'_>, raw: ir::Value, values: &FiniteSet<i64>) -> ir::Value {
     if values.is_any() {
         return b.ins().iconst(types::I8, 1);
     }
@@ -909,7 +910,7 @@ fn emit_receive_i64_membership(b: &mut FunctionBuilder<'_>, raw: ir::Value, valu
     }
 }
 
-fn emit_receive_u64_membership(b: &mut FunctionBuilder<'_>, raw: ir::Value, values: &ObservedSet<u64>) -> ir::Value {
+fn emit_receive_u64_membership(b: &mut FunctionBuilder<'_>, raw: ir::Value, values: &FiniteSet<u64>) -> ir::Value {
     if values.is_any() {
         return b.ins().iconst(types::I8, 1);
     }
@@ -984,7 +985,7 @@ fn emit_receive_struct_named_membership(
     b: &mut FunctionBuilder<'_>,
     schema64: ir::Value,
     named_schema_ids: &HashMap<String, u32>,
-    names: &ObservedSet<String>,
+    names: &FiniteSet<String>,
 ) -> ir::Value {
     if names.is_none() {
         return b.ins().iconst(types::I8, 0);

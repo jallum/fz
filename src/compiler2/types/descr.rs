@@ -6,16 +6,17 @@ use super::dnf::{dnf_intersect, dnf_neg, dnf_union, is_dnf_top, normalize_empty_
 use super::emptiness::{
     Memo, func_clause_empty, list_clause_empty, map_clause_empty, resource_clause_empty, tuple_clause_empty,
 };
-use super::lit_set::{AtomSet, LiteralSet, VarSet};
+use super::lit_set::{AtomSet, VarSet};
 use super::sigs::{ArrowSig, ClosureLit, ListSig, MapSig, ResourceSig, TupleSig};
 use super::{MapKey, Ty, TyCtx, TypeVarId};
+use crate::finite_set::FiniteSet;
 
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub(super) struct Descr {
     pub(super) basic: BasicBits,
     pub(super) atoms: AtomSet,
-    pub(super) opaques: LiteralSet<String>,
-    pub(super) brands: LiteralSet<String>,
+    pub(super) opaques: FiniteSet<String>,
+    pub(super) brands: FiniteSet<String>,
     pub(super) vars: VarSet,
     pub(super) tuples: Vec<Conj<TupleSig>>,
     pub(super) lists: Vec<Conj<ListSig>>,
@@ -29,8 +30,8 @@ impl Descr {
         Self {
             basic: BasicBits::ALL,
             atoms: AtomSet::any(),
-            opaques: LiteralSet::any(),
-            brands: LiteralSet::any(),
+            opaques: FiniteSet::any(),
+            brands: FiniteSet::any(),
             vars: VarSet::any(),
             tuples: vec![Conj::top()],
             lists: vec![Conj::top()],
@@ -44,8 +45,8 @@ impl Descr {
         Self {
             basic: BasicBits::NONE,
             atoms: AtomSet::none(),
-            opaques: LiteralSet::none(),
-            brands: LiteralSet::none(),
+            opaques: FiniteSet::none(),
+            brands: FiniteSet::none(),
             vars: VarSet::none(),
             tuples: Vec::new(),
             lists: Vec::new(),
@@ -57,19 +58,19 @@ impl Descr {
 
     pub(super) fn opaque_of(name: impl Into<String>) -> Self {
         let mut d = Self::none();
-        d.opaques = LiteralSet::lit(name.into());
+        d.opaques = FiniteSet::lit(name.into());
         d
     }
 
     pub(super) fn brand_of(name: impl Into<String>) -> Self {
         let mut d = Self::none();
-        d.brands = LiteralSet::lit(name.into());
+        d.brands = FiniteSet::lit(name.into());
         d
     }
 
     pub(super) fn var(id: TypeVarId) -> Self {
         let mut d = Self::none();
-        d.vars = LiteralSet::lit(id);
+        d.vars = VarSet::lit(id);
         d
     }
 
@@ -187,25 +188,25 @@ impl Descr {
     }
 
     pub(super) fn as_atom_singleton(&self) -> Option<&str> {
-        (!self.atoms.cofinite && self.atoms.set.len() == 1)
-            .then(|| self.atoms.set.iter().next().map(String::as_str))
+        (!self.atoms.cofinite && self.atoms.values.len() == 1)
+            .then(|| self.atoms.values.iter().next().map(String::as_str))
             .flatten()
     }
 
     pub(super) fn atom_literals(&self) -> Option<Vec<String>> {
-        (!self.atoms.cofinite).then(|| self.atoms.set.iter().cloned().collect())
+        (!self.atoms.cofinite).then(|| self.atoms.values.iter().cloned().collect())
     }
 
     pub(super) fn as_opaque_singleton(&self) -> Option<&str> {
-        (!self.opaques.cofinite && self.opaques.set.len() == 1)
-            .then(|| self.opaques.set.iter().next().map(String::as_str))
+        (!self.opaques.cofinite && self.opaques.values.len() == 1)
+            .then(|| self.opaques.values.iter().next().map(String::as_str))
             .flatten()
     }
 
     #[cfg(test)]
     pub(super) fn as_brand_singleton(&self) -> Option<&str> {
-        (!self.brands.cofinite && self.brands.set.len() == 1)
-            .then(|| self.brands.set.iter().next().map(String::as_str))
+        (!self.brands.cofinite && self.brands.values.len() == 1)
+            .then(|| self.brands.values.iter().next().map(String::as_str))
             .flatten()
     }
 
@@ -472,8 +473,8 @@ impl Descr {
 
     fn erase_nominal(&self, cx: TyCtx<'_>) -> Descr {
         let mut d = self.clone();
-        let brands = std::mem::replace(&mut d.brands, LiteralSet::none());
-        let opaques = std::mem::replace(&mut d.opaques, LiteralSet::none());
+        let brands = std::mem::replace(&mut d.brands, FiniteSet::none());
+        let opaques = std::mem::replace(&mut d.opaques, FiniteSet::none());
         // Finite brands: mint_brand embeds the inner's structural axes directly in the
         // descriptor (replacing the inner's own brand axis), so clearing suffices.
         // Cofinite brands (e.g. from any()): we cannot enumerate inners; widen to any.

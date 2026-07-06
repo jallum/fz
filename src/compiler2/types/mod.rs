@@ -17,7 +17,8 @@ mod sigs;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use crate::runtime_type_predicate::{ListShape, ObservedSet, RuntimeTypePredicate};
+use crate::finite_set::FiniteSet;
+use crate::runtime_type_predicate::{ListShape, RuntimeTypePredicate};
 
 use super::keying::DispatchDemand;
 use crate::type_expr::opaque_owner_module;
@@ -40,7 +41,7 @@ use descr::Descr;
 use dnf::{dnf_intersect_with, tuple_clause_subsumed};
 #[cfg(test)]
 pub(crate) use lit_set::{ClosureSurfacePos, decode_closure_surface_var};
-use lit_set::{LiteralSet, closure_ret_var_id, closure_var_id};
+use lit_set::{closure_ret_var_id, closure_var_id};
 use sigs::{ArrowSig, ClosureLit, ListSig, MergeSig, PosMeet, TupleSig};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -446,7 +447,7 @@ impl Types {
 
     pub fn mint_brand(&mut self, inner: Ty, name: &str) -> Ty {
         let mut d = self.descr(&inner).clone();
-        d.brands = LiteralSet::lit(name.to_string());
+        d.brands = FiniteSet::lit(name.to_string());
         self.intern(d)
     }
 
@@ -999,18 +1000,17 @@ impl Types {
         RuntimeTypePredicate {
             // Numbers are presence bits: the predicate is a kind check,
             // never a value-membership set, from this pipeline.
-            ints: ObservedSet {
-                cofinite: descr.basic.contains_all(BasicBits::INT),
-                values: BTreeSet::new(),
+            ints: if descr.basic.contains_all(BasicBits::INT) {
+                FiniteSet::any()
+            } else {
+                FiniteSet::none()
             },
-            floats: ObservedSet {
-                cofinite: descr.basic.contains_all(BasicBits::FLOAT),
-                values: BTreeSet::new(),
+            floats: if descr.basic.contains_all(BasicBits::FLOAT) {
+                FiniteSet::any()
+            } else {
+                FiniteSet::none()
             },
-            atoms: ObservedSet {
-                cofinite: descr.atoms.cofinite,
-                values: descr.atoms.set.iter().cloned().collect(),
-            },
+            atoms: descr.atoms.clone(),
             lists: runtime_type_predicate_list_shapes(descr),
             tuple_arities: runtime_type_predicate_tuple_arities(descr),
             named_structs: named_structs.clone(),
@@ -1534,7 +1534,7 @@ impl SharedRenderTypes for Types {
 }
 
 fn pure_var_ids(d: &Descr) -> Option<Vec<TypeVarId>> {
-    let finite: Vec<TypeVarId> = d.vars.finite()?.collect();
+    let finite: Vec<TypeVarId> = d.vars.finite_elems()?.collect();
     let only_vars = d.basic.is_empty()
         && d.atoms.is_none()
         && d.opaques.is_none()
@@ -1777,25 +1777,25 @@ fn callable_clauses(cx: TyCtx<'_>, d: &Descr) -> Option<Vec<CallableClause<Ty>>>
 fn runtime_type_predicate_requires_any(descr: &Descr) -> bool {
     const STRUCT_PREFIX: &str = "impl-target::";
     descr.opaques.cofinite
-        || descr.opaques.set.iter().any(|tag| !tag.starts_with(STRUCT_PREFIX))
+        || descr.opaques.values.iter().any(|tag| !tag.starts_with(STRUCT_PREFIX))
         || descr.brands.cofinite
         || descr.vars.cofinite
-        || !descr.vars.set.is_empty()
+        || !descr.vars.values.is_empty()
 }
 
-fn runtime_type_predicate_list_shapes(descr: &Descr) -> ObservedSet<ListShape> {
-    let mut out = ObservedSet::none();
+fn runtime_type_predicate_list_shapes(descr: &Descr) -> FiniteSet<ListShape> {
+    let mut out = FiniteSet::none();
     for clause in &descr.lists {
-        let mut allowed = ObservedSet::finite([ListShape::Empty, ListShape::NonEmpty]);
+        let mut allowed = FiniteSet::finite([ListShape::Empty, ListShape::NonEmpty]);
         for sig in &clause.pos {
             let sig_allowed = if sig.is_exact_empty() {
-                ObservedSet::lit(ListShape::Empty)
+                FiniteSet::lit(ListShape::Empty)
             } else if sig.is_exact_non_empty() {
-                ObservedSet::lit(ListShape::NonEmpty)
+                FiniteSet::lit(ListShape::NonEmpty)
             } else {
-                ObservedSet::finite([ListShape::Empty, ListShape::NonEmpty])
+                FiniteSet::finite([ListShape::Empty, ListShape::NonEmpty])
             };
-            allowed = runtime_type_predicate_intersect(&allowed, &sig_allowed);
+            allowed = allowed.intersect(&sig_allowed);
         }
         for sig in &clause.neg {
             if sig.is_exact_empty() {
@@ -1809,17 +1809,17 @@ fn runtime_type_predicate_list_shapes(descr: &Descr) -> ObservedSet<ListShape> {
     out
 }
 
-fn runtime_type_predicate_tuple_arities(descr: &Descr) -> ObservedSet<usize> {
-    let mut out = ObservedSet::none();
+fn runtime_type_predicate_tuple_arities(descr: &Descr) -> FiniteSet<usize> {
+    let mut out = FiniteSet::none();
     for clause in &descr.tuples {
         let mut allowed = if clause.pos.is_empty() {
-            ObservedSet::any()
+            FiniteSet::any()
         } else {
             let arities = clause.pos.iter().map(|sig| sig.elems.len()).collect::<BTreeSet<_>>();
             if arities.len() != 1 {
                 continue;
             }
-            ObservedSet::lit(*arities.iter().next().expect("one tuple arity"))
+            FiniteSet::lit(*arities.iter().next().expect("one tuple arity"))
         };
         for sig in &clause.neg {
             allowed = runtime_type_predicate_remove(&allowed, &sig.elems.len());
@@ -1829,39 +1829,27 @@ fn runtime_type_predicate_tuple_arities(descr: &Descr) -> ObservedSet<usize> {
     out
 }
 
-fn runtime_type_predicate_named_structs(descr: &Descr) -> ObservedSet<String> {
+fn runtime_type_predicate_named_structs(descr: &Descr) -> FiniteSet<String> {
     const STRUCT_PREFIX: &str = "impl-target::";
-    ObservedSet::finite(
+    FiniteSet::finite(
         descr
             .opaques
-            .set
+            .values
             .iter()
             .filter_map(|tag| tag.strip_prefix(STRUCT_PREFIX).map(str::to_string)),
     )
 }
 
-fn runtime_type_predicate_intersect<T>(left: &ObservedSet<T>, right: &ObservedSet<T>) -> ObservedSet<T>
-where
-    T: Ord + Clone,
-{
-    match (left.cofinite, right.cofinite) {
-        (false, false) => ObservedSet::finite(left.values.intersection(&right.values).cloned()),
-        (true, false) => ObservedSet::finite(right.values.difference(&left.values).cloned()),
-        (false, true) => ObservedSet::finite(left.values.difference(&right.values).cloned()),
-        (true, true) => ObservedSet::cofinite(left.values.union(&right.values).cloned()),
-    }
-}
-
-fn runtime_type_predicate_remove<T>(set: &ObservedSet<T>, value: &T) -> ObservedSet<T>
+fn runtime_type_predicate_remove<T>(set: &FiniteSet<T>, value: &T) -> FiniteSet<T>
 where
     T: Ord + Clone,
 {
     if set.cofinite {
         let mut excluded = set.values.clone();
         excluded.insert(value.clone());
-        ObservedSet::cofinite(excluded)
+        FiniteSet::cofinite(excluded)
     } else {
-        ObservedSet::finite(set.values.iter().filter(|candidate| *candidate != value).cloned())
+        FiniteSet::finite(set.values.iter().filter(|candidate| *candidate != value).cloned())
     }
 }
 
@@ -1883,7 +1871,7 @@ fn specialize_callable_clause(
 }
 
 fn has_vars(cx: TyCtx<'_>, d: &Descr) -> bool {
-    if !d.vars.set.is_empty() {
+    if !d.vars.values.is_empty() {
         return true;
     }
     d.tuples.iter().any(|c| {
@@ -2053,7 +2041,7 @@ fn instantiate(t: &mut Types, a: Ty, sigma: &Sigma<Ty>) -> Descr {
     let mut base = d.clone();
     if !base.vars.cofinite {
         let mut new_set = BTreeSet::new();
-        for id in &d.vars.set {
+        for id in &d.vars.values {
             match sigma.get(id) {
                 Some(replacement) => {
                     substituted = substituted.union(t.ctx(), t.descr(replacement));
@@ -2063,10 +2051,7 @@ fn instantiate(t: &mut Types, a: Ty, sigma: &Sigma<Ty>) -> Descr {
                 }
             }
         }
-        base.vars = LiteralSet {
-            set: new_set,
-            cofinite: false,
-        };
+        base.vars = FiniteSet::finite(new_set);
     }
     let walked = map_recursive_inputs_with(t, base, &mut |t, nested| {
         let d = instantiate(t, nested, sigma);

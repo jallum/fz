@@ -6,8 +6,8 @@ use super::TyCtx;
 use super::bits::BASIC_NAMES;
 use super::conj::Conj;
 use super::descr::Descr;
-use super::lit_set::LiteralSet;
 use super::sigs::{ArrowSig, ListSig, MapSig, ResourceSig, TupleSig};
+use crate::finite_set::FiniteSet;
 
 pub(crate) fn display(cx: TyCtx<'_>, d: &Descr) -> String {
     if d.looks_empty() {
@@ -38,7 +38,7 @@ pub(crate) fn display_for_diag(cx: TyCtx<'_>, d: &Descr) -> String {
     display(cx, d)
 }
 
-fn append_axis<T, F>(parts: &mut Vec<String>, set: &LiteralSet<T>, top_name: &str, render: F)
+fn append_axis<T, F>(parts: &mut Vec<String>, set: &FiniteSet<T>, top_name: &str, render: F)
 where
     T: Ord + Clone,
     F: Fn(&T) -> String,
@@ -50,7 +50,7 @@ where
         parts.push(top_name.to_string());
         return;
     }
-    let rendered: Vec<String> = set.set.iter().map(render).collect();
+    let rendered: Vec<String> = set.values.iter().map(render).collect();
     if set.cofinite {
         parts.push(format!("not({})", rendered.join(" | ")));
     } else {

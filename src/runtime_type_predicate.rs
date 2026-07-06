@@ -4,6 +4,7 @@
 //! Backends and the interpreter therefore answer runtime-membership questions
 //! by projecting semantic types into this explicit predicate layer.
 
+use crate::finite_set::FiniteSet;
 use crate::fz_ir::Module;
 use fz_runtime::any_value::{AnyValue as RuntimeAnyValue, ValueKind, struct_schema_id};
 use std::collections::{BTreeSet, HashMap};
@@ -16,91 +17,13 @@ pub(crate) enum ListShape {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ObservedSet<T> {
-    pub(crate) cofinite: bool,
-    pub(crate) values: BTreeSet<T>,
-}
-
-impl<T> Default for ObservedSet<T> {
-    fn default() -> Self {
-        Self {
-            cofinite: false,
-            values: BTreeSet::new(),
-        }
-    }
-}
-
-impl<T: Ord> ObservedSet<T> {
-    pub(crate) fn none() -> Self {
-        Self::default()
-    }
-
-    pub(crate) fn any() -> Self {
-        Self {
-            cofinite: true,
-            values: BTreeSet::new(),
-        }
-    }
-
-    pub(crate) fn lit(value: T) -> Self {
-        Self::finite([value])
-    }
-
-    pub(crate) fn finite(values: impl IntoIterator<Item = T>) -> Self {
-        Self {
-            cofinite: false,
-            values: values.into_iter().collect(),
-        }
-    }
-
-    pub(crate) fn cofinite(values: impl IntoIterator<Item = T>) -> Self {
-        Self {
-            cofinite: true,
-            values: values.into_iter().collect(),
-        }
-    }
-
-    pub(crate) fn is_none(&self) -> bool {
-        !self.cofinite && self.values.is_empty()
-    }
-
-    pub(crate) fn is_any(&self) -> bool {
-        self.cofinite && self.values.is_empty()
-    }
-
-    pub(crate) fn contains(&self, value: &T) -> bool {
-        self.values.contains(value) != self.cofinite
-    }
-}
-
-impl<T: Ord + Clone> ObservedSet<T> {
-    pub(crate) fn union(&self, other: &Self) -> Self {
-        match (self.cofinite, other.cofinite) {
-            (false, false) => Self::finite(self.values.union(&other.values).cloned()),
-            (true, false) => Self::cofinite(self.values.difference(&other.values).cloned()),
-            (false, true) => Self::cofinite(other.values.difference(&self.values).cloned()),
-            (true, true) => Self::cofinite(self.values.intersection(&other.values).cloned()),
-        }
-    }
-
-    pub(crate) fn overlaps(&self, other: &Self) -> bool {
-        match (self.cofinite, other.cofinite) {
-            (false, false) => self.values.iter().any(|value| other.values.contains(value)),
-            (false, true) => self.values.iter().any(|value| !other.values.contains(value)),
-            (true, false) => other.values.iter().any(|value| !self.values.contains(value)),
-            (true, true) => true,
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RuntimeTypePredicate {
-    pub(crate) ints: ObservedSet<i64>,
-    pub(crate) floats: ObservedSet<u64>,
-    pub(crate) atoms: ObservedSet<String>,
-    pub(crate) lists: ObservedSet<ListShape>,
-    pub(crate) tuple_arities: ObservedSet<usize>,
-    pub(crate) named_structs: ObservedSet<String>,
+    pub(crate) ints: FiniteSet<i64>,
+    pub(crate) floats: FiniteSet<u64>,
+    pub(crate) atoms: FiniteSet<String>,
+    pub(crate) lists: FiniteSet<ListShape>,
+    pub(crate) tuple_arities: FiniteSet<usize>,
+    pub(crate) named_structs: FiniteSet<String>,
     pub(crate) allow_other_structs: bool,
     pub(crate) maps: bool,
     pub(crate) binaries: bool,
@@ -111,12 +34,12 @@ pub(crate) struct RuntimeTypePredicate {
 impl RuntimeTypePredicate {
     pub(crate) fn none() -> Self {
         Self {
-            ints: ObservedSet::none(),
-            floats: ObservedSet::none(),
-            atoms: ObservedSet::none(),
-            lists: ObservedSet::none(),
-            tuple_arities: ObservedSet::none(),
-            named_structs: ObservedSet::none(),
+            ints: FiniteSet::none(),
+            floats: FiniteSet::none(),
+            atoms: FiniteSet::none(),
+            lists: FiniteSet::none(),
+            tuple_arities: FiniteSet::none(),
+            named_structs: FiniteSet::none(),
             allow_other_structs: false,
             maps: false,
             binaries: false,
@@ -127,12 +50,12 @@ impl RuntimeTypePredicate {
 
     pub(crate) fn any() -> Self {
         Self {
-            ints: ObservedSet::any(),
-            floats: ObservedSet::any(),
-            atoms: ObservedSet::any(),
-            lists: ObservedSet::any(),
-            tuple_arities: ObservedSet::any(),
-            named_structs: ObservedSet::any(),
+            ints: FiniteSet::any(),
+            floats: FiniteSet::any(),
+            atoms: FiniteSet::any(),
+            lists: FiniteSet::any(),
+            tuple_arities: FiniteSet::any(),
+            named_structs: FiniteSet::any(),
             allow_other_structs: true,
             maps: true,
             binaries: true,
@@ -143,13 +66,13 @@ impl RuntimeTypePredicate {
 
     pub(crate) fn tuple_arity(arity: usize) -> Self {
         let mut predicate = Self::none();
-        predicate.tuple_arities = ObservedSet::lit(arity);
+        predicate.tuple_arities = FiniteSet::lit(arity);
         predicate
     }
 
     pub(crate) fn named_struct(name: impl Into<String>) -> Self {
         let mut predicate = Self::none();
-        predicate.named_structs = ObservedSet::lit(name.into());
+        predicate.named_structs = FiniteSet::lit(name.into());
         predicate
     }
 
@@ -222,7 +145,7 @@ pub(crate) fn matches_runtime_type_predicate(
     }
 }
 
-fn mapped_membership<T, U>(set: &ObservedSet<T>, actual: U, mut map: impl FnMut(&T) -> Option<U>) -> bool
+fn mapped_membership<T, U>(set: &FiniteSet<T>, actual: U, mut map: impl FnMut(&T) -> Option<U>) -> bool
 where
     T: Ord,
     U: Ord,

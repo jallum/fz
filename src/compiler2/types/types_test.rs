@@ -4,7 +4,8 @@ use std::slice;
 
 use super::*;
 use crate::compiler2::keying::DispatchDemand;
-use crate::runtime_type_predicate::{ListShape, ObservedSet, RuntimeTypePredicate};
+use crate::finite_set::FiniteSet;
+use crate::runtime_type_predicate::{ListShape, RuntimeTypePredicate};
 
 #[test]
 fn ty_is_an_integer_handle() {
@@ -140,7 +141,7 @@ fn runtime_type_predicate_projects_integer_kind() {
     assert_eq!(
         predicate,
         RuntimeTypePredicate {
-            ints: ObservedSet::any(),
+            ints: FiniteSet::any(),
             ..RuntimeTypePredicate::none()
         }
     );
@@ -154,7 +155,7 @@ fn runtime_type_predicate_projects_tuple_and_list_shapes() {
     assert_eq!(
         empty_list,
         RuntimeTypePredicate {
-            lists: ObservedSet::lit(ListShape::Empty),
+            lists: FiniteSet::lit(ListShape::Empty),
             ..RuntimeTypePredicate::none()
         }
     );
@@ -166,7 +167,7 @@ fn runtime_type_predicate_projects_tuple_and_list_shapes() {
     assert_eq!(
         tuple,
         RuntimeTypePredicate {
-            tuple_arities: ObservedSet::lit(2),
+            tuple_arities: FiniteSet::lit(2),
             ..RuntimeTypePredicate::none()
         }
     );
@@ -180,7 +181,7 @@ fn runtime_type_predicate_projects_named_structs_and_widens_unknown_opaques() {
     assert_eq!(
         named,
         RuntimeTypePredicate {
-            named_structs: ObservedSet::lit("box".to_string()),
+            named_structs: FiniteSet::lit("box".to_string()),
             ..RuntimeTypePredicate::none()
         }
     );
@@ -212,7 +213,7 @@ fn runtime_type_predicate_keeps_named_struct_identity_out_of_plain_map_kind() {
 
     assert_eq!(
         range_predicate.named_structs,
-        ObservedSet::lit("Range".to_string()),
+        FiniteSet::lit("Range".to_string()),
         "a struct value should keep its named runtime identity even though it also has structural field evidence",
     );
     assert!(
@@ -828,7 +829,7 @@ macro_rules! semantic_helper_conformance_tests {
                 let predicate = t.runtime_type_predicate(&rejoined);
                 assert_eq!(
                     predicate.lists,
-                    ObservedSet::finite([ListShape::Empty, ListShape::NonEmpty])
+                    FiniteSet::finite([ListShape::Empty, ListShape::NonEmpty])
                 );
             }
 

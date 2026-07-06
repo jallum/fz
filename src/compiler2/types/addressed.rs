@@ -30,8 +30,8 @@
 use std::collections::{BTreeSet, HashMap};
 
 use super::descr::Descr;
-use super::lit_set::LiteralSet;
 use super::{Ty, TypeVarId, Types};
+use crate::finite_set::FiniteSet;
 
 /// One step of a structural address. A full address is a `&[AddrStep]` path
 /// rooted at a parameter or the result slot.
@@ -231,7 +231,7 @@ impl Types {
             return ty;
         }
         let mut d = self.descr(&ty).clone();
-        if !d.vars.cofinite && !d.vars.set.is_empty() {
+        if !d.vars.cofinite && !d.vars.values.is_empty() {
             d.vars = self.address_vars_at(&d.vars, path, map);
         }
         self.address_remap_children(&mut d, path, map);
@@ -243,11 +243,11 @@ impl Types {
     /// sub-addresses so distinct variables never collide.
     fn address_vars_at(
         &mut self,
-        vars: &LiteralSet<TypeVarId>,
+        vars: &FiniteSet<TypeVarId>,
         path: &[AddrStep],
         map: &mut HashMap<TypeVarId, TypeVarId>,
-    ) -> LiteralSet<TypeVarId> {
-        let originals: Vec<TypeVarId> = vars.set.iter().copied().collect();
+    ) -> FiniteSet<TypeVarId> {
+        let originals: Vec<TypeVarId> = vars.values.iter().copied().collect();
         let single = originals.len() == 1;
         let mut set = BTreeSet::new();
         for (k, original) in originals.into_iter().enumerate() {
@@ -267,7 +267,7 @@ impl Types {
             };
             set.insert(mapped);
         }
-        LiteralSet { set, cofinite: false }
+        FiniteSet::finite(set)
     }
 
     /// Recurse into the nested shapes of `d`, extending the address path by the
