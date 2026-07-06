@@ -43,20 +43,21 @@ impl GroundValue {
 
     /// Projects onto the `{Atom, Int}` shape that map keys need, or `None`
     /// for every other ground value.
-    pub fn as_map_key(&self) -> Option<MapKeyProjection> {
+    pub fn as_map_key(&self) -> Option<MapKey> {
         match self {
-            GroundValue::Atom(name) => Some(MapKeyProjection::Atom(name.clone())),
-            GroundValue::Int(value) => Some(MapKeyProjection::Int(*value)),
+            GroundValue::Atom(name) => Some(MapKey::Atom(name.clone())),
+            GroundValue::Int(value) => Some(MapKey::Int(*value)),
             _ => None,
         }
     }
 }
 
-/// The atom/int projection of a [`GroundValue`] that map keys need. Kept
-/// separate from `crate::types::map::MapKey` so this leaf module stays
-/// dependency-free; later migrations can convert between the two.
+/// The atom/int projection of a [`GroundValue`] that open-shape map keys
+/// need. This is the single canonical `{Atom, Int}` key shape: `crate::types`
+/// re-exports it as `crate::types::MapKey` rather than defining its own, so
+/// there is exactly one such enum in the crate.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub enum MapKeyProjection {
+pub enum MapKey {
     Atom(String),
     Int(i64),
 }
@@ -121,13 +122,19 @@ mod tests {
         assert_ne!(GroundValue::Bool(false), GroundValue::Atom("false".to_string()));
     }
 
+    /// Every non-atom/int ground value is dropped from map-key position
+    /// rather than coerced -- the map lattice only ever reasons about the
+    /// atom/int subset, so `Nil`, `EmptyList`, `Bool`, `Binary`,
+    /// `Utf8Binary`, and `Float` must all narrow to `None` here, exactly as
+    /// `literal_map_key` (compiler2/jobs/semantic.rs) drops the equivalent
+    /// non-atom/int literals during lowering.
     #[test]
     fn as_map_key_projects_atom_and_int_only() {
         assert_eq!(
             GroundValue::Atom("ok".to_string()).as_map_key(),
-            Some(MapKeyProjection::Atom("ok".to_string()))
+            Some(MapKey::Atom("ok".to_string()))
         );
-        assert_eq!(GroundValue::Int(7).as_map_key(), Some(MapKeyProjection::Int(7)));
+        assert_eq!(GroundValue::Int(7).as_map_key(), Some(MapKey::Int(7)));
         assert_eq!(GroundValue::Nil.as_map_key(), None);
         assert_eq!(GroundValue::EmptyList.as_map_key(), None);
         assert_eq!(GroundValue::Bool(true).as_map_key(), None);
