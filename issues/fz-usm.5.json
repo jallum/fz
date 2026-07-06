@@ -10,9 +10,15 @@
   "id": "fz-usm.5",
   "labels": [],
   "parent": "fz-usm",
+  "comments": [
+    {
+      "text": "DECISION (user, 2026-07-06): DEEP -- add a real homogeneous-map Ty axis (not the lossy map_top approximation). User wants to DISCUSS the design before implementation. Producing a grounded design proposal (current MapSig/Descr/map_top model + the homogeneous axis's lattice rules: subtype/emptiness/join/meet + integration with exact-map and top + blast radius + sub-DAG) for review BEFORE any coding. Do NOT start implementation until the design is agreed.",
+      "timestamp": "2026-07-06T15:36:03Z"
+    }
+  ],
   "priority": 3,
   "status": "open",
   "title": "fz-usm DECISION: homogeneous map(k,v) -- lossy map_top approximation vs a real homogeneous-map Ty axis",
   "type": "task",
-  "updated_at": "2026-07-05T22:25:01Z"
+  "updated_at": "2026-07-06T15:36:03Z"
 }
