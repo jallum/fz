@@ -6,9 +6,15 @@
   "description": "SURFACED by the fz-yj0.2 audit (concordance fold LiteralSet+ObservedSet -\u003e FiniteSet). After the fold, src/compiler2/types/lit_set.rs no longer defines any 'literal set' type -- it carries only (a) two thin aliases 'pub(crate) type AtomSet = FiniteSet\u003cString\u003e' / 'type VarSet = FiniteSet\u003cTypeVarId\u003e' over crate::finite_set::FiniteSet, and (b) UNRELATED closure-surface-var-id encoding: closure_var_id / closure_ret_var_id / decode_closure_surface_var / ClosureSurfacePos. The filename now lies and the module lacks a coherent focus.\n\nFIX (holistic): move the closure-surface-var-id encoding into its own leaf module (e.g. closure_surface_var.rs) named for its job; then EITHER fold the AtomSet/VarSet aliases into descr.rs where they are consumed (deleting lit_set.rs entirely -- fewer modules, preferred) OR rename lit_set.rs to reflect it now only hosts type-axis aliases.\n\nVERIFY: lib gate green (1214+ / 0 / 9), zero warnings; git grep confirms no stale 'lit_set'/'LiteralSet' references in comments/docs. Non-blocking end-of-epic hygiene; belongs to the fz-yj0 concordance epic.",
   "id": "fz-y0x",
   "labels": [],
+  "comments": [
+    {
+      "text": "DONE (folded to cbb52490b). Pure module reorg: lit_set.rs DELETED — AtomSet/VarSet aliases folded into descr.rs (narrowed pub(crate)-\u003eprivate, sole consumer), closure-surface var-id encoding relocated to types/closure_surface_var.rs (byte-identical). .agent/docs/type-world.md updated. Self-audited (byte-identical move, zero stale lit_set/LiteralSet refs, visibility narrowing safe). Fold nit applied: stripped carried-forward ticket IDs (fz-try.5/.6/.7) from the moved doc comments. lib 1229/0/9.",
+      "timestamp": "2026-07-06T21:20:48Z"
+    }
+  ],
   "priority": 3,
   "status": "open",
   "title": "Rename/split lit_set.rs: it no longer defines a literal set",
   "type": "task",
-  "updated_at": "2026-07-06T19:35:51Z"
+  "updated_at": "2026-07-06T21:20:48Z"
 }
