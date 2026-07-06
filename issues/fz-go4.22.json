@@ -25,11 +25,15 @@
     {
       "text": "Census result (fz-go4.18.28): the AOT-grind bucket IS the transport per-anchor global re-solve — keystone fix filed as fz-go4.18.28.1 (expected: 00420 \u003e30min -\u003e seconds). Triage this ticket after fz-go4.18.28.1 lands. Also noted by the census: 143/556 fixtures exit nonzero under RAW interp (no matrix defer/annotation context) — not a defect count per se, but worth a pass when triaging.",
       "timestamp": "2026-07-02T20:48:48Z"
+    },
+    {
+      "text": "PARALLEL-FLAKE DATA POINT (from fz-yj0 verification, 2026-07-06; fz-4zs closed as dup of this + fz-0lm): 'cargo test --test fixture_matrix' in DEFAULT parallel mode gave 27, then 21, then (single-threaded) 19 failures across consecutive no-change runs, with DIFFERENT names appearing/disappearing (curried_add, defstruct_runtime, destructure_*). Same 3s-build-timeout-under-contention family already noted here + the fz-0lm concurrent-AOT-output race. OPERATIONAL GATE that works today: 'cargo test --test fixture_matrix -- --test-threads=1' is deterministic and yields the stable 19-known-red baseline; any 'fixture stays exactly N' regression check MUST be single-threaded until the timeout/race fixes (this ticket + fz-0lm) land.",
+      "timestamp": "2026-07-06T21:01:48Z"
     }
   ],
   "priority": 2,
   "status": "in_progress",
   "title": "fixture_matrix is red on the branch (pre-existing): stale append oracle, actor_ring interp, timeout family, f98.14 AOT grind",
   "type": "bug",
-  "updated_at": "2026-07-04T12:04:44Z"
+  "updated_at": "2026-07-06T21:01:48Z"
 }
