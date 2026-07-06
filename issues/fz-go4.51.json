@@ -2,6 +2,7 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-07-06T21:20:49Z",
   "created": "2026-07-05T22:25:03Z",
   "description": "Surfaced by the fz-usm investigation (2026-07-05). resolve.rs:212 resolves TypeExpr::EmptyList ([]) to types.nil(), but types.empty_list() (types/mod.rs:423-425) exists and is used elsewhere (world_test.rs:281). Is [] in TYPE position meant to be the nil atom or the empty-list type? Orthogonal to fz-usm's constructor registry (this is list-type semantics, not constructor resolution). Investigate intent; likely should be empty_list(). Small.",
   "id": "fz-go4.51",
@@ -14,7 +15,7 @@
     }
   ],
   "priority": 3,
-  "status": "open",
+  "status": "closed",
   "title": "TypeExpr::EmptyList ([] in type position) resolves to nil() not empty_list()",
   "type": "bug",
   "updated_at": "2026-07-06T21:20:49Z"
