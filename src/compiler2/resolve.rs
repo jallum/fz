@@ -44,11 +44,6 @@ pub(crate) struct ResolvedSpec {
 
 /// How a name in type position classifies once measured against the namespace.
 enum NameClass {
-    /// The `list(T)` / `list()` builtin list constructor — Elixir-equivalent to
-    /// `[T]` / `[any]`, producing the very same type and shape as the brackets.
-    List,
-    /// The `resource(T)` parametric opaque constructor.
-    Resource,
     /// A builtin constructor found in the [`CONSTRUCTORS`] registry — minted
     /// directly, never namespace-resolved.
     Builtin(&'static ConstructorEntry),
@@ -60,19 +55,19 @@ enum NameClass {
     Unknown,
 }
 
-/// How many type arguments a registered constructor accepts. Every scalar
-/// registered so far is `Fixed(0)`; the parametric constructors (`list`,
-/// `resource`, ...) a later migration folds into this registry will extend
-/// this with their own variants when they arrive.
+/// How many type arguments a registered constructor accepts.
 enum Arity {
     /// Exactly `n` arguments.
     Fixed(usize),
+    /// Between `min` and `max` arguments, inclusive.
+    Range(usize, usize),
 }
 
 impl Arity {
     fn accepts(&self, n: usize) -> bool {
         match self {
             Arity::Fixed(k) => n == *k,
+            Arity::Range(min, max) => (*min..=*max).contains(&n),
         }
     }
 }
@@ -81,6 +76,7 @@ impl std::fmt::Display for Arity {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Arity::Fixed(k) => write!(f, "{k}"),
+            Arity::Range(min, max) => write!(f, "{min} to {max}"),
         }
     }
 }
@@ -94,9 +90,11 @@ struct ConstructorEntry {
     build: fn(&mut Types, &[Ty]) -> Ty,
 }
 
-/// The registry of builtin type-constructor names. Today this holds only the
-/// twelve nullary scalars; `list`/`resource` (still special-cased in
-/// [`World::classify_name`]) and `map` join it in later migrations.
+/// The registry of builtin type-constructor names: the twelve nullary
+/// scalars plus the two parametric constructors, `list` (0 or 1 type
+/// argument — `list()`/`list(any)` and `[T]` mint the identical `Ty`) and
+/// `resource` (0 or 1 type argument, defaulting the payload to `any`). `map`
+/// joins it in a later migration.
 #[rustfmt::skip]
 const CONSTRUCTORS: &[ConstructorEntry] = &[
     ConstructorEntry { name: "nil",      arity: Arity::Fixed(0), build: |t, _| t.nil() },
@@ -111,6 +109,8 @@ const CONSTRUCTORS: &[ConstructorEntry] = &[
     ConstructorEntry { name: "utf8",     arity: Arity::Fixed(0), build: |t, _| { let inner = t.str_t(); t.mint_brand(inner, "utf8") } },
     ConstructorEntry { name: "pid",      arity: Arity::Fixed(0), build: |t, _| t.opaque_of("pid") },
     ConstructorEntry { name: "ref",      arity: Arity::Fixed(0), build: |t, _| t.opaque_of("ref") },
+    ConstructorEntry { name: "list",     arity: Arity::Range(0, 1), build: |t, a| { let inner = a.first().copied().unwrap_or_else(|| t.any()); t.list(inner) } },
+    ConstructorEntry { name: "resource", arity: Arity::Range(0, 1), build: |t, a| { let inner = a.first().copied().unwrap_or_else(|| t.any()); t.resource(inner) } },
 ];
 
 fn find_constructor(name: &str) -> Option<&'static ConstructorEntry> {
@@ -339,17 +339,6 @@ impl World<'_> {
     ) -> Result<Ty, TypeExprError> {
         let arg_tys = self.resolve_each(namespace, args, vars)?;
         match self.classify_name(namespace, path, args.len(), vars) {
-            NameClass::List => {
-                if args.len() > 1 {
-                    return Err(self.name_error(path, "list takes at most one type argument"));
-                }
-                let inner_ty = arg_tys.into_iter().next().unwrap_or_else(|| self.types_mut().any());
-                Ok(self.types_mut().list(inner_ty))
-            }
-            NameClass::Resource => {
-                let inner_ty = arg_tys.into_iter().next().unwrap_or_else(|| self.types_mut().any());
-                Ok(self.types_mut().resource(inner_ty))
-            }
             NameClass::Builtin(entry) => {
                 if !entry.arity.accepts(args.len()) {
                     return Err(self.name_error(
@@ -383,12 +372,6 @@ impl World<'_> {
         vars: &mut HashMap<String, TypeVarId>,
     ) -> NameClass {
         if let [name] = path {
-            if name == "list" {
-                return NameClass::List;
-            }
-            if name == "resource" {
-                return NameClass::Resource;
-            }
             if let Some(entry) = find_constructor(name) {
                 return NameClass::Builtin(entry);
             }

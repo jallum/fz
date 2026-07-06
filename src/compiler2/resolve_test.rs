@@ -72,6 +72,89 @@ fn a_nullary_builtin_applied_with_arguments_reports_the_uniform_arity_error() {
     assert_eq!(error.msg, "expected 0 type argument(s), got 1 `integer`");
 }
 
+/// `[T]` (structural), `list(T)`, and bare `list` (defaulting the element to
+/// `any`) are three syntaxes that must resolve to the identical target `Ty` —
+/// the concordance this registry entry exists to prove.
+#[test]
+fn list_bracket_and_named_forms_resolve_to_the_same_ty() {
+    let tel = ConfiguredTelemetry::new();
+
+    let mut world = World::new(&tel);
+    let bracket = resolve(&tel, &mut world, "[integer]").expect("[T] resolves");
+    let named = resolve(&tel, &mut world, "list(integer)").expect("list(T) resolves");
+    assert_eq!(
+        world.types_mut().display(&bracket),
+        world.types_mut().display(&named),
+        "`[integer]` and `list(integer)` should resolve to the same Ty"
+    );
+
+    let mut world = World::new(&tel);
+    let bracket_any = resolve(&tel, &mut world, "[any]").expect("[any] resolves");
+    let bare = resolve(&tel, &mut world, "list").expect("bare list resolves");
+    assert_eq!(
+        world.types_mut().display(&bracket_any),
+        world.types_mut().display(&bare),
+        "`[any]` and bare `list` should resolve to the same Ty"
+    );
+}
+
+/// `resource(T)` resolves exactly as it did before the registry migration:
+/// a payload type wrapped by `Types::resource`.
+#[test]
+fn resource_with_one_argument_resolves_as_before() {
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new(&tel);
+
+    let resolved = resolve(&tel, &mut world, "resource(integer)").expect("resource(T) resolves");
+
+    let mut expect = Types::new();
+    let inner = expect.int();
+    let expected = expect.resource(inner);
+
+    assert_eq!(
+        world.types_mut().display(&resolved),
+        expect.display(&expected),
+        "`resource(integer)` should resolve to `Types::resource(integer)`"
+    );
+}
+
+/// Before this migration, `resource(A, B)` silently dropped `B` (the
+/// `NameClass::Resource` arm took only `arg_tys.into_iter().next()`). The
+/// registry's uniform arity check now diagnoses the extra argument instead
+/// of truncating it — the one intended behavior change in this fold.
+#[test]
+fn resource_with_two_arguments_now_errors_instead_of_silently_dropping_the_second() {
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new(&tel);
+
+    let error = resolve(&tel, &mut world, "resource(integer, bool)")
+        .expect_err("resource with two type arguments should now fail to resolve");
+
+    assert_eq!(error.msg, "expected 0 to 1 type argument(s), got 2 `resource`");
+}
+
+/// Bare `resource` (no type arguments) resolved before this migration too —
+/// the old `NameClass::Resource` arm had the identical `unwrap_or_else(any)`
+/// fallback as `list` — so it keeps resolving, defaulting the payload to
+/// `any`, under `Arity::Range(0, 1)`.
+#[test]
+fn bare_resource_resolves_with_an_any_payload() {
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new(&tel);
+
+    let resolved = resolve(&tel, &mut world, "resource").expect("bare resource resolves");
+
+    let mut expect = Types::new();
+    let any = expect.any();
+    let expected = expect.resource(any);
+
+    assert_eq!(
+        world.types_mut().display(&resolved),
+        expect.display(&expected),
+        "bare `resource` should resolve to `Types::resource(any)`"
+    );
+}
+
 #[test]
 fn a_structural_map_type_resolves_to_the_same_ty_as_a_hand_built_exact_map() {
     // `%{ok: integer, err: atom}` — parity with `[T]` for lists: the
