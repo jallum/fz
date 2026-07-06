@@ -12,11 +12,15 @@
     {
       "text": "AUDIT CARRY-FORWARDS from fz-yj0.1 (GroundValue leaf, adversarial audit — no blockers):\n\nSTEP .3 ACCEPTANCE CRITERION (MapKey migration): the .1 leaf carries a local MapKeyProjection enum {Atom(String),Int(i64)} that DUPLICATES crate::types::map::MapKey to keep the leaf dependency-free. This is deliberate, self-acknowledged concordance debt and MUST NOT survive .3. Fold it: either make GroundValue::as_map_key() return crate::types::map::MapKey directly, or move the canonical two-variant shape into ground_value and have types::map::MapKey re-export it. Leaving MapKeyProjection standing is exactly the concordance violation this epic exists to remove.\n\nSTEP .4 ACCEPTANCE CRITERION (Literal migration): signed-zero semantics change. Today Literal::Float(f64) derives only PartialEq, so +0.0 == -0.0. After migrating onto GroundValue::Float(u64), +0.0 (bits 0x0) and -0.0 (bits 0x8000_0000_0000_0000) become DISTINCT, non-equal values. DispatchConst::FloatBits already has this bit-exact behavior (so .5 dispatch-matrix migration is a no-op there), but Literal-consuming sites (interpreter/compiler2 literal folding, any Literal::Float equality/dedup) may rely on +0.0==-0.0. .4 must verify no equality-fold or dedup depends on signed-zero collapsing before migrating.\n\nAlso noted (inherited, non-blocking): GroundValue's derived Ord is bit-pattern order over Float(u64) bits, NOT numeric order (negatives/NaN sort by raw bits). Now documented on the derive in .1; safe for map/set key ordering, never use for numeric sort.",
       "timestamp": "2026-07-06T19:29:25Z"
+    },
+    {
+      "text": "STEP .2 DONE (folded to d91239894 on the branch). Two adversarial audits (lattice-semantics + migration-completeness), both clean, no blockers.\n- FiniteSet\u003cT\u003e {values: BTreeSet\u003cT\u003e, cofinite: bool} leaf at src/finite_set.rs; LiteralSet AND ObservedSet deleted; runtime_type_predicate_intersect hand-copy deleted (call site uses .intersect()); field-for-field atoms copy collapsed to descr.atoms.clone(). git grep LiteralSet|ObservedSet = zero hits.\n- Semantics VERIFIED-IDENTICAL across all four (finite,cofinite) combos for union/intersect/neg/contains/overlaps (Lane A hand-trace). Codegen changes are pure type-name substitution over byte-identical .contains() (Lane B). Concordance genuine: tree-wide search found NO other finite-or-cofinite container to fold (BasicBits/dnf.rs are different algebras, correctly left alone).\n- FINDING (filed fz-y0x, non-blocking): lit_set.rs filename now lies (no LiteralSet left; only AtomSet/VarSet aliases + unrelated closure-var-id encoding). End-of-epic hygiene.\n\nfz-yj0 DAG: .1 done (b400368e3), .2 done (d91239894). Unblocks .3/.4/.5 (need .1) and .6 (needs .1+.2).",
+      "timestamp": "2026-07-06T19:36:03Z"
     }
   ],
   "priority": 2,
   "status": "open",
   "title": "Fold the four ground-literal-value carriers into one GroundValue + unify the two finite-or-cofinite Set containers",
   "type": "task",
-  "updated_at": "2026-07-06T19:29:25Z"
+  "updated_at": "2026-07-06T19:36:03Z"
 }
