@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-07-06T20:12:53Z",
+  "description": "SURFACED by fz-yj0.4 AND fz-yj0.5 audits (both independently recommend it). CONCORDANCE / north-star: reduce duplicated code.\n\nBecause GroundValue is an 8-variant SUPERSET, each subsystem that consumes only a SUBSET must reject the impossible variants. The migrations do this with hand-copied 'GroundValue::\u003cimpossible\u003e =\u003e unreachable!(\"...\")' match arms:\n- fz-yj0.4 (body literals, 6-variant subset {Int,Float,Atom,Bool,Nil,Binary}): 5 copies of 'EmptyList | Utf8Binary =\u003e unreachable!()' across literal_repr/lower_backend_literal/literal_ty/literal_map_key/literal_value.\n- fz-yj0.5 (dispatch consts, 7-variant subset, no Binary): 7 copies of 'Binary =\u003e unreachable!()' with an IDENTICAL comment string across native/body/semantic/receive/dispatch_exec.\n- fz-yj0.6 will add more for its subset.\nThat is O(N-subsystems) duplicated panic arms asserting the same invariant, each a latent panic if a future author matches the wrong-sourced value.\n\nFIX (correct-by-construction): give GroundValue narrowing accessors that reject the impossible variants at ONE boundary, e.g. as_body_literal(\u0026self) -\u003e Option\u003cBodyLiteral\u003e (closed 6-variant view) and as_dispatch_shape(\u0026self) -\u003e Option\u003cDispatchShape\u003e (7-variant view). Each consumer then matches a CLOSED subset type -- no per-site unreachable, no copy-paste, no wrong-value panic risk. Reduces duplication from O(N) to O(1) and makes the subset invariants type-enforced.\n\nNOTE: not fold-able into .4/.5/.6 themselves -- the 7 sites return different types (ValueId/Var/Ty/Option/bool) around their arms, so this is a second migration layer over the carrier fold. Sequence AFTER .6 so all subsets are known. Belongs to the fz-yj0 epic; end-of-epic concordance cleanup.\n\nVERIFY: git grep 'unreachable!' near GroundValue matches -\u003e 0 hand-copied superset-rejection arms; lib green; single-threaded fixture_matrix still exactly 19.",
+  "id": "fz-xm2",
+  "labels": [],
+  "priority": 3,
+  "status": "open",
+  "title": "Fold the duplicated GroundValue superset-rejection unreachable arms into narrowing accessors",
+  "type": "task",
+  "updated_at": "2026-07-06T20:12:53Z"
+}
