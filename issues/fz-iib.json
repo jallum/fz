@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-07-06T17:42:33Z",
+  "description": "INCONSISTENCY (surfaced by the ground-literal-value fold investigation): the SAME source keyword `nil` types two different ways depending on position.\n\n- As an expression literal: Literal::Nil -\u003e world.types.nil() = Descr::atom_lit(\"nil\") -- the ATOM nil (jobs/semantic.rs:2114; types/descr.rs:76-78).\n- As a pattern / dispatch const: DispatchConst::Nil -\u003e world.types.empty_list() = ListSig::empty() -- the EMPTY LIST (jobs/semantic.rs:2131).\n\nSame syntax, same unit payload, different Ty depending on expression- vs pattern-position lowering. This is a latent correctness/consistency question independent of the fold: the GroundValue fold shares the VALUE representation (GroundValue::Nil) but the per-consumer TYPING functions stay separate and continue to disagree until this is resolved.\n\nDecide the intended meaning of `nil` in each position and align. Grep fixtures for programs relying on either behavior before changing. Parser context: quoted_function.rs:324 (`\"nil\" =\u003e Expr::Nil`); pattern path dispatch_matrix/pattern.rs:319.",
+  "id": "fz-iib",
+  "labels": [],
+  "priority": 3,
+  "status": "open",
+  "title": "nil types as atom in expression position but as empty-list in pattern position (same syntax, divergent Ty)",
+  "type": "bug",
+  "updated_at": "2026-07-06T17:42:33Z"
+}
