@@ -2,13 +2,15 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-07-06T18:05:32Z",
+  "close_reason": "Satisfied by current compiler2 artifact/native product boundary: no live world.transport_plan reads remain; native consumes BackendProgram/MaterializedTransportPlan.",
   "created": "2026-06-26T19:43:32Z",
   "description": "Artifact and native lowering still reach back into the root-global TransportPlan after MaterializedProgram has copied a materialized transport handoff. That violates the documented one-way artifact boundary: AbiReady should consume MaterializedProgram, Backend should consume EmissionReadyProgram, and Native should consume BackendProgram. Move callable/boundary fact rows needed by ABI/native into MaterializedTransportPlan and remove downstream world.transport_plan(root) reads.",
   "id": "fz-08l",
   "labels": [],
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Compiler2 artifact ladder must not reread live TransportPlan",
   "type": "bug",
-  "updated_at": "2026-06-26T19:43:38Z"
+  "updated_at": "2026-07-06T18:05:32Z"
 }
