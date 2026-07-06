@@ -37,7 +37,7 @@ Descr                            the private structural kernel behind an id
 `interner.intern(descr)` returns the existing id for an equal `Descr` or mints a
 new one. Two structurally equal types therefore get the **same** id: equality is a
 `u32` compare, and a `Vec<Ty>` compares in O(arity). The structural kernel (`dnf`,
-`conj`, `bits`, `emptiness`, `lit_set`, `sigs`) is private; callers work through
+`conj`, `bits`, `emptiness`, `sigs`) is private; callers work through
 `Ty` and the `Types` methods.
 
 ## One instance, threaded everywhere

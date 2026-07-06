@@ -6,10 +6,24 @@ use super::dnf::{dnf_intersect, dnf_neg, dnf_union, is_dnf_top, normalize_empty_
 use super::emptiness::{
     Memo, func_clause_empty, list_clause_empty, map_clause_empty, resource_clause_empty, tuple_clause_empty,
 };
-use super::lit_set::{AtomSet, VarSet};
 use super::sigs::{ArrowSig, ClosureLit, ListSig, MapSig, ResourceSig, TupleSig};
 use super::{MapKey, Ty, TyCtx, TypeVarId};
 use crate::finite_set::FiniteSet;
+
+/// Singleton-type precision for atoms (and the atom-shaped nominal axes:
+/// opaques, brands, vars — see [`VarSet`]). Numbers deliberately have no
+/// literal sets — numeric constants are values, not types.
+type AtomSet = FiniteSet<String>;
+
+/// Parametric type-variable identifier. Vars are nominal placeholders
+/// distinguished only by id; the lattice cannot tell them apart from opaques.
+/// The difference is at use sites: opaques are fixed (the name *is* the type);
+/// vars are substituted at instantiation sites.
+///
+/// Per-function scoping is handled by the planner, which renames at
+/// function-typing entry to ensure alpha-equivalence across signatures; the id
+/// itself carries no scope.
+type VarSet = FiniteSet<TypeVarId>;
 
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub(super) struct Descr {

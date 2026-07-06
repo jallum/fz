@@ -6,12 +6,12 @@
 mod addressed;
 mod arrow_match;
 mod bits;
+mod closure_surface_var;
 mod conj;
 mod descr;
 mod dnf;
 mod emptiness;
 mod format;
-mod lit_set;
 mod sigs;
 
 use std::cell::RefCell;
@@ -36,12 +36,12 @@ pub use crate::types::{
 pub use arrow_match::ArrowMatch;
 
 use addressed::AddrStep;
+#[cfg(test)]
+pub(crate) use closure_surface_var::{ClosureSurfacePos, decode_closure_surface_var};
+use closure_surface_var::{closure_ret_var_id, closure_var_id};
 use conj::Conj;
 use descr::Descr;
 use dnf::{dnf_intersect_with, tuple_clause_subsumed};
-#[cfg(test)]
-pub(crate) use lit_set::{ClosureSurfacePos, decode_closure_surface_var};
-use lit_set::{closure_ret_var_id, closure_var_id};
 use sigs::{ArrowSig, ClosureLit, ListSig, MergeSig, PosMeet, TupleSig};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]

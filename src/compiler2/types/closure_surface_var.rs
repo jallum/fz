@@ -1,26 +1,10 @@
-//! Primitive aliases over the shared finite-or-cofinite [`FiniteSet`].
+//! Deterministic var-id encoding for a closure's surface arrow.
 
-use crate::finite_set::FiniteSet;
 use crate::fz_ir::FnId;
 
 use super::TypeVarId;
 
-/// Singleton-type precision for atoms (and the atom-shaped nominal axes:
-/// opaques, brands, vars — see [`VarSet`]). Numbers deliberately have no
-/// literal sets — numeric constants are values, not types.
-pub(crate) type AtomSet = FiniteSet<String>;
-
-/// fz-try.5 — parametric type-variable identifier. Vars are nominal placeholders
-/// distinguished only by id; the lattice cannot tell them apart from opaques.
-/// The difference is at use sites: opaques are fixed (the name *is* the type);
-/// vars are substituted at instantiation sites (fz-try.6 onward).
-///
-/// Per-function scoping is handled by the planner, which renames at
-/// function-typing entry to ensure alpha-equivalence across signatures; the id
-/// itself carries no scope.
-pub(crate) type VarSet = FiniteSet<TypeVarId>;
-
-/// fz-try.7 — deterministic var-id allocation for a closure's surface arrow.
+/// Deterministic var-id allocation for a closure's surface arrow.
 /// Vars in a closure's `(α₀, …, αₙ₋₁) -> β` signature are keyed by `(fn_id,
 /// position)`. Arg positions occupy `0..MAX_CLOSURE_ARG_VAR`; ret occupies
 /// the dedicated slot at `MAX_CLOSURE_ARG_VAR`.
@@ -58,7 +42,7 @@ pub(crate) fn closure_var_id(fn_id: FnId, position: usize) -> TypeVarId {
     TypeVarId(id)
 }
 
-/// fz-try.7 — the dedicated return-var slot for a closure's surface arrow.
+/// The dedicated return-var slot for a closure's surface arrow.
 /// Reserved at position `MAX_CLOSURE_ARG_VAR` so it does not alias arg
 /// positions when the same closure is rendered at different apparent
 /// arities (value-form vs called-form).
