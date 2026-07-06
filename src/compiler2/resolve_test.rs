@@ -39,6 +39,7 @@ fn nullary_scalars_resolve_to_the_same_ty_as_the_direct_types_call() {
         }),
         ("pid", |t| t.opaque_of("pid")),
         ("ref", |t| t.opaque_of("ref")),
+        ("map", |t| t.map_top()),
     ];
 
     for (name, expect_ty) in cases {
@@ -237,4 +238,19 @@ fn an_empty_map_type_resolves_to_the_exact_empty_map() {
         expect.display(&expected),
         "`%{{}}` should resolve to the exact empty-map Ty, not `map_top`",
     );
+}
+
+/// `map` applied with a type argument must fail the same uniform arity
+/// check every other nullary builtin does — the named `map` constructor is
+/// nullary-only; a homogeneous `map(k, v)` is a separate, unauthorized
+/// question.
+#[test]
+fn map_with_a_type_argument_reports_the_uniform_arity_error() {
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new(&tel);
+
+    let error =
+        resolve(&tel, &mut world, "map(integer)").expect_err("nullary `map` applied with an argument should fail");
+
+    assert_eq!(error.msg, "expected 0 type argument(s), got 1 `map`");
 }

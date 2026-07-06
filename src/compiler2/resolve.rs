@@ -90,11 +90,12 @@ struct ConstructorEntry {
     build: fn(&mut Types, &[Ty]) -> Ty,
 }
 
-/// The registry of builtin type-constructor names: the twelve nullary
-/// scalars plus the two parametric constructors, `list` (0 or 1 type
-/// argument — `list()`/`list(any)` and `[T]` mint the identical `Ty`) and
-/// `resource` (0 or 1 type argument, defaulting the payload to `any`). `map`
-/// joins it in a later migration.
+/// The registry of builtin type-constructor names: the thirteen nullary
+/// scalars (including `map`, the fully-unconstrained "any map" type — the
+/// named counterpart to the structural `%{k => v}` syntax) plus the two
+/// parametric constructors, `list` (0 or 1 type argument — `list()`/`list(any)`
+/// and `[T]` mint the identical `Ty`) and `resource` (0 or 1 type argument,
+/// defaulting the payload to `any`).
 #[rustfmt::skip]
 const CONSTRUCTORS: &[ConstructorEntry] = &[
     ConstructorEntry { name: "nil",      arity: Arity::Fixed(0), build: |t, _| t.nil() },
@@ -111,6 +112,7 @@ const CONSTRUCTORS: &[ConstructorEntry] = &[
     ConstructorEntry { name: "ref",      arity: Arity::Fixed(0), build: |t, _| t.opaque_of("ref") },
     ConstructorEntry { name: "list",     arity: Arity::Range(0, 1), build: |t, a| { let inner = a.first().copied().unwrap_or_else(|| t.any()); t.list(inner) } },
     ConstructorEntry { name: "resource", arity: Arity::Range(0, 1), build: |t, a| { let inner = a.first().copied().unwrap_or_else(|| t.any()); t.resource(inner) } },
+    ConstructorEntry { name: "map",      arity: Arity::Fixed(0), build: |t, _| t.map_top() },
 ];
 
 fn find_constructor(name: &str) -> Option<&'static ConstructorEntry> {
