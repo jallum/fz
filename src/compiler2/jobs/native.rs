@@ -21,6 +21,7 @@ use crate::fz_ir::{
     ExternDecl, ExternId, ExternMarshalSite, ExternTy, FnBuilder, FnCategory, FnId, InitTokenId, ModuleBuilder, Prim,
     ReceiveAfter, ReceiveClause, Term, UnOp as IrUnOp, Var,
 };
+use crate::ground_value::GroundValue;
 use crate::runtime_type_predicate::RuntimeTypePredicate;
 use crate::source::Span;
 
@@ -30,7 +31,7 @@ use super::super::artifact::{
     NativeBodyOrigin, NativeCallableBoundary, NativeCallableBoundaryId, NativeEntryAbi, NativeProgram,
     ReusableConsCapture,
 };
-use super::super::body::{ControlDestination, ControlEntryId, Literal, LoweredExtern, ValueId};
+use super::super::body::{ControlDestination, ControlEntryId, LoweredExtern, ValueId};
 use super::super::drive::{FactKey, Job, JobEffects, settled_uses};
 use super::super::identity::{FunctionId, RootId};
 use super::super::scheduler::FatalError;
@@ -4637,21 +4638,24 @@ fn collect_extern_marshals_for_call_target(
 fn lower_backend_literal(
     ctx: &mut NativeFnCtx,
     atom_ids: &HashMap<String, u32>,
-    literal: &Literal,
+    literal: &GroundValue,
 ) -> Result<Var, FatalError> {
     Ok(match literal {
-        Literal::Int(value) => ctx.emit_let(Prim::Const(Const::Int(*value))).0,
-        Literal::Float(value) => ctx.emit_let(Prim::Const(Const::Float(*value))).0,
-        Literal::Atom(name) => {
+        GroundValue::Int(value) => ctx.emit_let(Prim::Const(Const::Int(*value))).0,
+        GroundValue::Float(bits) => ctx.emit_let(Prim::Const(Const::Float(f64::from_bits(*bits)))).0,
+        GroundValue::Atom(name) => {
             ctx.emit_let(Prim::Const(Const::Atom(*atom_ids.get(name).ok_or(FatalError)?)))
                 .0
         }
-        Literal::Bool(true) => ctx.emit_let(Prim::Const(Const::True)).0,
-        Literal::Bool(false) => ctx.emit_let(Prim::Const(Const::False)).0,
-        Literal::Nil => ctx.emit_let(Prim::Const(Const::Nil)).0,
-        Literal::Binary(bytes) => {
+        GroundValue::Bool(true) => ctx.emit_let(Prim::Const(Const::True)).0,
+        GroundValue::Bool(false) => ctx.emit_let(Prim::Const(Const::False)).0,
+        GroundValue::Nil => ctx.emit_let(Prim::Const(Const::Nil)).0,
+        GroundValue::Binary(bytes) => {
             ctx.emit_let(Prim::ConstBitstring(bytes.clone(), (bytes.len() * 8) as u64))
                 .0
+        }
+        GroundValue::EmptyList | GroundValue::Utf8Binary(_) => {
+            unreachable!("lowered-body literals never produce EmptyList or Utf8Binary")
         }
     })
 }

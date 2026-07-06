@@ -10,6 +10,7 @@ use crate::diag::codes;
 use crate::diag::driver::emit_through;
 use crate::dispatch_matrix::pattern::{PatternDispatchPlan, PatternGuardDispatch, PatternGuardExpr};
 use crate::dispatch_matrix::{ComparisonValue, DispatchConst, DispatchNode, ProjectionKind, Region, SubjectSource};
+use crate::ground_value::GroundValue;
 use crate::source::Span;
 
 use super::super::artifact::{
@@ -1676,8 +1677,8 @@ fn collect_tail_atoms(world: &mut World<'_>, tail: &BackendTail, seen: &mut Hash
     }
 }
 
-fn collect_literal_atoms(literal: &super::super::body::Literal, seen: &mut HashSet<String>, atoms: &mut Vec<String>) {
-    if let super::super::body::Literal::Atom(name) = literal {
+fn collect_literal_atoms(literal: &GroundValue, seen: &mut HashSet<String>, atoms: &mut Vec<String>) {
+    if let GroundValue::Atom(name) = literal {
         push_atom(seen, atoms, name);
     }
 }

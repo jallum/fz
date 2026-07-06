@@ -9,6 +9,7 @@ use std::collections::{HashMap, HashSet};
 use crate::ast::{BinOp, BitType, Endian, TypeExprBody, UnOp};
 use crate::dispatch_matrix::pattern::PatternDispatchPlan;
 use crate::fz_ir::ExternTy;
+use crate::ground_value::GroundValue;
 use crate::source::Span;
 use crate::type_expr::ResolvedSpecDecl;
 
@@ -69,16 +70,6 @@ impl ControlEntryId {
 pub struct CallArg {
     pub value: ValueId,
     pub ascription: Option<TypeExprBody>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum Literal {
-    Int(i64),
-    Float(f64),
-    Binary(Vec<u8>),
-    Atom(String),
-    Bool(bool),
-    Nil,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -558,14 +549,14 @@ pub(crate) fn callsite_call_dests(body: &LoweredBody) -> HashMap<CallSiteId, Con
 #[derive(Debug, Clone, PartialEq)]
 pub struct LoweredMapKey {
     pub value: ValueId,
-    pub literal: Option<Literal>,
+    pub literal: Option<GroundValue>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum LoweredStep {
     Const {
         value: ValueId,
-        literal: Literal,
+        literal: GroundValue,
     },
     Tuple {
         value: ValueId,
@@ -626,7 +617,7 @@ pub enum LoweredStep {
     },
     AssertLiteral {
         source: ValueId,
-        literal: Literal,
+        literal: GroundValue,
     },
     AssertStruct {
         source: ValueId,
@@ -635,7 +626,7 @@ pub enum LoweredStep {
     RequireMapValue {
         value: ValueId,
         source: ValueId,
-        key: Literal,
+        key: GroundValue,
     },
     AssertTuple {
         source: ValueId,

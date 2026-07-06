@@ -2528,11 +2528,15 @@ fn publish_runtime_value(proc: *mut Process, value: AnyValue) -> Result<AnyValue
     )
 }
 
-fn literal_value(runtime: &mut IrInterpRuntime, literal: &crate::compiler2::Literal) -> Result<AnyValue, String> {
+fn literal_value(
+    runtime: &mut IrInterpRuntime,
+    literal: &crate::ground_value::GroundValue,
+) -> Result<AnyValue, String> {
+    use crate::ground_value::GroundValue;
     Ok(match literal {
-        crate::compiler2::Literal::Int(value) => AnyValue::Int(*value),
-        crate::compiler2::Literal::Float(value) => AnyValue::Float(*value),
-        crate::compiler2::Literal::Binary(value) => {
+        GroundValue::Int(value) => AnyValue::Int(*value),
+        GroundValue::Float(bits) => AnyValue::Float(f64::from_bits(*bits)),
+        GroundValue::Binary(value) => {
             let ref_word = fz_runtime::ir_runtime::fz_alloc_bitstring_const(
                 runtime.cur_proc(),
                 value.as_ptr() as u64,
@@ -2541,9 +2545,12 @@ fn literal_value(runtime: &mut IrInterpRuntime, literal: &crate::compiler2::Lite
             );
             interp_value_from_ref_word(ref_word, "backend binary literal")?
         }
-        crate::compiler2::Literal::Atom(name) => AnyValue::Atom(runtime.node.intern_atom(name)),
-        crate::compiler2::Literal::Bool(value) => interp_bool_value(*value),
-        crate::compiler2::Literal::Nil => interp_nil_value(),
+        GroundValue::Atom(name) => AnyValue::Atom(runtime.node.intern_atom(name)),
+        GroundValue::Bool(value) => interp_bool_value(*value),
+        GroundValue::Nil => interp_nil_value(),
+        GroundValue::EmptyList | GroundValue::Utf8Binary(_) => {
+            unreachable!("lowered-body literals never produce EmptyList or Utf8Binary")
+        }
     })
 }
 

@@ -10,6 +10,7 @@ use crate::diag::Diagnostic;
 use crate::diag::codes;
 use crate::diag::driver::emit_through;
 use crate::extern_contract::extern_ty_from_name;
+use crate::ground_value::GroundValue;
 use crate::parser::lexer::Tok;
 use crate::source::Span;
 
@@ -19,7 +20,7 @@ use super::super::artifact::{
     MaterializedExecutable, MaterializedExecutableTransport,
 };
 use super::super::body::{
-    CallArg, CallSiteId, ControlDestination, ControlEntryId, ControlEntryOrigin, Literal, LoweredBody, LoweredEntry,
+    CallArg, CallSiteId, ControlDestination, ControlEntryId, ControlEntryOrigin, LoweredBody, LoweredEntry,
     LoweredStep, LoweredTail, ValueId,
 };
 use super::super::drive::FactKey;
@@ -2423,12 +2424,15 @@ fn record_step_reprs(
     }
 }
 
-fn literal_repr(literal: &Literal) -> AbiValueRepr {
+fn literal_repr(literal: &GroundValue) -> AbiValueRepr {
     match literal {
-        Literal::Int(_) => AbiValueRepr::RawInt,
-        Literal::Float(_) => AbiValueRepr::RawF64,
-        Literal::Atom(_) | Literal::Bool(_) | Literal::Nil => AbiValueRepr::RawAtom,
-        Literal::Binary(_) => AbiValueRepr::ValueRef,
+        GroundValue::Int(_) => AbiValueRepr::RawInt,
+        GroundValue::Float(_) => AbiValueRepr::RawF64,
+        GroundValue::Atom(_) | GroundValue::Bool(_) | GroundValue::Nil => AbiValueRepr::RawAtom,
+        GroundValue::Binary(_) => AbiValueRepr::ValueRef,
+        GroundValue::EmptyList | GroundValue::Utf8Binary(_) => {
+            unreachable!("lowered-body literals never produce EmptyList or Utf8Binary")
+        }
     }
 }
 

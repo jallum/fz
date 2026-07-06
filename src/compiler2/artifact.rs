@@ -21,11 +21,12 @@ use crate::fz_ir::{
     ExternalCallEdge, FnId, FnIr as IrFn, Module as IrModule, Prim as IrPrim, ReceiveAfter as IrReceiveAfter,
     ReceiveClause as IrReceiveClause, Stmt as IrStmt, Term as IrTerm, Var,
 };
+use crate::ground_value::GroundValue;
 use crate::source::Span;
 
 pub use super::body::ReusableConsCapture;
 use super::body::{
-    CallSiteId, ControlDestination, ControlDispatch, ControlEntryId, DispatchBindings, Literal, LoweredBitField,
+    CallSiteId, ControlDestination, ControlDispatch, ControlEntryId, DispatchBindings, LoweredBitField,
     LoweredBitFieldSpec, LoweredBody, LoweredExtern, ReceiveAfter, ReceiveClause, ValueId,
 };
 use super::identity::{ExecutableKey, FunctionId, RootId};
@@ -636,7 +637,7 @@ pub enum BackendStep {
     },
     Const {
         value: ValueId,
-        literal: Literal,
+        literal: GroundValue,
     },
     Tuple {
         value: ValueId,
@@ -697,7 +698,7 @@ pub enum BackendStep {
     },
     AssertLiteral {
         source: ValueId,
-        literal: Literal,
+        literal: GroundValue,
     },
     AssertStruct {
         source: ValueId,
@@ -706,7 +707,7 @@ pub enum BackendStep {
     RequireMapValue {
         value: ValueId,
         source: ValueId,
-        key: Literal,
+        key: GroundValue,
     },
     AssertTuple {
         source: ValueId,

@@ -12,10 +12,11 @@ use crate::dispatch_matrix::{
     ComparisonValue, DispatchConst, DispatchNode, EdgeEvidence, GraphNodeId, ListRegion, Region, RegionPredicate,
     SubjectId, SubjectSource,
 };
+use crate::ground_value::GroundValue;
 
 use super::super::body::{
-    CallSiteId, ControlDestination, Literal, LoweredBody, LoweredClause, LoweredEntry, LoweredMapKey, LoweredStep,
-    LoweredTail, ValueId,
+    CallSiteId, ControlDestination, LoweredBody, LoweredClause, LoweredEntry, LoweredMapKey, LoweredStep, LoweredTail,
+    ValueId,
 };
 use super::super::contract::FunctionContract;
 use super::super::drive::{FactKey, JobEffects, current_uses};
@@ -2104,14 +2105,17 @@ fn value_ty(values: &SemanticValues, value: ValueId) -> Option<Ty> {
     values.get(&value).copied()
 }
 
-fn literal_ty(world: &mut World<'_>, literal: &Literal) -> Ty {
+fn literal_ty(world: &mut World<'_>, literal: &GroundValue) -> Ty {
     match literal {
-        Literal::Int(value) => world.types_mut().int_lit(*value),
-        Literal::Float(value) => world.types_mut().float_lit(*value),
-        Literal::Binary(_) => world.types_mut().str_t(),
-        Literal::Atom(name) => world.types_mut().atom_lit(name),
-        Literal::Bool(value) => world.types_mut().bool_lit(*value),
-        Literal::Nil => world.types_mut().nil(),
+        GroundValue::Int(value) => world.types_mut().int_lit(*value),
+        GroundValue::Float(bits) => world.types_mut().float_lit(f64::from_bits(*bits)),
+        GroundValue::Binary(_) => world.types_mut().str_t(),
+        GroundValue::Atom(name) => world.types_mut().atom_lit(name),
+        GroundValue::Bool(value) => world.types_mut().bool_lit(*value),
+        GroundValue::Nil => world.types_mut().nil(),
+        GroundValue::EmptyList | GroundValue::Utf8Binary(_) => {
+            unreachable!("lowered-body literals never produce EmptyList or Utf8Binary")
+        }
     }
 }
 
@@ -2244,11 +2248,14 @@ fn map_key_from_ty(world: &World<'_>, ty: Ty) -> Option<super::super::types::Map
     world.types().as_map_key(&ty)
 }
 
-fn literal_map_key(literal: &Literal) -> Option<super::super::types::MapKey> {
+fn literal_map_key(literal: &GroundValue) -> Option<super::super::types::MapKey> {
     match literal {
-        Literal::Int(value) => Some(super::super::types::MapKey::Int(*value)),
-        Literal::Atom(name) => Some(super::super::types::MapKey::Atom(name.clone())),
-        Literal::Float(_) | Literal::Binary(_) | Literal::Bool(_) | Literal::Nil => None,
+        GroundValue::Int(value) => Some(super::super::types::MapKey::Int(*value)),
+        GroundValue::Atom(name) => Some(super::super::types::MapKey::Atom(name.clone())),
+        GroundValue::Float(_) | GroundValue::Binary(_) | GroundValue::Bool(_) | GroundValue::Nil => None,
+        GroundValue::EmptyList | GroundValue::Utf8Binary(_) => {
+            unreachable!("lowered-body literals never produce EmptyList or Utf8Binary")
+        }
     }
 }
 

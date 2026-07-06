@@ -11002,7 +11002,7 @@ fn compiler2_quicksort_cli_builds_are_stable_smoke() {
 
 #[test]
 fn compiler2_string_constant_dispatch_keeps_the_miss_arm_reachable() {
-    // String literals have no singleton types (Literal::Binary types as
+    // String literals have no singleton types (GroundValue::Binary types as
     // str_t), so no subtype check can ever witness "the scrutinee always
     // equals this string". The old miss-side proof !is_subtype(str, str)
     // evaluated false and silently pruned the live wildcard clause — the

@@ -20,12 +20,13 @@ use crate::extern_contract::{
     explicit_extern_wire_hint, extern_semantic_contract, extern_symbol_from_name, ty_to_extern_ty,
 };
 use crate::function_surface::FunctionSurface;
+use crate::ground_value::GroundValue;
 use crate::source::Span;
 
 use super::super::body::{
     CallArg, CallSiteId, ControlDestination, ControlDispatch, ControlEntryId, ControlEntryOrigin, DispatchBindings,
-    Literal, LoweredBitField, LoweredBitFieldSpec, LoweredBitSize, LoweredBody, LoweredClause, LoweredEntry,
-    LoweredExtern, LoweredMapKey, LoweredStep, LoweredTail, ReceiveAfter, ReceiveClause, ReusableConsCapture, ValueId,
+    LoweredBitField, LoweredBitFieldSpec, LoweredBitSize, LoweredBody, LoweredClause, LoweredEntry, LoweredExtern,
+    LoweredMapKey, LoweredStep, LoweredTail, ReceiveAfter, ReceiveClause, ReusableConsCapture, ValueId,
 };
 use super::super::drive::{FactKey, JobEffects, current_uses};
 use super::super::identity::{FunctionId, FunctionSource};
@@ -89,7 +90,7 @@ struct ExprReceive {
 enum ExprStep {
     Const {
         value: ValueId,
-        literal: Literal,
+        literal: GroundValue,
     },
     Tuple {
         value: ValueId,
@@ -178,7 +179,7 @@ enum ExprStep {
     },
     AssertLiteral {
         source: ValueId,
-        literal: Literal,
+        literal: GroundValue,
     },
     AssertStruct {
         source: ValueId,
@@ -187,7 +188,7 @@ enum ExprStep {
     RequireMapValue {
         value: ValueId,
         source: ValueId,
-        key: Literal,
+        key: GroundValue,
     },
     AssertTuple {
         source: ValueId,
@@ -624,12 +625,12 @@ impl<'a, 'w, 'tel, 'env, 'steps> QuoteLowerer<'a, 'w, 'tel, 'env, 'steps> {
         match &expr.node {
             Expr::Unquote(inner) => self.lowerer.lower_expr(inner, self.env, self.steps),
             Expr::Ascribe(inner, _) => self.lower(inner),
-            Expr::Int(value) => Ok(self.lowerer.push_const(self.steps, Literal::Int(*value))),
-            Expr::Float(value) => Ok(self.lowerer.push_const(self.steps, Literal::Float(*value))),
-            Expr::Binary(value) => Ok(self.lowerer.push_const(self.steps, Literal::Binary(value.clone()))),
-            Expr::Atom(value) => Ok(self.lowerer.push_const(self.steps, Literal::Atom(value.clone()))),
-            Expr::Bool(value) => Ok(self.lowerer.push_const(self.steps, Literal::Bool(*value))),
-            Expr::Nil => Ok(self.lowerer.push_const(self.steps, Literal::Nil)),
+            Expr::Int(value) => Ok(self.lowerer.push_const(self.steps, GroundValue::Int(*value))),
+            Expr::Float(value) => Ok(self.lowerer.push_const(self.steps, GroundValue::from_f64(*value))),
+            Expr::Binary(value) => Ok(self.lowerer.push_const(self.steps, GroundValue::Binary(value.clone()))),
+            Expr::Atom(value) => Ok(self.lowerer.push_const(self.steps, GroundValue::Atom(value.clone()))),
+            Expr::Bool(value) => Ok(self.lowerer.push_const(self.steps, GroundValue::Bool(*value))),
+            Expr::Nil => Ok(self.lowerer.push_const(self.steps, GroundValue::Nil)),
             Expr::Var(name) => self.lower_variable(name),
             Expr::List(items, None) => {
                 let values = items
@@ -774,8 +775,8 @@ impl<'a, 'w, 'tel, 'env, 'steps> QuoteLowerer<'a, 'w, 'tel, 'env, 'steps> {
         if quoted_alias_segments(name).is_some() {
             return self.lower_alias(name);
         }
-        let head = self.lowerer.push_const(self.steps, Literal::Atom(name.to_string()));
-        let tail = self.lowerer.push_const(self.steps, Literal::Nil);
+        let head = self.lowerer.push_const(self.steps, GroundValue::Atom(name.to_string()));
+        let tail = self.lowerer.push_const(self.steps, GroundValue::Nil);
         Ok(self.push_ast_node(head, tail))
     }
 
@@ -783,10 +784,13 @@ impl<'a, 'w, 'tel, 'env, 'steps> QuoteLowerer<'a, 'w, 'tel, 'env, 'steps> {
         let segments = quoted_alias_segments(name).expect("checked quoted alias name");
         let head = self
             .lowerer
-            .push_const(self.steps, Literal::Atom("__aliases__".to_string()));
+            .push_const(self.steps, GroundValue::Atom("__aliases__".to_string()));
         let mut items = Vec::with_capacity(segments.len());
         for segment in segments {
-            items.push(self.lowerer.push_const(self.steps, Literal::Atom(segment.to_string())));
+            items.push(
+                self.lowerer
+                    .push_const(self.steps, GroundValue::Atom(segment.to_string())),
+            );
         }
         let tail = self.push_list(items, None);
         Ok(self.push_ast_node(head, tail))
@@ -804,15 +808,15 @@ impl<'a, 'w, 'tel, 'env, 'steps> QuoteLowerer<'a, 'w, 'tel, 'env, 'steps> {
             ));
         };
         let base = self.lower(base)?;
-        let field = self.lowerer.push_const(self.steps, Literal::Atom(field.clone()));
-        let head = self.lowerer.push_const(self.steps, Literal::Atom(".".to_string()));
+        let field = self.lowerer.push_const(self.steps, GroundValue::Atom(field.clone()));
+        let head = self.lowerer.push_const(self.steps, GroundValue::Atom(".".to_string()));
         let meta = self.push_map(Vec::new());
         let tail = self.push_list(vec![base, field], None);
         Ok(self.push_tuple(vec![head, meta, tail]))
     }
 
     fn lower_atom_node(&mut self, name: &str, args: Vec<ValueId>) -> Result<ValueId, FatalError> {
-        let head = self.lowerer.push_const(self.steps, Literal::Atom(name.to_string()));
+        let head = self.lowerer.push_const(self.steps, GroundValue::Atom(name.to_string()));
         let tail = self.push_list(args, None);
         Ok(self.push_ast_node(head, tail))
     }
@@ -823,7 +827,7 @@ impl<'a, 'w, 'tel, 'env, 'steps> QuoteLowerer<'a, 'w, 'tel, 'env, 'steps> {
     }
 
     fn push_keyword(&mut self, key: &str, value: ValueId) -> ValueId {
-        let key = self.lowerer.push_const(self.steps, Literal::Atom(key.to_string()));
+        let key = self.lowerer.push_const(self.steps, GroundValue::Atom(key.to_string()));
         self.push_tuple(vec![key, value])
     }
 
@@ -1018,12 +1022,12 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
         steps: &mut Vec<ExprStep>,
     ) -> Result<ValueId, FatalError> {
         match &expr.node {
-            Expr::Int(value) => Ok(self.push_const(steps, Literal::Int(*value))),
-            Expr::Float(value) => Ok(self.push_const(steps, Literal::Float(*value))),
-            Expr::Binary(value) => Ok(self.push_const(steps, Literal::Binary(value.clone()))),
-            Expr::Atom(value) => Ok(self.push_const(steps, Literal::Atom(value.clone()))),
-            Expr::Bool(value) => Ok(self.push_const(steps, Literal::Bool(*value))),
-            Expr::Nil => Ok(self.push_const(steps, Literal::Nil)),
+            Expr::Int(value) => Ok(self.push_const(steps, GroundValue::Int(*value))),
+            Expr::Float(value) => Ok(self.push_const(steps, GroundValue::from_f64(*value))),
+            Expr::Binary(value) => Ok(self.push_const(steps, GroundValue::Binary(value.clone()))),
+            Expr::Atom(value) => Ok(self.push_const(steps, GroundValue::Atom(value.clone()))),
+            Expr::Bool(value) => Ok(self.push_const(steps, GroundValue::Bool(*value))),
+            Expr::Nil => Ok(self.push_const(steps, GroundValue::Nil)),
             Expr::Var(name) => {
                 if let Some(value) = env.get(name) {
                     return Ok(*value);
@@ -1264,7 +1268,7 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
             }
             Expr::Block(exprs) => {
                 if exprs.is_empty() {
-                    return Ok(self.push_const(steps, Literal::Nil));
+                    return Ok(self.push_const(steps, GroundValue::Nil));
                 }
                 let mut last = None;
                 for expr in exprs {
@@ -1284,7 +1288,7 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
                         span: nil_span,
                         steps: vec![ExprStep::Const {
                             value: result,
-                            literal: Literal::Nil,
+                            literal: GroundValue::Nil,
                         }],
                         result,
                     }
@@ -1472,7 +1476,7 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
             let value = if let Some(expr) = by_name.remove(field.as_str()) {
                 self.lower_expr(expr, env, steps)?
             } else {
-                self.push_const(steps, Literal::Nil)
+                self.push_const(steps, GroundValue::Nil)
             };
             lowered.push((field, value));
         }
@@ -1958,27 +1962,27 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
         match key {
             crate::dispatch_matrix::DispatchConst::Int(n) => steps.push(ExprStep::Const {
                 value,
-                literal: Literal::Int(*n),
+                literal: GroundValue::Int(*n),
             }),
             crate::dispatch_matrix::DispatchConst::FloatBits(bits) => steps.push(ExprStep::Const {
                 value,
-                literal: Literal::Float(f64::from_bits(*bits)),
+                literal: GroundValue::Float(*bits),
             }),
             crate::dispatch_matrix::DispatchConst::Utf8Binary(bytes) => steps.push(ExprStep::Const {
                 value,
-                literal: Literal::Binary(bytes.clone()),
+                literal: GroundValue::Binary(bytes.clone()),
             }),
             crate::dispatch_matrix::DispatchConst::AtomName(name) => steps.push(ExprStep::Const {
                 value,
-                literal: Literal::Atom(name.clone()),
+                literal: GroundValue::Atom(name.clone()),
             }),
             crate::dispatch_matrix::DispatchConst::Bool(flag) => steps.push(ExprStep::Const {
                 value,
-                literal: Literal::Bool(*flag),
+                literal: GroundValue::Bool(*flag),
             }),
             crate::dispatch_matrix::DispatchConst::Nil => steps.push(ExprStep::Const {
                 value,
-                literal: Literal::Nil,
+                literal: GroundValue::Nil,
             }),
             crate::dispatch_matrix::DispatchConst::EmptyList => {
                 return Err(emit_job_diagnostic(
@@ -2060,7 +2064,7 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
             steps: vec![
                 ExprStep::Const {
                     value,
-                    literal: Literal::Nil,
+                    literal: GroundValue::Nil,
                 },
                 ExprStep::Halt { atom: atom.to_string() },
             ],
@@ -2468,42 +2472,42 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
             Pattern::Int(value) => {
                 steps.push(ExprStep::AssertLiteral {
                     source,
-                    literal: Literal::Int(*value),
+                    literal: GroundValue::Int(*value),
                 });
                 Ok(())
             }
             Pattern::Float(value) => {
                 steps.push(ExprStep::AssertLiteral {
                     source,
-                    literal: Literal::Float(*value),
+                    literal: GroundValue::from_f64(*value),
                 });
                 Ok(())
             }
             Pattern::Binary(value) => {
                 steps.push(ExprStep::AssertLiteral {
                     source,
-                    literal: Literal::Binary(value.clone()),
+                    literal: GroundValue::Binary(value.clone()),
                 });
                 Ok(())
             }
             Pattern::Atom(value) => {
                 steps.push(ExprStep::AssertLiteral {
                     source,
-                    literal: Literal::Atom(value.clone()),
+                    literal: GroundValue::Atom(value.clone()),
                 });
                 Ok(())
             }
             Pattern::Bool(value) => {
                 steps.push(ExprStep::AssertLiteral {
                     source,
-                    literal: Literal::Bool(*value),
+                    literal: GroundValue::Bool(*value),
                 });
                 Ok(())
             }
             Pattern::Nil => {
                 steps.push(ExprStep::AssertLiteral {
                     source,
-                    literal: Literal::Nil,
+                    literal: GroundValue::Nil,
                 });
                 Ok(())
             }
@@ -2755,7 +2759,7 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
             });
             steps.push(ExprStep::AssertLiteral {
                 source: ok,
-                literal: Literal::Bool(true),
+                literal: GroundValue::Bool(true),
             });
             if with_asserts {
                 self.apply_pattern(&field.value.node, field.value.span, value, env, steps)?;
@@ -2769,7 +2773,7 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
         Ok(())
     }
 
-    fn push_const(&mut self, steps: &mut Vec<ExprStep>, literal: Literal) -> ValueId {
+    fn push_const(&mut self, steps: &mut Vec<ExprStep>, literal: GroundValue) -> ValueId {
         let value = self.fresh_value();
         steps.push(ExprStep::Const { value, literal });
         value
@@ -3825,14 +3829,14 @@ fn quoted_alias_segments(name: &str) -> Option<Vec<&str>> {
     }
 }
 
-fn literal_from_pattern(pattern: &Pattern) -> Option<Literal> {
+fn literal_from_pattern(pattern: &Pattern) -> Option<GroundValue> {
     Some(match pattern {
-        Pattern::Int(value) => Literal::Int(*value),
-        Pattern::Float(value) => Literal::Float(*value),
-        Pattern::Binary(value) => Literal::Binary(value.clone()),
-        Pattern::Atom(value) => Literal::Atom(value.clone()),
-        Pattern::Bool(value) => Literal::Bool(*value),
-        Pattern::Nil => Literal::Nil,
+        Pattern::Int(value) => GroundValue::Int(*value),
+        Pattern::Float(value) => GroundValue::from_f64(*value),
+        Pattern::Binary(value) => GroundValue::Binary(value.clone()),
+        Pattern::Atom(value) => GroundValue::Atom(value.clone()),
+        Pattern::Bool(value) => GroundValue::Bool(*value),
+        Pattern::Nil => GroundValue::Nil,
         Pattern::Wildcard
         | Pattern::Var(_)
         | Pattern::Tuple(_)
@@ -3872,14 +3876,14 @@ fn emit_job_diagnostic(world: &World<'_>, diagnostic: Diagnostic) -> FatalError 
 
 /// The compile-time constant of a literal expression, for positions where
 /// the lowering records values alongside their known constants (map keys).
-fn expr_literal(expr: &Expr) -> Option<Literal> {
+fn expr_literal(expr: &Expr) -> Option<GroundValue> {
     match expr {
-        Expr::Int(value) => Some(Literal::Int(*value)),
-        Expr::Float(value) => Some(Literal::Float(*value)),
-        Expr::Binary(value) => Some(Literal::Binary(value.clone())),
-        Expr::Atom(value) => Some(Literal::Atom(value.clone())),
-        Expr::Bool(value) => Some(Literal::Bool(*value)),
-        Expr::Nil => Some(Literal::Nil),
+        Expr::Int(value) => Some(GroundValue::Int(*value)),
+        Expr::Float(value) => Some(GroundValue::from_f64(*value)),
+        Expr::Binary(value) => Some(GroundValue::Binary(value.clone())),
+        Expr::Atom(value) => Some(GroundValue::Atom(value.clone())),
+        Expr::Bool(value) => Some(GroundValue::Bool(*value)),
+        Expr::Nil => Some(GroundValue::Nil),
         _ => None,
     }
 }
