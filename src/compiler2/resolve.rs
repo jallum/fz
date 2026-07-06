@@ -253,7 +253,10 @@ impl World<'_> {
                 let elem = self.resolve_ty(namespace, inner, vars)?;
                 Ok(self.types_mut().list(elem))
             }
-            TypeExpr::EmptyList => Ok(self.types_mut().nil()),
+            // `[]` in type position is the empty-list type (list axis, kind
+            // LIST) — Elixir typespec parity, and distinct from the atom
+            // `nil` written in expr/type position (`nil()`, atom axis).
+            TypeExpr::EmptyList => Ok(self.types_mut().empty_list()),
             TypeExpr::Tuple(elems) => {
                 let tys = self.resolve_each(namespace, elems, vars)?;
                 Ok(self.types_mut().tuple(&tys))

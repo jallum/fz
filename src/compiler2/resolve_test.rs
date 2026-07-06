@@ -99,6 +99,35 @@ fn list_bracket_and_named_forms_resolve_to_the_same_ty() {
     );
 }
 
+/// `[]` in type position is the empty-LIST type (Elixir typespec parity:
+/// `[]` denotes the empty list, `nil` denotes the atom). It must resolve to
+/// `Types::empty_list()`, not `Types::nil()` — a different axis (list vs.
+/// atom) with a different runtime `ValueKind` tag (LIST vs. ATOM).
+#[test]
+fn empty_list_brackets_resolve_to_the_empty_list_type_not_nil() {
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new(&tel);
+
+    let resolved = resolve(&tel, &mut world, "[]").expect("`[]` resolves");
+
+    let mut expect = Types::new();
+    let expected = expect.empty_list();
+
+    assert_eq!(
+        world.types_mut().display(&resolved),
+        expect.display(&expected),
+        "`[]` in type position should resolve to `Types::empty_list()`",
+    );
+
+    let mut nil_world = World::new(&tel);
+    let nil_ty = nil_world.types_mut().nil();
+    assert_ne!(
+        world.types_mut().display(&resolved),
+        nil_world.types_mut().display(&nil_ty),
+        "`[]` (empty-list type) must be distinct from `nil` (the atom)",
+    );
+}
+
 /// `resource(T)` resolves exactly as it did before the registry migration:
 /// a payload type wrapped by `Types::resource`.
 #[test]
