@@ -2,13 +2,15 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-07-06T18:05:40Z",
+  "close_reason": "Satisfied: old compiler front door is gone; fz2/compiler2 owns the CLI path, with only shared neutral backend substrate remaining.",
   "created": "2026-06-20T21:09:12Z",
   "description": "Remove the legacy fz compiler entrypoint and old frontend/planner/codegen compiler surface now that compiler2 owns the public CLI path. Keep shared neutral infrastructure only where compiler2 still depends on it; update tests and docs so stale old-world guidance is gone.",
   "id": "fz-jmi",
   "labels": [],
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Delete old-world compiler",
   "type": "task",
-  "updated_at": "2026-06-20T21:09:16Z"
+  "updated_at": "2026-07-06T18:05:40Z"
 }
