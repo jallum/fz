@@ -1,8 +1,8 @@
 use self::source::{collect_pinned_names, direct_bitfield_bindings};
 use super::{
     BitstringEndian, BitstringFieldKind, BitstringFieldShape, BitstringFieldSize, BitstringShape, ComparisonValue,
-    DispatchCompileError, DispatchConst, DispatchGraph, DispatchMatrix, DispatchMatrixBuilder, DispatchMatrixError,
-    EdgeEvidence, EdgeProjection, GuardId, OutcomeId, OutcomeMultiplicity, PinnedValueId, ProjectionKind, Region,
+    DispatchCompileError, DispatchGraph, DispatchMatrix, DispatchMatrixBuilder, DispatchMatrixError, EdgeEvidence,
+    EdgeProjection, GroundValue, GuardId, OutcomeId, OutcomeMultiplicity, PinnedValueId, ProjectionKind, Region,
     RegionPredicate, RegionQuestion, SubjectId, compile_dispatch_matrix,
 };
 use crate::ast::{BitSize, BitType, Endian, Expr, Pattern, Spanned};
@@ -25,7 +25,7 @@ pub(crate) struct PatternDispatchPlan<TypeHandle> {
     pub(crate) outcomes: Vec<PatternDispatchOutcome>,
     pub(crate) guards: Vec<PatternGuardExpr<TypeHandle>>,
     pub(crate) pinned: Vec<PatternPinnedInput>,
-    pub(crate) prepared_keys: Vec<DispatchConst>,
+    pub(crate) prepared_keys: Vec<GroundValue>,
     pub(crate) bitstring_direct_bindings: HashMap<SubjectId, Vec<String>>,
 }
 
@@ -89,7 +89,7 @@ pub(crate) enum PatternSubjectRef {
     ListTail(Box<PatternSubjectRef>),
     MapValue {
         map: Box<PatternSubjectRef>,
-        key: DispatchConst,
+        key: GroundValue,
     },
     BitstringField {
         bitstring: Box<PatternSubjectRef>,
@@ -99,7 +99,7 @@ pub(crate) enum PatternSubjectRef {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum PatternGuardExpr<TypeHandle> {
-    Const(DispatchConst),
+    Const(GroundValue),
     Subject(SubjectId),
     Pinned(PinnedValueId),
     Unary {
@@ -311,12 +311,12 @@ where
     ) -> Result<Option<PatternGuardExpr<TypeHandle>>, SourcePatternError>,
 {
     Ok(match expr {
-        Expr::Int(value) => PatternGuardExpr::Const(DispatchConst::Int(*value)),
-        Expr::Float(value) => PatternGuardExpr::Const(DispatchConst::FloatBits(value.to_bits())),
-        Expr::Binary(bytes) => PatternGuardExpr::Const(DispatchConst::Utf8Binary(bytes.clone())),
-        Expr::Atom(name) => PatternGuardExpr::Const(DispatchConst::AtomName(name.clone())),
-        Expr::Bool(value) => PatternGuardExpr::Const(DispatchConst::Bool(*value)),
-        Expr::Nil => PatternGuardExpr::Const(DispatchConst::Nil),
+        Expr::Int(value) => PatternGuardExpr::Const(GroundValue::Int(*value)),
+        Expr::Float(value) => PatternGuardExpr::Const(GroundValue::Float(value.to_bits())),
+        Expr::Binary(bytes) => PatternGuardExpr::Const(GroundValue::Utf8Binary(bytes.clone())),
+        Expr::Atom(name) => PatternGuardExpr::Const(GroundValue::Atom(name.clone())),
+        Expr::Bool(value) => PatternGuardExpr::Const(GroundValue::Bool(*value)),
+        Expr::Nil => PatternGuardExpr::Const(GroundValue::Nil),
         Expr::Var(name) => {
             if let Some(subject) = bindings.get(name) {
                 PatternGuardExpr::Subject(*subject)
@@ -441,7 +441,7 @@ struct PatternDispatchProducer<TypeHandle> {
     guard_subject: SubjectId,
     pinned: Vec<PatternPinnedInput>,
     pinned_by_name: HashMap<String, PinnedValueId>,
-    prepared_keys: Vec<DispatchConst>,
+    prepared_keys: Vec<GroundValue>,
     outcomes: Vec<PatternDispatchOutcome>,
     guards: Vec<PatternGuardExpr<TypeHandle>>,
     bitstring_direct_bindings: HashMap<SubjectId, Vec<String>>,
@@ -598,16 +598,14 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
                 let subject = self.subject_id(subject)?;
                 questions.push(RegionQuestion::equality(subject, ComparisonValue::Pinned(pinned)));
             }
-            Pattern::Int(value) => self.const_question(subject, DispatchConst::Int(*value), questions)?,
-            Pattern::Float(value) => {
-                self.const_question(subject, DispatchConst::FloatBits(value.to_bits()), questions)?
-            }
+            Pattern::Int(value) => self.const_question(subject, GroundValue::Int(*value), questions)?,
+            Pattern::Float(value) => self.const_question(subject, GroundValue::Float(value.to_bits()), questions)?,
             Pattern::Binary(bytes) => {
-                self.const_question(subject, DispatchConst::Utf8Binary(bytes.clone()), questions)?
+                self.const_question(subject, GroundValue::Utf8Binary(bytes.clone()), questions)?
             }
-            Pattern::Atom(name) => self.const_question(subject, DispatchConst::AtomName(name.clone()), questions)?,
-            Pattern::Bool(value) => self.const_question(subject, DispatchConst::Bool(*value), questions)?,
-            Pattern::Nil => self.const_question(subject, DispatchConst::Nil, questions)?,
+            Pattern::Atom(name) => self.const_question(subject, GroundValue::Atom(name.clone()), questions)?,
+            Pattern::Bool(value) => self.const_question(subject, GroundValue::Bool(*value), questions)?,
+            Pattern::Nil => self.const_question(subject, GroundValue::Nil, questions)?,
             Pattern::Tuple(fields) => {
                 let subject_id = self.subject_id(subject)?;
                 let mut field_subjects = Vec::with_capacity(fields.len());
@@ -764,7 +762,7 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
     fn const_question(
         &mut self,
         subject: &PatternSubjectRef,
-        value: DispatchConst,
+        value: GroundValue,
         questions: &mut Vec<RegionQuestion<TypeHandle>>,
     ) -> Result<(), SourcePatternError> {
         let subject = self.subject_id(subject)?;
@@ -829,22 +827,22 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
         Ok(id)
     }
 
-    fn map_key(&mut self, pattern: &Pattern) -> Result<DispatchConst, SourcePatternError> {
+    fn map_key(&mut self, pattern: &Pattern) -> Result<GroundValue, SourcePatternError> {
         match pattern {
-            Pattern::Int(value) => Ok(DispatchConst::Int(*value)),
-            Pattern::Float(value) => Ok(DispatchConst::FloatBits(value.to_bits())),
-            Pattern::Binary(bytes) => Ok(DispatchConst::Utf8Binary(bytes.clone())),
-            Pattern::Atom(name) => Ok(DispatchConst::AtomName(name.clone())),
-            Pattern::Bool(value) => Ok(DispatchConst::Bool(*value)),
-            Pattern::Nil => Ok(DispatchConst::Nil),
+            Pattern::Int(value) => Ok(GroundValue::Int(*value)),
+            Pattern::Float(value) => Ok(GroundValue::Float(value.to_bits())),
+            Pattern::Binary(bytes) => Ok(GroundValue::Utf8Binary(bytes.clone())),
+            Pattern::Atom(name) => Ok(GroundValue::Atom(name.clone())),
+            Pattern::Bool(value) => Ok(GroundValue::Bool(*value)),
+            Pattern::Nil => Ok(GroundValue::Nil),
             _ => Err(SourcePatternError::UnsupportedMapKey),
         }
     }
 
-    fn prepare_heap_key(&mut self, key: &DispatchConst) {
+    fn prepare_heap_key(&mut self, key: &GroundValue) {
         if !matches!(
             key,
-            DispatchConst::FloatBits(_) | DispatchConst::AtomName(_) | DispatchConst::Utf8Binary(_)
+            GroundValue::Float(_) | GroundValue::Atom(_) | GroundValue::Utf8Binary(_)
         ) {
             return;
         }

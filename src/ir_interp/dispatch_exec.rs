@@ -6,8 +6,8 @@ use crate::dispatch_matrix::pattern::{
     PatternDispatchPlan, PatternGuardBinOp, PatternGuardExpr, PatternGuardUnaryOp, prepared_key_name,
 };
 use crate::dispatch_matrix::{
-    BitstringEndian, BitstringFieldKind, BitstringFieldSize, BitstringShape, ComparisonValue, DispatchConst,
-    DispatchNode, EdgeEvidence, GraphNodeId, ListRegion, PinnedValueId, ProjectionKind, Region, SubjectId,
+    BitstringEndian, BitstringFieldKind, BitstringFieldSize, BitstringShape, ComparisonValue, DispatchNode,
+    EdgeEvidence, GraphNodeId, GroundValue, ListRegion, PinnedValueId, ProjectionKind, Region, SubjectId,
     SubjectSource,
 };
 use crate::fz_ir::Module;
@@ -429,19 +429,24 @@ fn load_pinned_dispatch_value<TypeHandle>(
     pinned_values.get(&p.name).copied()
 }
 
-pub(super) fn dispatch_const_to_value(proc: *mut Process, module: &Module, c: &DispatchConst) -> Option<AnyValue> {
+pub(super) fn dispatch_const_to_value(proc: *mut Process, module: &Module, c: &GroundValue) -> Option<AnyValue> {
     match c {
-        DispatchConst::Int(n) => Some(AnyValue::Int(*n)),
-        DispatchConst::FloatBits(bits) => Some(AnyValue::Float(f64::from_bits(*bits))),
-        DispatchConst::AtomName(name) => module
+        GroundValue::Int(n) => Some(AnyValue::Int(*n)),
+        GroundValue::Float(bits) => Some(AnyValue::Float(f64::from_bits(*bits))),
+        GroundValue::Atom(name) => module
             .atom_names
             .iter()
             .position(|n| n == name)
             .map(|id| AnyValue::Atom(id as u32)),
-        DispatchConst::Bool(value) => Some(interp_bool_value(*value)),
-        DispatchConst::Nil => Some(interp_nil_value()),
-        DispatchConst::EmptyList => Some(interp_empty_list_value()),
-        DispatchConst::Utf8Binary(bytes) => utf8_binary_const_value(proc, bytes),
+        GroundValue::Bool(value) => Some(interp_bool_value(*value)),
+        GroundValue::Nil => Some(interp_nil_value()),
+        GroundValue::EmptyList => Some(interp_empty_list_value()),
+        GroundValue::Utf8Binary(bytes) => utf8_binary_const_value(proc, bytes),
+        GroundValue::Binary(_) => {
+            // `dispatch_matrix::pattern` only ever builds `Utf8Binary`
+            // dispatch consts; raw `Binary` is unreachable here.
+            unreachable!("dispatch matrix does not construct GroundValue::Binary consts")
+        }
     }
 }
 
@@ -462,22 +467,22 @@ fn utf8_binary_const_value(proc: *mut Process, bytes: &[u8]) -> Option<AnyValue>
     interp_value_from_ref_word(fz_bs_finalize(proc), "dispatch utf8 guard literal").ok()
 }
 
-pub(super) fn dispatch_const_eq(proc: *mut Process, module: &Module, val: AnyValue, value: &DispatchConst) -> bool {
+pub(super) fn dispatch_const_eq(proc: *mut Process, module: &Module, val: AnyValue, value: &GroundValue) -> bool {
     match value {
-        DispatchConst::Int(n) => val.as_i64() == Some(*n),
-        DispatchConst::FloatBits(bits) => {
+        GroundValue::Int(n) => val.as_i64() == Some(*n),
+        GroundValue::Float(bits) => {
             matches!(val, AnyValue::Float(f) if f.to_bits() == *bits)
         }
-        DispatchConst::AtomName(name) => module
+        GroundValue::Atom(name) => module
             .atom_names
             .iter()
             .position(|n| n == name)
             .is_some_and(|id| val.is_atom_id(id as u32)),
-        DispatchConst::Bool(true) => val.is_atom_id(TRUE_ATOM_ID),
-        DispatchConst::Bool(false) => val.is_false(),
-        DispatchConst::Nil => val.is_nil(),
-        DispatchConst::EmptyList => val.is_empty_list(),
-        DispatchConst::Utf8Binary(bytes) => match val {
+        GroundValue::Bool(true) => val.is_atom_id(TRUE_ATOM_ID),
+        GroundValue::Bool(false) => val.is_false(),
+        GroundValue::Nil => val.is_nil(),
+        GroundValue::EmptyList => val.is_empty_list(),
+        GroundValue::Utf8Binary(bytes) => match val {
             AnyValue::FnRef(_) => false,
             other => other.value(proc).ok().is_some_and(|val| {
                 val.heap_object_word().and_then(bitstring_like_ptr).is_some_and(|p| {
@@ -494,6 +499,11 @@ pub(super) fn dispatch_const_eq(proc: *mut Process, module: &Module, val: AnyVal
                 })
             }),
         },
+        GroundValue::Binary(_) => {
+            // `dispatch_matrix::pattern` only ever builds `Utf8Binary`
+            // dispatch consts; raw `Binary` is unreachable here.
+            unreachable!("dispatch matrix does not construct GroundValue::Binary consts")
+        }
     }
 }
 
@@ -502,7 +512,7 @@ pub(super) fn dispatch_map_lookup<TypeHandle>(
     plan: &PatternDispatchPlan<TypeHandle>,
     module: &Module,
     map: AnyValue,
-    key: &DispatchConst,
+    key: &GroundValue,
     pinned: &HashMap<String, AnyValue>,
 ) -> Option<AnyValue> {
     if !map.value(proc).ok().is_some_and(is_map_value) {
@@ -526,25 +536,30 @@ pub(super) fn dispatch_map_lookup<TypeHandle>(
 pub(super) fn dispatch_const_key_value<TypeHandle>(
     plan: &PatternDispatchPlan<TypeHandle>,
     module: &Module,
-    key: &DispatchConst,
+    key: &GroundValue,
     pinned: &HashMap<String, AnyValue>,
 ) -> Option<AnyValue> {
     match key {
-        DispatchConst::Int(n) => Some(AnyValue::Int(*n)),
-        DispatchConst::FloatBits(bits) => Some(AnyValue::Float(f64::from_bits(*bits))),
-        DispatchConst::Bool(value) => Some(interp_bool_value(*value)),
-        DispatchConst::Nil => Some(interp_nil_value()),
-        DispatchConst::AtomName(name) => module
+        GroundValue::Int(n) => Some(AnyValue::Int(*n)),
+        GroundValue::Float(bits) => Some(AnyValue::Float(f64::from_bits(*bits))),
+        GroundValue::Bool(value) => Some(interp_bool_value(*value)),
+        GroundValue::Nil => Some(interp_nil_value()),
+        GroundValue::Atom(name) => module
             .atom_names
             .iter()
             .position(|n| n == name)
             .map(|id| AnyValue::Atom(id as u32)),
-        DispatchConst::Utf8Binary(_) => plan
+        GroundValue::Utf8Binary(_) => plan
             .prepared_keys
             .iter()
             .position(|prepared| prepared == key)
             .and_then(|index| pinned.get(&prepared_key_name(index)).copied()),
-        DispatchConst::EmptyList => None,
+        GroundValue::EmptyList => None,
+        GroundValue::Binary(_) => {
+            // `dispatch_matrix::pattern` only ever builds `Utf8Binary`
+            // map-key consts; raw `Binary` is unreachable here.
+            unreachable!("dispatch matrix does not construct GroundValue::Binary consts")
+        }
     }
 }
 

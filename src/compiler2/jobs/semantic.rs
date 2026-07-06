@@ -9,8 +9,8 @@ use std::collections::{BTreeMap, HashMap, HashSet, hash_map::Entry};
 use crate::ast::{BinOp, UnOp};
 use crate::dispatch_matrix::pattern::PatternDispatchPlan;
 use crate::dispatch_matrix::{
-    ComparisonValue, DispatchConst, DispatchNode, EdgeEvidence, GraphNodeId, ListRegion, Region, RegionPredicate,
-    SubjectId, SubjectSource,
+    ComparisonValue, DispatchNode, EdgeEvidence, GraphNodeId, ListRegion, Region, RegionPredicate, SubjectId,
+    SubjectSource,
 };
 use crate::ground_value::GroundValue;
 
@@ -1791,7 +1791,7 @@ fn branch_possible(world: &mut World<'_>, predicate: &RegionPredicate<Ty>, sourc
                     // is always statically possible. Atoms, bools, nil and
                     // the empty list keep their exact singleton proofs.
                     ComparisonValue::Const(
-                        DispatchConst::Int(_) | DispatchConst::FloatBits(_) | DispatchConst::Utf8Binary(_),
+                        GroundValue::Int(_) | GroundValue::Float(_) | GroundValue::Utf8Binary(_),
                     ) => true,
                     _ => !world.types().is_subtype(source, &target),
                 }
@@ -2126,14 +2126,19 @@ fn comparison_ty(world: &mut World<'_>, value: &ComparisonValue) -> Ty {
     }
 }
 
-fn dispatch_const_ty(world: &mut World<'_>, value: &DispatchConst) -> Ty {
+fn dispatch_const_ty(world: &mut World<'_>, value: &GroundValue) -> Ty {
     match value {
-        DispatchConst::Int(value) => world.types_mut().int_lit(*value),
-        DispatchConst::FloatBits(value) => world.types_mut().float_lit(f64::from_bits(*value)),
-        DispatchConst::AtomName(name) => world.types_mut().atom_lit(name),
-        DispatchConst::Bool(value) => world.types_mut().bool_lit(*value),
-        DispatchConst::Nil | DispatchConst::EmptyList => world.types_mut().empty_list(),
-        DispatchConst::Utf8Binary(_) => world.types_mut().str_t(),
+        GroundValue::Int(value) => world.types_mut().int_lit(*value),
+        GroundValue::Float(value) => world.types_mut().float_lit(f64::from_bits(*value)),
+        GroundValue::Atom(name) => world.types_mut().atom_lit(name),
+        GroundValue::Bool(value) => world.types_mut().bool_lit(*value),
+        GroundValue::Nil | GroundValue::EmptyList => world.types_mut().empty_list(),
+        GroundValue::Utf8Binary(_) => world.types_mut().str_t(),
+        GroundValue::Binary(_) => {
+            // `dispatch_matrix::pattern` only ever builds `Utf8Binary`
+            // comparison consts; raw `Binary` is unreachable here.
+            unreachable!("dispatch matrix does not construct GroundValue::Binary consts")
+        }
     }
 }
 

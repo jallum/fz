@@ -124,7 +124,7 @@ lowering.
 `fz2 interp`, and `enum_predicate_search` on `fz2 interp`.
 
 The `bsx_guard_eq` interpreter gap is closed: dispatch guard constants
-materialize `DispatchConst::Utf8Binary` values in the backend interpreter,
+materialize `GroundValue::Utf8Binary` values in the backend interpreter,
 so guards such as `s == "hi"` compare through the same brand-blind runtime
 equality path as ordinary `==`.
 

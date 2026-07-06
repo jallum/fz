@@ -1954,37 +1954,37 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
 
     fn materialize_dispatch_const(
         &mut self,
-        key: &crate::dispatch_matrix::DispatchConst,
+        key: &crate::dispatch_matrix::GroundValue,
         steps: &mut Vec<ExprStep>,
         span: Span,
     ) -> Result<ValueId, FatalError> {
         let value = self.fresh_value();
         match key {
-            crate::dispatch_matrix::DispatchConst::Int(n) => steps.push(ExprStep::Const {
+            crate::dispatch_matrix::GroundValue::Int(n) => steps.push(ExprStep::Const {
                 value,
                 literal: GroundValue::Int(*n),
             }),
-            crate::dispatch_matrix::DispatchConst::FloatBits(bits) => steps.push(ExprStep::Const {
+            crate::dispatch_matrix::GroundValue::Float(bits) => steps.push(ExprStep::Const {
                 value,
                 literal: GroundValue::Float(*bits),
             }),
-            crate::dispatch_matrix::DispatchConst::Utf8Binary(bytes) => steps.push(ExprStep::Const {
+            crate::dispatch_matrix::GroundValue::Utf8Binary(bytes) => steps.push(ExprStep::Const {
                 value,
                 literal: GroundValue::Binary(bytes.clone()),
             }),
-            crate::dispatch_matrix::DispatchConst::AtomName(name) => steps.push(ExprStep::Const {
+            crate::dispatch_matrix::GroundValue::Atom(name) => steps.push(ExprStep::Const {
                 value,
                 literal: GroundValue::Atom(name.clone()),
             }),
-            crate::dispatch_matrix::DispatchConst::Bool(flag) => steps.push(ExprStep::Const {
+            crate::dispatch_matrix::GroundValue::Bool(flag) => steps.push(ExprStep::Const {
                 value,
                 literal: GroundValue::Bool(*flag),
             }),
-            crate::dispatch_matrix::DispatchConst::Nil => steps.push(ExprStep::Const {
+            crate::dispatch_matrix::GroundValue::Nil => steps.push(ExprStep::Const {
                 value,
                 literal: GroundValue::Nil,
             }),
-            crate::dispatch_matrix::DispatchConst::EmptyList => {
+            crate::dispatch_matrix::GroundValue::EmptyList => {
                 return Err(emit_job_diagnostic(
                     self.world,
                     Diagnostic::error(
@@ -1993,6 +1993,11 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
                         span,
                     ),
                 ));
+            }
+            crate::dispatch_matrix::GroundValue::Binary(_) => {
+                // `dispatch_matrix::pattern` only ever builds `Utf8Binary`
+                // prepared keys; raw `Binary` is unreachable here.
+                unreachable!("dispatch matrix does not construct GroundValue::Binary consts")
             }
         }
         Ok(value)

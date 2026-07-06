@@ -47,6 +47,13 @@ use std::collections::BTreeMap;
 
 pub(crate) mod pattern;
 
+/// The dispatch/pattern constant carrier. `dispatch_matrix` is otherwise
+/// generic over an opaque `TypeHandle` and has no dependency on any concrete
+/// value type; this re-export is the one intentional edge to
+/// `crate::ground_value`, a dependency-free leaf, so dispatch questions can
+/// name the ground literal a subject is tested against.
+pub(crate) use crate::ground_value::GroundValue;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub(crate) struct SubjectId(pub(crate) u32);
 
@@ -108,7 +115,7 @@ pub(crate) enum ProjectionKind {
     TupleField(u32),
     ListHead,
     ListTail,
-    MapValue { key: DispatchConst },
+    MapValue { key: GroundValue },
     BitstringField(u32),
 }
 
@@ -167,7 +174,7 @@ pub(crate) enum Region<TypeHandle> {
     TupleArity(u32),
     List(ListRegion),
     MapKind,
-    MapKeyPresent { key: DispatchConst },
+    MapKeyPresent { key: GroundValue },
     Bitstring(BitstringShape),
     Guard(GuardId),
 }
@@ -192,7 +199,7 @@ impl<TypeHandle> Region<TypeHandle> {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) enum ComparisonValue {
-    Const(DispatchConst),
+    Const(GroundValue),
     Pinned(PinnedValueId),
 }
 
@@ -240,17 +247,6 @@ pub(crate) enum BitstringEndian {
     Big,
     Little,
     Native,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub(crate) enum DispatchConst {
-    Int(i64),
-    FloatBits(u64),
-    AtomName(String),
-    Bool(bool),
-    Nil,
-    EmptyList,
-    Utf8Binary(Vec<u8>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -441,7 +437,7 @@ impl<TypeHandle> RegionQuestion<TypeHandle> {
         }
     }
 
-    pub(crate) fn map_key_present(subject: SubjectId, key: DispatchConst, value: SubjectId) -> Self {
+    pub(crate) fn map_key_present(subject: SubjectId, key: GroundValue, value: SubjectId) -> Self {
         let predicate = RegionPredicate::new(subject, Region::MapKeyPresent { key: key.clone() });
         let match_key = key.clone();
         let miss_key = key.clone();

@@ -24,8 +24,8 @@ use crate::dispatch_matrix::pattern::{
     prepared_key_name,
 };
 use crate::dispatch_matrix::{
-    BitstringEndian, BitstringFieldKind, BitstringFieldSize, BitstringShape, ComparisonValue, DispatchConst,
-    DispatchNode, EdgeEvidence, GraphNodeId, ListRegion, PinnedValueId, ProjectionKind, Region, SubjectId,
+    BitstringEndian, BitstringFieldKind, BitstringFieldSize, BitstringShape, ComparisonValue, DispatchNode,
+    EdgeEvidence, GraphNodeId, GroundValue, ListRegion, PinnedValueId, ProjectionKind, Region, SubjectId,
     SubjectSource,
 };
 use crate::finite_set::FiniteSet;
@@ -633,7 +633,7 @@ fn emit_region_test(
         }
         Region::List(ListRegion::Empty) => {
             let val = resolve_dispatch_subject(b, ctx, subject, state)?;
-            emit_dispatch_const_test(b, ctx, val, &DispatchConst::EmptyList, true_b, false_b)?;
+            emit_dispatch_const_test(b, ctx, val, &GroundValue::EmptyList, true_b, false_b)?;
         }
         Region::List(ListRegion::Cons) => {
             let val = resolve_dispatch_subject(b, ctx, subject, state)?;
@@ -1080,7 +1080,7 @@ fn emit_dispatch_side_tag_const_test(
     b: &mut FunctionBuilder<'_>,
     ctx: &DispatchCtx<'_>,
     val: ReceiveValue,
-    value: &DispatchConst,
+    value: &GroundValue,
     match_b: ir::Block,
     next_b: ir::Block,
 ) -> Result<bool, CodegenError> {
@@ -1119,7 +1119,7 @@ fn emit_any_ref_const_test(
     b: &mut FunctionBuilder<'_>,
     ctx: &DispatchCtx<'_>,
     value_ref: ir::Value,
-    want: DispatchConstValue,
+    want: GroundValueBits,
     match_b: ir::Block,
     next_b: ir::Block,
 ) -> Result<(), CodegenError> {
@@ -1169,49 +1169,52 @@ fn emit_any_ref_const_test(
     Ok(())
 }
 
-fn dispatch_const_value(module: &Module, value: &DispatchConst) -> Result<Option<DispatchConstValue>, CodegenError> {
+fn dispatch_const_value(module: &Module, value: &GroundValue) -> Result<Option<GroundValueBits>, CodegenError> {
     Ok(match value {
-        DispatchConst::Int(n) => Some(DispatchConstValue {
+        GroundValue::Int(n) => Some(GroundValueBits {
             raw: *n as u64,
             kind: ValueKind::INT,
         }),
-        DispatchConst::FloatBits(bits) => Some(DispatchConstValue {
+        GroundValue::Float(bits) => Some(GroundValueBits {
             raw: *bits,
             kind: ValueKind::FLOAT,
         }),
-        DispatchConst::AtomName(name) => {
-            module
-                .atom_names
-                .iter()
-                .position(|n| n == name)
-                .map(|id| DispatchConstValue {
-                    raw: id as u64,
-                    kind: ValueKind::ATOM,
-                })
-        }
-        DispatchConst::Bool(v) => Some(DispatchConstValue {
+        GroundValue::Atom(name) => module
+            .atom_names
+            .iter()
+            .position(|n| n == name)
+            .map(|id| GroundValueBits {
+                raw: id as u64,
+                kind: ValueKind::ATOM,
+            }),
+        GroundValue::Bool(v) => Some(GroundValueBits {
             raw: if *v { TRUE_ATOM_ID as u64 } else { FALSE_ATOM_ID as u64 },
             kind: ValueKind::ATOM,
         }),
-        DispatchConst::Nil => Some(DispatchConstValue {
+        GroundValue::Nil => Some(GroundValueBits {
             raw: NIL_ATOM_ID as u64,
             kind: ValueKind::ATOM,
         }),
-        DispatchConst::EmptyList => Some(DispatchConstValue {
+        GroundValue::EmptyList => Some(GroundValueBits {
             raw: 0,
             kind: ValueKind::LIST,
         }),
-        DispatchConst::Utf8Binary(_) => None,
+        GroundValue::Utf8Binary(_) => None,
+        GroundValue::Binary(_) => {
+            // `dispatch_matrix::pattern` only ever builds `Utf8Binary`
+            // comparison consts; raw `Binary` is unreachable here.
+            unreachable!("dispatch matrix does not construct GroundValue::Binary consts")
+        }
     })
 }
 
 #[derive(Clone, Copy)]
-struct DispatchConstValue {
+struct GroundValueBits {
     raw: u64,
     kind: ValueKind,
 }
 
-fn dispatch_const_receive_value(b: &mut FunctionBuilder<'_>, value: DispatchConstValue) -> ReceiveValue {
+fn dispatch_const_receive_value(b: &mut FunctionBuilder<'_>, value: GroundValueBits) -> ReceiveValue {
     match value.kind {
         ValueKind::INT => ReceiveValue::Int(b.ins().iconst(types::I64, value.raw as i64)),
         ValueKind::FLOAT => {
@@ -1229,24 +1232,24 @@ fn emit_dispatch_const_test(
     b: &mut FunctionBuilder<'_>,
     ctx: &DispatchCtx<'_>,
     val: ReceiveValue,
-    value: &DispatchConst,
+    value: &GroundValue,
     match_b: ir::Block,
     next_b: ir::Block,
 ) -> Result<(), CodegenError> {
     match value {
-        DispatchConst::FloatBits(_)
-        | DispatchConst::Int(_)
-        | DispatchConst::AtomName(_)
-        | DispatchConst::Bool(_)
-        | DispatchConst::Nil
-        | DispatchConst::EmptyList => {
+        GroundValue::Float(_)
+        | GroundValue::Int(_)
+        | GroundValue::Atom(_)
+        | GroundValue::Bool(_)
+        | GroundValue::Nil
+        | GroundValue::EmptyList => {
             let emitted = emit_dispatch_side_tag_const_test(b, ctx, val, value, match_b, next_b)?;
             if !emitted {
                 b.ins().jump(next_b, &[]);
             }
             Ok(())
         }
-        DispatchConst::Utf8Binary(bytes) => {
+        GroundValue::Utf8Binary(bytes) => {
             let bits = emit_receive_value_ref(b, ctx, val)?;
             emit_binary_literal_test(
                 b,
@@ -1258,6 +1261,11 @@ fn emit_dispatch_const_test(
                 next_b,
             )
         }
+        GroundValue::Binary(_) => {
+            // `dispatch_matrix::pattern` only ever builds `Utf8Binary`
+            // dispatch consts; raw `Binary` is unreachable here.
+            unreachable!("dispatch matrix does not construct GroundValue::Binary consts")
+        }
     }
 }
 
@@ -1265,7 +1273,7 @@ fn emit_dispatch_map_get_value(
     b: &mut FunctionBuilder<'_>,
     ctx: &DispatchCtx<'_>,
     map: ReceiveValue,
-    key: &DispatchConst,
+    key: &GroundValue,
 ) -> Result<ReceiveValue, CodegenError> {
     if let Some(index) = prepared_dispatch_key_index(ctx.dispatch, key) {
         let Some(map_get_ref_fref) = ctx.runtime.matcher_map_get_ref_fref else {
@@ -1304,7 +1312,7 @@ fn emit_dispatch_map_get_value(
     Ok(receive_value_from_ref_word(b, out_ref))
 }
 
-fn prepared_dispatch_key_index(dispatch: &ReceiveDispatchPlan, key: &DispatchConst) -> Option<usize> {
+fn prepared_dispatch_key_index(dispatch: &ReceiveDispatchPlan, key: &GroundValue) -> Option<usize> {
     dispatch.prepared_keys.iter().position(|prepared| prepared == key)
 }
 
@@ -1988,8 +1996,8 @@ fn collect_binary_literals_in_guard(expr: &ReceiveGuardExpr, out: &mut Vec<Vec<u
     }
 }
 
-fn collect_binary_literals_in_const(value: &DispatchConst, out: &mut Vec<Vec<u8>>) {
-    if let DispatchConst::Utf8Binary(bytes) = value {
+fn collect_binary_literals_in_const(value: &GroundValue, out: &mut Vec<Vec<u8>>) {
+    if let GroundValue::Utf8Binary(bytes) = value {
         out.push(bytes.clone());
     }
 }

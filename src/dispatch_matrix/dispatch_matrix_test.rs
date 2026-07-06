@@ -62,7 +62,7 @@ fn unique_outcome_cannot_be_routed_from_multiple_arms() {
         .add_arm_questions(
             vec![RegionQuestion::new(RegionPredicate::new(
                 subject,
-                Region::Equal(ComparisonValue::Const(DispatchConst::Nil)),
+                Region::Equal(ComparisonValue::Const(GroundValue::Nil)),
             ))],
             EdgeEvidence::empty(),
             unique,
@@ -73,7 +73,7 @@ fn unique_outcome_cannot_be_routed_from_multiple_arms() {
         .add_arm_questions(
             vec![RegionQuestion::new(RegionPredicate::new(
                 subject,
-                Region::Equal(ComparisonValue::Const(DispatchConst::Nil)),
+                Region::Equal(ComparisonValue::Const(GroundValue::Nil)),
             ))],
             EdgeEvidence::empty(),
             unique,
@@ -123,7 +123,7 @@ fn edge_evidence_keeps_proofs_and_projections_branch_local() {
 fn map_key_presence_question_produces_value_or_absent_evidence() {
     let map = SubjectId(0);
     let value = SubjectId(1);
-    let key = DispatchConst::AtomName("id".to_string());
+    let key = GroundValue::Atom("id".to_string());
 
     let question: RegionQuestion<Ty> = RegionQuestion::map_key_present(map, key.clone(), value);
 
@@ -156,18 +156,18 @@ fn map_key_presence_question_produces_value_or_absent_evidence() {
 fn present_nil_map_value_is_value_equality_after_presence() {
     let map = SubjectId(0);
     let value = SubjectId(1);
-    let presence: RegionQuestion<Ty> = RegionQuestion::map_key_present(map, DispatchConst::Int(7), value);
-    let nil_value: RegionQuestion<Ty> = RegionQuestion::equality(value, ComparisonValue::Const(DispatchConst::Nil));
+    let presence: RegionQuestion<Ty> = RegionQuestion::map_key_present(map, GroundValue::Int(7), value);
+    let nil_value: RegionQuestion<Ty> = RegionQuestion::equality(value, ComparisonValue::Const(GroundValue::Nil));
 
     assert!(matches!(
         presence.predicate.region,
         Region::MapKeyPresent {
-            key: DispatchConst::Int(7)
+            key: GroundValue::Int(7)
         }
     ));
     assert_eq!(
         nil_value.predicate,
-        RegionPredicate::new(value, Region::Equal(ComparisonValue::Const(DispatchConst::Nil)))
+        RegionPredicate::new(value, Region::Equal(ComparisonValue::Const(GroundValue::Nil)))
     );
 }
 
@@ -241,7 +241,7 @@ fn type_shape_and_equality_questions_share_graph_branch_shape() {
     let questions = vec![
         RegionQuestion::type_region(subject, types.int()),
         RegionQuestion::list_empty(subject),
-        RegionQuestion::equality(subject, ComparisonValue::Const(DispatchConst::Int(42))),
+        RegionQuestion::equality(subject, ComparisonValue::Const(GroundValue::Int(42))),
         RegionQuestion::equality(subject, ComparisonValue::Pinned(PinnedValueId(0))),
     ];
 
@@ -312,11 +312,11 @@ fn eval_predicate(predicate: &RegionPredicate<Ty>, values: &BTreeMap<SubjectId, 
         return false;
     };
     match (&predicate.region, value) {
-        (Region::Equal(ComparisonValue::Const(DispatchConst::Int(expected))), TestValue::Int(actual)) => {
+        (Region::Equal(ComparisonValue::Const(GroundValue::Int(expected))), TestValue::Int(actual)) => {
             *expected == *actual
         }
-        (Region::Equal(ComparisonValue::Const(DispatchConst::Nil)), TestValue::Nil) => true,
-        (Region::Equal(ComparisonValue::Const(DispatchConst::EmptyList)), TestValue::EmptyList) => true,
+        (Region::Equal(ComparisonValue::Const(GroundValue::Nil)), TestValue::Nil) => true,
+        (Region::Equal(ComparisonValue::Const(GroundValue::EmptyList)), TestValue::EmptyList) => true,
         (Region::List(ListRegion::Empty), TestValue::EmptyList) => true,
         (Region::List(ListRegion::Cons), TestValue::Cons) => true,
         _ => false,
@@ -327,10 +327,7 @@ fn eval_predicate(predicate: &RegionPredicate<Ty>, values: &BTreeMap<SubjectId, 
 fn test_graph_evaluator_covers_non_int_fixture_values() {
     let subject = SubjectId(0);
     for (value, region) in [
-        (
-            TestValue::Nil,
-            Region::Equal(ComparisonValue::Const(DispatchConst::Nil)),
-        ),
+        (TestValue::Nil, Region::Equal(ComparisonValue::Const(GroundValue::Nil))),
         (TestValue::EmptyList, Region::List(ListRegion::Empty)),
         (TestValue::Cons, Region::List(ListRegion::Cons)),
     ] {
@@ -356,7 +353,7 @@ fn compile_source_order_uses_first_matching_arm() {
         .add_arm_questions(
             vec![RegionQuestion::equality(
                 subject,
-                ComparisonValue::Const(DispatchConst::Int(1)),
+                ComparisonValue::Const(GroundValue::Int(1)),
             )],
             EdgeEvidence::empty(),
             one,
@@ -383,7 +380,7 @@ fn compile_orthogonal_arms_in_deterministic_source_order() {
         .add_arm_questions(
             vec![RegionQuestion::equality(
                 subject,
-                ComparisonValue::Const(DispatchConst::Int(2)),
+                ComparisonValue::Const(GroundValue::Int(2)),
             )],
             EdgeEvidence::empty(),
             two,
@@ -393,7 +390,7 @@ fn compile_orthogonal_arms_in_deterministic_source_order() {
         .add_arm_questions(
             vec![RegionQuestion::equality(
                 subject,
-                ComparisonValue::Const(DispatchConst::Int(1)),
+                ComparisonValue::Const(GroundValue::Int(1)),
             )],
             EdgeEvidence::empty(),
             one,
@@ -408,7 +405,7 @@ fn compile_orthogonal_arms_in_deterministic_source_order() {
 
     assert_eq!(
         predicate.region,
-        Region::Equal(ComparisonValue::Const(DispatchConst::Int(2)))
+        Region::Equal(ComparisonValue::Const(GroundValue::Int(2)))
     );
     assert_eq!(eval_graph(&compiled.graph, subject, TestValue::Int(2)), Some(two));
     assert_eq!(eval_graph(&compiled.graph, subject, TestValue::Int(1)), Some(one));
@@ -432,7 +429,7 @@ fn compile_shares_consecutive_common_prefix_tests() {
         .add_arm_questions(
             vec![
                 cons.clone(),
-                RegionQuestion::equality(head, ComparisonValue::Const(DispatchConst::Int(1))),
+                RegionQuestion::equality(head, ComparisonValue::Const(GroundValue::Int(1))),
             ],
             EdgeEvidence::empty(),
             first,
@@ -442,7 +439,7 @@ fn compile_shares_consecutive_common_prefix_tests() {
         .add_arm_questions(
             vec![
                 cons.clone(),
-                RegionQuestion::equality(head, ComparisonValue::Const(DispatchConst::Int(2))),
+                RegionQuestion::equality(head, ComparisonValue::Const(GroundValue::Int(2))),
             ],
             EdgeEvidence::empty(),
             second,
@@ -468,7 +465,7 @@ fn compile_closed_residual_fails_unmatched_values() {
         .add_arm_questions(
             vec![RegionQuestion::equality(
                 subject,
-                ComparisonValue::Const(DispatchConst::Int(1)),
+                ComparisonValue::Const(GroundValue::Int(1)),
             )],
             EdgeEvidence::empty(),
             one,
@@ -490,18 +487,18 @@ fn compile_places_projection_only_on_proven_edge() {
         .add_projected_subject(
             map,
             ProjectionKind::MapValue {
-                key: DispatchConst::AtomName("id".to_string()),
+                key: GroundValue::Atom("id".to_string()),
             },
         )
         .expect("map value subject");
     let matched = builder.add_outcome(OutcomeMultiplicity::Unique);
-    let key = DispatchConst::AtomName("id".to_string());
+    let key = GroundValue::Atom("id".to_string());
 
     builder
         .add_arm_questions(
             vec![
                 RegionQuestion::map_key_present(map, key.clone(), value),
-                RegionQuestion::equality(value, ComparisonValue::Const(DispatchConst::Nil)),
+                RegionQuestion::equality(value, ComparisonValue::Const(GroundValue::Nil)),
             ],
             EdgeEvidence::empty(),
             matched,
@@ -534,7 +531,7 @@ fn compile_places_projection_only_on_proven_edge() {
         Some(DispatchNode::Test {
             predicate: RegionPredicate {
                 subject,
-                region: Region::Equal(ComparisonValue::Const(DispatchConst::Nil)),
+                region: Region::Equal(ComparisonValue::Const(GroundValue::Nil)),
             },
             ..
         }) if *subject == value
@@ -550,7 +547,7 @@ fn graph_builder_preserves_node_identity_and_validates_edges() {
         evidence: EdgeEvidence::empty(),
     });
     let test = builder.add_node(DispatchNode::Test {
-        predicate: RegionPredicate::new(SubjectId(0), Region::Equal(ComparisonValue::Const(DispatchConst::Nil))),
+        predicate: RegionPredicate::new(SubjectId(0), Region::Equal(ComparisonValue::Const(GroundValue::Nil))),
         on_match: DispatchEdge::new(out),
         on_miss: DispatchEdge::new(fail),
     });
@@ -575,7 +572,7 @@ fn graph_builder_rejects_unknown_root_or_edge_node() {
     let mut unknown_edge = DispatchGraphBuilder::<Ty>::typed();
     let fail = unknown_edge.add_node(DispatchNode::Fail);
     let test = unknown_edge.add_node(DispatchNode::Test {
-        predicate: RegionPredicate::new(SubjectId(0), Region::Equal(ComparisonValue::Const(DispatchConst::Nil))),
+        predicate: RegionPredicate::new(SubjectId(0), Region::Equal(ComparisonValue::Const(GroundValue::Nil))),
         on_match: DispatchEdge::new(GraphNodeId(42)),
         on_miss: DispatchEdge::new(fail),
     });
@@ -671,23 +668,23 @@ fn pattern_dispatch_matrix_preserves_literal_outcomes_and_default() {
     ));
     assert!(has_region(&plan, |region| matches!(
         region,
-        Region::Equal(ComparisonValue::Const(DispatchConst::Int(7)))
+        Region::Equal(ComparisonValue::Const(GroundValue::Int(7)))
     )));
     assert!(has_region(&plan, |region| matches!(
         region,
-        Region::Equal(ComparisonValue::Const(DispatchConst::AtomName(name))) if name == "ok"
+        Region::Equal(ComparisonValue::Const(GroundValue::Atom(name))) if name == "ok"
     )));
     assert!(has_region(&plan, |region| matches!(
         region,
-        Region::Equal(ComparisonValue::Const(DispatchConst::Bool(false)))
+        Region::Equal(ComparisonValue::Const(GroundValue::Bool(false)))
     )));
     assert!(has_region(&plan, |region| matches!(
         region,
-        Region::Equal(ComparisonValue::Const(DispatchConst::Nil))
+        Region::Equal(ComparisonValue::Const(GroundValue::Nil))
     )));
     assert!(has_region(&plan, |region| matches!(
         region,
-        Region::Equal(ComparisonValue::Const(DispatchConst::Utf8Binary(bytes))) if bytes == b"hi"
+        Region::Equal(ComparisonValue::Const(GroundValue::Utf8Binary(bytes))) if bytes == b"hi"
     )));
 
     let (fallback_arm, fallback) = arm_for_body(&plan, 5);
@@ -722,7 +719,7 @@ fn pattern_dispatch_matrix_preserves_tuple_list_projections_and_leaf_bindings() 
     assert!(has_region(&plan, |region| matches!(region, Region::TupleArity(2))));
     assert!(has_region(&plan, |region| matches!(
         region,
-        Region::Equal(ComparisonValue::Const(DispatchConst::AtomName(name))) if name == "ok"
+        Region::Equal(ComparisonValue::Const(GroundValue::Atom(name))) if name == "ok"
     )));
     assert!(has_region(&plan, |region| matches!(
         region,
@@ -789,7 +786,7 @@ fn pattern_dispatch_matrix_preserves_map_presence_before_value_tests() {
 
     let plan = pattern_plan(source_patterns);
 
-    assert_eq!(plan.prepared_keys, vec![DispatchConst::AtomName("id".to_string())]);
+    assert_eq!(plan.prepared_keys, vec![GroundValue::Atom("id".to_string())]);
     assert!(has_region(&plan, |region| matches!(region, Region::MapKind)));
     let map_key_question = plan
         .matrix
@@ -800,7 +797,7 @@ fn pattern_dispatch_matrix_preserves_map_presence_before_value_tests() {
             matches!(
                 question.predicate.region,
                 Region::MapKeyPresent {
-                    key: DispatchConst::AtomName(ref name),
+                    key: GroundValue::Atom(ref name),
                 } if name == "id"
             )
         })
@@ -809,13 +806,13 @@ fn pattern_dispatch_matrix_preserves_map_presence_before_value_tests() {
         matches!(
             projection.kind,
             ProjectionKind::MapValue {
-                key: DispatchConst::AtomName(ref name),
+                key: GroundValue::Atom(ref name),
             } if name == "id"
         )
     }));
     assert!(has_region(&plan, |region| matches!(
         region,
-        Region::Equal(ComparisonValue::Const(DispatchConst::Nil))
+        Region::Equal(ComparisonValue::Const(GroundValue::Nil))
     )));
 }
 
@@ -929,13 +926,13 @@ fn pattern_dispatch_plan_carries_executable_payloads_directly() {
     };
     let plan = pattern_plan(source_patterns);
 
-    assert_eq!(plan.prepared_keys, vec![DispatchConst::AtomName("id".to_string())]);
+    assert_eq!(plan.prepared_keys, vec![GroundValue::Atom("id".to_string())]);
     assert_eq!(plan.pinned[0].name, "want");
     assert_eq!(plan_body_ids(&plan), vec![0, 1, 2]);
     assert!(has_region(&plan, |region| matches!(
         region,
         Region::MapKeyPresent {
-            key: DispatchConst::AtomName(name),
+            key: GroundValue::Atom(name),
         } if name == "id"
     )));
     assert!(has_region(&plan, |region| matches!(
@@ -988,7 +985,7 @@ fn pattern_dispatch_matrix_preserves_pins_guards_and_preconditions_as_questions(
     assert_eq!(plan.pinned[0].name, "want");
     assert_eq!(
         plan.guards,
-        vec![pattern::PatternGuardExpr::Const(DispatchConst::Bool(true))]
+        vec![pattern::PatternGuardExpr::Const(GroundValue::Bool(true))]
     );
     let (arm, _outcome) = arm_for_body(&plan, 0);
     assert!(arm.questions.iter().any(|question| {

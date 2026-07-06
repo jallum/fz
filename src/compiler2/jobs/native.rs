@@ -13,9 +13,7 @@ use crate::diag::Diagnostic;
 use crate::diag::codes;
 use crate::diag::driver::emit_through;
 use crate::dispatch_matrix::pattern::{PatternDispatchPlan, PatternGuardExpr, prepared_key_name};
-use crate::dispatch_matrix::{
-    ComparisonValue, DispatchConst, DispatchNode, GraphNodeId, ListRegion, Region, SubjectId,
-};
+use crate::dispatch_matrix::{ComparisonValue, DispatchNode, GraphNodeId, ListRegion, Region, SubjectId};
 use crate::fz_ir::{
     BinOp as IrBinOp, BitSizeIr, BlockId, BranchOrigin, CallsiteIdent, Const, Cont, DirectCallTarget, ExternArg,
     ExternDecl, ExternId, ExternMarshalSite, ExternTy, FnBuilder, FnCategory, FnId, InitTokenId, ModuleBuilder, Prim,
@@ -2609,7 +2607,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                 let (var, _) = ctx.emit_let(Prim::RuntimeTypeTest(subject, Box::new(predicate)));
                 var
             }
-            Region::Equal(ComparisonValue::Const(DispatchConst::EmptyList)) | Region::List(ListRegion::Empty) => {
+            Region::Equal(ComparisonValue::Const(GroundValue::EmptyList)) | Region::List(ListRegion::Empty) => {
                 let subject = self.dispatch_subject_var(ctx, plan, state, subject)?;
                 let (var, _) = ctx.emit_let(Prim::IsEmptyList(subject));
                 var
@@ -4663,24 +4661,29 @@ fn lower_backend_literal(
 fn lower_dispatch_const(
     ctx: &mut NativeFnCtx,
     atom_ids: &HashMap<String, u32>,
-    value: &DispatchConst,
+    value: &GroundValue,
 ) -> Result<Var, FatalError> {
     Ok(match value {
-        DispatchConst::Int(value) => ctx.emit_let(Prim::Const(Const::Int(*value))).0,
-        DispatchConst::FloatBits(bits) => ctx.emit_let(Prim::Const(Const::Float(f64::from_bits(*bits)))).0,
-        DispatchConst::AtomName(name) => {
+        GroundValue::Int(value) => ctx.emit_let(Prim::Const(Const::Int(*value))).0,
+        GroundValue::Float(bits) => ctx.emit_let(Prim::Const(Const::Float(f64::from_bits(*bits)))).0,
+        GroundValue::Atom(name) => {
             let atom = *atom_ids.get(name).ok_or(FatalError)?;
             ctx.emit_let(Prim::Const(Const::Atom(atom))).0
         }
-        DispatchConst::Bool(true) => ctx.emit_let(Prim::Const(Const::True)).0,
-        DispatchConst::Bool(false) => ctx.emit_let(Prim::Const(Const::False)).0,
-        DispatchConst::Nil => ctx.emit_let(Prim::Const(Const::Nil)).0,
-        DispatchConst::Utf8Binary(bytes) => {
+        GroundValue::Bool(true) => ctx.emit_let(Prim::Const(Const::True)).0,
+        GroundValue::Bool(false) => ctx.emit_let(Prim::Const(Const::False)).0,
+        GroundValue::Nil => ctx.emit_let(Prim::Const(Const::Nil)).0,
+        GroundValue::Utf8Binary(bytes) => {
             ctx.emit_let(Prim::ConstBitstring(bytes.clone(), (bytes.len() * 8) as u64))
                 .0
         }
-        DispatchConst::EmptyList => {
+        GroundValue::EmptyList => {
             return Err(FatalError);
+        }
+        GroundValue::Binary(_) => {
+            // Pattern lowering (`dispatch_matrix::pattern`) only ever builds
+            // `Utf8Binary` dispatch consts; raw `Binary` is unreachable here.
+            unreachable!("dispatch matrix does not construct GroundValue::Binary consts")
         }
     })
 }

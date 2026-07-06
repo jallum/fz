@@ -9,7 +9,7 @@ use crate::diag::Diagnostic;
 use crate::diag::codes;
 use crate::diag::driver::emit_through;
 use crate::dispatch_matrix::pattern::{PatternDispatchPlan, PatternGuardDispatch, PatternGuardExpr};
-use crate::dispatch_matrix::{ComparisonValue, DispatchConst, DispatchNode, ProjectionKind, Region, SubjectSource};
+use crate::dispatch_matrix::{ComparisonValue, DispatchNode, ProjectionKind, Region, SubjectSource};
 use crate::ground_value::GroundValue;
 use crate::source::Span;
 
@@ -1791,8 +1791,8 @@ fn collect_guard_dispatch_atoms(
     }
 }
 
-fn collect_dispatch_const_atoms(value: &DispatchConst, seen: &mut HashSet<String>, atoms: &mut Vec<String>) {
-    if let DispatchConst::AtomName(name) = value {
+fn collect_dispatch_const_atoms(value: &GroundValue, seen: &mut HashSet<String>, atoms: &mut Vec<String>) {
+    if let GroundValue::Atom(name) = value {
         push_atom(seen, atoms, name);
     }
 }
