@@ -2,13 +2,15 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-07-06T18:05:33Z",
+  "close_reason": "Completed/stale epic: .fzi/.fzo storage is gone, children are closed, and docs now state there is no .fzi/.fzo store.",
   "created": "2026-06-06T11:12:18Z",
   "description": "Placeholder parent ticket for the work to remove the legacy .fzi/.fzo persistence system and any dependent workflow.",
   "id": "fz-tkf",
   "labels": [],
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "Epic: remove .fzi/.fzo storage system",
   "type": "epic",
-  "updated_at": "2026-06-06T11:12:18Z"
+  "updated_at": "2026-07-06T18:05:33Z"
 }
