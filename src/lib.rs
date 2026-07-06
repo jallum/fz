@@ -7,6 +7,7 @@ mod exec;
 mod extern_contract;
 mod function_surface;
 mod fz_ir;
+pub mod ground_value;
 mod ir_codegen;
 mod ir_dce;
 mod ir_interp;
