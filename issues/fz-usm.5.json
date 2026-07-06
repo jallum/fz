@@ -2,7 +2,8 @@
   "assignee": "",
   "blocked_by": [
     "fz-usm.3",
-    "fz-usm.4"
+    "fz-usm.4",
+    "fz-yj0"
   ],
   "blocks": [],
   "created": "2026-07-05T22:24:58Z",
@@ -20,5 +21,5 @@
   "status": "open",
   "title": "fz-usm DECISION: homogeneous map(k,v) -- lossy map_top approximation vs a real homogeneous-map Ty axis",
   "type": "task",
-  "updated_at": "2026-07-06T15:36:03Z"
+  "updated_at": "2026-07-06T17:42:34Z"
 }
