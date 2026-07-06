@@ -7,9 +7,15 @@
   "id": "fz-go4.51",
   "labels": [],
   "parent": "fz-go4",
+  "comments": [
+    {
+      "text": "DONE (folded to a5b44bf54). TypeExpr::EmptyList ([] in type position) now resolves to empty_list() (list axis, ValueKind LIST) not nil() (atom axis, ValueKind ATOM). Evidence: Elixir typespec parity ([]=empty list, nil=atom); GroundValue::Nil vs EmptyList already distinct at value level; empty_list() already existed; no prior test asserted the old behavior. Intent-stating test added (empty_list_brackets_resolve_to_the_empty_list_type_not_nil). Self-audited: sole TypeExpr::EmptyList site, clean intent comment (no ticket ID). Scoped strictly to type position; broader fz-iib (nil-as-atom expr vs empty-list pattern) left untouched. lib 1229/0/9; single-threaded fixture_matrix 19 unchanged.",
+      "timestamp": "2026-07-06T21:20:49Z"
+    }
+  ],
   "priority": 3,
   "status": "open",
   "title": "TypeExpr::EmptyList ([] in type position) resolves to nil() not empty_list()",
   "type": "bug",
-  "updated_at": "2026-07-05T22:25:03Z"
+  "updated_at": "2026-07-06T21:20:49Z"
 }
