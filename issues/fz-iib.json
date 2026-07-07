@@ -6,9 +6,15 @@
   "description": "INCONSISTENCY (surfaced by the ground-literal-value fold investigation): the SAME source keyword `nil` types two different ways depending on position.\n\n- As an expression literal: Literal::Nil -\u003e world.types.nil() = Descr::atom_lit(\"nil\") -- the ATOM nil (jobs/semantic.rs:2114; types/descr.rs:76-78).\n- As a pattern / dispatch const: DispatchConst::Nil -\u003e world.types.empty_list() = ListSig::empty() -- the EMPTY LIST (jobs/semantic.rs:2131).\n\nSame syntax, same unit payload, different Ty depending on expression- vs pattern-position lowering. This is a latent correctness/consistency question independent of the fold: the GroundValue fold shares the VALUE representation (GroundValue::Nil) but the per-consumer TYPING functions stay separate and continue to disagree until this is resolved.\n\nDecide the intended meaning of `nil` in each position and align. Grep fixtures for programs relying on either behavior before changing. Parser context: quoted_function.rs:324 (`\"nil\" =\u003e Expr::Nil`); pattern path dispatch_matrix/pattern.rs:319.",
   "id": "fz-iib",
   "labels": [],
+  "comments": [
+    {
+      "text": "Folded at 1ccfe3e8e onto fz-go4.1/frontdoor-cli-ownership. Adversarial audit (fresh agent) confirmed the retype is correct-by-construction: nil-\u003eGroundValue::Nil in both positions; [] lowers to Region::List(ListRegion::Empty), never a GroundValue::EmptyList dispatch const, so DispatchShape::EmptyList is unreachable-from-source and the retype cannot touch [] patterns. Audit surfaced ONE unexamined second consumer: Region::MapKeyPresent also calls dispatch_const_ty(Nil) -- post-fix, a %{nil =\u003e ...} map-pattern key now resolves to MapKey::Atom(\"nil\") and prunes its miss edge like any atom key (correct new behavior). Applied at fold: updated the now-stale semantic.rs comment (dropped nil from the 'no singleton' list) + added regression test nil_map_pattern_key_resolves_to_the_nil_atom_singleton pinning that path. Verified: lib 1241/0/6, clippy -D warnings clean. Follow-up fz-go4.54 filed (DispatchShape::EmptyList dead-arm: fold-or-delete).",
+      "timestamp": "2026-07-07T16:28:48Z"
+    }
+  ],
   "priority": 3,
   "status": "open",
   "title": "nil types as atom in expression position but as empty-list in pattern position (same syntax, divergent Ty)",
   "type": "bug",
-  "updated_at": "2026-07-06T17:42:33Z"
+  "updated_at": "2026-07-07T16:28:48Z"
 }
