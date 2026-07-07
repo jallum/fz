@@ -7,9 +7,15 @@
   "id": "fz-go4.53",
   "labels": [],
   "parent": "fz-go4",
+  "comments": [
+    {
+      "text": "LANDED at 917e002b2 (folded from wt/b6-53 4da456a19). Split the boolean code_surface_can_publish_function / item_macro_call_may_define predicates into a 3-valued FunctionSurfaceMatch enum (None\u003cOpaque\u003cCertain, derived Ord) via code_surface_function_match / item_macro_call_match. demand_function_scope now returns ONLY the certain fn-form home's CodeScoped wait when one exists (a plain fn/fnp/defmacro/defmodule/defprotocol/defimpl head naming the wanted name+arity, or a compiler-service form) — unrelated opaque item-macro candidates become irrelevant; otherwise STAGES opaque candidates one at a time in submission order (returns the first opaque candidate's wait; on re-run the probed code is Scoped and excluded, narrowing to the next). Net complexity DECREASE: two boolean helpers -\u003e one classifier + a small Ord enum, no new job/fact/field. Never bundles a non-empty wait with the arm-less FunctionSourceStash (AND-semantics safe, jobs/source.rs unchanged). Termination on a truly-undefined name verified: opaque set strictly shrinks -\u003e terminal empty return -\u003e arm-less stash -\u003e proper 'function X is not defined' diagnostic, no hang/spin. Order deterministic (code.ids() is a Vec, submission order). Test: drive_test.rs::compiler2_resolving_a_global_name_does_not_scope_unrelated_opaque_macro_calls — telemetry OutputCapture over Job::ScopeCode, asserts main's file IS scoped and two unrelated opaque-macro files are NEVER scoped; proven non-vacuous (reverting world.rs fails with 'got a ScopeCode(CodeId(2))'). fz-go4.43's 3 macro-DSL tests stay green. lib 1239/0/6. Adversarial audit: SOUND, all 6 risks cleared. Audit NIT (first-certain-home-wins over an untested cross-file duplicate-definition edge -\u003e deterministic, an improvement) surfaced a latent gap: no duplicate-global-definition diagnostic -\u003e filed fz-zbp.",
+      "timestamp": "2026-07-07T13:06:38Z"
+    }
+  ],
   "priority": 3,
   "status": "open",
   "title": "demand_function_scope global branch eagerly scopes the WHOLE surface on the first unresolved global name (AND-semantics fan-out over every opaque item-macro call)",
   "type": "bug",
-  "updated_at": "2026-07-07T12:36:34Z"
+  "updated_at": "2026-07-07T13:06:38Z"
 }
