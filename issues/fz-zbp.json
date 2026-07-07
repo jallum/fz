@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-07-07T13:06:38Z",
+  "description": "SURFACED by the fz-go4.53 adversarial audit (at 917e002b2). While tracing demand_function_scope, the auditor found there is NO 'already defined' / ambiguity check anywhere for a global function name+arity defined by TWO separate codes (cross-file duplicate). Before fz-go4.53, demand_function_scope waited on BOTH codes' CodeScoped facts (AND-semantics) and whichever ScopeCode job ran LAST won the single-slot pending_function_sources.stash (last-write-wins) — an actual-execution-order RACE. fz-go4.53 changed this to deterministic first-submitted-home-wins (certain_home.get_or_insert keeps the first matching code, world.rs:2118). That is an improvement (race -\u003e deterministic) but it MASKS the underlying gap: a genuine duplicate global definition should be a user DIAGNOSTIC ('function name/arity already defined'), not silently resolved to one definition. TASK: decide the intended semantics for a duplicate global function definition (Elixir errors/warns on redefinition), and if it should be diagnosed, add the ambiguity check at the authoritative define/stash point (source_publish define_source_function / stash_function_source) with a clear diagnostic and a multi-file fixture. If duplicate-global is intentionally last-one-wins or first-one-wins by design, document that as a provable fact instead. Low priority — no in-tree program currently relies on either behavior. Related: fz-go4.53.",
+  "id": "fz-zbp",
+  "labels": [],
+  "priority": 4,
+  "status": "open",
+  "title": "No duplicate-global-definition diagnostic: two codes defining the same global name+arity silently resolve to one (was a race, now first-submitted-wins)",
+  "type": "bug",
+  "updated_at": "2026-07-07T13:06:38Z"
+}
