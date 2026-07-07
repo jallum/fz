@@ -50,6 +50,69 @@ impl GroundValue {
             _ => None,
         }
     }
+
+    /// Projects onto the `{Int, Float, Atom, Bool, Nil, Binary}` shape that
+    /// lowered function bodies can express as a literal, or `None` for
+    /// `EmptyList`/`Utf8Binary` -- lowering never produces either (brand
+    /// erasure turns a dispatch-const `Utf8Binary` into a body-literal
+    /// `Binary` before it reaches this projection).
+    pub fn as_body_literal(&self) -> Option<BodyLiteral<'_>> {
+        match self {
+            GroundValue::Int(value) => Some(BodyLiteral::Int(*value)),
+            GroundValue::Float(bits) => Some(BodyLiteral::Float(*bits)),
+            GroundValue::Atom(name) => Some(BodyLiteral::Atom(name)),
+            GroundValue::Bool(value) => Some(BodyLiteral::Bool(*value)),
+            GroundValue::Nil => Some(BodyLiteral::Nil),
+            GroundValue::Binary(bytes) => Some(BodyLiteral::Binary(bytes)),
+            GroundValue::EmptyList | GroundValue::Utf8Binary(_) => None,
+        }
+    }
+
+    /// Projects onto the `{Int, Float, Atom, Bool, Nil, EmptyList,
+    /// Utf8Binary}` shape that the dispatch matrix constructs, or `None` for
+    /// raw `Binary` -- `dispatch_matrix::pattern` only ever builds
+    /// `Utf8Binary` consts, never a raw `Binary`.
+    pub fn as_dispatch_shape(&self) -> Option<DispatchShape<'_>> {
+        match self {
+            GroundValue::Int(value) => Some(DispatchShape::Int(*value)),
+            GroundValue::Float(bits) => Some(DispatchShape::Float(*bits)),
+            GroundValue::Atom(name) => Some(DispatchShape::Atom(name)),
+            GroundValue::Bool(value) => Some(DispatchShape::Bool(*value)),
+            GroundValue::Nil => Some(DispatchShape::Nil),
+            GroundValue::EmptyList => Some(DispatchShape::EmptyList),
+            GroundValue::Utf8Binary(bytes) => Some(DispatchShape::Utf8Binary(bytes)),
+            GroundValue::Binary(_) => None,
+        }
+    }
+}
+
+/// The closed subset of [`GroundValue`] that a lowered function body can
+/// express as a literal. Every consumer of a body literal matches this type
+/// exhaustively instead of hand-copying an `unreachable!()` arm for the two
+/// variants -- `EmptyList` and `Utf8Binary` -- that lowering never produces.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BodyLiteral<'a> {
+    Int(i64),
+    Float(u64),
+    Atom(&'a str),
+    Bool(bool),
+    Nil,
+    Binary(&'a [u8]),
+}
+
+/// The closed subset of [`GroundValue`] that the dispatch matrix constructs.
+/// Every dispatch-const consumer matches this type exhaustively instead of
+/// hand-copying an `unreachable!()` arm for the one variant -- raw `Binary`
+/// -- that the dispatch matrix never builds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DispatchShape<'a> {
+    Int(i64),
+    Float(u64),
+    Atom(&'a str),
+    Bool(bool),
+    Nil,
+    EmptyList,
+    Utf8Binary(&'a [u8]),
 }
 
 /// The atom/int projection of a [`GroundValue`] that open-shape map keys
@@ -141,5 +204,54 @@ mod tests {
         assert_eq!(GroundValue::Binary(vec![1]).as_map_key(), None);
         assert_eq!(GroundValue::Utf8Binary(vec![1]).as_map_key(), None);
         assert_eq!(GroundValue::Float(0).as_map_key(), None);
+    }
+
+    /// The six in-subset variants all narrow to their `BodyLiteral`
+    /// counterpart; `EmptyList` and `Utf8Binary` are the only variants a
+    /// lowered body never produces, so they -- and only they -- narrow to
+    /// `None`.
+    #[test]
+    fn as_body_literal_projects_the_six_lowering_variants() {
+        assert_eq!(GroundValue::Int(7).as_body_literal(), Some(BodyLiteral::Int(7)));
+        assert_eq!(GroundValue::Float(0).as_body_literal(), Some(BodyLiteral::Float(0)));
+        assert_eq!(
+            GroundValue::Atom("ok".to_string()).as_body_literal(),
+            Some(BodyLiteral::Atom("ok"))
+        );
+        assert_eq!(GroundValue::Bool(true).as_body_literal(), Some(BodyLiteral::Bool(true)));
+        assert_eq!(GroundValue::Nil.as_body_literal(), Some(BodyLiteral::Nil));
+        assert_eq!(
+            GroundValue::Binary(vec![1, 2]).as_body_literal(),
+            Some(BodyLiteral::Binary(&[1, 2]))
+        );
+        assert_eq!(GroundValue::EmptyList.as_body_literal(), None);
+        assert_eq!(GroundValue::Utf8Binary(vec![1]).as_body_literal(), None);
+    }
+
+    /// The seven in-subset variants all narrow to their `DispatchShape`
+    /// counterpart; raw `Binary` is the only variant the dispatch matrix
+    /// never constructs, so it -- and only it -- narrows to `None`.
+    #[test]
+    fn as_dispatch_shape_projects_the_seven_dispatch_matrix_variants() {
+        assert_eq!(GroundValue::Int(7).as_dispatch_shape(), Some(DispatchShape::Int(7)));
+        assert_eq!(GroundValue::Float(0).as_dispatch_shape(), Some(DispatchShape::Float(0)));
+        assert_eq!(
+            GroundValue::Atom("ok".to_string()).as_dispatch_shape(),
+            Some(DispatchShape::Atom("ok"))
+        );
+        assert_eq!(
+            GroundValue::Bool(true).as_dispatch_shape(),
+            Some(DispatchShape::Bool(true))
+        );
+        assert_eq!(GroundValue::Nil.as_dispatch_shape(), Some(DispatchShape::Nil));
+        assert_eq!(
+            GroundValue::EmptyList.as_dispatch_shape(),
+            Some(DispatchShape::EmptyList)
+        );
+        assert_eq!(
+            GroundValue::Utf8Binary(vec![1, 2]).as_dispatch_shape(),
+            Some(DispatchShape::Utf8Binary(&[1, 2]))
+        );
+        assert_eq!(GroundValue::Binary(vec![1]).as_dispatch_shape(), None);
     }
 }

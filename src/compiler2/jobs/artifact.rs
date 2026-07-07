@@ -2425,14 +2425,15 @@ fn record_step_reprs(
 }
 
 fn literal_repr(literal: &GroundValue) -> AbiValueRepr {
-    match literal {
-        GroundValue::Int(_) => AbiValueRepr::RawInt,
-        GroundValue::Float(_) => AbiValueRepr::RawF64,
-        GroundValue::Atom(_) | GroundValue::Bool(_) | GroundValue::Nil => AbiValueRepr::RawAtom,
-        GroundValue::Binary(_) => AbiValueRepr::ValueRef,
-        GroundValue::EmptyList | GroundValue::Utf8Binary(_) => {
-            unreachable!("lowered-body literals never produce EmptyList or Utf8Binary")
-        }
+    use crate::ground_value::BodyLiteral;
+    match literal
+        .as_body_literal()
+        .expect("literal_repr only ever sees a lowered-body literal")
+    {
+        BodyLiteral::Int(_) => AbiValueRepr::RawInt,
+        BodyLiteral::Float(_) => AbiValueRepr::RawF64,
+        BodyLiteral::Atom(_) | BodyLiteral::Bool(_) | BodyLiteral::Nil => AbiValueRepr::RawAtom,
+        BodyLiteral::Binary(_) => AbiValueRepr::ValueRef,
     }
 }
 

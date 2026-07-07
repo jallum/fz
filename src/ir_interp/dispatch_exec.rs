@@ -430,23 +430,22 @@ fn load_pinned_dispatch_value<TypeHandle>(
 }
 
 pub(super) fn dispatch_const_to_value(proc: *mut Process, module: &Module, c: &GroundValue) -> Option<AnyValue> {
-    match c {
-        GroundValue::Int(n) => Some(AnyValue::Int(*n)),
-        GroundValue::Float(bits) => Some(AnyValue::Float(f64::from_bits(*bits))),
-        GroundValue::Atom(name) => module
+    use crate::ground_value::DispatchShape;
+    match c
+        .as_dispatch_shape()
+        .expect("dispatch_const_to_value only ever sees a dispatch-matrix const")
+    {
+        DispatchShape::Int(n) => Some(AnyValue::Int(n)),
+        DispatchShape::Float(bits) => Some(AnyValue::Float(f64::from_bits(bits))),
+        DispatchShape::Atom(name) => module
             .atom_names
             .iter()
             .position(|n| n == name)
             .map(|id| AnyValue::Atom(id as u32)),
-        GroundValue::Bool(value) => Some(interp_bool_value(*value)),
-        GroundValue::Nil => Some(interp_nil_value()),
-        GroundValue::EmptyList => Some(interp_empty_list_value()),
-        GroundValue::Utf8Binary(bytes) => utf8_binary_const_value(proc, bytes),
-        GroundValue::Binary(_) => {
-            // `dispatch_matrix::pattern` only ever builds `Utf8Binary`
-            // dispatch consts; raw `Binary` is unreachable here.
-            unreachable!("dispatch matrix does not construct GroundValue::Binary consts")
-        }
+        DispatchShape::Bool(value) => Some(interp_bool_value(value)),
+        DispatchShape::Nil => Some(interp_nil_value()),
+        DispatchShape::EmptyList => Some(interp_empty_list_value()),
+        DispatchShape::Utf8Binary(bytes) => utf8_binary_const_value(proc, bytes),
     }
 }
 
@@ -468,21 +467,25 @@ fn utf8_binary_const_value(proc: *mut Process, bytes: &[u8]) -> Option<AnyValue>
 }
 
 pub(super) fn dispatch_const_eq(proc: *mut Process, module: &Module, val: AnyValue, value: &GroundValue) -> bool {
-    match value {
-        GroundValue::Int(n) => val.as_i64() == Some(*n),
-        GroundValue::Float(bits) => {
-            matches!(val, AnyValue::Float(f) if f.to_bits() == *bits)
+    use crate::ground_value::DispatchShape;
+    match value
+        .as_dispatch_shape()
+        .expect("dispatch_const_eq only ever sees a dispatch-matrix const")
+    {
+        DispatchShape::Int(n) => val.as_i64() == Some(n),
+        DispatchShape::Float(bits) => {
+            matches!(val, AnyValue::Float(f) if f.to_bits() == bits)
         }
-        GroundValue::Atom(name) => module
+        DispatchShape::Atom(name) => module
             .atom_names
             .iter()
             .position(|n| n == name)
             .is_some_and(|id| val.is_atom_id(id as u32)),
-        GroundValue::Bool(true) => val.is_atom_id(TRUE_ATOM_ID),
-        GroundValue::Bool(false) => val.is_false(),
-        GroundValue::Nil => val.is_nil(),
-        GroundValue::EmptyList => val.is_empty_list(),
-        GroundValue::Utf8Binary(bytes) => match val {
+        DispatchShape::Bool(true) => val.is_atom_id(TRUE_ATOM_ID),
+        DispatchShape::Bool(false) => val.is_false(),
+        DispatchShape::Nil => val.is_nil(),
+        DispatchShape::EmptyList => val.is_empty_list(),
+        DispatchShape::Utf8Binary(bytes) => match val {
             AnyValue::FnRef(_) => false,
             other => other.value(proc).ok().is_some_and(|val| {
                 val.heap_object_word().and_then(bitstring_like_ptr).is_some_and(|p| {
@@ -495,15 +498,10 @@ pub(super) fn dispatch_const_eq(proc: *mut Process, module: &Module, val: AnyVal
                     }
                     let ptr = unsafe { bitstring_byte_ptr(p) };
                     let slice = unsafe { from_raw_parts(ptr, bytes.len()) };
-                    slice == bytes.as_slice()
+                    slice == bytes
                 })
             }),
         },
-        GroundValue::Binary(_) => {
-            // `dispatch_matrix::pattern` only ever builds `Utf8Binary`
-            // dispatch consts; raw `Binary` is unreachable here.
-            unreachable!("dispatch matrix does not construct GroundValue::Binary consts")
-        }
     }
 }
 
@@ -539,27 +537,26 @@ pub(super) fn dispatch_const_key_value<TypeHandle>(
     key: &GroundValue,
     pinned: &HashMap<String, AnyValue>,
 ) -> Option<AnyValue> {
-    match key {
-        GroundValue::Int(n) => Some(AnyValue::Int(*n)),
-        GroundValue::Float(bits) => Some(AnyValue::Float(f64::from_bits(*bits))),
-        GroundValue::Bool(value) => Some(interp_bool_value(*value)),
-        GroundValue::Nil => Some(interp_nil_value()),
-        GroundValue::Atom(name) => module
+    use crate::ground_value::DispatchShape;
+    match key
+        .as_dispatch_shape()
+        .expect("dispatch_const_key_value only ever sees a dispatch-matrix const")
+    {
+        DispatchShape::Int(n) => Some(AnyValue::Int(n)),
+        DispatchShape::Float(bits) => Some(AnyValue::Float(f64::from_bits(bits))),
+        DispatchShape::Bool(value) => Some(interp_bool_value(value)),
+        DispatchShape::Nil => Some(interp_nil_value()),
+        DispatchShape::Atom(name) => module
             .atom_names
             .iter()
             .position(|n| n == name)
             .map(|id| AnyValue::Atom(id as u32)),
-        GroundValue::Utf8Binary(_) => plan
+        DispatchShape::Utf8Binary(_) => plan
             .prepared_keys
             .iter()
             .position(|prepared| prepared == key)
             .and_then(|index| pinned.get(&prepared_key_name(index)).copied()),
-        GroundValue::EmptyList => None,
-        GroundValue::Binary(_) => {
-            // `dispatch_matrix::pattern` only ever builds `Utf8Binary`
-            // map-key consts; raw `Binary` is unreachable here.
-            unreachable!("dispatch matrix does not construct GroundValue::Binary consts")
-        }
+        DispatchShape::EmptyList => None,
     }
 }
 

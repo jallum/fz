@@ -2532,26 +2532,28 @@ fn literal_value(
     runtime: &mut IrInterpRuntime,
     literal: &crate::ground_value::GroundValue,
 ) -> Result<AnyValue, String> {
-    use crate::ground_value::GroundValue;
-    Ok(match literal {
-        GroundValue::Int(value) => AnyValue::Int(*value),
-        GroundValue::Float(bits) => AnyValue::Float(f64::from_bits(*bits)),
-        GroundValue::Binary(value) => {
-            let ref_word = fz_runtime::ir_runtime::fz_alloc_bitstring_const(
-                runtime.cur_proc(),
-                value.as_ptr() as u64,
-                value.len() as u64,
-                (value.len() * 8) as u64,
-            );
-            interp_value_from_ref_word(ref_word, "backend binary literal")?
-        }
-        GroundValue::Atom(name) => AnyValue::Atom(runtime.node.intern_atom(name)),
-        GroundValue::Bool(value) => interp_bool_value(*value),
-        GroundValue::Nil => interp_nil_value(),
-        GroundValue::EmptyList | GroundValue::Utf8Binary(_) => {
-            unreachable!("lowered-body literals never produce EmptyList or Utf8Binary")
-        }
-    })
+    use crate::ground_value::BodyLiteral;
+    Ok(
+        match literal
+            .as_body_literal()
+            .expect("literal_value only ever sees a lowered-body literal")
+        {
+            BodyLiteral::Int(value) => AnyValue::Int(value),
+            BodyLiteral::Float(bits) => AnyValue::Float(f64::from_bits(bits)),
+            BodyLiteral::Binary(value) => {
+                let ref_word = fz_runtime::ir_runtime::fz_alloc_bitstring_const(
+                    runtime.cur_proc(),
+                    value.as_ptr() as u64,
+                    value.len() as u64,
+                    (value.len() * 8) as u64,
+                );
+                interp_value_from_ref_word(ref_word, "backend binary literal")?
+            }
+            BodyLiteral::Atom(name) => AnyValue::Atom(runtime.node.intern_atom(name)),
+            BodyLiteral::Bool(value) => interp_bool_value(value),
+            BodyLiteral::Nil => interp_nil_value(),
+        },
+    )
 }
 
 fn make_tuple(runtime: &mut IrInterpRuntime, items: Vec<AnyValue>) -> Result<AnyValue, String> {

@@ -2106,16 +2106,17 @@ fn value_ty(values: &SemanticValues, value: ValueId) -> Option<Ty> {
 }
 
 fn literal_ty(world: &mut World<'_>, literal: &GroundValue) -> Ty {
-    match literal {
-        GroundValue::Int(value) => world.types_mut().int_lit(*value),
-        GroundValue::Float(bits) => world.types_mut().float_lit(f64::from_bits(*bits)),
-        GroundValue::Binary(_) => world.types_mut().str_t(),
-        GroundValue::Atom(name) => world.types_mut().atom_lit(name),
-        GroundValue::Bool(value) => world.types_mut().bool_lit(*value),
-        GroundValue::Nil => world.types_mut().nil(),
-        GroundValue::EmptyList | GroundValue::Utf8Binary(_) => {
-            unreachable!("lowered-body literals never produce EmptyList or Utf8Binary")
-        }
+    use crate::ground_value::BodyLiteral;
+    match literal
+        .as_body_literal()
+        .expect("literal_ty only ever sees a lowered-body literal")
+    {
+        BodyLiteral::Int(value) => world.types_mut().int_lit(value),
+        BodyLiteral::Float(bits) => world.types_mut().float_lit(f64::from_bits(bits)),
+        BodyLiteral::Binary(_) => world.types_mut().str_t(),
+        BodyLiteral::Atom(name) => world.types_mut().atom_lit(name),
+        BodyLiteral::Bool(value) => world.types_mut().bool_lit(value),
+        BodyLiteral::Nil => world.types_mut().nil(),
     }
 }
 
@@ -2127,18 +2128,17 @@ fn comparison_ty(world: &mut World<'_>, value: &ComparisonValue) -> Ty {
 }
 
 fn dispatch_const_ty(world: &mut World<'_>, value: &GroundValue) -> Ty {
-    match value {
-        GroundValue::Int(value) => world.types_mut().int_lit(*value),
-        GroundValue::Float(value) => world.types_mut().float_lit(f64::from_bits(*value)),
-        GroundValue::Atom(name) => world.types_mut().atom_lit(name),
-        GroundValue::Bool(value) => world.types_mut().bool_lit(*value),
-        GroundValue::Nil | GroundValue::EmptyList => world.types_mut().empty_list(),
-        GroundValue::Utf8Binary(_) => world.types_mut().str_t(),
-        GroundValue::Binary(_) => {
-            // `dispatch_matrix::pattern` only ever builds `Utf8Binary`
-            // comparison consts; raw `Binary` is unreachable here.
-            unreachable!("dispatch matrix does not construct GroundValue::Binary consts")
-        }
+    use crate::ground_value::DispatchShape;
+    match value
+        .as_dispatch_shape()
+        .expect("dispatch_const_ty only ever sees a dispatch-matrix const")
+    {
+        DispatchShape::Int(value) => world.types_mut().int_lit(value),
+        DispatchShape::Float(value) => world.types_mut().float_lit(f64::from_bits(value)),
+        DispatchShape::Atom(name) => world.types_mut().atom_lit(name),
+        DispatchShape::Bool(value) => world.types_mut().bool_lit(value),
+        DispatchShape::Nil | DispatchShape::EmptyList => world.types_mut().empty_list(),
+        DispatchShape::Utf8Binary(_) => world.types_mut().str_t(),
     }
 }
 
@@ -2254,13 +2254,14 @@ fn map_key_from_ty(world: &World<'_>, ty: Ty) -> Option<super::super::types::Map
 }
 
 fn literal_map_key(literal: &GroundValue) -> Option<super::super::types::MapKey> {
-    match literal {
-        GroundValue::Int(value) => Some(super::super::types::MapKey::Int(*value)),
-        GroundValue::Atom(name) => Some(super::super::types::MapKey::Atom(name.clone())),
-        GroundValue::Float(_) | GroundValue::Binary(_) | GroundValue::Bool(_) | GroundValue::Nil => None,
-        GroundValue::EmptyList | GroundValue::Utf8Binary(_) => {
-            unreachable!("lowered-body literals never produce EmptyList or Utf8Binary")
-        }
+    use crate::ground_value::BodyLiteral;
+    match literal
+        .as_body_literal()
+        .expect("literal_map_key only ever sees a lowered-body literal")
+    {
+        BodyLiteral::Int(value) => Some(super::super::types::MapKey::Int(value)),
+        BodyLiteral::Atom(name) => Some(super::super::types::MapKey::Atom(name.to_string())),
+        BodyLiteral::Float(_) | BodyLiteral::Binary(_) | BodyLiteral::Bool(_) | BodyLiteral::Nil => None,
     }
 }
 

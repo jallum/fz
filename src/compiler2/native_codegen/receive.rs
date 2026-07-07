@@ -1170,42 +1170,43 @@ fn emit_any_ref_const_test(
 }
 
 fn dispatch_const_value(module: &Module, value: &GroundValue) -> Result<Option<GroundValueBits>, CodegenError> {
-    Ok(match value {
-        GroundValue::Int(n) => Some(GroundValueBits {
-            raw: *n as u64,
-            kind: ValueKind::INT,
-        }),
-        GroundValue::Float(bits) => Some(GroundValueBits {
-            raw: *bits,
-            kind: ValueKind::FLOAT,
-        }),
-        GroundValue::Atom(name) => module
-            .atom_names
-            .iter()
-            .position(|n| n == name)
-            .map(|id| GroundValueBits {
-                raw: id as u64,
+    use crate::ground_value::DispatchShape;
+    Ok(
+        match value
+            .as_dispatch_shape()
+            .expect("dispatch_const_value only ever sees a dispatch-matrix const")
+        {
+            DispatchShape::Int(n) => Some(GroundValueBits {
+                raw: n as u64,
+                kind: ValueKind::INT,
+            }),
+            DispatchShape::Float(bits) => Some(GroundValueBits {
+                raw: bits,
+                kind: ValueKind::FLOAT,
+            }),
+            DispatchShape::Atom(name) => module
+                .atom_names
+                .iter()
+                .position(|n| n == name)
+                .map(|id| GroundValueBits {
+                    raw: id as u64,
+                    kind: ValueKind::ATOM,
+                }),
+            DispatchShape::Bool(v) => Some(GroundValueBits {
+                raw: if v { TRUE_ATOM_ID as u64 } else { FALSE_ATOM_ID as u64 },
                 kind: ValueKind::ATOM,
             }),
-        GroundValue::Bool(v) => Some(GroundValueBits {
-            raw: if *v { TRUE_ATOM_ID as u64 } else { FALSE_ATOM_ID as u64 },
-            kind: ValueKind::ATOM,
-        }),
-        GroundValue::Nil => Some(GroundValueBits {
-            raw: NIL_ATOM_ID as u64,
-            kind: ValueKind::ATOM,
-        }),
-        GroundValue::EmptyList => Some(GroundValueBits {
-            raw: 0,
-            kind: ValueKind::LIST,
-        }),
-        GroundValue::Utf8Binary(_) => None,
-        GroundValue::Binary(_) => {
-            // `dispatch_matrix::pattern` only ever builds `Utf8Binary`
-            // comparison consts; raw `Binary` is unreachable here.
-            unreachable!("dispatch matrix does not construct GroundValue::Binary consts")
-        }
-    })
+            DispatchShape::Nil => Some(GroundValueBits {
+                raw: NIL_ATOM_ID as u64,
+                kind: ValueKind::ATOM,
+            }),
+            DispatchShape::EmptyList => Some(GroundValueBits {
+                raw: 0,
+                kind: ValueKind::LIST,
+            }),
+            DispatchShape::Utf8Binary(_) => None,
+        },
+    )
 }
 
 #[derive(Clone, Copy)]
@@ -1236,20 +1237,24 @@ fn emit_dispatch_const_test(
     match_b: ir::Block,
     next_b: ir::Block,
 ) -> Result<(), CodegenError> {
-    match value {
-        GroundValue::Float(_)
-        | GroundValue::Int(_)
-        | GroundValue::Atom(_)
-        | GroundValue::Bool(_)
-        | GroundValue::Nil
-        | GroundValue::EmptyList => {
+    use crate::ground_value::DispatchShape;
+    match value
+        .as_dispatch_shape()
+        .expect("emit_dispatch_const_test only ever sees a dispatch-matrix const")
+    {
+        DispatchShape::Float(_)
+        | DispatchShape::Int(_)
+        | DispatchShape::Atom(_)
+        | DispatchShape::Bool(_)
+        | DispatchShape::Nil
+        | DispatchShape::EmptyList => {
             let emitted = emit_dispatch_side_tag_const_test(b, ctx, val, value, match_b, next_b)?;
             if !emitted {
                 b.ins().jump(next_b, &[]);
             }
             Ok(())
         }
-        GroundValue::Utf8Binary(bytes) => {
+        DispatchShape::Utf8Binary(bytes) => {
             let bits = emit_receive_value_ref(b, ctx, val)?;
             emit_binary_literal_test(
                 b,
@@ -1260,11 +1265,6 @@ fn emit_dispatch_const_test(
                 match_b,
                 next_b,
             )
-        }
-        GroundValue::Binary(_) => {
-            // `dispatch_matrix::pattern` only ever builds `Utf8Binary`
-            // dispatch consts; raw `Binary` is unreachable here.
-            unreachable!("dispatch matrix does not construct GroundValue::Binary consts")
         }
     }
 }

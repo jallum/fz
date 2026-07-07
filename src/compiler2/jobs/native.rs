@@ -4638,24 +4638,27 @@ fn lower_backend_literal(
     atom_ids: &HashMap<String, u32>,
     literal: &GroundValue,
 ) -> Result<Var, FatalError> {
-    Ok(match literal {
-        GroundValue::Int(value) => ctx.emit_let(Prim::Const(Const::Int(*value))).0,
-        GroundValue::Float(bits) => ctx.emit_let(Prim::Const(Const::Float(f64::from_bits(*bits)))).0,
-        GroundValue::Atom(name) => {
-            ctx.emit_let(Prim::Const(Const::Atom(*atom_ids.get(name).ok_or(FatalError)?)))
-                .0
-        }
-        GroundValue::Bool(true) => ctx.emit_let(Prim::Const(Const::True)).0,
-        GroundValue::Bool(false) => ctx.emit_let(Prim::Const(Const::False)).0,
-        GroundValue::Nil => ctx.emit_let(Prim::Const(Const::Nil)).0,
-        GroundValue::Binary(bytes) => {
-            ctx.emit_let(Prim::ConstBitstring(bytes.clone(), (bytes.len() * 8) as u64))
-                .0
-        }
-        GroundValue::EmptyList | GroundValue::Utf8Binary(_) => {
-            unreachable!("lowered-body literals never produce EmptyList or Utf8Binary")
-        }
-    })
+    use crate::ground_value::BodyLiteral;
+    Ok(
+        match literal
+            .as_body_literal()
+            .expect("lower_backend_literal only ever sees a lowered-body literal")
+        {
+            BodyLiteral::Int(value) => ctx.emit_let(Prim::Const(Const::Int(value))).0,
+            BodyLiteral::Float(bits) => ctx.emit_let(Prim::Const(Const::Float(f64::from_bits(bits)))).0,
+            BodyLiteral::Atom(name) => {
+                ctx.emit_let(Prim::Const(Const::Atom(*atom_ids.get(name).ok_or(FatalError)?)))
+                    .0
+            }
+            BodyLiteral::Bool(true) => ctx.emit_let(Prim::Const(Const::True)).0,
+            BodyLiteral::Bool(false) => ctx.emit_let(Prim::Const(Const::False)).0,
+            BodyLiteral::Nil => ctx.emit_let(Prim::Const(Const::Nil)).0,
+            BodyLiteral::Binary(bytes) => {
+                ctx.emit_let(Prim::ConstBitstring(bytes.to_vec(), (bytes.len() * 8) as u64))
+                    .0
+            }
+        },
+    )
 }
 
 fn lower_dispatch_const(
@@ -4663,29 +4666,25 @@ fn lower_dispatch_const(
     atom_ids: &HashMap<String, u32>,
     value: &GroundValue,
 ) -> Result<Var, FatalError> {
-    Ok(match value {
-        GroundValue::Int(value) => ctx.emit_let(Prim::Const(Const::Int(*value))).0,
-        GroundValue::Float(bits) => ctx.emit_let(Prim::Const(Const::Float(f64::from_bits(*bits)))).0,
-        GroundValue::Atom(name) => {
+    use crate::ground_value::DispatchShape;
+    match value
+        .as_dispatch_shape()
+        .expect("lower_dispatch_const only ever sees a dispatch-matrix const")
+    {
+        DispatchShape::Int(value) => Ok(ctx.emit_let(Prim::Const(Const::Int(value))).0),
+        DispatchShape::Float(bits) => Ok(ctx.emit_let(Prim::Const(Const::Float(f64::from_bits(bits)))).0),
+        DispatchShape::Atom(name) => {
             let atom = *atom_ids.get(name).ok_or(FatalError)?;
-            ctx.emit_let(Prim::Const(Const::Atom(atom))).0
+            Ok(ctx.emit_let(Prim::Const(Const::Atom(atom))).0)
         }
-        GroundValue::Bool(true) => ctx.emit_let(Prim::Const(Const::True)).0,
-        GroundValue::Bool(false) => ctx.emit_let(Prim::Const(Const::False)).0,
-        GroundValue::Nil => ctx.emit_let(Prim::Const(Const::Nil)).0,
-        GroundValue::Utf8Binary(bytes) => {
-            ctx.emit_let(Prim::ConstBitstring(bytes.clone(), (bytes.len() * 8) as u64))
-                .0
-        }
-        GroundValue::EmptyList => {
-            return Err(FatalError);
-        }
-        GroundValue::Binary(_) => {
-            // Pattern lowering (`dispatch_matrix::pattern`) only ever builds
-            // `Utf8Binary` dispatch consts; raw `Binary` is unreachable here.
-            unreachable!("dispatch matrix does not construct GroundValue::Binary consts")
-        }
-    })
+        DispatchShape::Bool(true) => Ok(ctx.emit_let(Prim::Const(Const::True)).0),
+        DispatchShape::Bool(false) => Ok(ctx.emit_let(Prim::Const(Const::False)).0),
+        DispatchShape::Nil => Ok(ctx.emit_let(Prim::Const(Const::Nil)).0),
+        DispatchShape::Utf8Binary(bytes) => Ok(ctx
+            .emit_let(Prim::ConstBitstring(bytes.to_vec(), (bytes.len() * 8) as u64))
+            .0),
+        DispatchShape::EmptyList => Err(FatalError),
+    }
 }
 
 fn lower_binop(op: crate::ast::BinOp) -> IrBinOp {
