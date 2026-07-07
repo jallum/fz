@@ -1217,6 +1217,77 @@ fn compiler2_root_scopes_only_the_code_that_can_publish_its_entry() {
     );
 }
 
+// fz-go4.53: `demand_function_scope`'s global-module branch used to name
+// EVERY code containing an opaque item-macro call as a `CodeScoped` wait
+// alongside the code that actually, definitely defines the wanted function
+// (the fn-form home). Because the scheduler's waiter wake is AND-semantics
+// (`enqueue_dependents`), that bundled the certain home together with every
+// unrelated opaque candidate: resolving `main/0` would force-expand every
+// custom item-macro call in the program before the job could even re-check
+// whether `main/0` had already resolved. This test proves the fix: a certain
+// fn-form home rules out the unrelated opaque candidates entirely, so
+// resolving `main/0` never `ScopeCode`s the files whose only surface is an
+// unrelated custom-macro call.
+#[test]
+fn compiler2_resolving_a_global_name_does_not_scope_unrelated_opaque_macro_calls() {
+    let tel = ConfiguredTelemetry::new();
+    let outputs = OutputCapture::new();
+    tel.attach(&["fz", "compiler2", "job"], outputs.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    let main_code = compiler.submit_code(CodeSubmission {
+        name: Some("main_only.fz".to_string()),
+        text: "fn main(), do: 1\n".to_string(),
+    });
+    let unrelated_macro_call = |macro_name: &str, produced_atom: &str| {
+        format!(
+            "defmacro {macro_name}(name_atom, [do: body]) do\n  \
+             {{:fn, %{{}}, [{{name_atom, %{{}}, []}}, [{{:do, body}}]]}}\nend\n\n\
+             {macro_name}(:{produced_atom}) do\n  1\nend\n"
+        )
+    };
+    let unrelated_code_a = compiler.submit_code(CodeSubmission {
+        name: Some("unrelated_a.fz".to_string()),
+        text: unrelated_macro_call("dsl_a", "produced_a"),
+    });
+    let unrelated_code_b = compiler.submit_code(CodeSubmission {
+        name: Some("unrelated_b.fz".to_string()),
+        text: unrelated_macro_call("dsl_b", "produced_b"),
+    });
+    compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    assert_resolved(
+        compiler.drive(),
+        "resolving main/0's certain fn-form home should not require expanding unrelated item macros",
+    );
+
+    assert!(
+        outputs
+            .stops_matching(|job| matches!(job, Job::ScopeCode(id) if *id == main_code))
+            .iter()
+            .any(|stop| {
+                stop.effects
+                    .as_ref()
+                    .is_some_and(|effects| effects.outputs.contains(&FactKey::CodeScoped(main_code)))
+            }),
+        "main/0's own code should still be scoped to publish it"
+    );
+    for unrelated in [unrelated_code_a, unrelated_code_b] {
+        assert!(
+            outputs
+                .stops_matching(|job| matches!(job, Job::ScopeCode(id) if *id == unrelated))
+                .is_empty(),
+            "a file whose only surface is an unrelated opaque item-macro call must stay unscoped \
+             when a certain fn-form home already resolves the wanted name, got a ScopeCode({unrelated:?})"
+        );
+    }
+}
+
 #[test]
 fn compiler2_root_source_publication_is_once_per_code_fact() {
     let tel = ConfiguredTelemetry::new();

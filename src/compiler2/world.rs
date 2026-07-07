@@ -2093,30 +2093,56 @@ impl<'a> World<'a> {
     /// fact whenever any candidate home is still unresolved (`Pending`); it
     /// only returns empty once every code is `Indexed` and none of them is
     /// the home — the terminal dangling case, where the only remaining wait
-    /// (`FunctionSourceStash`, which has no producer arm) is legitimate.
+    /// (`FunctionSourceStash`, which has no producer arm) is legitimate. A
+    /// single `Certain` match or `Opaque` item-macro candidate is returned
+    /// ALONE (never bundled with the rest of the surface, fz-go4.53): the
+    /// scheduler's AND-semantics wake would otherwise force every unrelated
+    /// opaque item-macro call in the program to expand before re-checking
+    /// whether the wanted name already resolved, so candidates are staged
+    /// one `CodeScoped` wait at a time instead.
     pub(crate) fn demand_function_scope(&mut self, function: FunctionId) -> Vec<FactKey> {
         let module = self.function_module(function);
         if module.is_global() {
             let function_ref = self.function_ref(function).clone();
-            let mut homes = Vec::new();
+            let mut certain_home = None;
+            let mut opaque_candidates = Vec::new();
             let mut pending = Vec::new();
             for code_id in self.code.ids() {
                 match self.code.get(code_id) {
                     CodeState::Pending => pending.push(FactKey::CodeIndexed(code_id)),
-                    CodeState::Indexed { source } if code_surface_can_publish_function(source, &function_ref) => {
-                        homes.push(FactKey::CodeScoped(code_id))
-                    }
-                    // An Indexed code that cannot publish this function is not a
-                    // candidate. A Scoped home is unreachable here: this walk runs
-                    // only when the pending source stash is empty, and scoping a
-                    // code eagerly stashes every function it defines (source_publish),
-                    // so once the home reaches Scoped the caller never re-enters.
-                    CodeState::Scoped { .. } | CodeState::Indexed { .. } => {}
+                    CodeState::Indexed { source } => match code_surface_function_match(source, &function_ref) {
+                        FunctionSurfaceMatch::Certain => {
+                            certain_home.get_or_insert(code_id);
+                        }
+                        FunctionSurfaceMatch::Opaque => opaque_candidates.push(code_id),
+                        FunctionSurfaceMatch::None => {}
+                    },
+                    // A Scoped home is unreachable here: this walk runs only
+                    // when the pending source stash is empty, and scoping a
+                    // code eagerly stashes every function it defines
+                    // (source_publish), so once the home reaches Scoped the
+                    // caller never re-enters.
+                    CodeState::Scoped { .. } => {}
                 }
             }
-            // A found home makes the other codes' indexing irrelevant to this
-            // function: waiting on them too would be over-demand.
-            return if !homes.is_empty() { homes } else { pending };
+            // A certain home resolves the function for sure once scoped, so
+            // every opaque candidate and pending code is irrelevant — naming
+            // them too would be over-demand.
+            if let Some(code_id) = certain_home {
+                return vec![FactKey::CodeScoped(code_id)];
+            }
+            // Opaque item-macro calls are only MAYBE the home (fz-go4.43):
+            // probe them one at a time, in submission order, instead of
+            // scoping every opaque candidate in the program up front. Once
+            // this single wait is satisfied, `publish_function_source_job`
+            // re-runs and re-enters this scan: the probed code is now
+            // `Scoped` (excluded above), so an unresolved name narrows to the
+            // NEXT candidate, and a name the probe just produced short-circuits
+            // here instead of forcing every other candidate to expand too.
+            if let Some(code_id) = opaque_candidates.into_iter().next() {
+                return vec![FactKey::CodeScoped(code_id)];
+            }
+            return pending;
         }
         if self.module_has_source_state(module) || self.ensure_runtime_module(module).is_some() {
             return vec![FactKey::ModuleDefined(module)];
@@ -2709,19 +2735,57 @@ fn function_source_clause_count(source: &FunctionSource) -> u64 {
     clauses
 }
 
-fn code_surface_can_publish_function(source: &QuotedCodeSource, function_ref: &FunctionRef) -> bool {
-    source.surface.forms.iter().any(|form| match form {
-        ScopeForm::Function(function) => function.name == function_ref.name && function.arity == function_ref.arity,
-        ScopeForm::CompilerService(service) => source_definition_matches_function(&service.source, function_ref),
-        ScopeForm::MacroCall(macro_call) => item_macro_call_may_define(&macro_call.source, function_ref),
-        ScopeForm::Alias(_)
-        | ScopeForm::Import(_)
-        | ScopeForm::Require(_)
-        | ScopeForm::Module(_)
-        | ScopeForm::Protocol(_)
-        | ScopeForm::ProtocolImpl(_)
-        | ScopeForm::Struct(_) => false,
-    })
+/// How definitively a code's surface, still `Indexed` (not yet scoped), could
+/// turn out to publish a wanted global function. Declaration order IS rank
+/// order (derived `Ord`): `None < Opaque < Certain`, so `.max()` over a
+/// code's forms picks the most definitive verdict any single form gives.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum FunctionSurfaceMatch {
+    /// This code's surface rules the function out entirely.
+    None,
+    /// An unexpanded item-macro call whose head is not reserved: its
+    /// expansion is unknown until it runs, so it is only a MAYBE home.
+    Opaque,
+    /// A plain `fn`/`fnp`/`defmacro`/`defmodule`/`defprotocol`/`defimpl` head
+    /// names the wanted name+arity statically: scoping this code is
+    /// guaranteed to publish the function (or the reference is to a form
+    /// scoping cannot change its mind about).
+    Certain,
+}
+
+fn code_surface_function_match(source: &QuotedCodeSource, function_ref: &FunctionRef) -> FunctionSurfaceMatch {
+    source
+        .surface
+        .forms
+        .iter()
+        .map(|form| match form {
+            ScopeForm::Function(function)
+                if function.name == function_ref.name && function.arity == function_ref.arity =>
+            {
+                FunctionSurfaceMatch::Certain
+            }
+            ScopeForm::Function(_) => FunctionSurfaceMatch::None,
+            ScopeForm::CompilerService(service) => {
+                if source_definition_matches_function(&service.source, function_ref) {
+                    FunctionSurfaceMatch::Certain
+                } else {
+                    FunctionSurfaceMatch::None
+                }
+            }
+            ScopeForm::MacroCall(macro_call) => item_macro_call_match(&macro_call.source, function_ref),
+            ScopeForm::Alias(_)
+            | ScopeForm::Import(_)
+            | ScopeForm::Require(_)
+            | ScopeForm::Module(_)
+            | ScopeForm::Protocol(_)
+            | ScopeForm::ProtocolImpl(_)
+            | ScopeForm::Struct(_) => FunctionSurfaceMatch::None,
+        })
+        // `Certain` beats `Opaque` beats `None`: one certain form is enough to
+        // call the whole code a certain home even if it also contains
+        // unrelated opaque macro calls.
+        .max()
+        .unwrap_or(FunctionSurfaceMatch::None)
 }
 
 fn source_definition_matches_function(source: &QuotedSourceRoot, function_ref: &FunctionRef) -> bool {
@@ -2732,25 +2796,29 @@ fn source_definition_matches_function(source: &QuotedSourceRoot, function_ref: &
     )
 }
 
-/// Whether an unexpanded item-level macro call could still turn out to be the
-/// home of `function_ref`. A reserved head (`fn`/`fnp`/`defmacro`/`defmodule`/
-/// `defprotocol`/`defimpl`) names its target statically, so a definite
-/// mismatch rules the call out for good (same rule as
-/// `source_definition_matches_function`). Any other head is a call to a
-/// user-defined `defmacro`: its expansion is unknown until it actually runs,
-/// so the call is an opaque candidate home for every still-unresolved global
-/// name. Treating it as a non-match here would strand a macro-produced root
-/// or callee name behind a wait no producer arm ever wakes (the arm-less
-/// `FunctionSourceStash` fallback in `demand_function_scope`), since nothing
-/// would ever demand the `ScopeCode` that expands the macro and stashes the
-/// name it produces.
-fn item_macro_call_may_define(source: &QuotedSourceRoot, function_ref: &FunctionRef) -> bool {
+/// How definitively an unexpanded item-level macro call could turn out to be
+/// the home of `function_ref`. A reserved head (`fn`/`fnp`/`defmacro`/
+/// `defmodule`/`defprotocol`/`defimpl`) names its target statically, so a
+/// definite mismatch rules the call out for good (same rule as
+/// `source_definition_matches_function`) and a match is `Certain`. Any other
+/// head is a call to a user-defined `defmacro`: its expansion is unknown
+/// until it actually runs, so the call is only an `Opaque` candidate home for
+/// every still-unresolved global name. Treating it as a non-match here would
+/// strand a macro-produced root or callee name behind a wait no producer arm
+/// ever wakes (the arm-less `FunctionSourceStash` fallback in
+/// `demand_function_scope`), since nothing would ever demand the `ScopeCode`
+/// that expands the macro and stashes the name it produces.
+fn item_macro_call_match(source: &QuotedSourceRoot, function_ref: &FunctionRef) -> FunctionSurfaceMatch {
     match reserved_source_definition(source) {
         Ok(Some(ReservedSourceDefinition::Function { name, arity, .. })) => {
-            name == function_ref.name && arity == function_ref.arity
+            if name == function_ref.name && arity == function_ref.arity {
+                FunctionSurfaceMatch::Certain
+            } else {
+                FunctionSurfaceMatch::None
+            }
         }
-        Ok(Some(_)) => false,
-        Ok(None) | Err(_) => true,
+        Ok(Some(_)) => FunctionSurfaceMatch::None,
+        Ok(None) | Err(_) => FunctionSurfaceMatch::Opaque,
     }
 }
 
