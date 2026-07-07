@@ -164,10 +164,10 @@ fn decode_extern_fn(
     let abi = args[0].utf8_binary_text()?;
     let details = &args[1];
     let name = required_map_utf8(details, "name")?;
-    let params = required_map_list_tokens(details, "params")?;
-    let ret = required_map_tokens(details, "return")?;
+    let params = required_map_list_tokens(details, "params", ctx.code_id)?;
+    let ret = required_map_tokens(details, "return", ctx.code_id)?;
     let variadic = required_map_bool(details, "variadic")?;
-    let constraints = optional_map_keyword_tokens(details, "when")?;
+    let constraints = optional_map_keyword_tokens(details, "when", ctx.code_id)?;
     let span = span_from_meta(&node.meta, ctx).unwrap_or(Span::DUMMY);
 
     let extern_param_tokens = params
@@ -253,7 +253,7 @@ fn decode_function_head(
                 return Err(QuotedSourceError::new("quoted `::` parameter expects lhs and rhs"));
             }
             params.push(decode_pattern(&parts[0], ctx, Some(span))?);
-            annotations.push(Some(quoted_type_expr_body(&parts[1])?));
+            annotations.push(Some(quoted_type_expr_body(&parts[1], ctx)?));
             continue;
         }
         params.push(decode_pattern(&arg, ctx, Some(span))?);
@@ -387,7 +387,7 @@ fn decode_named_expr(
         }
         ("::", 2) => {
             let value = decode_expr(&args[0], ctx, Some(span))?;
-            let ty = quoted_type_expr_body(&args[1])?;
+            let ty = quoted_type_expr_body(&args[1], ctx)?;
             Ok(Spanned::new(Expr::Ascribe(Box::new(value), ty), span))
         }
         ("__aliases__", _) => Ok(Spanned::new(Expr::Var(alias_name_from_args(args)?), span)),
@@ -1185,12 +1185,12 @@ fn pattern_var_name(
     })
 }
 
-fn quoted_type_expr_body(cursor: &QuotedSourceCursor) -> Result<TypeExprBody, QuotedSourceError> {
-    Ok(TypeExprBody(token_payload::decode_tokens(cursor)?))
+fn quoted_type_expr_body(cursor: &QuotedSourceCursor, ctx: &DecodeCtx) -> Result<TypeExprBody, QuotedSourceError> {
+    Ok(TypeExprBody(token_payload::decode_tokens(cursor, ctx.code_id)?))
 }
 
 fn decode_spec_attribute(payload: &QuotedSourceCursor, ctx: &DecodeCtx) -> Result<Attribute, QuotedSourceError> {
-    let mut parser = FragmentCursor::new(token_payload::decode_tokens(payload)?, ctx.code_id);
+    let mut parser = FragmentCursor::new(token_payload::decode_tokens(payload, ctx.code_id)?);
     let (name, param_body_tokens) =
         if matches!(parser.peek(), Tok::Ident(_)) && matches!(parser.peek_at(1), Some(Tok::LParen)) {
             let name = match parser.bump() {
@@ -1516,26 +1516,21 @@ impl TypeTokenBoundary {
 struct FragmentCursor {
     toks: Vec<Token>,
     pos: usize,
-    code_id: CodeId,
 }
 
 impl FragmentCursor {
-    fn new(toks: Vec<Token>, code_id: CodeId) -> Self {
-        Self { toks, pos: 0, code_id }
+    fn new(toks: Vec<Token>) -> Self {
+        Self { toks, pos: 0 }
     }
 
-    /// The span of the next unconsumed token, real-code-id-corrected (the
-    /// decoded `Token::span` this fragment was built from always carries a
-    /// placeholder code id — see `token_payload::decode_token` — so only the
-    /// byte offsets are reused here). Falls back to the last token's end (or
-    /// `Span::DUMMY` for an empty fragment) at end-of-fragment, so an
+    /// The span of the next unconsumed token. Falls back to the last token's
+    /// end (or `Span::DUMMY` for an empty fragment) at end-of-fragment, so an
     /// "expected X, got eof" error still points at a real location.
     fn current_span(&self) -> Span {
-        let real_span = |token: &Token| Span::new(SourceId(self.code_id.as_u32()), token.span.start, token.span.end);
         self.toks
             .get(self.pos)
             .or_else(|| self.toks.last())
-            .map(real_span)
+            .map(|token| token.span)
             .unwrap_or(Span::DUMMY)
     }
 
@@ -1664,20 +1659,28 @@ fn required_map_utf8(cursor: &QuotedSourceCursor, key: &str) -> Result<String, Q
         .utf8_binary_text()
 }
 
-fn required_map_tokens(cursor: &QuotedSourceCursor, key: &str) -> Result<Vec<Token>, QuotedSourceError> {
+fn required_map_tokens(
+    cursor: &QuotedSourceCursor,
+    key: &str,
+    code_id: CodeId,
+) -> Result<Vec<Token>, QuotedSourceError> {
     let value = cursor
         .map_value(key)?
         .ok_or_else(|| QuotedSourceError::new(format!("quoted map is missing `{key}`")))?;
-    token_payload::decode_tokens(&value)
+    token_payload::decode_tokens(&value, code_id)
 }
 
-fn required_map_list_tokens(cursor: &QuotedSourceCursor, key: &str) -> Result<Vec<Vec<Token>>, QuotedSourceError> {
+fn required_map_list_tokens(
+    cursor: &QuotedSourceCursor,
+    key: &str,
+    code_id: CodeId,
+) -> Result<Vec<Vec<Token>>, QuotedSourceError> {
     cursor
         .map_value(key)?
         .ok_or_else(|| QuotedSourceError::new(format!("quoted map is missing `{key}`")))?
         .list_items()?
         .into_iter()
-        .map(|item| token_payload::decode_tokens(&item))
+        .map(|item| token_payload::decode_tokens(&item, code_id))
         .collect::<Result<Vec<_>, _>>()
 }
 
@@ -1697,6 +1700,7 @@ fn required_map_bool(cursor: &QuotedSourceCursor, key: &str) -> Result<bool, Quo
 fn optional_map_keyword_tokens(
     cursor: &QuotedSourceCursor,
     key: &str,
+    code_id: CodeId,
 ) -> Result<Vec<(String, Vec<Token>)>, QuotedSourceError> {
     let Some(list) = cursor.map_value(key)? else {
         return Ok(Vec::new());
@@ -1707,7 +1711,7 @@ fn optional_map_keyword_tokens(
         if items.len() != 2 {
             return Err(QuotedSourceError::new("quoted keyword entry expects a 2-tuple"));
         }
-        out.push((items[0].atom_name()?, token_payload::decode_tokens(&items[1])?));
+        out.push((items[0].atom_name()?, token_payload::decode_tokens(&items[1], code_id)?));
     }
     Ok(out)
 }

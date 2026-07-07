@@ -3,6 +3,7 @@ use fz_runtime::any_value::AnyValueRef;
 use crate::parser::lexer::{Tok, Token};
 use crate::source::{Id as SourceId, Span};
 
+use super::code::CodeId;
 use super::source::{QuotedSourceBuilder, QuotedSourceCursor, QuotedSourceError};
 
 pub(crate) fn encode_tokens(builder: &QuotedSourceBuilder, tokens: &[Token]) -> Result<AnyValueRef, QuotedSourceError> {
@@ -13,11 +14,11 @@ pub(crate) fn encode_tokens(builder: &QuotedSourceBuilder, tokens: &[Token]) -> 
     builder.list(&encoded)
 }
 
-pub(crate) fn decode_tokens(cursor: &QuotedSourceCursor) -> Result<Vec<Token>, QuotedSourceError> {
+pub(crate) fn decode_tokens(cursor: &QuotedSourceCursor, code_id: CodeId) -> Result<Vec<Token>, QuotedSourceError> {
     cursor
         .list_items()?
         .into_iter()
-        .map(|item| decode_token(&item))
+        .map(|item| decode_token(&item, code_id))
         .collect()
 }
 
@@ -126,7 +127,7 @@ fn encode_tok(builder: &QuotedSourceBuilder, tok: &Tok) -> Result<(&'static str,
     })
 }
 
-fn decode_token(cursor: &QuotedSourceCursor) -> Result<Token, QuotedSourceError> {
+fn decode_token(cursor: &QuotedSourceCursor, code_id: CodeId) -> Result<Token, QuotedSourceError> {
     let fields = cursor.tuple_items()?;
     if fields.len() != 5 {
         return Err(QuotedSourceError::new(format!(
@@ -141,7 +142,7 @@ fn decode_token(cursor: &QuotedSourceCursor) -> Result<Token, QuotedSourceError>
     let space_before = decode_bool(&fields[4], "token space_before")?;
     Ok(Token {
         tok,
-        span: Span::new(SourceId(0), start, end),
+        span: Span::new(SourceId(code_id.as_u32()), start, end),
         space_before,
     })
 }

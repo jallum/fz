@@ -1064,6 +1064,82 @@ fn bitstring_bad_size_error_span_brackets_the_size_modifier() {
     );
 }
 
+/// A malformed `@type` in the SECOND submitted file must surface its
+/// `RESOLVE_TYPE_ALIAS` diagnostic pointing at that second file, not at the
+/// first. `token_payload::decode_token` used to stamp every decoded token
+/// with a hardcoded `SourceId(0)` placeholder code id (only the byte
+/// offsets were real); in a single-file compile file 0 IS the only file, so
+/// the bug was invisible. Once a second file exists, an error whose tokens
+/// were decoded from that second file must carry ITS code id, or the
+/// diagnostic renders against the wrong source text entirely.
+#[test]
+fn malformed_type_alias_in_second_file_points_at_that_files_span() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&[], capture.handler());
+    let last_span = Rc::new(RefCell::new(None));
+    tel.attach(
+        &[],
+        Box::new(LastErrorSpan {
+            span: last_span.clone(),
+        }),
+    );
+    let mut compiler = Compiler2::new(&tel);
+
+    compiler.submit_code(CodeSubmission {
+        name: Some("first.fz".to_string()),
+        text: "fn main(), do: 1\n".to_string(),
+    });
+    compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    assert_resolved(
+        compiler.drive(),
+        "the first, well-formed file should resolve on its own",
+    );
+
+    // The second file arrives once a root is already active, so it is
+    // auto-scoped (fz-f98.14.5) -- exercising exactly the multi-file shape
+    // this bug hid behind: a real second `SourceId` whose decoded tokens
+    // must carry their own code id, not file 0's.
+    let second_source = "@type bad :: ,\n";
+    let second_code = compiler.submit_code(CodeSubmission {
+        name: Some("second.fz".to_string()),
+        text: second_source.to_string(),
+    });
+    assert!(
+        matches!(compiler.drive(), DriveOutcome::Fatal { .. }),
+        "the malformed `@type` in the second file should fail to parse",
+    );
+
+    let diagnostic = capture
+        .last(&["fz", "diag", "error"])
+        .expect("expected a compiler diagnostic");
+    assert_eq!(
+        metadata_str(&diagnostic, "code"),
+        codes::RESOLVE_TYPE_ALIAS.0,
+        "a malformed `@type` body should surface as RESOLVE_TYPE_ALIAS"
+    );
+
+    let span = last_span.borrow().expect("expected a captured diagnostic span");
+    assert_eq!(
+        span.code_id,
+        crate::source::Id(second_code.as_u32()),
+        "the diagnostic span must point at the SECOND file's source id, not file 0's"
+    );
+
+    let comma_offset = second_source.find(',').expect("fixture contains `,`") as u32;
+    assert!(
+        span.start <= comma_offset && span.end > comma_offset,
+        "span [{}, {}) must bracket the malformed `,` at offset {comma_offset} inside the second file",
+        span.start,
+        span.end,
+    );
+}
+
 // Ported from src/frontend/resolve_test.rs: @spec with no fn following it in the module is a parse-time error
 #[test]
 fn spec_without_following_fn_is_a_source_surface_error() {

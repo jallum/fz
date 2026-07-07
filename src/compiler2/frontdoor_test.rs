@@ -20,7 +20,7 @@ fn map_value<'a>(
 }
 
 fn token_kinds(cursor: &super::QuotedSourceCursor) -> Vec<Tok> {
-    super::token_payload::decode_tokens(cursor)
+    super::token_payload::decode_tokens(cursor, super::code::CodeId::ZERO)
         .expect("decode token payload")
         .into_iter()
         .map(|token| token.tok)
