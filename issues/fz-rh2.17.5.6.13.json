@@ -12,6 +12,12 @@
   "id": "fz-rh2.17.5.6.13",
   "labels": [],
   "parent": "fz-rh2.17.5.6.8",
+  "comments": [
+    {
+      "text": "GATE before deleting the source scan (from slice .9 audit): a module with duplicate defstruct silently flips first-wins (old find_map scan) -\u003e last-wins (new HashMap store) once this slice makes the store authoritative. Resolve per fz-rh2.17.5.6.8.1 (emit a duplicate-defstruct diagnostic, or pin semantics with a regression test) BEFORE deleting World::module_struct_fields/struct_schemas.",
+      "timestamp": "2026-07-07T21:38:23Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "Structs: backend struct_schemas from facts + DELETE the module_struct_fields/struct_schemas scan (last consumer)",
