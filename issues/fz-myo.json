@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-07-07T21:51:08Z",
+  "description": "SURFACED by the fz-rh2.16.2 golden audit. append/quicksort/reverse expected.txt were reblessed for reductions_remaining drift (3998-\u003e3997, 3934-\u003e3906 [reductions BURNED 66-\u003e94, +42%], 3992-\u003e3990) -- verified single-line, counter-only, no semantic/alloc change (legit rebless). But this is the SECOND consecutive rebless of the same symptom on the same three fixtures: commit 0aa8dc0eb (fz-79h, 2026-06-18) already reblessed the same reductions_remaining/yield counters once. reductions_remaining is decremented by emit_back_edge_yield_check (native_codegen/terminator.rs ~1229-1249) -- one per cooperative back-edge (tail-loop iteration) check emitted by native codegen; it is a codegen-SHAPE artifact, not semantics. The counts keep drifting UPWARD (more back-edge checks = more work) across intervening commits (type-system/ActivationKey refactors, dead-code removal) that should NOT plausibly change back-edge counts. Per 'tiny-fixture slowness is correctness', repeated same-direction drift is a SIGNAL. INVESTIGATE why compiler-internal refactors keep increasing emitted back-edge-check count for these loops (is the lowering emitting redundant yield checks? is a loop being restructured to iterate more?), rather than reblessing a third time. Not masking wrong output today. Related: fz-rh2.16.2, fz-79h (0aa8dc0eb).",
+  "id": "fz-myo",
+  "labels": [],
+  "priority": 3,
+  "status": "open",
+  "title": "reductions_remaining creeps upward on append/quicksort/reverse across unrelated compiler refactors (2nd consecutive golden rebless of the same symptom)",
+  "type": "bug",
+  "updated_at": "2026-07-07T21:51:08Z"
+}
