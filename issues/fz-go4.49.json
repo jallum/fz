@@ -2,6 +2,7 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-07-07T03:06:55Z",
   "created": "2026-07-05T16:24:30Z",
   "description": "Left internal by fz-go4.48 (deliberately, as an ambiguous site). apply_bit_spec_modifier's final fallback 'unsupported quoted bit-spec fragment kind {:?}' (quoted_function.rs ~:1344) fires when a bitstring type-spec segment's AST tag is neither call/INT/ATOM/BITSTRING/PROCBIN -- e.g. a FLOAT or LIST/tuple literal in modifier position like '\u003c\u003cx :: 3.14\u003e\u003e'. Bitstring segments are parsed as fully generic exprs upstream (frontdoor parse_bitstring_literal), so this arm is PROBABLY user-reachable via a plain typo, in which case it should be QuotedSourceError::user (parse/bitstring-bad-modifier) not ::new (internal). UNCONFIRMED: need to check whether float/list/tuple/map literals in modifier position actually reach THIS arm via a valid parse, versus being caught earlier by ast_node()/is_list_like. TASK: trace it; if user-reachable, reclassify to parse/bitstring-bad-modifier with a fixture proving '\u003c\u003cx :: 3.14\u003e\u003e'-style typos surface as user diagnostics; if genuinely internal (can't arise from valid parse), leave ::new and document why. Small, follow-up to fz-go4.48.",
   "id": "fz-go4.49",
@@ -14,8 +15,8 @@
     }
   ],
   "priority": 3,
-  "status": "open",
+  "status": "closed",
   "title": "Confirm whether the bitstring 'unsupported fragment kind' fallback is user-reachable (float/list/tuple in modifier position)",
   "type": "bug",
-  "updated_at": "2026-07-07T03:06:54Z"
+  "updated_at": "2026-07-07T03:06:55Z"
 }
