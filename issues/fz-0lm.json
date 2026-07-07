@@ -3,7 +3,7 @@
   "blocked_by": [],
   "blocks": [],
   "created": "2026-06-23T22:36:26Z",
-  "description": "matrix::opaque_fn_value_join::build (an AOT/native build fixture) fails intermittently ONLY in the full parallel `cargo test --test fixture_matrix` run, never in isolation. Measured at the fz-xhk green floor (commit 56dca5970, BEFORE any change): full-matrix run1 ok, run2 FAILED, run3 FAILED (2/3 fail); the same fixture passes 3/3 when run alone. So the flake is in the parallel build harness (concurrent AOT compile/link of native fixtures racing on a shared output/temp path), not in the transport plan -- the plan for this fixture is deterministic and the transport_contract_test for it is green. This is the source of the matrix oracle's 31-vs-32 instability. Fix: isolate each AOT build fixture's output dir / serialize the link step. Pre-existing; surfaced during fz-bfh.5.5 verification.",
+  "description": "CANONICAL ticket for the parallel-only AOT-build flake family (folds in fz-go4.42, confirmed same root — see below).\n\nROOT CAUSE (candidate, code-confirmed as the shared path): every non-coverage AOT build resolves its runtime archive via RuntimeArchivePlan::Sibling -\u003e find_runtime_archive -\u003e newest_hashed_runtime_archive (aot_link.rs:146,225-243), which scans target/debug/deps for libfz_runtime-*.a and picks the NEWEST BY MTIME — unfenced read-shared state across every concurrently-spawned fz2 build child under cargo test's parallel scheduler. If a transient second/stale hashed archive exists (mid-rebuild, or a differently-profiled cargo invocation), a child links fresh objects against an ABI-MISMATCHED runtime archive =\u003e struct-layout drift in internal teardown state (Process/heap/pending_dtors, aot_shim.rs) =\u003e intermittent crash ONLY under parallel contention, never in isolation.\n\nCONFIRMED SAME ISSUE across both symptom families:\n- both are AOT-build fixture_matrix ::build tests;\n- both fail ONLY in the full PARALLEL run, never single-threaded/in-isolation (fz-0lm by report; fz-go4.42's trio verified across 80+ isolated runs at two commits, all exit 0);\n- both traverse the IDENTICAL runtime-archive resolution path above.\n\nSYMPTOMS (must ALL be re-verified green by the fix):\n- opaque_fn_value_join::build — intermittent build/link failure under parallel contention (original fz-0lm).\n- a-resource_aot_dtor::build, file_handle::build, file_resource_lifecycle::build — SIGBUS (exit 138) at resource-dtor teardown AFTER correct output, under parallel contention (folded from fz-go4.42).\n\nFIX (correct-by-construction): make runtime-archive selection deterministic and race-free per build — pin the EXACT archive the current fz2 was built against (e.g. embed/resolve the specific hashed archive rather than newest-by-mtime), or fence selection so a mid-rebuild/second archive cannot be chosen. Do NOT rely on mtime ordering.\n\nVERIFY: run the actual PARALLEL 'cargo test --test fixture_matrix' harness (the single-threaded gate hides this by construction) repeatedly and confirm opaque_fn_value_join::build AND the a-resource_aot_dtor/file_handle/file_resource_lifecycle trio are all stably green; ideally add a regression that stresses concurrent archive resolution. Related: fz-go4.22 (matrix-red parent), fz-go4.42 (closed dup), fixture_matrix single-threaded gate.",
   "id": "fz-0lm",
   "labels": [],
   "comments": [
@@ -12,9 +12,9 @@
       "timestamp": "2026-07-07T12:57:29Z"
     }
   ],
-  "priority": 3,
+  "priority": 2,
   "status": "open",
-  "title": "[BUG] opaque_fn_value_join::build flakes in the parallel fixture_matrix run",
+  "title": "Parallel AOT-build runtime-archive race: fixture_matrix ::build tests flake only under contention (shared newest-mtime libfz_runtime-*.a selection)",
   "type": "task",
-  "updated_at": "2026-07-07T12:57:29Z"
+  "updated_at": "2026-07-07T14:09:40Z"
 }
