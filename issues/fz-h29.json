@@ -2,6 +2,7 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-07-07T16:34:02Z",
   "created": "2026-07-07T13:16:52Z",
   "description": "SURFACED by the fz-s2b investigation (at 6efa9fc16). CURRENT STATE: encode_token (token_payload.rs) bakes a Vec\u003cToken\u003e blob with byte offsets but NO code id; decode_token/decode_tokens re-attach a code id from an EXTERNAL DecodeCtx.code_id (threaded in by fz-3sb). This is correct for the common case but is FRAGILE across cross-code macro expansion: run_macro_on_source (world.rs:964-975) rematerializes a macro file's baked type-token blob (macro-file offsets) into the CALLER's heap, and derive_function_surface (jobs/source.rs:224-227) then decodes it with the CALLER's code_id =\u003e an inconsistent span{code_id: caller, offsets: macro-file} on decoded Expr::Ascribe nodes. Proven LATENT today (fz-s2b: expression :: ascription types are never resolved/enforced/surfaced, so nothing reads the bad span) but it becomes OBSERVABLE the instant body-ascription types are type-checked or their span is surfaced — with zero other changes.\n\nCORRECT-BY-CONSTRUCTION FIX (data-model up, REDUCES code): store the originating SourceId INSIDE the encoded token tuple at encode_token, so a token carries its own code id and decode needs NO external code_id at all. This (1) OBSOLETES the DecodeCtx.code_id threading fz-3sb added across decode_token/decode_tokens and every caller (delete it — a fold win), and (2) closes the cross-splice mismatch by construction: a spliced token keeps the code id of the file that actually owns its offsets, regardless of which caller decodes it. VERIFY: the fz-3sb multi-file test (malformed @type in the 2nd file points at that file) still passes with the code_id threading REMOVED; and a cross-file macro-spliced :: ascription (once made observable via a temporary type-check probe, or via a direct span assertion on the decoded node) carries span{code_id: macro-file, offsets: macro-file} consistently. Supersedes the span-threading approach; alternative to fz-s2b (closed not-reachable). Related: fz-3sb, fz-s2b, fz-ose.",
   "id": "fz-h29",
@@ -13,7 +14,7 @@
     }
   ],
   "priority": 3,
-  "status": "open",
+  "status": "closed",
   "title": "Make token spans self-describing: embed SourceId in the encoded token tuple at encode_token, obsoleting DecodeCtx.code_id threading",
   "type": "task",
   "updated_at": "2026-07-07T16:34:02Z"
