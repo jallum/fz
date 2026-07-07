@@ -2,6 +2,7 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-07-07T18:40:18Z",
   "created": "2026-07-07T16:33:07Z",
   "description": "SURFACED by the fz-h29 adversarial audit. fz-h29 made TOKEN spans self-describing (embedded the originating SourceId in the encoded token tuple, deleting the external decode-time code_id threading), closing the cross-splice mismatch by construction for tokens. The SAME class of hazard remains OPEN for AST-node meta spans decoded via span_from_meta.\n\nCURRENT STATE: span_from_meta (quoted_function.rs ~1755-1770, also quoted_surface.rs) builds Span::new(SourceId(ctx.code_id.as_u32()), start, start+length) from the CALLER-supplied ctx.code_id (DecodeCtx / SurfaceSourceContext). The AST node's __fz_span__ meta map carries only start/length -- NO code id of its own. So if a macro's quoted AST fragment (an Expr/Pattern node, not merely a token blob inside a TypeExprBody) is rematerialized into a caller's heap the way run_macro_on_source splices token blobs, any Expr/Pattern span decoded from that spliced node gets span{code_id: caller, offsets: macro-file} -- the exact latent mismatch fz-3sb/fz-h29 eliminated for tokens, now for general expression/pattern spans.\n\nPresumed still LATENT today for the same reason the original token bug was (nothing surfaces/type-checks against those AST-meta spans yet), but it becomes OBSERVABLE the instant an Expr/Pattern meta span is surfaced across a macro splice.\n\nCORRECT-BY-CONSTRUCTION FIX (the natural fold, mirroring fz-h29): embed the originating code_id INTO the __fz_span__ meta-span encoding at emit time, so span_from_meta needs NO external ctx.code_id and a spliced AST node keeps the code id of the file that owns its offsets. This would also let DecodeCtx.code_id / SurfaceSourceContext.code_id be retired entirely (fz-h29 kept them ONLY because span_from_meta still needs them) -- a further fold/reduce win. Analogous to fz-s2b (closed not-reachable for tokens); this is its AST-span sibling. Related: fz-h29, fz-3sb, fz-s2b.",
   "id": "fz-5vt",
@@ -13,7 +14,7 @@
     }
   ],
   "priority": 3,
-  "status": "open",
+  "status": "closed",
   "title": "AST-node meta spans (span_from_meta) have the same cross-splice hazard fz-h29 fixed for tokens: __fz_span__ carries no code_id, so a macro-spliced Expr/Pattern span gets caller code_id + macro-file offsets",
   "type": "bug",
   "updated_at": "2026-07-07T18:40:18Z"
