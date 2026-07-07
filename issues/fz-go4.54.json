@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-07-07T16:27:48Z",
+  "description": "SURFACED by the fz-iib adversarial audit. The `nil`/`[]` typing fix (fz-iib) confirmed by exhaustive trace that `[]` patterns NEVER reach dispatch_const_ty as a GroundValue::EmptyList const: append_list_pattern (dispatch_matrix/pattern.rs:667-700) lowers `[]` to Region::List(ListRegion::Empty) via RegionQuestion::list_empty — a structurally distinct region kind. Every consumer of DispatchShape::EmptyList independently treats it as unreachable-from-source: native.rs:4686 -\u003e Err(FatalError); body.rs:1991-1999 -\u003e LOWER_UNSUPPORTED diagnostic; ir_interp/dispatch_exec.rs:559 -\u003e None. And list literals are rejected in guard expressions entirely (guard_expr_from_ast has no Expr::List arm), so `x == []` in a guard cannot construct one either. So GroundValue::EmptyList / DispatchShape::EmptyList exists only for closed-match completeness (kept with a comment at semantic.rs by fz-iib).\n\nDECIDE and either fold or delete (CLAUDE.md 'cares as much about what we remove'; NORTH STAR 'fold concordant ideas'):\n(a) FOLD: unify `[]` matching to flow through the same dispatch-const machinery as other ground literals (collapse the two ways of expressing 'compare against a ground list shape' into one) -- IF the region-kind split isn't load-bearing; OR\n(b) DELETE: if the Region::List(ListRegion::Empty/Cons) split is intentionally permanent (list matching needs cons/tail projections a flat Region::Equal can't express), remove GroundValue::EmptyList + DispatchShape::EmptyList as dead scaffolding rather than carrying an unreachable arm.\n\nInvestigate whether the region split is load-bearing (cons/tail projection needs) before choosing. Related: fz-iib, fz-yj0 (the fold that introduced GroundValue::EmptyList as a distinct leaf), fz-go4.51.",
+  "id": "fz-go4.54",
+  "labels": [],
+  "parent": "fz-go4",
+  "priority": 4,
+  "status": "open",
+  "title": "[BUG] DispatchShape::EmptyList is dead-in-practice: [] patterns lower to Region::List(ListRegion::Empty), never a GroundValue::EmptyList dispatch const — decide fold-or-delete",
+  "type": "bug",
+  "updated_at": "2026-07-07T16:27:48Z"
+}
