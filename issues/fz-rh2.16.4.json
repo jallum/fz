@@ -13,9 +13,15 @@
   "id": "fz-rh2.16.4",
   "labels": [],
   "parent": "fz-rh2.16",
+  "comments": [
+    {
+      "text": "Folded at 5cab6c605 (clean auto-merge with struct-slice/16.2 on world.rs+fixture_matrix.rs). Adversarial audit found ONE MUST-FIX (latent) fixed at fold: the fz2 test macro was PREPENDED to the user's source text (format!(PRELUDE+text) in one CodeSubmission) -\u003e every user span shifted +5 lines, a wrong-line-number landmine once location rendering lands. Fixed correct-by-construction (option a): generalized the prelude mechanism (World::extra_preludes + register_scoped_prelude, mirroring runtime_prelude) so the test macro is its OWN CodeId (test:prelude.fz) scoped into the test root's world via the existing fact-\u003eproducer pull; user source submitted verbatim with true offsets. Non-vacuous span test (asserts offset 21 not 195). Dispositions verified live: no_parens_* already green (corpus 16.4.1); keyword_lists was a FIXTURE bug (asserted merged arity-1; real Elixir appends arity+1 -\u003e fixed fixture + append-never-merge regression test, confirmed vs ../elixir); sample_tests/sample_tests_module -\u003e new fz2 test [--interp] CLI (real-parser discovery, subprocess-per-test, assert-\u003eabort), build deferred structural. Audit also confirmed discovery robust + subprocess attribution correct; discovery-shape guard added. Composed-branch matrix 350/11 (keyword_lists green all paths; sample_tests* run/interp green, build deferred), lib 1253/0/6, clippy+fmt clean. Follow-ups: fz-rh2.16.4.2 (no-parens do-merge divergence).",
+      "timestamp": "2026-07-07T22:46:56Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "Fix fz2 source-surface parser and item macro gaps",
   "type": "task",
-  "updated_at": "2026-06-10T21:05:37Z"
+  "updated_at": "2026-07-07T22:46:56Z"
 }
