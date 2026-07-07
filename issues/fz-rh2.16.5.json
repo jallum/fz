@@ -11,9 +11,15 @@
   "id": "fz-rh2.16.5",
   "labels": [],
   "parent": "fz-rh2.16",
+  "comments": [
+    {
+      "text": "Folded at 0e4dc5e93. Four fz2-interp fixtures dispositioned per the ticket's signal (pass OR documented out-of-scope): (1) tail_recursion -\u003e FIXED (red-\u003egreen): never a stack/TCO-correctness bug (backend already trampolines) but ~3.05s \u003e 3s interp timeout from re-deriving static-per-executable input-binding layout + transport-position shapes on every one of 100k calls. Memoized both on IrInterpRuntime (interp-only, fresh per run); audit confirmed single-program-safe (immutable program, duplicate TransportPosition structurally impossible). At fold, dense-Vec-indexed input_bindings_cache (drop per-call hash) tightened the margin: gated exec ~1.74s idle. Layer discipline held (only ir_interp touched, no native codegen). Branch matrix confirms tail_recursion::interp green, known-red 19-\u003e18. (2) utf8_pattern_match -\u003e already green all 3 fz2 paths (ticket claim was stale; audit reproduced). (3) resource_lifecycle -\u003e correctly deferred: fixture defers to fz-9i4.7.5 (native struct-field kind mismatch, same symptom on interp: 'StructField: subject is not a map or Struct'); a native-boundary bug, not interp/native parity. (4) enum_predicate_search -\u003e NOT interp-only: fails identically on run/interp/build at the same ValueId(6)/FunctionId(203) ('backend value unbound'); a compiler2 specialization/demand bug (generic Enum HOF at 2+ distinct closures), out of this ticket's runtime-parity layer -\u003e filed fz-k22. Audit clean (no MUST-FIX). lib 1247/0/6.",
+      "timestamp": "2026-07-07T19:58:11Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "Fix fz2 runtime/interpreter parity gaps",
   "type": "task",
-  "updated_at": "2026-07-07T19:15:50Z"
+  "updated_at": "2026-07-07T19:58:11Z"
 }
