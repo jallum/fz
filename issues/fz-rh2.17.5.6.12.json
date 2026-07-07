@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-rh2.17.5.6.9"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-rh2.17.5.6.13"
+  ],
   "created": "2026-07-07T19:14:03Z",
   "description": "Fourth slice. Replace stringly protocol-impl-target classification (World::module_impl_target_ty classifying by last-segment strings + module_struct_fields) with a typed classification backed by facts: builtin value family vs Struct(ModuleId) vs non-struct nominal; module_impl_target_ty projects from that typed kind to Ty. Also migrate jobs/semantic.rs struct_assertion_ty. Test (ticket #5): defimpl P, for: A does not classify A by string; if A is a struct, impl-target type carries nominal identity + tuple/map field evidence via the typed struct-target path. Needs the StructDef store from the first slice.",
   "id": "fz-rh2.17.5.6.12",
@@ -13,5 +15,5 @@
   "status": "open",
   "title": "Structs: typed protocol-impl-target classification backed by facts",
   "type": "bug",
-  "updated_at": "2026-07-07T19:14:04Z"
+  "updated_at": "2026-07-07T19:14:06Z"
 }
