@@ -6,9 +6,15 @@
   "description": "matrix::opaque_fn_value_join::build (an AOT/native build fixture) fails intermittently ONLY in the full parallel `cargo test --test fixture_matrix` run, never in isolation. Measured at the fz-xhk green floor (commit 56dca5970, BEFORE any change): full-matrix run1 ok, run2 FAILED, run3 FAILED (2/3 fail); the same fixture passes 3/3 when run alone. So the flake is in the parallel build harness (concurrent AOT compile/link of native fixtures racing on a shared output/temp path), not in the transport plan -- the plan for this fixture is deterministic and the transport_contract_test for it is green. This is the source of the matrix oracle's 31-vs-32 instability. Fix: isolate each AOT build fixture's output dir / serialize the link step. Pre-existing; surfaced during fz-bfh.5.5 verification.",
   "id": "fz-0lm",
   "labels": [],
+  "comments": [
+    {
+      "text": "SHARPENED by the fz-go4.42 investigation (6efa9fc16). Concrete candidate root for the parallel-AOT-build flake family: aot_link.rs:225-243 find_runtime_archive/newest_hashed_runtime_archive picks the runtime archive to link by scanning target/debug/deps for libfz_runtime-*.a and taking the NEWEST BY MTIME — unfenced read-shared state across every concurrently-spawned fz2 build child in a parallel matrix run. A transient second/stale hashed archive =\u003e fresh objects linked against an ABI-MISMATCHED runtime archive =\u003e layout drift =\u003e intermittent crash ONLY under parallel scheduling, never in isolation (matches this ticket's signature exactly). fz-go4.42 (a-resource_aot_dtor/file_handle/file_resource_lifecycle ::build SIGBUS at teardown) is very likely the SAME root, manifesting as a teardown SIGBUS instead of opaque_fn_value_join's failure. Suggest this ticket own the archive-resolution/build-artifact ISOLATION fix (pin the exact runtime archive per build, or fence selection) and, once fixed, re-verify the fz-go4.42 trio greens — folding the two symptoms onto one root (north-star reduce). Related: fz-go4.42.",
+      "timestamp": "2026-07-07T12:57:29Z"
+    }
+  ],
   "priority": 3,
   "status": "open",
   "title": "[BUG] opaque_fn_value_join::build flakes in the parallel fixture_matrix run",
   "type": "task",
-  "updated_at": "2026-06-23T22:36:26Z"
+  "updated_at": "2026-07-07T12:57:29Z"
 }
