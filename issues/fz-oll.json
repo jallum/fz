@@ -2,6 +2,7 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-07-07T02:59:07Z",
   "created": "2026-07-06T17:42:33Z",
   "description": "DEAD CODE (surfaced by the ground-literal-value fold investigation): RuntimeTypePredicate carries ints: ObservedSet\u003ci64\u003e and floats: ObservedSet\u003cu64\u003e value-membership sets, and native codegen fully implements membership emission for them (emit_i64_membership / emit_u64_membership loop over the values, native_codegen/prim.rs), but the SOLE producer Types::runtime_type_predicate (src/compiler2/types/mod.rs:993-1023) ALWAYS leaves ints.values / floats.values empty (BTreeSet::new()) -- only the cofinite bit varies. Comment there: \"Numbers are presence bits: the predicate is a kind check, never a value-membership set, from this pipeline.\"\n\nSo numeric value-membership is currently unreachable from production; the machinery runs only via test fixtures. Two clean outcomes:\n- Prune the compiler2-side dead production path (kind-check only), keeping the shared ObservedSet machinery; OR\n- If numeric static reasoning is ever pursued (the deferred type-precision / reverse-Arc-B epic -- restore IntSet/FloatSet, git-recoverable from 643fa9812), THIS is the wiring point where the lattice would populate the sets.\n\nDecide and either prune or document as the intended wiring point. Confirmed independently by two investigation lanes (blast-radius \"number-is-a-kind\" + the ObservedSet carrier).",
   "id": "fz-oll",
@@ -13,7 +14,7 @@
     }
   ],
   "priority": 3,
-  "status": "open",
+  "status": "closed",
   "title": "Dead numeric value-membership machinery: ObservedSet\u003ci64\u003e/\u003cu64\u003e built in codegen, never populated by the sole producer",
   "type": "task",
   "updated_at": "2026-07-07T02:59:07Z"
