@@ -2,6 +2,7 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-07-07T14:09:41Z",
   "created": "2026-07-04T11:05:48Z",
   "description": "Found by the fz-go4.22 re-enablability investigation (2026-07-04, at d49562986). matrix::a-resource_aot_dtor::build, matrix::file_handle::build, matrix::file_resource_lifecycle::build all crash IDENTICALLY: the build succeeds, the fz2-produced AOT binary prints CORRECT output, then dies with SIGBUS (exit 138) during resource-dtor teardown. Same fixture family/theme as resource_lifecycle.fz's fz-9i4.7.5 panic (fz_struct_get_named_field_ref ExpectedTag mismatch) but a DISTINCT AOT-only crash signature (SIGBUS at teardown, not the interp-path tag panic). Deterministic. Likely a build-path sibling of fz-9i4.7.5 or its own AOT resource-destructor codegen bug. Part of fz-go4.22's matrix-red set but not previously named. Diagnose the dtor-teardown codegen (double-free / stale pointer / mmap unmap ordering).",
   "id": "fz-go4.42",
@@ -18,7 +19,7 @@
     }
   ],
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "AOT resource-dtor teardown SIGBUS: a-resource_aot_dtor/file_handle/file_resource_lifecycle ::build",
   "type": "bug",
   "updated_at": "2026-07-07T14:09:41Z"
