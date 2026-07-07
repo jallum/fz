@@ -7,9 +7,15 @@
   "id": "fz-go4.52",
   "labels": [],
   "parent": "fz-go4",
+  "comments": [
+    {
+      "text": "DONE (folded to 7749c9d84). Deleted 3 near-identical callsite-args fns from jobs/artifact.rs (collect_callsite_args/collect_tail_call_args/collect_step_call_args); artifact.rs now uses the shared body::callsite_call_args. collect_step_call_args was a literal empty-body no-op; deadness proven by checking every LoweredStep variant carries NO CallSiteId (callsites only from LoweredTail DirectCall/ClosureCall) — so the deleted projection/step scans contributed nothing in either builder. Pruned-body equivalence via fz-go4.47's invariant (body::callsite_call_args covers prune_lowered_body). Self-audited: no stale refs, target exists. 1+/33-. lib 1231/0/9, single-threaded fixture 328/19.",
+      "timestamp": "2026-07-07T02:58:38Z"
+    }
+  ],
   "priority": 3,
   "status": "open",
   "title": "Converge artifact.rs's collect_callsite_args onto body::callsite_call_args; drop its dead no-op step hooks",
   "type": "task",
-  "updated_at": "2026-07-05T22:27:47Z"
+  "updated_at": "2026-07-07T02:58:38Z"
 }
