@@ -41,6 +41,7 @@ type CallsiteDefs = Rc<RefCell<Vec<CallsiteDefinedRecord>>>;
 type BackendProgramDefs = Rc<RefCell<Vec<BackendProgramRecord>>>;
 type NativeProgramDefs = Rc<RefCell<Vec<NativeProgramRecord>>>;
 type ReturnTypeDefs = Rc<RefCell<Vec<ReturnTypeRecord>>>;
+type PublishedStructFields = Rc<RefCell<Vec<(u32, Vec<String>)>>>;
 
 fn jit_compile_native_program(
     compiler: &mut Compiler2<'_>,
@@ -834,6 +835,119 @@ fn compiler2_protocol_domain_marker_stays_type_owned_while_dispatch_revises_when
     assert!(
         dispatch.arms[0].callbacks.contains_key(&pick_callback),
         "the dispatch arm should route the declared callback identity",
+    );
+}
+
+#[test]
+fn compiler2_struct_defined_publishes_independently_of_module_defined() {
+    let tel = ConfiguredTelemetry::new();
+    let outputs = OutputCapture::new();
+    tel.attach(&["fz", "compiler2", "job"], outputs.handler());
+    // Observe the published `StructDef` through the callee-tier signal the
+    // store emits — the same object slice .10 will read back — so the test
+    // pins the store's *content*, not just that the fact fires.
+    let published_fields: PublishedStructFields = Rc::new(RefCell::new(Vec::new()));
+    let fields_sink = Rc::clone(&published_fields);
+    tel.attach(
+        &["fz", "compiler2", "struct_def", "defined"],
+        Box::new(move |event: &Event<'_, '_, '_>| {
+            let Some(Value::U64(module_id)) = event.measurements.get("module_id") else {
+                return;
+            };
+            let Some(def) = event
+                .metadata
+                .get("def")
+                .and_then(|value| value.downcast_ref::<crate::compiler2::structdef::StructDef>())
+            else {
+                return;
+            };
+            fields_sink.borrow_mut().push((*module_id as u32, def.fields.clone()));
+        }),
+    );
+    let mut world = crate::compiler2::World::new(&tel);
+    let code_id = world.submit_code(
+        Some("struct_defined_independence.fz".to_string()),
+        concat!(
+            "defmodule Point do\n",
+            "  defstruct [:x, :y]\n",
+            "end\n",
+            "\n",
+            "defmodule Helper do\n",
+            "  fn id(x), do: x\n",
+            "end\n",
+        )
+        .to_string(),
+    );
+
+    assert_resolved(world.drive(), "first drive should index both modules");
+    assert!(
+        world.demand(Job::ScopeCode(code_id)),
+        "top-level scope should be demandable"
+    );
+    assert_resolved(world.drive(), "second drive should scope both modules");
+
+    let point = world.reference_module("Point");
+    let helper = world.reference_module("Helper");
+
+    assert!(
+        world.demand(Job::DefineModule(point)),
+        "Point definition should be demandable"
+    );
+    assert!(
+        world.demand(Job::DefineModule(helper)),
+        "Helper definition should be demandable"
+    );
+    assert_resolved(world.drive(), "third drive should define both modules");
+
+    let point_defined = outputs
+        .take(Job::DefineModule(point))
+        .expect("DefineModule job effects for Point");
+    let helper_defined = outputs
+        .take(Job::DefineModule(helper))
+        .expect("DefineModule job effects for Helper");
+
+    // A `defstruct`-carrying module body still publishes `ModuleDefined` as
+    // usual, but also publishes `StructDefined` as its own distinct fact —
+    // not folded into, or standing in for, `ModuleDefined`.
+    assert!(
+        point_defined.contains(&presence(FactKey::ModuleDefined(point), true)),
+        "Point's defstruct-carrying body should still publish ModuleDefined"
+    );
+    assert!(
+        point_defined.contains(&presence(FactKey::StructDefined(point), true)),
+        "a module body containing defstruct settling should publish its own StructDefined fact"
+    );
+
+    // A module with no `defstruct` publishes `ModuleDefined` but never
+    // `StructDefined` — proof that `StructDefined` is not an overbroad proxy
+    // riding every module settle.
+    assert!(
+        helper_defined.contains(&presence(FactKey::ModuleDefined(helper), true)),
+        "Helper's defstruct-free body should still publish ModuleDefined"
+    );
+    assert!(
+        !helper_defined
+            .iter()
+            .any(|(fact, _)| matches!(fact, FactKey::StructDefined(_))),
+        "StructDefined must not fire for a module that never declares defstruct"
+    );
+
+    assert!(
+        world.has_fact(&FactKey::StructDefined(point)),
+        "StructDefined(Point) should be independently observable as settled"
+    );
+    assert!(
+        !world.has_fact(&FactKey::StructDefined(helper)),
+        "StructDefined(Helper) should never be recorded — Helper never declares defstruct"
+    );
+
+    // The StructDef store captures the defstruct's field names in source
+    // order — the exact ordered schema slices .10-.13 build layout on. Only
+    // Point's struct-bearing body publishes a def; Helper's never does.
+    assert_eq!(
+        *published_fields.borrow(),
+        vec![(point.as_u32(), vec!["x".to_string(), "y".to_string()])],
+        "the store should hold Point's `defstruct [:x, :y]` fields in source order, and nothing for Helper"
     );
 }
 

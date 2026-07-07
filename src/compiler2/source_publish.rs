@@ -28,12 +28,13 @@ use super::quoted_expander::{
 };
 use super::quoted_surface::{
     CompilerService, CompilerServiceForm, FunctionForm, MacroCallForm, ProtocolImplForm, ReservedSourceDefinition,
-    ScopeForm, ScopeSurface, read_module_body_surface, read_protocol_body_surface, read_protocol_impl_body_surface,
-    reserved_source_definition,
+    ScopeForm, ScopeSurface, StructForm, read_module_body_surface, read_protocol_body_surface,
+    read_protocol_impl_body_surface, reserved_source_definition,
 };
 use super::scheduler::FatalError;
 use super::scope::ScopeSnapshot;
 use super::source::{QuotedSourceError, QuotedSourceHeap, QuotedSourceMetadata};
+use super::structdef::StructDef;
 use super::type_expr::{NominalKind, TypeDefBody, TypeExpr, parse_type_def_body, parse_type_expr};
 use super::world::World;
 
@@ -763,7 +764,32 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
                 Ok(None)
             }
             ScopeForm::MacroCall(macro_call) => self.apply_item_macro_call(macro_call),
-            ScopeForm::Struct(_) => Ok(None),
+            ScopeForm::Struct(def) => {
+                self.publish_struct_def(def);
+                Ok(None)
+            }
+        }
+    }
+
+    /// Publishes `def`'s ordered fields under the enclosing module and emits
+    /// `FactKey::StructDefined` alongside `ModuleDefined`/`ModuleInterface`
+    /// when this module body settles — the same co-output timing those two
+    /// facts already use (`define_module`'s `ScopePublication::Complete`
+    /// branch). Mirrors `TypeDefined`'s store shape; no consumer reads this
+    /// fact yet, so `World::module_struct_fields`'s source scan stays the
+    /// sole reader for now.
+    fn publish_struct_def(&mut self, def: &StructForm) {
+        let module = self.current_module;
+        let changed = self.world.define_struct_def(
+            module,
+            StructDef {
+                fields: def.fields.clone(),
+                span: def.span,
+            },
+        );
+        self.outputs.push(FactKey::StructDefined(module));
+        if changed {
+            self.changed.push(FactKey::StructDefined(module));
         }
     }
 

@@ -53,6 +53,7 @@ use super::source::{
     QuotedLexicalContext, QuotedLexicalContextKind, QuotedSourceBuilder, QuotedSourceError, QuotedSourceMetadata,
     QuotedSourceRoot,
 };
+use super::structdef::{StructDef, StructDefMap};
 use super::transport::{
     BoundaryDescr, BoundaryId, CallableDescr, CallableId, LaneDescr, LaneId, ShapeDescr, ShapeId, TransportStore,
 };
@@ -106,6 +107,7 @@ pub struct World<'a> {
     type_decls: TypeDeclMap,
     type_refs: TypeRefMap,
     type_defs: TypeDefMap,
+    struct_defs: StructDefMap,
     function_contracts: FunctionContractMap,
     bodies: LoweredBodyMap,
     guard_dispatches: GuardDispatchMap,
@@ -173,6 +175,7 @@ impl<'a> World<'a> {
             type_decls: TypeDeclMap::new(),
             type_refs: TypeRefMap::new(),
             type_defs: TypeDefMap::new(),
+            struct_defs: StructDefMap::new(),
             function_contracts: FunctionContractMap::new(),
             bodies: LoweredBodyMap::new(),
             guard_dispatches: GuardDispatchMap::new(),
@@ -1269,6 +1272,30 @@ impl<'a> World<'a> {
 
     pub(crate) fn type_def(&self, name: &TypeName) -> Option<&TypeDef> {
         self.type_defs.get(name)
+    }
+
+    /// Publishes a resolved `defstruct` under `module` and emits the
+    /// callee-tier `struct_def defined` signal, mirroring `define_type_def`.
+    /// This store is additive alongside the `module_struct_fields` source
+    /// scan below — nothing reads it yet.
+    pub(crate) fn define_struct_def(&mut self, module: ModuleId, def: StructDef) -> bool {
+        let changed = self.struct_defs.define(module, def);
+        let def = self
+            .struct_defs
+            .get(module)
+            .expect("struct defs should be readable right after they are defined");
+        self.tel.execute(
+            &["fz", "compiler2", "struct_def", "defined"],
+            &measurements! {
+                module_id: module.as_u32(),
+                field_count: def.fields.len(),
+                changed: changed as u64,
+            },
+            &metadata! {
+                def: opaque_debug(def),
+            },
+        );
+        changed
     }
 
     /// The struct module's declared value type, from its conventional `@type t`

@@ -35,6 +35,7 @@ mod source;
 mod source_diagnostics;
 mod source_publish;
 mod source_sugar;
+mod structdef;
 mod token_payload;
 pub mod transport;
 mod type_expr;

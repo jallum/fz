@@ -51,6 +51,7 @@ pub enum FactKey {
     FunctionSourceStash(FunctionId),
     ExpandedFunctionSource(FunctionId),
     TypeDefined(TypeName),
+    StructDefined(ModuleId),
     ProtocolDispatch(ModuleId),
     ProtocolImplProviders(ModuleId),
     FunctionDefined(FunctionId),
@@ -123,7 +124,7 @@ impl World<'_> {
     /// scheduler (`drive_until`'s demand-on-stall pass) consult it.
     ///
     /// Facts whose producers publish them only as a co-output of a broader
-    /// job's conclusion (`ModuleIndexed`, `ProtocolDispatch`,
+    /// job's conclusion (`ModuleIndexed`, `StructDefined`, `ProtocolDispatch`,
     /// `ProtocolImplProviders`, `Executable`, `BackendProgram`,
     /// `NativeProgram`, `FunctionSourceStash`) have no arm: their demand rides
     /// the mapped facts that gate the job that co-produces them. Every fact
