@@ -894,6 +894,11 @@ fn emit_receive_value_kind_flag(
     Ok(b.ins().icmp_imm(IntCC::Equal, tag64, kind.tag() as i64))
 }
 
+/// Receive-plan counterpart of `native_codegen::prim::emit_i64_membership`:
+/// shared by live atom membership and dormant numeric (`ints`) membership,
+/// whose sole producer (`Types::runtime_type_predicate`) always leaves
+/// `values` empty in production. Kept as the wiring point for a deferred
+/// numeric-singleton-precision restoration, not pruned.
 fn emit_receive_i64_membership(b: &mut FunctionBuilder<'_>, raw: ir::Value, values: &FiniteSet<i64>) -> ir::Value {
     if values.is_any() {
         return b.ins().iconst(types::I8, 1);
@@ -910,6 +915,8 @@ fn emit_receive_i64_membership(b: &mut FunctionBuilder<'_>, raw: ir::Value, valu
     }
 }
 
+/// See `emit_receive_i64_membership`: the `floats` counterpart, same
+/// dormant-wiring status.
 fn emit_receive_u64_membership(b: &mut FunctionBuilder<'_>, raw: ir::Value, values: &FiniteSet<u64>) -> ir::Value {
     if values.is_any() {
         return b.ins().iconst(types::I8, 1);

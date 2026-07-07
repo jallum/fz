@@ -999,7 +999,18 @@ impl Types {
         let named_structs = runtime_type_predicate_named_structs(descr);
         RuntimeTypePredicate {
             // Numbers are presence bits: the predicate is a kind check,
-            // never a value-membership set, from this pipeline.
+            // never a value-membership set, from this pipeline. `ints` and
+            // `floats` are therefore always `FiniteSet::any()` (INT/FLOAT
+            // present) or `FiniteSet::none()` (absent) here — never a
+            // finite set of literal values. If a future numeric-singleton
+            // axis is restored to the type lattice (the IntSet/FloatSet
+            // finite-or-cofinite axes deleted when literals widened to
+            // presence bits, recoverable from history), this is the site
+            // that would populate `ints.values`/`floats.values` from it;
+            // `emit_i64_membership`/`emit_u64_membership` in native
+            // codegen already implement the per-value membership check
+            // and are reused live today for atom membership, so they need
+            // no change to pick up real numeric value sets.
             ints: if descr.basic.contains_all(BasicBits::INT) {
                 FiniteSet::any()
             } else {

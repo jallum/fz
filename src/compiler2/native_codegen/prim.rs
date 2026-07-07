@@ -1380,6 +1380,14 @@ fn emit_kind_guarded_membership<M: cranelift_module::Module>(
     }
 }
 
+/// Per-value membership check, shared by two callers: atom membership
+/// (live in production, `values` routinely non-empty — atom ids are i64
+/// here) and numeric (`ints`) membership, whose sole producer
+/// (`Types::runtime_type_predicate`) always leaves `values` empty today —
+/// numbers are a kind check, not a value-membership set, from that
+/// pipeline. The numeric call site is dormant, not dead: it is the wiring
+/// point for a deferred numeric-singleton-precision restoration to the
+/// type lattice, and is kept for that reuse rather than pruned.
 fn emit_i64_membership(b: &mut FunctionBuilder<'_>, raw: ir::Value, values: &FiniteSet<i64>) -> ir::Value {
     if values.is_any() {
         return b.ins().iconst(types::I8, 1);
@@ -1396,6 +1404,9 @@ fn emit_i64_membership(b: &mut FunctionBuilder<'_>, raw: ir::Value, values: &Fin
     }
 }
 
+/// See `emit_i64_membership`: the `floats` counterpart, same dormant-wiring
+/// status (`Types::runtime_type_predicate` always leaves `values` empty for
+/// floats in production; no other caller populates it).
 fn emit_u64_membership(b: &mut FunctionBuilder<'_>, raw: ir::Value, values: &FiniteSet<u64>) -> ir::Value {
     if values.is_any() {
         return b.ins().iconst(types::I8, 1);
