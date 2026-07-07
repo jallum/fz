@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-07-07T13:16:53Z",
+  "description": "SURFACED by the fz-s2b investigation (at 6efa9fc16). Observed while constructing cross-file macro repros: 'require M' alone is NOT sufficient to invoke M's macro via a qualified call 'M.tag(...)' — it fails with 'macro/not-required' because lookup_module_path has no global-name fallback; the module name must additionally be bound via 'alias M' or 'import M'. Cross-file SYMBOL identity is global, but namespace VISIBILITY is per-code. QUESTION: is this asymmetry intended — that a macro needs BOTH 'require' (for the requirement guard) AND 'alias'/'import' (for name binding) to be called qualified cross-file? Elixir's 'require M' alone DOES permit 'M.macro()'. Decide the intended semantics and either add the global-name fallback in lookup_module_path so 'require M' + 'M.macro()' works (Elixir parity), or document the intended requirement explicitly as a provable fact. Low priority — narrow surface. Related: fz-s2b.",
+  "id": "fz-osx",
+  "labels": [],
+  "priority": 4,
+  "status": "open",
+  "title": "Cross-file macro invocation needs alias/import to bind the module name; bare require M + qualified M.macro() fails macro/not-required",
+  "type": "bug",
+  "updated_at": "2026-07-07T13:16:53Z"
+}
