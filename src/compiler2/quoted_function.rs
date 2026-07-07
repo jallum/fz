@@ -7,15 +7,10 @@ use crate::modules::identity::ModuleName;
 use crate::parser::lexer::{Tok, Token};
 use crate::source::{Id as SourceId, Span};
 
-use super::code::CodeId;
 use super::source::{QuotedAstNode, QuotedSourceCursor, QuotedSourceError, QuotedSourceRoot};
 use super::token_payload;
 
 const META_SPAN_KEY: &str = "__fz_span__";
-
-struct DecodeCtx {
-    code_id: CodeId,
-}
 
 type DecodedFnHead = (
     String,
@@ -27,13 +22,7 @@ type DecodedFnHead = (
 
 type ExprPair = (Spanned<Expr>, Spanned<Expr>);
 
-pub(crate) fn derive_function_surface(
-    root: &QuotedSourceRoot,
-    code_id: CodeId,
-    _code_name: Option<&str>,
-    _tel: &dyn crate::telemetry::Telemetry,
-) -> Result<FunctionSurface, QuotedSourceError> {
-    let ctx = DecodeCtx { code_id };
+pub(crate) fn derive_function_surface(root: &QuotedSourceRoot) -> Result<FunctionSurface, QuotedSourceError> {
     let mut attrs = Vec::new();
     let mut attr_spans = Vec::new();
     let mut forms = Vec::new();
@@ -41,7 +30,7 @@ pub(crate) fn derive_function_surface(
         let node = expect_ast_node(&item, "grouped function item")?;
         let head = atom_name(&node.head)?;
         if head.starts_with('@') {
-            attr_spans.push(span_from_meta(&node.meta, &ctx)?);
+            attr_spans.push(span_from_meta(&node.meta)?);
             attrs.push(decode_attribute(&item)?);
         } else {
             forms.push(item);
@@ -60,7 +49,7 @@ pub(crate) fn derive_function_surface(
                 "grouped quoted extern source cannot contain multiple non-attribute forms",
             ));
         }
-        return decode_extern_fn(&first, attrs, &ctx);
+        return decode_extern_fn(&first, attrs);
     }
 
     let is_macro = form_head == "defmacro";
@@ -77,7 +66,7 @@ pub(crate) fn derive_function_surface(
                 "grouped quoted function mixes `{form_head}` and `{head_name}`"
             )));
         }
-        let (name, clause, clause_name_span) = decode_function_clause(&node, &ctx)?;
+        let (name, clause, clause_name_span) = decode_function_clause(&node)?;
         match &group_name {
             None => {
                 group_name = Some(name);
@@ -152,11 +141,7 @@ fn decode_attribute(cursor: &QuotedSourceCursor) -> Result<Attribute, QuotedSour
     }
 }
 
-fn decode_extern_fn(
-    node: &QuotedAstNode,
-    attrs: Vec<Attribute>,
-    ctx: &DecodeCtx,
-) -> Result<FunctionSurface, QuotedSourceError> {
+fn decode_extern_fn(node: &QuotedAstNode, attrs: Vec<Attribute>) -> Result<FunctionSurface, QuotedSourceError> {
     let args = node.tail.list_items()?;
     if args.len() != 2 {
         return Err(QuotedSourceError::new("quoted extern expects ABI and detail map"));
@@ -168,7 +153,7 @@ fn decode_extern_fn(
     let ret = required_map_tokens(details, "return")?;
     let variadic = required_map_bool(details, "variadic")?;
     let constraints = optional_map_keyword_tokens(details, "when")?;
-    let span = span_from_meta(&node.meta, ctx).unwrap_or(Span::DUMMY);
+    let span = span_from_meta(&node.meta).unwrap_or(Span::DUMMY);
 
     let extern_param_tokens = params
         .into_iter()
@@ -196,19 +181,16 @@ fn decode_extern_fn(
     })
 }
 
-fn decode_function_clause(
-    node: &QuotedAstNode,
-    ctx: &DecodeCtx,
-) -> Result<(String, FnClause, Span), QuotedSourceError> {
-    let span = span_from_meta(&node.meta, ctx).unwrap_or(Span::DUMMY);
+fn decode_function_clause(node: &QuotedAstNode) -> Result<(String, FnClause, Span), QuotedSourceError> {
+    let span = span_from_meta(&node.meta).unwrap_or(Span::DUMMY);
     let args = node.tail.list_items()?;
     if args.len() != 2 {
         return Err(QuotedSourceError::new(
             "quoted function clause expects head and do-body",
         ));
     }
-    let (name, params, param_annotations, name_span, guard) = decode_function_head(&args[0], ctx, Some(span))?;
-    let body = decode_do_body(&args[1], ctx, Some(span))?;
+    let (name, params, param_annotations, name_span, guard) = decode_function_head(&args[0], Some(span))?;
+    let body = decode_do_body(&args[1], Some(span))?;
     Ok((
         name,
         FnClause {
@@ -224,11 +206,10 @@ fn decode_function_clause(
 
 fn decode_function_head(
     cursor: &QuotedSourceCursor,
-    ctx: &DecodeCtx,
     fallback_span: Option<Span>,
 ) -> Result<DecodedFnHead, QuotedSourceError> {
     let node = expect_ast_node(cursor, "function head")?;
-    let span = span_from_meta(&node.meta, ctx).unwrap_or(fallback_span.unwrap_or(Span::DUMMY));
+    let span = span_from_meta(&node.meta).unwrap_or(fallback_span.unwrap_or(Span::DUMMY));
     if atom_name(&node.head)? == "when" {
         let parts = node.tail.list_items()?;
         if parts.len() != 2 {
@@ -236,8 +217,8 @@ fn decode_function_head(
                 "quoted `when` function head expects head and guard",
             ));
         }
-        let (name, params, annotations, name_span, _) = decode_function_head(&parts[0], ctx, Some(span))?;
-        let guard = decode_expr(&parts[1], ctx, Some(span))?;
+        let (name, params, annotations, name_span, _) = decode_function_head(&parts[0], Some(span))?;
+        let guard = decode_expr(&parts[1], Some(span))?;
         return Ok((name, params, annotations, name_span, Some(guard)));
     }
 
@@ -252,11 +233,11 @@ fn decode_function_head(
             if parts.len() != 2 {
                 return Err(QuotedSourceError::new("quoted `::` parameter expects lhs and rhs"));
             }
-            params.push(decode_pattern(&parts[0], ctx, Some(span))?);
+            params.push(decode_pattern(&parts[0], Some(span))?);
             annotations.push(Some(quoted_type_expr_body(&parts[1])?));
             continue;
         }
-        params.push(decode_pattern(&arg, ctx, Some(span))?);
+        params.push(decode_pattern(&arg, Some(span))?);
         annotations.push(None);
     }
     Ok((name, params, annotations, span, None))
@@ -264,7 +245,6 @@ fn decode_function_head(
 
 fn decode_do_body(
     cursor: &QuotedSourceCursor,
-    ctx: &DecodeCtx,
     fallback_span: Option<Span>,
 ) -> Result<Spanned<Expr>, QuotedSourceError> {
     let entries = decode_keyword_entries(cursor)?;
@@ -273,16 +253,12 @@ fn decode_do_body(
             "quoted function clause is missing its `do` body",
         ));
     };
-    decode_expr(&body, ctx, fallback_span)
+    decode_expr(&body, fallback_span)
 }
 
-fn decode_expr(
-    cursor: &QuotedSourceCursor,
-    ctx: &DecodeCtx,
-    fallback_span: Option<Span>,
-) -> Result<Spanned<Expr>, QuotedSourceError> {
+fn decode_expr(cursor: &QuotedSourceCursor, fallback_span: Option<Span>) -> Result<Spanned<Expr>, QuotedSourceError> {
     if let Some(node) = cursor.ast_node()? {
-        let span = span_from_meta(&node.meta, ctx).unwrap_or(fallback_span.unwrap_or(Span::DUMMY));
+        let span = span_from_meta(&node.meta).unwrap_or(fallback_span.unwrap_or(Span::DUMMY));
         if !is_list_like(&node.tail) {
             return Ok(Spanned::new(Expr::Var(atom_name(&node.head)?), span));
         }
@@ -294,22 +270,22 @@ fn decode_expr(
             {
                 let callee_parts = head_node.tail.list_items()?;
                 if callee_parts.len() == 1 {
-                    let callee = decode_expr(&callee_parts[0], ctx, Some(span))?;
-                    let call_args = decode_exprs(&args, ctx, Some(span))?;
+                    let callee = decode_expr(&callee_parts[0], Some(span))?;
+                    let call_args = decode_exprs(&args, Some(span))?;
                     return Ok(Spanned::new(Expr::ClosureCall(Box::new(callee), call_args), span));
                 }
                 if callee_parts.len() == 2 && is_access_get(&callee_parts[0], &callee_parts[1]) && args.len() == 2 {
-                    let base = decode_expr(&args[0], ctx, Some(span))?;
-                    let key = decode_expr(&args[1], ctx, Some(span))?;
+                    let base = decode_expr(&args[0], Some(span))?;
+                    let key = decode_expr(&args[1], Some(span))?;
                     return Ok(Spanned::new(Expr::Index(Box::new(base), Box::new(key)), span));
                 }
             }
-            let callee = decode_expr(&node.head, ctx, Some(span))?;
-            let call_args = decode_exprs(&args, ctx, Some(span))?;
+            let callee = decode_expr(&node.head, Some(span))?;
+            let call_args = decode_exprs(&args, Some(span))?;
             return Ok(Spanned::new(Expr::Call(Box::new(callee), call_args), span));
         }
 
-        return decode_named_expr(atom_name(&node.head)?, &args, ctx, span);
+        return decode_named_expr(atom_name(&node.head)?, &args, span);
     }
 
     let span = fallback_span.unwrap_or(Span::DUMMY);
@@ -334,17 +310,17 @@ fn decode_expr(
         fz_runtime::any_value::ValueKind::BITSTRING | fz_runtime::any_value::ValueKind::PROCBIN => {
             Ok(Spanned::new(Expr::Binary(cursor.raw_bytes()?), span))
         }
-        fz_runtime::any_value::ValueKind::LIST => decode_list_expr(cursor, ctx, span),
+        fz_runtime::any_value::ValueKind::LIST => decode_list_expr(cursor, span),
         fz_runtime::any_value::ValueKind::STRUCT => {
             let items = cursor.tuple_items()?;
-            let elems = decode_exprs(&items, ctx, Some(span))?;
+            let elems = decode_exprs(&items, Some(span))?;
             Ok(Spanned::new(Expr::Tuple(elems), span))
         }
         fz_runtime::any_value::ValueKind::MAP => {
             let entries = cursor
                 .map_entries()?
                 .iter()
-                .map(|(key, value)| Ok((decode_expr(key, ctx, Some(span))?, decode_expr(value, ctx, Some(span))?)))
+                .map(|(key, value)| Ok((decode_expr(key, Some(span))?, decode_expr(value, Some(span))?)))
                 .collect::<Result<Vec<_>, QuotedSourceError>>()?;
             Ok(Spanned::new(Expr::Map(entries), span))
         }
@@ -358,63 +334,62 @@ fn decode_expr(
 fn decode_named_expr(
     name: String,
     args: &[QuotedSourceCursor],
-    ctx: &DecodeCtx,
     span: Span,
 ) -> Result<Spanned<Expr>, QuotedSourceError> {
     if name == "%" && args.len() == 2 && is_alias(&args[0]) {
-        return decode_struct_expr(args, ctx, span);
+        return decode_struct_expr(args, span);
     }
     if let Some(op) = binop_from_name(&name)
         && args.len() == 2
     {
-        let left = decode_expr(&args[0], ctx, Some(span))?;
-        let right = decode_expr(&args[1], ctx, Some(span))?;
+        let left = decode_expr(&args[0], Some(span))?;
+        let right = decode_expr(&args[1], Some(span))?;
         return Ok(Spanned::new(Expr::BinOp(op, Box::new(left), Box::new(right)), span));
     }
     match (name.as_str(), args.len()) {
         ("-", 1) => {
-            let inner = decode_expr(&args[0], ctx, Some(span))?;
+            let inner = decode_expr(&args[0], Some(span))?;
             Ok(Spanned::new(Expr::UnOp(UnOp::Neg, Box::new(inner)), span))
         }
         ("not", 1) => {
-            let inner = decode_expr(&args[0], ctx, Some(span))?;
+            let inner = decode_expr(&args[0], Some(span))?;
             Ok(Spanned::new(Expr::UnOp(UnOp::Not, Box::new(inner)), span))
         }
         ("=", 2) => {
-            let lhs = decode_pattern(&args[0], ctx, Some(span))?;
-            let rhs = decode_expr(&args[1], ctx, Some(span))?;
+            let lhs = decode_pattern(&args[0], Some(span))?;
+            let rhs = decode_expr(&args[1], Some(span))?;
             Ok(Spanned::new(Expr::Match(lhs, Box::new(rhs)), span))
         }
         ("::", 2) => {
-            let value = decode_expr(&args[0], ctx, Some(span))?;
+            let value = decode_expr(&args[0], Some(span))?;
             let ty = quoted_type_expr_body(&args[1])?;
             Ok(Spanned::new(Expr::Ascribe(Box::new(value), ty), span))
         }
         ("__aliases__", _) => Ok(Spanned::new(Expr::Var(alias_name_from_args(args)?), span)),
         (".", 2) => {
-            let base = decode_expr(&args[0], ctx, Some(span))?;
+            let base = decode_expr(&args[0], Some(span))?;
             let field = Spanned::new(Expr::Atom(args[1].atom_name()?), span);
             Ok(Spanned::new(Expr::Index(Box::new(base), Box::new(field)), span))
         }
-        ("__block__", _) => Ok(Spanned::new(Expr::Block(decode_exprs(args, ctx, Some(span))?), span)),
-        ("if", 2) => decode_if(args, ctx, span),
-        ("case", 1 | 2) => decode_case(args, ctx, span),
-        ("cond", 1) => decode_cond(args, ctx, span),
-        ("with", _) => decode_with(args, ctx, span),
-        ("receive", 1) => decode_receive(args, ctx, span),
-        ("fn", _) => decode_lambda(args, ctx, span),
-        ("quote", 1) => decode_quote(args, ctx, span),
+        ("__block__", _) => Ok(Spanned::new(Expr::Block(decode_exprs(args, Some(span))?), span)),
+        ("if", 2) => decode_if(args, span),
+        ("case", 1 | 2) => decode_case(args, span),
+        ("cond", 1) => decode_cond(args, span),
+        ("with", _) => decode_with(args, span),
+        ("receive", 1) => decode_receive(args, span),
+        ("fn", _) => decode_lambda(args, span),
+        ("quote", 1) => decode_quote(args, span),
         ("unquote", 1) => {
-            let inner = decode_expr(&args[0], ctx, Some(span))?;
+            let inner = decode_expr(&args[0], Some(span))?;
             Ok(Spanned::new(Expr::Unquote(Box::new(inner)), span))
         }
-        ("{}", _) => Ok(Spanned::new(Expr::Tuple(decode_exprs(args, ctx, Some(span))?), span)),
-        ("%{}", _) => decode_map_expr(args, ctx, span),
-        ("<<>>", _) => decode_bitstring_expr(args, ctx, span),
-        ("&", 1) => decode_fn_ref_expr(&args[0], ctx, span),
+        ("{}", _) => Ok(Spanned::new(Expr::Tuple(decode_exprs(args, Some(span))?), span)),
+        ("%{}", _) => decode_map_expr(args, span),
+        ("<<>>", _) => decode_bitstring_expr(args, span),
+        ("&", 1) => decode_fn_ref_expr(&args[0], span),
         _ => {
             let callee = Spanned::new(Expr::Var(name), span);
-            let call_args = decode_exprs(args, ctx, Some(span))?;
+            let call_args = decode_exprs(args, Some(span))?;
             Ok(Spanned::new(Expr::Call(Box::new(callee), call_args), span))
         }
     }
@@ -422,11 +397,10 @@ fn decode_named_expr(
 
 fn decode_pattern(
     cursor: &QuotedSourceCursor,
-    ctx: &DecodeCtx,
     fallback_span: Option<Span>,
 ) -> Result<Spanned<Pattern>, QuotedSourceError> {
     if let Some(node) = cursor.ast_node()? {
-        let span = span_from_meta(&node.meta, ctx).unwrap_or(fallback_span.unwrap_or(Span::DUMMY));
+        let span = span_from_meta(&node.meta).unwrap_or(fallback_span.unwrap_or(Span::DUMMY));
         if !is_list_like(&node.tail) {
             let name = atom_name(&node.head)?;
             return Ok(Spanned::new(
@@ -441,30 +415,30 @@ fn decode_pattern(
         let args = node.tail.list_items()?;
         return match atom_name(&node.head)?.as_str() {
             "=" => {
-                let Some(name) = pattern_var_name(&args[0], ctx, Some(span))? else {
+                let Some(name) = pattern_var_name(&args[0], Some(span))? else {
                     return Err(QuotedSourceError::new("pattern as-bind lhs must be a variable"));
                 };
-                let inner = decode_pattern(&args[1], ctx, Some(span))?;
+                let inner = decode_pattern(&args[1], Some(span))?;
                 Ok(Spanned::new(Pattern::As(name, Box::new(inner)), span))
             }
             "^" => {
-                let Some(name) = pattern_var_name(&args[0], ctx, Some(span))? else {
+                let Some(name) = pattern_var_name(&args[0], Some(span))? else {
                     return Err(QuotedSourceError::new("pinned pattern expects a variable"));
                 };
                 Ok(Spanned::new(Pattern::Pinned(name), span))
             }
-            "%{}" => decode_map_pattern(&args, ctx, span),
-            "%" if is_alias(&args[0]) => decode_struct_pattern(&args, ctx, span),
+            "%{}" => decode_map_pattern(&args, span),
+            "%" if is_alias(&args[0]) => decode_struct_pattern(&args, span),
             "{}" => Ok(Spanned::new(
                 Pattern::Tuple(
                     args.iter()
-                        .map(|arg| decode_pattern(arg, ctx, Some(span)))
+                        .map(|arg| decode_pattern(arg, Some(span)))
                         .collect::<Result<Vec<_>, _>>()?,
                 ),
                 span,
             )),
-            "<<>>" => decode_bitstring_pattern(&args, ctx, span),
-            "-" if args.len() == 1 => decode_negative_pattern(&args[0], ctx, span),
+            "<<>>" => decode_bitstring_pattern(&args, span),
+            "-" if args.len() == 1 => decode_negative_pattern(&args[0], span),
             "__aliases__" => Err(QuotedSourceError::new("module aliases are not valid patterns")),
             other => Err(QuotedSourceError::new(format!(
                 "unsupported quoted pattern head `{other}`"
@@ -494,12 +468,12 @@ fn decode_pattern(
         fz_runtime::any_value::ValueKind::BITSTRING | fz_runtime::any_value::ValueKind::PROCBIN => {
             Ok(Spanned::new(Pattern::Binary(cursor.raw_bytes()?), span))
         }
-        fz_runtime::any_value::ValueKind::LIST => decode_list_pattern(cursor, ctx, span),
+        fz_runtime::any_value::ValueKind::LIST => decode_list_pattern(cursor, span),
         fz_runtime::any_value::ValueKind::STRUCT => {
             let items = cursor.tuple_items()?;
             let elems = items
                 .into_iter()
-                .map(|item| decode_pattern(&item, ctx, Some(span)))
+                .map(|item| decode_pattern(&item, Some(span)))
                 .collect::<Result<Vec<_>, _>>()?;
             Ok(Spanned::new(Pattern::Tuple(elems), span))
         }
@@ -510,15 +484,15 @@ fn decode_pattern(
     }
 }
 
-fn decode_if(args: &[QuotedSourceCursor], ctx: &DecodeCtx, span: Span) -> Result<Spanned<Expr>, QuotedSourceError> {
-    let cond = decode_expr(&args[0], ctx, Some(span))?;
+fn decode_if(args: &[QuotedSourceCursor], span: Span) -> Result<Spanned<Expr>, QuotedSourceError> {
+    let cond = decode_expr(&args[0], Some(span))?;
     let entries = decode_keyword_entries(&args[1])?;
     let mut then_branch = None;
     let mut else_branch = None;
     for (key, value) in entries {
         match key.as_str() {
-            "do" => then_branch = Some(decode_expr(&value, ctx, Some(span))?),
-            "else" => else_branch = Some(decode_expr(&value, ctx, Some(span))?),
+            "do" => then_branch = Some(decode_expr(&value, Some(span))?),
+            "else" => else_branch = Some(decode_expr(&value, Some(span))?),
             other => {
                 return Err(QuotedSourceError::new(format!(
                     "unsupported quoted `if` keyword `{other}`"
@@ -536,10 +510,10 @@ fn decode_if(args: &[QuotedSourceCursor], ctx: &DecodeCtx, span: Span) -> Result
     ))
 }
 
-fn decode_case(args: &[QuotedSourceCursor], ctx: &DecodeCtx, span: Span) -> Result<Spanned<Expr>, QuotedSourceError> {
+fn decode_case(args: &[QuotedSourceCursor], span: Span) -> Result<Spanned<Expr>, QuotedSourceError> {
     let (subject, kw_cursor) = match args {
         [kw] => (None, kw),
-        [subject, kw] => (Some(decode_expr(subject, ctx, Some(span))?), kw),
+        [subject, kw] => (Some(decode_expr(subject, Some(span))?), kw),
         _ => {
             return Err(QuotedSourceError::new("quoted `case` expects a subject and `do` body"));
         }
@@ -551,12 +525,12 @@ fn decode_case(args: &[QuotedSourceCursor], ctx: &DecodeCtx, span: Span) -> Resu
     let clauses = body
         .list_items()?
         .into_iter()
-        .map(|clause| decode_match_clause(&clause, ctx, Some(span)))
+        .map(|clause| decode_match_clause(&clause, Some(span)))
         .collect::<Result<Vec<_>, _>>()?;
     Ok(Spanned::new(Expr::Case(subject.map(Box::new), clauses), span))
 }
 
-fn decode_cond(args: &[QuotedSourceCursor], ctx: &DecodeCtx, span: Span) -> Result<Spanned<Expr>, QuotedSourceError> {
+fn decode_cond(args: &[QuotedSourceCursor], span: Span) -> Result<Spanned<Expr>, QuotedSourceError> {
     let entries = decode_keyword_entries(&args[0])?;
     let Some((_, body)) = entries.into_iter().find(|(key, _)| key == "do") else {
         return Err(QuotedSourceError::new("quoted `cond` is missing `do` clauses"));
@@ -577,15 +551,12 @@ fn decode_cond(args: &[QuotedSourceCursor], ctx: &DecodeCtx, span: Span) -> Resu
         if tests.len() != 1 {
             return Err(QuotedSourceError::new("quoted `cond` clause expects one test"));
         }
-        clauses.push((
-            decode_expr(&tests[0], ctx, Some(span))?,
-            decode_expr(&parts[1], ctx, Some(span))?,
-        ));
+        clauses.push((decode_expr(&tests[0], Some(span))?, decode_expr(&parts[1], Some(span))?));
     }
     Ok(Spanned::new(Expr::Cond(clauses), span))
 }
 
-fn decode_with(args: &[QuotedSourceCursor], ctx: &DecodeCtx, span: Span) -> Result<Spanned<Expr>, QuotedSourceError> {
+fn decode_with(args: &[QuotedSourceCursor], span: Span) -> Result<Spanned<Expr>, QuotedSourceError> {
     let Some((kw_cursor, binding_args)) = args.split_last() else {
         return Err(QuotedSourceError::new("quoted `with` expects bindings and a body"));
     };
@@ -594,12 +565,12 @@ fn decode_with(args: &[QuotedSourceCursor], ctx: &DecodeCtx, span: Span) -> Resu
     let mut else_clauses = Vec::new();
     for (key, value) in entries {
         match key.as_str() {
-            "do" => body = Some(decode_expr(&value, ctx, Some(span))?),
+            "do" => body = Some(decode_expr(&value, Some(span))?),
             "else" => {
                 else_clauses = value
                     .list_items()?
                     .into_iter()
-                    .map(|clause| decode_match_clause(&clause, ctx, Some(span)))
+                    .map(|clause| decode_match_clause(&clause, Some(span)))
                     .collect::<Result<Vec<_>, _>>()?;
             }
             other => {
@@ -622,12 +593,12 @@ fn decode_with(args: &[QuotedSourceCursor], ctx: &DecodeCtx, span: Span) -> Resu
                 ));
             }
             bindings.push(WithBinding::Match(
-                decode_pattern(&parts[0], ctx, Some(span))?,
-                decode_expr(&parts[1], ctx, Some(span))?,
+                decode_pattern(&parts[0], Some(span))?,
+                decode_expr(&parts[1], Some(span))?,
             ));
             continue;
         }
-        bindings.push(WithBinding::Bare(decode_expr(binding, ctx, Some(span))?));
+        bindings.push(WithBinding::Bare(decode_expr(binding, Some(span))?));
     }
 
     Ok(Spanned::new(
@@ -640,11 +611,7 @@ fn decode_with(args: &[QuotedSourceCursor], ctx: &DecodeCtx, span: Span) -> Resu
     ))
 }
 
-fn decode_receive(
-    args: &[QuotedSourceCursor],
-    ctx: &DecodeCtx,
-    span: Span,
-) -> Result<Spanned<Expr>, QuotedSourceError> {
+fn decode_receive(args: &[QuotedSourceCursor], span: Span) -> Result<Spanned<Expr>, QuotedSourceError> {
     let entries = decode_keyword_entries(&args[0])?;
     let mut clauses = Vec::new();
     let mut after = None;
@@ -654,7 +621,7 @@ fn decode_receive(
                 clauses = value
                     .list_items()?
                     .into_iter()
-                    .map(|clause| decode_match_clause(&clause, ctx, Some(span)))
+                    .map(|clause| decode_match_clause(&clause, Some(span)))
                     .collect::<Result<Vec<_>, _>>()?;
             }
             "after" => {
@@ -662,7 +629,7 @@ fn decode_receive(
                 let Some(clause) = after_items.first() else {
                     return Err(QuotedSourceError::new("quoted `receive after` is empty"));
                 };
-                after = Some(Box::new(decode_after_clause(clause, ctx, Some(span))?));
+                after = Some(Box::new(decode_after_clause(clause, Some(span))?));
             }
             other => {
                 return Err(QuotedSourceError::new(format!(
@@ -674,30 +641,26 @@ fn decode_receive(
     Ok(Spanned::new(Expr::Receive { clauses, after }, span))
 }
 
-fn decode_lambda(args: &[QuotedSourceCursor], ctx: &DecodeCtx, span: Span) -> Result<Spanned<Expr>, QuotedSourceError> {
+fn decode_lambda(args: &[QuotedSourceCursor], span: Span) -> Result<Spanned<Expr>, QuotedSourceError> {
     let clauses = args
         .iter()
-        .map(|clause| decode_lambda_clause(clause, ctx, Some(span)))
+        .map(|clause| decode_lambda_clause(clause, Some(span)))
         .collect::<Result<Vec<_>, _>>()?;
     Ok(Spanned::new(Expr::Lambda(clauses), span))
 }
 
-fn decode_quote(args: &[QuotedSourceCursor], ctx: &DecodeCtx, span: Span) -> Result<Spanned<Expr>, QuotedSourceError> {
+fn decode_quote(args: &[QuotedSourceCursor], span: Span) -> Result<Spanned<Expr>, QuotedSourceError> {
     let entries = decode_keyword_entries(&args[0])?;
     let Some((_, body)) = entries.into_iter().find(|(key, _)| key == "do") else {
         return Err(QuotedSourceError::new("quoted `quote` is missing `do` body"));
     };
     Ok(Spanned::new(
-        Expr::Quote(Box::new(decode_expr(&body, ctx, Some(span))?)),
+        Expr::Quote(Box::new(decode_expr(&body, Some(span))?)),
         span,
     ))
 }
 
-fn decode_map_expr(
-    args: &[QuotedSourceCursor],
-    ctx: &DecodeCtx,
-    span: Span,
-) -> Result<Spanned<Expr>, QuotedSourceError> {
+fn decode_map_expr(args: &[QuotedSourceCursor], span: Span) -> Result<Spanned<Expr>, QuotedSourceError> {
     if args.len() == 1
         && let Some(node) = args[0].ast_node()?
         && atom_name(&node.head)? == "|"
@@ -708,23 +671,19 @@ fn decode_map_expr(
                 "quoted map update expects base and keyword list",
             ));
         }
-        let base = decode_expr(&parts[0], ctx, Some(span))?;
-        let entries = decode_expr_keyword_pairs(&parts[1], ctx, Some(span))?;
+        let base = decode_expr(&parts[0], Some(span))?;
+        let entries = decode_expr_keyword_pairs(&parts[1], Some(span))?;
         return Ok(Spanned::new(Expr::MapUpdate(Box::new(base), entries), span));
     }
 
     let entries = args
         .iter()
-        .map(|entry| decode_expr_pair(entry, ctx, Some(span)))
+        .map(|entry| decode_expr_pair(entry, Some(span)))
         .collect::<Result<Vec<_>, _>>()?;
     Ok(Spanned::new(Expr::Map(entries), span))
 }
 
-fn decode_struct_expr(
-    args: &[QuotedSourceCursor],
-    ctx: &DecodeCtx,
-    span: Span,
-) -> Result<Spanned<Expr>, QuotedSourceError> {
+fn decode_struct_expr(args: &[QuotedSourceCursor], span: Span) -> Result<Spanned<Expr>, QuotedSourceError> {
     let module = decode_module_name(&args[0])?;
     let map = expect_ast_node(&args[1], "struct map payload")?;
     if atom_name(&map.head)? != "%{}" {
@@ -732,7 +691,7 @@ fn decode_struct_expr(
     }
     let mut fields = Vec::new();
     for entry in map.tail.list_items()? {
-        let (key, value) = decode_expr_pair(&entry, ctx, Some(span))?;
+        let (key, value) = decode_expr_pair(&entry, Some(span))?;
         let Expr::Atom(field) = key.node else {
             return Err(QuotedSourceError::new("quoted struct keys must be atoms"));
         };
@@ -741,11 +700,7 @@ fn decode_struct_expr(
     Ok(Spanned::new(Expr::Struct { module, fields }, span))
 }
 
-fn decode_bitstring_expr(
-    args: &[QuotedSourceCursor],
-    ctx: &DecodeCtx,
-    span: Span,
-) -> Result<Spanned<Expr>, QuotedSourceError> {
+fn decode_bitstring_expr(args: &[QuotedSourceCursor], span: Span) -> Result<Spanned<Expr>, QuotedSourceError> {
     let mut fields = Vec::new();
     for field in args {
         if let Some(node) = field.ast_node()?
@@ -755,26 +710,22 @@ fn decode_bitstring_expr(
             if parts.len() != 2 {
                 return Err(QuotedSourceError::new("quoted bitstring field expects value and spec"));
             }
-            let field_span = span_from_meta(&node.meta, ctx)?;
+            let field_span = span_from_meta(&node.meta)?;
             fields.push(BitField {
-                value: decode_expr(&parts[0], ctx, Some(span))?,
-                spec: decode_bit_spec(&parts[1], ctx, field_span)?,
+                value: decode_expr(&parts[0], Some(span))?,
+                spec: decode_bit_spec(&parts[1], field_span)?,
             });
             continue;
         }
         fields.push(BitField {
-            value: decode_expr(field, ctx, Some(span))?,
+            value: decode_expr(field, Some(span))?,
             spec: BitFieldSpec::default(),
         });
     }
     Ok(Spanned::new(Expr::Bitstring(fields), span))
 }
 
-fn decode_fn_ref_expr(
-    cursor: &QuotedSourceCursor,
-    ctx: &DecodeCtx,
-    span: Span,
-) -> Result<Spanned<Expr>, QuotedSourceError> {
+fn decode_fn_ref_expr(cursor: &QuotedSourceCursor, span: Span) -> Result<Spanned<Expr>, QuotedSourceError> {
     let node = expect_ast_node(cursor, "function reference payload")?;
     if atom_name(&node.head)? != "/" {
         return Err(QuotedSourceError::new("quoted `&` expects a `/` target"));
@@ -785,18 +736,17 @@ fn decode_fn_ref_expr(
             "quoted function reference expects target and arity",
         ));
     }
-    let name = decode_fn_ref_name(&parts[0], ctx, Some(span))?;
+    let name = decode_fn_ref_name(&parts[0], Some(span))?;
     let arity = parts[1].int_value()? as usize;
     Ok(Spanned::new(Expr::FnRef { name, arity }, span))
 }
 
 fn decode_match_clause(
     cursor: &QuotedSourceCursor,
-    ctx: &DecodeCtx,
     fallback_span: Option<Span>,
 ) -> Result<MatchClause, QuotedSourceError> {
     let node = expect_ast_node(cursor, "match clause")?;
-    let span = span_from_meta(&node.meta, ctx).unwrap_or(fallback_span.unwrap_or(Span::DUMMY));
+    let span = span_from_meta(&node.meta).unwrap_or(fallback_span.unwrap_or(Span::DUMMY));
     if atom_name(&node.head)? != "->" {
         return Err(QuotedSourceError::new("quoted clause expects a `->` head"));
     }
@@ -818,27 +768,26 @@ fn decode_match_clause(
             ));
         }
         (
-            decode_pattern(&args[0], ctx, Some(span))?,
-            Some(decode_expr(&args[1], ctx, Some(span))?),
+            decode_pattern(&args[0], Some(span))?,
+            Some(decode_expr(&args[1], Some(span))?),
         )
     } else {
-        (decode_pattern(&patterns[0], ctx, Some(span))?, None)
+        (decode_pattern(&patterns[0], Some(span))?, None)
     };
     Ok(MatchClause {
         pattern,
         guard,
-        body: decode_expr(&parts[1], ctx, Some(span))?,
+        body: decode_expr(&parts[1], Some(span))?,
         span,
     })
 }
 
 fn decode_after_clause(
     cursor: &QuotedSourceCursor,
-    ctx: &DecodeCtx,
     fallback_span: Option<Span>,
 ) -> Result<AfterClause, QuotedSourceError> {
     let node = expect_ast_node(cursor, "after clause")?;
-    let span = span_from_meta(&node.meta, ctx).unwrap_or(fallback_span.unwrap_or(Span::DUMMY));
+    let span = span_from_meta(&node.meta).unwrap_or(fallback_span.unwrap_or(Span::DUMMY));
     if atom_name(&node.head)? != "->" {
         return Err(QuotedSourceError::new("quoted `after` clause expects `->`"));
     }
@@ -853,19 +802,18 @@ fn decode_after_clause(
         ));
     }
     Ok(AfterClause {
-        timeout: decode_expr(&patterns[0], ctx, Some(span))?,
-        body: decode_expr(&parts[1], ctx, Some(span))?,
+        timeout: decode_expr(&patterns[0], Some(span))?,
+        body: decode_expr(&parts[1], Some(span))?,
         span,
     })
 }
 
 fn decode_lambda_clause(
     cursor: &QuotedSourceCursor,
-    ctx: &DecodeCtx,
     fallback_span: Option<Span>,
 ) -> Result<LambdaClause, QuotedSourceError> {
     let node = expect_ast_node(cursor, "lambda clause")?;
-    let span = span_from_meta(&node.meta, ctx).unwrap_or(fallback_span.unwrap_or(Span::DUMMY));
+    let span = span_from_meta(&node.meta).unwrap_or(fallback_span.unwrap_or(Span::DUMMY));
     if atom_name(&node.head)? != "->" {
         return Err(QuotedSourceError::new("quoted lambda clause expects `->`"));
     }
@@ -884,15 +832,15 @@ fn decode_lambda_clause(
             };
             let params = param_cursors
                 .iter()
-                .map(|param| decode_pattern(param, ctx, Some(span)))
+                .map(|param| decode_pattern(param, Some(span)))
                 .collect::<Result<Vec<_>, _>>()?;
-            let guard = decode_expr(guard_cursor, ctx, Some(span))?;
+            let guard = decode_expr(guard_cursor, Some(span))?;
             (params, Some(guard))
         } else {
             (
                 params_root
                     .iter()
-                    .map(|param| decode_pattern(param, ctx, Some(span)))
+                    .map(|param| decode_pattern(param, Some(span)))
                     .collect::<Result<Vec<_>, _>>()?,
                 None,
             )
@@ -901,7 +849,7 @@ fn decode_lambda_clause(
         (
             params_root
                 .iter()
-                .map(|param| decode_pattern(param, ctx, Some(span)))
+                .map(|param| decode_pattern(param, Some(span)))
                 .collect::<Result<Vec<_>, _>>()?,
             None,
         )
@@ -909,28 +857,20 @@ fn decode_lambda_clause(
     Ok(LambdaClause {
         params,
         guard,
-        body: decode_expr(&parts[1], ctx, Some(span))?,
+        body: decode_expr(&parts[1], Some(span))?,
         span,
     })
 }
 
-fn decode_map_pattern(
-    args: &[QuotedSourceCursor],
-    ctx: &DecodeCtx,
-    span: Span,
-) -> Result<Spanned<Pattern>, QuotedSourceError> {
+fn decode_map_pattern(args: &[QuotedSourceCursor], span: Span) -> Result<Spanned<Pattern>, QuotedSourceError> {
     let entries = args
         .iter()
-        .map(|entry| decode_pattern_pair(entry, ctx, Some(span)))
+        .map(|entry| decode_pattern_pair(entry, Some(span)))
         .collect::<Result<Vec<_>, _>>()?;
     Ok(Spanned::new(Pattern::Map(entries), span))
 }
 
-fn decode_struct_pattern(
-    args: &[QuotedSourceCursor],
-    ctx: &DecodeCtx,
-    span: Span,
-) -> Result<Spanned<Pattern>, QuotedSourceError> {
+fn decode_struct_pattern(args: &[QuotedSourceCursor], span: Span) -> Result<Spanned<Pattern>, QuotedSourceError> {
     let module = decode_module_name(&args[0])?;
     let map = expect_ast_node(&args[1], "struct pattern payload")?;
     if atom_name(&map.head)? != "%{}" {
@@ -938,7 +878,7 @@ fn decode_struct_pattern(
     }
     let mut fields = Vec::new();
     for entry in map.tail.list_items()? {
-        let (key, value) = decode_pattern_pair(&entry, ctx, Some(span))?;
+        let (key, value) = decode_pattern_pair(&entry, Some(span))?;
         let Pattern::Atom(field) = key.node else {
             return Err(QuotedSourceError::new("quoted struct pattern keys must be atoms"));
         };
@@ -947,11 +887,7 @@ fn decode_struct_pattern(
     Ok(Spanned::new(Pattern::Struct { module, fields }, span))
 }
 
-fn decode_bitstring_pattern(
-    args: &[QuotedSourceCursor],
-    ctx: &DecodeCtx,
-    span: Span,
-) -> Result<Spanned<Pattern>, QuotedSourceError> {
+fn decode_bitstring_pattern(args: &[QuotedSourceCursor], span: Span) -> Result<Spanned<Pattern>, QuotedSourceError> {
     let mut fields = Vec::new();
     for field in args {
         if let Some(node) = field.ast_node()?
@@ -963,27 +899,23 @@ fn decode_bitstring_pattern(
                     "quoted bitstring pattern field expects value and spec",
                 ));
             }
-            let field_span = span_from_meta(&node.meta, ctx)?;
+            let field_span = span_from_meta(&node.meta)?;
             fields.push(BitField {
-                value: decode_pattern(&parts[0], ctx, Some(span))?,
-                spec: decode_bit_spec(&parts[1], ctx, field_span)?,
+                value: decode_pattern(&parts[0], Some(span))?,
+                spec: decode_bit_spec(&parts[1], field_span)?,
             });
             continue;
         }
         fields.push(BitField {
-            value: decode_pattern(field, ctx, Some(span))?,
+            value: decode_pattern(field, Some(span))?,
             spec: BitFieldSpec::default(),
         });
     }
     Ok(Spanned::new(Pattern::Bitstring(fields), span))
 }
 
-fn decode_negative_pattern(
-    cursor: &QuotedSourceCursor,
-    ctx: &DecodeCtx,
-    span: Span,
-) -> Result<Spanned<Pattern>, QuotedSourceError> {
-    let decoded = decode_pattern(cursor, ctx, Some(span))?;
+fn decode_negative_pattern(cursor: &QuotedSourceCursor, span: Span) -> Result<Spanned<Pattern>, QuotedSourceError> {
+    let decoded = decode_pattern(cursor, Some(span))?;
     match decoded.node {
         Pattern::Int(value) => Ok(Spanned::new(Pattern::Int(-value), span)),
         Pattern::Float(value) => Ok(Spanned::new(Pattern::Float(-value), span)),
@@ -994,31 +926,23 @@ fn decode_negative_pattern(
     }
 }
 
-fn decode_list_expr(
-    cursor: &QuotedSourceCursor,
-    ctx: &DecodeCtx,
-    span: Span,
-) -> Result<Spanned<Expr>, QuotedSourceError> {
+fn decode_list_expr(cursor: &QuotedSourceCursor, span: Span) -> Result<Spanned<Expr>, QuotedSourceError> {
     let items = cursor.list_items()?;
-    let (items, tail) = split_improper_list(items, ctx, span)?;
+    let (items, tail) = split_improper_list(items, span)?;
     Ok(Spanned::new(
-        Expr::List(decode_exprs(&items, ctx, Some(span))?, tail.map(Box::new)),
+        Expr::List(decode_exprs(&items, Some(span))?, tail.map(Box::new)),
         span,
     ))
 }
 
-fn decode_list_pattern(
-    cursor: &QuotedSourceCursor,
-    ctx: &DecodeCtx,
-    span: Span,
-) -> Result<Spanned<Pattern>, QuotedSourceError> {
+fn decode_list_pattern(cursor: &QuotedSourceCursor, span: Span) -> Result<Spanned<Pattern>, QuotedSourceError> {
     let items = cursor.list_items()?;
-    let (items, tail) = split_improper_pattern_list(items, ctx, span)?;
+    let (items, tail) = split_improper_pattern_list(items, span)?;
     Ok(Spanned::new(
         Pattern::List(
             items
                 .iter()
-                .map(|item| decode_pattern(item, ctx, Some(span)))
+                .map(|item| decode_pattern(item, Some(span)))
                 .collect::<Result<Vec<_>, _>>()?,
             tail.map(Box::new),
         ),
@@ -1028,7 +952,6 @@ fn decode_list_pattern(
 
 fn split_improper_list(
     items: Vec<QuotedSourceCursor>,
-    ctx: &DecodeCtx,
     span: Span,
 ) -> Result<(Vec<QuotedSourceCursor>, Option<Spanned<Expr>>), QuotedSourceError> {
     let Some((last, prefix)) = items.split_last() else {
@@ -1045,14 +968,13 @@ fn split_improper_list(
         }
         let mut heads = prefix.to_vec();
         heads.push(parts[0].clone());
-        return Ok((heads, Some(decode_expr(&parts[1], ctx, Some(span))?)));
+        return Ok((heads, Some(decode_expr(&parts[1], Some(span))?)));
     }
     Ok((items, None))
 }
 
 fn split_improper_pattern_list(
     items: Vec<QuotedSourceCursor>,
-    ctx: &DecodeCtx,
     span: Span,
 ) -> Result<(Vec<QuotedSourceCursor>, Option<Spanned<Pattern>>), QuotedSourceError> {
     let Some((last, prefix)) = items.split_last() else {
@@ -1069,24 +991,22 @@ fn split_improper_pattern_list(
         }
         let mut heads = prefix.to_vec();
         heads.push(parts[0].clone());
-        return Ok((heads, Some(decode_pattern(&parts[1], ctx, Some(span))?)));
+        return Ok((heads, Some(decode_pattern(&parts[1], Some(span))?)));
     }
     Ok((items, None))
 }
 
 fn decode_exprs(
     args: &[QuotedSourceCursor],
-    ctx: &DecodeCtx,
     fallback_span: Option<Span>,
 ) -> Result<Vec<Spanned<Expr>>, QuotedSourceError> {
     args.iter()
-        .map(|arg| decode_expr(arg, ctx, fallback_span))
+        .map(|arg| decode_expr(arg, fallback_span))
         .collect::<Result<Vec<_>, _>>()
 }
 
 fn decode_expr_pair(
     cursor: &QuotedSourceCursor,
-    ctx: &DecodeCtx,
     fallback_span: Option<Span>,
 ) -> Result<(Spanned<Expr>, Spanned<Expr>), QuotedSourceError> {
     let items = cursor.tuple_items()?;
@@ -1094,14 +1014,13 @@ fn decode_expr_pair(
         return Err(QuotedSourceError::new("quoted pair expects a 2-tuple"));
     }
     Ok((
-        decode_expr(&items[0], ctx, fallback_span)?,
-        decode_expr(&items[1], ctx, fallback_span)?,
+        decode_expr(&items[0], fallback_span)?,
+        decode_expr(&items[1], fallback_span)?,
     ))
 }
 
 fn decode_pattern_pair(
     cursor: &QuotedSourceCursor,
-    ctx: &DecodeCtx,
     fallback_span: Option<Span>,
 ) -> Result<(Spanned<Pattern>, Spanned<Pattern>), QuotedSourceError> {
     let items = cursor.tuple_items()?;
@@ -1109,20 +1028,19 @@ fn decode_pattern_pair(
         return Err(QuotedSourceError::new("quoted pair expects a 2-tuple"));
     }
     Ok((
-        decode_pattern(&items[0], ctx, fallback_span)?,
-        decode_pattern(&items[1], ctx, fallback_span)?,
+        decode_pattern(&items[0], fallback_span)?,
+        decode_pattern(&items[1], fallback_span)?,
     ))
 }
 
 fn decode_expr_keyword_pairs(
     cursor: &QuotedSourceCursor,
-    ctx: &DecodeCtx,
     fallback_span: Option<Span>,
 ) -> Result<Vec<ExprPair>, QuotedSourceError> {
     cursor
         .list_items()?
         .into_iter()
-        .map(|entry| decode_expr_pair(&entry, ctx, fallback_span))
+        .map(|entry| decode_expr_pair(&entry, fallback_span))
         .collect::<Result<Vec<_>, _>>()
 }
 
@@ -1146,13 +1064,9 @@ fn decode_module_name(cursor: &QuotedSourceCursor) -> Result<ModuleName, QuotedS
     Ok(ModuleName::from_segments(node.tail.list_atom_names()?))
 }
 
-fn decode_fn_ref_name(
-    cursor: &QuotedSourceCursor,
-    ctx: &DecodeCtx,
-    fallback_span: Option<Span>,
-) -> Result<String, QuotedSourceError> {
+fn decode_fn_ref_name(cursor: &QuotedSourceCursor, fallback_span: Option<Span>) -> Result<String, QuotedSourceError> {
     if let Some(node) = cursor.ast_node()? {
-        let span = span_from_meta(&node.meta, ctx).unwrap_or(fallback_span.unwrap_or(Span::DUMMY));
+        let span = span_from_meta(&node.meta).unwrap_or(fallback_span.unwrap_or(Span::DUMMY));
         if !is_list_like(&node.tail) {
             return atom_name(&node.head);
         }
@@ -1161,7 +1075,7 @@ fn decode_fn_ref_name(
             "__aliases__" => alias_name_from_args(&args),
             "." if args.len() == 2 => Ok(format!(
                 "{}.{}",
-                decode_fn_ref_name(&args[0], ctx, Some(span))?,
+                decode_fn_ref_name(&args[0], Some(span))?,
                 args[1].atom_name()?
             )),
             other => Err(QuotedSourceError::new(format!(
@@ -1174,10 +1088,9 @@ fn decode_fn_ref_name(
 
 fn pattern_var_name(
     cursor: &QuotedSourceCursor,
-    ctx: &DecodeCtx,
     fallback_span: Option<Span>,
 ) -> Result<Option<String>, QuotedSourceError> {
-    let decoded = decode_pattern(cursor, ctx, fallback_span)?;
+    let decoded = decode_pattern(cursor, fallback_span)?;
     Ok(match decoded.node {
         Pattern::Var(name) => Some(name),
         Pattern::Wildcard => Some("_".to_string()),
@@ -1319,24 +1232,19 @@ fn decode_spec_attribute(payload: &QuotedSourceCursor) -> Result<Attribute, Quot
 /// `unit(...)`, a variable, or an unsupported name-with-args -- carries its own
 /// `__fz_span__`, and `apply_bit_spec_modifier` threads that tighter node span
 /// through to the error instead.
-fn decode_bit_spec(
-    cursor: &QuotedSourceCursor,
-    ctx: &DecodeCtx,
-    field_span: Span,
-) -> Result<BitFieldSpec, QuotedSourceError> {
+fn decode_bit_spec(cursor: &QuotedSourceCursor, field_span: Span) -> Result<BitFieldSpec, QuotedSourceError> {
     let mut spec = BitFieldSpec::default();
-    apply_bit_spec_modifier(cursor, &mut spec, ctx, field_span)?;
+    apply_bit_spec_modifier(cursor, &mut spec, field_span)?;
     Ok(spec)
 }
 
 fn apply_bit_spec_modifier(
     cursor: &QuotedSourceCursor,
     spec: &mut BitFieldSpec,
-    ctx: &DecodeCtx,
     field_span: Span,
 ) -> Result<(), QuotedSourceError> {
     if let Some(node) = cursor.ast_node()? {
-        let node_span = span_from_meta(&node.meta, ctx)?;
+        let node_span = span_from_meta(&node.meta)?;
         let args = if is_list_like(&node.tail) {
             node.tail.list_items()?
         } else {
@@ -1344,8 +1252,8 @@ fn apply_bit_spec_modifier(
         };
         return match atom_name(&node.head)?.as_str() {
             "-" if args.len() == 2 => {
-                apply_bit_spec_modifier(&args[0], spec, ctx, field_span)?;
-                apply_bit_spec_modifier(&args[1], spec, ctx, field_span)
+                apply_bit_spec_modifier(&args[0], spec, field_span)?;
+                apply_bit_spec_modifier(&args[1], spec, field_span)
             }
             "size" if args.len() == 1 => {
                 spec.size = Some(decode_bit_size(&args[0], node_span)?);
@@ -1753,7 +1661,7 @@ fn is_list_like(cursor: &QuotedSourceCursor) -> bool {
     cursor.root().tag() == fz_runtime::any_value::ValueKind::LIST
 }
 
-fn span_from_meta(meta: &QuotedSourceCursor, ctx: &DecodeCtx) -> Result<Span, QuotedSourceError> {
+fn span_from_meta(meta: &QuotedSourceCursor) -> Result<Span, QuotedSourceError> {
     let Some(span_map) = meta.map_value(META_SPAN_KEY)? else {
         return Ok(Span::DUMMY);
     };
@@ -1765,11 +1673,11 @@ fn span_from_meta(meta: &QuotedSourceCursor, ctx: &DecodeCtx) -> Result<Span, Qu
         .map_value("length")?
         .ok_or_else(|| QuotedSourceError::new("quoted span is missing `length`"))?
         .int_value()? as u32;
-    Ok(Span::new(
-        SourceId(ctx.code_id.as_u32()),
-        start,
-        start.saturating_add(length),
-    ))
+    let code_id = span_map
+        .map_value("code_id")?
+        .ok_or_else(|| QuotedSourceError::new("quoted span is missing `code_id`"))?
+        .int_value()? as u32;
+    Ok(Span::new(SourceId(code_id), start, start.saturating_add(length)))
 }
 
 fn binop_from_name(name: &str) -> Option<BinOp> {

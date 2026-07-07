@@ -21,8 +21,7 @@ fn compiler2_quoted_function_surface_derives_specs_and_bit_specs_without_old_par
 fn pack(x :: integer), do: <<x::integer-size(16), rest::binary-size(len)-unit(8)>>
 "#;
     let root = grouped_function_root("pack.fz", source);
-    let tel = ConfiguredTelemetry::new();
-    let surface = derive_function_surface(&root, CodeId::ZERO, Some("pack.fz"), &tel).expect("derive function surface");
+    let surface = derive_function_surface(&root).expect("derive function surface");
 
     let Attribute::Spec(spec) = &surface.attrs[0] else {
         panic!("expected @spec attr");
@@ -61,8 +60,7 @@ fn compiler2_quoted_function_surface_derives_operator_specs_from_quoted_source()
 fn left + right, do: left + right
 "#;
     let root = grouped_function_root("plus.fz", source);
-    let tel = ConfiguredTelemetry::new();
-    let surface = derive_function_surface(&root, CodeId::ZERO, Some("plus.fz"), &tel).expect("derive function surface");
+    let surface = derive_function_surface(&root).expect("derive function surface");
 
     assert_eq!(surface.name, "+");
     let Attribute::Spec(spec) = &surface.attrs[0] else {
@@ -84,9 +82,7 @@ fn compiler2_quoted_function_surface_derives_typed_operator_clause_annotations()
 fn left :: integer + right :: float, do: left + right
 "#;
     let root = grouped_function_root("typed_plus.fz", source);
-    let tel = ConfiguredTelemetry::new();
-    let surface =
-        derive_function_surface(&root, CodeId::ZERO, Some("typed_plus.fz"), &tel).expect("derive function surface");
+    let surface = derive_function_surface(&root).expect("derive function surface");
 
     assert_eq!(surface.name, "+");
     let left = surface.clauses[0].param_annotations[0]
@@ -107,8 +103,7 @@ fn pick(v) do
 end
 "#;
     let root = grouped_function_root("with.fz", source);
-    let tel = ConfiguredTelemetry::new();
-    let surface = derive_function_surface(&root, CodeId::ZERO, Some("with.fz"), &tel).expect("derive function surface");
+    let surface = derive_function_surface(&root).expect("derive function surface");
 
     let Expr::With(bindings, body, else_clauses) = &surface.clauses[0].body.node else {
         panic!("expected with body");
@@ -129,9 +124,7 @@ fn compiler2_quoted_function_surface_decodes_struct_literals_before_percent_oper
 fn new(first, last, step), do: %Range{first: first, last: last, step: step}
 "#;
     let root = grouped_function_root("range.fz", source);
-    let tel = ConfiguredTelemetry::new();
-    let surface =
-        derive_function_surface(&root, CodeId::ZERO, Some("range.fz"), &tel).expect("derive function surface");
+    let surface = derive_function_surface(&root).expect("derive function surface");
 
     let Expr::Struct { module, fields } = &surface.clauses[0].body.node else {
         panic!("expected %Range{{}} to decode as a struct literal");
@@ -143,49 +136,33 @@ fn new(first, last, step), do: %Range{first: first, last: last, step: step}
     );
 }
 
-/// A macro-expanded function body is decoded with the CALLER's `code_id`
-/// (jobs/source.rs reads `expanded_function_source.code`, the home file of
-/// the function being expanded), but its tokens may have been rematerialized
-/// from a DIFFERENT file's baked payload (`world::run_macro_on_source`
-/// splices a macro's own quoted fragment, offsets and all, into the caller's
-/// heap). A decoded token's span must always name the file it was actually
-/// lexed from, no matter which `code_id` a later decode call happens to
-/// pass -- the code id is embedded in the token tuple at encode time, so it
-/// travels with the token rather than being reattached externally at decode.
+/// A macro's quoted fragment gets rematerialized into a caller's heap by
+/// `world::run_macro_on_source` -- byte offsets intact -- and decoded there
+/// with no external code id at all (`derive_function_surface` takes only the
+/// source root). A decoded token's span must still name the file it was
+/// actually lexed from: the code id is embedded in the token tuple at encode
+/// time, so it travels with the token instead of being reattached from the
+/// decode call site. This test lexes a fragment under one real submitted
+/// `CodeId` and asserts the decoded token span keeps that id -- there is no
+/// decode-time code id that could override it.
 #[test]
-fn tokens_decoded_under_a_different_callers_code_id_still_carry_their_own_files_id() {
+fn a_decoded_token_span_carries_its_own_files_baked_code_id() {
     let tel = ConfiguredTelemetry::new();
     let mut compiler = super::Compiler2::new(&tel);
-    let macro_file_code = compiler.submit_code(super::CodeSubmission {
+    let file_code = compiler.submit_code(super::CodeSubmission {
         name: Some("macro_file.fz".to_string()),
         text: String::new(),
     });
-    let caller_code = compiler.submit_code(super::CodeSubmission {
-        name: Some("caller_file.fz".to_string()),
-        text: String::new(),
-    });
-    assert_ne!(
-        macro_file_code, caller_code,
-        "the two submitted files must actually get distinct code ids for this test to be meaningful"
-    );
 
-    // Lex and parse straight off the macro file's own code id, exactly like
-    // the tokens `run_macro_on_source` rematerializes really were: real bytes
-    // from that file, real `code_id` at the lexer.
     let source = "fn tmpl(), do: x :: integer\n";
-    let root = parse_quoted_program("macro_file.fz", source, macro_file_code, &tel).expect("quoted parse");
+    let root = parse_quoted_program("macro_file.fz", source, file_code, &tel).expect("quoted parse");
     let items = root.cursor().list_items().expect("top-level items");
     let item_roots = items.into_iter().map(|item| item.root()).collect::<Vec<_>>();
     let grouped = root
         .interned_list_subroot(&item_roots)
         .expect("grouped function root should intern");
 
-    // Decode as the CALLER would: with the caller's own code id, not the
-    // macro file's -- reproducing the exact cross-splice mismatch a token
-    // that only remembers its code id via the decode call site would get
-    // wrong.
-    let surface =
-        derive_function_surface(&grouped, caller_code, Some("caller_file.fz"), &tel).expect("derive function surface");
+    let surface = derive_function_surface(&grouped).expect("derive function surface");
 
     let Expr::Ascribe(_, type_expr) = &surface.clauses[0].body.node else {
         panic!("expected an ascribed body expression");
@@ -196,7 +173,46 @@ fn tokens_decoded_under_a_different_callers_code_id_still_carry_their_own_files_
         .expect("type expr body should carry at least one token");
     assert_eq!(
         token.span.code_id,
-        crate::source::Id(macro_file_code.as_u32()),
-        "a spliced token must carry the code id of the file it was actually lexed from"
+        crate::source::Id(file_code.as_u32()),
+        "a decoded token must carry the code id of the file it was actually lexed from"
+    );
+}
+
+/// The AST-node sibling of the token test above: `span_from_meta` used to
+/// build a decoded `Expr`/`Pattern` span from a caller-supplied `code_id`
+/// plus the node's own `start`/`length` -- the same external-reattachment
+/// hazard the token fix closed, just one layer up. A macro's quoted fragment
+/// is rematerialized into a caller's heap with its `__fz_span__` meta
+/// untouched, and decoding it used to mislabel which file the *expression*
+/// span (not just its inner type-expr tokens) named. Every `__fz_span__` now
+/// bakes its own originating code id at emit time, so `span_from_meta` reads
+/// it back from the node -- and `derive_function_surface` no longer even takes
+/// a code id, so there is nothing external left to override it. This test
+/// lexes a fragment under one real submitted `CodeId` and asserts the decoded
+/// expression span keeps that id.
+#[test]
+fn a_decoded_ast_node_meta_span_carries_its_own_files_baked_code_id() {
+    let tel = ConfiguredTelemetry::new();
+    let mut compiler = super::Compiler2::new(&tel);
+    let file_code = compiler.submit_code(super::CodeSubmission {
+        name: Some("macro_file.fz".to_string()),
+        text: String::new(),
+    });
+
+    let source = "fn tmpl(), do: x :: integer\n";
+    let root = parse_quoted_program("macro_file.fz", source, file_code, &tel).expect("quoted parse");
+    let items = root.cursor().list_items().expect("top-level items");
+    let item_roots = items.into_iter().map(|item| item.root()).collect::<Vec<_>>();
+    let grouped = root
+        .interned_list_subroot(&item_roots)
+        .expect("grouped function root should intern");
+
+    let surface = derive_function_surface(&grouped).expect("derive function surface");
+
+    let body_span = surface.clauses[0].body.span;
+    assert_eq!(
+        body_span.code_id,
+        crate::source::Id(file_code.as_u32()),
+        "a decoded expression's own __fz_span__ must carry the code id of the file it was actually parsed from"
     );
 }

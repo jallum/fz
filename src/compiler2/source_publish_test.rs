@@ -1,6 +1,6 @@
 use std::rc::Rc;
 
-use super::quoted_surface::{SurfaceSourceContext, read_compiler_fragment_surface};
+use super::quoted_surface::read_compiler_fragment_surface;
 use super::source_publish::{ScopePublication, publish_scope};
 use super::source_test::quoted_tokens;
 use super::{
@@ -66,8 +66,7 @@ fn publish_compiler_fragment_scope(
     code: super::CodeId,
     root: &QuotedSourceRoot,
 ) -> ScopePublication {
-    let ctx = SurfaceSourceContext::new(code);
-    let surface = read_compiler_fragment_surface(root, &ctx).expect("compiler fragment surface");
+    let surface = read_compiler_fragment_surface(root).expect("compiler fragment surface");
     publish_scope(
         world,
         code,

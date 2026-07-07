@@ -28,8 +28,8 @@ use super::quoted_expander::{
 };
 use super::quoted_surface::{
     CompilerService, CompilerServiceForm, FunctionForm, MacroCallForm, ProtocolImplForm, ReservedSourceDefinition,
-    ScopeForm, ScopeSurface, SurfaceSourceContext, read_module_body_surface, read_protocol_body_surface,
-    read_protocol_impl_body_surface, reserved_source_definition,
+    ScopeForm, ScopeSurface, read_module_body_surface, read_protocol_body_surface, read_protocol_impl_body_surface,
+    reserved_source_definition,
 };
 use super::scheduler::FatalError;
 use super::scope::ScopeSnapshot;
@@ -247,7 +247,6 @@ pub(crate) fn discover_modules(
     code_id: CodeId,
     parent_module: ModuleId,
     surface: &ScopeSurface,
-    ctx: &SurfaceSourceContext,
     outputs: &mut Outputs,
     changed: &mut Changed,
 ) -> Result<(), FatalError> {
@@ -255,7 +254,7 @@ pub(crate) fn discover_modules(
         match form {
             ScopeForm::Module(module) => {
                 let module_id = world.reference_child_module(parent_module, &module.name);
-                let nested = read_module_body_surface(module, ctx)
+                let nested = read_module_body_surface(module)
                     .map_err(|error| emit_surface_read_error(world, "nested module body read failed", &error))?;
                 let revision = world.index_module_body(
                     module_id,
@@ -269,11 +268,11 @@ pub(crate) fn discover_modules(
                 if revision {
                     changed.push(FactKey::ModuleIndexed(module_id));
                 }
-                discover_modules(world, code_id, module_id, &nested, ctx, outputs, changed)?;
+                discover_modules(world, code_id, module_id, &nested, outputs, changed)?;
             }
             ScopeForm::Protocol(protocol) => {
                 let module_id = reference_declared_protocol_module(world, parent_module, &protocol.name);
-                let protocol_surface = read_protocol_body_surface(protocol, ctx)
+                let protocol_surface = read_protocol_body_surface(protocol)
                     .map_err(|error| emit_surface_read_error(world, "quoted protocol body read failed", &error))?;
                 let revision = world.index_protocol_module(
                     module_id,
@@ -294,15 +293,14 @@ pub(crate) fn discover_modules(
                 else {
                     continue;
                 };
-                let fragment =
-                    read_compiler_fragment_root(world, code_id, &macro_call.source, "raw scope-definition fragment")?;
+                let fragment = read_compiler_fragment_root(world, &macro_call.source, "raw scope-definition fragment")?;
                 let Some(fragment_form) = fragment.forms.first() else {
                     continue;
                 };
                 match (definition, fragment_form) {
                     (ReservedSourceDefinition::Module { .. }, ScopeForm::Module(module)) => {
                         let module_id = world.reference_child_module(parent_module, &module.name);
-                        let nested = read_module_body_surface(module, ctx).map_err(|error| {
+                        let nested = read_module_body_surface(module).map_err(|error| {
                             emit_surface_read_error(world, "nested module body read failed", &error)
                         })?;
                         let revision = world.index_module_body(
@@ -317,11 +315,11 @@ pub(crate) fn discover_modules(
                         if revision {
                             changed.push(FactKey::ModuleIndexed(module_id));
                         }
-                        discover_modules(world, code_id, module_id, &nested, ctx, outputs, changed)?;
+                        discover_modules(world, code_id, module_id, &nested, outputs, changed)?;
                     }
                     (ReservedSourceDefinition::Protocol { .. }, ScopeForm::Protocol(protocol)) => {
                         let module_id = reference_declared_protocol_module(world, parent_module, &protocol.name);
-                        let protocol_surface = read_protocol_body_surface(protocol, ctx).map_err(|error| {
+                        let protocol_surface = read_protocol_body_surface(protocol).map_err(|error| {
                             emit_surface_read_error(world, "quoted protocol body read failed", &error)
                         })?;
                         let revision = world.index_protocol_module(
@@ -609,8 +607,7 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
     }
 
     fn apply_compiler_define(&mut self, service: &CompilerServiceForm) -> Result<(), FatalError> {
-        let surface =
-            read_compiler_fragment_root(self.world, self.code_id, &service.source, "Fz.Compiler.define source")?;
+        let surface = read_compiler_fragment_root(self.world, &service.source, "Fz.Compiler.define source")?;
         if !surface.attrs.is_empty() || surface.forms.len() != 1 {
             return Err(emit_job_diagnostic(
                 self.world,
@@ -685,7 +682,7 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
 
     fn apply_item_macro_call(&mut self, macro_call: &MacroCallForm) -> Result<Option<JobEffects>, FatalError> {
         let scope = ScopeSnapshot::module(self.current_module, self.namespace);
-        let surface = match expand_item_macro_fragment(self, self.code_id, macro_call, scope)? {
+        let surface = match expand_item_macro_fragment(self, macro_call, scope)? {
             ExpandedScopeFragment::Complete(surface) => surface,
             ExpandedScopeFragment::Blocked(effects) => return Ok(Some(*effects)),
         };
@@ -699,13 +696,11 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
         context: &FragmentPublicationContext,
     ) -> Result<Option<JobEffects>, FatalError> {
         if matches!(context.discovery, FragmentDiscovery::DiscoverNestedModules) {
-            let ctx = SurfaceSourceContext::new(self.code_id);
             discover_modules(
                 self.world,
                 self.code_id,
                 self.current_module,
                 surface,
-                &ctx,
                 &mut self.outputs,
                 &mut self.changed,
             )?;
@@ -753,10 +748,9 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
             ScopeForm::Module(module) => {
                 let module_id = self.world.reference_child_module(self.current_module, &module.name);
                 self.world.scope_module(module_id, self.namespace);
-                let ctx = SurfaceSourceContext::new(self.code_id);
-                let body = read_module_body_surface(module, &ctx)
+                let body = read_module_body_surface(module)
                     .map_err(|error| emit_surface_read_error(self.world, "module body read failed", &error))?;
-                self.register_protocol_impl_providers(module_id, &body, &ctx)?;
+                self.register_protocol_impl_providers(module_id, &body)?;
                 Ok(None)
             }
             ScopeForm::Protocol(protocol) => {
@@ -765,8 +759,7 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
                 Ok(None)
             }
             ScopeForm::ProtocolImpl(protocol_impl) => {
-                let ctx = SurfaceSourceContext::new(self.code_id);
-                self.register_protocol_impl(protocol_impl, &ctx)?;
+                self.register_protocol_impl(protocol_impl)?;
                 Ok(None)
             }
             ScopeForm::MacroCall(macro_call) => self.apply_item_macro_call(macro_call),
@@ -780,23 +773,18 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
     /// It records the provider relation without defining the module: the
     /// `defimpl` is pulled (its callbacks registered) only when a concrete
     /// receiver later demands `DefineModule(provider)`.
-    fn register_protocol_impl_providers(
-        &mut self,
-        module: ModuleId,
-        body: &ScopeSurface,
-        ctx: &SurfaceSourceContext,
-    ) -> Result<(), FatalError> {
+    fn register_protocol_impl_providers(&mut self, module: ModuleId, body: &ScopeSurface) -> Result<(), FatalError> {
         for form in &body.forms {
             match form {
                 ScopeForm::ProtocolImpl(impl_form) => {
-                    self.register_protocol_impl(impl_form, ctx)?;
+                    self.register_protocol_impl(impl_form)?;
                 }
                 ScopeForm::Module(child) => {
                     let child_id = self.world.reference_child_module(module, &child.name);
-                    let nested = read_module_body_surface(child, ctx).map_err(|error| {
+                    let nested = read_module_body_surface(child).map_err(|error| {
                         emit_surface_read_error(self.world, "nested module body read failed", &error)
                     })?;
-                    self.register_protocol_impl_providers(child_id, &nested, ctx)?;
+                    self.register_protocol_impl_providers(child_id, &nested)?;
                 }
                 ScopeForm::MacroCall(macro_call) => {
                     let Some(definition) = reserved_source_definition(&macro_call.source).map_err(|error| {
@@ -809,28 +797,26 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
                         ReservedSourceDefinition::ProtocolImpl => {
                             let fragment = read_compiler_fragment_root(
                                 self.world,
-                                self.code_id,
                                 &macro_call.source,
                                 "raw scope-definition fragment",
                             )?;
                             if let Some(ScopeForm::ProtocolImpl(impl_form)) = fragment.forms.first() {
                                 let impl_form = impl_form.clone();
-                                self.register_protocol_impl(&impl_form, ctx)?;
+                                self.register_protocol_impl(&impl_form)?;
                             }
                         }
                         ReservedSourceDefinition::Module { .. } => {
                             let fragment = read_compiler_fragment_root(
                                 self.world,
-                                self.code_id,
                                 &macro_call.source,
                                 "raw scope-definition fragment",
                             )?;
                             if let Some(ScopeForm::Module(child)) = fragment.forms.first() {
                                 let child_id = self.world.reference_child_module(module, &child.name);
-                                let nested = read_module_body_surface(child, ctx).map_err(|error| {
+                                let nested = read_module_body_surface(child).map_err(|error| {
                                     emit_surface_read_error(self.world, "nested module body read failed", &error)
                                 })?;
-                                self.register_protocol_impl_providers(child_id, &nested, ctx)?;
+                                self.register_protocol_impl_providers(child_id, &nested)?;
                             }
                         }
                         _ => {}
@@ -1090,15 +1076,11 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
     /// name-accurately at its lexical site; `DefineModule(Protocol.Target)`
     /// later publishes it without defining its lexical host. The provider index
     /// points at `Protocol.Target` so dispatch demands exactly the impl.
-    fn register_protocol_impl(
-        &mut self,
-        form: &ProtocolImplForm,
-        ctx: &SurfaceSourceContext,
-    ) -> Result<(), FatalError> {
+    fn register_protocol_impl(&mut self, form: &ProtocolImplForm) -> Result<(), FatalError> {
         let protocol = reference_impl_protocol_module(self.world, self.current_module, self.namespace, &form.protocol);
         let target = reference_impl_target_module(self.world, self.current_module, self.namespace, &form.target);
         let impl_module = reference_protocol_impl_module(self.world, protocol, target);
-        let body = read_protocol_impl_body_surface(form, ctx).map_err(|error| {
+        let body = read_protocol_impl_body_surface(form).map_err(|error| {
             emit_internal_surface_error(self.world, format!("quoted protocol impl body read failed: {error}"))
         })?;
         let impl_name = self

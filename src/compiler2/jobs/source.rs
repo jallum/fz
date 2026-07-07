@@ -8,7 +8,7 @@ use super::super::quoted_expander::{
     ExpandedRoot, ExpandedValue, QuotedExpansionCtx, emit_internal_surface_error, emit_job_diagnostic,
     emit_surface_read_error,
 };
-use super::super::quoted_surface::{SurfaceSourceContext, read_compiler_fragment_surface, read_scope_surface};
+use super::super::quoted_surface::{read_compiler_fragment_surface, read_scope_surface};
 use super::super::scheduler::FatalError;
 use super::super::scope::ScopeSnapshot;
 use super::super::source::{QuotedLexicalContextKind, QuotedSourceCursor, QuotedSourceRoot};
@@ -29,25 +29,16 @@ pub(super) fn index_code(world: &mut World<'_>, code_id: CodeId) -> Result<JobEf
     let source_text = world.code_text(code_id).to_owned();
     let quoted_root = parse_quoted_program(&source_name, &source_text, code_id, world.tel())
         .map_err(|error| emit_job_diagnostic(world, error.to_diagnostic()))?;
-    let ctx = SurfaceSourceContext::new(code_id);
     let read_surface = if world.is_bootstrap(code_id) {
         read_compiler_fragment_surface
     } else {
         read_scope_surface
     };
-    let surface = read_surface(&quoted_root, &ctx)
+    let surface = read_surface(&quoted_root)
         .map_err(|error| emit_surface_read_error(world, "quoted surface read failed", &error))?;
     let mut outputs = Vec::new();
     let mut changed = Vec::new();
-    source_publish::discover_modules(
-        world,
-        code_id,
-        ModuleId::GLOBAL,
-        &surface,
-        &ctx,
-        &mut outputs,
-        &mut changed,
-    )?;
+    source_publish::discover_modules(world, code_id, ModuleId::GLOBAL, &surface, &mut outputs, &mut changed)?;
 
     let quoted = QuotedCodeSource {
         quoted: quoted_root,
@@ -221,13 +212,8 @@ pub(super) fn define_function(
         return Ok(JobEffects::wait_on_current(FactKey::FunctionSource(function_id)));
     };
 
-    let surface = crate::compiler2::quoted_function::derive_function_surface(
-        &expanded_source.source,
-        expanded_source.code,
-        world.code_name(expanded_source.code),
-        world.tel(),
-    )
-    .map_err(|error| emit_surface_read_error(world, "quoted function decode failed", &error))?;
+    let surface = crate::compiler2::quoted_function::derive_function_surface(&expanded_source.source)
+        .map_err(|error| emit_surface_read_error(world, "quoted function decode failed", &error))?;
     for diagnostic in crate::compiler2::source_diagnostics::function_warnings(&surface) {
         world.emit_warning_once(diagnostic);
     }

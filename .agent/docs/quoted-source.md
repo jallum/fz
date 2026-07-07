@@ -135,7 +135,12 @@
 - `__fz_lexical__`: stable lexical context; semantic content, compared by
   `semantically_eq`.
 - `__fz_span__`: diagnostic-only span payload; not semantic content, skipped
-  by `semantically_eq`.
+  by `semantically_eq`. Self-describing: it bakes the originating `SourceId`
+  alongside `start`/`length` at emit time, so `span_from_meta` reconstructs
+  the span from the node's own payload and needs no external code id from the
+  decode call site. This keeps a macro's rematerialized quoted fragment
+  correctly attributed to the file it was actually parsed from, even when a
+  different caller decodes it.
 - `__fz_namespace_id__`: transport-only namespace handle; not semantic
   content, skipped by `semantically_eq`.
 

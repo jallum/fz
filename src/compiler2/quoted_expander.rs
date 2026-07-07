@@ -8,13 +8,11 @@ use crate::source::Span;
 use crate::telemetry::opaque_debug;
 use crate::{measurements, metadata};
 
-use super::code::CodeId;
 use super::drive::{FactKey, JobEffects};
 use super::identity::{FunctionId, ModuleId};
 use super::namespace::NamespaceSymbol;
 use super::quoted_surface::{
-    MacroCallForm, ScopeForm, ScopeSurface, SurfaceSourceContext, is_scope_definition_head,
-    read_compiler_fragment_surface,
+    MacroCallForm, ScopeForm, ScopeSurface, is_scope_definition_head, read_compiler_fragment_surface,
 };
 use super::scope::ScopeSnapshot;
 use super::source::{QuotedAstNode, QuotedLexicalContextKind, QuotedSourceCursor, QuotedSourceError, QuotedSourceRoot};
@@ -484,7 +482,6 @@ fn splice_candidate_name(node: &QuotedAstNode) -> Option<String> {
 
 pub(crate) fn expand_item_macro_fragment<'tel, C: QuotedExpansionCtx<'tel>>(
     ctx: &mut C,
-    code_id: CodeId,
     macro_call: &MacroCallForm,
     scope: ScopeSnapshot,
 ) -> Result<ExpandedScopeFragment, super::scheduler::FatalError> {
@@ -516,7 +513,7 @@ pub(crate) fn expand_item_macro_fragment<'tel, C: QuotedExpansionCtx<'tel>>(
         ExpandedValue::Complete(root) => item_macro_fragment_root(ctx.world(), &owner.subroot(root))?,
         ExpandedValue::Blocked(effects) => return Ok(ExpandedScopeFragment::Blocked(effects)),
     };
-    let surface = read_compiler_fragment_root(ctx.world(), code_id, &expanded, "item macro expanded source")?;
+    let surface = read_compiler_fragment_root(ctx.world(), &expanded, "item macro expanded source")?;
     if surface.forms.iter().any(|form| matches!(form, ScopeForm::MacroCall(_))) {
         return Err(emit_job_diagnostic(
             ctx.world(),
@@ -647,28 +644,25 @@ fn item_macro_invocation(
 
 pub(crate) fn read_compiler_fragment_root(
     world: &World<'_>,
-    code_id: CodeId,
     root: &QuotedSourceRoot,
     context: &str,
 ) -> Result<ScopeSurface, super::scheduler::FatalError> {
-    read_surface_root_with(world, code_id, root, context, read_compiler_fragment_surface)
+    read_surface_root_with(world, root, context, read_compiler_fragment_surface)
 }
 
 fn read_surface_root_with(
     world: &World<'_>,
-    code_id: CodeId,
     root: &QuotedSourceRoot,
     context: &str,
-    read: fn(&QuotedSourceRoot, &SurfaceSourceContext) -> Result<ScopeSurface, QuotedSourceError>,
+    read: fn(&QuotedSourceRoot) -> Result<ScopeSurface, QuotedSourceError>,
 ) -> Result<ScopeSurface, super::scheduler::FatalError> {
-    let ctx = SurfaceSourceContext::new(code_id);
     let source = if root.root().is_empty_list() || root.root().tag() == ValueKind::LIST {
         root.clone()
     } else {
         root.interned_list_subroot(&[root.root()])
             .map_err(|error| emit_internal_surface_error(world, format!("{context} wrapper failed: {error}")))?
     };
-    read(&source, &ctx).map_err(|error| emit_internal_surface_error(world, format!("{context} read failed: {error}")))
+    read(&source).map_err(|error| emit_internal_surface_error(world, format!("{context} read failed: {error}")))
 }
 
 pub(crate) fn emit_macro_expanded(

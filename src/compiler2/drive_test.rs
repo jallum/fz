@@ -1547,13 +1547,8 @@ fn subtract(left, [item | rest]), do: subtract(delete_first(left, item), rest)
         "unquote(source) should preserve procbin-backed grouped source fragments by identity too",
     );
     let forwarded_group = long_doc_group.subroot(forwarded_long_doc_args[0].root());
-    crate::compiler2::quoted_function::derive_function_surface(
-        &forwarded_group,
-        crate::compiler2::CodeId::ZERO,
-        Some("long_doc_forwarded.fz"),
-        &tel,
-    )
-    .expect("forwarded long-doc grouped source should still decode");
+    crate::compiler2::quoted_function::derive_function_surface(&forwarded_group)
+        .expect("forwarded long-doc grouped source should still decode");
 
     let module_source = parse_quoted_program(
         "forwarded_module.fz",
@@ -1588,11 +1583,8 @@ end
     let forwarded_module_root = module_source
         .interned_list_subroot(&[forwarded_module_args[0].root()])
         .expect("wrap forwarded module form as a top-level source list");
-    let forwarded_module_surface = crate::compiler2::quoted_surface::read_scope_surface(
-        &forwarded_module_root,
-        &crate::compiler2::quoted_surface::SurfaceSourceContext::new(crate::compiler2::CodeId::ZERO),
-    )
-    .expect("forwarded whole-module source should still read as scope surface");
+    let forwarded_module_surface = crate::compiler2::quoted_surface::read_scope_surface(&forwarded_module_root)
+        .expect("forwarded whole-module source should still read as scope surface");
     let nested_surface = match forwarded_module_surface
         .forms
         .first()
@@ -1603,11 +1595,9 @@ end
                 .source
                 .interned_list_subroot(&[macro_call.source.root()])
                 .expect("wrap forwarded compiler fragment as a grouped source list");
-            let compiler_fragment = crate::compiler2::quoted_surface::read_compiler_fragment_surface(
-                &compiler_fragment_root,
-                &crate::compiler2::quoted_surface::SurfaceSourceContext::new(crate::compiler2::CodeId::ZERO),
-            )
-            .expect("forwarded macro-call source should still decode as compiler fragment");
+            let compiler_fragment =
+                crate::compiler2::quoted_surface::read_compiler_fragment_surface(&compiler_fragment_root)
+                    .expect("forwarded macro-call source should still decode as compiler fragment");
             let module_form = match compiler_fragment
                 .forms
                 .first()
@@ -1616,11 +1606,8 @@ end
                 crate::compiler2::quoted_surface::ScopeForm::Module(module) => module,
                 other => panic!("expected compiler fragment module form, got {other:?}"),
             };
-            crate::compiler2::quoted_surface::read_module_body_surface(
-                module_form,
-                &crate::compiler2::quoted_surface::SurfaceSourceContext::new(crate::compiler2::CodeId::ZERO),
-            )
-            .expect("forwarded module body should still decode")
+            crate::compiler2::quoted_surface::read_module_body_surface(module_form)
+                .expect("forwarded module body should still decode")
         }
         other => panic!("expected forwarded module form, got {other:?}"),
     };
@@ -1632,13 +1619,8 @@ end
         crate::compiler2::quoted_surface::ScopeForm::MacroCall(function) => function,
         other => panic!("expected grouped function macro call, got {other:?}"),
     };
-    crate::compiler2::quoted_function::derive_function_surface(
-        &function.source,
-        crate::compiler2::CodeId::ZERO,
-        Some("forwarded_module.fz"),
-        &tel,
-    )
-    .expect("whole-module forwarding should preserve nested procbin-backed @doc payloads too");
+    crate::compiler2::quoted_function::derive_function_surface(&function.source)
+        .expect("whole-module forwarding should preserve nested procbin-backed @doc payloads too");
 }
 
 #[test]

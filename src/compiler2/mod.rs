@@ -82,7 +82,6 @@ pub use module_interface::{
     ReadyOrPending,
 };
 pub use namespace::{BindingId, Namespace, NamespaceStore, NamespaceSymbol};
-pub use quoted_surface::SurfaceSourceContext;
 pub use scheduler::{AppliedStep, DriveOutcome, FatalError, Scheduler, WorkStartReason, WorkStartTally};
 pub use scope::ScopeSnapshot;
 pub use semantic::{

@@ -355,6 +355,7 @@ impl QuotedSourceBuilder {
         self.map(&[
             (self.atom("start"), self.int(span.start as i64)),
             (self.atom("length"), self.int(length as i64)),
+            (self.atom("code_id"), self.int(span.code_id.0 as i64)),
         ])
     }
 
