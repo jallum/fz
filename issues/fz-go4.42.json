@@ -7,9 +7,15 @@
   "id": "fz-go4.42",
   "labels": [],
   "parent": "fz-go4",
+  "comments": [
+    {
+      "text": "DIAGNOSED — NOT REPRODUCIBLE IN ISOLATION (investigation at 6efa9fc16; no code change). Replicated the matrix's exact single-fixture AOT build+run path (fz2 build \u003cf\u003e.fz -o out; run out; mirrors fixture_matrix.rs:743-793) for all three fixtures (a-resource_aot_dtor, file_handle, file_resource_lifecycle), single-threaded, at BOTH the cited crash commit d49562986 AND HEAD 6efa9fc16: build ok, CORRECT stdout, EXIT 0, ZERO SIGBUS across 20 sequential runs/fixture/commit (80+ runs) + a 5-way concurrent-stress run. The direct 'cargo test --test fixture_matrix -- --test-threads=1' filters for each ::build name also report ok. Could NOT recreate the 'deterministic' crash the ticket describes.\n\nCANDIDATE ROOT (unconfirmed, offered for re-scope): aot_link.rs:225-243 find_runtime_archive/newest_hashed_runtime_archive selects the runtime archive to link by scanning target/debug/deps for libfz_runtime-*.a and taking the NEWEST BY MTIME — read-shared, UNFENCED across every concurrently-spawned fz2 build child in a PARALLEL matrix run. A transient stale/second hashed archive (mid-rebuild, or a differently-profiled cargo invocation) =\u003e fresh objects linked against an ABI-MISMATCHED runtime archive =\u003e struct-layout drift in exactly the teardown state this crash touches (Process/heap/pending_dtors, aot_shim.rs:721-731 MSO dtor-drain) =\u003e misaligned-pointer SIGBUS AFTER correct output. Only one archive exists here on an idle tree, consistent with non-repro in isolation. Per-fixture temp object/output paths (fixture_matrix.rs:747-749) and the in-memory dtor-table codegen (native_codegen/driver.rs:149-208,389-428) are already per-process/nonce'd and look safe by construction — no distinct codegen bug found there.\n\nLIKELY THE SAME RACE AS fz-0lm (non-repro-in-isolation, concurrent-AOT-build family). NEXT STEP before more effort: reproduce fz-go4.42 specifically inside the actual PARALLEL 'cargo test --test fixture_matrix' harness to CONFIRM the shared-archive race; if confirmed, fold into fz-0lm's fix (archive-resolution/build-artifact isolation) and close this as its symptom. Leaving OPEN pending that confirmation — not closing on suspicion. Related: fz-0lm, fz-go4.22 (parent).",
+      "timestamp": "2026-07-07T12:57:29Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "AOT resource-dtor teardown SIGBUS: a-resource_aot_dtor/file_handle/file_resource_lifecycle ::build",
   "type": "bug",
-  "updated_at": "2026-07-04T11:05:48Z"
+  "updated_at": "2026-07-07T12:57:29Z"
 }
