@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-rh2.17.5.6.13"
+  ],
   "created": "2026-07-07T21:38:22Z",
   "description": "SURFACED by the fz-rh2.17.5.6.9 (struct slice 1) adversarial audit. Two latent struct-representation gaps, both shared by the OLD source scan and the NEW StructDef store, both inert today (scan is sole reader) but load-bearing once the store becomes authoritative:\n\n1. DUPLICATE DEFSTRUCT silent divergence: a module with two defstruct forms (defmodule M do; defstruct [:a]; defstruct [:b]; end) is accepted with NO diagnostic. World::module_struct_fields uses .find_map (world.rs ~1974) =\u003e FIRST wins; StructDefMap::define uses HashMap::insert (structdef.rs ~47) =\u003e LAST wins. Behavior is unchanged today but the moment a later slice makes the store authoritative, a malformed module silently flips first-\u003elast semantics with no diagnostic either way. MUST be resolved in slice .13 (store-authoritative + scan deletion) at the latest: either emit a duplicate-defstruct diagnostic (preferred -- one struct per module is the intended grammar) or at minimum a regression test pinning the chosen semantics before the scan is deleted.\n\n2. DEFSTRUCT WITH DEFAULT VALUES unsupported: parse_struct_form (quoted_surface.rs ~647-656) calls fields.list_atom_names(), requiring every element be a bare atom. The Elixir keyword-with-defaults form (defstruct x: 1, y: 2) produces 2-tuples, not atoms, so atom_name() errors. Pre-existing (not created by slice 1), shared by both representations. Decide whether fz defstruct supports default values; if yes, the StructDef store must carry defaults (fields + default exprs), which affects the store shape the later slices consume -- so decide EARLY (ideally before slice .10 finalizes the store shape).\n\nRelated: fz-rh2.17.5.6.9, fz-rh2.17.5.6.13 (the duplicate-defstruct decision gates the scan deletion).",
   "id": "fz-rh2.17.5.6.8.1",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Struct representation completeness: duplicate defstruct silently first-vs-last + defstruct default-value (keyword) form unsupported",
   "type": "bug",
-  "updated_at": "2026-07-07T21:38:22Z"
+  "updated_at": "2026-07-07T21:38:23Z"
 }
