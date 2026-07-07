@@ -33,6 +33,13 @@ pub struct QuotedSourceError {
     /// carries its own diagnostic code; `None` means an internal invariant
     /// failed and the job boundary classifies it as such.
     code: Option<crate::diag::codes::DiagCode>,
+    /// The offending construct's source span, when the decode site had one in
+    /// scope. `None` for internal builder/heap failures (`new`/`From`, where
+    /// `Span::DUMMY` at the render site is acceptable) and for the rare
+    /// user-coded site that genuinely has no span to read (documented at the
+    /// raise site). A `Some` span always brackets the construct the user error
+    /// is about.
+    span: Option<Span>,
 }
 
 impl QuotedSourceError {
@@ -40,18 +47,24 @@ impl QuotedSourceError {
         Self {
             message: message.into(),
             code: None,
+            span: None,
         }
     }
 
-    pub(crate) fn user(code: crate::diag::codes::DiagCode, message: impl Into<String>) -> Self {
+    pub(crate) fn user(code: crate::diag::codes::DiagCode, span: Option<Span>, message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
             code: Some(code),
+            span: span.filter(|span| !span.is_dummy()),
         }
     }
 
     pub(crate) fn user_code(&self) -> Option<crate::diag::codes::DiagCode> {
         self.code
+    }
+
+    pub(crate) fn span(&self) -> Option<Span> {
+        self.span
     }
 }
 
@@ -61,6 +74,8 @@ impl fmt::Display for QuotedSourceError {
     }
 }
 
+/// Internal builder/heap invariant failure — `Span::DUMMY` at the render site
+/// is acceptable for these; they are not about a specific user construct.
 impl From<AnyValueRefError> for QuotedSourceError {
     fn from(value: AnyValueRefError) -> Self {
         Self::new(format!("invalid any value ref: {value:?}"))

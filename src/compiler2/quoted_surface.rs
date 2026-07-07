@@ -215,7 +215,7 @@ fn read_surface(source: &QuotedSourceRoot, ctx: &SurfaceSourceContext) -> Result
             Ok(head_name) => head_name,
             Err(_) => {
                 flush_function_groups(source, ctx, &mut forms, &mut group_order, &mut groups)?;
-                reject_dangling_function_attrs(source, &pending_function_attrs)?;
+                reject_dangling_function_attrs(source, &pending_function_attrs, ctx)?;
                 forms.push(build_form(source.subroot(quoted_item.root()), ctx)?);
                 continue;
             }
@@ -258,14 +258,14 @@ fn read_surface(source: &QuotedSourceRoot, ctx: &SurfaceSourceContext) -> Result
             }
             _ => {
                 flush_function_groups(source, ctx, &mut forms, &mut group_order, &mut groups)?;
-                reject_dangling_function_attrs(source, &pending_function_attrs)?;
+                reject_dangling_function_attrs(source, &pending_function_attrs, ctx)?;
                 forms.push(build_form(source.subroot(quoted_item.root()), ctx)?);
             }
         }
     }
 
     flush_function_groups(source, ctx, &mut forms, &mut group_order, &mut groups)?;
-    reject_dangling_function_attrs(source, &pending_function_attrs)?;
+    reject_dangling_function_attrs(source, &pending_function_attrs, ctx)?;
     Ok(ScopeSurface { attrs, forms })
 }
 
@@ -304,20 +304,26 @@ fn read_do_body_surface(
 /// where the dangling attribute is visible, instead of degrading into a
 /// confusing unknown-export diagnostic when the described function is rooted
 /// later.
-fn reject_dangling_function_attrs(source: &QuotedSourceRoot, pending: &[AnyValueRef]) -> Result<(), QuotedSourceError> {
+fn reject_dangling_function_attrs(
+    source: &QuotedSourceRoot,
+    pending: &[AnyValueRef],
+    ctx: &SurfaceSourceContext,
+) -> Result<(), QuotedSourceError> {
     let Some(root) = pending.first() else {
         return Ok(());
     };
-    let head = source
-        .subroot(*root)
+    let attr_root = source.subroot(*root);
+    let head = attr_root
         .cursor()
         .ast_node()
         .ok()
         .flatten()
         .and_then(|node| node.head.atom_name().ok())
         .unwrap_or_else(|| "@doc/@spec".to_string());
+    let span = surface_span(&attr_root, ctx)?;
     Err(QuotedSourceError::user(
         crate::diag::codes::PARSE_DANGLING_FUNCTION_ATTR,
+        Some(span),
         format!(
             "`{head}` does not attach to any function definition: function attributes must be followed by their function's clauses",
         ),

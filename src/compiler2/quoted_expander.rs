@@ -714,7 +714,10 @@ pub(crate) fn emit_surface_read_error(
     error: &super::source::QuotedSourceError,
 ) -> super::scheduler::FatalError {
     match error.user_code() {
-        Some(code) => emit_job_diagnostic(world, Diagnostic::error(code, error.to_string(), Span::DUMMY)),
+        Some(code) => emit_job_diagnostic(
+            world,
+            Diagnostic::error(code, error.to_string(), error.span().unwrap_or(Span::DUMMY)),
+        ),
         None => emit_internal_surface_error(world, format!("{context}: {error}")),
     }
 }

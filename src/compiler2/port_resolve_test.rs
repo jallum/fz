@@ -1,17 +1,46 @@
 //! Ported tests from old-world — behaviour already captured; assertions filled in next pass.
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use super::drive_test::assert_resolved;
 use super::{
     CodeSubmission, Compiler2, DriveOutcome, ExecutableNeed, InterfaceCallableKind, ModuleInterface,
     ModuleInterfaceCallable, RootSubmission, World,
 };
-use crate::diag::codes;
+use crate::diag::{Diagnostic, codes};
 use crate::fz_ir::{DirectCallTarget, Term};
+use crate::source::Span;
+use crate::telemetry::handler::{Event, Handler};
 use crate::telemetry::{Capture, ConfiguredTelemetry};
 
 fn metadata_str<'a>(event: &'a crate::telemetry::capture::OwnedEvent, key: &str) -> &'a str {
     match event.metadata.get(key) {
         Some(crate::telemetry::Value::Str(value)) => value.as_ref(),
         other => panic!("metadata key `{key}` missing or not str: {other:?}"),
+    }
+}
+
+/// Captures the primary span of the last `[fz, diag, error]` diagnostic seen.
+/// `Capture` durably owns its events, which strips the opaque `Diagnostic`
+/// payload (opaque values are not durable) -- so a span assertion needs a
+/// handler that reads the `Diagnostic` synchronously, inside `handle`, the
+/// way `telemetry::diag_render::DiagRenderer` does for rendering.
+struct LastErrorSpan {
+    span: Rc<RefCell<Option<Span>>>,
+}
+
+impl Handler for LastErrorSpan {
+    fn handle(&self, event: &Event<'_, '_, '_>) {
+        if event.name != ["fz", "diag", "error"] {
+            return;
+        }
+        if let Some(diagnostic) = event
+            .metadata
+            .get("diagnostic")
+            .and_then(|value| value.downcast_ref::<Diagnostic>())
+        {
+            *self.span.borrow_mut() = Some(diagnostic.primary.span);
+        }
     }
 }
 
@@ -896,6 +925,142 @@ fn bitstring_float_modifier_is_parse_error() {
         &capture,
         codes::PARSE_BITSTRING_BAD_MODIFIER.0,
         "unsupported bitstring modifier value of kind ValueKind(14)",
+    );
+}
+
+/// A USER coded quoted-source error must carry its source location end to
+/// end, not `Span::DUMMY`: `QuotedSourceError` now threads a span from the
+/// decode site (`quoted_function.rs`'s bit-spec modifier decode) through to
+/// the `emit_surface_read_error` render site (`quoted_expander.rs`). `3.14`
+/// is a bare literal in the quoted tree (frontdoor quotes literals without
+/// their own span metadata), so the tightest span available is the
+/// enclosing `1::3.14` bitstring field -- this asserts that span is real
+/// (non-DUMMY) and brackets the `3.14` modifier, not merely non-DUMMY.
+#[test]
+fn bitstring_float_modifier_error_span_brackets_the_modifier() {
+    let tel = ConfiguredTelemetry::new();
+    let last_span = Rc::new(RefCell::new(None));
+    tel.attach(
+        &[],
+        Box::new(LastErrorSpan {
+            span: last_span.clone(),
+        }),
+    );
+    let mut compiler = Compiler2::new(&tel);
+    let source = include_str!("../../fixtures2/00556_bitstring_float_modifier.fz");
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures2/00556_bitstring_float_modifier.fz".to_string()),
+        text: source.to_string(),
+    });
+    compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    assert!(
+        matches!(compiler.drive(), DriveOutcome::Fatal { .. }),
+        "<<1::3.14>> should fail during bit-spec modifier decoding",
+    );
+
+    let span = last_span.borrow().expect("expected a captured diagnostic span");
+    assert!(
+        !span.is_dummy(),
+        "user coded bit-spec modifier error must carry a real span, not DUMMY"
+    );
+
+    let modifier_start = source.find("3.14").expect("fixture contains `3.14`") as u32;
+    let modifier_end = modifier_start + "3.14".len() as u32;
+    assert!(
+        span.start <= modifier_start && span.end >= modifier_end,
+        "span [{}, {}) must bracket the `3.14` modifier at [{modifier_start}, {modifier_end})",
+        span.start,
+        span.end,
+    );
+
+    // Upper bound: the span must not widen past the `1::3.14` bitstring field.
+    // Without this, a regression to a whole-function or whole-`<<>>` span would
+    // still satisfy the containment check above. `3.14` is a bare literal
+    // (no span meta of its own), so the enclosing `::` field is the tightest
+    // bracket available and the span should equal exactly that field.
+    let field_start = source.find("1::3.14").expect("fixture contains `1::3.14`") as u32;
+    let field_end = field_start + "1::3.14".len() as u32;
+    assert!(
+        span.start >= field_start && span.end <= field_end,
+        "span [{}, {}) must not extend beyond the `1::3.14` field at [{field_start}, {field_end})",
+        span.start,
+        span.end,
+    );
+}
+
+// A `size(...)` modifier with a non-int, non-variable argument (`size(1.5)`)
+// is the sole USER-reachable trigger of PARSE_BITSTRING_BAD_SIZE from
+// `decode_bit_size`: frontdoor parses the `::` right-hand side as a generic
+// expr, so `size(1.5)` reaches quoted_function.rs as a call node whose float
+// argument is neither int nor variable. This asserts (a) the code is the
+// user-facing bad-size code and (b) the span brackets the `size(1.5)` call
+// construct TIGHTLY -- unlike a bare-literal modifier, a call-shaped modifier
+// carries its own `__fz_span__`, so the error points at `size(1.5)` itself,
+// not the wider enclosing bitstring field.
+#[test]
+fn bitstring_bad_size_error_span_brackets_the_size_modifier() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&[], capture.handler());
+    let last_span = Rc::new(RefCell::new(None));
+    tel.attach(
+        &[],
+        Box::new(LastErrorSpan {
+            span: last_span.clone(),
+        }),
+    );
+    let mut compiler = Compiler2::new(&tel);
+    let source = include_str!("../../fixtures2/00557_bitstring_bad_size.fz");
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures2/00557_bitstring_bad_size.fz".to_string()),
+        text: source.to_string(),
+    });
+    compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    assert!(
+        matches!(compiler.drive(), DriveOutcome::Fatal { .. }),
+        "<<1::size(1.5)>> should fail during bit-spec size decoding",
+    );
+    assert_last_error(
+        &capture,
+        codes::PARSE_BITSTRING_BAD_SIZE.0,
+        "bitstring size expects int or variable, got ValueKind(14)",
+    );
+
+    let span = last_span.borrow().expect("expected a captured diagnostic span");
+    assert!(
+        !span.is_dummy(),
+        "user coded bad-size error must carry a real span, not DUMMY"
+    );
+
+    // Lower bound: the span brackets the whole `size(1.5)` modifier.
+    let modifier_start = source.find("size(1.5)").expect("fixture contains `size(1.5)`") as u32;
+    let modifier_end = modifier_start + "size(1.5)".len() as u32;
+    assert!(
+        span.start <= modifier_start && span.end >= modifier_end,
+        "span [{}, {}) must bracket the `size(1.5)` modifier at [{modifier_start}, {modifier_end})",
+        span.start,
+        span.end,
+    );
+
+    // Upper bound: the span must not widen past `size(1.5)` -- it must be the
+    // tight call construct, not the enclosing `1::size(1.5)` field or the whole
+    // `<<>>`. This is what makes threading node_span (rather than field_span)
+    // through the size branch observable.
+    assert!(
+        span.start >= modifier_start && span.end <= modifier_end,
+        "span [{}, {}) must equal the `size(1.5)` modifier at [{modifier_start}, {modifier_end}), not widen past it",
+        span.start,
+        span.end,
     );
 }
 

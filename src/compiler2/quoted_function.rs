@@ -35,12 +35,14 @@ pub(crate) fn derive_function_surface(
 ) -> Result<FunctionSurface, QuotedSourceError> {
     let ctx = DecodeCtx { code_id };
     let mut attrs = Vec::new();
+    let mut attr_spans = Vec::new();
     let mut forms = Vec::new();
     for item in root.cursor().list_items()? {
         let node = expect_ast_node(&item, "grouped function item")?;
         let head = atom_name(&node.head)?;
         if head.starts_with('@') {
-            attrs.push(decode_attribute(&item)?);
+            attr_spans.push(span_from_meta(&node.meta, &ctx)?);
+            attrs.push(decode_attribute(&item, &ctx)?);
         } else {
             forms.push(item);
         }
@@ -92,19 +94,21 @@ pub(crate) fn derive_function_surface(
         clauses.push(clause);
     }
 
-    for attr in &attrs {
+    for (attr, attr_span) in attrs.iter().zip(&attr_spans) {
         if let Attribute::Spec(spec) = attr {
             let expected_name = group_name.as_deref().unwrap_or_default();
             let expected_arity = clauses.first().map(|clause| clause.params.len()).unwrap_or_default();
             if spec.name != expected_name {
                 return Err(QuotedSourceError::user(
                     crate::diag::codes::PARSE_SPEC_NAME_MISMATCH,
+                    Some(*attr_span),
                     format!("@spec name `{}` doesn't match function `{expected_name}`", spec.name),
                 ));
             }
             if spec.param_body_tokens.len() != expected_arity {
                 return Err(QuotedSourceError::user(
                     crate::diag::codes::PARSE_SPEC_ARITY_MISMATCH,
+                    Some(*attr_span),
                     format!(
                         "@spec arity {} doesn't match function `{expected_name}/{expected_arity}`",
                         spec.param_body_tokens.len()
@@ -130,7 +134,7 @@ pub(crate) fn derive_function_surface(
     })
 }
 
-fn decode_attribute(cursor: &QuotedSourceCursor) -> Result<Attribute, QuotedSourceError> {
+fn decode_attribute(cursor: &QuotedSourceCursor, ctx: &DecodeCtx) -> Result<Attribute, QuotedSourceError> {
     let node = expect_ast_node(cursor, "function attribute")?;
     let head = atom_name(&node.head)?;
     let args = node.tail.list_items()?;
@@ -141,7 +145,7 @@ fn decode_attribute(cursor: &QuotedSourceCursor) -> Result<Attribute, QuotedSour
     };
     match head.as_str() {
         "@doc" => Ok(Attribute::Doc(value.utf8_binary_text()?)),
-        "@spec" => decode_spec_attribute(value),
+        "@spec" => decode_spec_attribute(value, ctx),
         other => Err(QuotedSourceError::new(format!(
             "unsupported quoted function attribute `{other}`"
         ))),
@@ -751,9 +755,10 @@ fn decode_bitstring_expr(
             if parts.len() != 2 {
                 return Err(QuotedSourceError::new("quoted bitstring field expects value and spec"));
             }
+            let field_span = span_from_meta(&node.meta, ctx)?;
             fields.push(BitField {
                 value: decode_expr(&parts[0], ctx, Some(span))?,
-                spec: decode_bit_spec(&parts[1])?,
+                spec: decode_bit_spec(&parts[1], ctx, field_span)?,
             });
             continue;
         }
@@ -958,9 +963,10 @@ fn decode_bitstring_pattern(
                     "quoted bitstring pattern field expects value and spec",
                 ));
             }
+            let field_span = span_from_meta(&node.meta, ctx)?;
             fields.push(BitField {
                 value: decode_pattern(&parts[0], ctx, Some(span))?,
-                spec: decode_bit_spec(&parts[1])?,
+                spec: decode_bit_spec(&parts[1], ctx, field_span)?,
             });
             continue;
         }
@@ -1183,8 +1189,8 @@ fn quoted_type_expr_body(cursor: &QuotedSourceCursor) -> Result<TypeExprBody, Qu
     Ok(TypeExprBody(token_payload::decode_tokens(cursor)?))
 }
 
-fn decode_spec_attribute(payload: &QuotedSourceCursor) -> Result<Attribute, QuotedSourceError> {
-    let mut parser = FragmentCursor::new(token_payload::decode_tokens(payload)?);
+fn decode_spec_attribute(payload: &QuotedSourceCursor, ctx: &DecodeCtx) -> Result<Attribute, QuotedSourceError> {
+    let mut parser = FragmentCursor::new(token_payload::decode_tokens(payload)?, ctx.code_id);
     let (name, param_body_tokens) =
         if matches!(parser.peek(), Tok::Ident(_)) && matches!(parser.peek_at(1), Some(Tok::LParen)) {
             let name = match parser.bump() {
@@ -1195,10 +1201,12 @@ fn decode_spec_attribute(payload: &QuotedSourceCursor) -> Result<Attribute, Quot
             let mut params = Vec::new();
             if !matches!(parser.peek(), Tok::RParen) {
                 loop {
+                    let span = parser.current_span();
                     let tokens = parser.collect_type_tokens(TypeTokenBoundary::SpecParam);
                     if tokens.is_empty() {
                         return Err(QuotedSourceError::user(
                             crate::diag::codes::PARSE_EXPECTED_TOKEN,
+                            Some(span),
                             "expected type expression in @spec param list",
                         ));
                     }
@@ -1211,26 +1219,32 @@ fn decode_spec_attribute(payload: &QuotedSourceCursor) -> Result<Attribute, Quot
             parser.expect_rparen("`)` after @spec param list")?;
             (name, params)
         } else {
+            let left_span = parser.current_span();
             let left = parser.collect_type_tokens(TypeTokenBoundary::SpecInfixOperand);
             if left.is_empty() {
                 return Err(QuotedSourceError::user(
                     crate::diag::codes::PARSE_EXPECTED_TOKEN,
+                    Some(left_span),
                     "expected type expression before operator in @spec",
                 ));
             }
+            let op_span = parser.current_span();
             let name = parser
                 .bump()
                 .and_then(|tok| operator_token_name(&tok).map(str::to_string))
                 .ok_or_else(|| {
                     QuotedSourceError::user(
                         crate::diag::codes::PARSE_EXPECTED_TOKEN,
+                        Some(op_span),
                         "expected `@spec name(` or `@spec T1 <op> T2`",
                     )
                 })?;
+            let right_span = parser.current_span();
             let right = parser.collect_type_tokens(TypeTokenBoundary::SpecInfixOperand);
             if right.is_empty() {
                 return Err(QuotedSourceError::user(
                     crate::diag::codes::PARSE_EXPECTED_TOKEN,
+                    Some(right_span),
                     "expected type expression after operator in @spec",
                 ));
             }
@@ -1238,10 +1252,12 @@ fn decode_spec_attribute(payload: &QuotedSourceCursor) -> Result<Attribute, Quot
         };
 
     parser.expect_colon_colon("`::` in @spec")?;
+    let result_span = parser.current_span();
     let result_body_tokens = parser.collect_type_tokens(TypeTokenBoundary::TypeBody);
     if result_body_tokens.is_empty() {
         return Err(QuotedSourceError::user(
             crate::diag::codes::PARSE_EXPECTED_TOKEN,
+            Some(result_span),
             "expected result type expression after `::` in @spec",
         ));
     }
@@ -1249,18 +1265,21 @@ fn decode_spec_attribute(payload: &QuotedSourceCursor) -> Result<Attribute, Quot
     let mut constraints = Vec::new();
     if parser.eat_when() {
         loop {
+            let var_span = parser.current_span();
             let (var, kw_colon) = match parser.bump() {
                 Some(Tok::Ident(name)) => (name, false),
                 Some(Tok::KwKey(name)) => (name, true),
                 Some(other) => {
                     return Err(QuotedSourceError::user(
                         crate::diag::codes::PARSE_EXPECTED_TOKEN,
+                        Some(var_span),
                         format!("expected type variable after `when`, got {:?}", other),
                     ));
                 }
                 None => {
                     return Err(QuotedSourceError::user(
                         crate::diag::codes::PARSE_EXPECTED_TOKEN,
+                        Some(var_span),
                         "expected type variable after `when`",
                     ));
                 }
@@ -1268,10 +1287,12 @@ fn decode_spec_attribute(payload: &QuotedSourceCursor) -> Result<Attribute, Quot
             if !kw_colon {
                 parser.expect_colon("`:` after constrained type variable")?;
             }
+            let body_span = parser.current_span();
             let body = parser.collect_type_tokens(TypeTokenBoundary::Constraint);
             if body.is_empty() {
                 return Err(QuotedSourceError::user(
                     crate::diag::codes::PARSE_EXPECTED_TOKEN,
+                    Some(body_span),
                     format!("expected constraint type expression after `{}:`", var),
                 ));
             }
@@ -1291,14 +1312,31 @@ fn decode_spec_attribute(payload: &QuotedSourceCursor) -> Result<Attribute, Quot
     }))
 }
 
-fn decode_bit_spec(cursor: &QuotedSourceCursor) -> Result<BitFieldSpec, QuotedSourceError> {
+/// `field_span` brackets the whole `value :: spec` bitstring field. It is the
+/// fallback error span for a bare-literal modifier (`3.14`, `[1]`, a 2-tuple),
+/// since frontdoor quotes literals without their own span metadata (only
+/// call/var nodes carry one). A modifier shaped as a node -- `size(...)`,
+/// `unit(...)`, a variable, or an unsupported name-with-args -- carries its own
+/// `__fz_span__`, and `apply_bit_spec_modifier` threads that tighter node span
+/// through to the error instead.
+fn decode_bit_spec(
+    cursor: &QuotedSourceCursor,
+    ctx: &DecodeCtx,
+    field_span: Span,
+) -> Result<BitFieldSpec, QuotedSourceError> {
     let mut spec = BitFieldSpec::default();
-    apply_bit_spec_modifier(cursor, &mut spec)?;
+    apply_bit_spec_modifier(cursor, &mut spec, ctx, field_span)?;
     Ok(spec)
 }
 
-fn apply_bit_spec_modifier(cursor: &QuotedSourceCursor, spec: &mut BitFieldSpec) -> Result<(), QuotedSourceError> {
+fn apply_bit_spec_modifier(
+    cursor: &QuotedSourceCursor,
+    spec: &mut BitFieldSpec,
+    ctx: &DecodeCtx,
+    field_span: Span,
+) -> Result<(), QuotedSourceError> {
     if let Some(node) = cursor.ast_node()? {
+        let node_span = span_from_meta(&node.meta, ctx)?;
         let args = if is_list_like(&node.tail) {
             node.tail.list_items()?
         } else {
@@ -1306,20 +1344,21 @@ fn apply_bit_spec_modifier(cursor: &QuotedSourceCursor, spec: &mut BitFieldSpec)
         };
         return match atom_name(&node.head)?.as_str() {
             "-" if args.len() == 2 => {
-                apply_bit_spec_modifier(&args[0], spec)?;
-                apply_bit_spec_modifier(&args[1], spec)
+                apply_bit_spec_modifier(&args[0], spec, ctx, field_span)?;
+                apply_bit_spec_modifier(&args[1], spec, ctx, field_span)
             }
             "size" if args.len() == 1 => {
-                spec.size = Some(decode_bit_size(&args[0])?);
+                spec.size = Some(decode_bit_size(&args[0], node_span)?);
                 Ok(())
             }
             "unit" if args.len() == 1 => {
-                spec.unit = Some(decode_bit_unit(&args[0])?);
+                spec.unit = Some(decode_bit_unit(&args[0], node_span)?);
                 Ok(())
             }
-            name if args.is_empty() => apply_bit_modifier_name(spec, name),
+            name if args.is_empty() => apply_bit_modifier_name(spec, name, node_span),
             other => Err(QuotedSourceError::user(
                 crate::diag::codes::PARSE_BITSTRING_BAD_MODIFIER,
+                Some(node_span),
                 format!("unsupported quoted bit-spec modifier `{other}`"),
             )),
         };
@@ -1331,15 +1370,16 @@ fn apply_bit_spec_modifier(cursor: &QuotedSourceCursor, spec: &mut BitFieldSpec)
             let size = u32::try_from(raw).map_err(|_| {
                 QuotedSourceError::user(
                     crate::diag::codes::PARSE_BITSTRING_BAD_SIZE,
+                    Some(field_span),
                     format!("bitstring size literal must fit in u32, got {raw}"),
                 )
             })?;
             spec.size = Some(BitSize::Literal(size));
             Ok(())
         }
-        fz_runtime::any_value::ValueKind::ATOM => apply_bit_modifier_name(spec, &cursor.atom_name()?),
+        fz_runtime::any_value::ValueKind::ATOM => apply_bit_modifier_name(spec, &cursor.atom_name()?, field_span),
         fz_runtime::any_value::ValueKind::BITSTRING | fz_runtime::any_value::ValueKind::PROCBIN => {
-            apply_bit_modifier_name(spec, &cursor.utf8_binary_text()?)
+            apply_bit_modifier_name(spec, &cursor.utf8_binary_text()?, field_span)
         }
         // Reachable from valid source: a bitstring segment's `::` modifier is
         // parsed as a fully generic expr (frontdoor `parse_bitstring_literal`),
@@ -1350,19 +1390,27 @@ fn apply_bit_spec_modifier(cursor: &QuotedSourceCursor, spec: &mut BitFieldSpec)
         // with none of INT/ATOM/BITSTRING/PROCBIN. Every other modifier shape
         // (calls, atoms with args, N-tuples with N != 2) is caught earlier by
         // the `ast_node()` arm above. This is a plain user typo, not an
-        // internal-compiler-bug shape.
+        // internal-compiler-bug shape. None of these literal kinds carry their
+        // own span (frontdoor quotes bare literals unwrapped), so `field_span`
+        // -- the enclosing `value :: spec` field -- is the tightest bracket
+        // available.
         other => Err(QuotedSourceError::user(
             crate::diag::codes::PARSE_BITSTRING_BAD_MODIFIER,
+            Some(field_span),
             format!("unsupported bitstring modifier value of kind {:?}", other),
         )),
     }
 }
 
-fn decode_bit_size(cursor: &QuotedSourceCursor) -> Result<BitSize, QuotedSourceError> {
+/// `error_span` is the tightest span the caller has for this modifier: the
+/// enclosing `size(...)` call construct when reached from the `size` branch,
+/// so a bad size argument points at the modifier itself.
+fn decode_bit_size(cursor: &QuotedSourceCursor, error_span: Span) -> Result<BitSize, QuotedSourceError> {
     if let Ok(value) = cursor.int_value() {
         return u32::try_from(value).map(BitSize::Literal).map_err(|_| {
             QuotedSourceError::user(
                 crate::diag::codes::PARSE_BITSTRING_BAD_SIZE,
+                Some(error_span),
                 format!("bitstring size literal must fit in u32, got {value}"),
             )
         });
@@ -1376,22 +1424,28 @@ fn decode_bit_size(cursor: &QuotedSourceCursor) -> Result<BitSize, QuotedSourceE
         fz_runtime::any_value::ValueKind::ATOM => Ok(BitSize::Var(cursor.atom_name()?)),
         other => Err(QuotedSourceError::user(
             crate::diag::codes::PARSE_BITSTRING_BAD_SIZE,
+            Some(error_span),
             format!("bitstring size expects int or variable, got {:?}", other),
         )),
     }
 }
 
-fn decode_bit_unit(cursor: &QuotedSourceCursor) -> Result<u32, QuotedSourceError> {
+fn decode_bit_unit(cursor: &QuotedSourceCursor, error_span: Span) -> Result<u32, QuotedSourceError> {
     let raw = cursor.int_value()?;
     u32::try_from(raw).map_err(|_| {
         QuotedSourceError::user(
             crate::diag::codes::PARSE_BITSTRING_BAD_SIZE,
+            Some(error_span),
             format!("bitstring unit must fit in u32, got {raw}"),
         )
     })
 }
 
-fn apply_bit_modifier_name(spec: &mut BitFieldSpec, name: &str) -> Result<(), QuotedSourceError> {
+/// `error_span` is the tightest span the caller has for this modifier: the
+/// modifier's own variable/call node when reached from the name branch of
+/// `apply_bit_spec_modifier`, or the enclosing `::` field for a bare atom or
+/// binary literal (frontdoor gives those no span of their own).
+fn apply_bit_modifier_name(spec: &mut BitFieldSpec, name: &str, error_span: Span) -> Result<(), QuotedSourceError> {
     match name {
         "integer" => spec.ty = BitType::Integer,
         "float" => spec.ty = BitType::Float,
@@ -1408,6 +1462,7 @@ fn apply_bit_modifier_name(spec: &mut BitFieldSpec, name: &str) -> Result<(), Qu
         other => {
             return Err(QuotedSourceError::user(
                 crate::diag::codes::PARSE_BITSTRING_BAD_MODIFIER,
+                Some(error_span),
                 format!("unknown bitstring modifier: {other}"),
             ));
         }
@@ -1461,11 +1516,27 @@ impl TypeTokenBoundary {
 struct FragmentCursor {
     toks: Vec<Token>,
     pos: usize,
+    code_id: CodeId,
 }
 
 impl FragmentCursor {
-    fn new(toks: Vec<Token>) -> Self {
-        Self { toks, pos: 0 }
+    fn new(toks: Vec<Token>, code_id: CodeId) -> Self {
+        Self { toks, pos: 0, code_id }
+    }
+
+    /// The span of the next unconsumed token, real-code-id-corrected (the
+    /// decoded `Token::span` this fragment was built from always carries a
+    /// placeholder code id — see `token_payload::decode_token` — so only the
+    /// byte offsets are reused here). Falls back to the last token's end (or
+    /// `Span::DUMMY` for an empty fragment) at end-of-fragment, so an
+    /// "expected X, got eof" error still points at a real location.
+    fn current_span(&self) -> Span {
+        let real_span = |token: &Token| Span::new(SourceId(self.code_id.as_u32()), token.span.start, token.span.end);
+        self.toks
+            .get(self.pos)
+            .or_else(|| self.toks.last())
+            .map(real_span)
+            .unwrap_or(Span::DUMMY)
     }
 
     fn peek(&self) -> Tok {
@@ -1509,6 +1580,7 @@ impl FragmentCursor {
     }
 
     fn expect_eof(&mut self, label: &str) -> Result<(), QuotedSourceError> {
+        let span = self.current_span();
         match self.peek_at(0) {
             None => Ok(()),
             Some(Tok::Eof) => {
@@ -1517,6 +1589,7 @@ impl FragmentCursor {
             }
             Some(other) => Err(QuotedSourceError::user(
                 crate::diag::codes::PARSE_EXPECTED_TOKEN,
+                Some(span),
                 format!("expected {label}, got {:?}", other),
             )),
         }
@@ -1550,14 +1623,17 @@ impl FragmentCursor {
     }
 
     fn expect(&mut self, pred: impl FnOnce(&Tok) -> bool, label: &str) -> Result<(), QuotedSourceError> {
+        let span = self.current_span();
         match self.bump() {
             Some(tok) if pred(&tok) => Ok(()),
             Some(other) => Err(QuotedSourceError::user(
                 crate::diag::codes::PARSE_EXPECTED_TOKEN,
+                Some(span),
                 format!("expected {label}, got {:?}", other),
             )),
             None => Err(QuotedSourceError::user(
                 crate::diag::codes::PARSE_EXPECTED_TOKEN,
+                Some(span),
                 format!("expected {label}, got eof"),
             )),
         }
