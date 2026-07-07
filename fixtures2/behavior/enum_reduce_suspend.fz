@@ -1,8 +1,5 @@
 #---
 # purpose: "Enumerable.reduce/3 suspend returns a real resumable closure at the runtime-value boundary"
-# defer.build: fz-hwn.13 native returned suspend continuations lose settled callable boundaries
-# defer.interp: fz-hwn.13 native returned suspend continuations lose settled callable boundaries
-# defer.run: fz-hwn.13 native returned suspend continuations lose settled callable boundaries
 #---
 #
 # # enum_reduce_suspend
@@ -14,26 +11,30 @@
 # ```
 #
 # The suspend clause returns `{:suspended, acc, fn () -> ... end}`. That closure
-# is a source value, not an internal native continuation edge, so it must remain a
+# is a source value, not an internal native continuation edge, so it remains a
 # real heap closure even as native call continuations become direct or lazy.
 #
-# Target for native JIT/AOT:
+# Current contract, native `run`/`build`:
 #
 # - the three-element input list allocates three cons cells;
-# - the returned suspend function allocates one closure;
-# - the current native path also boxes one scalar before the suspend boundary;
-# - `closure_allocs = 1`;
-# - `closure_bytes = 48`;
-# - `scalar_box_allocs = 1`;
-# - `scalar_box_bytes = 16`.
+# - the returned suspend function allocates one closure (`closure_allocs = 1`,
+#   `closure_bytes = 48`);
+# - the `{:cont, acc}`/`{:suspended, ...}` protocol-control tuples allocate two
+#   structs (`struct_allocs = 2`, `struct_bytes = 80`);
+# - the accumulator is boxed once per reduce step plus once at the suspend
+#   boundary (`scalar_box_allocs = 4`, `scalar_box_bytes = 64`);
+# - the rendered function identity is `#fn<4/2>`.
 #
-# Interpreter / REPL note:
+# Current contract, `interp`:
 #
-# - the suspended continuation still remains a real heap closure with the same
-#   allocation profile as before;
-# - the rendered function identity is currently `#fn<3/3>` rather than
-#   `#fn<4/3>`, which is numbering drift in the printer rather than a semantic
-#   change in the suspend boundary.
+# - same list-cons and struct counts as native;
+# - the suspended continuation is a real heap closure, same as native, but
+#   `interp` never boxes the accumulator into a scalar box
+#   (`scalar_box_allocs = 0`) — it allocates a second closure instead
+#   (`closure_allocs = 2`, `closure_bytes = 64`);
+# - the rendered function identity is `#fn<3/3>`, which differs from native's
+#   `#fn<4/2>` — this is allocation-order-dependent function numbering, not a
+#   semantic difference in the suspend boundary.
 fn main() do
   xs = [1, 2, 3]
   out = Enumerable.reduce(xs, {:suspend, 0}, fn (x, acc) -> {:cont, acc + x} end)

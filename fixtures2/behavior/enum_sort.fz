@@ -1,6 +1,5 @@
 #---
 # purpose: "runtime-library Enum.sort (merge sort) allocation contract across four paths; pins JIT/AOT parity and default-sorter closure erasure"
-# defer.interp: fz-rh2.16.2 enum allocation/golden contracts unresolved (mismatch-without-failure)
 #---
 #
 # # enum_sort
@@ -35,10 +34,10 @@
 # - `scalar_box_allocs = 0`
 # - `heap_bytes = 352`
 #
-# The interpreter and REPL legs are direct-IR baselines: they do not run native
-# `ReturnDemand` / reusable-cons lowering, so they allocate more cons cells
-# (`154`), ten protocol/control structs, and three small closures. They share
-# the same growable heap.
+# The interpreter leg is a direct-IR baseline: it does not run native
+# `ReturnDemand` / reusable-cons lowering, so it allocates more cons cells
+# (`93`) and ten protocol/control structs. The reducer-bridge closure is
+# erased on `interp` too, same as native (`closure_allocs = 0`).
 #
 # ## The default sorter is erased from native frames
 #

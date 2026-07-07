@@ -1397,11 +1397,9 @@ fn enum_list_allocations_pin_minimum_list_cons() {
         "`Enum.count/1`, `Enum.member?/2`, and `Enum.reduce/3` allocate no additional",
         "public `Enum.reduce/3` stays a small wrapper over `Enumerable.reduce/3`",
         "static protocol dispatch routes the known list receiver",
-        "native `Enum.reduce/3` allocates one wrapper closure",
+        "the public reducer bridge closure is erased on every path",
         "`list_cons_allocs = 5`",
         "`list_cons_bytes = 80`",
-        "`closure_allocs = 1`",
-        "`closure_bytes = 32`",
         "final list/struct/map heap headline is `368`",
     ] {
         assert!(
@@ -1448,10 +1446,10 @@ fn enum_sort_constant_sorter_erased_under_return_demand_specs() {
     assert_eq!(
         stats,
         ReusableConsTelemetryStats {
-            birth_count: 15,
-            transport_count: 21,
-            codegen_candidate_count: 15,
-            codegen_consumed_count: 15,
+            birth_count: 14,
+            transport_count: 20,
+            codegen_candidate_count: 14,
+            codegen_consumed_count: 14,
             runtime_attempted_count: 132,
             runtime_reused_count: 132,
         },
