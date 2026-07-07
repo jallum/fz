@@ -7,9 +7,15 @@
   "id": "fz-rh2.24",
   "labels": [],
   "parent": "fz-rh2",
+  "comments": [
+    {
+      "text": "INVESTIGATION (holistic look done; Outcome: no ad-hoc fix warranted now). scheduler.rs/deps.rs: Scheduler::rebased (HashSet\u003cJ\u003e) and the union_reads read-subscription set are ALREADY cleared by the SAME event -- complete()'s wait-free (non-waiting) branch, back to back (scheduler.rs:268 rebased.remove; :274 replace_reads). They are one coherent lifecycle transition ('a settled conclusion replaces provisional state accumulated while blocked'), not two independent mechanisms needing unification. Both retro notes describe the identical residual case: a job that never reaches a wait-free conclude AGAIN (permanently blocked on a never-satisfied wait, or drive halts before it's popped). In that case there is no fresher state to reset TO -- the read-set and rebase mark are honest facts about the job's last ground-derived state.\n\nA genuine holistic fix would require inventing JOB GARBAGE COLLECTION: jobs are immortal for the life of the World/Scheduler (facts.rs/deps.rs expose NO API to remove a job's reads/waits/outputs/subscriber entries; even function redefinition via stash_function_source leaves dead jobs inert, never reaped). Detecting an orphaned job (target fact retracted with no successor) and atomically tearing down all its scheduler state is a materially larger feature than this ticket, not a corollary.\n\nBOUNDEDNESS confirmed by code (not just asserted): rebased is a HashSet -\u003e re-insert is a no-op, size capped by distinct job count; union_reads capped by distinct FactUse the job can read (program size). Matches the ticket's own 'bounded by job count / bounded wake amplification' framing. No unbounded-growth path found.\n\nRECOMMENDATION: close as documented/deferred to a future holistic scheduler-lifecycle (job-GC) pass. What would justify that pass: a MEASURED case where a long-lived World (multi-submission / editor-style incremental redefinition workload) accumulates enough dead-job cruft in rebased/reads/subscribers to show as real memory or wake-amplification cost. No such usage exists today (fz2 is single-shot run_cli). Until that signal exists, an ad-hoc prune is exactly the unjustified non-holistic patch this ticket and CLAUDE.md warn against.",
+      "timestamp": "2026-07-07T18:33:16Z"
+    }
+  ],
   "priority": 3,
   "status": "open",
   "title": "Compiler2 fact-engine hygiene: prune rebased marks and shrink waiting subscriptions",
   "type": "task",
-  "updated_at": "2026-06-12T15:57:06Z"
+  "updated_at": "2026-07-07T18:33:16Z"
 }
