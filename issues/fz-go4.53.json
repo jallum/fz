@@ -2,6 +2,7 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-07-07T13:06:39Z",
   "created": "2026-07-07T12:36:34Z",
   "description": "SURFACED by the fz-go4.43 adversarial audit (at 6efa9fc16). fz-go4.43 made item_macro_call_may_define (world.rs:2747) return true for ANY non-reserved-head item-macro call, so demand_function_scope's global-module branch (world.rs:2103-2116) now includes EVERY Indexed code containing ANY such call in the homes set. publish_function_source_job (jobs/source.rs:282-300) waits on ALL of homes, and the scheduler is AND-semantics (scheduler.rs:397: !waits.iter().all(..)) — so the job only re-runs once EVERY home code is fully ScopeCode'd (macro-expanded + all definitions stashed).\n\nCONSEQUENCE: the first still-unresolved global bare-name lookup (ANY name, not just a macro-produced one) forces ScopeCode on every file containing any opaque item-macro call, even files that cannot possibly define the wanted name. Scenario: files A..Z, ten each with one unrelated custom-macro DSL call, target fn behind its own macro in file Y — resolving one name pre-emptively scopes all 11.\n\nBOUNDED, not a blocker: CodeState::Scoped is cached and the scan skips already-Scoped codes (world.rs:2114), so the cost is paid ONCE per program. Correctness holds (candidate-home is a pure DEMAND trigger, never feeds resolution/disambiguation — verified). Today's impact is narrow (only reserved-head-free item-macro pattern in-tree is the test DSL, fixtures2/0052x). BUT this is eager whole-surface scoping on first lookup — it works AGAINST the pull/laziness discipline (excess work is a correctness SIGNAL, not perf), and grows as item macros become common (the very feature fz-go4.43 unblocks).\n\nTASK (holistic, not a shim): either (a) stage the homes wait — scope ONE opaque-macro candidate at a time and re-check whether the name resolved before scoping the next, so an early hit short-circuits the rest; or (b) let an item macro declare (even coarsely) the name(s)/arities it may produce, so item_macro_call_may_define can rule out unrelated calls WITHOUT expanding them. VERIFY via a --log-telemetry job trace: resolving one global name in a multi-file program with unrelated item-macro calls does NOT ScopeCode the unrelated files. Related: fz-go4.43, fz-go4.18.41 (arm-less-wait AND-semantics), the pull-discipline north star.",
   "id": "fz-go4.53",
@@ -14,8 +15,8 @@
     }
   ],
   "priority": 3,
-  "status": "open",
+  "status": "closed",
   "title": "demand_function_scope global branch eagerly scopes the WHOLE surface on the first unresolved global name (AND-semantics fan-out over every opaque item-macro call)",
   "type": "bug",
-  "updated_at": "2026-07-07T13:06:38Z"
+  "updated_at": "2026-07-07T13:06:39Z"
 }
