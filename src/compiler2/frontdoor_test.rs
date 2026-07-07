@@ -1,5 +1,6 @@
 use super::parse_quoted_program;
 use super::source_test::assert_quoted_mentions;
+use crate::compiler2::CodeId;
 use crate::modules::runtime_library;
 use crate::parser::lexer::Tok;
 use crate::telemetry::ConfiguredTelemetry;
@@ -20,7 +21,7 @@ fn map_value<'a>(
 }
 
 fn token_kinds(cursor: &super::QuotedSourceCursor) -> Vec<Tok> {
-    super::token_payload::decode_tokens(cursor, super::code::CodeId::ZERO)
+    super::token_payload::decode_tokens(cursor)
         .expect("decode token payload")
         .into_iter()
         .map(|token| token.tok)
@@ -33,6 +34,7 @@ fn compiler2_frontdoor_parses_alias_import_and_require_as_quoted_calls() {
     let root = parse_quoted_program(
         "surface.fz",
         "alias Helpers.Tools, as: Tools\nrequire Helpers.Tools\nimport Helpers.Tools, only: [twice: 1]\n",
+        CodeId::ZERO,
         &tel,
     )
     .expect("quoted parse");
@@ -64,7 +66,7 @@ fn compiler2_frontdoor_parses_alias_import_and_require_as_quoted_calls() {
 fn compiler2_frontdoor_threads_source_context_through_nested_modules() {
     let tel = ConfiguredTelemetry::new();
     let source = "defmodule App do\n  require Helpers\n  defmodule Tools do\n    import Helpers, except: [twice: 1]\n  end\nend\n";
-    let root = parse_quoted_program("app.fz", source, &tel).expect("quoted parse");
+    let root = parse_quoted_program("app.fz", source, CodeId::ZERO, &tel).expect("quoted parse");
 
     let top = root.cursor().list_items().expect("top-level items");
     let app = top[0].ast_node().expect("app cursor").expect("app defmodule node");
@@ -141,8 +143,13 @@ fn compiler2_frontdoor_threads_source_context_through_nested_modules() {
 #[test]
 fn compiler2_frontdoor_encodes_type_ascriptions_as_token_payloads() {
     let tel = ConfiguredTelemetry::new();
-    let root = parse_quoted_program("typed.fz", "fn pack(x :: integer), do: x :: list(integer)\n", &tel)
-        .expect("quoted parse");
+    let root = parse_quoted_program(
+        "typed.fz",
+        "fn pack(x :: integer), do: x :: list(integer)\n",
+        CodeId::ZERO,
+        &tel,
+    )
+    .expect("quoted parse");
 
     let items = root.cursor().list_items().expect("top-level items");
     let function = items[0].ast_node().expect("function cursor").expect("function node");
@@ -189,6 +196,7 @@ fn compiler2_frontdoor_surface_root_is_real_quoted_source_not_old_ast() {
     let root = parse_quoted_program(
         "surface.fz",
         "require Helpers\nimport Helpers, except: [twice: 1]\ndefmodule App do\n  require Helpers\nend\n",
+        CodeId::ZERO,
         &tel,
     )
     .expect("quoted parse");
@@ -204,6 +212,7 @@ fn compiler2_frontdoor_parses_function_and_macro_defs_with_quote_unquote() {
     let root = parse_quoted_program(
         "macro_inc.fz",
         include_str!("../../fixtures2/behavior/macro_inc.fz"),
+        CodeId::ZERO,
         &tel,
     )
     .expect("quoted parse");
@@ -254,6 +263,7 @@ fn compiler2_frontdoor_parses_guarded_one_line_function_clauses() {
     let root = parse_quoted_program(
         "guarded_clause.fz",
         "fn positive(n), do: n > 0\nfn wanted(n) when positive(n), do: n\n",
+        CodeId::ZERO,
         &tel,
     )
     .expect("quoted parse");
@@ -276,7 +286,8 @@ fn compiler2_frontdoor_parses_guarded_one_line_function_clauses() {
 #[test]
 fn compiler2_frontdoor_parses_item_macro_calls_with_trailing_do() {
     let tel = ConfiguredTelemetry::new();
-    let root = parse_quoted_program("test_surface.fz", "test(:name) do\n  42\nend\n", &tel).expect("quoted parse");
+    let root = parse_quoted_program("test_surface.fz", "test(:name) do\n  42\nend\n", CodeId::ZERO, &tel)
+        .expect("quoted parse");
 
     let items = root.cursor().list_items().expect("top-level items");
     assert_eq!(items.len(), 1);
@@ -301,6 +312,7 @@ fn compiler2_frontdoor_parses_remote_calls_captures_and_headless_case_from_fixtu
     let cross = parse_quoted_program(
         "cross_module_macro.fz",
         include_str!("../../fixtures2/behavior/cross_module_macro.fz"),
+        CodeId::ZERO,
         &tel,
     )
     .expect("cross-module macro parse");
@@ -311,6 +323,7 @@ fn compiler2_frontdoor_parses_remote_calls_captures_and_headless_case_from_fixtu
     let pipe_case = parse_quoted_program(
         "pipe_headless_case.fz",
         include_str!("../../fixtures2/behavior/pipe_headless_case.fz"),
+        CodeId::ZERO,
         &tel,
     )
     .expect("pipe/headless-case parse");
@@ -321,6 +334,7 @@ fn compiler2_frontdoor_parses_remote_calls_captures_and_headless_case_from_fixtu
     let fn_ref = parse_quoted_program(
         "fn_ref.fz",
         include_str!("../../fixtures2/behavior/fn_ref_ampersand.fz"),
+        CodeId::ZERO,
         &tel,
     )
     .expect("fn-ref parse");
@@ -331,6 +345,7 @@ fn compiler2_frontdoor_parses_remote_calls_captures_and_headless_case_from_fixtu
     let lambda_sugars = parse_quoted_program(
         "lambda_sugars.fz",
         include_str!("../../fixtures2/behavior/lambda_sugars.fz"),
+        CodeId::ZERO,
         &tel,
     )
     .expect("lambda sugar parse");
@@ -345,7 +360,7 @@ fn compiler2_frontdoor_parses_multiline_call_args_and_newline_pipe() {
     let root = parse_quoted_program(
         "multiline-call.fz",
         "fn main() do\n  finish(loop(\n    [1, 2, 3],\n    {:cont, 0},\n    fn (entry, inner) -> {:cont, entry + inner} end\n  ))\n  |> dbg()\nend\n",
-        &tel,
+        CodeId::ZERO, &tel,
     )
     .expect("multiline call args and newline pipe parse");
     assert_quoted_mentions(&root, &["finish", "loop", "|>", "dbg"]);
@@ -357,6 +372,7 @@ fn compiler2_frontdoor_parses_assignment_rhs_after_newline() {
     let root = parse_quoted_program(
         "assignment-newline.fz",
         "fn main() do\n  x =\n    41\n  x + 1\nend\n",
+        CodeId::ZERO,
         &tel,
     )
     .expect("assignment rhs after newline parse");
@@ -369,7 +385,7 @@ fn compiler2_frontdoor_parses_keyword_list_macro_heads() {
     let root = parse_quoted_program(
         "macro-heads.fz",
         "defmacro test(name_atom, [do: body]) do\n  {:fn, %{}, [{name_atom, %{}, []}, [{:do, body}]]}\nend\n\ndefmacro switching_macro(list, a, do: block) do\n  block\nend\n",
-        &tel,
+        CodeId::ZERO, &tel,
     )
     .expect("keyword list macro heads parse");
     assert_quoted_mentions(&root, &["defmacro", "test", "switching_macro", "do"]);
@@ -381,6 +397,7 @@ fn compiler2_frontdoor_parses_with_expressions() {
     let root = parse_quoted_program(
         "with.fz",
         "fn main(v) do\n  with {:ok, x} <- v do x else :err -> 0 end\nend\n",
+        CodeId::ZERO,
         &tel,
     )
     .expect("quoted with parse");
@@ -396,6 +413,7 @@ fn compiler2_frontdoor_parses_cond_and_remote_operator_capture_refs() {
     let root = parse_quoted_program(
         "cond_capture.fz",
         "fn main() do\n  cond do\n    false -> &Kernel.+/2\n    true -> &+/2\n  end\nend\n",
+        CodeId::ZERO,
         &tel,
     )
     .expect("quoted parse");
@@ -411,7 +429,7 @@ fn compiler2_frontdoor_parses_attributes_protocols_impls_and_structs() {
     let root = parse_quoted_program(
         "surface.fz",
         "@moduledoc \"docs\"\n@type t :: integer\n@spec run(integer) :: integer\ndefstruct [name, age]\ndefprotocol Enumerable do\n  @doc \"reduce docs\"\n  fn reduce(xs, acc)\nend\ndefimpl Enumerable, for: List do\n  fn reduce(xs, acc), do: acc\nend\n",
-        &tel,
+        CodeId::ZERO, &tel,
     )
     .expect("quoted parse");
 
@@ -429,7 +447,7 @@ fn compiler2_frontdoor_parses_maps_structs_bitstrings_and_patterns() {
     let root = parse_quoted_program(
         "shapes.fz",
         "fn shapes(x :: integer, ref) do\n  literal = %{2 => x, a: 1}\n  updated = %{literal | a: 2, b: 3}\n  point = %Point{x: x, y: 1}\n  bytes = <<104, 105>>\n  case x do\n    %{name: n} -> n\n    {:ok, s} when s == \"hi\" -> s\n    [h | _] -> h\n    ^ref -> ref\n    <<len, payload::binary-size(len), rest::binary>> -> len\n  end\nend\n",
-        &tel,
+        CodeId::ZERO, &tel,
     )
     .expect("quoted parse");
 
@@ -441,7 +459,8 @@ fn compiler2_frontdoor_parses_maps_structs_bitstrings_and_patterns() {
 #[test]
 fn compiler2_frontdoor_quotes_postfix_bracket_access_as_access_get() {
     let tel = ConfiguredTelemetry::new();
-    let root = parse_quoted_program("map_access.fz", "fn main(), do: m[:a]\n", &tel).expect("quoted parse");
+    let root =
+        parse_quoted_program("map_access.fz", "fn main(), do: m[:a]\n", CodeId::ZERO, &tel).expect("quoted parse");
 
     let items = root.cursor().list_items().expect("top-level items");
     let main = items[0].ast_node().expect("main cursor").expect("main node");
@@ -481,13 +500,18 @@ fn compiler2_frontdoor_quotes_postfix_bracket_access_as_access_get() {
 fn compiler2_frontdoor_parses_runtime_bootstrap_sources_directly() {
     let tel = ConfiguredTelemetry::new();
 
-    let prelude = parse_quoted_program("runtime:runtime.fz", runtime_library::prelude_source(), &tel)
-        .expect("runtime prelude quoted parse");
+    let prelude = parse_quoted_program(
+        "runtime:runtime.fz",
+        runtime_library::prelude_source(),
+        CodeId::ZERO,
+        &tel,
+    )
+    .expect("runtime prelude quoted parse");
     // Runtime prelude should quote operator import filters directly.
     assert_quoted_mentions(&prelude, &["import", "+", "dbg"]);
 
     for (name, source) in runtime_library::module_sources() {
-        let root = parse_quoted_program(format!("runtime:{name}.fz"), source, &tel)
+        let root = parse_quoted_program(format!("runtime:{name}.fz"), source, CodeId::ZERO, &tel)
             .unwrap_or_else(|error| panic!("runtime module `{name}` should quote directly: {error}"));
         let module = root.cursor().list_items().expect("runtime module top-level items")[0]
             .ast_node()
@@ -503,6 +527,7 @@ fn compiler2_frontdoor_parses_runtime_bootstrap_sources_directly() {
     parse_quoted_program(
         "receive_selective_refs.fz",
         include_str!("../../fixtures2/behavior/receive_selective_refs.fz"),
+        CodeId::ZERO,
         &tel,
     )
     .expect("receive selective refs quoted parse");
@@ -514,7 +539,7 @@ fn compiler2_frontdoor_quotes_bootstrap_control_and_ffi_forms() {
     let root = parse_quoted_program(
         "bootstrap_surface.fz",
         "extern \"C\" fn libc::open(path :: cstring, flags :: integer, ...) :: integer\nfn run(pred) do\n  if pred.(1) do\n    receive do\n      {:ok, value} -> (fn (x) -> x end).(value)\n    after\n      500 -> nil\n    end\n  else\n    nil\n  end\nend\n",
-        &tel,
+        CodeId::ZERO, &tel,
     )
     .expect("quoted parse");
     // Bootstrap-shaped surface should quote extern/control/lambda forms
@@ -608,6 +633,7 @@ fn compiler2_frontdoor_preserves_extern_symbol_calls_distinct_from_ascription() 
     let root = parse_quoted_program(
         "extern_call.fz",
         "fn main(), do: libc::open(path, flags, mode :: integer)\n",
+        CodeId::ZERO,
         &tel,
     )
     .expect("quoted parse");
@@ -641,8 +667,13 @@ fn compiler2_frontdoor_preserves_extern_symbol_calls_distinct_from_ascription() 
 #[test]
 fn compiler2_frontdoor_parses_operator_headed_function_defs() {
     let tel = ConfiguredTelemetry::new();
-    let root =
-        parse_quoted_program("operator_head.fz", "fn left + right, do: left + right\n", &tel).expect("quoted parse");
+    let root = parse_quoted_program(
+        "operator_head.fz",
+        "fn left + right, do: left + right\n",
+        CodeId::ZERO,
+        &tel,
+    )
+    .expect("quoted parse");
     // Operator-headed function definitions should quote directly.
     assert_quoted_mentions(&root, &["fn", "+"]);
 }
@@ -653,7 +684,7 @@ fn compiler2_frontdoor_parses_complex_extern_signatures() {
     let root = parse_quoted_program(
         "extern_surface.fz",
         "extern \"C\" fn fz_spawn(() -> any) :: pid\nextern \"C\" fn fz_make_resource(t, (t) -> nil) :: resource(t) when t: integer | cpointer\n",
-        &tel,
+        CodeId::ZERO, &tel,
     )
     .expect("quoted parse");
     let items = root.cursor().list_items().expect("top-level externs");

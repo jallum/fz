@@ -463,19 +463,15 @@ fn parse_scope_attr(cursor: &QuotedSourceCursor, ctx: &SurfaceSourceContext) -> 
     let span = span_from_meta(&node.meta, ctx)?;
     match head.as_str() {
         "@moduledoc" => Ok(Attribute::ModuleDoc(value.utf8_binary_text()?)),
-        "@type" => decode_type_alias_attr(value, span, ctx.code_id),
+        "@type" => decode_type_alias_attr(value, span),
         other => Err(QuotedSourceError::new(format!(
             "unsupported quoted scope attribute `{other}`"
         ))),
     }
 }
 
-fn decode_type_alias_attr(
-    payload: &QuotedSourceCursor,
-    span: Span,
-    code_id: CodeId,
-) -> Result<Attribute, QuotedSourceError> {
-    let mut tokens = token_payload::decode_tokens(payload, code_id)?
+fn decode_type_alias_attr(payload: &QuotedSourceCursor, span: Span) -> Result<Attribute, QuotedSourceError> {
+    let mut tokens = token_payload::decode_tokens(payload)?
         .into_iter()
         .filter(|token| !matches!(token.tok, Tok::Newline | Tok::Eof))
         .peekable();

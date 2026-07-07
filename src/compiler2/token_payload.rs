@@ -3,7 +3,6 @@ use fz_runtime::any_value::AnyValueRef;
 use crate::parser::lexer::{Tok, Token};
 use crate::source::{Id as SourceId, Span};
 
-use super::code::CodeId;
 use super::source::{QuotedSourceBuilder, QuotedSourceCursor, QuotedSourceError};
 
 pub(crate) fn encode_tokens(builder: &QuotedSourceBuilder, tokens: &[Token]) -> Result<AnyValueRef, QuotedSourceError> {
@@ -14,11 +13,11 @@ pub(crate) fn encode_tokens(builder: &QuotedSourceBuilder, tokens: &[Token]) -> 
     builder.list(&encoded)
 }
 
-pub(crate) fn decode_tokens(cursor: &QuotedSourceCursor, code_id: CodeId) -> Result<Vec<Token>, QuotedSourceError> {
+pub(crate) fn decode_tokens(cursor: &QuotedSourceCursor) -> Result<Vec<Token>, QuotedSourceError> {
     cursor
         .list_items()?
         .into_iter()
-        .map(|item| decode_token(&item, code_id))
+        .map(|item| decode_token(&item))
         .collect()
 }
 
@@ -30,6 +29,7 @@ fn encode_token(builder: &QuotedSourceBuilder, token: &Token) -> Result<AnyValue
         builder.int(token.span.start as i64),
         builder.int(token.span.end as i64),
         builder.bool(token.space_before),
+        builder.int(token.span.code_id.0 as i64),
     ])
 }
 
@@ -127,11 +127,11 @@ fn encode_tok(builder: &QuotedSourceBuilder, tok: &Tok) -> Result<(&'static str,
     })
 }
 
-fn decode_token(cursor: &QuotedSourceCursor, code_id: CodeId) -> Result<Token, QuotedSourceError> {
+fn decode_token(cursor: &QuotedSourceCursor) -> Result<Token, QuotedSourceError> {
     let fields = cursor.tuple_items()?;
-    if fields.len() != 5 {
+    if fields.len() != 6 {
         return Err(QuotedSourceError::new(format!(
-            "encoded token expects 5 fields, got {}",
+            "encoded token expects 6 fields, got {}",
             fields.len()
         )));
     }
@@ -140,9 +140,10 @@ fn decode_token(cursor: &QuotedSourceCursor, code_id: CodeId) -> Result<Token, Q
     let start = decode_u32(&fields[2], "token start")?;
     let end = decode_u32(&fields[3], "token end")?;
     let space_before = decode_bool(&fields[4], "token space_before")?;
+    let code_id = decode_u32(&fields[5], "token code_id")?;
     Ok(Token {
         tok,
-        span: Span::new(SourceId(code_id.as_u32()), start, end),
+        span: Span::new(SourceId(code_id), start, end),
         space_before,
     })
 }

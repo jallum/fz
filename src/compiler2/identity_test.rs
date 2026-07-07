@@ -1,6 +1,6 @@
 use super::quoted_surface::ScopeSurface;
 use super::{
-    CodeMap, CodeState, FunctionMap, FunctionSource, FunctionState, Horizon, ModuleId, ModuleMap, ModuleState,
+    CodeId, CodeMap, CodeState, FunctionMap, FunctionSource, FunctionState, Horizon, ModuleId, ModuleMap, ModuleState,
     NamespaceStore, NamespaceSymbol, QuotedCodeSource, QuotedSourceRoot, parse_quoted_program,
 };
 use crate::ast::{Expr, FnClause, Spanned, TypeExprBody};
@@ -9,7 +9,7 @@ use crate::telemetry::ConfiguredTelemetry;
 
 fn quoted_source(source_name: &str, text: &str) -> QuotedSourceRoot {
     let tel = ConfiguredTelemetry::new();
-    parse_quoted_program(source_name, text, &tel).expect("quoted parse should succeed")
+    parse_quoted_program(source_name, text, CodeId::ZERO, &tel).expect("quoted parse should succeed")
 }
 
 fn function_surface_with_int(name: &str, value: i64) -> FunctionSurface {

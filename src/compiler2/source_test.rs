@@ -3,7 +3,7 @@ use std::rc::Rc;
 use fz_runtime::any_value::ValueKind;
 
 use super::{
-    Horizon, QuotedLexicalContext, QuotedLexicalContextKind, QuotedSourceCursor, QuotedSourceHeap,
+    CodeId, Horizon, QuotedLexicalContext, QuotedLexicalContextKind, QuotedSourceCursor, QuotedSourceHeap,
     QuotedSourceMetadata, QuotedSourceRoot, parse_quoted_program,
 };
 use crate::modules::runtime_library;
@@ -358,9 +358,9 @@ fn semantic_walk_reaches_the_last_leaf_of_long_ast_lists() {
 fn semantic_walk_handles_runtime_sized_quoted_roots() {
     let tel = ConfiguredTelemetry::new();
     for (name, source) in runtime_library::module_sources() {
-        let left = parse_quoted_program(format!("runtime:{name}.fz"), source, &tel)
+        let left = parse_quoted_program(format!("runtime:{name}.fz"), source, CodeId::ZERO, &tel)
             .unwrap_or_else(|error| panic!("runtime source `{name}` should parse to quoted root: {error}"));
-        let right = parse_quoted_program(format!("runtime:{name}.fz"), source, &tel)
+        let right = parse_quoted_program(format!("runtime:{name}.fz"), source, CodeId::ZERO, &tel)
             .unwrap_or_else(|error| panic!("runtime source `{name}` should re-parse to quoted root: {error}"));
         assert!(
             left.semantically_eq(&right, Horizon::Full),
@@ -414,7 +414,7 @@ fn semantic_walk_compares_bitstring_payloads_in_long_lists() {
 }
 
 fn parse_src(name: &str, text: &str) -> QuotedSourceRoot {
-    parse_quoted_program(name, text, &ConfiguredTelemetry::new()).expect("parse quoted program")
+    parse_quoted_program(name, text, CodeId::ZERO, &ConfiguredTelemetry::new()).expect("parse quoted program")
 }
 
 // Spans and source positions are not semantic content: the same code parsed

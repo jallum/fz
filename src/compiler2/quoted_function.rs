@@ -42,7 +42,7 @@ pub(crate) fn derive_function_surface(
         let head = atom_name(&node.head)?;
         if head.starts_with('@') {
             attr_spans.push(span_from_meta(&node.meta, &ctx)?);
-            attrs.push(decode_attribute(&item, &ctx)?);
+            attrs.push(decode_attribute(&item)?);
         } else {
             forms.push(item);
         }
@@ -134,7 +134,7 @@ pub(crate) fn derive_function_surface(
     })
 }
 
-fn decode_attribute(cursor: &QuotedSourceCursor, ctx: &DecodeCtx) -> Result<Attribute, QuotedSourceError> {
+fn decode_attribute(cursor: &QuotedSourceCursor) -> Result<Attribute, QuotedSourceError> {
     let node = expect_ast_node(cursor, "function attribute")?;
     let head = atom_name(&node.head)?;
     let args = node.tail.list_items()?;
@@ -145,7 +145,7 @@ fn decode_attribute(cursor: &QuotedSourceCursor, ctx: &DecodeCtx) -> Result<Attr
     };
     match head.as_str() {
         "@doc" => Ok(Attribute::Doc(value.utf8_binary_text()?)),
-        "@spec" => decode_spec_attribute(value, ctx),
+        "@spec" => decode_spec_attribute(value),
         other => Err(QuotedSourceError::new(format!(
             "unsupported quoted function attribute `{other}`"
         ))),
@@ -164,10 +164,10 @@ fn decode_extern_fn(
     let abi = args[0].utf8_binary_text()?;
     let details = &args[1];
     let name = required_map_utf8(details, "name")?;
-    let params = required_map_list_tokens(details, "params", ctx.code_id)?;
-    let ret = required_map_tokens(details, "return", ctx.code_id)?;
+    let params = required_map_list_tokens(details, "params")?;
+    let ret = required_map_tokens(details, "return")?;
     let variadic = required_map_bool(details, "variadic")?;
-    let constraints = optional_map_keyword_tokens(details, "when", ctx.code_id)?;
+    let constraints = optional_map_keyword_tokens(details, "when")?;
     let span = span_from_meta(&node.meta, ctx).unwrap_or(Span::DUMMY);
 
     let extern_param_tokens = params
@@ -253,7 +253,7 @@ fn decode_function_head(
                 return Err(QuotedSourceError::new("quoted `::` parameter expects lhs and rhs"));
             }
             params.push(decode_pattern(&parts[0], ctx, Some(span))?);
-            annotations.push(Some(quoted_type_expr_body(&parts[1], ctx)?));
+            annotations.push(Some(quoted_type_expr_body(&parts[1])?));
             continue;
         }
         params.push(decode_pattern(&arg, ctx, Some(span))?);
@@ -387,7 +387,7 @@ fn decode_named_expr(
         }
         ("::", 2) => {
             let value = decode_expr(&args[0], ctx, Some(span))?;
-            let ty = quoted_type_expr_body(&args[1], ctx)?;
+            let ty = quoted_type_expr_body(&args[1])?;
             Ok(Spanned::new(Expr::Ascribe(Box::new(value), ty), span))
         }
         ("__aliases__", _) => Ok(Spanned::new(Expr::Var(alias_name_from_args(args)?), span)),
@@ -1185,12 +1185,12 @@ fn pattern_var_name(
     })
 }
 
-fn quoted_type_expr_body(cursor: &QuotedSourceCursor, ctx: &DecodeCtx) -> Result<TypeExprBody, QuotedSourceError> {
-    Ok(TypeExprBody(token_payload::decode_tokens(cursor, ctx.code_id)?))
+fn quoted_type_expr_body(cursor: &QuotedSourceCursor) -> Result<TypeExprBody, QuotedSourceError> {
+    Ok(TypeExprBody(token_payload::decode_tokens(cursor)?))
 }
 
-fn decode_spec_attribute(payload: &QuotedSourceCursor, ctx: &DecodeCtx) -> Result<Attribute, QuotedSourceError> {
-    let mut parser = FragmentCursor::new(token_payload::decode_tokens(payload, ctx.code_id)?);
+fn decode_spec_attribute(payload: &QuotedSourceCursor) -> Result<Attribute, QuotedSourceError> {
+    let mut parser = FragmentCursor::new(token_payload::decode_tokens(payload)?);
     let (name, param_body_tokens) =
         if matches!(parser.peek(), Tok::Ident(_)) && matches!(parser.peek_at(1), Some(Tok::LParen)) {
             let name = match parser.bump() {
@@ -1659,28 +1659,20 @@ fn required_map_utf8(cursor: &QuotedSourceCursor, key: &str) -> Result<String, Q
         .utf8_binary_text()
 }
 
-fn required_map_tokens(
-    cursor: &QuotedSourceCursor,
-    key: &str,
-    code_id: CodeId,
-) -> Result<Vec<Token>, QuotedSourceError> {
+fn required_map_tokens(cursor: &QuotedSourceCursor, key: &str) -> Result<Vec<Token>, QuotedSourceError> {
     let value = cursor
         .map_value(key)?
         .ok_or_else(|| QuotedSourceError::new(format!("quoted map is missing `{key}`")))?;
-    token_payload::decode_tokens(&value, code_id)
+    token_payload::decode_tokens(&value)
 }
 
-fn required_map_list_tokens(
-    cursor: &QuotedSourceCursor,
-    key: &str,
-    code_id: CodeId,
-) -> Result<Vec<Vec<Token>>, QuotedSourceError> {
+fn required_map_list_tokens(cursor: &QuotedSourceCursor, key: &str) -> Result<Vec<Vec<Token>>, QuotedSourceError> {
     cursor
         .map_value(key)?
         .ok_or_else(|| QuotedSourceError::new(format!("quoted map is missing `{key}`")))?
         .list_items()?
         .into_iter()
-        .map(|item| token_payload::decode_tokens(&item, code_id))
+        .map(|item| token_payload::decode_tokens(&item))
         .collect::<Result<Vec<_>, _>>()
 }
 
@@ -1700,7 +1692,6 @@ fn required_map_bool(cursor: &QuotedSourceCursor, key: &str) -> Result<bool, Quo
 fn optional_map_keyword_tokens(
     cursor: &QuotedSourceCursor,
     key: &str,
-    code_id: CodeId,
 ) -> Result<Vec<(String, Vec<Token>)>, QuotedSourceError> {
     let Some(list) = cursor.map_value(key)? else {
         return Ok(Vec::new());
@@ -1711,7 +1702,7 @@ fn optional_map_keyword_tokens(
         if items.len() != 2 {
             return Err(QuotedSourceError::new("quoted keyword entry expects a 2-tuple"));
         }
-        out.push((items[0].atom_name()?, token_payload::decode_tokens(&items[1], code_id)?));
+        out.push((items[0].atom_name()?, token_payload::decode_tokens(&items[1])?));
     }
     Ok(out)
 }

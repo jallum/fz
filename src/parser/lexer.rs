@@ -148,6 +148,9 @@ impl fmt::Display for LexError {
 }
 
 impl<'a> Lexer<'a> {
+    /// Test-only convenience: unit tests that only care about token shape,
+    /// not source identity, don't need to name a real `CodeId`.
+    #[cfg(test)]
     pub fn with_source_name(src: &'a str, source_name: impl AsRef<str>) -> Self {
         Self::with_code_id_and_source_name(src, CodeId(0), source_name)
     }

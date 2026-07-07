@@ -1521,6 +1521,7 @@ fn compiler2_macro_executable_runs_quote_unquote_on_the_source_heap() {
 fn subtract(left, []), do: left
 fn subtract(left, [item | rest]), do: subtract(delete_first(left, item), rest)
 "#,
+        crate::compiler2::CodeId::ZERO,
         &tel,
     )
     .expect("long-doc quoted parse");
@@ -1564,6 +1565,7 @@ defmodule M do
   fn subtract(left, [item | rest]), do: subtract(delete_first(left, item), rest)
 end
 "#,
+        crate::compiler2::CodeId::ZERO,
         &tel,
     )
     .expect("module quoted parse");

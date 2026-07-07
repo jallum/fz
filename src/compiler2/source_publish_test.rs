@@ -4,7 +4,7 @@ use super::quoted_surface::{SurfaceSourceContext, read_compiler_fragment_surface
 use super::source_publish::{ScopePublication, publish_scope};
 use super::source_test::quoted_tokens;
 use super::{
-    DriveOutcome, Job, ModuleId, Namespace, NamespaceSymbol, QuotedSourceBuilder, QuotedSourceHeap,
+    CodeId, DriveOutcome, Job, ModuleId, Namespace, NamespaceSymbol, QuotedSourceBuilder, QuotedSourceHeap,
     QuotedSourceMetadata, QuotedSourceRoot, ScopeSnapshot, World, parse_quoted_program,
 };
 use crate::telemetry::{Capture, ConfiguredTelemetry, Value};
@@ -79,7 +79,7 @@ fn publish_compiler_fragment_scope(
 
 fn grouped_function_root(source_name: &str, text: &str) -> QuotedSourceRoot {
     let tel = ConfiguredTelemetry::new();
-    let root = parse_quoted_program(source_name, text, &tel).expect("quoted parse");
+    let root = parse_quoted_program(source_name, text, CodeId::ZERO, &tel).expect("quoted parse");
     let items = root.cursor().list_items().expect("top-level items");
     let item_roots = items.into_iter().map(|item| item.root()).collect::<Vec<_>>();
     root.interned_list_subroot(&item_roots)

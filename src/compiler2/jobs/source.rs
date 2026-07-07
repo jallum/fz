@@ -27,7 +27,7 @@ pub(super) fn index_code(world: &mut World<'_>, code_id: CodeId) -> Result<JobEf
         .map(str::to_owned)
         .unwrap_or_else(|| format!("<code:{}>", code_id.as_u32()));
     let source_text = world.code_text(code_id).to_owned();
-    let quoted_root = parse_quoted_program(&source_name, &source_text, world.tel())
+    let quoted_root = parse_quoted_program(&source_name, &source_text, code_id, world.tel())
         .map_err(|error| emit_job_diagnostic(world, error.to_diagnostic()))?;
     let ctx = SurfaceSourceContext::new(code_id);
     let read_surface = if world.is_bootstrap(code_id) {

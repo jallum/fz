@@ -7,7 +7,7 @@ use super::{CodeId, QuotedSourceRoot, parse_quoted_program};
 
 fn grouped_function_root(source_name: &str, text: &str) -> QuotedSourceRoot {
     let tel = ConfiguredTelemetry::new();
-    let root = parse_quoted_program(source_name, text, &tel).expect("quoted parse");
+    let root = parse_quoted_program(source_name, text, CodeId::ZERO, &tel).expect("quoted parse");
     let items = root.cursor().list_items().expect("top-level items");
     let item_roots = items.into_iter().map(|item| item.root()).collect::<Vec<_>>();
     root.interned_list_subroot(&item_roots)
@@ -140,5 +140,63 @@ fn new(first, last, step), do: %Range{first: first, last: last, step: step}
     assert_eq!(
         fields.iter().map(|(name, _)| name.as_str()).collect::<Vec<_>>(),
         ["first", "last", "step"]
+    );
+}
+
+/// A macro-expanded function body is decoded with the CALLER's `code_id`
+/// (jobs/source.rs reads `expanded_function_source.code`, the home file of
+/// the function being expanded), but its tokens may have been rematerialized
+/// from a DIFFERENT file's baked payload (`world::run_macro_on_source`
+/// splices a macro's own quoted fragment, offsets and all, into the caller's
+/// heap). A decoded token's span must always name the file it was actually
+/// lexed from, no matter which `code_id` a later decode call happens to
+/// pass -- the code id is embedded in the token tuple at encode time, so it
+/// travels with the token rather than being reattached externally at decode.
+#[test]
+fn tokens_decoded_under_a_different_callers_code_id_still_carry_their_own_files_id() {
+    let tel = ConfiguredTelemetry::new();
+    let mut compiler = super::Compiler2::new(&tel);
+    let macro_file_code = compiler.submit_code(super::CodeSubmission {
+        name: Some("macro_file.fz".to_string()),
+        text: String::new(),
+    });
+    let caller_code = compiler.submit_code(super::CodeSubmission {
+        name: Some("caller_file.fz".to_string()),
+        text: String::new(),
+    });
+    assert_ne!(
+        macro_file_code, caller_code,
+        "the two submitted files must actually get distinct code ids for this test to be meaningful"
+    );
+
+    // Lex and parse straight off the macro file's own code id, exactly like
+    // the tokens `run_macro_on_source` rematerializes really were: real bytes
+    // from that file, real `code_id` at the lexer.
+    let source = "fn tmpl(), do: x :: integer\n";
+    let root = parse_quoted_program("macro_file.fz", source, macro_file_code, &tel).expect("quoted parse");
+    let items = root.cursor().list_items().expect("top-level items");
+    let item_roots = items.into_iter().map(|item| item.root()).collect::<Vec<_>>();
+    let grouped = root
+        .interned_list_subroot(&item_roots)
+        .expect("grouped function root should intern");
+
+    // Decode as the CALLER would: with the caller's own code id, not the
+    // macro file's -- reproducing the exact cross-splice mismatch a token
+    // that only remembers its code id via the decode call site would get
+    // wrong.
+    let surface =
+        derive_function_surface(&grouped, caller_code, Some("caller_file.fz"), &tel).expect("derive function surface");
+
+    let Expr::Ascribe(_, type_expr) = &surface.clauses[0].body.node else {
+        panic!("expected an ascribed body expression");
+    };
+    let token = type_expr
+        .0
+        .first()
+        .expect("type expr body should carry at least one token");
+    assert_eq!(
+        token.span.code_id,
+        crate::source::Id(macro_file_code.as_u32()),
+        "a spliced token must carry the code id of the file it was actually lexed from"
     );
 }

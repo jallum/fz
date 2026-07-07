@@ -8,6 +8,7 @@ use crate::source::Span;
 use crate::telemetry::Telemetry;
 use fz_runtime::any_value::AnyValueRef;
 
+use super::code::CodeId;
 use super::token_payload;
 use super::{
     QuotedLexicalContext, QuotedLexicalContextKind, QuotedSourceBuilder, QuotedSourceError, QuotedSourceHeap,
@@ -45,10 +46,11 @@ impl From<QuotedSourceError> for FrontDoorError {
 pub fn parse_quoted_program(
     source_name: impl AsRef<str>,
     source_text: &str,
+    code_id: CodeId,
     tel: &dyn Telemetry,
 ) -> Result<QuotedSourceRoot, FrontDoorError> {
     let source_name = Rc::<str>::from(source_name.as_ref());
-    let tokens = Lexer::with_source_name(source_text, source_name)
+    let tokens = Lexer::with_code_id_and_source_name(source_text, crate::source::Id(code_id.as_u32()), source_name)
         .tokenize(tel)
         .map_err(|error| FrontDoorError::syntax(error.msg, error.span))?;
     FrontDoorParser::new(tokens).parse_program()
