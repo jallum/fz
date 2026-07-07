@@ -480,7 +480,6 @@ fn fn_at_different_arity_resolves() {
 
 // Ported from src/cli/test_runner_test.rs: test macro with passing assert runs without error
 #[test]
-#[ignore = "red-worklist: triage + re-enable"]
 fn test_macro_passing_assert_compiles() {
     let tel = ConfiguredTelemetry::new();
     let mut compiler = Compiler2::new(&tel);
@@ -500,7 +499,6 @@ fn test_macro_passing_assert_compiles() {
 
 // Ported from src/cli/test_runner_test.rs: test macro with failing assert surfaces as error result
 #[test]
-#[ignore = "red-worklist: triage + re-enable"]
 fn test_macro_failing_assert_compiles() {
     let tel = ConfiguredTelemetry::new();
     let mut compiler = Compiler2::new(&tel);
@@ -523,7 +521,6 @@ fn test_macro_failing_assert_compiles() {
 
 // Ported from src/cli/test_runner_test.rs: multiple test blocks; one failure makes overall result an error
 #[test]
-#[ignore = "red-worklist: triage + re-enable"]
 fn multiple_test_blocks_compile() {
     let tel = ConfiguredTelemetry::new();
     let mut compiler = Compiler2::new(&tel);

@@ -2713,7 +2713,7 @@ fn code_surface_can_publish_function(source: &QuotedCodeSource, function_ref: &F
     source.surface.forms.iter().any(|form| match form {
         ScopeForm::Function(function) => function.name == function_ref.name && function.arity == function_ref.arity,
         ScopeForm::CompilerService(service) => source_definition_matches_function(&service.source, function_ref),
-        ScopeForm::MacroCall(macro_call) => source_definition_matches_function(&macro_call.source, function_ref),
+        ScopeForm::MacroCall(macro_call) => item_macro_call_may_define(&macro_call.source, function_ref),
         ScopeForm::Alias(_)
         | ScopeForm::Import(_)
         | ScopeForm::Require(_)
@@ -2730,6 +2730,28 @@ fn source_definition_matches_function(source: &QuotedSourceRoot, function_ref: &
         Some(ReservedSourceDefinition::Function { name, arity, .. })
             if name == function_ref.name && arity == function_ref.arity
     )
+}
+
+/// Whether an unexpanded item-level macro call could still turn out to be the
+/// home of `function_ref`. A reserved head (`fn`/`fnp`/`defmacro`/`defmodule`/
+/// `defprotocol`/`defimpl`) names its target statically, so a definite
+/// mismatch rules the call out for good (same rule as
+/// `source_definition_matches_function`). Any other head is a call to a
+/// user-defined `defmacro`: its expansion is unknown until it actually runs,
+/// so the call is an opaque candidate home for every still-unresolved global
+/// name. Treating it as a non-match here would strand a macro-produced root
+/// or callee name behind a wait no producer arm ever wakes (the arm-less
+/// `FunctionSourceStash` fallback in `demand_function_scope`), since nothing
+/// would ever demand the `ScopeCode` that expands the macro and stashes the
+/// name it produces.
+fn item_macro_call_may_define(source: &QuotedSourceRoot, function_ref: &FunctionRef) -> bool {
+    match reserved_source_definition(source) {
+        Ok(Some(ReservedSourceDefinition::Function { name, arity, .. })) => {
+            name == function_ref.name && arity == function_ref.arity
+        }
+        Ok(Some(_)) => false,
+        Ok(None) | Err(_) => true,
+    }
 }
 
 /// A consumer's references are a set: the same type named twice (e.g. by both a
