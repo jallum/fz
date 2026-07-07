@@ -1029,7 +1029,7 @@ fn split_improper_list(
         return Ok((Vec::new(), None));
     };
     if let Some(node) = last.ast_node()?
-        && atom_name(&node.head)? == "|"
+        && node_head_is_atom_named(&node, "|")
     {
         let parts = node.tail.list_items()?;
         if parts.len() != 2 {
@@ -1053,7 +1053,7 @@ fn split_improper_pattern_list(
         return Ok((Vec::new(), None));
     };
     if let Some(node) = last.ast_node()?
-        && atom_name(&node.head)? == "|"
+        && node_head_is_atom_named(&node, "|")
     {
         let parts = node.tail.list_items()?;
         if parts.len() != 2 {
@@ -1634,6 +1634,18 @@ fn expect_ast_node(cursor: &QuotedSourceCursor, context: &str) -> Result<QuotedA
 
 fn atom_name(cursor: &QuotedSourceCursor) -> Result<String, QuotedSourceError> {
     cursor.atom_name()
+}
+
+/// True when `node.head` is itself an atom equal to `name`.
+///
+/// An AST node's `head` is not always an atom: remote calls and closure
+/// calls carry a quoted callee AST there instead (see `decode_expr`'s own
+/// `node.head.root().tag() != ATOM` guard). Special-form markers such as the
+/// improper-list `|` node are only ever atom-headed, so a non-atom head just
+/// means "not this marker" rather than a decode error.
+fn node_head_is_atom_named(node: &QuotedAstNode, name: &str) -> bool {
+    node.head.root().tag() == fz_runtime::any_value::ValueKind::ATOM
+        && atom_name(&node.head).ok().as_deref() == Some(name)
 }
 
 fn alias_name_from_args(args: &[QuotedSourceCursor]) -> Result<String, QuotedSourceError> {
