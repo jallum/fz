@@ -13,11 +13,15 @@
     {
       "text": "Golden pass on fz-go4.1/frontdoor-cli-ownership (commits 417d4c2b0, e391791d5).\n\nRESOLVED (goldens refreshed, verified field-by-field — program output byte-identical, no heap field increased):\n- append, filter, reverse, quicksort: diffs were stale scheduler counters (reductions_remaining + yield counters; confirmed deterministic across repeated runs) plus reverse-interp cons_allocs 10-\u003e5 (owned-cons reuse improvement landing in the interpreter's measured output). quicksort additionally hit its 11-cons native target (417d4c2b0) and now has the canonical expected.txt.\n\nRECLASSIFIED — NOT golden choices; real behavior regressions, must NOT be blessed (proven pre-existing vs parent commit ca703c6b7, so not caused by the cons-reuse arc):\n- tree: scalar_box_allocs 0-\u003e14, allocs 3-\u003e17, AND lost its type/no-matching-clause warning (the diagnostic that closed fz-rh2.11.8).\n- case_tuple_pattern_sequential: lost its case_clause fall-through diagnostics.\n- enum_list_allocations: an allocation slot increased (3-\u003e15).\nThese belong with the lost-exhaustiveness-diagnostics regression tracked under fz-9i4.7, not a golden decision.\n\nSTILL OPEN here:\n- bsx_guard_eq: interp selects a different branch (matches this ticket's existing note) — semantic check still needed.\n- enum_sort: telemetry pin is now stale-LOW (runtime reuse 1-\u003e132 after 417d4c2b0) and interp mismatches; pin needs updating to the improved numbers.",
       "timestamp": "2026-06-18T03:29:54Z"
+    },
+    {
+      "text": "Folded at 2479a69fd (audit-clean; commit-message +1-\u003e-1 direction corrected at fold). Adversarial audit verified EVERY rebless LEGITIMATE by running fixtures live + byte-diffing: append/quicksort/reverse are single-line reductions_remaining-only drift (emit_back_edge_yield_check codegen-shape counter, not semantics/allocs); enum_sort/enum_reduce_suspend/enum_list_allocations-interp goldens match live output exactly; the enum_sort static pin rebaselined to the honest current value (15/21/15/15 -\u003e 14/20/14/14, runtime reuse unchanged 132/132); deleted expected.repl/jit/aot/fz2-* sidecars confirmed never read by the harness (only expected.\u003crun|interp|build\u003e.txt); bsx_guard_eq verified :guard_hit on both paths (already fixed by fz-bin.11). Matrix 18-\u003e11 red. All 10 fixtures dispositioned: append/quicksort/reverse/enum_sort/enum_reduce_suspend/filter/process_heap_stats/bsx_guard_eq -\u003e fz2 goldens/green; enum_list_allocations interp green, run/build honestly LEFT RED (real native regression, not blessed); tree deferred vs fz-9i4.7.1. lib 1248/0/6. Two audit follow-ups filed: fz-6jh (enum_list_allocations native scalar_box 3-\u003e15 regression) + fz-myo (reductions_remaining upward creep, 2nd rebless of same symptom -\u003e root-cause not rebless again).",
+      "timestamp": "2026-07-07T21:52:01Z"
     }
   ],
   "priority": 2,
   "status": "open",
   "title": "Decide fz2 goldens for mismatch-without-failure fixtures",
   "type": "task",
-  "updated_at": "2026-06-18T03:29:54Z"
+  "updated_at": "2026-07-07T21:52:01Z"
 }
