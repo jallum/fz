@@ -7,9 +7,15 @@
   "id": "fz-hwn",
   "labels": [],
   "parent": "fz-rh2",
+  "comments": [
+    {
+      "text": "CLOSE-OUT verified (fresh close-out auditor, code-level not child-checkbox-level). REMOVAL TARGETS: all six named symbols (runtime_callable_values, runtime_callable_boundary_values, note_callable_arg_uses, ClosureBoundaryUse::CallableArg, closure_value_needs_runtime_boundary, resolve_materialized_runtime_callable_boundary_activations) grep to ZERO hits. ABI-ready callable-entry derivation now rides session.demanded_boundaries() (pull.rs:826 via backend.rs:287/532) not a callable-typed-value scan; native boundary/identity selection rides transport.callable_boundary_ids/publication_boundaries (native.rs:2943/3030) not capture-type scans; native explicitly 'does not re-derive the choice' (native.rs:2933). Return-vocabulary-narrowing DISPROVED by construction: TransportPosition {ExecutableInput,ExecutableReturn,ResumePayload,ReturnPayload,CallArg,EntryCapture} all resolve through ONE HashMap\u003cTransportPosition,ShapeId\u003e (transport.rs:264, jobs/transport.rs:335/365), test-enforced (transport_contract_test.rs:141/1173/2449 share-one-ShapeId). Flat-capture-metadata GONE: CallableDescr.capture_shapes: Box\u003c[ShapeId]\u003e recursively via ShapeDescr::{Nothing,Lane,Tuple,Callable} (transport.rs:109/225). Old TrashRuntimeValueLayout/DeliveredShape/NativeDemandAbi/ReturnAbi vocabulary: zero hits (one surviving 'Trash' is a negative regrowth-guard assertion). GOAL: RuntimeDemand is a documented PRODUCT refinement {shape,callable} of the epic's sketched sum (semantic.rs:308-317 -- keeps both axes independently monotone, avoids the non-monotone callable-axis join; superseded-in-the-good-sense, provably stronger). Tests exact baseline: lib 1241/0/6, matrix 19 known-red (all reusable-cons/allocation/convergence family, none hwn/demand/transport). Docs (pipeline/fact-engine/semantic-fixpoint/telemetry/compiler2-migration.md) present-tense, match code. No must-fix residue; the only open items (3 red-worklist ignores, 1 spec-count TODO) belong to other tracked tracks (reusable-cons/GC fz-3bb/fz-km3), not fz-hwn. Closing confirms fz-hwn.7 -\u003e unblocks fz-rh2.16.5.",
+      "timestamp": "2026-07-07T18:37:01Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "Compiler2 runtime value demand: derive ABI and callable work from demand",
   "type": "epic",
-  "updated_at": "2026-06-14T10:25:05Z"
+  "updated_at": "2026-07-07T18:37:01Z"
 }
