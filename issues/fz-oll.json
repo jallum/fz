@@ -6,9 +6,15 @@
   "description": "DEAD CODE (surfaced by the ground-literal-value fold investigation): RuntimeTypePredicate carries ints: ObservedSet\u003ci64\u003e and floats: ObservedSet\u003cu64\u003e value-membership sets, and native codegen fully implements membership emission for them (emit_i64_membership / emit_u64_membership loop over the values, native_codegen/prim.rs), but the SOLE producer Types::runtime_type_predicate (src/compiler2/types/mod.rs:993-1023) ALWAYS leaves ints.values / floats.values empty (BTreeSet::new()) -- only the cofinite bit varies. Comment there: \"Numbers are presence bits: the predicate is a kind check, never a value-membership set, from this pipeline.\"\n\nSo numeric value-membership is currently unreachable from production; the machinery runs only via test fixtures. Two clean outcomes:\n- Prune the compiler2-side dead production path (kind-check only), keeping the shared ObservedSet machinery; OR\n- If numeric static reasoning is ever pursued (the deferred type-precision / reverse-Arc-B epic -- restore IntSet/FloatSet, git-recoverable from 643fa9812), THIS is the wiring point where the lattice would populate the sets.\n\nDecide and either prune or document as the intended wiring point. Confirmed independently by two investigation lanes (blast-radius \"number-is-a-kind\" + the ObservedSet carrier).",
   "id": "fz-oll",
   "labels": [],
+  "comments": [
+    {
+      "text": "DONE (folded to acee7e08a). Decision: DOCUMENT as dormant wiring point, NOT prune. Verified deadness: RuntimeTypePredicate.ints/floats value sets are always empty in production (sole producer Types::runtime_type_predicate assigns only FiniteSet::any()/none(); pinned by existing test). Verified the prune-vs-document pivot MYSELF: emit_i64_membership is SHARED — prim.rs:1201 ints(dead) + prim.rs:1231 atoms(LIVE, atom ids-\u003ei64, real non-empty sets), so it cannot be pruned; emit_u64_membership is floats-only(dead) but is the symmetric counterpart + the deferred numeric-singleton-precision epic's (reverse-Arc-B, git-recoverable 643fa9812) natural wiring point. Pruning i64 would break atoms; pruning u64 would destroy the wiring point + create asymmetry. Added precise doc comments at the producer (types/mod.rs) + emit_i64/u64_membership (prim.rs) + receive twins (receive.rs) marking the dormant-wiring status; comments accurately distinguish i64(atom-shared) vs u64(floats-only). Comment-only (30+/1-), no behavior change. lib 1231/0/9, clippy clean, fixture 328/19.",
+      "timestamp": "2026-07-07T02:59:07Z"
+    }
+  ],
   "priority": 3,
   "status": "open",
   "title": "Dead numeric value-membership machinery: ObservedSet\u003ci64\u003e/\u003cu64\u003e built in codegen, never populated by the sole producer",
   "type": "task",
-  "updated_at": "2026-07-06T17:42:33Z"
+  "updated_at": "2026-07-07T02:59:07Z"
 }
