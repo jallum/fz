@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-07-07T19:21:55Z",
+  "description": "SURFACED by the fz-rh2.17.5.6.7 adversarial audit. That ticket realized the grammar-owned 'dot consumes trailing eol by construction' model at TWO dot-consuming sites (finish_closure_call, finish_remote_target) via skip_newlines() after Tok::Dot. Three other Tok::Dot-consuming sites did NOT get the same treatment and still do not continue across a newline: parse_alias_expr (frontdoor.rs ~884-891, alias-path chains like Foo.Bar), the capture-target dot chain (frontdoor.rs ~1284-1301, e.g. \u0026Foo.bar/1), and parse_upper_path (frontdoor.rs ~1854-1864, import/require module paths). So Foo.\\n  Bar and \u0026Foo.\\n  bar/1 error where remote access a.\\n  b now works. Pre-existing (never handled), NOT a regression from fz-rh2.17.5.6.7. DECIDE per-site whether trailing-eol-after-dot is the intended Elixir-shaped behavior for alias/module/capture paths (it may legitimately differ from value access -- check ../elixir), then apply skip_newlines() uniformly where it should continue, with a regression test per site. Completes the 'dot by construction' intent. Related: fz-rh2.17.5.6.7.",
+  "id": "fz-rh2.17.5.6.14",
+  "labels": [],
+  "parent": "fz-rh2.17.5.6",
+  "priority": 3,
+  "status": "open",
+  "title": "Frontdoor: apply dot trailing-eol uniformly across all dot-consuming sites (alias path, capture dot-chain, upper path)",
+  "type": "bug",
+  "updated_at": "2026-07-07T19:21:55Z"
+}
