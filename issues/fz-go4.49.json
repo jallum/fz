@@ -7,9 +7,15 @@
   "id": "fz-go4.49",
   "labels": [],
   "parent": "fz-go4",
+  "comments": [
+    {
+      "text": "DONE (folded to 4cf9dff01). Determination: USER-REACHABLE. Empirically confirmed (drove Compiler2 on \u003c\u003c1::MOD\u003e\u003e): float (\u003c\u003cx::3.14\u003e\u003e, ValueKind FLOAT), list (\u003c\u003cx::[1]\u003e\u003e, LIST), and bare 2-tuple (\u003c\u003cx::{1,2}\u003e\u003e, STRUCT — Elixir encodes exactly-2-tuples as a raw struct, not a {} call node) literals in modifier position all bypass the ast_node() arm and reach the fallback via valid parse; maps/N!=2 tuples produce call nodes caught earlier. Reclassified QuotedSourceError::new -\u003e ::user(PARSE_BITSTRING_BAD_MODIFIER), REUSING the existing code already used by the unrecognized-atom-modifier case (concordance — no new code minted). Comment documents which shapes reach the arm + why others don't. Fixture 00556_bitstring_float_modifier.fz + port_resolve_test bitstring_float_modifier_is_parse_error drive the pipeline and assert parse/bitstring-bad-modifier (was internal/post-resolution-leftover). Self-audited: code exists, comment accurate. lib 1232/0/9, clippy clean, single-threaded fixture 328/19. NOTE: the diagnostic's SPAN is still Span::DUMMY (emit_surface_read_error) — same dummy-span issue as fz-ose; out of scope here.",
+      "timestamp": "2026-07-07T03:06:54Z"
+    }
+  ],
   "priority": 3,
   "status": "open",
   "title": "Confirm whether the bitstring 'unsupported fragment kind' fallback is user-reachable (float/list/tuple in modifier position)",
   "type": "bug",
-  "updated_at": "2026-07-05T16:24:30Z"
+  "updated_at": "2026-07-07T03:06:54Z"
 }
