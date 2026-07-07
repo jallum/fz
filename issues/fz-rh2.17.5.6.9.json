@@ -11,9 +11,15 @@
   "id": "fz-rh2.17.5.6.9",
   "labels": [],
   "parent": "fz-rh2.17.5.6.8",
+  "comments": [
+    {
+      "text": "Folded at 34eb21461 (audit-clean). Adversarial audit found NO MUST-FIX: store fidelity byte-for-byte identical to the old module_struct_fields scan (both read the same parse_struct_form AST node -\u003e sound foundation for slices .10-.13), publish timing mirrors other co-outputs (ProtocolDispatch/ModuleIndexed), additive-only (resolve/body/semantic/backend untouched, confirmed by diff), demand_fact_producer catch-all safe (StructDefined never demanded), behavior-neutral (matrix 18 unchanged). Test-gap NIT applied at fold: the independence test now also pins store CONTENT (fields == [x,y] in source order, via the struct_def/defined telemetry payload). Two follow-ups filed: fz-rh2.17.5.6.8.1 (duplicate-defstruct first-vs-last landmine + defstruct default-value form) gating .13. lib 1248/0/6, matrix 18 known-red, clippy+fmt clean. Unblocked .10 (obligation store + resolve migration) and .12 (typed protocol-impl-target).",
+      "timestamp": "2026-07-07T21:44:50Z"
+    }
+  ],
   "priority": 1,
   "status": "closed",
   "title": "Structs: add StructDef store + FactKey::StructDefined published on defstruct settle",
   "type": "bug",
-  "updated_at": "2026-07-07T21:30:55Z"
+  "updated_at": "2026-07-07T21:44:50Z"
 }
