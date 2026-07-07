@@ -112,6 +112,44 @@ impl fmt::Display for Tok {
     }
 }
 
+/// True for tokens whose grammar production is exclusively infix/postfix —
+/// they never begin a fresh expression as a prefix. `Minus` and `Percent`
+/// are the deliberate exceptions among the operator tokens, because both are
+/// dual prefix/infix in fz's grammar: `parse_prefix` accepts `-` as unary
+/// negation and `%` as a `%Foo{...}` struct literal, while `infix_bp` also
+/// gives them subtraction and modulo. A `-` or `%` leading a fresh physical
+/// line is therefore the start of a new statement (unary negation / struct
+/// literal), not a continuation. This mirrors Elixir's `unary_op` token
+/// classification (elixir_tokenizer.erl), which never swallows a preceding
+/// eol for an ambiguous prefix-capable operator; `%` has no modulo in Elixir,
+/// so that dual role is fz-specific and must be excluded here explicitly.
+fn is_infix_only_continuation(tok: &Tok) -> bool {
+    matches!(
+        tok,
+        Tok::Dot
+            | Tok::Eq
+            | Tok::Or
+            | Tok::And
+            | Tok::EqEq
+            | Tok::NotEq
+            | Tok::Lt
+            | Tok::LtEq
+            | Tok::Gt
+            | Tok::GtEq
+            | Tok::Pipe
+            | Tok::In
+            | Tok::ColonColon
+            | Tok::SlashSlash
+            | Tok::PlusPlus
+            | Tok::MinusMinus
+            | Tok::Concat
+            | Tok::DotDot
+            | Tok::Plus
+            | Tok::Star
+            | Tok::Slash
+    )
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Token {
     pub tok: Tok,
@@ -693,14 +731,34 @@ impl<'a> Lexer<'a> {
     /// Opens a `[fz, lexer, pass]` span and emits a
     /// `[fz, lexer, tokens_built]` event with the final token count on
     /// success. The span's stop event records elapsed_ns.
+    ///
+    /// Owns the eol/continuation decision at tokenize time (Elixir model:
+    /// elixir_tokenizer.erl's `add_token_with_eol`/`previous_was_eol`). A
+    /// physical newline is emitted as a first-class `Tok::Newline`. When
+    /// the next real token is one that can *only* be infix/postfix — it has
+    /// no unary/prefix production, see [`is_infix_only_continuation`] — any
+    /// run of `Newline`s immediately before it is dropped, so the token
+    /// continues the previous expression regardless of which line it
+    /// starts. Tokens that double as a prefix (`Minus`, `Percent`, and
+    /// anything else `parse_prefix` accepts) are excluded on purpose: a
+    /// leading `-` or `%` after a real newline always starts a fresh
+    /// statement (unary negation / `%Foo{...}` struct literal), never a
+    /// continuation of the previous one — this is what lets the parser's
+    /// Pratt loop stop at a bare `Newline` by construction, with no
+    /// lookahead heuristic required downstream.
     pub fn tokenize(mut self, tel: &dyn Telemetry) -> Result<Vec<Token>, LexError> {
         use crate::telemetry::TelemetryExt;
         let metadata = self.telemetry_metadata();
         let _span = tel.span(LEX_PASS_NAME, metadata.clone());
-        let mut out = Vec::new();
+        let mut out: Vec<Token> = Vec::new();
         loop {
             let t = self.next_token()?;
             let done = matches!(t.tok, Tok::Eof);
+            if is_infix_only_continuation(&t.tok) {
+                while matches!(out.last().map(|last| &last.tok), Some(Tok::Newline)) {
+                    out.pop();
+                }
+            }
             out.push(t);
             if done {
                 tel.execute(TOKENS_BUILT_NAME, &measurements! { count: out.len() }, &metadata);

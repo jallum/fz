@@ -28,6 +28,19 @@ fn token_kinds(cursor: &super::QuotedSourceCursor) -> Vec<Tok> {
         .collect()
 }
 
+/// Digs out the `do:` body of the first top-level `fn`/`fnp`/`defmacro` item:
+/// `{head_name, meta, [head, [{:do, body}]]}` -> `body`.
+fn fn_do_body(root: &super::QuotedSourceRoot) -> super::QuotedSourceCursor {
+    let items = root.cursor().list_items().expect("top-level items");
+    let fn_node = items[0].ast_node().expect("fn cursor").expect("fn node");
+    fn_node.tail.list_items().expect("fn args")[1]
+        .list_items()
+        .expect("fn kw list")[0]
+        .tuple_items()
+        .expect("do tuple")[1]
+        .clone()
+}
+
 #[test]
 fn compiler2_frontdoor_parses_alias_import_and_require_as_quoted_calls() {
     let tel = ConfiguredTelemetry::new();
@@ -377,6 +390,182 @@ fn compiler2_frontdoor_parses_assignment_rhs_after_newline() {
     )
     .expect("assignment rhs after newline parse");
     assert_quoted_mentions(&root, &["fn", "=", "+"]);
+}
+
+// The four cases below pin the grammar-owned eol/eoe model: newline
+// continuation falls out of which token follows a run of physical
+// newlines (infix-only tokens swallow it at tokenize time; the parser
+// never peeks past a newline to decide). No test-only lexer/parser hooks
+// are used — each asserts the real parse tree `parse_quoted_program`
+// produces.
+
+#[test]
+fn compiler2_frontdoor_continues_expr_across_newline_after_operator() {
+    // A binary operator at the END of a line (`+` here) continues onto the
+    // next line: this must parse as the single call `1 + 2`, not as two
+    // statements `1` followed by a dangling `+ 2`.
+    let tel = ConfiguredTelemetry::new();
+    let root = parse_quoted_program(
+        "operator-trailing-newline.fz",
+        "fn main() do\n  1 +\n    2\nend\n",
+        CodeId::ZERO,
+        &tel,
+    )
+    .expect("trailing operator newline parse");
+    let body = fn_do_body(&root).ast_node().expect("body cursor").expect("body node");
+    assert_eq!(head_name(&body), "+", "newline after `+` must continue the expression");
+    let args = body.tail.list_items().expect("+ args");
+    assert_eq!(args.len(), 2);
+    assert_eq!(args[0].int_value().expect("lhs"), 1);
+    assert_eq!(args[1].int_value().expect("rhs"), 2);
+}
+
+#[test]
+fn compiler2_frontdoor_continues_expr_across_newline_after_dot() {
+    // `.` at the end of a line continues onto the next: `cfg.\n  value`
+    // must parse as the single remote-access node `cfg.value`, not error
+    // out looking for a field name and hit a newline instead.
+    let tel = ConfiguredTelemetry::new();
+    let root = parse_quoted_program(
+        "dot-trailing-newline.fz",
+        "fn main() do\n  cfg.\n    value\nend\n",
+        CodeId::ZERO,
+        &tel,
+    )
+    .expect("trailing dot newline parse");
+    let body = fn_do_body(&root).ast_node().expect("body cursor").expect("body node");
+    assert_eq!(
+        head_name(&body),
+        ".",
+        "newline after `.` must continue the remote access"
+    );
+    let tail = body.tail.list_items().expect(". tail");
+    assert_eq!(tail.len(), 2);
+    let target = tail[0].ast_node().expect("target cursor").expect("target node");
+    assert_eq!(head_name(&target), "cfg");
+    assert_eq!(tail[1].atom_name().expect("field atom"), "value");
+}
+
+#[test]
+fn compiler2_frontdoor_separates_statements_at_a_bare_newline() {
+    // Two expressions on separate lines with no continuing operator are
+    // two statements (`eoe`-separated), not one: the block wraps them as
+    // `__block__` with two independent children.
+    let tel = ConfiguredTelemetry::new();
+    let root = parse_quoted_program(
+        "block-separation.fz",
+        "fn main() do\n  a\n  b\nend\n",
+        CodeId::ZERO,
+        &tel,
+    )
+    .expect("block separation parse");
+    let body = fn_do_body(&root).ast_node().expect("body cursor").expect("body node");
+    assert_eq!(head_name(&body), "__block__");
+    let stmts = body.tail.list_items().expect("block items");
+    assert_eq!(stmts.len(), 2);
+    assert_eq!(
+        head_name(&stmts[0].ast_node().expect("first cursor").expect("first node")),
+        "a"
+    );
+    assert_eq!(
+        head_name(&stmts[1].ast_node().expect("second cursor").expect("second node")),
+        "b"
+    );
+}
+
+#[test]
+fn compiler2_frontdoor_leading_operator_starts_a_new_expression() {
+    // The tricky disambiguation the old lookahead heuristic got wrong: a
+    // `-` that LEADS a fresh line is a unary prefix starting a NEW
+    // statement, never a continuation of the previous one. `a\n-b` is two
+    // statements — `a`, then the unary call `-(b)` — not the single binary
+    // expression `a - b`.
+    let tel = ConfiguredTelemetry::new();
+    let root = parse_quoted_program(
+        "leading-operator-new-statement.fz",
+        "fn main() do\n  a\n  -b\nend\n",
+        CodeId::ZERO,
+        &tel,
+    )
+    .expect("leading operator new-statement parse");
+    let body = fn_do_body(&root).ast_node().expect("body cursor").expect("body node");
+    assert_eq!(
+        head_name(&body),
+        "__block__",
+        "a bare newline before a leading `-` must not fuse the two statements into one binary expression"
+    );
+    let stmts = body.tail.list_items().expect("block items");
+    assert_eq!(stmts.len(), 2);
+    assert_eq!(
+        head_name(&stmts[0].ast_node().expect("first cursor").expect("first node")),
+        "a"
+    );
+    let second = stmts[1].ast_node().expect("second cursor").expect("second node");
+    assert_eq!(head_name(&second), "-", "leading `-` parses as the unary operator");
+    let unary_args = second.tail.list_items().expect("unary - args");
+    assert_eq!(
+        unary_args.len(),
+        1,
+        "unary `-` takes exactly one argument, not `a` and `b`"
+    );
+    assert_eq!(
+        head_name(&unary_args[0].ast_node().expect("operand cursor").expect("operand node")),
+        "b"
+    );
+}
+
+#[test]
+fn compiler2_frontdoor_leading_struct_literal_starts_a_new_expression() {
+    // `%` is fz's OTHER dual prefix/infix token (like `-`): prefix it opens
+    // a `%Foo{...}` struct literal, infix it is modulo. A `%` that LEADS a
+    // fresh line is the struct-literal prefix starting a NEW statement, not
+    // a modulo continuation of the previous line. `a\n%Foo{x: 1}` must parse
+    // as two statements — `a`, then the struct `%Foo{x: 1}` — not the infix
+    // `a % Foo` with a dangling `{x: 1}`.
+    let tel = ConfiguredTelemetry::new();
+    let root = parse_quoted_program(
+        "leading-struct-new-statement.fz",
+        "fn main() do\n  a\n  %Foo{x: 1}\nend\n",
+        CodeId::ZERO,
+        &tel,
+    )
+    .expect("leading struct-literal new-statement parse");
+    let body = fn_do_body(&root).ast_node().expect("body cursor").expect("body node");
+    assert_eq!(
+        head_name(&body),
+        "__block__",
+        "a bare newline before a leading `%` must not fuse the two statements into infix modulo"
+    );
+    let stmts = body.tail.list_items().expect("block items");
+    assert_eq!(stmts.len(), 2);
+    assert_eq!(
+        head_name(&stmts[0].ast_node().expect("first cursor").expect("first node")),
+        "a"
+    );
+    let second = stmts[1].ast_node().expect("second cursor").expect("second node");
+    assert_eq!(
+        head_name(&second),
+        "%",
+        "leading `%` parses as the struct-literal prefix"
+    );
+    let struct_args = second.tail.list_items().expect("% args");
+    assert_eq!(
+        struct_args.len(),
+        2,
+        "struct node is `%(alias, map)`, not infix `%(a, Foo)`"
+    );
+    let alias = struct_args[0].ast_node().expect("alias cursor").expect("alias node");
+    assert_eq!(head_name(&alias), "__aliases__");
+    assert_eq!(
+        alias.tail.list_items().expect("alias segments")[0]
+            .atom_name()
+            .expect("alias segment atom"),
+        "Foo"
+    );
+    assert_eq!(
+        head_name(&struct_args[1].ast_node().expect("map cursor").expect("map node")),
+        "%{}"
+    );
 }
 
 #[test]

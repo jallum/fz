@@ -607,9 +607,14 @@ impl FrontDoorParser {
         self.saw_no_parens_call = false;
         let mut lhs = self.parse_prefix(module_path, scope)?;
         loop {
-            if self.peek_is(&Tok::Newline) && self.starts_expr_continuation(self.peek_after_newlines()) {
-                self.skip_newlines();
-            }
+            // No newline-continuation lookahead here by construction: the
+            // lexer has already swallowed any newline that precedes a
+            // token which can only ever be infix/postfix (see
+            // `is_infix_only_continuation` in the lexer). A `Newline` that
+            // still reaches this point means a real statement boundary, so
+            // none of the arms below match it and the loop falls through
+            // to `break`, handing the boundary to the caller's
+            // `skip_newlines` (the block/`eoe` layer).
             if self.peek_is(&Tok::LParen) {
                 lhs = self.finish_call(lhs, module_path, scope)?;
                 continue;
@@ -814,6 +819,7 @@ impl FrontDoorParser {
         scope: &[String],
     ) -> Result<ParsedExpr, FrontDoorError> {
         self.expect(&Tok::Dot, "`.`")?;
+        self.skip_newlines();
         self.expect(&Tok::LParen, "`(`")?;
         let mut args = self.parse_paren_call_args(&Tok::RParen, module_path, scope)?;
         self.expect(&Tok::RParen, "`)`")?;
@@ -835,6 +841,7 @@ impl FrontDoorParser {
         scope: &[String],
     ) -> Result<ParsedExpr, FrontDoorError> {
         self.expect(&Tok::Dot, "`.`")?;
+        self.skip_newlines();
         let field = match self.bump() {
             Tok::Ident(name) | Tok::Upper(name) => name,
             other => return Err(self.error(format!("expected name after `.`, got {:?}", other))),
@@ -2242,18 +2249,6 @@ impl FrontDoorParser {
             Tok::Pipe => "|>",
             _ => return None,
         })
-    }
-
-    fn starts_expr_continuation(&self, tok: &Tok) -> bool {
-        matches!(tok, Tok::Dot | Tok::Eq) || self.infix_bp(tok).is_some()
-    }
-
-    fn peek_after_newlines(&self) -> &Tok {
-        let mut offset = 0;
-        while self.peek_is_at(offset, &Tok::Newline) {
-            offset += 1;
-        }
-        self.peek_at(offset)
     }
 }
 
