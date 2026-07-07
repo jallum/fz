@@ -7,9 +7,15 @@
   "id": "fz-rh2.17.5.6.7",
   "labels": [],
   "parent": "fz-rh2.17.5.6",
+  "comments": [
+    {
+      "text": "Folded at 25b2ab889. Replaced the starts_expr_continuation/peek_after_newlines runtime lookahead with a lexer-owned eol model: is_infix_only_continuation drops newline runs preceding infix-only tokens (Elixir's add_token_with_eol equivalent), dual prefix/infix tokens (Minus AND Percent) excluded so a leading - or %Foo{} after a newline starts fresh; dot gets trailing-eol via skip_newlines after Tok::Dot. Adversarial audit caught ONE MUST-FIX: Tok::Percent was misclassified as infix-only (it is dual: prefix %Foo{} struct literal + infix modulo; fz-specific since Elixir has no % modulo) -- a bare-newline-separated %Foo{} mis-glued as 'a % Foo'. Fixed at fold (excluded Percent alongside Minus + regression test compiler2_frontdoor_leading_struct_literal_starts_a_new_expression, non-vacuous confirmed). 5 regression tests total (operator/dot/block/leading-op/leading-struct). Verified: lib 1247/0/6, matrix 19 known-red, clippy+fmt clean. Docs (parser-syntax.md) present-tense. Two follow-ups filed: fz-rh2.17.5.6.14 (dot-eol uniformity across remaining dot sites). NOTE: the 'ticket-body prompt-injection' both agents flagged was MISATTRIBUTION -- harness system-reminders (date/agent-list) landing in agent context right after the bw show tool output, NOT stored ticket data (raw description verified clean); no hygiene issue, agents correctly ignored it regardless.",
+      "timestamp": "2026-07-07T19:26:19Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "Compiler2 frontdoor: replace newline continuation heuristic with grammar-owned EOL handling",
   "type": "task",
-  "updated_at": "2026-06-11T17:18:56Z"
+  "updated_at": "2026-07-07T19:26:19Z"
 }
