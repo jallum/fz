@@ -8,9 +8,15 @@
   "description": "Sibling finding to fz-bkx (surfaced by the 2026-07-04 concordant-fold survey). FrontDoorError { msg: String, span: Span } (src/compiler2/frontdoor.rs:18) has From\u003cQuotedSourceError\u003e (frontdoor.rs:39-43) that drops the DiagCode AND discards the real span (substitutes Span::DUMMY) -- the same 'lossy From erases user/internal classification + diagnostic code' smell as fz-bkx, but in the frontdoor/lexer domain. NOT a type-fold (FrontDoorError carries a span QuotedFunctionError doesn't, so it's not a duplicate type) -- it's a diagnostic-fidelity bug: user errors lose their code and span through this boundary. FIX: preserve DiagCode and the source span when converting QuotedSourceError at the frontdoor. Single call-site problem. Relate to fz-bkx (do fz-bkx first; this may share the resolution pattern).",
   "id": "fz-ose",
   "labels": [],
+  "comments": [
+    {
+      "text": "First attempt (commit cd954dd68) DISCARDED after adversarial audit found two blockers + a wrong-target finding:\n\n1. DiagCode half is DEAD in frontdoor: frontdoor.rs never mints a coded (::user) QuotedSourceError — all its QuotedSourceError ?-conversions guard QuotedSourceBuilder calls that fail only via ::new / ::from(AnyValueRefError) (internal heap-validity). ::user lives only in quoted_function/quoted_surface/quoted_expander, which frontdoor doesn't call. So the added FrontDoorError.code field is always None here.\n2. Span half fixed WRONG: the mechanical .at(self.cur_span()) at ~111 sites used cur_span()=self.toks[self.pos].span = the NEXT unconsumed token (one past the failed construct); ~87/111 had a correct in-scope span/start one line away. Degrades ~111 spans to off-by-one; only ~40 hand-fixed sites correct. 578 lines for ~40 correct spans + ~111 worse spans + 0 DiagCode value.\n\nWRONG TARGET: frontdoor's conversions are INTERNAL builder failures (real user parse errors go through FrontDoorError::syntax(msg,span), already spanned, only 3 sites) — precise spans there are low-value. The REAL user-facing dummy-span is emit_surface_read_error (quoted_expander.rs:711): user CODED errors from quoted_function decode (e.g. fz-go4.49's PARSE_BITSTRING_BAD_MODIFIER, fz-bkx's codes) render with Span::DUMMY, losing location. But QuotedSourceError carries NO span (only message+code).\n\nRE-SCOPE (pending user confirm): thread the offending AST node's span (__fz_span__ metadata) at the ~10 ::user raise sites in quoted_function, add a span to QuotedSourceError, and have emit_surface_read_error use it instead of Span::DUMMY. Smaller + surgical + fixes the spans users actually see. Leave frontdoor's internal-failure spans alone. AtSpan/from_quoted machinery from the discarded attempt was sound but misapplied.",
+      "timestamp": "2026-07-07T10:14:15Z"
+    }
+  ],
   "priority": 3,
   "status": "open",
   "title": "FrontDoorError's From\u003cQuotedSourceError\u003e drops DiagCode and real span (Span::DUMMY) -- same lossy-classification bug as fz-bkx, frontdoor domain",
   "type": "bug",
-  "updated_at": "2026-07-04T23:49:09Z"
+  "updated_at": "2026-07-07T10:14:15Z"
 }
