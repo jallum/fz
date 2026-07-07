@@ -6,14 +6,16 @@
     "fz-rh2.17.5.9"
   ],
   "blocks": [],
+  "closed_at": "2026-07-07T18:34:47Z",
+  "close_reason": "Already implemented via fz-rh2.17.5.6.1-.6 (commits c7d21d580, 0dac196f2, 92eba51a2, 4267485f9, ea418e418) merged into this worktree from origin/fz-rh2. Verified: cargo test --lib 1241 passed/0 failed/6 ignored (matches baseline exactly, no import/module tests among the ignored); the five named failing tests (compiler2_submit_module_root_without_code_reports_one_unknown_module_diag, import_undefined_module_is_error, import_wrong_arity_is_error, import_except_wrong_arity_is_error, import_non_exported_name_is_error) all pass, plus import_resolves_from_external_interface now exists as import_from_external_interface_carries_provider_boundary_call_without_provider_body and passes. World.module_exports/find_export fallback already absent from src/compiler2/. fixture_matrix --test-threads=1: 328 passed/19 failed (exact known-red set)/42 ignored, unchanged. Zero clippy warnings. No code changes needed in this worktree; working tree clean.",
   "created": "2026-06-11T14:00:56Z",
   "description": "After clearing the callable-interface source-production blockers, cargo test --lib compiler2:: still fails in drive/resolve coverage around missing unknown-module diagnostics and import resolution. Current failing tests include compiler2_submit_module_root_without_code_reports_one_unknown_module_diag plus port_resolve import failures such as import_non_exported_name_is_error, import_wrong_arity_is_error, import_except_wrong_arity_is_error, import_undefined_module_is_error, and import_resolves_from_external_interface. Recover the intended diagnostics and interface-backed resolution behavior.",
   "id": "fz-rh2.17.5.6",
   "labels": [],
   "parent": "fz-rh2.17.5",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Compiler2 interface/diagnostics sweep: recover unknown-module and import-resolution failures",
   "type": "bug",
-  "updated_at": "2026-06-12T17:00:36Z"
+  "updated_at": "2026-07-07T18:34:47Z"
 }
