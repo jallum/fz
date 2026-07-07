@@ -11,10 +11,10 @@
   "description": "Second slice. Add a durable StructFieldExpectation/StructReference obligation store mirroring InterfaceExpectation/InterfaceRequester{code,module,span}, validated on StructDefined settle at requester spans. Migrate resolve.rs TypeExpr::StructRecord to record A.field obligations and wait/read StructDefined(A) when precise schema/order is needed -- it must NOT silently drop unknown fields (current bug). Test (ticket #3): type-expression @type t :: %A{field: integer} records A.field, waits/reads StructDefined(A), unknown fields diagnosed not dropped. Needs the StructDef store from the first slice.",
   "id": "fz-rh2.17.5.6.10",
   "labels": [],
-  "parent": "fz-rh2.17.5.6",
+  "parent": "fz-rh2.17.5.6.8",
   "priority": 1,
   "status": "open",
   "title": "Structs: obligation store + validate-on-settle; migrate resolve.rs TypeExpr::StructRecord",
   "type": "bug",
-  "updated_at": "2026-07-07T19:14:05Z"
+  "updated_at": "2026-07-07T19:14:52Z"
 }
