@@ -7,9 +7,15 @@
   "id": "fz-go4.54",
   "labels": [],
   "parent": "fz-go4",
+  "comments": [
+    {
+      "text": "Folded at d9718f2de. DECISION: DELETE (not fold) -- adversarial audit independently confirmed the region split (Region::List Empty/Cons) is load-bearing (needs runtime cons-cell predicates a flat Region::Equal const can't express), and GroundValue::EmptyList was DEAD-ON-ARRIVAL since fz-v19.1 (never had a producer; carried for closed-match completeness through fz-yj0.1/.5). Deleted GroundValue::EmptyList + DispatchShape::EmptyList + the ReceiveValue::EmptyList cascade + all unreachable consumer arms; gave Region::List(Empty) its own emit_list_empty_test (audit verified byte-for-byte equivalent to the old borrowed ground-const path). nil != [] intent preserved (nil stays the atom; [] is now provably never a GroundValue). Net -40 lines. Verified: lib 1241/0/6, matrix 19 known-red, clippy+fmt clean; three-path runtime proof via fixtures2/behavior/receive_list_cons_pattern (run/interp/build all green). Follow-up fz-go4.55 filed (ReceiveValue::Null/ValueKind::NULL is dead by the same mechanism).",
+      "timestamp": "2026-07-07T18:22:35Z"
+    }
+  ],
   "priority": 4,
   "status": "open",
   "title": "[BUG] DispatchShape::EmptyList is dead-in-practice: [] patterns lower to Region::List(ListRegion::Empty), never a GroundValue::EmptyList dispatch const — decide fold-or-delete",
   "type": "bug",
-  "updated_at": "2026-07-07T16:27:48Z"
+  "updated_at": "2026-07-07T18:22:35Z"
 }
