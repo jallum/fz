@@ -2,6 +2,7 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-07-07T12:36:55Z",
   "created": "2026-07-04T11:29:24Z",
   "description": "Found by the ignored-test triage (2026-07-04, at d49562986). Three ignored port_misc_test.rs tests fail identically: test_macro_passing_assert_compiles, test_macro_failing_assert_compiles, multiple_test_blocks_compile. Each submit_root's a BARE NAME (test_one/test_bad/test_a) that only a top-level defmacro-produced `test`-block invocation produces. Diagnostic: 'function test_one/0 is not defined'. ROOT CAUSE (telemetry-traced): submit_root resolves only ALREADY-VISIBLE names, but a macro-PRODUCED top-level function name isn't visible until its item-level macro is expanded — and nothing triggers that expansion here (contrast the PASSING 00122_item_macro_compiler_ast.fz, which submits root 'main', an ordinary source fn whose BODY calls answer(), so callee-resolution naturally triggers the macro). These tests are ported from the DELETED legacy fz CLI's test_runner_test.rs, whose bespoke test-block discovery pass expanded item macros; fz2 has no such discovery (fz2.rs has no test subcommand). FIX: a root-name-discovery bridge — when submit_root names a bare top-level name that isn't yet defined, expand pending top-level ITEM macros (defmacro invocations at item scope) before/while resolving the root, mirroring what the deleted CLI runner did. All 3 tests would then pass as written. This is a MISSING CAPABILITY (item-macro-produced root discovery), not a test rewrite. Triage them together; one fix closes all 3. Low priority (macro-defined test DSL is a narrow surface). RELATED: the reusable-cons native-lowering pair (native.rs:3123 + Continuation extra_params ABI gap) is a SEPARATE finding, mapped to fz-go4.22 + the branch-join-bug family, not this ticket.",
   "id": "fz-go4.43",
@@ -14,7 +15,7 @@
     }
   ],
   "priority": 3,
-  "status": "open",
+  "status": "closed",
   "title": "submit_root by bare name does not expand top-level item macros (macro-test-DSL tests never resolve)",
   "type": "bug",
   "updated_at": "2026-07-07T12:36:55Z"
