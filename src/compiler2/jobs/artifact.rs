@@ -100,7 +100,7 @@ pub(crate) fn produce_materialized_executable_product(
         &analysis.reachable_entries,
     );
     let body = pruned.body;
-    let callsite_args = collect_callsite_args(&body);
+    let callsite_args = super::super::body::callsite_call_args(&body);
     waits.extend(required_call_edge_transport_waits(
         world,
         session,
@@ -1920,38 +1920,6 @@ fn reindex_entries(
             }
             LoweredTail::Halt { .. } => {}
         }
-    }
-}
-
-fn collect_callsite_args(body: &LoweredBody) -> HashMap<CallSiteId, Vec<CallArg>> {
-    let mut out = HashMap::new();
-    match body {
-        LoweredBody::Extern { .. } => {}
-        LoweredBody::Clauses { clauses, entries, .. } => {
-            for clause in clauses {
-                collect_step_call_args(&clause.projections, &mut out);
-            }
-            for entry in entries {
-                collect_step_call_args(&entry.steps, &mut out);
-                collect_tail_call_args(&entry.tail, &mut out);
-            }
-        }
-    }
-    out
-}
-
-fn collect_step_call_args(_steps: &[LoweredStep], _out: &mut HashMap<CallSiteId, Vec<CallArg>>) {}
-
-fn collect_tail_call_args(tail: &LoweredTail, out: &mut HashMap<CallSiteId, Vec<CallArg>>) {
-    match tail {
-        LoweredTail::DirectCall { callsite, args, .. } | LoweredTail::ClosureCall { callsite, args, .. } => {
-            out.insert(*callsite, args.clone());
-        }
-        LoweredTail::Value { .. }
-        | LoweredTail::If { .. }
-        | LoweredTail::Dispatch { .. }
-        | LoweredTail::Receive(_)
-        | LoweredTail::Halt { .. } => {}
     }
 }
 
