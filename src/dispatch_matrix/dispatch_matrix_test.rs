@@ -316,7 +316,6 @@ fn eval_predicate(predicate: &RegionPredicate<Ty>, values: &BTreeMap<SubjectId, 
             *expected == *actual
         }
         (Region::Equal(ComparisonValue::Const(GroundValue::Nil)), TestValue::Nil) => true,
-        (Region::Equal(ComparisonValue::Const(GroundValue::EmptyList)), TestValue::EmptyList) => true,
         (Region::List(ListRegion::Empty), TestValue::EmptyList) => true,
         (Region::List(ListRegion::Cons), TestValue::Cons) => true,
         _ => false,

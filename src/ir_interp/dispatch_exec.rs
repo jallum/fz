@@ -444,7 +444,6 @@ pub(super) fn dispatch_const_to_value(proc: *mut Process, module: &Module, c: &G
             .map(|id| AnyValue::Atom(id as u32)),
         DispatchShape::Bool(value) => Some(interp_bool_value(value)),
         DispatchShape::Nil => Some(interp_nil_value()),
-        DispatchShape::EmptyList => Some(interp_empty_list_value()),
         DispatchShape::Utf8Binary(bytes) => utf8_binary_const_value(proc, bytes),
     }
 }
@@ -484,7 +483,6 @@ pub(super) fn dispatch_const_eq(proc: *mut Process, module: &Module, val: AnyVal
         DispatchShape::Bool(true) => val.is_atom_id(TRUE_ATOM_ID),
         DispatchShape::Bool(false) => val.is_false(),
         DispatchShape::Nil => val.is_nil(),
-        DispatchShape::EmptyList => val.is_empty_list(),
         DispatchShape::Utf8Binary(bytes) => match val {
             AnyValue::FnRef(_) => false,
             other => other.value(proc).ok().is_some_and(|val| {
@@ -556,7 +554,6 @@ pub(super) fn dispatch_const_key_value<TypeHandle>(
             .iter()
             .position(|prepared| prepared == key)
             .and_then(|index| pinned.get(&prepared_key_name(index)).copied()),
-        DispatchShape::EmptyList => None,
     }
 }
 

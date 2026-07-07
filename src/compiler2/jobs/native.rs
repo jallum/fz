@@ -2607,7 +2607,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                 let (var, _) = ctx.emit_let(Prim::RuntimeTypeTest(subject, Box::new(predicate)));
                 var
             }
-            Region::Equal(ComparisonValue::Const(GroundValue::EmptyList)) | Region::List(ListRegion::Empty) => {
+            Region::List(ListRegion::Empty) => {
                 let subject = self.dispatch_subject_var(ctx, plan, state, subject)?;
                 let (var, _) = ctx.emit_let(Prim::IsEmptyList(subject));
                 var
@@ -4683,7 +4683,6 @@ fn lower_dispatch_const(
         DispatchShape::Utf8Binary(bytes) => Ok(ctx
             .emit_let(Prim::ConstBitstring(bytes.to_vec(), (bytes.len() * 8) as u64))
             .0),
-        DispatchShape::EmptyList => Err(FatalError),
     }
 }
 

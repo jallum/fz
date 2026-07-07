@@ -1947,7 +1947,7 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
         let prepared = plan
             .prepared_keys
             .iter()
-            .map(|key| self.materialize_dispatch_const(key, steps, span))
+            .map(|key| self.materialize_dispatch_const(key, steps))
             .collect::<Result<Vec<_>, _>>()?;
         Ok(DispatchBindings { pinned, prepared })
     }
@@ -1956,7 +1956,6 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
         &mut self,
         key: &crate::dispatch_matrix::GroundValue,
         steps: &mut Vec<ExprStep>,
-        span: Span,
     ) -> Result<ValueId, FatalError> {
         use crate::ground_value::DispatchShape;
         let value = self.fresh_value();
@@ -1988,16 +1987,6 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
                 value,
                 literal: GroundValue::Nil,
             }),
-            DispatchShape::EmptyList => {
-                return Err(emit_job_diagnostic(
-                    self.world,
-                    Diagnostic::error(
-                        codes::LOWER_UNSUPPORTED,
-                        "compiler2 local dispatch does not materialize an empty-list prepared key".to_string(),
-                        span,
-                    ),
-                ));
-            }
         }
         Ok(value)
     }

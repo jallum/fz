@@ -265,7 +265,6 @@ enum ReceiveValue {
     Float(ir::Value),
     Atom(ir::Value),
     Null,
-    EmptyList,
 }
 
 struct DispatchCtx<'a> {
@@ -323,7 +322,6 @@ fn emit_receive_value_ref(
             Ok(b.inst_results(inst)[0])
         }
         ReceiveValue::Null => Ok(b.ins().iconst(types::I64, 0)),
-        ReceiveValue::EmptyList => Ok(b.ins().iconst(types::I64, AnyValueRef::empty_list().raw_word() as i64)),
     }
 }
 
@@ -348,7 +346,6 @@ fn receive_value_tag(
         ReceiveValue::Float(_) => Ok(b.ins().iconst(types::I8, ValueKind::FLOAT.tag() as i64)),
         ReceiveValue::Atom(_) => Ok(b.ins().iconst(types::I8, ValueKind::ATOM.tag() as i64)),
         ReceiveValue::Null => Ok(b.ins().iconst(types::I8, ValueKind::NULL.tag() as i64)),
-        ReceiveValue::EmptyList => Ok(b.ins().iconst(types::I8, ValueKind::LIST.tag() as i64)),
     }
 }
 
@@ -633,7 +630,7 @@ fn emit_region_test(
         }
         Region::List(ListRegion::Empty) => {
             let val = resolve_dispatch_subject(b, ctx, subject, state)?;
-            emit_dispatch_const_test(b, ctx, val, &GroundValue::EmptyList, true_b, false_b)?;
+            emit_list_empty_test(b, val, true_b, false_b);
         }
         Region::List(ListRegion::Cons) => {
             let val = resolve_dispatch_subject(b, ctx, subject, state)?;
@@ -1021,7 +1018,6 @@ fn emit_receive_is_empty_list_flag(
     value: ReceiveValue,
 ) -> Result<ir::Value, CodegenError> {
     Ok(match value {
-        ReceiveValue::EmptyList => b.ins().iconst(types::I8, 1),
         ReceiveValue::AnyRef(value_ref) => {
             let tag = receive_value_tag(b, ctx, value)?;
             let tag64 = b.ins().uextend(types::I64, tag);
@@ -1051,11 +1047,9 @@ fn emit_receive_is_list_cons_flag(
             let not_empty = b.ins().icmp_imm(IntCC::Equal, is_empty, 0);
             b.ins().band(is_list, not_empty)
         }
-        ReceiveValue::Null
-        | ReceiveValue::Int(_)
-        | ReceiveValue::Float(_)
-        | ReceiveValue::Atom(_)
-        | ReceiveValue::EmptyList => b.ins().iconst(types::I8, 0),
+        ReceiveValue::Null | ReceiveValue::Int(_) | ReceiveValue::Float(_) | ReceiveValue::Atom(_) => {
+            b.ins().iconst(types::I8, 0)
+        }
     })
 }
 
@@ -1109,9 +1103,6 @@ fn emit_dispatch_side_tag_const_test(
             let ok = b.ins().icmp_imm(IntCC::Equal, raw, want.raw as i64);
             b.ins().brif(ok, match_b, &[], next_b, &[]);
         }
-        (ValueKind::LIST, ReceiveValue::EmptyList) if want.raw == 0 => {
-            b.ins().jump(match_b, &[]);
-        }
         (_, ReceiveValue::AnyRef(value_ref)) => {
             emit_any_ref_const_test(b, ctx, value_ref, want, match_b, next_b)?;
         }
@@ -1130,12 +1121,6 @@ fn emit_any_ref_const_test(
     match_b: ir::Block,
     next_b: ir::Block,
 ) -> Result<(), CodegenError> {
-    if want.kind == ValueKind::LIST && want.raw == 0 {
-        let empty = b.ins().iconst(types::I64, AnyValueRef::empty_list().raw_word() as i64);
-        let ok = b.ins().icmp(IntCC::Equal, value_ref, empty);
-        b.ins().brif(ok, match_b, &[], next_b, &[]);
-        return Ok(());
-    }
     let want_tag = want.kind;
     if want_tag.is_heap() {
         b.ins().jump(next_b, &[]);
@@ -1165,9 +1150,6 @@ fn emit_any_ref_const_test(
             let raw = receive_value_atom(b, ctx, ReceiveValue::AnyRef(value_ref))?;
             let ok = b.ins().icmp_imm(IntCC::Equal, raw, want.raw as i64);
             b.ins().brif(ok, match_b, &[], next_b, &[]);
-        }
-        ValueKind::LIST if want.raw == 0 => {
-            b.ins().jump(match_b, &[]);
         }
         _ => {
             b.ins().jump(next_b, &[]);
@@ -1207,10 +1189,6 @@ fn dispatch_const_value(module: &Module, value: &GroundValue) -> Result<Option<G
                 raw: NIL_ATOM_ID as u64,
                 kind: ValueKind::ATOM,
             }),
-            DispatchShape::EmptyList => Some(GroundValueBits {
-                raw: 0,
-                kind: ValueKind::LIST,
-            }),
             DispatchShape::Utf8Binary(_) => None,
         },
     )
@@ -1231,8 +1209,7 @@ fn dispatch_const_receive_value(b: &mut FunctionBuilder<'_>, value: GroundValueB
         }
         ValueKind::ATOM => ReceiveValue::Atom(b.ins().iconst(types::I64, value.raw as i64)),
         ValueKind::NULL => ReceiveValue::Null,
-        ValueKind::LIST if value.raw == 0 => ReceiveValue::EmptyList,
-        _ => unreachable!("dispatch constants only materialize scalar, null, or empty list values"),
+        _ => unreachable!("dispatch constants only materialize scalar or null values"),
     }
 }
 
@@ -1253,8 +1230,7 @@ fn emit_dispatch_const_test(
         | DispatchShape::Int(_)
         | DispatchShape::Atom(_)
         | DispatchShape::Bool(_)
-        | DispatchShape::Nil
-        | DispatchShape::EmptyList => {
+        | DispatchShape::Nil => {
             let emitted = emit_dispatch_side_tag_const_test(b, ctx, val, value, match_b, next_b)?;
             if !emitted {
                 b.ins().jump(next_b, &[]);
@@ -1826,7 +1802,7 @@ fn emit_truthy_cmp(
             Ok(b.ins().bxor_imm(false_or_nil, 1))
         }
         ReceiveValue::Null => Ok(b.ins().iconst(types::I8, 0)),
-        ReceiveValue::Int(_) | ReceiveValue::Float(_) | ReceiveValue::EmptyList => Ok(b.ins().iconst(types::I8, 1)),
+        ReceiveValue::Int(_) | ReceiveValue::Float(_) => Ok(b.ins().iconst(types::I8, 1)),
     }
 }
 
@@ -1848,7 +1824,7 @@ fn emit_typed_eq_cmp(
         (ReceiveValue::Atom(a), ReceiveValue::Atom(bv)) => {
             return Ok(b.ins().icmp(IntCC::Equal, a, bv));
         }
-        (ReceiveValue::Null, ReceiveValue::Null) | (ReceiveValue::EmptyList, ReceiveValue::EmptyList) => {
+        (ReceiveValue::Null, ReceiveValue::Null) => {
             return Ok(b.ins().iconst(types::I8, 1));
         }
         _ => {}
@@ -2042,6 +2018,22 @@ fn emit_binary_literal_test(
     let cmp = b.ins().icmp(IntCC::NotEqual, res, zero);
     b.ins().brif(cmp, match_b, &[], next_b, &[]);
     Ok(())
+}
+
+/// Verify `val` is the canonical empty list (`[]`). The empty list is a
+/// single interned sentinel ref (`ValueKind::LIST` with raw word `0`), so
+/// this compares directly instead of routing through a runtime predicate.
+fn emit_list_empty_test(b: &mut FunctionBuilder<'_>, val: ReceiveValue, match_b: ir::Block, next_b: ir::Block) {
+    match val {
+        ReceiveValue::AnyRef(value_ref) => {
+            let empty = b.ins().iconst(types::I64, AnyValueRef::empty_list().raw_word() as i64);
+            let ok = b.ins().icmp(IntCC::Equal, value_ref, empty);
+            b.ins().brif(ok, match_b, &[], next_b, &[]);
+        }
+        _ => {
+            b.ins().jump(next_b, &[]);
+        }
+    }
 }
 
 /// Verify `val` is a List cons cell. Strict list cells are headerless

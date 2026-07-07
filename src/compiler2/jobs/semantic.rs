@@ -2141,14 +2141,11 @@ fn dispatch_const_ty(world: &mut World<'_>, value: &GroundValue) -> Ty {
         DispatchShape::Bool(value) => world.types_mut().bool_lit(value),
         // The `nil` keyword is the atom `nil` in every position, expression
         // or pattern (Elixir parity: `is_nil(nil)` holds, `nil == []` does
-        // not). `[]` is the empty list; it never reaches this arm as a
-        // `GroundValue::EmptyList` dispatch const in practice -- the `[]`
-        // pattern lowers to `Region::List(ListRegion::Empty)` instead (see
-        // `dispatch_matrix::pattern::append_list_pattern`), so the
-        // `EmptyList` arm below exists only for `DispatchShape`'s
-        // closed-match completeness.
+        // not). `[]` is the empty list, but it never reaches this function:
+        // `[]` patterns lower to `Region::List(ListRegion::Empty)` instead
+        // (see `dispatch_matrix::pattern::append_list_pattern`), a
+        // structurally distinct region with no `GroundValue` counterpart.
         DispatchShape::Nil => world.types_mut().nil(),
-        DispatchShape::EmptyList => world.types_mut().empty_list(),
         DispatchShape::Utf8Binary(_) => world.types_mut().str_t(),
     }
 }
@@ -2374,17 +2371,12 @@ mod dispatch_const_ty_tests {
             "the `nil` keyword must not type as the empty list -- `nil` and `[]` are distinct values with distinct types",
         );
 
-        // `[]` in pattern position never reaches `dispatch_const_ty` as a
-        // `GroundValue::EmptyList` dispatch const (it lowers to
-        // `Region::List(ListRegion::Empty)`), but the closed-match arm
-        // above must still type it as the empty list, not the atom, in
-        // case anything ever constructs that const directly.
-        let empty_list_dispatch_ty = dispatch_const_ty(&mut world, &GroundValue::EmptyList);
-        assert_eq!(
-            world.types_mut().display(&empty_list_dispatch_ty),
-            world.types_mut().display(&empty_list_ty),
-            "a `GroundValue::EmptyList` dispatch const should type as the empty list",
-        );
+        // `[]` never reaches `dispatch_const_ty` at all: `GroundValue` has
+        // no empty-list variant, so `[]` patterns lower to
+        // `Region::List(ListRegion::Empty)` instead (see
+        // `dispatch_matrix::pattern::append_list_pattern`). The distinction
+        // pinned above holds by construction -- there is no `GroundValue`
+        // an empty-list pattern could ever be confused with `Nil` through.
     }
 
     /// Because `nil` now types as the atom `:nil`, a `nil` map-pattern key
