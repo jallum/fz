@@ -9,9 +9,15 @@
   "id": "fz-rh2.16.11",
   "labels": [],
   "parent": "fz-rh2.16",
+  "comments": [
+    {
+      "text": "CLOSE-OUT verified (fresh close-out auditor, direct code reading not just child-checkbox trust). All four signals hold on HEAD d9718f2de: (1) every definition family (fn/fnp/defmacro/defmodule/defprotocol/defimpl) expands to Fz.Compiler.define(source, __CALLER__) in modules/runtime_library/runtime.fz:40-58; single dispatch at jobs/source.rs:33-37 index_code (one branch, bootstrap the sole origin exception). (2) FunctionSource stays raw/lazy via Job::ExpandFunctionSource on demand. (3) direct-publication path DELETED -- FunctionEnvSource/ScopeSurfaceMode grep to ZERO hits; quoted_surface.rs:152-174 'exactly one source read'; is_bootstrap (world.rs:1877) the one honestly-marked boundary; no direct_publish/legacy_publish symbols in src/. (4) nested discovery routes through read_compiler_fragment_root + apply_compiler_define/apply_item_macro_call (source_publish.rs:245-310), no bespoke path. Tests exact baseline: lib 1241/0/6, matrix 19 known-red, zero warnings. Docs (macro-expansion.md, quoted-source.md) present-tense and accurate. No must-fix residue, no 16.11-specific follow-up (fz-rh2.16.4 already tracks the next step above the simpler seam).",
+      "timestamp": "2026-07-07T18:36:09Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "Compiler2 definition macros: make top-level defs expand through one compiler callback",
   "type": "epic",
-  "updated_at": "2026-06-10T21:05:30Z"
+  "updated_at": "2026-07-07T18:36:09Z"
 }
