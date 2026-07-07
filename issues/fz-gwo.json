@@ -6,9 +6,15 @@
   "description": "compiler2 fails to decode a list literal whose LAST element is a function call.\n\nMinimal repro:\n  fn main(), do: dbg([Enum.reverse([1,2,3])])              -\u003e ERROR\n  fn main(), do: dbg([1, Enum.reverse([1,2,3])])           -\u003e ERROR\n  fn main(), do: dbg([Enum.reverse([1,2,3]), 9])           -\u003e OK ([[3,2,1], 9])\n  fn main(), do: dbg([Enum.reverse([1,2,3]), Enum.reverse([4,5])]) -\u003e ERROR\n\nError: error[internal/post-resolution-leftover]: quoted function decode failed: invalid any value ref: ExpectedTag { expected: ValueKind(15), found: ValueKind(3) }\n\nTrigger is precise: a list literal whose FINAL element is a call (not a literal). A trailing literal element works; a trailing call element fails. Likely a frontdoor/quote encoding bug where a call in tail position of a list is mis-encoded (no-parens / trailing-do ambiguity at the list close, or the list-element terminator after a call). ValueKind(15) expected vs ValueKind(3) found points at a tag mismatch in quoted_function/quoted_surface decode.\n\nFound incidentally while profiling fz-hyj (amplified-stdlib repro). NOT blocking. Independent of the span/QuotedSourceSpan work.",
   "id": "fz-gwo",
   "labels": [],
+  "comments": [
+    {
+      "text": "DONE (folded to 23414196b). Root cause: a quoted AST node is a {head,meta,tail} Struct; split_improper_list/split_improper_pattern_list probed for the improper-list '|' marker via atom_name(\u0026node.head)? UNCONDITIONALLY, but a call's head is itself a nested AST node (Struct), not an atom -\u003e ExpectedTag{Atom(15), found Struct(3)} when a list's LAST element was a call (non-last elements go through decode_expr which already tag-guards). Fix: node_head_is_atom_named() tag-guards (head.tag()==ATOM \u0026\u0026 atom_name().ok()==Some(name)) before reading head as atom, mirroring decode_expr's guard; applied to both split fns. Symmetric, not a trailing-call shim. Agent swept ~20 sibling atom_name(\u0026node.head)? sites -\u003e all guarded by enclosing dispatch (atom-headed by construction), no other live bugs. Fixture list_literal_trailing_call.fz pins all 5 shapes (single/trailing/leading/middle/all calls); fails-before, passes-after across interp/JIT/AOT. lib 1229/0/9. Self-audited: helper correct, symmetric, no ticket IDs.\n\nNOTE (user decision): the decode-drift CLASS (~20 unenforced head-is-atom invariants in the hand-written reader; shared encode/decode-schema redesign) is deliberately NOT ticketed -- these are caught as unit-test-guarded instances when they surface, not via preemptive redesign.",
+      "timestamp": "2026-07-07T02:38:16Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "[BUG] List literal ending in a function call fails to decode",
   "type": "task",
-  "updated_at": "2026-06-21T13:42:50Z"
+  "updated_at": "2026-07-07T02:38:16Z"
 }
