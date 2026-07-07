@@ -11,11 +11,15 @@
     {
       "text": "LANDED at 49126e966 (folded from wt/b5-3sb f159bd82c). Threaded the real code_id into decode_token/decode_tokens at source; every one of the 8 call sites now stamps the correct SourceId. DELETED the fz-ose FragmentCursor::current_span rebuild patch (its code_id field + rebuild closure) — now redundant since token.span carries the right code id at construction (fold win: patch removed, not layered). Test: port_resolve_test.rs::malformed_type_alias_in_second_file_points_at_that_files_span — real multi-file production path, asserts both the correct SourceId AND the byte offsets bracketing the malformed comma; proven non-vacuous (reverting the fix fails Id(0) vs Id(2)). lib 1235/0/9 in-worktree, 1238/0/6 on the folded branch. Adversarial audit: SOUND, no blocker; all risk areas (call-site completeness, FragmentCursor deletion safety, @spec path still correct, test validity, single-file no-regression, conversion idiom pre-existing) cleared. Audit surfaced an UNCONFIRMED, non-regression follow-up (cross-code macro-spliced token spans) -\u003e fz-s2b.",
       "timestamp": "2026-07-07T12:36:54Z"
+    },
+    {
+      "text": "The DecodeCtx.code_id decode-time threading this ticket added was RETIRED by fz-h29 (5578d702c): tokens now carry their own SourceId baked at encode time, so decode needs no external code_id. This ticket's multi-file regression test (malformed @type in the 2nd file points at that file) still passes with the threading removed -- verified green. fz-h29 supersedes the span-threading approach and closes the cross-splice mismatch by construction.",
+      "timestamp": "2026-07-07T16:34:03Z"
     }
   ],
   "priority": 2,
   "status": "closed",
   "title": "token_payload::decode_token leaks SourceId(0) into @type/type-ascription diagnostics (wrong file in multi-file compiles)",
   "type": "bug",
-  "updated_at": "2026-07-07T12:36:54Z"
+  "updated_at": "2026-07-07T16:34:03Z"
 }
