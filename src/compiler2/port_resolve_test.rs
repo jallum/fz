@@ -862,6 +862,43 @@ fn bitstring_bad_modifier_is_parse_error() {
     );
 }
 
+// fz-go4.49: a bitstring modifier that parses as a non-atom, non-call literal
+// (e.g. a float, `<<1::3.14>>`) is also a USER typo, not an internal-compiler
+// shape bug. frontdoor `parse_bitstring_literal` parses the `::` right-hand
+// side as a fully generic expr, so a float literal reaches
+// apply_bit_spec_modifier's final fallback (previously `QuotedSourceError::new`,
+// routed to INTERNAL_POST_RESOLUTION_LEFTOVER) exactly like the unrecognized-
+// atom case above. Confirmed the same fallback is also reachable via a list
+// literal (`<<1::[1]>>`) and a bare 2-element tuple literal (`<<1::{2,3}>>`,
+// which Elixir represents as a raw struct rather than a `{}` call node); the
+// float case here is representative of all three.
+#[test]
+fn bitstring_float_modifier_is_parse_error() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&[], capture.handler());
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures2/00556_bitstring_float_modifier.fz".to_string()),
+        text: include_str!("../../fixtures2/00556_bitstring_float_modifier.fz").to_string(),
+    });
+    compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    assert!(
+        matches!(compiler.drive(), DriveOutcome::Fatal { .. }),
+        "<<1::3.14>> should fail during bit-spec modifier decoding",
+    );
+    assert_last_error(
+        &capture,
+        codes::PARSE_BITSTRING_BAD_MODIFIER.0,
+        "unsupported bitstring modifier value of kind ValueKind(14)",
+    );
+}
+
 // Ported from src/frontend/resolve_test.rs: @spec with no fn following it in the module is a parse-time error
 #[test]
 fn spec_without_following_fn_is_a_source_surface_error() {

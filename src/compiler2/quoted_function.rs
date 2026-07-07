@@ -1341,10 +1341,20 @@ fn apply_bit_spec_modifier(cursor: &QuotedSourceCursor, spec: &mut BitFieldSpec)
         fz_runtime::any_value::ValueKind::BITSTRING | fz_runtime::any_value::ValueKind::PROCBIN => {
             apply_bit_modifier_name(spec, &cursor.utf8_binary_text()?)
         }
-        other => Err(QuotedSourceError::new(format!(
-            "unsupported quoted bit-spec fragment kind {:?}",
-            other
-        ))),
+        // Reachable from valid source: a bitstring segment's `::` modifier is
+        // parsed as a fully generic expr (frontdoor `parse_bitstring_literal`),
+        // so a float literal (`<<x :: 3.14>>`), a list literal (`<<x :: [1]>>`,
+        // including `nil`/`[]`), or a bare 2-element tuple literal
+        // (`<<x :: {1, 2}>>` -- Elixir represents exactly-2-tuples as a raw
+        // struct rather than wrapping them in a `{}` call node) all land here
+        // with none of INT/ATOM/BITSTRING/PROCBIN. Every other modifier shape
+        // (calls, atoms with args, N-tuples with N != 2) is caught earlier by
+        // the `ast_node()` arm above. This is a plain user typo, not an
+        // internal-compiler-bug shape.
+        other => Err(QuotedSourceError::user(
+            crate::diag::codes::PARSE_BITSTRING_BAD_MODIFIER,
+            format!("unsupported bitstring modifier value of kind {:?}", other),
+        )),
     }
 }
 
