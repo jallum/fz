@@ -7,9 +7,15 @@
   "id": "fz-rh2.17.5.6.8",
   "labels": [],
   "parent": "fz-rh2.17.5.6",
+  "comments": [
+    {
+      "text": "DECOMPOSED (investigation, not a code commit). Thorough investigation proved this cannot land as one correct-by-construction commit: the reduce (deleting module_struct_fields/struct_schemas source scanning) can only happen at the LAST consumer's migration, so any single commit is either a forbidden half-migrated hybrid (some consumers read the new StructDefined fact, others still scan ModuleState) or an incomplete obligation walk; the 6 required tests each gate on their subsystem's wiring and no shims are allowed. Matches precedent (fz-hwn.27/fz-463/fz-bfh.5 were split). Now a tracking node for 5 dependency-ordered slices modeled on the existing ModuleInterface obligation pattern (StructDefined + StructFieldExpectation validate-on-settle): .9 StructDef store + FactKey::StructDefined -\u003e .10 obligation store + resolve.rs migration -\u003e .11 body.rs lowering waits -\u003e .12 typed protocol-impl-target -\u003e .13 backend-from-facts + DELETE the scan. .9 is ready; the rest unblock in order. This node stays open until all five close.",
+      "timestamp": "2026-07-07T19:14:54Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "Compiler2 structs: publish field-schema facts and validate field reference obligations",
   "type": "task",
-  "updated_at": "2026-06-11T17:32:38Z"
+  "updated_at": "2026-07-07T19:14:54Z"
 }
