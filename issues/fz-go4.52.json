@@ -2,6 +2,7 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-07-07T02:58:39Z",
   "created": "2026-07-05T22:27:47Z",
   "description": "Found by fz-go4.50 (2026-07-05). jobs/artifact.rs collect_callsite_args/collect_tail_call_args (used at artifact.rs:102) is a THIRD near-identical callsite-args builder -- already a flat scan over entries (functionally equal to the new body::callsite_call_args from fz-go4.50), but carries two permanently-no-op hooks: collect_step_call_args over clause.projections and entry.steps that never contribute to output. FOLD: route artifact.rs through the shared body::callsite_call_args and DELETE the dead no-op step hooks. Concordant reduction (north star). Verify the equivalence (artifact.rs may feed a PRUNED body -- the body::callsite_call_args invariant already covers prune_lowered_body per fz-go4.47's doc, so it's sound). Test-only-adjacent; lib+matrix no-new-regression. Depends fz-go4.50 (landed).",
   "id": "fz-go4.52",
@@ -14,8 +15,8 @@
     }
   ],
   "priority": 3,
-  "status": "open",
+  "status": "closed",
   "title": "Converge artifact.rs's collect_callsite_args onto body::callsite_call_args; drop its dead no-op step hooks",
   "type": "task",
-  "updated_at": "2026-07-07T02:58:38Z"
+  "updated_at": "2026-07-07T02:58:39Z"
 }
