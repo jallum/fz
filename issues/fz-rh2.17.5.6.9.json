@@ -2,7 +2,8 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [
-    "fz-rh2.17.5.6.10"
+    "fz-rh2.17.5.6.10",
+    "fz-rh2.17.5.6.12"
   ],
   "created": "2026-07-07T19:14:02Z",
   "description": "First slice of the fz-rh2.17.5.6.8 struct-facts decomposition (investigation proved it is not one atomic commit). Add a first-class StructDef store keyed by ModuleId (ordered fields + provenance) and FactKey::StructDefined(ModuleId), published when a module body containing defstruct settles -- replace the ScopeForm::Struct(_) no-op in source_publish.rs apply_scope_form. Model on the existing ModuleInterface publication + TypeDefMap/FactKey::TypeDefined patterns. NO consumer migrated here; the old module_struct_fields/struct_schemas source-scan stays the sole reader for now. Test: StructDefined publishes independently of ModuleDefined. Later slices migrate consumers; .8.5 deletes the scan.",
