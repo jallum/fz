@@ -120,8 +120,8 @@ direct-only predicate keep the predicate's exact callable shape through native
 lowering.
 
 **Runtime/interpreter gaps.** Current fz2 failures also include
-`resource_lifecycle`, `tail_recursion` on `fz2 interp`, `utf8_pattern_match` on
-`fz2 interp`, and `enum_predicate_search` on `fz2 interp`.
+`resource_lifecycle`, `utf8_pattern_match` on `fz2 interp`, and
+`enum_predicate_search` on `fz2 interp`.
 
 The `bsx_guard_eq` interpreter gap is closed: dispatch guard constants
 materialize `GroundValue::Utf8Binary` values in the backend interpreter,
