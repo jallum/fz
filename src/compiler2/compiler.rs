@@ -54,6 +54,17 @@ impl<'a> Compiler2<'a> {
         self.world.submit_code(name, text)
     }
 
+    /// Registers an additional user-surface prelude — ordinary source scoped in
+    /// over the runtime prelude so its top-level definitions become visible to
+    /// every later `submit_code`/`submit_root` in this compiler, with no text
+    /// spliced into any user source buffer. Must be called before submitting the
+    /// code that should see it. `fz2 test` uses this to make the `test` item
+    /// macro available to a test file scoped into this run's world only.
+    pub fn submit_scoped_prelude(&mut self, submission: CodeSubmission) -> CodeId {
+        let CodeSubmission { name, text } = submission;
+        self.world.register_scoped_prelude(name, text)
+    }
+
     pub fn submit_module_interface(&mut self, module_name: String, interface: ModuleInterface) -> ModuleId {
         self.world.submit_module_interface(module_name, interface)
     }

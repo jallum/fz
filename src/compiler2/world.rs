@@ -131,6 +131,14 @@ pub struct World<'a> {
     types: Types,
     transport: TransportStore,
     runtime_prelude: CodeId,
+    /// Additional user-surface preludes scoped in over the runtime prelude, in
+    /// registration order. Each is ordinary user source (read + expanded like
+    /// any submission, unlike the bootstrap runtime prelude) whose scope
+    /// advances `prelude_head`, so every later submission sees its bindings
+    /// without any textual splicing into the user's own source buffer. The
+    /// `fz2 test` front door registers exactly one — the `test` item macro —
+    /// scoped into that run's world only, never the global Kernel bootstrap.
+    extra_preludes: Vec<CodeId>,
     runtime_modules: HashMap<ModuleId, RuntimeModuleCode>,
     reported_unresolved: HashSet<UnresolvedIssueKey>,
     reported_warnings: HashSet<WarningDiagnosticKey>,
@@ -199,6 +207,7 @@ impl<'a> World<'a> {
             types: Types::new(),
             transport: TransportStore::new(),
             runtime_prelude: CodeId::ZERO,
+            extra_preludes: Vec::new(),
             runtime_modules: HashMap::new(),
             reported_unresolved: HashSet::new(),
             reported_warnings: HashSet::new(),
@@ -1882,8 +1891,48 @@ impl<'a> World<'a> {
         self.namespaces.prelude_head()
     }
 
+    #[cfg(test)]
     pub(crate) fn runtime_prelude(&self) -> CodeId {
         self.runtime_prelude
+    }
+
+    /// Registers `text` as an additional user-surface prelude: ordinary source
+    /// that is scoped in over the runtime prelude (and any earlier extra
+    /// prelude) so its top-level definitions advance `prelude_head` and become
+    /// visible to every later submission — without splicing text into any
+    /// user source buffer, so every span keeps its true on-disk offset. The
+    /// code is defined but not enqueued; it is pulled lazily when a later
+    /// submission's scope waits on its `CodeScoped` fact, exactly as the
+    /// runtime prelude is.
+    pub(crate) fn register_scoped_prelude(&mut self, name: Option<String>, text: String) -> CodeId {
+        let code_id = self.code.define(name, text);
+        self.extra_preludes.push(code_id);
+        code_id
+    }
+
+    /// The preludes whose scope must be settled before `code`'s own scope can
+    /// base off `prelude_head`, in the order their bindings layer: the runtime
+    /// prelude first, then each extra prelude registered before `code` itself.
+    /// `code`'s own entry (if it is an extra prelude) is excluded so a prelude
+    /// never waits on itself.
+    pub(crate) fn preludes_to_await(&self, code: CodeId) -> Vec<CodeId> {
+        if self.is_runtime_prelude(code) {
+            return Vec::new();
+        }
+        let mut preludes = vec![self.runtime_prelude];
+        for &extra in &self.extra_preludes {
+            if extra == code {
+                break;
+            }
+            preludes.push(extra);
+        }
+        preludes
+    }
+
+    /// True for any code whose scope advances `prelude_head`: the runtime
+    /// prelude or a registered extra prelude.
+    pub(crate) fn is_prelude(&self, code: CodeId) -> bool {
+        self.is_runtime_prelude(code) || self.extra_preludes.contains(&code)
     }
 
     /// True only for *the* prelude source — the bootstrap code whose scope seeds

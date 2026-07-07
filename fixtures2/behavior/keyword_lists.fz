@@ -1,10 +1,8 @@
 #---
 # purpose: "Elixir-style keyword lists lower to ordinary lists of atom/value tuples"
-# defer.build: fz-9i4.7.6 compiler2 lowering finds unbound demand (echo/2)
-# defer.interp: fz-9i4.7.6 compiler2 lowering finds unbound demand (echo/2)
-# defer.run: fz-9i4.7.6 compiler2 lowering finds unbound demand (echo/2)
 #---
 fn echo(opts), do: opts
+fn echo(opts, more), do: opts ++ more
 
 fn main() do
   assert([a: 1, b: 2] == [{:a, 1}, {:b, 2}], "keyword list lowers to a list of atom/value tuples")
@@ -12,5 +10,5 @@ fn main() do
   with_do = echo(label: :work) do
     42
   end
-  assert(with_do == [{:label, :work}, {:do, 42}], "a trailing do-block becomes a :do keyword entry")
+  assert(with_do == [{:label, :work}, {:do, 42}], "a trailing do-block after a paren call with keyword args appends a second keyword-list argument (Elixir never merges do: into a preceding keyword-list arg)")
 end

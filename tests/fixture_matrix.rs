@@ -716,15 +716,21 @@ fn fixture_command_output(
 }
 
 fn run_path(fixture: &FixtureCase, header: &Header, path: FixtureMatrixPath) -> RunOutcome {
-    let subcmd = match (path, header.kind) {
-        (FixtureMatrixPath::Run, Kind::Run) => "run",
-        (FixtureMatrixPath::Run, Kind::Test) => "test",
-        (FixtureMatrixPath::Interp, _) => "interp",
+    // `kind: test` fixtures always go through the `fz2 test` discovery/report
+    // front door, on whichever backend the path names (JIT for `run`, the
+    // backend interpreter for `interp` via `--interp`) — there is no `kind:
+    // test` equivalent of a bare `fz2 interp`, since a test fixture has no
+    // `main/0` for that command to seed.
+    let args: &[&str] = match (path, header.kind) {
+        (FixtureMatrixPath::Run, Kind::Run) => &["run"],
+        (FixtureMatrixPath::Run, Kind::Test) => &["test"],
+        (FixtureMatrixPath::Interp, Kind::Test) => &["test", "--interp"],
+        (FixtureMatrixPath::Interp, Kind::Run) => &["interp"],
         (FixtureMatrixPath::Build, _) => return run_fz2_build_path(fixture, header),
     };
     let input = fixture.source_path();
     let out = match fixture_command_output(
-        Command::new(FZ2_BIN).arg(subcmd).arg(&input),
+        Command::new(FZ2_BIN).args(args).arg(&input),
         "fz2",
         TimeoutStart::OnExecutionReady,
         header.timeout_for_path(path),
@@ -1058,7 +1064,10 @@ fn run_path_logged(
         (FixtureMatrixPath::Run, Kind::Test) => {
             cmd.arg("test").arg(input);
         }
-        (FixtureMatrixPath::Interp, _) => {
+        (FixtureMatrixPath::Interp, Kind::Test) => {
+            cmd.args(["test", "--interp"]).arg(input);
+        }
+        (FixtureMatrixPath::Interp, Kind::Run) => {
             cmd.arg("interp").arg(input);
         }
         (FixtureMatrixPath::Build, _) => unreachable!("build returns above"),

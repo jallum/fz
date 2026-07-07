@@ -1,9 +1,6 @@
 #---
 # purpose: "`test()` macro from the prelude — assert / refute"
 # kind: test
-# defer.run: compiler2 does not implement `test` fixtures yet
-# defer.interp: compiler2 does not implement `test` fixtures yet
-# defer.build: compiler2 does not implement `test` fixtures yet
 #---
 test(:test_addition) do
   assert(1 + 1 == 2)

@@ -12,7 +12,9 @@ The backend and type-name questions that blocked migration are settled:
 
 - compiler2 owns source submission, type naming, contract resolution, semantic
   closure, backend-product construction, and `NativeProgram(root)`;
-- `fz2 run`, `fz2 interp`, and `fz2 build` submit source directly to compiler2;
+- `fz2 run`, `fz2 interp`, `fz2 build`, and `fz2 test` submit source directly to
+  compiler2 (`fz2 test` discovers and runs every `test(:name) do ... end` item,
+  one subprocess per test, instead of seeding `main/0`);
 - native backend time is named at the compiler2 artifact boundary by
   `fz.compiler2.native_backend.compile`, with raw codegen phases nested below it;
 - source-fragment re-lexing and per-call `ModuleTypeEnv` rebuilds are gone on the

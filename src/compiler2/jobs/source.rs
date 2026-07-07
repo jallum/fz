@@ -69,12 +69,17 @@ pub(super) fn scope_code(world: &mut World<'_>, code_id: CodeId) -> Result<JobEf
     let base_namespace = if world.is_runtime_prelude(code_id) {
         Namespace::default()
     } else {
-        let prelude = world.runtime_prelude();
-        let prelude_fact = FactKey::CodeScoped(prelude);
-        if !world.has_fact(&prelude_fact) {
-            return Ok(JobEffects::wait_on_current(prelude_fact));
+        // Every non-runtime-prelude submission bases off `prelude_head`, which
+        // the runtime prelude and any registered extra prelude (e.g. the `fz2
+        // test` macro) advance as they scope. Wait on each so their bindings
+        // are layered into `prelude_head` before this code reads it.
+        for prelude in world.preludes_to_await(code_id) {
+            let prelude_fact = FactKey::CodeScoped(prelude);
+            if !world.has_fact(&prelude_fact) {
+                return Ok(JobEffects::wait_on_current(prelude_fact));
+            }
+            reads.push(prelude_fact);
         }
-        reads.push(prelude_fact);
         world.prelude_head()
     };
     match source_publish::publish_scope(
@@ -90,7 +95,7 @@ pub(super) fn scope_code(world: &mut World<'_>, code_id: CodeId) -> Result<JobEf
             mut changed,
             ..
         } => {
-            if world.is_runtime_prelude(code_id) {
+            if world.is_prelude(code_id) {
                 world.set_prelude_head(namespace);
             }
             reads.extend(scope_reads);

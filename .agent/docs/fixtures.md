@@ -86,15 +86,25 @@ Each applicable path becomes its own `cargo test` trial named
 `cargo test ::build` filters to one leg across all fixtures. `run_path` drives
 each path:
 
-| path     | driver                                                            |
-|----------|-------------------------------------------------------------------|
-| `run`    | `fz2 run <fixture.fz>` (or `fz2 test` when `kind: test`)          |
-| `interp` | `fz2 interp <fixture.fz>`                                         |
-| `build`  | `fz2 build <fixture.fz> -o <tmp>` then run the binary             |
+| path     | driver                                                                            |
+|----------|------------------------------------------------------------------------------------|
+| `run`    | `fz2 run <fixture.fz>` (or `fz2 test <fixture.fz>` when `kind: test`)              |
+| `interp` | `fz2 interp <fixture.fz>` (or `fz2 test --interp <fixture.fz>` when `kind: test`)  |
+| `build`  | `fz2 build <fixture.fz> -o <tmp>` then run the binary                              |
+
+`fz2 test` discovers every `test(:name) do ... end` item in the source — at
+top level or nested inside a `defmodule` — and runs each as its own root, one
+subprocess per test (a failing `assert` aborts its process on the JIT backend,
+so sibling tests must not share one). `--interp` runs each discovered test
+through the backend interpreter instead of the JIT. A test nested in a
+`defmodule` is qualified by its enclosing module's dotted alias in both its
+display name and its root (e.g. `MathTest.test_helper`); a top-level test is
+unqualified.
 
 The `build` leg only runs `kind: run` fixtures; a `kind: test` fixture is
-surfaced as `Deferred` on that leg because compiler2 does not yet run `test`
-fixtures there.
+surfaced as `Deferred` on that leg because compiler2 does not run `test`
+fixtures through an AOT-built binary — there is no single `main/0` to build
+against, since each discovered test is its own root.
 
 Each runner captures a `Ran { success, stdout, diagnostics }` with *no* verdict
 applied. `check()` then applies the fixture's `expect:` policy in one place, so

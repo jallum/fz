@@ -297,6 +297,49 @@ fn compiler2_frontdoor_parses_guarded_one_line_function_clauses() {
 }
 
 #[test]
+fn compiler2_frontdoor_paren_call_keyword_args_plus_trailing_do_appends_second_keyword_list() {
+    // Elixir never merges a trailing `do:` into a preceding keyword-list
+    // argument, even when that argument came from paren-call keyword sugar:
+    // `echo(label: :work) do 42 end` is `echo([label: :work], [do: 42])`,
+    // arity 2 -- not `echo([label: :work, do: 42])`, arity 1. `attach_trailing_do`
+    // always appends a fresh `[do: ...]` argument for a parenthesized call; it
+    // never rewrites an existing argument in place.
+    let tel = ConfiguredTelemetry::new();
+    let root = parse_quoted_program(
+        "keyword_paren_do.fz",
+        "echo(label: :work) do\n  42\nend\n",
+        CodeId::ZERO,
+        &tel,
+    )
+    .expect("quoted parse");
+
+    let items = root.cursor().list_items().expect("top-level items");
+    assert_eq!(items.len(), 1);
+    let call = items[0].ast_node().expect("call cursor").expect("call node");
+    assert_eq!(head_name(&call), "echo");
+    let args = call.tail.list_items().expect("call args");
+    assert_eq!(
+        args.len(),
+        2,
+        "the preceding keyword-list arg and the trailing do-block are two separate arguments, not merged"
+    );
+    let first_kw = args[0].list_items().expect("first kw list");
+    assert_eq!(
+        first_kw[0].tuple_items().expect("label tuple")[0]
+            .atom_name()
+            .expect("label key"),
+        "label"
+    );
+    let second_kw = args[1].list_items().expect("second kw list");
+    assert_eq!(
+        second_kw[0].tuple_items().expect("do tuple")[0]
+            .atom_name()
+            .expect("do key"),
+        "do"
+    );
+}
+
+#[test]
 fn compiler2_frontdoor_parses_item_macro_calls_with_trailing_do() {
     let tel = ConfiguredTelemetry::new();
     let root = parse_quoted_program("test_surface.fz", "test(:name) do\n  42\nend\n", CodeId::ZERO, &tel)

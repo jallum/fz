@@ -633,7 +633,9 @@ Current conclusion from the code:
   ladder to avoid: those jobs do not exist
 - `fz2` is now the side-by-side outer shell for those front doors: `fz2 run`,
   `fz2 interp`, and `fz2 build` submit source directly to Compiler2, seed
-  `main/0`, and never reopen old planner or type-infer work
+  `main/0`, and never reopen old planner or type-infer work; `fz2 test`
+  submits the same way but seeds one root per discovered `test(:name) do ...
+  end` item instead of `main/0`, running each in its own subprocess
 - the old `fz` surface is retired; new compiler-facing work enters through
   compiler2 APIs or `fz2`
 
