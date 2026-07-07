@@ -489,7 +489,7 @@ fn step_backend_executable(
         }
         BackendBody::Clauses { clauses, entries, .. } => {
             let semantic_inputs =
-                bind_executable_inputs(transport, program, types, runtime.cur_proc(), executable, &args)?;
+                bind_executable_inputs(transport, program, types, runtime, executable_index, executable, &args)?;
             let clause_index = if clauses.len() == 1 {
                 0
             } else {
@@ -885,6 +885,7 @@ fn step_eval_entry(
                 program,
                 types,
                 runtime,
+                executable_target,
                 callee_executable,
                 &env,
                 args,
@@ -894,16 +895,12 @@ fn step_eval_entry(
                 ControlDestination::Return => continuations,
                 ControlDestination::Deliver(target) => {
                     let mut continuations = continuations;
+                    let proc = runtime.cur_proc();
                     continuations.push(BackendContinuation {
                         executable: executable_index,
                         entry: *target,
                         env: capture_backend_continuation_env(
-                            runtime.cur_proc(),
-                            transport,
-                            program,
-                            entries,
-                            *target,
-                            &env,
+                            runtime, proc, transport, program, entries, *target, &env,
                         )?,
                     });
                     continuations
@@ -1210,11 +1207,13 @@ fn eval_steps(
                     .get(value)
                     .is_some_and(|flow| !flow.escape && !flow.opaque && !flow.direct_surfaces.is_empty())
                 {
+                    let proc = runtime.cur_proc();
                     direct_callable_value(
+                        runtime,
                         transport,
                         program,
                         executable,
-                        runtime.cur_proc(),
+                        proc,
                         env,
                         *value,
                         *function,
@@ -1236,15 +1235,9 @@ fn eval_steps(
                     .get(value)
                     .is_some_and(|flow| !flow.escape && !flow.opaque && !flow.direct_surfaces.is_empty())
                 {
+                    let proc = runtime.cur_proc();
                     direct_callable_value(
-                        transport,
-                        program,
-                        executable,
-                        runtime.cur_proc(),
-                        env,
-                        *value,
-                        *function,
-                        captures,
+                        runtime, transport, program, executable, proc, env, *value, *function, captures,
                     )?
                 } else {
                     BackendBoundValue::Runtime(make_closure(
@@ -1510,7 +1503,7 @@ fn delivered_env(
         | crate::compiler2::BackendEntryOrigin::Branch
         | crate::compiler2::BackendEntryOrigin::ReceiveOutcome => {}
         crate::compiler2::BackendEntryOrigin::DeliveredResume { value, position } => {
-            let shape = position_shape(program, position)?;
+            let shape = position_shape(runtime, program, position)?;
             let bound = bind_delivered_value(
                 transport,
                 program,
@@ -1526,7 +1519,7 @@ fn delivered_env(
         }
     }
     for (capture, position) in entry.captures.iter().zip(entry.capture_positions.iter()) {
-        if position_is_runtime_absent(transport, program, position)? {
+        if position_is_runtime_absent(runtime, transport, program, position)? {
             continue;
         }
         next.insert(*capture, env_get_value(env, *capture)?);
@@ -1595,7 +1588,7 @@ fn eval_direct_call(
         .executables
         .get(callee)
         .ok_or_else(|| format!("backend direct callee {} is out of bounds", callee))?;
-    let call_args = encode_call_args(transport, program, types, runtime, executable, &env, args, 0)?;
+    let call_args = encode_call_args(transport, program, types, runtime, callee, executable, &env, args, 0)?;
     let continuations = match dest {
         ControlDestination::Return => continuations,
         ControlDestination::Deliver(target) => {
@@ -1603,14 +1596,18 @@ fn eval_direct_call(
             continuations.push(BackendContinuation {
                 executable: executable_index,
                 entry: target,
-                env: capture_backend_continuation_env(
-                    runtime.cur_proc(),
-                    transport,
-                    program,
-                    entries_for_executable(program, executable_index)?,
-                    target,
-                    &env,
-                )?,
+                env: {
+                    let proc = runtime.cur_proc();
+                    capture_backend_continuation_env(
+                        runtime,
+                        proc,
+                        transport,
+                        program,
+                        entries_for_executable(program, executable_index)?,
+                        target,
+                        &env,
+                    )?
+                },
             });
             continuations
         }
@@ -1644,7 +1641,9 @@ fn eval_direct_call(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn capture_backend_continuation_env(
+    runtime: &mut IrInterpRuntime,
     proc: *mut Process,
     transport: &TransportStore,
     program: &BackendProgram,
@@ -1657,7 +1656,7 @@ fn capture_backend_continuation_env(
         .ok_or_else(|| format!("backend entry {} is out of bounds", target.as_u32()))?;
     let mut captured = HashMap::with_capacity(entry.captures.len() + entry.reusable_cons_captures.len());
     for (capture, position) in entry.captures.iter().zip(entry.capture_positions.iter()) {
-        if position_is_runtime_absent(transport, program, position)? {
+        if position_is_runtime_absent(runtime, transport, program, position)? {
             continue;
         }
         captured.insert(*capture, publish_backend_capture(proc, &env_get_value(env, *capture)?)?);
@@ -1754,14 +1753,17 @@ fn bind_executable_inputs(
     transport: &TransportStore,
     program: &BackendProgram,
     types: &crate::compiler2::Types,
-    proc: *mut Process,
+    runtime: &mut IrInterpRuntime,
+    executable_index: usize,
     executable: &BackendExecutable,
     args: &[AnyValue],
 ) -> Result<Vec<Option<BackendBoundValue>>, String> {
     let semantic_arity = executable.key.activation.input_len(types);
     let mut bound = vec![None; semantic_arity];
     let mut lane_index = 0;
-    for binding in executable_input_bindings(program, executable)? {
+    let bindings = cached_executable_input_bindings(runtime, program, executable_index, executable)?;
+    let proc = runtime.cur_proc();
+    for binding in bindings.iter() {
         let value = decode_runtime_input_for_position(
             transport,
             program,
@@ -1805,7 +1807,12 @@ pub(crate) fn encode_macro_entry_inputs(
         .get(program.entry)
         .ok_or_else(|| format!("macro entry executable {} is out of bounds", program.entry))?;
     let mut lanes = Vec::new();
-    for binding in executable_input_bindings(program, executable)? {
+    // No `IrInterpRuntime` is available here — macro entry encoding runs
+    // ahead of (and outside) the interpreter run loop that owns the
+    // position-shape cache used elsewhere in this file — so this scans the
+    // transport plan directly. It runs once per macro invocation, not in a
+    // per-call hot loop, so the O(positions) scan cost is fine uncached.
+    for binding in scan_executable_input_bindings(program, executable)? {
         let semantic_index = binding.semantic_index;
         let shape = binding.shape;
         if matches!(transport.interners().shape(shape), ShapeDescr::Nothing) {
@@ -1822,32 +1829,54 @@ pub(crate) fn encode_macro_entry_inputs(
     Ok(lanes)
 }
 
-fn position_shape(program: &BackendProgram, position: &TransportPosition) -> Result<ShapeId, String> {
-    program
-        .transport
-        .position_shapes
-        .iter()
-        .find_map(|(candidate, shape)| (candidate == position).then_some(*shape))
+/// Looks up the transport shape published for `position`, through a
+/// per-run index built once on first use. The program's transport plan
+/// never changes over the life of a run, so a linear scan re-comparing
+/// every `TransportPosition` on every lookup would be pure repeated work —
+/// this is that fact, made a fact of construction instead of a per-call cost.
+fn position_shape(
+    runtime: &mut IrInterpRuntime,
+    program: &BackendProgram,
+    position: &TransportPosition,
+) -> Result<ShapeId, String> {
+    let index = runtime.position_shape_index.get_or_insert_with(|| {
+        program
+            .transport
+            .position_shapes
+            .iter()
+            .map(|(position, shape)| (position.clone(), *shape))
+            .collect()
+    });
+    index
+        .get(position)
+        .copied()
         .ok_or_else(|| format!("backend transport handoff did not publish shape for {position:?}"))
 }
 
 fn position_is_runtime_absent(
+    runtime: &mut IrInterpRuntime,
     transport: &TransportStore,
     program: &BackendProgram,
     position: &TransportPosition,
 ) -> Result<bool, String> {
-    let shape = position_shape(program, position)?;
+    let shape = position_shape(runtime, program, position)?;
     Ok(matches!(transport.interners().shape(shape), ShapeDescr::Nothing))
 }
 
 #[derive(Clone)]
-struct BackendExecutableInputBinding {
+pub(super) struct BackendExecutableInputBinding {
     position: TransportPosition,
     semantic_index: usize,
     shape: ShapeId,
 }
 
+/// Recovers `executable`'s semantic input layout by scanning the program's
+/// transport-position shape table. Pure in `(program, executable)` — the
+/// transport plan never changes over the life of a run — so callers on a hot
+/// path (a callee invoked more than once) should go through
+/// [`cached_executable_input_bindings`] instead of calling this directly.
 fn executable_input_bindings(
+    runtime: &mut IrInterpRuntime,
     program: &BackendProgram,
     executable: &BackendExecutable,
 ) -> Result<Vec<BackendExecutableInputBinding>, String> {
@@ -1860,7 +1889,7 @@ fn executable_input_bindings(
                 return None;
             };
             Some(
-                position_shape(program, position).map(|shape| BackendExecutableInputBinding {
+                position_shape(runtime, program, position).map(|shape| BackendExecutableInputBinding {
                     position: position.clone(),
                     semantic_index: *semantic_index,
                     shape,
@@ -1872,19 +1901,98 @@ fn executable_input_bindings(
     Ok(inputs)
 }
 
-fn value_shape(program: &BackendProgram, executable: &BackendExecutable, value: ValueId) -> Result<ShapeId, String> {
-    maybe_value_shape(program, executable, value)
+/// Memoized [`executable_input_bindings`], indexed by executable index.
+///
+/// A tail-recursive (or otherwise repeatedly-invoked) callee re-derives the
+/// same input layout on every call; caching it once per executable turns
+/// that from an O(calls * positions) linear-scan cost into O(executables *
+/// positions) over the whole run. The cache is a dense `Vec` — `executable_index`
+/// is already an array index into `program.executables` — so a hit is a bounds
+/// check and a clone, no hashing.
+fn cached_executable_input_bindings(
+    runtime: &mut IrInterpRuntime,
+    program: &BackendProgram,
+    executable_index: usize,
+    executable: &BackendExecutable,
+) -> Result<Rc<Vec<BackendExecutableInputBinding>>, String> {
+    // One runtime serves exactly one program (both entry points build it
+    // fresh), so the cache is sized once to the executable count and then only
+    // filled — the same build-once invariant `position_shape_index` relies on.
+    if runtime.input_bindings_cache.is_empty() {
+        runtime.input_bindings_cache.resize(program.executables.len(), None);
+    }
+    if let Some(cached) = runtime.input_bindings_cache[executable_index].as_ref() {
+        return Ok(Rc::clone(cached));
+    }
+    let bindings = Rc::new(executable_input_bindings(runtime, program, executable)?);
+    runtime.input_bindings_cache[executable_index] = Some(Rc::clone(&bindings));
+    Ok(bindings)
+}
+
+/// Uncached fallback for callers with no `IrInterpRuntime` to memoize
+/// against (currently only [`encode_macro_entry_inputs`], which runs ahead
+/// of the interpreter run loop). Scans the transport plan directly.
+fn scan_position_shape(program: &BackendProgram, position: &TransportPosition) -> Result<ShapeId, String> {
+    program
+        .transport
+        .position_shapes
+        .iter()
+        .find_map(|(candidate, shape)| (candidate == position).then_some(*shape))
+        .ok_or_else(|| format!("backend transport handoff did not publish shape for {position:?}"))
+}
+
+/// Uncached fallback for callers with no `IrInterpRuntime` to memoize
+/// against. See [`scan_position_shape`].
+fn scan_executable_input_bindings(
+    program: &BackendProgram,
+    executable: &BackendExecutable,
+) -> Result<Vec<BackendExecutableInputBinding>, String> {
+    let mut inputs = executable
+        .transport
+        .input_positions
+        .iter()
+        .filter_map(|position| {
+            let TransportPosition::ExecutableInput { semantic_index, .. } = position else {
+                return None;
+            };
+            Some(
+                scan_position_shape(program, position).map(|shape| BackendExecutableInputBinding {
+                    position: position.clone(),
+                    semantic_index: *semantic_index,
+                    shape,
+                }),
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    inputs.sort_by_key(|binding| binding.semantic_index);
+    Ok(inputs)
+}
+
+fn value_shape(
+    runtime: &mut IrInterpRuntime,
+    program: &BackendProgram,
+    executable: &BackendExecutable,
+    value: ValueId,
+) -> Result<ShapeId, String> {
+    maybe_value_shape(runtime, program, executable, value)
         .ok_or_else(|| format!("backend transport handoff did not publish value position for {value:?}"))
 }
 
-fn maybe_value_shape(program: &BackendProgram, executable: &BackendExecutable, value: ValueId) -> Option<ShapeId> {
+fn maybe_value_shape(
+    runtime: &mut IrInterpRuntime,
+    program: &BackendProgram,
+    executable: &BackendExecutable,
+    value: ValueId,
+) -> Option<ShapeId> {
     let position = executable.transport.value_positions.iter().find(
         |position| matches!(position, TransportPosition::Value { value: candidate, .. } if *candidate == value),
     )?;
-    position_shape(program, position).ok()
+    position_shape(runtime, program, position).ok()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn direct_callable_value(
+    runtime: &mut IrInterpRuntime,
     transport: &TransportStore,
     program: &BackendProgram,
     executable: &BackendExecutable,
@@ -1894,7 +2002,7 @@ fn direct_callable_value(
     function: FunctionId,
     captures: &[ValueId],
 ) -> Result<BackendBoundValue, String> {
-    let shape = value_shape(program, executable, value)?;
+    let shape = value_shape(runtime, program, executable, value)?;
     let ShapeDescr::Callable(callable) = transport.interners().shape(shape) else {
         return Err(format!(
             "backend direct callable producer {} had non-callable transport shape {shape:?}",
@@ -2008,6 +2116,7 @@ fn encode_call_args(
     program: &BackendProgram,
     types: &crate::compiler2::Types,
     runtime: &mut IrInterpRuntime,
+    executable_index: usize,
     executable: &BackendExecutable,
     env: &HashMap<ValueId, BackendBoundValue>,
     args: &[crate::compiler2::BackendCallArg],
@@ -2027,8 +2136,9 @@ fn encode_call_args(
         ));
     }
     let mut lanes = Vec::new();
-    for binding in executable_input_bindings(program, executable)?
-        .into_iter()
+    let bindings = cached_executable_input_bindings(runtime, program, executable_index, executable)?;
+    for binding in bindings
+        .iter()
         .filter(|binding| binding.semantic_index >= semantic_start)
     {
         if matches!(transport.interners().shape(binding.shape), ShapeDescr::Nothing) {
