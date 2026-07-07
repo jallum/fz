@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-07-07T11:03:05Z",
+  "description": "SURFACED by the fz-ose (re-scoped) audit. token_payload::decode_token (token_payload.rs:~144) stamps every decoded token with Span::new(SourceId(0), start, end) — byte offsets are the token's REAL offsets (round-tripped verbatim) but the code_id is a PLACEHOLDER.\n\nfz-ose fixed this ONLY for the @spec-fragment path, via FragmentCursor::current_span (quoted_function.rs:~1517) which rebuilds the span with the real ctx.code_id. But two other consumers of decode_tokens output still keep the raw SourceId(0) spans:\n- quoted_type_expr_body (quoted_function.rs:~1188, @type bodies + non-@spec type ascriptions) -\u003e TypeExprBody\n- required_map_tokens / required_map_list_tokens / optional_map_keyword_tokens (quoted_function.rs:~1653)\n\nThese feed TypeExprBody, consumed by type_expr.rs (parse_type_expr/parse_type_def_body) whose TypeExprError.span is built directly from token.span (type_expr.rs:~112,136) with NO code_id correction. Surfaces live: source_publish.rs:457 + :1470 emit Diagnostic::error(RESOLVE_TYPE_ALIAS, ..., error.span) with error.span.code_id == SourceId(0).\n\nIMPACT: masked in single-file compiles (the first submitted file typically IS code id 0 — which is why every existing single-file fixture never caught it). In a MULTI-FILE compile, a malformed @type or type annotation in the 2nd+ file renders its diagnostic pointing at byte offsets in the WRONG file (file 0's source). Pre-existing; not introduced by fz-ose.\n\nFIX (correct-by-construction, preferred): thread a real code_id into decode_token/decode_tokens itself, so every decoded token carries the right SourceId — this OBSOLETES the per-call-site FragmentCursor rebuild patch too (fold it away). ALT: apply the rebuild-with-real-code_id pattern at type_expr.rs's TypeExprError.span construction sites.\n\nVERIFY: a MULTI-FILE fixture with a malformed @type/type-annotation in the non-first file surfaces a RESOLVE_TYPE_ALIAS diagnostic pointing at the correct file (right SourceId, right offsets). Confirm FragmentCursor's rebuild can be deleted if decode_token is fixed at source. lib+matrix green.",
+  "id": "fz-3sb",
+  "labels": [],
+  "priority": 2,
+  "status": "open",
+  "title": "token_payload::decode_token leaks SourceId(0) into @type/type-ascription diagnostics (wrong file in multi-file compiles)",
+  "type": "bug",
+  "updated_at": "2026-07-07T11:03:05Z"
+}
