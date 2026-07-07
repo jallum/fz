@@ -7,9 +7,15 @@
   "id": "fz-go4.43",
   "labels": [],
   "parent": "fz-go4",
+  "comments": [
+    {
+      "text": "LANDED at 6efa9fc16 (folded from wt/b5-43 737cddf47). Root cause: World::demand_function_scope only demanded ScopeCode on codes whose surface could STATICALLY match the wanted name — and a MacroCall form matched only RESERVED def-heads (source_definition_matches_function), so a user-defmacro-produced test-block (non-reserved head) was never a candidate home; ScopeCode never ran, and PublishFunctionSource deadlocked on the arm-less FunctionSourceStash wait. FIX: new item_macro_call_may_define treats any non-reserved-head opaque macro call as a candidate home (rules out only a reserved def-head naming a DIFFERENT function). Reuses the existing demand_function_scope -\u003e CodeScoped -\u003e ScopeCode -\u003e apply_item_macro_call pull chain verbatim — no new job/fact/discovery pass (fold-aligned). All 3 tests (test_macro_passing_assert_compiles, test_macro_failing_assert_compiles, multiple_test_blocks_compile) un-ignored and passing as written. lib 1237/0/6 in-worktree, 1238/0/6 on the folded branch. Adversarial audit: SOUND, no blocker; false-home/disambiguation, termination, predicate correctness all cleared (candidate-home is a pure DEMAND trigger). Audit surfaced a bounded-but-real excess-work widening (whole-surface eager scoping on first unresolved global lookup, AND-semantics fan-out) -\u003e fz-go4.53.",
+      "timestamp": "2026-07-07T12:36:55Z"
+    }
+  ],
   "priority": 3,
   "status": "open",
   "title": "submit_root by bare name does not expand top-level item macros (macro-test-DSL tests never resolve)",
   "type": "bug",
-  "updated_at": "2026-07-04T11:29:54Z"
+  "updated_at": "2026-07-07T12:36:55Z"
 }
