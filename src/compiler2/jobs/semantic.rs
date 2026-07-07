@@ -1851,12 +1851,14 @@ fn branch_possible(world: &mut World<'_>, predicate: &RegionPredicate<Ty>, sourc
             // exactly as an atom literal already prunes its miss edge below.
             //
             // The prune only applies when the key resolves to a form the map
-            // lattice can carry as a required field: an atom singleton.
-            // `map_key` accepts int/float/string/nil map-pattern keys too
+            // lattice can carry as a required field: an atom singleton. The
+            // `nil` key resolves here — it is the atom `:nil`, so a `%{nil =>
+            // ...}` pattern prunes its miss edge exactly like any other atom
+            // key. `map_key` also accepts int/float/string map-pattern keys
             // (`dispatch_matrix/pattern.rs`), but the lattice erases numeric
             // literals to their kind (`Types::int_lit`/`as_int_singleton` is a
-            // permanent stub) and has no singleton for float/string/nil keys,
-            // so `as_map_key` returns `None` for them. Absence of a resolvable
+            // permanent stub) and has no singleton for float/string keys, so
+            // `as_map_key` returns `None` for them. Absence of a resolvable
             // key is absence of proof: we cannot show the key is present, so
             // we must not prune either edge — falling back to the old
             // unconditional `true` keeps those (valid, working) programs
@@ -2137,7 +2139,16 @@ fn dispatch_const_ty(world: &mut World<'_>, value: &GroundValue) -> Ty {
         DispatchShape::Float(value) => world.types_mut().float_lit(f64::from_bits(value)),
         DispatchShape::Atom(name) => world.types_mut().atom_lit(name),
         DispatchShape::Bool(value) => world.types_mut().bool_lit(value),
-        DispatchShape::Nil | DispatchShape::EmptyList => world.types_mut().empty_list(),
+        // The `nil` keyword is the atom `nil` in every position, expression
+        // or pattern (Elixir parity: `is_nil(nil)` holds, `nil == []` does
+        // not). `[]` is the empty list; it never reaches this arm as a
+        // `GroundValue::EmptyList` dispatch const in practice -- the `[]`
+        // pattern lowers to `Region::List(ListRegion::Empty)` instead (see
+        // `dispatch_matrix::pattern::append_list_pattern`), so the
+        // `EmptyList` arm below exists only for `DispatchShape`'s
+        // closed-match completeness.
+        DispatchShape::Nil => world.types_mut().nil(),
+        DispatchShape::EmptyList => world.types_mut().empty_list(),
         DispatchShape::Utf8Binary(_) => world.types_mut().str_t(),
     }
 }
@@ -2329,4 +2340,72 @@ fn any_ty(world: &mut World<'_>) -> Ty {
 
 fn none_ty(world: &mut World<'_>) -> Ty {
     world.types_mut().none()
+}
+
+#[cfg(test)]
+mod dispatch_const_ty_tests {
+    use super::*;
+    use crate::ground_value::MapKey;
+    use crate::telemetry::ConfiguredTelemetry;
+
+    /// The `nil` keyword types as the atom `nil` in both expression and
+    /// pattern position; `[]` types as the empty list; the two are
+    /// distinct. This pins the fix for the divergence where pattern
+    /// position used to type `nil` as `empty_list()` while expression
+    /// position (`literal_ty`, `BodyLiteral::Nil`) already typed it as the
+    /// atom -- same keyword, same `GroundValue::Nil` payload, one `Ty`.
+    #[test]
+    fn nil_keyword_types_as_the_atom_in_pattern_position_not_the_empty_list() {
+        let tel = ConfiguredTelemetry::new();
+        let mut world = World::new(&tel);
+
+        let nil_pattern_ty = dispatch_const_ty(&mut world, &GroundValue::Nil);
+        let nil_expr_ty = world.types_mut().nil();
+        let empty_list_ty = world.types_mut().empty_list();
+
+        assert_eq!(
+            world.types_mut().display(&nil_pattern_ty),
+            world.types_mut().display(&nil_expr_ty),
+            "the `nil` keyword should type the same way (the atom nil) in pattern position as it does in expression position",
+        );
+        assert_ne!(
+            world.types_mut().display(&nil_pattern_ty),
+            world.types_mut().display(&empty_list_ty),
+            "the `nil` keyword must not type as the empty list -- `nil` and `[]` are distinct values with distinct types",
+        );
+
+        // `[]` in pattern position never reaches `dispatch_const_ty` as a
+        // `GroundValue::EmptyList` dispatch const (it lowers to
+        // `Region::List(ListRegion::Empty)`), but the closed-match arm
+        // above must still type it as the empty list, not the atom, in
+        // case anything ever constructs that const directly.
+        let empty_list_dispatch_ty = dispatch_const_ty(&mut world, &GroundValue::EmptyList);
+        assert_eq!(
+            world.types_mut().display(&empty_list_dispatch_ty),
+            world.types_mut().display(&empty_list_ty),
+            "a `GroundValue::EmptyList` dispatch const should type as the empty list",
+        );
+    }
+
+    /// Because `nil` now types as the atom `:nil`, a `nil` map-pattern key
+    /// resolves to a `MapKey::Atom` singleton -- so `%{nil => ...}` prunes
+    /// its present/absent miss edge in the `Region::MapKeyPresent` proof
+    /// exactly like any other atom key. Before the fix, `nil` typed as the
+    /// empty list, `as_map_key` returned `None`, and the proof fell back to
+    /// the unconditional "cannot prune". This pins the resolvable-key path
+    /// that the type change unlocked so it is not silently untested.
+    #[test]
+    fn nil_map_pattern_key_resolves_to_the_nil_atom_singleton() {
+        let tel = ConfiguredTelemetry::new();
+        let mut world = World::new(&tel);
+
+        let nil_key_ty = dispatch_const_ty(&mut world, &GroundValue::Nil);
+        let resolved = world.types().as_map_key(&nil_key_ty);
+
+        assert_eq!(
+            resolved,
+            Some(MapKey::Atom("nil".to_string())),
+            "a `nil` map-pattern key should resolve to the `:nil` atom singleton so `MapKeyPresent` can prune its miss edge",
+        );
+    }
 }
