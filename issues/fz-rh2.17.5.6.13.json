@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-07-07T19:14:04Z",
+  "description": "Final slice -- the reduce. Feed BackendProgram.struct_schemas (jobs/backend.rs, consumed by ir_interp/native/codegen at MakeStruct/StructField) from the StructDef store/facts, then DELETE the old source-scan path entirely: World::struct_schemas(), World::module_struct_fields(), ModuleStore::named_struct_schemas(), and the ScopeForm::Struct scan. Update .agent docs to present-tense (StructDefined facts + obligation validation, no source scanning). Test (ticket #6): BackendProgram.struct_schemas populated from StructDef facts; MakeStruct/StructField still run. Blocked until all consumer slices are migrated (it removes the last reader).",
+  "id": "fz-rh2.17.5.6.13",
+  "labels": [],
+  "parent": "fz-rh2.17.5.6",
+  "priority": 1,
+  "status": "open",
+  "title": "Structs: backend struct_schemas from facts + DELETE the module_struct_fields/struct_schemas scan (last consumer)",
+  "type": "bug",
+  "updated_at": "2026-07-07T19:14:04Z"
+}
