@@ -4,6 +4,7 @@
   "blocks": [
     "fz-k22.3"
   ],
+  "closed_at": "2026-07-08T13:13:07Z",
   "created": "2026-07-08T03:39:46Z",
   "description": "From the fz-k22 STOP-and-report investigation. project_executable_input_source (src/compiler2/jobs/transport.rs:2839-2857) callable branch: when 2+ distinct producer shapes satisfy the callable demand it records boundary/publication facts for the multiple source_shapes but then FALLS THROUGH to a non-callable equality check that fails (shapes differ) -\u003e yields SourceShape::Unknown, never returning the generic boxed callable shape (function:None, one ValueRef lane) the codebase already uses for the ambiguous/opaque-closure case (doc at transport.rs:3414-3423). Looks like half-wired dead code from a partial multi-producer boundary mechanism -- finish it. FIX (VERIFIED WORKING IN ISOLATION by the investigation, small/localized, reuses generic_callable_shape): fall back to generic_callable_shape when exact_len\u003e=2 / source_shapes_len\u003e=2 at a callable position. NOTE: this fix ALONE does NOT turn the repro green (the crash persists byte-identical) -- the proximate cause is Slice C; B is a required correctness piece that must land WITH A+C. Related: fz-k22.",
   "id": "fz-k22.2",
@@ -16,7 +17,7 @@
     }
   ],
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "fz-k22 Slice B: project_executable_input_source returns generic boxed callable shape (not SourceShape::Unknown) for ambiguous multi-producer callable",
   "type": "bug",
   "updated_at": "2026-07-08T13:13:07Z"
