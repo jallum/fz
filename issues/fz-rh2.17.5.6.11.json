@@ -6,6 +6,7 @@
   "blocks": [
     "fz-rh2.17.5.6.13"
   ],
+  "closed_at": "2026-07-08T04:03:42Z",
   "created": "2026-07-07T19:14:03Z",
   "description": "Third slice. Extend the collect_local_*_requirements pre-pass and the Pattern::Struct/Expr::Struct walks in jobs/body.rs to record struct field obligations and wait on StructDefined(A) instead of synchronously requiring module_struct_fields and emitting a fatal LOWER_UNSUPPORTED. Tests: #1 out-of-order (B references %A{field:...} before A defined; records obligations, waits only on StructDefined(A), succeeds after A publishes), #2 missing-field (no immediate fatal if A pending; after A settles diagnostic points to B usage span), #4 pattern/literal lowering consumes ordered schema from StructDefined(A) not ModuleDefined/source scans. Needs the obligation store slice.",
   "id": "fz-rh2.17.5.6.11",
@@ -18,7 +19,7 @@
     }
   ],
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "Structs: body.rs lowering records obligations + waits on StructDefined; kill synchronous-fatal path",
   "type": "bug",
   "updated_at": "2026-07-08T04:03:42Z"
