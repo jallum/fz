@@ -15,11 +15,15 @@
     {
       "text": "REOPENED: closed in error during a sweep. The ORIGINAL intent (recover unknown-module + import-resolution diagnostics) IS satisfied on branch HEAD -- verified: the 6 named failing tests (compiler2_submit_module_root_without_code_reports_one_unknown_module_diag, import_undefined/wrong_arity/except_wrong_arity/non_exported_name_is_error, and the renamed import_from_external_interface_carries_provider_boundary_call_without_provider_body) all PASS; module_exports/find_export grep to zero hits (old string/export fallback gone); lib 1241/0/6; matrix 19 known-red; docs present-tense. That work landed via closed children .6.1-.6.6. BUT this ticket has two still-OPEN P1 children -- .6.7 (frontdoor: grammar-owned EOL handling replacing the newline continuation heuristic) and .6.8 (structs: publish field-schema facts + validate field-reference obligations) -- which are separate scope discovered under this parent. Parent stays OPEN until those land; only then does it cascade to fz-rh2.17.5 -\u003e fz-rh2.17.",
       "timestamp": "2026-07-07T18:36:08Z"
+    },
+    {
+      "text": "Closing: own goal met (unknown-module + import-resolution diagnostics recovered via interface settlement; module_exports/find_export string-fallback deleted -- verified when the impl pass found it already-satisfied by children .6.1-.6.6, the named import/unknown-module tests passing) AND all children now closed: .6.1-.6.6 (interface diagnostics), .6.7 (grammar-owned EOL), .6.8 (struct field-schema facts epic -- store authoritative, scan deleted), .6.14 (dot-eol uniformity). Residual struct-refinement follow-ups (.8.2/.8.3/.8.5) reparented to standalone; fz-l59 gates 16.6 directly.",
+      "timestamp": "2026-07-08T14:27:07Z"
     }
   ],
   "priority": 2,
   "status": "open",
   "title": "Compiler2 interface/diagnostics sweep: recover unknown-module and import-resolution failures",
   "type": "bug",
-  "updated_at": "2026-07-07T18:36:08Z"
+  "updated_at": "2026-07-08T14:27:07Z"
 }
