@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-07-08T13:43:48Z",
+  "description": "SURFACED by the fz-k22.1 audit; becomes REACHABLE once fz-k22.3 fixes the proximate demand-fixpoint crash. TWO coupled items:\n\n1. INTERP GAP: ir_interp/backend.rs (~line 765) BackendTail::ClosureCall does callable.function.ok_or_else(...)? -- it hard-errors ('backend closure call cannot directly invoke generic callable transport') when function:None, i.e. exactly the ambiguous multi-producer shape fz-k22.2 assigns (generic_callable_shape). Today this is UNREACHED (confirmed empirically: enum_predicate_search crashes at the Slice-C proximate cause -- native.rs:3127 'must be runtime-materializable' / interp 'backend value 6 is unbound' -- BEFORE control reaches the ClosureCall shape-dispatch). But once fz-k22.3's demand fix lets control reach it, interp needs a REAL multi-target boxed-dispatch UNPACK (invoke through the runtime closure identity), not just unpack_closure for single-function values. Native (direct_callable_lanes, native.rs:3378) already handles function:None via the boxed path; interp does not.\n\n2. COHERENCE NUANCE: CallEdge::Indirect (fz-k22.1) is an effects/ABI-exhaustiveness-level fact, but it does NOT drive the boxed-path codegen decision -- that is made independently by direct_callable_lanes checking descr.function.is_none() on the callee's transport shape. The two agree by construction today (both triggered by 2+ distinct producers) but are NOT cross-checked; nothing catches a divergence (summary settles 2+ targets but the value shape resolved concrete, or vice versa). When fixing the interp path, decide whether to cross-validate the two or unify on one signal.\n\nVERIFY (after fz-k22.3): interp reaches and correctly invokes a function:None boxed multi-target closure call in enum_predicate_search; the minimal 2-closure repro + enum_predicate_search run GREEN on run/interp/build. Effectively part of turning enum_predicate_search green -- coordinate with fz-k22.3/.4. Related: fz-k22.1, fz-k22.2, fz-k22.3.",
+  "id": "fz-k22.6",
+  "labels": [],
+  "parent": "fz-k22",
+  "priority": 2,
+  "status": "open",
+  "title": "fz-k22 interp: ClosureCall on a function:None (ambiguous multi-target) boxed callable hard-errors instead of unpacking; + CallEdge::Indirect not cross-validated with the transport-shape function:None check",
+  "type": "bug",
+  "updated_at": "2026-07-08T13:43:48Z"
+}
