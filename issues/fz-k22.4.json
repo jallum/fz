@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-k22.3"
+  ],
   "blocks": [],
   "created": "2026-07-08T03:39:47Z",
   "description": "From the fz-k22 investigation. A variant repro (Enum.find_index called twice with different predicates) hit a capture-count-mismatch assertion in build_codegen_closure_targets (src/compiler2/native_codegen/driver.rs:927-970, which asserts one global capture-surface per native FnId). May be a FOURTH independent symptom of the 2+-distinct-closure-shared-HOF class, OR may resolve once Slices A-C land. RE-VERIFY after A-C: run the find_index-twice repro; if still failing, diagnose whether the one-capture-surface-per-FnId assertion is too strict for a shared HOF specialization reached by distinct-capture closures. ACCEPTANCE for the whole fz-k22: the minimal 2-closure repro (Enum.find + Enum.find_value in one fn) AND enum_predicate_search fixture run GREEN on all three backends (run/interp/build) -\u003e enum_predicate_search::{run,interp,build} leave the known-red set (11-\u003e8). Related: fz-k22.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "fz-k22 Slice D: re-verify build_codegen_closure_targets one-capture-surface-per-FnId assertion after A-C (Enum.find_index-twice variant)",
   "type": "bug",
-  "updated_at": "2026-07-08T03:39:47Z"
+  "updated_at": "2026-07-08T03:39:48Z"
 }
