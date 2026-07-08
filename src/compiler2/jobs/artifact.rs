@@ -1437,6 +1437,17 @@ fn materialize_closure_call_edge(
         return Ok(None);
     };
     let Some(target) = summary.single_target().cloned() else {
+        if summary.targets.len() >= 2 {
+            // 2+ distinct concrete closure producers: no single local target
+            // can be devirtualized. Route through the boxed/opaque callable
+            // value explicitly (agreeing with the generic callable transport
+            // shape), rather than silently dropping the edge — a dropped
+            // edge is indistinguishable from "not computed yet".
+            return Ok(Some(MaterializedCallEdge {
+                target: CallEdge::Indirect,
+                return_ty: summary.settled_return(world.types_mut()),
+            }));
+        }
         return Ok(None);
     };
     let (direct, return_ty) = lower_materialized_call_target(
@@ -2080,8 +2091,18 @@ fn step_effects(steps: &[LoweredStep], _call_edges: &HashMap<CallSiteId, Materia
 fn tail_effects(tail: &LoweredTail, call_edges: &HashMap<CallSiteId, MaterializedCallEdge>) -> EffectSummary {
     let mut effects = EffectSummary::default();
     match tail {
-        LoweredTail::ClosureCall { callsite, .. } if !call_edges.contains_key(callsite) => {
-            effects.calls_opaque = true;
+        LoweredTail::ClosureCall { callsite, .. } => {
+            // Missing entry ("not computed yet") and an explicit `Indirect`
+            // edge (settled-ambiguous, 2+ producers) are both opaque calls
+            // from the effects producer's point of view; only a settled
+            // single/dispatch target is not.
+            let opaque = match call_edges.get(callsite) {
+                None => true,
+                Some(edge) => matches!(edge.target, CallEdge::Indirect),
+            };
+            if opaque {
+                effects.calls_opaque = true;
+            }
         }
         LoweredTail::DirectCall { callsite, .. } => {
             if call_edges.get(callsite).is_some_and(call_edge_calls_provider_boundary) {
@@ -2093,7 +2114,6 @@ fn tail_effects(tail: &LoweredTail, call_edges: &HashMap<CallSiteId, Materialize
         | LoweredTail::Dispatch { .. }
         | LoweredTail::Receive(_)
         | LoweredTail::Halt { .. } => {}
-        LoweredTail::ClosureCall { .. } => {}
     }
     effects
 }
@@ -2105,6 +2125,7 @@ fn call_edge_calls_provider_boundary(edge: &MaterializedCallEdge) -> bool {
             .arms
             .iter()
             .any(|arm| matches!(arm.callee, CallTarget::ProviderBoundary(_))),
+        CallEdge::Indirect => false,
     }
 }
 
@@ -2434,7 +2455,9 @@ fn incomplete_semantic_plan(world: &World<'_>, root_id: RootId, message: impl In
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::compiler2::semantic::{CallSiteSummary, CallTargetSummary, SelectedCallee};
     use crate::compiler2::transport::{CodegenSeamFact, LaneDescr, TransportClass};
+    use crate::compiler2::{ActivationKey, FunctionId};
     use crate::telemetry::ConfiguredTelemetry;
 
     #[test]
@@ -2468,6 +2491,103 @@ mod tests {
         sort_transport_positions(&mut positions);
 
         assert_eq!(positions, vec![call_arg(0, 1), call_arg(1, 0), call_arg(1, 1)]);
+    }
+
+    fn fake_call_executable(world: &mut World<'_>, root: u32, function: u32, inputs: &[Ty]) -> ExecutableKey {
+        let activation = ActivationKey::from_inputs(
+            RootId::for_test(root),
+            FunctionId::for_test(function),
+            inputs,
+            world.types_mut(),
+        );
+        ExecutableKey {
+            activation,
+            need: ExecutableNeed::Value,
+        }
+    }
+
+    /// Non-vacuous regression guard for the fz-k22 Slice A fix:
+    /// `materialize_closure_call_edge` used to silently return `Ok(None)` for
+    /// a closure-call site with 2+ distinct concrete producers (no single
+    /// target to devirtualize), dropping the edge entirely -- indistinguishable
+    /// from a callsite whose summary fact has not settled yet. It must instead
+    /// produce an explicit `CallEdge::Indirect` edge, routing the call through
+    /// the callee's runtime identity (agreeing with the generic boxed callable
+    /// transport shape from Slice B) rather than devirtualizing or dropping it.
+    #[test]
+    fn materialize_closure_call_edge_routes_ambiguous_multi_target_through_indirect() {
+        let tel = ConfiguredTelemetry::new();
+        let mut world = World::new(&tel);
+        let int = world.types_mut().int();
+
+        let caller = fake_call_executable(&mut world, 300, 301, &[]);
+        let producer_a = FunctionId::for_test(302);
+        let producer_b = FunctionId::for_test(303);
+        let callsite = CallSiteId::from_u32(7);
+
+        let key = CallSiteKey {
+            activation: caller.activation.clone(),
+            callsite,
+        };
+        let summary = CallSiteSummary {
+            targets: vec![
+                CallTargetSummary {
+                    callee: SelectedCallee::Function(producer_a),
+                    surface_inputs: vec![int, int],
+                    activation: None,
+                    return_ty: Some(int),
+                },
+                CallTargetSummary {
+                    callee: SelectedCallee::Function(producer_b),
+                    surface_inputs: vec![int, int],
+                    activation: None,
+                    return_ty: Some(int),
+                },
+            ],
+            return_ty: Some(int),
+        };
+        world.define_callsite_summary(key, summary);
+
+        let analysis = ActivationAnalysis {
+            reachable_clauses: Vec::new(),
+            reachable_entries: Vec::new(),
+            callsites: Vec::new(),
+            latent_executables: Vec::new(),
+            value_types: HashMap::new(),
+        };
+        let positions = HashMap::new();
+        let callables = HashMap::new();
+        let boundaries = HashMap::new();
+        let codegen_seam_facts = Vec::new();
+        let transport_plan = ArtifactTransportLookup {
+            positions: &positions,
+            callables: &callables,
+            boundaries: &boundaries,
+            codegen_seam_facts: &codegen_seam_facts,
+        };
+        let callsite_args = HashMap::new();
+        let callee_value = ValueId::from_u32(1);
+
+        let edge = materialize_closure_call_edge(
+            &mut world,
+            RootId::for_test(300),
+            &transport_plan,
+            &caller,
+            &analysis,
+            ExecutableNeed::Value,
+            callsite,
+            callee_value,
+            &ControlDestination::Return,
+            &callsite_args,
+        )
+        .expect("materialization should not fail")
+        .expect("ambiguous 2+-producer closure call must produce an edge, not Ok(None)");
+
+        assert!(
+            matches!(edge.target, CallEdge::Indirect),
+            "ambiguous 2+-producer closure call should route through the boxed indirect edge, got {:?}",
+            edge.target
+        );
     }
 
     #[test]

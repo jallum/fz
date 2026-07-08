@@ -251,6 +251,7 @@ fn symbolic_call_edge_callees(target: &CallEdge<ExecutableKey>) -> Vec<&Executab
     match target {
         CallEdge::Direct(direct) => direct.callee.local().into_iter().collect(),
         CallEdge::Dispatch(dispatch) => dispatch.arms.iter().filter_map(|arm| arm.callee.local()).collect(),
+        CallEdge::Indirect => Vec::new(),
     }
 }
 
@@ -504,6 +505,7 @@ fn package_call_edge(
                 .collect::<Result<Vec<_>, _>>()?,
             miss: dispatch.miss,
         }),
+        CallEdge::Indirect => CallEdge::Indirect,
     })
 }
 
@@ -823,7 +825,7 @@ fn lower_symbolic_tail(
 fn symbolic_direct_call_edge(target: &CallEdge<ExecutableKey>) -> Option<&DirectCallEdge<ExecutableKey>> {
     match target {
         CallEdge::Direct(direct) => Some(direct),
-        CallEdge::Dispatch(_) => None,
+        CallEdge::Dispatch(_) | CallEdge::Indirect => None,
     }
 }
 

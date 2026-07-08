@@ -722,6 +722,11 @@ fn step_eval_entry(
                         .ok_or_else(|| format!("backend dispatch call arm {} is out of bounds", body_id))?;
                     (&arm.callee, arm.extern_marshals.as_deref())
                 }
+                CallEdge::Indirect => {
+                    return Err(format!(
+                        "backend direct callsite in executable {executable_index} materialized as an indirect closure edge; Indirect is closure-call-only"
+                    ));
+                }
             };
             eval_backend_direct_call_edge(
                 runtime,

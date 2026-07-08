@@ -123,6 +123,13 @@ pub struct MaterializedCallEdge {
 pub enum CallEdge<T> {
     Direct(DirectCallEdge<T>),
     Dispatch(DispatchCallEdge<T>),
+    /// A closure-call site with 2+ distinct concrete producers: no single
+    /// local target can be devirtualized, so the call runs through the
+    /// callee's runtime identity (the boxed/opaque callable value), agreeing
+    /// with the generic callable transport shape assigned to that value.
+    /// Explicit and settled — distinct from a callsite whose summary fact
+    /// has not been computed yet (which stays `Ok(None)` at materialization).
+    Indirect,
 }
 
 impl<T> CallEdge<T> {
@@ -134,6 +141,7 @@ impl<T> CallEdge<T> {
         match self {
             Self::Direct(direct) => direct.callee.local().into_iter().collect(),
             Self::Dispatch(dispatch) => dispatch.arms.iter().filter_map(|arm| arm.callee.local()).collect(),
+            Self::Indirect => Vec::new(),
         }
     }
 }

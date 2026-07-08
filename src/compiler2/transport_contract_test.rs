@@ -4737,6 +4737,7 @@ fn materialized_call_edge_callees(edge: &super::artifact::MaterializedCallEdge) 
         super::artifact::CallEdge::Dispatch(dispatch) => {
             dispatch.arms.iter().filter_map(|arm| arm.callee.local()).collect()
         }
+        super::artifact::CallEdge::Indirect => Vec::new(),
     }
 }
 
@@ -4746,6 +4747,7 @@ fn abi_ready_call_edge_callees(edge: &super::artifact::AbiReadyCallEdge) -> Vec<
         super::artifact::CallEdge::Dispatch(dispatch) => {
             dispatch.arms.iter().filter_map(|arm| arm.callee.local()).collect()
         }
+        super::artifact::CallEdge::Indirect => Vec::new(),
     }
 }
 
@@ -4784,6 +4786,7 @@ fn abi_call_edge_callees_from_target(target: &super::artifact::CallEdge<Executab
         super::artifact::CallEdge::Dispatch(dispatch) => {
             dispatch.arms.iter().filter_map(|arm| arm.callee.local()).collect()
         }
+        super::artifact::CallEdge::Indirect => Vec::new(),
     }
 }
 

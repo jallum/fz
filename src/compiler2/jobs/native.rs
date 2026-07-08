@@ -954,6 +954,11 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                 CallEdge::Dispatch(dispatch) => {
                     self.lower_dispatch_call_tail(ctx, executable, entries, entry_fns, env, dispatch, args, dest)
                 }
+                CallEdge::Indirect => Err(incomplete_native_program(
+                    self.world,
+                    self.root_id,
+                    "native direct call materialized as an indirect closure edge; Indirect is closure-call-only",
+                )),
             },
             BackendTail::ClosureCall {
                 callee,
@@ -4592,6 +4597,9 @@ fn collect_extern_marshals_in_tail(
                     )?;
                 }
             }
+            // Indirect is closure-call-only (never a DirectCall edge); no
+            // local callee to collect extern marshals for.
+            CallEdge::Indirect => {}
         }
     }
     Ok(())
