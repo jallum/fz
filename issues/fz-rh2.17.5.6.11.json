@@ -11,9 +11,15 @@
   "id": "fz-rh2.17.5.6.11",
   "labels": [],
   "parent": "fz-rh2.17.5.6.8",
+  "comments": [
+    {
+      "text": "Folded at f480bc1b9 (clean auto-merge with .8.1 on drive_test.rs). Struct-literal/pattern lowering now records obligations + waits on StructDefined (mirroring .10): a shared record_struct_reference helper (called from both Expr::Struct and Pattern::Struct arms) + a new collect_local_pattern_requirements walk covering ALL pattern positions (FnClause params, case/receive/with/Match; lambda params via their own lower_function job; nested/tuple/list/map patterns recursed). lower_struct_expr/pattern read struct_def_fields not module_struct_fields; BOTH LOWER_UNSUPPORTED fatals deleted (schema guaranteed present by the wait; unknown fields diagnosed durably via validate_struct_field_expectations; non-struct %A{} in expr OR pattern surfaces RESOLVE_NOT_A_STRUCT via .10's settled-absent machinery). Adversarial audit found NO MUST-FIX (unlike .10) -- pattern coverage complete (full Pattern enum cross-referenced), non-struct-pattern diagnoses not stalls, nested/multi-struct waits both collected, schema-order correct. Test-gap nit closed at fold: added pattern-side non-struct test (non-vacuous, verified by deleting the record call). 5 tests total. Verified: lib 1272/0/6, composed-branch matrix 350/11 (no new red), clippy+fmt clean. Follow-ups: fz-rh2.17.5.6.8.5 (bare-%A{} DUMMY span + unquote-walk asymmetry). Unblocks .13 (last struct slice, gated also on .8.4).",
+      "timestamp": "2026-07-08T04:03:42Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "Structs: body.rs lowering records obligations + waits on StructDefined; kill synchronous-fatal path",
   "type": "bug",
-  "updated_at": "2026-07-07T19:14:53Z"
+  "updated_at": "2026-07-08T04:03:42Z"
 }
