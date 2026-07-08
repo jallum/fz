@@ -6,10 +6,9 @@
   "description": "SURFACED and confirmed BENIGN by the fz-rh2.17.5.6.10 re-audit. function_type_struct_refs(function) is ONE shared vec covering @spec params/result/constraints + extern contract + every clause's param annotations. Both derive_function_contract and plan_entry_dispatch iterate the ENTIRE vec, so plan_entry_dispatch also waits on StructDefined for a struct referenced only in the @spec return type or only the extern contract, and vice versa. STRICTLY CONSERVATIVE: it is a superset of what each job's own resolution needs -\u003e never a missed/under-wait -\u003e no silent-drop path (verified). Waiting on an extra StructDefined that settles just adds a harmless read edge; waiting on a non-struct correctly surfaces the not-a-struct error regardless of which job reports it. So this is a REFINEMENT, not a correctness bug. FIX (low priority): split function_type_struct_refs per-consumer (spec vs guard/param-annotation vs extern) so each job waits only on the structs its own positions reference, tightening the wake set. Coordinate with any fix to fz-b6w / the .10 obligation model. Related: fz-rh2.17.5.6.10.",
   "id": "fz-rh2.17.5.6.8.2",
   "labels": [],
-  "parent": "fz-rh2.17.5.6.8",
   "priority": 4,
   "status": "open",
   "title": "Struct-ref wait-set is per-function not per-consumer: contract and dispatch jobs each wait on every struct any type position references (over-waiting)",
   "type": "bug",
-  "updated_at": "2026-07-08T01:24:43Z"
+  "updated_at": "2026-07-08T14:26:13Z"
 }
