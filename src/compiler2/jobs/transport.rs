@@ -2853,6 +2853,17 @@ fn project_executable_input_source(
             if unknown {
                 return SourceShape::Unknown;
             }
+            // 2+ distinct producer shapes satisfy the callable demand (the
+            // single-producer case already returned above via
+            // `select_callable_input_shape_for_demand`). There is no single
+            // exact shape to report, but the position is still a callable:
+            // report the generic boxed callable shape (one ValueRef lane,
+            // `function: None`) rather than falling through to the
+            // non-callable equality check below, which would spuriously
+            // fail (the shapes differ by construction) and yield
+            // `SourceShape::Unknown`.
+            let shape = generic_callable_shape(world, ty, &demand.callable, facts, publication);
+            return SourceShape::Exact(shape);
         }
     }
     if unknown {
@@ -4356,5 +4367,132 @@ mod tests {
         graph.equal(a, b.clone());
         graph.anchor(b, right_shape);
         let _ = graph.solve();
+    }
+
+    /// Builds a minimal `ExecutableContext` whose sole local value is a direct
+    /// callable producer (`CallableValue`) for `function`, satisfying `surface`
+    /// via a matching `CallableFlowFact::direct_edges` entry -- exactly what
+    /// `callable_input_shape_satisfies_demand` requires to admit the shape.
+    fn direct_callable_producer_context(
+        world: &mut World<'_>,
+        function: FunctionId,
+        surface_ty: Ty,
+    ) -> (ExecutableContext, ValueId) {
+        let value = ValueId::from_u32(1);
+        let surface = CallableSurface::new(vec![surface_ty], world.types_mut());
+        let producer = LocalCallableProducer {
+            function,
+            captures: Box::default(),
+        };
+        let flow = CallableFlowFact {
+            function,
+            captures: Box::default(),
+            direct_surfaces: BTreeSet::from([surface.clone()]),
+            first_class_surfaces: BTreeSet::default(),
+            direct_edges: vec![crate::compiler2::semantic::CallableFlowEdge {
+                surface,
+                resolution: ExecutableKey {
+                    activation: ActivationKey::from_inputs(RootId::for_test(1), function, &[], world.types_mut()),
+                    need: ExecutableNeed::Value,
+                },
+            }],
+            first_class_edges: Vec::new(),
+            opaque: false,
+            escape: false,
+            resolutions: Vec::new(),
+        };
+        let analysis = ActivationAnalysis {
+            reachable_clauses: Vec::new(),
+            reachable_entries: Vec::new(),
+            callsites: Vec::new(),
+            latent_executables: Vec::new(),
+            value_types: HashMap::from([(value, surface_ty)]),
+        };
+        let mut runtime_demand = ExecutableRuntimeDemand::default();
+        runtime_demand.callable_flows.insert(value, flow);
+        let context = ExecutableContext {
+            analysis,
+            return_ty: surface_ty,
+            body: LoweredBody::Clauses {
+                clauses: Vec::new(),
+                entries: Vec::new(),
+                generated: Vec::new(),
+            },
+            original_entry_ids: Vec::new(),
+            runtime_demand,
+            callsite_needs: HashMap::new(),
+            callsite_args: HashMap::new(),
+            callsite_modes: HashMap::new(),
+            local_sources: HashMap::from([(value, TransportSource::CallableValue(producer))]),
+            callsite_dests: HashMap::new(),
+            return_sources: Vec::new(),
+            resume_entries: Vec::new(),
+        };
+        (context, value)
+    }
+
+    /// Non-vacuous regression guard for the fz-k22 Slice B fix: when 2+
+    /// distinct producer shapes satisfy a callable demand,
+    /// `project_executable_input_source`'s callable branch used to record the
+    /// multi-producer boundary/publication facts and then fall through to the
+    /// non-callable equality check (which fails because the shapes genuinely
+    /// differ) and yield `SourceShape::Unknown`. It must instead report the
+    /// generic boxed callable shape -- `CallableDescr { function: None, .. }`,
+    /// one `ValueRef` lane -- the representation the codebase already uses for
+    /// an ambiguous/opaque closure position (`generic_callable_shape`).
+    #[test]
+    fn project_executable_input_source_reports_generic_callable_for_ambiguous_multi_producer() {
+        let tel = ConfiguredTelemetry::new();
+        let mut world = World::new(&tel);
+        let surface_ty = world.types_mut().int();
+
+        let producer_a_fn = FunctionId::for_test(201);
+        let producer_b_fn = FunctionId::for_test(202);
+        let (context_a, value_a) = direct_callable_producer_context(&mut world, producer_a_fn, surface_ty);
+        let (context_b, value_b) = direct_callable_producer_context(&mut world, producer_b_fn, surface_ty);
+
+        let producer_a = fake_executable(&mut world, 90, 91, &[]);
+        let producer_b = fake_executable(&mut world, 90, 92, &[]);
+        let callee = fake_executable(&mut world, 90, 93, &[surface_ty]);
+
+        let mut contexts = TransportContexts::default();
+        contexts.by_executable.insert(producer_a.clone(), context_a);
+        contexts.by_executable.insert(producer_b.clone(), context_b);
+        contexts
+            .incoming_input_sources
+            .insert((callee.clone(), 0), vec![(producer_a, value_a), (producer_b, value_b)]);
+
+        let demand = RuntimeDemand {
+            shape: ShapeDemand::Ignore,
+            callable: CallableDemand::resolved(vec![surface_ty], world.types_mut()),
+        };
+
+        let mut facts = TransportFactsBuilder::default();
+        let mut cycle = Cycle::default();
+        let mut memo = ProjectionMemo::default();
+        let projected = project_executable_input_source(
+            &mut world, &contexts, &mut facts, &callee, surface_ty, &demand, 0, None, &mut cycle, &mut memo,
+        );
+
+        let SourceShape::Exact(shape) = projected else {
+            panic!(
+                "ambiguous multi-producer callable position must resolve to the generic boxed callable \
+                 shape, not {projected:?}"
+            );
+        };
+        let ShapeDescr::Callable(callable) = world.shape(shape) else {
+            panic!("expected a callable shape, got {:?}", world.shape(shape));
+        };
+        let descr = world.callable(*callable);
+        assert_eq!(
+            descr.function, None,
+            "an ambiguous multi-producer callable must be the GENERIC boxed callable (function: None), \
+             not a direct callable pinned to one producer's function: {descr:?}"
+        );
+        assert_eq!(
+            descr.capture_lanes.len(),
+            1,
+            "the generic boxed callable shape is one ValueRef lane: {descr:?}"
+        );
     }
 }
