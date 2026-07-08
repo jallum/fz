@@ -4,6 +4,7 @@
   "blocks": [
     "fz-rh2.17.5.6.13"
   ],
+  "closed_at": "2026-07-08T03:17:27Z",
   "created": "2026-07-07T21:38:22Z",
   "description": "SURFACED by the fz-rh2.17.5.6.9 audit; the .13-BLOCKING half of the original completeness ticket (the orthogonal default-value-form feature was split out to fz-rh2.17.5.6.8.3). A module with two defstruct forms (defmodule M do; defstruct [:a]; defstruct [:b]; end) is accepted with NO diagnostic. Today the divergence is inert (World::module_struct_fields uses .find_map =\u003e FIRST wins; StructDefMap::define uses HashMap::insert =\u003e LAST wins; the scan is the sole reader so behavior is first-wins). But the moment slice .13 makes the StructDef store authoritative and deletes the scan, a malformed duplicate-defstruct module silently flips first-\u003elast with no diagnostic either way. FIX (preferred, one struct per module is the intended grammar): emit a duplicate-defstruct diagnostic at the SECOND defstruct's span when apply_scope_form/publish_struct_def sees a module already carrying a StructDef. Regression test: a two-defstruct module -\u003e diagnostic (not silent first/last). This resolves the semantics BEFORE .13 deletes the scan. Related: fz-rh2.17.5.6.9, fz-rh2.17.5.6.13, fz-rh2.17.5.6.8.3.",
   "id": "fz-rh2.17.5.6.8.1",
@@ -16,7 +17,7 @@
     }
   ],
   "priority": 3,
-  "status": "open",
+  "status": "closed",
   "title": "Structs: emit a duplicate-defstruct diagnostic (one struct per module) before the store becomes authoritative",
   "type": "bug",
   "updated_at": "2026-07-08T03:17:27Z"
