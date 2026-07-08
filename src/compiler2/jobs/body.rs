@@ -28,8 +28,9 @@ use super::super::body::{
     LoweredBitField, LoweredBitFieldSpec, LoweredBitSize, LoweredBody, LoweredClause, LoweredEntry, LoweredExtern,
     LoweredMapKey, LoweredStep, LoweredTail, ReceiveAfter, ReceiveClause, ReusableConsCapture, ValueId,
 };
+use super::super::code::CodeId;
 use super::super::drive::{FactKey, JobEffects, current_uses};
-use super::super::identity::{FunctionId, FunctionSource};
+use super::super::identity::{FunctionId, FunctionSource, ModuleId};
 use super::super::module_interface::{InterfaceCallableKind, InterfaceRequester};
 use super::super::namespace::{Namespace, NamespaceSymbol};
 use super::super::scheduler::FatalError;
@@ -257,8 +258,8 @@ pub(super) fn lower_function(world: &mut World<'_>, function: FunctionId) -> Res
         // component is order-sensitive, so resolving before the defstruct
         // settles would bake in literal write order (fz-rh2.17.5.6.10). This
         // waits on the extern spec's struct refs, mirroring the `TypeDefined`
-        // loop above; it is spec-type resolution, not struct-literal lowering
-        // (MakeStruct/StructField), which stays a later concern.
+        // loop above; it is spec-type resolution, distinct from the
+        // struct-literal/pattern lowering wait recorded below.
         for module in world.function_type_struct_refs(function).iter().copied() {
             let fact = FactKey::StructDefined(module);
             if world.has_fact(&fact) {
@@ -269,10 +270,37 @@ pub(super) fn lower_function(world: &mut World<'_>, function: FunctionId) -> Res
         }
     }
     for clause in &surface.clauses {
-        if let Some(guard) = &clause.guard {
-            collect_local_dispatch_requirements(world, source.namespace, guard, &mut reads, &mut waits)?;
+        for param in &clause.params {
+            collect_local_pattern_requirements(
+                world,
+                source.namespace,
+                source.owner_module,
+                source.code,
+                param,
+                &mut reads,
+                &mut waits,
+            )?;
         }
-        collect_local_dispatch_requirements(world, source.namespace, &clause.body, &mut reads, &mut waits)?;
+        if let Some(guard) = &clause.guard {
+            collect_local_dispatch_requirements(
+                world,
+                source.namespace,
+                source.owner_module,
+                source.code,
+                guard,
+                &mut reads,
+                &mut waits,
+            )?;
+        }
+        collect_local_dispatch_requirements(
+            world,
+            source.namespace,
+            source.owner_module,
+            source.code,
+            &clause.body,
+            &mut reads,
+            &mut waits,
+        )?;
     }
     if !waits.is_empty() {
         return Ok(JobEffects {
@@ -317,6 +345,8 @@ fn extern_wire_ty(
 fn collect_local_dispatch_requirements(
     world: &mut World<'_>,
     namespace: Namespace,
+    owner_module: ModuleId,
+    code: CodeId,
     expr: &Spanned<Expr>,
     reads: &mut Vec<FactKey>,
     waits: &mut HashSet<FactKey>,
@@ -324,107 +354,169 @@ fn collect_local_dispatch_requirements(
     match &expr.node {
         Expr::Case(subject, clauses) => {
             if let Some(subject) = subject {
-                collect_local_dispatch_requirements(world, namespace, subject, reads, waits)?;
+                collect_local_dispatch_requirements(world, namespace, owner_module, code, subject, reads, waits)?;
             }
             for clause in clauses {
+                collect_local_pattern_requirements(
+                    world,
+                    namespace,
+                    owner_module,
+                    code,
+                    &clause.pattern,
+                    reads,
+                    waits,
+                )?;
                 if let Some(guard) = &clause.guard {
                     collect_local_guard_requirements(world, namespace, guard, reads, waits)?;
                 }
-                collect_local_dispatch_requirements(world, namespace, &clause.body, reads, waits)?;
+                collect_local_dispatch_requirements(world, namespace, owner_module, code, &clause.body, reads, waits)?;
             }
         }
         Expr::With(bindings, body, else_clauses) => {
             for binding in bindings {
                 match binding {
-                    WithBinding::Match(_, expr) | WithBinding::Bare(expr) => {
-                        collect_local_dispatch_requirements(world, namespace, expr, reads, waits)?;
+                    WithBinding::Match(pattern, expr) => {
+                        collect_local_pattern_requirements(
+                            world,
+                            namespace,
+                            owner_module,
+                            code,
+                            pattern,
+                            reads,
+                            waits,
+                        )?;
+                        collect_local_dispatch_requirements(world, namespace, owner_module, code, expr, reads, waits)?;
+                    }
+                    WithBinding::Bare(expr) => {
+                        collect_local_dispatch_requirements(world, namespace, owner_module, code, expr, reads, waits)?;
                     }
                 }
             }
-            collect_local_dispatch_requirements(world, namespace, body, reads, waits)?;
+            collect_local_dispatch_requirements(world, namespace, owner_module, code, body, reads, waits)?;
             for clause in else_clauses {
+                collect_local_pattern_requirements(
+                    world,
+                    namespace,
+                    owner_module,
+                    code,
+                    &clause.pattern,
+                    reads,
+                    waits,
+                )?;
                 if let Some(guard) = &clause.guard {
                     collect_local_guard_requirements(world, namespace, guard, reads, waits)?;
                 }
-                collect_local_dispatch_requirements(world, namespace, &clause.body, reads, waits)?;
+                collect_local_dispatch_requirements(world, namespace, owner_module, code, &clause.body, reads, waits)?;
             }
         }
         Expr::If(cond, then_expr, else_expr) => {
-            collect_local_dispatch_requirements(world, namespace, cond, reads, waits)?;
-            collect_local_dispatch_requirements(world, namespace, then_expr, reads, waits)?;
+            collect_local_dispatch_requirements(world, namespace, owner_module, code, cond, reads, waits)?;
+            collect_local_dispatch_requirements(world, namespace, owner_module, code, then_expr, reads, waits)?;
             if let Some(else_expr) = else_expr {
-                collect_local_dispatch_requirements(world, namespace, else_expr, reads, waits)?;
+                collect_local_dispatch_requirements(world, namespace, owner_module, code, else_expr, reads, waits)?;
             }
         }
         Expr::Cond(arms) => {
             for (cond, body) in arms {
-                collect_local_dispatch_requirements(world, namespace, cond, reads, waits)?;
-                collect_local_dispatch_requirements(world, namespace, body, reads, waits)?;
+                collect_local_dispatch_requirements(world, namespace, owner_module, code, cond, reads, waits)?;
+                collect_local_dispatch_requirements(world, namespace, owner_module, code, body, reads, waits)?;
             }
         }
         Expr::Receive { clauses, after } => {
             for clause in clauses {
+                collect_local_pattern_requirements(
+                    world,
+                    namespace,
+                    owner_module,
+                    code,
+                    &clause.pattern,
+                    reads,
+                    waits,
+                )?;
                 if let Some(guard) = &clause.guard {
                     collect_local_guard_requirements(world, namespace, guard, reads, waits)?;
                 }
-                collect_local_dispatch_requirements(world, namespace, &clause.body, reads, waits)?;
+                collect_local_dispatch_requirements(world, namespace, owner_module, code, &clause.body, reads, waits)?;
             }
             if let Some(after) = after {
-                collect_local_dispatch_requirements(world, namespace, &after.timeout, reads, waits)?;
-                collect_local_dispatch_requirements(world, namespace, &after.body, reads, waits)?;
+                collect_local_dispatch_requirements(
+                    world,
+                    namespace,
+                    owner_module,
+                    code,
+                    &after.timeout,
+                    reads,
+                    waits,
+                )?;
+                collect_local_dispatch_requirements(world, namespace, owner_module, code, &after.body, reads, waits)?;
             }
         }
-        Expr::Match(_, rhs) | Expr::Ascribe(rhs, _) | Expr::UnOp(_, rhs) | Expr::Capture(rhs) | Expr::Unquote(rhs) => {
-            collect_local_dispatch_requirements(world, namespace, rhs, reads, waits)?;
+        Expr::Match(pattern, rhs) => {
+            collect_local_pattern_requirements(world, namespace, owner_module, code, pattern, reads, waits)?;
+            collect_local_dispatch_requirements(world, namespace, owner_module, code, rhs, reads, waits)?;
+        }
+        Expr::Ascribe(rhs, _) | Expr::UnOp(_, rhs) | Expr::Capture(rhs) | Expr::Unquote(rhs) => {
+            collect_local_dispatch_requirements(world, namespace, owner_module, code, rhs, reads, waits)?;
         }
         Expr::Quote(rhs) => {
-            collect_unquote_dispatch_requirements(world, namespace, rhs, reads, waits)?;
+            collect_unquote_dispatch_requirements(world, namespace, owner_module, code, rhs, reads, waits)?;
         }
         Expr::BinOp(_, left, right) | Expr::Index(left, right) => {
-            collect_local_dispatch_requirements(world, namespace, left, reads, waits)?;
-            collect_local_dispatch_requirements(world, namespace, right, reads, waits)?;
+            collect_local_dispatch_requirements(world, namespace, owner_module, code, left, reads, waits)?;
+            collect_local_dispatch_requirements(world, namespace, owner_module, code, right, reads, waits)?;
         }
         Expr::Call(target, args) | Expr::ClosureCall(target, args) => {
-            collect_local_dispatch_requirements(world, namespace, target, reads, waits)?;
+            collect_local_dispatch_requirements(world, namespace, owner_module, code, target, reads, waits)?;
             for arg in args {
-                collect_local_dispatch_requirements(world, namespace, arg, reads, waits)?;
+                collect_local_dispatch_requirements(world, namespace, owner_module, code, arg, reads, waits)?;
             }
         }
         Expr::List(items, tail) => {
             for item in items {
-                collect_local_dispatch_requirements(world, namespace, item, reads, waits)?;
+                collect_local_dispatch_requirements(world, namespace, owner_module, code, item, reads, waits)?;
             }
             if let Some(tail) = tail {
-                collect_local_dispatch_requirements(world, namespace, tail, reads, waits)?;
+                collect_local_dispatch_requirements(world, namespace, owner_module, code, tail, reads, waits)?;
             }
         }
         Expr::Tuple(items) => {
             for item in items {
-                collect_local_dispatch_requirements(world, namespace, item, reads, waits)?;
+                collect_local_dispatch_requirements(world, namespace, owner_module, code, item, reads, waits)?;
             }
         }
         Expr::Bitstring(fields) => {
             for field in fields {
-                collect_local_dispatch_requirements(world, namespace, &field.value, reads, waits)?;
+                collect_local_dispatch_requirements(world, namespace, owner_module, code, &field.value, reads, waits)?;
             }
         }
         Expr::Map(entries) | Expr::MapUpdate(_, entries) => {
             if let Expr::MapUpdate(base, _) = &expr.node {
-                collect_local_dispatch_requirements(world, namespace, base, reads, waits)?;
+                collect_local_dispatch_requirements(world, namespace, owner_module, code, base, reads, waits)?;
             }
             for (key, value) in entries {
-                collect_local_dispatch_requirements(world, namespace, key, reads, waits)?;
-                collect_local_dispatch_requirements(world, namespace, value, reads, waits)?;
+                collect_local_dispatch_requirements(world, namespace, owner_module, code, key, reads, waits)?;
+                collect_local_dispatch_requirements(world, namespace, owner_module, code, value, reads, waits)?;
             }
         }
-        Expr::Struct { fields, .. } => {
+        Expr::Struct { module, fields } => {
+            record_struct_reference(
+                world,
+                namespace,
+                owner_module,
+                code,
+                module,
+                fields.iter().map(|(name, _)| name.as_str()),
+                expr.span,
+                reads,
+                waits,
+            )?;
             for (_, value) in fields {
-                collect_local_dispatch_requirements(world, namespace, value, reads, waits)?;
+                collect_local_dispatch_requirements(world, namespace, owner_module, code, value, reads, waits)?;
             }
         }
         Expr::Block(exprs) => {
             for expr in exprs {
-                collect_local_dispatch_requirements(world, namespace, expr, reads, waits)?;
+                collect_local_dispatch_requirements(world, namespace, owner_module, code, expr, reads, waits)?;
             }
         }
         Expr::Lambda(_) => {}
@@ -441,27 +533,164 @@ fn collect_local_dispatch_requirements(
     Ok(())
 }
 
+/// Walks one pattern for the same reason `collect_local_dispatch_requirements`
+/// walks expressions: a `%Mod{field: pattern, ...}` struct pattern needs
+/// `Mod`'s ordered field schema before `lower_struct_pattern` can turn it into
+/// `AssertStruct`/`FieldAccess` steps, so this pre-pass records the field
+/// obligations and the `StructDefined` wait up front, mirroring the
+/// `Expr::Struct` arm above. Patterns never carry dispatch calls of their own
+/// (guards are the only dispatch-call surface, and guards are walked
+/// separately), so this only needs to recurse far enough to find nested
+/// struct patterns.
+fn collect_local_pattern_requirements(
+    world: &mut World<'_>,
+    namespace: Namespace,
+    owner_module: ModuleId,
+    code: CodeId,
+    pattern: &Spanned<Pattern>,
+    reads: &mut Vec<FactKey>,
+    waits: &mut HashSet<FactKey>,
+) -> Result<(), FatalError> {
+    match &pattern.node {
+        Pattern::Struct { module, fields } => {
+            record_struct_reference(
+                world,
+                namespace,
+                owner_module,
+                code,
+                module,
+                fields.iter().map(|(name, _)| name.as_str()),
+                pattern.span,
+                reads,
+                waits,
+            )?;
+            for (_, field_pattern) in fields {
+                collect_local_pattern_requirements(world, namespace, owner_module, code, field_pattern, reads, waits)?;
+            }
+        }
+        Pattern::Tuple(items) => {
+            for item in items {
+                collect_local_pattern_requirements(world, namespace, owner_module, code, item, reads, waits)?;
+            }
+        }
+        Pattern::List(items, tail) => {
+            for item in items {
+                collect_local_pattern_requirements(world, namespace, owner_module, code, item, reads, waits)?;
+            }
+            if let Some(tail) = tail {
+                collect_local_pattern_requirements(world, namespace, owner_module, code, tail, reads, waits)?;
+            }
+        }
+        Pattern::Map(entries) => {
+            for (_, value) in entries {
+                collect_local_pattern_requirements(world, namespace, owner_module, code, value, reads, waits)?;
+            }
+        }
+        Pattern::As(_, inner) => {
+            collect_local_pattern_requirements(world, namespace, owner_module, code, inner, reads, waits)?;
+        }
+        Pattern::Bitstring(fields) => {
+            for field in fields {
+                collect_local_pattern_requirements(world, namespace, owner_module, code, &field.value, reads, waits)?;
+            }
+        }
+        Pattern::Wildcard
+        | Pattern::Var(_)
+        | Pattern::Int(_)
+        | Pattern::Float(_)
+        | Pattern::Binary(_)
+        | Pattern::Atom(_)
+        | Pattern::Bool(_)
+        | Pattern::Nil
+        | Pattern::Pinned(_) => {}
+    }
+    Ok(())
+}
+
+/// Records one `%Mod{field: ..., ...}` reference from a struct literal or
+/// struct pattern in a function body: the field-obligation half mirrors
+/// `source_publish.rs`'s `collect_struct_field_obligations` (same
+/// `note_struct_field_expectation` store, so a bad field is diagnosed at
+/// settle time regardless of whether the reference came from a type position
+/// or a body position), and the `StructDefined` wait half mirrors every other
+/// consumer in this file (`lower_function`'s extern-contract loop,
+/// `plan_entry_dispatch`, `derive_function_contract`) — `Mod`'s field *order*
+/// is unknown until `StructDefined(Mod)` publishes, so the caller must wait
+/// rather than guess an order from the literal/pattern's own field list.
+///
+/// Module resolution mirrors `Lowerer::resolve_struct_module` exactly (same
+/// `resolve_module_name` call against the same `owner_module`/`namespace`),
+/// so the module identity this pre-pass records obligations/waits against is
+/// always the module the later `Lowerer` pass will actually consume. If
+/// resolution itself fails, this records nothing and defers to
+/// `resolve_struct_module`'s own `LOWER_UNBOUND` diagnostic once lowering
+/// runs — an unresolvable module name is an unrelated, pre-existing failure
+/// mode, not a struct-schema question.
+#[allow(clippy::too_many_arguments)]
+fn record_struct_reference<'a>(
+    world: &mut World<'_>,
+    namespace: Namespace,
+    owner_module: ModuleId,
+    code: CodeId,
+    module: &crate::modules::identity::ModuleName,
+    fields: impl Iterator<Item = &'a str>,
+    span: Span,
+    reads: &mut Vec<FactKey>,
+    waits: &mut HashSet<FactKey>,
+) -> Result<(), FatalError> {
+    let Some(module_id) = world.resolve_module_name(owner_module, namespace, module) else {
+        return Ok(());
+    };
+    let requester = InterfaceRequester {
+        code,
+        module: owner_module,
+        span,
+    };
+    for field in fields {
+        world.note_struct_field_expectation(module_id, field.to_string(), requester.clone())?;
+    }
+    let fact = FactKey::StructDefined(module_id);
+    if world.has_fact(&fact) {
+        reads.push(fact);
+    } else {
+        waits.insert(fact);
+    }
+    Ok(())
+}
+
 fn collect_unquote_dispatch_requirements(
     world: &mut World<'_>,
     namespace: Namespace,
+    owner_module: ModuleId,
+    code: CodeId,
     expr: &Spanned<Expr>,
     reads: &mut Vec<FactKey>,
     waits: &mut HashSet<FactKey>,
 ) -> Result<(), FatalError> {
     match &expr.node {
-        Expr::Unquote(inner) => collect_local_dispatch_requirements(world, namespace, inner, reads, waits),
+        Expr::Unquote(inner) => {
+            collect_local_dispatch_requirements(world, namespace, owner_module, code, inner, reads, waits)
+        }
         Expr::Ascribe(inner, _) | Expr::Quote(inner) => {
-            collect_unquote_dispatch_requirements(world, namespace, inner, reads, waits)
+            collect_unquote_dispatch_requirements(world, namespace, owner_module, code, inner, reads, waits)
         }
         Expr::Case(subject, clauses) => {
             if let Some(subject) = subject {
-                collect_unquote_dispatch_requirements(world, namespace, subject, reads, waits)?;
+                collect_unquote_dispatch_requirements(world, namespace, owner_module, code, subject, reads, waits)?;
             }
             for clause in clauses {
                 if let Some(guard) = &clause.guard {
-                    collect_unquote_dispatch_requirements(world, namespace, guard, reads, waits)?;
+                    collect_unquote_dispatch_requirements(world, namespace, owner_module, code, guard, reads, waits)?;
                 }
-                collect_unquote_dispatch_requirements(world, namespace, &clause.body, reads, waits)?;
+                collect_unquote_dispatch_requirements(
+                    world,
+                    namespace,
+                    owner_module,
+                    code,
+                    &clause.body,
+                    reads,
+                    waits,
+                )?;
             }
             Ok(())
         }
@@ -469,101 +698,141 @@ fn collect_unquote_dispatch_requirements(
             for binding in bindings {
                 match binding {
                     WithBinding::Match(_, expr) | WithBinding::Bare(expr) => {
-                        collect_unquote_dispatch_requirements(world, namespace, expr, reads, waits)?;
+                        collect_unquote_dispatch_requirements(
+                            world,
+                            namespace,
+                            owner_module,
+                            code,
+                            expr,
+                            reads,
+                            waits,
+                        )?;
                     }
                 }
             }
-            collect_unquote_dispatch_requirements(world, namespace, body, reads, waits)?;
+            collect_unquote_dispatch_requirements(world, namespace, owner_module, code, body, reads, waits)?;
             for clause in else_clauses {
                 if let Some(guard) = &clause.guard {
-                    collect_unquote_dispatch_requirements(world, namespace, guard, reads, waits)?;
+                    collect_unquote_dispatch_requirements(world, namespace, owner_module, code, guard, reads, waits)?;
                 }
-                collect_unquote_dispatch_requirements(world, namespace, &clause.body, reads, waits)?;
+                collect_unquote_dispatch_requirements(
+                    world,
+                    namespace,
+                    owner_module,
+                    code,
+                    &clause.body,
+                    reads,
+                    waits,
+                )?;
             }
             Ok(())
         }
         Expr::If(cond, then_expr, else_expr) => {
-            collect_unquote_dispatch_requirements(world, namespace, cond, reads, waits)?;
-            collect_unquote_dispatch_requirements(world, namespace, then_expr, reads, waits)?;
+            collect_unquote_dispatch_requirements(world, namespace, owner_module, code, cond, reads, waits)?;
+            collect_unquote_dispatch_requirements(world, namespace, owner_module, code, then_expr, reads, waits)?;
             if let Some(else_expr) = else_expr {
-                collect_unquote_dispatch_requirements(world, namespace, else_expr, reads, waits)?;
+                collect_unquote_dispatch_requirements(world, namespace, owner_module, code, else_expr, reads, waits)?;
             }
             Ok(())
         }
         Expr::Cond(arms) => {
             for (cond, body) in arms {
-                collect_unquote_dispatch_requirements(world, namespace, cond, reads, waits)?;
-                collect_unquote_dispatch_requirements(world, namespace, body, reads, waits)?;
+                collect_unquote_dispatch_requirements(world, namespace, owner_module, code, cond, reads, waits)?;
+                collect_unquote_dispatch_requirements(world, namespace, owner_module, code, body, reads, waits)?;
             }
             Ok(())
         }
         Expr::Receive { clauses, after } => {
             for clause in clauses {
                 if let Some(guard) = &clause.guard {
-                    collect_unquote_dispatch_requirements(world, namespace, guard, reads, waits)?;
+                    collect_unquote_dispatch_requirements(world, namespace, owner_module, code, guard, reads, waits)?;
                 }
-                collect_unquote_dispatch_requirements(world, namespace, &clause.body, reads, waits)?;
+                collect_unquote_dispatch_requirements(
+                    world,
+                    namespace,
+                    owner_module,
+                    code,
+                    &clause.body,
+                    reads,
+                    waits,
+                )?;
             }
             if let Some(after) = after {
-                collect_unquote_dispatch_requirements(world, namespace, &after.timeout, reads, waits)?;
-                collect_unquote_dispatch_requirements(world, namespace, &after.body, reads, waits)?;
+                collect_unquote_dispatch_requirements(
+                    world,
+                    namespace,
+                    owner_module,
+                    code,
+                    &after.timeout,
+                    reads,
+                    waits,
+                )?;
+                collect_unquote_dispatch_requirements(world, namespace, owner_module, code, &after.body, reads, waits)?;
             }
             Ok(())
         }
         Expr::Match(_, rhs) | Expr::UnOp(_, rhs) | Expr::Capture(rhs) => {
-            collect_unquote_dispatch_requirements(world, namespace, rhs, reads, waits)
+            collect_unquote_dispatch_requirements(world, namespace, owner_module, code, rhs, reads, waits)
         }
         Expr::BinOp(_, left, right) | Expr::Index(left, right) => {
-            collect_unquote_dispatch_requirements(world, namespace, left, reads, waits)?;
-            collect_unquote_dispatch_requirements(world, namespace, right, reads, waits)
+            collect_unquote_dispatch_requirements(world, namespace, owner_module, code, left, reads, waits)?;
+            collect_unquote_dispatch_requirements(world, namespace, owner_module, code, right, reads, waits)
         }
         Expr::Call(target, args) | Expr::ClosureCall(target, args) => {
-            collect_unquote_dispatch_requirements(world, namespace, target, reads, waits)?;
+            collect_unquote_dispatch_requirements(world, namespace, owner_module, code, target, reads, waits)?;
             for arg in args {
-                collect_unquote_dispatch_requirements(world, namespace, arg, reads, waits)?;
+                collect_unquote_dispatch_requirements(world, namespace, owner_module, code, arg, reads, waits)?;
             }
             Ok(())
         }
         Expr::List(items, tail) => {
             for item in items {
-                collect_unquote_dispatch_requirements(world, namespace, item, reads, waits)?;
+                collect_unquote_dispatch_requirements(world, namespace, owner_module, code, item, reads, waits)?;
             }
             if let Some(tail) = tail {
-                collect_unquote_dispatch_requirements(world, namespace, tail, reads, waits)?;
+                collect_unquote_dispatch_requirements(world, namespace, owner_module, code, tail, reads, waits)?;
             }
             Ok(())
         }
         Expr::Tuple(items) => {
             for item in items {
-                collect_unquote_dispatch_requirements(world, namespace, item, reads, waits)?;
+                collect_unquote_dispatch_requirements(world, namespace, owner_module, code, item, reads, waits)?;
             }
             Ok(())
         }
         Expr::Bitstring(fields) => {
             for field in fields {
-                collect_unquote_dispatch_requirements(world, namespace, &field.value, reads, waits)?;
+                collect_unquote_dispatch_requirements(
+                    world,
+                    namespace,
+                    owner_module,
+                    code,
+                    &field.value,
+                    reads,
+                    waits,
+                )?;
             }
             Ok(())
         }
         Expr::Map(entries) | Expr::MapUpdate(_, entries) => {
             if let Expr::MapUpdate(base, _) = &expr.node {
-                collect_unquote_dispatch_requirements(world, namespace, base, reads, waits)?;
+                collect_unquote_dispatch_requirements(world, namespace, owner_module, code, base, reads, waits)?;
             }
             for (key, value) in entries {
-                collect_unquote_dispatch_requirements(world, namespace, key, reads, waits)?;
-                collect_unquote_dispatch_requirements(world, namespace, value, reads, waits)?;
+                collect_unquote_dispatch_requirements(world, namespace, owner_module, code, key, reads, waits)?;
+                collect_unquote_dispatch_requirements(world, namespace, owner_module, code, value, reads, waits)?;
             }
             Ok(())
         }
         Expr::Struct { fields, .. } => {
             for (_, value) in fields {
-                collect_unquote_dispatch_requirements(world, namespace, value, reads, waits)?;
+                collect_unquote_dispatch_requirements(world, namespace, owner_module, code, value, reads, waits)?;
             }
             Ok(())
         }
         Expr::Block(exprs) => {
             for expr in exprs {
-                collect_unquote_dispatch_requirements(world, namespace, expr, reads, waits)?;
+                collect_unquote_dispatch_requirements(world, namespace, owner_module, code, expr, reads, waits)?;
             }
             Ok(())
         }
@@ -1474,16 +1743,22 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
         steps: &mut Vec<ExprStep>,
     ) -> Result<ValueId, FatalError> {
         let module_id = self.resolve_struct_module(module, span)?;
-        let Some(order) = self.world.module_struct_fields(module_id).map(|fields| fields.to_vec()) else {
-            return Err(emit_job_diagnostic(
-                self.world,
-                Diagnostic::error(
-                    codes::LOWER_UNSUPPORTED,
-                    format!("compiler2 does not know the schema for struct `{}`", module.dotted()),
-                    span,
-                ),
-            ));
-        };
+        // `collect_local_dispatch_requirements`'s `Expr::Struct` arm already
+        // recorded this literal's field obligations and waited on
+        // `StructDefined(module_id)` before `lower_function` built this
+        // `Lowerer`, so the ordered schema is present by construction; an
+        // unknown field is diagnosed durably by
+        // `World::validate_struct_field_expectations` at settle time (the
+        // same obligation store `note_struct_field_expectation` recorded
+        // into), not by a local synchronous check here. The literal's own
+        // field order is only a fallback for the unreachable case where the
+        // schema is somehow still absent, mirroring `resolve.rs`'s
+        // `TypeExpr::StructRecord` arm.
+        let order = self
+            .world
+            .struct_def_fields(module_id)
+            .map(|fields| fields.to_vec())
+            .unwrap_or_else(|| fields.iter().map(|(name, _)| name.clone()).collect());
         let mut by_name = fields
             .iter()
             .map(|(name, expr)| (name.as_str(), expr))
@@ -1496,16 +1771,6 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
                 self.push_const(steps, GroundValue::Nil)
             };
             lowered.push((field, value));
-        }
-        if let Some((name, _)) = by_name.into_iter().next() {
-            return Err(emit_job_diagnostic(
-                self.world,
-                Diagnostic::error(
-                    codes::LOWER_UNSUPPORTED,
-                    format!("struct `{}` does not define field `{}`", module.dotted(), name),
-                    span,
-                ),
-            ));
         }
         let value = self.fresh_value();
         steps.push(ExprStep::Struct {
@@ -2688,16 +2953,17 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
         with_asserts: bool,
     ) -> Result<(), FatalError> {
         let module_id = self.resolve_struct_module(module, span)?;
-        let Some(order) = self.world.module_struct_fields(module_id).map(|fields| fields.to_vec()) else {
-            return Err(emit_job_diagnostic(
-                self.world,
-                Diagnostic::error(
-                    codes::LOWER_UNSUPPORTED,
-                    format!("compiler2 does not know the schema for struct `{}`", module.dotted()),
-                    span,
-                ),
-            ));
-        };
+        // Same invariant as `lower_struct_expr`: `collect_local_pattern_requirements`'s
+        // `Pattern::Struct` arm already recorded this pattern's field
+        // obligations and waited on `StructDefined(module_id)` before this
+        // `Lowerer` was built, so the ordered schema is present by
+        // construction, and an unknown field is diagnosed durably through
+        // that obligation store rather than a local check here.
+        let order = self
+            .world
+            .struct_def_fields(module_id)
+            .map(|fields| fields.to_vec())
+            .unwrap_or_else(|| fields.iter().map(|(name, _)| name.clone()).collect());
         let mut by_name = fields
             .iter()
             .map(|(name, pattern)| (name.as_str(), pattern))
@@ -2706,12 +2972,11 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
             source,
             module: module_id,
         });
-        for (index, field) in order.iter().enumerate() {
+        for field in &order {
             let Some(pattern) = by_name.remove(field.as_str()) else {
                 continue;
             };
             let value = self.fresh_value();
-            let _ = index;
             steps.push(ExprStep::FieldAccess {
                 value,
                 base: source,
@@ -2722,16 +2987,6 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
             } else {
                 self.bind_pattern(&pattern.node, pattern.span, value, env, steps)?;
             }
-        }
-        if let Some((name, pattern)) = by_name.into_iter().next() {
-            return Err(emit_job_diagnostic(
-                self.world,
-                Diagnostic::error(
-                    codes::LOWER_UNSUPPORTED,
-                    format!("struct `{}` does not define field `{}`", module.dotted(), name),
-                    pattern.span,
-                ),
-            ));
         }
         Ok(())
     }

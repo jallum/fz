@@ -1403,6 +1403,334 @@ fn compiler2_extern_struct_param_waits_on_struct_defined_not_literal_order() {
 }
 
 #[test]
+fn compiler2_struct_literal_and_pattern_lowering_wait_out_of_order_then_use_schema_field_order() {
+    // The body-lowering sibling of `compiler2_struct_type_expression_waits_for_struct_defined_and_resolves_precise_order`:
+    // `B.convert/1`'s struct *pattern* param and struct
+    // *literal* return both name `Point` in reversed (y, x) write order.
+    // Demanding LowerFunction alone -- without ever separately demanding
+    // Point's DefineModule -- proves the pull architecture itself demands
+    // Point's DefineModule as `StructDefined`'s producer to unblock the
+    // wait, exactly like the `@type t` test: it must not fabricate an order
+    // from the literal/pattern's own field list while Point is unprocessed,
+    // and it must not fatally diagnose on the way. Once the drive resolves,
+    // both the pattern's FieldAccess destructuring and the literal's
+    // MakeStruct must use Point's schema order (x, y), not the source's
+    // reversed order -- proving the lowering consumes `StructDefined`, not a
+    // `ModuleDefined`/source scan.
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&[], capture.handler());
+    let bodies = LoweredBodyCapture::new();
+    tel.attach(&["fz", "compiler2", "lowered_body", "defined"], bodies.handler());
+    let mut world = crate::compiler2::World::new(&tel);
+    let code_id = world.submit_code(
+        Some("struct_literal_pattern_out_of_order.fz".to_string()),
+        concat!(
+            "defmodule B do\n",
+            "  fn convert(%Point{y: y, x: x}), do: %Point{y: y, x: x}\n",
+            "end\n",
+            "\n",
+            "defmodule Point do\n",
+            "  defstruct [:x, :y]\n",
+            "end\n",
+        )
+        .to_string(),
+    );
+
+    assert_resolved(world.drive(), "first drive should index both modules");
+    assert!(
+        world.demand(Job::ScopeCode(code_id)),
+        "top-level scope should be demandable"
+    );
+    assert_resolved(world.drive(), "second drive should scope both modules");
+
+    let b = world.reference_module("B");
+    let point = world.reference_module("Point");
+    let convert = world.reference_function(b, "convert", 1);
+
+    assert!(
+        !world.has_fact(&FactKey::StructDefined(point)),
+        "Point's defstruct should not have published yet"
+    );
+    assert!(
+        world.demand(Job::LowerFunction(convert)),
+        "lowering convert/1 should be demandable"
+    );
+    assert_resolved(
+        world.drive(),
+        "pulling convert/1's lowering should transitively pull Point's defstruct and resolve",
+    );
+    assert!(
+        capture.find(&["fz", "diag", "error"]).is_empty(),
+        "an out-of-order struct reference that resolves cleanly must not have diagnosed along the way"
+    );
+
+    let body = lowered_body(&bodies, convert);
+    let LoweredBody::Clauses { clauses, entries, .. } = body else {
+        panic!("convert/1 should lower as clauses");
+    };
+
+    let field_access_order = clauses[0]
+        .projections
+        .iter()
+        .filter_map(|step| match step {
+            LoweredStep::FieldAccess { field, .. } => Some(field.clone()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        field_access_order,
+        vec!["x".to_string(), "y".to_string()],
+        "the struct pattern should destructure fields in Point's schema order (x, y), not the pattern's own reversed write order (y, x)"
+    );
+
+    let struct_fields = entries
+        .iter()
+        .flat_map(|entry| entry.steps.iter())
+        .find_map(|step| match step {
+            LoweredStep::Struct { module, fields, .. } if *module == point => {
+                Some(fields.iter().map(|(name, _)| name.clone()).collect::<Vec<_>>())
+            }
+            _ => None,
+        })
+        .expect("convert/1 should lower a MakeStruct step for %Point{}");
+    assert_eq!(
+        struct_fields,
+        vec!["x".to_string(), "y".to_string()],
+        "MakeStruct should use Point's schema field order (x, y), not the literal's reversed write order (y, x)"
+    );
+}
+
+#[test]
+fn compiler2_struct_literal_unknown_field_diagnoses_at_settle_not_synchronously() {
+    // The struct-literal sibling of `compiler2_struct_param_annotation_diagnoses_unknown_field_instead_of_dropping_it`:
+    // `bogus` is not one of `Point`'s declared fields.
+    // Lowering `make/0`'s literal never synchronously fails with the old
+    // `LOWER_UNSUPPORTED` "does not define field" check -- the obligation is
+    // recorded during the pre-pass and validated once `Point`'s defstruct
+    // settles, so the diagnostic that surfaces is the durable
+    // `RESOLVE_UNKNOWN_STRUCT_FIELD` from the obligation store, at the
+    // literal's own span, not a local synchronous check in `lower_struct_expr`.
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&[], capture.handler());
+    let mut world = crate::compiler2::World::new(&tel);
+    let code_id = world.submit_code(
+        Some("struct_literal_unknown_field.fz".to_string()),
+        concat!(
+            "defmodule B do\n",
+            "  fn make(), do: %Point{x: 1, bogus: 2}\n",
+            "end\n",
+            "\n",
+            "defmodule Point do\n",
+            "  defstruct [:x, :y]\n",
+            "end\n",
+        )
+        .to_string(),
+    );
+    assert_resolved(world.drive(), "first drive should index both modules");
+    assert!(
+        world.demand(Job::ScopeCode(code_id)),
+        "top-level scope should be demandable"
+    );
+    assert_resolved(world.drive(), "second drive should scope both modules");
+
+    let b = world.reference_module("B");
+    let make = world.reference_function(b, "make", 0);
+
+    assert!(
+        world.demand(Job::LowerFunction(make)),
+        "lowering make/0 should be demandable"
+    );
+    assert!(
+        matches!(world.drive(), DriveOutcome::Fatal { .. }),
+        "an unknown field on a struct literal should diagnose once Point settles, not resolve cleanly",
+    );
+    let diagnostic = capture
+        .last(&["fz", "diag", "error"])
+        .expect("expected an unknown-struct-field diagnostic once Point settles");
+    assert_eq!(
+        metadata_str(&diagnostic, "code"),
+        codes::RESOLVE_UNKNOWN_STRUCT_FIELD.0,
+        "the unknown field must be diagnosed through the durable obligation store, not the killed synchronous LOWER_UNSUPPORTED path"
+    );
+    assert_eq!(
+        metadata_str(&diagnostic, "message"),
+        "struct `Point` has no field `bogus`"
+    );
+}
+
+#[test]
+fn compiler2_struct_pattern_unknown_field_diagnoses_at_settle_not_synchronously() {
+    // The struct-pattern sibling of the literal test above: an unknown field
+    // named in a struct *pattern* is diagnosed through the same durable
+    // obligation store once `Point` settles, not by a local synchronous
+    // check in `lower_struct_pattern`.
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&[], capture.handler());
+    let mut world = crate::compiler2::World::new(&tel);
+    let code_id = world.submit_code(
+        Some("struct_pattern_unknown_field.fz".to_string()),
+        concat!(
+            "defmodule B do\n",
+            "  fn take(%Point{x: x, bogus: b}), do: {x, b}\n",
+            "end\n",
+            "\n",
+            "defmodule Point do\n",
+            "  defstruct [:x, :y]\n",
+            "end\n",
+        )
+        .to_string(),
+    );
+    assert_resolved(world.drive(), "first drive should index both modules");
+    assert!(
+        world.demand(Job::ScopeCode(code_id)),
+        "top-level scope should be demandable"
+    );
+    assert_resolved(world.drive(), "second drive should scope both modules");
+
+    let b = world.reference_module("B");
+    let take = world.reference_function(b, "take", 1);
+
+    assert!(
+        world.demand(Job::LowerFunction(take)),
+        "lowering take/1 should be demandable"
+    );
+    assert!(
+        matches!(world.drive(), DriveOutcome::Fatal { .. }),
+        "an unknown field on a struct pattern should diagnose once Point settles, not resolve cleanly",
+    );
+    let diagnostic = capture
+        .last(&["fz", "diag", "error"])
+        .expect("expected an unknown-struct-field diagnostic once Point settles");
+    assert_eq!(
+        metadata_str(&diagnostic, "code"),
+        codes::RESOLVE_UNKNOWN_STRUCT_FIELD.0,
+        "the unknown field must be diagnosed through the durable obligation store, not the killed synchronous LOWER_UNSUPPORTED path"
+    );
+    assert_eq!(
+        metadata_str(&diagnostic, "message"),
+        "struct `Point` has no field `bogus`"
+    );
+}
+
+#[test]
+fn compiler2_struct_literal_lowering_diagnoses_reference_to_non_struct_module() {
+    // The struct-literal-in-body sibling of `compiler2_extern_struct_param_waits_on_struct_defined_not_literal_order`:
+    // `%NotAStruct{...}` waits on `StructDefined(NotAStruct)`;
+    // the drive engine pulls `NotAStruct`'s own `DefineModule` as that fact's
+    // producer; `NotAStruct`'s body settles `ModuleDefined` without ever
+    // declaring `defstruct`; the wait survives to the terminal frontier and
+    // the settled-absent diagnostic fires instead of silently stalling.
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&[], capture.handler());
+    let mut world = crate::compiler2::World::new(&tel);
+    let code_id = world.submit_code(
+        Some("struct_literal_non_struct.fz".to_string()),
+        concat!(
+            "defmodule NotAStruct do\n",
+            "  fn hello(), do: 0\n",
+            "end\n",
+            "\n",
+            "defmodule B do\n",
+            "  fn make(), do: %NotAStruct{x: 1}\n",
+            "end\n",
+        )
+        .to_string(),
+    );
+    assert_resolved(world.drive(), "first drive should index both modules");
+    assert!(
+        world.demand(Job::ScopeCode(code_id)),
+        "top-level scope should be demandable"
+    );
+    assert_resolved(world.drive(), "second drive should scope both modules");
+
+    let b = world.reference_module("B");
+    let make = world.reference_function(b, "make", 0);
+    assert!(
+        world.demand(Job::LowerFunction(make)),
+        "lowering make/0 should be demandable"
+    );
+    assert!(
+        matches!(world.drive(), DriveOutcome::Unresolved { .. }),
+        "lowering a struct literal naming a non-struct module should terminate, not resolve in literal order",
+    );
+
+    let diagnostic = capture
+        .last(&["fz", "diag", "error"])
+        .expect("expected a not-a-struct diagnostic from the struct-literal lowering wait");
+    assert_eq!(metadata_str(&diagnostic, "code"), codes::RESOLVE_NOT_A_STRUCT.0);
+    assert_eq!(
+        metadata_str(&diagnostic, "message"),
+        "module `NotAStruct` is not a struct"
+    );
+}
+
+#[test]
+fn compiler2_struct_pattern_lowering_diagnoses_reference_to_non_struct_module() {
+    // The struct-*pattern* sibling of
+    // `compiler2_struct_literal_lowering_diagnoses_reference_to_non_struct_module`:
+    // a `%NotAStruct{...}` in a fn-clause param pattern, where NotAStruct is a
+    // real module that never declares a defstruct, waits on
+    // `StructDefined(NotAStruct)`; the drive pulls NotAStruct's own
+    // `DefineModule` as that fact's producer; NotAStruct settles
+    // `ModuleDefined` without ever declaring `defstruct`; the wait survives to
+    // the terminal frontier and the settled-absent diagnostic fires. Both the
+    // literal and pattern paths share `record_struct_reference` and the generic
+    // `unresolved_struct_issue`, so they SHOULD behave identically -- this test
+    // proves it (rather than assuming it), pinning the pattern path against a
+    // silent divergence. Non-vacuous: the pattern-path wait is what turns this
+    // from a silent terminal stall into a RESOLVE_NOT_A_STRUCT diagnostic; a
+    // pattern lowering that skipped the obligation/wait would resolve or stall
+    // with no diagnostic.
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&[], capture.handler());
+    let mut world = crate::compiler2::World::new(&tel);
+    let code_id = world.submit_code(
+        Some("struct_pattern_non_struct.fz".to_string()),
+        concat!(
+            "defmodule NotAStruct do\n",
+            "  fn hello(), do: 0\n",
+            "end\n",
+            "\n",
+            "defmodule B do\n",
+            "  fn take(%NotAStruct{x: x}), do: x\n",
+            "end\n",
+        )
+        .to_string(),
+    );
+    assert_resolved(world.drive(), "first drive should index both modules");
+    assert!(
+        world.demand(Job::ScopeCode(code_id)),
+        "top-level scope should be demandable"
+    );
+    assert_resolved(world.drive(), "second drive should scope both modules");
+
+    let b = world.reference_module("B");
+    let take = world.reference_function(b, "take", 1);
+    assert!(
+        world.demand(Job::LowerFunction(take)),
+        "lowering take/1 should be demandable"
+    );
+    assert!(
+        matches!(world.drive(), DriveOutcome::Unresolved { .. }),
+        "lowering a struct pattern naming a non-struct module should terminate, not resolve in literal order",
+    );
+
+    let diagnostic = capture
+        .last(&["fz", "diag", "error"])
+        .expect("expected a not-a-struct diagnostic from the struct-pattern lowering wait");
+    assert_eq!(metadata_str(&diagnostic, "code"), codes::RESOLVE_NOT_A_STRUCT.0);
+    assert_eq!(
+        metadata_str(&diagnostic, "message"),
+        "module `NotAStruct` is not a struct"
+    );
+}
+
+#[test]
 fn compiler2_index_code_defines_owned_functions_without_lowering_or_activating_bodies() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
