@@ -12,9 +12,15 @@
   "id": "fz-rh2.17.5.6.10",
   "labels": [],
   "parent": "fz-rh2.17.5.6.8",
+  "comments": [
+    {
+      "text": "Folded at aab61dde6 (world.rs doc-comment conflict with .12 resolved: merged to name all three now-migrated consumers). Obligation store mirrors InterfaceExpectation (StructFieldExpectation + validate-on-settle, bidirectional: publish-side + note-side); resolve.rs TypeExpr::StructRecord reads the durable struct_def_fields; a single publish-time record_function_type_refs walk covers @type/@spec/guard/extern. THREE adversarial-audit rounds, each fixing a real reproduced gap before fold: (1) @spec/guard shared the StructRecord arm but weren't wired -\u003e still silently dropped; fixed via the shared publish-time walk + StructDefined waits in derive_function_contract/plan_entry_dispatch. (2) non-struct %A{} (plain module / typo) waited on a StructDefined that never publishes -\u003e bounded stall with ZERO diagnostics (unresolved_issue had no arm); fixed via RESOLVE_NOT_A_STRUCT + unresolved_struct_issue (settled-without-defstruct -\u003e diagnose at requester span; wholly-unresolved -\u003e defer to module-not-defined, no double-report). (3) extern contracts DO name user structs; lower_function waited only on TypeDefined -\u003e extern %Point{} resolved literal-order (silently wrong); fixed via a StructDefined wait in lower_function's extern spec-resolution wait-set (did NOT touch .11's MakeStruct/StructField). drive.rs also gained the StructDefined-\u003eDefineModule producer mapping (first real waiter). Tests: precise-order @type, unknown-field @type (both dirs), unknown-field @spec, non-struct @spec diagnostic, extern wait, guard-annotation unknown-field -- all non-vacuous (verified by /tmp-copy revert, no git stash). Verified: lib 1262/0/6, composed-branch matrix 350/11 (no new red), clippy+fmt clean. Follow-ups: fz-rh2.17.5.6.8.2 (per-consumer wait-set split, benign over-wait), fz-b6w (obligation-store retraction). Unblocked .11 and .13.",
+      "timestamp": "2026-07-08T01:53:14Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "Structs: obligation store + validate-on-settle; migrate resolve.rs TypeExpr::StructRecord",
   "type": "bug",
-  "updated_at": "2026-07-07T19:14:52Z"
+  "updated_at": "2026-07-08T01:53:14Z"
 }
