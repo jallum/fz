@@ -7,9 +7,15 @@
   "id": "fz-rh2.17.5.6.14",
   "labels": [],
   "parent": "fz-rh2.17.5.6",
+  "comments": [
+    {
+      "text": "Folded at 3f4527d9a. Completes the grammar-owned dot-eol model from .7: all three remaining dot-consuming sites (parse_alias_expr, capture-target dot chain, parse_upper_path) now continue across a trailing newline-after-dot via skip_newlines(), plus a peek_non_newline_from lookahead helper for the alias-chain guard. All three 'continue' decisions verified against real Elixir 1.19.4 (elixirc/elixir). Adversarial audit CLEAN (no MUST-FIX): newline-BEFORE-dot is the lexer's job (is_infix_only_continuation, untouched) and matches Elixir; the guard governs only trailing-eol; lowercase-after-dot (Foo.\\n bar) correctly falls through to remote-call parsing; EOF/multi-newline terminate cleanly. Nit closed at fold: added compiler2_frontdoor_lowercase_field_after_dotted_newline_is_remote_access_not_alias_chain (Foo.\\n bar -\u003e remote-access . node not __aliases__[Foo,bar], cross-checked vs Elixir quote output). 5 dot-eol regression tests total. lib 1266/0/6, matrix 350/11, clippy+fmt clean. Docs (parser-syntax.md) present-tense.",
+      "timestamp": "2026-07-08T03:14:12Z"
+    }
+  ],
   "priority": 3,
   "status": "open",
   "title": "Frontdoor: apply dot trailing-eol uniformly across all dot-consuming sites (alias path, capture dot-chain, upper path)",
   "type": "bug",
-  "updated_at": "2026-07-07T19:21:55Z"
+  "updated_at": "2026-07-08T03:14:12Z"
 }
