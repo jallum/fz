@@ -882,11 +882,12 @@ impl FrontDoorParser {
         start: Span,
     ) -> Result<ParsedExpr, FrontDoorError> {
         let mut path = vec![first];
-        while self.peek_is(&Tok::Dot) && matches!(self.peek_at(1), Tok::Upper(_)) {
+        while self.peek_is(&Tok::Dot) && matches!(self.peek_non_newline_from(1), Tok::Upper(_)) {
             self.bump();
+            self.skip_newlines();
             match self.bump() {
                 Tok::Upper(name) => path.push(name),
-                _ => unreachable!("guarded by peek_at"),
+                _ => unreachable!("guarded by peek_non_newline_from"),
             }
         }
         let span = start.merge(self.prev_span());
@@ -1283,6 +1284,7 @@ impl FrontDoorParser {
 
         while self.peek_is(&Tok::Dot) {
             self.expect(&Tok::Dot, "`.`")?;
+            self.skip_newlines();
             let field = match self.bump() {
                 Tok::Ident(name) | Tok::Upper(name) => name,
                 other if self.operator_name(&other).is_some() => {
@@ -1853,6 +1855,7 @@ impl FrontDoorParser {
         }
         while self.peek_is(&Tok::Dot) {
             self.bump();
+            self.skip_newlines();
             match self.bump() {
                 Tok::Upper(name) => path.push(name),
                 other => {
@@ -2057,6 +2060,22 @@ impl FrontDoorParser {
 
     fn peek_is_at(&self, off: usize, expected: &Tok) -> bool {
         discriminant(self.peek_at(off)) == discriminant(expected)
+    }
+
+    /// Look ahead from `self.pos + off`, skipping over any `Newline` tokens,
+    /// and return the first non-newline token found (or `Eof` at end of input).
+    /// Used where a construct needs to decide whether a dot continues across
+    /// a line break before committing to consume it (e.g. alias-path chains,
+    /// which only continue when an uppercase segment follows).
+    fn peek_non_newline_from(&self, off: usize) -> &Tok {
+        let mut i = self.pos + off;
+        while let Some(token) = self.toks.get(i) {
+            if !matches!(token.tok, Tok::Newline) {
+                return &token.tok;
+            }
+            i += 1;
+        }
+        &Tok::Eof
     }
 
     fn cur_span(&self) -> Span {

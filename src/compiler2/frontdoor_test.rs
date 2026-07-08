@@ -490,6 +490,164 @@ fn compiler2_frontdoor_continues_expr_across_newline_after_dot() {
 }
 
 #[test]
+fn compiler2_frontdoor_continues_alias_path_across_newline_after_dot() {
+    // Verified against ../elixir: `x = Foo.\n  Bar` binds `x` to the alias
+    // `Foo.Bar`, same as `x = Foo.Bar` on one line (elixirc'd a two-segment
+    // alias module and referenced it split across a dot-trailing newline;
+    // it resolved). Alias-path dots consume trailing eol just like value
+    // access, so `Foo.\n  Bar` must parse as the single `__aliases__` node
+    // `[Foo, Bar]`, not error out looking for an uppercase segment.
+    let tel = ConfiguredTelemetry::new();
+    let root = parse_quoted_program(
+        "alias-path-trailing-newline.fz",
+        "fn main() do\n  Foo.\n    Bar\nend\n",
+        CodeId::ZERO,
+        &tel,
+    )
+    .expect("trailing dot newline in alias path parse");
+    let body = fn_do_body(&root).ast_node().expect("body cursor").expect("body node");
+    assert_eq!(
+        head_name(&body),
+        "__aliases__",
+        "newline after `.` must continue the alias path"
+    );
+    let segments: Vec<String> = body
+        .tail
+        .list_items()
+        .expect("alias segments")
+        .iter()
+        .map(|item| item.atom_name().expect("alias segment atom"))
+        .collect();
+    assert_eq!(segments, vec!["Foo".to_string(), "Bar".to_string()]);
+}
+
+#[test]
+fn compiler2_frontdoor_lowercase_field_after_dotted_newline_is_remote_access_not_alias_chain() {
+    // The disambiguation the alias-chain guard must preserve across a dotted
+    // newline: an UPPERCASE segment after `Foo.` continues the alias path
+    // (`Foo.Bar` -> `__aliases__[Foo, Bar]`), but a LOWERCASE field must NOT
+    // be absorbed into the alias chain — it is remote access on the alias
+    // (`Foo.bar` -> `.`-node `[__aliases__[Foo], :bar]`). The guard uses
+    // `peek_non_newline_from(1)` and only stays in the alias loop for a
+    // `Tok::Upper`, so `Foo.\n  bar` must fall through to `finish_remote_target`
+    // and produce a remote-access node, exactly like `Foo.bar` on one line.
+    // This pins that the newline-tolerant guard did not widen the alias chain
+    // to swallow lowercase fields.
+    let tel = ConfiguredTelemetry::new();
+    let root = parse_quoted_program(
+        "lowercase-field-after-dotted-newline.fz",
+        "fn main() do\n  Foo.\n    bar\nend\n",
+        CodeId::ZERO,
+        &tel,
+    )
+    .expect("lowercase field after dotted newline parse");
+    let body = fn_do_body(&root).ast_node().expect("body cursor").expect("body node");
+    assert_eq!(
+        head_name(&body),
+        ".",
+        "a lowercase field after a dotted newline is remote access, not an alias chain"
+    );
+    let tail = body.tail.list_items().expect(". tail");
+    assert_eq!(tail.len(), 2);
+    let receiver = tail[0].ast_node().expect("receiver cursor").expect("receiver node");
+    assert_eq!(
+        head_name(&receiver),
+        "__aliases__",
+        "the remote-access receiver is the alias `Foo`, not a two-segment alias path"
+    );
+    let receiver_segments: Vec<String> = receiver
+        .tail
+        .list_items()
+        .expect("receiver alias segments")
+        .iter()
+        .map(|item| item.atom_name().expect("receiver alias segment atom"))
+        .collect();
+    assert_eq!(
+        receiver_segments,
+        vec!["Foo".to_string()],
+        "`bar` must NOT be folded into the alias path as `[Foo, bar]`"
+    );
+    assert_eq!(tail[1].atom_name().expect("field atom"), "bar");
+}
+
+#[test]
+fn compiler2_frontdoor_continues_capture_target_across_newline_after_dot() {
+    // Verified against ../elixir: `f = &Foo.\n  bar/1` captures the same
+    // `&Foo.bar/1` function reference as writing it on one line (elixir
+    // printed `&Foo.bar/1` from an interactive session split across a
+    // dot-trailing newline). The capture-target dot chain consumes trailing
+    // eol just like value access and alias paths, so `&Foo.\n  bar/1` must
+    // parse as `&(Foo.bar / 1)`, not error out looking for a field name.
+    let tel = ConfiguredTelemetry::new();
+    let root = parse_quoted_program(
+        "capture-target-trailing-newline.fz",
+        "fn main() do\n  &Foo.\n    bar/1\nend\n",
+        CodeId::ZERO,
+        &tel,
+    )
+    .expect("trailing dot newline in capture target parse");
+    let body = fn_do_body(&root).ast_node().expect("body cursor").expect("body node");
+    assert_eq!(head_name(&body), "&", "capture wraps the `/` arity node");
+    let capture_args = body.tail.list_items().expect("& args");
+    assert_eq!(capture_args.len(), 1);
+    let slash = capture_args[0].ast_node().expect("slash cursor").expect("slash node");
+    assert_eq!(head_name(&slash), "/");
+    let slash_args = slash.tail.list_items().expect("/ args");
+    assert_eq!(slash_args.len(), 2);
+    let dot = slash_args[0].ast_node().expect("dot cursor").expect("dot node");
+    assert_eq!(
+        head_name(&dot),
+        ".",
+        "newline after `.` must continue the capture target's remote-access chain"
+    );
+    let dot_tail = dot.tail.list_items().expect(". tail");
+    assert_eq!(dot_tail.len(), 2);
+    let target = dot_tail[0].ast_node().expect("target cursor").expect("target node");
+    assert_eq!(head_name(&target), "__aliases__");
+    assert_eq!(dot_tail[1].atom_name().expect("field atom"), "bar");
+    assert_eq!(slash_args[1].int_value().expect("arity"), 1);
+}
+
+#[test]
+fn compiler2_frontdoor_continues_upper_path_across_newline_after_dot() {
+    // Verified against ../elixir: `import Foo.\n  Bar` (with `Foo.Bar`
+    // predefined and on the code path) imports the same module as
+    // `import Foo.Bar` on one line — elixirc'd it split across a
+    // dot-trailing newline and it compiled with only the expected "unused
+    // import" warning, no syntax error. `parse_upper_path` backs
+    // `alias`/`import`/`require`/`defmodule`/protocol module paths, so its
+    // dots must consume trailing eol like every other dot-consuming site:
+    // `import Foo.\n  Bar` must parse as the single alias path `[Foo, Bar]`.
+    let tel = ConfiguredTelemetry::new();
+    let root = parse_quoted_program(
+        "upper-path-trailing-newline.fz",
+        "import Foo.\n  Bar\n",
+        CodeId::ZERO,
+        &tel,
+    )
+    .expect("trailing dot newline in upper path parse");
+    let items = root.cursor().list_items().expect("top-level items");
+    assert_eq!(items.len(), 1);
+    let import = items[0].ast_node().expect("import cursor").expect("import node");
+    assert_eq!(head_name(&import), "import");
+    let import_args = import.tail.list_items().expect("import args");
+    let alias = import_args[0].ast_node().expect("alias cursor").expect("alias node");
+    assert_eq!(
+        head_name(&alias),
+        "__aliases__",
+        "newline after `.` must continue the import's module path"
+    );
+    let segments: Vec<String> = alias
+        .tail
+        .list_items()
+        .expect("alias segments")
+        .iter()
+        .map(|item| item.atom_name().expect("alias segment atom"))
+        .collect();
+    assert_eq!(segments, vec!["Foo".to_string(), "Bar".to_string()]);
+}
+
+#[test]
 fn compiler2_frontdoor_separates_statements_at_a_bare_newline() {
     // Two expressions on separate lines with no continuing operator are
     // two statements (`eoe`-separated), not one: the block wraps them as

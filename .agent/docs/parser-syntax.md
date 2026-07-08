@@ -27,10 +27,20 @@ newline to guess intent.
 
 - **Trailing eol** (operator/`.` at the END of a line): each infix
   production in `FrontDoorParser::parse_bp` calls `skip_newlines()` right
-  after consuming its operator, before parsing the right-hand side. The
-  `.` productions (`finish_remote_target`, `finish_closure_call`) do the
-  same right after consuming `Tok::Dot`. This is ordinary trailing-position
-  grammar, unconditional, no classification needed.
+  after consuming its operator, before parsing the right-hand side. Every
+  `Tok::Dot`-consuming production does the same right after consuming the
+  dot: `finish_remote_target` and `finish_closure_call` (value/call access),
+  `parse_alias_expr` (alias-path chains, e.g. `Foo.\n  Bar`), the
+  capture-target dot chain in `parse_capture_target` (e.g. `&Foo.\n  bar/1`),
+  and `parse_upper_path` (the shared path parser behind
+  `alias`/`import`/`require`/`defmodule`/protocol module paths). Dot
+  consumes trailing eol by construction regardless of what it's chaining —
+  this is ordinary trailing-position grammar, unconditional, no
+  classification needed. `parse_alias_expr`'s loop guard additionally uses
+  `peek_non_newline_from` to look past a newline run before committing to
+  consume the dot, since an alias-path dot only continues the chain when an
+  uppercase segment follows (unlike remote access, which continues
+  unconditionally after any dot).
 - **Leading eol** (operator at the START of a line): the lexer decides.
   `parser::lexer::is_infix_only_continuation` classifies each operator/`.`
   token by whether its grammar production can *only* ever be infix/postfix
