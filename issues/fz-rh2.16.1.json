@@ -9,9 +9,15 @@
   "id": "fz-rh2.16.1",
   "labels": [],
   "parent": "fz-rh2.16",
+  "comments": [
+    {
+      "text": "Folded at 72807eb84. FINDING: the manual-batch-promotion premise is OBSOLETE by construction -- the fixture-matrix architecture changed (every fixtures2/behavior/ fixture runs run/interp/build by DEFAULT; the old fz compiler + its repl/jit/aot legs and fz2-* path opt-in are gone), so promotion is automatic and there was nothing to metadata-add without violating observe-then-promote or inventing goldens (16.2's job). Verified (proportionate to a doc-only change, not a full audit): commit is doc-only (1 file, +61/-85); matrix 350 passed/11 known-red twice; all 12 deferred/filename-narrowed fixtures cite still-OPEN bug tickets (spot-confirmed fz-9i4.7.5, fz-9i4.7.1 open) -- no stale defers; NO regressions (no sweep fixture that passed then fails fz2 now). The stale .agent/docs/compiler2-migration.md 2026-06-10 snapshot (17-fixture list, 88/9/21 breakdown) was wrong on 3 fixtures now green (membership_operator, map_enumerable, utf8_pattern_match -- confirmed no defer markers, not in red set) -\u003e refreshed to present-tense facts. fixtures/index.md does not exist in the repo (the ticket's mention was stale). Signal met: fixture_matrix covers the fz2 paths comprehensively; remaining gaps are the documented 11 known-red + defers citing open tickets. Advances fz-rh2.16.6.",
+      "timestamp": "2026-07-08T00:13:44Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "Promote passing fz2 sweep fixtures into the matrix in batches",
   "type": "task",
-  "updated_at": "2026-06-10T08:05:55Z"
+  "updated_at": "2026-07-08T00:13:44Z"
 }
