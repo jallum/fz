@@ -9,9 +9,15 @@
   "id": "fz-rh2.17.5.6.8.4",
   "labels": [],
   "parent": "fz-rh2.17.5.6.8",
+  "comments": [
+    {
+      "text": "Folded at d905494aa. VERDICT: macro-emitted defstruct IS reachable (fz macros can emit a top-level defstruct via {:defstruct,%{},[fields]}; literal %{} meta -\u003e Span::DUMMY on every expansion, confirming the identical-fields same-span hazard .8.1 left). RESOLVED (not deferred) with a per-ScopeSession struct_form_seen occurrence count: a second defstruct in one module-body pass (incl. macro-expanded, since apply_item_macro_call recurses on the same session without reassigning current_module) diagnoses RESOLVE_DUPLICATE_STRUCT regardless of content; .8.1's content-comparison is kept for cross-job-re-run idempotency (fresh session per run). ELIXIR-CONFIRMED: matches Kernel.Utils.defstruct (../elixir/lib/elixir/lib/kernel/utils.ex:110-114) 'defstruct can only be called once per module' -- content-independent, at the second call. Adversarial audit CLEAN (no MUST-FIX): ScopeSession lifetime correct (per-body reset, macro in-session, nested modules isolated -- all verified adversarially), no single-defstruct false-positive (the 19-regression class), per-session check runs before content-comparison (no double-diagnosis), keep-first holds, full Elixir-parity table a-e, test non-vacuous. lib 1273/0/6, matrix 352/11. .13 gate SOUND.",
+      "timestamp": "2026-07-08T13:06:26Z"
+    }
+  ],
   "priority": 4,
   "status": "open",
   "title": "Confirm/cover macro-emitted defstruct duplication: same-span-identical-fields dup is a benign missed diagnostic; verify fz macros can even emit a defstruct",
   "type": "bug",
-  "updated_at": "2026-07-08T03:11:52Z"
+  "updated_at": "2026-07-08T13:06:26Z"
 }
