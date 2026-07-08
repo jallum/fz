@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-07-08T14:33:04Z",
+  "description": "SURFACED by the fz-rh2.17 close-out audit. world.rs ~2899-2955: unresolved_module_issue/unresolved_function_issue (the rare scheduler-level stall/deadlock diagnostic path, fires only when the fact graph deadlocks) still emit Span::DUMMY. Their sibling unresolved_struct_issue (world.rs ~2875, from the struct-facts work) DOES look up a real span from recorded expectations -- so the struct path set a better precedent. FIX: mirror unresolved_struct_issue -- consult the recorded interface/function expectations for a real requester span instead of DUMMY. Cosmetic-diagnostic-only, rare path. Concordant with fz-rh2.17.5.6.8.5 (struct obligation DUMMY-span for bare %A{}); consider folding the span-lookup pattern once. Related: fz-rh2.17, fz-rh2.17.5.6.8.5.",
+  "id": "fz-c07",
+  "labels": [],
+  "priority": 4,
+  "status": "open",
+  "title": "Stall-detector unresolved_module_issue/unresolved_function_issue emit Span::DUMMY; give them a real requester span like unresolved_struct_issue does",
+  "type": "bug",
+  "updated_at": "2026-07-08T14:33:04Z"
+}
