@@ -11,11 +11,15 @@
     {
       "text": "DECOMPOSED (investigation, not a code commit). Thorough investigation proved this cannot land as one correct-by-construction commit: the reduce (deleting module_struct_fields/struct_schemas source scanning) can only happen at the LAST consumer's migration, so any single commit is either a forbidden half-migrated hybrid (some consumers read the new StructDefined fact, others still scan ModuleState) or an incomplete obligation walk; the 6 required tests each gate on their subsystem's wiring and no shims are allowed. Matches precedent (fz-hwn.27/fz-463/fz-bfh.5 were split). Now a tracking node for 5 dependency-ordered slices modeled on the existing ModuleInterface obligation pattern (StructDefined + StructFieldExpectation validate-on-settle): .9 StructDef store + FactKey::StructDefined -\u003e .10 obligation store + resolve.rs migration -\u003e .11 body.rs lowering waits -\u003e .12 typed protocol-impl-target -\u003e .13 backend-from-facts + DELETE the scan. .9 is ready; the rest unblock in order. This node stays open until all five close.",
       "timestamp": "2026-07-07T19:14:54Z"
+    },
+    {
+      "text": "CLOSING as tracking epic: goal MET -- struct field-schema facts (StructDef store + FactKey::StructDefined) are published and are the SINGLE source of truth across all tiers (resolve/body/protocol/semantic/backend), field-reference obligations are recorded and validated-on-settle with requester-span diagnostics, and the legacy module_struct_fields/struct_schemas source scan is DELETED (.13). Core slices .9(store)/.10(obligations+resolve)/.11(body lowering)/.12(protocol-impl)/.13(backend+delete scan) + gates .8.1(dup diagnostic)/.8.4(macro-dup) all closed. The three residual refinement children (.8.2 over-wait, .8.3 defstruct-defaults, .8.5 span-quality) were reparented to standalone -- they are enhancements beyond this epic's goal and must NOT gate the epic/keystone (16.6 planning can add a parity dep for defstruct-defaults if needed). Architectural follow-up fz-l59 (cross-root schema completeness) gates fz-rh2.16.6 directly.",
+      "timestamp": "2026-07-08T14:26:14Z"
     }
   ],
   "priority": 1,
   "status": "open",
   "title": "Compiler2 structs: publish field-schema facts and validate field reference obligations",
   "type": "task",
-  "updated_at": "2026-07-07T19:14:54Z"
+  "updated_at": "2026-07-08T14:26:14Z"
 }
