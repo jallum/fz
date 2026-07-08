@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-07-08T00:38:00Z",
+  "description": "SURFACED by the fz-rh2.17.5.6.10 audit; confirmed PRE-EXISTING and SHARED (not introduced by .10). Both durable obligation stores are append-only with dedup-on-record but NO retraction/clear/generation-scoping:\n- StructExpectationMap::record (structdef.rs) only adds.\n- ModuleInterface.expectations: record_expectation (module_interface.rs ~123-132) only adds; inherit_expectations_from / merge_module_interface_expectations (world.rs ~1057-1064) copies EVERY prior expectation forward onto a freshly-rebuilt interface with no staleness filter.\nCONSEQUENCE: a referencing site edited to STOP naming A.bogus (or M.missing_fn) leaves a stale obligation in the map forever, capable of mis-firing a diagnostic (RESOLVE_UNKNOWN_STRUCT_FIELD / missing-export) against a reference that no longer exists in source -- in BOTH the struct and module-interface cases. Requires an incremental edit that removes a bad reference; the fixpoint would need to retract the obligation but cannot.\nFIX (fold-concordant per NORTH STAR / CLAUDE.md 'fold concordant ideas' -- design ONCE for both stores, do not patch structs alone): add generation/revision-scoped or retraction-aware expectation recording so obligations from a re-derived requester replace (not accumulate onto) the prior set, and stale obligations are dropped when their requester's revision advances without re-recording them. Unify StructExpectationMap and ModuleInterface.expectations onto one retraction-aware expectation mechanism. Related: fz-rh2.17.5.6.10, fz-rh2.17 (ModuleInterface), fz-rh2.17.5.6.8.",
+  "id": "fz-b6w",
+  "labels": [],
+  "priority": 3,
+  "status": "open",
+  "title": "Expectation stores are append-only with no retraction: StructExpectationMap AND ModuleInterface.expectations can mis-fire a diagnostic after the referencing site is edited away",
+  "type": "bug",
+  "updated_at": "2026-07-08T00:38:00Z"
+}
