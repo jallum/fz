@@ -183,7 +183,7 @@ pub(crate) fn produce_root_backend_product(
         entry: entry_index,
         transport,
         atom_names: collect_backend_atom_names(world, &executables),
-        struct_schemas: world.struct_schemas(),
+        struct_schemas: world.struct_def_schemas(),
         executables,
         callable_entries,
     };

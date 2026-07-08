@@ -1803,6 +1803,76 @@ fn compiler2_struct_pattern_lowering_diagnoses_reference_to_non_struct_module() 
 }
 
 #[test]
+fn compiler2_backend_struct_schemas_are_fed_from_struct_def_facts_not_a_source_scan() {
+    // The last struct-facts consumer migration: `BackendProgram.struct_schemas`
+    // now reads `World::struct_def_schemas` (the fact-backed `StructDefMap`),
+    // not the deleted `World::struct_schemas`/`ModuleStore::named_struct_schemas`
+    // source scan. Two structs, reached through the two different backend
+    // consumers of the map, prove it is genuinely populated from published
+    // `StructDefined` facts rather than vacuously empty or a stale literal:
+    // `Point` is only ever dot-field-accessed (`Prim::StructField`'s named
+    // lookup), and its schema field ORDER must match the `defstruct`
+    // declaration (x, y), not construction-site literal order (the literal
+    // below writes y before x); `Pair` is only ever pattern-destructured
+    // (`Prim::TupleField`/`AssertStruct`'s schema-identity check), never
+    // dot-accessed, proving the map serves both consumers.
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&[], capture.handler());
+    let backend = BackendProgramCapture::new();
+    tel.attach(&["fz", "compiler2", "backend_program", "defined"], backend.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("struct_backend_schema_from_facts.fz".to_string()),
+        text: concat!(
+            "defmodule Point do\n",
+            "  defstruct [:x, :y]\n",
+            "\n",
+            "  fn new(x, y), do: %Point{y: y, x: x}\n",
+            "end\n",
+            "\n",
+            "defmodule Pair do\n",
+            "  defstruct [:first, :second]\n",
+            "end\n",
+            "\n",
+            "fn describe(%Pair{first: f, second: s}), do: f + s\n",
+            "\n",
+            "fn main() do\n",
+            "  point = Point.new(3, 4)\n",
+            "  dbg(point.x)\n",
+            "  dbg(point.y)\n",
+            "  dbg(describe(%Pair{first: 10, second: 20}))\n",
+            "end\n",
+        )
+        .to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    demand_backend_product(&mut compiler, root_id);
+    assert_resolved(
+        compiler.drive(),
+        "struct construction/field-access/pattern should settle",
+    );
+
+    let program = backend.last(root_id).program;
+    assert_eq!(
+        program.struct_schemas.get("Point").map(Vec::as_slice),
+        Some(["x".to_string(), "y".to_string()].as_slice()),
+        "Point's schema should be the declared defstruct order, not the literal's write order"
+    );
+    assert_eq!(
+        program.struct_schemas.get("Pair").map(Vec::as_slice),
+        Some(["first".to_string(), "second".to_string()].as_slice()),
+        "Pair's schema should be present from the fact store even though it is only ever pattern-destructured"
+    );
+}
+
+#[test]
 fn compiler2_index_code_defines_owned_functions_without_lowering_or_activating_bodies() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();

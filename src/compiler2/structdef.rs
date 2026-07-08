@@ -8,11 +8,13 @@
 //! under the module's [`ModuleId`] identity for referencing consumers to
 //! read.
 //!
-//! This store is additive: `World::module_struct_fields`/`struct_schemas`
-//! still scan `ModuleState` source forms and remain readers of struct schema
-//! for consumers this slice does not touch (fz-rh2.17.5.6.11/.12/.13 migrate
-//! the rest and delete the scan). `resolve.rs`'s `TypeExpr::StructRecord`
-//! path now reads this store directly through [`super::world::World::struct_def_fields`].
+//! This store is the single source of truth for struct schemas: every
+//! consumer (type resolution, struct-literal/pattern lowering,
+//! protocol-impl-target classification, and the backend's whole-program
+//! schema inventory) reads it, directly or through
+//! [`super::world::World::struct_def_fields`]. There is no source-form scan
+//! left to fall back to — a struct defined through a macro-emitted
+//! `defstruct` is visible here exactly like a source-written one.
 //!
 //! [`StructFieldExpectation`] and [`StructExpectationMap`] are this store's
 //! obligation half, mirroring [`super::module_interface::InterfaceExpectation`]/
@@ -61,6 +63,13 @@ impl StructDefMap {
 
     pub(crate) fn get(&self, module: ModuleId) -> Option<&StructDef> {
         self.slots.get(&module)
+    }
+
+    /// Every `defstruct` published so far, for the backend's whole-program
+    /// schema inventory — the fact-backed sibling of the deleted
+    /// `ModuleStore::named_struct_schemas` source scan.
+    pub(crate) fn iter(&self) -> impl Iterator<Item = (ModuleId, &StructDef)> {
+        self.slots.iter().map(|(module, def)| (*module, def))
     }
 }
 

@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 
 use crate::function_surface::FunctionSurface;
 use crate::source::Span;
@@ -7,7 +7,7 @@ use crate::types::ClosureTarget;
 use super::code::CodeId;
 use super::module_interface::ModuleInterface;
 use super::namespace::Namespace;
-use super::quoted_surface::{ScopeForm, ScopeSurface};
+use super::quoted_surface::ScopeSurface;
 use super::source::{Horizon, QuotedSourceRoot};
 use super::type_expr::TypeDefBody;
 use super::types::Ty;
@@ -510,32 +510,6 @@ impl ModuleMap {
             .get(id.0 as usize)
             .expect("module ids should be known before reading module names")
             .as_deref()
-    }
-
-    pub fn named_struct_schemas(&self) -> BTreeMap<String, Vec<String>> {
-        let mut out = BTreeMap::new();
-        for (index, name) in self.names.iter().enumerate() {
-            let Some(name) = name else {
-                continue;
-            };
-            let module = &self.slots[index];
-            let Some(fields) = (match module {
-                ModuleState::Placeholder { .. } => None,
-                ModuleState::Indexed { source, .. }
-                | ModuleState::Scoped { source, .. }
-                | ModuleState::Defined { source, .. } => match &source.kind {
-                    ModuleSourceKind::Body(surface) => surface.forms.iter().find_map(|form| match form {
-                        ScopeForm::Struct(def) => Some(def.fields.clone()),
-                        _ => None,
-                    }),
-                    ModuleSourceKind::Protocol(_) | ModuleSourceKind::ProtocolImpl(_) => None,
-                },
-            }) else {
-                continue;
-            };
-            out.insert(name.clone(), fields);
-        }
-        out
     }
 }
 

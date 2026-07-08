@@ -870,11 +870,9 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
     /// fz's grammar is one `defstruct` per module (mirroring Elixir). A
     /// second `defstruct` in the same module body is diagnosed at its own
     /// span rather than silently overwriting the first: `StructDefMap::define`
-    /// is a plain `HashMap::insert` (last-wins) while the legacy
-    /// `World::module_struct_fields` source scan it is replacing is a
-    /// `find_map` (first-wins) — without this guard, a malformed
-    /// duplicate-defstruct module would silently flip which struct "wins"
-    /// once the scan is deleted, with no diagnostic either way.
+    /// is a plain `HashMap::insert` (last-wins), so without this guard a
+    /// malformed duplicate-defstruct module would silently flip which struct
+    /// "wins" from one publish to the next, with no diagnostic either way.
     fn publish_struct_def(&mut self, def: &StructForm) -> Result<(), FatalError> {
         let module = self.current_module;
         let incoming = StructDef {

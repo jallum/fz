@@ -373,7 +373,12 @@ fn apply_step(
             else {
                 return Ok(());
             };
-            let struct_ty = world.module_struct_value_ty(*module, &field_tys);
+            // `fields` is already ordered against the struct's schema by body
+            // lowering (which waited on `StructDefined` before producing this
+            // step), so the field names travel with the step itself — no
+            // separate schema lookup needed here.
+            let field_names = fields.iter().map(|(name, _)| name.clone()).collect::<Vec<_>>();
+            let struct_ty = world.struct_module_value_ty(*module, &field_names, &field_tys);
             values.insert(*value, struct_ty);
         }
         LoweredStep::Bitstring { value, .. } => {

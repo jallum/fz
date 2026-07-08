@@ -1316,8 +1316,7 @@ impl<'a> World<'a> {
     }
 
     /// Reads `module`'s resolved `defstruct`, if `StructDefined(module)` has
-    /// published one. This is the fact-backed replacement for scanning
-    /// `ModuleState` source for a `defstruct` form — the protocol-impl-target
+    /// published one. There is no scan to fall back to: the protocol-impl-target
     /// classification and `struct_assertion_ty` read schemas through here.
     pub(crate) fn struct_def(&self, module: ModuleId) -> Option<&StructDef> {
         self.struct_defs.get(module)
@@ -1325,11 +1324,11 @@ impl<'a> World<'a> {
 
     /// Publishes a resolved `defstruct` under `module` and emits the
     /// callee-tier `struct_def defined` signal, mirroring `define_type_def`.
+    /// This store is the single source of truth for struct schemas:
     /// `resolve.rs`'s `TypeExpr::StructRecord` path (via `struct_def_fields`),
-    /// the protocol-impl-target classification, and `struct_assertion_ty` read
-    /// this store; `module_struct_fields`'s source scan below remains the reader
-    /// for the struct-literal/pattern lowering and backend consumers not yet
-    /// migrated.
+    /// struct-literal/pattern lowering, protocol-impl-target classification,
+    /// `struct_assertion_ty`, and the backend's whole-program schema
+    /// inventory (`struct_def_schemas`) all read it.
     pub(crate) fn define_struct_def(&mut self, module: ModuleId, def: StructDef) -> bool {
         let changed = self.struct_defs.define(module, def);
         let def = self
@@ -1351,10 +1350,9 @@ impl<'a> World<'a> {
     }
 
     /// The precise, durable reader over `defstruct`'s ordered fields:
-    /// `resolve.rs`'s `TypeExpr::StructRecord` classification reads this, not
-    /// `module_struct_fields`'s source scan, once it needs the schema
-    /// (fz-rh2.17.5.6.10). Unlike that scan, this never has an opinion when
-    /// the fact has not published yet — callers that need the answer wait on
+    /// `resolve.rs`'s `TypeExpr::StructRecord` classification reads this once
+    /// it needs the schema. This never has an opinion when the fact has not
+    /// published yet — callers that need the answer wait on
     /// `FactKey::StructDefined(module)` first (see `jobs::types::derive_type_def`).
     pub(crate) fn struct_def_fields(&self, module: ModuleId) -> Option<&[String]> {
         self.struct_defs.get(module).map(|def| def.fields.as_slice())
@@ -2122,27 +2120,27 @@ impl<'a> World<'a> {
         function
     }
 
-    pub(crate) fn module_struct_fields(&self, module: ModuleId) -> Option<&[String]> {
-        match self.modules.get(module) {
-            ModuleState::Placeholder { .. } => None,
-            ModuleState::Indexed { source, .. }
-            | ModuleState::Scoped { source, .. }
-            | ModuleState::Defined { source, .. } => match &source.kind {
-                ModuleSourceKind::Protocol(_) | ModuleSourceKind::ProtocolImpl(_) => None,
-                ModuleSourceKind::Body(body) => body.forms.iter().find_map(|form| match form {
-                    super::quoted_surface::ScopeForm::Struct(def) => Some(def.fields.as_slice()),
-                    _ => None,
-                }),
-            },
-        }
-    }
-
     pub(crate) fn module_name(&self, module: ModuleId) -> Option<&str> {
         self.modules.name(module)
     }
 
-    pub(crate) fn struct_schemas(&self) -> BTreeMap<String, Vec<String>> {
-        self.modules.named_struct_schemas()
+    /// Every `defstruct` published so far, named by module, for the
+    /// backend's whole-program schema inventory (`Prim::MakeStruct`'s schema
+    /// registration and the interpreter's `AssertStruct`/`is_named_struct`
+    /// checks both need every struct that might be constructed or matched
+    /// against, not just the ones a single executable happens to construct
+    /// literally). Fact-backed: this reads `StructDefMap` directly, replacing
+    /// the old `ModuleStore::named_struct_schemas` source scan — a struct
+    /// declared through a macro-emitted `defstruct` now appears here exactly
+    /// like a source-written one.
+    pub(crate) fn struct_def_schemas(&self) -> BTreeMap<String, Vec<String>> {
+        self.struct_defs
+            .iter()
+            .filter_map(|(module, def)| {
+                self.module_name(module)
+                    .map(|name| (name.to_string(), def.fields.clone()))
+            })
+            .collect()
     }
 
     pub fn finish_code_index(&mut self, id: CodeId, source: QuotedCodeSource) -> bool {
@@ -2719,18 +2717,6 @@ impl<'a> World<'a> {
         self.types.union(nominal, structural)
     }
 
-    pub(crate) fn module_struct_value_ty(&mut self, module: ModuleId, field_tys: &[Ty]) -> Ty {
-        let name = self
-            .module_name(module)
-            .unwrap_or_else(|| panic!("named struct module {} should have a reverse lookup", module.as_u32()))
-            .to_string();
-        let field_names = self
-            .module_struct_fields(module)
-            .map(|fields| fields.to_vec())
-            .unwrap_or_default();
-        self.struct_value_ty(&name, &field_names, field_tys)
-    }
-
     pub(crate) fn resolve_module_name(
         &mut self,
         current_module: ModuleId,
@@ -2833,10 +2819,10 @@ impl<'a> World<'a> {
     }
 
     /// The struct type projected from an already-resolved field schema
-    /// (`field_names`/`field_tys` in schema order) — the fact-backed sibling
-    /// of `module_struct_value_ty`, which still derives its field names from
-    /// the `module_struct_fields` source scan for the struct-literal lowering
-    /// consumer that has not migrated yet.
+    /// (`field_names`/`field_tys` in schema order): the shared tail of both
+    /// `struct_assertion_ty` (schema read from `struct_def`) and struct-literal
+    /// type inference (schema read from the lowered field list, already
+    /// ordered against `struct_def_fields` by body lowering).
     pub(crate) fn struct_module_value_ty(&mut self, module: ModuleId, field_names: &[String], field_tys: &[Ty]) -> Ty {
         let name = self
             .module_name(module)

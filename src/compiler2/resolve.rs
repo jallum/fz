@@ -280,16 +280,15 @@ impl World<'_> {
                 let module_id = self
                     .lookup_module_path(namespace, &module_name.dotted())
                     .unwrap_or_else(|| self.reference_module(module_name.dotted()));
-                // The durable `defstruct` store, not the `module_struct_fields`
-                // source scan. Every consumer that reaches this arm — `@type`
-                // (`note_pending_types`), `@spec`, and param annotations
-                // (`record_function_type_refs`) — records its `%Mod{...}`
-                // field obligations and its `StructDefined` wait at publish
-                // time, so by the time this runs the wait is satisfied and the
-                // schema is present; a field the schema does not declare is
-                // diagnosed through that obligation, never dropped here. This
-                // read only asks for what the schema says exists
-                // (fz-rh2.17.5.6.10).
+                // The durable `defstruct` store. Every consumer that reaches
+                // this arm — `@type` (`note_pending_types`), `@spec`, and
+                // param annotations (`record_function_type_refs`) — records
+                // its `%Mod{...}` field obligations and its `StructDefined`
+                // wait at publish time, so by the time this runs the wait is
+                // satisfied and the schema is present; a field the schema
+                // does not declare is diagnosed through that obligation,
+                // never dropped here. This read only asks for what the
+                // schema says exists.
                 let field_order = self.struct_def_fields(module_id).map(|fields| fields.to_vec());
                 let any = self.types_mut().any();
                 let mut by_name = HashMap::new();
