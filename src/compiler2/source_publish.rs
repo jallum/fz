@@ -112,6 +112,7 @@ struct ScopeSession<'world, 'tel> {
     changed: Changed,
     callables: Vec<ModuleInterfaceCallable>,
     revision_floor: u64,
+    struct_form_seen: bool,
 }
 
 impl<'world, 'tel> QuotedExpansionCtx<'tel> for ScopeSession<'world, 'tel> {
@@ -456,6 +457,7 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
             changed: Vec::new(),
             callables: Vec::new(),
             revision_floor: 0,
+            struct_form_seen: false,
         }
     }
 
@@ -879,32 +881,39 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
             fields: def.fields.clone(),
             span: def.span,
         };
+        // A second `defstruct` form reached while publishing THIS module
+        // body -- one `ScopeSession` covers exactly one execution of one
+        // body, including every `defstruct` a macro expansion applies into
+        // it (`apply_item_macro_call` recurses back into `apply_scope_form`
+        // without ever changing `self.current_module`) -- is always a
+        // genuine duplicate, independent of whether its fields happen to
+        // agree with the first. That content-independence matters because a
+        // macro invoked twice from a literal (non-`unquote`) `defstruct`
+        // template carries no source span of its own (`span_from_meta`
+        // returns `Span::DUMMY` for a meta map without a `__fz_span__` key),
+        // so two macro-emitted defstructs in one module compare
+        // span-and-fields-EQUAL whenever the macro's argument happens to
+        // repeat the same fields -- exactly the case the fields-comparison
+        // check below cannot see. Checking occurrence count first, before
+        // ever comparing content, catches that case without relying on span
+        // or fields at all.
+        if self.struct_form_seen {
+            return Err(self.duplicate_struct_diagnostic(module, def.span));
+        }
+        self.struct_form_seen = true;
         // A job re-running this same module body (incremental recompute,
-        // multiple demanders) re-publishes the byte-identical `defstruct`
-        // every time -- that is idempotent, not a duplicate. A genuine
-        // second `defstruct` DIFFERS from the stored one (different span for
-        // a literal duplicate; different fields for a macro-emitted one that
-        // shares the macro definition-site span), so we compare the WHOLE
-        // `StructDef` rather than the span alone: any difference against an
-        // already-recorded struct is the error this ticket targets, and we
-        // diagnose it at the second form's span BEFORE `define_struct_def`
-        // could overwrite the kept-first definition.
+        // multiple demanders) starts a fresh `ScopeSession` and re-publishes
+        // the byte-identical `defstruct` every time -- that is idempotent,
+        // not a duplicate. A genuine second `defstruct` from an EARLIER
+        // execution's stored definition DIFFERS from the incoming one, so we
+        // compare the whole `StructDef` rather than the span alone: any
+        // difference against an already-recorded struct is diagnosed here,
+        // before `define_struct_def` could overwrite the kept-first
+        // definition.
         if let Some(existing) = self.world.struct_def(module)
             && *existing != incoming
         {
-            let module_name = self
-                .world
-                .module_name(module)
-                .map(str::to_owned)
-                .unwrap_or_else(|| format!("<unnamed module {}>", module.as_u32()));
-            return Err(emit_job_diagnostic(
-                self.world,
-                Diagnostic::error(
-                    codes::RESOLVE_DUPLICATE_STRUCT,
-                    format!("module `{}` already defines a struct", module_name),
-                    def.span,
-                ),
-            ));
+            return Err(self.duplicate_struct_diagnostic(module, def.span));
         }
         let changed = self.world.define_struct_def(module, incoming);
         self.outputs.push(FactKey::StructDefined(module));
@@ -912,6 +921,22 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
             self.changed.push(FactKey::StructDefined(module));
         }
         self.world.validate_struct_field_expectations(module)
+    }
+
+    fn duplicate_struct_diagnostic(&mut self, module: ModuleId, span: Span) -> FatalError {
+        let module_name = self
+            .world
+            .module_name(module)
+            .map(str::to_owned)
+            .unwrap_or_else(|| format!("<unnamed module {}>", module.as_u32()));
+        emit_job_diagnostic(
+            self.world,
+            Diagnostic::error(
+                codes::RESOLVE_DUPLICATE_STRUCT,
+                format!("module `{}` already defines a struct", module_name),
+                span,
+            ),
+        )
     }
 
     /// Resolves the `defimpl`s declared in a scoped module's body to ids and

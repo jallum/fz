@@ -1008,6 +1008,78 @@ fn compiler2_struct_duplicate_defstruct_diagnoses_instead_of_silently_picking_on
 }
 
 #[test]
+fn compiler2_struct_macro_emitted_duplicate_defstruct_diagnoses_even_with_identical_fields() {
+    // fz macros ARE able to emit a top-level `defstruct`: an item macro can
+    // return a bare `{:defstruct, meta, [fields]}` tuple (the same
+    // compiler-shaped AST literal fixtures2/00124 uses for `{:fn, ...}`),
+    // and `quoted_surface::build_form` recognizes the `:defstruct` head the
+    // same way it would from source. When that macro's body writes the
+    // fields as a literal (no `__fz_span__` key in its `meta` map), every
+    // expansion gets `Span::DUMMY` (`quoted_surface::span_from_meta`'s
+    // no-span fallback) -- so invoking the SAME macro twice in one module
+    // produces two `StructDef`s that are not just same-span but
+    // byte-IDENTICAL whenever the macro's argument repeats. Before this
+    // guard, `publish_struct_def`'s content-comparison gate (fz-rh2.17.5.6.8.1)
+    // treated that as indistinguishable from an idempotent job re-run and
+    // silently kept the first -- a genuine duplicate-defstruct module going
+    // undiagnosed. The occurrence check now catches it regardless of
+    // content.
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&[], capture.handler());
+    let mut world = crate::compiler2::World::new(&tel);
+    let code_id = world.submit_code(
+        Some("struct_macro_emitted_duplicate_defstruct.fz".to_string()),
+        concat!(
+            "defmacro make_struct(fields) do\n",
+            "  {:defstruct, %{}, [fields]}\n",
+            "end\n",
+            "\n",
+            "defmodule Point do\n",
+            "  make_struct([:a, :b])\n",
+            "  make_struct([:a, :b])\n",
+            "end\n",
+        )
+        .to_string(),
+    );
+
+    assert_resolved(world.drive(), "first drive should index the module");
+    assert!(
+        world.demand(Job::ScopeCode(code_id)),
+        "top-level scope should be demandable"
+    );
+    assert_resolved(world.drive(), "second drive should scope the module");
+
+    let point = world.reference_module("Point");
+    assert!(
+        world.demand(Job::DefineModule(point)),
+        "Point definition should be demandable"
+    );
+    assert!(
+        matches!(world.drive(), DriveOutcome::Fatal { .. }),
+        "two macro-emitted defstruct forms with identical fields must still diagnose as a duplicate, \
+         not be silently treated as an idempotent re-run"
+    );
+
+    let diagnostic = capture
+        .last(&["fz", "diag", "error"])
+        .expect("expected a compiler diagnostic for the macro-emitted duplicate defstruct");
+    assert_eq!(metadata_str(&diagnostic, "code"), codes::RESOLVE_DUPLICATE_STRUCT.0);
+    assert_eq!(
+        metadata_str(&diagnostic, "message"),
+        "module `Point` already defines a struct"
+    );
+
+    // The FIRST macro-emitted defstruct's fields are what the store keeps,
+    // matching the literal-duplicate keep-first behavior above.
+    assert_eq!(
+        world.struct_def_fields(point),
+        Some(["a".to_string(), "b".to_string()].as_slice()),
+        "the store should retain the first macro-emitted defstruct's fields"
+    );
+}
+
+#[test]
 fn compiler2_struct_type_expression_waits_for_struct_defined_and_resolves_precise_order() {
     // `Q`'s `@type t` names `Point` (in reversed field order) before `Point`
     // is even processed. This proves three things at once
