@@ -21,11 +21,15 @@
     {
       "text": "GATE NOTE from the .8.4 audit: the legacy module_struct_fields/named_struct_schemas scan (world.rs ~2124, identity.rs ~514) is a raw find_map over TOP-LEVEL ScopeForm::Struct only -- it does NOT see macro-emitted defstructs (those appear as ScopeForm::MacroCall in the raw surface). So today's backend consumers of the scan already MISS macro-emitted struct fields; migrating to the StructDef fact store in this slice FIXES that pre-existing gap rather than introducing one. Duplicate-defstruct detection is now sound for every combination (source/macro x identical/different fields x in-session/cross-run) -- publish_struct_def is the sole StructDefMap writer and diagnoses every dup before any overwrite -- so this slice can safely make the store authoritative and delete World::struct_schemas()/module_struct_fields()/ModuleStore::named_struct_schemas()/the ScopeForm::Struct scan with no silent first/last flip surviving.",
       "timestamp": "2026-07-08T13:06:27Z"
+    },
+    {
+      "text": "Folded at HEAD (clean cherry-pick, no conflict with fz-k22.1). THE STRUCT-FACTS FINALE: backend struct_schemas now fed from World::struct_def_schemas() (iterating the StructDefMap fact store); migrated the last consumer (semantic.rs LoweredStep::Struct type-inference, deriving names from schema-ordered lowered fields); DELETED World::struct_schemas(), module_struct_fields(), module_struct_value_ty(), ModuleStore::named_struct_schemas() (the ScopeForm::Struct scan) -- grep confirms zero live readers. The StructDef fact store is now the SINGLE source of truth across ALL tiers (resolve, body lowering, protocol-impl, semantic type-infer, backend). FIXES the macro-emitted-struct gap by construction (old scan saw only ScopeForm::Struct, not ScopeForm::MacroCall). Adversarial audit: no MUST-FIX -- single-root inventory coverage provably sound (blocking StructDefined waits force every reachable struct's schema before the backend product completes), field order provably preserved, deletion complete, macro-struct fixture non-vacuous. Verified: branch lib 1276/0/6, agent+audit full matrix 356/10 (twice, stable), targeted struct-fixture matrix on branch 21/0 (defstruct_macro_runtime run/interp/build green). FOLLOW-UP fz-l59 (P2, gates fz-rh2.16.6): cross-RootId cofinite struct-schema completeness -- resolve before the irreversible old-compiler deletion. Closes tracking epic fz-rh2.17.5.6.8.",
+      "timestamp": "2026-07-08T14:25:08Z"
     }
   ],
   "priority": 1,
   "status": "open",
   "title": "Structs: backend struct_schemas from facts + DELETE the module_struct_fields/struct_schemas scan (last consumer)",
   "type": "bug",
-  "updated_at": "2026-07-08T13:06:27Z"
+  "updated_at": "2026-07-08T14:25:08Z"
 }
