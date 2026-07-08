@@ -26,91 +26,64 @@ replacement for each piece.
 
 ## Fixture Signal
 
-As of 2026-06-10, fixture metadata declares fz2 matrix paths for 17 fixtures:
+Every fixture under `fixtures2/behavior/` participates in the compiler2 matrix
+by default on all three paths (`run`, `interp`, `build`); a fixture only drops a
+path through an explicit filename prefix (structural narrowing, e.g. an
+AOT-only destructor fixture) or an explicit `defer.<path>:` frontmatter line
+(a real, currently open gap). There is no separate "fz2 matrix path" opt-in
+left to promote — `run`/`interp`/`build` in `tests/fixture_matrix.rs` are the
+fz2 paths; the old `fz` compiler and its `repl`/`jit`/`aot` legs are gone.
 
-- `case_tuple_pattern_sequential`
-- `case_with_total`
-- `concurrency_ping_pong`
-- `cross_module_macro`
-- `defstruct_runtime`
-- `item_macro_source`
-- `lambda_sugars`
-- `macro_inc`
-- `map_three_path_parity`
-- `operator_sugars`
-- `opaque_fn_value_join`
-- `pipe_headless_case`
-- `receive_float_pattern`
-- `receive_selective_refs`
-- `repr_seam_closure_predicate`
-- `tailcall_closure_captures`
-- `utf8_smart_constructor`
-
-`tests/fz2_cli.rs` also probes `quicksort` as a telemetry contract, but
-quicksort is not yet a fixture-matrix fz2 path because its fz2 allocation output
-does not match the old native goldens and needs an explicit fz2 golden decision.
-
-An ad hoc sweep of success fixtures through `target/debug/fz2 run` and
-`target/debug/fz2 interp` against `expected.txt` produced this fixture-level
-shape:
-
-```text
-pass both run/interp:      88 fixtures
-mismatch, no fz2 failure:   9 fixtures
-has fz2 failure:           21 fixtures
-```
-
-This sweep is a triage signal, not the committed oracle. It excludes abort /
-diagnostic fixtures and compares only against `expected.txt`, so allocation
-fixtures with per-path goldens naturally appear as mismatches until fz2-specific
-goldens are chosen.
+`tests/fz2_cli.rs` also probes a handful of matrix fixtures directly
+(`quicksort`, `map_three_path_parity`, `defstruct_runtime`,
+`utf8_smart_constructor`, `enum_predicate_search`, `enum_take_drop_split`,
+`case_with_total`, `case_tuple_pattern_sequential`, `concurrency_ping_pong`,
+`receive_selective_refs`, `receive_float_pattern`, `macro_inc`,
+`cross_module_macro`, `item_macro_source`, `pipe_headless_case`,
+`lambda_sugars`, `operator_sugars`) for targeted CLI/telemetry contracts (macro
+loading, module dispatch parity, reusable-cons counters); these reuse existing
+matrix fixtures rather than duplicating fixture-only coverage.
 
 ## Remaining Classes
 
-**Matrix coverage gap.** Many fixtures already pass fz2 run/interp in the sweep
-but are not declared in fixture metadata. Those should move into the matrix in
-batches, with fz2-build included only after it is observed for that batch.
+**Golden/allocation decisions are closed.** `append`, `bsx_guard_eq`,
+`enum_sort`, `filter`, `process_heap_stats`, `quicksort`, and `reverse` each
+carry an fz2-specific golden and pass the full matrix. `bsx_guard_eq`'s guard
+dispatch materializes `GroundValue::Utf8Binary` in the backend interpreter, so
+`s == "hi"` compares through the same brand-blind path on every leg.
+`enum_list_allocations` still carries a real, open native-lowering allocation
+regression (see below) and stays deferred on `run`/`build` rather than being
+blessed. `tree` stays deferred on all three paths for an unrelated reason: it
+lost its type/no-matching-clause diagnostic in the same regression that also
+affects `case_tuple_pattern_sequential` and `spec_violation`.
 
-**Golden/allocation decisions.** The no-fail mismatch set is:
+**Source-surface gaps are closed.** The Elixir-surface parser batch for
+keyword lists, no-parens calls, trailing `do`, quoted keyword keys, and
+keyword-boundary diagnostics is covered by compiler2's `fixtures2/00532`-`00546`
+corpus. `sample_tests` and `sample_tests_module` cover the `test()` macro
+front door (`kind: test`, discovered via `fz2 test`/`fz2 test --interp`; the
+`build` leg stays structurally deferred since a `kind: test` fixture has no
+single `main/0` to AOT-build against).
 
-```text
-append
-bsx_guard_eq
-enum_list_allocations
-enum_sort
-filter
-process_heap_stats
-quicksort
-reverse
-tree
-```
+**Callable/protocol/Enum artifact gaps are closed for closed unions.** Latent
+callable executables derive from reachable value types and match callable
+inventory against compatible closed activation keys instead of raw capture
+`Ty` ids. Multi-target protocol dispatch for union receivers materializes
+local dispatch from the settled multi-target semantic fact. Under that
+mechanism the union-receiver fixtures sit at:
 
-Most are allocation-stat or path-golden questions. `bsx_guard_eq` needs a
-semantic check because fz2 interp returns a different branch.
-`enum_reduce_suspend` is deferred on all three matrix paths: native returned
-suspend continuations lose settled callable boundaries.
-
-**Source-surface gaps.** The Elixir-surface parser batch for keyword lists,
-no-parens calls, trailing `do`, quoted keyword keys, and keyword-boundary
-diagnostics is now covered directly by compiler2's `fixtures2/00532`-`00546`
-corpus. The remaining item-surface fixtures still called out in the sweep are
-`sample_tests` and `sample_tests_module`.
-
-**Callable/protocol/Enum artifact gaps.** The closed callable-entry side of
-this class derives latent callable executables from reachable value types and
-matches callable inventory against compatible closed activation keys instead
-of raw capture `Ty` ids. The multi-target protocol dispatch gap for union
-receivers is closed by materializing local dispatch from the settled
-multi-target semantic fact. Under that mechanism the union-receiver fixtures
-sit at mixed matrix coverage: `enum_take_drop_split` and `range_enumerable`
-run through fz2 on all three paths (run, interp, build); `enum_map_family`
-runs on interp only (its build and run paths are deferred on a native-codegen
-`ReturnLanes` arity mismatch); `map_enumerable` runs on run and build (its
-interp path is deferred on the same `ReturnLanes` mismatch); and `enum_tier0`,
-`enumerable_protocol_dispatch`, and `membership_operator` are deferred on all
-three paths (`enum_tier0` on the shared `Enum.reduce*` bridge over non-List
-Enumerables, the other two pending nominal struct-vs-map protocol-dispatch
-tests).
+- `enum_take_drop_split` — declared on all three paths, but currently red on
+  all three (native closure-target-surface mismatch on `run`/`build`, ambiguous
+  backend callable on `interp`); a real gap, not yet root-caused.
+- `range_enumerable` — green on all three paths.
+- `enum_map_family` — green on `interp`; `run`/`build` stay deferred on a
+  native-codegen `ReturnLanes` arity mismatch.
+- `map_enumerable` — green on all three paths.
+- `enum_tier0`, `enumerable_protocol_dispatch` — deferred on all three paths
+  (`enum_tier0` on the shared `Enum.reduce*` bridge over non-List Enumerables;
+  `enumerable_protocol_dispatch` pending nominal struct-vs-map
+  protocol-dispatch tests).
+- `membership_operator` — green on all three paths.
 
 `enum_take_drop_split` runs as a full run/interp/build matrix fixture. The
 take/drop/split runtime functions that carry tuple accumulators use
@@ -121,9 +94,12 @@ before the generic callable fallback, so reducer callbacks that capture a
 direct-only predicate keep the predicate's exact callable shape through native
 lowering.
 
-**Runtime/interpreter gaps.** Current fz2 failures also include
-`resource_lifecycle`, `utf8_pattern_match` on `fz2 interp`, and
-`enum_predicate_search` on `fz2 interp`.
+**Runtime/interpreter gaps.** `utf8_pattern_match` is green on all three
+paths; the interpreter gap it used to have is closed. `resource_lifecycle`
+stays deferred on all three paths on a native struct field-access kind
+mismatch. `enum_predicate_search` and `enum_take_drop_split` are declared on
+all three paths but currently fail all three — real, open gaps, not golden
+questions.
 
 The `bsx_guard_eq` interpreter gap is closed: dispatch guard constants
 materialize `GroundValue::Utf8Binary` values in the backend interpreter,
