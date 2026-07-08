@@ -11,9 +11,15 @@
   "id": "fz-rh2.17.5.6.12",
   "labels": [],
   "parent": "fz-rh2.17.5.6.8",
+  "comments": [
+    {
+      "text": "Folded at 01c54cd81 (clean cherry-pick). Introduced typed ImplTargetKind {Struct(module), Builtin(BuiltinValueFamily: List/Integer/Float/Atom/Binary/Map), Nominal}; classify_impl_target checks struct_def FIRST (fixing the real bug: old code matched the last name segment against the builtin list BEFORE checking struct-ness, so a struct named ...List was misclassified as the builtin list). Deleted the stringly free fn impl_target_ty; module_impl_target_ty projects the kind to Ty; struct_assertion_ty migrated to the StructDef store. Adversarial audit confirmed builtin-family set byte-identical to old, Nominal fallback identical, test non-vacuous, scope-clean (no .10/.11/.13 leak), commit stash-clean. ONE MUST-FIX caught + fixed at fold: classify_impl_target only subscribed to StructDefined when the struct was ALREADY defined -\u003e a forward-referenced struct impl target classified Nominal/Builtin with no wake path, permanently mis-typed. Fixed: reads.push(StructDefined(module)) UNCONDITIONALLY before the branch (mirrors the ProtocolImplProviders idiom; non-blocking reads-subscription re-wakes to reclassify struct-first when StructDefined lands, without hanging on bare names). Added out-of-order regression test (any-receiver + identity fn so main's return is the impl-target shape; empty vs non-empty intersect across two drives proves the re-wake), verified non-vacuous by in-place revert (no git stash). lib 1255/0/6, matrix 350/11, clippy+fmt clean.",
+      "timestamp": "2026-07-08T00:49:52Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "Structs: typed protocol-impl-target classification backed by facts",
   "type": "bug",
-  "updated_at": "2026-07-07T19:14:53Z"
+  "updated_at": "2026-07-08T00:49:52Z"
 }
