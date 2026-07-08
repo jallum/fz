@@ -2,6 +2,7 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-07-08T13:16:11Z",
   "created": "2026-07-08T04:14:32Z",
   "description": "SURFACED by fz-6jh (which fixed the SEPARATE scalar_box 3-\u003e15 boxing bug). fixtures2/behavior/enum_list_allocations.fz's static pin enum_list_allocations_pin_minimum_list_cons still fails on a ReusableConsTelemetryStats birth_count mismatch -- confirmed by the fz-6jh agent to be PRE-EXISTING and independent of scalar boxing (reverted the fz-6jh patch, mismatch still present). This is list-cons-REUSE telemetry, not scalar boxing. NOTE a discrepancy to resolve: the fz-6jh ticket text described 'pin 6 vs actual 8' but the agent observed LIVE (both before and after its change) pin=8 / actual=6 -- double-check the direction and the intended aspirational target. FIX: diagnose why the reusable-cons birth_count differs from the pin (is the pin aspirational-not-yet-met, or did cons-reuse regress?), then either fix the cons reuse to hit the pinned floor or rebaseline the pin to the correct current value with justification. Once green, enum_list_allocations is fully green (feeds fz-rh2.16.1 promotion / fz-rh2.16.6 keystone). Related: fz-6jh, fz-rh2.16.2 (golden audit), fz-qwf (destination-passing/reusable-cons).",
   "id": "fz-l5n",
@@ -13,7 +14,7 @@
     }
   ],
   "priority": 3,
-  "status": "open",
+  "status": "closed",
   "title": "enum_list_allocations_pin_minimum_list_cons: ReusableConsTelemetryStats birth_count mismatch (live 6 vs pinned 8), independent of scalar boxing",
   "type": "bug",
   "updated_at": "2026-07-08T13:16:11Z"
