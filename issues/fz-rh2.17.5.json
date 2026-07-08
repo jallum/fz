@@ -9,9 +9,15 @@
   "id": "fz-rh2.17.5",
   "labels": [],
   "parent": "fz-rh2.17",
+  "comments": [
+    {
+      "text": "CLOSE-OUT verified (fresh auditor). Closeout signal HELD: World.module_exports/find_export DELETED (grep zero hits tree-wide, incl. comments); protocol impl callbacks keyed by FunctionId not (name,arity) (protocol.rs:37-53); no Named callee/fnref residue in later tiers (DirectCallee zero hits); boundary restated + docs present-tense (modules.md:65-68: ModuleDefined=body readiness, ModuleInterface=cross-module visibility). lib 1276/0/6.",
+      "timestamp": "2026-07-08T14:33:02Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "Compiler2 interface closeout: settle obligations, sweep remaining name/protocol residue, and restate invariants",
   "type": "task",
-  "updated_at": "2026-06-11T11:38:50Z"
+  "updated_at": "2026-07-08T14:33:02Z"
 }
