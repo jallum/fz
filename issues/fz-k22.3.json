@@ -17,6 +17,10 @@
     {
       "text": "PREREQUISITE-COUPLED (from .1 audit): once this slice's demand fix lets control REACH the ambiguous ClosureCall at runtime, the interp path (ir_interp/backend.rs ~765) will hard-error on function:None boxed callables -- it needs a real multi-target boxed-dispatch unpack (native already handles it via direct_callable_lanes). Tracked as fz-k22.6; turning enum_predicate_search green requires BOTH this demand fix AND that interp unpack. Also decide whether to cross-validate CallEdge::Indirect (.1) with the transport-shape function:None signal (they agree by construction but aren't checked).",
       "timestamp": "2026-07-08T13:43:49Z"
+    },
+    {
+      "text": "UNBLOCKED (spike disproved fz-k22.7's settle-race premise). The arg-floor fix is PROVEN INDEPENDENT: the spike prototyped generalizing arg_demands_for_summary's multi-target argument floor to CallInputMode::Closure with targets.len()\u003e1, and it took find+find_value PAST the demand crash into fz-k22.4's codegen assertion, with lib 1277/0 unchanged and no enum-subset regression. Land this fix on its own. Spike WIP for reference: commit 7c667e4ad on branch wt/spike-k22-holistic.",
+      "timestamp": "2026-07-08T18:35:03Z"
     }
   ],
   "priority": 1,
