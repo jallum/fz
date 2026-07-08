@@ -6,10 +6,9 @@
   "description": "SPLIT from fz-rh2.17.5.6.8.1 (which now covers only the .13-blocking duplicate-defstruct diagnostic). This is an orthogonal LANGUAGE FEATURE, not part of the fact-migration critical path -- it does NOT block slice .13 (deleting the scan doesn't need defaults). parse_struct_form (quoted_surface.rs ~647-656) calls fields.list_atom_names(), requiring every element be a bare atom; the Elixir keyword-with-defaults form defstruct x: 1, y: 2 produces 2-tuples not atoms, so atom_name() errors. DECIDE whether fz defstruct supports default values. If yes: the StructDef store (structdef.rs, currently fields: Vec\u003cString\u003e) must carry defaults (fields + default value exprs), and every consumer migrated in slices .9-.13 (resolve StructRecord, protocol-impl-target, body.rs lowering MakeStruct, backend struct_schemas) must thread the defaults through struct construction (a %A{} literal omitting a field gets its default). NOTE: slice .10 already finalized the store as fields-only, so adding defaults now is a store-shape change touching the landed consumers -- scope accordingly. Check ../elixir for exact default-merge semantics (defstruct defaults + per-literal overrides). Related: fz-rh2.17.5.6.8.1, fz-rh2.17.5.6.9.",
   "id": "fz-rh2.17.5.6.8.3",
   "labels": [],
-  "parent": "fz-rh2.17.5.6.8",
   "priority": 3,
   "status": "open",
   "title": "Structs: support defstruct default-value (keyword) form defstruct x: 1, y: 2 -- carry defaults in StructDef",
   "type": "bug",
-  "updated_at": "2026-07-08T02:52:06Z"
+  "updated_at": "2026-07-08T14:26:13Z"
 }
