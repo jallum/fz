@@ -952,6 +952,62 @@ fn compiler2_struct_defined_publishes_independently_of_module_defined() {
 }
 
 #[test]
+fn compiler2_struct_duplicate_defstruct_diagnoses_instead_of_silently_picking_one() {
+    // fz's grammar is one `defstruct` per module (Elixir parity). A second
+    // `defstruct` in the same module body must not be silently resolved by
+    // either "first wins" or "last wins" -- it is a genuine user error and
+    // must diagnose at the SECOND defstruct's span.
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&[], capture.handler());
+    let mut world = crate::compiler2::World::new(&tel);
+    let code_id = world.submit_code(
+        Some("struct_duplicate_defstruct.fz".to_string()),
+        concat!(
+            "defmodule Point do\n",
+            "  defstruct [:a]\n",
+            "  defstruct [:b]\n",
+            "end\n",
+        )
+        .to_string(),
+    );
+
+    assert_resolved(world.drive(), "first drive should index the module");
+    assert!(
+        world.demand(Job::ScopeCode(code_id)),
+        "top-level scope should be demandable"
+    );
+    assert_resolved(world.drive(), "second drive should scope the module");
+
+    let point = world.reference_module("Point");
+    assert!(
+        world.demand(Job::DefineModule(point)),
+        "Point definition should be demandable"
+    );
+    assert!(
+        matches!(world.drive(), DriveOutcome::Fatal { .. }),
+        "a module with two defstruct forms must diagnose rather than silently pick first-or-last"
+    );
+
+    let diagnostic = capture
+        .last(&["fz", "diag", "error"])
+        .expect("expected a compiler diagnostic for the duplicate defstruct");
+    assert_eq!(metadata_str(&diagnostic, "code"), codes::RESOLVE_DUPLICATE_STRUCT.0);
+    assert_eq!(
+        metadata_str(&diagnostic, "message"),
+        "module `Point` already defines a struct"
+    );
+
+    // The first defstruct's fields are what the store keeps -- the guard
+    // rejects the second form outright rather than letting it overwrite.
+    assert_eq!(
+        world.struct_def_fields(point),
+        Some(["a".to_string()].as_slice()),
+        "the store should retain the FIRST defstruct's fields; the duplicate must not overwrite it"
+    );
+}
+
+#[test]
 fn compiler2_struct_type_expression_waits_for_struct_defined_and_resolves_precise_order() {
     // `Q`'s `@type t` names `Point` (in reversed field order) before `Point`
     // is even processed. This proves three things at once

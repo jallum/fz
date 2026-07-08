@@ -864,15 +864,49 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
     /// source order) is checked against the freshly defined schema, mirroring
     /// `jobs::source::define_module`'s `validate_module_interface_expectations`
     /// call.
+    ///
+    /// fz's grammar is one `defstruct` per module (mirroring Elixir). A
+    /// second `defstruct` in the same module body is diagnosed at its own
+    /// span rather than silently overwriting the first: `StructDefMap::define`
+    /// is a plain `HashMap::insert` (last-wins) while the legacy
+    /// `World::module_struct_fields` source scan it is replacing is a
+    /// `find_map` (first-wins) — without this guard, a malformed
+    /// duplicate-defstruct module would silently flip which struct "wins"
+    /// once the scan is deleted, with no diagnostic either way.
     fn publish_struct_def(&mut self, def: &StructForm) -> Result<(), FatalError> {
         let module = self.current_module;
-        let changed = self.world.define_struct_def(
-            module,
-            StructDef {
-                fields: def.fields.clone(),
-                span: def.span,
-            },
-        );
+        let incoming = StructDef {
+            fields: def.fields.clone(),
+            span: def.span,
+        };
+        // A job re-running this same module body (incremental recompute,
+        // multiple demanders) re-publishes the byte-identical `defstruct`
+        // every time -- that is idempotent, not a duplicate. A genuine
+        // second `defstruct` DIFFERS from the stored one (different span for
+        // a literal duplicate; different fields for a macro-emitted one that
+        // shares the macro definition-site span), so we compare the WHOLE
+        // `StructDef` rather than the span alone: any difference against an
+        // already-recorded struct is the error this ticket targets, and we
+        // diagnose it at the second form's span BEFORE `define_struct_def`
+        // could overwrite the kept-first definition.
+        if let Some(existing) = self.world.struct_def(module)
+            && *existing != incoming
+        {
+            let module_name = self
+                .world
+                .module_name(module)
+                .map(str::to_owned)
+                .unwrap_or_else(|| format!("<unnamed module {}>", module.as_u32()));
+            return Err(emit_job_diagnostic(
+                self.world,
+                Diagnostic::error(
+                    codes::RESOLVE_DUPLICATE_STRUCT,
+                    format!("module `{}` already defines a struct", module_name),
+                    def.span,
+                ),
+            ));
+        }
+        let changed = self.world.define_struct_def(module, incoming);
         self.outputs.push(FactKey::StructDefined(module));
         if changed {
             self.changed.push(FactKey::StructDefined(module));
