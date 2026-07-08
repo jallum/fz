@@ -1424,11 +1424,25 @@ fn enum_list_allocations_pin_minimum_list_cons() {
         "expected.txt",
         &["5\ntrue\n15", "{5, 80, 9, 288, 0, 0, 3, 48, 0, 0}", "\n368\n"],
     );
+    // birth_count counts static `SplitList` ([h|t] destructure) sites across every
+    // executable the whole-program native lowering produces for this root, so it
+    // tracks activation-specialization width, not this fixture's own list-cons
+    // count (`list_cons_allocs = 5` above, pinned separately). It was originally
+    // pinned at 8, matching the then-current specialization width: `member?/2`
+    // compiled to two activations (2 splits each), and `count/2` and
+    // `reduce_cont/3` each ALSO compiled to two redundant activations of
+    // identical logic (1 split each) -- 2*2 + 1*2 + 1*2 = 8. A later
+    // activation-keying collapse unified `count/2` and `reduce_cont/3` down to
+    // one activation apiece (member?/2's two activations are unaffected),
+    // dropping the honest floor to 6 -- verified live: program output is
+    // byte-identical on every path (the `expected.txt` assertion above,
+    // unchanged), so the two fewer births are two fewer redundant specialized
+    // bodies, not a dropped cons allocation.
     let stats = reusable_cons_telemetry_stats_for_fixture(&behavior_fixture_case("enum_list_allocations"));
     assert_eq!(
         stats,
         ReusableConsTelemetryStats {
-            birth_count: 8,
+            birth_count: 6,
             transport_count: 0,
             codegen_candidate_count: 0,
             codegen_consumed_count: 0,
