@@ -9,9 +9,15 @@
   "id": "fz-k22.1",
   "labels": [],
   "parent": "fz-k22",
+  "comments": [
+    {
+      "text": "Folded at 6f7e044a2. Added CallEdge::Indirect (a SETTLED fact = 'route through the boxed callable runtime identity'), replacing materialize_closure_call_edge's Ok(None) for 2+-target closure calls -- the unknown-is-not-none fix (absence conflated 'ambiguous decided' with 'summary not yet computed'). Agrees with .2's generic_callable_shape (function:None) in outcome. Adversarial audit CLEAN (no MUST-FIX): making the edge PRESENT flips NO downstream decision -- tail_effects opaque both true, local_callees empty both, symbolic_direct_call_edge maps Dispatch|Indirect-\u003eNone so the ClosureCall target field is None either way (bit-for-bit unchanged codegen input); defensive DirectCall arms structurally unreachable + fail-loud; no regression (matrix 353/10). Edge-level test non-vacuous (verified vs HEAD~1's Ok(None)). NIT (noted, not blocking): test lacks a companion 1-target-stays-Direct assertion (that arm untouched, covered by fixture corpus). Two audit follow-ups -\u003e fz-k22.6: (1) interp ClosureCall hard-errors on function:None (unreachable until .3 fixes the proximate crash) -- needs a real multi-target boxed-dispatch unpack; (2) CallEdge::Indirect and the transport-shape function:None check aren't cross-validated. enum_predicate_search stays red as EXPECTED (needs .3). lib 1275/0/6.",
+      "timestamp": "2026-07-08T13:44:47Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "fz-k22 Slice A: give closure-call edge materialization a multi-target path (or force generic boxed indirect for ambiguous targets)",
   "type": "bug",
-  "updated_at": "2026-07-08T03:39:47Z"
+  "updated_at": "2026-07-08T13:44:47Z"
 }
