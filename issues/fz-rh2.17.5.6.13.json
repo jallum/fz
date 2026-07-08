@@ -17,11 +17,15 @@
     {
       "text": "GATE before deleting the source scan (from slice .9 audit): a module with duplicate defstruct silently flips first-wins (old find_map scan) -\u003e last-wins (new HashMap store) once this slice makes the store authoritative. Resolve per fz-rh2.17.5.6.8.1 (emit a duplicate-defstruct diagnostic, or pin semantics with a regression test) BEFORE deleting World::module_struct_fields/struct_schemas.",
       "timestamp": "2026-07-07T21:38:23Z"
+    },
+    {
+      "text": "GATE NOTE from the .8.4 audit: the legacy module_struct_fields/named_struct_schemas scan (world.rs ~2124, identity.rs ~514) is a raw find_map over TOP-LEVEL ScopeForm::Struct only -- it does NOT see macro-emitted defstructs (those appear as ScopeForm::MacroCall in the raw surface). So today's backend consumers of the scan already MISS macro-emitted struct fields; migrating to the StructDef fact store in this slice FIXES that pre-existing gap rather than introducing one. Duplicate-defstruct detection is now sound for every combination (source/macro x identical/different fields x in-session/cross-run) -- publish_struct_def is the sole StructDefMap writer and diagnoses every dup before any overwrite -- so this slice can safely make the store authoritative and delete World::struct_schemas()/module_struct_fields()/ModuleStore::named_struct_schemas()/the ScopeForm::Struct scan with no silent first/last flip surviving.",
+      "timestamp": "2026-07-08T13:06:27Z"
     }
   ],
   "priority": 1,
   "status": "open",
   "title": "Structs: backend struct_schemas from facts + DELETE the module_struct_fields/struct_schemas scan (last consumer)",
   "type": "bug",
-  "updated_at": "2026-07-08T03:11:52Z"
+  "updated_at": "2026-07-08T13:06:27Z"
 }
