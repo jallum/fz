@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-07-08T16:54:26Z",
+  "description": "From the fz-k22.3 STOP-and-report -- this is the TRUE proximate blocker, upstream of the runtime-demand layer. resolve_closure_call (src/compiler2/jobs/semantic.rs ~1336) computes CallSiteSummary.targets for a shared generic-HOF closure callsite from a SNAPSHOT of the closure parameter's type that is not reliably caught up to the final WIDENED union by the time it is read. Symptom: for Enum.all? + Enum.any? sharing one reduce_while_cont body, facts.callsites[callsite].targets reports only 1 target, even though the same shared activation's settled callable-value demand later shows a 2-3 surface union (opaque:true). For find+find_index+find_value the same summary DOES widen to all targets -- the only difference is WHICH functions share the body -\u003e SCHEDULE/order-dependent, not input-dependent = the signature of a 'settled-too-early' fixpoint hazard. The arrow Ty for the shared activation is a refining/widening cell whose displayed contents change between reads at the same Ty id across rounds; the CallSiteSummary freezes before later callers join the union. FIX (fixpoint settled-gate discipline, per fz-hwn/fz-rh2/'unknown is not none'): gate resolve_closure_call/analyze_activation's settlement of a closure callsite's target set on the FULLY WIDENED closure-parameter type for a shared activation, not a snapshot that can freeze before later callers join. This is the demand-fixpoint / SpecKey territory (fz-xqw). Acceptance: facts.callsites[callsite].targets reports ALL sharing targets for all?+any? and find+find_value; unblocks fz-k22.3's proven arg-floor fix. Related: fz-k22.3, fz-xqw, fz-hwn, fz-f98 convergence family.",
+  "id": "fz-k22.7",
+  "labels": [],
+  "parent": "fz-k22",
+  "priority": 1,
+  "status": "open",
+  "title": "fz-k22 Slice C-root: CallSiteSummary under-counts a shared closure callsite's target set -- settles from a pre-widened snapshot of the closure-param type (schedule-dependent)",
+  "type": "bug",
+  "updated_at": "2026-07-08T16:54:26Z"
+}
