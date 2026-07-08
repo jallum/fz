@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-07-08T03:30:13Z",
+  "description": "SURFACED by the fz-rh2.17.5.6.11 audit; both are PRE-EXISTING/latent, shared across the .10 (resolve) and .11 (body.rs lowering) obligation walks -- NOT introduced or worsened by either slice. Two small span/coverage gaps in the struct obligation model:\n\n1. BARE %A{} (ZERO FIELDS) -\u003e DUMMY SPAN: record_struct_reference (jobs/body.rs ~630) and collect_struct_field_obligations (source_publish.rs) only call note_struct_field_expectation PER NAMED FIELD. A bare %A{} with no fields still records the StructDefined wait but ZERO expectation entries, so when A is a non-struct module, unresolved_struct_issue's span lookup (world.rs ~2892: struct_expectations.expectations(module).first()) falls back to Span::DUMMY -- the RESOLVE_NOT_A_STRUCT diagnostic still FIRES (not a stall) but points nowhere useful for a fieldless struct reference. FIX: record a struct-MODULE reference (with the %A{} usage span) even when there are zero field obligations, so the diagnostic has a real requester span. Applies to both resolve and lowering walks (fold-concordant, do both).\n\n2. UNQUOTE WALK ASYMMETRY (dead-safe today): collect_unquote_dispatch_requirements' Expr::Struct arm (jobs/body.rs) recurses field values but does NOT call record_struct_reference, unlike the live-code walk. Currently harmless because QuoteLowerer's Expr::Struct errors with 'compiler2 quote does not lower Struct yet' (LOWER_UNSUPPORTED) -- no %A{} inside quote do..end reaches lower_struct_expr/pattern. WIRE record_struct_reference into the unquote walk WHEN quote gains struct support (track alongside that feature). Related: fz-rh2.17.5.6.10, fz-rh2.17.5.6.11, fz-b6w (obligation model).",
+  "id": "fz-rh2.17.5.6.8.5",
+  "labels": [],
+  "parent": "fz-rh2.17.5.6.8",
+  "priority": 4,
+  "status": "open",
+  "title": "Struct obligation diagnostics point at Span::DUMMY for a bare %A{} (zero-field) reference; unquote walk doesn't record struct refs",
+  "type": "bug",
+  "updated_at": "2026-07-08T03:30:13Z"
+}
