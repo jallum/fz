@@ -9,9 +9,15 @@
   "id": "fz-rh2.17.5.6.8.1",
   "labels": [],
   "parent": "fz-rh2.17.5.6.8",
+  "comments": [
+    {
+      "text": "Folded at c3c26001c. Emits RESOLVE_DUPLICATE_STRUCT at the second defstruct's span when a module already has a StructDef, resolving the first-vs-last silent divergence (old scan find_map=first-wins vs store HashMap::insert=last-wins) BEFORE slice .13 deletes the scan. Adversarial audit found span-only gate robust for literal duplicates but with a macro-same-span silent-overwrite gap; STRENGTHENED at fold to full-StructDef comparison (fields+span, = StructDefMap::define's changed signal): job re-run (byte-identical) stays idempotent (the 19 re-run false-positives do NOT return, confirmed); literal dup (diff span) diagnosed; macro dup with diff fields (same span) now DIAGNOSED not silently overwritten; residual macro dup with identical fields = benign miss (no data loss), untestable until macro-defstruct emission exists. Determinism/keep-first/diagnostic-channel all audit-clean. lib 1267/0/6, matrix 350/11. Follow-ups: fz-rh2.17.5.6.8.4 (confirm macro-defstruct reachability + cover the residual, gates .13). Unblocks .13 (with .11, .8.4).",
+      "timestamp": "2026-07-08T03:17:27Z"
+    }
+  ],
   "priority": 3,
   "status": "open",
   "title": "Structs: emit a duplicate-defstruct diagnostic (one struct per module) before the store becomes authoritative",
   "type": "bug",
-  "updated_at": "2026-07-08T02:52:06Z"
+  "updated_at": "2026-07-08T03:17:27Z"
 }
