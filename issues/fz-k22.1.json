@@ -4,6 +4,7 @@
   "blocks": [
     "fz-k22.3"
   ],
+  "closed_at": "2026-07-08T13:44:47Z",
   "created": "2026-07-08T03:39:46Z",
   "description": "From the fz-k22 STOP-and-report root-cause investigation. materialize_closure_call_edge (src/compiler2/jobs/artifact.rs:1404-1458) has NO multi-target path: when CallSiteSummary.single_target() is None (2+ distinct concrete closure producers) it just returns Ok(None) -- unlike materialize_direct_call_edge (artifact.rs:1309) which falls back to CallEdge::Dispatch. Empirically confirmed: FunctionId(183)'s closure-call site reducer.(entry,acc) has summary.targets == [Function(160), Function(161)] (find's + find_value's inline reducer lambdas). FIX: give BackendTail::ClosureCall / SymbolicBackendTail / native.rs lowering a real multi-target path mirroring DirectCall's CallEdge::Dispatch, OR (simpler) ensure closure calls with an ambiguous/multi-producer target take the existing generic/boxed indirect-call path (call through the closure's runtime identity) rather than attempting devirtualization. Must AGREE with Slice B's shape representation. Related: fz-k22, fz-xqw.",
   "id": "fz-k22.1",
@@ -16,7 +17,7 @@
     }
   ],
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "fz-k22 Slice A: give closure-call edge materialization a multi-target path (or force generic boxed indirect for ambiguous targets)",
   "type": "bug",
   "updated_at": "2026-07-08T13:44:47Z"
