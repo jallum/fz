@@ -6,9 +6,15 @@
   "description": "SURFACED and CONFIRMED by the fz-rh2.16.2 golden audit (verified live). fixtures2/behavior/enum_list_allocations.fz native run/build path: Enum.reduce allocates scalar_box_allocs=15 (one box per reduce step) vs the interp path's 3-alloc floor, with NO offsetting closure elimination (closure_allocs=0 on both). Live native run: {5,80,9,288,0,0,15,240,0,0}; interp: scalar_box=3. This is a genuine native lowering regression, NOT a golden question -- correctly left RED by fz-rh2.16.2 (run/build deferred; the enum_list_allocations_pin_minimum_list_cons static pin left aspirational at birth_count 6 vs actual 8, so it stays visibly red). Previously noted only as fixture-header prose ('not yet filed as a ticket'); filing now per 'new issues deserve new tickets'. Likely the native ReturnDemand/reusable-cons accumulator lowering boxing each step instead of reusing. FIX: native Enum.reduce accumulator should not scalar-box per step; run/build match the interp 3-alloc floor (or the correct demand-derived floor). Then promote enum_list_allocations run/build fz2 goldens (feeds fz-rh2.16.1 / 16.6 keystone). Related: fz-rh2.16.2, fz-rh2.16.5.",
   "id": "fz-6jh",
   "labels": [],
+  "comments": [
+    {
+      "text": "Folded at fc5d94c7f. Root cause: native ==/!= (lower_eq_binop, prim.rs) only took the no-alloc fast path when both operands had a type-inference-derived atom/int type; two Var classes never get one -- compile-time literals synthesized for codegen (the :cont tag) and dispatch-matrix subjects projected from a tuple field -- so Enum.reduce's {:cont,acc} tag match fell into the generic fz_value_eq_ref path, boxing the scalar EACH step. Fix (2 parts): (1) lower_backend_literal/lower_dispatch_const register the literal's real Ty into value_types; (2) a repr-based fast path + new runtime helper fz_value_eq_raw_const(ref,expected_tag,raw) for unboxed-scalar-vs-opaque-ref that checks the dynamic tag and compares payloads with NO alloc and NO panic. Adversarial audit CLEAN (no MUST-FIX/NIT): full per-combination eq verdict table all CORRECT (short-circuit \u0026\u0026 reads payload only after tag match; storage_raw exhaustive; float STRUCTURALLY excluded from the fast path; payload encoding consistent box-side vs load-side; nil/bool/empty-list can't collide; != negates), fast-path guard cannot misfire, type-registration monotonically safe, JIT+AOT wiring correct, interp unaffected, both golden rebaselines LIVE-verified against HEAD~1 (no masked regression). Results: enum_list_allocations scalar_box 15-\u003e3 (run/build promoted deferred-\u003egreen), enum_reduce_suspend 4-\u003e1 (green). Verified: lib 1272/0/6, matrix 352/11 (2 legs promoted; no new red; no eq regression corpus-wide). Separate still-red pin filed fz-l5n (cons birth_count, unrelated to scalar boxing).",
+      "timestamp": "2026-07-08T05:01:08Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "enum_list_allocations: native Enum.reduce boxes the accumulator into scalar_box_allocs 3-\u003e15 (one box per reduce step); run/build deferred",
   "type": "bug",
-  "updated_at": "2026-07-07T21:51:08Z"
+  "updated_at": "2026-07-08T05:01:08Z"
 }
