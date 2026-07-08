@@ -2446,6 +2446,24 @@ fn arg_demands_for_summary(
             slot.join_assign(&observed);
         }
     }
+    // The boxed-apply ABI for an ambiguous (2+ target) *closure* callsite
+    // (`CallEdge::Indirect` / `generic_callable_shape`) transmits a real
+    // value in every argument lane regardless of what any one resolved
+    // callee does with it: the caller cannot devirtualize, so it must
+    // materialize the full argument tuple for whichever target ends up
+    // selected at runtime. Joining demands *per target* (as the loop above
+    // does) lets an argument some targets ignore -- e.g. a shared HOF body's
+    // `_acc` parameter that one target discards -- join down to `Ignore` when
+    // every target ignores it, starving that argument's materialization even
+    // though the ABI still carries it. Floor every argument to `Whole` in
+    // this case, generalizing the index-0-only receiver floor above (which
+    // covers the direct/receiver protocol-dispatch case) to closure calls
+    // and to every argument position.
+    if matches!(input_mode, CallInputMode::Closure) && summary.targets.len() > 1 {
+        for slot in out.iter_mut() {
+            slot.join_assign(&RuntimeDemand::whole());
+        }
+    }
     out
 }
 

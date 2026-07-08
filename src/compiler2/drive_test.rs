@@ -12337,3 +12337,48 @@ fn compiler2_native_program_jit_adapts_callable_raw_returns_back_to_value_refs()
         "callable-entry adapters should box raw predicate/reducer returns back onto the ValueRef callable seam",
     );
 }
+
+#[test]
+fn compiler2_multi_target_closure_arg_floor_clears_the_shared_reducer_demand_crash() {
+    // INTENT: `Enum.find` and `Enum.find_value` share one generic reduce body
+    // whose `_acc` reducer parameter `find` never reads and `find_value` does.
+    // Before the arg-floor generalization, the per-target join of that
+    // parameter's demand collapsed to `Ignore` (find contributes `Ignore`,
+    // find_value's contribution joins against it) at the shared body's
+    // ambiguous (2-target) closure callsite, so the accumulator's input was
+    // never demanded as a runtime-materializable value: interp failed with
+    // "backend value 6 is unbound" before ever reaching a resolved callee.
+    // The generalized floor demands the FULL argument tuple at any ambiguous
+    // multi-target closure callsite (matching the boxed-apply ABI, which
+    // transmits every lane regardless of which target is selected at
+    // runtime), so that crash must be gone. This does not make the program
+    // run to completion: build_codegen_closure_targets' capture-count
+    // assertion for this ambiguous multi-target closure is a separate,
+    // still-open gap, and this test observes exactly that later failure,
+    // not success.
+    let tel = ConfiguredTelemetry::new();
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures2/00279_enum_find_find_value.fz".to_string()),
+        text: include_str!("../../fixtures2/00279_enum_find_find_value.fz").to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    let result = compiler.run_root_interp(root_id);
+    let error =
+        result.expect_err("downstream closure-target gaps remain open: find+find_value still fails, just later");
+    assert!(
+        !error.contains("is unbound"),
+        "the demand-floor fix should stop the shared-body accumulator from being left as an unbound \
+         backend value, but got: {error}",
+    );
+    assert!(
+        error.contains("no settled callable entry"),
+        "expected the fix to progress the failure past the runtime-demand crash to the known, separately \
+         tracked build_codegen_closure_targets capture-count gap, but got: {error}",
+    );
+}
