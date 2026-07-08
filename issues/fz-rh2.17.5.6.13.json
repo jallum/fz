@@ -4,7 +4,8 @@
     "fz-rh2.17.5.6.10",
     "fz-rh2.17.5.6.11",
     "fz-rh2.17.5.6.12",
-    "fz-rh2.17.5.6.8.1"
+    "fz-rh2.17.5.6.8.1",
+    "fz-rh2.17.5.6.8.4"
   ],
   "blocks": [],
   "created": "2026-07-07T19:14:04Z",
@@ -22,5 +23,5 @@
   "status": "open",
   "title": "Structs: backend struct_schemas from facts + DELETE the module_struct_fields/struct_schemas scan (last consumer)",
   "type": "bug",
-  "updated_at": "2026-07-07T21:38:23Z"
+  "updated_at": "2026-07-08T03:11:52Z"
 }

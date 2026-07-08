@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-rh2.17.5.6.13"
+  ],
   "created": "2026-07-08T03:11:51Z",
   "description": "SURFACED by the fz-rh2.17.5.6.8.1 audit. After that ticket's strengthening (duplicate gate compares FULL StructDef fields+span, not span alone), the silent-OVERWRITE regression is closed: a macro-emitted defstruct dup with DIFFERENT fields now diagnoses. TWO residual items to settle before slice .13 deletes the old scan (the safety net):\n1. REACHABILITY: can fz's macro system today actually emit a ScopeForm::Struct/defstruct from a macro body at all (expand_item_macro_fragment -\u003e apply_scope_form -\u003e publish_struct_def)? The .8.1 audit reasoned it PLAUSIBLE (a macro whose body contains a literal, non-unquoted defstruct template inherits the macro def-site span on every expansion) but could NOT reproduce it -- no fixture/test exercises macro-emitted defstruct. Write a fixture/test that either PROVES it reachable (two invocations of such a macro in one module) or proves it unreachable (fz macros can't emit defstruct). This determines whether the residual below matters at all.\n2. RESIDUAL BENIGN MISS: if reachable, a macro dup with IDENTICAL fields (same span, same fields) is still treated as an idempotent re-run -\u003e missed duplicate diagnostic. This is BENIGN (no data loss / no silent-wrong-fields, unlike the closed overwrite bug) but is a real missed-error edge. If (1) proves reachability, add coverage and decide whether to catch it (e.g. a per-body occurrence count during apply_ordered_forms, which is schedule-independent and doesn't rely on span OR content -- the architecturally-cleanest duplicate detector, distinct from the store-comparison heuristic).\nDo BOTH before .13 permanently deletes module_struct_fields (the fallback). Related: fz-rh2.17.5.6.8.1, fz-rh2.17.5.6.9, fz-rh2.17.5.6.13.",
   "id": "fz-rh2.17.5.6.8.4",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Confirm/cover macro-emitted defstruct duplication: same-span-identical-fields dup is a benign missed diagnostic; verify fz macros can even emit a defstruct",
   "type": "bug",
-  "updated_at": "2026-07-08T03:11:51Z"
+  "updated_at": "2026-07-08T03:11:52Z"
 }
