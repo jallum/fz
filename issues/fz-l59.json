@@ -4,6 +4,7 @@
   "blocks": [
     "fz-rh2.16.6"
   ],
+  "closed_at": "2026-07-08T16:44:14Z",
   "created": "2026-07-08T13:55:18Z",
   "description": "SURFACED by the fz-rh2.17.5.6.13 audit (the struct-facts finale that DELETED the eager module_struct_fields/named_struct_schemas source scan). NOT a proven defect -- the auditor could not construct a triggering fixture and single-root/single-program coverage is provably sound (blocking StructDefined waits force every reachable struct's schema before the backend product completes). But the MECHANISM is real and must be RESOLVED BEFORE the irreversible fz-rh2.16.6 old-compiler deletion removes the oracle:\n\nstruct_def_schemas() (world.rs ~2130) snapshots the ENTIRE shared StructDefMap at the moment THIS root's backend product settles. It feeds the COFINITE predicate is_named_struct / matches_runtime_struct (ir_interp/backend.rs ~1153, runtime_type_predicate.rs ~170) -- 'is this value NOT one of the known named structs' -- which needs completeness over EVERY struct name that could appear as a runtime value in the program, not just structs textually referenced in this root's own reachable code. The old scan achieved this incidentally (eager read of ALL submitted modules' parsed source at Indexed state, independent of any root's processing order). The new fact store only contains what has SETTLED SO FAR, which is order-dependent across independently-driven RootIds sharing one World. If a program has multiple RootIds and root B does a generic/cofinite struct-vs-tuple check on a value never constructed in B's OWN reachable graph while root A (constructing that struct) hasn't yet been driven, B's snapshot omits that struct's schema and could MISCLASSIFY the value (is_struct/is_map predicate wrong).\n\nRESOLVE: either (a) confirm no cross-root struct-value flow exists in fz's execution model (each program = one root; actor/process boundaries stay within one compiled artifact; the fixture harness compiles one program per fixture) -- in which case document the single-root completeness invariant and close; OR (b) if cross-root runtime struct-value flow is possible (multi-submission session, REPL, cross-program message passing), force struct_def_schemas() completeness at a COARSER barrier -- e.g. 'all submitted modules' defstructs settled' -- before any RootBackendProduct is allowed to snapshot it. The fix, if needed, is a scheduling barrier, NOT resurrecting the scan. Related: fz-rh2.17.5.6.13, fz-rh2.16.6 (must resolve before the old-compiler deletion).",
   "id": "fz-l59",
@@ -15,8 +16,8 @@
     }
   ],
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "Struct schema completeness across independently-driven RootIds: struct_def_schemas snapshots the shared StructDefMap per-root; cofinite is_named_struct/matches_runtime_struct needs whole-program completeness the deleted scan gave incidentally",
   "type": "bug",
-  "updated_at": "2026-07-08T16:44:13Z"
+  "updated_at": "2026-07-08T16:44:14Z"
 }
