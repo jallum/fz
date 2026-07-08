@@ -151,6 +151,213 @@ fn main(), do: Greet.hello([1, 2, 3])
     );
 }
 
+/// A protocol impl-target classification must come from the `StructDefined`
+/// fact, not from matching the target module's last name segment against the
+/// compiler's built-in ground value families. `Shadow.List` is a genuine
+/// struct whose *last segment* happens to collide with the built-in `List`
+/// family name. A string-driven classifier (matching `"List"` before ever
+/// checking for a struct) would misclassify this target as "list of any":
+/// the receiver (a `Shadow.List` struct) would then never overlap the
+/// (wrong) list-shaped target type, `Peek.first` would never find a
+/// matching arm, and `main` would never settle. The fact-backed classifier
+/// checks `StructDefined(Shadow.List)` first, so the struct's own declared
+/// field types (nominal identity + tuple/map evidence) reach the dispatch,
+/// and `l.head`'s field access resolves to the declared `integer` — not
+/// `any`.
+#[test]
+fn compiler2_protocol_impl_target_struct_is_not_classified_by_last_segment_name() {
+    let tel = crate::telemetry::ConfiguredTelemetry::new();
+    let mut world = World::new(&tel);
+    world.submit_code(
+        Some("impl_target_struct_not_stringly.fz".to_string()),
+        r#"
+defprotocol Peek do
+  @spec first(t(a)) :: a
+  fn first(x)
+end
+
+defmodule Shadow do
+  defmodule List do
+    defstruct [:head, :tail]
+    @type t :: %List{head: integer, tail: integer}
+
+    fn new(head, tail), do: %List{head: head, tail: tail}
+  end
+
+  defimpl Peek, for: List do
+    fn first(l), do: l.head
+  end
+end
+
+fn main(), do: Peek.first(Shadow.List.new(1, 2))
+"#
+        .to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+
+    drive_until_semantic_closure(
+        &mut world,
+        root,
+        "a struct target whose last segment shadows a built-in family name should still \
+         dispatch: fact-backed classification must not misroute it to the built-in list shape",
+    );
+
+    let global_list = world.reference_module("List");
+    let shadow_list = world.reference_module("Shadow.List".to_string());
+    assert_ne!(
+        global_list, shadow_list,
+        "the nested struct and the built-in runtime List module must be distinct identities"
+    );
+
+    let protocol = world.reference_module("Peek");
+    let dispatch = world
+        .protocol_dispatch(protocol)
+        .expect("Peek should publish a dispatch fact for its single defimpl");
+    assert_eq!(
+        dispatch.arms.len(),
+        1,
+        "one defimpl should contribute exactly one dispatch arm"
+    );
+    assert_eq!(
+        dispatch.arms[0].target, shadow_list,
+        "the impl target should resolve to the nested Shadow.List struct module, not the built-in List"
+    );
+
+    let main_function = world.root_function(root);
+    let main_activation = super::identity::ActivationKey::from_inputs(root, main_function, &[], world.types_mut());
+    let main_return = world
+        .activation_return(&main_activation)
+        .expect("main/0 should have a settled return type at semantic closure");
+    assert!(
+        world.types().is_integer(&main_return),
+        "Peek.first(l) should resolve through Shadow.List's declared struct field types and \
+         return the `head` field's declared `integer` type, not `any`; main/0 returned `{}`",
+        world.types().display(&main_return),
+    );
+}
+
+/// A protocol impl target forward-referenced before its `defstruct` settles must
+/// reclassify from nominal to struct once `StructDefined` publishes — the
+/// classifier's dependency on the struct fact is registered even when the fact
+/// is absent at read time, so a later publication re-wakes and re-types it.
+///
+/// This is the out-of-order sibling of the same-order shadow test above, and it
+/// is the one that pins the *subscription*. The classification of `for: Boxy`
+/// DEPENDS on whether `Boxy` is a struct: a classifier that recorded the
+/// `StructDefined(Boxy)` dependency only in the branch where the struct is
+/// already defined would leave a forward-referenced target permanently
+/// mis-typed — nothing would re-wake the reader that concluded on the absent
+/// fact. The construction forces exactly that ordering:
+///
+/// * `main(x)` dispatches `Peek.first(x)` on its `any` parameter — a receiver
+///   that overlaps the impl target in *either* classification (both share the
+///   `impl-target::Boxy` runtime predicate; the difference between nominal and
+///   struct lives only in the *intersected* type, not in whether a match
+///   fires). The callback `first(b), do: b` returns that intersected receiver
+///   unchanged, so `main`'s settled return type IS the impl target's shape.
+/// * `Boxy` is forward-referenced only as the impl target in unit 1, and its
+///   `defstruct` lands in a second unit pulled by an unrelated `probe` root.
+///
+/// So `main` resolves in *both* drives, and the observable is the *shape* of
+/// its return: a bare opaque `impl-target::Boxy` while `Boxy` is nominal, versus
+/// one carrying tuple/map field evidence once it is a struct. We probe that with
+/// `intersect(main_return, %{val: any})`: empty against the opaque nominal tag
+/// (a struct value keeps its nominal identity out of the plain-map kind), and
+/// non-empty against the struct's map evidence.
+///
+/// Non-vacuous: against a classifier that pushed `StructDefined(Boxy)` only in
+/// the struct-present branch, `main`'s drive-1 conclusion (nominal target,
+/// return intersects no map) records no subscription on `StructDefined(Boxy)`,
+/// so drive 2's publication has no subscriber to re-wake — `main`'s return
+/// stays the opaque nominal shape and the final `non-empty` assertion fails.
+/// `ProtocolImplProviders(Peek)` is settled in drive 1 and unchanged in drive 2,
+/// so it is not an alternate re-wake path.
+#[test]
+fn compiler2_forward_referenced_struct_impl_target_reclassifies_when_structdefined_lands() {
+    use super::super::types::MapKey;
+
+    let tel = crate::telemetry::ConfiguredTelemetry::new();
+    let mut world = World::new(&tel);
+
+    // A `%{val: any}` probe type: disjoint from a struct's opaque nominal tag,
+    // overlapping its structural map evidence. This is what tells the two
+    // classifications apart in `main`'s settled return.
+    let any = world.types_mut().any();
+    let map_probe = world.types_mut().map(&[(MapKey::Atom("val".to_string()), any)]);
+
+    // Unit 1: the protocol, its impl for a not-yet-defined `Boxy`, and a caller
+    // that dispatches on its own `any` parameter — nothing here defines `Boxy`.
+    world.submit_code(
+        Some("forward_ref_impl.fz".to_string()),
+        r#"
+defprotocol Peek do
+  @spec first(t(a)) :: a
+  fn first(x)
+end
+
+defimpl Peek, for: Boxy do
+  fn first(b), do: b
+end
+
+fn main(x), do: Peek.first(x)
+"#
+        .to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 1, ExecutableNeed::Value);
+    assert_resolved(
+        world.drive(),
+        "drive 1: the protocol and caller settle even though Boxy's defstruct has not landed",
+    );
+
+    let main_function = world.root_function(root);
+    let main_activation = super::identity::ActivationKey::from_inputs(root, main_function, &[any], world.types_mut());
+    let drive1_return = world
+        .activation_return(&main_activation)
+        .expect("drive 1: main resolves — the any receiver matches the nominal impl target");
+    let drive1_map_overlap = world.types_mut().intersect(drive1_return, map_probe);
+    assert!(
+        world.types().is_empty(&drive1_map_overlap),
+        "drive 1: Boxy is only forward-referenced, so its impl target is the opaque nominal tag; \
+         main's return carries no struct map evidence (intersect with %{{val: any}} is empty), got `{}`",
+        world.types().display(&drive1_return),
+    );
+
+    // Unit 2: `Boxy`'s real definition (defstruct + declared field types), pulled
+    // into the program by an unrelated root that calls one of its functions —
+    // this is the independent event that publishes `StructDefined(Boxy)`.
+    world.submit_code(
+        Some("boxy_defstruct.fz".to_string()),
+        r#"
+defmodule Boxy do
+  defstruct [:val]
+  @type t :: %Boxy{val: integer}
+
+  fn ident(x), do: x
+end
+
+fn probe(), do: Boxy.ident(1)
+"#
+        .to_string(),
+    );
+    world.submit_root(None, "probe".to_string(), 0, ExecutableNeed::Value);
+    assert_resolved(
+        world.drive(),
+        "drive 2: defining Boxy publishes StructDefined(Boxy), which must re-wake main's classifier",
+    );
+
+    let drive2_return = world
+        .activation_return(&main_activation)
+        .expect("drive 2: main still resolves after Boxy is defined");
+    let drive2_map_overlap = world.types_mut().intersect(drive2_return, map_probe);
+    assert!(
+        !world.types().is_empty(&drive2_map_overlap),
+        "drive 2: the standing StructDefined(Boxy) subscription must have re-woken main's analysis, \
+         reclassifying the impl target from nominal to struct so main's return now carries the \
+         struct's tuple/map field evidence (intersect with %{{val: any}} is non-empty), got `{}`",
+        world.types().display(&drive2_return),
+    );
+}
+
 /// fz-hwn.19.2.4.16.3: a `defimpl` co-located with its `defprotocol` at file root
 /// (no enclosing module) registers as `Protocol.Target` when the file is scoped —
 /// the same path a runtime protocol file takes when its protocol is referenced.

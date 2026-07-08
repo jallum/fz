@@ -1220,7 +1220,7 @@ fn resolve_protocol_call(
         .expect("protocol dispatch fact should be stored before semantic reads it")
         .clone();
     for arm in dispatch.arms {
-        let target_ty = world.module_impl_target_ty(arm.target);
+        let target_ty = world.module_impl_target_ty(arm.target, reads);
         if !protocol_receiver_target_overlaps(world, receiver_ty, target_ty) {
             continue;
         }
@@ -1245,7 +1245,7 @@ fn resolve_protocol_call(
         // single discovery path.
         reads.push(FactKey::ProtocolImplProviders(protocol));
         for (target, provider) in world.protocol_impl_providers(protocol) {
-            let target_ty = world.module_impl_target_ty(target);
+            let target_ty = world.module_impl_target_ty(target, reads);
             if !protocol_receiver_target_overlaps(world, receiver_ty, target_ty) {
                 continue;
             }
@@ -2251,10 +2251,25 @@ fn struct_assertion_ty(
             waits.insert(fact);
         }
     }
-    let field_count = world.module_struct_fields(module).map_or(0, |fields| fields.len());
+    // The field schema itself is fact-backed too: `module` is always a real
+    // struct here (body lowering already fataled on `%Module{}` patterns
+    // whose module has no `defstruct`), so `StructDefined(module)` is
+    // guaranteed to publish eventually — waiting on it, unlike the impl-target
+    // classification above, carries no deadlock risk.
+    let struct_fact = FactKey::StructDefined(module);
+    let field_names = match world.struct_def(module) {
+        Some(def) => {
+            reads.push(struct_fact);
+            def.fields.clone()
+        }
+        None => {
+            waits.insert(struct_fact);
+            Vec::new()
+        }
+    };
     let any = world.types_mut().any();
-    let fields = vec![any; field_count];
-    world.module_struct_value_ty(module, &fields)
+    let field_tys = vec![any; field_names.len()];
+    world.struct_module_value_ty(module, &field_names, &field_tys)
 }
 
 fn map_key_from_ty(world: &World<'_>, ty: Ty) -> Option<super::super::types::MapKey> {

@@ -1283,10 +1283,20 @@ impl<'a> World<'a> {
         self.type_defs.get(name)
     }
 
+    /// Reads `module`'s resolved `defstruct`, if `StructDefined(module)` has
+    /// published one. This is the fact-backed replacement for scanning
+    /// `ModuleState` source for a `defstruct` form — the protocol-impl-target
+    /// classification and `struct_assertion_ty` read schemas through here.
+    pub(crate) fn struct_def(&self, module: ModuleId) -> Option<&StructDef> {
+        self.struct_defs.get(module)
+    }
+
     /// Publishes a resolved `defstruct` under `module` and emits the
     /// callee-tier `struct_def defined` signal, mirroring `define_type_def`.
-    /// This store is additive alongside the `module_struct_fields` source
-    /// scan below — nothing reads it yet.
+    /// The protocol-impl-target classification and `struct_assertion_ty` read
+    /// this store; `module_struct_fields`'s source scan remains the sole
+    /// reader for the struct-literal/pattern lowering and backend consumers
+    /// not yet migrated.
     pub(crate) fn define_struct_def(&mut self, module: ModuleId, def: StructDef) -> bool {
         let changed = self.struct_defs.define(module, def);
         let def = self
@@ -2581,8 +2591,14 @@ impl<'a> World<'a> {
         Some(code_id)
     }
 
-    pub(crate) fn module_impl_target_ty(&mut self, module: ModuleId) -> Ty {
-        self.module_impl_target_ty_with(module)
+    /// The `Ty` a `defimpl P, for: Target` module contributes to protocol
+    /// dispatch, from a typed classification of `Target` rather than
+    /// last-segment string matching: a struct backed by `StructDefined`
+    /// (`reads` records the fact so incremental re-derivation can depend on
+    /// it), one of the compiler's built-in ground value families, or a bare
+    /// nominal target that is neither.
+    pub(crate) fn module_impl_target_ty(&mut self, module: ModuleId, reads: &mut Vec<FactKey>) -> Ty {
+        self.module_impl_target_ty_with(module, reads)
     }
 
     pub(crate) fn struct_value_ty(&mut self, module_name: &str, field_names: &[String], field_tys: &[Ty]) -> Ty {
@@ -2655,14 +2671,13 @@ impl<'a> World<'a> {
         Some(module)
     }
 
-    fn module_impl_target_ty_with(&mut self, module: ModuleId) -> Ty {
+    fn module_impl_target_ty_with(&mut self, module: ModuleId, reads: &mut Vec<FactKey>) -> Ty {
         let name = self
             .module_name(module)
             .expect("impl target modules should have reverse names")
             .to_string();
-        match name.rsplit('.').next().unwrap_or(name.as_str()) {
-            "List" | "Integer" | "Float" | "Atom" | "Binary" | "Map" => impl_target_ty(&mut self.types, &name),
-            _ if self.module_struct_fields(module).is_some() => {
+        match self.classify_impl_target(module, &name, reads) {
+            ImplTargetKind::Struct => {
                 // Honor the struct's declared @type field types for the dispatch
                 // target too (fz-f98.8/f98.10): a `vec![any]` target erases the
                 // element at the protocol boundary, so intersecting a concrete
@@ -2670,14 +2685,65 @@ impl<'a> World<'a> {
                 if let Some(declared) = self.declared_struct_value_ty(module) {
                     declared
                 } else {
-                    let field_count = self.module_struct_fields(module).map_or(0, |fields| fields.len());
+                    let field_names = self
+                        .struct_def(module)
+                        .expect("classify_impl_target proved this module has a StructDef")
+                        .fields
+                        .clone();
                     let any = self.types.any();
-                    let fields = vec![any; field_count];
-                    self.module_struct_value_ty(module, &fields)
+                    let field_tys = vec![any; field_names.len()];
+                    self.struct_module_value_ty(module, &field_names, &field_tys)
                 }
             }
-            _ => impl_target_ty(&mut self.types, &name),
+            ImplTargetKind::Builtin(family) => builtin_value_family_ty(&mut self.types, family),
+            ImplTargetKind::Nominal => nominal_impl_target_ty(&mut self.types, &name),
         }
+    }
+
+    /// Classifies a protocol impl target module by fact, not by string: a
+    /// struct wins whenever `StructDefined(module)` has published one,
+    /// otherwise the name is checked against the compiler's built-in ground
+    /// value families (`List`/`Integer`/`Float`/`Atom`/`Binary`/`Map` — these
+    /// have no backing module facts at all, the name literally *is* their
+    /// identity), and anything left over is a bare nominal target (e.g.
+    /// `defimpl P, for: String`, where `String` names no struct and no ground
+    /// family).
+    ///
+    /// The subscription on `StructDefined(module)` is registered
+    /// UNCONDITIONALLY — before the struct-first branch, covering every return
+    /// path — because the classification DEPENDS on whether the struct is
+    /// defined: a target forward-referenced before its `defstruct` settles
+    /// reads `struct_def(module) == None` this round and falls through to
+    /// Builtin/Nominal, and only the recorded read wakes this job to
+    /// reclassify it to Struct once `StructDefined(module)` publishes (the
+    /// scheduler invariant: a producer subscribes to every fact its conclusion
+    /// read, including ones absent at read time). This is the same discipline
+    /// `resolve_protocol_call` uses for `ProtocolImplProviders`. It stays a
+    /// `reads` subscription rather than a hard `waits` block, so a bare
+    /// builtin/nominal name that never publishes `StructDefined` classifies
+    /// immediately and does not stall.
+    fn classify_impl_target(&mut self, module: ModuleId, name: &str, reads: &mut Vec<FactKey>) -> ImplTargetKind {
+        reads.push(FactKey::StructDefined(module));
+        if self.struct_def(module).is_some() {
+            return ImplTargetKind::Struct;
+        }
+        match BuiltinValueFamily::from_name(name) {
+            Some(family) => ImplTargetKind::Builtin(family),
+            None => ImplTargetKind::Nominal,
+        }
+    }
+
+    /// The struct type projected from an already-resolved field schema
+    /// (`field_names`/`field_tys` in schema order) — the fact-backed sibling
+    /// of `module_struct_value_ty`, which still derives its field names from
+    /// the `module_struct_fields` source scan for the struct-literal lowering
+    /// consumer that has not migrated yet.
+    pub(crate) fn struct_module_value_ty(&mut self, module: ModuleId, field_names: &[String], field_tys: &[Ty]) -> Ty {
+        let name = self
+            .module_name(module)
+            .unwrap_or_else(|| panic!("named struct module {} should have a reverse lookup", module.as_u32()))
+            .to_string();
+        self.struct_value_ty(&name, field_names, field_tys)
     }
 
     fn unresolved_issues(&self, waits: &[UnresolvedWait<Job, FactKey>]) -> Vec<UnresolvedIssue> {
@@ -2912,17 +2978,66 @@ fn module_name_segments(name: &str) -> Vec<String> {
         .collect()
 }
 
-fn impl_target_ty<T: crate::types::Types<Ty = Ty>>(t: &mut T, module_name: &str) -> Ty {
-    match module_name.rsplit('.').next().unwrap_or(module_name) {
-        "List" => {
+/// The typed shape a `defimpl P, for: Target` module classifies as. See
+/// `World::classify_impl_target` for how this is derived — the point of
+/// having this type is that dispatch resolution matches on a closed enum
+/// instead of re-deriving the same three cases from a module name string.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ImplTargetKind {
+    /// `StructDefined(module)` published a schema: the dispatch target is
+    /// this struct's nominal identity plus tuple/map field evidence.
+    Struct,
+    /// One of the compiler's built-in ground value families. These carry no
+    /// module facts at all — the name is their entire identity.
+    Builtin(BuiltinValueFamily),
+    /// Neither of the above: a bare module name used only as a protocol
+    /// target tag (e.g. `defimpl P, for: String`), projected to an opaque
+    /// nominal type.
+    Nominal,
+}
+
+/// The compiler's built-in ground value families: primitive value shapes a
+/// protocol can dispatch on by name alone, with no `defstruct` and (for
+/// `Integer`/`Float`/`Atom`/`Binary`) no backing module source at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BuiltinValueFamily {
+    List,
+    Integer,
+    Float,
+    Atom,
+    Binary,
+    Map,
+}
+
+impl BuiltinValueFamily {
+    fn from_name(module_name: &str) -> Option<Self> {
+        match module_name.rsplit('.').next().unwrap_or(module_name) {
+            "List" => Some(Self::List),
+            "Integer" => Some(Self::Integer),
+            "Float" => Some(Self::Float),
+            "Atom" => Some(Self::Atom),
+            "Binary" => Some(Self::Binary),
+            "Map" => Some(Self::Map),
+            _ => None,
+        }
+    }
+}
+
+fn builtin_value_family_ty<T: crate::types::Types<Ty = Ty>>(t: &mut T, family: BuiltinValueFamily) -> Ty {
+    match family {
+        BuiltinValueFamily::List => {
             let any = t.any();
             t.list(any)
         }
-        "Integer" => t.int(),
-        "Float" => t.float(),
-        "Atom" => t.atom(),
-        "Binary" => t.str_t(),
-        "Map" => t.map_top(),
-        other => t.opaque_of(&format!("impl-target::{}", other)),
+        BuiltinValueFamily::Integer => t.int(),
+        BuiltinValueFamily::Float => t.float(),
+        BuiltinValueFamily::Atom => t.atom(),
+        BuiltinValueFamily::Binary => t.str_t(),
+        BuiltinValueFamily::Map => t.map_top(),
     }
+}
+
+fn nominal_impl_target_ty<T: crate::types::Types<Ty = Ty>>(t: &mut T, module_name: &str) -> Ty {
+    let tag = module_name.rsplit('.').next().unwrap_or(module_name);
+    t.opaque_of(&format!("impl-target::{}", tag))
 }
