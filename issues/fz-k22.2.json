@@ -9,9 +9,15 @@
   "id": "fz-k22.2",
   "labels": [],
   "parent": "fz-k22",
+  "comments": [
+    {
+      "text": "Folded at 15d6ae750. project_executable_input_source's ambiguous multi-producer callable branch (transport.rs ~2853) now returns Exact(generic_callable_shape(...)) instead of falling through to SourceShape::Unknown -- fixing the source-of-truth transport shape that slices .1/.3 build on. Adversarial audit CLEAN (no MUST-FIX): generic_callable_shape is the single uniform opaque-closure representation (function:None, one ValueRef lane), the branch fires ONLY for genuinely-distinct producers (same-shape ones deduped earlier by extend_unique/ShapeId equality), shape is ty-invariant. Confirmed no-op OBSERVABLY today (both production consumers -- collect_executable_input_constraints and project_source's ExecutableInput dispatch -- already fell back to generic_callable_shape with identical ty/demand/facts/publication), verified non-vacuous via HEAD~1 worktree. No regression (matrix 352/11, enum_predicate_search STAYS red as EXPECTED -- crash needs .3). AUDIT CORRECTION of the impl agent's 'redundant fallback, just delete it' framing: those two fallback sites remain LOAD-BEARING for OTHER legit Unknown causes (empty sources, missing context, empty admitted-shapes) -- only the ambiguous-2+-producer path is now closed, not the fallbacks. lib 1274/0/6, clippy+fmt clean.",
+      "timestamp": "2026-07-08T13:13:07Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "fz-k22 Slice B: project_executable_input_source returns generic boxed callable shape (not SourceShape::Unknown) for ambiguous multi-producer callable",
   "type": "bug",
-  "updated_at": "2026-07-08T03:39:48Z"
+  "updated_at": "2026-07-08T13:13:07Z"
 }
