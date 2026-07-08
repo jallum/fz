@@ -53,7 +53,7 @@ use super::source::{
     QuotedLexicalContext, QuotedLexicalContextKind, QuotedSourceBuilder, QuotedSourceError, QuotedSourceMetadata,
     QuotedSourceRoot,
 };
-use super::structdef::{StructDef, StructDefMap};
+use super::structdef::{StructDef, StructDefMap, StructExpectationMap, StructFieldExpectation};
 use super::transport::{
     BoundaryDescr, BoundaryId, CallableDescr, CallableId, LaneDescr, LaneId, ShapeDescr, ShapeId, TransportStore,
 };
@@ -65,6 +65,7 @@ use fz_runtime::any_value::AnyValueRef;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum UnresolvedIssueKey {
     Module(ModuleId),
+    Struct(ModuleId),
     Function(FunctionId),
     Export(FunctionId),
 }
@@ -108,6 +109,7 @@ pub struct World<'a> {
     type_refs: TypeRefMap,
     type_defs: TypeDefMap,
     struct_defs: StructDefMap,
+    struct_expectations: StructExpectationMap,
     function_contracts: FunctionContractMap,
     bodies: LoweredBodyMap,
     guard_dispatches: GuardDispatchMap,
@@ -184,6 +186,7 @@ impl<'a> World<'a> {
             type_refs: TypeRefMap::new(),
             type_defs: TypeDefMap::new(),
             struct_defs: StructDefMap::new(),
+            struct_expectations: StructExpectationMap::new(),
             function_contracts: FunctionContractMap::new(),
             bodies: LoweredBodyMap::new(),
             guard_dispatches: GuardDispatchMap::new(),
@@ -1252,6 +1255,35 @@ impl<'a> World<'a> {
         self.type_refs.type_refs(name)
     }
 
+    /// Records the struct modules a `@type` body's `%Mod{...}` records name
+    /// — the `StructDefined` half of `DeriveTypeDef`'s wait-set, alongside
+    /// `record_type_def_refs`'s `TypeDefined` half (fz-rh2.17.5.6.10).
+    pub(crate) fn record_type_def_struct_refs(&mut self, name: TypeName, mut refs: Vec<ModuleId>) {
+        dedup_module_ids(&mut refs);
+        self.type_refs.record_type_structs(name, refs);
+    }
+
+    /// The struct modules a `@type` body references — `DeriveTypeDef`'s
+    /// `StructDefined` wait-set.
+    pub(crate) fn type_def_struct_refs(&self, name: &TypeName) -> &[ModuleId] {
+        self.type_refs.type_struct_refs(name)
+    }
+
+    /// Records the struct modules a function's type positions (`@spec`, param
+    /// annotations, extern contract) reference — the `StructDefined` wait-set
+    /// the contract and entry-dispatch jobs resolve against, the function
+    /// mirror of `record_type_def_struct_refs`.
+    pub(crate) fn record_function_type_struct_refs(&mut self, function: FunctionId, mut refs: Vec<ModuleId>) {
+        dedup_module_ids(&mut refs);
+        self.type_refs.record_function_structs(function, refs);
+    }
+
+    /// The struct modules a function's type positions reference — the
+    /// contract/entry-dispatch `StructDefined` wait-set.
+    pub(crate) fn function_type_struct_refs(&self, function: FunctionId) -> &[ModuleId] {
+        self.type_refs.function_struct_refs(function)
+    }
+
     /// Publishes a resolved type definition under `name` and emits the
     /// callee-tier `type defined` signal. The definition and the interner ride
     /// the event as opaque refs, so handlers that want the resolved surface
@@ -1293,10 +1325,11 @@ impl<'a> World<'a> {
 
     /// Publishes a resolved `defstruct` under `module` and emits the
     /// callee-tier `struct_def defined` signal, mirroring `define_type_def`.
-    /// The protocol-impl-target classification and `struct_assertion_ty` read
-    /// this store; `module_struct_fields`'s source scan remains the sole
-    /// reader for the struct-literal/pattern lowering and backend consumers
-    /// not yet migrated.
+    /// `resolve.rs`'s `TypeExpr::StructRecord` path (via `struct_def_fields`),
+    /// the protocol-impl-target classification, and `struct_assertion_ty` read
+    /// this store; `module_struct_fields`'s source scan below remains the reader
+    /// for the struct-literal/pattern lowering and backend consumers not yet
+    /// migrated.
     pub(crate) fn define_struct_def(&mut self, module: ModuleId, def: StructDef) -> bool {
         let changed = self.struct_defs.define(module, def);
         let def = self
@@ -1315,6 +1348,72 @@ impl<'a> World<'a> {
             },
         );
         changed
+    }
+
+    /// The precise, durable reader over `defstruct`'s ordered fields:
+    /// `resolve.rs`'s `TypeExpr::StructRecord` classification reads this, not
+    /// `module_struct_fields`'s source scan, once it needs the schema
+    /// (fz-rh2.17.5.6.10). Unlike that scan, this never has an opinion when
+    /// the fact has not published yet — callers that need the answer wait on
+    /// `FactKey::StructDefined(module)` first (see `jobs::types::derive_type_def`).
+    pub(crate) fn struct_def_fields(&self, module: ModuleId) -> Option<&[String]> {
+        self.struct_defs.get(module).map(|def| def.fields.as_slice())
+    }
+
+    /// Records that `field` was referenced on `module`'s struct from
+    /// `requester`, mirroring `note_module_interface_expectation`. `A`'s
+    /// `defstruct` has no dedicated re-derivation job to rewake the way
+    /// `ModuleInterface` does when a late expectation lands, so this method
+    /// is half of validate-on-settle: reference-then-settle is validated in
+    /// `validate_struct_field_expectations` when `A` finally publishes;
+    /// settle-then-reference (`A` already published) is checked right here,
+    /// immediately, since nothing else would ever re-check it otherwise.
+    pub(crate) fn note_struct_field_expectation(
+        &mut self,
+        module: ModuleId,
+        field: String,
+        requester: InterfaceRequester,
+    ) -> Result<(), FatalError> {
+        self.struct_expectations
+            .record(module, StructFieldExpectation { field, requester });
+        if self.struct_defs.get(module).is_some() {
+            self.validate_struct_field_expectations(module)?;
+        }
+        Ok(())
+    }
+
+    /// Checks every outstanding field obligation on `module` against its
+    /// published `defstruct` schema, mirroring
+    /// `validate_module_interface_expectations`: a field named on a struct
+    /// that does not declare it is diagnosed at the *requester's* span,
+    /// independent of whether the struct or the reference settled first. A
+    /// no-op until `module`'s `defstruct` has actually published. Every bad
+    /// obligation is reported in one pass (two requesters each naming a bad
+    /// field both surface), then the job is failed once.
+    pub(crate) fn validate_struct_field_expectations(&self, module: ModuleId) -> Result<(), FatalError> {
+        let Some(def) = self.struct_defs.get(module) else {
+            return Ok(());
+        };
+        let mut violated = false;
+        for expectation in self.struct_expectations.expectations(module) {
+            if def.fields.iter().any(|field| field == &expectation.field) {
+                continue;
+            }
+            let module_name = self
+                .module_name(module)
+                .map(str::to_owned)
+                .unwrap_or_else(|| format!("<unnamed module {}>", module.as_u32()));
+            emit_through(
+                self.tel,
+                std::slice::from_ref(&Diagnostic::error(
+                    codes::RESOLVE_UNKNOWN_STRUCT_FIELD,
+                    format!("struct `{}` has no field `{}`", module_name, expectation.field),
+                    expectation.requester.span,
+                )),
+            );
+            violated = true;
+        }
+        if violated { Err(FatalError) } else { Ok(()) }
     }
 
     /// The struct module's declared value type, from its conventional `@type t`
@@ -2759,8 +2858,9 @@ impl<'a> World<'a> {
         }
         issues.sort_by_key(|issue| match issue.key {
             UnresolvedIssueKey::Module(module) => (0_u8, module.as_u32()),
-            UnresolvedIssueKey::Function(function) => (1_u8, function.as_u32()),
-            UnresolvedIssueKey::Export(function) => (2_u8, function.as_u32()),
+            UnresolvedIssueKey::Struct(module) => (1_u8, module.as_u32()),
+            UnresolvedIssueKey::Function(function) => (2_u8, function.as_u32()),
+            UnresolvedIssueKey::Export(function) => (3_u8, function.as_u32()),
         });
         issues.dedup_by_key(|issue| issue.key);
         issues
@@ -2769,11 +2869,45 @@ impl<'a> World<'a> {
     fn unresolved_issue(&self, frontier: &HashSet<FactKey>, fact: &FactKey) -> Option<UnresolvedIssue> {
         match fact {
             FactKey::ModuleIndexed(module) => Some(self.unresolved_module_issue(*module)),
+            FactKey::StructDefined(module) => self.unresolved_struct_issue(*module),
             FactKey::FunctionSource(function) => self.unresolved_function_issue(frontier, *function),
             FactKey::ExpandedFunctionSource(function) => self.unresolved_function_issue(frontier, *function),
             FactKey::FunctionDefined(function) => self.unresolved_function_issue(frontier, *function),
             _ => None,
         }
+    }
+
+    /// A `StructDefined(module)` wait that survives to the terminal frontier
+    /// means the drive drained without that fact publishing — so `%module{}`
+    /// named something that never produces a `defstruct`. If the module is
+    /// still wholly unresolved, its own module-not-defined issue speaks (return
+    /// `None` here to avoid double-reporting); if it settled (a plain
+    /// `defmodule`, a builtin/runtime module) but carries no `defstruct`, then
+    /// `%module{}` is a real user error — reported at the referencing span the
+    /// obligation carries, turning what would otherwise be a silent stall into
+    /// a terminating diagnostic.
+    fn unresolved_struct_issue(&self, module: ModuleId) -> Option<UnresolvedIssue> {
+        if self.module_defined_revision(module).is_none() && !self.is_runtime_module(module) {
+            return None;
+        }
+        let span = self
+            .struct_expectations
+            .expectations(module)
+            .first()
+            .map(|expectation| expectation.requester.span)
+            .unwrap_or(Span::DUMMY);
+        let module_name = self
+            .module_name(module)
+            .map(str::to_owned)
+            .unwrap_or_else(|| format!("<unnamed module {}>", module.as_u32()));
+        Some(UnresolvedIssue {
+            key: UnresolvedIssueKey::Struct(module),
+            diagnostic: Diagnostic::error(
+                codes::RESOLVE_NOT_A_STRUCT,
+                format!("module `{}` is not a struct", module_name),
+                span,
+            ),
+        })
     }
 
     fn unresolved_module_issue(&self, module: ModuleId) -> UnresolvedIssue {
@@ -2969,6 +3103,14 @@ fn item_macro_call_match(source: &QuotedSourceRoot, function_ref: &FunctionRef) 
 fn dedup_type_names(refs: &mut Vec<TypeName>) {
     let mut seen = HashSet::new();
     refs.retain(|name| seen.insert(name.clone()));
+}
+
+/// The struct-ref sibling of `dedup_type_names`: the same struct module named
+/// twice in one `@type` body (e.g. two fields of the same struct type) is one
+/// wait, not two.
+fn dedup_module_ids(refs: &mut Vec<ModuleId>) {
+    let mut seen = HashSet::new();
+    refs.retain(|module| seen.insert(*module));
 }
 
 fn module_name_segments(name: &str) -> Vec<String> {

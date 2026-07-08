@@ -952,6 +952,401 @@ fn compiler2_struct_defined_publishes_independently_of_module_defined() {
 }
 
 #[test]
+fn compiler2_struct_type_expression_waits_for_struct_defined_and_resolves_precise_order() {
+    // `Q`'s `@type t` names `Point` (in reversed field order) before `Point`
+    // is even processed. This proves three things at once
+    // (fz-rh2.17.5.6.10): the reference walk records the obligation and the
+    // `StructDefined` wait regardless of processing order; `DeriveTypeDef`
+    // actually waits rather than resolving early against an absent schema;
+    // and once `Point` settles, the resolved type uses schema field order
+    // (x, y) rather than the literal, reversed write order (y, x).
+    let tel = ConfiguredTelemetry::new();
+    let mut world = crate::compiler2::World::new(&tel);
+    let code_id = world.submit_code(
+        Some("struct_type_expression_out_of_order.fz".to_string()),
+        concat!(
+            "defmodule Q do\n",
+            "  @type t :: %Point{y: integer, x: integer}\n",
+            "end\n",
+            "\n",
+            "defmodule Point do\n",
+            "  defstruct [:x, :y]\n",
+            "end\n",
+        )
+        .to_string(),
+    );
+
+    assert_resolved(world.drive(), "first drive should index both modules");
+    assert!(
+        world.demand(Job::ScopeCode(code_id)),
+        "top-level scope should be demandable"
+    );
+    assert_resolved(world.drive(), "second drive should scope both modules");
+
+    let q = world.reference_module("Q");
+    let point = world.reference_module("Point");
+    let t = TypeName {
+        module: q,
+        name: "t".to_string(),
+        arity: 0,
+    };
+
+    // Q's own body settles before Point's defstruct does.
+    assert!(world.demand(Job::DefineModule(q)), "Q definition should be demandable");
+    assert_resolved(world.drive(), "third drive should settle Q without Point existing yet");
+
+    assert!(
+        !world.has_fact(&FactKey::StructDefined(point)),
+        "Point's defstruct should not have published yet"
+    );
+    assert_eq!(
+        world.type_def_struct_refs(&t),
+        &[point],
+        "Q's @type t body should have recorded Point as its StructDefined wait"
+    );
+    assert!(
+        world.type_def(&t).is_none(),
+        "t/0 should not resolve before Point's defstruct publishes"
+    );
+
+    // Pulling the type derivation alone, with Point's `defstruct` still
+    // unpublished, must wait rather than fabricate a field order from the
+    // reversed literal write order -- the pull architecture demands Point's
+    // own `DefineModule` as `StructDefined`'s producer to unblock it.
+    assert!(
+        world.demand(Job::DeriveTypeDef(t.clone())),
+        "t/0 derivation should be demandable"
+    );
+    assert_resolved(
+        world.drive(),
+        "pulling t/0 should transitively pull Point's defstruct and resolve",
+    );
+
+    let def = world
+        .type_def(&t)
+        .cloned()
+        .expect("t/0 should resolve once Point's defstruct publishes");
+    let int_ty = world.types_mut().int();
+    let expected = world.struct_value_ty("Point", &["x".to_string(), "y".to_string()], &[int_ty, int_ty]);
+    assert_eq!(
+        def.ty, expected,
+        "resolved struct-record type should use Point's schema order (x, y), not the reversed literal order (y, x)"
+    );
+}
+
+#[test]
+fn compiler2_struct_type_expression_diagnoses_unknown_field_instead_of_dropping_it() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&[], capture.handler());
+    let mut world = crate::compiler2::World::new(&tel);
+    let code_id = world.submit_code(
+        Some("struct_type_expression_unknown_field.fz".to_string()),
+        concat!(
+            "defmodule Point do\n",
+            "  defstruct [:x, :y]\n",
+            "end\n",
+            "\n",
+            "defmodule Q do\n",
+            "  @type t :: %Point{x: integer, bogus: integer}\n",
+            "end\n",
+        )
+        .to_string(),
+    );
+
+    assert_resolved(world.drive(), "first drive should index both modules");
+    assert!(
+        world.demand(Job::ScopeCode(code_id)),
+        "top-level scope should be demandable"
+    );
+    assert_resolved(world.drive(), "second drive should scope both modules");
+
+    let point = world.reference_module("Point");
+    assert!(
+        world.demand(Job::DefineModule(point)),
+        "Point definition should be demandable"
+    );
+    assert_resolved(world.drive(), "third drive should define Point's defstruct");
+
+    let q = world.reference_module("Q");
+    assert!(world.demand(Job::DefineModule(q)), "Q definition should be demandable");
+    assert!(
+        matches!(world.drive(), DriveOutcome::Fatal { .. }),
+        "an unknown struct field named in a type expression should diagnose rather than silently resolve",
+    );
+
+    let diagnostic = capture
+        .last(&["fz", "diag", "error"])
+        .expect("expected a compiler diagnostic for the unknown struct field");
+    assert_eq!(metadata_str(&diagnostic, "code"), codes::RESOLVE_UNKNOWN_STRUCT_FIELD.0);
+    assert_eq!(
+        metadata_str(&diagnostic, "message"),
+        "struct `Point` has no field `bogus`"
+    );
+}
+
+#[test]
+fn compiler2_struct_type_expression_out_of_order_unknown_field_diagnoses_when_struct_settles() {
+    // Q references %Point{bogus: ...} before Point is even processed. The
+    // obligation is recorded against Point regardless -- diagnosing it must
+    // wait until Point's own `defstruct` settles (there is nothing to
+    // validate against yet), and it must not be lost in the meantime.
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&[], capture.handler());
+    let mut world = crate::compiler2::World::new(&tel);
+    let code_id = world.submit_code(
+        Some("struct_type_expression_out_of_order_unknown_field.fz".to_string()),
+        concat!(
+            "defmodule Q do\n",
+            "  @type t :: %Point{bogus: integer}\n",
+            "end\n",
+            "\n",
+            "defmodule Point do\n",
+            "  defstruct [:x, :y]\n",
+            "end\n",
+        )
+        .to_string(),
+    );
+
+    assert_resolved(world.drive(), "first drive should index both modules");
+    assert!(
+        world.demand(Job::ScopeCode(code_id)),
+        "top-level scope should be demandable"
+    );
+    assert_resolved(world.drive(), "second drive should scope both modules");
+
+    let q = world.reference_module("Q");
+    assert!(world.demand(Job::DefineModule(q)), "Q definition should be demandable");
+    assert_resolved(
+        world.drive(),
+        "Q settling before Point exists should not itself fail -- there is nothing to validate yet",
+    );
+    assert!(
+        capture.find(&["fz", "diag", "error"]).is_empty(),
+        "no diagnostic should fire before Point settles"
+    );
+
+    let point = world.reference_module("Point");
+    assert!(
+        world.demand(Job::DefineModule(point)),
+        "Point definition should be demandable"
+    );
+    assert!(
+        matches!(world.drive(), DriveOutcome::Fatal { .. }),
+        "Point settling should validate Q's outstanding obligation and diagnose the unknown field",
+    );
+
+    let diagnostic = capture
+        .last(&["fz", "diag", "error"])
+        .expect("expected a compiler diagnostic once Point settles");
+    assert_eq!(metadata_str(&diagnostic, "code"), codes::RESOLVE_UNKNOWN_STRUCT_FIELD.0);
+    assert_eq!(
+        metadata_str(&diagnostic, "message"),
+        "struct `Point` has no field `bogus`"
+    );
+}
+
+#[test]
+fn compiler2_struct_spec_type_diagnoses_unknown_field_instead_of_dropping_it() {
+    // The `@spec` consumer reaches the SAME shared `TypeExpr::StructRecord`
+    // arm as `@type`, but through `derive_function_contract`
+    // (`resolve_spec_decl`) rather than `derive_type_def`. Before this slice
+    // wired the function type-position walk, that arm silently dropped an
+    // unknown field for `@spec`/guard (the schema-order read never re-included
+    // it) and resolved -- worse than the old scan, which was available
+    // earlier. This proves the obligation is now recorded for the function's
+    // type positions too, so an unknown field is diagnosed at the spec's span,
+    // not dropped. Non-vacuous: on the pre-fix code this drive Resolved.
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&[], capture.handler());
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("struct_spec_unknown_field.fz".to_string()),
+        text: concat!(
+            "defmodule Point do\n",
+            "  defstruct [:x, :y]\n",
+            "end\n",
+            "\n",
+            "defmodule M do\n",
+            "  @spec run(%Point{bogus: integer}) :: integer\n",
+            "  fn run(p), do: 0\n",
+            "end\n",
+        )
+        .to_string(),
+    });
+    compiler.submit_root(RootSubmission {
+        module_name: Some("M".to_string()),
+        name: "run".to_string(),
+        arity: 1,
+        need: ExecutableNeed::Value,
+    });
+    assert!(
+        matches!(compiler.drive(), DriveOutcome::Fatal { .. }),
+        "an unknown struct field named in an @spec should diagnose rather than silently drop",
+    );
+    let diagnostic = capture
+        .last(&["fz", "diag", "error"])
+        .expect("expected a compiler diagnostic for the unknown @spec struct field");
+    assert_eq!(metadata_str(&diagnostic, "code"), codes::RESOLVE_UNKNOWN_STRUCT_FIELD.0);
+    assert_eq!(
+        metadata_str(&diagnostic, "message"),
+        "struct `Point` has no field `bogus`"
+    );
+}
+
+#[test]
+fn compiler2_struct_spec_type_diagnoses_reference_to_non_struct_module() {
+    // `%NotAStruct{...}` where NotAStruct is a real module that never declares
+    // a defstruct: DefineModule(NotAStruct) settles ModuleDefined but never
+    // StructDefined, so the contract's StructDefined wait survives to the
+    // terminal frontier. Without the unresolved_issue arm this produced ZERO
+    // diagnostics -- a silent stall (Unresolved with nothing to show). It must
+    // terminate with a clear not-a-struct error at the referencing span. This
+    // is the correct behaviour for `%NonStruct{}`: real structs still wait for
+    // precise order; a non-struct now diagnoses instead of stalling silently.
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&[], capture.handler());
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("struct_spec_non_struct.fz".to_string()),
+        text: concat!(
+            "defmodule NotAStruct do\n",
+            "  fn hello(), do: 0\n",
+            "end\n",
+            "\n",
+            "defmodule M do\n",
+            "  @spec run(%NotAStruct{x: integer}) :: integer\n",
+            "  fn run(p), do: 0\n",
+            "end\n",
+        )
+        .to_string(),
+    });
+    compiler.submit_root(RootSubmission {
+        module_name: Some("M".to_string()),
+        name: "run".to_string(),
+        arity: 1,
+        need: ExecutableNeed::Value,
+    });
+    assert!(
+        matches!(compiler.drive(), DriveOutcome::Unresolved { .. }),
+        "an @spec naming a non-struct module should terminate with a diagnostic, not silently stall",
+    );
+    let diagnostic = capture
+        .last(&["fz", "diag", "error"])
+        .expect("expected a not-a-struct diagnostic rather than a silent stall");
+    assert_eq!(metadata_str(&diagnostic, "code"), codes::RESOLVE_NOT_A_STRUCT.0);
+    assert_eq!(
+        metadata_str(&diagnostic, "message"),
+        "module `NotAStruct` is not a struct"
+    );
+}
+
+#[test]
+fn compiler2_struct_param_annotation_diagnoses_unknown_field_instead_of_dropping_it() {
+    // The guard/entry-dispatch consumer reaches the shared StructRecord arm
+    // through `plan_entry_dispatch` (`resolve_type_expr_body`) when a param
+    // carries a `%Mod{...}` annotation. Proves the param-annotation walk in
+    // record_function_type_refs records the obligation so an unknown field is
+    // diagnosed at the annotation's span, not silently dropped -- the guard
+    // sibling of the @spec test.
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&[], capture.handler());
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("struct_param_annotation_unknown_field.fz".to_string()),
+        text: concat!(
+            "defmodule Point do\n",
+            "  defstruct [:x, :y]\n",
+            "end\n",
+            "\n",
+            "defmodule M do\n",
+            "  fn run(p :: %Point{bogus: integer}), do: 0\n",
+            "end\n",
+        )
+        .to_string(),
+    });
+    compiler.submit_root(RootSubmission {
+        module_name: Some("M".to_string()),
+        name: "run".to_string(),
+        arity: 1,
+        need: ExecutableNeed::Value,
+    });
+    assert!(
+        matches!(compiler.drive(), DriveOutcome::Fatal { .. }),
+        "an unknown struct field in a param annotation should diagnose rather than silently drop",
+    );
+    let diagnostic = capture
+        .last(&["fz", "diag", "error"])
+        .expect("expected a compiler diagnostic for the unknown param-annotation struct field");
+    assert_eq!(metadata_str(&diagnostic, "code"), codes::RESOLVE_UNKNOWN_STRUCT_FIELD.0);
+    assert_eq!(
+        metadata_str(&diagnostic, "message"),
+        "struct `Point` has no field `bogus`"
+    );
+}
+
+#[test]
+fn compiler2_extern_struct_param_waits_on_struct_defined_not_literal_order() {
+    // The extern-contract path resolves its `%Mod{...}` param through the same
+    // shared arm via `resolve_extern_signature`/`resolve_spec_decl` inside
+    // `lower_function`. Demanding LowerFunction ALONE (which never pulls the
+    // contract job) isolates lower_function's own wait-set: with the
+    // StructDefined wait, a `%NotAStruct{...}` extern param cannot resolve to a
+    // literal-order type -- it waits, the wait never settles (NotAStruct has no
+    // defstruct), and the drive terminates with the not-a-struct diagnostic.
+    // Non-vacuous for lower_function's wait: without it, lower_function would
+    // resolve the extern signature immediately in literal order and the drive
+    // would Resolve with no diagnostic.
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&[], capture.handler());
+    let mut world = crate::compiler2::World::new(&tel);
+    let code_id = world.submit_code(
+        Some("extern_struct_param.fz".to_string()),
+        concat!(
+            "extern \"C\" fn takes(p :: %NotAStruct{x: integer}) :: integer\n",
+            "\n",
+            "defmodule NotAStruct do\n",
+            "  fn hello(), do: 0\n",
+            "end\n",
+        )
+        .to_string(),
+    );
+    assert_resolved(world.drive(), "first drive should index the code");
+    assert!(
+        world.demand(Job::ScopeCode(code_id)),
+        "top-level scope should be demandable"
+    );
+    assert_resolved(
+        world.drive(),
+        "second drive should scope the code, indexing NotAStruct's body",
+    );
+
+    let takes = world.reference_function(ModuleId::GLOBAL, "takes", 1);
+    assert!(
+        world.demand(Job::LowerFunction(takes)),
+        "lowering the extern function should be demandable"
+    );
+    assert!(
+        matches!(world.drive(), DriveOutcome::Unresolved { .. }),
+        "lowering an extern whose struct param names a non-struct should terminate, not resolve in literal order",
+    );
+
+    let diagnostic = capture
+        .last(&["fz", "diag", "error"])
+        .expect("expected a not-a-struct diagnostic from the extern lowering wait");
+    assert_eq!(metadata_str(&diagnostic, "code"), codes::RESOLVE_NOT_A_STRUCT.0);
+    assert_eq!(
+        metadata_str(&diagnostic, "message"),
+        "module `NotAStruct` is not a struct"
+    );
+}
+
+#[test]
 fn compiler2_index_code_defines_owned_functions_without_lowering_or_activating_bodies() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();

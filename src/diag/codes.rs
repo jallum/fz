@@ -21,6 +21,8 @@ pub const RESOLVE_UNKNOWN_MODULE: DiagCode = DiagCode("resolve/unknown-module");
 pub const RESOLVE_UNKNOWN_FUNCTION: DiagCode = DiagCode("resolve/unknown-function");
 pub const RESOLVE_UNKNOWN_IMPORT: DiagCode = DiagCode("resolve/unknown-import");
 pub const RESOLVE_TYPE_ALIAS: DiagCode = DiagCode("resolve/type-alias");
+pub const RESOLVE_UNKNOWN_STRUCT_FIELD: DiagCode = DiagCode("resolve/unknown-struct-field");
+pub const RESOLVE_NOT_A_STRUCT: DiagCode = DiagCode("resolve/not-a-struct");
 
 // ----- macro expansion -----
 

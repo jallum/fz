@@ -36,6 +36,15 @@ pub(super) fn derive_type_def(world: &mut World<'_>, name: &TypeName) -> Result<
             waits.push(FactKey::TypeDefined(referenced.clone()));
         }
     }
+    // Same wait, `StructDefined` side: a `%Mod{...}` in this body needs
+    // `Mod`'s precise field order before `resolve_type_def` can classify it
+    // (fz-rh2.17.5.6.10).
+    let struct_refs = world.type_def_struct_refs(name).to_vec();
+    for module in &struct_refs {
+        if !world.has_fact(&FactKey::StructDefined(*module)) {
+            waits.push(FactKey::StructDefined(*module));
+        }
+    }
     if !waits.is_empty() {
         return Ok(JobEffects {
             waits: current_uses(waits),
@@ -54,10 +63,11 @@ pub(super) fn derive_type_def(world: &mut World<'_>, name: &TypeName) -> Result<
         )
     })?;
 
-    let reads: Vec<_> = refs
+    let mut reads: Vec<_> = refs
         .iter()
         .map(|referenced| FactKey::TypeDefined(referenced.clone()))
         .collect();
+    reads.extend(struct_refs.iter().map(|module| FactKey::StructDefined(*module)));
     let changed = world.define_type_def(name.clone(), def);
     Ok(JobEffects {
         reads: current_uses(reads),

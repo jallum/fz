@@ -52,6 +52,18 @@ pub(super) fn derive_function_contract(world: &mut World<'_>, function: Function
             waits.push(fact);
         }
     }
+    // Same wait, `StructDefined` side: a `%Mod{...}` in this contract needs
+    // `Mod`'s precise field order before `resolve_spec_decl` can classify it,
+    // exactly as the `TypeDefined` loop above waits on referenced aliases
+    // (fz-rh2.17.5.6.10).
+    for module in world.function_type_struct_refs(function).iter().copied() {
+        let fact = FactKey::StructDefined(module);
+        if world.has_fact(&fact) {
+            reads.push(fact);
+        } else {
+            waits.push(fact);
+        }
+    }
     if !waits.is_empty() {
         return Ok(JobEffects {
             reads: current_uses(reads),

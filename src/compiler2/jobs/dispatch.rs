@@ -118,6 +118,17 @@ pub(super) fn plan_entry_dispatch(world: &mut World<'_>, function: FunctionId) -
             waits.insert(fact);
         }
     }
+    // Same wait, `StructDefined` side: a `%Mod{...}` in a param annotation
+    // needs `Mod`'s precise field order before `resolve_type_expr_body`
+    // classifies it in `entry_source_patterns` (fz-rh2.17.5.6.10).
+    for module in world.function_type_struct_refs(function).iter().copied() {
+        let fact = FactKey::StructDefined(module);
+        if world.has_fact(&fact) {
+            reads.push(fact);
+        } else {
+            waits.insert(fact);
+        }
+    }
     for call in collect_guard_calls_in_guards(&surface)
         .map_err(|span| emit_entry_guard_error(world, function, span, "are not dispatch-pure"))?
     {

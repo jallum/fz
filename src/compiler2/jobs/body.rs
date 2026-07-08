@@ -250,6 +250,23 @@ pub(super) fn lower_function(world: &mut World<'_>, function: FunctionId) -> Res
                 waits.insert(fact);
             }
         }
+        // Same wait, `StructDefined` side: an extern contract that names
+        // `%Mod{...}` resolves through the shared `TypeExpr::StructRecord` arm
+        // (`resolve_extern_signature` -> `resolve_spec_decl`), which needs
+        // `Mod`'s precise field order -- the struct value type's tuple
+        // component is order-sensitive, so resolving before the defstruct
+        // settles would bake in literal write order (fz-rh2.17.5.6.10). This
+        // waits on the extern spec's struct refs, mirroring the `TypeDefined`
+        // loop above; it is spec-type resolution, not struct-literal lowering
+        // (MakeStruct/StructField), which stays a later concern.
+        for module in world.function_type_struct_refs(function).iter().copied() {
+            let fact = FactKey::StructDefined(module);
+            if world.has_fact(&fact) {
+                reads.push(fact);
+            } else {
+                waits.insert(fact);
+            }
+        }
     }
     for clause in &surface.clauses {
         if let Some(guard) = &clause.guard {

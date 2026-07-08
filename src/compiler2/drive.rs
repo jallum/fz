@@ -142,6 +142,13 @@ impl World<'_> {
             FactKey::RootEntry(root) => Some(Job::SeedRoot(*root)),
             FactKey::FunctionDefined(function) => Some(Job::DefineFunction(*function)),
             FactKey::ModuleDefined(module) => Some(Job::DefineModule(*module)),
+            // `StructDefined` publishes as `DefineModule`'s co-output
+            // (`source_publish::publish_struct_def`), exactly like
+            // `ModuleDefined` above — the first real waiter on this fact
+            // (fz-rh2.17.5.6.10's `DeriveTypeDef` struct wait-loop) needs the
+            // same producer mapping or it would stall forever with no wake
+            // source.
+            FactKey::StructDefined(module) => Some(Job::DefineModule(*module)),
             FactKey::TypeDefined(name) => Some(Job::DeriveTypeDef(name.clone())),
             FactKey::FunctionContract(function) => Some(Job::DeriveFunctionContract(*function)),
             FactKey::CodeIndexed(code) => Some(Job::IndexCode(*code)),

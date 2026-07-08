@@ -350,26 +350,95 @@ pub(crate) fn record_function_type_refs(
     function: FunctionId,
     surface: &FunctionSurface,
 ) -> Result<(), FatalError> {
-    let namespace = world
-        .function_source(function)
-        .expect("function type refs should only be recorded after function source is noted")
-        .namespace;
+    let (namespace, code, module) = {
+        let source = world
+            .function_source(function)
+            .expect("function type refs should only be recorded after function source is noted");
+        (source.namespace, source.code, source.owner_module)
+    };
     let mut refs = Vec::new();
+    // The struct half of the same walk, recorded in one pass with the
+    // `TypeDefined` refs: every `%Mod{...}` a `@spec`, extern contract, or
+    // param annotation names records an `A.field` obligation (at that
+    // position's span, from this function's module) and collects `Mod` as the
+    // `StructDefined` wait the contract/entry-dispatch jobs resolve against.
+    // `@spec` and guard param annotations are all this function's type
+    // positions, so this single walk covers both uniformly — the function
+    // mirror of `note_pending_types`' `@type` walk (fz-rh2.17.5.6.10).
+    let mut struct_refs = Vec::new();
     for attr in &surface.attrs {
         if let Attribute::Spec(spec) = attr {
             collect_spec_refs(world, namespace, spec, &mut refs)?;
+            collect_spec_struct_obligations(world, namespace, spec, code, module, &mut struct_refs)?;
         }
     }
     if let Some(extern_spec) = surface.extern_contract_decl() {
         collect_spec_refs(world, namespace, &extern_spec, &mut refs)?;
+        collect_spec_struct_obligations(world, namespace, &extern_spec, code, module, &mut struct_refs)?;
     }
     for clause in &surface.clauses {
         for annotation in clause.param_annotations.iter().flatten() {
             collect_body_refs(world, namespace, annotation, &mut refs)?;
+            collect_body_struct_obligations(world, namespace, annotation, code, module, &mut struct_refs)?;
         }
     }
     world.record_function_type_refs(function, refs);
+    world.record_function_type_struct_refs(function, struct_refs);
     Ok(())
+}
+
+/// The struct-obligation sibling of `collect_spec_refs`: walks every
+/// type-position of a spec (params, result, constraint bounds), recording the
+/// `%Mod{...}` obligations and struct-module refs each carries.
+fn collect_spec_struct_obligations(
+    world: &mut World<'_>,
+    scope: Namespace,
+    spec: &SpecDecl,
+    code: CodeId,
+    module: ModuleId,
+    struct_refs: &mut Vec<ModuleId>,
+) -> Result<(), FatalError> {
+    for body in spec
+        .param_body_tokens
+        .iter()
+        .chain(std::iter::once(&spec.result_body_tokens))
+        .chain(spec.constraints.iter().map(|(_, bound)| bound))
+    {
+        collect_body_struct_obligations(world, scope, body, code, module, struct_refs)?;
+    }
+    Ok(())
+}
+
+/// The struct-obligation sibling of `collect_body_refs`: parses one
+/// type-expression body and records its `%Mod{...}` obligations at the body's
+/// own span, from the referencing function's `code`/`module`.
+fn collect_body_struct_obligations(
+    world: &mut World<'_>,
+    scope: Namespace,
+    body: &TypeExprBody,
+    code: CodeId,
+    module: ModuleId,
+    struct_refs: &mut Vec<ModuleId>,
+) -> Result<(), FatalError> {
+    if body.0.is_empty() {
+        return Ok(());
+    }
+    let expr = parse_type_expr(&body.0).map_err(|error| {
+        emit_job_diagnostic(
+            world,
+            Diagnostic::error(
+                codes::RESOLVE_TYPE_ALIAS,
+                format!("compiler2 could not parse a type expression: {}", error.msg),
+                error.span,
+            ),
+        )
+    })?;
+    let requester = InterfaceRequester {
+        code,
+        module,
+        span: body.0.first().map(|token| token.span).unwrap_or(Span::DUMMY),
+    };
+    collect_struct_field_obligations(world, scope, &expr, &requester, struct_refs)
 }
 
 impl<'world, 'tel> ScopeSession<'world, 'tel> {
@@ -565,17 +634,29 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
         Ok(())
     }
 
-    fn note_pending_types(&mut self) {
+    fn note_pending_types(&mut self) -> Result<(), FatalError> {
+        let pending: Vec<_> = self.pending_types.drain(..).collect();
         for PendingType {
             name,
             params,
             body,
             span,
-        } in self.pending_types.drain(..)
+        } in pending
         {
             let mut refs = Vec::new();
             collect_type_refs(self.world, self.namespace, &body.inner, &mut refs);
             self.world.record_type_def_refs(name.clone(), refs);
+
+            // The struct-record half of the same walk: every `%Mod{field:
+            // ...}` this `@type` body names records an `A.field` obligation
+            // at this declaration's span, and collects `Mod`'s module id as
+            // the `StructDefined` wait `DeriveTypeDef` resolves against
+            // (fz-rh2.17.5.6.10).
+            let requester = self.interface_requester(span);
+            let mut struct_refs = Vec::new();
+            collect_struct_field_obligations(self.world, self.namespace, &body.inner, &requester, &mut struct_refs)?;
+            self.world.record_type_def_struct_refs(name.clone(), struct_refs);
+
             self.world.note_type_decl(
                 name,
                 NotedTypeDecl {
@@ -586,6 +667,7 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
                 },
             );
         }
+        Ok(())
     }
 
     fn apply_ordered_forms(
@@ -708,7 +790,7 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
         }
         self.reserve_types(&surface.attrs)?;
         self.reserve_local_forms(&surface.forms)?;
-        self.note_pending_types();
+        self.note_pending_types()?;
         self.apply_ordered_forms(&surface.forms, context)
     }
 
@@ -765,7 +847,7 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
             }
             ScopeForm::MacroCall(macro_call) => self.apply_item_macro_call(macro_call),
             ScopeForm::Struct(def) => {
-                self.publish_struct_def(def);
+                self.publish_struct_def(def)?;
                 Ok(None)
             }
         }
@@ -775,10 +857,14 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
     /// `FactKey::StructDefined` alongside `ModuleDefined`/`ModuleInterface`
     /// when this module body settles — the same co-output timing those two
     /// facts already use (`define_module`'s `ScopePublication::Complete`
-    /// branch). Mirrors `TypeDefined`'s store shape; no consumer reads this
-    /// fact yet, so `World::module_struct_fields`'s source scan stays the
-    /// sole reader for now.
-    fn publish_struct_def(&mut self, def: &StructForm) {
+    /// branch). Mirrors `TypeDefined`'s store shape. Once published, this is
+    /// the validate-on-settle half of the struct obligation store: every
+    /// field expectation recorded on `module` so far (including one this same
+    /// module body's own `@type t` recorded against itself, one inch above in
+    /// source order) is checked against the freshly defined schema, mirroring
+    /// `jobs::source::define_module`'s `validate_module_interface_expectations`
+    /// call.
+    fn publish_struct_def(&mut self, def: &StructForm) -> Result<(), FatalError> {
         let module = self.current_module;
         let changed = self.world.define_struct_def(
             module,
@@ -791,6 +877,7 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
         if changed {
             self.changed.push(FactKey::StructDefined(module));
         }
+        self.world.validate_struct_field_expectations(module)
     }
 
     /// Resolves the `defimpl`s declared in a scoped module's body to ids and
@@ -1399,6 +1486,68 @@ fn emit_compiler_service_define(world: &World<'_>, function: FunctionId, source:
             function_ref: opaque_debug(function_ref),
         },
     );
+}
+
+/// Walks a parsed type expression a second time, recording each `%Mod{...}`
+/// struct-record's obligations: `Mod`'s module id (the `StructDefined`
+/// wait-set collected into `struct_refs`) and one `StructFieldExpectation`
+/// per field, from `requester` (the enclosing `@type`/`@spec` declaration).
+/// A dedicated walk rather than folding into `collect_type_refs` above: that
+/// walk answers "which `TypeDefined` facts does this body need," this one
+/// answers "which struct obligations does this body create" — a different
+/// question over the same tree, same shape as `resolve_ty`'s own separate
+/// walk in `resolve.rs` (fz-rh2.17.5.6.10).
+fn collect_struct_field_obligations(
+    world: &mut World<'_>,
+    scope: Namespace,
+    expr: &TypeExpr,
+    requester: &InterfaceRequester,
+    struct_refs: &mut Vec<ModuleId>,
+) -> Result<(), FatalError> {
+    match expr {
+        TypeExpr::Name { args, .. } => {
+            for arg in args {
+                collect_struct_field_obligations(world, scope, arg, requester, struct_refs)?;
+            }
+        }
+        TypeExpr::List(inner) => collect_struct_field_obligations(world, scope, inner, requester, struct_refs)?,
+        TypeExpr::Tuple(elems) | TypeExpr::Union(elems) => {
+            for elem in elems {
+                collect_struct_field_obligations(world, scope, elem, requester, struct_refs)?;
+            }
+        }
+        TypeExpr::Arrow { params, result } => {
+            for param in params {
+                collect_struct_field_obligations(world, scope, param, requester, struct_refs)?;
+            }
+            collect_struct_field_obligations(world, scope, result, requester, struct_refs)?;
+        }
+        TypeExpr::StructRecord { module, fields } => {
+            let module_name = ModuleName::from_segments(module.clone());
+            let module_id = world
+                .lookup_module_path(scope, &module_name.dotted())
+                .unwrap_or_else(|| world.reference_module(module_name.dotted()));
+            struct_refs.push(module_id);
+            for (field, value) in fields {
+                world.note_struct_field_expectation(module_id, field.clone(), requester.clone())?;
+                collect_struct_field_obligations(world, scope, value, requester, struct_refs)?;
+            }
+        }
+        TypeExpr::Map(pairs) => {
+            for (key, value) in pairs {
+                collect_struct_field_obligations(world, scope, key, requester, struct_refs)?;
+                collect_struct_field_obligations(world, scope, value, requester, struct_refs)?;
+            }
+        }
+        TypeExpr::EmptyList
+        | TypeExpr::AtomLit(_)
+        | TypeExpr::IntLit(_)
+        | TypeExpr::FloatLit(_)
+        | TypeExpr::Wildcard
+        | TypeExpr::Nil
+        | TypeExpr::Bool => {}
+    }
+    Ok(())
 }
 
 /// Walks a parsed type expression, recording each name that resolves to a type

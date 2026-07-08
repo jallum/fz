@@ -753,6 +753,18 @@ impl TypeDeclMap {
 pub struct TypeRefMap {
     by_function: HashMap<FunctionId, Vec<TypeName>>,
     by_type: HashMap<TypeName, Vec<TypeName>>,
+    /// The struct modules a `@type` body's `%Mod{...}` records name — the
+    /// `StructDefined` wait-set `DeriveTypeDef` resolves against before
+    /// asking `resolve.rs` for precise field order (fz-rh2.17.5.6.10),
+    /// alongside `by_type`'s `TypeDefined` wait-set.
+    by_type_structs: HashMap<TypeName, Vec<ModuleId>>,
+    /// The same, for a function's type positions (`@spec`, param annotations,
+    /// extern contract): the `StructDefined` wait-set the contract and
+    /// entry-dispatch jobs resolve against before asking `resolve.rs` for
+    /// precise field order. One walk (`record_function_type_refs`) feeds this
+    /// for every function type position, so `@spec` and guard annotations
+    /// share a single obligation/wait record just as they share `by_function`.
+    by_function_structs: HashMap<FunctionId, Vec<ModuleId>>,
 }
 
 impl TypeRefMap {
@@ -780,6 +792,31 @@ impl TypeRefMap {
     // Consumed by DeriveTypeDef (fz-rh2.12.2); recorded one inch ahead.
     pub fn type_refs(&self, name: &TypeName) -> &[TypeName] {
         self.by_type.get(name).map(Vec::as_slice).unwrap_or(&[])
+    }
+
+    pub fn record_type_structs(&mut self, name: TypeName, refs: Vec<ModuleId>) -> bool {
+        let changed = self.by_type_structs.get(&name) != Some(&refs);
+        self.by_type_structs.insert(name, refs);
+        changed
+    }
+
+    // Consumed by DeriveTypeDef's struct wait-loop (fz-rh2.17.5.6.10).
+    pub fn type_struct_refs(&self, name: &TypeName) -> &[ModuleId] {
+        self.by_type_structs.get(name).map(Vec::as_slice).unwrap_or(&[])
+    }
+
+    pub fn record_function_structs(&mut self, function: FunctionId, refs: Vec<ModuleId>) -> bool {
+        let changed = self.by_function_structs.get(&function) != Some(&refs);
+        self.by_function_structs.insert(function, refs);
+        changed
+    }
+
+    // Consumed by the contract and entry-dispatch struct wait-loops.
+    pub fn function_struct_refs(&self, function: FunctionId) -> &[ModuleId] {
+        self.by_function_structs
+            .get(&function)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
     }
 }
 
