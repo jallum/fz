@@ -38,7 +38,7 @@ use super::super::transport::{
     BoundaryId, CallableId, CodegenLaneRepr, CodegenSeam, LaneId, ShapeDescr, ShapeId, TransportPosition,
     TransportValue,
 };
-use super::super::types::Ty;
+use super::super::types::{Ty, Types};
 use super::super::world::World;
 
 const UNREACHABLE_CONTROL_ATOM: &str = "compiler2_unreachable_control";
@@ -612,7 +612,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                     bind_local_value(ctx, executable, env, *value, NativeBoundValue::Absent);
                 }
                 BackendStep::Const { value, literal } => {
-                    let var = lower_backend_literal(ctx, &self.atom_ids, literal)?;
+                    let var = lower_backend_literal(ctx, &self.atom_ids, self.world.types_mut(), literal)?;
                     self.bind_runtime_value(ctx, executable, env, *value, var);
                 }
                 BackendStep::Tuple { value, items } => {
@@ -826,7 +826,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                 }
                 BackendStep::AssertLiteral { source, literal } => {
                     let source = self.env_runtime_var(ctx, executable, env, *source);
-                    let expected = lower_backend_literal(ctx, &self.atom_ids, literal)?;
+                    let expected = lower_backend_literal(ctx, &self.atom_ids, self.world.types_mut(), literal)?;
                     let (matches, _) = ctx.emit_let(Prim::BinOp(IrBinOp::Eq, source, expected));
                     ctx.assert_truthy(matches, self.atom_id("match_error"));
                 }
@@ -839,7 +839,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                 }
                 BackendStep::RequireMapValue { value, source, key } => {
                     let source = self.env_runtime_var(ctx, executable, env, *source);
-                    let key = lower_backend_literal(ctx, &self.atom_ids, key)?;
+                    let key = lower_backend_literal(ctx, &self.atom_ids, self.world.types_mut(), key)?;
                     let (var, _) = ctx.emit_let(Prim::MatcherMapGet(source, key));
                     let (is_miss, _) = ctx.emit_let(Prim::IsMatcherMapMiss(var));
                     let (false_v, _) = ctx.emit_let(Prim::Const(Const::False));
@@ -2633,7 +2633,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
             }
             Region::MapKeyPresent { key } => {
                 let subject = self.dispatch_subject_var(ctx, plan, state, subject)?;
-                let key = lower_dispatch_const(ctx, &self.atom_ids, key)?;
+                let key = lower_dispatch_const(ctx, &self.atom_ids, self.world.types_mut(), key)?;
                 let (value, _) = ctx.emit_let(Prim::MatcherMapGet(subject, key));
                 let (is_miss, _) = ctx.emit_let(Prim::IsMatcherMapMiss(value));
                 let (false_v, _) = ctx.emit_let(Prim::Const(Const::False));
@@ -2642,7 +2642,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
             }
             Region::Equal(ComparisonValue::Const(value)) => {
                 let subject = self.dispatch_subject_var(ctx, plan, state, subject)?;
-                let expected = lower_dispatch_const(ctx, &self.atom_ids, value)?;
+                let expected = lower_dispatch_const(ctx, &self.atom_ids, self.world.types_mut(), value)?;
                 let (var, _) = ctx.emit_let(Prim::BinOp(IrBinOp::Eq, subject, expected));
                 var
             }
@@ -2681,7 +2681,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
         expr: &PatternGuardExpr<Ty>,
     ) -> Result<Var, FatalError> {
         Ok(match expr {
-            PatternGuardExpr::Const(value) => lower_dispatch_const(ctx, &self.atom_ids, value)?,
+            PatternGuardExpr::Const(value) => lower_dispatch_const(ctx, &self.atom_ids, self.world.types_mut(), value)?,
             PatternGuardExpr::Subject(subject) => self.dispatch_subject_var(ctx, plan, state, *subject)?,
             PatternGuardExpr::Unary { op, expr } => {
                 let input = self.lower_guard_expr(ctx, executable, plan, state, expr)?;
@@ -2866,7 +2866,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                 }
                 crate::dispatch_matrix::ProjectionKind::MapValue { key } => {
                     let map = self.dispatch_subject_var(ctx, plan, state, projection.source)?;
-                    let key = lower_dispatch_const(ctx, &self.atom_ids, key)?;
+                    let key = lower_dispatch_const(ctx, &self.atom_ids, self.world.types_mut(), key)?;
                     let (var, _) = ctx.emit_let(Prim::MapGet(map, key));
                     var
                 }
@@ -4633,57 +4633,97 @@ fn collect_extern_marshals_for_call_target(
     Ok(())
 }
 
+/// Lower a compile-time literal to a fresh `Var` holding its `Prim::Const`.
+///
+/// This `Var` never flows through type inference (it has no `ValueId`), so
+/// without registering its `Ty` here, every downstream codegen fast path
+/// gated on `value_types` (equality, ordering, arithmetic dispatch) sees it
+/// as untyped `any()` and falls back to the generic boxed slow path — e.g.
+/// comparing a pattern-match tag against a literal atom like `:cont` boxed
+/// the tag into a heap scalar on every check instead of taking the raw-atom
+/// `icmp` fast path. Registering the literal's known type here is what lets
+/// those fast paths recognize it.
 fn lower_backend_literal(
     ctx: &mut NativeFnCtx,
     atom_ids: &HashMap<String, u32>,
+    types: &mut Types,
     literal: &GroundValue,
 ) -> Result<Var, FatalError> {
     use crate::ground_value::BodyLiteral;
-    Ok(
-        match literal
-            .as_body_literal()
-            .expect("lower_backend_literal only ever sees a lowered-body literal")
-        {
-            BodyLiteral::Int(value) => ctx.emit_let(Prim::Const(Const::Int(value))).0,
-            BodyLiteral::Float(bits) => ctx.emit_let(Prim::Const(Const::Float(f64::from_bits(bits)))).0,
-            BodyLiteral::Atom(name) => {
-                ctx.emit_let(Prim::Const(Const::Atom(*atom_ids.get(name).ok_or(FatalError)?)))
-                    .0
-            }
-            BodyLiteral::Bool(true) => ctx.emit_let(Prim::Const(Const::True)).0,
-            BodyLiteral::Bool(false) => ctx.emit_let(Prim::Const(Const::False)).0,
-            BodyLiteral::Nil => ctx.emit_let(Prim::Const(Const::Nil)).0,
-            BodyLiteral::Binary(bytes) => {
-                ctx.emit_let(Prim::ConstBitstring(bytes.to_vec(), (bytes.len() * 8) as u64))
-                    .0
-            }
-        },
-    )
+    let (var, ty) = match literal
+        .as_body_literal()
+        .expect("lower_backend_literal only ever sees a lowered-body literal")
+    {
+        BodyLiteral::Int(value) => (ctx.emit_let(Prim::Const(Const::Int(value))).0, types.int()),
+        BodyLiteral::Float(bits) => (
+            ctx.emit_let(Prim::Const(Const::Float(f64::from_bits(bits)))).0,
+            types.float(),
+        ),
+        BodyLiteral::Atom(name) => (
+            ctx.emit_let(Prim::Const(Const::Atom(*atom_ids.get(name).ok_or(FatalError)?)))
+                .0,
+            types.atom(),
+        ),
+        BodyLiteral::Bool(value) => (
+            ctx.emit_let(Prim::Const(if value { Const::True } else { Const::False }))
+                .0,
+            types.bool(),
+        ),
+        BodyLiteral::Nil => (ctx.emit_let(Prim::Const(Const::Nil)).0, types.nil()),
+        BodyLiteral::Binary(bytes) => {
+            return Ok(ctx
+                .emit_let(Prim::ConstBitstring(bytes.to_vec(), (bytes.len() * 8) as u64))
+                .0);
+        }
+    };
+    ctx.value_types.insert(var, ty);
+    Ok(var)
 }
 
+/// Lower a dispatch-matrix clause-selector constant (the compile-time value
+/// a multi-clause function's argument is tested against, e.g. the `:cont`
+/// in a `{:cont, acc}` clause head) to a fresh `Var`.
+///
+/// See `lower_backend_literal`'s doc comment: this `Var` has no `ValueId`
+/// and so never appears in type inference's `value_types`. Registering its
+/// `Ty` here is what lets `lower_eq_binop`'s same-kind fast paths recognize
+/// it instead of falling back to the generic boxed `fz_value_eq_ref` path —
+/// this is the exact site responsible for boxing the `{:cont, acc}` /
+/// `{:halt, acc}` tag on every `Enum.reduce` step.
 fn lower_dispatch_const(
     ctx: &mut NativeFnCtx,
     atom_ids: &HashMap<String, u32>,
+    types: &mut Types,
     value: &GroundValue,
 ) -> Result<Var, FatalError> {
     use crate::ground_value::DispatchShape;
-    match value
+    let (var, ty) = match value
         .as_dispatch_shape()
         .expect("lower_dispatch_const only ever sees a dispatch-matrix const")
     {
-        DispatchShape::Int(value) => Ok(ctx.emit_let(Prim::Const(Const::Int(value))).0),
-        DispatchShape::Float(bits) => Ok(ctx.emit_let(Prim::Const(Const::Float(f64::from_bits(bits)))).0),
+        DispatchShape::Int(value) => (ctx.emit_let(Prim::Const(Const::Int(value))).0, types.int()),
+        DispatchShape::Float(bits) => (
+            ctx.emit_let(Prim::Const(Const::Float(f64::from_bits(bits)))).0,
+            types.float(),
+        ),
         DispatchShape::Atom(name) => {
             let atom = *atom_ids.get(name).ok_or(FatalError)?;
-            Ok(ctx.emit_let(Prim::Const(Const::Atom(atom))).0)
+            (ctx.emit_let(Prim::Const(Const::Atom(atom))).0, types.atom())
         }
-        DispatchShape::Bool(true) => Ok(ctx.emit_let(Prim::Const(Const::True)).0),
-        DispatchShape::Bool(false) => Ok(ctx.emit_let(Prim::Const(Const::False)).0),
-        DispatchShape::Nil => Ok(ctx.emit_let(Prim::Const(Const::Nil)).0),
-        DispatchShape::Utf8Binary(bytes) => Ok(ctx
-            .emit_let(Prim::ConstBitstring(bytes.to_vec(), (bytes.len() * 8) as u64))
-            .0),
-    }
+        DispatchShape::Bool(value) => (
+            ctx.emit_let(Prim::Const(if value { Const::True } else { Const::False }))
+                .0,
+            types.bool(),
+        ),
+        DispatchShape::Nil => (ctx.emit_let(Prim::Const(Const::Nil)).0, types.nil()),
+        DispatchShape::Utf8Binary(bytes) => {
+            return Ok(ctx
+                .emit_let(Prim::ConstBitstring(bytes.to_vec(), (bytes.len() * 8) as u64))
+                .0);
+        }
+    };
+    ctx.value_types.insert(var, ty);
+    Ok(var)
 }
 
 fn lower_binop(op: crate::ast::BinOp) -> IrBinOp {

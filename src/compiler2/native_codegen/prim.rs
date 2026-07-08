@@ -1698,10 +1698,45 @@ where
     Ok(LowerOut::RawI64(body.b.block_params(join_blk)[0]))
 }
 
+/// If `raw_side` is natively unboxed (`RawInt`/`RawAtom`, or a `Known`
+/// int/atom constant) and `dyn_side` is a genuinely dynamic, unproven-kind
+/// value (`ValueRef` repr), return `raw_side`'s `ValueKind` + raw payload
+/// alongside `dyn_side`'s `Var`.
+///
+/// This is what lets `==`/`!=` between an unboxed int/atom (a raw register
+/// value — a literal, a monomorphized parameter, a projected tag, etc.) and
+/// an opaque `AnyValueRef`-repr value skip materializing the unboxed side
+/// into a heap scalar box (what `tagged_var` would do) just to call the
+/// fully generic `fz_value_eq_ref`. Instead the runtime checks the dynamic
+/// side's actual tag against the known kind and compares raw payloads
+/// directly — `fz_value_eq_raw_const` — with no allocation on either side.
+/// Float is deliberately excluded: float equality has IEEE-754 semantics
+/// (-0.0 == 0.0, NaN != NaN) that a bitwise payload compare would violate.
+fn raw_scalar_vs_dynamic(
+    var_env: &HashMap<u32, CodegenValue>,
+    raw_side: Var,
+    dyn_side: Var,
+) -> Option<(ValueKind, ir::Value, Var)> {
+    let (kind, raw) = match binding_for_var(var_env, raw_side.0) {
+        CodegenValue::RawAtom(payload) => (ValueKind::ATOM, payload),
+        CodegenValue::RawInt(payload) => (ValueKind::INT, payload),
+        CodegenValue::Known {
+            payload,
+            kind: kind @ (ValueKind::ATOM | ValueKind::INT),
+        } => (kind, payload),
+        _ => return None,
+    };
+    if binding_for_var(var_env, dyn_side.0).repr() != ArgRepr::ValueRef {
+        return None;
+    }
+    Some((kind, raw, dyn_side))
+}
+
 /// Lower a `Prim::BinOp` Eq/Neq. Folds kind-disjoint operands to a
 /// constant; otherwise picks native fcmp/icmp for same-kind float/int,
-/// raw atom compare for atom/nil/bool pairs, or calls the runtime
-/// value_eq_ref for the heterogeneous fallback.
+/// raw atom compare for atom/nil/bool pairs, the no-allocation raw-scalar
+/// check when only one side is an unboxed int/atom, or calls the runtime
+/// value_eq_ref for the fully heterogeneous fallback.
 fn lower_eq_binop<M, T>(
     body: &mut CodegenFn<'_, '_, '_, M>,
     t: &mut T,
@@ -1750,7 +1785,9 @@ where
     // Same-kind int: native icmp on raw i64. Must not
     // mix raw and tagged operands — bit-eq is only
     // correct when both are in the same encoding.
-    if ty_is_int(t, value_types, a) && ty_is_int(t, value_types, bv) {
+    if (ty_is_int(t, value_types, a) && ty_is_int(t, value_types, bv))
+        || matches!((a_repr, b_repr), (ArgRepr::RawInt, ArgRepr::RawInt))
+    {
         let ai = body.as_raw_i64(var_env, a.0);
         let bi = body.as_raw_i64(var_env, bv.0);
         let cmp = body.b.ins().icmp(int_cc, ai, bi);
@@ -1761,6 +1798,7 @@ where
     }
     if (ty_is_atom(t, value_types, a) && ty_is_atom(t, value_types, bv))
         || (descr_is_nil_or_bool(t, value_types, a) && descr_is_nil_or_bool(t, value_types, bv))
+        || matches!((a_repr, b_repr), (ArgRepr::RawAtom, ArgRepr::RawAtom))
     {
         let avp = body.value_raw_atom(binding_for_var(var_env, a.0));
         let bvp = body.value_raw_atom(binding_for_var(var_env, bv.0));
@@ -1769,6 +1807,31 @@ where
             return Ok(LowerOut::Condition(same_raw));
         }
         Ok(LowerOut::Strict(strict_bool(body.b, same_raw)))
+    } else if let Some((kind, raw, dyn_var)) =
+        raw_scalar_vs_dynamic(var_env, a, bv).or_else(|| raw_scalar_vs_dynamic(var_env, bv, a))
+    {
+        // One side is an unboxed int/atom and the other's static type isn't
+        // known to match: skip boxing the unboxed side into a heap scalar
+        // (what `tagged_var` would do below) and instead hand the runtime
+        // its raw payload directly, checked against the dynamic side's
+        // actual tag.
+        let dyn_ref = body.tagged_var(var_env, dyn_var.0);
+        let kind_tag = body.b.ins().iconst(types::I32, i64::from(kind.tag()));
+        let fref = body
+            .jmod
+            .declare_func_in_func(runtime.value_eq_raw_const_id, body.b.func);
+        let inst = body.b.ins().call(fref, &[dyn_ref, kind_tag, raw]);
+        let eq = body.b.inst_results(inst)[0];
+        let eq_bool = body.b.ins().icmp_imm(IntCC::NotEqual, eq, 0);
+        let cmp = if is_eq {
+            eq_bool
+        } else {
+            body.b.ins().bxor_imm(eq_bool, 1)
+        };
+        if body.cache.if_only_conds.contains(&dest_var.0) {
+            return Ok(LowerOut::Condition(cmp));
+        }
+        Ok(LowerOut::Strict(strict_bool(body.b, cmp)))
     } else {
         let a_ref = body.tagged_var(var_env, a.0);
         let b_ref = body.tagged_var(var_env, bv.0);

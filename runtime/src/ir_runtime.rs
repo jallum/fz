@@ -1985,6 +1985,26 @@ pub extern "C" fn fz_fmod(a: f64, b: f64) -> f64 {
     a % b
 }
 
+/// Checked `==` between a dynamic `AnyValueRef` and an unboxed int/atom raw
+/// payload, with no allocation on either side. `expected_tag` is an
+/// `INT`/`ATOM` `ValueKind` tag byte. Reads `ref_word`'s runtime tag and
+/// returns false (not a panic) whenever it doesn't match `expected_tag`, so
+/// codegen can call this whenever one side of an `==`/`!=` is natively
+/// unboxed (a literal, a monomorphized parameter, a projected pattern tag,
+/// etc. — e.g. matching a `:cont`/`:halt` protocol tag, or an `Enum.member?`
+/// scan against an int argument) without first proving the other side's
+/// static type — the proof `fz_value_eq_ref`'s generic path would otherwise
+/// need before it could avoid materializing the unboxed side into a heap
+/// scalar box.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_value_eq_raw_const(ref_word: u64, expected_tag: u32, raw: u64) -> u64 {
+    let value = any_value_ref_from_word(ref_word, "fz_value_eq_raw_const");
+    let Some(expected_tag) = ValueKind::new(expected_tag as u8) else {
+        return 0;
+    };
+    u64::from(value.tag() == expected_tag && value.storage_raw() == Ok(raw))
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_value_eq_ref(process: *mut Process, a_ref: u64, b_ref: u64) -> u64 {
     if a_ref == b_ref {

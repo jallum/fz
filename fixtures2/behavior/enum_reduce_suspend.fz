@@ -21,8 +21,11 @@
 #   `closure_bytes = 48`);
 # - the `{:cont, acc}`/`{:suspended, ...}` protocol-control tuples allocate two
 #   structs (`struct_allocs = 2`, `struct_bytes = 80`);
-# - the accumulator is boxed once per reduce step plus once at the suspend
-#   boundary (`scalar_box_allocs = 4`, `scalar_box_bytes = 64`);
+# - the accumulator is boxed once, at the `dbg(out)` print of the returned
+#   `{:suspended, acc, ...}` tuple (`scalar_box_allocs = 1`,
+#   `scalar_box_bytes = 16`); the per-reduce-step clause-dispatch checks on
+#   the `{:cont, acc}`/`{:suspend, acc}` protocol tag no longer box the
+#   accumulator on every step;
 # - the rendered function identity is `#fn<4/2>`.
 #
 # Current contract, `interp`:

@@ -240,6 +240,7 @@ pub(crate) fn register_runtime_symbols(builder: &mut JITBuilder) {
     builder.symbol("fz_map_is_map", ir_runtime::fz_map_is_map as *const u8);
     builder.symbol("fz_promote_f64", ir_runtime::fz_promote_f64 as *const u8);
     builder.symbol("fz_value_eq_ref", ir_runtime::fz_value_eq_ref as *const u8);
+    builder.symbol("fz_value_eq_raw_const", ir_runtime::fz_value_eq_raw_const as *const u8);
     // Receive matcher's binary-literal helper.
     builder.symbol("fz_matcher_eq_bytes", ir_runtime::fz_matcher_eq_bytes as *const u8);
     // Receive matcher's map-key lookup helper.

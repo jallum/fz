@@ -1,7 +1,5 @@
 #---
 # purpose: "runtime Enum list functions preserve protocol-first native list-cons and continuation allocation floors"
-# defer.build: native Enum.reduce boxes the accumulator into 15 scalar_box allocations across the five-element walk, versus the 3-alloc floor the interpreter holds; allocation regression, not yet filed as a ticket
-# defer.run: native Enum.reduce boxes the accumulator into 15 scalar_box allocations across the five-element walk, versus the 3-alloc floor the interpreter holds; allocation regression, not yet filed as a ticket
 #---
 #
 # # enum_list_allocations
@@ -33,14 +31,9 @@
 # - no map objects are needed before the stats snapshot;
 # - `list_cons_allocs = 5`;
 # - `list_cons_bytes = 80`;
+# - `scalar_box_allocs = 3` (the three `dbg`'d result scalars), on every
+#   path — `run`, `interp`, and `build` alike;
 # - final list/struct/map heap headline is `368`.
-#
-# Interp holds `scalar_box_allocs = 3` (the three `dbg`'d result scalars).
-# Native `run`/`build` currently allocate `scalar_box_allocs = 15` instead of
-# 3 — the accumulator is boxed once per reduce step. That is an open
-# allocation regression on the native path (see `defer.run`/`defer.build`
-# above), not a golden choice; `interp` has its own golden reflecting the
-# 3-alloc floor.
 #
 # This fixture deliberately excludes `Enum.sort/1`. The current runtime sort is
 # a source-level merge sort that builds split/reverse/merge work lists, so it has

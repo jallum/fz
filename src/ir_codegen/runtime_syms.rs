@@ -101,6 +101,7 @@ pub(crate) fn runtime_import_sig(name: &str) -> Signature {
         "fz_promote_f64" => (&[I64], &[F64]),
         "fz_dynamic_float_arith_unsupported" => (&[], &[I64]),
         "fz_value_eq_ref" => (&[I64, I64, I64], &[I64]),
+        "fz_value_eq_raw_const" => (&[I64, I32, I64], &[I64]),
         "fz_matcher_eq_bytes" => (&[I64, I64, I64], &[I32]),
         "fz_matcher_map_get" => (&[I64, I64], &[I64]),
         "fz_matcher_map_get_ref" => (&[I64, I64, I64], &[I64]),
@@ -221,6 +222,7 @@ pub(crate) fn declare_runtime_symbols<M: ClModule>(jmod: &mut M) -> Result<Runti
         promote_f64_id: arith.promote_f64_id,
         dynamic_float_arith_unsupported_id: arith.dynamic_float_arith_unsupported_id,
         value_eq_ref_id: arith.value_eq_ref_id,
+        value_eq_raw_const_id: arith.value_eq_raw_const_id,
         matcher_eq_bytes_id: matcher.matcher_eq_bytes_id,
         matcher_map_get_ref_id: matcher.matcher_map_get_ref_id,
         alloc_closure_id: closure.alloc_closure_id,
@@ -440,6 +442,7 @@ struct ArithRefs {
     promote_f64_id: FuncId,
     dynamic_float_arith_unsupported_id: FuncId,
     value_eq_ref_id: FuncId,
+    value_eq_raw_const_id: FuncId,
 }
 
 /// Mixed-type arithmetic and value-equality slow-path helpers. Mixed-type
@@ -450,6 +453,7 @@ fn declare_arith_runtime<M: ClModule>(jmod: &mut M) -> Result<ArithRefs, Codegen
         promote_f64_id: decl_import(jmod, "fz_promote_f64")?,
         dynamic_float_arith_unsupported_id: decl_import(jmod, "fz_dynamic_float_arith_unsupported")?,
         value_eq_ref_id: decl_import(jmod, "fz_value_eq_ref")?,
+        value_eq_raw_const_id: decl_import(jmod, "fz_value_eq_raw_const")?,
     })
 }
 
@@ -716,6 +720,15 @@ pub(crate) struct RuntimeRefs {
     pub(crate) promote_f64_id: FuncId,
     pub(crate) dynamic_float_arith_unsupported_id: FuncId,
     pub(crate) value_eq_ref_id: FuncId,
+    /// Checked `==` between a dynamic `AnyValueRef` and an unboxed int/atom
+    /// raw payload, with no allocation on either side: verifies the ref's
+    /// runtime tag matches the expected `INT`/`ATOM` `ValueKind` before
+    /// comparing payloads (false, not a panic, on any other tag). Lets
+    /// Eq/Neq against an unboxed int/atom (e.g. matching a `:cont`/`:halt`
+    /// protocol tag, or an `Enum.member?` scan argument) skip boxing that
+    /// side into a scalar box when the other operand's static type isn't
+    /// known to match.
+    pub(crate) value_eq_raw_const_id: FuncId,
     /// Selective-receive matcher binary-literal helper.
     pub matcher_eq_bytes_id: FuncId,
     pub matcher_map_get_ref_id: FuncId,

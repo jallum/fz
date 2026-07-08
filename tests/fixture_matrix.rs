@@ -1409,6 +1409,7 @@ fn enum_list_allocations_pin_minimum_list_cons() {
         "the public reducer bridge closure is erased on every path",
         "`list_cons_allocs = 5`",
         "`list_cons_bytes = 80`",
+        "`scalar_box_allocs = 3`",
         "final list/struct/map heap headline is `368`",
     ] {
         assert!(
@@ -1421,7 +1422,7 @@ fn enum_list_allocations_pin_minimum_list_cons() {
     assert_fixture_output_contains(
         "enum_list_allocations",
         "expected.txt",
-        &["5\ntrue\n15", "{5, 80, 9, 288, 1, 32, 3, 48, 0, 0}", "\n368\n"],
+        &["5\ntrue\n15", "{5, 80, 9, 288, 0, 0, 3, 48, 0, 0}", "\n368\n"],
     );
     let stats = reusable_cons_telemetry_stats_for_fixture(&behavior_fixture_case("enum_list_allocations"));
     assert_eq!(
