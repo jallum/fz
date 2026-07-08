@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-07-08T13:13:08Z",
+  "description": "SURFACED by the fz-k22.2 audit (which CORRECTED the impl agent's overstated 'redundant fallback, just delete it' claim). After fz-k22.2, project_executable_input_source returns the generic boxed callable shape directly for the ambiguous 2+-producer case -- so that ONE path no longer relies on the downstream fallbacks. BUT SourceShape::Unknown still legitimately arises from that function for OTHER causes untouched by .2: sources.is_empty() (transport.rs ~2786), missing source_context/value_types entry (~2793-2800), and the callable case where callable_input_shapes_for_demand returns EMPTY (no producer shape admits the demand, ~2869-2894). So the two consumer fallback sites -- shape_for_executable_input (~2460) and shape_for_source's Recursive|Unknown arm (~2522) -- remain LOAD-BEARING for those causes; they are NOT dead code. TASK (a modest cleanup, NOT a trivial deletion): audit each remaining Unknown cause at the two consumer sites and confirm the generic-callable fallback behavior is still the CORRECT default for them (or tighten it); do NOT blindly delete the fallbacks. Related: fz-k22.2.",
+  "id": "fz-k22.5",
+  "labels": [],
+  "parent": "fz-k22",
+  "priority": 4,
+  "status": "open",
+  "title": "fz-k22 follow-up: audit the remaining SourceShape::Unknown causes at the two consumer fallback sites now that ambiguous-multi-producer is fixed at source",
+  "type": "bug",
+  "updated_at": "2026-07-08T13:13:08Z"
+}
