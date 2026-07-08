@@ -233,6 +233,58 @@ waited on, while this starts work because the fact it needs has no producer a
 wait could ever name -- both are bounded, self-contained drives invoked
 directly rather than a job commanding another job to run.
 
+### Whole-program struct-schema completeness
+
+`World::struct_def_schemas()` snapshots the *entire* shared `StructDefMap` fact
+store (every published `defstruct`, source-written or macro-emitted) at the
+moment a root's `BackendProgram` is packaged (`jobs/backend.rs`,
+`produce_root_backend_product`). That snapshot feeds `struct_schemas` on the
+`BackendProgram`, which the interpreter and native codegen read for the
+cofinite `is_named_struct`/`matches_runtime_struct` check ("is this runtime
+value NOT one of the known named structs") — a check that needs completeness
+over every struct name that could appear as a runtime value anywhere in the
+program, not just ones the checking root's own reachable graph literally
+constructs.
+
+A `World` can hold more than one independently-driven `RootId` at once — every
+`defmacro` mints its own hidden compile-time root (`World::macro_root`, driven
+through `Job::BuildMacroExecutable`) alongside the program's one runtime root.
+`struct_def_schemas()` is order-dependent in principle: it only contains what
+has *settled so far*, and different roots settle their own backend products at
+different times. Whole-program completeness nonetheless holds today, by
+construction of two facts about the current architecture:
+
+- **Per-root completeness is structural.** A root's `BackendProgram` cannot
+  settle until every `BackendExecutable` its own reachable call graph needs has
+  been packaged, and a `MakeStruct`/`StructField`/`AssertStruct` step cannot
+  package until the struct it names has a settled `StructDefined` fact
+  (`produce_root_backend_executable_product`'s waits). So whichever root reads
+  `struct_def_schemas()` already has every struct *it itself* can construct or
+  match against.
+- **No struct value ever crosses between two independently-driven roots at
+  runtime.** One `fz2 run`/`interp`/`build` invocation submits exactly one
+  runtime root (`Compiler2::submit_root`, `RootKind::Runtime`); `fz2 test`
+  spawns one fresh OS subprocess (and therefore one fresh `Compiler2`/`World`,
+  with its own one runtime root) per discovered test via `run-test-root`; the
+  fixture matrix likewise drives each fixture/path as its own child process.
+  Spawned actor processes (`fz_spawn`) reuse the *same* `BackendProgram` their
+  spawning root already produced — spawning mints a new runtime `Process`, not
+  a new `RootId`. Macro roots run on a separate compile-time process
+  (`QuotedSourceRoot::lend_process`) over AST-shaped values, never over the
+  running program's own struct instances, and their product is never read by
+  the main root's interpreter/codegen. So the one root whose reachable graph
+  can construct a given struct is always the same root whose product is
+  consulted when a value from that construction is later struct-checked.
+
+Together these mean today's single-runtime-root-per-program execution model
+makes the cofinite predicate sound by construction, even though
+`struct_def_schemas()` itself has no barrier forcing it to wait for every
+`defstruct` in the `World`. A future feature that lets one `World` drive
+*multiple runtime roots* whose values can flow into each other at runtime (a
+REPL, a multi-submission session, cross-program message passing) would break
+this invariant and must add the coarser barrier this section describes instead
+of relying on it implicitly.
+
 ## Tiny walkthrough
 
 ```text

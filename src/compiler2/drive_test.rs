@@ -1873,6 +1873,79 @@ fn compiler2_backend_struct_schemas_are_fed_from_struct_def_facts_not_a_source_s
 }
 
 #[test]
+fn compiler2_main_root_struct_schema_is_complete_alongside_an_independently_driven_macro_root() {
+    // fz-l59: a `defmacro` mints its own hidden compile-time `RootId`
+    // (`World::macro_root`), driven through `Job::BuildMacroExecutable` --
+    // independently of the program's runtime root and its own
+    // `BuildBackendProduct` drive. That is exactly the "multiple
+    // independently-driven RootIds sharing one World" shape the struct-schema
+    // completeness concern named: `struct_def_schemas()` snapshots the
+    // shared `StructDefMap` at whichever moment a root's own backend product
+    // settles, so if one root's snapshot could observe less than the whole
+    // program's struct inventory, this is where it would show.
+    //
+    // `Widget` is declared after the macro and is never touched by the
+    // macro's own body (the macro only multiplies an integer) -- the macro
+    // root's executable is built and driven to completion touching zero
+    // structs. The main root still constructs and dot-accesses `Widget`.
+    // Because struct-schema completeness is a per-root property (a root's
+    // `BackendProgram` cannot settle until every backend executable ITS OWN
+    // reachable call graph needs has packaged, which in turn cannot package a
+    // `MakeStruct`/`StructField` step until that struct's `StructDefined`
+    // fact has settled), the main root's snapshot is complete regardless of
+    // the macro root's presence, drive order, or that it touches no structs
+    // at all. This pins the invariant that makes the cofinite
+    // `is_named_struct`/`matches_runtime_struct` predicate sound today: one
+    // program (`fz2 run`/`interp`/`build`, and each `fz2 test` subprocess)
+    // mints exactly one *runtime* root, so no struct value ever has to cross
+    // from one independently-driven root's product into another's cofinite
+    // check.
+    let tel = ConfiguredTelemetry::new();
+    let backend = BackendProgramCapture::new();
+    tel.attach(&["fz", "compiler2", "backend_program", "defined"], backend.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("struct_schema_complete_alongside_macro_root.fz".to_string()),
+        text: concat!(
+            "defmacro triple(x) do\n",
+            "  quote do: unquote(x) * 3\n",
+            "end\n",
+            "\n",
+            "defmodule Widget do\n",
+            "  defstruct [:label, :count]\n",
+            "end\n",
+            "\n",
+            "fn main() do\n",
+            "  w = %Widget{count: triple(2), label: \"a\"}\n",
+            "  dbg(w.label)\n",
+            "  dbg(w.count)\n",
+            "end\n",
+        )
+        .to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    demand_backend_product(&mut compiler, root_id);
+    assert_resolved(
+        compiler.drive(),
+        "the main root's struct construction/field-access should settle alongside the macro root's own build",
+    );
+
+    let program = backend.last(root_id).program;
+    assert_eq!(
+        program.struct_schemas.get("Widget").map(Vec::as_slice),
+        Some(["label".to_string(), "count".to_string()].as_slice()),
+        "the main root's struct-schema inventory must be complete (declared defstruct order) even though \
+         an independently-driven macro root -- which touches no structs at all -- shares this World",
+    );
+}
+
+#[test]
 fn compiler2_index_code_defines_owned_functions_without_lowering_or_activating_bodies() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
