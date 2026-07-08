@@ -2,14 +2,16 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-07-08T18:52:37Z",
+  "close_reason": "verified fixed: telemetry docs now explicitly curate the stable fz.codegen surface",
   "created": "2026-07-03T15:52:49Z",
   "description": "Named by fz-go4.18.30's sweep (2026-07-03) and confirmed by its audit as deliberately left untouched (not half-documented). src/compiler2/native_codegen/driver.rs emits an [fz, codegen, *] span/event cluster -- callable_boundary_lowered, receive.site, lower_function, function_lowered, declare, define_function, emit_runtime, finalize -- largely absent from telemetry.md's existing fz.codegen.* section, which deliberately curates only 3-4 events (compile, abi_contract, callable_boundary_materialized, closure_call_lowered).\n\nTASK: decide curation-vs-completeness for that section (the existing 3-event curation may be intentional -- check whether the undocumented spans are stable contract surfaces tests rely on, or internal tracing), then either document the cluster in the established entry format (plain facts: topic, emission site sans line numbers, fields, what an observer can assert) or add one sentence to the section stating the curation policy (what is documented there and why the rest is internal). Either outcome closes this; the current state (silent gap) is the only wrong one.",
   "id": "fz-go4.18.34",
   "labels": [],
   "parent": "fz-go4.18",
   "priority": 3,
-  "status": "open",
+  "status": "closed",
   "title": "Document (or curate) the fz.codegen.* span cluster in native_codegen/driver.rs",
   "type": "task",
-  "updated_at": "2026-07-03T15:52:49Z"
+  "updated_at": "2026-07-08T18:52:37Z"
 }
