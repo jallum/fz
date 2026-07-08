@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-07-08T03:39:47Z",
+  "description": "The PROXIMATE cause of fz-k22 (confirmed by instrumentation). List.reduce_while_cont (modules/runtime_library/list.fz:58-63) clause 0 base case returns acc: reduce_while_cont([], acc, _reducer), do: acc. When find/3 + find_value/3 share ONE specialization (same ActivationKey/FunctionId(183) because both reducer closures have identical structural arrow types), the shared body's acc/default input (semantic_index 1, Ty(28)) gets ShapeDescr::Nothing (demand fixpoint decided it can be ignored) EVEN THOUGH clause 0 trivially returns it and both calls reach that base case at runtime. Confirmed: the SAME FunctionId(183) clause at a DIFFERENT single-producer instantiation correctly gets Lane(...) for the same semantic index -\u003e the Nothing-shape ONLY appears for the shared 2-distinct-closure instantiation. So the ambiguous multi-target closure call (Slice A) corrupts/short-circuits demand propagation for OTHER, unrelated inputs of the same shared body. Crash: native lowering invariant failed backend ValueId(6) ... must be runtime-materializable (run/build) / backend value 6 is unbound (interp). FIX: investigate derive_executable_runtime_demand + per-index join_assign in src/compiler2/jobs/runtime_demand.rs -- why closure-call-site ambiguity feeds back into sibling input demands as Nothing; ground the accumulator input as live Lane. Must NOT regress the single-producer case that currently works. This is the slice that turns the repro GREEN. fz-xqw / 'unknown is not none' fixpoint territory. Related: fz-k22, fz-xqw, fz-hwn.",
+  "id": "fz-k22.3",
+  "labels": [],
+  "parent": "fz-k22",
+  "priority": 1,
+  "status": "open",
+  "title": "fz-k22 Slice C: runtime-demand fixpoint under-approximates a shared HOF body's UNRELATED input to Nothing when its closure-call site has 2+ distinct targets (proximate crash cause)",
+  "type": "bug",
+  "updated_at": "2026-07-08T03:39:47Z"
+}
