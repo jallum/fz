@@ -8,6 +8,7 @@
     "fz-k22.4",
     "fz-k22.6"
   ],
+  "closed_at": "2026-07-08T19:00:53Z",
   "created": "2026-07-08T03:39:47Z",
   "description": "SLICE C (downstream layer): generalize arg_demands_for_summary's multi-target argument FLOOR to closure calls. The existing special case floors argument index 0 to Whole for multi-target callsites (fz-bin.5, protocol-dispatch receivers; runtime_demand.rs ~2384-2401) but is not generalized to CallInputMode::Closure or to non-receiver argument positions. When a closure callsite has summary.targets.len() \u003e 1, floor EVERY argument to Whole -- because the physical boxed-apply ABI (CallEdge::Indirect/generic_callable_shape, fz-k22.1/.2) must transmit a real value in every lane regardless of what any resolved callee does with it, so a discarded-_acc join of Ignore-v-Ignore must NOT starve the accumulator's materialization. This fix is PROVEN correct on the minimal find+find_value repro (progresses past the ValueId(6) demand crash to fz-k22.4's assertion). BLOCKED BY fz-k22.7: it only triggers once CallSiteSummary.targets correctly reports 2+ targets (today it under-counts to 1 for some sharings, so the multi-target floor never fires). Once fz-k22.7 lands, re-apply and land this. Related: fz-k22.7, fz-k22.1, fz-k22.2.",
   "id": "fz-k22.3",
@@ -28,7 +29,7 @@
     }
   ],
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "fz-k22 Slice C: runtime-demand fixpoint under-approximates a shared HOF body's UNRELATED input to Nothing when its closure-call site has 2+ distinct targets (proximate crash cause)",
   "type": "bug",
   "updated_at": "2026-07-08T19:00:53Z"
