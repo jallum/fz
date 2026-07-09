@@ -8,9 +8,15 @@
   "id": "fz-rh2.16.4.3",
   "labels": [],
   "parent": "fz-rh2.16.4",
+  "comments": [
+    {
+      "text": "COORDINATOR VERIFY 2026-07-09: landed amended 2e86329df (fz-rh2.16.4.3: reject no-comma do keyword attachment) on integration. Independent audit passed with a test-wording nit; coordinator applied the nit before final fold. Verified on integration with cargo test --lib, cargo clippy --all-targets -- -D warnings, and cargo test --lib compiler2_frontdoor_ -- --nocapture. Note: implementation agent prematurely closed this ticket from its worktree; coordinator verified/folded after the fact.",
+      "timestamp": "2026-07-09T18:57:39Z"
+    }
+  ],
   "priority": 4,
   "status": "closed",
   "title": "frontdoor attach_trailing_do: possibly-dead bare KwKey(do) branch -- verify reachable or remove",
   "type": "bug",
-  "updated_at": "2026-07-09T18:43:37Z"
+  "updated_at": "2026-07-09T18:57:39Z"
 }
