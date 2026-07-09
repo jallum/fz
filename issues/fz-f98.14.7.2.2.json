@@ -4,6 +4,7 @@
     "fz-f98.14.10"
   ],
   "blocks": [],
+  "closed_at": "2026-07-09T02:04:12Z",
   "created": "2026-06-26T09:39:53Z",
   "description": "compiler2_quicksort_root_closes_with_a_finite_recursive_frontier: partition/4 settles to 3 activation keys, asserts 1. PROVEN INDEPENDENT: reproduces IDENTICALLY with the 14.7.2 transport/native fixes reverted — a SemanticClosed activation-frontier over-specialization exposed by the fz-f98.14.7 de-widening, UPSTREAM of transport. Collapse the recursive list-family partition/4 keys in activation keying (cf fz-y6w / convergence_class on the recursive non-dispatch inputs). Shares the type-fused-identity root with fz-f98.14.1 (seal). Test currently #[ignore] red-worklist.",
   "id": "fz-f98.14.7.2.2",
@@ -20,8 +21,8 @@
     }
   ],
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Activation over-specialization: recursive list-family partition/4 settles to 3 keys (asserts 1)",
   "type": "bug",
-  "updated_at": "2026-07-09T02:04:11Z"
+  "updated_at": "2026-07-09T02:04:12Z"
 }
