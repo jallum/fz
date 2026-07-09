@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-07-07T13:06:38Z",
@@ -7,8 +7,8 @@
   "id": "fz-zbp",
   "labels": [],
   "priority": 4,
-  "status": "open",
+  "status": "in_progress",
   "title": "No duplicate-global-definition diagnostic: two codes defining the same global name+arity silently resolve to one (was a race, now first-submitted-wins)",
   "type": "bug",
-  "updated_at": "2026-07-07T13:06:38Z"
+  "updated_at": "2026-07-09T19:34:57Z"
 }
