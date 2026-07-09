@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-07-09T20:08:10Z",
+  "description": "Before ff1bac056 the ordinary (non-coverage) Sibling AOT link was a pure read_dir glob -- zero dependency on cargo, CARGO_MANIFEST_DIR, or the source checkout. After, both plans funnel through locate_runtime_staticlib which needs env!(CARGO_MANIFEST_DIR)/Cargo.toml at the absolute baked-in path AND a resolvable cargo binary. If fz2 is ever copied out of its build tree or run without cargo, ordinary AOT build fails hard where it used to work off the on-disk sibling archive. Escape hatch FZ_AOT_RUNTIME_STATICLIB exists (aot_link.rs:17) but is documented NOWHERE (zero hits outside aot_link.rs). Acceptable under the current single-checkout dev-tool model; not blocking. ACTION: document FZ_AOT_RUNTIME_STATICLIB as the distribution escape hatch (guide + doc-comment), and/or make the Sibling cargo invocation opportunistic (deterministic on-disk resolution first, cargo re-invoke only as fallback) if a standalone/shipped fz2 ever becomes a goal. Also latent: locate_runtime_staticlib never passes --target \u003ctriple\u003e, so cross-compiled AOT would resolve the host-triple archive (no --target handling exists anywhere today).",
+  "id": "fz-ayd",
+  "labels": [],
+  "priority": 4,
+  "status": "open",
+  "title": "fz-0lm: AOT ::build Sibling path now requires cargo + the baked-in source tree (was a pure filesystem glob) -- narrower operating envelope; FZ_AOT_RUNTIME_STATICLIB escape hatch is undocumented",
+  "type": "bug",
+  "updated_at": "2026-07-09T20:08:10Z"
+}
