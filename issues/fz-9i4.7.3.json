@@ -19,7 +19,7 @@
   ],
   "priority": 2,
   "status": "open",
-  "title": "Native enum_map_family direct closure fast path passes too many args",
+  "title": "Native direct closure fast path reuses wrong closure target in shared Enum helpers",
   "type": "bug",
-  "updated_at": "2026-07-09T22:00:04Z"
+  "updated_at": "2026-07-09T22:00:05Z"
 }
