@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-07-09T20:14:00Z",
@@ -14,8 +14,8 @@
     }
   ],
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "fz-k22: reduce_while_cont clause_0/clause_1 direct call passes 4 args to a 5-param tail-CC body (fn6/fn7) -- cranelift verifier reject",
   "type": "bug",
-  "updated_at": "2026-07-09T21:39:37Z"
+  "updated_at": "2026-07-09T23:45:21Z"
 }
