@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-07-09T20:23:27Z",
+  "description": "Found during fz-2su. fixture_metadata.rs parses any budget.* key generically into Vec\u003cBudgetAssertion\u003e read ONLY to flip participates_in_matrix() -- no assertion compares any of them to telemetry. The dump_budgets test + fz dump --emit stats + DUMP_BUDGET_TOLERANCE_PERCENT mechanism they fed was deleted in 9dda68aa0 (Remove old-world compiler dead code). So budget.codegen.functions, budget.codegen.instructions, budget.planner.*, etc. are ALL stale decoration, and fixtures2/GOLDEN.md still documents the dead fz dump --emit stats Fixture Dump Budgets workflow as if live. fz-2su removed only budget.specs.count per its scope. ACTION: either revive a real telemetry-backed check for the budget.* family (ties to over-specialization guarding, cf. fz-myo.2) or delete the remaining budget.* fields + the stale GOLDEN.md section. Coordinate with fz-myo.2 (which may want a spec-count pin).",
+  "id": "fz-9i4.8",
+  "labels": [],
+  "parent": "fz-9i4",
+  "priority": 4,
+  "status": "open",
+  "title": "fixtures: the whole budget.* frontmatter family is decorative/unchecked and GOLDEN.md documents a deleted dump-budgets workflow",
+  "type": "bug",
+  "updated_at": "2026-07-09T20:23:27Z"
+}
