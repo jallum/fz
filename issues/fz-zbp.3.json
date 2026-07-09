@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-07-09T20:02:35Z",
+  "description": "Stale doc (world.rs:3072-3076) says defmodule/defprotocol/defimpl produce Certain matches; the match arms (world.rs:3099-3105) explicitly route ScopeForm::Module/Protocol/ProtocolImpl to None (correct -- those never define a GLOBAL function). Documentation must be provable fact: fix the one-line comment to match the code. Trivial.",
+  "id": "fz-zbp.3",
+  "labels": [],
+  "parent": "fz-zbp",
+  "priority": 4,
+  "status": "open",
+  "title": "world.rs FunctionSurfaceMatch::Certain doc claims defmodule/defprotocol/defimpl heads are Certain but the code routes them to None",
+  "type": "bug",
+  "updated_at": "2026-07-09T20:02:35Z"
+}
