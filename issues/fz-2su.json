@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-07-09T19:48:10Z",
+  "description": "Side-finding from fz-myo: the budget.specs.count=19 annotation in fixture frontmatter (e.g. quicksort) is NOT machine-checked anywhere -- stale decorative scaffolding. Per the campaign rule to track+remove construction scaffolding: either wire it into a real assertion (spec-count pin, which would ALSO give over-specialization a guard) or delete it. Cheap.",
+  "id": "fz-2su",
+  "labels": [],
+  "priority": 4,
+  "status": "open",
+  "title": "fixture frontmatter budget.specs.count is decorative -- machine-check it or delete it",
+  "type": "bug",
+  "updated_at": "2026-07-09T19:48:10Z"
+}
