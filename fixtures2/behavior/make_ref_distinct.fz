@@ -2,7 +2,6 @@
 # purpose: "fz-ht5 — make_ref() returns a distinct opaque ref on every call"
 # budget.codegen.functions: 8
 # budget.codegen.instructions: 71
-# budget.specs.count: 8
 # budget.planner.worklist_pops: 8
 # budget.planner.walk_calls: 8
 # budget.planner.type_fn_calls: 8

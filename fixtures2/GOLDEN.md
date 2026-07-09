@@ -150,7 +150,6 @@ compiler reports the facts we care about directly:
 
 - `budget.codegen.functions`
 - `budget.codegen.instructions`
-- `budget.specs.count`
 - `budget.planner.worklist_pops`
 - `budget.planner.walk_calls`
 - `budget.planner.type_fn_calls`

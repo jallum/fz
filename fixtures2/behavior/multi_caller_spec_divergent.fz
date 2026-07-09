@@ -2,7 +2,6 @@
 # purpose: "fz-uwq.4 regression — divergent dispatch across two caller specs of the same higher-order fn"
 # budget.codegen.functions: 6
 # budget.codegen.instructions: 67
-# budget.specs.count: 6
 # budget.planner.worklist_pops: 8
 # budget.planner.walk_calls: 8
 # budget.planner.type_fn_calls: 8

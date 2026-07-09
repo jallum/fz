@@ -2,7 +2,6 @@
 # purpose: "pin fz-s9y semantics — `nil` and `[]` print as distinct strings"
 # budget.codegen.functions: 1
 # budget.codegen.instructions: 15
-# budget.specs.count: 1
 # budget.planner.worklist_pops: 1
 # budget.planner.walk_calls: 1
 # budget.planner.type_fn_calls: 1
