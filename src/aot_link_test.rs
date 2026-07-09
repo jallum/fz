@@ -176,3 +176,75 @@ fn runtime_staticlib_selection_ignores_decoy_newer_mtime_archive() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A single cargo invocation can legitimately report `fz-runtime` more than
+/// once (e.g. the lib target and a unit-test binary both trigger a
+/// `compiler-artifact` message with `target.name == "fz_runtime"`). The
+/// selector must pick deterministically rather than panic or pick
+/// ambiguously; it does so by taking the FIRST matching message in stream
+/// order (`Iterator::find_map` over `lines()`), so this pins "first match
+/// wins" as the intended contract.
+#[test]
+fn runtime_staticlib_selection_is_deterministic_across_multiple_fz_runtime_artifacts() {
+    let cargo_stdout = concat!(
+        r#"{"reason":"compiler-artifact","package_id":"path+file:///repo/runtime#libc@0.2.0","target":{"kind":["lib"],"name":"libc"},"filenames":["/repo/target/debug/deps/liblibc-aaaa.rlib"]}"#,
+        "\n",
+        // First fz_runtime artifact message: the one that must win.
+        r#"{"reason":"compiler-artifact","package_id":"path+file:///repo/runtime#fz-runtime@0.1.0","target":{"kind":["staticlib","rlib"],"name":"fz_runtime"},"filenames":["/repo/target/debug/deps/libfz_runtime-1111111111111111.a","/repo/target/debug/deps/libfz_runtime-1111111111111111.rlib"]}"#,
+        "\n",
+        // Second fz_runtime artifact message (e.g. the test-harness build of
+        // the same crate): must NOT override the first match.
+        r#"{"reason":"compiler-artifact","package_id":"path+file:///repo/runtime#fz-runtime@0.1.0","target":{"kind":["staticlib","rlib"],"name":"fz_runtime"},"filenames":["/repo/target/debug/deps/libfz_runtime-2222222222222222.a","/repo/target/debug/deps/libfz_runtime-2222222222222222.rlib"]}"#,
+    );
+
+    // Confirm this fixture actually exercises the multi-match corner before
+    // trusting what the selector does with it.
+    let fz_runtime_artifact_count = cargo_stdout
+        .lines()
+        .filter(|line| line.contains(r#""name":"fz_runtime""#))
+        .count();
+    assert_eq!(
+        fz_runtime_artifact_count, 2,
+        "fixture must contain at least two fz_runtime compiler-artifact messages"
+    );
+
+    let selected = runtime_staticlib_from_cargo_messages(cargo_stdout.as_bytes())
+        .expect("cargo message names a staticlib artifact");
+
+    assert_eq!(
+        selected,
+        PathBuf::from("/repo/target/debug/deps/libfz_runtime-1111111111111111.a"),
+        "selection must deterministically take the first fz_runtime compiler-artifact message"
+    );
+}
+
+/// When cargo's message stream never names an `fz_runtime` compiler-artifact
+/// (e.g. only unrelated dependency artifacts and build-script messages are
+/// present), the selector must return `None` so the caller can surface a loud
+/// error, rather than silently returning a wrong path or panicking.
+#[test]
+fn runtime_staticlib_selection_returns_none_when_no_fz_runtime_artifact_is_reported() {
+    let cargo_stdout = concat!(
+        r#"{"reason":"compiler-artifact","package_id":"path+file:///repo/runtime#libc@0.2.0","target":{"kind":["lib"],"name":"libc"},"filenames":["/repo/target/debug/deps/liblibc-aaaa.rlib"]}"#,
+        "\n",
+        r#"{"reason":"build-script-executed","package_id":"path+file:///repo/runtime#fz-runtime@0.1.0"}"#,
+    );
+
+    // Confirm the fixture truly has zero fz_runtime compiler-artifact
+    // messages before trusting the `None` result below.
+    let fz_runtime_artifact_count = cargo_stdout
+        .lines()
+        .filter(|line| line.contains(r#""reason":"compiler-artifact""#) && line.contains(r#""name":"fz_runtime""#))
+        .count();
+    assert_eq!(
+        fz_runtime_artifact_count, 0,
+        "fixture must not contain any fz_runtime compiler-artifact message"
+    );
+
+    let selected = runtime_staticlib_from_cargo_messages(cargo_stdout.as_bytes());
+
+    assert_eq!(
+        selected, None,
+        "absence of an fz_runtime compiler-artifact message must surface as None (the caller's ok_or_else error path), not a silent fallback"
+    );
+}
