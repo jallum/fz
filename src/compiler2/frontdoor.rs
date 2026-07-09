@@ -1590,10 +1590,7 @@ impl FrontDoorParser {
         if !self.allow_trailing_do {
             return Ok(());
         }
-        let body = if matches!(self.peek(), Tok::KwKey(key) if key == "do") {
-            self.bump();
-            Some(self.parse_expr(module_path, scope)?.root)
-        } else if self.peek_is(&Tok::Do) {
+        let body = if self.peek_is(&Tok::Do) {
             self.bump();
             self.skip_newlines();
             let body = self.parse_block_until(&[Tok::End], module_path, scope)?;

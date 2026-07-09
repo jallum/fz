@@ -433,6 +433,39 @@ fn compiler2_frontdoor_no_parens_and_paren_call_trailing_do_parity() {
 }
 
 #[test]
+fn compiler2_frontdoor_paren_call_comma_do_keyword_attaches_do_argument() {
+    let tel = ConfiguredTelemetry::new();
+    let root =
+        parse_quoted_program("keyword_comma_do.fz", "echo(:work), do: 42\n", CodeId::ZERO, &tel).expect("quoted parse");
+
+    let items = root.cursor().list_items().expect("top-level items");
+    assert_eq!(items.len(), 1);
+    let call = items[0].ast_node().expect("call cursor").expect("call node");
+    assert_eq!(head_name(&call), "echo");
+    let args = call.tail.list_items().expect("call args");
+    assert_eq!(args.len(), 2, "comma `do:` appends a fresh do keyword-list argument");
+    assert_eq!(args[0].atom_name().expect("first arg"), "work");
+    let do_kw = args[1].list_items().expect("do keyword-list arg");
+    let do_tuple = do_kw[0].tuple_items().expect("do tuple");
+    assert_eq!(do_tuple[0].atom_name().expect("do key"), "do");
+    assert_eq!(do_tuple[1].int_value().expect("do body"), 42);
+}
+
+#[test]
+fn compiler2_frontdoor_call_no_comma_do_keyword_is_rejected() {
+    for (label, source) in [("paren", "echo(:work) do: 42\n"), ("no-parens", "echo :work do: 42\n")] {
+        let tel = ConfiguredTelemetry::new();
+        let error = parse_quoted_program(label, source, CodeId::ZERO, &tel)
+            .expect_err("no-comma `do:` call surface should be rejected");
+        assert!(
+            error.msg.contains("does not yet parse") && error.msg.contains("at item position"),
+            "{label} no-comma `do:` surface should be rejected at item position; got `{}`",
+            error.msg
+        );
+    }
+}
+
+#[test]
 fn compiler2_frontdoor_parses_item_macro_calls_with_trailing_do() {
     let tel = ConfiguredTelemetry::new();
     let root = parse_quoted_program("test_surface.fz", "test(:name) do\n  42\nend\n", CodeId::ZERO, &tel)
