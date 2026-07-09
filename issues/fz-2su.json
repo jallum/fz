@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-07-09T19:48:10Z",
@@ -7,8 +7,8 @@
   "id": "fz-2su",
   "labels": [],
   "priority": 4,
-  "status": "open",
+  "status": "in_progress",
   "title": "fixture frontmatter budget.specs.count is decorative -- machine-check it or delete it",
   "type": "bug",
-  "updated_at": "2026-07-09T19:48:10Z"
+  "updated_at": "2026-07-09T20:10:43Z"
 }
