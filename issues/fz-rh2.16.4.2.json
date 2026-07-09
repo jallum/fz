@@ -2,14 +2,15 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-07-09T18:32:22Z",
   "created": "2026-07-07T21:56:42Z",
   "description": "SURFACED by fz-rh2.16.4. fz's NO-PARENS call path (run label: :work do 42 end) MERGES a trailing do-block into a preceding keyword-list argument via attach_trailing_do_with_keyword_index (src/compiler2/frontdoor.rs), producing a single merged keyword-list arg (arity 1). This diverges TWO ways: (1) from real Elixir, where a trailing do-block is NEVER merged into a keyword-list argument -- it is always appended as a SECOND keyword-list argument (arity+1); and (2) from fz's OWN parenthesized-call path, which correctly appends (never merges) -- this was verified and pinned by fz-rh2.16.4's regression test compiler2_frontdoor_paren_call_keyword_args_plus_trailing_do_appends_second_keyword_list. So the two call surfaces disagree with each other on the same semantic question. No in-scope fixture exercised the no-parens divergence, so fz-rh2.16.4 left it untouched. FIX: make the no-parens path append-never-merge (consistent with the paren path and Elixir); likely remove/rework attach_trailing_do_with_keyword_index so the do-block becomes a distinct trailing argument. Add a no-parens regression test mirroring the paren one. Related: fz-rh2.16.4.",
   "id": "fz-rh2.16.4.2",
   "labels": [],
   "parent": "fz-rh2.16.4",
   "priority": 3,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Frontdoor no-parens call merges a trailing do-block into a preceding keyword-list argument (diverges from Elixir AND from fz's own parenthesized-call path)",
   "type": "bug",
-  "updated_at": "2026-07-09T18:19:00Z"
+  "updated_at": "2026-07-09T18:32:22Z"
 }
