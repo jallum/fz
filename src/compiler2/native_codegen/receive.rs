@@ -264,7 +264,6 @@ enum ReceiveValue {
     Int(ir::Value),
     Float(ir::Value),
     Atom(ir::Value),
-    Null,
 }
 
 struct DispatchCtx<'a> {
@@ -321,7 +320,6 @@ fn emit_receive_value_ref(
             let inst = b.ins().call(fref, &[ctx.process, raw]);
             Ok(b.inst_results(inst)[0])
         }
-        ReceiveValue::Null => Ok(b.ins().iconst(types::I64, 0)),
     }
 }
 
@@ -345,7 +343,6 @@ fn receive_value_tag(
         ReceiveValue::Int(_) => Ok(b.ins().iconst(types::I8, ValueKind::INT.tag() as i64)),
         ReceiveValue::Float(_) => Ok(b.ins().iconst(types::I8, ValueKind::FLOAT.tag() as i64)),
         ReceiveValue::Atom(_) => Ok(b.ins().iconst(types::I8, ValueKind::ATOM.tag() as i64)),
-        ReceiveValue::Null => Ok(b.ins().iconst(types::I8, ValueKind::NULL.tag() as i64)),
     }
 }
 
@@ -363,7 +360,7 @@ fn receive_value_int(
             let inst = b.ins().call(fref, &[value_ref]);
             Ok(b.inst_results(inst)[0])
         }
-        _ => Err(CodegenError::new("expected int receive value")),
+        ReceiveValue::Float(_) | ReceiveValue::Atom(_) => Err(CodegenError::new("expected int receive value")),
     }
 }
 
@@ -381,7 +378,7 @@ fn receive_value_float(
             let inst = b.ins().call(fref, &[value_ref]);
             Ok(b.inst_results(inst)[0])
         }
-        _ => Err(CodegenError::new("expected float receive value")),
+        ReceiveValue::Int(_) | ReceiveValue::Atom(_) => Err(CodegenError::new("expected float receive value")),
     }
 }
 
@@ -399,7 +396,7 @@ fn receive_value_atom(
             let inst = b.ins().call(fref, &[value_ref]);
             Ok(b.inst_results(inst)[0])
         }
-        _ => Err(CodegenError::new("expected atom receive value")),
+        ReceiveValue::Int(_) | ReceiveValue::Float(_) => Err(CodegenError::new("expected atom receive value")),
     }
 }
 
@@ -874,9 +871,11 @@ fn emit_receive_kind_guarded_membership(
             Ok(b.block_params(join_blk)[0])
         }
         ReceiveValue::Int(_) if kind == ValueKind::INT => build(b, ctx, value),
+        ReceiveValue::Int(_) => Ok(b.ins().iconst(types::I8, 0)),
         ReceiveValue::Float(_) if kind == ValueKind::FLOAT => build(b, ctx, value),
+        ReceiveValue::Float(_) => Ok(b.ins().iconst(types::I8, 0)),
         ReceiveValue::Atom(_) if kind == ValueKind::ATOM => build(b, ctx, value),
-        _ => Ok(b.ins().iconst(types::I8, 0)),
+        ReceiveValue::Atom(_) => Ok(b.ins().iconst(types::I8, 0)),
     }
 }
 
@@ -1026,9 +1025,7 @@ fn emit_receive_is_empty_list_flag(
             let is_empty = b.ins().icmp(IntCC::Equal, value_ref, empty);
             b.ins().band(is_list, is_empty)
         }
-        ReceiveValue::Null | ReceiveValue::Int(_) | ReceiveValue::Float(_) | ReceiveValue::Atom(_) => {
-            b.ins().iconst(types::I8, 0)
-        }
+        ReceiveValue::Int(_) | ReceiveValue::Float(_) | ReceiveValue::Atom(_) => b.ins().iconst(types::I8, 0),
     })
 }
 
@@ -1047,9 +1044,7 @@ fn emit_receive_is_list_cons_flag(
             let not_empty = b.ins().icmp_imm(IntCC::Equal, is_empty, 0);
             b.ins().band(is_list, not_empty)
         }
-        ReceiveValue::Null | ReceiveValue::Int(_) | ReceiveValue::Float(_) | ReceiveValue::Atom(_) => {
-            b.ins().iconst(types::I8, 0)
-        }
+        ReceiveValue::Int(_) | ReceiveValue::Float(_) | ReceiveValue::Atom(_) => b.ins().iconst(types::I8, 0),
     })
 }
 
@@ -1088,26 +1083,35 @@ fn emit_dispatch_side_tag_const_test(
     let Some(want) = dispatch_const_value(ctx.fz_module, value)? else {
         return Ok(false);
     };
-    match (want.kind, val) {
-        (ValueKind::INT, ReceiveValue::Int(raw)) => {
-            let ok = b.ins().icmp_imm(IntCC::Equal, raw, want.raw as i64);
+    match val {
+        ReceiveValue::Int(raw) => {
+            let DispatchConstValue::Int(want) = want else {
+                b.ins().jump(next_b, &[]);
+                return Ok(true);
+            };
+            let ok = b.ins().icmp_imm(IntCC::Equal, raw, want);
             b.ins().brif(ok, match_b, &[], next_b, &[]);
         }
-        (ValueKind::FLOAT, ReceiveValue::Float(raw)) => {
+        ReceiveValue::Float(raw) => {
+            let DispatchConstValue::Float(want) = want else {
+                b.ins().jump(next_b, &[]);
+                return Ok(true);
+            };
             let raw_bits = b.ins().bitcast(types::I64, MemFlags::new(), raw);
-            let want_bits = b.ins().iconst(types::I64, want.raw as i64);
+            let want_bits = b.ins().iconst(types::I64, want as i64);
             let ok = b.ins().icmp(IntCC::Equal, raw_bits, want_bits);
             b.ins().brif(ok, match_b, &[], next_b, &[]);
         }
-        (ValueKind::ATOM, ReceiveValue::Atom(raw)) => {
-            let ok = b.ins().icmp_imm(IntCC::Equal, raw, want.raw as i64);
+        ReceiveValue::Atom(raw) => {
+            let DispatchConstValue::Atom(want) = want else {
+                b.ins().jump(next_b, &[]);
+                return Ok(true);
+            };
+            let ok = b.ins().icmp_imm(IntCC::Equal, raw, want as i64);
             b.ins().brif(ok, match_b, &[], next_b, &[]);
         }
-        (_, ReceiveValue::AnyRef(value_ref)) => {
+        ReceiveValue::AnyRef(value_ref) => {
             emit_any_ref_const_test(b, ctx, value_ref, want, match_b, next_b)?;
-        }
-        _ => {
-            b.ins().jump(next_b, &[]);
         }
     }
     Ok(true)
@@ -1117,15 +1121,11 @@ fn emit_any_ref_const_test(
     b: &mut FunctionBuilder<'_>,
     ctx: &DispatchCtx<'_>,
     value_ref: ir::Value,
-    want: GroundValueBits,
+    want: DispatchConstValue,
     match_b: ir::Block,
     next_b: ir::Block,
 ) -> Result<(), CodegenError> {
-    let want_tag = want.kind;
-    if want_tag.is_heap() {
-        b.ins().jump(next_b, &[]);
-        return Ok(());
-    };
+    let want_tag = want.kind();
     let tag = receive_value_tag(b, ctx, ReceiveValue::AnyRef(value_ref))?;
     let tag64 = b.ins().uextend(types::I64, tag);
     let type_ok = b.ins().icmp_imm(IntCC::Equal, tag64, want_tag.tag() as i64);
@@ -1133,83 +1133,78 @@ fn emit_any_ref_const_test(
     b.ins().brif(type_ok, value_block, &[], next_b, &[]);
     b.switch_to_block(value_block);
     b.seal_block(value_block);
-    match want.kind {
-        ValueKind::INT => {
+    match want {
+        DispatchConstValue::Int(want) => {
             let raw = receive_value_int(b, ctx, ReceiveValue::AnyRef(value_ref))?;
-            let ok = b.ins().icmp_imm(IntCC::Equal, raw, want.raw as i64);
+            let ok = b.ins().icmp_imm(IntCC::Equal, raw, want);
             b.ins().brif(ok, match_b, &[], next_b, &[]);
         }
-        ValueKind::FLOAT => {
+        DispatchConstValue::Float(want) => {
             let raw = receive_value_float(b, ctx, ReceiveValue::AnyRef(value_ref))?;
             let raw_bits = b.ins().bitcast(types::I64, MemFlags::new(), raw);
-            let want_bits = b.ins().iconst(types::I64, want.raw as i64);
+            let want_bits = b.ins().iconst(types::I64, want as i64);
             let ok = b.ins().icmp(IntCC::Equal, raw_bits, want_bits);
             b.ins().brif(ok, match_b, &[], next_b, &[]);
         }
-        ValueKind::ATOM => {
+        DispatchConstValue::Atom(want) => {
             let raw = receive_value_atom(b, ctx, ReceiveValue::AnyRef(value_ref))?;
-            let ok = b.ins().icmp_imm(IntCC::Equal, raw, want.raw as i64);
+            let ok = b.ins().icmp_imm(IntCC::Equal, raw, want as i64);
             b.ins().brif(ok, match_b, &[], next_b, &[]);
-        }
-        _ => {
-            b.ins().jump(next_b, &[]);
         }
     }
     Ok(())
 }
 
-fn dispatch_const_value(module: &Module, value: &GroundValue) -> Result<Option<GroundValueBits>, CodegenError> {
+fn dispatch_const_value(module: &Module, value: &GroundValue) -> Result<Option<DispatchConstValue>, CodegenError> {
     use crate::ground_value::DispatchShape;
     Ok(
         match value
             .as_dispatch_shape()
             .expect("dispatch_const_value only ever sees a dispatch-matrix const")
         {
-            DispatchShape::Int(n) => Some(GroundValueBits {
-                raw: n as u64,
-                kind: ValueKind::INT,
-            }),
-            DispatchShape::Float(bits) => Some(GroundValueBits {
-                raw: bits,
-                kind: ValueKind::FLOAT,
-            }),
+            DispatchShape::Int(n) => Some(DispatchConstValue::Int(n)),
+            DispatchShape::Float(bits) => Some(DispatchConstValue::Float(bits)),
             DispatchShape::Atom(name) => module
                 .atom_names
                 .iter()
                 .position(|n| n == name)
-                .map(|id| GroundValueBits {
-                    raw: id as u64,
-                    kind: ValueKind::ATOM,
-                }),
-            DispatchShape::Bool(v) => Some(GroundValueBits {
-                raw: if v { TRUE_ATOM_ID as u64 } else { FALSE_ATOM_ID as u64 },
-                kind: ValueKind::ATOM,
-            }),
-            DispatchShape::Nil => Some(GroundValueBits {
-                raw: NIL_ATOM_ID as u64,
-                kind: ValueKind::ATOM,
-            }),
+                .map(|id| DispatchConstValue::Atom(id as u64)),
+            DispatchShape::Bool(v) => Some(DispatchConstValue::Atom(if v {
+                TRUE_ATOM_ID as u64
+            } else {
+                FALSE_ATOM_ID as u64
+            })),
+            DispatchShape::Nil => Some(DispatchConstValue::Atom(NIL_ATOM_ID as u64)),
             DispatchShape::Utf8Binary(_) => None,
         },
     )
 }
 
-#[derive(Clone, Copy)]
-struct GroundValueBits {
-    raw: u64,
-    kind: ValueKind,
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DispatchConstValue {
+    Int(i64),
+    Float(u64),
+    Atom(u64),
 }
 
-fn dispatch_const_receive_value(b: &mut FunctionBuilder<'_>, value: GroundValueBits) -> ReceiveValue {
-    match value.kind {
-        ValueKind::INT => ReceiveValue::Int(b.ins().iconst(types::I64, value.raw as i64)),
-        ValueKind::FLOAT => {
-            let bits = b.ins().iconst(types::I64, value.raw as i64);
+impl DispatchConstValue {
+    fn kind(self) -> ValueKind {
+        match self {
+            DispatchConstValue::Int(_) => ValueKind::INT,
+            DispatchConstValue::Float(_) => ValueKind::FLOAT,
+            DispatchConstValue::Atom(_) => ValueKind::ATOM,
+        }
+    }
+}
+
+fn dispatch_const_receive_value(b: &mut FunctionBuilder<'_>, value: DispatchConstValue) -> ReceiveValue {
+    match value {
+        DispatchConstValue::Int(raw) => ReceiveValue::Int(b.ins().iconst(types::I64, raw)),
+        DispatchConstValue::Float(raw) => {
+            let bits = b.ins().iconst(types::I64, raw as i64);
             ReceiveValue::Float(b.ins().bitcast(types::F64, MemFlags::new(), bits))
         }
-        ValueKind::ATOM => ReceiveValue::Atom(b.ins().iconst(types::I64, value.raw as i64)),
-        ValueKind::NULL => ReceiveValue::Null,
-        _ => unreachable!("dispatch constants only materialize scalar or null values"),
+        DispatchConstValue::Atom(raw) => ReceiveValue::Atom(b.ins().iconst(types::I64, raw as i64)),
     }
 }
 
@@ -1801,7 +1796,6 @@ fn emit_truthy_cmp(
             let false_or_nil = b.ins().bor(is_false, is_nil);
             Ok(b.ins().bxor_imm(false_or_nil, 1))
         }
-        ReceiveValue::Null => Ok(b.ins().iconst(types::I8, 0)),
         ReceiveValue::Int(_) | ReceiveValue::Float(_) => Ok(b.ins().iconst(types::I8, 1)),
     }
 }
@@ -1812,22 +1806,26 @@ fn emit_typed_eq_cmp(
     lhs: ReceiveValue,
     rhs: ReceiveValue,
 ) -> Result<ir::Value, CodegenError> {
-    match (lhs, rhs) {
-        (ReceiveValue::Int(a), ReceiveValue::Int(bv)) => {
-            return Ok(b.ins().icmp(IntCC::Equal, a, bv));
-        }
-        (ReceiveValue::Float(a), ReceiveValue::Float(bv)) => {
-            let a = b.ins().bitcast(types::I64, MemFlags::new(), a);
-            let bv = b.ins().bitcast(types::I64, MemFlags::new(), bv);
-            return Ok(b.ins().icmp(IntCC::Equal, a, bv));
-        }
-        (ReceiveValue::Atom(a), ReceiveValue::Atom(bv)) => {
-            return Ok(b.ins().icmp(IntCC::Equal, a, bv));
-        }
-        (ReceiveValue::Null, ReceiveValue::Null) => {
-            return Ok(b.ins().iconst(types::I8, 1));
-        }
-        _ => {}
+    match lhs {
+        ReceiveValue::Int(a) => match rhs {
+            ReceiveValue::Int(bv) => return Ok(b.ins().icmp(IntCC::Equal, a, bv)),
+            ReceiveValue::AnyRef(_) | ReceiveValue::Float(_) | ReceiveValue::Atom(_) => {}
+        },
+        ReceiveValue::Float(a) => match rhs {
+            ReceiveValue::Float(bv) => {
+                let a = b.ins().bitcast(types::I64, MemFlags::new(), a);
+                let bv = b.ins().bitcast(types::I64, MemFlags::new(), bv);
+                return Ok(b.ins().icmp(IntCC::Equal, a, bv));
+            }
+            ReceiveValue::AnyRef(_) | ReceiveValue::Int(_) | ReceiveValue::Atom(_) => {}
+        },
+        ReceiveValue::Atom(a) => match rhs {
+            ReceiveValue::Atom(bv) => return Ok(b.ins().icmp(IntCC::Equal, a, bv)),
+            ReceiveValue::AnyRef(_) | ReceiveValue::Int(_) | ReceiveValue::Float(_) => {}
+        },
+        ReceiveValue::AnyRef(_) => match rhs {
+            ReceiveValue::AnyRef(_) | ReceiveValue::Int(_) | ReceiveValue::Float(_) | ReceiveValue::Atom(_) => {}
+        },
     }
     let Some(fref) = ctx.runtime.value_eq_typed_fref else {
         return Err(CodegenError::new("mixed/ref equality requires fz_value_eq_ref"));
@@ -1858,13 +1856,12 @@ fn emit_not_dispatch_map_miss(
     value: ReceiveValue,
 ) -> Result<ir::Value, CodegenError> {
     match value {
-        ReceiveValue::Null => Ok(b.ins().iconst(types::I8, 0)),
         ReceiveValue::AnyRef(_) => {
             let tag = receive_value_tag(b, ctx, value)?;
             let tag64 = b.ins().uextend(types::I64, tag);
             Ok(b.ins().icmp_imm(IntCC::NotEqual, tag64, ValueKind::NULL.tag() as i64))
         }
-        _ => Ok(b.ins().iconst(types::I8, 1)),
+        ReceiveValue::Int(_) | ReceiveValue::Float(_) | ReceiveValue::Atom(_) => Ok(b.ins().iconst(types::I8, 1)),
     }
 }
 
@@ -2030,7 +2027,7 @@ fn emit_list_empty_test(b: &mut FunctionBuilder<'_>, val: ReceiveValue, match_b:
             let ok = b.ins().icmp(IntCC::Equal, value_ref, empty);
             b.ins().brif(ok, match_b, &[], next_b, &[]);
         }
-        _ => {
+        ReceiveValue::Int(_) | ReceiveValue::Float(_) | ReceiveValue::Atom(_) => {
             b.ins().jump(next_b, &[]);
         }
     }
@@ -2056,4 +2053,48 @@ fn emit_list_cons_test(
     let cmp = b.ins().icmp(IntCC::NotEqual, ok, zero);
     b.ins().brif(cmp, match_b, &[], next_b, &[]);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dispatch_const_value_materializes_only_receive_scalar_consts() {
+        let module = Module {
+            atom_names: vec!["ok".to_string()],
+            ..Module::default()
+        };
+
+        let cases = [
+            (GroundValue::Int(-7), Some(DispatchConstValue::Int(-7))),
+            (GroundValue::Float(12), Some(DispatchConstValue::Float(12))),
+            (GroundValue::Atom("ok".to_string()), Some(DispatchConstValue::Atom(0))),
+            (
+                GroundValue::Bool(true),
+                Some(DispatchConstValue::Atom(TRUE_ATOM_ID as u64)),
+            ),
+            (
+                GroundValue::Bool(false),
+                Some(DispatchConstValue::Atom(FALSE_ATOM_ID as u64)),
+            ),
+            (GroundValue::Nil, Some(DispatchConstValue::Atom(NIL_ATOM_ID as u64))),
+            (GroundValue::Utf8Binary(b"ok".to_vec()), None),
+        ];
+
+        for (value, expected) in cases {
+            let actual = dispatch_const_value(&module, &value).expect("dispatch const lowering should not fail");
+            assert_eq!(
+                actual, expected,
+                "unexpected native receive dispatch const for {value:?}"
+            );
+            if let Some(actual) = actual {
+                assert_ne!(
+                    actual.kind(),
+                    ValueKind::NULL,
+                    "native receive dispatch const materialized null"
+                );
+            }
+        }
+    }
 }
