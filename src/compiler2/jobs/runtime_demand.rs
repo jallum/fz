@@ -1211,8 +1211,23 @@ fn derive_executable_runtime_demand(
         };
     };
 
-    for clause_id in &facts.analysis.reachable_clauses {
-        let clause = &clauses[*clause_id as usize];
+    // Live-demand propagation is the authoritative "what must be
+    // materialized" pass that native codegen relies on (`env_runtime_var`).
+    // Codegen lowers every structural clause regardless of
+    // `analysis.reachable_clauses`, so a clause the type-level reachability
+    // analysis under-approximates as dead (e.g. a recursive base case whose
+    // list slot is over-narrowed) can still reach native lowering and crash
+    // when its return value was never marked live. Widen the walked clause
+    // set by the trivial delta `trivial_value_clause_ids` identifies —
+    // shared with `collect_transport_contexts` in transport.rs so the
+    // predicate has one definition.
+    let mut walked_clauses = facts.analysis.reachable_clauses.clone();
+    walked_clauses.extend(super::transport::trivial_value_clause_ids(
+        &facts.body,
+        &facts.analysis.reachable_clauses,
+    ));
+    for clause_id in walked_clauses {
+        let clause = &clauses[clause_id as usize];
         let mut live = collect_entry_live_demands(
             world,
             executable,

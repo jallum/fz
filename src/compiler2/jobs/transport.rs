@@ -1296,12 +1296,38 @@ fn collect_transport_contexts(
         } else {
             analysis.reachable_clauses.clone()
         };
-        let reachable_entries = if uses_materialized_body {
-            local_entry_ids(&body)
-        } else {
-            analysis.reachable_entries.clone()
-        };
         let callsite_needs = executable_callsite_needs(&body, &reachable_clauses, executable.need);
+        // Return-source materializability must widen past `reachable_clauses`
+        // for the DELTA of clauses codegen lowers that the type-level
+        // reachability analysis excludes (an under-approximation, e.g. a
+        // recursive base case whose list slot is over-narrowed) — and only
+        // for the trivial subset codegen can only ever assert a value is
+        // live for, never a call/callable-flow fact (see
+        // `trivial_value_clause_ids`). Reusing `analysis.reachable_entries`
+        // verbatim for every already-reachable clause keeps their
+        // branch-level pruning exactly as before (a clause's own dispatch/if
+        // arms proved dead stay excluded); widening any *non-trivial* extra
+        // clause would resurrect pruned call/continuation-capture shapes
+        // belonging to unrelated functions in the whole-program run (see
+        // `compiler2_transport_plan_preserves_enumerable_suspend_continuation_captures`).
+        let mut return_source_clauses = analysis.reachable_clauses.clone();
+        let mut return_source_entries = analysis.reachable_entries.iter().copied().collect::<HashSet<_>>();
+        if uses_materialized_body {
+            return_source_clauses = local_clause_ids(&body);
+            return_source_entries = local_entry_ids(&body).into_iter().collect();
+        } else if let LoweredBody::Clauses {
+            clauses,
+            entries: body_entries,
+            ..
+        } = &body
+        {
+            for clause_id in trivial_value_clause_ids(&body, &analysis.reachable_clauses) {
+                return_source_clauses.push(clause_id);
+                let clause = &clauses[clause_id as usize];
+                collect_all_entries_from(clause.entry, body_entries, &mut return_source_entries);
+            }
+        }
+        let return_source_entries = return_source_entries.into_iter().collect::<Vec<_>>();
         for callsite in &analysis.callsites {
             let fact = FactKey::CallSiteSummary(CallSiteKey {
                 activation: executable.activation.clone(),
@@ -1332,7 +1358,7 @@ fn collect_transport_contexts(
                 callsite_modes: callsite_input_modes(&body),
                 callsite_dests: callsite_call_dests(&body),
                 local_sources,
-                return_sources: collect_return_sources(&body, &reachable_clauses, &reachable_entries),
+                return_sources: collect_return_sources(&body, &return_source_clauses, &return_source_entries),
                 resume_entries,
                 analysis,
                 return_ty,
@@ -2253,18 +2279,55 @@ fn collect_step_origin(step: &LoweredStep, out: &mut HashMap<ValueId, TransportS
     }
 }
 
-fn local_clause_ids(body: &LoweredBody) -> Vec<u32> {
+// Codegen (`lower_symbolic_body` in jobs/backend.rs) unconditionally lowers
+// every structural clause/entry from `LoweredBody`, never consulting
+// `ActivationAnalysis::reachable_clauses`. Demand computation must match
+// what codegen actually emits, so every codegen-facing consumer uses the
+// FULL local id set rather than the type-narrowed reachable set.
+// `pub(super)` so `runtime_demand.rs` (which derives the sibling
+// `ExecutableFacts.callsite_needs` / `entry_dispatch_inputs`) shares the
+// identical id sets.
+pub(super) fn local_clause_ids(body: &LoweredBody) -> Vec<u32> {
     let LoweredBody::Clauses { clauses, .. } = body else {
         return Vec::new();
     };
     (0..clauses.len() as u32).collect()
 }
 
-fn local_entry_ids(body: &LoweredBody) -> Vec<ControlEntryId> {
+pub(super) fn local_entry_ids(body: &LoweredBody) -> Vec<ControlEntryId> {
     let LoweredBody::Clauses { entries, .. } = body else {
         return Vec::new();
     };
     (0..entries.len() as u32).map(ControlEntryId::from_u32).collect()
+}
+
+// Clauses that codegen lowers (see `local_clause_ids`) but that
+// `reachable` (the type-level reachability analysis) excludes are an
+// under-approximation risk: a recursive base case whose list slot is
+// over-narrowed can be pruned from `reachable` while codegen still emits
+// it unconditionally. This returns exactly the subset of that delta safe
+// to fold back in for demand purposes — clauses whose entry is a bare,
+// callee-free `Value` return with no `steps`, i.e. an entry that can only
+// ever assert a value is live, never introduce a call or callable-flow
+// fact. Folding in any non-trivial extra clause would resurrect a pruned
+// call/continuation-capture shape belonging to an unrelated function (see
+// `compiler2_transport_plan_preserves_enumerable_suspend_continuation_captures`).
+// Shared by both `collect_transport_contexts` (transport.rs) and
+// `derive_executable_runtime_demand` (runtime_demand.rs) so the predicate
+// has one definition.
+pub(super) fn trivial_value_clause_ids(body: &LoweredBody, reachable: &[u32]) -> Vec<u32> {
+    let LoweredBody::Clauses { clauses, entries, .. } = body else {
+        return Vec::new();
+    };
+    local_clause_ids(body)
+        .into_iter()
+        .filter(|clause_id| !reachable.contains(clause_id))
+        .filter(|clause_id| {
+            let clause = &clauses[*clause_id as usize];
+            let entry = &entries[clause.entry.as_u32() as usize];
+            entry.steps.is_empty() && matches!(entry.tail, LoweredTail::Value { .. })
+        })
+        .collect()
 }
 
 fn collect_return_sources(
@@ -2281,6 +2344,65 @@ fn collect_return_sources(
         collect_return_sources_from_entry(clauses[clause_id as usize].entry, entries, &reachable_entries, &mut out);
     }
     out
+}
+
+// An unconditional structural mirror of `collect_return_sources_from_entry`'s
+// traversal, for clauses codegen lowers that `analysis.reachable_entries`
+// never visited (see the call site in `collect_transport_contexts`). Every
+// branch is walked rather than gated by type-level pruning, but in practice
+// this is only ever called on entries already proven to terminate
+// immediately (the `trivial_value_clause_ids` gate: a bare, callee-free
+// `Value` return with no `steps`), so the Deliver/If/Dispatch/Receive arms
+// below are defensive generality — unreachable at today's call sites, kept
+// in case a future caller widens the gate.
+fn collect_all_entries_from(
+    entry_id: ControlEntryId,
+    entries: &[super::super::body::LoweredEntry],
+    out: &mut HashSet<ControlEntryId>,
+) {
+    if !out.insert(entry_id) {
+        return;
+    }
+    let entry = &entries[entry_id.as_u32() as usize];
+    match &entry.tail {
+        LoweredTail::Value {
+            dest: ControlDestination::Deliver(target),
+            ..
+        }
+        | LoweredTail::DirectCall {
+            dest: ControlDestination::Deliver(target),
+            ..
+        }
+        | LoweredTail::ClosureCall {
+            dest: ControlDestination::Deliver(target),
+            ..
+        } => collect_all_entries_from(*target, entries, out),
+        LoweredTail::Value { .. } | LoweredTail::DirectCall { .. } | LoweredTail::ClosureCall { .. } => {}
+        LoweredTail::If {
+            then_entry, else_entry, ..
+        } => {
+            collect_all_entries_from(*then_entry, entries, out);
+            collect_all_entries_from(*else_entry, entries, out);
+        }
+        LoweredTail::Dispatch { dispatch, .. } => {
+            for arm_entry in &dispatch.arm_entries {
+                collect_all_entries_from(*arm_entry, entries, out);
+            }
+            collect_all_entries_from(dispatch.miss_entry, entries, out);
+        }
+        LoweredTail::Receive(receive) => {
+            for clause in &receive.clauses {
+                collect_all_entries_from(clause.entry, entries, out);
+            }
+            if let Some(after) = &receive.after {
+                collect_all_entries_from(after.entry, entries, out);
+            }
+            if let ControlDestination::Deliver(target) = receive.dest {
+                collect_all_entries_from(target, entries, out);
+            }
+        }
+        LoweredTail::Halt { .. } => {}
+    }
 }
 
 fn collect_return_sources_from_entry(
@@ -4493,6 +4615,118 @@ mod tests {
             descr.capture_lanes.len(),
             1,
             "the generic boxed callable shape is one ValueRef lane: {descr:?}"
+        );
+    }
+
+    /// Pins the fix that keeps a recursive-list HOF's base clause (the `[]`
+    /// case, a bare literal return) in the demand-derived return-source set
+    /// even when the type-level reachability analysis prunes it from
+    /// `reachable_clauses` (over-narrowing the list slot to non-empty).
+    /// Native codegen (`lower_symbolic_body`) lowers the base clause
+    /// unconditionally regardless of that pruning, so if its return value
+    /// were never marked materializable, native `env_runtime_var` would
+    /// later panic on an Absent accumulator. `trivial_value_clause_ids` is
+    /// the shared widening this pins; reverting it (or the call sites that
+    /// consult it) drops the base clause's `TransportSource::LocalValue` out
+    /// of `collect_return_sources`, which this test asserts against
+    /// directly using the real body/entry/clause types (no test-only
+    /// shims).
+    #[test]
+    fn base_case_clause_return_stays_demanded_when_reachable_clauses_prunes_it() {
+        use crate::compiler2::body::{ControlEntryOrigin, LoweredClause, LoweredEntry};
+        use crate::source::Span;
+
+        let base_value = ValueId::from_u32(1);
+        let base_entry = LoweredEntry {
+            span: Span::DUMMY,
+            origin: ControlEntryOrigin::Clause,
+            params: Vec::new(),
+            captures: Vec::new(),
+            reusable_cons_captures: Vec::new(),
+            steps: Vec::new(),
+            tail: LoweredTail::Value {
+                value: base_value,
+                dest: ControlDestination::Return,
+            },
+        };
+        let recursive_value = ValueId::from_u32(2);
+        let recursive_entry = LoweredEntry {
+            span: Span::DUMMY,
+            origin: ControlEntryOrigin::Clause,
+            params: Vec::new(),
+            captures: Vec::new(),
+            reusable_cons_captures: Vec::new(),
+            steps: Vec::new(),
+            tail: LoweredTail::Value {
+                value: recursive_value,
+                dest: ControlDestination::Return,
+            },
+        };
+        let body = LoweredBody::Clauses {
+            clauses: vec![
+                LoweredClause {
+                    span: Span::DUMMY,
+                    params: Vec::new(),
+                    projections: Vec::new(),
+                    entry: ControlEntryId::from_u32(0),
+                },
+                LoweredClause {
+                    span: Span::DUMMY,
+                    params: Vec::new(),
+                    projections: Vec::new(),
+                    entry: ControlEntryId::from_u32(1),
+                },
+            ],
+            entries: vec![base_entry, recursive_entry],
+            generated: Vec::new(),
+        };
+
+        // Simulate what `ActivationAnalysis` computes once the list slot has
+        // type-narrowed to non-empty: only clause 1 (the recursive case) is
+        // reachable; clause 0 (the `[]` base case) is pruned.
+        let reachable_clauses = vec![1u32];
+        let reachable_entries_vec = vec![ControlEntryId::from_u32(1)];
+
+        // Sanity / pre-fix behavior: consulting only the type-level
+        // reachable set loses the base clause's return value entirely.
+        let pruned_sources = collect_return_sources(&body, &reachable_clauses, &reachable_entries_vec);
+        assert!(
+            !pruned_sources.contains(&TransportSource::LocalValue(base_value)),
+            "sanity check: the type-level reachable set alone must not already carry the base \
+             clause's value, otherwise this test proves nothing"
+        );
+
+        // The fix: `trivial_value_clause_ids` finds the delta -- clause 0 is
+        // a bare, callee-free `Value` return with no steps -- and the
+        // production call sites (`collect_transport_contexts`,
+        // `derive_executable_runtime_demand`) widen by exactly this delta.
+        let trivial = trivial_value_clause_ids(&body, &reachable_clauses);
+        assert_eq!(
+            trivial,
+            vec![0],
+            "clause 0's bare literal return is the only safe widening candidate"
+        );
+
+        let LoweredBody::Clauses { clauses, entries, .. } = &body else {
+            unreachable!()
+        };
+        let mut widened_clauses = reachable_clauses;
+        let mut widened_entries: HashSet<ControlEntryId> = reachable_entries_vec.iter().copied().collect();
+        for clause_id in &trivial {
+            widened_clauses.push(*clause_id);
+            collect_all_entries_from(clauses[*clause_id as usize].entry, entries, &mut widened_entries);
+        }
+
+        let widened_sources = collect_return_sources(
+            &body,
+            &widened_clauses,
+            &widened_entries.into_iter().collect::<Vec<_>>(),
+        );
+        assert!(
+            widened_sources.contains(&TransportSource::LocalValue(base_value)),
+            "base-case clause-0 accumulator return must stay demanded/materializable even when \
+             `reachable_clauses` prunes it, because native codegen lowers it unconditionally: \
+             {widened_sources:?}"
         );
     }
 }
