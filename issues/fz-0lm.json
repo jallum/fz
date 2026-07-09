@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-06-23T22:36:26Z",
@@ -13,8 +13,8 @@
     }
   ],
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "Parallel AOT-build runtime-archive race: fixture_matrix ::build tests flake only under contention (shared newest-mtime libfz_runtime-*.a selection)",
   "type": "task",
-  "updated_at": "2026-07-07T14:09:40Z"
+  "updated_at": "2026-07-09T19:41:35Z"
 }
