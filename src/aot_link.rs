@@ -9,7 +9,7 @@
 use std::env;
 use std::ffi::{OsStr, OsString};
 use std::fmt;
-use std::fs::{read_dir, remove_file, write};
+use std::fs::{remove_file, write};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus};
@@ -56,15 +56,6 @@ impl std::error::Error for RuntimeArchiveError {}
 enum CargoProfile {
     Debug,
     Release,
-}
-
-impl CargoProfile {
-    fn as_str(self) -> &'static str {
-        match self {
-            CargoProfile::Debug => "debug",
-            CargoProfile::Release => "release",
-        }
-    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -143,14 +134,17 @@ pub(crate) fn link_aot_artifact(
 fn resolve_runtime_archive_plan(plan: RuntimeArchivePlan) -> Result<RuntimeArchive, RuntimeArchiveError> {
     match plan {
         RuntimeArchivePlan::EnvOverride(path) => existing_archive(path, RuntimeArchiveSource::EnvOverride),
-        RuntimeArchivePlan::Sibling { target_dir } => find_runtime_archive(&target_dir)
-            .ok_or_else(|| missing_archive_error(&target_dir))
-            .map(|path| RuntimeArchive {
+        RuntimeArchivePlan::Sibling { target_dir } => {
+            let target_root = target_dir.parent().unwrap_or(&target_dir).to_path_buf();
+            let profile = profile_from_target_dir(&target_dir);
+            locate_runtime_staticlib(&target_root, profile, false).map(|path| RuntimeArchive {
                 path,
                 source: RuntimeArchiveSource::Sibling,
-            }),
+            })
+        }
         RuntimeArchivePlan::IsolatedCoverageBuild { target_root, profile } => {
-            ensure_isolated_clean_runtime_archive(&target_root, profile).map(|path| RuntimeArchive {
+            let isolated_target_root = target_root.join(ISOLATED_AOT_TARGET_DIR);
+            locate_runtime_staticlib(&isolated_target_root, profile, true).map(|path| RuntimeArchive {
                 path,
                 source: RuntimeArchiveSource::IsolatedCoverageBuild,
             })
@@ -222,43 +216,31 @@ fn has_component(path: &Path, needle: &OsStr) -> bool {
     path.components().any(|component| component.as_os_str() == needle)
 }
 
-fn find_runtime_archive(target_dir: &Path) -> Option<PathBuf> {
-    newest_hashed_runtime_archive(&target_dir.join("deps")).or_else(|| {
-        let path = target_dir.join("libfz_runtime.a");
-        path.is_file().then_some(path)
-    })
-}
-
-fn newest_hashed_runtime_archive(deps_dir: &Path) -> Option<PathBuf> {
-    read_dir(deps_dir)
-        .ok()?
-        .filter_map(Result::ok)
-        .filter(|entry| {
-            let name = entry.file_name();
-            let s = name.to_string_lossy();
-            s.starts_with("libfz_runtime-") && s.ends_with(".a")
-        })
-        .max_by_key(|entry| entry.metadata().and_then(|m| m.modified()).ok())
-        .map(|entry| entry.path())
-}
-
-fn missing_archive_error(target_dir: &Path) -> RuntimeArchiveError {
-    RuntimeArchiveError::new(format!(
-        "could not find libfz_runtime.a under {} or {}",
-        target_dir.join("deps").display(),
-        target_dir.join("libfz_runtime.a").display()
-    ))
-}
-
-fn ensure_isolated_clean_runtime_archive(
+/// Ask Cargo for the exact staticlib path it produced for `fz-runtime` under
+/// `target_root`/`profile`, instead of globbing `libfz_runtime-*.a` and
+/// picking the newest by mtime.
+///
+/// Cargo's hashed dependency filenames (`libfz_runtime-<hash>.a`) are stable
+/// for a given (rustc, features, profile, target) tuple, but stale archives
+/// from earlier builds linger alongside the current one, and under parallel
+/// `::build` test execution a *different* concurrent build can refresh one
+/// of those files' mtimes mid-run. "Newest mtime" then names whichever build
+/// last touched the filesystem, not necessarily the archive that matches
+/// *this* invocation — a race, not a selection. Cargo's own
+/// `--message-format=json` artifact report names the file it actually
+/// produced for this exact invocation; asking it directly removes the
+/// ambiguity at the source rather than guessing among candidates. Cargo also
+/// serializes concurrent builds of the same target directory itself, so this
+/// call is safe under contention where a directory scan was not.
+fn locate_runtime_staticlib(
     target_root: &Path,
     profile: CargoProfile,
+    scrub_env: bool,
 ) -> Result<PathBuf, RuntimeArchiveError> {
-    let isolated_target_root = target_root.join(ISOLATED_AOT_TARGET_DIR);
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
     if !manifest.is_file() {
         return Err(RuntimeArchiveError::new(format!(
-            "coverage-isolated AOT runtime needs Cargo.toml at {}",
+            "locating the fz-runtime staticlib needs Cargo.toml at {}",
             manifest.display()
         )));
     }
@@ -271,30 +253,60 @@ fn ensure_isolated_clean_runtime_archive(
         .arg("-p")
         .arg("fz-runtime")
         .arg("--target-dir")
-        .arg(&isolated_target_root);
+        .arg(target_root)
+        .arg("--message-format=json")
+        .arg("-q");
     if profile == CargoProfile::Release {
         cmd.arg("--release");
     }
-    scrub_coverage_env(&mut cmd);
+    if scrub_env {
+        scrub_coverage_env(&mut cmd);
+    }
 
     let output = cmd.output().map_err(|e| {
         RuntimeArchiveError::new(format!(
-            "building clean AOT runtime in {}: {e}",
-            isolated_target_root.display()
+            "invoking `cargo build -p fz-runtime --target-dir {}`: {e}",
+            target_root.display()
         ))
     })?;
     if !output.status.success() {
         return Err(RuntimeArchiveError::new(format!(
-            "building clean AOT runtime in {} exited {}; stdout={:?} stderr={:?}",
-            isolated_target_root.display(),
+            "`cargo build -p fz-runtime --target-dir {}` exited {}; stderr={}",
+            target_root.display(),
             output.status,
-            String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         )));
     }
 
-    let target_dir = isolated_target_root.join(profile.as_str());
-    find_runtime_archive(&target_dir).ok_or_else(|| missing_archive_error(&target_dir))
+    runtime_staticlib_from_cargo_messages(&output.stdout).ok_or_else(|| {
+        RuntimeArchiveError::new(format!(
+            "`cargo build -p fz-runtime --target-dir {}` did not report a staticlib artifact",
+            target_root.display()
+        ))
+    })
+}
+
+/// Parse Cargo's `--message-format=json` stream for the `fz-runtime`
+/// `compiler-artifact` message and return the staticlib (`.a`) filename it
+/// names. This is the deterministic, Cargo-authoritative counterpart to
+/// globbing `libfz_runtime-*.a` and picking the newest by mtime.
+fn runtime_staticlib_from_cargo_messages(stdout: &[u8]) -> Option<PathBuf> {
+    String::from_utf8_lossy(stdout).lines().find_map(|line| {
+        let message: serde_json::Value = serde_json::from_str(line).ok()?;
+        if message.get("reason")?.as_str()? != "compiler-artifact" {
+            return None;
+        }
+        if message.get("target")?.get("name")?.as_str()? != "fz_runtime" {
+            return None;
+        }
+        message
+            .get("filenames")?
+            .as_array()?
+            .iter()
+            .filter_map(|name| name.as_str())
+            .find(|name| name.ends_with(".a"))
+            .map(PathBuf::from)
+    })
 }
 
 fn scrub_coverage_env(cmd: &mut Command) {

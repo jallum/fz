@@ -114,3 +114,65 @@ fn clean_runtime_build_scrubs_coverage_and_target_env() {
     assert!(!should_scrub_for_clean_runtime_build(OsStr::new("PATH")));
     assert!(!should_scrub_for_clean_runtime_build(OsStr::new("CARGO_HOME")));
 }
+
+/// Selection must come from Cargo's own artifact report, never from
+/// filesystem mtime. Fabricate a decoy `libfz_runtime-*.a` whose mtime is
+/// newer than the archive Cargo actually reports as this build's output; a
+/// mtime-based picker would return the decoy, but the deterministic selector
+/// must still return the archive named in the `compiler-artifact` message.
+#[test]
+fn runtime_staticlib_selection_ignores_decoy_newer_mtime_archive() {
+    use std::fs::{create_dir_all, write as fs_write};
+    use std::thread::sleep;
+    use std::time::Duration;
+
+    let dir = std::env::temp_dir().join(format!(
+        "fz_aot_link_test_{}_{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    create_dir_all(&dir).expect("create temp dir");
+
+    let authoritative = dir.join("libfz_runtime-19d6c6c451fa0f44.a");
+    fs_write(&authoritative, b"real archive").expect("write authoritative archive");
+
+    // Give the decoy a strictly newer mtime than the authoritative archive,
+    // as would happen when a concurrent, unrelated build refreshes a stale
+    // hashed archive mid-run.
+    sleep(Duration::from_millis(10));
+    let decoy = dir.join("libfz_runtime-deadbeefcafefeed.a");
+    fs_write(&decoy, b"stale archive with a newer mtime").expect("write decoy archive");
+
+    let authoritative_mtime = authoritative.metadata().unwrap().modified().unwrap();
+    let decoy_mtime = decoy.metadata().unwrap().modified().unwrap();
+    assert!(
+        decoy_mtime > authoritative_mtime,
+        "decoy must have the newer mtime for this test to prove anything"
+    );
+
+    let cargo_stdout = format!(
+        concat!(
+            r#"{{"reason":"compiler-artifact","package_id":"path+file:///repo/runtime#libc@0.2.0","target":{{"kind":["lib"],"name":"libc"}},"filenames":["/repo/target/debug/deps/liblibc-aaaa.rlib"]}}"#,
+            "\n",
+            r#"{{"reason":"build-script-executed","package_id":"path+file:///repo/runtime#fz-runtime@0.1.0"}}"#,
+            "\n",
+            r#"{{"reason":"compiler-artifact","package_id":"path+file:///repo/runtime#fz-runtime@0.1.0","target":{{"kind":["staticlib","rlib"],"name":"fz_runtime"}},"filenames":["{authoritative}","{rlib}"]}}"#,
+        ),
+        authoritative = authoritative.display(),
+        rlib = dir.join("libfz_runtime-19d6c6c451fa0f44.rlib").display(),
+    );
+
+    let selected = runtime_staticlib_from_cargo_messages(cargo_stdout.as_bytes())
+        .expect("cargo message names a staticlib artifact");
+
+    assert_eq!(
+        selected, authoritative,
+        "selection must follow Cargo's compiler-artifact message, not the newer-mtime decoy"
+    );
+    assert_ne!(selected, decoy);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
