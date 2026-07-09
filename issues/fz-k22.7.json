@@ -4,6 +4,7 @@
     "fz-k22.8"
   ],
   "blocks": [],
+  "closed_at": "2026-07-09T22:29:30Z",
   "created": "2026-07-08T16:54:26Z",
   "description": "BUG 2 (the genuine capture-lane surface work), distinct from and STACKED ON TOP OF fz-k22.8 (clause-0 demand, bug 1). Confirmed via spike wt-spike-k22b (2026-07-09): with bug 1 fixed, enum_predicate_search now fails on a distinct pre-existing codegen bug -- NativeClosureTargetSurface { capture_count: 1, capture_reprs: [RawAtom] } vs { 0, [] } at native_codegen/driver.rs:940 -- a direct closure-call fast path encoding 1 capture lane where the callee target expects 0/2. Ground-folding of closure captures disagrees across call sites.\n\nINDEPENDENCE CONFIRMED: reproduces on UNTOUCHED fixtures2/00279_enum_find_find_value.fz and at HEAD baseline. SHARED BUG FAMILY: identical NativeClosureTargetSurface assertion at driver.rs:940 holds enum_take_drop_split::{run,build} red -- so fixing this greens TWO matrix fixtures at once.\n\nCORRECT LOCUS = native codegen closure-target SURFACE unification (driver.rs:940), NOT the demand seam. The earlier fix (a) attempt (route through CallEdge::Indirect, thread aggregate capture-surface multiplicity through arg_demands_for_summary) dead-ended on phase-ordering (capture-surface fact lives in transport-layer BoundaryDescr, downstream of the demand seam). Re-diagnose from the SETTLED state that lands only after fz-k22.8. BLOCKED BY fz-k22.8 (must land first to expose the settled non-crashing state this bug lives in).\n\nFIXTURE PATH: fixtures2/behavior/enum_predicate_search.{fz,expected.txt,oracle.exs} (discovered by tests/fixture_matrix.rs via fixtures2/behavior).",
   "id": "fz-k22.7",
@@ -28,8 +29,8 @@
     }
   ],
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "fz-k22: shared HOF body reached by 2+ distinct closure CAPTURE surfaces -- the crash is per-call closure-capture evidence, NOT a settle-race or a convergence fold",
   "type": "bug",
-  "updated_at": "2026-07-09T20:13:59Z"
+  "updated_at": "2026-07-09T22:29:30Z"
 }
