@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-07-09T22:00:24Z",
+  "description": "spec_violation.fz currently exits 0 and prints 42 on run/interp/build; no spec/violation code is registered and FunctionContract facts refine calls without rejecting declared-vs-observed mismatches. Acceptance: register/emit spec/violation from production compiler2 validation, spec_violation.fz exits nonzero with diagnostic on run/interp/build, spec_ok.fz stays clean, cargo test --lib and cargo clippy --all-targets -- -D warnings pass.",
+  "id": "fz-9i4.7.1.3",
+  "labels": [],
+  "parent": "fz-9i4.7.1",
+  "priority": 2,
+  "status": "open",
+  "title": "Implement real @spec violation diagnostics on compiler2 product paths",
+  "type": "bug",
+  "updated_at": "2026-07-09T22:00:24Z"
+}
