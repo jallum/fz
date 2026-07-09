@@ -65,6 +65,12 @@ impl<'a> Compiler2<'a> {
         self.world.register_scoped_prelude(name, text)
     }
 
+    /// Registers another module's interface without handing this compiler
+    /// that module's source: the front door for an embedder that owns a
+    /// module out-of-band (a host-provided module, or a sibling compilation
+    /// unit compiled elsewhere) and wants code submitted here to import
+    /// against it. The module settles on the published interface alone —
+    /// no body definition is required or implied.
     pub fn submit_module_interface(&mut self, module_name: String, interface: ModuleInterface) -> ModuleId {
         self.world.submit_module_interface(module_name, interface)
     }

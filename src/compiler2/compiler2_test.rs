@@ -1,4 +1,4 @@
-use super::{CodeSubmission, Compiler2, DriveOutcome, Job};
+use super::{CodeSubmission, Compiler2, DriveOutcome, Job, ModuleInterface};
 use crate::exec::runtime::DbgCapture;
 use crate::ir_interp::{
     tests_support_dtor_fired, tests_support_dtor_last_payload, tests_support_dtor_reset, tests_support_lock,
@@ -79,6 +79,32 @@ fn compiler2_drive_honors_the_configured_timeout() {
             }
         ),
         "compiler.drive() should honor the configured timeout, got: {outcome:?}"
+    );
+}
+
+// Ported from `world_test`'s interface-only-module coverage, through the
+// public `Compiler2` front door instead of poking `World` directly: an
+// embedder that owns another module's interface out-of-band (a host module,
+// or a sibling compilation unit it does not want to hand this compiler's
+// source for) registers that interface here so imports against it resolve
+// without ever supplying a body.
+#[test]
+fn compiler2_submit_module_interface_settles_an_external_module_without_a_body() {
+    let tel = ConfiguredTelemetry::new();
+    let mut compiler = Compiler2::new(&tel);
+    let module = compiler.submit_module_interface("ExternalHost".to_string(), ModuleInterface::default());
+
+    assert!(
+        matches!(compiler.drive(), DriveOutcome::Resolved),
+        "publishing an interface-only module through Compiler2 should settle without a source body",
+    );
+    assert!(
+        compiler.world().module_defined_revision(module).is_none(),
+        "an externally-submitted interface must never gain a body definition on its own",
+    );
+    assert!(
+        compiler.world().module_interface_revision(module).is_some(),
+        "Compiler2::submit_module_interface should publish the interface fact the same way World's does",
     );
 }
 
