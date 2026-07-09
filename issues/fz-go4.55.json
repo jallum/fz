@@ -9,9 +9,15 @@
   "id": "fz-go4.55",
   "labels": [],
   "parent": "fz-go4",
+  "comments": [
+    {
+      "text": "COORDINATOR VERIFY 2026-07-09: landed eaa011485 (fz-go4.55: remove dead null receive value) on integration, audited by independent agent against a99553ad8, then verified on integration with cargo test --lib, cargo clippy --all-targets -- -D warnings, dispatch_const_value_materializes_only_receive_scalar_consts, and fz2_cli receive fixture run/interp/build checks. Note: implementation agent prematurely closed this ticket from its worktree; coordinator verified/folded after the fact.",
+      "timestamp": "2026-07-09T18:57:38Z"
+    }
+  ],
   "priority": 4,
   "status": "closed",
   "title": "ReceiveValue::Null / ValueKind::NULL dispatch-const arm is dead: dispatch_const_value never emits ValueKind::NULL (same mechanism as the deleted EmptyList arm)",
   "type": "bug",
-  "updated_at": "2026-07-09T18:45:19Z"
+  "updated_at": "2026-07-09T18:57:38Z"
 }
