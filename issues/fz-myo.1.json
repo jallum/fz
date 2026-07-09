@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-myo.2"
+  ],
   "created": "2026-07-09T19:48:08Z",
   "description": "Use the validated rebuild-and-diff technique (~15-20s/rebuild): checkout each candidate, rebuild, run quicksort/append/reverse, diff reductions_remaining vs the committed golden, to name the single culprit commit in the ~250-commit range between rebless #1 (0aa8dc0eb) and rebless #2 (2479a69fd). Then decide whether that commits SCC-partition change is NECESSARY (accept) or SPURIOUS duplication/over-specialization (fix + LOWER the pin -- lowering is safe by construction). Output + all allocation counters were byte-identical across the jump, so this isolates pure codegen-shape churn.",
   "id": "fz-myo.1",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "fz-myo: bisect 0aa8dc0eb..2479a69fd to name the exact commit that reshaped the SCC partition (quicksort reductions 66-\u003e94)",
   "type": "bug",
-  "updated_at": "2026-07-09T19:48:08Z"
+  "updated_at": "2026-07-09T19:48:09Z"
 }
