@@ -941,6 +941,24 @@ fn build_codegen_closure_targets(
         }
     }
 
+    // `direct_target` on `CallClosure`/`TailCallClosure` is a devirtualization
+    // HINT for the call_indirect's code pointer — native codegen never emits a
+    // genuine direct `call`/`return_call` for either terminator (see
+    // `emit_call_closure`/`emit_tail_call_closure` in native_codegen/call.rs
+    // and terminator.rs, which always lower through `call_indirect` /
+    // `return_call_indirect`). The same `target_fn` can legitimately be named
+    // by call sites whose closures carry different real capture surfaces —
+    // e.g. `all?/1` closing over nothing vs `all?/2` closing over a
+    // caller-supplied `fun`, sharing one recursive body (see the "expected,
+    // not a bug" fallback comment in jobs/native.rs). Deriving a capture count
+    // from this call site's `args.len()` and comparing it against an already
+    // *authoritative* target surface (published above from the concrete
+    // producer boundaries) therefore fabricates false disagreements
+    // and must never happen. This loop exists only to synthesize a fallback
+    // surface for target bodies that own no callable boundary at all (e.g.
+    // closures that never escape as first-class values), so it must skip any
+    // `target_fn` the boundary walk above already settled.
+    let authoritative_targets: std::collections::HashSet<FnId> = targets.keys().copied().collect();
     for function in &program.module.fns {
         for block in &function.blocks {
             let (target_fn, arg_count) = match &block.terminator {
@@ -956,6 +974,9 @@ fn build_codegen_closure_targets(
                 } => (*target_fn, args.len()),
                 _ => continue,
             };
+            if authoritative_targets.contains(&target_fn) {
+                continue;
+            }
             let target_ir = program.module.fn_by_id(target_fn);
             let logical_param_count = target_ir.block(target_ir.entry).params.len();
             assert!(

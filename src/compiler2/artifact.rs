@@ -65,6 +65,15 @@ pub struct MaterializedTransportPlan {
     /// materialization reads boundary selection from here; it never re-opens the
     /// legacy root transport plan.
     pub callable_boundaries: Vec<(CallableId, Box<[BoundaryId]>)>,
+    /// Per-callable concrete producer resolutions, sourced from the
+    /// `CallableFacts` pull product (`CallableFacts.resolutions`). A callable
+    /// that never publishes a first-class boundary (it never escapes as an
+    /// opaque value) still needs its resolved target body's physical entry
+    /// layout to materialize a `MakeClosure`/`MakeFnRef` value correctly --
+    /// capture ABI is a property of the resolved target, never of the
+    /// reference. Native codegen reads this to synthesize a fallback
+    /// callable-boundary shim for such values.
+    pub callable_resolutions: Vec<(CallableId, Box<[ExecutableSymbol]>)>,
     pub boundary_ids: Vec<BoundaryId>,
     pub publication_boundaries: Vec<(TransportPosition, BoundaryId)>,
     pub codegen_seam_facts: Box<[CodegenSeamFact]>,
@@ -79,6 +88,15 @@ impl MaterializedTransportPlan {
         self.callable_boundaries
             .iter()
             .find_map(|(candidate, boundaries)| (*candidate == callable).then_some(&boundaries[..]))
+    }
+
+    /// Concrete producer resolutions for a callable that never published a
+    /// first-class boundary. `None` means the callable was never demanded for
+    /// this program (no facts), distinct from an empty resolution list.
+    pub fn callable_resolutions(&self, callable: CallableId) -> Option<&[ExecutableSymbol]> {
+        self.callable_resolutions
+            .iter()
+            .find_map(|(candidate, resolutions)| (*candidate == callable).then_some(&resolutions[..]))
     }
 
     pub fn shape_at(&self, position: &TransportPosition) -> Option<ShapeId> {
@@ -283,7 +301,12 @@ pub(crate) struct NativeCallableBoundary {
     /// The transport `BoundaryId` this native boundary projects. Callable
     /// materialization selects a boundary by the value's `CallableId` fact
     /// (`CallableFacts.boundary_ids`), never by re-deriving from capture types.
-    pub boundary: BoundaryId,
+    /// `None` for a synthetic fallback entry: a target body that never
+    /// published a first-class boundary still needs a
+    /// physical callable-boundary shim so its `MakeClosure`/`MakeFnRef` value
+    /// carries a valid code pointer; that shim has no transport publication
+    /// to project.
+    pub boundary: Option<BoundaryId>,
     /// Synthetic callable identity used at `MakeFnRef` / `MakeClosure` sites.
     pub identity_fn: FnId,
     /// Direct executable-entry body the callable boundary ultimately reaches

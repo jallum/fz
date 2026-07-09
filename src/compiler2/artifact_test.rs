@@ -160,7 +160,7 @@ fn compiler2_native_program_contract_keeps_codegen_facts_on_body_records() {
         }],
         callable_boundaries: vec![NativeCallableBoundary {
             id: NativeCallableBoundaryId(0),
-            boundary: shapes.boundary_id(return_shape, return_lane),
+            boundary: Some(shapes.boundary_id(return_shape, return_lane)),
             identity_fn,
             target_fn: entry_fn,
             target: executable.clone(),
@@ -316,7 +316,7 @@ fn compiler2_native_program_contract_maps_old_native_inputs_to_local_facts() {
         ],
         callable_boundaries: vec![NativeCallableBoundary {
             id: NativeCallableBoundaryId(0),
-            boundary: shapes.boundary_id(return_shape, return_lane),
+            boundary: Some(shapes.boundary_id(return_shape, return_lane)),
             identity_fn,
             target_fn: entry_fn,
             target: executable.clone(),

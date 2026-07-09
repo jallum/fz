@@ -531,6 +531,69 @@ fn package_call_target(
     })
 }
 
+/// The capture ABI of a compiled closure body is a property of the TARGET
+/// (its `ExecutableKey`), not of whichever boundary happens to reference it.
+/// A concrete producer boundary (`CallableDescr.function: Some(_)`) IS that
+/// target's own entry -- its `published_capture_lanes` is the target's real
+/// physical capture surface. A generic/pooling dispatch boundary
+/// (`function: None`) legitimately pools every concrete producer that flows
+/// through it for resolution purposes (`source_callable_admitted_by_target`),
+/// but its OWN `published_capture_lanes` describes its boxed call convention,
+/// not the ABI of whichever concrete body it happens to resolve to. Reading
+/// captures straight off the iterated boundary conflates those two grains: a
+/// pooling boundary can publish `(target_fn, capture_count=0)` for a target
+/// whose owning concrete boundary already published `(target_fn,
+/// capture_count=1)`, and native codegen's per-`target_fn` map
+/// (`build_codegen_closure_targets`) then sees two incompatible surfaces for
+/// one physical entry. Collecting the concrete owners' capture
+/// surfaces once, keyed by resolved target, and reading from that single
+/// source of truth for every boundary (concrete or pooling) makes the
+/// divergence impossible instead of papering over it at the codegen seam.
+fn concrete_target_capture_surfaces(
+    world: &World<'_>,
+    root: RootId,
+    executable_index: &std::collections::HashMap<ExecutableKey, usize>,
+    boundaries: &HashMap<BoundaryId, BoundaryFacts>,
+) -> Result<HashMap<ExecutableKey, Box<[LaneId]>>, FatalError> {
+    let mut surfaces: HashMap<ExecutableKey, Box<[LaneId]>> = HashMap::new();
+    for (boundary, facts) in boundaries {
+        let boundary_descr = world.boundary(*boundary);
+        if world.callable(boundary_descr.callable).function.is_none() {
+            continue;
+        }
+        for target_symbol in facts.resolutions.iter() {
+            let Some(target) = executable_key_for_symbol_in_index(target_symbol, executable_index, world.types())
+            else {
+                return Err(incomplete_backend_program(
+                    world,
+                    root,
+                    format!(
+                        "boundary {:?} resolution {:?} is missing from final executable inventory",
+                        boundary, target_symbol
+                    ),
+                ));
+            };
+            let lanes = boundary_descr.published_capture_lanes.clone();
+            match surfaces.get(&target) {
+                Some(existing) if existing.as_ref() != lanes.as_ref() => {
+                    return Err(incomplete_backend_program(
+                        world,
+                        root,
+                        format!(
+                            "target {:?} has two concrete producer boundaries with different capture surfaces: {:?} vs {:?}",
+                            target, existing, lanes
+                        ),
+                    ));
+                }
+                _ => {
+                    surfaces.insert(target, lanes);
+                }
+            }
+        }
+    }
+    Ok(surfaces)
+}
+
 fn package_backend_callable_entries(
     world: &World<'_>,
     root: RootId,
@@ -538,6 +601,7 @@ fn package_backend_callable_entries(
     executable_index: &std::collections::HashMap<ExecutableKey, usize>,
     boundaries: &HashMap<BoundaryId, BoundaryFacts>,
 ) -> Result<Vec<BackendCallableEntry>, FatalError> {
+    let concrete_captures = concrete_target_capture_surfaces(world, root, executable_index, boundaries)?;
     let mut entries = Vec::new();
     for (boundary, facts) in boundaries {
         let boundary_descr = world.boundary(*boundary);
@@ -573,12 +637,37 @@ fn package_backend_callable_entries(
                     ),
                 ));
             };
+            let capture_lanes = match concrete_captures.get(&target) {
+                Some(lanes) => lanes.clone(),
+                None if world.callable(boundary_descr.callable).function.is_none()
+                    && !boundary_descr.published_capture_lanes.is_empty() =>
+                {
+                    // A pooling boundary with no concrete producer AND a non-empty
+                    // published capture surface is the genuinely dangerous case:
+                    // its lanes describe its own boxed call convention, not the
+                    // target's physical ABI, and here there is a real (non-zero)
+                    // surface that could silently disagree with the target's true
+                    // one. When the pooling boundary's own surface is empty,
+                    // there is no grain to get wrong -- zero captures reads the
+                    // same regardless of which boundary's lanes are consulted --
+                    // so that case is left alone rather than hard-erroring on
+                    // programs that are provably unaffected.
+                    return Err(incomplete_backend_program(
+                        world,
+                        root,
+                        format!(
+                            "boundary {:?} target {:?} has no concrete producer capture surface, and boundary {:?} is a pooling boundary publishing a non-empty capture surface {:?} -- that surface describes the pooling boundary's own boxed call convention, not the target's physical ABI, so it cannot stand in as a fallback",
+                            boundary, target, boundary, boundary_descr.published_capture_lanes
+                        ),
+                    ));
+                }
+                None => boundary_descr.published_capture_lanes.clone(),
+            };
             entries.push(BackendCallableEntry {
                 boundary: *boundary,
                 target: target_index,
-                capture_count: boundary_descr.published_capture_lanes.len(),
-                capture_reprs: boundary_descr
-                    .published_capture_lanes
+                capture_count: capture_lanes.len(),
+                capture_reprs: capture_lanes
                     .iter()
                     .copied()
                     .map(|lane| abi_value_repr_for_lane(world, lane))
@@ -650,7 +739,7 @@ fn compare_executable_needs(left: ExecutableNeed, right: ExecutableNeed) -> std:
     }
 }
 
-fn abi_value_repr_for_lane(
+pub(crate) fn abi_value_repr_for_lane(
     world: &World<'_>,
     lane: super::super::transport::LaneId,
 ) -> super::super::artifact::AbiValueRepr {
@@ -884,6 +973,14 @@ pub(crate) fn symbolic_materialized_transport_plan(
             let mut rows = callables
                 .iter()
                 .map(|(callable, facts)| (*callable, facts.boundary_ids.clone()))
+                .collect::<Vec<_>>();
+            rows.sort_by_key(|(callable, _)| callable.as_u32());
+            rows
+        },
+        callable_resolutions: {
+            let mut rows = callables
+                .iter()
+                .map(|(callable, facts)| (*callable, facts.resolutions.clone()))
                 .collect::<Vec<_>>();
             rows.sort_by_key(|(callable, _)| callable.as_u32());
             rows

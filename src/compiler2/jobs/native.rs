@@ -31,12 +31,12 @@ use super::super::artifact::{
 };
 use super::super::body::{ControlDestination, ControlEntryId, LoweredExtern, ValueId};
 use super::super::drive::{FactKey, Job, JobEffects, settled_uses};
-use super::super::identity::{FunctionId, RootId};
+use super::super::identity::{ExecutableKey, FunctionId, RootId};
 use super::super::scheduler::FatalError;
 use super::super::semantic::{RuntimeDemand, ShapeDemand};
 use super::super::transport::{
-    BoundaryId, CallableId, CodegenLaneRepr, CodegenSeam, LaneId, ShapeDescr, ShapeId, TransportPosition,
-    TransportValue,
+    BoundaryId, CallableId, CodegenLaneRepr, CodegenSeam, ExecutableSymbol, LaneId, ShapeDescr, ShapeId,
+    TransportPosition, TransportValue,
 };
 use super::super::types::{Ty, Types};
 use super::super::world::World;
@@ -118,6 +118,13 @@ struct NativeLowerer<'a, 'tel> {
     executable_fns: Vec<FnId>,
     callable_identity_fns: HashMap<(FunctionId, usize), FnId>,
     callable_boundaries: Vec<NativeCallableBoundary>,
+    /// Synthetic fallback boundaries minted on demand for callables that
+    /// never publish a first-class transport boundary (they never escape as
+    /// an opaque value) but still get materialized as a `MakeClosure`/
+    /// `MakeFnRef` value, which needs a real physical entry to embed as its
+    /// code pointer. Cached per `CallableId` so repeated
+    /// materializations of the same callable share one boundary.
+    fallback_callable_boundaries: HashMap<CallableId, NativeCallableBoundaryId>,
     extern_ids: HashMap<usize, ExternId>,
     extern_marshals: HashMap<usize, Vec<ExternTy>>,
     extern_decls: Vec<ExternDecl>,
@@ -189,7 +196,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                     .expect("callable identity should be predeclared");
                 NativeCallableBoundary {
                     id: NativeCallableBoundaryId(index as u32),
-                    boundary: entry.boundary,
+                    boundary: Some(entry.boundary),
                     identity_fn,
                     target_fn: executable_fns[entry.target],
                     target: executable.key.clone(),
@@ -217,6 +224,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
             executable_fns,
             callable_identity_fns,
             callable_boundaries,
+            fallback_callable_boundaries: HashMap::new(),
             extern_ids,
             extern_marshals,
             extern_decls,
@@ -1082,16 +1090,18 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                         }
                     }
                 } else {
-                    if let Some(reason) = direct_rejection {
-                        return Err(incomplete_native_program(
-                            self.world,
-                            self.root_id,
-                            format!(
-                                "native direct-only closure call in {:?} could not use direct target {:?}: {reason}",
-                                ctx.origin, target
-                            ),
-                        ));
-                    }
+                    // The devirtualized fast path only fires when this callsite's closure
+                    // capture surface structurally agrees with the shared target executable's
+                    // published param reprs. A settled `target` can still disagree here: the
+                    // same target executable/FnId can be reached by closures from distinct call
+                    // sites whose capture surfaces differ (e.g. `all?/1` closing over nothing vs
+                    // `all?/2` closing over a caller-supplied `fun`) sharing one recursive body.
+                    // That disagreement is expected, not a bug — fall back to the general
+                    // indirect closure call, which always accepts the closure's true runtime
+                    // capture surface. `target` is still passed through as a codegen hint so the
+                    // backend can devirtualize the call target's *code pointer* even though the
+                    // call itself goes through the indirect calling convention.
+                    let _ = direct_rejection;
                     let closure = self.materialize_native_value(ctx, None, &callee_value)?;
                     let call_args = self.env_runtime_vars(
                         ctx,
@@ -2257,7 +2267,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
         } else {
             self.callable_boundaries
                 .iter()
-                .filter(|candidate| published.contains(&candidate.boundary))
+                .filter(|candidate| candidate.boundary.is_some_and(|boundary| published.contains(&boundary)))
                 .map(NativeCallableBoundary::id)
                 .collect()
         };
@@ -2964,7 +2974,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
         let matched = self
             .callable_boundaries
             .iter()
-            .filter(|boundary| boundary_ids.contains(&boundary.boundary))
+            .filter(|boundary| boundary.boundary.is_some_and(|id| boundary_ids.contains(&id)))
             .map(NativeCallableBoundary::id)
             .collect::<Vec<_>>();
         match self.select_inhabited_callable_boundary(&matched) {
@@ -2988,6 +2998,152 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
         }
     }
 
+    /// Mint (or reuse) a native callable boundary for a callable value that
+    /// carries no transport-published boundary at all -- it never escapes as
+    /// an opaque first-class value, so transport never records a
+    /// `CallableFacts.boundary_ids` entry for it. Its `MakeClosure`/
+    /// `MakeFnRef` value still needs a real code pointer: capture ABI is a
+    /// property of the resolved TARGET body, so this reads the
+    /// callable's `CallableFacts.resolutions` -- the same concrete-producer
+    /// facts a published boundary would have carried -- and builds a native
+    /// boundary from whichever resolved executable(s) agree on physical ABI.
+    ///
+    /// Call sites for such a callable always devirtualize through their own
+    /// resolved target (native codegen's `direct_target` hint / the
+    /// interpreter's per-callsite resolution), never through this value's
+    /// header code pointer; several resolutions sharing one identical ABI
+    /// (arg/capture/return reprs) are therefore layout-interchangeable at
+    /// this seam, mirroring `select_inhabited_callable_boundary`'s existing
+    /// pooling tolerance for published boundaries. Resolutions that
+    /// genuinely disagree on ABI are a real defect, surfaced as a hard error
+    /// rather than silently picking one (never trade a clean crash for a
+    /// miscompile).
+    fn fallback_callable_boundary(
+        &mut self,
+        callable: CallableId,
+        function: FunctionId,
+        capture_count: usize,
+        capture_lanes: &[LaneId],
+        origin: &NativeBodyOrigin,
+    ) -> Result<NativeCallableBoundaryId, FatalError> {
+        if let Some(boundary) = self.fallback_callable_boundaries.get(&callable).copied() {
+            return Ok(boundary);
+        }
+        let resolutions: Vec<ExecutableSymbol> = self
+            .program
+            .transport
+            .callable_resolutions(callable)
+            .ok_or_else(|| {
+                incomplete_native_program(
+                    self.world,
+                    self.root_id,
+                    format!(
+                        "native callable materialization has no transport resolution facts for {callable:?} in {}",
+                        self.native_origin_debug(origin)
+                    ),
+                )
+            })?
+            .to_vec();
+        if resolutions.is_empty() {
+            return Err(incomplete_native_program(
+                self.world,
+                self.root_id,
+                format!(
+                    "native callable materialization found no concrete resolutions for {callable:?} in {}",
+                    self.native_origin_debug(origin)
+                ),
+            ));
+        }
+        let capture_reprs: Vec<AbiValueRepr> = capture_lanes
+            .iter()
+            .copied()
+            .map(|lane| super::backend::abi_value_repr_for_lane(self.world, lane))
+            .collect();
+        // Not every resolution `CallableFacts` recorded for this callable
+        // necessarily survived into root 0's final closed executable
+        // inventory -- a resolution can name a specialization pulled for a
+        // sibling root, or one this root's own dead-code pruning dropped.
+        // Only resolutions that made it into `program.executables` are real
+        // candidates for this program; skip the rest rather than treating
+        // their absence as a defect (mirrors how call sites already resolve
+        // through the reachable inventory only).
+        let mut candidates = Vec::with_capacity(resolutions.len());
+        for symbol in &resolutions {
+            let Some(target_index) = self
+                .program
+                .executables
+                .iter()
+                .position(|executable| executable_symbol_matches(&executable.key, symbol, self.world.types()))
+            else {
+                continue;
+            };
+            let executable = &self.program.executables[target_index];
+            let (return_reprs, return_tuple_arity) =
+                native_return_contract(self.world, self.program, &executable.transport.return_position);
+            candidates.push((
+                target_index,
+                executable.param_reprs.clone(),
+                return_reprs,
+                return_tuple_arity,
+            ));
+        }
+        if candidates.is_empty() {
+            return Err(incomplete_native_program(
+                self.world,
+                self.root_id,
+                format!(
+                    "native callable materialization found no resolution for {callable:?} in root 0's executable inventory (resolutions={resolutions:?}) in {}",
+                    self.native_origin_debug(origin)
+                ),
+            ));
+        }
+        let (first_index, first_arg_reprs, first_return_reprs, first_return_tuple_arity) = candidates[0].clone();
+        for (index, arg_reprs, return_reprs, return_tuple_arity) in &candidates[1..] {
+            if *arg_reprs != first_arg_reprs
+                || *return_reprs != first_return_reprs
+                || *return_tuple_arity != first_return_tuple_arity
+            {
+                return Err(incomplete_native_program(
+                    self.world,
+                    self.root_id,
+                    format!(
+                        "native callable materialization for {callable:?} has resolutions with incompatible physical ABI: executable {} (arg_reprs={:?}, return_reprs={:?}, return_tuple_arity={:?}) vs executable {} (arg_reprs={:?}, return_reprs={:?}, return_tuple_arity={:?}) in {}",
+                        first_index,
+                        first_arg_reprs,
+                        first_return_reprs,
+                        first_return_tuple_arity,
+                        index,
+                        arg_reprs,
+                        return_reprs,
+                        return_tuple_arity,
+                        self.native_origin_debug(origin)
+                    ),
+                ));
+            }
+        }
+        let target = &self.program.executables[first_index];
+        let identity_fn = self.callable_identity(function, capture_count);
+        let return_shape = position_shape(self.program, &target.transport.return_position);
+        let boundary_id = NativeCallableBoundaryId(self.callable_boundaries.len() as u32);
+        self.callable_boundaries.push(NativeCallableBoundary {
+            id: boundary_id,
+            boundary: None,
+            identity_fn,
+            target_fn: self.executable_fns[first_index],
+            target: target.key.clone(),
+            capture_count,
+            capture_reprs,
+            arg_reprs: first_arg_reprs,
+            return_ty: target.return_ty,
+            return_shape,
+            return_lanes: Vec::new(),
+            return_reprs: first_return_reprs,
+            return_tuple_arity: first_return_tuple_arity,
+        });
+        self.fallback_callable_boundaries.insert(callable, boundary_id);
+        Ok(boundary_id)
+    }
+
     /// Every native callable boundary that materializes `(boundary, function,
     /// capture_count)`. A single published transport boundary legitimately pools
     /// several resolutions of one callable identity — the same reducer specialized
@@ -3004,7 +3160,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
         self.callable_boundaries
             .iter()
             .filter(|candidate| {
-                candidate.boundary == boundary
+                candidate.boundary == Some(boundary)
                     && candidate.target.activation.function == function
                     && candidate.capture_count == capture_count
             })
@@ -3318,19 +3474,29 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                     )
                 })?;
                 let capture_count = descr.capture_lanes.len();
+                let capture_lanes = descr.capture_lanes.to_vec();
                 let identity = self.callable_identity(function, capture_count);
-                // A direct-only resolved callable carries no published boundary by
-                // construction (transport keeps `boundary_ids` empty for a capture
-                // that is only ever called at its known surface). Its value still
-                // materializes to a real closure/fn-ref; the call site resolves the
-                // dispatch target directly (`indirect_closure_call_target_hint`),
-                // so we attach a boundary only when transport actually minted one.
+                // A direct-only resolved callable carries no transport-published
+                // boundary by construction (transport keeps `boundary_ids` empty
+                // for a capture that never escapes as a first-class value). Its
+                // value still materializes to a real closure/fn-ref, and every
+                // call site resolves the dispatch target directly
+                // (`indirect_closure_call_target_hint`) rather than reading this
+                // header -- but the header still needs a physically valid entry,
+                // so an unpublished callable mints one from its own resolved
+                // target instead of leaving it boundary-less.
                 let boundary = match boundary {
                     Some(boundary) => Some(boundary),
                     None if self.callable_has_boundaries(callable) => {
                         Some(self.settled_callable_boundary(callable, shape, &ctx.origin)?)
                     }
-                    None => None,
+                    None => Some(self.fallback_callable_boundary(
+                        callable,
+                        function,
+                        capture_count,
+                        &capture_lanes,
+                        &ctx.origin,
+                    )?),
                 };
                 let prim = if lanes.is_empty() {
                     Prim::MakeFnRef(ctx.fresh_callsite(), identity)
@@ -3848,6 +4014,17 @@ fn shape_lane_tys(world: &World<'_>, shape: ShapeId) -> Vec<Ty> {
         .into_iter()
         .map(|lane| world.lane(lane).ty)
         .collect()
+}
+
+/// Whether `key` is the concrete executable a `CallableFacts.resolutions`
+/// `ExecutableSymbol` names, mirroring `executable_key_for_symbol_in_index`
+/// in `jobs/backend.rs` (that helper closes over a `BackendProgram`-specific
+/// `executable_index` map that native's own `program.executables` slice
+/// doesn't carry).
+fn executable_symbol_matches(key: &ExecutableKey, symbol: &ExecutableSymbol, types: &Types) -> bool {
+    key.need == symbol.need
+        && key.activation.function == symbol.activation.function
+        && key.activation.inputs(types).as_slice() == symbol.activation.input.as_ref()
 }
 
 fn position_shape(program: &BackendProgram, position: &TransportPosition) -> ShapeId {

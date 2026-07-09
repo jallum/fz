@@ -4,9 +4,9 @@ use crate::compiler2::artifact::{NativeBodyOrigin, NativeCallableBoundaryId, Nat
 use crate::compiler2::drive::JobEffects;
 use crate::compiler2::transport::{ExecutableSymbol, ShapeId, TransportPosition};
 use crate::compiler2::{
-    AbiValueRepr, ActivationKey, BackendEntryOrigin, BackendProgram, BackendStep, CallSiteId, CallSiteKey,
-    CallSiteSummary, CallTarget, ControlEntryOrigin, ExecutableKey, FactKey, FactUse, FunctionId, FunctionRef,
-    LoweredBody, LoweredStep, LoweredTail, ModuleId, ModuleState, QuotedSourceHeap, QuotedSourceMetadata,
+    AbiValueRepr, ActivationKey, BackendCallableEntry, BackendEntryOrigin, BackendProgram, BackendStep, CallSiteId,
+    CallSiteKey, CallSiteSummary, CallTarget, ControlEntryOrigin, ExecutableKey, FactKey, FactUse, FunctionId,
+    FunctionRef, LoweredBody, LoweredStep, LoweredTail, ModuleId, ModuleState, QuotedSourceHeap, QuotedSourceMetadata,
     SelectedCallee, Ty, TypeName, TypeVarId, Types, ValueId, parse_quoted_program,
 };
 use crate::diag::{Diagnostic, codes};
@@ -12952,10 +12952,13 @@ fn compiler2_multi_target_closure_arg_floor_clears_the_shared_reducer_demand_cra
     // multi-target closure callsite (matching the boxed-apply ABI, which
     // transmits every lane regardless of which target is selected at
     // runtime), so that crash must be gone. This does not make the program
-    // run to completion: build_codegen_closure_targets' capture-count
-    // assertion for this ambiguous multi-target closure is a separate,
-    // still-open gap, and this test observes exactly that later failure,
-    // not success.
+    // run to completion under the interpreter: the interp backend's own
+    // callable-entry resolution for this ambiguous multi-target closure is a
+    // separate, still-open gap, and this test observes exactly that later
+    // failure, not success. (Native lowering's own closure-target-surface
+    // consistency check that used to fault on this same shared body has
+    // since been proven sound and deleted, not merely deferred -- see
+    // `compiler2_multi_target_closure_arg_floor_shares_one_capture_surface_across_boundaries`.)
     let tel = ConfiguredTelemetry::new();
     let mut compiler = Compiler2::new(&tel);
     compiler.submit_code(CodeSubmission {
@@ -12979,6 +12982,236 @@ fn compiler2_multi_target_closure_arg_floor_clears_the_shared_reducer_demand_cra
     assert!(
         error.contains("no settled callable entry"),
         "expected the fix to progress the failure past the runtime-demand crash to the known, separately \
-         tracked build_codegen_closure_targets capture-count gap, but got: {error}",
+         tracked interp callable-entry resolution gap, but got: {error}",
     );
+}
+
+#[test]
+fn compiler2_multi_target_closure_arg_floor_shares_one_capture_surface_across_boundaries() {
+    // INTENT (fz-k22.7 layer B): `Enum.find` and `Enum.find_value` share one
+    // generic reduce body (the same physical target function) reached
+    // through two DIFFERENT callable boundaries -- `find`'s two-argument
+    // call site and `find_value`'s three-argument call site, whose reducer
+    // closures differ in return demand (an early-exit tuple shape vs. a
+    // plain value shape) but close over the identical single free variable.
+    // Before layer B, native codegen's `build_codegen_closure_targets`
+    // re-derived a capture count from each call site's own `args.len()` and
+    // asserted it against the boundary-walk's already-authoritative surface,
+    // so this exact shared-body/differing-call-site-shape scenario used to
+    // fault the `debug_assert_eq!` consistency check. That re-derivation is
+    // deleted outright (not merely disabled): the boundary walk is the sole
+    // source of truth, so every `NativeCallableBoundary` naming this shared
+    // target must report the SAME capture surface regardless of which call
+    // site (and which differing return shape) it was minted from, and
+    // native program lowering must settle instead of panicking.
+    let tel = ConfiguredTelemetry::new();
+    let native = NativeProgramCapture::new();
+    tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures2/00279_enum_find_find_value.fz".to_string()),
+        text: include_str!("../../fixtures2/00279_enum_find_find_value.fz").to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    compiler.demand(Job::LowerNativeProgram(root_id));
+    assert_resolved(
+        compiler.drive(),
+        "native program lowering must settle for a shared reducer body named by two boundaries with differing \
+         call-site return shapes -- this used to panic in build_codegen_closure_targets' deleted consistency loop",
+    );
+
+    let program = native.last(root_id).program;
+    let mut by_target: HashMap<crate::fz_ir::FnId, Vec<_>> = HashMap::new();
+    for boundary in &program.callable_boundaries {
+        by_target.entry(boundary.target_fn).or_default().push(boundary);
+    }
+    let (shared_target, boundaries) = by_target.iter().find(|(_, boundaries)| boundaries.len() > 1).expect(
+        "find and find_value should name the same shared reducer target_fn from two distinct boundaries -- \
+             if this no longer holds, the fixture stopped exercising the shared-target scenario this test pins",
+    );
+    let distinct_boundary_ids: HashSet<_> = boundaries.iter().map(|b| b.boundary).collect();
+    assert!(
+        distinct_boundary_ids.len() > 1,
+        "target {shared_target:?} should be named by two DIFFERENT boundaries (find's and find_value's), not one \
+         boundary counted twice: {boundaries:?}",
+    );
+    let (first_count, first_reprs) = (boundaries[0].capture_count, &boundaries[0].capture_reprs);
+    assert!(
+        first_count > 0,
+        "non-vacuous guard: the shared reducer must actually close over a free variable"
+    );
+    for boundary in &boundaries[1..] {
+        assert_eq!(
+            boundary.capture_count, first_count,
+            "shared target {shared_target:?} disagrees on capture_count across boundaries {boundaries:?}",
+        );
+        assert_eq!(
+            &boundary.capture_reprs, first_reprs,
+            "shared target {shared_target:?} disagrees on capture_reprs across boundaries {boundaries:?}",
+        );
+    }
+}
+
+#[test]
+fn compiler2_backend_program_capture_surface_is_authoritative_from_concrete_producer() {
+    // INTENT (fz-k22.7 layer A): capture ABI belongs to the resolved TARGET
+    // body, not to whichever boundary happens to name it. `Enum.all?/1` (no
+    // predicate closure) and `Enum.all?/2` (a caller-supplied predicate
+    // closure) share one recursive backend body: `all?/1`'s call site
+    // resolves it through a concrete producer boundary, while other call
+    // sites in this fixture resolve shared reducer bodies through a
+    // generic/pooling boundary whose own `published_capture_lanes` describe
+    // its boxed call convention, not the ABI of whichever concrete body it
+    // pools. `package_backend_callable_entries`/`concrete_target_capture_surfaces`
+    // must package EVERY `BackendCallableEntry` naming a given target with
+    // that target's real (concrete-producer) capture surface, never the
+    // pooling boundary's own. This guards that override directly on the
+    // packaged product, independent of native lowering.
+    let tel = ConfiguredTelemetry::new();
+    let backend = BackendProgramCapture::new();
+    tel.attach(&["fz", "compiler2", "backend_program", "defined"], backend.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/behavior/enum_predicate_search.fz".to_string()),
+        text: include_str!("../../fixtures2/behavior/enum_predicate_search.fz").to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    demand_backend_product(&mut compiler, root_id);
+    assert_resolved(
+        compiler.drive(),
+        "enum_predicate_search should settle the backend product cleanly",
+    );
+
+    let program = backend.last(root_id).program;
+    let mut by_target: HashMap<usize, Vec<&BackendCallableEntry>> = HashMap::new();
+    for entry in &program.callable_entries {
+        by_target.entry(entry.target).or_default().push(entry);
+    }
+
+    let mut saw_shared_target_with_real_captures = false;
+    for (target, entries) in &by_target {
+        if entries.len() < 2 {
+            continue;
+        }
+        let (first_count, first_reprs) = (entries[0].capture_count, &entries[0].capture_reprs);
+        for entry in &entries[1..] {
+            assert_eq!(
+                entry.capture_count,
+                first_count,
+                "target {target} is named by boundaries {:?} that disagree on capture_count -- capture ABI must \
+                 be a property of the target body, not the naming boundary",
+                entries.iter().map(|e| e.boundary).collect::<Vec<_>>(),
+            );
+            assert_eq!(
+                &entry.capture_reprs,
+                first_reprs,
+                "target {target} is named by boundaries {:?} that disagree on capture_reprs",
+                entries.iter().map(|e| e.boundary).collect::<Vec<_>>(),
+            );
+        }
+        if first_count > 0 {
+            saw_shared_target_with_real_captures = true;
+        }
+    }
+    assert!(
+        saw_shared_target_with_real_captures,
+        "non-vacuous guard: enum_predicate_search should surface at least one target shared by multiple \
+         boundaries with a real (non-zero) capture surface, or this test proves nothing",
+    );
+}
+
+#[test]
+fn compiler2_native_program_synthesizes_fallback_boundary_for_unpublished_closure_target() {
+    // INTENT (fz-k22.7 layer C): a closure that never escapes as a
+    // first-class opaque value (it is only ever devirtualized through its
+    // own resolved target at every call site) never gets a transport-
+    // published `BoundaryId` at all -- transport keeps `CallableFacts.
+    // boundary_ids` empty for it by construction. Its `MakeClosure`/
+    // `MakeFnRef` value still needs a physically valid code pointer, so
+    // `NativeLowerer::fallback_callable_boundary` mints one on demand from
+    // the callable's already-computed `CallableFacts.resolutions` (the same
+    // concrete-producer facts a published boundary would have carried).
+    // enum_predicate_search's `all?`/`any?`/`find`/`find_value` family
+    // naturally produces such direct-only closures alongside closures that
+    // DO publish. This pins that: (1) at least one `NativeCallableBoundary`
+    // with `boundary: None` (a synthesized fallback) actually exists in the
+    // settled native program, so the fallback path is proven live and not
+    // dead code; (2) at least one fallback boundary names a real
+    // (non-zero) capture surface, so the synthesis is doing real ABI work,
+    // not trivially defaulting to zero captures; and (3) every fallback
+    // boundary agrees with any OTHER boundary (fallback or published) that
+    // names the same target_fn -- the synthesized surface is the same
+    // physical ABI a published boundary would have recorded, never a
+    // second, disagreeing guess.
+    let tel = ConfiguredTelemetry::new();
+    let native = NativeProgramCapture::new();
+    tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/behavior/enum_predicate_search.fz".to_string()),
+        text: include_str!("../../fixtures2/behavior/enum_predicate_search.fz").to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    compiler.demand(Job::LowerNativeProgram(root_id));
+    assert_resolved(
+        compiler.drive(),
+        "enum_predicate_search should settle native lowering, synthesizing fallback boundaries as needed",
+    );
+
+    let program = native.last(root_id).program;
+    let fallback_boundaries: Vec<_> = program
+        .callable_boundaries
+        .iter()
+        .filter(|boundary| boundary.boundary.is_none())
+        .collect();
+    assert!(
+        !fallback_boundaries.is_empty(),
+        "enum_predicate_search should exercise at least one direct-only closure that needs a synthesized \
+         fallback boundary; if this no longer holds, the fixture stopped covering the layer-C path",
+    );
+    assert!(
+        fallback_boundaries.iter().any(|boundary| boundary.capture_count > 0),
+        "non-vacuous guard: at least one synthesized fallback boundary should carry a real (non-zero) capture \
+         surface, or the synthesis path is never actually asked to reproduce nontrivial ABI",
+    );
+
+    let mut by_target: HashMap<crate::fz_ir::FnId, Vec<_>> = HashMap::new();
+    for boundary in &program.callable_boundaries {
+        by_target.entry(boundary.target_fn).or_default().push(boundary);
+    }
+    for fallback in &fallback_boundaries {
+        let siblings = &by_target[&fallback.target_fn];
+        for sibling in siblings.iter() {
+            assert_eq!(
+                sibling.capture_count, fallback.capture_count,
+                "target {:?} disagrees on capture_count between its synthesized fallback and a sibling boundary: \
+                 {:?}",
+                fallback.target_fn, siblings,
+            );
+            assert_eq!(
+                &sibling.capture_reprs, &fallback.capture_reprs,
+                "target {:?} disagrees on capture_reprs between its synthesized fallback and a sibling boundary: \
+                 {:?}",
+                fallback.target_fn, siblings,
+            );
+        }
+    }
 }
