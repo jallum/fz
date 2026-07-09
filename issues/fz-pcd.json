@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-07-09T20:14:01Z",
+  "description": "fz-k22.7 Layer C (synthesize fallback callable boundary from resolved target) stopped repr_seam_enum_count_after_reduce2 from CRASHING; it now runs but produces WRONG OUTPUT (10/10 instead of expected 10/2) on run/interp/build. Confirmed NOT caused by the fallback: its two orphan callables each resolve to exactly ONE candidate (no pooling), so the fallback picks correctly -- this is a distinct, previously-masked correctness defect the earlier crash was hiding. Was already in the known-red 10 (crash); now red-by-wrong-output. Root-cause the count-after-reduce2 semantics (the repr-seam between Enum.count and a preceding reduce2). Standalone from the k22 capture-ABI family.",
+  "id": "fz-pcd",
+  "labels": [],
+  "priority": 2,
+  "status": "open",
+  "title": "repr_seam_enum_count_after_reduce2 produces wrong output 10/10 instead of 10/2 on all 3 backends -- previously-masked defect unblocked by the k22.7 Layer-C callable-boundary fallback",
+  "type": "bug",
+  "updated_at": "2026-07-09T20:14:01Z"
+}
