@@ -11,11 +11,15 @@
     {
       "text": "SPIKE 2026-07-09: prototype e199bec6 on branch coord/spike-fz-osx-require-macro supports promotion. Root cause: require records required macro IDs but does not bind the module name into namespace; qualified macro expansion requires lookup_module_path visibility before the macro/not-required guard. Recommended implementation: make require bind the required module's default alias while separately preserving the required macro permission set; add tests for bare require M + M.macro(), missing require still macro/not-required, and dotted require Foo.Bar aliasing Bar if Elixir parity is intended. Prototype passed focused require/macro/frontdoor tests and pre-commit check/clippy.",
       "timestamp": "2026-07-09T19:27:02Z"
+    },
+    {
+      "text": "COORDINATOR VERIFY 2026-07-09: landed on integration as 7ad58b8b9 (fz-osx: bind required module paths). Fold gates rerun from integration HEAD: cargo test --lib passed (1292 passed, 6 ignored); cargo clippy --all-targets -- -D warnings passed; focused cargo test --lib require, cargo test --lib remote_macro, and cargo test --test fz2_cli remote_macro passed. Implementation/audit worktrees were temporary; spike prototype superseded by the landed integration commit.",
+      "timestamp": "2026-07-09T19:44:32Z"
     }
   ],
   "priority": 4,
   "status": "closed",
   "title": "Cross-file macro invocation needs alias/import to bind the module name; bare require M + qualified M.macro() fails macro/not-required",
   "type": "bug",
-  "updated_at": "2026-07-09T19:42:13Z"
+  "updated_at": "2026-07-09T19:44:32Z"
 }
