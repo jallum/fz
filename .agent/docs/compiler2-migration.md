@@ -44,6 +44,28 @@ fz2 paths; the old `fz` compiler and its `repl`/`jit`/`aot` legs are gone.
 loading, module dispatch parity, reusable-cons counters); these reuse existing
 matrix fixtures rather than duplicating fixture-only coverage.
 
+## AOT Runtime Archive Resolution
+
+`fz2 build` links generated object code against the `fz-runtime` staticlib.
+`src/aot_link.rs` resolves that archive's path by invoking
+`cargo build -p fz-runtime --message-format=json` and reading the artifact
+path Cargo reports, rather than globbing `libfz_runtime-*.a` and picking the
+newest by mtime (a prior mtime glob was nondeterministic under concurrent
+builds).
+
+This narrows what an ordinary `::build` needs at runtime: a `cargo` binary on
+`$CARGO`/`PATH`, and the `fz` source tree present on disk at the absolute
+`CARGO_MANIFEST_DIR` baked into the `fz2` binary at compile time (Cargo is
+invoked with `--manifest-path` against that baked-in path). A `fz2` binary
+copied somewhere without its source checkout, or run in an environment with no
+Cargo toolchain, cannot self-link an AOT executable through this path.
+
+`FZ_AOT_RUNTIME_STATICLIB=<absolute path>` is the escape hatch: set to a
+non-empty absolute path naming a prebuilt `libfz_runtime*.a`, it short-circuits
+archive resolution to that path with no `cargo` invocation at all (the path
+must exist; its ABI must match the linking `fz2`'s target/profile, which is
+not checked automatically).
+
 ## Remaining Classes
 
 **Golden/allocation decisions are closed.** `append`, `bsx_guard_eq`,

@@ -14,6 +14,27 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus};
 
+/// Escape hatch that lets an operator name the `fz-runtime` staticlib
+/// directly, bypassing the `cargo build -p fz-runtime --message-format=json`
+/// invocation `locate_runtime_staticlib` otherwise performs.
+///
+/// Ordinary AOT `::build` resolves the runtime archive by invoking Cargo,
+/// which requires:
+/// - a `cargo` binary reachable via `$CARGO` or `PATH`;
+/// - the `fz` source tree present on disk at the absolute
+///   `CARGO_MANIFEST_DIR` baked into the `fz2` binary at compile time (Cargo
+///   is invoked with `--manifest-path` pointed at that tree, not the
+///   caller's current directory).
+///
+/// Set `FZ_AOT_RUNTIME_STATICLIB` to an absolute path to a prebuilt
+/// `libfz_runtime*.a` to skip both requirements — for example, when running
+/// `fz2 build` from a packaged/installed binary with no Cargo toolchain or
+/// source checkout nearby. When set to a non-empty value, this short-circuits
+/// straight to `RuntimeArchivePlan::EnvOverride` (see `runtime_archive_plan`)
+/// and no cargo process is spawned; the path must already exist on disk
+/// (`existing_archive` rejects a missing file with a named error) and its ABI
+/// must match the linking `fz2`'s target/profile — nothing here checks that
+/// for you.
 const RUNTIME_ARCHIVE_OVERRIDE_ENV: &str = "FZ_AOT_RUNTIME_STATICLIB";
 const LLVM_COV_TARGET_COMPONENT: &str = "llvm-cov-target";
 const ISOLATED_AOT_TARGET_DIR: &str = "fz-aot-clean-runtime";
