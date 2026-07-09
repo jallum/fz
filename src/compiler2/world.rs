@@ -2294,20 +2294,18 @@ impl<'a> World<'a> {
     /// opaque item-macro call in the program to expand before re-checking
     /// whether the wanted name already resolved, so candidates are staged
     /// one `CodeScoped` wait at a time instead.
-    pub(crate) fn demand_function_scope(&mut self, function: FunctionId) -> Vec<FactKey> {
+    pub(crate) fn demand_function_scope(&mut self, function: FunctionId) -> Result<Vec<FactKey>, FatalError> {
         let module = self.function_module(function);
         if module.is_global() {
             let function_ref = self.function_ref(function).clone();
-            let mut certain_home = None;
+            let mut certain_homes = Vec::new();
             let mut opaque_candidates = Vec::new();
             let mut pending = Vec::new();
             for code_id in self.code.ids() {
                 match self.code.get(code_id) {
                     CodeState::Pending => pending.push(FactKey::CodeIndexed(code_id)),
                     CodeState::Indexed { source } => match code_surface_function_match(source, &function_ref) {
-                        FunctionSurfaceMatch::Certain => {
-                            certain_home.get_or_insert(code_id);
-                        }
+                        FunctionSurfaceMatch::Certain => certain_homes.push(code_id),
                         FunctionSurfaceMatch::Opaque => opaque_candidates.push(code_id),
                         FunctionSurfaceMatch::None => {}
                     },
@@ -2315,15 +2313,33 @@ impl<'a> World<'a> {
                     // when the pending source stash is empty, and scoping a
                     // code eagerly stashes every function it defines
                     // (source_publish), so once the home reaches Scoped the
-                    // caller never re-enters.
+                    // caller never re-enters. This is also what keeps a later,
+                    // legitimate redefinition (a fresh `submit_code` replacing
+                    // an already-`Scoped` home's definition, fz-f98.14.5) from
+                    // ever reaching the duplicate check below: by the time a
+                    // second code can be indexed, the first one's home has
+                    // already left this scan for good.
                     CodeState::Scoped { .. } => {}
                 }
+            }
+            // Two (or more) codes BOTH statically defining the same
+            // never-yet-scoped top-level name+arity is a genuine duplicate
+            // global definition, not a home to silently pick between
+            // (fz-go4.53's audit: `get_or_insert` used to keep only the
+            // first, submission-order code and never look for a second).
+            // Diagnosing here — before either candidate reaches `Scoped` —
+            // is exactly what does NOT fire on hot redefinition: a
+            // redefinition's superseded code is always already `Scoped` by
+            // the time the new one is indexed (see the `Scoped` arm above),
+            // so it never contributes a second `certain_homes` entry.
+            if certain_homes.len() > 1 {
+                return Err(self.duplicate_function_diagnostic(&function_ref, &certain_homes));
             }
             // A certain home resolves the function for sure once scoped, so
             // every opaque candidate and pending code is irrelevant — naming
             // them too would be over-demand.
-            if let Some(code_id) = certain_home {
-                return vec![FactKey::CodeScoped(code_id)];
+            if let Some(code_id) = certain_homes.into_iter().next() {
+                return Ok(vec![FactKey::CodeScoped(code_id)]);
             }
             // Opaque item-macro calls are only MAYBE the home (fz-go4.43):
             // probe them one at a time, in submission order, instead of
@@ -2334,14 +2350,48 @@ impl<'a> World<'a> {
             // NEXT candidate, and a name the probe just produced short-circuits
             // here instead of forcing every other candidate to expand too.
             if let Some(code_id) = opaque_candidates.into_iter().next() {
-                return vec![FactKey::CodeScoped(code_id)];
+                return Ok(vec![FactKey::CodeScoped(code_id)]);
             }
-            return pending;
+            return Ok(pending);
         }
         if self.module_has_source_state(module) || self.ensure_runtime_module(module).is_some() {
-            return vec![FactKey::ModuleDefined(module)];
+            return Ok(vec![FactKey::ModuleDefined(module)]);
         }
-        Vec::new()
+        Ok(Vec::new())
+    }
+
+    /// Diagnoses two (or more) separately submitted codes that both, for
+    /// real, define the same top-level `name/arity` — Elixir raises
+    /// `CompileError` ("... is already defined") on the same shape,
+    /// mirroring `source_publish::duplicate_struct_diagnostic`'s "diagnose
+    /// the second occurrence rather than silently keep one" contract. The
+    /// span is the SECOND certain home's matching form, a real requester
+    /// span rather than `Span::DUMMY`, falling back to the first home's span
+    /// only for the (bootstrap-only) `CompilerService` match shape that
+    /// carries no form span of its own.
+    fn duplicate_function_diagnostic(&mut self, function_ref: &FunctionRef, certain_homes: &[CodeId]) -> FatalError {
+        let span = certain_homes
+            .iter()
+            .skip(1)
+            .find_map(|code_id| match self.code.get(*code_id) {
+                CodeState::Indexed { source } => function_form_span(source, function_ref),
+                _ => None,
+            })
+            .or_else(|| {
+                certain_homes.iter().find_map(|code_id| match self.code.get(*code_id) {
+                    CodeState::Indexed { source } => function_form_span(source, function_ref),
+                    _ => None,
+                })
+            })
+            .unwrap_or(Span::DUMMY);
+        emit_job_diagnostic(
+            self,
+            Diagnostic::error(
+                codes::RESOLVE_DUPLICATE_FUNCTION,
+                format!("`{}/{}` is already defined", function_ref.name, function_ref.arity),
+                span,
+            ),
+        )
     }
 
     /// `FunctionDefined`'s sole producer arm is `Job::DefineFunction`
@@ -3059,6 +3109,21 @@ fn code_surface_function_match(source: &QuotedCodeSource, function_ref: &Functio
         // unrelated opaque macro calls.
         .max()
         .unwrap_or(FunctionSurfaceMatch::None)
+}
+
+/// The span of `function_ref`'s matching `fn`/`fnp`/`defmacro` form in
+/// `source`'s top-level surface, when it has one — a plain `ScopeForm::Function`
+/// always carries a real source span (`quoted_surface::FunctionForm::span`);
+/// the `CompilerService` match shape (bootstrap-only) does not carry a form
+/// span of its own, so it returns `None` rather than `Span::DUMMY` here, and
+/// the caller falls back to another candidate's span instead.
+fn function_form_span(source: &QuotedCodeSource, function_ref: &FunctionRef) -> Option<Span> {
+    source.surface.forms.iter().find_map(|form| match form {
+        ScopeForm::Function(function) if function.name == function_ref.name && function.arity == function_ref.arity => {
+            Some(function.span)
+        }
+        _ => None,
+    })
 }
 
 fn source_definition_matches_function(source: &QuotedSourceRoot, function_ref: &FunctionRef) -> bool {

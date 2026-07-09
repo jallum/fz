@@ -270,7 +270,7 @@ pub(super) fn publish_function_source_job(
         // *same* `JobEffects` as `CodeScoped` (see `source_publish`), so the
         // `CodeScoped`-triggered re-run already finds the stash present -- no
         // separate wait on the stash is needed while a scope fact is named.
-        let mut waits: Vec<FactKey> = world.demand_function_scope(function_id);
+        let mut waits: Vec<FactKey> = world.demand_function_scope(function_id)?;
         if waits.is_empty() {
             // Only the terminal case -- no code names this function's home yet
             // (its owning code has not been submitted, or the reference is

@@ -1080,6 +1080,55 @@ fn compiler2_struct_macro_emitted_duplicate_defstruct_diagnoses_even_with_identi
     );
 }
 
+// fz-go4.53's adversarial audit found `demand_function_scope`'s global-module
+// branch (`World::demand_function_scope`) scans every submitted code for a
+// `Certain` surface match and, via `certain_home.get_or_insert`, keeps only
+// the FIRST code whose surface names the wanted top-level name+arity. Before
+// .53 that scan raced (whichever `ScopeCode` job ran last won the single-slot
+// pending-source stash); .53 made the choice deterministic (submission-order
+// first-wins) but never added a diagnostic for the case that choice is
+// papering over: two SEPARATE source files (codes) both defining the same
+// top-level `name/arity` for real. Elixir raises `CompileError` ("... is
+// already defined") on exactly this shape, so fz must diagnose it too instead
+// of silently keeping one definition and dropping the other with no signal.
+// This mirrors `compiler2_struct_duplicate_defstruct_diagnoses_instead_of_silently_picking_one`
+// above: same-shaped bug (silent first/last-wins on a genuine duplicate
+// definition), same fix shape (diagnose at the second occurrence instead of
+// resolving).
+#[test]
+fn compiler2_duplicate_global_function_definition_diagnoses_instead_of_silently_picking_one() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&[], capture.handler());
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("foo_first.fz".to_string()),
+        text: "fn foo(), do: 1\n".to_string(),
+    });
+    compiler.submit_code(CodeSubmission {
+        name: Some("foo_second.fz".to_string()),
+        text: "fn foo(), do: 2\n".to_string(),
+    });
+    compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "foo".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    assert!(
+        matches!(compiler.drive(), DriveOutcome::Fatal { .. }),
+        "two separate codes defining the same top-level foo/0 must diagnose rather than silently \
+         resolving to whichever code was submitted first"
+    );
+
+    let diagnostic = capture
+        .last(&["fz", "diag", "error"])
+        .expect("expected a compiler diagnostic for the duplicate global function definition");
+    assert_eq!(metadata_str(&diagnostic, "code"), codes::RESOLVE_DUPLICATE_FUNCTION.0);
+    assert_eq!(metadata_str(&diagnostic, "message"), "`foo/0` is already defined");
+}
+
 #[test]
 fn compiler2_struct_type_expression_waits_for_struct_defined_and_resolves_precise_order() {
     // `Q`'s `@type t` names `Point` (in reversed field order) before `Point`

@@ -744,7 +744,9 @@ fn compiler2_demand_function_scope_never_empties_on_a_pending_global_home() {
     // Before the first drive, the code is still `Pending`: the home is
     // unresolved, so the wait must name an arm-covered fact that pulls
     // indexing forward, not go empty.
-    let waits = world.demand_function_scope(function);
+    let waits = world
+        .demand_function_scope(function)
+        .expect("no duplicate global home in this test");
     assert!(
         !waits.is_empty(),
         "a pending candidate home must never leave demand_function_scope empty"
@@ -758,7 +760,9 @@ fn compiler2_demand_function_scope_never_empties_on_a_pending_global_home() {
 
     // Now that the code is indexed and it is the function's home, the wait
     // narrows to the found home alone.
-    let waits = world.demand_function_scope(function);
+    let waits = world
+        .demand_function_scope(function)
+        .expect("no duplicate global home in this test");
     assert_eq!(
         waits,
         vec![FactKey::CodeScoped(code_id)],
@@ -779,7 +783,9 @@ fn compiler2_demand_function_scope_never_empties_on_a_pending_global_home() {
     // is Indexed and none is the home, so the wait is legitimately empty
     // (`PublishFunctionSource` falls back to its `FunctionSourceStash` wait).
     let dangling = world.reference_function(ModuleId::GLOBAL, "nope", 0);
-    let waits = world.demand_function_scope(dangling);
+    let waits = world
+        .demand_function_scope(dangling)
+        .expect("no duplicate global home in this test");
     assert!(
         waits.is_empty(),
         "a function published by no indexed code should have no scope wait, got {waits:?}"

@@ -15,6 +15,8 @@ fn all_codes_follow_stage_slash_kind_format() {
         RESOLVE_UNKNOWN_FUNCTION,
         RESOLVE_UNKNOWN_IMPORT,
         RESOLVE_TYPE_ALIAS,
+        RESOLVE_DUPLICATE_STRUCT,
+        RESOLVE_DUPLICATE_FUNCTION,
         MACRO_NOT_A_DEFMACRO,
         MACRO_NOT_REQUIRED,
         LOWER_UNSUPPORTED,
