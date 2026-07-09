@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-07-08T14:33:04Z",
@@ -7,8 +7,8 @@
   "id": "fz-8kt",
   "labels": [],
   "priority": 4,
-  "status": "open",
+  "status": "in_progress",
   "title": "Compiler2::submit_module_interface (external-module interface entry) has no production caller -- exercise from a real embedder/fixture or document as test-only",
   "type": "bug",
-  "updated_at": "2026-07-08T14:33:04Z"
+  "updated_at": "2026-07-09T18:19:01Z"
 }
