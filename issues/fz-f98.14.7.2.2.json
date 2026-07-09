@@ -13,11 +13,15 @@
     {
       "text": "BLOCKED on fz-f98.14.10 (proven). Bounded keying fix READY (~25 LoC: descr.rs is_pure_list_modulo_empty folding an emptiness-only list union [int]|[] -\u003e list(any) in the convergence_collapse_ty Ignore-key branch) makes partition/4 converge to 1 in isolation, target green, termination intact (strictly narrower than the existing fun_top/single-list collapse). CANNOT land: identical collapse on identical [int]|[] shape in 00420 reconnects layout-distinct ValueId positions -\u003e transport.rs:338 panic (4 distinct ShapeIds/component) -\u003e reds enum_reduce_runtime_graph + take_positive_reduce_while + transport_plan_preserves_nested_enum. Lands the moment fz-f98.14.10 separates transport layout-identity from the convergence key. Test re-ignored + characterized.",
       "timestamp": "2026-06-26T10:31:31Z"
+    },
+    {
+      "text": "CLOSING as ALREADY-DONE (drift confirmed by two independent spikes at HEAD 47903558b). The test compiler2_quicksort_root_closes_with_a_finite_recursive_frontier is NOT #[ignore] at HEAD -- it is a live #[test] and PASSES (asserts qsort/1-\u003e1 key AND partition/4-\u003e1 key, both hold). The bounded fix landed via a BROADER mechanism than this ticket proposed: not is_pure_list_modulo_empty folding [int]|[]-\u003elist(any), but the ADDRESSED fold convergence_class_at's is_pure_list_family branch (fz-f98.14.10.2), collapsing recursive list slots to addressed vars [a2_e]/[a3_e]; and fz-f98.14.10.4 made transport shaping schedule-independent so the transport.rs:338 panic that blocked this ticket is structurally prevented. The 3 fixtures this ticket said it would regress (enum_reduce_runtime_graph, take_positive_reduce_while, transport_plan_preserves_nested_enum) all pass at HEAD. Subsumed by fz-f98.14.10.2/.4.",
+      "timestamp": "2026-07-09T02:04:11Z"
     }
   ],
   "priority": 1,
   "status": "in_progress",
   "title": "Activation over-specialization: recursive list-family partition/4 settles to 3 keys (asserts 1)",
   "type": "bug",
-  "updated_at": "2026-06-26T10:31:31Z"
+  "updated_at": "2026-07-09T02:04:11Z"
 }
