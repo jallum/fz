@@ -7,6 +7,7 @@
     "fz-usm.4"
   ],
   "blocks": [],
+  "closed_at": "2026-07-09T20:19:33Z",
   "created": "2026-07-05T22:24:58Z",
   "description": "Step 6, close-out. One pass confirming the constructor table (list/map/tuple/resource/scalars) is accurate post-fold; DOCUMENT explicitly that tuple/tuple(T,U) named forms are intentionally NOT added ({T,U} stays sole syntax) unless reviewer wants that parity (open question, don't build speculatively). Update .agent/docs type-resolution section to name the registry as the single source of truth (present-tense per docs convention). Depends fz-usm.1-.4 (and .5's decision).",
   "id": "fz-usm.6",
@@ -19,8 +20,8 @@
     }
   ],
   "priority": 3,
-  "status": "open",
+  "status": "closed",
   "title": "fz-usm: parity audit across the constructor set + update type-resolution agent docs to name the registry as source of truth",
   "type": "task",
-  "updated_at": "2026-07-09T20:19:32Z"
+  "updated_at": "2026-07-09T20:19:33Z"
 }
