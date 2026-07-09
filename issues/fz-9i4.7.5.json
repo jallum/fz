@@ -15,11 +15,15 @@
     {
       "text": "CORRECTION 2026-07-09: previous spike comment omitted the literal receiver syntax due shell quoting. The root-cause sentence should read: h.value lowers as generic FieldAccess, backend/native preserve it as struct-field access, and native calls fz_struct_get_named_field_ref.",
       "timestamp": "2026-07-09T22:04:39Z"
+    },
+    {
+      "text": "AUDIT FAIL 2026-07-09 against 78e36af79: resource .value path passed, but resource map-get still leaked payloads for arbitrary keys. Probe with h = R.make(); dbg(h[0]) outside the owning module printed 42 on run/interp/AOT because fz_map_get_* handled ValueKind::RESOURCE by discarding the key and returning the payload. Also .agent/docs/compiler2-migration.md still claimed resource_lifecycle stayed deferred. Implementation sent back to narrow/remove resource MapGet payload access, add a production-path regression for h[0], keep .value working, and update stale docs before re-audit.",
+      "timestamp": "2026-07-09T22:25:21Z"
     }
   ],
   "priority": 2,
   "status": "open",
   "title": "[BUG] Resource-lifecycle native struct field access kind mismatch",
   "type": "bug",
-  "updated_at": "2026-07-09T22:04:39Z"
+  "updated_at": "2026-07-09T22:25:21Z"
 }
