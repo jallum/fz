@@ -437,9 +437,13 @@ fn collect_body_struct_obligations(
     let requester = InterfaceRequester {
         code,
         module,
-        span: body.0.first().map(|token| token.span).unwrap_or(Span::DUMMY),
+        span: type_expr_body_span(body),
     };
-    collect_struct_field_obligations(world, scope, &expr, &requester, struct_refs)
+    collect_struct_obligations(world, scope, &expr, &requester, struct_refs)
+}
+
+fn type_expr_body_span(body: &TypeExprBody) -> Span {
+    body.0.iter().map(|token| token.span).fold(Span::DUMMY, Span::merge)
 }
 
 impl<'world, 'tel> ScopeSession<'world, 'tel> {
@@ -656,7 +660,7 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
             // (fz-rh2.17.5.6.10).
             let requester = self.interface_requester(span);
             let mut struct_refs = Vec::new();
-            collect_struct_field_obligations(self.world, self.namespace, &body.inner, &requester, &mut struct_refs)?;
+            collect_struct_obligations(self.world, self.namespace, &body.inner, &requester, &mut struct_refs)?;
             self.world.record_type_def_struct_refs(name.clone(), struct_refs);
 
             self.world.note_type_decl(
@@ -1547,14 +1551,15 @@ fn emit_compiler_service_define(world: &World<'_>, function: FunctionId, source:
 
 /// Walks a parsed type expression a second time, recording each `%Mod{...}`
 /// struct-record's obligations: `Mod`'s module id (the `StructDefined`
-/// wait-set collected into `struct_refs`) and one `StructFieldExpectation`
-/// per field, from `requester` (the enclosing `@type`/`@spec` declaration).
+/// wait-set collected into `struct_refs`), one module-level expectation for
+/// the struct reference, and one `StructFieldExpectation` per field, from
+/// `requester` (the enclosing `@type`/`@spec` declaration).
 /// A dedicated walk rather than folding into `collect_type_refs` above: that
 /// walk answers "which `TypeDefined` facts does this body need," this one
 /// answers "which struct obligations does this body create" — a different
 /// question over the same tree, same shape as `resolve_ty`'s own separate
-/// walk in `resolve.rs` (fz-rh2.17.5.6.10).
-fn collect_struct_field_obligations(
+/// walk in `resolve.rs`.
+fn collect_struct_obligations(
     world: &mut World<'_>,
     scope: Namespace,
     expr: &TypeExpr,
@@ -1564,20 +1569,20 @@ fn collect_struct_field_obligations(
     match expr {
         TypeExpr::Name { args, .. } => {
             for arg in args {
-                collect_struct_field_obligations(world, scope, arg, requester, struct_refs)?;
+                collect_struct_obligations(world, scope, arg, requester, struct_refs)?;
             }
         }
-        TypeExpr::List(inner) => collect_struct_field_obligations(world, scope, inner, requester, struct_refs)?,
+        TypeExpr::List(inner) => collect_struct_obligations(world, scope, inner, requester, struct_refs)?,
         TypeExpr::Tuple(elems) | TypeExpr::Union(elems) => {
             for elem in elems {
-                collect_struct_field_obligations(world, scope, elem, requester, struct_refs)?;
+                collect_struct_obligations(world, scope, elem, requester, struct_refs)?;
             }
         }
         TypeExpr::Arrow { params, result } => {
             for param in params {
-                collect_struct_field_obligations(world, scope, param, requester, struct_refs)?;
+                collect_struct_obligations(world, scope, param, requester, struct_refs)?;
             }
-            collect_struct_field_obligations(world, scope, result, requester, struct_refs)?;
+            collect_struct_obligations(world, scope, result, requester, struct_refs)?;
         }
         TypeExpr::StructRecord { module, fields } => {
             let module_name = ModuleName::from_segments(module.clone());
@@ -1585,15 +1590,16 @@ fn collect_struct_field_obligations(
                 .lookup_module_path(scope, &module_name.dotted())
                 .unwrap_or_else(|| world.reference_module(module_name.dotted()));
             struct_refs.push(module_id);
+            world.note_struct_reference_expectation(module_id, requester.clone());
             for (field, value) in fields {
                 world.note_struct_field_expectation(module_id, field.clone(), requester.clone())?;
-                collect_struct_field_obligations(world, scope, value, requester, struct_refs)?;
+                collect_struct_obligations(world, scope, value, requester, struct_refs)?;
             }
         }
         TypeExpr::Map(pairs) => {
             for (key, value) in pairs {
-                collect_struct_field_obligations(world, scope, key, requester, struct_refs)?;
-                collect_struct_field_obligations(world, scope, value, requester, struct_refs)?;
+                collect_struct_obligations(world, scope, key, requester, struct_refs)?;
+                collect_struct_obligations(world, scope, value, requester, struct_refs)?;
             }
         }
         TypeExpr::EmptyList

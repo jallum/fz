@@ -607,13 +607,13 @@ fn collect_local_pattern_requirements(
     Ok(())
 }
 
-/// Records one `%Mod{field: ..., ...}` reference from a struct literal or
-/// struct pattern in a function body: the field-obligation half mirrors
-/// `source_publish.rs`'s `collect_struct_field_obligations` (same
-/// `note_struct_field_expectation` store, so a bad field is diagnosed at
-/// settle time regardless of whether the reference came from a type position
-/// or a body position), and the `StructDefined` wait half mirrors every other
-/// consumer in this file (`lower_function`'s extern-contract loop,
+/// Records one `%Mod{...}` reference from a struct literal or struct pattern
+/// in a function body: the module-obligation and field-obligation halves
+/// mirror `source_publish.rs`'s `collect_struct_obligations` (same
+/// expectation store, so a non-struct module or bad field is diagnosed at
+/// the requester regardless of whether the reference came from a type
+/// position or a body position), and the `StructDefined` wait half mirrors
+/// every other consumer in this file (`lower_function`'s extern-contract loop,
 /// `plan_entry_dispatch`, `derive_function_contract`) — `Mod`'s field *order*
 /// is unknown until `StructDefined(Mod)` publishes, so the caller must wait
 /// rather than guess an order from the literal/pattern's own field list.
@@ -646,6 +646,7 @@ fn record_struct_reference<'a>(
         module: owner_module,
         span,
     };
+    world.note_struct_reference_expectation(module_id, requester.clone());
     for field in fields {
         world.note_struct_field_expectation(module_id, field.to_string(), requester.clone())?;
     }

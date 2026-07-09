@@ -16,12 +16,15 @@
 //! left to fall back to — a struct defined through a macro-emitted
 //! `defstruct` is visible here exactly like a source-written one.
 //!
-//! [`StructFieldExpectation`] and [`StructExpectationMap`] are this store's
-//! obligation half, mirroring [`super::module_interface::InterfaceExpectation`]/
-//! `ModuleInterface`'s expectation list: a reference to `A.field` is
-//! recordable before `A`'s `defstruct` publishes, and is checked against
-//! whichever side settles second (see `World::note_struct_field_expectation`
-//! and `World::validate_struct_field_expectations`).
+//! [`StructReferenceExpectation`], [`StructFieldExpectation`], and
+//! [`StructExpectationMap`] are this store's obligation half, mirroring
+//! [`super::module_interface::InterfaceExpectation`]/`ModuleInterface`'s
+//! expectation list: a reference to `%A{...}` is recordable before `A`'s
+//! `defstruct` publishes, and any referenced `A.field` is checked against
+//! whichever side settles second (see
+//! `World::note_struct_reference_expectation`,
+//! `World::note_struct_field_expectation`, and
+//! `World::validate_struct_field_expectations`).
 
 use std::collections::HashMap;
 
@@ -73,6 +76,13 @@ impl StructDefMap {
     }
 }
 
+/// One `%A{...}` obligation: a struct-record use recorded the struct's owning
+/// module, from `requester`, even if it named no fields.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct StructReferenceExpectation {
+    pub(crate) requester: InterfaceRequester,
+}
+
 /// One `A.field` obligation: a struct-record use recorded field `field` on
 /// the struct's owning module, from `requester`. Mirrors
 /// [`super::module_interface::InterfaceExpectation`]'s requester-carrying
@@ -91,7 +101,8 @@ pub(crate) struct StructFieldExpectation {
 /// later publishes under.
 #[derive(Debug, Default)]
 pub(crate) struct StructExpectationMap {
-    slots: HashMap<ModuleId, Vec<StructFieldExpectation>>,
+    references: HashMap<ModuleId, Vec<StructReferenceExpectation>>,
+    fields: HashMap<ModuleId, Vec<StructFieldExpectation>>,
 }
 
 impl StructExpectationMap {
@@ -99,16 +110,30 @@ impl StructExpectationMap {
         Self::default()
     }
 
-    /// Records one obligation, deduplicating identical (field, requester)
-    /// pairs so re-scoping the same reference site stays idempotent.
-    pub(crate) fn record(&mut self, module: ModuleId, expectation: StructFieldExpectation) {
-        let list = self.slots.entry(module).or_default();
+    /// Records one module-level obligation, deduplicating identical requesters
+    /// so re-scoping the same reference site stays idempotent.
+    pub(crate) fn record_reference(&mut self, module: ModuleId, expectation: StructReferenceExpectation) {
+        let list = self.references.entry(module).or_default();
         if !list.contains(&expectation) {
             list.push(expectation);
         }
     }
 
-    pub(crate) fn expectations(&self, module: ModuleId) -> &[StructFieldExpectation] {
-        self.slots.get(&module).map(Vec::as_slice).unwrap_or(&[])
+    /// Records one field obligation, deduplicating identical (field,
+    /// requester) pairs so re-scoping the same reference site stays
+    /// idempotent.
+    pub(crate) fn record_field(&mut self, module: ModuleId, expectation: StructFieldExpectation) {
+        let list = self.fields.entry(module).or_default();
+        if !list.contains(&expectation) {
+            list.push(expectation);
+        }
+    }
+
+    pub(crate) fn reference_expectations(&self, module: ModuleId) -> &[StructReferenceExpectation] {
+        self.references.get(&module).map(Vec::as_slice).unwrap_or(&[])
+    }
+
+    pub(crate) fn field_expectations(&self, module: ModuleId) -> &[StructFieldExpectation] {
+        self.fields.get(&module).map(Vec::as_slice).unwrap_or(&[])
     }
 }

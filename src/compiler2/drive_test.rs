@@ -9,7 +9,7 @@ use crate::compiler2::{
     LoweredBody, LoweredStep, LoweredTail, ModuleId, ModuleState, QuotedSourceHeap, QuotedSourceMetadata,
     SelectedCallee, Ty, TypeName, TypeVarId, Types, ValueId, parse_quoted_program,
 };
-use crate::diag::codes;
+use crate::diag::{Diagnostic, codes};
 use crate::dispatch_matrix::Region;
 use crate::dispatch_matrix::pattern::{PatternDispatchPlan, PatternGuardDispatch, PatternGuardExpr};
 use crate::exec::runtime::DbgCapture;
@@ -42,6 +42,7 @@ type BackendProgramDefs = Rc<RefCell<Vec<BackendProgramRecord>>>;
 type NativeProgramDefs = Rc<RefCell<Vec<NativeProgramRecord>>>;
 type ReturnTypeDefs = Rc<RefCell<Vec<ReturnTypeRecord>>>;
 type PublishedStructFields = Rc<RefCell<Vec<(u32, Vec<String>)>>>;
+type Diagnostics = Rc<RefCell<Vec<Diagnostic>>>;
 
 fn jit_compile_native_program(
     compiler: &mut Compiler2<'_>,
@@ -1373,6 +1374,53 @@ fn compiler2_struct_spec_type_diagnoses_reference_to_non_struct_module() {
 }
 
 #[test]
+fn compiler2_zero_field_struct_spec_type_diagnoses_non_struct_module_at_reference_span() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    let diagnostics = DiagnosticCapture::new();
+    tel.attach(&[], capture.handler());
+    tel.attach(&[], diagnostics.handler());
+    let mut compiler = Compiler2::new(&tel);
+    let source = concat!(
+        "defmodule NotAStruct do\n",
+        "  fn hello(), do: 0\n",
+        "end\n",
+        "\n",
+        "defmodule M do\n",
+        "  @spec run(%NotAStruct{}) :: integer\n",
+        "  fn run(p), do: 0\n",
+        "end\n",
+    )
+    .to_string();
+    compiler.submit_code(CodeSubmission {
+        name: Some("zero_field_struct_spec_non_struct.fz".to_string()),
+        text: source.clone(),
+    });
+    compiler.submit_root(RootSubmission {
+        module_name: Some("M".to_string()),
+        name: "run".to_string(),
+        arity: 1,
+        need: ExecutableNeed::Value,
+    });
+    assert!(
+        matches!(compiler.drive(), DriveOutcome::Unresolved { .. }),
+        "a zero-field struct type naming a non-struct module should diagnose instead of reporting a generated span",
+    );
+    let diagnostic = capture
+        .last(&["fz", "diag", "error"])
+        .expect("expected a not-a-struct diagnostic for the zero-field @spec struct type");
+    assert_eq!(metadata_str(&diagnostic, "code"), codes::RESOLVE_NOT_A_STRUCT.0);
+    assert_eq!(
+        metadata_str(&diagnostic, "message"),
+        "module `NotAStruct` is not a struct"
+    );
+    let diagnostic = diagnostics
+        .last()
+        .expect("expected the not-a-struct diagnostic payload to be captured");
+    assert_primary_span_contains(&diagnostic, &source, "%NotAStruct{}");
+}
+
+#[test]
 fn compiler2_struct_param_annotation_diagnoses_unknown_field_instead_of_dropping_it() {
     // The guard/entry-dispatch consumer reaches the shared StructRecord arm
     // through `plan_entry_dispatch` (`resolve_type_expr_body`) when a param
@@ -1741,6 +1789,60 @@ fn compiler2_struct_literal_lowering_diagnoses_reference_to_non_struct_module() 
 }
 
 #[test]
+fn compiler2_zero_field_struct_literal_lowering_diagnoses_non_struct_module_at_reference_span() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    let diagnostics = DiagnosticCapture::new();
+    tel.attach(&[], capture.handler());
+    tel.attach(&[], diagnostics.handler());
+    let mut world = crate::compiler2::World::new(&tel);
+    let source = concat!(
+        "defmodule NotAStruct do\n",
+        "  fn hello(), do: 0\n",
+        "end\n",
+        "\n",
+        "defmodule B do\n",
+        "  fn make(), do: %NotAStruct{}\n",
+        "end\n",
+    )
+    .to_string();
+    let code_id = world.submit_code(
+        Some("zero_field_struct_literal_non_struct.fz".to_string()),
+        source.clone(),
+    );
+    assert_resolved(world.drive(), "first drive should index both modules");
+    assert!(
+        world.demand(Job::ScopeCode(code_id)),
+        "top-level scope should be demandable"
+    );
+    assert_resolved(world.drive(), "second drive should scope both modules");
+
+    let b = world.reference_module("B");
+    let make = world.reference_function(b, "make", 0);
+    assert!(
+        world.demand(Job::LowerFunction(make)),
+        "lowering make/0 should be demandable"
+    );
+    assert!(
+        matches!(world.drive(), DriveOutcome::Unresolved { .. }),
+        "lowering a zero-field struct literal naming a non-struct module should diagnose at the literal",
+    );
+
+    let diagnostic = capture
+        .last(&["fz", "diag", "error"])
+        .expect("expected a not-a-struct diagnostic from the zero-field struct-literal lowering wait");
+    assert_eq!(metadata_str(&diagnostic, "code"), codes::RESOLVE_NOT_A_STRUCT.0);
+    assert_eq!(
+        metadata_str(&diagnostic, "message"),
+        "module `NotAStruct` is not a struct"
+    );
+    let diagnostic = diagnostics
+        .last()
+        .expect("expected the not-a-struct diagnostic payload to be captured");
+    assert_primary_span_contains(&diagnostic, &source, "%NotAStruct{}");
+}
+
+#[test]
 fn compiler2_struct_pattern_lowering_diagnoses_reference_to_non_struct_module() {
     // The struct-*pattern* sibling of
     // `compiler2_struct_literal_lowering_diagnoses_reference_to_non_struct_module`:
@@ -1800,6 +1902,60 @@ fn compiler2_struct_pattern_lowering_diagnoses_reference_to_non_struct_module() 
         metadata_str(&diagnostic, "message"),
         "module `NotAStruct` is not a struct"
     );
+}
+
+#[test]
+fn compiler2_zero_field_struct_pattern_lowering_diagnoses_non_struct_module_at_reference_span() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    let diagnostics = DiagnosticCapture::new();
+    tel.attach(&[], capture.handler());
+    tel.attach(&[], diagnostics.handler());
+    let mut world = crate::compiler2::World::new(&tel);
+    let source = concat!(
+        "defmodule NotAStruct do\n",
+        "  fn hello(), do: 0\n",
+        "end\n",
+        "\n",
+        "defmodule B do\n",
+        "  fn take(%NotAStruct{}), do: 0\n",
+        "end\n",
+    )
+    .to_string();
+    let code_id = world.submit_code(
+        Some("zero_field_struct_pattern_non_struct.fz".to_string()),
+        source.clone(),
+    );
+    assert_resolved(world.drive(), "first drive should index both modules");
+    assert!(
+        world.demand(Job::ScopeCode(code_id)),
+        "top-level scope should be demandable"
+    );
+    assert_resolved(world.drive(), "second drive should scope both modules");
+
+    let b = world.reference_module("B");
+    let take = world.reference_function(b, "take", 1);
+    assert!(
+        world.demand(Job::LowerFunction(take)),
+        "lowering take/1 should be demandable"
+    );
+    assert!(
+        matches!(world.drive(), DriveOutcome::Unresolved { .. }),
+        "lowering a zero-field struct pattern naming a non-struct module should diagnose at the pattern",
+    );
+
+    let diagnostic = capture
+        .last(&["fz", "diag", "error"])
+        .expect("expected a not-a-struct diagnostic from the zero-field struct-pattern lowering wait");
+    assert_eq!(metadata_str(&diagnostic, "code"), codes::RESOLVE_NOT_A_STRUCT.0);
+    assert_eq!(
+        metadata_str(&diagnostic, "message"),
+        "module `NotAStruct` is not a struct"
+    );
+    let diagnostic = diagnostics
+        .last()
+        .expect("expected the not-a-struct diagnostic payload to be captured");
+    assert_primary_span_contains(&diagnostic, &source, "%NotAStruct{}");
 }
 
 #[test]
@@ -10046,6 +10202,10 @@ struct WorkGraphCapture {
     steps: AppliedSteps,
 }
 
+struct DiagnosticCapture {
+    diagnostics: Diagnostics,
+}
+
 #[derive(Debug, Clone)]
 struct JobSpanStop {
     job: Job,
@@ -10203,6 +10363,24 @@ impl WorkGraphCapture {
 
     fn all(&self) -> Vec<AppliedStep<Job, FactKey>> {
         self.steps.borrow().clone()
+    }
+}
+
+impl DiagnosticCapture {
+    fn new() -> Self {
+        Self {
+            diagnostics: Rc::new(RefCell::new(Vec::new())),
+        }
+    }
+
+    fn handler(&self) -> Box<dyn Handler> {
+        Box::new(DiagnosticCaptureHandler {
+            diagnostics: self.diagnostics.clone(),
+        })
+    }
+
+    fn last(&self) -> Option<Diagnostic> {
+        self.diagnostics.borrow().last().cloned()
     }
 }
 
@@ -10566,6 +10744,10 @@ struct WorkGraphCaptureHandler {
     steps: AppliedSteps,
 }
 
+struct DiagnosticCaptureHandler {
+    diagnostics: Diagnostics,
+}
+
 struct FunctionCaptureHandler {
     defs: FunctionDefs,
 }
@@ -10671,6 +10853,21 @@ impl Handler for WorkGraphCaptureHandler {
             return;
         };
         self.steps.borrow_mut().push(step.clone());
+    }
+}
+
+impl Handler for DiagnosticCaptureHandler {
+    fn handle(&self, event: &Event<'_, '_, '_>) {
+        if !event.name.starts_with(&["fz", "diag"]) || event.kind != EventKind::Event {
+            return;
+        }
+        if let Some(diagnostic) = event
+            .metadata
+            .get("diagnostic")
+            .and_then(|value| value.downcast_ref::<Diagnostic>())
+        {
+            self.diagnostics.borrow_mut().push(diagnostic.clone());
+        }
     }
 }
 
@@ -11010,6 +11207,18 @@ fn metadata_str<'a>(event: &'a crate::telemetry::capture::OwnedEvent, key: &str)
         Some(Value::Str(value)) => value.as_ref(),
         other => panic!("metadata key `{key}` missing or not str: {other:?}"),
     }
+}
+
+fn assert_primary_span_contains(diagnostic: &Diagnostic, source: &str, needle: &str) {
+    let span = diagnostic.primary.span;
+    assert!(!span.is_dummy(), "diagnostic span must be a real source span");
+    let source_slice = source
+        .get(span.start as usize..span.end as usize)
+        .unwrap_or_else(|| panic!("diagnostic span {span:?} should slice the submitted source"));
+    assert!(
+        source_slice.contains(needle),
+        "diagnostic span should cover `{needle}`; got {span:?} -> `{source_slice}`"
+    );
 }
 
 fn guard_dispatch(capture: &GuardDispatchCapture, function: FunctionId) -> PatternGuardDispatch<Ty> {

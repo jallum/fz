@@ -53,7 +53,9 @@ use super::source::{
     QuotedLexicalContext, QuotedLexicalContextKind, QuotedSourceBuilder, QuotedSourceError, QuotedSourceMetadata,
     QuotedSourceRoot,
 };
-use super::structdef::{StructDef, StructDefMap, StructExpectationMap, StructFieldExpectation};
+use super::structdef::{
+    StructDef, StructDefMap, StructExpectationMap, StructFieldExpectation, StructReferenceExpectation,
+};
 use super::transport::{
     BoundaryDescr, BoundaryId, CallableDescr, CallableId, LaneDescr, LaneId, ShapeDescr, ShapeId, TransportStore,
 };
@@ -1358,6 +1360,15 @@ impl<'a> World<'a> {
         self.struct_defs.get(module).map(|def| def.fields.as_slice())
     }
 
+    /// Records that `module` was used as a struct from `requester`, even when
+    /// the reference named no fields. `unresolved_struct_issue` uses this
+    /// module-level obligation to report a non-struct module at the reference
+    /// site rather than falling back to a generated span.
+    pub(crate) fn note_struct_reference_expectation(&mut self, module: ModuleId, requester: InterfaceRequester) {
+        self.struct_expectations
+            .record_reference(module, StructReferenceExpectation { requester });
+    }
+
     /// Records that `field` was referenced on `module`'s struct from
     /// `requester`, mirroring `note_module_interface_expectation`. `A`'s
     /// `defstruct` has no dedicated re-derivation job to rewake the way
@@ -1373,7 +1384,7 @@ impl<'a> World<'a> {
         requester: InterfaceRequester,
     ) -> Result<(), FatalError> {
         self.struct_expectations
-            .record(module, StructFieldExpectation { field, requester });
+            .record_field(module, StructFieldExpectation { field, requester });
         if self.struct_defs.get(module).is_some() {
             self.validate_struct_field_expectations(module)?;
         }
@@ -1393,7 +1404,7 @@ impl<'a> World<'a> {
             return Ok(());
         };
         let mut violated = false;
-        for expectation in self.struct_expectations.expectations(module) {
+        for expectation in self.struct_expectations.field_expectations(module) {
             if def.fields.iter().any(|field| field == &expectation.field) {
                 continue;
             }
@@ -2878,7 +2889,7 @@ impl<'a> World<'a> {
         }
         let span = self
             .struct_expectations
-            .expectations(module)
+            .reference_expectations(module)
             .first()
             .map(|expectation| expectation.requester.span)
             .unwrap_or(Span::DUMMY);
