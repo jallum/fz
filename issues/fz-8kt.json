@@ -2,13 +2,14 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-07-09T18:27:39Z",
   "created": "2026-07-08T14:33:04Z",
   "description": "SURFACED by the fz-rh2.17 close-out audit. Compiler2::submit_module_interface (compiler.rs:68) -\u003e World::submit_module_interface (world.rs:382) -\u003e Job::DefineModuleInterface publishes an 'external' (host-submitted, no fz source) ModuleInterface through the same uniform type/path as local/protocol/runtime modules. The MECHANISM is uniform and correct, but it has NO production caller outside tests (world_test.rs:32, port_resolve_test.rs:393) -- so the 'external' module kind is theoretically-uniform but not load-bearing today. RESOLVE: either exercise it from a real embedder/fixture (proving the fourth module kind works end-to-end), or document it as an intentionally test-only/embedder-facing API. Related: fz-rh2.17.",
   "id": "fz-8kt",
   "labels": [],
   "priority": 4,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Compiler2::submit_module_interface (external-module interface entry) has no production caller -- exercise from a real embedder/fixture or document as test-only",
   "type": "bug",
-  "updated_at": "2026-07-09T18:19:01Z"
+  "updated_at": "2026-07-09T18:27:39Z"
 }
