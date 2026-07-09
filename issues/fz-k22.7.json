@@ -9,9 +9,15 @@
   "id": "fz-k22.7",
   "labels": [],
   "parent": "fz-k22",
+  "comments": [
+    {
+      "text": "ADVANCED (not green) via spike 2026-07-09. TWO LAYERS, one step (neither greens a fixture alone -\u003e one commit when both land):\n\nLAYER 1 (prototyped, preserved on branch wt/k22-7-capture-lane @ 66d99ec40): native.rs BackendTail::ClosureCall hard-errored on direct_rejection instead of falling through to the already-correct generic indirect path. Deleting the redundant hard-error (~12 LoC) moves BOTH enum_predicate_search AND enum_take_drop_split past the 'encoded N call lanes for M callee params' error to fail IDENTICALLY at layer 2 -- proving they share one root bug. lib 1279/0/6, warning-free.\n\nLAYER 2 (root-caused, NOT fixed -- the cheap fix is UNSOUND): driver.rs:940 build_codegen_closure_targets asserts one NativeClosureTargetSurface per target_fn. Two BoundaryIds (per closure-literal call site: all?/2 captures a fun -\u003e 1 RawAtom lane; all?/1 ground-folds to 0 lanes) resolve to the same shared recursive body with divergent published_capture_lanes. That target_fn-\u003esurface map ALSO compiles the callee's OWN entry ABI (one physical param layout), so 'pick one, skip conflict' trades a clean crash for a silent miscompile. Correct fix must unify capture lanes at the boundary-publication layer (transport) + make the ground-folded 0-capture producer materialize the folded constant into the widened slot -- needs fixpoint-safety review.\n\nNOW: holistic root-cause investigation underway (Output Contract Loop) on wt-k22-7-holistic to trace where the DATA MODEL first goes sour (is capture-surface held at the wrong granularity? is the body-sharing decision ignoring capture ABI? is the ground-fold the rot?) and design the correct-by-construction repair. Full data-model diagnosis to replace this when it returns.",
+      "timestamp": "2026-07-09T18:36:32Z"
+    }
+  ],
   "priority": 1,
   "status": "in_progress",
   "title": "fz-k22: shared HOF body reached by 2+ distinct closure CAPTURE surfaces -- the crash is per-call closure-capture evidence, NOT a settle-race or a convergence fold",
   "type": "bug",
-  "updated_at": "2026-07-09T18:18:59Z"
+  "updated_at": "2026-07-09T18:36:32Z"
 }
