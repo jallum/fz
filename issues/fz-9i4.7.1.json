@@ -7,9 +7,15 @@
   "id": "fz-9i4.7.1",
   "labels": [],
   "parent": "fz-9i4.7",
+  "comments": [
+    {
+      "text": "SPIKE 2026-07-09: this ticket is not atomic. Current failures split into at least three repairs: (1) product-drive paths queue source warnings but never flush world.flush_reported_warnings(), so case/with warnings are dropped on fz2 run/interp/build; (2) source_diagnostics checks case/with but not function clause heads, so tree-style partial fn clauses cannot warn yet; (3) spec/violation validation appears absent, not merely dropped: diag code is not registered and FunctionContract facts refine calls without rejecting declared-vs-observed mismatches. Creating child tickets for the three independent fixes; keep this parent open until they close and the fixtures can be undeferred.",
+      "timestamp": "2026-07-09T22:00:06Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "[BUG] Compiler2 lost exhaustiveness/spec diagnostics regressed",
   "type": "bug",
-  "updated_at": "2026-06-18T03:40:59Z"
+  "updated_at": "2026-07-09T22:00:06Z"
 }
