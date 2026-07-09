@@ -2,14 +2,16 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-07-09T21:51:50Z",
+  "close_reason": "Current integration HEAD a78163d0c no longer reproduces the keyword_lists lowering failure. Verified with cargo test --test fixture_matrix keyword_lists -- --nocapture: run, interp, and build all passed (3 passed, 0 ignored). No code change was needed in this batch; the ticket intent is satisfied by existing integration work.",
   "created": "2026-06-18T03:41:18Z",
   "description": "fixtures2/behavior/keyword_lists fails run+interp+build with 'error[lower/unbound]: compiler2 lowering found unresolved d...' — lowering reaches an unresolved/unbound demand for the keyword-list construction. Single-fixture frontend/lowering gap; resolve the unbound reference so keyword_lists lowers.",
   "id": "fz-9i4.7.6",
   "labels": [],
   "parent": "fz-9i4.7",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "[BUG] Compiler2 lowering finds unbound demand on keyword_lists",
   "type": "bug",
-  "updated_at": "2026-06-18T03:41:18Z"
+  "updated_at": "2026-07-09T21:51:50Z"
 }
