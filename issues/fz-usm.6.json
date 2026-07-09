@@ -12,9 +12,15 @@
   "id": "fz-usm.6",
   "labels": [],
   "parent": "fz-usm",
+  "comments": [
+    {
+      "text": "Parity audit complete for the resolve.rs CONSTRUCTORS registry (the table this\nticket names): all 13 nullary scalars + list/resource (parametric) + map are\npresent, each already had test coverage proving it mints the identical Ty a\ndirect Types call produces (resolve_test.rs). Added two new pinning tests\n(bare_tuple_is_not_a_registered_constructor_name,\napplied_tuple_is_not_a_registered_constructor_name) documenting that `tuple`/\n`tuple(T,U)` are deliberately absent -- {T,U} stays the sole tuple syntax --\nso a future registry edit can't reintroduce that gap un-reviewed. Updated the\nCONSTRUCTORS doc comment in resolve.rs with the same rationale, and expanded\n.agent/docs/type-naming.md with a new \"Builtin constructors are one registry\"\nsection naming resolve.rs's CONSTRUCTORS as the single source of truth for\nbuiltin type-constructor names, including the list/[T] and map/%{} structural\nconcordance and the tuple-absence decision.\n\nAdjacent finding surfaced during the audit (not in this ticket's scope, filed\nseparately per no-silent-deferrals): the registry this ticket closes out is\nthe sole authority for *type-annotation* name resolution\n(resolve.rs::classify_name), but two OTHER independent name-\u003eTy sites still\nexist and were never reconciled against it:\n- fz-usm.7: source_publish.rs's collect_type_refs (the reference-walk/publish\n  side) never consults CONSTRUCTORS, only reference_type -- a user @type that\n  shadows a builtin name (e.g. `@type list :: ...`) gets a real TypeDefined\n  reference recorded at publish time, then silently ignored at resolve time\n  because classify_name checks find_constructor first. Latent bug, not\n  authorized to fix here.\n- fz-usm.8: world.rs's BuiltinValueFamily (defimpl target dispatch, ~line\n  3190-3247) is a second hand-maintained name-\u003eTy table, keyed by capitalized\n  module name (List/Map/...) rather than lowercase type-position name, and\n  missing a Tuple family (defimpl ..., for: Tuple falls through to Nominal).\n  Whether this should fold into CONSTRUCTORS or stay separate (different\n  domain: protocol-impl-target names vs. type-annotation names) is an open\n  design question, not decided here.\n\nVerify: cargo test --lib -- 1296 passed, 0 failed (16 in\ncompiler2::resolve_test, up from 14). cargo clippy --all-targets -- -D\nwarnings clean.",
+      "timestamp": "2026-07-09T20:19:32Z"
+    }
+  ],
   "priority": 3,
   "status": "open",
   "title": "fz-usm: parity audit across the constructor set + update type-resolution agent docs to name the registry as source of truth",
   "type": "task",
-  "updated_at": "2026-07-05T22:25:03Z"
+  "updated_at": "2026-07-09T20:19:32Z"
 }
