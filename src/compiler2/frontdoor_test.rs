@@ -340,6 +340,99 @@ fn compiler2_frontdoor_paren_call_keyword_args_plus_trailing_do_appends_second_k
 }
 
 #[test]
+fn compiler2_frontdoor_no_parens_call_keyword_args_plus_trailing_do_appends_second_keyword_list() {
+    // Same rule as the paren-call case above, but for a no-parens call whose
+    // last argument is a keyword list: `echo label: :work do 42 end` must be
+    // `echo([label: :work], [do: 42])`, arity 2 -- not `echo([label: :work,
+    // do: 42])`, arity 1. The no-parens path must not diverge from the paren
+    // path or from Elixir, which never folds a trailing `do` block into a
+    // preceding keyword-list argument.
+    let tel = ConfiguredTelemetry::new();
+    let root = parse_quoted_program(
+        "keyword_no_paren_do.fz",
+        "echo label: :work do\n  42\nend\n",
+        CodeId::ZERO,
+        &tel,
+    )
+    .expect("quoted parse");
+
+    let items = root.cursor().list_items().expect("top-level items");
+    assert_eq!(items.len(), 1);
+    let call = items[0].ast_node().expect("call cursor").expect("call node");
+    assert_eq!(head_name(&call), "echo");
+    let args = call.tail.list_items().expect("call args");
+    assert_eq!(
+        args.len(),
+        2,
+        "the preceding keyword-list arg and the trailing do-block are two separate arguments, not merged"
+    );
+    let first_kw = args[0].list_items().expect("first kw list");
+    assert_eq!(
+        first_kw[0].tuple_items().expect("label tuple")[0]
+            .atom_name()
+            .expect("label key"),
+        "label"
+    );
+    let second_kw = args[1].list_items().expect("second kw list");
+    assert_eq!(
+        second_kw[0].tuple_items().expect("do tuple")[0]
+            .atom_name()
+            .expect("do key"),
+        "do"
+    );
+}
+
+#[test]
+fn compiler2_frontdoor_no_parens_and_paren_call_trailing_do_parity() {
+    // The crisp intent: the no-parens and parenthesized forms of the same
+    // call must produce the identical argument shape once a trailing do-block
+    // is attached -- arity, the keyword-list argument's keys/values, and the
+    // do-block's body are all the same regardless of which surface syntax
+    // was used to write the call.
+    let tel = ConfiguredTelemetry::new();
+    let no_parens = parse_quoted_program(
+        "keyword_no_paren_do_parity.fz",
+        "echo a, b: 1, c: 2 do\n  42\nend\n",
+        CodeId::ZERO,
+        &tel,
+    )
+    .expect("quoted parse (no parens)");
+    let parens = parse_quoted_program(
+        "keyword_paren_do_parity.fz",
+        "echo(a, b: 1, c: 2) do\n  42\nend\n",
+        CodeId::ZERO,
+        &tel,
+    )
+    .expect("quoted parse (parens)");
+
+    for (label, root) in [("no-parens", &no_parens), ("parens", &parens)] {
+        let items = root.cursor().list_items().expect("top-level items");
+        assert_eq!(items.len(), 1, "{label}: one top-level call");
+        let call = items[0].ast_node().expect("call cursor").expect("call node");
+        assert_eq!(head_name(&call), "echo", "{label}: call head");
+        let args = call.tail.list_items().expect("call args");
+        assert_eq!(
+            args.len(),
+            3,
+            "{label}: positional arg, keyword-list arg, and do-block arg stay three separate arguments"
+        );
+        let kw = args[1].list_items().expect("keyword-list arg");
+        assert_eq!(kw.len(), 2, "{label}: keyword list keeps both b: and c:");
+        let b_tuple = kw[0].tuple_items().expect("b tuple");
+        assert_eq!(b_tuple[0].atom_name().expect("b key"), "b");
+        assert_eq!(b_tuple[1].int_value().expect("b value"), 1);
+        let c_tuple = kw[1].tuple_items().expect("c tuple");
+        assert_eq!(c_tuple[0].atom_name().expect("c key"), "c");
+        assert_eq!(c_tuple[1].int_value().expect("c value"), 2);
+        let do_kw = args[2].list_items().expect("do-block arg");
+        assert_eq!(do_kw.len(), 1, "{label}: do-block arg holds only `do:`");
+        let do_tuple = do_kw[0].tuple_items().expect("do tuple");
+        assert_eq!(do_tuple[0].atom_name().expect("do key"), "do");
+        assert_eq!(do_tuple[1].int_value().expect("do body"), 42);
+    }
+}
+
+#[test]
 fn compiler2_frontdoor_parses_item_macro_calls_with_trailing_do() {
     let tel = ConfiguredTelemetry::new();
     let root = parse_quoted_program("test_surface.fz", "test(:name) do\n  42\nend\n", CodeId::ZERO, &tel)

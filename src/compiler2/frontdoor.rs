@@ -660,8 +660,8 @@ impl FrontDoorParser {
                 continue;
             }
             if lhs.callable_head && self.starts_no_parens_arg() {
-                let (mut args, keyword_arg_index) = self.parse_no_parens_args(module_path, scope)?;
-                self.attach_trailing_do_with_keyword_index(&mut args, keyword_arg_index, module_path, scope)?;
+                let mut args = self.parse_no_parens_args(module_path, scope)?;
+                self.attach_trailing_do(&mut args, module_path, scope)?;
                 let span = lhs.span.merge(self.prev_span());
                 let meta = self.meta(module_path, scope, span)?;
                 let root = if let Some(name) = lhs.call_head {
@@ -675,7 +675,7 @@ impl FrontDoorParser {
             }
             if lhs.callable_head && self.allow_trailing_do && self.peek_is(&Tok::Do) {
                 let mut args = Vec::new();
-                self.attach_trailing_do_with_keyword_index(&mut args, None, module_path, scope)?;
+                self.attach_trailing_do(&mut args, module_path, scope)?;
                 let span = lhs.span.merge(self.prev_span());
                 let meta = self.meta(module_path, scope, span)?;
                 let root = if let Some(name) = lhs.call_head {
@@ -1520,10 +1520,10 @@ impl FrontDoorParser {
         &mut self,
         module_path: &[String],
         scope: &[String],
-    ) -> Result<(Vec<AnyValueRef>, Option<usize>), FrontDoorError> {
+    ) -> Result<Vec<AnyValueRef>, FrontDoorError> {
         if matches!(self.peek(), Tok::KwKey(_)) {
             let kw = self.parse_keyword_list_expr(module_path, scope, &Tok::Eof)?;
-            return Ok((vec![kw], Some(0)));
+            return Ok(vec![kw]);
         }
 
         let mut args = vec![
@@ -1531,22 +1531,21 @@ impl FrontDoorParser {
                 .root,
         ];
         if self.comma_bound {
-            return Ok((args, None));
+            return Ok(args);
         }
 
         while self.eat(&Tok::Comma) {
             self.skip_newlines();
             if matches!(self.peek(), Tok::KwKey(_)) {
                 args.push(self.parse_keyword_list_expr(module_path, scope, &Tok::Eof)?);
-                let keyword_arg_index = args.len() - 1;
-                return Ok((args, Some(keyword_arg_index)));
+                return Ok(args);
             }
             args.push(
                 self.with_comma_unbound(|parser| parser.parse_expr(module_path, scope))?
                     .root,
             );
         }
-        Ok((args, None))
+        Ok(args)
     }
 
     fn parse_block_until(
@@ -1575,19 +1574,16 @@ impl FrontDoorParser {
             .map_err(FrontDoorError::from)
     }
 
+    /// Attaches a trailing `do ... end` / `, do: ...` block to a call as a
+    /// fresh `[do: body]` argument. Elixir never folds the do-block into a
+    /// preceding keyword-list argument, even when that argument came from
+    /// keyword-call sugar (`echo(label: :work) do 42 end` is arity-2
+    /// `echo([label: :work], [do: 42])`, not arity-1 `echo([label: :work, do:
+    /// 42])`) -- so this always appends, matching both call surfaces
+    /// (parenthesized and no-parens) and Elixir's own attachment rule.
     fn attach_trailing_do(
         &mut self,
         args: &mut Vec<AnyValueRef>,
-        module_path: &[String],
-        scope: &[String],
-    ) -> Result<(), FrontDoorError> {
-        self.attach_trailing_do_with_keyword_index(args, None, module_path, scope)
-    }
-
-    fn attach_trailing_do_with_keyword_index(
-        &mut self,
-        args: &mut Vec<AnyValueRef>,
-        keyword_arg_index: Option<usize>,
         module_path: &[String],
         scope: &[String],
     ) -> Result<(), FrontDoorError> {
@@ -1611,23 +1607,7 @@ impl FrontDoorParser {
             None
         };
         if let Some(body) = body {
-            if let Some(index) = keyword_arg_index
-                && let Some(existing) = args.get(index).copied()
-            {
-                let mut entries = self
-                    .builder
-                    .root(existing)?
-                    .cursor()
-                    .list_items()
-                    .map_err(|_| self.error("expected keyword list argument"))?
-                    .iter()
-                    .map(|entry| entry.root())
-                    .collect::<Vec<_>>();
-                entries.push(self.builder.keyword("do", body)?);
-                args[index] = self.builder.list(&entries)?;
-            } else {
-                args.push(self.builder.list(&[self.builder.keyword("do", body)?])?);
-            }
+            args.push(self.builder.list(&[self.builder.keyword("do", body)?])?);
         }
         Ok(())
     }
