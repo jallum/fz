@@ -104,6 +104,30 @@ a `Range` never pulls the `Range` impl, and only the callbacks actually called a
 lowered. The domain's meaning is fixed at the surface tier; the reached impl set
 accretes at the semantic tier the same way any reached function does.
 
+## Builtin constructors are one registry
+
+A name in type position first checks a single table before anything else runs:
+`resolve.rs`'s `CONSTRUCTORS`, a `&[ConstructorEntry]` mapping a builtin name to
+its arity and its `Types`-minting function. This is the one authoritative
+source for every builtin type-constructor name — scalars (`integer`, `bool`,
+`atom`, `map`, …) and the two parametric constructors (`list`, `resource`)
+alike — and `classify_name` (`resolve.rs`) tries it before checking bound type
+variables or the `TypeDefined` namespace. There is no separate nullary-only
+table and no inline special-casing for parametric names: `list`/`list(T)` and
+`resource`/`resource(T)` are ordinary registry entries with `Arity::Range(0,
+1)`, resolved through the identical `find_constructor` lookup and arity check
+every scalar goes through.
+
+A structural spelling (`[T]`, `%{k => v}`, `{T, U}`) is a distinct
+`TypeExpr` variant handled directly in `resolve_ty`, not a registry lookup —
+but where both a name and a structural form exist for the same type (`list`
+vs `[T]`, `map` vs `%{k => v}`), they mint the identical `Ty`; the registry
+entry and the structural arm are proven concordant by
+`resolve_test::list_bracket_and_named_forms_resolve_to_the_same_ty` and
+`a_structural_map_type_resolves_to_the_same_ty_as_a_hand_built_exact_map`.
+`tuple` has no named form — `{T, U}` is its sole syntax by deliberate
+choice, not an oversight (see the `CONSTRUCTORS` doc comment).
+
 ## Where it lives
 
 ```text

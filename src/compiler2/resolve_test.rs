@@ -283,3 +283,31 @@ fn map_with_a_type_argument_reports_the_uniform_arity_error() {
 
     assert_eq!(error.msg, "expected 0 type argument(s), got 1 `map`");
 }
+
+/// Parity audit: `list`/`resource`/`map` all got a named-constructor form
+/// alongside their structural syntax ([`fz-usm.1`–`.4`]); `tuple` deliberately
+/// did not. `{T, U}` stays the sole tuple syntax — there is no `tuple` or
+/// `tuple(T, U)` registry entry, and a source program that writes one gets the
+/// same "unknown type name" every other undeclared name gets, not a silent
+/// fallback. This pins that gap as intentional so a future registry edit
+/// can't reintroduce it un-reviewed.
+#[test]
+fn bare_tuple_is_not_a_registered_constructor_name() {
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new(&tel);
+
+    let error = resolve(&tel, &mut world, "tuple").expect_err("`tuple` is not a builtin constructor name");
+
+    assert_eq!(error.msg, "unknown type name `tuple`");
+}
+
+#[test]
+fn applied_tuple_is_not_a_registered_constructor_name() {
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new(&tel);
+
+    let error =
+        resolve(&tel, &mut world, "tuple(integer, atom)").expect_err("`tuple(...)` is not a builtin constructor form");
+
+    assert_eq!(error.msg, "unknown type name `tuple`");
+}
