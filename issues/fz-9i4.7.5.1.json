@@ -6,10 +6,10 @@
   "description": "Audit of fz-9i4.7.5 found that non-.value resource dot access is rejected, but native/AOT abort via runtime/src/ir_runtime.rs expect(\"fz_struct_get_named_field_ref\") while backend interp returns a clean error. Acceptance: h.foo on a resource fails consistently with a controlled diagnostic/runtime error on run/interp/build and does not expose payloads; resource .value remains the only payload path; cargo test --lib and clippy pass.",
   "id": "fz-9i4.7.5.1",
   "labels": [],
-  "parent": "fz-9i4.7.5",
+  "parent": "fz-9i4.7",
   "priority": 3,
   "status": "open",
   "title": "Native resource non-value field access reports a controlled error instead of aborting",
   "type": "bug",
-  "updated_at": "2026-07-09T22:32:31Z"
+  "updated_at": "2026-07-09T22:35:13Z"
 }
