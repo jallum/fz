@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-07-09T20:14:00Z",
+  "description": "Exposed under fz-k22.7 after Layers A/B/C cleared the capture-ABI crashes. A plain (non-closure) Term::Call/TailCall to a shared body passes only 4 args at ONE call site while every other call site to the same fn correctly passes 5. Direct call -\u003e arity is a property of the callees compiled signature, NOT capture-ABI/target-identity resolution -- judged LIKELY SEPARATE from the k22 capture-ABI family. Precise repro: fixtures2/behavior/enum_predicate_search.fz via run/build; error at native_codegen verify stage; functions reduce_while_cont__clause_{0,1}; callee fn6/fn7 (colocated u0:224 / u0:857 in dumped IR); signature (i64,i64,i64,i64,i64)-\u003ei64 tail; call site supplies 4. May connect to the reduce_while_cont demand/materialization territory (near the closed fz-k22.8 clause-0 work). Blocks enum_predicate_search + enum_take_drop_split run/build.",
+  "id": "fz-k22.10",
+  "labels": [],
+  "parent": "fz-k22",
+  "priority": 2,
+  "status": "open",
+  "title": "fz-k22: reduce_while_cont clause_0/clause_1 direct call passes 4 args to a 5-param tail-CC body (fn6/fn7) -- cranelift verifier reject",
+  "type": "bug",
+  "updated_at": "2026-07-09T20:14:00Z"
+}
