@@ -76,8 +76,8 @@ dispatch materializes `GroundValue::Utf8Binary` in the backend interpreter, so
 `enum_list_allocations` still carries a real, open native-lowering allocation
 regression (see below) and stays deferred on `run`/`build` rather than being
 blessed. `tree` stays deferred on all three paths for an unrelated reason: it
-lost its type/no-matching-clause diagnostic in the same regression that also
-affects `case_tuple_pattern_sequential` and `spec_violation`.
+still lacks the expected type/no-matching-clause diagnostic; `spec_violation`
+remains deferred for its own diagnostic regression.
 
 **Source-surface gaps are closed.** The Elixir-surface parser batch for
 keyword lists, no-parens calls, trailing `do`, quoted keyword keys, and

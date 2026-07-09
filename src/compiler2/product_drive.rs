@@ -90,6 +90,7 @@ pub(super) fn drive_root_backend_product_with_budgets<'a, E: ProductDriveError>(
         match outcome {
             PullOutcome::Produced(ProductValue::RootBackendProduct(program)) if current == root_key => {
                 driver.session_mut().record_work_starts(world.work_start_tally());
+                world.flush_reported_warnings();
                 return Ok((*program, driver));
             }
             PullOutcome::Produced(_) => {}
