@@ -6,9 +6,15 @@
   "description": "SURFACED by the fz-s2b investigation (at 6efa9fc16). Observed while constructing cross-file macro repros: 'require M' alone is NOT sufficient to invoke M's macro via a qualified call 'M.tag(...)' — it fails with 'macro/not-required' because lookup_module_path has no global-name fallback; the module name must additionally be bound via 'alias M' or 'import M'. Cross-file SYMBOL identity is global, but namespace VISIBILITY is per-code. QUESTION: is this asymmetry intended — that a macro needs BOTH 'require' (for the requirement guard) AND 'alias'/'import' (for name binding) to be called qualified cross-file? Elixir's 'require M' alone DOES permit 'M.macro()'. Decide the intended semantics and either add the global-name fallback in lookup_module_path so 'require M' + 'M.macro()' works (Elixir parity), or document the intended requirement explicitly as a provable fact. Low priority — narrow surface. Related: fz-s2b.",
   "id": "fz-osx",
   "labels": [],
+  "comments": [
+    {
+      "text": "SPIKE 2026-07-09: prototype e199bec6 on branch coord/spike-fz-osx-require-macro supports promotion. Root cause: require records required macro IDs but does not bind the module name into namespace; qualified macro expansion requires lookup_module_path visibility before the macro/not-required guard. Recommended implementation: make require bind the required module's default alias while separately preserving the required macro permission set; add tests for bare require M + M.macro(), missing require still macro/not-required, and dotted require Foo.Bar aliasing Bar if Elixir parity is intended. Prototype passed focused require/macro/frontdoor tests and pre-commit check/clippy.",
+      "timestamp": "2026-07-09T19:27:02Z"
+    }
+  ],
   "priority": 4,
   "status": "open",
   "title": "Cross-file macro invocation needs alias/import to bind the module name; bare require M + qualified M.macro() fails macro/not-required",
   "type": "bug",
-  "updated_at": "2026-07-07T13:16:53Z"
+  "updated_at": "2026-07-09T19:27:02Z"
 }
