@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-07-07T21:56:42Z",
@@ -8,8 +8,8 @@
   "labels": [],
   "parent": "fz-rh2.16.4",
   "priority": 3,
-  "status": "open",
+  "status": "in_progress",
   "title": "Frontdoor no-parens call merges a trailing do-block into a preceding keyword-list argument (diverges from Elixir AND from fz's own parenthesized-call path)",
   "type": "bug",
-  "updated_at": "2026-07-07T21:56:42Z"
+  "updated_at": "2026-07-09T18:19:00Z"
 }
