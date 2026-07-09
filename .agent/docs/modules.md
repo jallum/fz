@@ -104,6 +104,13 @@ declared later in the same scope:
    Set-valued `import M` / `import M, except: ...` and the corresponding
    `require` forms wait on `FactKey::ModuleInterface(module)`, because they
    need the provider's full exported callable set before they can bind names.
+   `require` also publishes the required module path into the lexical
+   namespace so qualified remote macro calls can resolve the module name. For
+   a dotted path such as `Foo.Bar`, the full path is made visible through
+   `Foo`; the short name `Bar` still requires an explicit `alias`.
+   Separately, `require` records the selected remote macro `FunctionId`s that
+   this scope may expand. A visible module without a matching required macro
+   entry still trips `macro/not-required`.
    Later jobs wait only when they need more than that placeholder:
    macro expansion waits for the provider interface when it must decide whether
    a reserved callable is a macro, and module-interface publication validates

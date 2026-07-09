@@ -1011,6 +1011,7 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
 
     fn apply_require(&mut self, import: &super::quoted_surface::ImportForm) -> Result<Option<JobEffects>, FatalError> {
         let required_module = self.resolve_import_module(import);
+        self.bind_required_module_path(import, required_module);
         let selected = if self.world.module_interface_revision(required_module).is_none() {
             if let Some(only) = import.only.as_deref() {
                 only.iter()
@@ -1041,6 +1042,23 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
         };
         self.record_required_remote_macros(&selected);
         Ok(None)
+    }
+
+    fn bind_required_module_path(&mut self, import: &super::quoted_surface::ImportForm, module: ModuleId) {
+        let Some((first, rest)) = import.path.split_first() else {
+            return;
+        };
+        let bound_module = if rest.is_empty() {
+            module
+        } else {
+            match self.world.lookup_namespace(self.namespace, first) {
+                Some(NamespaceSymbol::Module(prefix)) => prefix,
+                _ => self.world.reference_module(first.clone()),
+            }
+        };
+        self.namespace =
+            self.world
+                .bind_namespace(self.namespace, first.clone(), NamespaceSymbol::Module(bound_module));
     }
 
     fn select_required_macro_exports(

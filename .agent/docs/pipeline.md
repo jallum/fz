@@ -170,7 +170,12 @@ identity and are not expression positions. Local macros, imported macros, and
 required remote macros all converge on the same `MacroExecutable(function)`
 fact. Exact `import/require ... only:` forms do not wait during scoping: they
 reserve callable identity lazily by recording a module-interface expectation and
-binding a `Callable` placeholder into the namespace immediately. A later job
+binding a `Callable` placeholder into the namespace immediately. `require`
+also binds module-path visibility for the required name, but remote macro
+permission is still tracked separately as selected macro `FunctionId`s; an
+alias or other visible module binding does not authorize expansion by itself.
+For dotted required paths, the spelled full path is visible through its leading
+segment, and the short final segment is not implicitly aliased. A later job
 waits only if it needs more than that placeholder. In practice that means
 `ExpandFunctionSource(function)` waits on `FactKey::ModuleInterface(module)`
 when a reserved exact callable must be classified as macro vs ordinary

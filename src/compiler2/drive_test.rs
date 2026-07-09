@@ -9902,6 +9902,244 @@ end
 }
 
 #[test]
+fn compiler2_cross_file_bare_require_permits_qualified_macro_call() {
+    let tel = ConfiguredTelemetry::new();
+    let functions = FunctionCapture::new();
+    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    let modules = ModuleCapture::new();
+    tel.attach(&["fz", "compiler2", "module", "defined"], modules.handler());
+    let bodies = LoweredBodyCapture::new();
+    tel.attach(&["fz", "compiler2", "lowered_body", "defined"], bodies.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/cross_file_macro_provider.fz".to_string()),
+        text: r#"
+defmodule M do
+  fn tag(x), do: {:tagged, x}
+
+  defmacro tagged(x) do
+    quote do: tag(unquote(x))
+  end
+end
+"#
+        .to_string(),
+    });
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/cross_file_macro_user.fz".to_string()),
+        text: r#"
+defmodule User do
+  require M
+
+  fn run(), do: M.tagged(7)
+end
+"#
+        .to_string(),
+    });
+    compiler.submit_root(RootSubmission {
+        module_name: Some("User".to_string()),
+        name: "run".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    assert_resolved(
+        compiler.drive(),
+        "bare require should bind module visibility for a qualified macro call across files",
+    );
+
+    let records = functions.all();
+    let run = records
+        .iter()
+        .find(|record| function_fq_name(record, &modules) == "User.run")
+        .expect("User.run/0 should be defined")
+        .function_id;
+    let tag = records
+        .iter()
+        .find(|record| function_fq_name(record, &modules) == "M.tag")
+        .expect("M.tag/1 should be defined")
+        .function_id;
+    direct_call_in_body(lowered_body(&bodies, run), tag);
+}
+
+#[test]
+fn compiler2_visible_alias_does_not_permit_remote_macro_without_require() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&[], capture.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/aliased_macro_provider.fz".to_string()),
+        text: r#"
+defmodule Helpers do
+  fn double(x), do: x * 2
+
+  defmacro twice(x) do
+    quote do: double(unquote(x))
+  end
+end
+"#
+        .to_string(),
+    });
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/aliased_macro_user_without_require.fz".to_string()),
+        text: r#"
+defmodule App do
+  alias Helpers, as: H
+
+  fn run(), do: H.twice(21)
+end
+"#
+        .to_string(),
+    });
+    compiler.submit_root(RootSubmission {
+        module_name: Some("App".to_string()),
+        name: "run".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    let outcome = compiler.drive();
+    assert!(
+        matches!(outcome, DriveOutcome::Fatal { .. }),
+        "a visible module alias should not bypass the remote macro require guard: {outcome:?}",
+    );
+    let diagnostic = capture
+        .last(&["fz", "diag", "error"])
+        .expect("unrequired aliased remote macro diagnostic");
+    assert_eq!(
+        metadata_str(&diagnostic, "code"),
+        codes::MACRO_NOT_REQUIRED.0,
+        "aliased remote macros should still require an explicit require",
+    );
+    assert!(
+        metadata_str(&diagnostic, "message").contains("require H"),
+        "diagnostic should name the visible qualifier that needs require; got: {}",
+        metadata_str(&diagnostic, "message"),
+    );
+}
+
+#[test]
+fn compiler2_dotted_require_permits_full_path_macro_call() {
+    let tel = ConfiguredTelemetry::new();
+    let functions = FunctionCapture::new();
+    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    let modules = ModuleCapture::new();
+    tel.attach(&["fz", "compiler2", "module", "defined"], modules.handler());
+    let bodies = LoweredBodyCapture::new();
+    tel.attach(&["fz", "compiler2", "lowered_body", "defined"], bodies.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/dotted_macro_provider.fz".to_string()),
+        text: r#"
+defmodule Foo.Bar do
+  fn tag(x), do: {:tagged, x}
+
+  defmacro tagged(x) do
+    quote do: tag(unquote(x))
+  end
+end
+"#
+        .to_string(),
+    });
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/dotted_macro_user.fz".to_string()),
+        text: r#"
+defmodule User do
+  require Foo.Bar
+
+  fn run(), do: Foo.Bar.tagged(7)
+end
+"#
+        .to_string(),
+    });
+    compiler.submit_root(RootSubmission {
+        module_name: Some("User".to_string()),
+        name: "run".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    assert_resolved(
+        compiler.drive(),
+        "dotted require should make the full required module path visible to qualified macro expansion",
+    );
+
+    let records = functions.all();
+    let run = records
+        .iter()
+        .find(|record| function_fq_name(record, &modules) == "User.run")
+        .expect("User.run/0 should be defined")
+        .function_id;
+    let tag = records
+        .iter()
+        .find(|record| function_fq_name(record, &modules) == "Foo.Bar.tag")
+        .expect("Foo.Bar.tag/1 should be defined")
+        .function_id;
+    direct_call_in_body(lowered_body(&bodies, run), tag);
+}
+
+#[test]
+fn compiler2_dotted_require_does_not_bind_short_alias() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&[], capture.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/dotted_macro_provider.fz".to_string()),
+        text: r#"
+defmodule Foo.Bar do
+  fn tag(x), do: {:tagged, x}
+
+  defmacro tagged(x) do
+    quote do: tag(unquote(x))
+  end
+end
+"#
+        .to_string(),
+    });
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/dotted_macro_user_without_alias.fz".to_string()),
+        text: r#"
+defmodule User do
+  require Foo.Bar
+
+  fn run(), do: Bar.tagged(7)
+end
+"#
+        .to_string(),
+    });
+    compiler.submit_root(RootSubmission {
+        module_name: Some("User".to_string()),
+        name: "run".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    let outcome = compiler.drive();
+    assert!(
+        matches!(outcome, DriveOutcome::Fatal { .. }),
+        "dotted require should not create the short Bar alias: {outcome:?}",
+    );
+    assert!(
+        capture
+            .find(&["fz", "compiler2", "macro", "expanded"])
+            .into_iter()
+            .all(|event| {
+                event
+                    .metadata
+                    .get("function_ref")
+                    .and_then(|value| value.downcast_ref::<FunctionRef>())
+                    .is_none_or(|function_ref| function_ref.name != "tagged")
+            }),
+        "the short alias form should not expand the remote macro",
+    );
+}
+
+#[test]
 fn compiler2_remote_macro_requires_explicit_require() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();

@@ -133,6 +133,24 @@ arity. This keeps module internals predictable: if a module defines its own
 <code>add/2</code>, a bare call to <code>add(x, y)</code> means the local
 function.</p>
 
+<p>Macros are different from ordinary imported functions. A qualified remote
+macro call needs <code>require</code> for that module before expansion:</p>
+
+<pre><span class="kw">defmodule</span> <span class="ty">User</span> <span class="kw">do</span>
+  <span class="kw">require</span> <span class="ty">Math</span>
+
+  <span class="kw">fn</span> <span class="fn">run</span>(), <span class="kw">do:</span> <span class="ty">Math</span>.<span class="fn">some_macro</span>(<span class="num">21</span>)
+<span class="kw">end</span></pre>
+
+<p><code>require</code> makes the module path visible for qualified macro
+expansion and records which exported macros that scope may use. Visibility is
+not permission by itself: <code>alias Math, as: M</code> lets
+<code>M.some_macro(...)</code> name the module, but the macro still needs
+<code>require M</code> or <code>require Math</code> in the same scope. For a
+dotted module path such as <code>Foo.Bar</code>, <code>require Foo.Bar</code>
+supports <code>Foo.Bar.some_macro(...)</code>; it does not create the short
+alias <code>Bar</code>.</p>
+
 <!-- ─────────────────────────────── 5. INTERFACE ─────────────────────────────── -->
 <h2 id="interface">5. Interfaces - the public contract</h2>
 
