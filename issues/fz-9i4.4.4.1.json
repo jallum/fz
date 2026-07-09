@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-07-09T22:19:03Z",
+  "description": "Cleanup of legacy callable reconstruction is blocked by a model assumption: NativeCodegenSurface currently treats closure target surfaces as unique by target FnId, but shared Enum.find/find_value-style helpers can have multiple callable-boundary surfaces for the same target FnId. Acceptance: native codegen carries boundary-keyed/direct-surface-keyed closure target surfaces; direct closure-call resolution selects the callable-boundary surface when the closure var has a boundary id; no-boundary singleton direct calls still use a direct-only fallback; then build_codegen_closure_targets and its stale expected-failure regression can be deleted in fz-9i4.4.4.",
+  "id": "fz-9i4.4.4.1",
+  "labels": [],
+  "parent": "fz-9i4.4.4",
+  "priority": 2,
+  "status": "open",
+  "title": "Native closure target surfaces are keyed by callable boundary identity, not only target FnId",
+  "type": "bug",
+  "updated_at": "2026-07-09T22:19:03Z"
+}
