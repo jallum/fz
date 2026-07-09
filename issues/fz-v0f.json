@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-07-09T20:08:11Z",
+  "description": "The landed test runtime_staticlib_selection_ignores_decoy_newer_mtime_archive exercises the real parse fn but its decoy-mtime file is not load-bearing (the fn never touches the fs anymore). Two real ambiguity corners are untested: (a) \u003e1 compiler-artifact with target.name==fz_runtime in one build stream (find_map takes first -- harmless by construction but assert it), (b) zero matching artifact messages (ok_or_else at aot_link.rs:281 errors -- assert the loud failure). Cheap coverage.",
+  "id": "fz-v0f",
+  "labels": [],
+  "priority": 4,
+  "status": "open",
+  "title": "fz-0lm: add unit tests for runtime_staticlib_from_cargo_messages multi-artifact and zero-artifact corners",
+  "type": "bug",
+  "updated_at": "2026-07-09T20:08:11Z"
+}
