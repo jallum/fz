@@ -693,13 +693,19 @@ fields and dies with that pipeline.
   by native lowering"; codegen no longer re-selects among candidate
   boundaries from local type evidence.
 - `fz.codegen.closure_call_lowered` (`compiler2/native_codegen/terminator.rs`)
-  — one per `CallClosure` lowering. Measurements: active `spec_id`,
-  `closure_var`, `continuation_spec_id`. Metadata: `body_name`, `call_kind`,
+  — one per `CallClosure` or `TailCallClosure` lowering. Measurements include
+  active `spec_id` and `closure_var`; non-tail closure calls also include
+  `continuation_spec_id`. Metadata: `body_name`, `call_kind`,
   `closure_binding_repr` (`ArgRepr::as_str`), `dispatch_kind` (`direct` when
-  the body literal resolves, else `indirect`), and `continuation_storage`
-  (`lazy_descriptor` or `heap_closure`). Direct closure fast paths consume the
-  native call term selected by `CallReturnFlow`; narrowing return delivery is
-  represented by an explicit continuation before codegen.
+  the body literal resolves, else `indirect`), optional `direct_target_fn_id`
+  for direct calls, and optional `callable_boundary_id` plus
+  `callable_boundary_target_fn_id` when the closure value carries a settled
+  callable-boundary fact. Non-tail closure calls also report
+  `continuation_storage` (`lazy_descriptor` or `heap_closure`). Absence of
+  `callable_boundary_id` means the call lowered without a known callable
+  boundary id. Direct closure fast paths consume the native call term selected
+  by `CallReturnFlow`; narrowing return delivery is represented by an explicit
+  continuation before codegen.
 
 ## Telemetry In Tests
 

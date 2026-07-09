@@ -7017,6 +7017,64 @@ fn compiler2_native_program_carries_published_callable_boundary_targets_into_clo
 }
 
 #[test]
+fn compiler2_native_codegen_reports_direct_closure_call_boundary_target_telemetry() {
+    let tel = ConfiguredTelemetry::new();
+    let native = NativeProgramCapture::new();
+    let closure_calls = Capture::new();
+    tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
+    tel.attach(&["fz", "codegen", "closure_call_lowered"], closure_calls.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures2/behavior/curried_add.fz".to_string()),
+        text: include_str!("../../fixtures2/behavior/curried_add.fz").to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    compiler.demand(Job::LowerNativeProgram(root_id));
+
+    assert_resolved(
+        compiler.drive(),
+        "closure boundary fixture should settle before inspecting direct closure call telemetry",
+    );
+
+    let program = native.last(root_id).program;
+    let expected = direct_closure_call_boundary_targets(&program);
+    assert!(
+        !expected.is_empty(),
+        "fixture should produce at least one direct closure call with a settled callable boundary; closure targets: {:?}; boundary uses: {:?}",
+        native_closure_call_targets(&program),
+        native_callable_boundary_uses(&program),
+    );
+
+    let _compiled = jit_compile_native_program(&mut compiler, &program);
+    let direct_events = closure_calls
+        .find(&["fz", "codegen", "closure_call_lowered"])
+        .into_iter()
+        .filter(|event| metadata_str(event, "dispatch_kind") == "direct")
+        .collect::<Vec<_>>();
+    assert!(
+        !direct_events.is_empty(),
+        "native codegen should report direct closure-call lowering events",
+    );
+
+    for (boundary_id, target_fn_id) in expected {
+        assert!(
+            direct_events.iter().any(|event| {
+                metadata_u64_opt(event, "callable_boundary_id") == Some(boundary_id.as_u32() as u64)
+                    && metadata_u64_opt(event, "direct_target_fn_id") == Some(target_fn_id.0 as u64)
+                    && metadata_u64_opt(event, "callable_boundary_target_fn_id") == Some(target_fn_id.0 as u64)
+            }),
+            "direct closure-call telemetry should report boundary {boundary_id:?} and exact target {target_fn_id:?}; events: {direct_events:?}",
+        );
+    }
+}
+
+#[test]
 fn compiler2_native_program_resource_fixture_shapes_callable_boundaries_explicitly() {
     let _lock = tests_support_lock().lock().unwrap();
     tests_support_dtor_reset();
@@ -11489,6 +11547,14 @@ fn measurement_i64(event: &crate::telemetry::capture::OwnedEvent, key: &str) -> 
     }
 }
 
+fn metadata_u64_opt(event: &crate::telemetry::capture::OwnedEvent, key: &str) -> Option<u64> {
+    match event.metadata.get(key) {
+        Some(Value::U64(value)) => Some(*value),
+        None => None,
+        other => panic!("metadata key `{key}` is not u64: {other:?}"),
+    }
+}
+
 fn metadata_str<'a>(event: &'a crate::telemetry::capture::OwnedEvent, key: &str) -> &'a str {
     match event.metadata.get(key) {
         Some(Value::Str(value)) => value.as_ref(),
@@ -11675,6 +11741,44 @@ fn native_closure_call_targets(program: &NativeProgram) -> Vec<Option<FnId>> {
                 }
                 _ => {}
             }
+        }
+    }
+    out
+}
+
+fn direct_closure_call_boundary_targets(program: &NativeProgram) -> Vec<(NativeCallableBoundaryId, FnId)> {
+    let mut out = Vec::new();
+    for function in &program.module.fns {
+        let Some(body) = program.bodies.iter().find(|body| body.fn_id == function.id) else {
+            continue;
+        };
+        for block in &function.blocks {
+            let (closure, direct_target) = match &block.terminator {
+                IrTerm::CallClosure {
+                    closure,
+                    direct_target: Some(direct_target),
+                    ..
+                }
+                | IrTerm::TailCallClosure {
+                    closure,
+                    direct_target: Some(direct_target),
+                    ..
+                } => (*closure, *direct_target),
+                _ => continue,
+            };
+            let Some(boundary_id) = body.callable_value_boundaries.get(&closure).copied() else {
+                continue;
+            };
+            let boundary = program
+                .callable_boundaries
+                .iter()
+                .find(|entry| entry.id() == boundary_id)
+                .unwrap_or_else(|| panic!("callable boundary {boundary_id:?} should exist in native inventory"));
+            assert_eq!(
+                boundary.target_fn, direct_target,
+                "native direct closure target should agree with the settled callable boundary target",
+            );
+            out.push((boundary_id, direct_target));
         }
     }
     out
