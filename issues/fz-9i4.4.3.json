@@ -6,6 +6,8 @@
   "blocks": [
     "fz-9i4.4.4"
   ],
+  "closed_at": "2026-07-09T22:08:00Z",
+  "close_reason": "Landed on integration as 85202f546 (fz-9i4.4.3: report closure-call boundary telemetry). Added direct closure-call telemetry for direct target and callable boundary identity when known, updated the event contract docs, and applied the audit doc nit before folding. Coordinator verification: cargo test --lib passed (1299 passed, 6 ignored); cargo clippy --all-targets -- -D warnings passed; focused compiler2_native_codegen_reports_direct_closure_call_boundary_target_telemetry passed; fixture_matrix closure_typed_captures, curried_add, and multi_caller_spec_divergent each passed run/interp/build.",
   "created": "2026-06-13T02:06:47Z",
   "description": "Goal: make JIT/AOT closure invocation consume the new callable contract directly. Rewrite closure construction, closure entry harnesses, and direct/opaque closure-call lowering so argument ABI lanes and capture ABI lanes are handled separately, with the machine closure-body signature lowered uniformly as (args..., self, cont). Delete callable-entry selection from capture-type candidate sets and delete native codegen’s mixed capture-prefix ABI slicing. Acceptance: closure_typed_captures, curried_add, and multi_caller_spec_divergent pass on the relevant fz2 paths; telemetry reports boundary id plus direct-vs-opaque dispatch and exact target when known.",
   "id": "fz-9i4.4.3",
@@ -18,8 +20,8 @@
     }
   ],
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Rewrite compiler2 native codegen around callable boundaries and split arg/capture ABI",
   "type": "task",
-  "updated_at": "2026-06-19T14:40:57Z"
+  "updated_at": "2026-07-09T22:08:00Z"
 }
