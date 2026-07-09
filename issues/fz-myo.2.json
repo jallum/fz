@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-07-09T19:48:09Z",
+  "description": "append/quicksort/reverse have a real contract of OUTPUT + ALLOCATIONS; reductions_remaining is a compiled-call-graph-shape metric that drifts on unrelated specialization refactors (see parent root cause). Pinning it as a strict golden causes a recurring rebless treadmill. Replace the raw pin with EITHER (a) a derived invariant computed from the algorithm+input (e.g. back-edge count == number of tail-recursive element traversals for the fixed input) that still catches genuine over-specialization regressions, OR (b) telemetry-only status (as 2479a69fd did for the enum allocation regression). Do NOT simply delete the signal -- it is a genuine correctness signal (more yield-check work for identical semantics); preserve its regression-catching value while removing the shape-churn false-positives. Likely wants the bisect child done first to know if there is a real regression hiding under the drift.",
+  "id": "fz-myo.2",
+  "labels": [],
+  "parent": "fz-myo",
+  "priority": 3,
+  "status": "open",
+  "title": "fz-myo: stop pinning raw reductions_remaining as a strict golden for output+allocation-contract fixtures -- derive it or make it telemetry-only",
+  "type": "bug",
+  "updated_at": "2026-07-09T19:48:09Z"
+}
