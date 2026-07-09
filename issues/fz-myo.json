@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-07-07T21:51:08Z",
@@ -7,8 +7,8 @@
   "id": "fz-myo",
   "labels": [],
   "priority": 3,
-  "status": "open",
+  "status": "in_progress",
   "title": "reductions_remaining creeps upward on append/quicksort/reverse across unrelated compiler refactors (2nd consecutive golden rebless of the same symptom)",
   "type": "bug",
-  "updated_at": "2026-07-07T21:51:08Z"
+  "updated_at": "2026-07-09T19:34:58Z"
 }
