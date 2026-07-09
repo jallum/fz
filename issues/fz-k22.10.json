@@ -7,6 +7,12 @@
   "id": "fz-k22.10",
   "labels": [],
   "parent": "fz-k22",
+  "comments": [
+    {
+      "text": "SCOPE: this ticket covers BOTH run/build blockers now, same root (reduce_while_cont's shared body reached with INCONSISTENT physical arg/capture shapes across call sites):\n- enum_predicate_search run/build: surfaces at the cranelift VERIFIER -- reduce_while_cont clause_0/clause_1 direct call passes 4 args to a 5-param tail-CC body (fn6/fn7).\n- enum_take_drop_split run/build: surfaces at the fz-k22.7 Layer-C boundary ABI-agreement guard -- two resolutions to one shared target disagree on physical ABI (arg/capture/return reprs); the guard CORRECTLY hard-errors rather than silently picking one (would miscompile). Greening needs a real resolution: specialize the shared body per-ABI, or give it a uniform boxed ABI, OR fix the upstream cause that lets one body be called with two arg-vector shapes.\nBoth are the argument-shape-consistency problem for the shared reduce_while continuation, distinct from the capture-ABI conflation (which fz-k22.7 Layers 1/A/B/C resolved). Interp blocker is separate (fz-k22.9).",
+      "timestamp": "2026-07-09T21:39:37Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "fz-k22: reduce_while_cont clause_0/clause_1 direct call passes 4 args to a 5-param tail-CC body (fn6/fn7) -- cranelift verifier reject",
