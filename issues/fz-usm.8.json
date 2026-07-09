@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-07-09T20:19:19Z",
+  "description": "Adjacent finding surfaced while closing fz-usm.6 (parity audit of the builtin\ntype-constructor registry).\n\nworld.rs (~line 3190-3247) has a second, independent name-\u003eTy registry:\nBuiltinValueFamily / ImplTargetKind::Builtin, used to classify a `defimpl\nProtocol, for: X` target as one of the compiler's built-in ground value\nfamilies (List, Integer, Float, Atom, Binary, Map), matched by the\ncapitalized last dotted segment of the module name (from_name, ~line 3216).\nThis is a hand-maintained enum with its own name table, doing the same\nconceptual job as resolve.rs's ConstructorEntry/CONSTRUCTORS -- minting a Ty\nfrom a recognized builtin name -- but populated and keyed independently:\n\n- Different case convention by design (Elixir module names are capitalized\n  `List`/`Map`; type-position names are lowercase `list`/`map`) -- these are\n  arguably different domains (protocol-impl-target names vs. type-annotation\n  names), not simply the same lookup miscased. Whether they *should* be one\n  registry, or are legitimately two, is the open question this ticket should\n  answer.\n- No Tuple family: `defimpl Enumerable, for: Tuple` falls through to the\n  Nominal branch (nominal_impl_target_ty, ~line 2878) and is treated as an\n  opaque nominal type rather than dispatching on the actual tuple value\n  family -- a real functional gap (mirrors this epic's original \"no map\"\n  symptom, but for tuple, at this third site). Also absent: Bool, Nil, Pid,\n  Ref, Resource, Cpointer, Utf8, Never -- though not all of these obviously\n  need a defimpl target (open question per name, not all necessarily gaps).\n- `Map` was already present here (builtin_value_family_ty, ~line 3240 -\u003e\n  t.map_top()) before fz-usm.3 added `map` to the resolve.rs registry -- i.e.\n  this site was already 2-for-1 ahead of the resolver on \"map\" before this\n  epic started.\n\nProposed direction (not yet designed/authorized): decide whether\nBuiltinValueFamily should be folded into (or derived from) CONSTRUCTORS -- if\nso, whether by a case-insensitive/capitalize-first-letter bridge or by adding\nan explicit \"protocol-impl-target name\" field per registry entry -- and, if\ntuple dispatch is wanted, add a Tuple family with its Ty-minting rule.\n\nVERIFY: a fixture asserting `defimpl Enumerable, for: Tuple` dispatches on the\ntuple family (once/if the family is added) or is documented as an intentional\ngap the way fz-usm.6 documents `tuple`'s absence from CONSTRUCTORS.",
+  "id": "fz-usm.8",
+  "labels": [],
+  "parent": "fz-usm",
+  "priority": 3,
+  "status": "open",
+  "title": "fz-usm follow-up: reconcile world.rs BuiltinValueFamily (defimpl target dispatch) with the resolve.rs CONSTRUCTORS registry",
+  "type": "bug",
+  "updated_at": "2026-07-09T20:19:19Z"
+}
