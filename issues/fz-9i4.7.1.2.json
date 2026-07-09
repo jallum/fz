@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-07-09T22:00:18Z",
+  "description": "Current source_diagnostics::function_warnings walks guards and bodies and checks case/with, but does not analyze surface.clauses/function params. Acceptance: partial multi-clause fn heads emit type/no-matching-clause through production source diagnostics; tree.fz reports its expected warning; total multi-clause functions remain clean; cargo test --lib and cargo clippy --all-targets -- -D warnings pass.",
+  "id": "fz-9i4.7.1.2",
+  "labels": [],
+  "parent": "fz-9i4.7.1",
+  "priority": 2,
+  "status": "open",
+  "title": "Source diagnostics warn on partial multi-clause function heads",
+  "type": "bug",
+  "updated_at": "2026-07-09T22:00:18Z"
+}
