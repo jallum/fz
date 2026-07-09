@@ -2,14 +2,16 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-07-09T18:45:19Z",
+  "close_reason": "fixed",
   "created": "2026-07-07T18:21:31Z",
   "description": "SURFACED (and independently confirmed) by the fz-go4.54 adversarial audit while verifying the GroundValue::EmptyList deletion. native_codegen/receive.rs: ReceiveValue::Null's sole constructor is dispatch_const_receive_value's 'ValueKind::NULL =\u003e ReceiveValue::Null' arm (~receive.rs:1211). But dispatch_const_value -- the function producing the GroundValueBits fed into it -- has NO arm that ever emits ValueKind::NULL: its six arms (Int/Float/Atom/Bool/Nil/Utf8Binary) map to INT/FLOAT/ATOM/ATOM/ATOM/None only. So ReceiveValue::Null is structurally dead by the EXACT same mechanism GroundValue::EmptyList/DispatchShape::EmptyList were (fz-go4.54). Pre-existing (predates fz-yj0/fz-iib/fz-go4.54), left untouched there to keep that commit's scope to the empty-list fold. Reduce win: trace the full producer chain to confirm no live path, then delete ReceiveValue::Null + its dead arms (exhaustive-by-construction, no catch-all). Related: fz-go4.54, fz-iib.",
   "id": "fz-go4.55",
   "labels": [],
   "parent": "fz-go4",
   "priority": 4,
-  "status": "open",
+  "status": "closed",
   "title": "ReceiveValue::Null / ValueKind::NULL dispatch-const arm is dead: dispatch_const_value never emits ValueKind::NULL (same mechanism as the deleted EmptyList arm)",
   "type": "bug",
-  "updated_at": "2026-07-07T18:21:31Z"
+  "updated_at": "2026-07-09T18:45:19Z"
 }
