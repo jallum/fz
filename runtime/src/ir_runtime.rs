@@ -1291,11 +1291,8 @@ pub extern "C" fn fz_map_get_ref(process: *mut Process, map_ref_word: u64, key_r
 
 fn fz_map_get_value_ref(process: *mut Process, map: AnyValueRef, key: AnyValueRef) -> u64 {
     if map.tag() == ValueKind::RESOURCE {
-        let rs = unsafe { ResourceStub::from_raw(map.resource_addr().expect("resource map get")) };
         let _ = key;
-        return AnyValueRef::from_scalar_slot(ValueKind::INT, rs.payload_slot())
-            .expect("resource integer payload ref")
-            .raw_word();
+        return nil_atom_ref().raw_word();
     }
     if map.tag() == ValueKind::STRUCT && key.tag() == ValueKind::ATOM {
         let atom_id = key.load_atom().expect("struct field atom key");
@@ -1313,19 +1310,14 @@ fn fz_map_get_value_ref(process: *mut Process, map: AnyValueRef, key: AnyValueRe
         .heap
         .read_map_value_ref(map, key)
         .expect("fz_map_get_ref")
-        .unwrap_or_else(|| {
-            AnyValueRef::from_scalar_slot(ValueKind::ATOM, &NIL_ATOM_REF_SLOT).expect("static nil atom ref")
-        })
+        .unwrap_or_else(nil_atom_ref)
         .raw_word()
 }
 
 fn fz_map_get_scalar_key_ref(process: *mut Process, map: AnyValueRef, key: AnyValue) -> u64 {
     if map.tag() == ValueKind::RESOURCE {
-        let rs = unsafe { ResourceStub::from_raw(map.resource_addr().expect("resource map get")) };
         let _ = key;
-        return AnyValueRef::from_scalar_slot(ValueKind::INT, rs.payload_slot())
-            .expect("resource integer payload ref")
-            .raw_word();
+        return nil_atom_ref().raw_word();
     }
     if map.tag() == ValueKind::STRUCT
         && let AnyValue::Atom(atom_id) = key
@@ -1344,9 +1336,7 @@ fn fz_map_get_scalar_key_ref(process: *mut Process, map: AnyValueRef, key: AnyVa
         .heap
         .read_map_value_for_any_key(map, key)
         .expect("fz_map_get scalar key")
-        .unwrap_or_else(|| {
-            AnyValueRef::from_scalar_slot(ValueKind::ATOM, &NIL_ATOM_REF_SLOT).expect("static nil atom ref")
-        })
+        .unwrap_or_else(nil_atom_ref)
         .raw_word()
 }
 
@@ -1354,6 +1344,15 @@ fn fz_map_get_scalar_key_ref(process: *mut Process, map: AnyValueRef, key: AnyVa
 pub extern "C" fn fz_map_get_atom_key_ref(process: *mut Process, map_ref_word: u64, atom_id: u64) -> u64 {
     let map = any_value_ref_from_word(map_ref_word, "fz_map_get_atom_key_ref map");
     fz_map_get_scalar_key_ref(process, map, AnyValue::atom(atom_id as u32))
+}
+
+fn resource_payload_ref(resource: AnyValueRef) -> AnyValueRef {
+    let stub = unsafe { ResourceStub::from_raw(resource.resource_addr().expect("resource payload")) };
+    AnyValueRef::from_scalar_slot(ValueKind::INT, stub.payload_slot()).expect("resource integer payload ref")
+}
+
+fn nil_atom_ref() -> AnyValueRef {
+    AnyValueRef::from_scalar_slot(ValueKind::ATOM, &NIL_ATOM_REF_SLOT).expect("static nil atom ref")
 }
 
 #[unsafe(no_mangle)]
@@ -1631,6 +1630,9 @@ pub extern "C" fn fz_struct_get_named_field_ref(process: *mut Process, value_ref
         .node
         .atom_name(field_atom_id as u32)
         .unwrap_or_else(|| panic!("unknown field atom id {}", field_atom_id));
+    if value_ref.tag() == ValueKind::RESOURCE && field_name == "value" {
+        return resource_payload_ref(value_ref).raw_word();
+    }
     (unsafe { &mut *process })
         .heap
         .read_struct_named_field_ref(value_ref, &field_name)

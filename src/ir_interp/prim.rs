@@ -65,10 +65,7 @@ pub(super) fn interp_list_tail(proc: *mut Process, value: AnyValue) -> Result<An
 
 pub(super) fn interp_map_get(proc: *mut Process, map: AnyValue, key: AnyValue) -> Result<AnyValue, String> {
     let map_slot = map.value(proc)?;
-    if map_slot.kind() != ValueKind::RESOURCE
-        && map_slot.kind() != ValueKind::STRUCT
-        && !super::value::is_map_value(map_slot)
-    {
+    if map_slot.kind() != ValueKind::STRUCT && !super::value::is_map_value(map_slot) {
         return Ok(interp_nil_value());
     }
     with_value_ref(proc, map, "MapGet map", |map_ref| {

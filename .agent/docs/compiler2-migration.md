@@ -95,11 +95,11 @@ direct-only predicate keep the predicate's exact callable shape through native
 lowering.
 
 **Runtime/interpreter gaps.** `utf8_pattern_match` is green on all three
-paths; the interpreter gap it used to have is closed. `resource_lifecycle`
-stays deferred on all three paths on a native struct field-access kind
-mismatch. `enum_predicate_search` and `enum_take_drop_split` are declared on
-all three paths but currently fail all three — real, open gaps, not golden
-questions.
+paths; the interpreter gap it used to have is closed. `resource_lifecycle` is
+green on all three paths; resource `.value` field access routes through the
+shared named-field runtime ABI on backend interpreter and native paths.
+`enum_predicate_search` and `enum_take_drop_split` are declared on all three
+paths but currently fail all three — real, open gaps, not golden questions.
 
 The `bsx_guard_eq` interpreter gap is closed: dispatch guard constants
 materialize `GroundValue::Utf8Binary` values in the backend interpreter,

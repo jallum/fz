@@ -125,6 +125,10 @@ lattice-disjoint (see [`set-theoretic-types`](set-theoretic-types.md)) — so a
 plain `resource(integer)` is not interchangeable with the opaque handle, and only
 the owning module's functions mint it.
 
+Inside the owning module, `.value` on a resource handle projects the payload.
+Lowering keeps this as ordinary field access, and both backend interpreter and
+native/JIT/AOT paths read it through the shared named-field runtime ABI.
+
 ## Proof gates
 
 ```text

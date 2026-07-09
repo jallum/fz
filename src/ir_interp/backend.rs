@@ -29,6 +29,7 @@ use fz_runtime::heap::{FieldKind, Heap, deep_copy_any_value_ref};
 use fz_runtime::ir_runtime::{
     fz_bs_begin, fz_bs_finalize, fz_bs_write_field_ref, fz_list_reuse_or_cons_parts, fz_map_empty,
     fz_map_get_atom_key_ref, fz_mark_published_ref_aliased, fz_matcher_map_get_ref, fz_struct_get_field_ref,
+    fz_struct_get_named_field_ref,
 };
 use fz_runtime::procbin::mso_drop_all_deferred;
 use fz_runtime::process::{CompiledModuleConsts, DEFAULT_REDUCTIONS_PER_QUANTUM, Process, ProcessState};
@@ -3143,6 +3144,17 @@ fn interp_struct_field(
             fz_map_get_atom_key_ref(runtime.cur_proc(), map, atom_id as u64),
             "backend field access",
         );
+    }
+    if slot.kind() == ValueKind::RESOURCE && field == "value" {
+        let atom_id = module
+            .atom_names
+            .iter()
+            .position(|name| name == field)
+            .ok_or_else(|| format!("field atom `{field}` not interned"))?;
+        return with_value_ref(runtime.cur_proc(), value, "backend resource field", |resource_ref| {
+            fz_struct_get_named_field_ref(runtime.cur_proc(), resource_ref, atom_id as u64)
+        })
+        .and_then(|ref_word| interp_value_from_ref_word(ref_word, "backend resource field"));
     }
     if slot.kind() != ValueKind::STRUCT {
         return Err("StructField: subject is not a map or Struct".to_string());
