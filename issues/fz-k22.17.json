@@ -7,9 +7,15 @@
   "id": "fz-k22.17",
   "labels": [],
   "parent": "fz-k22",
+  "comments": [
+    {
+      "text": "IMPLEMENTED on epic branch @ 1279a3e4d (close at fold). KEY DISCOVERY reshaping the ticket: at native-codegen time each semantic arg is ALREADY collapsed to one scalar CodegenValue (every ArgRepr::abi_arity()==1; CodegenValue wraps exactly one ir::Value — value.rs:180). The multi-lane pieces exist only at IR-CONSTRUCTION time (encode_runtime_value_for_position, jobs/native.rs) -- there is nothing left to project from at the codegen layer, and building a decoder+width-bookkeeping there would be a second lane-expansion mechanism (rejected per tight-changes). LANDED: require_direct_closure_call_arity_agreement (surface.rs, same idiom + shared incompatible_physical_abi_message prose) fails clean BEFORE under-filling; the silent target.arg_reprs.get(i).unwrap_or(ValueRef) mis-coercion default replaced by direct index (provably in-bounds after the guard). push_direct_closure_args -\u003e Result, both emit sites propagate. +2 tests. lib 1328/0/6 (also --release), clippy clean, matrix md5-identical pre/post (74 names on this branch), both target fixtures unchanged (die at earlier guards). RESIDUAL (rides fz-k22.18): a direct-callable closure whose surface has a multi-lane semantic arg is UNCALLABLE at codegen by construction -- the upstream fix must ensure direct-consumed surfaces are 1-value-per-semantic-arg or decompose at IR-construction; k22.18 acceptance should include the arity guard never firing on legitimate code.",
+      "timestamp": "2026-07-10T18:32:07Z"
+    }
+  ],
   "priority": 2,
   "status": "in_progress",
   "title": "fz-k22: push_direct_closure_args pushes one ABI arg per SEMANTIC arg while the declared sig counts LANES -- multi-lane inputs under-fill the call (unit conflation)",
   "type": "bug",
-  "updated_at": "2026-07-10T18:04:47Z"
+  "updated_at": "2026-07-10T18:32:07Z"
 }
