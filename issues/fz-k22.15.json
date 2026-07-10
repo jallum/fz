@@ -2,14 +2,15 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-07-10T16:16:00Z",
   "created": "2026-07-10T15:05:26Z",
   "description": "Separate real bug found+fixed inside the fz-k22.10 option-B spike (reverted with the rest). When re-deriving a joined activation, using surface_inputs (the declared call-surface types) instead of the activation ActivationKey.inputs() TRUNCATES a closures capture slot -- surface_inputs is deliberately narrower than the activation (which carries capture inputs). Recompute/join must operate on .inputs(). Small, clean, correct-by-construction; extract and land independently of the larger machinery work. Verify against a closure-with-captures reduce fixture.",
   "id": "fz-k22.15",
   "labels": [],
   "parent": "fz-k22",
   "priority": 3,
-  "status": "in_progress",
+  "status": "closed",
   "title": "fz-k22: callsite activation recompute must widen the activation's own .inputs(), not surface_inputs -- surface_inputs is narrower and truncates a closure's capture slot",
   "type": "bug",
-  "updated_at": "2026-07-10T15:29:41Z"
+  "updated_at": "2026-07-10T16:16:00Z"
 }
