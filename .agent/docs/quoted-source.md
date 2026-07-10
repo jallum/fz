@@ -107,6 +107,9 @@
   `FunctionSurface`. Partial `case` and `with else` surfaces emit
   `type/no-matching-clause` warnings through the normal diagnostic telemetry bus
   without reopening the old frontend pattern-check pass.
+- The front door renders those diagnostics through the shared `CodeMap` source
+  index. Quoted macro errors must retain the originating call span; a generated
+  span is reserved for diagnostics with no user construct to locate.
 - The noted function-source fact must carry enough callable surface to keep
   pre-definition name resolution honest. Today that explicitly includes the
   variadic bit, because lowering may need callable matching before

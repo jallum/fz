@@ -56,6 +56,10 @@ impl<T: Telemetry> Compiler2<T> {
         &self.telemetry
     }
 
+    pub(crate) fn source_map(&self) -> std::rc::Rc<std::cell::RefCell<crate::source::SourceMap>> {
+        self.world.source_map()
+    }
+
     pub fn submit_code(&mut self, submission: CodeSubmission) -> CodeId {
         let CodeSubmission { name, text } = submission;
         ExecutionContext::new(&mut self.world, &self.telemetry).submit_code(name, text)

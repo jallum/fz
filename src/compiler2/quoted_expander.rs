@@ -12,7 +12,7 @@ use super::drive::{FactKey, JobEffects};
 use super::identity::{FunctionId, ModuleId};
 use super::namespace::NamespaceSymbol;
 use super::quoted_surface::{
-    MacroCallForm, ScopeForm, ScopeSurface, is_scope_definition_head, read_compiler_fragment_surface,
+    MacroCallForm, ScopeForm, ScopeSurface, is_scope_definition_head, read_compiler_fragment_surface, span_from_meta,
 };
 use super::scope::ScopeSnapshot;
 use super::source::{QuotedAstNode, QuotedLexicalContextKind, QuotedSourceCursor, QuotedSourceError, QuotedSourceRoot};
@@ -217,6 +217,12 @@ pub(crate) trait QuotedExpansionCtx {
         else {
             return Ok(None);
         };
+        let call_span = span_from_meta(&node.meta).map_err(|error| {
+            emit_internal_surface_error(
+                self.telemetry(),
+                format!("quoted remote call span read failed: {error}"),
+            )
+        })?;
         if head_node.head.atom_name().as_deref() != Ok(".") {
             return Ok(None);
         }
@@ -252,6 +258,7 @@ pub(crate) trait QuotedExpansionCtx {
                 args,
                 &function_name,
                 &module_path,
+                call_span,
             );
         }
         let module_defined = self.world().module_defined_revision(module);
@@ -291,6 +298,7 @@ pub(crate) trait QuotedExpansionCtx {
                 &function_name,
                 args.len(),
                 &module_path,
+                call_span,
             ));
         }
         self.expand_macro_invocation(owner, input_root, function, scope, depth, args)
@@ -306,6 +314,7 @@ pub(crate) trait QuotedExpansionCtx {
         args: &[QuotedSourceCursor],
         function_name: &str,
         module_path: &[String],
+        call_span: Span,
     ) -> Result<Option<ExpandedValue>, super::scheduler::FatalError> {
         let Some(function) = self.lookup_current_module_macro(scope, function_name, args.len()) else {
             return Ok(None);
@@ -316,6 +325,7 @@ pub(crate) trait QuotedExpansionCtx {
                 function_name,
                 args.len(),
                 module_path,
+                call_span,
             ));
         }
         self.expand_macro_invocation(owner, input_root, function, scope, depth, args)
@@ -747,6 +757,7 @@ fn remote_macro_not_required(
     function_name: &str,
     arity: usize,
     module_path: &[String],
+    span: Span,
 ) -> super::scheduler::FatalError {
     let module_name = module_path.join(".");
     emit_job_diagnostic(
@@ -757,7 +768,7 @@ fn remote_macro_not_required(
                 "remote macro `{}.{}/{}` requires `require {}` before source expansion",
                 module_name, function_name, arity, module_name
             ),
-            Span::DUMMY,
+            span,
         ),
     )
 }

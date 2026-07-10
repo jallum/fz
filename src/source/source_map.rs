@@ -12,7 +12,7 @@ use std::{
 
 use super::{Id, Span};
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct Code {
     pub bytes: Arc<str>,
     /// Lazily computed on first `locate` for this file. Each entry is the
@@ -59,13 +59,14 @@ pub struct Location {
     pub line_end: u32,
 }
 
-#[derive(Default, Clone)]
+#[derive(Debug, Default, Clone)]
 pub struct SourceMap {
     codes: Vec<Code>,
     names: HashMap<Id, String>,
 }
 
 impl SourceMap {
+    #[cfg(test)]
     pub fn new() -> Self {
         Self {
             codes: Vec::new(),
@@ -93,6 +94,7 @@ impl SourceMap {
         self.names.get(&id).map(String::as_str)
     }
 
+    #[cfg(test)]
     pub fn code_count(&self) -> usize {
         self.codes.len()
     }
