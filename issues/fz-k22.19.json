@@ -4,14 +4,15 @@
   "blocks": [
     "fz-k22.10"
   ],
+  "closed_at": "2026-07-10T20:01:12Z",
   "created": "2026-07-10T16:33:34Z",
   "description": "PROVEN (fz-k22.10 spike 5). package_backend_callable_entries (jobs/backend.rs:666-684) glues boundary_descr.published_arg_lanes onto each resolution with NO agreement check against target_backend.abi.param_reprs -- probe counted 86-120 mismatched pairings PER RUN (e.g. BoundaryId(25): boundary 1+3=4 lanes vs target compiled 2). The fz-k22.7 guard covers only the fallback-boundary path (why enum_take_drop_split fails CLEAN with incompatible-physical-ABI while enum_predicate_search reaches the raw cranelift verifier via the guardless closure-lit direct path). MISSING INVARIANT: per (boundary, resolution) pair, the boundary lane surface must equal the resolved target compiled ABI. FIX = the GUARD ticket: enforce at the packaging seam + the closure-lit direct path (terminator.rs emit paths), early enough for a clean incomplete-semantic-plan diagnostic -- never a raw verifier ICE, never a silent miscompile. Lands FIRST in the epic: converts the nondeterministic raw crash into a deterministic clean diagnostic so every subsequent fix iterates against trustworthy signal. Fold fz-k22.11 (release-silent debug_assert in driver.rs loop 2) into this same discipline.",
   "id": "fz-k22.19",
   "labels": [],
   "parent": "fz-k22",
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "fz-k22: packaging + closure-lit direct path have NO boundary-surface-vs-resolved-target ABI agreement check -- 86-120 mismatched (boundary,resolution) pairings per run reach codegen unguarded",
   "type": "bug",
-  "updated_at": "2026-07-10T16:39:45Z"
+  "updated_at": "2026-07-10T20:01:12Z"
 }
