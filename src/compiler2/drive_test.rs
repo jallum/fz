@@ -2008,6 +2008,115 @@ fn compiler2_zero_field_struct_pattern_lowering_diagnoses_non_struct_module_at_r
 }
 
 #[test]
+fn compiler2_import_of_undefined_module_diagnoses_at_the_import_site() {
+    // The module-reference sibling of the struct-pattern span tests above:
+    // `import Missing` records a bare module-reference expectation
+    // (`World::note_module_reference_expectation`) before `Missing` is known
+    // to resolve; `Missing` never gets any source, so the drive's terminal
+    // `ModuleIndexed(Missing)` wait survives to `unresolved_module_issue`,
+    // which now reads that recorded expectation instead of emitting
+    // `Span::DUMMY`.
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    let diagnostics = DiagnosticCapture::new();
+    tel.attach(&[], capture.handler());
+    tel.attach(&[], diagnostics.handler());
+    let mut compiler = Compiler2::new(&tel);
+    let source = concat!(
+        "defmodule User do\n",
+        "  import Missing\n",
+        "  fn run(), do: nil\n",
+        "end\n",
+    )
+    .to_string();
+    compiler.submit_code(CodeSubmission {
+        name: Some("import_undefined_module_span.fz".to_string()),
+        text: source.clone(),
+    });
+    compiler.submit_root(RootSubmission {
+        module_name: Some("User".to_string()),
+        name: "run".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    let outcome = compiler.drive();
+    assert!(
+        matches!(outcome, DriveOutcome::Unresolved { .. }),
+        "import of an undefined module should stay unresolved until the missing provider exists, got {outcome:?}",
+    );
+
+    let diagnostic = capture
+        .last(&["fz", "diag", "error"])
+        .expect("expected an unknown-module diagnostic for `import Missing`");
+    assert_eq!(metadata_str(&diagnostic, "code"), codes::RESOLVE_UNKNOWN_MODULE.0);
+    assert_eq!(metadata_str(&diagnostic, "message"), "module `Missing` is not defined");
+    let diagnostic = diagnostics
+        .last()
+        .expect("expected the unknown-module diagnostic payload to be captured");
+    assert_primary_span_contains(&diagnostic, &source, "import");
+}
+
+#[test]
+fn compiler2_dotted_call_to_a_name_a_settled_module_does_not_export_diagnoses_at_the_call_site() {
+    // The function-export sibling: `Math.subtract/2` is referenced only
+    // *after* `Math`'s own interface has already settled (with just
+    // `add/2`), so `validate_module_interface_expectations` -- which runs
+    // once, inside Math's own interface-defining job -- never sees this
+    // late obligation. It survives unvalidated to the terminal frontier,
+    // exercising `unresolved_function_issue`'s `Export` fallback, which now
+    // reads the `InterfaceExpectation` `resolve_runtime_function` recorded
+    // for `subtract/2` instead of emitting `Span::DUMMY`.
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    let diagnostics = DiagnosticCapture::new();
+    tel.attach(&[], capture.handler());
+    tel.attach(&[], diagnostics.handler());
+    let mut compiler = Compiler2::new(&tel);
+
+    compiler.submit_code(CodeSubmission {
+        name: Some("math_export_span_math.fz".to_string()),
+        text: concat!("defmodule Math do\n", "  fn add(a, b), do: a + b\n", "end\n").to_string(),
+    });
+    assert_resolved(compiler.drive(), "Math should settle its own interface on its own");
+
+    let source = concat!(
+        "defmodule User do\n",
+        "  alias Math\n",
+        "  fn run(), do: Math.subtract(1, 2)\n",
+        "end\n",
+    )
+    .to_string();
+    compiler.submit_code(CodeSubmission {
+        name: Some("math_export_span_user.fz".to_string()),
+        text: source.clone(),
+    });
+    compiler.submit_root(RootSubmission {
+        module_name: Some("User".to_string()),
+        name: "run".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    let outcome = compiler.drive();
+    assert!(
+        matches!(outcome, DriveOutcome::Unresolved { .. }),
+        "calling an export Math never defines should terminate unresolved, not resolve or panic, got {outcome:?}",
+    );
+
+    let diagnostic = capture
+        .last(&["fz", "diag", "error"])
+        .expect("expected an unknown-import diagnostic for Math.subtract");
+    assert_eq!(metadata_str(&diagnostic, "code"), codes::RESOLVE_UNKNOWN_IMPORT.0);
+    assert_eq!(
+        metadata_str(&diagnostic, "message"),
+        "module `Math` does not export `subtract/2`"
+    );
+    let diagnostic = diagnostics
+        .last()
+        .expect("expected the unknown-import diagnostic payload to be captured");
+    assert_primary_span_contains(&diagnostic, &source, "Math.subtract");
+}
+
+#[test]
 fn compiler2_backend_struct_schemas_are_fed_from_struct_def_facts_not_a_source_scan() {
     // The last struct-facts consumer migration: `BackendProgram.struct_schemas`
     // now reads `World::struct_def_schemas` (the fact-backed `StructDefMap`),

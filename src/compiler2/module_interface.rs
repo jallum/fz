@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use crate::source::Span;
 
 use super::code::CodeId;
@@ -62,6 +64,50 @@ impl InterfaceExpectation {
                 InterfaceCallableKind::Callable => true,
                 kind => kind == callable.kind,
             }
+    }
+}
+
+/// A bare module reference recorded before the module resolved -- a
+/// whole-module `import`/`require` naming no particular function, so there
+/// is no `(name, arity)` to hang an [`InterfaceExpectation`] on. Deliberately
+/// its own store rather than a field on [`ModuleInterface`]: `ModuleInterface`
+/// doubles as "is this module's interface actually known" (checked by
+/// `module_interface_if_present`), so folding an obligation into it would
+/// make an undefined module look resolved the moment someone referenced it.
+/// This is the module-reference sibling of
+/// `structdef::StructReferenceExpectation`, kept separate from `ModuleInterface`
+/// for the same reason `StructReferenceExpectation` is kept separate from
+/// `StructDef`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModuleReferenceExpectation {
+    pub requester: InterfaceRequester,
+}
+
+/// Module -> outstanding bare-reference obligations, read back by
+/// `World::unresolved_module_issue` so a module that never resolves still
+/// names the site that asked for it.
+#[derive(Debug, Default)]
+pub struct ModuleReferenceExpectationMap {
+    references: HashMap<ModuleId, Vec<ModuleReferenceExpectation>>,
+}
+
+impl ModuleReferenceExpectationMap {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Records one obligation, deduplicating identical requesters so
+    /// re-scoping the same `import`/`require` site stays idempotent -- the
+    /// same discipline `StructExpectationMap::record_reference` follows.
+    pub fn record(&mut self, module: ModuleId, expectation: ModuleReferenceExpectation) {
+        let list = self.references.entry(module).or_default();
+        if !list.contains(&expectation) {
+            list.push(expectation);
+        }
+    }
+
+    pub fn expectations(&self, module: ModuleId) -> &[ModuleReferenceExpectation] {
+        self.references.get(&module).map(Vec::as_slice).unwrap_or(&[])
     }
 }
 

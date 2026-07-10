@@ -1011,6 +1011,8 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
 
     fn apply_require(&mut self, import: &super::quoted_surface::ImportForm) -> Result<Option<JobEffects>, FatalError> {
         let required_module = self.resolve_import_module(import);
+        self.world
+            .note_module_reference_expectation(required_module, self.interface_requester(import.span));
         self.bind_required_module_path(import, required_module);
         let selected = if self.world.module_interface_revision(required_module).is_none() {
             if let Some(only) = import.only.as_deref() {
@@ -1148,6 +1150,8 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
 
     fn apply_import(&mut self, import: &super::quoted_surface::ImportForm) -> Result<Option<JobEffects>, FatalError> {
         let imported_module = self.resolve_import_module(import);
+        self.world
+            .note_module_reference_expectation(imported_module, self.interface_requester(import.span));
         let selected = if self.world.module_interface_revision(imported_module).is_none() {
             if let Some(only) = import.only.as_deref() {
                 only.iter()

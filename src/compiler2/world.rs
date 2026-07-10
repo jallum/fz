@@ -35,7 +35,10 @@ use super::identity::{
     RootEntry, RootId, RootKind, RootMap, TypeDeclMap, TypeName, TypeRefMap,
 };
 use super::keying::{DispatchDemand, DispatchMaskMap, RecursiveMap};
-use super::module_interface::{InterfaceCallableKind, InterfaceExpectation, InterfaceRequester, ModuleInterface};
+use super::module_interface::{
+    InterfaceCallableKind, InterfaceExpectation, InterfaceRequester, ModuleInterface, ModuleReferenceExpectation,
+    ModuleReferenceExpectationMap,
+};
 use super::namespace::{Namespace, NamespaceStore, NamespaceSymbol};
 use super::protocol::{
     ProtocolCallback, ProtocolCallbackImpl, ProtocolCallbackMap, ProtocolDispatch, ProtocolDispatchArm,
@@ -112,6 +115,7 @@ pub struct World<'a> {
     type_defs: TypeDefMap,
     struct_defs: StructDefMap,
     struct_expectations: StructExpectationMap,
+    module_reference_expectations: ModuleReferenceExpectationMap,
     function_contracts: FunctionContractMap,
     bodies: LoweredBodyMap,
     guard_dispatches: GuardDispatchMap,
@@ -189,6 +193,7 @@ impl<'a> World<'a> {
             type_defs: TypeDefMap::new(),
             struct_defs: StructDefMap::new(),
             struct_expectations: StructExpectationMap::new(),
+            module_reference_expectations: ModuleReferenceExpectationMap::new(),
             function_contracts: FunctionContractMap::new(),
             bodies: LoweredBodyMap::new(),
             guard_dispatches: GuardDispatchMap::new(),
@@ -2110,6 +2115,22 @@ impl<'a> World<'a> {
         self.define_module_interface(module, interface);
     }
 
+    /// Records that `module` was referenced from `requester` without naming
+    /// any one export -- a whole-module `import`/`require`, which has no
+    /// `(name, arity)` to hang an [`InterfaceExpectation`] on. Mirrors
+    /// `note_struct_reference_expectation`'s shape one for one: both note "a
+    /// reference happened here" before the referenced thing is known to
+    /// resolve, so `unresolved_module_issue` can name the real site instead
+    /// of `Span::DUMMY` when the module never settles. Recorded into its own
+    /// `module_reference_expectations` store, never into `ModuleInterface`
+    /// itself -- `module_interface_if_present` doubles as "is this module's
+    /// interface actually known," so stashing an obligation there would make
+    /// an undefined module look resolved the moment someone referenced it.
+    pub(crate) fn note_module_reference_expectation(&mut self, module: ModuleId, requester: InterfaceRequester) {
+        self.module_reference_expectations
+            .record(module, ModuleReferenceExpectation { requester });
+    }
+
     pub fn reference_module_interface_callable(
         &mut self,
         module: ModuleId,
@@ -2957,7 +2978,21 @@ impl<'a> World<'a> {
         })
     }
 
+    /// The span comes from the first bare `import`/`require` that named
+    /// `module` before it resolved (`note_module_reference_expectation`),
+    /// the same `.first()`-of-recorded-obligations discipline
+    /// `unresolved_struct_issue` uses for `struct_expectations`. A module
+    /// that stalled without ever picking up such a reference (e.g. a named
+    /// root submitted by an external caller, not a source reference) has
+    /// none recorded, and falls back to `Span::DUMMY` -- there genuinely is
+    /// no reference site to name.
     fn unresolved_module_issue(&self, module: ModuleId) -> UnresolvedIssue {
+        let span = self
+            .module_reference_expectations
+            .expectations(module)
+            .first()
+            .map(|expectation| expectation.requester.span)
+            .unwrap_or(Span::DUMMY);
         UnresolvedIssue {
             key: UnresolvedIssueKey::Module(module),
             diagnostic: Diagnostic::error(
@@ -2967,7 +3002,7 @@ impl<'a> World<'a> {
                     self.module_name(module)
                         .expect("referenced modules should have reverse names")
                 ),
-                Span::DUMMY,
+                span,
             ),
         }
     }
@@ -2975,6 +3010,14 @@ impl<'a> World<'a> {
     fn unresolved_function_issue(&self, frontier: &HashSet<FactKey>, function: FunctionId) -> Option<UnresolvedIssue> {
         let function_ref = self.function_ref(function);
         if function_ref.module.is_global() {
+            // No `Span::DUMMY` fallback to fix here: a global-module function
+            // that never resolves reaches this arm exclusively through
+            // `submit_root` naming an entry point by string (the compiler's
+            // external front door, not a source reference) -- every in-source
+            // call to a name `lookup_callable_namespace` cannot find fails
+            // immediately at lowering time with its own real span
+            // (`World::unbound_runtime_function`), never reaching the stall
+            // detector at all. There is no reference site to name here.
             return Some(UnresolvedIssue {
                 key: UnresolvedIssueKey::Function(function),
                 diagnostic: Diagnostic::error(
@@ -3002,6 +3045,27 @@ impl<'a> World<'a> {
         let module_name = self
             .module_name(function_ref.module)
             .expect("referenced function modules should have reverse names");
+        // The span comes from the `InterfaceExpectation` `resolve_runtime_function`
+        // recorded for this exact `(name, arity)` when the call was lowered
+        // (`reference_module_interface_callable`). `validate_module_interface_expectations`
+        // normally catches this mismatch the moment the module's own interface
+        // settles; this arm is reached only when the expectation was recorded
+        // *after* that validation already ran, so it survives unvalidated to
+        // the terminal frontier -- the same late-obligation shape
+        // `unresolved_struct_issue` handles for `struct_expectations`.
+        let span = self
+            .module_interface_if_present(function_ref.module)
+            .and_then(|interface| {
+                interface
+                    .expectations()
+                    .iter()
+                    .find(|expectation| {
+                        expectation.name == function_ref.name && expectation.arity == function_ref.arity
+                    })
+                    .and_then(|expectation| expectation.requester.as_ref())
+                    .map(|requester| requester.span)
+            })
+            .unwrap_or(Span::DUMMY);
         Some(UnresolvedIssue {
             key: UnresolvedIssueKey::Export(function),
             diagnostic: Diagnostic::error(
@@ -3010,7 +3074,7 @@ impl<'a> World<'a> {
                     "module `{}` does not export `{}/{}`",
                     module_name, function_ref.name, function_ref.arity
                 ),
-                Span::DUMMY,
+                span,
             ),
         })
     }
