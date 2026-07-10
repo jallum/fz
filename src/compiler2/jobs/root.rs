@@ -15,7 +15,11 @@ use super::super::world::World;
 /// A root entry is compiler-owned and can exist before the function does. The
 /// seed publishes the root fact immediately, then waits until the entry
 /// function is defined before it schedules the first closure walk.
-pub(super) fn seed_root(world: &mut World<'_>, root_id: RootId) -> Result<JobEffects, FatalError> {
+pub(super) fn seed_root(
+    world: &mut World,
+    tel: &impl crate::telemetry::Telemetry,
+    root_id: RootId,
+) -> Result<JobEffects, FatalError> {
     let root = world.root_entry(root_id);
     let root_fact = FactKey::RootEntry(root_id);
     let mut reads = Vec::new();
@@ -41,7 +45,7 @@ pub(super) fn seed_root(world: &mut World<'_>, root_id: RootId) -> Result<JobEff
     let (_, surface) = world.function_definition(root.function);
     if root.kind == RootKind::Runtime && surface.is_macro {
         return Err(emit_root_error(
-            world,
+            tel,
             surface.span,
             format!(
                 "compiler2 runtime root cannot target macro `{}/{}`",
@@ -108,7 +112,11 @@ pub(super) fn seed_root(world: &mut World<'_>, root_id: RootId) -> Result<JobEff
 /// reaches here also demands `AnalyzeActivation` for this same activation in
 /// the very same call -- co-demanded, not chained through a push. First-run
 /// demand is genuinely pulled by whichever fact wait triggered the seed.
-pub(super) fn seed_activation(world: &mut World<'_>, activation: &ActivationKey) -> Result<JobEffects, FatalError> {
+pub(super) fn seed_activation(
+    world: &mut World,
+    _tel: &impl crate::telemetry::Telemetry,
+    activation: &ActivationKey,
+) -> Result<JobEffects, FatalError> {
     Ok(JobEffects {
         outputs: vec![
             FactKey::Activation(activation.clone()),
@@ -119,8 +127,8 @@ pub(super) fn seed_activation(world: &mut World<'_>, activation: &ActivationKey)
     })
 }
 
-fn emit_root_error(world: &World<'_>, span: Span, message: impl Into<String>) -> FatalError {
+fn emit_root_error(tel: &impl crate::telemetry::Telemetry, span: Span, message: impl Into<String>) -> FatalError {
     let diagnostic = Diagnostic::error(codes::LOWER_UNSUPPORTED, message.into(), span);
-    emit_through(world.tel(), std::slice::from_ref(&diagnostic));
+    emit_through(tel, std::slice::from_ref(&diagnostic));
     FatalError
 }

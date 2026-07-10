@@ -99,8 +99,9 @@ impl FragmentPublicationContext {
     }
 }
 
-struct ScopeSession<'world, 'tel> {
-    world: &'world mut World<'tel>,
+struct ScopeSession<'world, 'tel, T: crate::telemetry::Telemetry> {
+    world: &'world mut World,
+    telemetry: &'tel T,
     code_id: CodeId,
     current_module: ModuleId,
     namespace: Namespace,
@@ -115,9 +116,18 @@ struct ScopeSession<'world, 'tel> {
     struct_form_seen: bool,
 }
 
-impl<'world, 'tel> QuotedExpansionCtx<'tel> for ScopeSession<'world, 'tel> {
-    fn world(&mut self) -> &mut World<'tel> {
+impl<'world, 'tel, T: crate::telemetry::Telemetry> QuotedExpansionCtx for ScopeSession<'world, 'tel, T> {
+    type Telemetry = T;
+    fn world(&mut self) -> &mut World {
         self.world
+    }
+
+    fn telemetry(&self) -> &T {
+        self.telemetry
+    }
+
+    fn split(&mut self) -> (&mut World, &T) {
+        (self.world, self.telemetry)
     }
 
     fn current_module(&self) -> ModuleId {
@@ -143,16 +153,18 @@ impl<'world, 'tel> QuotedExpansionCtx<'tel> for ScopeSession<'world, 'tel> {
 }
 
 pub(crate) fn publish_scope(
-    world: &mut World<'_>,
+    world: &mut World,
+    tel: &impl crate::telemetry::Telemetry,
     code_id: CodeId,
     current_scope: ScopeSnapshot,
     surface: &ScopeSurface,
 ) -> Result<ScopePublication, FatalError> {
-    ScopeSession::new(world, code_id, current_scope).publish(surface)
+    ScopeSession::new(world, tel, code_id, current_scope).publish(surface)
 }
 
 pub(crate) fn publish_protocol_surface(
-    world: &mut World<'_>,
+    world: &mut World,
+    tel: &impl crate::telemetry::Telemetry,
     code_id: CodeId,
     module_id: ModuleId,
     namespace: Namespace,
@@ -165,9 +177,10 @@ pub(crate) fn publish_protocol_surface(
         arity: 0,
     };
     scope = world.bind_namespace(scope, "t".to_string(), NamespaceSymbol::Type(protocol_t.clone()));
-    note_protocol_domain_type(world, protocol_t, scope, Vec::new());
+    note_protocol_domain_type(world, tel, protocol_t, scope, Vec::new());
     note_protocol_domain_type(
         world,
+        tel,
         TypeName {
             module: module_id,
             name: "t".to_string(),
@@ -185,7 +198,7 @@ pub(crate) fn publish_protocol_surface(
             continue;
         };
         let function = world.reference_function(module_id, callback.name.clone(), callback.arity);
-        world.define_protocol_callback(function, module_id);
+        super::drive::ExecutionContext::new(world, tel).define_protocol_callback(function, module_id);
         let symbol = NamespaceSymbol::Function(function);
         scope = world.bind_namespace(scope, callback.name.clone(), symbol.clone());
         callables.push(ModuleInterfaceCallable {
@@ -200,16 +213,26 @@ pub(crate) fn publish_protocol_surface(
         .module_name(module_id)
         .ok_or_else(|| {
             emit_internal_surface_error(
-                world,
+                tel,
                 "protocol modules should have reverse names before publication".to_string(),
             )
         })?
         .to_string();
     let function = build_module_info_function(&callables, &module_name)
-        .map_err(|error| emit_surface_read_error(world, "protocol module info synthesis failed", &error))?;
+        .map_err(|error| emit_surface_read_error(tel, "protocol module info synthesis failed", &error))?;
     let function_id = world.reference_function(module_id, function.name.clone(), function.arity);
     scope = world.bind_namespace(scope, function.name.clone(), NamespaceSymbol::Function(function_id));
-    let publication = publish_function_source(world, code_id, module_id, module_id, scope, &function, true, Vec::new());
+    let publication = publish_function_source(
+        world,
+        tel,
+        code_id,
+        module_id,
+        module_id,
+        scope,
+        &function,
+        true,
+        Vec::new(),
+    );
     outputs.push(FactKey::FunctionSourceStash(publication.function));
     if publication.stashed_changed {
         changed.push(FactKey::FunctionSourceStash(publication.function));
@@ -219,7 +242,7 @@ pub(crate) fn publish_protocol_surface(
     }
 
     outputs.push(FactKey::ProtocolDispatch(module_id));
-    if world.refresh_protocol_dispatch(module_id) {
+    if super::drive::ExecutionContext::new(world, tel).refresh_protocol_dispatch(module_id) {
         changed.push(FactKey::ProtocolDispatch(module_id));
     }
     Ok(ScopePublication::Complete {
@@ -233,19 +256,21 @@ pub(crate) fn publish_protocol_surface(
 }
 
 pub(crate) fn publish_protocol_impl_surface(
-    world: &mut World<'_>,
+    world: &mut World,
+    tel: &impl crate::telemetry::Telemetry,
     code_id: CodeId,
     impl_module: ModuleId,
     namespace: Namespace,
     source: &ProtocolImplSource,
 ) -> Result<ScopePublication, FatalError> {
-    let mut session = ScopeSession::new(world, code_id, ScopeSnapshot::module(impl_module, namespace));
+    let mut session = ScopeSession::new(world, tel, code_id, ScopeSnapshot::module(impl_module, namespace));
     session.publish_resolved_protocol_impl(impl_module, source)?;
     Ok(session.complete())
 }
 
 pub(crate) fn discover_modules(
-    world: &mut World<'_>,
+    world: &mut World,
+    tel: &impl crate::telemetry::Telemetry,
     code_id: CodeId,
     parent_module: ModuleId,
     surface: &ScopeSurface,
@@ -257,7 +282,7 @@ pub(crate) fn discover_modules(
             ScopeForm::Module(module) => {
                 let module_id = world.reference_child_module(parent_module, &module.name);
                 let nested = read_module_body_surface(module)
-                    .map_err(|error| emit_surface_read_error(world, "nested module body read failed", &error))?;
+                    .map_err(|error| emit_surface_read_error(tel, "nested module body read failed", &error))?;
                 let revision = world.index_module_body(
                     module_id,
                     code_id,
@@ -270,12 +295,12 @@ pub(crate) fn discover_modules(
                 if revision {
                     changed.push(FactKey::ModuleIndexed(module_id));
                 }
-                discover_modules(world, code_id, module_id, &nested, outputs, changed)?;
+                discover_modules(world, tel, code_id, module_id, &nested, outputs, changed)?;
             }
             ScopeForm::Protocol(protocol) => {
                 let module_id = reference_declared_protocol_module(world, parent_module, &protocol.name);
                 let protocol_surface = read_protocol_body_surface(protocol)
-                    .map_err(|error| emit_surface_read_error(world, "quoted protocol body read failed", &error))?;
+                    .map_err(|error| emit_surface_read_error(tel, "quoted protocol body read failed", &error))?;
                 let revision = world.index_protocol_module(
                     module_id,
                     code_id,
@@ -291,20 +316,19 @@ pub(crate) fn discover_modules(
             }
             ScopeForm::MacroCall(macro_call) => {
                 let Some(definition) = reserved_source_definition(&macro_call.source)
-                    .map_err(|error| emit_surface_read_error(world, "raw discovery reservation failed", &error))?
+                    .map_err(|error| emit_surface_read_error(tel, "raw discovery reservation failed", &error))?
                 else {
                     continue;
                 };
-                let fragment = read_compiler_fragment_root(world, &macro_call.source, "raw scope-definition fragment")?;
+                let fragment = read_compiler_fragment_root(tel, &macro_call.source, "raw scope-definition fragment")?;
                 let Some(fragment_form) = fragment.forms.first() else {
                     continue;
                 };
                 match (definition, fragment_form) {
                     (ReservedSourceDefinition::Module { .. }, ScopeForm::Module(module)) => {
                         let module_id = world.reference_child_module(parent_module, &module.name);
-                        let nested = read_module_body_surface(module).map_err(|error| {
-                            emit_surface_read_error(world, "nested module body read failed", &error)
-                        })?;
+                        let nested = read_module_body_surface(module)
+                            .map_err(|error| emit_surface_read_error(tel, "nested module body read failed", &error))?;
                         let revision = world.index_module_body(
                             module_id,
                             code_id,
@@ -317,12 +341,12 @@ pub(crate) fn discover_modules(
                         if revision {
                             changed.push(FactKey::ModuleIndexed(module_id));
                         }
-                        discover_modules(world, code_id, module_id, &nested, outputs, changed)?;
+                        discover_modules(world, tel, code_id, module_id, &nested, outputs, changed)?;
                     }
                     (ReservedSourceDefinition::Protocol { .. }, ScopeForm::Protocol(protocol)) => {
                         let module_id = reference_declared_protocol_module(world, parent_module, &protocol.name);
                         let protocol_surface = read_protocol_body_surface(protocol).map_err(|error| {
-                            emit_surface_read_error(world, "quoted protocol body read failed", &error)
+                            emit_surface_read_error(tel, "quoted protocol body read failed", &error)
                         })?;
                         let revision = world.index_protocol_module(
                             module_id,
@@ -347,7 +371,8 @@ pub(crate) fn discover_modules(
 }
 
 pub(crate) fn record_function_type_refs(
-    world: &mut World<'_>,
+    world: &mut World,
+    tel: &impl crate::telemetry::Telemetry,
     function: FunctionId,
     surface: &FunctionSurface,
 ) -> Result<(), FatalError> {
@@ -369,21 +394,21 @@ pub(crate) fn record_function_type_refs(
     let mut struct_refs = Vec::new();
     for attr in &surface.attrs {
         if let Attribute::Spec(spec) = attr {
-            collect_spec_refs(world, namespace, spec, &mut refs)?;
-            collect_spec_struct_obligations(world, namespace, spec, code, module, &mut struct_refs)?;
+            collect_spec_refs(world, tel, namespace, spec, &mut refs)?;
+            collect_spec_struct_obligations(world, tel, namespace, spec, code, module, &mut struct_refs)?;
         }
     }
     if let Some(extern_spec) = surface.extern_contract_decl() {
-        collect_spec_refs(world, namespace, &extern_spec, &mut refs)?;
-        collect_spec_struct_obligations(world, namespace, &extern_spec, code, module, &mut struct_refs)?;
+        collect_spec_refs(world, tel, namespace, &extern_spec, &mut refs)?;
+        collect_spec_struct_obligations(world, tel, namespace, &extern_spec, code, module, &mut struct_refs)?;
     }
     for clause in &surface.clauses {
         for annotation in clause.param_annotations.iter().flatten() {
-            collect_body_refs(world, namespace, annotation, &mut refs)?;
-            collect_body_struct_obligations(world, namespace, annotation, code, module, &mut struct_refs)?;
+            collect_body_refs(world, tel, namespace, annotation, &mut refs)?;
+            collect_body_struct_obligations(world, tel, namespace, annotation, code, module, &mut struct_refs)?;
         }
     }
-    world.record_function_type_refs(function, refs);
+    super::drive::ExecutionContext::new(world, tel).record_function_type_refs(function, refs);
     world.record_function_type_struct_refs(function, struct_refs);
     Ok(())
 }
@@ -392,7 +417,8 @@ pub(crate) fn record_function_type_refs(
 /// type-position of a spec (params, result, constraint bounds), recording the
 /// `%Mod{...}` obligations and struct-module refs each carries.
 fn collect_spec_struct_obligations(
-    world: &mut World<'_>,
+    world: &mut World,
+    tel: &impl crate::telemetry::Telemetry,
     scope: Namespace,
     spec: &SpecDecl,
     code: CodeId,
@@ -405,7 +431,7 @@ fn collect_spec_struct_obligations(
         .chain(std::iter::once(&spec.result_body_tokens))
         .chain(spec.constraints.iter().map(|(_, bound)| bound))
     {
-        collect_body_struct_obligations(world, scope, body, code, module, struct_refs)?;
+        collect_body_struct_obligations(world, tel, scope, body, code, module, struct_refs)?;
     }
     Ok(())
 }
@@ -414,7 +440,8 @@ fn collect_spec_struct_obligations(
 /// type-expression body and records its `%Mod{...}` obligations at the body's
 /// own span, from the referencing function's `code`/`module`.
 fn collect_body_struct_obligations(
-    world: &mut World<'_>,
+    world: &mut World,
+    tel: &impl crate::telemetry::Telemetry,
     scope: Namespace,
     body: &TypeExprBody,
     code: CodeId,
@@ -426,7 +453,7 @@ fn collect_body_struct_obligations(
     }
     let expr = parse_type_expr(&body.0).map_err(|error| {
         emit_job_diagnostic(
-            world,
+            tel,
             Diagnostic::error(
                 codes::RESOLVE_TYPE_ALIAS,
                 format!("compiler2 could not parse a type expression: {}", error.msg),
@@ -439,17 +466,18 @@ fn collect_body_struct_obligations(
         module,
         span: type_expr_body_span(body),
     };
-    collect_struct_obligations(world, scope, &expr, &requester, struct_refs)
+    collect_struct_obligations(world, tel, scope, &expr, &requester, struct_refs)
 }
 
 fn type_expr_body_span(body: &TypeExprBody) -> Span {
     body.0.iter().map(|token| token.span).fold(Span::DUMMY, Span::merge)
 }
 
-impl<'world, 'tel> ScopeSession<'world, 'tel> {
-    fn new(world: &'world mut World<'tel>, code_id: CodeId, current_scope: ScopeSnapshot) -> Self {
+impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T> {
+    fn new(world: &'world mut World, telemetry: &'tel T, code_id: CodeId, current_scope: ScopeSnapshot) -> Self {
         Self {
             world,
+            telemetry,
             code_id,
             current_module: current_scope.module_id(),
             namespace: current_scope.namespace(),
@@ -493,13 +521,13 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
             .module_name(self.current_module)
             .ok_or_else(|| {
                 emit_internal_surface_error(
-                    self.world,
+                    self.telemetry,
                     "module info synthesis expected a named current module".to_string(),
                 )
             })?
             .to_string();
         let function = build_module_info_function(&self.callables, &module_name).map_err(|error| {
-            emit_internal_surface_error(self.world, format!("module info source synthesis failed: {error}"))
+            emit_internal_surface_error(self.telemetry, format!("module info source synthesis failed: {error}"))
         })?;
         let function_id = self
             .world
@@ -530,7 +558,7 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
             };
             let body = parse_type_def_body(&decl.body_tokens.0).map_err(|error| {
                 emit_job_diagnostic(
-                    self.world,
+                    self.telemetry,
                     Diagnostic::error(
                         codes::RESOLVE_TYPE_ALIAS,
                         format!("compiler2 could not parse `@type {}`: {}", decl.name, error.msg),
@@ -597,7 +625,10 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
                 | ScopeForm::ProtocolImpl(_) => {}
                 ScopeForm::MacroCall(macro_call) => {
                     let Some(definition) = reserved_source_definition(&macro_call.source).map_err(|error| {
-                        emit_internal_surface_error(self.world, format!("raw definition reservation failed: {error}"))
+                        emit_internal_surface_error(
+                            self.telemetry,
+                            format!("raw definition reservation failed: {error}"),
+                        )
                     })?
                     else {
                         continue;
@@ -651,7 +682,7 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
         {
             let mut refs = Vec::new();
             collect_type_refs(self.world, self.namespace, &body.inner, &mut refs);
-            self.world.record_type_def_refs(name.clone(), refs);
+            super::drive::ExecutionContext::new(self.world, self.telemetry).record_type_def_refs(name.clone(), refs);
 
             // The struct-record half of the same walk: every `%Mod{field:
             // ...}` this `@type` body names records an `A.field` obligation
@@ -660,10 +691,17 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
             // (fz-rh2.17.5.6.10).
             let requester = self.interface_requester(span);
             let mut struct_refs = Vec::new();
-            collect_struct_obligations(self.world, self.namespace, &body.inner, &requester, &mut struct_refs)?;
+            collect_struct_obligations(
+                self.world,
+                self.telemetry,
+                self.namespace,
+                &body.inner,
+                &requester,
+                &mut struct_refs,
+            )?;
             self.world.record_type_def_struct_refs(name.clone(), struct_refs);
 
-            self.world.note_type_decl(
+            super::drive::ExecutionContext::new(self.world, self.telemetry).note_type_decl(
                 name,
                 NotedTypeDecl {
                     params,
@@ -696,10 +734,10 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
     }
 
     fn apply_compiler_define(&mut self, service: &CompilerServiceForm) -> Result<(), FatalError> {
-        let surface = read_compiler_fragment_root(self.world, &service.source, "Fz.Compiler.define source")?;
+        let surface = read_compiler_fragment_root(self.telemetry, &service.source, "Fz.Compiler.define source")?;
         if !surface.attrs.is_empty() || surface.forms.len() != 1 {
             return Err(emit_job_diagnostic(
-                self.world,
+                self.telemetry,
                 Diagnostic::error(
                     codes::INTERNAL_POST_RESOLUTION_LEFTOVER,
                     "Fz.Compiler.define expected one fully expanded source definition",
@@ -709,7 +747,7 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
         }
         let Some(form) = surface.forms.first() else {
             return Err(emit_job_diagnostic(
-                self.world,
+                self.telemetry,
                 Diagnostic::error(
                     codes::INTERNAL_POST_RESOLUTION_LEFTOVER,
                     "Fz.Compiler.define expected one fully expanded source definition",
@@ -719,7 +757,7 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
         };
         if matches!(form, ScopeForm::CompilerService(_) | ScopeForm::MacroCall(_)) {
             return Err(emit_job_diagnostic(
-                self.world,
+                self.telemetry,
                 Diagnostic::error(
                     codes::INTERNAL_POST_RESOLUTION_LEFTOVER,
                     "Fz.Compiler.define expected one fully expanded source definition",
@@ -730,7 +768,7 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
         let context = FragmentPublicationContext::compiler_define(self.current_module);
         if let Some(blocked) = self.apply_surface_fragment(&surface, &context)? {
             return Err(emit_job_diagnostic(
-                self.world,
+                self.telemetry,
                 Diagnostic::error(
                     codes::INTERNAL_POST_RESOLUTION_LEFTOVER,
                     format!(
@@ -754,6 +792,7 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
     ) -> Result<FunctionPublication, FatalError> {
         let publication = publish_function_source(
             self.world,
+            self.telemetry,
             self.code_id,
             function_module,
             owner_module,
@@ -787,6 +826,7 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
         if matches!(context.discovery, FragmentDiscovery::DiscoverNestedModules) {
             discover_modules(
                 self.world,
+                self.telemetry,
                 self.code_id,
                 self.current_module,
                 surface,
@@ -838,7 +878,7 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
                 let module_id = self.world.reference_child_module(self.current_module, &module.name);
                 self.world.scope_module(module_id, self.namespace);
                 let body = read_module_body_surface(module)
-                    .map_err(|error| emit_surface_read_error(self.world, "module body read failed", &error))?;
+                    .map_err(|error| emit_surface_read_error(self.telemetry, "module body read failed", &error))?;
                 self.register_protocol_impl_providers(module_id, &body)?;
                 Ok(None)
             }
@@ -917,12 +957,13 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
         {
             return Err(self.duplicate_struct_diagnostic(module, def.span));
         }
-        let changed = self.world.define_struct_def(module, incoming);
+        let changed =
+            super::drive::ExecutionContext::new(self.world, self.telemetry).define_struct_def(module, incoming);
         self.outputs.push(FactKey::StructDefined(module));
         if changed {
             self.changed.push(FactKey::StructDefined(module));
         }
-        self.world.validate_struct_field_expectations(module)
+        super::drive::ExecutionContext::new(self.world, self.telemetry).validate_struct_field_expectations(module)
     }
 
     fn duplicate_struct_diagnostic(&mut self, module: ModuleId, span: Span) -> FatalError {
@@ -932,7 +973,7 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
             .map(str::to_owned)
             .unwrap_or_else(|| format!("<unnamed module {}>", module.as_u32()));
         emit_job_diagnostic(
-            self.world,
+            self.telemetry,
             Diagnostic::error(
                 codes::RESOLVE_DUPLICATE_STRUCT,
                 format!("module `{}` already defines a struct", module_name),
@@ -956,13 +997,13 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
                 ScopeForm::Module(child) => {
                     let child_id = self.world.reference_child_module(module, &child.name);
                     let nested = read_module_body_surface(child).map_err(|error| {
-                        emit_surface_read_error(self.world, "nested module body read failed", &error)
+                        emit_surface_read_error(self.telemetry, "nested module body read failed", &error)
                     })?;
                     self.register_protocol_impl_providers(child_id, &nested)?;
                 }
                 ScopeForm::MacroCall(macro_call) => {
                     let Some(definition) = reserved_source_definition(&macro_call.source).map_err(|error| {
-                        emit_surface_read_error(self.world, "impl discovery reservation failed", &error)
+                        emit_surface_read_error(self.telemetry, "impl discovery reservation failed", &error)
                     })?
                     else {
                         continue;
@@ -970,7 +1011,7 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
                     match definition {
                         ReservedSourceDefinition::ProtocolImpl => {
                             let fragment = read_compiler_fragment_root(
-                                self.world,
+                                self.telemetry,
                                 &macro_call.source,
                                 "raw scope-definition fragment",
                             )?;
@@ -981,14 +1022,14 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
                         }
                         ReservedSourceDefinition::Module { .. } => {
                             let fragment = read_compiler_fragment_root(
-                                self.world,
+                                self.telemetry,
                                 &macro_call.source,
                                 "raw scope-definition fragment",
                             )?;
                             if let Some(ScopeForm::Module(child)) = fragment.forms.first() {
                                 let child_id = self.world.reference_child_module(module, &child.name);
                                 let nested = read_module_body_surface(child).map_err(|error| {
-                                    emit_surface_read_error(self.world, "nested module body read failed", &error)
+                                    emit_surface_read_error(self.telemetry, "nested module body read failed", &error)
                                 })?;
                                 self.register_protocol_impl_providers(child_id, &nested)?;
                             }
@@ -1073,7 +1114,7 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
             for (name, arity) in only {
                 let Some(callable) = find_callable(callables, name, *arity) else {
                     return Err(emit_job_diagnostic(
-                        self.world,
+                        self.telemetry,
                         Diagnostic::error(
                             codes::RESOLVE_UNKNOWN_IMPORT,
                             format!(
@@ -1088,7 +1129,7 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
                 };
                 if !matches!(callable.kind, InterfaceCallableKind::Macro) {
                     return Err(emit_job_diagnostic(
-                        self.world,
+                        self.telemetry,
                         Diagnostic::error(
                             codes::RESOLVE_UNKNOWN_IMPORT,
                             format!(
@@ -1110,7 +1151,7 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
         for (name, arity) in import.except.as_deref().unwrap_or(&[]) {
             let Some(callable) = find_callable(callables, name, *arity) else {
                 return Err(emit_job_diagnostic(
-                    self.world,
+                    self.telemetry,
                     Diagnostic::error(
                         codes::RESOLVE_UNKNOWN_IMPORT,
                         format!(
@@ -1125,7 +1166,7 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
             };
             if !matches!(callable.kind, InterfaceCallableKind::Macro) {
                 return Err(emit_job_diagnostic(
-                    self.world,
+                    self.telemetry,
                     Diagnostic::error(
                         codes::RESOLVE_UNKNOWN_IMPORT,
                         format!(
@@ -1184,7 +1225,7 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
                 for (name, arity) in only {
                     let Some(callable) = find_callable(callables, name, *arity) else {
                         return Err(emit_job_diagnostic(
-                            self.world,
+                            self.telemetry,
                             Diagnostic::error(
                                 codes::RESOLVE_UNKNOWN_IMPORT,
                                 format!(
@@ -1205,7 +1246,7 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
                 for (name, arity) in except {
                     if find_callable(callables, name, *arity).is_none() {
                         return Err(emit_job_diagnostic(
-                            self.world,
+                            self.telemetry,
                             Diagnostic::error(
                                 codes::RESOLVE_UNKNOWN_IMPORT,
                                 format!(
@@ -1277,7 +1318,10 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
         let target = reference_impl_target_module(self.world, self.current_module, self.namespace, &form.target);
         let impl_module = reference_protocol_impl_module(self.world, protocol, target);
         let body = read_protocol_impl_body_surface(form).map_err(|error| {
-            emit_internal_surface_error(self.world, format!("quoted protocol impl body read failed: {error}"))
+            emit_internal_surface_error(
+                self.telemetry,
+                format!("quoted protocol impl body read failed: {error}"),
+            )
         })?;
         let impl_name = self
             .world
@@ -1324,7 +1368,7 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
         for form in &source.body.forms {
             let ScopeForm::Function(function) = form else {
                 return Err(emit_job_diagnostic(
-                    self.world,
+                    self.telemetry,
                     Diagnostic::error(
                         codes::LOWER_UNSUPPORTED,
                         "compiler2 protocol implementations only support callback functions",
@@ -1334,7 +1378,7 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
             };
             if function.is_macro {
                 return Err(emit_job_diagnostic(
-                    self.world,
+                    self.telemetry,
                     Diagnostic::error(
                         codes::LOWER_UNSUPPORTED,
                         "compiler2 protocol implementations cannot define macros",
@@ -1383,10 +1427,13 @@ impl<'world, 'tel> ScopeSession<'world, 'tel> {
                 variadic: false,
             });
         }
-        self.world
-            .define_protocol_impl(source.protocol, source.target, callbacks);
+        super::drive::ExecutionContext::new(self.world, self.telemetry).define_protocol_impl(
+            source.protocol,
+            source.target,
+            callbacks,
+        );
         self.outputs.push(FactKey::ProtocolDispatch(source.protocol));
-        if self.world.refresh_protocol_dispatch(source.protocol) {
+        if super::drive::ExecutionContext::new(self.world, self.telemetry).refresh_protocol_dispatch(source.protocol) {
             self.changed.push(FactKey::ProtocolDispatch(source.protocol));
         }
         Ok(())
@@ -1506,7 +1553,8 @@ struct FunctionPublication {
 }
 
 fn publish_function_source(
-    world: &mut World<'_>,
+    world: &mut World,
+    tel: &impl crate::telemetry::Telemetry,
     code_id: CodeId,
     function_module: ModuleId,
     owner_module: ModuleId,
@@ -1531,8 +1579,8 @@ fn publish_function_source(
         variadic: function.variadic,
         source: function.source.clone(),
     };
-    emit_compiler_service_define(world, function_id, &source);
-    let stashed_changed = world.stash_function_source(function_id, source);
+    emit_compiler_service_define(world, tel, function_id, &source);
+    let stashed_changed = super::drive::ExecutionContext::new(world, tel).stash_function_source(function_id, source);
 
     let callable = (export_public && !function.is_private).then(|| ModuleInterfaceCallable {
         function: function_id,
@@ -1551,9 +1599,14 @@ fn publish_function_source(
     }
 }
 
-fn emit_compiler_service_define(world: &World<'_>, function: FunctionId, source: &FunctionSource) {
+fn emit_compiler_service_define(
+    world: &World,
+    tel: &impl crate::telemetry::Telemetry,
+    function: FunctionId,
+    source: &FunctionSource,
+) {
     let function_ref = world.function_ref(function);
-    world.tel().execute(
+    tel.execute(
         &["fz", "compiler2", "compiler_service", "define"],
         &measurements! {
             code_id: source.code.as_u32() as u64,
@@ -1582,7 +1635,8 @@ fn emit_compiler_service_define(world: &World<'_>, function: FunctionId, source:
 /// question over the same tree, same shape as `resolve_ty`'s own separate
 /// walk in `resolve.rs`.
 fn collect_struct_obligations(
-    world: &mut World<'_>,
+    world: &mut World,
+    tel: &impl crate::telemetry::Telemetry,
     scope: Namespace,
     expr: &TypeExpr,
     requester: &InterfaceRequester,
@@ -1591,20 +1645,20 @@ fn collect_struct_obligations(
     match expr {
         TypeExpr::Name { args, .. } => {
             for arg in args {
-                collect_struct_obligations(world, scope, arg, requester, struct_refs)?;
+                collect_struct_obligations(world, tel, scope, arg, requester, struct_refs)?;
             }
         }
-        TypeExpr::List(inner) => collect_struct_obligations(world, scope, inner, requester, struct_refs)?,
+        TypeExpr::List(inner) => collect_struct_obligations(world, tel, scope, inner, requester, struct_refs)?,
         TypeExpr::Tuple(elems) | TypeExpr::Union(elems) => {
             for elem in elems {
-                collect_struct_obligations(world, scope, elem, requester, struct_refs)?;
+                collect_struct_obligations(world, tel, scope, elem, requester, struct_refs)?;
             }
         }
         TypeExpr::Arrow { params, result } => {
             for param in params {
-                collect_struct_obligations(world, scope, param, requester, struct_refs)?;
+                collect_struct_obligations(world, tel, scope, param, requester, struct_refs)?;
             }
-            collect_struct_obligations(world, scope, result, requester, struct_refs)?;
+            collect_struct_obligations(world, tel, scope, result, requester, struct_refs)?;
         }
         TypeExpr::StructRecord { module, fields } => {
             let module_name = ModuleName::from_segments(module.clone());
@@ -1614,14 +1668,18 @@ fn collect_struct_obligations(
             struct_refs.push(module_id);
             world.note_struct_reference_expectation(module_id, requester.clone());
             for (field, value) in fields {
-                world.note_struct_field_expectation(module_id, field.clone(), requester.clone())?;
-                collect_struct_obligations(world, scope, value, requester, struct_refs)?;
+                super::drive::ExecutionContext::new(world, tel).note_struct_field_expectation(
+                    module_id,
+                    field.clone(),
+                    requester.clone(),
+                )?;
+                collect_struct_obligations(world, tel, scope, value, requester, struct_refs)?;
             }
         }
         TypeExpr::Map(pairs) => {
             for (key, value) in pairs {
-                collect_struct_obligations(world, scope, key, requester, struct_refs)?;
-                collect_struct_obligations(world, scope, value, requester, struct_refs)?;
+                collect_struct_obligations(world, tel, scope, key, requester, struct_refs)?;
+                collect_struct_obligations(world, tel, scope, value, requester, struct_refs)?;
             }
         }
         TypeExpr::EmptyList
@@ -1638,7 +1696,7 @@ fn collect_struct_obligations(
 /// Walks a parsed type expression, recording each name that resolves to a type
 /// identity against `scope`. Builtins, free type variables, and unresolvable
 /// bare names are not references; resolution decides them, not this walk.
-fn collect_type_refs(world: &mut World<'_>, scope: Namespace, expr: &TypeExpr, out: &mut Vec<TypeName>) {
+fn collect_type_refs(world: &mut World, scope: Namespace, expr: &TypeExpr, out: &mut Vec<TypeName>) {
     match expr {
         TypeExpr::Name { path, args } => {
             if let Some(type_name) = world.reference_type(scope, path, args.len()) {
@@ -1684,7 +1742,8 @@ fn collect_type_refs(world: &mut World<'_>, scope: Namespace, expr: &TypeExpr, o
 /// Walks every type-position of a spec: each parameter, the result, and each
 /// constraint bound.
 pub(crate) fn collect_spec_refs(
-    world: &mut World<'_>,
+    world: &mut World,
+    tel: &impl crate::telemetry::Telemetry,
     scope: Namespace,
     spec: &SpecDecl,
     out: &mut Vec<TypeName>,
@@ -1695,13 +1754,14 @@ pub(crate) fn collect_spec_refs(
         .chain(std::iter::once(&spec.result_body_tokens))
         .chain(spec.constraints.iter().map(|(_, bound)| bound))
     {
-        collect_body_refs(world, scope, body, out)?;
+        collect_body_refs(world, tel, scope, body, out)?;
     }
     Ok(())
 }
 
 fn collect_body_refs(
-    world: &mut World<'_>,
+    world: &mut World,
+    tel: &impl crate::telemetry::Telemetry,
     scope: Namespace,
     body: &TypeExprBody,
     out: &mut Vec<TypeName>,
@@ -1711,7 +1771,7 @@ fn collect_body_refs(
     }
     let expr = parse_type_expr(&body.0).map_err(|error| {
         emit_job_diagnostic(
-            world,
+            tel,
             Diagnostic::error(
                 codes::RESOLVE_TYPE_ALIAS,
                 format!("compiler2 could not parse a type expression: {}", error.msg),
@@ -1723,8 +1783,14 @@ fn collect_body_refs(
     Ok(())
 }
 
-fn note_protocol_domain_type(world: &mut World<'_>, name: TypeName, namespace: Namespace, params: Vec<String>) {
-    world.note_type_decl(
+fn note_protocol_domain_type(
+    world: &mut World,
+    tel: &impl crate::telemetry::Telemetry,
+    name: TypeName,
+    namespace: Namespace,
+    params: Vec<String>,
+) {
+    super::drive::ExecutionContext::new(world, tel).note_type_decl(
         name.clone(),
         NotedTypeDecl {
             params,
@@ -1736,7 +1802,7 @@ fn note_protocol_domain_type(world: &mut World<'_>, name: TypeName, namespace: N
             span: Span::DUMMY,
         },
     );
-    world.record_type_def_refs(name, Vec::new());
+    super::drive::ExecutionContext::new(world, tel).record_type_def_refs(name, Vec::new());
 }
 
 fn find_callable<'a>(
@@ -1749,16 +1815,16 @@ fn find_callable<'a>(
         .find(|callable| callable.matches_name_arity(name, arity))
 }
 
-fn bind_callable(world: &mut World<'_>, scope: Namespace, callable: &ModuleInterfaceCallable) -> Namespace {
+fn bind_callable(world: &mut World, scope: Namespace, callable: &ModuleInterfaceCallable) -> Namespace {
     world.bind_namespace(scope, callable.reference.name.clone(), callable.namespace_symbol())
 }
 
-fn reference_declared_protocol_module(world: &mut World<'_>, current_module: ModuleId, name: &ModuleName) -> ModuleId {
+fn reference_declared_protocol_module(world: &mut World, current_module: ModuleId, name: &ModuleName) -> ModuleId {
     world.reference_module(qualified_child_module_name(world, current_module, name))
 }
 
 fn reference_impl_protocol_module(
-    world: &mut World<'_>,
+    world: &mut World,
     current_module: ModuleId,
     head: Namespace,
     name: &ModuleName,
@@ -1769,7 +1835,7 @@ fn reference_impl_protocol_module(
 }
 
 fn reference_impl_target_module(
-    world: &mut World<'_>,
+    world: &mut World,
     current_module: ModuleId,
     head: Namespace,
     name: &ModuleName,
@@ -1779,7 +1845,7 @@ fn reference_impl_target_module(
         .expect("module resolution should always mint a module id for defimpl target names")
 }
 
-fn reference_protocol_impl_module(world: &mut World<'_>, protocol: ModuleId, target: ModuleId) -> ModuleId {
+fn reference_protocol_impl_module(world: &mut World, protocol: ModuleId, target: ModuleId) -> ModuleId {
     let protocol_name = world
         .module_name(protocol)
         .expect("protocol modules should have reverse names");
@@ -1790,14 +1856,14 @@ fn reference_protocol_impl_module(world: &mut World<'_>, protocol: ModuleId, tar
     world.reference_module(format!("{protocol_name}.{target_local}"))
 }
 
-fn qualified_child_module_name(world: &World<'_>, current_module: ModuleId, name: &ModuleName) -> String {
+fn qualified_child_module_name(world: &World, current_module: ModuleId, name: &ModuleName) -> String {
     if name.segments().len() != 1 || current_module.is_global() {
         return name.dotted();
     }
     qualify_local_child_name(world, current_module, name.last_segment())
 }
 
-fn qualify_local_child_name(world: &World<'_>, current_module: ModuleId, local: &str) -> String {
+fn qualify_local_child_name(world: &World, current_module: ModuleId, local: &str) -> String {
     let current_name = world
         .module_name(current_module)
         .expect("named scoped modules should have reverse lookups");

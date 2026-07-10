@@ -128,7 +128,7 @@ fn find_constructor(name: &str) -> Option<&'static ConstructorEntry> {
     CONSTRUCTORS.iter().find(|entry| entry.name == name)
 }
 
-impl World<'_> {
+impl World {
     /// Resolves a noted `@type` declaration to its [`TypeDef`]. Formal
     /// parameters take variable ids `0..params.len()` in declaration order, so a
     /// parametric body resolves to a template a use site instantiates by
@@ -416,7 +416,7 @@ impl World<'_> {
     }
 
     fn warn_numeric_literal_type(&mut self, literal: &str) {
-        self.emit_warning_once(Diagnostic::warning(
+        self.note_warning_once(Diagnostic::warning(
             codes::TYPE_NUMERIC_LITERAL_WIDENED,
             format!(
                 "`{literal}` is not a type; a numeric literal in type position means its kind — use a pattern or a guard to filter values"

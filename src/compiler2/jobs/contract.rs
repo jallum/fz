@@ -17,7 +17,11 @@ use super::super::identity::FunctionId;
 use super::super::scheduler::FatalError;
 use super::super::world::World;
 
-pub(super) fn derive_function_contract(world: &mut World<'_>, function: FunctionId) -> Result<JobEffects, FatalError> {
+pub(super) fn derive_function_contract(
+    world: &mut World,
+    tel: &impl crate::telemetry::Telemetry,
+    function: FunctionId,
+) -> Result<JobEffects, FatalError> {
     let Some(_) = world.function_defined_revision(function) else {
         return Ok(world.wait_for_function_definition(function));
     };
@@ -90,7 +94,7 @@ pub(super) fn derive_function_contract(world: &mut World<'_>, function: Function
         match world.resolve_spec_decl(source.namespace, spec) {
             Ok(resolved) => contract.push(resolved),
             Err(error) => emit_job_diagnostic(
-                world,
+                tel,
                 Diagnostic::error(
                     codes::RESOLVE_TYPE_ALIAS,
                     format!(
@@ -106,12 +110,12 @@ pub(super) fn derive_function_contract(world: &mut World<'_>, function: Function
     if check_head && contract_has_reachable_fail(world, function, &contract) {
         let diagnostic = super::super::source_diagnostics::function_head_warning(&surface)
             .expect("a source function with clauses has a final clause");
-        world.emit_warning_once(diagnostic);
+        super::super::drive::ExecutionContext::new(world, tel).emit_warning_once(diagnostic);
     }
-    Ok(publish_contract(world, function, reads, contract))
+    Ok(publish_contract(world, tel, function, reads, contract))
 }
 
-fn contract_has_reachable_fail(world: &mut World<'_>, function: FunctionId, contract: &FunctionContract) -> bool {
+fn contract_has_reachable_fail(world: &mut World, function: FunctionId, contract: &FunctionContract) -> bool {
     if contract.arrows.is_empty() {
         return false;
     }
@@ -123,12 +127,13 @@ fn contract_has_reachable_fail(world: &mut World<'_>, function: FunctionId, cont
 }
 
 fn publish_contract(
-    world: &mut World<'_>,
+    world: &mut World,
+    tel: &impl crate::telemetry::Telemetry,
     function: FunctionId,
     reads: Vec<FactKey>,
     contract: FunctionContract,
 ) -> JobEffects {
-    let changed = world.define_function_contract(function, contract);
+    let changed = super::super::drive::ExecutionContext::new(world, tel).define_function_contract(function, contract);
     JobEffects {
         reads: current_uses(reads),
         outputs: vec![FactKey::FunctionContract(function)],
@@ -140,6 +145,6 @@ fn publish_contract(
     }
 }
 
-fn emit_job_diagnostic(world: &World<'_>, diagnostic: Diagnostic) {
-    emit_through(world.tel(), &[diagnostic]);
+fn emit_job_diagnostic(tel: &impl crate::telemetry::Telemetry, diagnostic: Diagnostic) {
+    emit_through(tel, &[diagnostic]);
 }

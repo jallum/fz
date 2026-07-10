@@ -15,7 +15,7 @@
 use crate::telemetry::{TelemetryExt as _, opaque_debug};
 use crate::{measurements, metadata};
 
-use super::drive::FactKey;
+use super::drive::{ExecutionContext, FactKey};
 use super::facts::{FactReadiness, FactUse};
 use super::identity::RootId;
 use super::pull::{ProductDriver, ProductKey, ProductValue, PullOutcome, PullWait, WorldProductProducers};
@@ -38,15 +38,37 @@ pub(super) const PRODUCT_DRIVE_BUDGET: u64 = 50_000;
 pub(crate) trait ProductDriveError: Sized {
     /// A job the fact-wait ran to satisfy `fact` failed. `source` is the
     /// `FatalError` `jobs::run` returned (already diagnostic-bearing).
-    fn job_failed(world: &World<'_>, root: RootId, fact: &FactUse<FactKey>, job: &Job, source: FatalError) -> Self;
+    fn job_failed<T: crate::telemetry::Telemetry>(
+        world: &World,
+        tel: &T,
+        root: RootId,
+        fact: &FactUse<FactKey>,
+        job: &Job,
+        source: FatalError,
+    ) -> Self;
     /// The fact-wait's agenda drained with no ready producer for `fact`.
-    fn no_ready_producer(world: &World<'_>, root: RootId, fact: &FactUse<FactKey>) -> Self;
+    fn no_ready_producer<T: crate::telemetry::Telemetry>(
+        world: &World,
+        tel: &T,
+        root: RootId,
+        fact: &FactUse<FactKey>,
+    ) -> Self;
     /// The fact-wait for `fact` ran more jobs than the budget allows.
-    fn fact_wait_budget_exceeded(world: &World<'_>, root: RootId, fact: &FactUse<FactKey>) -> Self;
+    fn fact_wait_budget_exceeded<T: crate::telemetry::Telemetry>(
+        world: &World,
+        tel: &T,
+        root: RootId,
+        fact: &FactUse<FactKey>,
+    ) -> Self;
     /// The outer product-pull stack exhausted its budget before
     /// `RootBackendProduct` settled. `last_wait` is the last product key and
     /// waits observed, when any wait was ever recorded.
-    fn did_not_settle(world: &World<'_>, root: RootId, last_wait: Option<(ProductKey, Vec<PullWait>)>) -> Self;
+    fn did_not_settle<T: crate::telemetry::Telemetry>(
+        world: &World,
+        tel: &T,
+        root: RootId,
+        last_wait: Option<(ProductKey, Vec<PullWait>)>,
+    ) -> Self;
 }
 
 /// Drives `root`'s `RootBackendProduct` to a settled `BackendProgram` through
@@ -54,11 +76,12 @@ pub(crate) trait ProductDriveError: Sized {
 /// finished-but-not-yet-emitted driver so a caller can read the accumulated
 /// session (e.g. the materialized executable inventory) before calling
 /// `ProductDriver::finish_session`.
-pub(crate) fn drive_root_backend_product<'a, E: ProductDriveError>(
-    world: &mut World<'a>,
+pub(crate) fn drive_root_backend_product<'a, T: crate::telemetry::Telemetry, E: ProductDriveError>(
+    world: &mut World,
+    tel: &'a T,
     root: RootId,
-) -> Result<(BackendProgram, ProductDriver<'a>), E> {
-    drive_root_backend_product_with_budgets(world, root, PRODUCT_DRIVE_BUDGET, PRODUCT_DRIVE_BUDGET)
+) -> Result<(BackendProgram, ProductDriver<'a, T>), E> {
+    drive_root_backend_product_with_budgets(world, tel, root, PRODUCT_DRIVE_BUDGET, PRODUCT_DRIVE_BUDGET)
 }
 
 /// The loop `drive_root_backend_product` runs, parameterized on the outer
@@ -68,14 +91,15 @@ pub(crate) fn drive_root_backend_product<'a, E: ProductDriveError>(
 /// to before the split. Tests pass a small budget to force
 /// `did_not_settle`/`fact_wait_budget_exceeded` on a genuine drive without
 /// spending the real 50,000-job budget doing it.
-pub(super) fn drive_root_backend_product_with_budgets<'a, E: ProductDriveError>(
-    world: &mut World<'a>,
+pub(super) fn drive_root_backend_product_with_budgets<'a, T: crate::telemetry::Telemetry, E: ProductDriveError>(
+    world: &mut World,
+    tel: &'a T,
     root: RootId,
     product_stack_budget: u64,
     fact_wait_budget: u64,
-) -> Result<(BackendProgram, ProductDriver<'a>), E> {
+) -> Result<(BackendProgram, ProductDriver<'a, T>), E> {
     let root_key = ProductKey::RootBackendProduct(root);
-    let mut driver = ProductDriver::new(world.tel(), root);
+    let mut driver = ProductDriver::new(tel, root);
     let mut stack = vec![root_key.clone()];
     let mut last_wait = None;
     for _ in 0..product_stack_budget {
@@ -84,13 +108,13 @@ pub(super) fn drive_root_backend_product_with_budgets<'a, E: ProductDriveError>(
             continue;
         };
         let outcome = {
-            let mut producers = WorldProductProducers::new(world);
+            let mut producers = WorldProductProducers::new(world, tel);
             driver.pull(&mut producers, current.clone())
         };
         match outcome {
             PullOutcome::Produced(ProductValue::RootBackendProduct(program)) if current == root_key => {
                 driver.session_mut().record_work_starts(world.work_start_tally());
-                world.flush_reported_warnings();
+                ExecutionContext::new(world, tel).flush_reported_warnings();
                 return Ok((*program, driver));
             }
             PullOutcome::Produced(_) => {}
@@ -101,7 +125,8 @@ pub(super) fn drive_root_backend_product_with_budgets<'a, E: ProductDriveError>(
                     match wait {
                         PullWait::Product(product) => stack.push(product),
                         PullWait::Fact(fact) => {
-                            let producer_pokes = drive_product_fact_wait::<E>(world, root, fact, fact_wait_budget)?;
+                            let producer_pokes =
+                                drive_product_fact_wait::<T, E>(world, tel, root, fact, fact_wait_budget)?;
                             driver.session_mut().record_producer_pokes(producer_pokes);
                         }
                     }
@@ -109,14 +134,15 @@ pub(super) fn drive_root_backend_product_with_budgets<'a, E: ProductDriveError>(
             }
         }
     }
-    Err(E::did_not_settle(world, root, last_wait))
+    Err(E::did_not_settle(world, tel, root, last_wait))
 }
 
 /// The inner per-fact-wait job loop run while expanding a `PullWait::Fact`.
 /// `pub(super)` so test scaffolding driving a `ProductKey` this module has no
 /// dedicated runner for can still share this loop instead of forking it.
-pub(super) fn drive_product_fact_wait<E: ProductDriveError>(
-    world: &mut World<'_>,
+pub(super) fn drive_product_fact_wait<T: crate::telemetry::Telemetry, E: ProductDriveError>(
+    world: &mut World,
+    tel: &T,
     root: RootId,
     fact: FactUse<FactKey>,
     fact_wait_budget: u64,
@@ -129,18 +155,18 @@ pub(super) fn drive_product_fact_wait<E: ProductDriveError>(
             None => {
                 producer_pokes += world.demand_fact_producer(fact.fact(), WorkStartReason::BlockedWaiterExpansion);
                 let Some(job) = world.work_graph.pop() else {
-                    return Err(E::no_ready_producer(world, root, &fact));
+                    return Err(E::no_ready_producer(world, tel, root, &fact));
                 };
                 job
             }
         };
-        let job_span = world.tel().span(
+        let job_span = tel.span(
             &["fz", "compiler2", "job"],
             metadata! {
                 job: opaque_debug(&job),
             },
         );
-        match super::jobs::run(world, &job) {
+        match super::jobs::run(&mut super::drive::ExecutionContext::new(world, tel), &job) {
             Ok(effects) => {
                 jobs_ran += 1;
                 job_span.stop_with(
@@ -149,21 +175,21 @@ pub(super) fn drive_product_fact_wait<E: ProductDriveError>(
                         effects: opaque_debug(&effects),
                     },
                 );
-                world.complete_job(job, effects);
+                super::drive::ExecutionContext::new(world, tel).complete_job(job, effects);
             }
             Err(err) => {
                 job_span.stop_with(&measurements! {}, &metadata! {});
-                return Err(E::job_failed(world, root, &fact, &job, err));
+                return Err(E::job_failed(world, tel, root, &fact, &job, err));
             }
         }
         if jobs_ran > fact_wait_budget {
-            return Err(E::fact_wait_budget_exceeded(world, root, &fact));
+            return Err(E::fact_wait_budget_exceeded(world, tel, root, &fact));
         }
     }
     Ok(producer_pokes)
 }
 
-fn product_fact_wait_is_satisfied(world: &World<'_>, fact: &FactUse<FactKey>) -> bool {
+fn product_fact_wait_is_satisfied(world: &World, fact: &FactUse<FactKey>) -> bool {
     match fact.readiness() {
         FactReadiness::Current => world.fact_revision(fact.fact()).is_some(),
         FactReadiness::Settled => world.fact_is_settled(fact.fact()),

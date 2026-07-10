@@ -25,7 +25,7 @@ fn semantic_dumps_serve_from_the_product_path() {
     let types_path = dir.join("types.txt");
     let activations_path = dir.join("activations.txt");
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00001_quicksort_plus_foo.fz".to_string()),
         text: include_str!("../../fixtures2/00001_quicksort_plus_foo.fz").to_string(),
@@ -38,7 +38,7 @@ fn semantic_dumps_serve_from_the_product_path() {
     });
 
     install_dump_handlers(
-        &tel,
+        compiler.telemetry(),
         root,
         &[
             DumpSpec {
@@ -91,7 +91,7 @@ fn dump_quicksort_compiler2_telemetry_to_jsonl() {
     let tel = ConfiguredTelemetry::new();
     tel.attach(&[], Box::new(JsonlBackend::new_file(path).expect("open log file")));
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/quicksort_plus_foo.fz".to_string()),
         text: include_str!("../../fixtures2/00001_quicksort_plus_foo.fz").to_string(),
@@ -116,7 +116,7 @@ fn dump_enum_reduce_compiler2_telemetry_to_jsonl() {
     let tel = ConfiguredTelemetry::new();
     tel.attach(&[], Box::new(JsonlBackend::new_file(path).expect("open log file")));
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/enum_reduce_runtime_graph.fz".to_string()),
         text: include_str!("../../fixtures2/00010_enum_reduce_main.fz").to_string(),
@@ -140,7 +140,7 @@ fn jsonl_backend_shows_precipitating_compiler2_actions() {
     let tel = ConfiguredTelemetry::new();
     tel.attach(&[], Box::new(JsonlBackend::new_writer(writer)));
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_root(RootSubmission {
         module_name: None,
         name: "main".to_string(),
@@ -193,7 +193,7 @@ fn jsonl_backend_records_compiler2_drive_timeouts() {
     let tel = ConfiguredTelemetry::new();
     tel.attach(&[], Box::new(JsonlBackend::new_writer(writer)));
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.set_drive_timeout(Duration::ZERO);
     compiler.submit_code(CodeSubmission {
         name: Some("timeout_main.fz".to_string()),

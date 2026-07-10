@@ -47,7 +47,7 @@ pub fn parse_quoted_program(
     source_name: impl AsRef<str>,
     source_text: &str,
     code_id: CodeId,
-    tel: &dyn Telemetry,
+    tel: &impl Telemetry,
 ) -> Result<QuotedSourceRoot, FrontDoorError> {
     let source_name = Rc::<str>::from(source_name.as_ref());
     let tokens = Lexer::with_code_id_and_source_name(source_text, crate::source::Id(code_id.as_u32()), source_name)

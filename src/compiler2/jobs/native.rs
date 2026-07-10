@@ -48,18 +48,22 @@ const UNREACHABLE_CONTROL_ATOM: &str = "compiler2_unreachable_control";
 /// The native handoff consumes only `BackendProgram(root)` plus compiler-owned
 /// stores. It introduces CPS/native bodies and side facts, but it does not
 /// reopen semantic closure, type inference, or planner discovery.
-pub(super) fn lower_native_program(world: &mut World<'_>, root_id: RootId) -> Result<JobEffects, FatalError> {
+pub(super) fn lower_native_program(
+    world: &mut World,
+    tel: &impl crate::telemetry::Telemetry,
+    root_id: RootId,
+) -> Result<JobEffects, FatalError> {
     let backend_fact = FactKey::BackendProgram(root_id);
     if !world.has_fact(&backend_fact) {
-        let effects = super::backend::build_backend_product(world, root_id)?;
-        world.complete_job(Job::BuildBackendProduct(root_id), effects);
+        let effects = super::backend::build_backend_product(world, tel, root_id)?;
+        super::super::drive::ExecutionContext::new(world, tel).complete_job(Job::BuildBackendProduct(root_id), effects);
     }
 
     let backend = world.backend_program(root_id);
     let stats = reusable_cons_telemetry_counts(&backend);
-    let program = NativeLowerer::new(world, root_id, &backend)?.lower()?;
-    let changed = world.define_native_program(root_id, program);
-    world.tel().execute(
+    let program = NativeLowerer::new(world, tel, root_id, &backend)?.lower()?;
+    let changed = super::super::drive::ExecutionContext::new(world, tel).define_native_program(root_id, program);
+    tel.execute(
         &["fz", "compiler2", "native_program", "reusable_cons"],
         &crate::measurements! {
             root_id: root_id.as_u32() as u64,
@@ -109,8 +113,9 @@ fn count_reusable_cons_births(steps: &[BackendStep]) -> u64 {
         .count() as u64
 }
 
-struct NativeLowerer<'a, 'tel> {
-    world: &'a mut World<'tel>,
+struct NativeLowerer<'a, 'tel, T: crate::telemetry::Telemetry> {
+    world: &'a mut World,
+    telemetry: &'tel T,
     root_id: RootId,
     program: &'a BackendProgram,
     module: ModuleBuilder,
@@ -132,8 +137,13 @@ struct NativeLowerer<'a, 'tel> {
     return_continuation_count: u32,
 }
 
-impl<'a, 'tel> NativeLowerer<'a, 'tel> {
-    fn new(world: &'a mut World<'tel>, root_id: RootId, program: &'a BackendProgram) -> Result<Self, FatalError> {
+impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
+    fn new(
+        world: &'a mut World,
+        telemetry: &'tel T,
+        root_id: RootId,
+        program: &'a BackendProgram,
+    ) -> Result<Self, FatalError> {
         let mut atom_ids = HashMap::new();
         for (index, atom) in program.atom_names.iter().enumerate() {
             atom_ids.insert(atom.clone(), index as u32);
@@ -165,7 +175,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                 .or_insert_with(|| module.fresh_fn_id());
         }
 
-        let extern_marshals = collect_extern_marshals(world, root_id, program)?;
+        let extern_marshals = collect_extern_marshals(world, telemetry, root_id, program)?;
         let mut extern_ids = HashMap::new();
         let mut extern_decls = Vec::new();
         for (index, executable) in program.executables.iter().enumerate() {
@@ -217,6 +227,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
 
         Ok(Self {
             world,
+            telemetry,
             root_id,
             program,
             module,
@@ -244,7 +255,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                     } else {
                         let [clause] = clauses.as_slice() else {
                             return Err(incomplete_native_program(
-                                self.world,
+                                self.telemetry,
                                 self.root_id,
                                 format!(
                                     "backend executable {} has {} clauses but no settled entry dispatch",
@@ -412,7 +423,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                         self.materialize_native_value(&mut ctx, activation_inputs.get(semantic_index).copied(), value)
                     }
                     (true, None) => Err(incomplete_native_program(
-                        self.world,
+                        self.telemetry,
                         self.root_id,
                         format!(
                             "native clause dispatch required omitted semantic input {} for executable {}",
@@ -772,7 +783,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                     let capture_shapes = callable_descr.capture_shapes.to_vec();
                     if capture_shapes.len() != captures.len() {
                         return Err(incomplete_native_program(
-                            self.world,
+                            self.telemetry,
                             self.root_id,
                             "native direct callable capture count did not match transport callable descriptor",
                         ));
@@ -794,7 +805,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                     }
                     if descriptor_lane_index != callable_descr.capture_lanes.len() {
                         return Err(incomplete_native_program(
-                            self.world,
+                            self.telemetry,
                             self.root_id,
                             "native lambda capture lowering did not consume the callable descriptor capture lanes",
                         ));
@@ -963,7 +974,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                     self.lower_dispatch_call_tail(ctx, executable, entries, entry_fns, env, dispatch, args, dest)
                 }
                 CallEdge::Indirect => Err(incomplete_native_program(
-                    self.world,
+                    self.telemetry,
                     self.root_id,
                     "native direct call materialized as an indirect closure edge; Indirect is closure-call-only",
                 )),
@@ -981,7 +992,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                 let direct_call = if let Some(capture_lanes) = self.direct_callable_lanes(&callee_value)? {
                     let target = target.ok_or_else(|| {
                         incomplete_native_program(
-                            self.world,
+                            self.telemetry,
                             self.root_id,
                             "native direct-only closure call did not settle an exact local target",
                         )
@@ -1039,7 +1050,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                     match dest {
                         ControlDestination::Return => match return_flow.as_ref().ok_or_else(|| {
                             incomplete_native_program(
-                                self.world,
+                                self.telemetry,
                                 self.root_id,
                                 "native direct closure call with Return destination is missing return-flow facts",
                             )
@@ -1065,7 +1076,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                                 Ok(())
                             }
                             CallReturnFlow::Deliver { .. } => Err(incomplete_native_program(
-                                self.world,
+                                self.telemetry,
                                 self.root_id,
                                 "native direct closure call with Return destination carried Deliver return-flow",
                             )),
@@ -1308,7 +1319,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
     ) -> Result<(), FatalError> {
         let receiver = args.first().ok_or_else(|| {
             incomplete_native_program(
-                self.world,
+                self.telemetry,
                 self.root_id,
                 "native dispatch call has no receiver argument",
             )
@@ -1345,7 +1356,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
     ) -> Result<(), FatalError> {
         let Some(node) = dispatch.plan.graph.node(node_id).cloned() else {
             return Err(incomplete_native_program(
-                self.world,
+                self.telemetry,
                 self.root_id,
                 format!("call dispatch graph node {:?} is out of bounds", node_id),
             ));
@@ -1362,7 +1373,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                 };
                 let arm = dispatch.arms.iter().find(|arm| arm.body_id == body_id).ok_or_else(|| {
                     incomplete_native_program(
-                        self.world,
+                        self.telemetry,
                         self.root_id,
                         format!("call dispatch arm {} is out of bounds", body_id),
                     )
@@ -1516,7 +1527,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                     Ok(())
                 }
                 CallReturnFlow::Deliver { .. } => Err(incomplete_native_program(
-                    self.world,
+                    self.telemetry,
                     self.root_id,
                     "native direct call with Return destination carried Deliver return-flow",
                 )),
@@ -1729,7 +1740,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                 .decode_runtime_value_for_position(ctx, position, shape, entry_vars, capture_offset)
                 .map_err(|_| {
                     incomplete_native_program(
-                        self.world,
+                        self.telemetry,
                         self.root_id,
                         format!(
                             "native entry {:?} failed to decode capture {} at position {:?} with shape {:?}; offset={} params={}",
@@ -1747,7 +1758,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
         for capture in entry.reusable_cons_captures.iter().copied() {
             let physical_var = *entry_vars.get(*capture_offset).ok_or_else(|| {
                 incomplete_native_program(
-                    self.world,
+                    self.telemetry,
                     self.root_id,
                     format!(
                         "native entry {:?} missing reusable cons capture param at offset {} of {}",
@@ -1790,7 +1801,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
         }
         if lane_index != input_vars.len() {
             return Err(incomplete_native_program(
-                self.world,
+                self.telemetry,
                 self.root_id,
                 format!(
                     "delivered resume value {} semantic demand consumed {} lanes but entry exposes {}",
@@ -1818,7 +1829,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
         };
         if *entry != entry_id {
             return Err(incomplete_native_program(
-                self.world,
+                self.telemetry,
                 self.root_id,
                 format!(
                     "native delivered call targeted entry {} but return-flow targets {}",
@@ -1842,7 +1853,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
         let entry = &entries[entry_id.as_u32() as usize];
         if entry.origin.input_value().is_none() {
             return Err(incomplete_native_program(
-                self.world,
+                self.telemetry,
                 self.root_id,
                 format!(
                     "native call continuation targeted entry {} without an input value: origin={:?} params={} captures={}",
@@ -1869,7 +1880,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
         let (param_tys, payload_reprs) = return_payload_entry(self.world, self.program, payload);
         if param_tys.len() != payload_reprs.len() {
             return Err(incomplete_native_program(
-                self.world,
+                self.telemetry,
                 self.root_id,
                 format!(
                     "native return-lane continuation for {:?} expected {} payload lane types, got {} reprs",
@@ -1908,7 +1919,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
             self.decode_runtime_value_for_position(&mut cont_ctx, payload, payload_shape, &params, &mut lane_index)?;
         if lane_index != params.len() {
             return Err(incomplete_native_program(
-                self.world,
+                self.telemetry,
                 self.root_id,
                 format!(
                     "native return-lane continuation for {:?} consumed {} payload lanes, but received {}",
@@ -1951,7 +1962,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
         let entry = &entries[entry_id.as_u32() as usize];
         let Some(value) = entry.origin.input_value() else {
             return Err(incomplete_native_program(
-                self.world,
+                self.telemetry,
                 self.root_id,
                 format!(
                     "native delivered adapter targeted entry {} without an input value",
@@ -1970,7 +1981,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
         };
         if payload_tys.len() != payload_reprs.len() {
             return Err(incomplete_native_program(
-                self.world,
+                self.telemetry,
                 self.root_id,
                 format!(
                     "native delivered adapter for {:?} expected {} payload lane types, got {} reprs",
@@ -2062,7 +2073,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
         )?;
         if lane_index != entry_vars.len() {
             return Err(incomplete_native_program(
-                self.world,
+                self.telemetry,
                 self.root_id,
                 format!(
                     "native delivered adapter for entry {} consumed {} params but exposes {}",
@@ -2126,7 +2137,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
         for (index, value_id) in bindings.pinned.iter().copied().enumerate() {
             let Some(pin) = dispatch.pinned.get(index) else {
                 return Err(incomplete_native_program(
-                    self.world,
+                    self.telemetry,
                     self.root_id,
                     format!("receive pinned binding {} is out of bounds", index),
                 ));
@@ -2164,7 +2175,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
             let entry_captures = &entries[entry_id.as_u32() as usize].captures;
             if *entry_captures != capture_ids {
                 return Err(incomplete_native_program(
-                    self.world,
+                    self.telemetry,
                     self.root_id,
                     "receive entries did not settle on one shared capture layout",
                 ));
@@ -2363,7 +2374,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
     ) -> Result<(), FatalError> {
         let Some(node) = dispatch.plan().graph.node(node_id).cloned() else {
             return Err(incomplete_native_program(
-                self.world,
+                self.telemetry,
                 self.root_id,
                 format!("dispatch graph node {:?} is out of bounds", node_id),
             ));
@@ -2380,7 +2391,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                     .map(|entry| entry.body_id)
                     .ok_or_else(|| {
                         incomplete_native_program(
-                            self.world,
+                            self.telemetry,
                             self.root_id,
                             format!("dispatch outcome {:?} is out of bounds", outcome),
                         )
@@ -2444,7 +2455,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
     ) -> Result<(), FatalError> {
         let Some(node) = plan.graph.node(node_id).cloned() else {
             return Err(incomplete_native_program(
-                self.world,
+                self.telemetry,
                 self.root_id,
                 format!("local dispatch graph node {:?} is out of bounds", node_id),
             ));
@@ -2481,7 +2492,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                 };
                 let arm_entry = *arm_entries.get(body_id as usize).ok_or_else(|| {
                     incomplete_native_program(
-                        self.world,
+                        self.telemetry,
                         self.root_id,
                         format!("local dispatch arm {} is out of bounds", body_id),
                     )
@@ -2561,7 +2572,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
             let entry = &entries[entry_id.as_u32() as usize];
             if entry.params != params {
                 return Err(incomplete_native_program(
-                    self.world,
+                    self.telemetry,
                     self.root_id,
                     format!(
                         "local dispatch arm entries disagree on forwarded params: entry {} has {:?}, expected {:?}",
@@ -2591,7 +2602,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
             .get(..param_count)
             .ok_or_else(|| {
                 incomplete_native_program(
-                    self.world,
+                    self.telemetry,
                     self.root_id,
                     format!(
                         "local dispatch arm entry {} needs {} forwarded params but dispatch carries {}",
@@ -2664,7 +2675,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
             Region::Guard(guard) => {
                 let expr = plan.guards.get(guard.0 as usize).ok_or_else(|| {
                     incomplete_native_program(
-                        self.world,
+                        self.telemetry,
                         self.root_id,
                         format!("dispatch guard {:?} is out of bounds", guard),
                     )
@@ -2679,7 +2690,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
             }
             Region::Bitstring(_) => {
                 return Err(incomplete_native_program(
-                    self.world,
+                    self.telemetry,
                     self.root_id,
                     "native entry-dispatch lowering does not support bitstring tests yet",
                 ));
@@ -2774,7 +2785,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
     ) -> Result<(), FatalError> {
         let Some(node) = plan.graph.node(node_id).cloned() else {
             return Err(incomplete_native_program(
-                self.world,
+                self.telemetry,
                 self.root_id,
                 format!("guard dispatch graph node {:?} is out of bounds", node_id),
             ));
@@ -2787,14 +2798,14 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
             DispatchNode::Outcome { outcome, .. } => {
                 let outcome = plan.outcome(outcome).ok_or_else(|| {
                     incomplete_native_program(
-                        self.world,
+                        self.telemetry,
                         self.root_id,
                         format!("guard dispatch outcome {:?} is out of bounds", outcome),
                     )
                 })?;
                 let body = bodies.get(outcome.body_id as usize).ok_or_else(|| {
                     incomplete_native_program(
-                        self.world,
+                        self.telemetry,
                         self.root_id,
                         format!("guard dispatch body {} is out of bounds", outcome.body_id),
                     )
@@ -2848,7 +2859,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
         }
         let Some(subject_data) = plan.matrix.subjects.get(subject.0 as usize) else {
             return Err(incomplete_native_program(
-                self.world,
+                self.telemetry,
                 self.root_id,
                 format!("dispatch subject {:?} is out of bounds", subject),
             ));
@@ -2857,7 +2868,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
             crate::dispatch_matrix::SubjectSource::Input { ordinal } => {
                 state.dispatch_inputs.get(*ordinal as usize).copied().ok_or_else(|| {
                     incomplete_native_program(
-                        self.world,
+                        self.telemetry,
                         self.root_id,
                         format!("dispatch input {} has no native entry param", ordinal),
                     )
@@ -2887,7 +2898,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                 }
                 crate::dispatch_matrix::ProjectionKind::BitstringField(index) => {
                     return Err(incomplete_native_program(
-                        self.world,
+                        self.telemetry,
                         self.root_id,
                         format!("native dispatch does not support bitstring field projection {}", index),
                     ));
@@ -2906,7 +2917,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
     ) -> Result<Var, FatalError> {
         let pin = plan.pinned.get(pinned.0 as usize).ok_or_else(|| {
             incomplete_native_program(
-                self.world,
+                self.telemetry,
                 self.root_id,
                 format!("dispatch pinned {:?} is out of bounds", pinned),
             )
@@ -2914,7 +2925,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
         if let Some(input) = pin.input {
             return state.dispatch_inputs.get(input as usize).copied().ok_or_else(|| {
                 incomplete_native_program(
-                    self.world,
+                    self.telemetry,
                     self.root_id,
                     format!("dispatch pinned input {} is out of bounds", input),
                 )
@@ -2922,7 +2933,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
         }
         state.pinned.get(pinned.0 as usize).copied().ok_or_else(|| {
             incomplete_native_program(
-                self.world,
+                self.telemetry,
                 self.root_id,
                 format!("dispatch pinned capture {:?} is out of bounds", pinned),
             )
@@ -2965,7 +2976,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
             Some(boundaries) => boundaries.to_vec(),
             None => {
                 return Err(incomplete_native_program(
-                    self.world,
+                    self.telemetry,
                     self.root_id,
                     format!("native callable materialization has no transport callable facts for {callable:?}"),
                 ));
@@ -2980,7 +2991,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
         match self.select_inhabited_callable_boundary(&matched) {
             Ok(Some(boundary)) => Ok(boundary),
             Ok(None) => Err(incomplete_native_program(
-                self.world,
+                self.telemetry,
                 self.root_id,
                 format!(
                     "native callable materialization found no native boundary among CallableId fact boundaries {boundary_ids:?} for {callable:?} shape {shape:?} in {}",
@@ -2988,7 +2999,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                 ),
             )),
             Err(()) => Err(incomplete_native_program(
-                self.world,
+                self.telemetry,
                 self.root_id,
                 format!(
                     "native callable materialization for {callable:?} names multiple boundaries {matched:?}; a multi-surface callable value must arrive through a publication position in {}",
@@ -3035,7 +3046,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
             .callable_resolutions(callable)
             .ok_or_else(|| {
                 incomplete_native_program(
-                    self.world,
+                    self.telemetry,
                     self.root_id,
                     format!(
                         "native callable materialization has no transport resolution facts for {callable:?} in {}",
@@ -3046,7 +3057,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
             .to_vec();
         if resolutions.is_empty() {
             return Err(incomplete_native_program(
-                self.world,
+                self.telemetry,
                 self.root_id,
                 format!(
                     "native callable materialization found no concrete resolutions for {callable:?} in {}",
@@ -3089,7 +3100,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
         }
         if candidates.is_empty() {
             return Err(incomplete_native_program(
-                self.world,
+                self.telemetry,
                 self.root_id,
                 format!(
                     "native callable materialization found no resolution for {callable:?} in root 0's executable inventory (resolutions={resolutions:?}) in {}",
@@ -3104,7 +3115,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                 || *return_tuple_arity != first_return_tuple_arity
             {
                 return Err(incomplete_native_program(
-                    self.world,
+                    self.telemetry,
                     self.root_id,
                     format!(
                         "native callable materialization for {callable:?} has resolutions with incompatible physical ABI: executable {} (arg_reprs={:?}, return_reprs={:?}, return_tuple_arity={:?}) vs executable {} (arg_reprs={:?}, return_reprs={:?}, return_tuple_arity={:?}) in {}",
@@ -3394,7 +3405,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
             }
             NativeBoundValue::Absent => {
                 return Err(incomplete_native_program(
-                    self.world,
+                    self.telemetry,
                     self.root_id,
                     format!(
                         "native attempted to materialize absent value as runtime value with ty {ty:?} in {:?}",
@@ -3422,7 +3433,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
     ) -> Result<Var, FatalError> {
         match self.world.shape(shape).clone() {
             ShapeDescr::Nothing => Err(incomplete_native_program(
-                self.world,
+                self.telemetry,
                 self.root_id,
                 format!(
                     "native attempted to materialize nothing-shaped transport value {shape:?} in {:?}",
@@ -3431,7 +3442,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
             )),
             ShapeDescr::Lane(_) => lanes.first().copied().ok_or_else(|| {
                 incomplete_native_program(
-                    self.world,
+                    self.telemetry,
                     self.root_id,
                     format!(
                         "native lane-shaped transport value {shape:?} has no runtime lane while materializing in {:?}",
@@ -3453,7 +3464,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                 }
                 if lanes.len() != descr.capture_lanes.len() {
                     return Err(incomplete_native_program(
-                        self.world,
+                        self.telemetry,
                         self.root_id,
                         format!(
                             "native callable transport value {shape:?} has {} lanes, but callable {callable:?} expects {} capture lanes in {:?}",
@@ -3465,7 +3476,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                 }
                 let function = descr.function.ok_or_else(|| {
                     incomplete_native_program(
-                        self.world,
+                        self.telemetry,
                         self.root_id,
                         format!(
                             "native attempted to rematerialize generic callable shape {:?} in {:?}; first-class callable values must come from transport publication lanes",
@@ -3554,7 +3565,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
         }
         if lanes.len() != descr.capture_lanes.len() {
             return Err(incomplete_native_program(
-                self.world,
+                self.telemetry,
                 self.root_id,
                 format!(
                     "native direct callable transport value {shape:?} has {} lanes, but callable {callable:?} expects {} capture lanes",
@@ -3643,7 +3654,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
     ) -> Result<Vec<NativeBoundValue>, FatalError> {
         if lanes.len() != self.world.shape_width(shape) {
             return Err(incomplete_native_program(
-                self.world,
+                self.telemetry,
                 self.root_id,
                 format!(
                     "native transport tuple view for {shape:?} has {} lanes, but shape width is {}",
@@ -3722,7 +3733,7 @@ impl<'a, 'tel> NativeLowerer<'a, 'tel> {
                     return Ok(());
                 }
                 Err(incomplete_native_program(
-                    self.world,
+                    self.telemetry,
                     self.root_id,
                     format!(
                         "native attempted to encode callable shape {:?} ({:?}) for value {:?} from {:?} in {:?}; callable values must be supplied by matching transport lanes or a published value seam",
@@ -4008,7 +4019,7 @@ impl ValueEnv {
     }
 }
 
-fn shape_lane_tys(world: &World<'_>, shape: ShapeId) -> Vec<Ty> {
+fn shape_lane_tys(world: &World, shape: ShapeId) -> Vec<Ty> {
     world
         .shape_lane_ids(shape)
         .into_iter()
@@ -4036,7 +4047,7 @@ fn position_shape(program: &BackendProgram, position: &TransportPosition) -> Sha
         .unwrap_or_else(|| panic!("backend transport handoff should publish shape for {position:?}"))
 }
 
-fn shape_contains_callable(world: &World<'_>, shape: ShapeId) -> bool {
+fn shape_contains_callable(world: &World, shape: ShapeId) -> bool {
     match world.shape(shape) {
         ShapeDescr::Callable(_) => true,
         ShapeDescr::Tuple(fields) => fields.iter().any(|field| shape_contains_callable(world, *field)),
@@ -4045,7 +4056,7 @@ fn shape_contains_callable(world: &World<'_>, shape: ShapeId) -> bool {
 }
 
 fn native_return_contract(
-    world: &World<'_>,
+    world: &World,
     program: &BackendProgram,
     position: &TransportPosition,
 ) -> (Vec<AbiValueRepr>, Option<usize>) {
@@ -4061,7 +4072,7 @@ fn native_return_contract(
 }
 
 fn seam_reprs_for_position_shape_with_publications(
-    world: &World<'_>,
+    world: &World,
     program: &BackendProgram,
     position: &TransportPosition,
     shape: ShapeId,
@@ -4092,7 +4103,7 @@ fn seam_reprs_for_position_shape_with_publications(
 }
 
 fn position_lane_tys_with_publications(
-    world: &World<'_>,
+    world: &World,
     program: &BackendProgram,
     position: &TransportPosition,
     shape: ShapeId,
@@ -4115,7 +4126,7 @@ fn position_lane_tys_with_publications(
 }
 
 fn native_block_param_reprs(
-    world: &mut World<'_>,
+    world: &mut World,
     fn_ir: &crate::fz_ir::FnIr,
     value_types: &HashMap<Var, Ty>,
 ) -> HashMap<Var, AbiValueRepr> {
@@ -4133,7 +4144,7 @@ fn native_block_param_reprs(
 }
 
 fn continuation_result_entry(
-    world: &World<'_>,
+    world: &World,
     program: &BackendProgram,
     position: &TransportPosition,
 ) -> (Vec<Ty>, Vec<AbiValueRepr>) {
@@ -4147,7 +4158,7 @@ fn continuation_result_entry(
 }
 
 fn return_payload_entry(
-    world: &World<'_>,
+    world: &World,
     program: &BackendProgram,
     position: &TransportPosition,
 ) -> (Vec<Ty>, Vec<AbiValueRepr>) {
@@ -4224,7 +4235,7 @@ fn return_payload_seam_matches(position: &TransportPosition, seam: &CodegenSeam)
 }
 
 fn seam_reprs_for_position_shape(
-    world: &World<'_>,
+    world: &World,
     program: &BackendProgram,
     _position: &TransportPosition,
     shape: ShapeId,
@@ -4289,7 +4300,7 @@ fn position_publication_lanes(program: &BackendProgram, seam_matches: impl Fn(&C
 }
 
 fn position_publication_lanes_for_callable(
-    world: &World<'_>,
+    world: &World,
     program: &BackendProgram,
     position: &TransportPosition,
     callable: CallableId,
@@ -4316,7 +4327,7 @@ fn publication_boundaries_for_position(program: &BackendProgram, position: &Tran
         .collect()
 }
 
-fn entry_capture_reprs(world: &World<'_>, program: &BackendProgram, entry: &BackendEntry) -> Vec<AbiValueRepr> {
+fn entry_capture_reprs(world: &World, program: &BackendProgram, entry: &BackendEntry) -> Vec<AbiValueRepr> {
     entry
         .capture_positions
         .iter()
@@ -4547,7 +4558,7 @@ fn env_local_value(env: &ValueEnv, value: ValueId) -> Result<NativeBoundValue, F
     env.cloned_value(value).ok_or(FatalError)
 }
 
-fn executable_input_tys(world: &World<'_>, program: &BackendProgram, executable: &BackendExecutable) -> Vec<Ty> {
+fn executable_input_tys(world: &World, program: &BackendProgram, executable: &BackendExecutable) -> Vec<Ty> {
     executable_input_bindings(program, executable)
         .into_iter()
         .flat_map(|binding| position_lane_tys_with_publications(world, program, &binding.position, binding.shape))
@@ -4601,7 +4612,7 @@ fn maybe_value_shape(program: &BackendProgram, executable: &BackendExecutable, v
 }
 
 fn decode_native_value_from_lanes(
-    world: &World<'_>,
+    world: &World,
     _ctx: &mut NativeFnCtx,
     shape: ShapeId,
     lanes: Vec<Var>,
@@ -4616,7 +4627,7 @@ fn decode_native_value_from_lanes(
     })
 }
 
-fn callable_id_for_shape(world: &World<'_>, shape: ShapeId) -> Result<CallableId, FatalError> {
+fn callable_id_for_shape(world: &World, shape: ShapeId) -> Result<CallableId, FatalError> {
     match world.shape(shape) {
         ShapeDescr::Callable(callable) => Ok(*callable),
         ShapeDescr::Nothing | ShapeDescr::Lane(_) | ShapeDescr::Tuple(_) => Err(FatalError),
@@ -4638,7 +4649,7 @@ fn bind_local_value(
     env.insert(value, bound);
 }
 
-fn collect_callable_identity_needs(world: &World<'_>, program: &BackendProgram) -> Vec<(FunctionId, usize)> {
+fn collect_callable_identity_needs(world: &World, program: &BackendProgram) -> Vec<(FunctionId, usize)> {
     let mut seen = HashSet::new();
     let mut out = Vec::new();
     for entry in &program.callable_entries {
@@ -4667,7 +4678,7 @@ fn collect_callable_identity_needs(world: &World<'_>, program: &BackendProgram) 
 }
 
 fn collect_callable_identity_needs_in_shape(
-    world: &World<'_>,
+    world: &World,
     shape: ShapeId,
     seen: &mut HashSet<(FunctionId, usize)>,
     out: &mut Vec<(FunctionId, usize)>,
@@ -4715,7 +4726,8 @@ fn collect_callable_identity_needs_in_steps(
 }
 
 fn collect_extern_marshals(
-    world: &World<'_>,
+    world: &World,
+    tel: &impl crate::telemetry::Telemetry,
     root_id: RootId,
     program: &BackendProgram,
 ) -> Result<HashMap<usize, Vec<ExternTy>>, FatalError> {
@@ -4726,7 +4738,7 @@ fn collect_extern_marshals(
                 collect_extern_marshals_in_steps(world, root_id, program, &clause.projections, &mut out)?;
             }
             for entry in entries {
-                collect_extern_marshals_in_tail(world, root_id, program, &entry.tail, &mut out)?;
+                collect_extern_marshals_in_tail(world, tel, root_id, program, &entry.tail, &mut out)?;
             }
         }
     }
@@ -4734,7 +4746,7 @@ fn collect_extern_marshals(
 }
 
 fn collect_extern_marshals_in_steps(
-    _world: &World<'_>,
+    _world: &World,
     _root_id: RootId,
     _program: &BackendProgram,
     _steps: &[BackendStep],
@@ -4744,7 +4756,8 @@ fn collect_extern_marshals_in_steps(
 }
 
 fn collect_extern_marshals_in_tail(
-    world: &World<'_>,
+    world: &World,
+    tel: &impl crate::telemetry::Telemetry,
     root_id: RootId,
     program: &BackendProgram,
     tail: &BackendTail,
@@ -4755,6 +4768,7 @@ fn collect_extern_marshals_in_tail(
             CallEdge::Direct(direct) => {
                 collect_extern_marshals_for_call_target(
                     world,
+                    tel,
                     root_id,
                     program,
                     &direct.callee,
@@ -4766,6 +4780,7 @@ fn collect_extern_marshals_in_tail(
                 for arm in &dispatch.arms {
                     collect_extern_marshals_for_call_target(
                         world,
+                        tel,
                         root_id,
                         program,
                         &arm.callee,
@@ -4783,7 +4798,8 @@ fn collect_extern_marshals_in_tail(
 }
 
 fn collect_extern_marshals_for_call_target(
-    world: &World<'_>,
+    _world: &World,
+    tel: &impl crate::telemetry::Telemetry,
     root_id: RootId,
     program: &BackendProgram,
     callee: &CallTarget<usize>,
@@ -4801,7 +4817,7 @@ fn collect_extern_marshals_for_call_target(
         match out.get(callee) {
             Some(existing) if existing != &marshals => {
                 return Err(incomplete_native_program(
-                    world,
+                    tel,
                     root_id,
                     format!(
                         "extern executable {} has conflicting marshal plans: {:?} vs {:?}",
@@ -4964,7 +4980,7 @@ fn atom_names(atom_ids: &HashMap<String, u32>) -> Vec<String> {
 }
 
 fn lower_bit_size_ir(
-    _world: &World<'_>,
+    _world: &World,
     size: &Option<super::super::body::LoweredBitSize>,
     env: &ValueEnv,
 ) -> Result<Option<BitSizeIr>, FatalError> {
@@ -4977,7 +4993,7 @@ fn lower_bit_size_ir(
     })
 }
 
-fn abi_value_repr(world: &mut World<'_>, ty: Ty) -> AbiValueRepr {
+fn abi_value_repr(world: &mut World, ty: Ty) -> AbiValueRepr {
     if world.types().is_floating(&ty) {
         return AbiValueRepr::RawF64;
     }
@@ -4992,7 +5008,7 @@ fn abi_value_repr(world: &mut World<'_>, ty: Ty) -> AbiValueRepr {
     }
 }
 
-fn block_param_abi_value_repr(world: &mut World<'_>, ty: Ty) -> AbiValueRepr {
+fn block_param_abi_value_repr(world: &mut World, ty: Ty) -> AbiValueRepr {
     match abi_value_repr(world, ty) {
         repr @ (AbiValueRepr::RawInt | AbiValueRepr::RawAtom) => repr,
         AbiValueRepr::RawF64 | AbiValueRepr::ValueRef => AbiValueRepr::ValueRef,
@@ -5000,7 +5016,7 @@ fn block_param_abi_value_repr(world: &mut World<'_>, ty: Ty) -> AbiValueRepr {
 }
 
 fn mark_ignored_lanes_for_demand(
-    world: &World<'_>,
+    world: &World,
     builder: &mut FnBuilder,
     vars: &[Var],
     shape: ShapeId,
@@ -5074,7 +5090,7 @@ fn mark_ignored_publication_lanes(
 }
 
 fn mark_all_runtime_lanes_ignored(
-    world: &World<'_>,
+    world: &World,
     builder: &mut FnBuilder,
     vars: &[Var],
     shape: ShapeId,
@@ -5103,12 +5119,7 @@ fn mark_all_runtime_lanes_ignored(
     }
 }
 
-fn skip_runtime_lanes(
-    world: &World<'_>,
-    vars: &[Var],
-    shape: ShapeId,
-    lane_index: &mut usize,
-) -> Result<(), FatalError> {
+fn skip_runtime_lanes(world: &World, vars: &[Var], shape: ShapeId, lane_index: &mut usize) -> Result<(), FatalError> {
     match world.shape(shape) {
         ShapeDescr::Nothing => Ok(()),
         ShapeDescr::Lane(_) => {
@@ -5140,13 +5151,17 @@ fn missing_backend_value(_root_id: RootId, _value: ValueId) -> FatalError {
     FatalError
 }
 
-fn incomplete_native_program(world: &World<'_>, root_id: RootId, message: impl Into<String>) -> FatalError {
+fn incomplete_native_program(
+    tel: &impl crate::telemetry::Telemetry,
+    root_id: RootId,
+    message: impl Into<String>,
+) -> FatalError {
     let message = message.into();
     let diagnostic = Diagnostic::error(
         codes::ARTIFACT_INCOMPLETE_SEMANTIC_PLAN,
         format!("compiler2 native lowering for root {}: {}", root_id.as_u32(), message),
         Span::DUMMY,
     );
-    emit_through(world.tel(), std::slice::from_ref(&diagnostic));
+    emit_through(tel, std::slice::from_ref(&diagnostic));
     FatalError
 }

@@ -69,8 +69,8 @@ mod tests {
 
     #[test]
     fn multi_target_summary_builds_receiver_type_dispatch_rows() {
-        let tel = ConfiguredTelemetry::new();
-        let mut world = World::new(&tel);
+        let _tel = ConfiguredTelemetry::new();
+        let mut world = World::new();
         let list_impl = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "list_impl", 1);
         let range_impl = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "range_impl", 1);
         let any = world.types_mut().any();
@@ -142,8 +142,8 @@ mod tests {
 
     #[test]
     fn single_target_summary_stays_direct() {
-        let tel = ConfiguredTelemetry::new();
-        let mut world = World::new(&tel);
+        let _tel = ConfiguredTelemetry::new();
+        let mut world = World::new();
         let function = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "impl", 1);
         let any = world.types_mut().any();
         let summary = CallSiteSummary {

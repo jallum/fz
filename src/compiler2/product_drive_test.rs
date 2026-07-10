@@ -48,8 +48,8 @@ fn some_fact() -> FactUse<FactKey> {
 /// The `add1` fixture, submitted and rooted at `main/0`: the shared "ordinary,
 /// fully resolvable root" setup the `fact_wait_budget_exceeded`/
 /// `did_not_settle` end-to-end tests drive through the budget seam.
-fn add1_world(tel: &ConfiguredTelemetry) -> (World<'_>, RootId) {
-    let mut world = World::new(tel);
+fn add1_world(_tel: &ConfiguredTelemetry) -> (World, RootId) {
+    let mut world = World::new();
     world.submit_code(
         Some("fixtures2/behavior/add1.fz".to_string()),
         include_str!("../../fixtures2/behavior/add1.fz").to_string(),
@@ -61,11 +61,11 @@ fn add1_world(tel: &ConfiguredTelemetry) -> (World<'_>, RootId) {
 #[test]
 fn string_error_reports_fact_wait_budget_exceeded() {
     let tel = ConfiguredTelemetry::new();
-    let world = World::new(&tel);
+    let world = World::new();
     let root = RootId::for_test(7);
     let fact = some_fact();
 
-    let message = <String as ProductDriveError>::fact_wait_budget_exceeded(&world, root, &fact);
+    let message = <String as ProductDriveError>::fact_wait_budget_exceeded(&world, &tel, root, &fact);
 
     assert_eq!(
         message,
@@ -80,11 +80,11 @@ fn string_error_reports_fact_wait_budget_exceeded() {
 #[test]
 fn string_error_reports_did_not_settle_with_last_wait() {
     let tel = ConfiguredTelemetry::new();
-    let world = World::new(&tel);
+    let world = World::new();
     let root = RootId::for_test(7);
     let last_wait = Some((ProductKey::RootBackendProduct(root), vec![PullWait::Fact(some_fact())]));
 
-    let message = <String as ProductDriveError>::did_not_settle(&world, root, last_wait.clone());
+    let message = <String as ProductDriveError>::did_not_settle(&world, &tel, root, last_wait.clone());
 
     assert_eq!(
         message,
@@ -100,11 +100,11 @@ fn fatal_error_diagnostic_reports_fact_wait_budget_exceeded() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
     tel.attach(&[], capture.handler());
-    let world = World::new(&tel);
+    let world = World::new();
     let root = RootId::for_test(7);
     let fact = some_fact();
 
-    <FatalError as ProductDriveError>::fact_wait_budget_exceeded(&world, root, &fact);
+    <FatalError as ProductDriveError>::fact_wait_budget_exceeded(&world, &tel, root, &fact);
 
     let event = capture
         .last(&["fz", "diag", "error"])
@@ -138,7 +138,7 @@ fn fatal_error_diagnostic_reports_fact_wait_budget_exceeded() {
 #[test]
 fn string_error_end_to_end_no_ready_producer_from_undefined_root_entry() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     let root = compiler.submit_root(RootSubmission {
         module_name: None,
         name: "totally_undefined_entry".to_string(),
@@ -171,12 +171,12 @@ fn fatal_error_end_to_end_no_ready_producer_from_undefined_root_entry() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
     tel.attach(&[], capture.handler());
-    let mut world = World::new(&tel);
+    let mut world = World::new();
     let root = world.submit_root(None, "totally_undefined_entry".to_string(), 0, ExecutableNeed::Value);
     let function = world.root_function(root);
 
     world.demand(Job::BuildBackendProduct(root));
-    let outcome = world.drive_for(None);
+    let outcome = super::drive::ExecutionContext::new(&mut world, &tel).drive_for(None);
     assert!(
         matches!(&outcome, DriveOutcome::Fatal { job } if *job == Job::BuildBackendProduct(root)),
         "the backend product job should fail fatally when its entry is never defined, got: {outcome:?}"
@@ -212,8 +212,9 @@ fn string_error_end_to_end_fact_wait_budget_exceeded_on_a_real_drive() {
     let tel = ConfiguredTelemetry::new();
     let (mut world, root) = add1_world(&tel);
 
-    let result = super::product_drive::drive_root_backend_product_with_budgets::<String>(
+    let result = super::product_drive::drive_root_backend_product_with_budgets::<_, String>(
         &mut world,
+        &tel,
         root,
         super::product_drive::PRODUCT_DRIVE_BUDGET,
         0,
@@ -238,8 +239,9 @@ fn fatal_error_end_to_end_fact_wait_budget_exceeded_on_a_real_drive() {
     tel.attach(&[], capture.handler());
     let (mut world, root) = add1_world(&tel);
 
-    let result = super::product_drive::drive_root_backend_product_with_budgets::<FatalError>(
+    let result = super::product_drive::drive_root_backend_product_with_budgets::<_, FatalError>(
         &mut world,
+        &tel,
         root,
         super::product_drive::PRODUCT_DRIVE_BUDGET,
         0,
@@ -276,8 +278,9 @@ fn string_error_end_to_end_did_not_settle_on_a_real_drive() {
     let tel = ConfiguredTelemetry::new();
     let (mut world, root) = add1_world(&tel);
 
-    let result = super::product_drive::drive_root_backend_product_with_budgets::<String>(
+    let result = super::product_drive::drive_root_backend_product_with_budgets::<_, String>(
         &mut world,
+        &tel,
         root,
         3,
         super::product_drive::PRODUCT_DRIVE_BUDGET,
@@ -308,7 +311,7 @@ fn string_error_end_to_end_did_not_settle_on_a_real_drive() {
 #[test]
 fn string_error_end_to_end_job_failed_from_runtime_root_targeting_a_macro() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("macro_only_root.fz".to_string()),
         text: "defmacro inc(x) do\n  quote do: unquote(x) + 1\nend\n".to_string(),
@@ -350,7 +353,7 @@ fn fatal_error_end_to_end_job_failed_from_runtime_root_targeting_a_macro() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
     tel.attach(&[], capture.handler());
-    let mut world = World::new(&tel);
+    let mut world = World::new();
     world.submit_code(
         Some("macro_only_root.fz".to_string()),
         "defmacro inc(x) do\n  quote do: unquote(x) + 1\nend\n".to_string(),
@@ -358,7 +361,7 @@ fn fatal_error_end_to_end_job_failed_from_runtime_root_targeting_a_macro() {
     let root = world.submit_root(None, "inc".to_string(), 1, ExecutableNeed::Value);
 
     world.demand(Job::BuildBackendProduct(root));
-    let outcome = world.drive_for(None);
+    let outcome = super::drive::ExecutionContext::new(&mut world, &tel).drive_for(None);
     assert!(
         matches!(&outcome, DriveOutcome::Fatal { job } if *job == Job::BuildBackendProduct(root)),
         "the backend product job should fail fatally when its root targets a macro, got: {outcome:?}"
@@ -392,8 +395,9 @@ fn fatal_error_end_to_end_did_not_settle_on_a_real_drive() {
     tel.attach(&[], capture.handler());
     let (mut world, root) = add1_world(&tel);
 
-    let result = super::product_drive::drive_root_backend_product_with_budgets::<FatalError>(
+    let result = super::product_drive::drive_root_backend_product_with_budgets::<_, FatalError>(
         &mut world,
+        &tel,
         root,
         3,
         super::product_drive::PRODUCT_DRIVE_BUDGET,

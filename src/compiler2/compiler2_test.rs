@@ -17,6 +17,13 @@ struct ContractCase<'a> {
 }
 
 #[test]
+fn compiler2_can_own_configured_telemetry() {
+    fn requires_owned_configured_telemetry(_: Compiler2<ConfiguredTelemetry>) {}
+
+    requires_owned_configured_telemetry(Compiler2::new(ConfiguredTelemetry::new()));
+}
+
+#[test]
 fn compiler2_contract_harness_keeps_code_ingest_isolated_from_production_compiler() {
     for case in [
         ContractCase {
@@ -37,7 +44,7 @@ fn compiler2_contract_harness_keeps_code_ingest_isolated_from_production_compile
 #[test]
 fn compiler2_root_drive_timeout_reports_the_configured_limit() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.set_drive_timeout(Duration::ZERO);
     compiler.submit_code(CodeSubmission {
         name: Some("timeout_main.fz".to_string()),
@@ -62,7 +69,7 @@ fn compiler2_root_drive_timeout_reports_the_configured_limit() {
 #[test]
 fn compiler2_drive_honors_the_configured_timeout() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.set_drive_timeout(Duration::ZERO);
     compiler.submit_code(CodeSubmission {
         name: Some("timeout_drive.fz".to_string()),
@@ -91,7 +98,7 @@ fn compiler2_drive_honors_the_configured_timeout() {
 #[test]
 fn compiler2_submit_module_interface_settles_an_external_module_without_a_body() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     let module = compiler.submit_module_interface("ExternalHost".to_string(), ModuleInterface::default());
 
     assert!(
@@ -114,7 +121,7 @@ fn run_contract(case: ContractCase<'_>) {
     tel.attach(&[], capture.handler());
     let jobs = JobCapture::new();
     tel.attach(&["fz", "compiler2", "job"], jobs.handler());
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
 
     let code_id = compiler.submit_code(CodeSubmission {
         name: Some(case.source_name.to_string()),
@@ -424,7 +431,7 @@ fn compiler2_compile_root_jit_consumes_native_program_without_legacy_prepare() {
         tel.attach(&[], capture.handler());
         let dbg = DbgCapture::new();
         tel.attach(&[], dbg.handler());
-        let mut compiler = Compiler2::new(&tel);
+        let mut compiler = Compiler2::new(tel);
         compiler.submit_code(CodeSubmission {
             name: Some(case.source_name.to_string()),
             text: case.source_text,
@@ -441,7 +448,7 @@ fn compiler2_compile_root_jit_consumes_native_program_without_legacy_prepare() {
             .unwrap_or_else(|err| panic!("{} should JIT-compile through NativeProgram: {err}", case.name));
         assert_native_backend_compile_span(&capture, "jit", case.name);
         assert_eq!(
-            compiled.run(&tel, entry),
+            compiled.run(compiler.telemetry(), entry),
             case.expected_halt,
             "{} should preserve the Compiler2-native JIT result",
             case.name
@@ -488,7 +495,7 @@ fn compiler2_compile_root_aot_consumes_native_program_without_legacy_prepare() {
         let tel = ConfiguredTelemetry::new();
         let capture = Capture::new();
         tel.attach(&[], capture.handler());
-        let mut compiler = Compiler2::new(&tel);
+        let mut compiler = Compiler2::new(tel);
         compiler.submit_code(CodeSubmission {
             name: Some(source_name.to_string()),
             text: source_text,
@@ -531,7 +538,7 @@ fn compiler2_native_front_doors_jit_and_aot_enum_reduce_through_the_product_path
     // JIT front door.
     {
         let tel = ConfiguredTelemetry::new();
-        let mut compiler = Compiler2::new(&tel);
+        let mut compiler = Compiler2::new(tel);
         compiler.submit_code(CodeSubmission {
             name: Some("fixtures/enum_reduce_native_front_door_jit.fz".to_string()),
             text: source.to_string(),
@@ -546,7 +553,7 @@ fn compiler2_native_front_doors_jit_and_aot_enum_reduce_through_the_product_path
             .compile_root_jit(root)
             .expect("enum_reduce should JIT-compile through the product path");
         assert_eq!(
-            compiled.run(&tel, entry),
+            compiled.run(compiler.telemetry(), entry),
             15,
             "enum_reduce should preserve its JIT result through the native front door",
         );
@@ -555,7 +562,7 @@ fn compiler2_native_front_doors_jit_and_aot_enum_reduce_through_the_product_path
     // AOT front door.
     {
         let tel = ConfiguredTelemetry::new();
-        let mut compiler = Compiler2::new(&tel);
+        let mut compiler = Compiler2::new(tel);
         compiler.submit_code(CodeSubmission {
             name: Some("fixtures/enum_reduce_native_front_door_aot.fz".to_string()),
             text: source.to_string(),
@@ -585,7 +592,7 @@ fn compiler2_run_root_jit_executes_resources_without_legacy_prepare() {
     let capture = Capture::new();
     tel.attach(&[], capture.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/compiler2_run_root_jit_resource.fz".to_string()),
         text: include_str!("../../fixtures2/00026_make_resource.fz").to_string(),
@@ -644,7 +651,7 @@ fn compiler2_interp_never_lowers_native_program_while_jit_and_aot_still_do() {
         let tel = ConfiguredTelemetry::new();
         let capture = Capture::new();
         tel.attach(&[], capture.handler());
-        let mut compiler = Compiler2::new(&tel);
+        let mut compiler = Compiler2::new(tel);
         compiler.submit_code(CodeSubmission {
             name: Some("fixtures/interp_never_lowers_native.fz".to_string()),
             text: source.to_string(),
@@ -677,7 +684,7 @@ fn compiler2_interp_never_lowers_native_program_while_jit_and_aot_still_do() {
         let tel = ConfiguredTelemetry::new();
         let capture = Capture::new();
         tel.attach(&[], capture.handler());
-        let mut compiler = Compiler2::new(&tel);
+        let mut compiler = Compiler2::new(tel);
         compiler.submit_code(CodeSubmission {
             name: Some("fixtures/jit_still_lowers_native.fz".to_string()),
             text: source.to_string(),
@@ -709,7 +716,7 @@ fn compiler2_interp_never_lowers_native_program_while_jit_and_aot_still_do() {
         let tel = ConfiguredTelemetry::new();
         let capture = Capture::new();
         tel.attach(&[], capture.handler());
-        let mut compiler = Compiler2::new(&tel);
+        let mut compiler = Compiler2::new(tel);
         compiler.submit_code(CodeSubmission {
             name: Some("fixtures/aot_still_lowers_native.fz".to_string()),
             text: source.to_string(),
@@ -842,7 +849,7 @@ fn env_in_function_body_resolves_via_namespace_splice() {
     // snippet) and the expander splices it in. Without that binding __ENV__ is
     // an unbound variable and the drive cannot resolve.
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("env_body.fz".to_string()),
         text: "fn main(), do: __ENV__\n".to_string(),
@@ -867,7 +874,7 @@ fn compiler2_macro_ignoring_caller_runs_with_elided_caller_lane() {
     // layout rather than pass a fixed [__CALLER__, args] ABI; otherwise the entry
     // is handed one lane too many ("expected 1 runtime lane(s), got 2").
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("macro_caller_elision.fz".to_string()),
         text: "defmacro inc(x) do\n  quote do: unquote(x) + 1\nend\n\nfn main(), do: inc(41)\n".to_string(),
@@ -921,7 +928,7 @@ fn drive_and_count_function_source_production(name: &str, source: &str) -> (usiz
     let stash = Capture::new();
     tel.attach(&["fz", "compiler2", "compiler_service", "define"], stash.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some(name.to_string()),
         text: source.to_string(),

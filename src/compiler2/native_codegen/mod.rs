@@ -70,7 +70,7 @@ pub(crate) fn compile_with_backend_native_program<
     t: &mut T,
     program: &crate::compiler2::NativeProgram,
     backend: B,
-    tel: &dyn Telemetry,
+    tel: &impl Telemetry,
 ) -> Result<B::Output, CodegenError> {
     driver::compile_with_backend_native_program(t, program, backend, tel)
 }

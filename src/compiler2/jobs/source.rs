@@ -21,24 +21,36 @@ use super::super::{QuotedCodeSource, parse_quoted_program};
 /// This job stores the parsed top-level AST on the code record and discovers
 /// nested module records. It does not scope modules, define functions, lower
 /// bodies, or pull in imports.
-pub(super) fn index_code(world: &mut World<'_>, code_id: CodeId) -> Result<JobEffects, FatalError> {
+pub(super) fn index_code(
+    world: &mut World,
+    tel: &impl crate::telemetry::Telemetry,
+    code_id: CodeId,
+) -> Result<JobEffects, FatalError> {
     let source_name = world
         .code_name(code_id)
         .map(str::to_owned)
         .unwrap_or_else(|| format!("<code:{}>", code_id.as_u32()));
     let source_text = world.code_text(code_id).to_owned();
-    let quoted_root = parse_quoted_program(&source_name, &source_text, code_id, world.tel())
-        .map_err(|error| emit_job_diagnostic(world, error.to_diagnostic()))?;
+    let quoted_root = parse_quoted_program(&source_name, &source_text, code_id, tel)
+        .map_err(|error| emit_job_diagnostic(tel, error.to_diagnostic()))?;
     let read_surface = if world.is_bootstrap(code_id) {
         read_compiler_fragment_surface
     } else {
         read_scope_surface
     };
     let surface = read_surface(&quoted_root)
-        .map_err(|error| emit_surface_read_error(world, "quoted surface read failed", &error))?;
+        .map_err(|error| emit_surface_read_error(tel, "quoted surface read failed", &error))?;
     let mut outputs = Vec::new();
     let mut changed = Vec::new();
-    source_publish::discover_modules(world, code_id, ModuleId::GLOBAL, &surface, &mut outputs, &mut changed)?;
+    source_publish::discover_modules(
+        world,
+        tel,
+        code_id,
+        ModuleId::GLOBAL,
+        &surface,
+        &mut outputs,
+        &mut changed,
+    )?;
 
     let quoted = QuotedCodeSource {
         quoted: quoted_root,
@@ -61,7 +73,11 @@ pub(super) fn index_code(world: &mut World<'_>, code_id: CodeId) -> Result<JobEf
 ///
 /// If the code has not been indexed yet, this job waits on `CodeIndexed` and
 /// asks for `IndexCode`. When the scope is complete, it publishes `CodeScoped`.
-pub(super) fn scope_code(world: &mut World<'_>, code_id: CodeId) -> Result<JobEffects, FatalError> {
+pub(super) fn scope_code(
+    world: &mut World,
+    tel: &impl crate::telemetry::Telemetry,
+    code_id: CodeId,
+) -> Result<JobEffects, FatalError> {
     let Some(source) = world.code_source(code_id) else {
         return Ok(JobEffects::wait_on_current(FactKey::CodeIndexed(code_id)));
     };
@@ -84,6 +100,7 @@ pub(super) fn scope_code(world: &mut World<'_>, code_id: CodeId) -> Result<JobEf
     };
     match source_publish::publish_scope(
         world,
+        tel,
         code_id,
         ScopeSnapshot::module(ModuleId::GLOBAL, base_namespace),
         &source.surface,
@@ -121,15 +138,25 @@ pub(super) fn scope_code(world: &mut World<'_>, code_id: CodeId) -> Result<JobEf
 /// not ready, this job waits on the parent fact and schedules the parent job.
 /// When ready, it scopes the module body and publishes `ModuleDefined` and
 /// `ModuleInterface`.
-pub(super) fn define_module(world: &mut World<'_>, module_id: ModuleId) -> Result<JobEffects, FatalError> {
+pub(super) fn define_module(
+    world: &mut World,
+    tel: &impl crate::telemetry::Telemetry,
+    module_id: ModuleId,
+) -> Result<JobEffects, FatalError> {
     if let Some((source, scope)) = world.module_scope(module_id) {
         let result = match &source.kind {
-            ModuleSourceKind::Body(surface) => source_publish::publish_scope(world, source.code, scope, surface)?,
-            ModuleSourceKind::Protocol(surface) => {
-                source_publish::publish_protocol_surface(world, source.code, module_id, scope.namespace(), surface)?
-            }
+            ModuleSourceKind::Body(surface) => source_publish::publish_scope(world, tel, source.code, scope, surface)?,
+            ModuleSourceKind::Protocol(surface) => source_publish::publish_protocol_surface(
+                world,
+                tel,
+                source.code,
+                module_id,
+                scope.namespace(),
+                surface,
+            )?,
             ModuleSourceKind::ProtocolImpl(impl_source) => source_publish::publish_protocol_impl_surface(
                 world,
+                tel,
                 source.code,
                 module_id,
                 scope.namespace(),
@@ -146,8 +173,10 @@ pub(super) fn define_module(world: &mut World<'_>, module_id: ModuleId) -> Resul
                 interface,
             } => {
                 let interface = world.merge_module_interface_expectations(module_id, interface);
-                world.validate_module_interface_expectations(module_id, &interface)?;
-                let module_changed = world.define_module(module_id, namespace, interface);
+                super::super::drive::ExecutionContext::new(world, tel)
+                    .validate_module_interface_expectations(module_id, &interface)?;
+                let module_changed = super::super::drive::ExecutionContext::new(world, tel)
+                    .define_module(module_id, namespace, interface);
                 outputs.push(FactKey::ModuleDefined(module_id));
                 outputs.push(FactKey::ModuleInterface(module_id));
                 if module_changed {
@@ -176,14 +205,18 @@ pub(super) fn define_module(world: &mut World<'_>, module_id: ModuleId) -> Resul
         return Ok(JobEffects::wait_on_current(FactKey::ModuleDefined(parent_module)));
     }
 
-    if let Some(code_id) = world.ensure_runtime_module(module_id) {
+    if let Some(code_id) = super::super::drive::ExecutionContext::new(world, tel).ensure_runtime_module(module_id) {
         return Ok(JobEffects::wait_on_current(FactKey::CodeIndexed(code_id)));
     }
 
     Ok(JobEffects::wait_on_current(FactKey::ModuleIndexed(module_id)))
 }
 
-pub(super) fn define_module_interface(world: &mut World<'_>, module_id: ModuleId) -> Result<JobEffects, FatalError> {
+pub(super) fn define_module_interface(
+    world: &mut World,
+    tel: &impl crate::telemetry::Telemetry,
+    module_id: ModuleId,
+) -> Result<JobEffects, FatalError> {
     if world.module_scope(module_id).is_some() {
         return Ok(JobEffects::wait_on_current(FactKey::ModuleInterface(module_id)));
     }
@@ -192,7 +225,8 @@ pub(super) fn define_module_interface(world: &mut World<'_>, module_id: ModuleId
         return Ok(JobEffects::wait_on_current(FactKey::ModuleIndexed(module_id)));
     };
     let interface = world.merge_module_interface_expectations(module_id, interface);
-    world.validate_module_interface_expectations(module_id, &interface)?;
+    super::super::drive::ExecutionContext::new(world, tel)
+        .validate_module_interface_expectations(module_id, &interface)?;
     let changed = world.define_module_interface(module_id, interface);
     Ok(JobEffects {
         outputs: vec![FactKey::ModuleInterface(module_id)],
@@ -205,7 +239,8 @@ pub(super) fn define_module_interface(world: &mut World<'_>, module_id: ModuleId
 }
 
 pub(super) fn define_function(
-    world: &mut World<'_>,
+    world: &mut World,
+    tel: &impl crate::telemetry::Telemetry,
     function_id: super::super::FunctionId,
 ) -> Result<JobEffects, FatalError> {
     let Some(expanded_source) = world.expanded_function_source(function_id) else {
@@ -218,7 +253,7 @@ pub(super) fn define_function(
     };
 
     let surface = crate::compiler2::quoted_function::derive_function_surface(&expanded_source.source)
-        .map_err(|error| emit_surface_read_error(world, "quoted function decode failed", &error))?;
+        .map_err(|error| emit_surface_read_error(tel, "quoted function decode failed", &error))?;
     let declares_contract = surface.extern_abi.is_some()
         || surface
             .attrs
@@ -230,10 +265,15 @@ pub(super) fn define_function(
         crate::compiler2::source_diagnostics::function_warnings(&surface)
     };
     for diagnostic in warnings {
-        world.emit_warning_once(diagnostic);
+        super::super::drive::ExecutionContext::new(world, tel).emit_warning_once(diagnostic);
     }
-    source_publish::record_function_type_refs(world, function_id, &surface)?;
-    let changed = world.define_function(function_id, raw_source, expanded_source, surface);
+    source_publish::record_function_type_refs(world, tel, function_id, &surface)?;
+    let changed = super::super::drive::ExecutionContext::new(world, tel).define_function(
+        function_id,
+        raw_source,
+        expanded_source,
+        surface,
+    );
     Ok(JobEffects {
         reads: current_uses([
             FactKey::FunctionSource(function_id),
@@ -259,10 +299,13 @@ pub(super) fn define_function(
 /// producer arm (`World::demand_fact_producer`) is this job, so any consumer
 /// blocked on `FunctionSource` restarts it through that map rather than a push.
 pub(super) fn publish_function_source_job(
-    world: &mut World<'_>,
+    world: &mut World,
+    tel: &impl crate::telemetry::Telemetry,
     function_id: super::super::FunctionId,
 ) -> Result<JobEffects, FatalError> {
-    let Some(changed) = world.publish_pending_function_source(function_id) else {
+    let Some(changed) =
+        super::super::drive::ExecutionContext::new(world, tel).publish_pending_function_source(function_id)
+    else {
         // The owning scope has not been walked yet, so the stash is empty. Wait
         // on that scope and re-run once it has stashed this body; never wait on
         // `FunctionSource`, the fact this job is the sole producer of.
@@ -280,7 +323,8 @@ pub(super) fn publish_function_source_job(
         // *same* `JobEffects` as `CodeScoped` (see `source_publish`), so the
         // `CodeScoped`-triggered re-run already finds the stash present -- no
         // separate wait on the stash is needed while a scope fact is named.
-        let mut waits: Vec<FactKey> = world.demand_function_scope(function_id)?;
+        let mut waits: Vec<FactKey> =
+            super::super::drive::ExecutionContext::new(world, tel).demand_function_scope(function_id)?;
         if waits.is_empty() {
             // Only the terminal case -- no code names this function's home yet
             // (its owning code has not been submitted, or the reference is
@@ -322,15 +366,17 @@ pub(super) fn publish_function_source_job(
 }
 
 pub(super) fn expand_function_source(
-    world: &mut World<'_>,
+    world: &mut World,
+    tel: &impl crate::telemetry::Telemetry,
     function_id: super::super::FunctionId,
 ) -> Result<JobEffects, FatalError> {
     let Some(source) = world.function_source(function_id) else {
         return Ok(JobEffects::wait_on_current(FactKey::FunctionSource(function_id)));
     };
-    match FunctionSourceExpander::new(world, function_id, &source).expand(&source)? {
+    match FunctionSourceExpander::new(world, tel, function_id, &source).expand(&source)? {
         FunctionSourceExpansion::Complete { source, reads } => {
-            let changed = world.note_expanded_function_source(function_id, source);
+            let changed = super::super::drive::ExecutionContext::new(world, tel)
+                .note_expanded_function_source(function_id, source);
             let mut reads = reads;
             reads.push(FactKey::FunctionSource(function_id));
             Ok(JobEffects {
@@ -355,8 +401,9 @@ enum FunctionSourceExpansion {
     Blocked(Box<JobEffects>),
 }
 
-struct FunctionSourceExpander<'world, 'tel> {
-    world: &'world mut World<'tel>,
+struct FunctionSourceExpander<'world, 'tel, T: crate::telemetry::Telemetry> {
+    world: &'world mut World,
+    telemetry: &'tel T,
     function: FunctionId,
     current_module: ModuleId,
     namespace: Namespace,
@@ -364,9 +411,18 @@ struct FunctionSourceExpander<'world, 'tel> {
     reads: Vec<FactKey>,
 }
 
-impl<'world, 'tel> QuotedExpansionCtx<'tel> for FunctionSourceExpander<'world, 'tel> {
-    fn world(&mut self) -> &mut World<'tel> {
+impl<'world, 'tel, T: crate::telemetry::Telemetry> QuotedExpansionCtx for FunctionSourceExpander<'world, 'tel, T> {
+    type Telemetry = T;
+    fn world(&mut self) -> &mut World {
         self.world
+    }
+
+    fn telemetry(&self) -> &T {
+        self.telemetry
+    }
+
+    fn split(&mut self) -> (&mut World, &T) {
+        (self.world, self.telemetry)
     }
 
     fn current_module(&self) -> ModuleId {
@@ -391,11 +447,12 @@ impl<'world, 'tel> QuotedExpansionCtx<'tel> for FunctionSourceExpander<'world, '
     }
 }
 
-impl<'world, 'tel> FunctionSourceExpander<'world, 'tel> {
-    fn new(world: &'world mut World<'tel>, function: FunctionId, source: &FunctionSource) -> Self {
+impl<'world, 'tel, T: crate::telemetry::Telemetry> FunctionSourceExpander<'world, 'tel, T> {
+    fn new(world: &'world mut World, telemetry: &'tel T, function: FunctionId, source: &FunctionSource) -> Self {
         let current_module = world.function_module(function);
         Self {
             world,
+            telemetry,
             function,
             current_module,
             namespace: source.namespace,
@@ -414,7 +471,9 @@ impl<'world, 'tel> FunctionSourceExpander<'world, 'tel> {
         let env = self
             .world
             .project_env_value(&builder, def_scope, QuotedLexicalContextKind::Definition)
-            .map_err(|error| emit_internal_surface_error(self.world, format!("__ENV__ projection failed: {error}")))?;
+            .map_err(|error| {
+                emit_internal_surface_error(self.telemetry, format!("__ENV__ projection failed: {error}"))
+            })?;
         let env = source.source.subroot(env);
         let namespace = self
             .world
@@ -445,7 +504,9 @@ impl<'world, 'tel> FunctionSourceExpander<'world, 'tel> {
         let cursor = source.cursor();
         if cursor
             .ast_node()
-            .map_err(|error| emit_internal_surface_error(self.world, format!("function source read failed: {error}")))?
+            .map_err(|error| {
+                emit_internal_surface_error(self.telemetry, format!("function source read failed: {error}"))
+            })?
             .is_some()
         {
             return match self.expand_function_clause(&source, &cursor, scope, depth)? {
@@ -455,22 +516,25 @@ impl<'world, 'tel> FunctionSourceExpander<'world, 'tel> {
         }
 
         let items = cursor.list_items().map_err(|error| {
-            emit_internal_surface_error(self.world, format!("grouped function source read failed: {error}"))
+            emit_internal_surface_error(self.telemetry, format!("grouped function source read failed: {error}"))
         })?;
         let mut changed = false;
         let mut expanded = Vec::with_capacity(items.len());
         for item in items {
             let Some(node) = item.ast_node().map_err(|error| {
-                emit_internal_surface_error(self.world, format!("grouped function item read failed: {error}"))
+                emit_internal_surface_error(self.telemetry, format!("grouped function item read failed: {error}"))
             })?
             else {
                 return Err(emit_internal_surface_error(
-                    self.world,
+                    self.telemetry,
                     "grouped function source expected quoted AST items".to_string(),
                 ));
             };
             let head = node.head.atom_name().map_err(|error| {
-                emit_internal_surface_error(self.world, format!("grouped function item head read failed: {error}"))
+                emit_internal_surface_error(
+                    self.telemetry,
+                    format!("grouped function item head read failed: {error}"),
+                )
             })?;
             if head.starts_with('@') {
                 expanded.push(item.root());
@@ -489,7 +553,10 @@ impl<'world, 'tel> FunctionSourceExpander<'world, 'tel> {
             return Ok(ExpandedRoot::Complete(source));
         }
         let root = source.builder().list(&expanded).map_err(|error| {
-            emit_internal_surface_error(self.world, format!("grouped function source rebuild failed: {error}"))
+            emit_internal_surface_error(
+                self.telemetry,
+                format!("grouped function source rebuild failed: {error}"),
+            )
         })?;
         Ok(ExpandedRoot::Complete(source.subroot(root)))
     }
@@ -502,51 +569,57 @@ impl<'world, 'tel> FunctionSourceExpander<'world, 'tel> {
         depth: usize,
     ) -> Result<ExpandedValue, FatalError> {
         let Some(node) = cursor.ast_node().map_err(|error| {
-            emit_internal_surface_error(self.world, format!("function clause read failed: {error}"))
+            emit_internal_surface_error(self.telemetry, format!("function clause read failed: {error}"))
         })?
         else {
             return Err(emit_internal_surface_error(
-                self.world,
+                self.telemetry,
                 "function source expected a quoted AST node".to_string(),
             ));
         };
         let head = node.head.atom_name().map_err(|error| {
-            emit_internal_surface_error(self.world, format!("function clause head read failed: {error}"))
+            emit_internal_surface_error(self.telemetry, format!("function clause head read failed: {error}"))
         })?;
         if head == "extern" {
             return Ok(ExpandedValue::Complete(cursor.root()));
         }
         if !matches!(head.as_str(), "fn" | "fnp" | "defmacro") {
             return Err(emit_internal_surface_error(
-                self.world,
+                self.telemetry,
                 format!("function source expected fn/fnp/defmacro/extern, got `{head}`"),
             ));
         }
 
         let args = node.tail.list_items().map_err(|error| {
-            emit_internal_surface_error(self.world, format!("function clause args read failed: {error}"))
+            emit_internal_surface_error(self.telemetry, format!("function clause args read failed: {error}"))
         })?;
         let Some(kwargs) = args.get(1) else {
             return Ok(ExpandedValue::Complete(cursor.root()));
         };
         let kw_items = kwargs.list_items().map_err(|error| {
-            emit_internal_surface_error(self.world, format!("function clause keyword args read failed: {error}"))
+            emit_internal_surface_error(
+                self.telemetry,
+                format!("function clause keyword args read failed: {error}"),
+            )
         })?;
 
         let mut changed = false;
         let mut expanded_kw = Vec::with_capacity(kw_items.len());
         for kw in kw_items {
             let tuple = kw.tuple_items().map_err(|error| {
-                emit_internal_surface_error(self.world, format!("function clause keyword read failed: {error}"))
+                emit_internal_surface_error(self.telemetry, format!("function clause keyword read failed: {error}"))
             })?;
             if tuple.len() != 2 {
                 return Err(emit_internal_surface_error(
-                    self.world,
+                    self.telemetry,
                     "function clause expected keyword tuples".to_string(),
                 ));
             }
             if tuple[0].atom_name().map_err(|error| {
-                emit_internal_surface_error(self.world, format!("function clause keyword name read failed: {error}"))
+                emit_internal_surface_error(
+                    self.telemetry,
+                    format!("function clause keyword name read failed: {error}"),
+                )
             })? != "do"
             {
                 expanded_kw.push(kw.root());
@@ -560,7 +633,7 @@ impl<'world, 'tel> FunctionSourceExpander<'world, 'tel> {
                     } else {
                         let rebuilt = owner.builder().tuple(&[tuple[0].root(), body]).map_err(|error| {
                             emit_internal_surface_error(
-                                self.world,
+                                self.telemetry,
                                 format!("function clause keyword rebuild failed: {error}"),
                             )
                         })?;
@@ -577,20 +650,23 @@ impl<'world, 'tel> FunctionSourceExpander<'world, 'tel> {
 
         let kw_root = owner.builder().list(&expanded_kw).map_err(|error| {
             emit_internal_surface_error(
-                self.world,
+                self.telemetry,
                 format!("function clause keyword list rebuild failed: {error}"),
             )
         })?;
         let mut expanded_args = args.iter().map(QuotedSourceCursor::root).collect::<Vec<_>>();
         expanded_args[1] = kw_root;
         let tail = owner.builder().list(&expanded_args).map_err(|error| {
-            emit_internal_surface_error(self.world, format!("function clause arg list rebuild failed: {error}"))
+            emit_internal_surface_error(
+                self.telemetry,
+                format!("function clause arg list rebuild failed: {error}"),
+            )
         })?;
         let rebuilt = owner
             .builder()
             .tuple(&[node.head.root(), node.meta.root(), tail])
             .map_err(|error| {
-                emit_internal_surface_error(self.world, format!("function clause rebuild failed: {error}"))
+                emit_internal_surface_error(self.telemetry, format!("function clause rebuild failed: {error}"))
             })?;
         Ok(ExpandedValue::Complete(rebuilt))
     }

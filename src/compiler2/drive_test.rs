@@ -46,7 +46,7 @@ type PublishedStructFields = Rc<RefCell<Vec<(u32, Vec<String>)>>>;
 type Diagnostics = Rc<RefCell<Vec<Diagnostic>>>;
 
 fn jit_compile_native_program(
-    compiler: &mut Compiler2<'_>,
+    compiler: &mut Compiler2<ConfiguredTelemetry>,
     program: &NativeProgram,
 ) -> crate::ir_codegen::CompiledModule {
     compiler
@@ -82,7 +82,7 @@ fn output_facts(effects: &JobEffects) -> OutputFacts {
         .collect()
 }
 
-fn demand_backend_product(compiler: &mut Compiler2<'_>, root_id: crate::compiler2::RootId) {
+fn demand_backend_product(compiler: &mut Compiler2<ConfiguredTelemetry>, root_id: crate::compiler2::RootId) {
     assert!(
         compiler.demand(Job::BuildBackendProduct(root_id)),
         "backend product should be explicitly demandable for {root_id:?}",
@@ -113,7 +113,7 @@ fn compiler2_runtime_prelude_does_not_run_frontend_before_drive() {
     let capture = Capture::new();
     tel.attach(&[], capture.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/quicksort_plus_foo.fz".to_string()),
         text: include_str!("../../fixtures2/00001_quicksort_plus_foo.fz").to_string(),
@@ -155,7 +155,7 @@ fn compiler2_notes_top_level_types_into_the_global_scope() {
 
     // Unique `tkf_` names so the assertions ignore the runtime prelude's own
     // @types, which are noted in the same drive when the user scope pulls it.
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     let code_id = compiler.submit_code(CodeSubmission {
         name: Some("types.fz".to_string()),
         text: include_str!("../../fixtures2/00002_types_top_level.fz").to_string(),
@@ -205,7 +205,7 @@ fn compiler2_records_type_references_as_consumer_dependencies() {
     let functions = FunctionCapture::new();
     tel.attach(&["fz", "compiler2", "function"], functions.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     let code_id = compiler.submit_code(CodeSubmission {
         name: Some("refs.fz".to_string()),
         text: include_str!("../../fixtures2/00003_type_refs.fz").to_string(),
@@ -345,7 +345,7 @@ fn compiler2_derive_type_def_pulls_a_referenced_type_and_its_wait_set_leaving_ot
     tel.attach(&[], capture.handler());
     let rendered = rendered_type_defs(&tel);
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     let code_id = compiler.submit_code(CodeSubmission {
         name: Some("typedefs.fz".to_string()),
         text: include_str!("../../fixtures2/00004_typedefs.fz").to_string(),
@@ -446,7 +446,7 @@ fn compiler2_derive_type_def_mints_a_refines_brand_inner_in_symbol() {
     let tel = ConfiguredTelemetry::new();
     let rendered = rendered_type_defs(&tel);
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     let code_id = compiler.submit_code(CodeSubmission {
         name: Some("brand.fz".to_string()),
         text: include_str!("../../fixtures2/00005_brand.fz").to_string(),
@@ -498,7 +498,7 @@ fn compiler2_derive_type_def_mints_a_refines_brand_inner_in_symbol() {
 #[test]
 fn compiler2_defimpl_callback_owner_remote_call_does_not_self_wait() {
     let tel = ConfiguredTelemetry::new();
-    let mut world = crate::compiler2::World::new(&tel);
+    let mut world = crate::compiler2::World::new();
     let code_id = world.submit_code(
         Some("defimpl_owner_remote_call.fz".to_string()),
         concat!(
@@ -517,19 +517,28 @@ fn compiler2_defimpl_callback_owner_remote_call_does_not_self_wait() {
         .to_string(),
     );
 
-    assert_resolved(world.drive(), "source should index protocol and owner modules");
+    assert_resolved(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        "source should index protocol and owner modules",
+    );
     assert!(
         world.demand(Job::ScopeCode(code_id)),
         "top-level scope should be demandable"
     );
-    assert_resolved(world.drive(), "top-level scope should prepare module definitions");
+    assert_resolved(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        "top-level scope should prepare module definitions",
+    );
 
     let protocol = world.reference_module("Proof");
     assert!(
         world.demand(Job::DefineModule(protocol)),
         "protocol definition should be demandable"
     );
-    assert_resolved(world.drive(), "protocol definition should publish callback facts first");
+    assert_resolved(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        "protocol definition should publish callback facts first",
+    );
 
     let owner = world.reference_module("Box");
     assert!(
@@ -537,7 +546,7 @@ fn compiler2_defimpl_callback_owner_remote_call_does_not_self_wait() {
         "owner module definition should be demandable",
     );
     assert_resolved(
-        world.drive(),
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
         "owner-module remote calls inside defimpl callbacks should use the live source namespace, not wait on ModuleDefined(owner)",
     );
 }
@@ -545,14 +554,14 @@ fn compiler2_defimpl_callback_owner_remote_call_does_not_self_wait() {
 #[test]
 fn compiler2_nested_defimpl_resolves_protocol_and_target_through_namespace() {
     let tel = ConfiguredTelemetry::new();
-    let mut world = crate::compiler2::World::new(&tel);
+    let mut world = crate::compiler2::World::new();
     let code_id = world.submit_code(
         Some("nested_protocol_impl_dispatch.fz".to_string()),
         include_str!("../../fixtures2/00272_protocol_impl_dispatch.fz").to_string(),
     );
 
     assert_resolved(
-        world.drive(),
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
         "first drive should index the nested protocol/provider module and the caller module",
     );
     assert!(
@@ -560,14 +569,14 @@ fn compiler2_nested_defimpl_resolves_protocol_and_target_through_namespace() {
         "scoping the nested protocol fixture should be demandable",
     );
     assert_resolved(
-        world.drive(),
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
         "top-level scoping should bind nested definition macros before root demand",
     );
 
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
     world.demand(Job::BuildBackendProduct(root));
     assert_resolved(
-        world.drive(),
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
         "main should settle when nested defimpl resolves against the declared protocol identity",
     );
 
@@ -605,13 +614,13 @@ fn compiler2_protocol_domain_marker_stays_type_owned_while_dispatch_revises_when
     let rendered_defs = rendered_type_defs(&tel);
     let outputs = OutputCapture::new();
     tel.attach(&["fz", "compiler2", "job"], outputs.handler());
-    let mut world = crate::compiler2::World::new(&tel);
+    let mut world = crate::compiler2::World::new();
     let code_id = world.submit_code(
         Some("protocol_domain.fz".to_string()),
         include_str!("../../fixtures2/00006_protocol_domain.fz").to_string(),
     );
     assert_resolved(
-        world.drive(),
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
         "first drive should index the protocol and impl owner modules",
     );
     let indexed = outputs
@@ -636,12 +645,18 @@ fn compiler2_protocol_domain_marker_stays_type_owned_while_dispatch_revises_when
         world.demand(Job::ScopeCode(code_id)),
         "scoping the protocol source should be demandable",
     );
-    assert_resolved(world.drive(), "second drive should scope the protocol source");
+    assert_resolved(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        "second drive should scope the protocol source",
+    );
     assert!(
         world.demand(Job::DefineModule(protocol)),
         "defining the protocol module should be demandable",
     );
-    assert_resolved(world.drive(), "third drive should define the protocol callback surface");
+    assert_resolved(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        "third drive should define the protocol callback surface",
+    );
     let protocol_defined = outputs
         .take(Job::DefineModule(protocol))
         .expect("DefineModule job effects for the protocol surface");
@@ -694,7 +709,7 @@ fn compiler2_protocol_domain_marker_stays_type_owned_while_dispatch_revises_when
         "t/1 derivation should be demandable"
     );
     assert_resolved(
-        world.drive(),
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
         "demanded protocol-domain types should resolve through the normal DeriveTypeDef path",
     );
     let t0_derived = outputs
@@ -776,7 +791,7 @@ fn compiler2_protocol_domain_marker_stays_type_owned_while_dispatch_revises_when
         "defining the hoisted impl module `Proof.List` should be demandable",
     );
     assert_resolved(
-        world.drive(),
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
         "defining the impl module should revise the protocol facts",
     );
     let impl_defined = outputs
@@ -866,7 +881,7 @@ fn compiler2_struct_defined_publishes_independently_of_module_defined() {
             fields_sink.borrow_mut().push((*module_id as u32, def.fields.clone()));
         }),
     );
-    let mut world = crate::compiler2::World::new(&tel);
+    let mut world = crate::compiler2::World::new();
     let code_id = world.submit_code(
         Some("struct_defined_independence.fz".to_string()),
         concat!(
@@ -881,12 +896,18 @@ fn compiler2_struct_defined_publishes_independently_of_module_defined() {
         .to_string(),
     );
 
-    assert_resolved(world.drive(), "first drive should index both modules");
+    assert_resolved(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        "first drive should index both modules",
+    );
     assert!(
         world.demand(Job::ScopeCode(code_id)),
         "top-level scope should be demandable"
     );
-    assert_resolved(world.drive(), "second drive should scope both modules");
+    assert_resolved(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        "second drive should scope both modules",
+    );
 
     let point = world.reference_module("Point");
     let helper = world.reference_module("Helper");
@@ -899,7 +920,10 @@ fn compiler2_struct_defined_publishes_independently_of_module_defined() {
         world.demand(Job::DefineModule(helper)),
         "Helper definition should be demandable"
     );
-    assert_resolved(world.drive(), "third drive should define both modules");
+    assert_resolved(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        "third drive should define both modules",
+    );
 
     let point_defined = outputs
         .take(Job::DefineModule(point))
@@ -962,7 +986,7 @@ fn compiler2_struct_duplicate_defstruct_diagnoses_instead_of_silently_picking_on
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
     tel.attach(&[], capture.handler());
-    let mut world = crate::compiler2::World::new(&tel);
+    let mut world = crate::compiler2::World::new();
     let code_id = world.submit_code(
         Some("struct_duplicate_defstruct.fz".to_string()),
         concat!(
@@ -974,12 +998,18 @@ fn compiler2_struct_duplicate_defstruct_diagnoses_instead_of_silently_picking_on
         .to_string(),
     );
 
-    assert_resolved(world.drive(), "first drive should index the module");
+    assert_resolved(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        "first drive should index the module",
+    );
     assert!(
         world.demand(Job::ScopeCode(code_id)),
         "top-level scope should be demandable"
     );
-    assert_resolved(world.drive(), "second drive should scope the module");
+    assert_resolved(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        "second drive should scope the module",
+    );
 
     let point = world.reference_module("Point");
     assert!(
@@ -987,7 +1017,10 @@ fn compiler2_struct_duplicate_defstruct_diagnoses_instead_of_silently_picking_on
         "Point definition should be demandable"
     );
     assert!(
-        matches!(world.drive(), DriveOutcome::Fatal { .. }),
+        matches!(
+            super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+            DriveOutcome::Fatal { .. }
+        ),
         "a module with two defstruct forms must diagnose rather than silently pick first-or-last"
     );
 
@@ -1029,7 +1062,7 @@ fn compiler2_struct_macro_emitted_duplicate_defstruct_diagnoses_even_with_identi
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
     tel.attach(&[], capture.handler());
-    let mut world = crate::compiler2::World::new(&tel);
+    let mut world = crate::compiler2::World::new();
     let code_id = world.submit_code(
         Some("struct_macro_emitted_duplicate_defstruct.fz".to_string()),
         concat!(
@@ -1045,12 +1078,18 @@ fn compiler2_struct_macro_emitted_duplicate_defstruct_diagnoses_even_with_identi
         .to_string(),
     );
 
-    assert_resolved(world.drive(), "first drive should index the module");
+    assert_resolved(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        "first drive should index the module",
+    );
     assert!(
         world.demand(Job::ScopeCode(code_id)),
         "top-level scope should be demandable"
     );
-    assert_resolved(world.drive(), "second drive should scope the module");
+    assert_resolved(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        "second drive should scope the module",
+    );
 
     let point = world.reference_module("Point");
     assert!(
@@ -1058,7 +1097,10 @@ fn compiler2_struct_macro_emitted_duplicate_defstruct_diagnoses_even_with_identi
         "Point definition should be demandable"
     );
     assert!(
-        matches!(world.drive(), DriveOutcome::Fatal { .. }),
+        matches!(
+            super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+            DriveOutcome::Fatal { .. }
+        ),
         "two macro-emitted defstruct forms with identical fields must still diagnose as a duplicate, \
          not be silently treated as an idempotent re-run"
     );
@@ -1101,7 +1143,7 @@ fn compiler2_duplicate_global_function_definition_diagnoses_instead_of_silently_
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
     tel.attach(&[], capture.handler());
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("foo_first.fz".to_string()),
         text: "fn foo(), do: 1\n".to_string(),
@@ -1140,7 +1182,7 @@ fn compiler2_struct_type_expression_waits_for_struct_defined_and_resolves_precis
     // and once `Point` settles, the resolved type uses schema field order
     // (x, y) rather than the literal, reversed write order (y, x).
     let tel = ConfiguredTelemetry::new();
-    let mut world = crate::compiler2::World::new(&tel);
+    let mut world = crate::compiler2::World::new();
     let code_id = world.submit_code(
         Some("struct_type_expression_out_of_order.fz".to_string()),
         concat!(
@@ -1155,12 +1197,18 @@ fn compiler2_struct_type_expression_waits_for_struct_defined_and_resolves_precis
         .to_string(),
     );
 
-    assert_resolved(world.drive(), "first drive should index both modules");
+    assert_resolved(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        "first drive should index both modules",
+    );
     assert!(
         world.demand(Job::ScopeCode(code_id)),
         "top-level scope should be demandable"
     );
-    assert_resolved(world.drive(), "second drive should scope both modules");
+    assert_resolved(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        "second drive should scope both modules",
+    );
 
     let q = world.reference_module("Q");
     let point = world.reference_module("Point");
@@ -1172,7 +1220,10 @@ fn compiler2_struct_type_expression_waits_for_struct_defined_and_resolves_precis
 
     // Q's own body settles before Point's defstruct does.
     assert!(world.demand(Job::DefineModule(q)), "Q definition should be demandable");
-    assert_resolved(world.drive(), "third drive should settle Q without Point existing yet");
+    assert_resolved(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        "third drive should settle Q without Point existing yet",
+    );
 
     assert!(
         !world.has_fact(&FactKey::StructDefined(point)),
@@ -1197,7 +1248,7 @@ fn compiler2_struct_type_expression_waits_for_struct_defined_and_resolves_precis
         "t/0 derivation should be demandable"
     );
     assert_resolved(
-        world.drive(),
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
         "pulling t/0 should transitively pull Point's defstruct and resolve",
     );
 
@@ -1218,7 +1269,7 @@ fn compiler2_struct_type_expression_diagnoses_unknown_field_instead_of_dropping_
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
     tel.attach(&[], capture.handler());
-    let mut world = crate::compiler2::World::new(&tel);
+    let mut world = crate::compiler2::World::new();
     let code_id = world.submit_code(
         Some("struct_type_expression_unknown_field.fz".to_string()),
         concat!(
@@ -1233,24 +1284,36 @@ fn compiler2_struct_type_expression_diagnoses_unknown_field_instead_of_dropping_
         .to_string(),
     );
 
-    assert_resolved(world.drive(), "first drive should index both modules");
+    assert_resolved(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        "first drive should index both modules",
+    );
     assert!(
         world.demand(Job::ScopeCode(code_id)),
         "top-level scope should be demandable"
     );
-    assert_resolved(world.drive(), "second drive should scope both modules");
+    assert_resolved(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        "second drive should scope both modules",
+    );
 
     let point = world.reference_module("Point");
     assert!(
         world.demand(Job::DefineModule(point)),
         "Point definition should be demandable"
     );
-    assert_resolved(world.drive(), "third drive should define Point's defstruct");
+    assert_resolved(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        "third drive should define Point's defstruct",
+    );
 
     let q = world.reference_module("Q");
     assert!(world.demand(Job::DefineModule(q)), "Q definition should be demandable");
     assert!(
-        matches!(world.drive(), DriveOutcome::Fatal { .. }),
+        matches!(
+            super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+            DriveOutcome::Fatal { .. }
+        ),
         "an unknown struct field named in a type expression should diagnose rather than silently resolve",
     );
 
@@ -1273,7 +1336,7 @@ fn compiler2_struct_type_expression_out_of_order_unknown_field_diagnoses_when_st
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
     tel.attach(&[], capture.handler());
-    let mut world = crate::compiler2::World::new(&tel);
+    let mut world = crate::compiler2::World::new();
     let code_id = world.submit_code(
         Some("struct_type_expression_out_of_order_unknown_field.fz".to_string()),
         concat!(
@@ -1288,17 +1351,23 @@ fn compiler2_struct_type_expression_out_of_order_unknown_field_diagnoses_when_st
         .to_string(),
     );
 
-    assert_resolved(world.drive(), "first drive should index both modules");
+    assert_resolved(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        "first drive should index both modules",
+    );
     assert!(
         world.demand(Job::ScopeCode(code_id)),
         "top-level scope should be demandable"
     );
-    assert_resolved(world.drive(), "second drive should scope both modules");
+    assert_resolved(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        "second drive should scope both modules",
+    );
 
     let q = world.reference_module("Q");
     assert!(world.demand(Job::DefineModule(q)), "Q definition should be demandable");
     assert_resolved(
-        world.drive(),
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
         "Q settling before Point exists should not itself fail -- there is nothing to validate yet",
     );
     assert!(
@@ -1312,7 +1381,10 @@ fn compiler2_struct_type_expression_out_of_order_unknown_field_diagnoses_when_st
         "Point definition should be demandable"
     );
     assert!(
-        matches!(world.drive(), DriveOutcome::Fatal { .. }),
+        matches!(
+            super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+            DriveOutcome::Fatal { .. }
+        ),
         "Point settling should validate Q's outstanding obligation and diagnose the unknown field",
     );
 
@@ -1340,7 +1412,7 @@ fn compiler2_struct_spec_type_diagnoses_unknown_field_instead_of_dropping_it() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
     tel.attach(&[], capture.handler());
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("struct_spec_unknown_field.fz".to_string()),
         text: concat!(
@@ -1388,7 +1460,7 @@ fn compiler2_struct_spec_type_diagnoses_reference_to_non_struct_module() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
     tel.attach(&[], capture.handler());
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("struct_spec_non_struct.fz".to_string()),
         text: concat!(
@@ -1430,7 +1502,7 @@ fn compiler2_zero_field_struct_spec_type_diagnoses_non_struct_module_at_referenc
     let diagnostics = DiagnosticCapture::new();
     tel.attach(&[], capture.handler());
     tel.attach(&[], diagnostics.handler());
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     let source = concat!(
         "defmodule NotAStruct do\n",
         "  fn hello(), do: 0\n",
@@ -1481,7 +1553,7 @@ fn compiler2_struct_param_annotation_diagnoses_unknown_field_instead_of_dropping
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
     tel.attach(&[], capture.handler());
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("struct_param_annotation_unknown_field.fz".to_string()),
         text: concat!(
@@ -1530,7 +1602,7 @@ fn compiler2_extern_struct_param_waits_on_struct_defined_not_literal_order() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
     tel.attach(&[], capture.handler());
-    let mut world = crate::compiler2::World::new(&tel);
+    let mut world = crate::compiler2::World::new();
     let code_id = world.submit_code(
         Some("extern_struct_param.fz".to_string()),
         concat!(
@@ -1542,13 +1614,16 @@ fn compiler2_extern_struct_param_waits_on_struct_defined_not_literal_order() {
         )
         .to_string(),
     );
-    assert_resolved(world.drive(), "first drive should index the code");
+    assert_resolved(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        "first drive should index the code",
+    );
     assert!(
         world.demand(Job::ScopeCode(code_id)),
         "top-level scope should be demandable"
     );
     assert_resolved(
-        world.drive(),
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
         "second drive should scope the code, indexing NotAStruct's body",
     );
 
@@ -1558,7 +1633,10 @@ fn compiler2_extern_struct_param_waits_on_struct_defined_not_literal_order() {
         "lowering the extern function should be demandable"
     );
     assert!(
-        matches!(world.drive(), DriveOutcome::Unresolved { .. }),
+        matches!(
+            super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+            DriveOutcome::Unresolved { .. }
+        ),
         "lowering an extern whose struct param names a non-struct should terminate, not resolve in literal order",
     );
 
@@ -1592,7 +1670,7 @@ fn compiler2_struct_literal_and_pattern_lowering_wait_out_of_order_then_use_sche
     tel.attach(&[], capture.handler());
     let bodies = LoweredBodyCapture::new();
     tel.attach(&["fz", "compiler2", "lowered_body", "defined"], bodies.handler());
-    let mut world = crate::compiler2::World::new(&tel);
+    let mut world = crate::compiler2::World::new();
     let code_id = world.submit_code(
         Some("struct_literal_pattern_out_of_order.fz".to_string()),
         concat!(
@@ -1607,12 +1685,18 @@ fn compiler2_struct_literal_and_pattern_lowering_wait_out_of_order_then_use_sche
         .to_string(),
     );
 
-    assert_resolved(world.drive(), "first drive should index both modules");
+    assert_resolved(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        "first drive should index both modules",
+    );
     assert!(
         world.demand(Job::ScopeCode(code_id)),
         "top-level scope should be demandable"
     );
-    assert_resolved(world.drive(), "second drive should scope both modules");
+    assert_resolved(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        "second drive should scope both modules",
+    );
 
     let b = world.reference_module("B");
     let point = world.reference_module("Point");
@@ -1627,7 +1711,7 @@ fn compiler2_struct_literal_and_pattern_lowering_wait_out_of_order_then_use_sche
         "lowering convert/1 should be demandable"
     );
     assert_resolved(
-        world.drive(),
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
         "pulling convert/1's lowering should transitively pull Point's defstruct and resolve",
     );
     assert!(
@@ -1684,7 +1768,7 @@ fn compiler2_struct_literal_unknown_field_diagnoses_at_settle_not_synchronously(
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
     tel.attach(&[], capture.handler());
-    let mut world = crate::compiler2::World::new(&tel);
+    let mut world = crate::compiler2::World::new();
     let code_id = world.submit_code(
         Some("struct_literal_unknown_field.fz".to_string()),
         concat!(
@@ -1698,12 +1782,18 @@ fn compiler2_struct_literal_unknown_field_diagnoses_at_settle_not_synchronously(
         )
         .to_string(),
     );
-    assert_resolved(world.drive(), "first drive should index both modules");
+    assert_resolved(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        "first drive should index both modules",
+    );
     assert!(
         world.demand(Job::ScopeCode(code_id)),
         "top-level scope should be demandable"
     );
-    assert_resolved(world.drive(), "second drive should scope both modules");
+    assert_resolved(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        "second drive should scope both modules",
+    );
 
     let b = world.reference_module("B");
     let make = world.reference_function(b, "make", 0);
@@ -1713,7 +1803,10 @@ fn compiler2_struct_literal_unknown_field_diagnoses_at_settle_not_synchronously(
         "lowering make/0 should be demandable"
     );
     assert!(
-        matches!(world.drive(), DriveOutcome::Fatal { .. }),
+        matches!(
+            super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+            DriveOutcome::Fatal { .. }
+        ),
         "an unknown field on a struct literal should diagnose once Point settles, not resolve cleanly",
     );
     let diagnostic = capture
@@ -1739,7 +1832,7 @@ fn compiler2_struct_pattern_unknown_field_diagnoses_at_settle_not_synchronously(
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
     tel.attach(&[], capture.handler());
-    let mut world = crate::compiler2::World::new(&tel);
+    let mut world = crate::compiler2::World::new();
     let code_id = world.submit_code(
         Some("struct_pattern_unknown_field.fz".to_string()),
         concat!(
@@ -1753,12 +1846,18 @@ fn compiler2_struct_pattern_unknown_field_diagnoses_at_settle_not_synchronously(
         )
         .to_string(),
     );
-    assert_resolved(world.drive(), "first drive should index both modules");
+    assert_resolved(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        "first drive should index both modules",
+    );
     assert!(
         world.demand(Job::ScopeCode(code_id)),
         "top-level scope should be demandable"
     );
-    assert_resolved(world.drive(), "second drive should scope both modules");
+    assert_resolved(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        "second drive should scope both modules",
+    );
 
     let b = world.reference_module("B");
     let take = world.reference_function(b, "take", 1);
@@ -1768,7 +1867,10 @@ fn compiler2_struct_pattern_unknown_field_diagnoses_at_settle_not_synchronously(
         "lowering take/1 should be demandable"
     );
     assert!(
-        matches!(world.drive(), DriveOutcome::Fatal { .. }),
+        matches!(
+            super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+            DriveOutcome::Fatal { .. }
+        ),
         "an unknown field on a struct pattern should diagnose once Point settles, not resolve cleanly",
     );
     let diagnostic = capture
@@ -1796,7 +1898,7 @@ fn compiler2_struct_literal_lowering_diagnoses_reference_to_non_struct_module() 
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
     tel.attach(&[], capture.handler());
-    let mut world = crate::compiler2::World::new(&tel);
+    let mut world = crate::compiler2::World::new();
     let code_id = world.submit_code(
         Some("struct_literal_non_struct.fz".to_string()),
         concat!(
@@ -1810,12 +1912,18 @@ fn compiler2_struct_literal_lowering_diagnoses_reference_to_non_struct_module() 
         )
         .to_string(),
     );
-    assert_resolved(world.drive(), "first drive should index both modules");
+    assert_resolved(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        "first drive should index both modules",
+    );
     assert!(
         world.demand(Job::ScopeCode(code_id)),
         "top-level scope should be demandable"
     );
-    assert_resolved(world.drive(), "second drive should scope both modules");
+    assert_resolved(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        "second drive should scope both modules",
+    );
 
     let b = world.reference_module("B");
     let make = world.reference_function(b, "make", 0);
@@ -1824,7 +1932,10 @@ fn compiler2_struct_literal_lowering_diagnoses_reference_to_non_struct_module() 
         "lowering make/0 should be demandable"
     );
     assert!(
-        matches!(world.drive(), DriveOutcome::Unresolved { .. }),
+        matches!(
+            super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+            DriveOutcome::Unresolved { .. }
+        ),
         "lowering a struct literal naming a non-struct module should terminate, not resolve in literal order",
     );
 
@@ -1845,7 +1956,7 @@ fn compiler2_zero_field_struct_literal_lowering_diagnoses_non_struct_module_at_r
     let diagnostics = DiagnosticCapture::new();
     tel.attach(&[], capture.handler());
     tel.attach(&[], diagnostics.handler());
-    let mut world = crate::compiler2::World::new(&tel);
+    let mut world = crate::compiler2::World::new();
     let source = concat!(
         "defmodule NotAStruct do\n",
         "  fn hello(), do: 0\n",
@@ -1860,12 +1971,18 @@ fn compiler2_zero_field_struct_literal_lowering_diagnoses_non_struct_module_at_r
         Some("zero_field_struct_literal_non_struct.fz".to_string()),
         source.clone(),
     );
-    assert_resolved(world.drive(), "first drive should index both modules");
+    assert_resolved(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        "first drive should index both modules",
+    );
     assert!(
         world.demand(Job::ScopeCode(code_id)),
         "top-level scope should be demandable"
     );
-    assert_resolved(world.drive(), "second drive should scope both modules");
+    assert_resolved(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        "second drive should scope both modules",
+    );
 
     let b = world.reference_module("B");
     let make = world.reference_function(b, "make", 0);
@@ -1874,7 +1991,10 @@ fn compiler2_zero_field_struct_literal_lowering_diagnoses_non_struct_module_at_r
         "lowering make/0 should be demandable"
     );
     assert!(
-        matches!(world.drive(), DriveOutcome::Unresolved { .. }),
+        matches!(
+            super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+            DriveOutcome::Unresolved { .. }
+        ),
         "lowering a zero-field struct literal naming a non-struct module should diagnose at the literal",
     );
 
@@ -1912,7 +2032,7 @@ fn compiler2_struct_pattern_lowering_diagnoses_reference_to_non_struct_module() 
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
     tel.attach(&[], capture.handler());
-    let mut world = crate::compiler2::World::new(&tel);
+    let mut world = crate::compiler2::World::new();
     let code_id = world.submit_code(
         Some("struct_pattern_non_struct.fz".to_string()),
         concat!(
@@ -1926,12 +2046,18 @@ fn compiler2_struct_pattern_lowering_diagnoses_reference_to_non_struct_module() 
         )
         .to_string(),
     );
-    assert_resolved(world.drive(), "first drive should index both modules");
+    assert_resolved(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        "first drive should index both modules",
+    );
     assert!(
         world.demand(Job::ScopeCode(code_id)),
         "top-level scope should be demandable"
     );
-    assert_resolved(world.drive(), "second drive should scope both modules");
+    assert_resolved(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        "second drive should scope both modules",
+    );
 
     let b = world.reference_module("B");
     let take = world.reference_function(b, "take", 1);
@@ -1940,7 +2066,10 @@ fn compiler2_struct_pattern_lowering_diagnoses_reference_to_non_struct_module() 
         "lowering take/1 should be demandable"
     );
     assert!(
-        matches!(world.drive(), DriveOutcome::Unresolved { .. }),
+        matches!(
+            super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+            DriveOutcome::Unresolved { .. }
+        ),
         "lowering a struct pattern naming a non-struct module should terminate, not resolve in literal order",
     );
 
@@ -1961,7 +2090,7 @@ fn compiler2_zero_field_struct_pattern_lowering_diagnoses_non_struct_module_at_r
     let diagnostics = DiagnosticCapture::new();
     tel.attach(&[], capture.handler());
     tel.attach(&[], diagnostics.handler());
-    let mut world = crate::compiler2::World::new(&tel);
+    let mut world = crate::compiler2::World::new();
     let source = concat!(
         "defmodule NotAStruct do\n",
         "  fn hello(), do: 0\n",
@@ -1976,12 +2105,18 @@ fn compiler2_zero_field_struct_pattern_lowering_diagnoses_non_struct_module_at_r
         Some("zero_field_struct_pattern_non_struct.fz".to_string()),
         source.clone(),
     );
-    assert_resolved(world.drive(), "first drive should index both modules");
+    assert_resolved(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        "first drive should index both modules",
+    );
     assert!(
         world.demand(Job::ScopeCode(code_id)),
         "top-level scope should be demandable"
     );
-    assert_resolved(world.drive(), "second drive should scope both modules");
+    assert_resolved(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        "second drive should scope both modules",
+    );
 
     let b = world.reference_module("B");
     let take = world.reference_function(b, "take", 1);
@@ -1990,7 +2125,10 @@ fn compiler2_zero_field_struct_pattern_lowering_diagnoses_non_struct_module_at_r
         "lowering take/1 should be demandable"
     );
     assert!(
-        matches!(world.drive(), DriveOutcome::Unresolved { .. }),
+        matches!(
+            super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+            DriveOutcome::Unresolved { .. }
+        ),
         "lowering a zero-field struct pattern naming a non-struct module should diagnose at the pattern",
     );
 
@@ -2022,7 +2160,7 @@ fn compiler2_import_of_undefined_module_diagnoses_at_the_import_site() {
     let diagnostics = DiagnosticCapture::new();
     tel.attach(&[], capture.handler());
     tel.attach(&[], diagnostics.handler());
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     let source = concat!(
         "defmodule User do\n",
         "  import Missing\n",
@@ -2072,7 +2210,7 @@ fn compiler2_dotted_call_to_a_name_a_settled_module_does_not_export_diagnoses_at
     let diagnostics = DiagnosticCapture::new();
     tel.attach(&[], capture.handler());
     tel.attach(&[], diagnostics.handler());
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
 
     compiler.submit_code(CodeSubmission {
         name: Some("math_export_span_math.fz".to_string()),
@@ -2137,7 +2275,7 @@ fn compiler2_backend_struct_schemas_are_fed_from_struct_def_facts_not_a_source_s
     let backend = BackendProgramCapture::new();
     tel.attach(&["fz", "compiler2", "backend_program", "defined"], backend.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("struct_backend_schema_from_facts.fz".to_string()),
         text: concat!(
@@ -2219,7 +2357,7 @@ fn compiler2_main_root_struct_schema_is_complete_alongside_an_independently_driv
     let backend = BackendProgramCapture::new();
     tel.attach(&["fz", "compiler2", "backend_program", "defined"], backend.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("struct_schema_complete_alongside_macro_root.fz".to_string()),
         text: concat!(
@@ -2272,7 +2410,7 @@ fn compiler2_index_code_defines_owned_functions_without_lowering_or_activating_b
     let modules = ModuleCapture::new();
     tel.attach(&["fz", "compiler2", "module", "defined"], modules.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     let source = include_str!("../../fixtures2/00001_quicksort_plus_foo.fz").to_string();
 
     let code_id = compiler.submit_code(CodeSubmission {
@@ -2461,7 +2599,7 @@ fn compiler2_submit_root_pulls_scope_and_seeds_entry_semantics_without_warming_f
     let functions = FunctionCapture::new();
     tel.attach(&["fz", "compiler2", "function"], functions.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     let _code_id = compiler.submit_code(CodeSubmission {
         name: Some("fixtures/quicksort_plus_foo.fz".to_string()),
         text: include_str!("../../fixtures2/00001_quicksort_plus_foo.fz").to_string(),
@@ -2590,7 +2728,7 @@ fn compiler2_root_scopes_only_the_code_that_can_publish_its_entry() {
     let outputs = OutputCapture::new();
     tel.attach(&["fz", "compiler2", "job"], outputs.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     let main_code = compiler.submit_code(CodeSubmission {
         name: Some("main_only.fz".to_string()),
         text: "fn main(), do: 1\n".to_string(),
@@ -2657,7 +2795,7 @@ fn compiler2_resolving_a_global_name_does_not_scope_unrelated_opaque_macro_calls
     let outputs = OutputCapture::new();
     tel.attach(&["fz", "compiler2", "job"], outputs.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     let main_code = compiler.submit_code(CodeSubmission {
         name: Some("main_only.fz".to_string()),
         text: "fn main(), do: 1\n".to_string(),
@@ -2724,7 +2862,7 @@ fn compiler2_root_source_publication_is_once_per_code_fact() {
     let outputs = OutputCapture::new();
     tel.attach(&["fz", "compiler2", "job"], outputs.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     let user_code = compiler.submit_code(CodeSubmission {
         name: Some("no_runtime.fz".to_string()),
         text: include_str!("../../fixtures2/00009_no_runtime.fz").to_string(),
@@ -2789,7 +2927,7 @@ fn compiler2_macro_executable_runs_quote_unquote_on_the_source_heap() {
     let functions = FunctionCapture::new();
     tel.attach(&["fz", "compiler2", "function"], functions.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     let code_id = compiler.submit_code(CodeSubmission {
         name: Some("macro_inc.fz".to_string()),
         text: "defmacro inc(x) do\n  quote do: unquote(x) + 1\nend\n\ndefmacro quoted_var() do\n  quote do: x\nend\n\ndefmacro forward_define(source) do\n  quote do: Fz.Compiler.define(unquote(source), unquote(__CALLER__))\nend\n"
@@ -2943,9 +3081,9 @@ fn compiler2_macro_executable_runs_quote_unquote_on_the_source_heap() {
 @spec subtract([a], [a]) :: [a]
 fn subtract(left, []), do: left
 fn subtract(left, [item | rest]), do: subtract(delete_first(left, item), rest)
-"#,
+        "#,
         crate::compiler2::CodeId::ZERO,
-        &tel,
+        compiler.telemetry(),
     )
     .expect("long-doc quoted parse");
     let long_doc_items = long_doc_source.cursor().list_items().expect("long-doc items");
@@ -2982,9 +3120,9 @@ defmodule M do
   fn subtract(left, []), do: left
   fn subtract(left, [item | rest]), do: subtract(delete_first(left, item), rest)
 end
-"#,
+        "#,
         crate::compiler2::CodeId::ZERO,
-        &tel,
+        compiler.telemetry(),
     )
     .expect("module quoted parse");
     let module_items = module_source.cursor().list_items().expect("module items");
@@ -3052,7 +3190,7 @@ fn compiler2_runtime_roots_reject_macro_entries() {
     let outputs = OutputCapture::new();
     tel.attach(&["fz", "compiler2", "job"], outputs.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("macro_root.fz".to_string()),
         text: "defmacro inc(x) do\n  quote do: unquote(x) + 1\nend\n".to_string(),
@@ -3092,7 +3230,7 @@ fn compiler2_runtime_refs_pull_only_the_reached_runtime_modules() {
     let bodies = LoweredBodyCapture::new();
     tel.attach(&["fz", "compiler2", "lowered_body", "defined"], bodies.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("runtime_refs.fz".to_string()),
         text: include_str!("../../fixtures2/00007_runtime_refs.fz").to_string(),
@@ -3181,7 +3319,7 @@ fn compiler2_analyze_activation_publishes_one_whole_callsite_fact_per_call() {
     let functions = FunctionCapture::new();
     tel.attach(&["fz", "compiler2", "function"], functions.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/callsite_fact_surface.fz".to_string()),
         text: include_str!("../../fixtures2/00008_callsite_fact_surface.fz").to_string(),
@@ -3241,7 +3379,7 @@ fn compiler2_unused_runtime_library_stays_cold() {
     let bodies = LoweredBodyCapture::new();
     tel.attach(&["fz", "compiler2", "lowered_body", "defined"], bodies.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     let code_id = compiler.submit_code(CodeSubmission {
         name: Some("no_runtime.fz".to_string()),
         text: include_str!("../../fixtures2/00009_no_runtime.fz").to_string(),
@@ -3299,7 +3437,7 @@ fn compiler2_enum_reduce_selects_list_protocol_impl_and_callable_reducer() {
         analyzed.handler(),
     );
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/enum_reduce_runtime_graph.fz".to_string()),
         text: include_str!("../../fixtures2/00010_enum_reduce_main.fz").to_string(),
@@ -3487,7 +3625,7 @@ fn compiler2_return_type_defined_changed_field_matches_actual_fact_movement() {
     let returns = ReturnTypeCapture::new();
     tel.attach(&["fz", "compiler2", "return_type", "defined"], returns.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/quicksort_plus_foo.fz".to_string()),
         text: include_str!("../../fixtures2/00001_quicksort_plus_foo.fz").to_string(),
@@ -3569,7 +3707,7 @@ fn compiler2_enum_reduce_operator_ref_activates_kernel_plus() {
         analyzed.handler(),
     );
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/enum_reduce_operator_ref.fz".to_string()),
         text: include_str!("fixtures/enum_reduce_operator_ref.fz").to_string(),
@@ -3678,7 +3816,7 @@ fn compiler2_lowering_rejects_unbound_local_function_refs_before_artifact_planni
     let capture = Capture::new();
     tel.attach(&[], capture.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/unresolved_callable_boundary.fz".to_string()),
         text: include_str!("../../fixtures2/00014_unresolved_callable_boundary.fz").to_string(),
@@ -3722,7 +3860,7 @@ fn compiler2_import_only_exact_fn_refs_lower_as_function_ids_without_provider_bo
     let functions = FunctionCapture::new();
     tel.attach(&["fz", "compiler2", "function"], functions.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     let code_id = compiler.submit_code(CodeSubmission {
         name: Some("fixtures/import_only_exact_fn_ref.fz".to_string()),
         text: "import Math, only: [add: 2]\nfn main(), do: &add/2\n".to_string(),
@@ -3766,7 +3904,7 @@ fn compiler2_seed_root_does_not_depend_on_its_own_root_fact() {
     let outputs = OutputCapture::new();
     tel.attach(&["fz", "compiler2", "job"], outputs.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("seed_root_no_self_edge.fz".to_string()),
         text: "fn main(), do: 0\n".to_string(),
@@ -3799,7 +3937,7 @@ fn compiler2_backend_program_keeps_only_the_closed_quicksort_inventory() {
     let backend = BackendProgramCapture::new();
     tel.attach(&["fz", "compiler2", "backend_program", "defined"], backend.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/quicksort_plus_foo.fz".to_string()),
         text: include_str!("../../fixtures2/00001_quicksort_plus_foo.fz").to_string(),
@@ -3894,7 +4032,7 @@ fn compiler2_backend_program_carries_tail_return_flow_from_transport_facts() {
     let backend = BackendProgramCapture::new();
     tel.attach(&["fz", "compiler2", "backend_program", "defined"], backend.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("backend_tail_return_flow.fz".to_string()),
         text: r#"
@@ -3953,7 +4091,7 @@ fn compiler2_backend_program_carries_return_payload_flow_before_native_lowering(
     let backend = BackendProgramCapture::new();
     tel.attach(&["fz", "compiler2", "backend_program", "defined"], backend.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/behavior/multi_relay.fz".to_string()),
         text: include_str!("../../fixtures2/behavior/multi_relay.fz").to_string(),
@@ -4020,7 +4158,7 @@ fn compiler2_backend_program_keeps_direct_only_enum_reduce_out_of_callable_inven
     let backend = BackendProgramCapture::new();
     tel.attach(&["fz", "compiler2", "backend_program", "defined"], backend.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/enum_reduce_runtime_graph.fz".to_string()),
         text: include_str!("../../fixtures2/00010_enum_reduce_main.fz").to_string(),
@@ -4088,7 +4226,7 @@ fn compiler2_backend_program_surfaces_per_callable_boundary_association() {
     let backend = BackendProgramCapture::new();
     tel.attach(&["fz", "compiler2", "backend_program", "defined"], backend.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/00181_enum_reduce_operator_ref.fz".to_string()),
         text: include_str!("../../fixtures2/00181_enum_reduce_operator_ref.fz").to_string(),
@@ -4160,7 +4298,7 @@ fn compiler2_native_program_does_not_fabricate_nil_for_zero_width_resume_payload
     let native = NativeProgramCapture::new();
     tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         // `Enum.each` discards each element's mapped result, so the per-element
         // call delivers an IGNORED value to its resume continuation — a genuinely
@@ -4235,7 +4373,7 @@ fn compiler2_backend_program_preserves_variadic_extern_wire_classes() {
     let backend = BackendProgramCapture::new();
     tel.attach(&["fz", "compiler2", "backend_program", "defined"], backend.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/variadic_open_compiler2.fz".to_string()),
         text: include_str!("../../fixtures2/00013_variadic_open.fz").to_string(),
@@ -4313,7 +4451,7 @@ fn compiler2_native_program_keeps_only_the_closed_quicksort_inventory() {
     let native = NativeProgramCapture::new();
     tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/quicksort_plus_foo.fz".to_string()),
         text: include_str!("../../fixtures2/00001_quicksort_plus_foo.fz").to_string(),
@@ -4396,7 +4534,7 @@ fn compiler2_native_program_resume_payload_shape_is_schedule_independent() {
         let native = NativeProgramCapture::new();
         tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
 
-        let mut compiler = Compiler2::new(&tel);
+        let mut compiler = Compiler2::new(tel);
         compiler.submit_code(CodeSubmission {
             name: Some("fixtures/quicksort_plus_foo.fz".to_string()),
             text: include_str!("../../fixtures2/00001_quicksort_plus_foo.fz").to_string(),
@@ -4473,7 +4611,7 @@ fn compiler2_native_program_resume_shape_distinguishes_destination_passing_from_
         let tel = ConfiguredTelemetry::new();
         let native = NativeProgramCapture::new();
         tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
-        let mut compiler = Compiler2::new(&tel);
+        let mut compiler = Compiler2::new(tel);
         compiler.submit_code(CodeSubmission {
             name: Some("fixtures/quicksort_plus_foo.fz".to_string()),
             text: include_str!("../../fixtures2/00001_quicksort_plus_foo.fz").to_string(),
@@ -4514,7 +4652,7 @@ fn compiler2_native_program_resume_shape_distinguishes_destination_passing_from_
         let tel = ConfiguredTelemetry::new();
         let native = NativeProgramCapture::new();
         tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
-        let mut compiler = Compiler2::new(&tel);
+        let mut compiler = Compiler2::new(tel);
         compiler.submit_code(CodeSubmission {
             name: Some("fixtures/enum_each_zero_width_payload.fz".to_string()),
             text: r#"fn main(), do: Enum.each([1, 2, 3], fn (x) -> x end)"#.to_string(),
@@ -4571,7 +4709,7 @@ fn compiler2_native_program_matches_tuple_field_call_continuations_to_the_callee
     let native = NativeProgramCapture::new();
     tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/quicksort_plus_foo.fz".to_string()),
         text: include_str!("../../fixtures2/00001_quicksort_plus_foo.fz").to_string(),
@@ -4688,7 +4826,7 @@ fn compiler2_native_program_keeps_direct_only_enum_reduce_out_of_callable_invent
     let native = NativeProgramCapture::new();
     tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/enum_reduce_runtime_graph.fz".to_string()),
         text: include_str!("../../fixtures2/00010_enum_reduce_main.fz").to_string(),
@@ -4756,7 +4894,7 @@ fn compiler2_native_program_keeps_distinct_direct_callable_executables_for_same_
     let native = NativeProgramCapture::new();
     tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/callable_boundary_capture_identity.fz".to_string()),
         text: r#"
@@ -4843,7 +4981,7 @@ fn compiler2_native_program_joins_callable_resume_before_materializing_closure_c
     let native = NativeProgramCapture::new();
     tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/behavior/opaque_fn_value_join.fz".to_string()),
         text: include_str!("../../fixtures2/behavior/opaque_fn_value_join.fz").to_string(),
@@ -4896,7 +5034,7 @@ fn compiler2_native_program_marks_settled_singleton_closure_flows_with_exact_tar
     let native = NativeProgramCapture::new();
     tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/behavior/closure_typed_captures.fz".to_string()),
         text: include_str!("../../fixtures2/behavior/closure_typed_captures.fz").to_string(),
@@ -4949,7 +5087,7 @@ fn compiler2_native_codegen_keeps_callable_boundary_surface_authoritative_for_ra
     let native = NativeProgramCapture::new();
     tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/behavior/fz_f98_range_reduce_scalar.fz".to_string()),
         text: include_str!("../../fixtures2/behavior/fz_f98_range_reduce_scalar.fz").to_string(),
@@ -5000,7 +5138,7 @@ fn compiler2_interp_runs_range_reduce_scalar_bridge_from_backend_artifacts() {
     let dbg = DbgCapture::new();
     tel.attach(&[], dbg.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/behavior/fz_f98_range_reduce_scalar.fz".to_string()),
         text: include_str!("../../fixtures2/behavior/fz_f98_range_reduce_scalar.fz").to_string(),
@@ -5039,7 +5177,7 @@ fn compiler2_interp_runs_range_and_map_to_list_from_backend_artifacts() {
     let dbg = DbgCapture::new();
     tel.attach(&[], dbg.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/behavior/fz_f98_range_map_converges.fz".to_string()),
         text: include_str!("../../fixtures2/behavior/fz_f98_range_map_converges.fz").to_string(),
@@ -5086,7 +5224,7 @@ fn compiler2_runtime_demand_settles_the_f98_orbit_fixture_without_cycling() {
     let dbg = DbgCapture::new();
     tel.attach(&[], dbg.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/behavior/fz_f98_range_map_converges.fz".to_string()),
         text: include_str!("../../fixtures2/behavior/fz_f98_range_map_converges.fz").to_string(),
@@ -5138,7 +5276,7 @@ fn compiler2_native_program_preserves_variadic_extern_wrappers_and_marshals() {
     let native = NativeProgramCapture::new();
     tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/variadic_open_compiler2.fz".to_string()),
         text: include_str!("../../fixtures2/00013_variadic_open.fz").to_string(),
@@ -5190,7 +5328,7 @@ fn compiler2_native_program_revision_stays_stable_for_identical_recompute() {
     let native = NativeProgramCapture::new();
     tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/quicksort_plus_foo.fz".to_string()),
         text: include_str!("../../fixtures2/00001_quicksort_plus_foo.fz").to_string(),
@@ -5253,7 +5391,7 @@ fn compiler2_native_program_jit_runs_quicksort_through_compiler2_codegen() {
     let native = NativeProgramCapture::new();
     tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/quicksort_plus_foo.fz".to_string()),
         text: include_str!("../../fixtures2/00020_quicksort_jit_entry.fz").to_string(),
@@ -5279,7 +5417,7 @@ fn compiler2_native_program_jit_runs_quicksort_through_compiler2_codegen() {
 
     let program = native.last(root_id).program;
     let compiled = jit_compile_native_program(&mut compiler, &program);
-    let halt = compiled.run(&tel, program.entry);
+    let halt = compiled.run(compiler.telemetry(), program.entry);
     assert_eq!(
         halt, 42,
         "compiler2-owned native codegen should preserve the Compiler2 quicksort entry result"
@@ -5303,7 +5441,7 @@ fn compiler2_native_codegen_brackets_every_phase_under_one_compile_span() {
     let native = NativeProgramCapture::new();
     tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/quicksort_entry.fz".to_string()),
         text: include_str!("../../fixtures2/00019_quicksort_entry.fz").to_string(),
@@ -5407,7 +5545,7 @@ fn compiler2_native_program_jit_runs_spawn_then_receive_through_compiler2_codege
     let functions = FunctionCapture::new();
     tel.attach(&["fz", "compiler2", "function"], functions.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/compiler2_spawn_then_receive.fz".to_string()),
         text: include_str!("../../fixtures2/00016_spawn_then_receive.fz").to_string(),
@@ -5471,7 +5609,7 @@ fn compiler2_native_program_jit_runs_spawn_then_receive_through_compiler2_codege
 
     let compiled = jit_compile_native_program(&mut compiler, &program);
     assert_eq!(
-        compiled.run(&tel, program.entry),
+        compiled.run(compiler.telemetry(), program.entry),
         42,
         "compiler2-owned native codegen should preserve Compiler2 spawn/receive behavior through the callable-entry seam",
     );
@@ -5489,7 +5627,7 @@ fn compiler2_native_program_jit_runs_spawn_receive_and_assert_through_compiler2_
     let native = NativeProgramCapture::new();
     tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/compiler2_spawn_receive_assert.fz".to_string()),
         text: include_str!("../../fixtures2/00017_spawn_receive_assert.fz").to_string(),
@@ -5516,7 +5654,7 @@ fn compiler2_native_program_jit_runs_spawn_receive_and_assert_through_compiler2_
     let program = native.last(root_id).program;
     let compiled = jit_compile_native_program(&mut compiler, &program);
     assert_eq!(
-        compiled.run(&tel, program.entry),
+        compiled.run(compiler.telemetry(), program.entry),
         0,
         "compiler2-owned native codegen should preserve Compiler2 spawn/receive/assert behavior through the continuation seam",
     );
@@ -5534,7 +5672,7 @@ fn compiler2_native_program_jit_runs_enum_reduce_through_compiler2_codegen() {
     let native = NativeProgramCapture::new();
     tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/enum_reduce_runtime_graph.fz".to_string()),
         text: include_str!("../../fixtures2/00010_enum_reduce_main.fz").to_string(),
@@ -5561,7 +5699,7 @@ fn compiler2_native_program_jit_runs_enum_reduce_through_compiler2_codegen() {
     let program = native.last(root_id).program;
     let compiled = jit_compile_native_program(&mut compiler, &program);
     assert_eq!(
-        compiled.run(&tel, program.entry),
+        compiled.run(compiler.telemetry(), program.entry),
         15,
         "compiler2-owned native codegen should preserve the closed Enum.reduce result from Compiler2",
     );
@@ -5581,7 +5719,7 @@ fn compiler2_native_program_jit_runs_enum_map_reduce_with_direct_closure_targets
     let native = NativeProgramCapture::new();
     tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/behavior/enum_map_reduce_exact.fz".to_string()),
         text: "fn main() do\n  xs = [1, 2, 3, 4]\n  dbg(Enum.map_reduce(xs, 0, fn (x, acc) -> {x + acc, acc + x} end))\nend\n".to_string(),
@@ -5607,7 +5745,7 @@ fn compiler2_native_program_jit_runs_enum_map_reduce_with_direct_closure_targets
 
     let program = native.last(root_id).program;
     let compiled = jit_compile_native_program(&mut compiler, &program);
-    let _ = compiled.run(&tel, program.entry);
+    let _ = compiled.run(compiler.telemetry(), program.entry);
     assert_eq!(
         dbg.lines(),
         vec!["{[1, 3, 6, 10], 10}".to_string()],
@@ -5629,7 +5767,7 @@ fn compiler2_native_program_jit_runs_source_lambda_sugars_through_compiler2_code
     let native = NativeProgramCapture::new();
     tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/behavior/lambda_sugars.fz".to_string()),
         text: include_str!("../../fixtures2/behavior/lambda_sugars.fz").to_string(),
@@ -5665,7 +5803,7 @@ fn compiler2_native_program_jit_runs_source_lambda_sugars_through_compiler2_code
         "direct-only lambda sugars should lower every closure call with an exact direct target before codegen",
     );
     let compiled = jit_compile_native_program(&mut compiler, &program);
-    let _ = compiled.run(&tel, program.entry);
+    let _ = compiled.run(compiler.telemetry(), program.entry);
     assert_eq!(
         dbg.lines(),
         vec!["42".to_string(), "{:zero, :pos, :other}".to_string()],
@@ -5690,7 +5828,7 @@ fn compiler2_native_program_jit_runs_variadic_extern_through_compiler2_codegen()
     let native = NativeProgramCapture::new();
     tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/variadic_open_compiler2_jit.fz".to_string()),
         text: include_str!("../../fixtures2/00015_variadic_open_jit.fz").to_string(),
@@ -5717,7 +5855,7 @@ fn compiler2_native_program_jit_runs_variadic_extern_through_compiler2_codegen()
     let program = native.last(root_id).program;
     let compiled = jit_compile_native_program(&mut compiler, &program);
     assert_eq!(
-        compiled.run(&tel, program.entry),
+        compiled.run(compiler.telemetry(), program.entry),
         -1,
         "compiler2-owned native codegen should preserve Compiler2 variadic extern calls and return the libc open error sentinel for a missing path",
     );
@@ -5735,7 +5873,7 @@ fn compiler2_native_program_jit_runs_map_fixture_through_compiler2_codegen() {
     let native = NativeProgramCapture::new();
     tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/behavior/map_three_path_parity.fz".to_string()),
         text: include_str!("../../fixtures2/behavior/map_three_path_parity.fz").to_string(),
@@ -5771,7 +5909,7 @@ fn compiler2_native_program_jit_keeps_tail_recursion_bounded() {
     let native = NativeProgramCapture::new();
     tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/behavior/tail_recursion.fz".to_string()),
         text: include_str!("../../fixtures2/00018_tail_recursion.fz").to_string(),
@@ -5798,7 +5936,7 @@ fn compiler2_native_program_jit_keeps_tail_recursion_bounded() {
     let program = native.last(root_id).program;
     let compiled = jit_compile_native_program(&mut compiler, &program);
     assert_eq!(
-        compiled.run(&tel, program.entry),
+        compiled.run(compiler.telemetry(), program.entry),
         100_000,
         "compiler2-owned native codegen should preserve Compiler2 tail recursion without stack growth",
     );
@@ -5821,7 +5959,7 @@ fn compiler2_cont_threaded_recursion_closes_with_a_back_edge() {
     let native = NativeProgramCapture::new();
     tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/behavior/tail_recursion.fz".to_string()),
         text: include_str!("../../fixtures2/00018_tail_recursion.fz").to_string(),
@@ -5866,7 +6004,7 @@ fn compiler2_backend_program_keeps_heap_stats_resume_values_as_runtime_lanes() {
     let backend = BackendProgramCapture::new();
     tel.attach(&["fz", "compiler2", "backend_program", "defined"], backend.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00297_heap_alloc_stats.fz".to_string()),
         text: include_str!("../../fixtures2/00297_heap_alloc_stats.fz").to_string(),
@@ -5930,7 +6068,7 @@ fn compiler2_backend_program_keeps_dbg_resumed_heap_stats_as_runtime_lanes() {
     let backend = BackendProgramCapture::new();
     tel.attach(&["fz", "compiler2", "backend_program", "defined"], backend.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("heap_stats_dbg_resume.fz".to_string()),
         text:
@@ -6036,7 +6174,7 @@ fn compiler2_interp_runs_quicksort_from_backend_artifacts() {
     let backend = BackendProgramCapture::new();
     tel.attach(&["fz", "compiler2", "backend_program", "defined"], backend.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/quicksort_plus_foo.fz".to_string()),
         text: include_str!("../../fixtures2/00020_quicksort_jit_entry.fz").to_string(),
@@ -6095,7 +6233,7 @@ fn compiler2_interp_runs_enum_reduce_from_backend_artifacts() {
     let capture = Capture::new();
     tel.attach(&[], capture.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/enum_reduce_runtime_graph.fz".to_string()),
         text: include_str!("../../fixtures2/00010_enum_reduce_main.fz").to_string(),
@@ -6126,7 +6264,7 @@ fn compiler2_interp_runs_enum_reduce_while_halt_payload_with_distinct_type() {
     let dbg = DbgCapture::new();
     tel.attach(&[], dbg.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00284_enum_find_early_halt.fz".to_string()),
         text: include_str!("../../fixtures2/00284_enum_find_early_halt.fz").to_string(),
@@ -6159,7 +6297,7 @@ fn compiler2_semantic_preserves_enum_find_halt_payload_distinct_from_default() {
     let returns = ReturnTypeCapture::new();
     tel.attach(&["fz", "compiler2", "return_type", "defined"], returns.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("enum_find_semantic_halt_payload.fz".to_string()),
         text: r#"
@@ -6208,7 +6346,7 @@ fn compiler2_interp_runs_first_class_callable_captured_by_a_non_tail_continuatio
     let dbg = DbgCapture::new();
     tel.attach(&[], dbg.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/first_class_callable_non_tail_continuation.fz".to_string()),
         text: r#"
@@ -6250,7 +6388,7 @@ fn compiler2_interp_runs_distinct_surface_boxed_callables() {
     let dbg = DbgCapture::new();
     tel.attach(&[], dbg.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/distinct_surface_boxed_callables.fz".to_string()),
         text: r#"
@@ -6289,7 +6427,7 @@ fn compiler2_interp_runs_enum_with_index_mapper_from_backend_artifacts() {
     let dbg = DbgCapture::new();
     tel.attach(&[], dbg.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/enum_with_index_mapper_backend_interp.fz".to_string()),
         text: r#"
@@ -6330,7 +6468,7 @@ fn compiler2_interp_runs_variadic_extern_from_backend_artifacts() {
     let capture = Capture::new();
     tel.attach(&[], capture.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/variadic_printf_compiler2.fz".to_string()),
         text: include_str!("../../fixtures2/00021_variadic_printf.fz").to_string(),
@@ -6359,7 +6497,7 @@ fn compiler2_interp_runs_variadic_extern_from_backend_artifacts() {
 fn compiler2_interp_honors_typed_entry_dispatch_from_backend_artifacts() {
     let tel = ConfiguredTelemetry::new();
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/typed_dispatch_backend_interp.fz".to_string()),
         text: include_str!("../../fixtures2/00022_typed_dispatch.fz").to_string(),
@@ -6393,7 +6531,7 @@ fn compiler2_runtime_self_send_activations_keep_pid_boundary() {
     tel.attach(&[], returns.handler());
     tel.attach(&[], inputs.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/backend_interp_self_send.fz".to_string()),
         text: include_str!("../../fixtures2/00023_backend_interp_self_send.fz").to_string(),
@@ -6443,7 +6581,7 @@ fn compiler2_interp_uses_backend_runtime_self_and_send_intrinsics() {
     let capture = Capture::new();
     tel.attach(&[], capture.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/backend_interp_self_send.fz".to_string()),
         text: include_str!("../../fixtures2/00023_backend_interp_self_send.fz").to_string(),
@@ -6480,7 +6618,7 @@ fn compiler2_interp_runs_spawned_children_from_backend_runtime_intrinsics() {
     let dbg = DbgCapture::new();
     tel.attach(&[], dbg.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/backend_interp_spawn.fz".to_string()),
         text: include_str!("../../fixtures2/00024_backend_interp_spawn.fz").to_string(),
@@ -6520,7 +6658,7 @@ fn compiler2_interp_runs_spawn_opt_children_from_backend_runtime_intrinsics() {
     let dbg = DbgCapture::new();
     tel.attach(&[], dbg.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/backend_interp_spawn_opt.fz".to_string()),
         text: include_str!("../../fixtures2/00025_backend_interp_spawn_opt.fz").to_string(),
@@ -6557,7 +6695,7 @@ fn compiler2_interp_runs_selective_receive_with_make_ref_from_backend_artifacts(
     let dbg = DbgCapture::new();
     tel.attach(&[], dbg.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/behavior/receive_selective_refs.fz".to_string()),
         text: include_str!("../../fixtures2/behavior/receive_selective_refs.fz").to_string(),
@@ -6586,7 +6724,7 @@ fn compiler2_native_receive_value_resumes_as_arithmetic_input() {
     let dbg = DbgCapture::new();
     tel.attach(&[], dbg.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("receive_resume_arith.fz".to_string()),
         text: r#"
@@ -6625,7 +6763,7 @@ fn compiler2_native_program_routes_post_receive_resumes_through_delivered_contin
     let native = NativeProgramCapture::new();
     tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/behavior/receive_shared_tuple_arity.fz".to_string()),
         text: include_str!("../../fixtures2/behavior/receive_shared_tuple_arity.fz").to_string(),
@@ -6718,7 +6856,7 @@ fn compiler2_native_receive_body_call_resumes_once() {
     let dbg = DbgCapture::new();
     tel.attach(&[], dbg.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("receive_body_call_resume.fz".to_string()),
         text: r#"
@@ -6759,7 +6897,7 @@ fn compiler2_native_receive_branch_call_resumes_once() {
     let dbg = DbgCapture::new();
     tel.attach(&[], dbg.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("receive_branch_call_resume.fz".to_string()),
         text: r#"
@@ -6809,7 +6947,7 @@ fn compiler2_native_receive_mixed_branch_resume_once() {
     let dbg = DbgCapture::new();
     tel.attach(&[], dbg.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("receive_mixed_branch_resume.fz".to_string()),
         text: r#"
@@ -6856,7 +6994,7 @@ end
 #[test]
 fn compiler2_native_multi_relay_delivers_resume_values_through_continuation_abi() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/behavior/multi_relay.fz".to_string()),
         text: include_str!("../../fixtures2/behavior/multi_relay.fz").to_string(),
@@ -6879,7 +7017,7 @@ fn compiler2_native_lowering_consumes_return_payload_flow_through_return_lanes()
     let native = NativeProgramCapture::new();
     tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/behavior/multi_relay.fz".to_string()),
         text: include_str!("../../fixtures2/behavior/multi_relay.fz").to_string(),
@@ -6940,7 +7078,7 @@ fn compiler2_native_lowering_consumes_return_payload_flow_through_return_lanes()
 #[test]
 fn compiler2_native_actor_ring_delivers_resume_values_through_continuation_abi() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/behavior/actor_ring.fz".to_string()),
         text: include_str!("../../fixtures2/behavior/actor_ring.fz").to_string(),
@@ -6966,7 +7104,7 @@ fn compiler2_interp_runs_resource_dtors_from_backend_runtime_intrinsics() {
     let capture = Capture::new();
     tel.attach(&[], capture.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/backend_interp_make_resource.fz".to_string()),
         text: include_str!("../../fixtures2/00026_make_resource.fz").to_string(),
@@ -7014,7 +7152,7 @@ fn compiler2_native_program_reads_continuation_reprs_from_transport_seams() {
     let native = NativeProgramCapture::new();
     tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("native_float_resume_reads_transport_seam.fz".to_string()),
         text: r#"
@@ -7082,7 +7220,7 @@ fn compiler2_native_program_adapts_delivered_calls_from_callee_return_lanes() {
     let native = NativeProgramCapture::new();
     tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("enum_take_delivered_lane_adapter.fz".to_string()),
         text: "fn main() do\n  xs = [1, 2, 3, 4, 5]\n  dbg(Enum.take(xs, 3))\nend\n".to_string(),
@@ -7141,7 +7279,7 @@ fn compiler2_native_program_carries_published_callable_boundary_targets_into_clo
     let native = NativeProgramCapture::new();
     tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("enum_take_reducer_direct_target.fz".to_string()),
         text: "fn main() do\n  xs = [1, 2, 3, 4, 5]\n  dbg(Enum.take(xs, 3))\nend\n".to_string(),
@@ -7190,7 +7328,7 @@ fn compiler2_native_codegen_reports_direct_closure_call_boundary_target_telemetr
     tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
     tel.attach(&["fz", "codegen", "closure_call_lowered"], closure_calls.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/behavior/curried_add.fz".to_string()),
         text: include_str!("../../fixtures2/behavior/curried_add.fz").to_string(),
@@ -7251,7 +7389,7 @@ fn compiler2_native_program_resource_fixture_shapes_callable_boundaries_explicit
     let functions = FunctionCapture::new();
     tel.attach(&["fz", "compiler2", "function"], functions.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/compiler2_resource_callable_shape.fz".to_string()),
         text: include_str!("../../fixtures2/00026_make_resource.fz").to_string(),
@@ -7352,7 +7490,7 @@ fn escaping_destructor_keys_its_activation_at_the_grounded_boundary_surface() {
     let functions = FunctionCapture::new();
     tel.attach(&["fz", "compiler2", "function"], functions.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/compiler2_resource_callable_shape.fz".to_string()),
         text: include_str!("../../fixtures2/00026_make_resource.fz").to_string(),
@@ -7422,7 +7560,7 @@ fn compiler2_native_codegen_dispatches_typed_capture_closure_directly_without_a_
     let native = NativeProgramCapture::new();
     tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/behavior/closure_typed_captures.fz".to_string()),
         text: include_str!("../../fixtures2/behavior/closure_typed_captures.fz").to_string(),
@@ -7447,7 +7585,7 @@ fn compiler2_native_codegen_dispatches_typed_capture_closure_directly_without_a_
         program.callable_boundaries,
     );
     let compiled = jit_compile_native_program(&mut compiler, &program);
-    let halt = compiled.run(&tel, program.entry);
+    let halt = compiled.run(compiler.telemetry(), program.entry);
     assert_eq!(
         halt, 0,
         "closure_typed_captures should execute through JIT and halt with nil"
@@ -7460,7 +7598,7 @@ fn compiler2_backend_program_revision_stays_stable_for_identical_recompute() {
     let backend = BackendProgramCapture::new();
     tel.attach(&["fz", "compiler2", "backend_program", "defined"], backend.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/quicksort_plus_foo.fz".to_string()),
         text: include_str!("../../fixtures2/00001_quicksort_plus_foo.fz").to_string(),
@@ -7510,7 +7648,7 @@ fn compiler2_variadic_extern_too_few_args_is_a_lower_diagnostic() {
     let functions = FunctionCapture::new();
     tel.attach(&["fz", "compiler2", "function"], functions.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/variadic_open_too_few_compiler2.fz".to_string()),
         text: include_str!("../../fixtures2/00052_variadic_open_too_few.fz").to_string(),
@@ -7559,7 +7697,7 @@ fn compiler2_semantic_analysis_derives_reachable_call_edges_and_tuple_return_nee
     let callsites = CallsiteCapture::new();
     tel.attach(&["fz", "compiler2", "callsite", "defined"], callsites.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/quicksort_plus_foo.fz".to_string()),
         text: include_str!("../../fixtures2/00001_quicksort_plus_foo.fz").to_string(),
@@ -7637,7 +7775,7 @@ fn compiler2_backend_product_lowers_closed_union_protocol_dispatch_as_call_edge(
     let backend = BackendProgramCapture::new();
     tel.attach(&["fz", "compiler2", "backend_program", "defined"], backend.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/compiler2_protocol_union_dispatch.fz".to_string()),
         text: r#"
@@ -7766,7 +7904,7 @@ fn compiler2_membership_operator_protocol_receivers_settle_to_direct_impls() {
     let backend = BackendProgramCapture::new();
     tel.attach(&["fz", "compiler2", "backend_program", "defined"], backend.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/membership_operator_compiler2.fz".to_string()),
         text: include_str!("../../fixtures2/behavior/membership_operator.fz").to_string(),
@@ -7834,7 +7972,7 @@ fn compiler2_quicksort_root_closes_with_a_finite_recursive_frontier() {
     let functions = FunctionCapture::new();
     tel.attach(&["fz", "compiler2", "function"], functions.handler());
 
-    let mut world = crate::compiler2::World::new(&tel);
+    let mut world = crate::compiler2::World::new();
     world.submit_code(
         Some("quicksort_plus_foo.fz".to_string()),
         include_str!("../../fixtures2/00001_quicksort_plus_foo.fz").to_string(),
@@ -7842,7 +7980,7 @@ fn compiler2_quicksort_root_closes_with_a_finite_recursive_frontier() {
     let root_id = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
     world.demand(Job::BuildBackendProduct(root_id));
     assert_resolved(
-        world.drive(),
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
         "quicksort root should settle to a finite semantic frontier",
     );
 
@@ -8000,14 +8138,17 @@ fn compiler2_redefining_uncalled_foo_does_not_reopen_quicksort_root() {
     let functions = FunctionCapture::new();
     tel.attach(&["fz", "compiler2", "function"], functions.handler());
 
-    let mut world = crate::compiler2::World::new(&tel);
+    let mut world = crate::compiler2::World::new();
     world.submit_code(
         Some("quicksort_plus_foo_v1.fz".to_string()),
         include_str!("../../fixtures2/00001_quicksort_plus_foo.fz").to_string(),
     );
     let root_id = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
     world.demand(Job::BuildBackendProduct(root_id));
-    assert_resolved(world.drive(), "initial quicksort root should settle");
+    assert_resolved(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        "initial quicksort root should settle",
+    );
 
     let main_id = function_id(&functions, "main", 0);
     let qsort_id = function_id(&functions, "qsort", 1);
@@ -8028,7 +8169,7 @@ fn compiler2_redefining_uncalled_foo_does_not_reopen_quicksort_root() {
     );
     world.demand(Job::BuildBackendProduct(root_id));
     assert_resolved(
-        world.drive(),
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
         "redefining uncalled foo/0 should not reopen the quicksort root",
     );
 
@@ -8058,14 +8199,17 @@ fn compiler2_redefining_main_retracts_the_old_root_frontier_and_activates_foo() 
     let functions = FunctionCapture::new();
     tel.attach(&["fz", "compiler2", "function"], functions.handler());
 
-    let mut world = crate::compiler2::World::new(&tel);
+    let mut world = crate::compiler2::World::new();
     world.submit_code(
         Some("quicksort_plus_foo_v1.fz".to_string()),
         include_str!("../../fixtures2/00001_quicksort_plus_foo.fz").to_string(),
     );
     let root_id = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
     world.demand(Job::BuildBackendProduct(root_id));
-    assert_resolved(world.drive(), "initial quicksort root should settle");
+    assert_resolved(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        "initial quicksort root should settle",
+    );
 
     let main_id = function_id(&functions, "main", 0);
     let qsort_id = function_id(&functions, "qsort", 1);
@@ -8091,7 +8235,7 @@ fn compiler2_redefining_main_retracts_the_old_root_frontier_and_activates_foo() 
     );
     world.demand(Job::BuildBackendProduct(root_id));
     assert_resolved(
-        world.drive(),
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
         "redefining main/0 should retract the old quicksort root frontier",
     );
 
@@ -8120,7 +8264,7 @@ fn compiler2_submit_root_before_code_reports_unresolved_until_entry_is_defined()
     let work_graph = WorkGraphCapture::new();
     tel.attach(&["fz", "compiler2", "work_graph", "applied"], work_graph.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
         name: "main".to_string(),
@@ -8189,7 +8333,7 @@ fn compiler2_submit_module_root_without_code_reports_one_unknown_module_diag() {
     let capture = Capture::new();
     tel.attach(&[], capture.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_root(RootSubmission {
         module_name: Some("User".to_string()),
         name: "run".to_string(),
@@ -8241,7 +8385,7 @@ fn compiler2_submit_code_after_root_auto_scopes_new_definitions_without_reseedin
     let functions = FunctionCapture::new();
     tel.attach(&["fz", "compiler2", "function"], functions.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/entry_only.fz".to_string()),
         text: include_str!("../../fixtures2/00009_no_runtime.fz").to_string(),
@@ -8313,7 +8457,7 @@ fn compiler2_lower_function_mints_lambda_defs_without_eagerly_lowering_them() {
     let modules = ModuleCapture::new();
     tel.attach(&["fz", "compiler2", "module", "defined"], modules.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/local_lambda.fz".to_string()),
         text: include_str!("../../fixtures2/00031_local_lambda.fz").to_string(),
@@ -8424,7 +8568,7 @@ fn compiler2_recursive_keying_sees_recursion_through_generated_lambdas() {
     let returns = ReturnTypeCapture::new();
     tel.attach(&["fz", "compiler2", "return_type", "defined"], returns.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/compiler2_lambda_recursion_keying.fz".to_string()),
         text: include_str!("../../fixtures2/00032_lambda_recursion.fz").to_string(),
@@ -8498,7 +8642,7 @@ fn compiler2_lowered_body_keeps_clause_projections_separate_from_entry_matching(
     let bodies = LoweredBodyCapture::new();
     tel.attach(&["fz", "compiler2", "lowered_body", "defined"], bodies.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     let code_id = compiler.submit_code(CodeSubmission {
         name: Some("fixtures/lowered_clause_projections.fz".to_string()),
         text: include_str!("../../fixtures2/00033_clause_projections.fz").to_string(),
@@ -8559,7 +8703,7 @@ fn compiler2_generated_lambda_body_binds_captures_as_leading_inputs() {
     let bodies = LoweredBodyCapture::new();
     tel.attach(&["fz", "compiler2", "lowered_body", "defined"], bodies.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     let code_id = compiler.submit_code(CodeSubmission {
         name: Some("fixtures/lambda_capture_inputs.fz".to_string()),
         text: include_str!("../../fixtures2/00034_lambda_capture.fz").to_string(),
@@ -8631,7 +8775,7 @@ fn compiler2_lowered_body_keeps_local_match_asserts_inside_the_body() {
     let bodies = LoweredBodyCapture::new();
     tel.attach(&["fz", "compiler2", "lowered_body", "defined"], bodies.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     let code_id = compiler.submit_code(CodeSubmission {
         name: Some("fixtures/lowered_local_match.fz".to_string()),
         text: include_str!("../../fixtures2/00035_local_match.fz").to_string(),
@@ -8689,7 +8833,7 @@ fn compiler2_lowering_routes_nontail_if_join_flow_through_delivered_resume() {
     let bodies = LoweredBodyCapture::new();
     tel.attach(&["fz", "compiler2", "lowered_body", "defined"], bodies.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00466_nontail_if_join_flow.fz".to_string()),
         text: include_str!("../../fixtures2/00466_nontail_if_join_flow.fz").to_string(),
@@ -8764,7 +8908,7 @@ fn compiler2_native_program_routes_nontail_if_join_flow_through_continuation_ent
     let native = NativeProgramCapture::new();
     tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00466_nontail_if_join_flow.fz".to_string()),
         text: include_str!("../../fixtures2/00466_nontail_if_join_flow.fz").to_string(),
@@ -8822,7 +8966,7 @@ fn compiler2_native_program_transports_reusable_cons_caps_through_delivered_cont
     let native = NativeProgramCapture::new();
     tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("reusable_cons_continuation.fz".to_string()),
         text: r#"
@@ -8909,7 +9053,7 @@ fn compiler2_lowered_body_records_reusable_cons_capture_requirements_on_delivere
     let bodies = LoweredBodyCapture::new();
     tel.attach(&["fz", "compiler2", "lowered_body", "defined"], bodies.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     let code_id = compiler.submit_code(CodeSubmission {
         name: Some("reusable_cons_continuation.fz".to_string()),
         text: r#"
@@ -8984,7 +9128,7 @@ fn compiler2_reusable_cons_telemetry_reports_birth_transport_and_consumption() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
     tel.attach(&[], capture.handler());
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
         name: "main".to_string(),
@@ -9047,7 +9191,7 @@ fn compiler2_reusable_cons_telemetry_reports_born_but_not_transported() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
     tel.attach(&[], capture.handler());
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
         name: "main".to_string(),
@@ -9099,7 +9243,7 @@ fn compiler2_reusable_cons_runtime_telemetry_reports_in_place_reuse() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
     tel.attach(&[], capture.handler());
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
         name: "main".to_string(),
@@ -9142,7 +9286,7 @@ fn compiler2_reusable_cons_runtime_telemetry_reports_alias_fallback() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
     tel.attach(&[], capture.handler());
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
         name: "main".to_string(),
@@ -9203,7 +9347,7 @@ end
     let jit_tel = ConfiguredTelemetry::new();
     let jit_capture = Capture::new();
     jit_tel.attach(&[], jit_capture.handler());
-    let mut jit_compiler = Compiler2::new(&jit_tel);
+    let mut jit_compiler = Compiler2::new(jit_tel);
     let jit_root = jit_compiler.submit_root(RootSubmission {
         module_name: None,
         name: "main".to_string(),
@@ -9224,7 +9368,7 @@ end
     let interp_tel = ConfiguredTelemetry::new();
     let interp_capture = Capture::new();
     interp_tel.attach(&[], interp_capture.handler());
-    let mut interp_compiler = Compiler2::new(&interp_tel);
+    let mut interp_compiler = Compiler2::new(interp_tel);
     let interp_root = interp_compiler.submit_root(RootSubmission {
         module_name: None,
         name: "main".to_string(),
@@ -9267,7 +9411,7 @@ fn compiler2_native_program_jit_runs_nontail_if_join_flow_through_compiler2_code
     let tel = ConfiguredTelemetry::new();
     let dbg = DbgCapture::new();
     tel.attach(&["fz", "runtime", "dbg"], dbg.handler());
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00466_nontail_if_join_flow.fz".to_string()),
         text: include_str!("../../fixtures2/00466_nontail_if_join_flow.fz").to_string(),
@@ -9300,7 +9444,7 @@ fn compiler2_operator_expressions_lower_to_kernel_wrapper_calls() {
     let callsites = CallsiteCapture::new();
     tel.attach(&["fz", "compiler2", "callsite", "defined"], callsites.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/operator_wrapper_calls.fz".to_string()),
         text: "defmodule Main do\n  fn main(x), do: {x + 1, x == 1, x < 2}\nend\n".to_string(),
@@ -9345,7 +9489,7 @@ fn compiler2_kernel_operator_wrappers_lower_to_intrinsic_extern_calls() {
     let modules = ModuleCapture::new();
     tel.attach(&["fz", "compiler2", "module"], modules.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/operator_intrinsic_lanes.fz".to_string()),
         text: "defmodule Main do\n  fn main(), do: {1 + 2, 1 + 2.0, 2.0 + 1, 2.0 + 3.0}\nend\n".to_string(),
@@ -9384,7 +9528,7 @@ fn compiler2_guard_dispatch_reifies_single_clause_and_transitive_helpers() {
     let guard_defs = GuardDispatchCapture::new();
     tel.attach(&["fz", "compiler2", "guard_dispatch", "defined"], guard_defs.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     let code_id = compiler.submit_code(CodeSubmission {
         name: Some("fixtures/guard_helpers.fz".to_string()),
         text: include_str!("../../fixtures2/00036_guard_helpers.fz").to_string(),
@@ -9452,7 +9596,7 @@ fn compiler2_guard_dispatch_threads_call_arguments_and_destructuring() {
     let guard_defs = GuardDispatchCapture::new();
     tel.attach(&["fz", "compiler2", "guard_dispatch", "defined"], guard_defs.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     let code_id = compiler.submit_code(CodeSubmission {
         name: Some("fixtures/guard_destructure.fz".to_string()),
         text: include_str!("../../fixtures2/00037_guard_destructure.fz").to_string(),
@@ -9511,7 +9655,7 @@ fn compiler2_guard_dispatch_rejects_cycles() {
     let functions = FunctionCapture::new();
     tel.attach(&["fz", "compiler2", "function"], functions.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     let code_id = compiler.submit_code(CodeSubmission {
         name: Some("fixtures/guard_cycle.fz".to_string()),
         text: include_str!("../../fixtures2/00038_guard_cycle.fz").to_string(),
@@ -9560,7 +9704,7 @@ fn compiler2_guard_dispatch_rejects_impure_helpers() {
     let functions = FunctionCapture::new();
     tel.attach(&["fz", "compiler2", "function"], functions.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     let code_id = compiler.submit_code(CodeSubmission {
         name: Some("fixtures/guard_impure.fz".to_string()),
         text: include_str!("../../fixtures2/00039_guard_impure.fz").to_string(),
@@ -9615,7 +9759,7 @@ fn compiler2_entry_dispatch_plans_clause_heads_with_preconditions_and_helper_gua
     let entry_defs = EntryDispatchCapture::new();
     tel.attach(&["fz", "compiler2", "entry_dispatch", "defined"], entry_defs.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     let code_id = compiler.submit_code(CodeSubmission {
         name: Some("fixtures/entry_dispatch_aliases.fz".to_string()),
         text: include_str!("../../fixtures2/00040_entry_dispatch_aliases.fz").to_string(),
@@ -9695,7 +9839,7 @@ fn compiler2_entry_dispatch_plans_trivial_single_clause_functions() {
     let entry_defs = EntryDispatchCapture::new();
     tel.attach(&["fz", "compiler2", "entry_dispatch", "defined"], entry_defs.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     let code_id = compiler.submit_code(CodeSubmission {
         name: Some("fixtures/entry_dispatch_single_clause.fz".to_string()),
         text: include_str!("../../fixtures2/00041_entry_dispatch_single.fz").to_string(),
@@ -9750,7 +9894,7 @@ fn compiler2_entry_dispatch_recomputes_only_the_dependent_helper_blast_radius() 
     let entry_defs = EntryDispatchCapture::new();
     tel.attach(&["fz", "compiler2", "entry_dispatch", "defined"], entry_defs.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     let code_id = compiler.submit_code(CodeSubmission {
         name: Some("fixtures/entry_dispatch_blast_radius_v1.fz".to_string()),
         text: include_str!("../../fixtures2/00042_blast_radius_v1.fz").to_string(),
@@ -9858,7 +10002,7 @@ fn compiler2_scope_code_discovers_nested_modules_through_definition_macros() {
     let modules = ModuleCapture::new();
     tel.attach(&["fz", "compiler2", "module", "defined"], modules.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     let code_id = compiler.submit_code(CodeSubmission {
         name: Some("fixtures/nested_modules.fz".to_string()),
         text: include_str!("../../fixtures2/00044_nested_modules.fz").to_string(),
@@ -9987,7 +10131,7 @@ fn compiler2_import_only_keeps_provider_lazy_until_a_body_needs_it() {
     let modules = ModuleCapture::new();
     tel.attach(&["fz", "compiler2", "module", "defined"], modules.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     let code_id = compiler.submit_code(CodeSubmission {
         name: Some("fixtures/import_only.fz".to_string()),
         text: include_str!("../../fixtures2/00045_import_only.fz").to_string(),
@@ -10067,7 +10211,7 @@ fn compiler2_imported_macro_expands_in_provider_definition_namespace() {
     let bodies = LoweredBodyCapture::new();
     tel.attach(&["fz", "compiler2", "lowered_body", "defined"], bodies.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/cross_module_macro.fz".to_string()),
         text: r#"
@@ -10123,7 +10267,7 @@ fn compiler2_require_except_selects_remote_macro_set() {
     let bodies = LoweredBodyCapture::new();
     tel.attach(&["fz", "compiler2", "lowered_body", "defined"], bodies.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/require_except_remote_macro.fz".to_string()),
         text: r#"
@@ -10184,7 +10328,7 @@ fn compiler2_cross_file_bare_require_permits_qualified_macro_call() {
     let bodies = LoweredBodyCapture::new();
     tel.attach(&["fz", "compiler2", "lowered_body", "defined"], bodies.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/cross_file_macro_provider.fz".to_string()),
         text: r#"
@@ -10241,7 +10385,7 @@ fn compiler2_visible_alias_does_not_permit_remote_macro_without_require() {
     let capture = Capture::new();
     tel.attach(&[], capture.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/aliased_macro_provider.fz".to_string()),
         text: r#"
@@ -10303,7 +10447,7 @@ fn compiler2_dotted_require_permits_full_path_macro_call() {
     let bodies = LoweredBodyCapture::new();
     tel.attach(&["fz", "compiler2", "lowered_body", "defined"], bodies.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/dotted_macro_provider.fz".to_string()),
         text: r#"
@@ -10360,7 +10504,7 @@ fn compiler2_dotted_require_does_not_bind_short_alias() {
     let capture = Capture::new();
     tel.attach(&[], capture.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/dotted_macro_provider.fz".to_string()),
         text: r#"
@@ -10418,7 +10562,7 @@ fn compiler2_remote_macro_requires_explicit_require() {
     let capture = Capture::new();
     tel.attach(&[], capture.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/remote_macro_without_require.fz".to_string()),
         text: r#"
@@ -10486,7 +10630,7 @@ fn compiler2_require_remote_macro_waits_executable_and_expands() {
     let bodies = LoweredBodyCapture::new();
     tel.attach(&["fz", "compiler2", "lowered_body", "defined"], bodies.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/require_remote_macro.fz".to_string()),
         text: r#"
@@ -10540,7 +10684,7 @@ fn compiler2_import_only_missing_target_stays_lazy_until_interface_settlement() 
     let outputs = OutputCapture::new();
     tel.attach(&["fz", "compiler2", "job"], outputs.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     let code_id = compiler.submit_code(CodeSubmission {
         name: Some("fixtures/import_only_unknown.fz".to_string()),
         text: include_str!("../../fixtures2/00046_import_only_unknown.fz").to_string(),
@@ -10582,7 +10726,7 @@ fn compiler2_import_all_waits_for_module_interface() {
     let modules = ModuleCapture::new();
     tel.attach(&["fz", "compiler2", "module", "defined"], modules.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     let code_id = compiler.submit_code(CodeSubmission {
         name: Some("fixtures/import_all.fz".to_string()),
         text: include_str!("../../fixtures2/00047_import_all.fz").to_string(),
@@ -10648,7 +10792,7 @@ fn compiler2_import_except_waits_for_module_interface() {
     let modules = ModuleCapture::new();
     tel.attach(&["fz", "compiler2", "module", "defined"], modules.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     let code_id = compiler.submit_code(CodeSubmission {
         name: Some("fixtures/import_except.fz".to_string()),
         text: include_str!("../../fixtures2/00048_import_except.fz").to_string(),
@@ -11447,14 +11591,6 @@ impl Handler for FunctionCaptureHandler {
         else {
             return;
         };
-        let Some(module_id) = event
-            .metadata
-            .get("module_id")
-            .and_then(|v| v.downcast_ref::<ModuleId>())
-            .copied()
-        else {
-            return;
-        };
         let Some(Value::U64(arity)) = event.measurements.get("arity") else {
             return;
         };
@@ -11468,6 +11604,7 @@ impl Handler for FunctionCaptureHandler {
         else {
             return;
         };
+        let module_id = function_ref.module;
         let owner_function_id = if from_source {
             None
         } else {
@@ -12573,7 +12710,7 @@ fn compiler2_recursive_first_round_reads_absence_not_the_empty_type() {
     let callsites = CallsiteCapture::new();
     tel.attach(&["fz", "compiler2", "callsite", "defined"], callsites.handler());
 
-    let mut world = crate::compiler2::World::new(&tel);
+    let mut world = crate::compiler2::World::new();
     world.submit_code(
         Some("count.fz".to_string()),
         concat!(
@@ -12584,7 +12721,10 @@ fn compiler2_recursive_first_round_reads_absence_not_the_empty_type() {
         .to_string(),
     );
     world.submit_root(None, "main".to_string(), 0, crate::compiler2::ExecutableNeed::Value);
-    assert_resolved(world.drive(), "the recursive count program should converge");
+    assert_resolved(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        "the recursive count program should converge",
+    );
 
     let count_id = function_id(&functions, "count", 1);
     let self_calls: Vec<_> = callsites
@@ -12645,14 +12785,17 @@ fn compiler2_never_returning_function_settles_with_empty_evidence() {
     let functions = FunctionCapture::new();
     tel.attach(&["fz", "compiler2", "function"], functions.handler());
 
-    let mut world = crate::compiler2::World::new(&tel);
+    let mut world = crate::compiler2::World::new();
     world.submit_code(
         Some("forever.fz".to_string()),
         concat!("fn forever(), do: forever()\n", "fn main(), do: forever()\n").to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 0, crate::compiler2::ExecutableNeed::Value);
     world.demand(Job::BuildBackendProduct(root));
-    assert_resolved(world.drive(), "a never-returning program still quiesces");
+    assert_resolved(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        "a never-returning program still quiesces",
+    );
 
     // The two reachable activations both have bottom returns: analysis reaches
     // them (main/0 calls forever/0, forever/0 calls itself) but neither ever
@@ -12684,13 +12827,16 @@ fn compiler2_unproductive_deepening_settles_at_bottom_without_widening() {
     let tel = ConfiguredTelemetry::new();
     let widened = Capture::new();
     tel.attach(&["fz", "compiler2", "return_type", "widened"], widened.handler());
-    let mut world = crate::compiler2::World::new(&tel);
+    let mut world = crate::compiler2::World::new();
     world.submit_code(
         Some("deep_unproductive.fz".to_string()),
         concat!("fn deep(x), do: [deep(x)]\n", "fn main(), do: deep(1)\n").to_string(),
     );
     world.submit_root(None, "main".to_string(), 0, crate::compiler2::ExecutableNeed::Value);
-    assert_resolved(world.drive(), "an unproductive deepening program quiesces at bottom");
+    assert_resolved(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        "an unproductive deepening program quiesces at bottom",
+    );
     assert!(
         widened.is_empty(),
         "no evidence ever ascends, so widening must never engage",
@@ -12708,7 +12854,7 @@ fn compiler2_productive_deepening_terminates_by_widening() {
     let tel = ConfiguredTelemetry::new();
     let widened = Capture::new();
     tel.attach(&["fz", "compiler2", "return_type", "widened"], widened.handler());
-    let mut world = crate::compiler2::World::new(&tel);
+    let mut world = crate::compiler2::World::new();
     world.submit_code(
         Some("deep_productive.fz".to_string()),
         concat!(
@@ -12719,7 +12865,10 @@ fn compiler2_productive_deepening_terminates_by_widening() {
         .to_string(),
     );
     world.submit_root(None, "main".to_string(), 0, crate::compiler2::ExecutableNeed::Value);
-    assert_resolved(world.drive(), "the productive deepening program must converge");
+    assert_resolved(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        "the productive deepening program must converge",
+    );
     assert!(
         !widened.is_empty(),
         "termination of a true divergent ascent must come from widening",
@@ -12757,13 +12906,16 @@ fn compiler2_quicksort_return_revisions_stay_bounded() {
         }),
     );
 
-    let mut world = crate::compiler2::World::new(&tel);
+    let mut world = crate::compiler2::World::new();
     world.submit_code(
         Some("quicksort.fz".to_string()),
         include_str!("../../fixtures2/00001_quicksort_plus_foo.fz").to_string(),
     );
     world.submit_root(None, "main".to_string(), 0, crate::compiler2::ExecutableNeed::Value);
-    assert_resolved(world.drive(), "quicksort converges by theorem, on every schedule");
+    assert_resolved(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        "quicksort converges by theorem, on every schedule",
+    );
 
     for ((root, function), stats) in defines.borrow().iter() {
         assert!(
@@ -12822,12 +12974,12 @@ fn sweep_corpus_for_return_widening(shard: usize, shards: usize) {
             }),
         );
 
-        let mut world = crate::compiler2::World::new(&tel);
+        let mut world = crate::compiler2::World::new();
         world.submit_code(Some(path.display().to_string()), text);
         world.submit_root(None, "main".to_string(), 0, crate::compiler2::ExecutableNeed::Value);
         // Diagnostics are fixture-specific; the corpus invariants are that
         // the drive terminates (it returned) and never widened a return.
-        let _ = world.drive();
+        let _ = super::drive::ExecutionContext::new(&mut world, &tel).drive();
         assert!(
             widened.is_empty(),
             "return widening engaged on corpus fixture {}",
@@ -12895,14 +13047,17 @@ fn compiler2_quicksort_converges_identically_on_every_schedule() {
             }),
         );
 
-        let mut world = crate::compiler2::World::new(&tel);
+        let mut world = crate::compiler2::World::new();
         world.submit_code(
             Some("quicksort.fz".to_string()),
             include_str!("../../fixtures2/00001_quicksort_plus_foo.fz").to_string(),
         );
         let root = world.submit_root(None, "main".to_string(), 0, crate::compiler2::ExecutableNeed::Value);
         world.demand(Job::BuildBackendProduct(root));
-        assert_resolved(world.drive(), "every schedule converges");
+        assert_resolved(
+            super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+            "every schedule converges",
+        );
         let entry = world.root_function(root);
         let frontier = rooted_reachable_frontier(&mut world, root, entry);
         shapes.push((*jobs_ran.borrow(), frontier.len()));
@@ -12930,13 +13085,16 @@ fn compiler2_resolved_drive_is_quiescent() {
     // submissions runs zero jobs. Self-wake loops (the runaway's engine)
     // would fail this immediately.
     let tel = ConfiguredTelemetry::new();
-    let mut world = crate::compiler2::World::new(&tel);
+    let mut world = crate::compiler2::World::new();
     world.submit_code(
         Some("quicksort.fz".to_string()),
         include_str!("../../fixtures2/00001_quicksort_plus_foo.fz").to_string(),
     );
     world.submit_root(None, "main".to_string(), 0, crate::compiler2::ExecutableNeed::Value);
-    assert_resolved(world.drive(), "first drive settles");
+    assert_resolved(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        "first drive settles",
+    );
 
     let jobs_ran: Rc<RefCell<u64>> = Rc::new(RefCell::new(0));
     let sink = Rc::clone(&jobs_ran);
@@ -12948,7 +13106,10 @@ fn compiler2_resolved_drive_is_quiescent() {
             }
         }),
     );
-    assert_resolved(world.drive(), "a settled world re-drives to Resolved");
+    assert_resolved(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        "a settled world re-drives to Resolved",
+    );
     assert_eq!(*jobs_ran.borrow(), 0, "a settled world has nothing to do");
 }
 
@@ -13028,7 +13189,7 @@ fn compiler2_string_constant_dispatch_keeps_the_miss_arm_reachable() {
         }),
     );
 
-    let mut world = crate::compiler2::World::new(&tel);
+    let mut world = crate::compiler2::World::new();
     world.submit_code(
         Some("string_dispatch.fz".to_string()),
         concat!(
@@ -13039,7 +13200,10 @@ fn compiler2_string_constant_dispatch_keeps_the_miss_arm_reachable() {
         .to_string(),
     );
     world.submit_root(None, "main".to_string(), 0, crate::compiler2::ExecutableNeed::Value);
-    assert_resolved(world.drive(), "string-constant dispatch should settle");
+    assert_resolved(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        "string-constant dispatch should settle",
+    );
 
     let pick_id = function_id(&functions, "pick", 1).as_u32() as u64;
     let last = analyses
@@ -13354,10 +13518,10 @@ fn no_matching_clause_diagnostics(source_name: &str, source: &str) -> Vec<(Strin
     let diagnostics = DiagnosticCapture::new();
     tel.attach(&["fz", "diag"], diagnostics.handler());
 
-    let mut world = crate::compiler2::World::new(&tel);
+    let mut world = crate::compiler2::World::new();
     let user_code = world.submit_code(Some(source_name.to_string()), source.to_string());
     world.submit_root(None, "main".to_string(), 0, crate::compiler2::ExecutableNeed::Value);
-    let outcome = world.drive();
+    let outcome = super::drive::ExecutionContext::new(&mut world, &tel).drive();
     assert!(
         !matches!(outcome, DriveOutcome::Fatal { .. }),
         "diagnostic fixture must not fail fatally: {outcome:?}; diagnostics: {:?}",
@@ -13414,10 +13578,13 @@ fn semantic_reachability_for_source(
         }),
     );
 
-    let mut world = crate::compiler2::World::new(&tel);
+    let mut world = crate::compiler2::World::new();
     world.submit_code(Some(source_name.to_string()), source.to_string());
     let root = world.submit_root(None, "main".to_string(), 0, crate::compiler2::ExecutableNeed::Value);
-    assert_resolved(world.drive(), "dispatch reachability fixture should settle");
+    assert_resolved(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        "dispatch reachability fixture should settle",
+    );
 
     let function_id = function_id(&functions, function_name, arity);
     let function_measurement = function_id.as_u32() as u64;
@@ -13443,7 +13610,7 @@ fn compiler2_int_keyed_map_index_types_through_the_carried_literal() {
     let returns = ReturnTypeCapture::new();
     tel.attach(&["fz", "compiler2", "return_type", "defined"], returns.handler());
 
-    let mut world = crate::compiler2::World::new(&tel);
+    let mut world = crate::compiler2::World::new();
     world.submit_code(
         Some("map_int_key.fz".to_string()),
         concat!(
@@ -13456,7 +13623,10 @@ fn compiler2_int_keyed_map_index_types_through_the_carried_literal() {
         .to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 0, crate::compiler2::ExecutableNeed::Value);
-    assert_resolved(world.drive(), "int-keyed map program settles");
+    assert_resolved(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        "int-keyed map program settles",
+    );
 
     let pick_id = function_id(&functions, "pick", 0);
     let settled = returns.last_for_function(root, pick_id).return_ty;
@@ -13477,7 +13647,7 @@ fn compiler2_numeric_literal_in_type_position_widens_with_a_warning() {
     tel.attach(&["fz", "diag"], diags.handler());
     let rendered = rendered_type_defs(&tel);
 
-    let mut world = crate::compiler2::World::new(&tel);
+    let mut world = crate::compiler2::World::new();
     world.submit_code(
         Some("digit.fz".to_string()),
         concat!(
@@ -13488,7 +13658,10 @@ fn compiler2_numeric_literal_in_type_position_widens_with_a_warning() {
         .to_string(),
     );
     world.submit_root(None, "main".to_string(), 0, crate::compiler2::ExecutableNeed::Value);
-    assert_resolved(world.drive(), "the literal-typed program settles");
+    assert_resolved(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        "the literal-typed program settles",
+    );
 
     assert!(
         diags.find(&["fz", "diag", "warning"]).iter().any(|event| {
@@ -13516,7 +13689,7 @@ fn compiler2_native_program_jit_adapts_callable_raw_returns_back_to_value_refs()
     let native = NativeProgramCapture::new();
     tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/behavior/repr_seam_closure_predicate.fz".to_string()),
         text: include_str!("../../fixtures2/behavior/repr_seam_closure_predicate.fz").to_string(),
@@ -13537,7 +13710,7 @@ fn compiler2_native_program_jit_adapts_callable_raw_returns_back_to_value_refs()
     let program = native.last(root_id).program;
     let compiled = jit_compile_native_program(&mut compiler, &program);
     assert_eq!(
-        compiled.run(&tel, program.entry),
+        compiled.run(compiler.telemetry(), program.entry),
         2,
         "the fixture should still return the final count after native callable-entry adaptation",
     );
@@ -13571,7 +13744,7 @@ fn compiler2_multi_target_closure_arg_floor_clears_the_shared_reducer_demand_cra
     let tel = ConfiguredTelemetry::new();
     let dbg = DbgCapture::new();
     tel.attach(&[], dbg.handler());
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00279_enum_find_find_value.fz".to_string()),
         text: include_str!("../../fixtures2/00279_enum_find_find_value.fz").to_string(),
@@ -13618,7 +13791,7 @@ fn compiler2_multi_target_closure_arg_floor_shares_one_capture_surface_across_bo
     let native = NativeProgramCapture::new();
     tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00279_enum_find_find_value.fz".to_string()),
         text: include_str!("../../fixtures2/00279_enum_find_find_value.fz").to_string(),
@@ -13687,7 +13860,7 @@ fn compiler2_backend_program_capture_surface_is_authoritative_from_concrete_prod
     let backend = BackendProgramCapture::new();
     tel.attach(&["fz", "compiler2", "backend_program", "defined"], backend.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/behavior/enum_predicate_search.fz".to_string()),
         text: include_str!("../../fixtures2/behavior/enum_predicate_search.fz").to_string(),
@@ -13769,7 +13942,7 @@ fn compiler2_native_program_synthesizes_fallback_boundary_for_unpublished_closur
     let native = NativeProgramCapture::new();
     tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/behavior/enum_predicate_search.fz".to_string()),
         text: include_str!("../../fixtures2/behavior/enum_predicate_search.fz").to_string(),

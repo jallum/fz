@@ -41,9 +41,14 @@ use super::artifact::{codegen_seam_fact_sort_key, transport_position_global_sort
 
 const UNREACHABLE_CONTROL_ATOM: &str = "compiler2_unreachable_control";
 
-pub(crate) fn build_backend_product(world: &mut World<'_>, root_id: RootId) -> Result<JobEffects, FatalError> {
+pub(crate) fn build_backend_product(
+    world: &mut World,
+    tel: &impl crate::telemetry::Telemetry,
+    root_id: RootId,
+) -> Result<JobEffects, FatalError> {
     let backend_fact = FactKey::BackendProgram(root_id);
-    let (_program, driver) = super::super::product_drive::drive_root_backend_product::<FatalError>(world, root_id)?;
+    let (_program, driver) =
+        super::super::product_drive::drive_root_backend_product::<_, FatalError>(world, tel, root_id)?;
     driver.finish_session();
     Ok(JobEffects {
         outputs: vec![backend_fact.clone()],
@@ -58,13 +63,25 @@ pub(crate) fn build_backend_product(world: &mut World<'_>, root_id: RootId) -> R
 /// that fails through `jobs::run` has already emitted its own diagnostic, so
 /// this boundary must not emit a second one for the same failure.
 impl super::super::product_drive::ProductDriveError for FatalError {
-    fn job_failed(_world: &World<'_>, _root: RootId, _fact: &FactUse<FactKey>, _job: &Job, source: FatalError) -> Self {
+    fn job_failed<T: crate::telemetry::Telemetry>(
+        _world: &World,
+        _tel: &T,
+        _root: RootId,
+        _fact: &FactUse<FactKey>,
+        _job: &Job,
+        source: FatalError,
+    ) -> Self {
         source
     }
 
-    fn no_ready_producer(world: &World<'_>, root: RootId, fact: &FactUse<FactKey>) -> Self {
+    fn no_ready_producer<T: crate::telemetry::Telemetry>(
+        _world: &World,
+        tel: &T,
+        root: RootId,
+        fact: &FactUse<FactKey>,
+    ) -> Self {
         emit_backend_product_error(
-            world,
+            tel,
             Span::DUMMY,
             format!(
                 "compiler2 backend product for root {} waited on {:?} with no ready producer",
@@ -74,9 +91,14 @@ impl super::super::product_drive::ProductDriveError for FatalError {
         )
     }
 
-    fn fact_wait_budget_exceeded(world: &World<'_>, root: RootId, fact: &FactUse<FactKey>) -> Self {
+    fn fact_wait_budget_exceeded<T: crate::telemetry::Telemetry>(
+        _world: &World,
+        tel: &T,
+        root: RootId,
+        fact: &FactUse<FactKey>,
+    ) -> Self {
         emit_backend_product_error(
-            world,
+            tel,
             Span::DUMMY,
             format!(
                 "compiler2 backend product for root {} exceeded fact-wait budget for {:?}",
@@ -86,23 +108,33 @@ impl super::super::product_drive::ProductDriveError for FatalError {
         )
     }
 
-    fn did_not_settle(world: &World<'_>, root: RootId, _last_wait: Option<(ProductKey, Vec<PullWait>)>) -> Self {
+    fn did_not_settle<T: crate::telemetry::Telemetry>(
+        _world: &World,
+        tel: &T,
+        root: RootId,
+        _last_wait: Option<(ProductKey, Vec<PullWait>)>,
+    ) -> Self {
         emit_backend_product_error(
-            world,
+            tel,
             Span::DUMMY,
             format!("compiler2 backend product for root {} did not settle", root.as_u32()),
         )
     }
 }
 
-fn emit_backend_product_error(world: &World<'_>, span: Span, message: impl Into<String>) -> FatalError {
+fn emit_backend_product_error(
+    tel: &impl crate::telemetry::Telemetry,
+    span: Span,
+    message: impl Into<String>,
+) -> FatalError {
     let diagnostic = Diagnostic::error(codes::ARTIFACT_INCOMPLETE_SEMANTIC_PLAN, message.into(), span);
-    emit_through(world.tel(), std::slice::from_ref(&diagnostic));
+    emit_through(tel, std::slice::from_ref(&diagnostic));
     FatalError
 }
 
 pub(crate) fn produce_root_backend_product(
-    world: &mut World<'_>,
+    world: &mut World,
+    tel: &impl crate::telemetry::Telemetry,
     session: &mut PullSession,
     root: RootId,
 ) -> PullOutcome {
@@ -164,12 +196,12 @@ pub(crate) fn produce_root_backend_product(
             let backend = session
                 .backend_executable(executable)
                 .expect("reachable backend executable should have been checked before packaging");
-            package_symbolic_backend_executable(world, root, backend, &executable_index)
+            package_symbolic_backend_executable(world, tel, root, backend, &executable_index)
         })
         .collect::<Result<Vec<_>, _>>()
         .expect("root backend product should have complete symbolic executable inventory");
     let callable_entries =
-        package_backend_callable_entries(world, root, session, &executable_index, &produced_boundaries)
+        package_backend_callable_entries(world, tel, root, session, &executable_index, &produced_boundaries)
             .expect("root backend product should have complete callable-entry inventory");
     let transport =
         symbolic_materialized_transport_plan(session, &entry, world, &produced_callables, &produced_boundaries);
@@ -187,12 +219,13 @@ pub(crate) fn produce_root_backend_product(
         executables,
         callable_entries,
     };
-    world.define_backend_program(root, program.clone());
+    super::super::drive::ExecutionContext::new(world, tel).define_backend_program(root, program.clone());
     PullOutcome::Produced(ProductValue::RootBackendProduct(Box::new(program)))
 }
 
 pub(crate) fn produce_backend_executable_product(
-    world: &mut World<'_>,
+    world: &mut World,
+    tel: &impl crate::telemetry::Telemetry,
     session: &mut PullSession,
     executable: &ExecutableKey,
 ) -> PullOutcome {
@@ -203,7 +236,7 @@ pub(crate) fn produce_backend_executable_product(
         return PullOutcome::Waiting(vec![PullWait::Product(ProductKey::AbiExecutable(executable.clone()))]);
     };
     let value_shapes = executable_value_shapes(session, &abi);
-    let mut lowerer = BackendLowerer::new(world, session.root(), value_shapes);
+    let mut lowerer = BackendLowerer::new(world, tel, session.root(), value_shapes);
     let emission = symbolic_emission_ready_executable(executable.clone(), &abi);
     let lowered = lower_symbolic_body(&mut lowerer, &emission, &abi)
         .expect("symbolic backend lowering should be complete after ABI product exists");
@@ -300,7 +333,7 @@ fn produced_boundary_facts(session: &PullSession) -> HashMap<BoundaryId, Boundar
 }
 
 fn boundary_resolution_executables(
-    world: &mut World<'_>,
+    world: &mut World,
     root: RootId,
     boundaries: &HashMap<BoundaryId, BoundaryFacts>,
 ) -> Vec<ExecutableKey> {
@@ -325,7 +358,8 @@ pub(crate) fn executable_key_for_symbol(
 }
 
 fn package_symbolic_backend_executable(
-    world: &World<'_>,
+    world: &World,
+    tel: &impl crate::telemetry::Telemetry,
     root: RootId,
     backend: &SymbolicBackendExecutable,
     executable_index: &std::collections::HashMap<ExecutableKey, usize>,
@@ -340,12 +374,13 @@ fn package_symbolic_backend_executable(
         value_types: backend.abi.value_types.clone(),
         value_reprs: backend.abi.value_reprs.clone(),
         effects: backend.abi.effects,
-        body: package_symbolic_backend_body(world, root, &backend.key, &backend.body, executable_index)?,
+        body: package_symbolic_backend_body(world, tel, root, &backend.key, &backend.body, executable_index)?,
     })
 }
 
 fn package_symbolic_backend_body(
-    world: &World<'_>,
+    world: &World,
+    tel: &impl crate::telemetry::Telemetry,
     root: RootId,
     caller: &ExecutableKey,
     body: &SymbolicBackendBody,
@@ -371,7 +406,7 @@ fn package_symbolic_backend_body(
                 .collect(),
             entries: entries
                 .iter()
-                .map(|entry| package_symbolic_backend_entry(world, root, caller, entry, executable_index))
+                .map(|entry| package_symbolic_backend_entry(world, tel, root, caller, entry, executable_index))
                 .collect::<Result<Vec<_>, _>>()?,
             generated: generated.clone(),
         },
@@ -379,7 +414,8 @@ fn package_symbolic_backend_body(
 }
 
 fn package_symbolic_backend_entry(
-    world: &World<'_>,
+    world: &World,
+    tel: &impl crate::telemetry::Telemetry,
     root: RootId,
     caller: &ExecutableKey,
     entry: &SymbolicBackendEntry,
@@ -393,12 +429,13 @@ fn package_symbolic_backend_entry(
         capture_positions: entry.capture_positions.clone(),
         reusable_cons_captures: entry.reusable_cons_captures.clone(),
         steps: entry.steps.clone(),
-        tail: package_symbolic_backend_tail(world, root, caller, &entry.tail, executable_index)?,
+        tail: package_symbolic_backend_tail(world, tel, root, caller, &entry.tail, executable_index)?,
     })
 }
 
 fn package_symbolic_backend_tail(
-    world: &World<'_>,
+    world: &World,
+    tel: &impl crate::telemetry::Telemetry,
     root: RootId,
     caller: &ExecutableKey,
     tail: &SymbolicBackendTail,
@@ -418,7 +455,7 @@ fn package_symbolic_backend_tail(
         } => BackendTail::DirectCall {
             value: *value,
             callsite: *callsite,
-            target: package_call_edge(world, root, caller, target, executable_index)?,
+            target: package_call_edge(world, tel, root, caller, target, executable_index)?,
             args: args.clone(),
             dest: dest.clone(),
         },
@@ -439,7 +476,7 @@ fn package_symbolic_backend_tail(
                 .map(|target| {
                     executable_index.get(target).copied().ok_or_else(|| {
                         incomplete_backend_program(
-                            world,
+                            tel,
                             root,
                             format!(
                                 "symbolic closure target {:?} -> {:?} is missing from final inventory",
@@ -477,7 +514,8 @@ fn package_symbolic_backend_tail(
 }
 
 fn package_call_edge(
-    world: &World<'_>,
+    world: &World,
+    tel: &impl crate::telemetry::Telemetry,
     root: RootId,
     caller: &ExecutableKey,
     target: &CallEdge<ExecutableKey>,
@@ -485,7 +523,7 @@ fn package_call_edge(
 ) -> Result<CallEdge<usize>, FatalError> {
     Ok(match target {
         CallEdge::Direct(direct) => CallEdge::Direct(DirectCallEdge {
-            callee: package_call_target(world, root, caller, &direct.callee, executable_index)?,
+            callee: package_call_target(world, tel, root, caller, &direct.callee, executable_index)?,
             return_flow: direct.return_flow.clone(),
             extern_marshals: direct.extern_marshals.clone(),
         }),
@@ -497,7 +535,7 @@ fn package_call_edge(
                 .map(|arm| {
                     Ok(DispatchCallArm {
                         body_id: arm.body_id,
-                        callee: package_call_target(world, root, caller, &arm.callee, executable_index)?,
+                        callee: package_call_target(world, tel, root, caller, &arm.callee, executable_index)?,
                         return_flow: arm.return_flow.clone(),
                         extern_marshals: arm.extern_marshals.clone(),
                     })
@@ -510,7 +548,8 @@ fn package_call_edge(
 }
 
 fn package_call_target(
-    world: &World<'_>,
+    _world: &World,
+    tel: &impl crate::telemetry::Telemetry,
     root: RootId,
     caller: &ExecutableKey,
     target: &CallTarget<ExecutableKey>,
@@ -519,7 +558,7 @@ fn package_call_target(
     Ok(match target {
         CallTarget::Local(callee) => CallTarget::Local(executable_index.get(callee).copied().ok_or_else(|| {
             incomplete_backend_program(
-                world,
+                tel,
                 root,
                 format!(
                     "symbolic backend call edge {:?} -> {:?} points outside final executable inventory",
@@ -550,7 +589,8 @@ fn package_call_target(
 /// source of truth for every boundary (concrete or pooling) makes the
 /// divergence impossible instead of papering over it at the codegen seam.
 fn concrete_target_capture_surfaces(
-    world: &World<'_>,
+    world: &World,
+    tel: &impl crate::telemetry::Telemetry,
     root: RootId,
     executable_index: &std::collections::HashMap<ExecutableKey, usize>,
     boundaries: &HashMap<BoundaryId, BoundaryFacts>,
@@ -565,7 +605,7 @@ fn concrete_target_capture_surfaces(
             let Some(target) = executable_key_for_symbol_in_index(target_symbol, executable_index, world.types())
             else {
                 return Err(incomplete_backend_program(
-                    world,
+                    tel,
                     root,
                     format!(
                         "boundary {:?} resolution {:?} is missing from final executable inventory",
@@ -577,7 +617,7 @@ fn concrete_target_capture_surfaces(
             match surfaces.get(&target) {
                 Some(existing) if existing.as_ref() != lanes.as_ref() => {
                     return Err(incomplete_backend_program(
-                        world,
+                        tel,
                         root,
                         format!(
                             "target {:?} has two concrete producer boundaries with different capture surfaces: {:?} vs {:?}",
@@ -595,13 +635,14 @@ fn concrete_target_capture_surfaces(
 }
 
 fn package_backend_callable_entries(
-    world: &World<'_>,
+    world: &World,
+    tel: &impl crate::telemetry::Telemetry,
     root: RootId,
     session: &PullSession,
     executable_index: &std::collections::HashMap<ExecutableKey, usize>,
     boundaries: &HashMap<BoundaryId, BoundaryFacts>,
 ) -> Result<Vec<BackendCallableEntry>, FatalError> {
-    let concrete_captures = concrete_target_capture_surfaces(world, root, executable_index, boundaries)?;
+    let concrete_captures = concrete_target_capture_surfaces(world, tel, root, executable_index, boundaries)?;
     let mut entries = Vec::new();
     for (boundary, facts) in boundaries {
         let boundary_descr = world.boundary(*boundary);
@@ -609,7 +650,7 @@ fn package_backend_callable_entries(
             let Some(target) = executable_key_for_symbol_in_index(target_symbol, executable_index, world.types())
             else {
                 return Err(incomplete_backend_program(
-                    world,
+                    tel,
                     root,
                     format!(
                         "boundary {:?} resolution {:?} is missing from final executable inventory",
@@ -619,7 +660,7 @@ fn package_backend_callable_entries(
             };
             let Some(target_index) = executable_index.get(&target).copied() else {
                 return Err(incomplete_backend_program(
-                    world,
+                    tel,
                     root,
                     format!(
                         "boundary {:?} target {:?} is missing from final executable inventory",
@@ -629,7 +670,7 @@ fn package_backend_callable_entries(
             };
             let Some(target_backend) = session.backend_executable(&target) else {
                 return Err(incomplete_backend_program(
-                    world,
+                    tel,
                     root,
                     format!(
                         "boundary {:?} target {:?} is missing from backend products",
@@ -653,7 +694,7 @@ fn package_backend_callable_entries(
                     // so that case is left alone rather than hard-erroring on
                     // programs that are provably unaffected.
                     return Err(incomplete_backend_program(
-                        world,
+                        tel,
                         root,
                         format!(
                             "boundary {:?} target {:?} has no concrete producer capture surface, and boundary {:?} is a pooling boundary publishing a non-empty capture surface {:?} -- that surface describes the pooling boundary's own boxed call convention, not the target's physical ABI, so it cannot stand in as a fallback",
@@ -740,7 +781,7 @@ fn compare_executable_needs(left: ExecutableNeed, right: ExecutableNeed) -> std:
 }
 
 pub(crate) fn abi_value_repr_for_lane(
-    world: &World<'_>,
+    world: &World,
     lane: super::super::transport::LaneId,
 ) -> super::super::artifact::AbiValueRepr {
     let ty = world.lane(lane).ty;
@@ -757,8 +798,8 @@ pub(crate) fn abi_value_repr_for_lane(
     }
 }
 
-fn lower_symbolic_body(
-    lowerer: &mut BackendLowerer<'_, '_>,
+fn lower_symbolic_body<T: crate::telemetry::Telemetry>(
+    lowerer: &mut BackendLowerer<'_, '_, T>,
     emission: &EmissionReadyExecutable,
     abi: &AbiReadyExecutable,
 ) -> Result<SymbolicBackendBody, FatalError> {
@@ -796,8 +837,8 @@ fn lower_symbolic_body(
     }
 }
 
-fn lower_symbolic_entry(
-    lowerer: &mut BackendLowerer<'_, '_>,
+fn lower_symbolic_entry<T: crate::telemetry::Telemetry>(
+    lowerer: &mut BackendLowerer<'_, '_, T>,
     emission: &EmissionReadyExecutable,
     abi: &AbiReadyExecutable,
     entry_index: usize,
@@ -825,8 +866,8 @@ fn lower_symbolic_entry(
     })
 }
 
-fn lower_symbolic_tail(
-    lowerer: &mut BackendLowerer<'_, '_>,
+fn lower_symbolic_tail<T: crate::telemetry::Telemetry>(
+    lowerer: &mut BackendLowerer<'_, '_, T>,
     emission: &EmissionReadyExecutable,
     abi: &AbiReadyExecutable,
     tail: &LoweredTail,
@@ -845,7 +886,7 @@ fn lower_symbolic_tail(
         } => {
             let edge = abi.call_edges.get(callsite).ok_or_else(|| {
                 incomplete_backend_program(
-                    lowerer.world,
+                    lowerer.telemetry,
                     lowerer.root_id,
                     format!("missing symbolic direct-call edge for callsite {}", callsite.as_u32()),
                 )
@@ -938,7 +979,7 @@ fn symbolic_emission_ready_executable(key: ExecutableKey, abi: &AbiReadyExecutab
 pub(crate) fn symbolic_materialized_transport_plan(
     session: &PullSession,
     executable: &ExecutableKey,
-    world: &World<'_>,
+    world: &World,
     callables: &HashMap<CallableId, CallableFacts>,
     boundaries: &HashMap<BoundaryId, BoundaryFacts>,
 ) -> MaterializedTransportPlan {
@@ -994,7 +1035,7 @@ pub(crate) fn symbolic_materialized_transport_plan(
 fn symbolic_codegen_seam_facts(
     session: &PullSession,
     position_shapes: &[(TransportPosition, ShapeId)],
-    world: &World<'_>,
+    world: &World,
     boundaries: &HashMap<BoundaryId, BoundaryFacts>,
 ) -> Box<[CodegenSeamFact]> {
     let mut out = Vec::new();
@@ -1149,7 +1190,7 @@ fn symbolic_codegen_seam_facts(
 
 fn push_symbolic_boundary_codegen_seams(
     session: &PullSession,
-    world: &World<'_>,
+    world: &World,
     boundary: BoundaryId,
     out: &mut Vec<CodegenSeamFact>,
 ) {
@@ -1187,7 +1228,7 @@ fn push_symbolic_boundary_codegen_seams(
 
 fn push_symbolic_publication_codegen_seam(
     session: &PullSession,
-    world: &World<'_>,
+    world: &World,
     boundary: BoundaryId,
     publication: &TransportPosition,
     lane: LaneId,
@@ -1283,7 +1324,7 @@ fn push_symbolic_publication_codegen_seam(
 fn symbolic_backend_for_executable<'a>(
     session: &'a PullSession,
     executable: &ExecutableSymbol,
-    world: &World<'_>,
+    world: &World,
 ) -> Option<&'a SymbolicBackendExecutable> {
     session
         .backend_executables()
@@ -1291,7 +1332,7 @@ fn symbolic_backend_for_executable<'a>(
         .find(|backend| executable_symbol(&backend.key, world) == *executable)
 }
 
-fn executable_symbol(executable: &ExecutableKey, world: &World<'_>) -> ExecutableSymbol {
+fn executable_symbol(executable: &ExecutableKey, world: &World) -> ExecutableSymbol {
     ExecutableSymbol {
         activation: ActivationSymbol {
             function: executable.activation.function,
@@ -1305,7 +1346,7 @@ fn symbolic_entry_capture_owner_callsite(
     session: &PullSession,
     executable: &ExecutableSymbol,
     position: &TransportPosition,
-    world: &World<'_>,
+    world: &World,
 ) -> Option<CallSiteId> {
     let backend = symbolic_backend_for_executable(session, executable, world)?;
     let SymbolicBackendBody::Clauses { entries, .. } = &backend.body else {
@@ -1346,7 +1387,7 @@ fn symbolic_callsite_dest(backend: &SymbolicBackendExecutable, callsite: CallSit
     })
 }
 
-fn lanes_for_codegen_seam_shape(world: &World<'_>, shape: ShapeId) -> Vec<(ShapeId, LaneId)> {
+fn lanes_for_codegen_seam_shape(world: &World, shape: ShapeId) -> Vec<(ShapeId, LaneId)> {
     match world.shape(shape) {
         ShapeDescr::Nothing => Vec::new(),
         ShapeDescr::Lane(lane) => vec![(shape, *lane)],
@@ -1365,7 +1406,7 @@ fn lanes_for_codegen_seam_shape(world: &World<'_>, shape: ShapeId) -> Vec<(Shape
     }
 }
 
-fn raw_codegen_repr_for_lane(world: &World<'_>, lane: LaneId) -> Option<CodegenLaneRepr> {
+fn raw_codegen_repr_for_lane(world: &World, lane: LaneId) -> Option<CodegenLaneRepr> {
     let ty = world.lane(lane).ty;
     if world.types().is_floating(&ty) {
         Some(CodegenLaneRepr::RawF64)
@@ -1378,27 +1419,29 @@ fn raw_codegen_repr_for_lane(world: &World<'_>, lane: LaneId) -> Option<CodegenL
     }
 }
 
-fn codegen_repr_for_lane(world: &World<'_>, lane: LaneId) -> CodegenLaneRepr {
+fn codegen_repr_for_lane(world: &World, lane: LaneId) -> CodegenLaneRepr {
     raw_codegen_repr_for_lane(world, lane).unwrap_or(CodegenLaneRepr::ValueRef)
 }
 
-fn block_param_codegen_repr_for_lane(world: &World<'_>, lane: LaneId) -> CodegenLaneRepr {
+fn block_param_codegen_repr_for_lane(world: &World, lane: LaneId) -> CodegenLaneRepr {
     match raw_codegen_repr_for_lane(world, lane) {
         Some(repr @ (CodegenLaneRepr::RawInt | CodegenLaneRepr::RawAtom)) => repr,
         Some(CodegenLaneRepr::RawF64 | CodegenLaneRepr::ValueRef) | None => CodegenLaneRepr::ValueRef,
     }
 }
 
-struct BackendLowerer<'a, 'tel> {
-    world: &'a mut World<'tel>,
+struct BackendLowerer<'a, 'tel, T: crate::telemetry::Telemetry> {
+    world: &'a mut World,
+    telemetry: &'tel T,
     root_id: RootId,
     value_shapes: HashMap<ValueId, ShapeId>,
 }
 
-impl<'a, 'tel> BackendLowerer<'a, 'tel> {
-    fn new(world: &'a mut World<'tel>, root_id: RootId, value_shapes: HashMap<ValueId, ShapeId>) -> Self {
+impl<'a, 'tel, T: crate::telemetry::Telemetry> BackendLowerer<'a, 'tel, T> {
+    fn new(world: &'a mut World, telemetry: &'tel T, root_id: RootId, value_shapes: HashMap<ValueId, ShapeId>) -> Self {
         Self {
             world,
+            telemetry,
             root_id,
             value_shapes,
         }
@@ -1427,7 +1470,7 @@ impl<'a, 'tel> BackendLowerer<'a, 'tel> {
             .collect::<Vec<_>>();
         if positions.len() != entry.captures.len() {
             return Err(incomplete_backend_program(
-                self.world,
+                self.telemetry,
                 self.root_id,
                 format!(
                     "entry {} has {} captures but {} transport capture positions",
@@ -1669,7 +1712,7 @@ fn original_entry_id(
         .unwrap_or_else(|| ControlEntryId::from_u32(entry_index as u32))
 }
 
-fn collect_backend_atom_names(world: &mut World<'_>, executables: &[BackendExecutable]) -> Vec<String> {
+fn collect_backend_atom_names(world: &mut World, executables: &[BackendExecutable]) -> Vec<String> {
     let mut seen = HashSet::new();
     let mut atoms = Vec::new();
     for name in ["nil", "true", "false"] {
@@ -1682,7 +1725,7 @@ fn collect_backend_atom_names(world: &mut World<'_>, executables: &[BackendExecu
 }
 
 fn collect_executable_atoms(
-    world: &mut World<'_>,
+    world: &mut World,
     executable: &BackendExecutable,
     seen: &mut HashSet<String>,
     atoms: &mut Vec<String>,
@@ -1703,22 +1746,12 @@ fn collect_executable_atoms(
     }
 }
 
-fn collect_entry_atoms(
-    world: &mut World<'_>,
-    entry: &BackendEntry,
-    seen: &mut HashSet<String>,
-    atoms: &mut Vec<String>,
-) {
+fn collect_entry_atoms(world: &mut World, entry: &BackendEntry, seen: &mut HashSet<String>, atoms: &mut Vec<String>) {
     collect_step_atoms(world, &entry.steps, seen, atoms);
     collect_tail_atoms(world, &entry.tail, seen, atoms);
 }
 
-fn collect_step_atoms(
-    _world: &mut World<'_>,
-    steps: &[BackendStep],
-    seen: &mut HashSet<String>,
-    atoms: &mut Vec<String>,
-) {
+fn collect_step_atoms(_world: &mut World, steps: &[BackendStep], seen: &mut HashSet<String>, atoms: &mut Vec<String>) {
     for step in steps {
         match step {
             BackendStep::Const { literal, .. } | BackendStep::AssertLiteral { literal, .. } => {
@@ -1757,7 +1790,7 @@ fn collect_step_atoms(
     }
 }
 
-fn collect_tail_atoms(world: &mut World<'_>, tail: &BackendTail, seen: &mut HashSet<String>, atoms: &mut Vec<String>) {
+fn collect_tail_atoms(world: &mut World, tail: &BackendTail, seen: &mut HashSet<String>, atoms: &mut Vec<String>) {
     match tail {
         BackendTail::DirectCall {
             target: CallEdge::Dispatch(dispatch),
@@ -1783,7 +1816,7 @@ fn collect_literal_atoms(literal: &GroundValue, seen: &mut HashSet<String>, atom
 }
 
 fn collect_dispatch_atoms(
-    world: &mut World<'_>,
+    world: &mut World,
     plan: &PatternDispatchPlan<Ty>,
     seen: &mut HashSet<String>,
     atoms: &mut Vec<String>,
@@ -1808,7 +1841,7 @@ fn collect_dispatch_atoms(
 }
 
 fn collect_dispatch_graph_atoms(
-    world: &mut World<'_>,
+    world: &mut World,
     plan: &PatternDispatchPlan<Ty>,
     node_id: crate::dispatch_matrix::GraphNodeId,
     seen: &mut HashSet<String>,
@@ -1831,12 +1864,7 @@ fn collect_dispatch_graph_atoms(
     }
 }
 
-fn collect_region_atoms(
-    world: &mut World<'_>,
-    region: &Region<Ty>,
-    seen: &mut HashSet<String>,
-    atoms: &mut Vec<String>,
-) {
+fn collect_region_atoms(world: &mut World, region: &Region<Ty>, seen: &mut HashSet<String>, atoms: &mut Vec<String>) {
     match region {
         Region::Equal(ComparisonValue::Const(value)) | Region::MapKeyPresent { key: value } => {
             collect_dispatch_const_atoms(value, seen, atoms);
@@ -1856,7 +1884,7 @@ fn collect_region_atoms(
 }
 
 fn collect_guard_atoms(
-    world: &mut World<'_>,
+    world: &mut World,
     expr: &PatternGuardExpr<Ty>,
     seen: &mut HashSet<String>,
     atoms: &mut Vec<String>,
@@ -1879,7 +1907,7 @@ fn collect_guard_atoms(
 }
 
 fn collect_guard_dispatch_atoms(
-    world: &mut World<'_>,
+    world: &mut World,
     dispatch: &PatternGuardDispatch<Ty>,
     seen: &mut HashSet<String>,
     atoms: &mut Vec<String>,
@@ -1902,13 +1930,17 @@ fn push_atom(seen: &mut HashSet<String>, atoms: &mut Vec<String>, name: &str) {
     }
 }
 
-fn incomplete_backend_program(world: &World<'_>, root_id: RootId, message: impl Into<String>) -> FatalError {
+fn incomplete_backend_program(
+    tel: &impl crate::telemetry::Telemetry,
+    root_id: RootId,
+    message: impl Into<String>,
+) -> FatalError {
     let message = message.into();
     let diagnostic = Diagnostic::error(
         codes::ARTIFACT_INCOMPLETE_SEMANTIC_PLAN,
         format!("compiler2 backend lowering for root {}: {}", root_id.as_u32(), message),
         Span::DUMMY,
     );
-    emit_through(world.tel(), std::slice::from_ref(&diagnostic));
+    emit_through(tel, std::slice::from_ref(&diagnostic));
     FatalError
 }

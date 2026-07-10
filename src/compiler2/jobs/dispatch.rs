@@ -37,7 +37,11 @@ pub(super) struct GuardCall {
 /// The job stays at the function-definition layer. It waits on missing helper
 /// definitions, rejects impure helper bodies or cycles with diagnostics, and
 /// publishes one `GuardDispatch(function)` fact when the helper is reifiable.
-pub(super) fn reify_guard_dispatch(world: &mut World<'_>, function: FunctionId) -> Result<JobEffects, FatalError> {
+pub(super) fn reify_guard_dispatch(
+    world: &mut World,
+    tel: &impl crate::telemetry::Telemetry,
+    function: FunctionId,
+) -> Result<JobEffects, FatalError> {
     let Some(_) = world.function_defined_revision(function) else {
         return Ok(world.wait_for_function_definition(function));
     };
@@ -45,7 +49,7 @@ pub(super) fn reify_guard_dispatch(world: &mut World<'_>, function: FunctionId) 
     let (_, surface) = world.function_definition(function);
     if surface.is_macro {
         return Err(emit_job_diagnostic(
-            world,
+            tel,
             Diagnostic::error(
                 codes::LOWER_UNSUPPORTED,
                 format!(
@@ -62,7 +66,7 @@ pub(super) fn reify_guard_dispatch(world: &mut World<'_>, function: FunctionId) 
     let mut waits = HashSet::new();
     let mut seen = HashSet::new();
     let mut stack = Vec::new();
-    collect_requirements(world, function, &mut reads, &mut waits, &mut seen, &mut stack)?;
+    collect_requirements(world, tel, function, &mut reads, &mut waits, &mut seen, &mut stack)?;
     if !waits.is_empty() {
         return Ok(JobEffects {
             reads: current_uses(reads),
@@ -74,8 +78,8 @@ pub(super) fn reify_guard_dispatch(world: &mut World<'_>, function: FunctionId) 
     let mut cache = HashMap::new();
     let mut build_stack = Vec::new();
     let dispatch = build_guard_dispatch(world, function, &mut cache, &mut build_stack)
-        .map_err(|err| emit_guard_dispatch_error(world, function, fn_span, err))?;
-    let changed = world.define_guard_dispatch(function, dispatch);
+        .map_err(|err| emit_guard_dispatch_error(tel, world, function, fn_span, err))?;
+    let changed = super::super::drive::ExecutionContext::new(world, tel).define_guard_dispatch(function, dispatch);
     Ok(JobEffects {
         reads: current_uses(reads),
         outputs: vec![FactKey::GuardDispatch(function)],
@@ -93,7 +97,11 @@ pub(super) fn reify_guard_dispatch(world: &mut World<'_>, function: FunctionId) 
 /// facts its clause guards call. When every dependency is ready, it publishes
 /// one `EntryDispatch(function)` fact carrying the shared pattern-dispatch
 /// artifact that later semantic jobs will consume.
-pub(super) fn plan_entry_dispatch(world: &mut World<'_>, function: FunctionId) -> Result<JobEffects, FatalError> {
+pub(super) fn plan_entry_dispatch(
+    world: &mut World,
+    tel: &impl crate::telemetry::Telemetry,
+    function: FunctionId,
+) -> Result<JobEffects, FatalError> {
     let Some(_) = world.function_defined_revision(function) else {
         return Ok(world.wait_for_function_definition(function));
     };
@@ -130,9 +138,9 @@ pub(super) fn plan_entry_dispatch(world: &mut World<'_>, function: FunctionId) -
         }
     }
     for call in collect_guard_calls_in_guards(&surface)
-        .map_err(|span| emit_entry_guard_error(world, function, span, "are not dispatch-pure"))?
+        .map_err(|span| emit_entry_guard_error(tel, world, function, span, "are not dispatch-pure"))?
     {
-        let callee = resolve_guard_callee(world, source.namespace, &call)?;
+        let callee = resolve_guard_callee(world, tel, source.namespace, &call)?;
         let fact = FactKey::GuardDispatch(callee);
         if world.has_fact(&fact) {
             reads.push(fact);
@@ -148,7 +156,7 @@ pub(super) fn plan_entry_dispatch(world: &mut World<'_>, function: FunctionId) -
         });
     }
 
-    let source_patterns = entry_source_patterns(world, function, &source, &surface)?;
+    let source_patterns = entry_source_patterns(world, tel, function, &source, &surface)?;
     let namespace = source.namespace;
     let fn_span = surface.span;
     let mut resolver = |name: &str, arity: usize, args: Vec<PatternGuardExpr<Ty>>| {
@@ -159,8 +167,8 @@ pub(super) fn plan_entry_dispatch(world: &mut World<'_>, function: FunctionId) -
         }))
     };
     let plan = pattern_dispatch_from_source_with_guard_resolver(source_patterns, &mut resolver)
-        .map_err(|error| emit_entry_dispatch_error(world, function, fn_span, error))?;
-    let changed = world.define_entry_dispatch(function, plan);
+        .map_err(|error| emit_entry_dispatch_error(tel, world, function, fn_span, error))?;
+    let changed = super::super::drive::ExecutionContext::new(world, tel).define_entry_dispatch(function, plan);
     Ok(JobEffects {
         reads: current_uses(reads),
         outputs: vec![FactKey::EntryDispatch(function)],
@@ -173,7 +181,8 @@ pub(super) fn plan_entry_dispatch(world: &mut World<'_>, function: FunctionId) -
 }
 
 fn collect_requirements(
-    world: &mut World<'_>,
+    world: &mut World,
+    tel: &impl crate::telemetry::Telemetry,
     function: FunctionId,
     reads: &mut Vec<FactKey>,
     waits: &mut HashSet<FactKey>,
@@ -181,7 +190,7 @@ fn collect_requirements(
     stack: &mut Vec<FunctionId>,
 ) -> Result<(), FatalError> {
     if let Some(cycle_start) = stack.iter().position(|id| *id == function) {
-        return Err(emit_cycle(world, function, &stack[cycle_start..]));
+        return Err(emit_cycle(tel, world, function, &stack[cycle_start..]));
     }
     if !seen.insert(function) {
         return Ok(());
@@ -193,18 +202,18 @@ fn collect_requirements(
     reads.push(FactKey::FunctionDefined(function));
     let (source, surface) = world.function_definition(function);
     stack.push(function);
-    for call in collect_guard_calls_in_fn(&surface)
-        .map_err(|span| emit_guard_dispatch_error(world, function, span, SourcePatternError::UnsupportedGuardExpr))?
-    {
-        let callee = resolve_guard_callee(world, source.namespace, &call)?;
-        collect_requirements(world, callee, reads, waits, seen, stack)?;
+    for call in collect_guard_calls_in_fn(&surface).map_err(|span| {
+        emit_guard_dispatch_error(tel, world, function, span, SourcePatternError::UnsupportedGuardExpr)
+    })? {
+        let callee = resolve_guard_callee(world, tel, source.namespace, &call)?;
+        collect_requirements(world, tel, callee, reads, waits, seen, stack)?;
     }
     stack.pop();
     Ok(())
 }
 
 fn build_guard_dispatch(
-    world: &mut World<'_>,
+    world: &mut World,
     function: FunctionId,
     cache: &mut HashMap<FunctionId, PatternGuardDispatch<Ty>>,
     stack: &mut Vec<FunctionId>,
@@ -238,7 +247,8 @@ fn build_guard_dispatch(
 }
 
 fn entry_source_patterns(
-    world: &mut World<'_>,
+    world: &mut World,
+    tel: &impl crate::telemetry::Telemetry,
     _function: FunctionId,
     source: &FunctionSource,
     surface: &FunctionSurface,
@@ -280,7 +290,7 @@ fn entry_source_patterns(
                 .resolve_type_expr_body(source.namespace, tokens)
                 .map_err(|error| {
                     emit_job_diagnostic(
-                        world,
+                        tel,
                         Diagnostic::error(
                             codes::RESOLVE_TYPE_ALIAS,
                             format!(
@@ -388,14 +398,15 @@ pub(super) fn collect_guard_calls_in_expr(expr: &Spanned<Expr>, out: &mut Vec<Gu
 }
 
 pub(super) fn resolve_guard_callee(
-    world: &mut World<'_>,
+    world: &mut World,
+    tel: &impl crate::telemetry::Telemetry,
     namespace: Namespace,
     call: &GuardCall,
 ) -> Result<FunctionId, FatalError> {
     match world.lookup_callable_namespace(namespace, &call.name, call.arity) {
         Some(NamespaceSymbol::Function(function)) | Some(NamespaceSymbol::Callable(function)) => Ok(function),
         Some(NamespaceSymbol::Macro(_)) => Err(emit_job_diagnostic(
-            world,
+            tel,
             Diagnostic::error(
                 codes::LOWER_UNSUPPORTED,
                 format!(
@@ -407,7 +418,7 @@ pub(super) fn resolve_guard_callee(
         )),
         Some(NamespaceSymbol::Module(_)) | Some(NamespaceSymbol::Type(_)) | Some(NamespaceSymbol::Splice(_)) | None => {
             Err(emit_job_diagnostic(
-                world,
+                tel,
                 Diagnostic::error(
                     codes::LOWER_UNBOUND,
                     format!(
@@ -422,7 +433,7 @@ pub(super) fn resolve_guard_callee(
 }
 
 pub(super) fn resolve_guard_callee_checked(
-    world: &mut World<'_>,
+    world: &mut World,
     namespace: Namespace,
     name: &str,
     arity: usize,
@@ -438,14 +449,19 @@ pub(super) fn resolve_guard_callee_checked(
     }
 }
 
-fn emit_cycle(world: &World<'_>, function: FunctionId, cycle: &[FunctionId]) -> FatalError {
+fn emit_cycle(
+    tel: &impl crate::telemetry::Telemetry,
+    world: &World,
+    function: FunctionId,
+    cycle: &[FunctionId],
+) -> FatalError {
     let mut path = cycle
         .iter()
         .map(|function| function_label(&world.function_surface(*function)))
         .collect::<Vec<_>>();
     path.push(function_label(&world.function_surface(function)));
     emit_job_diagnostic(
-        world,
+        tel,
         Diagnostic::error(
             codes::LOWER_UNSUPPORTED,
             format!("compiler2 guard helper cycle detected: {}", path.join(" -> ")),
@@ -455,7 +471,8 @@ fn emit_cycle(world: &World<'_>, function: FunctionId, cycle: &[FunctionId]) -> 
 }
 
 fn emit_guard_dispatch_error(
-    world: &World<'_>,
+    tel: &impl crate::telemetry::Telemetry,
+    world: &World,
     function: FunctionId,
     span: Span,
     error: SourcePatternError,
@@ -463,7 +480,7 @@ fn emit_guard_dispatch_error(
     let label = function_label(&world.function_surface(function));
     match error {
         SourcePatternError::UnsupportedGuardExpr => emit_job_diagnostic(
-            world,
+            tel,
             Diagnostic::error(
                 codes::LOWER_UNSUPPORTED,
                 format!("compiler2 helper `{label}` is not dispatch-pure and cannot be reified into guard dispatch"),
@@ -471,7 +488,7 @@ fn emit_guard_dispatch_error(
             ),
         ),
         SourcePatternError::UnknownPinned(name) | SourcePatternError::UnknownGuardVar(name) => emit_job_diagnostic(
-            world,
+            tel,
             Diagnostic::error(
                 codes::LOWER_UNBOUND,
                 format!("compiler2 helper `{label}` references unknown guard name `{name}`"),
@@ -479,7 +496,7 @@ fn emit_guard_dispatch_error(
             ),
         ),
         SourcePatternError::GuardCallCycle(name, arity) => emit_job_diagnostic(
-            world,
+            tel,
             Diagnostic::error(
                 codes::LOWER_UNSUPPORTED,
                 format!("compiler2 guard helper cycle detected through `{name}/{arity}`"),
@@ -487,7 +504,7 @@ fn emit_guard_dispatch_error(
             ),
         ),
         SourcePatternError::DispatchMatrix(message) => emit_job_diagnostic(
-            world,
+            tel,
             Diagnostic::error(
                 codes::LOWER_UNSUPPORTED,
                 format!("compiler2 helper `{label}` could not be reified: {message}"),
@@ -500,7 +517,7 @@ fn emit_guard_dispatch_error(
             panic!("compiler2 built an invalid guard dispatch row set: {error:?}")
         }
         SourcePatternError::UnsupportedMapKey => emit_job_diagnostic(
-            world,
+            tel,
             Diagnostic::error(
                 codes::LOWER_UNSUPPORTED,
                 format!("compiler2 helper `{label}` uses an unsupported map key in a guard pattern"),
@@ -510,9 +527,15 @@ fn emit_guard_dispatch_error(
     }
 }
 
-fn emit_entry_guard_error(world: &World<'_>, function: FunctionId, span: Span, reason: &str) -> FatalError {
+fn emit_entry_guard_error(
+    tel: &impl crate::telemetry::Telemetry,
+    world: &World,
+    function: FunctionId,
+    span: Span,
+    reason: &str,
+) -> FatalError {
     emit_job_diagnostic(
-        world,
+        tel,
         Diagnostic::error(
             codes::LOWER_UNSUPPORTED,
             format!(
@@ -525,7 +548,8 @@ fn emit_entry_guard_error(world: &World<'_>, function: FunctionId, span: Span, r
 }
 
 fn emit_entry_dispatch_error(
-    world: &World<'_>,
+    tel: &impl crate::telemetry::Telemetry,
+    world: &World,
     function: FunctionId,
     span: Span,
     error: PatternDispatchError,
@@ -533,11 +557,11 @@ fn emit_entry_dispatch_error(
     let label = function_label(&world.function_surface(function));
     match error {
         PatternDispatchError::SourcePattern(SourcePatternError::UnsupportedGuardExpr) => {
-            emit_entry_guard_error(world, function, span, "are not dispatch-pure")
+            emit_entry_guard_error(tel, world, function, span, "are not dispatch-pure")
         }
         PatternDispatchError::SourcePattern(SourcePatternError::UnknownPinned(name))
         | PatternDispatchError::SourcePattern(SourcePatternError::UnknownGuardVar(name)) => emit_job_diagnostic(
-            world,
+            tel,
             Diagnostic::error(
                 codes::LOWER_UNBOUND,
                 format!("compiler2 entry guard for `{label}` references unknown guard name `{name}`"),
@@ -545,7 +569,7 @@ fn emit_entry_dispatch_error(
             ),
         ),
         PatternDispatchError::SourcePattern(SourcePatternError::UnsupportedMapKey) => emit_job_diagnostic(
-            world,
+            tel,
             Diagnostic::error(
                 codes::LOWER_UNSUPPORTED,
                 format!("compiler2 entry dispatch for `{label}` uses an unsupported map key"),
@@ -560,7 +584,7 @@ fn emit_entry_dispatch_error(
             | SourcePatternError::DispatchMatrix(_),
         ) => panic!("compiler2 built an invalid entry-dispatch row set: {error:?}"),
         PatternDispatchError::MatrixBuild(error) => emit_job_diagnostic(
-            world,
+            tel,
             Diagnostic::error(
                 codes::LOWER_UNSUPPORTED,
                 format!("compiler2 could not build entry dispatch for `{label}`: {error:?}"),
@@ -568,7 +592,7 @@ fn emit_entry_dispatch_error(
             ),
         ),
         PatternDispatchError::Compile(error) => emit_job_diagnostic(
-            world,
+            tel,
             Diagnostic::error(
                 codes::LOWER_UNSUPPORTED,
                 format!("compiler2 could not compile entry dispatch for `{label}`: {error:?}"),
@@ -582,7 +606,7 @@ fn function_label(def: &FunctionSurface) -> String {
     format!("{}/{}", def.name, def.arity())
 }
 
-fn emit_job_diagnostic(world: &World<'_>, diagnostic: Diagnostic) -> FatalError {
-    emit_through(world.tel(), std::slice::from_ref(&diagnostic));
+fn emit_job_diagnostic(tel: &impl crate::telemetry::Telemetry, diagnostic: Diagnostic) -> FatalError {
+    emit_through(tel, std::slice::from_ref(&diagnostic));
     FatalError
 }

@@ -1,11 +1,10 @@
 //! The concrete `Telemetry` implementation: handler registry, prefix-based
 //! routing, span stack, monotonic id counters.
 //!
-//! `ConfiguredTelemetry` is the impl the driver instantiates and threads
-//! through the compiler as `&dyn Telemetry`. Handlers are attached at setup
-//! and observe every matching event. Single-threaded by design — no
-//! `Send + Sync` bounds — the test harness and CLI driver each own their
-//! own bus.
+//! `ConfiguredTelemetry` is the impl the driver instantiates and hands by value
+//! to the compiler. Handlers are attached at setup and observe every matching
+//! event. Single-threaded by design — no `Send + Sync` bounds — each compiler
+//! root owns its bus and lends it only to short-lived execution contexts.
 
 use std::cell::{Cell, RefCell};
 

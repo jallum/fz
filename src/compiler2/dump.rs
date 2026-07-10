@@ -132,20 +132,26 @@ pub(crate) fn install_dump_handlers(tel: &ConfiguredTelemetry, root: RootId, spe
 /// Emits the per-activation types/activations dump events sourced from the
 /// product-path activation inventory (the demanded executables' activations).
 pub(crate) fn emit_product_semantic_dump_events(
-    world: &World<'_>,
+    world: &World,
+    tel: &impl crate::telemetry::Telemetry,
     root: RootId,
     activations: impl IntoIterator<Item = ActivationKey>,
 ) {
-    emit_dump_events(world, root, activations);
+    emit_dump_events(world, tel, root, activations);
 }
 
-fn emit_dump_events(world: &World<'_>, root: RootId, activations: impl IntoIterator<Item = ActivationKey>) {
+fn emit_dump_events(
+    world: &World,
+    tel: &impl crate::telemetry::Telemetry,
+    root: RootId,
+    activations: impl IntoIterator<Item = ActivationKey>,
+) {
     let activations = root_owned_activations(world, root, activations);
 
     let types = TypesDump {
         text: render_types_dump(world, &activations),
     };
-    world.tel().execute(
+    tel.execute(
         &["fz", "compiler2", "dump", "types"],
         &crate::measurements! { root_id: root.as_u32() },
         &crate::metadata! { dump: opaque(&types) },
@@ -154,7 +160,7 @@ fn emit_dump_events(world: &World<'_>, root: RootId, activations: impl IntoItera
     let activations = ActivationsDump {
         text: render_activations_dump(world, &activations),
     };
-    world.tel().execute(
+    tel.execute(
         &["fz", "compiler2", "dump", "activations"],
         &crate::measurements! { root_id: root.as_u32() },
         &crate::metadata! { dump: opaque(&activations) },
@@ -272,7 +278,7 @@ fn event_matches_root(ev: &crate::telemetry::Event<'_, '_, '_>, root: RootId) ->
     matches!(ev.measurements.get("root_id"), Some(Value::U64(value)) if *value == root.as_u32() as u64)
 }
 
-fn render_types_dump(world: &World<'_>, activations: &[ActivationKey]) -> String {
+fn render_types_dump(world: &World, activations: &[ActivationKey]) -> String {
     let mut activations = activations.to_vec();
     activations.sort_by_cached_key(|activation| activation_sort_key(world, activation));
     let mut out = String::new();
@@ -286,7 +292,7 @@ fn render_types_dump(world: &World<'_>, activations: &[ActivationKey]) -> String
     out
 }
 
-fn render_activations_dump(world: &World<'_>, activations: &[ActivationKey]) -> String {
+fn render_activations_dump(world: &World, activations: &[ActivationKey]) -> String {
     let mut activations = activations.to_vec();
     activations.sort_by_cached_key(|activation| activation_sort_key(world, activation));
     let mut out = String::new();
@@ -338,7 +344,7 @@ fn render_activations_dump(world: &World<'_>, activations: &[ActivationKey]) -> 
 /// product inventory yields one entry per demanded executable, so several
 /// executables may share an activation; the dump lists each activation once.
 fn root_owned_activations(
-    world: &World<'_>,
+    world: &World,
     root: RootId,
     activations: impl IntoIterator<Item = ActivationKey>,
 ) -> Vec<ActivationKey> {
@@ -351,7 +357,7 @@ fn root_owned_activations(
         .collect()
 }
 
-fn render_callsite_summary(world: &World<'_>, summary: &super::semantic::CallSiteSummary) -> String {
+fn render_callsite_summary(world: &World, summary: &super::semantic::CallSiteSummary) -> String {
     let mut targets = summary
         .targets
         .iter()
@@ -383,7 +389,7 @@ fn render_callsite_summary(world: &World<'_>, summary: &super::semantic::CallSit
     }
 }
 
-fn activation_sort_key(world: &World<'_>, activation: &ActivationKey) -> (String, Vec<String>) {
+fn activation_sort_key(world: &World, activation: &ActivationKey) -> (String, Vec<String>) {
     (
         function_label(world, activation.function),
         activation
@@ -394,7 +400,7 @@ fn activation_sort_key(world: &World<'_>, activation: &ActivationKey) -> (String
     )
 }
 
-fn executable_sort_key(world: &World<'_>, executable: &ExecutableKey) -> (String, Vec<String>, String) {
+fn executable_sort_key(world: &World, executable: &ExecutableKey) -> (String, Vec<String>, String) {
     (
         function_label(world, executable.activation.function),
         executable
@@ -407,7 +413,7 @@ fn executable_sort_key(world: &World<'_>, executable: &ExecutableKey) -> (String
     )
 }
 
-fn activation_label(world: &World<'_>, activation: &ActivationKey) -> String {
+fn activation_label(world: &World, activation: &ActivationKey) -> String {
     let inputs = activation
         .inputs(world.types())
         .iter()
@@ -417,7 +423,7 @@ fn activation_label(world: &World<'_>, activation: &ActivationKey) -> String {
     format!("{}[{}]", function_label(world, activation.function), inputs)
 }
 
-fn executable_label(world: &World<'_>, executable: &ExecutableKey) -> String {
+fn executable_label(world: &World, executable: &ExecutableKey) -> String {
     format!(
         "{} need={:?}",
         activation_label(world, &executable.activation),
@@ -425,7 +431,7 @@ fn executable_label(world: &World<'_>, executable: &ExecutableKey) -> String {
     )
 }
 
-fn function_label(world: &World<'_>, function: FunctionId) -> String {
+fn function_label(world: &World, function: FunctionId) -> String {
     let function_ref = world.function_ref(function);
     let module = world.module_name(function_ref.module).unwrap_or_default();
     if module.is_empty() {

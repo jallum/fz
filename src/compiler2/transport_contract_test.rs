@@ -183,7 +183,7 @@ end
 "#;
 
     let tel = ConfiguredTelemetry::new();
-    let mut world = World::new(&tel);
+    let mut world = World::new();
     world.submit_code(
         Some("transport_codegen_seam_float_resume.fz".to_string()),
         source.to_string(),
@@ -229,13 +229,13 @@ fn main(), do: inc(1.0)
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
     tel.attach(&["fz", "compiler2", "pull"], capture.handler());
-    let mut world = World::new(&tel);
+    let mut world = World::new();
     world.submit_code(
         Some("transport_codegen_seam_tail_call.fz".to_string()),
         source.to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
-    let (_, plan) = pull_root_backend_plan_for_test(&mut world, root);
+    let (_, plan) = pull_root_backend_plan_for_test(&tel, &mut world, root);
     assert!(
         plan.codegen_seam_facts
             .iter()
@@ -267,10 +267,10 @@ end
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
     tel.attach(&["fz", "compiler2", "pull"], capture.handler());
-    let mut world = World::new(&tel);
+    let mut world = World::new();
     world.submit_code(Some("transport_once_per_closure.fz".to_string()), source.to_string());
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
-    let mut driver = pull_root_backend_driver_for_test(&mut world, root);
+    let mut driver = pull_root_backend_driver_for_test(&tel, &mut world, root);
 
     const CLOSURE_SOLVED: &[&str] = &["fz", "compiler2", "pull", "transport_component", "closure_solved"];
     let solves = capture.count(CLOSURE_SOLVED);
@@ -293,7 +293,7 @@ end
     );
     for position in positions {
         let outcome = {
-            let mut producers = WorldProductProducers::new(&mut world);
+            let mut producers = WorldProductProducers::new(&mut world, &tel);
             driver.pull(&mut producers, ProductKey::TransportComponent(position.clone()))
         };
         assert!(
@@ -329,9 +329,9 @@ end
 /// the member whose fact a test moves; the second stands still and must
 /// displace with it.
 fn two_executables_covered_by_one_solve(
-    driver: &ProductDriver<'_>,
+    driver: &ProductDriver<'_, ConfiguredTelemetry>,
     root: super::RootId,
-    world: &mut World<'_>,
+    world: &mut World,
 ) -> (ExecutableKey, ExecutableKey, Vec<(TransportPosition, ShapeId)>) {
     let mut by_cover: BTreeMap<u64, HashMap<ExecutableKey, Vec<(TransportPosition, ShapeId)>>> = BTreeMap::new();
     let shaped = driver
@@ -381,13 +381,13 @@ fn two_executables_covered_by_one_solve(
 #[test]
 fn compiler2_transport_consult_ledger_displaces_co_members_on_demand_movement() {
     let tel = ConfiguredTelemetry::new();
-    let mut world = World::new(&tel);
+    let mut world = World::new();
     world.submit_code(
         Some("consult_ledger.fz".to_string()),
         CO_MEMBER_CLOSURE_SOURCE.to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
-    let mut driver = pull_root_backend_driver_for_test(&mut world, root);
+    let mut driver = pull_root_backend_driver_for_test(&tel, &mut world, root);
 
     let (moved_executable, standing_executable, standing_positions) =
         two_executables_covered_by_one_solve(&driver, root, &mut world);
@@ -462,13 +462,13 @@ fn compiler2_transport_world_fact_ledger_displaces_co_members_on_return_type_mov
     let capture = Capture::new();
     tel.attach(&["fz", "compiler2", "pull"], capture.handler());
     const CLOSURE_SOLVED: &[&str] = &["fz", "compiler2", "pull", "transport_component", "closure_solved"];
-    let mut world = World::new(&tel);
+    let mut world = World::new();
     world.submit_code(
         Some("world_fact_ledger.fz".to_string()),
         CO_MEMBER_CLOSURE_SOURCE.to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
-    let mut driver = pull_root_backend_driver_for_test(&mut world, root);
+    let mut driver = pull_root_backend_driver_for_test(&tel, &mut world, root);
 
     let (moved_executable, standing_executable, standing_positions) =
         two_executables_covered_by_one_solve(&driver, root, &mut world);
@@ -574,7 +574,7 @@ fn main(), do: inc(1.0)
 "#;
 
     let tel = ConfiguredTelemetry::new();
-    let mut world = World::new(&tel);
+    let mut world = World::new();
     world.submit_code(
         Some("transport_tail_return_payload_position.fz".to_string()),
         source.to_string(),
@@ -598,8 +598,8 @@ fn main(), do: inc(1.0)
         .transport_shapes()
         .iter()
         .filter_map(|(position, shape)| match position {
-            TransportPosition::ReturnPayload { executable, callsite } if executable == &main => {
-                Some((*callsite, *shape))
+            TransportPosition::ReturnPayload { executable, callsite } if *executable == main => {
+                Some((callsite, *shape))
             }
             _ => None,
         })
@@ -624,7 +624,7 @@ fn main(), do: inc(1.0)
         &plan.codegen_seam_facts,
         |seam| {
             matches!(seam, CodegenSeam::ReturnContinuation { executable, callsite: candidate }
-            if executable == &main && candidate == callsite)
+            if executable == &main && candidate == *callsite)
         },
         Some(*leaf_shape),
         *lane,
@@ -636,7 +636,7 @@ fn main(), do: inc(1.0)
 #[test]
 fn compiler2_transport_flow_names_non_tail_return_payload_position() {
     let tel = ConfiguredTelemetry::new();
-    let mut world = World::new(&tel);
+    let mut world = World::new();
     world.submit_code(
         Some("fixtures2/behavior/multi_relay.fz".to_string()),
         include_str!("../../fixtures2/behavior/multi_relay.fz").to_string(),
@@ -655,7 +655,7 @@ fn compiler2_transport_flow_names_non_tail_return_payload_position() {
                         executable: executable.clone(),
                     },
                 );
-                Some((executable.clone(), *callsite, *payload_shape, caller_return))
+                Some((executable.clone(), callsite, *payload_shape, caller_return))
             }
             _ => None,
         })
@@ -688,7 +688,7 @@ fn compiler2_transport_flow_names_non_tail_return_payload_position() {
                     CodegenSeam::ReturnContinuation {
                         executable: candidate_executable,
                         callsite: candidate_callsite,
-                    } if candidate_executable == &executable && *candidate_callsite == callsite
+                    } if candidate_executable == &executable && *candidate_callsite == *callsite
                 ) && fact.shape == Some(leaf_shape)
                     && fact.lane == lane
             }),
@@ -707,7 +707,7 @@ fn main(), do: make()
 "#;
 
     let tel = ConfiguredTelemetry::new();
-    let mut world = World::new(&tel);
+    let mut world = World::new();
     world.submit_code(
         Some("transport_codegen_seam_callable_boundary.fz".to_string()),
         source.to_string(),
@@ -740,13 +740,13 @@ fn main(), do: fz_float_id(1.0)
 "#;
 
     let tel = ConfiguredTelemetry::new();
-    let mut world = World::new(&tel);
+    let mut world = World::new();
     world.submit_code(
         Some("transport_codegen_seam_extern_boundary.fz".to_string()),
         source.to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
-    let (_, plan) = pull_root_backend_plan_for_test(&mut world, root);
+    let (_, plan) = pull_root_backend_plan_for_test(&tel, &mut world, root);
     assert!(
         plan.codegen_seam_facts
             .iter()
@@ -766,7 +766,7 @@ fn main(), do: spawn(child)
 "#;
 
     let tel = ConfiguredTelemetry::new();
-    let mut world = World::new(&tel);
+    let mut world = World::new();
     world.submit_code(
         Some("transport_spawn_callable_boundary_input.fz".to_string()),
         source.to_string(),
@@ -804,7 +804,7 @@ fn main(), do: dbg({:zero, :pos, :other})
 "#;
 
     let tel = ConfiguredTelemetry::new();
-    let mut world = World::new(&tel);
+    let mut world = World::new();
     world.submit_code(
         Some("transport_extern_tuple_value_input.fz".to_string()),
         source.to_string(),
@@ -862,7 +862,7 @@ end
 "#;
 
     let tel = ConfiguredTelemetry::new();
-    let mut world = World::new(&tel);
+    let mut world = World::new();
     world.submit_code(
         Some("transport_codegen_seam_tuple_leaf_lanes.fz".to_string()),
         source.to_string(),
@@ -935,7 +935,7 @@ end
 "#;
 
     let tel = ConfiguredTelemetry::new();
-    let mut world = World::new(&tel);
+    let mut world = World::new();
     world.submit_code(
         Some("transport_codegen_seam_int_atom_reprs.fz".to_string()),
         source.to_string(),
@@ -992,7 +992,7 @@ end
 "#;
 
     let tel = ConfiguredTelemetry::new();
-    let mut world = World::new(&tel);
+    let mut world = World::new();
     world.submit_code(
         Some("transport_codegen_seam_boxed_internal_reprs.fz".to_string()),
         source.to_string(),
@@ -1059,13 +1059,13 @@ fn main(), do: fz_binary_id("hello")
 "#;
 
     let tel = ConfiguredTelemetry::new();
-    let mut world = World::new(&tel);
+    let mut world = World::new();
     world.submit_code(
         Some("transport_codegen_seam_boxed_tail_extern_reprs.fz".to_string()),
         source.to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
-    let (driver, plan) = pull_root_backend_plan_for_test(&mut world, root);
+    let (driver, plan) = pull_root_backend_plan_for_test(&tel, &mut world, root);
     let session = driver.session();
     let extern_id = executable_for(&world, session, "fz_binary_id", 1);
     let extern_return = plan_shape_at(
@@ -1112,7 +1112,7 @@ end
 "#;
 
     let tel = ConfiguredTelemetry::new();
-    let mut world = World::new(&tel);
+    let mut world = World::new();
     world.submit_code(Some("transport_ignore.fz".to_string()), source.to_string());
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
     let driver = drive_transport_facts_for_test(&tel, &mut world, root);
@@ -1141,7 +1141,7 @@ end
 "#;
 
     let tel = ConfiguredTelemetry::new();
-    let mut world = World::new(&tel);
+    let mut world = World::new();
     world.submit_code(Some("transport_direct_callable.fz".to_string()), source.to_string());
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
     let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
@@ -1222,7 +1222,7 @@ end
 "#;
 
     let tel = ConfiguredTelemetry::new();
-    let mut world = World::new(&tel);
+    let mut world = World::new();
     world.submit_code(
         Some("transport_artifact_handoff_contract.fz".to_string()),
         source.to_string(),
@@ -1369,7 +1369,7 @@ end
 "#;
 
     let tel = ConfiguredTelemetry::new();
-    let mut world = World::new(&tel);
+    let mut world = World::new();
     world.submit_code(Some("transport_unused_callable.fz".to_string()), source.to_string());
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
     let driver = drive_transport_facts_for_test(&tel, &mut world, root);
@@ -1391,7 +1391,7 @@ end
 "#;
 
     let tel = ConfiguredTelemetry::new();
-    let mut world = World::new(&tel);
+    let mut world = World::new();
     world.submit_code(Some("transport_direct_lambda_use.fz".to_string()), source.to_string());
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
     let driver = drive_transport_facts_for_test(&tel, &mut world, root);
@@ -1403,7 +1403,7 @@ end
         .filter_map(|(position, shape)| match position {
             TransportPosition::Value {
                 executable: candidate, ..
-            } if candidate == &main && matches!(shape_descr(&world, *shape), ShapeDescr::Callable(_)) => Some(*shape),
+            } if *candidate == main && matches!(shape_descr(&world, *shape), ShapeDescr::Callable(_)) => Some(*shape),
             _ => None,
         })
         .collect::<Vec<_>>();
@@ -1426,7 +1426,7 @@ fn main(), do: make()
 "#;
 
     let tel = ConfiguredTelemetry::new();
-    let mut world = World::new(&tel);
+    let mut world = World::new();
     world.submit_code(Some("transport_escaped_lambda.fz".to_string()), source.to_string());
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
     let driver = drive_transport_facts_for_test(&tel, &mut world, root);
@@ -1452,7 +1452,7 @@ fn compiler2_transport_plan_requires_a_boundary_for_an_opaque_callable_input() {
     let source = "fn main(f), do: f.(1)\n";
 
     let tel = ConfiguredTelemetry::new();
-    let mut world = World::new(&tel);
+    let mut world = World::new();
     world.submit_code(
         Some("transport_opaque_callable_input.fz".to_string()),
         source.to_string(),
@@ -1494,7 +1494,7 @@ end
 "#;
 
     let tel = ConfiguredTelemetry::new();
-    let mut world = World::new(&tel);
+    let mut world = World::new();
     world.submit_code(
         Some("transport_distinct_opaque_callable_surfaces.fz".to_string()),
         source.to_string(),
@@ -1542,7 +1542,7 @@ fn main(), do: {make1(1), make2(1, 2)}
 "#;
 
     let tel = ConfiguredTelemetry::new();
-    let mut world = World::new(&tel);
+    let mut world = World::new();
     world.submit_code(
         Some("transport_same_surface_distinct_captures.fz".to_string()),
         source.to_string(),
@@ -1583,7 +1583,7 @@ end
 "#;
 
     let tel = ConfiguredTelemetry::new();
-    let mut world = World::new(&tel);
+    let mut world = World::new();
     world.submit_code(
         Some("transport_boundary_callable_arg.fz".to_string()),
         source.to_string(),
@@ -1614,7 +1614,7 @@ fn main(), do: make_pairer()
 "#;
 
     let tel = ConfiguredTelemetry::new();
-    let mut world = World::new(&tel);
+    let mut world = World::new();
     world.submit_code(
         Some("transport_boundary_tuple_return.fz".to_string()),
         source.to_string(),
@@ -1670,7 +1670,7 @@ fn main(), do: make_suspender()
 "#;
 
     let tel = ConfiguredTelemetry::new();
-    let mut world = World::new(&tel);
+    let mut world = World::new();
     world.submit_code(
         Some("transport_boundary_suspend_tuple_return.fz".to_string()),
         source.to_string(),
@@ -1741,7 +1741,7 @@ fn main(), do: make()
 "#;
 
     let tel = ConfiguredTelemetry::new();
-    let mut world = World::new(&tel);
+    let mut world = World::new();
     world.submit_code(
         Some("transport_enumerable_reduce_suspend_continuation.fz".to_string()),
         escaped_source.to_string(),
@@ -1798,7 +1798,7 @@ end
 "#;
 
     let tel = ConfiguredTelemetry::new();
-    let mut world = World::new(&tel);
+    let mut world = World::new();
     world.submit_code(
         Some("transport_enumerable_reduce_suspend_continuation_resumed.fz".to_string()),
         consumed_source.to_string(),
@@ -1845,7 +1845,7 @@ end
     assert_suspend_continuation_facts(&world, session, *continuation);
 }
 
-fn sole_callable_with_callable_capture(world: &World<'_>, session: &PullSession) -> super::transport::CallableId {
+fn sole_callable_with_callable_capture(world: &World, session: &PullSession) -> super::transport::CallableId {
     let candidates = session
         .callable_facts_inventory()
         .keys()
@@ -1864,11 +1864,7 @@ fn sole_callable_with_callable_capture(world: &World<'_>, session: &PullSession)
     *continuation
 }
 
-fn assert_suspend_continuation_facts(
-    world: &World<'_>,
-    session: &PullSession,
-    continuation: super::transport::CallableId,
-) {
+fn assert_suspend_continuation_facts(world: &World, session: &PullSession, continuation: super::transport::CallableId) {
     let continuation_descr = world.callable(continuation);
     assert_eq!(
         continuation_descr.capture_shapes.len(),
@@ -1918,7 +1914,7 @@ end
 "#;
 
     let tel = ConfiguredTelemetry::new();
-    let mut world = World::new(&tel);
+    let mut world = World::new();
     world.submit_code(
         Some("transport_tuple_returned_callable_resume_capture.fz".to_string()),
         source.to_string(),
@@ -1937,7 +1933,7 @@ end
                     executable,
                     callsite: Some(_),
                     ..
-                } if executable == &main
+                } if *executable == main
             ) && shape_contains_callable(&world, **shape)
         })
         .unwrap_or_else(|| {
@@ -1994,7 +1990,7 @@ end
                     executable,
                     callsite: candidate_callsite,
                     entry: candidate_entry,
-                } if executable == &main && candidate_callsite == callsite && candidate_entry == entry
+                } if executable == &main && *candidate_callsite == *callsite && *candidate_entry == *entry
             )
         },
         None,
@@ -2039,7 +2035,7 @@ fn main(), do: make(fn x -> x + 1 end)
 "#;
 
     let tel = ConfiguredTelemetry::new();
-    let mut world = World::new(&tel);
+    let mut world = World::new();
     world.submit_code(
         Some("transport_protocol_escaped_continuation.fz".to_string()),
         source.to_string(),
@@ -2083,7 +2079,7 @@ end
 "#;
 
     let tel = ConfiguredTelemetry::new();
-    let mut world = World::new(&tel);
+    let mut world = World::new();
     world.submit_code(
         Some("transport_direct_and_escaped_callable.fz".to_string()),
         source.to_string(),
@@ -2166,7 +2162,7 @@ end
 "#;
 
     let tel = ConfiguredTelemetry::new();
-    let mut world = World::new(&tel);
+    let mut world = World::new();
     world.submit_code(
         Some("transport_callable_capture_flow.fz".to_string()),
         source.to_string(),
@@ -2226,7 +2222,7 @@ end
 "#;
 
     let tel = ConfiguredTelemetry::new();
-    let mut world = World::new(&tel);
+    let mut world = World::new();
     world.submit_code(
         Some("transport_recursive_callable_return.fz".to_string()),
         source.to_string(),
@@ -2260,7 +2256,7 @@ fn main(), do: make(1, 2)
 "#;
 
     let tel = ConfiguredTelemetry::new();
-    let mut world = World::new(&tel);
+    let mut world = World::new();
     world.submit_code(
         Some("transport_duplicate_capture_lanes.fz".to_string()),
         source.to_string(),
@@ -2306,7 +2302,7 @@ end
 "#;
 
     let tel = ConfiguredTelemetry::new();
-    let mut world = World::new(&tel);
+    let mut world = World::new();
     world.submit_code(
         Some("transport_surface_specific_boundary_returns.fz".to_string()),
         source.to_string(),
@@ -2360,7 +2356,7 @@ fn compiler2_transport_plan_does_not_publish_dead_callable_input_boundaries() {
     let source = include_str!("../../fixtures2/behavior/range_enumerable.fz");
 
     let tel = ConfiguredTelemetry::new();
-    let mut world = World::new(&tel);
+    let mut world = World::new();
     world.submit_code(
         Some("transport_range_enumerable_dead_boundary.fz".to_string()),
         source.to_string(),
@@ -2383,7 +2379,7 @@ fn compiler2_transport_plan_does_not_publish_dead_callable_input_boundaries() {
 
     world.demand(super::Job::LowerNativeProgram(root));
     assert_resolved(
-        world.drive_for(None),
+        super::drive::ExecutionContext::new(&mut world, &tel).drive_for(None),
         "Range Enumerable fixture should lower native callable publications before the known slicer runtime blocker",
     );
 }
@@ -2393,7 +2389,7 @@ fn compiler2_transport_plan_scopes_enum_predicate_callback_inputs_to_concrete_ac
     let source = include_str!("../../fixtures2/behavior/enum_predicate_search.fz");
 
     let tel = ConfiguredTelemetry::new();
-    let mut world = World::new(&tel);
+    let mut world = World::new();
     world.submit_code(
         Some("transport_enum_predicate_search_activation_inputs.fz".to_string()),
         source.to_string(),
@@ -2425,7 +2421,7 @@ end
 "#;
 
     let tel = ConfiguredTelemetry::new();
-    let mut world = World::new(&tel);
+    let mut world = World::new();
     world.submit_code(
         Some("transport_recursive_tuple_return.fz".to_string()),
         source.to_string(),
@@ -2460,8 +2456,8 @@ fn compiler2_pull_runtime_demand_keeps_enum_reduce_operator_refs_direct_callable
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
     tel.attach(&["fz", "compiler2", "pull"], capture.handler());
-    let mut world = World::new(&tel);
-    let root = submit_enum_reduce_operator_ref_root(&mut world, "pull_runtime_enum_reduce_operator_refs.fz");
+    let mut world = World::new();
+    let root = submit_enum_reduce_operator_ref_root(&mut world, &tel, "pull_runtime_enum_reduce_operator_refs.fz");
     let driver = drive_transport_facts_for_test(&tel, &mut world, root);
     let executables = driver.session().materialized_executables().keys().collect::<Vec<_>>();
 
@@ -2521,7 +2517,7 @@ fn compiler2_runtime_demand_leaves_an_unused_callable_input_omitted() {
     // demand — its lane is omitted from transport instead of shipping a dead
     // closure value.
     let tel = ConfiguredTelemetry::new();
-    let mut world = World::new(&tel);
+    let mut world = World::new();
     world.submit_code(
         Some("unused_callable_input.fz".to_string()),
         r#"
@@ -2559,7 +2555,7 @@ fn compiler2_runtime_demand_records_the_exact_surface_for_a_direct_lambda_call()
     // INTENT: a lambda that is only ever invoked directly keeps exactly one
     // resolved call surface — no escape, no opacity, no boxed materialization.
     let tel = ConfiguredTelemetry::new();
-    let mut world = World::new(&tel);
+    let mut world = World::new();
     world.submit_code(
         Some("direct_lambda_call.fz".to_string()),
         r#"
@@ -2600,7 +2596,7 @@ fn compiler2_runtime_demand_delivers_boundary_return_demand_to_escaped_callable_
     // the callee's return is not left ignore-shaped just because the call goes
     // through a boundary.
     let tel = ConfiguredTelemetry::new();
-    let mut world = World::new(&tel);
+    let mut world = World::new();
     world.submit_code(
         Some("escaped_callable_boundary_return.fz".to_string()),
         r#"
@@ -2640,7 +2636,7 @@ fn compiler2_runtime_demand_marks_an_escaped_callable_first_class() {
     // a first-class runtime obligation — escaped but not opaque, with exactly
     // one first-class surface and one canonical executable resolution.
     let tel = ConfiguredTelemetry::new();
-    let mut world = World::new(&tel);
+    let mut world = World::new();
     world.submit_code(
         Some("escaped_callable.fz".to_string()),
         r#"
@@ -2687,7 +2683,7 @@ fn compiler2_runtime_demand_keeps_a_returned_direct_callable_out_of_first_class_
     // direct callable flow — returning it does not force a first-class boxed
     // callable object.
     let tel = ConfiguredTelemetry::new();
-    let mut world = World::new(&tel);
+    let mut world = World::new();
     world.submit_code(
         Some("returned_direct_callable_transport.fz".to_string()),
         r#"
@@ -2721,7 +2717,7 @@ fn compiler2_runtime_demand_makes_opaque_callable_use_explicit() {
     // the input demand carries the opaque callable obligation together with the
     // one observed call surface instead of collapsing to a plain value demand.
     let tel = ConfiguredTelemetry::new();
-    let mut world = World::new(&tel);
+    let mut world = World::new();
     world.submit_code(
         Some("opaque_callable_use.fz".to_string()),
         "fn main(f), do: f.(1)\n".to_string(),
@@ -2758,7 +2754,7 @@ fn compiler2_runtime_demand_marks_callable_arguments_to_opaque_calls_first_class
     // call-argument demand records the escape, and the lambda's callable flow
     // becomes a first-class obligation with a canonical resolution.
     let tel = ConfiguredTelemetry::new();
-    let mut world = World::new(&tel);
+    let mut world = World::new();
     world.submit_code(
         Some("opaque_call_callable_argument.fz".to_string()),
         r#"
@@ -2802,7 +2798,7 @@ fn compiler2_runtime_demand_marks_joined_function_refs_first_class_before_reduce
     // and the delivered joined value itself carries the escaped callable demand
     // with its arity-2 surface before downstream lowering.
     let tel = ConfiguredTelemetry::new();
-    let mut world = World::new(&tel);
+    let mut world = World::new();
     world.submit_code(
         Some("opaque_fn_value_join.fz".to_string()),
         include_str!("../../fixtures2/behavior/opaque_fn_value_join.fz").to_string(),
@@ -2874,7 +2870,7 @@ fn compiler2_runtime_demand_resolves_enum_take_first_class_reducer_surfaces_befo
     // surfaces whose upstream executable edges are resolved before transport
     // consumes them — no surface reaches transport without its edges.
     let tel = ConfiguredTelemetry::new();
-    let mut world = World::new(&tel);
+    let mut world = World::new();
     world.submit_code(
         Some("runtime_demand_enum_take_reducer_surfaces.fz".to_string()),
         "fn main() do\n  xs = [1, 2, 3, 4, 5]\n  dbg(Enum.take(xs, 3))\nend\n".to_string(),
@@ -2905,7 +2901,7 @@ fn compiler2_runtime_demand_preserves_tuple_return_shape_for_escaped_callable_bo
     // recursive tuple structure — `{{1, 2}, 3}` stays TupleFields([TupleFields,
     // Whole]) upstream instead of flattening to an opaque whole value.
     let tel = ConfiguredTelemetry::new();
-    let mut world = World::new(&tel);
+    let mut world = World::new();
     world.submit_code(
         Some("runtime_demand_boundary_tuple_return.fz".to_string()),
         r#"
@@ -2959,7 +2955,7 @@ fn compiler2_runtime_demand_records_recursive_tuple_resume_value_demand() {
     // destructured carries tuple-field demand upstream, so the recursive return
     // can be delivered field-wise instead of as a boxed whole.
     let tel = ConfiguredTelemetry::new();
-    let mut world = World::new(&tel);
+    let mut world = World::new();
     world.submit_code(
         Some("runtime_demand_recursive_tuple_resume.fz".to_string()),
         r#"
@@ -3001,7 +2997,7 @@ fn compiler2_runtime_demand_preserves_reducer_surface_when_suspend_continuation_
     // type-template) executable resolutions — the escape of the continuation
     // must not erase the reducer's proven call surface.
     let tel = ConfiguredTelemetry::new();
-    let mut world = World::new(&tel);
+    let mut world = World::new();
     world.submit_code(
         Some("runtime_demand_enumerable_reduce_suspend_continuation.fz".to_string()),
         r#"
@@ -3072,7 +3068,7 @@ fn compiler2_runtime_demand_keeps_dbg_inputs_live_when_the_return_is_ignored() {
     // caller discards the return, and the continuation after `dbg(stats)` keeps
     // the captured value live for the later field access.
     let tel = ConfiguredTelemetry::new();
-    let mut world = World::new(&tel);
+    let mut world = World::new();
     world.submit_code(
         Some("heap_stats_dbg_resume.fz".to_string()),
         r#"
@@ -3124,8 +3120,8 @@ fn compiler2_pull_transport_keeps_enum_reduce_operator_refs_direct_callable() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
     tel.attach(&["fz", "compiler2", "pull"], capture.handler());
-    let mut world = World::new(&tel);
-    let root = submit_enum_reduce_operator_ref_root(&mut world, "pull_transport_enum_reduce_operator_refs.fz");
+    let mut world = World::new();
+    let root = submit_enum_reduce_operator_ref_root(&mut world, &tel, "pull_transport_enum_reduce_operator_refs.fz");
     let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
     let main_return = TransportPosition::ExecutableReturn {
         executable: plan.entry.clone(),
@@ -3185,9 +3181,10 @@ fn compiler2_pull_transport_keeps_enum_reduce_operator_refs_direct_callable() {
 #[serial_test::serial]
 fn compiler2_pull_transport_shape_is_stable_across_product_request_order() {
     let tel = ConfiguredTelemetry::new();
-    let mut world = World::new(&tel);
+    let mut world = World::new();
     let root = submit_enum_reduce_operator_ref_root(
         &mut world,
+        &tel,
         "pull_transport_order_stability_enum_reduce_operator_refs.fz",
     );
     let (_, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
@@ -3220,8 +3217,8 @@ fn compiler2_pull_transport_shape_is_stable_across_product_request_order() {
 #[serial_test::serial]
 fn compiler2_pull_materialized_inventory_keeps_enum_reduce_operator_refs_symbolic() {
     let tel = ConfiguredTelemetry::new();
-    let mut world = World::new(&tel);
-    let root = submit_enum_reduce_operator_ref_root(&mut world, "pull_materialized_enum_reduce_operator_refs.fz");
+    let mut world = World::new();
+    let root = submit_enum_reduce_operator_ref_root(&mut world, &tel, "pull_materialized_enum_reduce_operator_refs.fz");
     let driver = drive_transport_facts_for_test(&tel, &mut world, root);
 
     assert_eq!(
@@ -3260,9 +3257,9 @@ fn compiler2_pull_materialized_inventory_keeps_enum_reduce_operator_refs_symboli
 #[serial_test::serial]
 fn compiler2_pull_abi_and_backend_products_keep_call_edges_symbolic() {
     let tel = ConfiguredTelemetry::new();
-    let mut world = World::new(&tel);
-    let root = submit_enum_reduce_operator_ref_root(&mut world, "pull_abi_backend_enum_reduce_operator_refs.fz");
-    let driver = pull_root_backend_driver_for_test(&mut world, root);
+    let mut world = World::new();
+    let root = submit_enum_reduce_operator_ref_root(&mut world, &tel, "pull_abi_backend_enum_reduce_operator_refs.fz");
+    let driver = pull_root_backend_driver_for_test(&tel, &mut world, root);
     let executables = driver
         .session()
         .backend_executables()
@@ -3317,8 +3314,8 @@ fn compiler2_pull_root_backend_product_packages_and_runs_enum_reduce_operator_re
         "product no-dump interp should reduce fixture 00181 compiler job starts below the legacy baseline; got {no_dump_job_fires}"
     );
 
-    let mut world = World::new(&tel);
-    let root = submit_enum_reduce_operator_ref_root(&mut world, "pull_root_backend_enum_reduce_operator_refs.fz");
+    let mut world = World::new();
+    let root = submit_enum_reduce_operator_ref_root(&mut world, &tel, "pull_root_backend_enum_reduce_operator_refs.fz");
     let capture = Capture::new();
     let product_jobs = JobTelemetry::new();
     tel.attach(&[], capture.handler());
@@ -3328,7 +3325,7 @@ fn compiler2_pull_root_backend_product_packages_and_runs_enum_reduce_operator_re
         "dense executable indices should not exist before final backend packaging"
     );
     let (program, driver) =
-        super::product_drive::drive_root_backend_product::<PanicProductDriveError>(&mut world, root)
+        super::product_drive::drive_root_backend_product::<_, PanicProductDriveError>(&mut world, &tel, root)
             .expect("panic-based ProductDriveError never returns Err");
 
     assert_eq!(
@@ -3390,7 +3387,7 @@ fn compiler2_pull_root_backend_product_packages_and_runs_enum_reduce_operator_re
     );
 }
 
-fn assert_direct_clause_param_forwards_have_abi_reprs(world: &World<'_>, program: &super::artifact::BackendProgram) {
+fn assert_direct_clause_param_forwards_have_abi_reprs(world: &World, program: &super::artifact::BackendProgram) {
     let mut checked = 0;
     for executable in &program.executables {
         let super::artifact::BackendBody::Clauses { clauses, entries, .. } = &executable.body else {
@@ -3439,7 +3436,7 @@ fn assert_direct_clause_param_forwards_have_abi_reprs(world: &World<'_>, program
 }
 
 fn executable_input_shape_is_nothing(
-    world: &World<'_>,
+    world: &World,
     program: &super::artifact::BackendProgram,
     executable: &super::artifact::BackendExecutable,
     semantic_index: usize,
@@ -3481,7 +3478,7 @@ end
 "#;
 
     let tel = ConfiguredTelemetry::new();
-    let mut world = World::new(&tel);
+    let mut world = World::new();
     world.submit_code(
         Some("transport_enum_reduce_joined_reducer.fz".to_string()),
         source.to_string(),
@@ -3535,7 +3532,7 @@ end
 #[test]
 fn compiler2_transport_plan_publishes_joined_callable_value_position_before_native_capture() {
     let tel = ConfiguredTelemetry::new();
-    let mut world = World::new(&tel);
+    let mut world = World::new();
     world.submit_code(
         Some("opaque_fn_value_join.fz".to_string()),
         include_str!("../../fixtures2/behavior/opaque_fn_value_join.fz").to_string(),
@@ -3617,7 +3614,7 @@ fn compiler2_transport_plan_publishes_joined_callable_value_position_before_nati
 #[test]
 fn compiler2_transport_plan_gives_lambda_capture_lane_for_published_callable_capture() {
     let tel = ConfiguredTelemetry::new();
-    let mut world = World::new(&tel);
+    let mut world = World::new();
     world.submit_code(
         Some("opaque_fn_value_join.fz".to_string()),
         include_str!("../../fixtures2/behavior/opaque_fn_value_join.fz").to_string(),
@@ -3693,7 +3690,7 @@ end
 "#;
 
     let tel = ConfiguredTelemetry::new();
-    let mut world = World::new(&tel);
+    let mut world = World::new();
     world.submit_code(
         Some("transport_first_class_callable_continuation_capture.fz".to_string()),
         source.to_string(),
@@ -3743,7 +3740,7 @@ end
 "#;
 
     let tel = ConfiguredTelemetry::new();
-    let mut world = World::new(&tel);
+    let mut world = World::new();
     world.submit_code(
         Some("transport_enum_style_reducer_captures_callable.fz".to_string()),
         source.to_string(),
@@ -3822,7 +3819,7 @@ fn compiler2_transport_input_components_are_schedule_independent() {
     // the meet panicked on when it failed.
     let keeps_layout_distinct_siblings_split = || -> bool {
         let tel = ConfiguredTelemetry::new();
-        let mut world = World::new(&tel);
+        let mut world = World::new();
         world.submit_code(
             Some("transport_input_components_schedule_independent.fz".to_string()),
             source.to_string(),
@@ -3870,7 +3867,7 @@ fn compiler2_transport_plan_preserves_nested_enum_reduce_predicate_capture_shape
     let source = include_str!("../../fixtures2/behavior/enum_take_drop_split.fz");
 
     let tel = ConfiguredTelemetry::new();
-    let mut world = World::new(&tel);
+    let mut world = World::new();
     world.submit_code(
         Some("transport_enum_take_drop_split_nested_predicate_capture.fz".to_string()),
         source.to_string(),
@@ -3941,7 +3938,7 @@ fn compiler2_transport_plan_resolves_enum_take_reducer_input_boundary_from_sourc
     let source = "fn main() do\n  xs = [1, 2, 3, 4, 5]\n  dbg(Enum.take(xs, 3))\nend\n";
 
     let tel = ConfiguredTelemetry::new();
-    let mut world = World::new(&tel);
+    let mut world = World::new();
     world.submit_code(
         Some("transport_enum_take_reducer_input_boundary_resolution.fz".to_string()),
         source.to_string(),
@@ -3997,7 +3994,7 @@ fn compiler2_transport_plan_publishes_enum_take_reduce_while_multi_surface_calla
     let source = "fn main() do\n  xs = [1, 2, 3, 4, 5]\n  dbg(Enum.take(xs, 3))\nend\n";
 
     let tel = ConfiguredTelemetry::new();
-    let mut world = World::new(&tel);
+    let mut world = World::new();
     world.submit_code(
         Some("transport_enum_take_unpublished_multi_surface_callables.fz".to_string()),
         source.to_string(),
@@ -4061,7 +4058,7 @@ end
 "#;
 
     let tel = ConfiguredTelemetry::new();
-    let mut world = World::new(&tel);
+    let mut world = World::new();
     world.submit_code(
         Some("transport_direct_reducer_capture_prefix_shape.fz".to_string()),
         source.to_string(),
@@ -4173,7 +4170,7 @@ fn compiler2_transport_plan_projects_enum_reduce_bridge_callable_flow_by_produce
     let source = include_str!("../../fixtures2/behavior/fz_f98_range_reduce_scalar.fz");
 
     let tel = ConfiguredTelemetry::new();
-    let mut world = World::new(&tel);
+    let mut world = World::new();
     world.submit_code(
         Some("transport_fz_f98_range_reduce_scalar_contract.fz".to_string()),
         source.to_string(),
@@ -4223,7 +4220,7 @@ fn compiler2_transport_plan_keeps_callable_resolution_capture_abi_correlated() {
     let source = include_str!("../../fixtures2/behavior/fz_f98_range_map_converges.fz");
 
     let tel = ConfiguredTelemetry::new();
-    let mut world = World::new(&tel);
+    let mut world = World::new();
     world.submit_code(
         Some("transport_fz_f98_range_map_callable_capture_abi.fz".to_string()),
         source.to_string(),
@@ -4250,7 +4247,7 @@ fn compiler2_transport_plan_keeps_callable_resolution_capture_abi_correlated() {
 #[test]
 fn compiler2_declared_struct_field_types_keep_integer_range_elements_off_float() {
     let tel = ConfiguredTelemetry::new();
-    let mut world = World::new(&tel);
+    let mut world = World::new();
     world.submit_code(
         Some("range_int_elements.fz".to_string()),
         "fn main() do\n  dbg(Enum.to_list(1..3))\nend\n".to_string(),
@@ -4305,7 +4302,7 @@ fn compiler2_transport_plan_keeps_unused_capture_on_specialized_activation_at_co
     let source = include_str!("../../fixtures2/behavior/fz_f98_range_reduce2.fz");
 
     let tel = ConfiguredTelemetry::new();
-    let mut world = World::new(&tel);
+    let mut world = World::new();
     world.submit_code(
         Some("transport_fz_f98_range_reduce2_capture_layout.fz".to_string()),
         source.to_string(),
@@ -4316,7 +4313,7 @@ fn compiler2_transport_plan_keeps_unused_capture_on_specialized_activation_at_co
     assert_callable_resolution_capture_prefixes_match_descriptors(&world, session);
 }
 
-fn executable_symbol_for(world: &World<'_>, key: &ExecutableKey) -> ExecutableSymbol {
+fn executable_symbol_for(world: &World, key: &ExecutableKey) -> ExecutableSymbol {
     ExecutableSymbol {
         activation: ActivationSymbol {
             function: key.activation.function,
@@ -4326,7 +4323,7 @@ fn executable_symbol_for(world: &World<'_>, key: &ExecutableKey) -> ExecutableSy
     }
 }
 
-fn executable_membership(world: &World<'_>, session: &PullSession) -> Vec<ExecutableSymbol> {
+fn executable_membership(world: &World, session: &PullSession) -> Vec<ExecutableSymbol> {
     session
         .demanded_executables()
         .iter()
@@ -4334,7 +4331,7 @@ fn executable_membership(world: &World<'_>, session: &PullSession) -> Vec<Execut
         .collect()
 }
 
-fn executable_for(world: &World<'_>, session: &PullSession, name: &str, arity: usize) -> ExecutableSymbol {
+fn executable_for(world: &World, session: &PullSession, name: &str, arity: usize) -> ExecutableSymbol {
     session
         .demanded_executables()
         .iter()
@@ -4364,7 +4361,7 @@ fn compiler2_runtime_demand_resettles_a_member_whose_contribution_grows_an_exter
     // one of its own external inputs: it re-collects (the displaced callee is
     // memo-less and joins as a member) and settles the grown cone together.
     let tel = ConfiguredTelemetry::new();
-    let mut world = World::new(&tel);
+    let mut world = World::new();
     world.submit_code(
         Some("runtime_demand_stale_caller_window.fz".to_string()),
         r#"
@@ -4438,12 +4435,7 @@ fn main(), do: caller(1)
     }
 }
 
-fn demanded_executable_for_function(
-    world: &World<'_>,
-    session: &PullSession,
-    name: &str,
-    arity: usize,
-) -> ExecutableKey {
+fn demanded_executable_for_function(world: &World, session: &PullSession, name: &str, arity: usize) -> ExecutableKey {
     session
         .demanded_executables()
         .iter()
@@ -4470,7 +4462,7 @@ fn runtime_demands_for_frontier(session: &PullSession) -> HashMap<ExecutableKey,
 /// from the product memo — the same read every downstream product consumer
 /// performs (`session.memo().runtime_demand`).
 fn product_runtime_demand_for_function(
-    world: &World<'_>,
+    world: &World,
     session: &PullSession,
     name: &str,
     arity: usize,
@@ -4487,7 +4479,11 @@ fn has_callable_flow(demand: &ExecutableRuntimeDemand, predicate: impl Fn(&Calla
     demand.callable_flows.values().any(predicate)
 }
 
-fn submit_enum_reduce_operator_ref_root(world: &mut World<'_>, source_name: &str) -> super::RootId {
+fn submit_enum_reduce_operator_ref_root(
+    world: &mut World,
+    _tel: &ConfiguredTelemetry,
+    source_name: &str,
+) -> super::RootId {
     world.submit_code(
         Some(source_name.to_string()),
         ENUM_REDUCE_OPERATOR_REF_SOURCE.to_string(),
@@ -4509,12 +4505,13 @@ fn submit_enum_reduce_operator_ref_root(world: &mut World<'_>, source_name: &str
 /// plus boundary resolutions) but stops at materialized facts.
 fn drive_transport_facts_for_test<'a>(
     tel: &'a ConfiguredTelemetry,
-    world: &mut World<'_>,
+    world: &mut World,
     root: super::RootId,
-) -> ProductDriver<'a> {
+) -> ProductDriver<'a, ConfiguredTelemetry> {
     let mut driver = ProductDriver::new(tel, root);
-    let pokes = super::product_drive::drive_product_fact_wait::<PanicProductDriveError>(
+    let pokes = super::product_drive::drive_product_fact_wait::<_, PanicProductDriveError>(
         world,
+        tel,
         root,
         FactUse::settled(FactKey::RootEntry(root)),
         super::product_drive::PRODUCT_DRIVE_BUDGET,
@@ -4596,9 +4593,9 @@ fn drive_transport_facts_for_test<'a>(
 /// building any ABI/backend/native artifacts.
 fn pull_transport_plan_for_test<'a>(
     tel: &'a ConfiguredTelemetry,
-    world: &mut World<'_>,
+    world: &mut World,
     root: super::RootId,
-) -> (ProductDriver<'a>, MaterializedTransportPlan) {
+) -> (ProductDriver<'a, ConfiguredTelemetry>, MaterializedTransportPlan) {
     let driver = drive_transport_facts_for_test(tel, world, root);
     let entry = world.root_entry_executable(root);
     let plan = super::jobs::backend::symbolic_materialized_transport_plan(
@@ -4619,10 +4616,11 @@ fn pull_transport_plan_for_test<'a>(
 /// `RootBackendProduct` so the session carries the backend executables, then read
 /// the plan the same way. The other seam tests need only the transport facts.
 fn pull_root_backend_plan_for_test<'a>(
-    world: &mut World<'a>,
+    tel: &'a ConfiguredTelemetry,
+    world: &mut World,
     root: super::RootId,
-) -> (ProductDriver<'a>, MaterializedTransportPlan) {
-    let driver = pull_root_backend_driver_for_test(world, root);
+) -> (ProductDriver<'a, ConfiguredTelemetry>, MaterializedTransportPlan) {
+    let driver = pull_root_backend_driver_for_test(tel, world, root);
     let entry = world.root_entry_executable(root);
     let plan = super::jobs::backend::symbolic_materialized_transport_plan(
         driver.session(),
@@ -4637,9 +4635,14 @@ fn pull_root_backend_plan_for_test<'a>(
 /// Drive the full `RootBackendProduct` and return only the driven session. Used
 /// by the few tests whose intent is the ABI/backend-product inventory itself
 /// (call-edge symbolism), which genuinely require those artifacts.
-fn pull_root_backend_driver_for_test<'a>(world: &mut World<'a>, root: super::RootId) -> ProductDriver<'a> {
-    let (_program, driver) = super::product_drive::drive_root_backend_product::<PanicProductDriveError>(world, root)
-        .expect("panic-based ProductDriveError never returns Err");
+fn pull_root_backend_driver_for_test<'a>(
+    tel: &'a ConfiguredTelemetry,
+    world: &mut World,
+    root: super::RootId,
+) -> ProductDriver<'a, ConfiguredTelemetry> {
+    let (_program, driver) =
+        super::product_drive::drive_root_backend_product::<_, PanicProductDriveError>(world, tel, root)
+            .expect("panic-based ProductDriveError never returns Err");
     driver.finish_session();
     driver
 }
@@ -4651,8 +4654,9 @@ fn pull_root_backend_driver_for_test<'a>(world: &mut World<'a>, root: super::Roo
 struct PanicProductDriveError;
 
 impl super::product_drive::ProductDriveError for PanicProductDriveError {
-    fn job_failed(
-        _world: &World<'_>,
+    fn job_failed<T: crate::telemetry::Telemetry>(
+        _world: &World,
+        _tel: &T,
         root: super::RootId,
         fact: &FactUse<FactKey>,
         job: &Job,
@@ -4664,15 +4668,30 @@ impl super::product_drive::ProductDriveError for PanicProductDriveError {
         );
     }
 
-    fn no_ready_producer(_world: &World<'_>, root: super::RootId, fact: &FactUse<FactKey>) -> Self {
+    fn no_ready_producer<T: crate::telemetry::Telemetry>(
+        _world: &World,
+        _tel: &T,
+        root: super::RootId,
+        fact: &FactUse<FactKey>,
+    ) -> Self {
         panic!("root {} no ready producer for {fact:?}", root.as_u32());
     }
 
-    fn fact_wait_budget_exceeded(_world: &World<'_>, root: super::RootId, fact: &FactUse<FactKey>) -> Self {
+    fn fact_wait_budget_exceeded<T: crate::telemetry::Telemetry>(
+        _world: &World,
+        _tel: &T,
+        root: super::RootId,
+        fact: &FactUse<FactKey>,
+    ) -> Self {
         panic!("root {} fact-wait budget exceeded for {fact:?}", root.as_u32());
     }
 
-    fn did_not_settle(_world: &World<'_>, root: super::RootId, last_wait: Option<(ProductKey, Vec<PullWait>)>) -> Self {
+    fn did_not_settle<T: crate::telemetry::Telemetry>(
+        _world: &World,
+        _tel: &T,
+        root: super::RootId,
+        last_wait: Option<(ProductKey, Vec<PullWait>)>,
+    ) -> Self {
         panic!(
             "root {} product did not settle; last wait: {last_wait:?}",
             root.as_u32()
@@ -4686,8 +4705,8 @@ impl super::product_drive::ProductDriveError for PanicProductDriveError {
 /// tests need transport shapes, runtime demands, and materialized executables
 /// too, so only the inner fact-wait loop is shared.
 fn pull_product_until_produced_with_fact_waits(
-    driver: &mut ProductDriver<'_>,
-    world: &mut World<'_>,
+    driver: &mut ProductDriver<'_, ConfiguredTelemetry>,
+    world: &mut World,
     root: super::RootId,
     key: ProductKey,
     message: &str,
@@ -4700,7 +4719,7 @@ fn pull_product_until_produced_with_fact_waits(
             continue;
         };
         let outcome = {
-            let mut producers = WorldProductProducers::new(world);
+            let mut producers = WorldProductProducers::new(world, driver.telemetry());
             driver.pull(&mut producers, current.clone())
         };
         match outcome {
@@ -4714,8 +4733,9 @@ fn pull_product_until_produced_with_fact_waits(
                         PullWait::Product(product) => stack.push(product),
                         PullWait::Fact(fact) => {
                             let producer_pokes =
-                                super::product_drive::drive_product_fact_wait::<PanicProductDriveError>(
+                                super::product_drive::drive_product_fact_wait::<_, PanicProductDriveError>(
                                     world,
+                                    driver.telemetry(),
                                     root,
                                     fact,
                                     super::product_drive::PRODUCT_DRIVE_BUDGET,
@@ -4800,7 +4820,7 @@ fn upstream_callable_flow_for_producer(session: &PullSession, function: super::F
 }
 
 fn upstream_input_demand_for_function(
-    world: &World<'_>,
+    world: &World,
     session: &PullSession,
     name: &str,
     arity: usize,
@@ -4818,7 +4838,7 @@ fn upstream_input_demand_for_function(
 }
 
 fn assert_generic_callable_shape_matches_upstream_demand(
-    world: &World<'_>,
+    world: &World,
     session: &PullSession,
     callable: super::transport::CallableId,
     demand: RuntimeDemand,
@@ -4850,7 +4870,7 @@ fn assert_generic_callable_shape_matches_upstream_demand(
 }
 
 fn assert_callable_facts_match_upstream_flow(
-    world: &mut World<'_>,
+    world: &mut World,
     session: &PullSession,
     callable: super::transport::CallableId,
     flow: &CallableFlowFact,
@@ -4872,7 +4892,7 @@ fn assert_callable_facts_match_upstream_flow(
     assert_boundary_resolutions_match_upstream_flow(world, session, facts, flow);
 }
 
-fn flow_resolution_symbols(world: &World<'_>, flow: &CallableFlowFact) -> Vec<ExecutableSymbol> {
+fn flow_resolution_symbols(world: &World, flow: &CallableFlowFact) -> Vec<ExecutableSymbol> {
     let mut symbols = flow
         .resolutions
         .iter()
@@ -4889,7 +4909,7 @@ fn flow_resolution_symbols(world: &World<'_>, flow: &CallableFlowFact) -> Vec<Ex
 }
 
 fn assert_boundary_resolutions_match_upstream_flow(
-    world: &mut World<'_>,
+    world: &mut World,
     session: &PullSession,
     facts: &super::transport::CallableFacts,
     flow: &CallableFlowFact,
@@ -4932,7 +4952,7 @@ fn assert_boundary_resolutions_match_upstream_flow(
     }
 }
 
-fn assert_callable_resolution_capture_prefixes_match_descriptors(world: &World<'_>, session: &PullSession) {
+fn assert_callable_resolution_capture_prefixes_match_descriptors(world: &World, session: &PullSession) {
     for (callable, facts) in session.callable_facts_inventory() {
         let descr = world.callable(*callable);
         let Some(function) = descr.function else {
@@ -4981,7 +5001,7 @@ fn executable_symbol_test_key(symbol: &ExecutableSymbol) -> (u32, Vec<Ty>, u8, u
 }
 
 fn assert_transport_surfaces_match_upstream(
-    world: &mut World<'_>,
+    world: &mut World,
     actual: &[Box<[ShapeId]>],
     expected: &BTreeSet<CallableSurface>,
 ) {
@@ -4992,7 +5012,7 @@ fn assert_transport_surfaces_match_upstream(
 }
 
 fn transport_surfaces_match_upstream(
-    world: &mut World<'_>,
+    world: &mut World,
     actual: &[Box<[ShapeId]>],
     expected: &BTreeSet<CallableSurface>,
 ) -> bool {
@@ -5012,7 +5032,7 @@ fn transport_surfaces_match_upstream(
     true
 }
 
-fn surface_shape_matches_upstream(world: &mut World<'_>, actual: &[ShapeId], expected: &CallableSurface) -> bool {
+fn surface_shape_matches_upstream(world: &mut World, actual: &[ShapeId], expected: &CallableSurface) -> bool {
     actual.len() == expected.inputs.len()
         && actual
             .iter()
@@ -5021,7 +5041,7 @@ fn surface_shape_matches_upstream(world: &mut World<'_>, actual: &[ShapeId], exp
             .all(|(shape, ty)| shape_matches_surface_input_ty(world, shape, ty))
 }
 
-fn shape_matches_surface_input_ty(world: &mut World<'_>, shape: ShapeId, ty: Ty) -> bool {
+fn shape_matches_surface_input_ty(world: &mut World, shape: ShapeId, ty: Ty) -> bool {
     match shape_descr(world, shape).clone() {
         ShapeDescr::Lane(lane) => world.lane(lane).ty == ty,
         ShapeDescr::Tuple(items) => {
@@ -5039,7 +5059,7 @@ fn shape_matches_surface_input_ty(world: &mut World<'_>, shape: ShapeId, ty: Ty)
     }
 }
 
-fn exact_tuple_field_tys_for_surface(world: &mut World<'_>, ty: Ty, arity: usize) -> Option<Vec<Ty>> {
+fn exact_tuple_field_tys_for_surface(world: &mut World, ty: Ty, arity: usize) -> Option<Vec<Ty>> {
     let predicate = world.types().runtime_type_predicate(&ty);
     if predicate.tuple_arities.cofinite
         || predicate.tuple_arities.values.len() != 1
@@ -5057,7 +5077,7 @@ fn exact_tuple_field_tys_for_surface(world: &mut World<'_>, ty: Ty, arity: usize
     Some(fields)
 }
 
-fn function_is(world: &World<'_>, function: super::FunctionId, name: &str, arity: usize) -> bool {
+fn function_is(world: &World, function: super::FunctionId, name: &str, arity: usize) -> bool {
     let function_ref = world.function_ref(function);
     function_ref.name == name && function_ref.arity == arity
 }
@@ -5083,11 +5103,11 @@ fn plan_shape_at(positions: &HashMap<TransportPosition, ShapeId>, position: &Tra
         .unwrap_or_else(|| panic!("transport position should exist: {position:?}"))
 }
 
-fn shape_descr<'a>(world: &'a World<'_>, shape: ShapeId) -> &'a ShapeDescr {
+fn shape_descr(world: &World, shape: ShapeId) -> &ShapeDescr {
     world.shape(shape)
 }
 
-fn shape_leaf_lanes(world: &World<'_>, shape: ShapeId) -> Vec<(ShapeId, LaneId)> {
+fn shape_leaf_lanes(world: &World, shape: ShapeId) -> Vec<(ShapeId, LaneId)> {
     match shape_descr(world, shape) {
         ShapeDescr::Nothing | ShapeDescr::Callable(_) => Vec::new(),
         ShapeDescr::Lane(lane) => vec![(shape, *lane)],
@@ -5116,7 +5136,7 @@ fn assert_seam_fact(
 }
 
 fn assert_plan_executable_references_are_root_scoped(
-    world: &World<'_>,
+    world: &World,
     transport: &MaterializedTransportPlan,
     session: &PullSession,
 ) {
@@ -5155,7 +5175,7 @@ fn assert_plan_executable_references_are_root_scoped(
     }
 }
 
-fn single_boundary_descr<'a>(world: &'a World<'_>, session: &PullSession) -> &'a BoundaryDescr {
+fn single_boundary_descr<'a>(world: &'a World, session: &PullSession) -> &'a BoundaryDescr {
     let boundaries = session.boundary_facts_inventory().keys().copied().collect::<Vec<_>>();
     let [boundary] = boundaries.as_slice() else {
         panic!(
@@ -5166,7 +5186,7 @@ fn single_boundary_descr<'a>(world: &'a World<'_>, session: &PullSession) -> &'a
     world.boundary(*boundary)
 }
 
-fn boundary_with_callable_arg<'a>(world: &'a World<'_>, session: &PullSession) -> &'a BoundaryDescr {
+fn boundary_with_callable_arg<'a>(world: &'a World, session: &PullSession) -> &'a BoundaryDescr {
     session
         .boundary_facts_inventory()
         .keys()
@@ -5186,7 +5206,7 @@ fn boundary_with_callable_arg<'a>(world: &'a World<'_>, session: &PullSession) -
 }
 
 fn callable_return_for_executable(
-    world: &World<'_>,
+    world: &World,
     positions: &HashMap<TransportPosition, ShapeId>,
     executable: super::transport::ExecutableSymbol,
 ) -> super::transport::CallableId {
@@ -5201,7 +5221,7 @@ fn callable_return_for_executable(
 }
 
 fn boundary_with_callable_return<'a>(
-    world: &'a World<'_>,
+    world: &'a World,
     session: &PullSession,
     callable: super::transport::CallableId,
 ) -> &'a BoundaryDescr {
@@ -5223,7 +5243,7 @@ fn boundary_with_callable_return<'a>(
 }
 
 fn continuation_boundary_descr<'a>(
-    world: &'a World<'_>,
+    world: &'a World,
     session: &PullSession,
     callable: super::transport::CallableId,
 ) -> &'a BoundaryDescr {
@@ -5242,7 +5262,7 @@ fn continuation_boundary_descr<'a>(
         })
 }
 
-fn boundary_descrs<'a>(world: &'a World<'_>, session: &PullSession) -> Vec<&'a BoundaryDescr> {
+fn boundary_descrs<'a>(world: &'a World, session: &PullSession) -> Vec<&'a BoundaryDescr> {
     session
         .boundary_facts_inventory()
         .keys()
@@ -5250,7 +5270,7 @@ fn boundary_descrs<'a>(world: &'a World<'_>, session: &PullSession) -> Vec<&'a B
         .collect()
 }
 
-fn shape_contains_callable(world: &World<'_>, shape: ShapeId) -> bool {
+fn shape_contains_callable(world: &World, shape: ShapeId) -> bool {
     match shape_descr(world, shape) {
         ShapeDescr::Callable(_) => true,
         ShapeDescr::Tuple(items) => items.iter().any(|item| shape_contains_callable(world, *item)),
@@ -5258,7 +5278,7 @@ fn shape_contains_callable(world: &World<'_>, shape: ShapeId) -> bool {
     }
 }
 
-fn first_callable_in_shape(world: &World<'_>, shape: ShapeId) -> Option<super::transport::CallableId> {
+fn first_callable_in_shape(world: &World, shape: ShapeId) -> Option<super::transport::CallableId> {
     match shape_descr(world, shape) {
         ShapeDescr::Callable(callable) => Some(*callable),
         ShapeDescr::Tuple(items) => items.iter().find_map(|item| first_callable_in_shape(world, *item)),
@@ -5326,7 +5346,7 @@ fn product_no_dump_interp_job_telemetry(source: &str) -> (super::RootId, JobTele
     let tel = ConfiguredTelemetry::new();
     let jobs = JobTelemetry::new();
     tel.attach(&["fz", "compiler2", "job"], jobs.handler());
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("current_no_dump_00181_enum_reduce_operator_ref.fz".to_string()),
         text: source.to_string(),

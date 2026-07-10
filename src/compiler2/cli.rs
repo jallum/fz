@@ -51,7 +51,7 @@ pub fn run() {
     let diagnostics = ConsoleDiagnostics::new();
     tel.attach(&["fz", "diag"], diagnostics.handler());
 
-    let exit_code = match dispatch(&tel, args) {
+    let exit_code = match dispatch(tel, args) {
         Ok(()) => 0,
         Err(error) => {
             if !diagnostics.saw_error() {
@@ -119,7 +119,7 @@ fn parse_global_args(raw_args: Vec<String>) -> (Option<String>, bool, Vec<String
     (log_telemetry, emit_stats, args)
 }
 
-fn dispatch(tel: &ConfiguredTelemetry, args: Vec<String>) -> Result<(), CliError> {
+fn dispatch(tel: ConfiguredTelemetry, args: Vec<String>) -> Result<(), CliError> {
     match args.first().map(String::as_str) {
         Some("help" | "--help" | "-h") => {
             print_help();
@@ -173,11 +173,11 @@ build options:
     );
 }
 
-fn run_command(tel: &ConfiguredTelemetry, args: &[String]) -> Result<(), CliError> {
+fn run_command(tel: ConfiguredTelemetry, args: &[String]) -> Result<(), CliError> {
     let options = parse_source_options("fz2 run [--lto] [--dump <spec>] <src.fz>", args)?;
     let path = options.path;
     let (mut compiler, root) = load_main_root(tel, &path)?;
-    install_dump_handlers(tel, root, &options.dumps);
+    install_dump_handlers(compiler.telemetry(), root, &options.dumps);
     if options
         .dumps
         .iter()
@@ -200,11 +200,11 @@ fn run_command(tel: &ConfiguredTelemetry, args: &[String]) -> Result<(), CliErro
     Ok(())
 }
 
-fn interp_command(tel: &ConfiguredTelemetry, args: &[String]) -> Result<(), CliError> {
+fn interp_command(tel: ConfiguredTelemetry, args: &[String]) -> Result<(), CliError> {
     let options = parse_source_options("fz2 interp [--dump <spec>] <src.fz>", args)?;
     let path = options.path;
     let (mut compiler, root) = load_main_root(tel, &path)?;
-    install_dump_handlers(tel, root, &options.dumps);
+    install_dump_handlers(compiler.telemetry(), root, &options.dumps);
     if options
         .dumps
         .iter()
@@ -232,12 +232,12 @@ fn interp_command(tel: &ConfiguredTelemetry, args: &[String]) -> Result<(), CliE
     Ok(())
 }
 
-fn build_command(tel: &ConfiguredTelemetry, args: &[String]) -> Result<(), CliError> {
+fn build_command(tel: ConfiguredTelemetry, args: &[String]) -> Result<(), CliError> {
     let options = parse_build_options(args)?;
     let path = options.path;
     let output = options.output;
     let (mut compiler, root) = load_main_root(tel, &path)?;
-    install_dump_handlers(tel, root, &options.dumps);
+    install_dump_handlers(compiler.telemetry(), root, &options.dumps);
     if options
         .dumps
         .iter()
@@ -250,7 +250,7 @@ fn build_command(tel: &ConfiguredTelemetry, args: &[String]) -> Result<(), CliEr
     let artifact = compiler
         .compile_root_aot(root, obj_name)
         .map_err(|error| CliError::failure(format!("fz2 build: {error}")))?;
-    emit_through(tel, artifact.diagnostics.as_slice());
+    emit_through(compiler.telemetry(), artifact.diagnostics.as_slice());
     if artifact
         .diagnostics
         .as_slice()
@@ -279,13 +279,13 @@ fn build_command(tel: &ConfiguredTelemetry, args: &[String]) -> Result<(), CliEr
 /// Each test runs in a fresh `run-test-root` subprocess: on the JIT backend a
 /// failing `assert` aborts the whole process (see `fz_panic`), so sibling
 /// tests would never run if the driver executed them in-process.
-fn test_command(tel: &ConfiguredTelemetry, args: &[String]) -> Result<(), CliError> {
+fn test_command(tel: ConfiguredTelemetry, args: &[String]) -> Result<(), CliError> {
     let options = parse_test_options(args)?;
     let path = options.path;
     let text = read_to_string(&path).map_err(|error| CliError::failure(format!("read {}: {error}", path.display())))?;
     let source_name = path.display().to_string();
     let tests =
-        discover_tests(&source_name, &text, tel).map_err(|error| CliError::failure(format!("fz2 test: {error}")))?;
+        discover_tests(&source_name, &text, &tel).map_err(|error| CliError::failure(format!("fz2 test: {error}")))?;
     let exe = std::env::current_exe().map_err(|error| CliError::failure(format!("fz2 test: {error}")))?;
 
     println!("Running {}...\n", plural_count(tests.len(), "test", "tests"));
@@ -352,7 +352,7 @@ const TEST_MACRO_PRELUDE_NAME: &str = "test:prelude.fz";
 /// through the backend interpreter instead. The `test` item macro is supplied
 /// as a scoped prelude (its own `CodeId`), never spliced into the user source,
 /// so the user's file keeps its true byte offsets.
-fn run_test_root_command(tel: &ConfiguredTelemetry, args: &[String]) -> Result<(), CliError> {
+fn run_test_root_command(tel: ConfiguredTelemetry, args: &[String]) -> Result<(), CliError> {
     let usage = "fz2 run-test-root [--interp] <src.fz> <module|-> <name>";
     let mut interp = false;
     let mut positional = Vec::new();
@@ -640,7 +640,11 @@ fn parse_build_options(args: &[String]) -> Result<BuildOptions, CliError> {
     Ok(BuildOptions { path, output, dumps })
 }
 
-fn emit_requested_root_dumps(compiler: &mut Compiler2<'_>, root: RootId, dumps: &[DumpSpec]) -> Result<(), String> {
+fn emit_requested_root_dumps(
+    compiler: &mut Compiler2<ConfiguredTelemetry>,
+    root: RootId,
+    dumps: &[DumpSpec],
+) -> Result<(), String> {
     if let Some(stage) = max_requested_stage(dumps) {
         compiler
             .drive_root_to_dump_stage(root, stage)
@@ -660,30 +664,30 @@ fn emit_requested_root_dumps(compiler: &mut Compiler2<'_>, root: RootId, dumps: 
     Ok(())
 }
 
-fn load_main_root<'a>(tel: &'a ConfiguredTelemetry, path: &Path) -> Result<(Compiler2<'a>, RootId), CliError> {
+fn load_main_root(tel: ConfiguredTelemetry, path: &Path) -> Result<(Compiler2<ConfiguredTelemetry>, RootId), CliError> {
     load_root(tel, path, None, "main".to_string(), 0)
 }
 
-fn load_root<'a>(
-    tel: &'a ConfiguredTelemetry,
+fn load_root(
+    tel: ConfiguredTelemetry,
     path: &Path,
     module_name: Option<String>,
     name: String,
     arity: usize,
-) -> Result<(Compiler2<'a>, RootId), CliError> {
+) -> Result<(Compiler2<ConfiguredTelemetry>, RootId), CliError> {
     let source_name = path.display().to_string();
     let text = read_to_string(path).map_err(|error| CliError::failure(format!("read {}: {error}", path.display())))?;
     Ok(load_root_from_text(tel, source_name, text, module_name, name, arity))
 }
 
-fn load_root_from_text<'a>(
-    tel: &'a ConfiguredTelemetry,
+fn load_root_from_text(
+    tel: ConfiguredTelemetry,
     source_name: String,
     text: String,
     module_name: Option<String>,
     name: String,
     arity: usize,
-) -> (Compiler2<'a>, RootId) {
+) -> (Compiler2<ConfiguredTelemetry>, RootId) {
     let mut compiler = Compiler2::new(tel);
     compiler.set_drive_timeout(FZ2_COMPILER_DRIVE_TIMEOUT);
     compiler.submit_code(CodeSubmission {
@@ -703,14 +707,14 @@ fn load_root_from_text<'a>(
 /// scoped prelude, so the submitted test source — passed verbatim, spans
 /// intact — can use `test(:name) do ... end` without the macro being spliced
 /// into its text or added to the global Kernel bootstrap.
-fn load_test_root_from_text<'a>(
-    tel: &'a ConfiguredTelemetry,
+fn load_test_root_from_text(
+    tel: ConfiguredTelemetry,
     source_name: String,
     text: String,
     module_name: Option<String>,
     name: String,
     arity: usize,
-) -> (Compiler2<'a>, RootId) {
+) -> (Compiler2<ConfiguredTelemetry>, RootId) {
     let mut compiler = Compiler2::new(tel);
     compiler.set_drive_timeout(FZ2_COMPILER_DRIVE_TIMEOUT);
     compiler.submit_scoped_prelude(CodeSubmission {
@@ -878,7 +882,7 @@ mod test_prelude_span_test {
         // every span would be off by that many bytes -- this asserts the true
         // offset, so it fails against the concatenated-buffer approach.
         let tel = ConfiguredTelemetry::new();
-        let mut compiler = Compiler2::new(&tel);
+        let mut compiler = Compiler2::new(tel);
         compiler.submit_scoped_prelude(CodeSubmission {
             name: Some(TEST_MACRO_PRELUDE_NAME.to_string()),
             text: TEST_MACRO_PRELUDE_SOURCE.to_string(),

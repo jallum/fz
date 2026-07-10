@@ -24,7 +24,7 @@ pub(crate) fn compile_fn<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
     t: &mut T,
     ctx: &mut Context,
     fbctx: &mut FunctionBuilderContext,
-    env: &CodegenEnv<'_>,
+    env: &CodegenEnv<'_, impl Telemetry>,
     schemas: &[Schema],
     f: &FnIr,
     this_spec_id: u32,

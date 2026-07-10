@@ -22,7 +22,7 @@ pub(crate) struct EntryHarnessOut {
 
 pub(crate) fn build_entry_harness<M: ClModule>(
     body: &mut CodegenFn<'_, '_, '_, M>,
-    env: &CodegenEnv<'_>,
+    env: &CodegenEnv<'_, impl Telemetry>,
     schemas: &[Schema],
     f: &FnIr,
     this_spec_id: u32,

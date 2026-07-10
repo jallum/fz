@@ -2,7 +2,8 @@
 //!
 //! Compiler code depends only on the trait. The driver constructs whichever
 //! concrete impl it wants (see fz-ndf.5 for the configured impl) and threads
-//! `&dyn Telemetry` through. Tests pass capture impls (fz-ndf.6).
+//! borrowed concrete handlers through generic compiler paths. Tests may still
+//! use trait objects when dynamic dispatch is intentional (fz-ndf.6).
 //!
 //! Span semantics — start/stop/exception events, elapsed_ns, parent linkage —
 //! land in fz-ndf.4.
@@ -78,6 +79,39 @@ pub trait Telemetry {
     }
 }
 
+/// Zero-sized telemetry for callers that install no observation path.
+/// Generic compiler code can monomorphize these empty methods away.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct NullTelemetry;
+
+impl Telemetry for NullTelemetry {
+    fn execute(&self, _name: &[&'static str], _measurements: &Measurements, _metadata: &Metadata) {}
+
+    fn span_start(&self, _name: &[&'static str], _metadata: &Metadata) -> u64 {
+        0
+    }
+
+    fn span_stop(
+        &self,
+        _name: &[&'static str],
+        _span_id: u64,
+        _elapsed_ns: u64,
+        _measurements: &Measurements,
+        _metadata: &Metadata,
+    ) {
+    }
+
+    fn span_exception(
+        &self,
+        _name: &[&'static str],
+        _span_id: u64,
+        _elapsed_ns: u64,
+        _measurements: &Measurements,
+        _metadata: &Metadata,
+    ) {
+    }
+}
+
 /// RAII guard returned by `TelemetryExt::span`. Captures the start time
 /// when constructed; on `Drop`, computes elapsed ns and calls back into
 /// the bus — `span_exception` when the scope is unwinding from a panic,
@@ -86,9 +120,9 @@ pub trait Telemetry {
 /// The `span_id` carried here is opaque to client code; the bus impl
 /// (fz-ndf.5) uses it to thread parent linkage into child events emitted
 /// while the span is live.
-pub struct Span<'a> {
-    tel: &'a dyn Telemetry,
-    name: Box<[&'static str]>,
+pub struct Span<'a, T: Telemetry + ?Sized> {
+    tel: &'a T,
+    name: &'a [&'static str],
     span_id: u64,
     start: Instant,
     stop_measurements: Measurements<'static>,
@@ -96,11 +130,11 @@ pub struct Span<'a> {
     closed: bool,
 }
 
-impl<'a> Span<'a> {
-    pub(super) fn new(tel: &'a dyn Telemetry, name: &[&'static str], span_id: u64) -> Self {
+impl<'a, T: Telemetry + ?Sized> Span<'a, T> {
+    pub(super) fn new(tel: &'a T, name: &'a [&'static str], span_id: u64) -> Self {
         Self {
             tel,
-            name: Box::from(name),
+            name,
             span_id,
             start: Instant::now(),
             stop_measurements: Measurements::new(),
@@ -122,7 +156,7 @@ impl<'a> Span<'a> {
     pub fn stop_with<'meas, 'meta>(mut self, measurements: &Measurements<'meas>, metadata: &Metadata<'meta>) {
         let elapsed_ns = self.start.elapsed().as_nanos().min(u64::MAX as u128) as u64;
         self.tel
-            .span_stop(&self.name, self.span_id, elapsed_ns, measurements, metadata);
+            .span_stop(self.name, self.span_id, elapsed_ns, measurements, metadata);
         self.closed = true;
     }
 
@@ -136,11 +170,11 @@ impl<'a> Span<'a> {
     /// Hierarchical name of the span. Useful for tests and renderers.
     #[cfg(test)]
     pub fn name(&self) -> &[&'static str] {
-        &self.name
+        self.name
     }
 }
 
-impl Drop for Span<'_> {
+impl<T: Telemetry + ?Sized> Drop for Span<'_, T> {
     fn drop(&mut self) {
         if self.closed {
             return;
@@ -148,7 +182,7 @@ impl Drop for Span<'_> {
         let elapsed_ns = self.start.elapsed().as_nanos().min(u64::MAX as u128) as u64;
         if panicking() {
             self.tel.span_exception(
-                &self.name,
+                self.name,
                 self.span_id,
                 elapsed_ns,
                 &self.stop_measurements,
@@ -156,7 +190,7 @@ impl Drop for Span<'_> {
             );
         } else {
             self.tel.span_stop(
-                &self.name,
+                self.name,
                 self.span_id,
                 elapsed_ns,
                 &self.stop_measurements,
@@ -166,29 +200,19 @@ impl Drop for Span<'_> {
     }
 }
 
-/// Ergonomic extension trait giving `t.span(...)` on any `&dyn Telemetry`.
-/// Split off the main trait so `Telemetry` stays dyn-safe and impl-free.
-pub trait TelemetryExt {
-    fn span(&self, name: &[&'static str], metadata: Metadata) -> Span<'_>;
+/// Ergonomic extension trait giving `t.span(...)` on concrete handlers and
+/// intentional trait objects without erasing the concrete type in generic code.
+pub trait TelemetryExt: Telemetry {
+    fn span<'a>(&'a self, name: &'a [&'static str], metadata: Metadata) -> Span<'a, Self>;
 }
 
-fn make_span<'a>(tel: &'a dyn Telemetry, name: &[&'static str], metadata: Metadata) -> Span<'a> {
+fn make_span<'a, T: Telemetry + ?Sized>(tel: &'a T, name: &'a [&'static str], metadata: Metadata) -> Span<'a, T> {
     let span_id = tel.span_start(name, &metadata);
     Span::new(tel, name, span_id)
 }
 
-// Two impls so `t.span(...)` works for both concrete impls (which coerce
-// `&T` to `&dyn Telemetry` thanks to `T: Sized`) and trait objects
-// (which already are `&dyn Telemetry`). The Sized blanket and the `dyn`
-// impl don't overlap because `dyn Telemetry: !Sized`.
-impl<T: Telemetry> TelemetryExt for T {
-    fn span(&self, name: &[&'static str], metadata: Metadata) -> Span<'_> {
-        make_span(self, name, metadata)
-    }
-}
-
-impl TelemetryExt for dyn Telemetry + '_ {
-    fn span(&self, name: &[&'static str], metadata: Metadata) -> Span<'_> {
+impl<T: Telemetry + ?Sized> TelemetryExt for T {
+    fn span<'a>(&'a self, name: &'a [&'static str], metadata: Metadata) -> Span<'a, Self> {
         make_span(self, name, metadata)
     }
 }

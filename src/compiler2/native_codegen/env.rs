@@ -10,8 +10,8 @@ use fz_runtime::any_value::AnyValue;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 
-pub(crate) struct CodegenEnv<'a> {
-    pub(super) telemetry: &'a dyn Telemetry,
+pub(crate) struct CodegenEnv<'a, T: Telemetry> {
+    pub(super) telemetry: &'a T,
     pub(super) runtime: &'a RuntimeRefs,
     pub(super) surface: &'a NativeCodegenSurface<'a>,
     pub(super) module: &'a Module,
@@ -40,7 +40,7 @@ pub(crate) struct CodegenEnv<'a> {
     pub(super) receive_dispatch_fn_ids: &'a HashMap<(u32, u32), FuncId>,
 }
 
-impl<'a> CodegenEnv<'a> {
+impl<'a, T: Telemetry> CodegenEnv<'a, T> {
     pub(super) fn body_fn_id(&self, codegen_id: u32) -> FnId {
         self.surface.body_fn_id(codegen_id)
     }

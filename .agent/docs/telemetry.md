@@ -6,10 +6,11 @@ not control flow — diagnostics, pass spans, counters, IR dumps, internal marke
 `Result<T, FatalError>`. Telemetry is the side channel; the `Result` is the
 answer.
 
-The compiler depends on one thing: the `Telemetry` trait (`sink.rs`). It threads
-`&dyn Telemetry` through the whole pipeline and calls `execute`/`span` on it. Who
-is listening, and what they do with the events, is none of the compiler's
-business.
+The compiler depends on one thing: the `Telemetry` trait (`sink.rs`). Generic
+compiler paths retain the concrete handler type and pass `&T` through to
+`execute`/`span`; callers may choose dynamic dispatch only at an intentional
+boundary. Who is listening, and what they do with the events, is none of the
+compiler's business.
 
 This doc covers compile-time telemetry. The running scheduler's events — process
 exit, `dbg` output, how tests observe a run — live in
@@ -24,11 +25,10 @@ exit, `dbg` output, how tests observe a run — live in
 `&[&'static str]` path like `&["fz", "lexer", "tokens_built"]` — broad to
 specific.
 
-**Silence by configuration** — there is no separate no-op telemetry type.
-Callers still thread a real `&dyn Telemetry` through the pipeline; when they want
-no observable output they instantiate a `ConfiguredTelemetry` and attach no
-handlers. That keeps one observability path across production, tests, and
-interactive tooling.
+**Silence by type** — `NullTelemetry` is a zero-sized implementation whose
+methods are empty. Because compiler execution retains its concrete telemetry
+type, optimized builds can inline those calls away. `ConfiguredTelemetry` is
+used when handlers may be attached at runtime.
 
 **`ConfiguredTelemetry`** (`bus.rs`) — the listening impl the driver
 instantiates. It owns a handler registry (`Vec<Entry>`, each entry a `prefix` +
@@ -93,8 +93,10 @@ programmer error, not a case the bus defends against.
 ## Spans
 
 A span is a timed region whose child events know their parent. `TelemetryExt`
-(`sink.rs`) gives `t.span(name, metadata)` on any `&dyn Telemetry` and returns an
-RAII `Span` guard. Construction calls `span_start` (which pushes a fresh id onto
+(`sink.rs`) gives `t.span(name, metadata)` on any `T: Telemetry` (including an
+intentional trait object) and returns an RAII `Span<'_, T>` guard. The guard
+borrows both `T` and the static name slice; it neither erases `T` nor copies the
+name. Construction calls `span_start` (which pushes a fresh id onto
 the bus's `span_stack` and emits a `SpanStart`); `Drop` measures `elapsed_ns` and
 emits `SpanStop`, or `SpanException` when the scope is unwinding from a panic
 (`panicking()`).
@@ -156,9 +158,12 @@ the typed object, attach a `handler()` that shares its buffer).
 
 ## Compiler2 Conventions
 
-Compiler2 uses telemetry as its only observability surface. `Compiler2::new`
-hands one caller-owned sink to `World`, and every job/event under
-`[fz, compiler2, ...]` flows through that single bus.
+Compiler2 uses telemetry as its only observability surface. `Compiler2<T>` owns
+its lifetime-free semantic `World` and its `T: Telemetry` side by side. A drive
+constructs a short-lived `ExecutionContext<'_, T>` that split-borrows
+`&mut World` and `&T`; `World` never stores, accepts, or dispatches telemetry.
+Every job/event
+under `[fz, compiler2, ...]` flows through the compiler's one telemetry value.
 
 **Emit points are cheap: raw borrowed state only.** An emit site performs no
 formatting, no processing, no allocation, no calculation, and no cloning. It
@@ -178,9 +183,11 @@ would explode a log line (a whole `fz_ir::Module`, the `Types` interner).
 
 Two recurring patterns keep emit sites clone-free:
 
-- **Define, then re-borrow.** A `World::define_*` moves the value into its
-  store first and borrows it back through the store's getter for the event
-  (`define_module` is the exemplar). A `store.define(k, v.clone())` written so
+- **Define in `World`, then re-borrow.** A `World::define_*` core owns the
+  mutation and invariants without accepting telemetry. Its typed
+  `ExecutionContext::define_*` wrapper calls that core, then borrows the stored
+  value through a `World` getter for the event (`define_module` is the
+  exemplar). Wrappers never access stores directly. A `store.define(k, v.clone())` written so
   telemetry can borrow the local afterward is a telemetry-induced clone — the
   pattern this rule exists to kill.
 - **Spans borrow.** Span-start metadata and `stop_with` payloads accept
@@ -211,7 +218,7 @@ compiler world. Telemetry therefore treats them like `FunctionId` or `ModuleId`:
 cheap compiler-owned identity, never a printable semantic contract by itself.
 If a handler wants a rendered type, it must derive that rendering on its side.
 
-**Drive and job spans are the execution spine.** `World::drive()` opens one
+**Drive and job spans are the execution spine.** `ExecutionContext::drive()` opens one
 `[fz, compiler2, drive]` span. Each popped job opens one
 `[fz, compiler2, job]` span. Successful job spans close with the raw `effects`
 borrowed in place; the applied graph step rides the separate
@@ -223,7 +230,7 @@ opaque metadata, the emitted log shows the actual precipitating `Job`,
 behind the final outcome. There is no extra "job_fatal" event and no redundant
 "fact_published" stream.
 
-When the agenda drains with unresolved waiters, `World::drive()`
+When the agenda drains with unresolved waiters, `ExecutionContext::drive()`
 (`drive.rs`) runs its stall pass: it demands every submitted root's entry
 analysis and, for each blocked waiter's fact not already demanded since the
 last content change, pokes that fact's mapped producer through the
@@ -366,14 +373,14 @@ accessors.
 The taxonomy holds exactly the pull-only northstar's sanctioned ways work can
 start (`../pull-based.html`):
 
-- `Ignition` — an EXTERNAL submission (`World::submit_code`,
-  `submit_module_interface`, `submit_root`) enqueuing the one job that begins
+- `Ignition` — an EXTERNAL submission (`ExecutionContext::submit_code`,
+  `World::submit_module_interface`, `ExecutionContext::submit_root`) enqueuing the one job that begins
   that submission's own work. "External" is load-bearing: the only production
   callers of those three methods are the CLI front door (`cli.rs`) and the
   public `Compiler2` API (`compiler.rs`) — a user/CLI request, never a job
   body mid-execution. A job that needs source minted (e.g. an unloaded
   runtime module) must NOT drive it through `submit_code`; it registers the
-  source (`World::register_code`, via `ensure_runtime_module`) and lets the
+  source (`ExecutionContext::register_code`, via `ensure_runtime_module`) and lets the
   fact->producer pull mint it. The `ignition == 2` assertion in the guard is
   what enforces this: a job that tried to mint source through `submit_code`
   mid-execution would inflate the ignition count past the two external
@@ -408,7 +415,7 @@ lands here by construction, which is exactly what trips
 
 The two bounded inner product-pulls (`jobs::macro_runtime::build_macro_executable`,
 `jobs::native::lower_native_program`) drive their own fresh
-`RootBackendProduct` and register its result through `World::complete_job`
+`RootBackendProduct` and register its result through `ExecutionContext::complete_job`
 directly — they never call `Scheduler::enqueue` for that work, so they carry
 no `WorkStartReason` at all; there is nothing on the shared agenda to
 misclassify.
@@ -461,9 +468,10 @@ the publication `revision`, the captured `namespace`, the quoted-source
 functions, item-macro returned definitions, and explicit compiler-service forms
 all use this same event with `origin=fz_compiler`.
 
-Function surface/body publication emits three sibling events, each fired from
-the `World::define_*`/`note_*`/`stash_*` step that owns the corresponding
-store. `[fz, compiler2, function, source, noted]`
+Function surface/body publication emits three sibling events. Each
+`ExecutionContext::define_*`/`note_*`/`stash_*` wrapper first calls its
+observer-free `World` core, then sequences observation from immutable getters;
+the context never owns the store. `[fz, compiler2, function, source, noted]`
 (`world.rs::note_function_source`) fires when a function's `FunctionSource`
 becomes readable — the interface-tier signal a name-keyed observer watches for
 every scoped function, macro-expanded or not. `[fz, compiler2, function,
@@ -471,7 +479,10 @@ source, stashed]` (`world.rs::stash_function_source`) mirrors that shape for a
 function whose identity/interface are published at scope time while its body
 stays cold until a reached consumer pulls it (the surface counterpart to
 `type.noted`); it carries no `changed` measurement because stashing does not
-touch the fact store. `[fz, compiler2, function, defined]`
+touch the fact store. Its metadata carries raw post-mutation borrows of the
+`FunctionRef`, stored `FunctionSource`, `FunctionId`, and `World`, so a handler
+can verify or project the settled state without any emit-side copy or
+transformation. `[fz, compiler2, function, defined]`
 (`world.rs::define_function` and `world.rs::define_generated_function`, its
 macro-literal-return sibling) fires when
 a function's parsed surface is stored; both call sites share the measurement
@@ -480,9 +491,10 @@ set `code_id`, `module_id`, `owner_module_id`, `function_id`, `arity`,
 `function`/`function_ref`/`function_id`/`module_id`/`owner_module_id` as
 `opaque_debug`, with the macro-literal site adding `owner_function_id` to both
 channels. All three carry the code/module/function ids plus arity and clause
-count in measurements, and the `FunctionSource`/`FunctionState` value itself as
-`opaque_debug` metadata, so a handler can render the actual source without the
-emit site formatting anything.
+count in measurements. Each carries its stored `FunctionSource` or
+`FunctionState` as raw metadata, so a handler can render the actual source
+without the emit site formatting anything; the stashed event uses its raw
+`World` borrow instead of duplicating module ids in metadata.
 
 `[fz, compiler2, function_contract, defined]` (`world.rs::define_function_contract`)
 fires when a function's `FunctionContract` (its declared/inferred call
@@ -490,7 +502,7 @@ contract) is stored. Measurements: `function_id`, `arity`, `changed`. Metadata:
 `function_ref`, `contract` as `opaque_debug`.
 
 Dispatch- and body-shape facts each emit one `[fz, compiler2, X, defined]` (or
-`derived`) event from their `World::define_*` step, all following the same
+`derived`) event from their `ExecutionContext::define_*` step, all following the same
 shape: measurements carry the owning `code_id`/`module_id`/`function_id`/
 `arity` plus a size count specific to the fact, and metadata carries the
 `function_ref` and the stored value as `opaque_debug`.
@@ -515,12 +527,14 @@ emit" shape keyed by `ActivationKey` instead of `FunctionId`:
   — measurements: `root_id`, `function_id`, `reachable_clauses`, `callsites`,
   `values` (sizes off the stored `ActivationAnalysis`). Metadata: `activation`,
   `analysis` as `opaque_debug`.
-- `[fz, compiler2, activation_inputs, defined]` (`world.rs::conclude_activation_input_contributions`)
+- `[fz, compiler2, activation_inputs, defined]` (`ExecutionContext::complete_job`)
   — fires once per activation whose input types changed this job completion.
   Measurements: `root_id`, `function_id`, `input_arity`, `rebased` (whether
-  this settle narrowed rather than joined). Metadata: `activation`, `inputs`,
-  a rendered `inputs_display` (`Types::display` per input, for JSONL
-  readability), and `publisher` (the completing `Job`), all `opaque_debug`.
+  this settle narrowed rather than joined). Emission occurs only after
+  `World::complete_job` has published the fact and revision. Metadata:
+  `activation`, `inputs`, the post-mutation `world`, and `publisher` (the completing `Job`). The raw
+  `World` and input borrows let handlers render types or inspect related state
+  without making the emit site construct a display projection.
 - `[fz, compiler2, return_type, defined]` (`world.rs::define_activation_return`)
   — measurements: `root_id`, `function_id`, `ascents` (join-step count),
   `rebased`. Metadata: `activation`, `return_ty`. When the same settle widens
@@ -734,10 +748,10 @@ the handler). Borrowed `Str` values survive durable capture (the handler
 clones them at event time), so emit sites lending `&str`s cost tests nothing.
 
 The ownership rule is strict: only the true root of a run creates the
-`ConfiguredTelemetry`. Shared helpers take caller-owned `&dyn Telemetry`; they
-do not quietly allocate a second bus, because that creates a shadow event
-stream the test cannot observe and can accidentally double-run planner/codegen
-work under a different sink.
+`ConfiguredTelemetry`, and `Compiler2` takes ownership of it. Short-lived
+execution contexts and shared helpers borrow that owned telemetry; they do not
+quietly allocate a second bus or preserve a caller-owned reference through a
+forwarding adapter, because either choice creates an ambiguous ownership seam.
 
 The decision and the artifact are two questions. Telemetry proves the compiler
 *chose* something — a pass ran, a path was selected, N items were pruned. It does

@@ -243,7 +243,7 @@ fn emit_callable_boundary_bodies<M: cranelift_module::Module>(
     fn_ids: &HashMap<u32, FuncId>,
     callable_boundary_fn_ids: &HashMap<u32, FuncId>,
     surface: &NativeCodegenSurface<'_>,
-    tel: &dyn Telemetry,
+    tel: &impl Telemetry,
     module_path: &str,
 ) -> Result<(), CodegenError> {
     for (&boundary_id, boundary) in &surface.callable_boundaries {
@@ -306,7 +306,7 @@ fn emit_callable_boundary_bodies<M: cranelift_module::Module>(
     Ok(())
 }
 
-fn emit_codegen_abi_contracts(surface: &NativeCodegenSurface<'_>, tel: &dyn Telemetry) {
+fn emit_codegen_abi_contracts(surface: &NativeCodegenSurface<'_>, tel: &impl Telemetry) {
     for body_slot in &surface.body_slots {
         let Some(body_slot) = body_slot.as_ref() else {
             continue;
@@ -623,7 +623,7 @@ type MidFlightContFnIds = HashMap<(u32, Vec<MidFlightArgShape>), FuncId>;
 fn declare_receive_dispatch_fns<M: cranelift_module::Module>(
     m: &mut M,
     module: &Module,
-    tel: &dyn Telemetry,
+    tel: &impl Telemetry,
 ) -> Result<(ReceiveDispatchFnIds, ReceiveMatchedSites), CodegenError> {
     let mut dispatch_fn_ids: HashMap<(u32, u32), FuncId> = HashMap::new();
     let mut receive_matched_sites: Vec<(FnId, BlockId)> = Vec::new();
@@ -683,7 +683,7 @@ fn emit_receive_dispatch_bodies<M: cranelift_module::Module>(
     named_schema_ids: &HashMap<String, u32>,
     dispatch_fn_ids: &HashMap<(u32, u32), FuncId>,
     receive_matched_sites: &[(FnId, BlockId)],
-    tel: &dyn Telemetry,
+    tel: &impl Telemetry,
 ) -> Result<(), CodegenError> {
     for (fn_id, blk_id) in receive_matched_sites {
         let f = module.fn_by_id(*fn_id);
@@ -874,7 +874,7 @@ pub(crate) fn compile_with_backend_native_program<
     t: &mut T,
     program: &crate::compiler2::NativeProgram,
     backend: B,
-    tel: &dyn Telemetry,
+    tel: &impl Telemetry,
 ) -> Result<B::Output, CodegenError> {
     let surface = prepare_native_codegen_surface_from_native_program(t, program);
     compile_with_backend_surface(t, &surface, backend, tel)
@@ -1182,7 +1182,7 @@ pub(crate) fn compile_with_backend_surface<
     t: &mut T,
     surface: &NativeCodegenSurface<'_>,
     mut backend: B,
-    tel: &dyn Telemetry,
+    tel: &impl Telemetry,
 ) -> Result<B::Output, CodegenError> {
     // Enclosing span: the denominator that makes codegen wall time account as
     // compile = declare + per-spec(lower + define) + emit_runtime + finalize.

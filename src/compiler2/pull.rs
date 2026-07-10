@@ -1568,7 +1568,7 @@ impl PullSession {
         }
     }
 
-    fn emit_finished(&self, tel: &dyn Telemetry) {
+    fn emit_finished(&self, tel: &impl Telemetry) {
         tel.execute(
             &["fz", "compiler2", "pull", "session", "finished"],
             &measurements! {
@@ -1630,27 +1630,28 @@ pub trait ProductProducers {
     fn produce_codegen_seam_facts(&mut self, session: &mut PullSession, root: RootId) -> PullOutcome;
 }
 
-pub struct WorldProductProducers<'w, 'a> {
-    world: &'w mut World<'a>,
+pub struct WorldProductProducers<'w, 'a, T: crate::telemetry::Telemetry> {
+    world: &'w mut World,
+    telemetry: &'a T,
 }
 
-impl<'w, 'a> WorldProductProducers<'w, 'a> {
-    pub fn new(world: &'w mut World<'a>) -> Self {
-        Self { world }
+impl<'w, 'a, T: crate::telemetry::Telemetry> WorldProductProducers<'w, 'a, T> {
+    pub fn new(world: &'w mut World, telemetry: &'a T) -> Self {
+        Self { world, telemetry }
     }
 }
 
-impl ProductProducers for WorldProductProducers<'_, '_> {
+impl<T: crate::telemetry::Telemetry> ProductProducers for WorldProductProducers<'_, '_, T> {
     fn produce_root_backend_product(&mut self, session: &mut PullSession, root: RootId) -> PullOutcome {
-        super::jobs::backend::produce_root_backend_product(self.world, session, root)
+        super::jobs::backend::produce_root_backend_product(self.world, self.telemetry, session, root)
     }
 
     fn produce_backend_executable(&mut self, session: &mut PullSession, executable: &ExecutableKey) -> PullOutcome {
-        super::jobs::backend::produce_backend_executable_product(self.world, session, executable)
+        super::jobs::backend::produce_backend_executable_product(self.world, self.telemetry, session, executable)
     }
 
     fn produce_abi_executable(&mut self, session: &mut PullSession, executable: &ExecutableKey) -> PullOutcome {
-        super::jobs::artifact::produce_abi_executable_product(self.world, session, executable)
+        super::jobs::artifact::produce_abi_executable_product(self.world, self.telemetry, session, executable)
     }
 
     fn produce_materialized_executable(
@@ -1658,11 +1659,11 @@ impl ProductProducers for WorldProductProducers<'_, '_> {
         session: &mut PullSession,
         executable: &ExecutableKey,
     ) -> PullOutcome {
-        super::jobs::artifact::produce_materialized_executable_product(self.world, session, executable)
+        super::jobs::artifact::produce_materialized_executable_product(self.world, self.telemetry, session, executable)
     }
 
     fn produce_executable_effects(&mut self, session: &mut PullSession, executable: &ExecutableKey) -> PullOutcome {
-        super::jobs::artifact::produce_executable_effects_product(self.world, session, executable)
+        super::jobs::artifact::produce_executable_effects_product(self.world, self.telemetry, session, executable)
     }
 
     fn produce_runtime_demand(&mut self, session: &mut PullSession, executable: &ExecutableKey) -> PullOutcome {
@@ -1684,7 +1685,7 @@ impl ProductProducers for WorldProductProducers<'_, '_> {
     }
 
     fn produce_transport_component(&mut self, session: &mut PullSession, position: &TransportPosition) -> PullOutcome {
-        super::jobs::transport::produce_transport_component_product(self.world, session, position)
+        super::jobs::transport::produce_transport_component_product(self.world, self.telemetry, session, position)
     }
 
     fn produce_callable_facts(&mut self, session: &mut PullSession, callable: CallableId) -> PullOutcome {
@@ -1696,21 +1697,26 @@ impl ProductProducers for WorldProductProducers<'_, '_> {
     }
 
     fn produce_codegen_seam_facts(&mut self, session: &mut PullSession, root: RootId) -> PullOutcome {
-        super::jobs::artifact::produce_codegen_seam_facts_product(self.world, session, root)
+        super::jobs::artifact::produce_codegen_seam_facts_product(self.world, self.telemetry, session, root)
     }
 }
 
-pub struct ProductDriver<'a> {
-    tel: &'a dyn Telemetry,
+pub struct ProductDriver<'a, T: Telemetry> {
+    tel: &'a T,
     session: PullSession,
 }
 
-impl<'a> ProductDriver<'a> {
-    pub fn new(tel: &'a dyn Telemetry, root: RootId) -> Self {
+impl<'a, T: Telemetry> ProductDriver<'a, T> {
+    pub fn new(tel: &'a T, root: RootId) -> Self {
         Self::with_session(tel, PullSession::new(root))
     }
 
-    pub fn with_session(tel: &'a dyn Telemetry, session: PullSession) -> Self {
+    #[cfg(test)]
+    pub(crate) fn telemetry(&self) -> &'a T {
+        self.tel
+    }
+
+    pub fn with_session(tel: &'a T, session: PullSession) -> Self {
         Self { tel, session }
     }
 
@@ -2247,8 +2253,8 @@ mod tests {
             callee,
             inputs: vec![(slot.semantic_index, source.clone())],
         });
-        let mut world = World::new(&tel);
-        let mut producers = WorldProductProducers::new(&mut world);
+        let mut world = World::new();
+        let mut producers = WorldProductProducers::new(&mut world, &tel);
 
         let outcome = driver.pull(&mut producers, ProductKey::IncomingInputSlot(slot));
 
@@ -2274,10 +2280,10 @@ mod tests {
             value: ValueId::from_u32(11),
         };
         let mut driver = ProductDriver::new(&tel, root);
-        let mut world = World::new(&tel);
+        let mut world = World::new();
 
         let empty = {
-            let mut producers = WorldProductProducers::new(&mut world);
+            let mut producers = WorldProductProducers::new(&mut world, &tel);
             driver.pull(&mut producers, ProductKey::IncomingInputSlot(slot.clone()))
         };
         assert_eq!(
@@ -2292,7 +2298,7 @@ mod tests {
             inputs: vec![(slot.semantic_index, source.clone())],
         });
         let updated = {
-            let mut producers = WorldProductProducers::new(&mut world);
+            let mut producers = WorldProductProducers::new(&mut world, &tel);
             driver.pull(&mut producers, ProductKey::IncomingInputSlot(slot))
         };
 
@@ -2310,8 +2316,8 @@ mod tests {
             executable: executable_symbol_for_test(&fake_executable(root)),
         };
         let mut driver = ProductDriver::new(&tel, root);
-        let mut world = World::new(&tel);
-        let mut producers = WorldProductProducers::new(&mut world);
+        let mut world = World::new();
+        let mut producers = WorldProductProducers::new(&mut world, &tel);
 
         let outcome = driver.pull(&mut producers, ProductKey::TransportShape(position.clone()));
 
@@ -2330,7 +2336,7 @@ mod tests {
         let tel = ConfiguredTelemetry::new();
         let root = RootId::for_test(7);
         let executable = fake_executable(root);
-        let mut world = World::new(&tel);
+        let mut world = World::new();
         let int = world.types_mut().int();
         let lane = world.intern_lane(LaneDescr {
             ty: int,
@@ -2369,7 +2375,7 @@ mod tests {
         driver
             .session_mut()
             .record_callable_facts(callable, callable_facts.clone());
-        let mut producers = WorldProductProducers::new(&mut world);
+        let mut producers = WorldProductProducers::new(&mut world, &tel);
 
         assert_eq!(
             driver.pull(&mut producers, ProductKey::TransportShape(position.clone())),
@@ -2428,8 +2434,8 @@ mod tests {
                 Some(fake_call_edge(first.clone(), second_symbol, first_symbol)),
             ),
         );
-        let mut world = World::new(&tel);
-        let mut producers = WorldProductProducers::new(&mut world);
+        let mut world = World::new();
+        let mut producers = WorldProductProducers::new(&mut world, &tel);
 
         let outcome = driver.pull(&mut producers, ProductKey::ExecutableEffects(second.clone()));
 
@@ -2590,8 +2596,8 @@ mod tests {
         driver
             .session_mut()
             .record_materialized_executable(callee.clone(), callee_materialized.clone());
-        let mut world = World::new(&tel);
-        let mut producers = WorldProductProducers::new(&mut world);
+        let mut world = World::new();
+        let mut producers = WorldProductProducers::new(&mut world, &tel);
         assert!(matches!(
             driver.pull(&mut producers, effects_key.clone()),
             PullOutcome::Produced(ProductValue::ExecutableEffects(_))
@@ -2770,8 +2776,8 @@ mod tests {
             callee.clone(),
             fake_materialized(callee_symbol, None, EffectSummary::default()),
         );
-        let mut world = World::new(&tel);
-        let mut producers = WorldProductProducers::new(&mut world);
+        let mut world = World::new();
+        let mut producers = WorldProductProducers::new(&mut world, &tel);
         for key in [&callee, &caller, &grand] {
             assert!(matches!(
                 driver.pull(&mut producers, ProductKey::ExecutableEffects(key.clone())),

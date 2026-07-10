@@ -7,7 +7,7 @@ use crate::telemetry::ConfiguredTelemetry;
 #[test]
 fn large_integer_arithmetic_preserves_high_bits() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00221_large_int_arithmetic.fz".to_string()),
         text: include_str!("../../fixtures2/00221_large_int_arithmetic.fz").to_string(),
@@ -26,7 +26,7 @@ fn large_integer_arithmetic_preserves_high_bits() {
 #[test]
 fn protocol_dispatch_selects_integer_impl() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00222_protocol_dispatch_integer.fz".to_string()),
         text: include_str!("../../fixtures2/00222_protocol_dispatch_integer.fz").to_string(),
@@ -45,7 +45,7 @@ fn protocol_dispatch_selects_integer_impl() {
 #[test]
 fn float_addition_ieee754_result() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00223_float_addition.fz".to_string()),
         text: include_str!("../../fixtures2/00223_float_addition.fz").to_string(),
@@ -64,7 +64,7 @@ fn float_addition_ieee754_result() {
 #[test]
 fn float_in_list_renders_via_dbg() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00224_float_in_list_dbg.fz".to_string()),
         text: include_str!("../../fixtures2/00224_float_in_list_dbg.fz").to_string(),
@@ -83,7 +83,7 @@ fn float_in_list_renders_via_dbg() {
 #[test]
 fn named_fn_ref_passed_as_value_no_heap_alloc() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00225_named_fn_ref_no_alloc.fz".to_string()),
         text: include_str!("../../fixtures2/00225_named_fn_ref_no_alloc.fz").to_string(),
@@ -102,7 +102,7 @@ fn named_fn_ref_passed_as_value_no_heap_alloc() {
 #[test]
 fn zero_capture_lambda_no_heap_alloc() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00226_zero_capture_lambda.fz".to_string()),
         text: include_str!("../../fixtures2/00226_zero_capture_lambda.fz").to_string(),
@@ -121,7 +121,7 @@ fn zero_capture_lambda_no_heap_alloc() {
 #[test]
 fn lambda_capturing_outer_variable_allocates_closure() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00227_lambda_capture_outer.fz".to_string()),
         text: include_str!("../../fixtures2/00227_lambda_capture_outer.fz").to_string(),
@@ -140,7 +140,7 @@ fn lambda_capturing_outer_variable_allocates_closure() {
 #[test]
 fn case_joined_fn_ref_remains_callable() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00228_case_joined_fn_ref.fz".to_string()),
         text: include_str!("../../fixtures2/00228_case_joined_fn_ref.fz").to_string(),
@@ -159,7 +159,7 @@ fn case_joined_fn_ref_remains_callable() {
 #[test]
 fn enum_reduce_with_inline_lambda_accumulates() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00229_enum_reduce_lambda.fz".to_string()),
         text: include_str!("../../fixtures2/00229_enum_reduce_lambda.fz").to_string(),
@@ -178,7 +178,7 @@ fn enum_reduce_with_inline_lambda_accumulates() {
 #[test]
 fn enum_take_chained_non_tail_calls_preserve_continuations() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00230_enum_take_chained.fz".to_string()),
         text: include_str!("../../fixtures2/00230_enum_take_chained.fz").to_string(),
@@ -197,7 +197,7 @@ fn enum_take_chained_non_tail_calls_preserve_continuations() {
 #[test]
 fn case_joined_fn_refs_callable_as_enum_reduce_reducer() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00231_joined_fn_refs_enum_reduce.fz".to_string()),
         text: include_str!("../../fixtures2/00231_joined_fn_refs_enum_reduce.fz").to_string(),
@@ -216,7 +216,7 @@ fn case_joined_fn_refs_callable_as_enum_reduce_reducer() {
 #[test]
 fn float_equality_in_list_compares_by_value() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00232_float_equality_in_list.fz".to_string()),
         text: include_str!("../../fixtures2/00232_float_equality_in_list.fz").to_string(),
@@ -235,7 +235,7 @@ fn float_equality_in_list_compares_by_value() {
 #[test]
 fn receive_pattern_matches_float_in_list() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00233_receive_float_in_list.fz".to_string()),
         text: include_str!("../../fixtures2/00233_receive_float_in_list.fz").to_string(),
@@ -254,7 +254,7 @@ fn receive_pattern_matches_float_in_list() {
 #[test]
 fn large_integer_survives_send_receive_boundary() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00234_large_int_send_receive.fz".to_string()),
         text: include_str!("../../fixtures2/00234_large_int_send_receive.fz").to_string(),
@@ -273,7 +273,7 @@ fn large_integer_survives_send_receive_boundary() {
 #[test]
 fn large_integer_extracted_via_list_head() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00235_large_int_list_head.fz".to_string()),
         text: include_str!("../../fixtures2/00235_large_int_list_head.fz").to_string(),
@@ -292,7 +292,7 @@ fn large_integer_extracted_via_list_head() {
 #[test]
 fn large_integer_extracted_via_map_field() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00236_large_int_map_get.fz".to_string()),
         text: include_str!("../../fixtures2/00236_large_int_map_get.fz").to_string(),
@@ -311,7 +311,7 @@ fn large_integer_extracted_via_map_field() {
 #[test]
 fn scalars_read_from_list_map_tuple_containers() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00237_scalars_from_containers.fz".to_string()),
         text: include_str!("../../fixtures2/00237_scalars_from_containers.fz").to_string(),
@@ -330,7 +330,7 @@ fn scalars_read_from_list_map_tuple_containers() {
 #[test]
 fn heap_values_read_from_list_map_tuple_containers() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00238_heap_values_from_containers.fz".to_string()),
         text: include_str!("../../fixtures2/00238_heap_values_from_containers.fz").to_string(),
@@ -349,7 +349,7 @@ fn heap_values_read_from_list_map_tuple_containers() {
 #[test]
 fn typed_integer_clause_guard_dispatches_correctly() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00239_typed_int_dispatch.fz".to_string()),
         text: include_str!("../../fixtures2/00239_typed_int_dispatch.fz").to_string(),
@@ -368,7 +368,7 @@ fn typed_integer_clause_guard_dispatches_correctly() {
 #[test]
 fn large_integer_delivered_from_spawn_unblocks_receive() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00240_large_int_from_spawn.fz".to_string()),
         text: include_str!("../../fixtures2/00240_large_int_from_spawn.fz").to_string(),
@@ -387,7 +387,7 @@ fn large_integer_delivered_from_spawn_unblocks_receive() {
 #[test]
 fn pinned_ref_receive_matches_pre_queued_message() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00241_pinned_ref_receive.fz".to_string()),
         text: include_str!("../../fixtures2/00241_pinned_ref_receive.fz").to_string(),
@@ -406,7 +406,7 @@ fn pinned_ref_receive_matches_pre_queued_message() {
 #[test]
 fn spawn_delivers_tagged_message_unblocks_receive() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00242_spawn_tagged_receive.fz".to_string()),
         text: include_str!("../../fixtures2/00242_spawn_tagged_receive.fz").to_string(),
@@ -425,7 +425,7 @@ fn spawn_delivers_tagged_message_unblocks_receive() {
 #[test]
 fn receive_after_zero_fires_immediately_on_empty_mailbox() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00243_receive_after_zero.fz".to_string()),
         text: include_str!("../../fixtures2/00243_receive_after_zero.fz").to_string(),
@@ -444,7 +444,7 @@ fn receive_after_zero_fires_immediately_on_empty_mailbox() {
 #[test]
 fn selective_receive_retrieves_out_of_order_skipped_message() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00244_out_of_order_receive.fz".to_string()),
         text: include_str!("../../fixtures2/00244_out_of_order_receive.fz").to_string(),
@@ -463,7 +463,7 @@ fn selective_receive_retrieves_out_of_order_skipped_message() {
 #[test]
 fn receive_map_pattern_matches_correct_message() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00245_receive_map_pattern.fz".to_string()),
         text: include_str!("../../fixtures2/00245_receive_map_pattern.fz").to_string(),
@@ -482,7 +482,7 @@ fn receive_map_pattern_matches_correct_message() {
 #[test]
 fn receive_map_pattern_matches_present_nil_value() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00246_receive_map_nil_value.fz".to_string()),
         text: include_str!("../../fixtures2/00246_receive_map_nil_value.fz").to_string(),
@@ -501,7 +501,7 @@ fn receive_map_pattern_matches_present_nil_value() {
 #[test]
 fn selective_receive_pinned_ref_out_of_order_server_replies() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00247_selective_refs_stress.fz".to_string()),
         text: include_str!("../../fixtures2/00247_selective_refs_stress.fz").to_string(),
@@ -520,7 +520,7 @@ fn selective_receive_pinned_ref_out_of_order_server_replies() {
 #[test]
 fn make_resource_resolves_with_dtor_binding() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00248_make_resource_dtor.fz".to_string()),
         text: include_str!("../../fixtures2/00248_make_resource_dtor.fz").to_string(),
@@ -539,7 +539,7 @@ fn make_resource_resolves_with_dtor_binding() {
 #[test]
 fn aliased_resource_bindings_fire_dtor_once() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00249_aliased_resource_dtor.fz".to_string()),
         text: include_str!("../../fixtures2/00249_aliased_resource_dtor.fz").to_string(),
@@ -558,7 +558,7 @@ fn aliased_resource_bindings_fire_dtor_once() {
 #[test]
 fn two_distinct_resources_each_fire_dtor_once() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00250_two_distinct_resources.fz".to_string()),
         text: include_str!("../../fixtures2/00250_two_distinct_resources.fz").to_string(),
@@ -577,7 +577,7 @@ fn two_distinct_resources_each_fire_dtor_once() {
 #[test]
 fn opaque_resource_value_accessor_returns_payload() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00251_opaque_resource_value.fz".to_string()),
         text: include_str!("../../fixtures2/00251_opaque_resource_value.fz").to_string(),
@@ -597,7 +597,7 @@ fn opaque_resource_value_accessor_returns_payload() {
 #[cfg(unix)]
 fn variadic_c_extern_open_passes_int_args() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00252_variadic_open_dynamic.fz".to_string()),
         text: include_str!("../../fixtures2/00252_variadic_open_dynamic.fz").to_string(),
@@ -616,7 +616,7 @@ fn variadic_c_extern_open_passes_int_args() {
 #[test]
 fn unsupported_variadic_extern_float_arg_is_error() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00253_variadic_float_error.fz".to_string()),
         text: include_str!("../../fixtures2/00253_variadic_float_error.fz").to_string(),

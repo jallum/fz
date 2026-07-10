@@ -13,7 +13,7 @@ use crate::telemetry::ConfiguredTelemetry;
 /// passed through an `f.(x)` boundary.
 fn product_call_edge_snapshot(source: &str) -> String {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     let root = build_lambda_root(&mut compiler, source);
     let inventory = compiler
         .product_activation_inventory(root)
@@ -21,7 +21,7 @@ fn product_call_edge_snapshot(source: &str) -> String {
     render_canonical_call_edge_snapshot(&canonical_call_edge_facts(compiler.world(), root, &inventory))
 }
 
-fn build_lambda_root(compiler: &mut Compiler2<'_>, source: &str) -> RootId {
+fn build_lambda_root(compiler: &mut Compiler2<ConfiguredTelemetry>, source: &str) -> RootId {
     compiler.submit_code(CodeSubmission {
         name: Some("fixture.fz".to_string()),
         text: source.to_string(),
@@ -46,7 +46,7 @@ end
 "#;
 
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     let root = build_lambda_root(&mut compiler, source);
     let inventory = compiler
         .product_activation_inventory(root)
@@ -142,10 +142,13 @@ fn add1(x), do: x + 1
 fn main(), do: add1(41)
 "#;
     let tel = ConfiguredTelemetry::new();
-    let mut world = crate::compiler2::World::new(&tel);
+    let mut world = crate::compiler2::World::new();
     world.submit_code(Some("fixture.fz".to_string()), source.to_string());
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
-    assert_resolved(world.drive(), "compiler2 should settle the direct-call fixture");
+    assert_resolved(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        "compiler2 should settle the direct-call fixture",
+    );
 
     let main_activation = ActivationKey::from_inputs(root, world.root_function(root), &[], world.types_mut());
     let analysis = world

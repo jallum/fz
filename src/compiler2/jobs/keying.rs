@@ -34,7 +34,11 @@ impl StaticEdge {
 /// Lambda creation is a static edge from the owner to the generated function,
 /// so recursion through generated closures is handled the same way as direct
 /// or mutual recursion.
-pub(super) fn derive_recursive(world: &mut World<'_>, function: FunctionId) -> Result<JobEffects, FatalError> {
+pub(super) fn derive_recursive(
+    world: &mut World,
+    tel: &impl crate::telemetry::Telemetry,
+    function: FunctionId,
+) -> Result<JobEffects, FatalError> {
     if world.function_is_provider_boundary(function) {
         let changed = world.define_recursive(function, false);
         return Ok(JobEffects {
@@ -51,7 +55,7 @@ pub(super) fn derive_recursive(world: &mut World<'_>, function: FunctionId) -> R
     let mut waits = HashSet::new();
     let mut graph = HashMap::new();
     let mut seen = HashSet::new();
-    collect_static_graph(world, function, &mut reads, &mut waits, &mut graph, &mut seen);
+    collect_static_graph(world, tel, function, &mut reads, &mut waits, &mut graph, &mut seen);
     if !waits.is_empty() {
         return Ok(JobEffects {
             reads: current_uses(reads),
@@ -71,7 +75,11 @@ pub(super) fn derive_recursive(world: &mut World<'_>, function: FunctionId) -> R
 }
 
 /// Derives which function inputs participate in entry dispatch.
-pub(super) fn derive_dispatch_mask(world: &mut World<'_>, function: FunctionId) -> Result<JobEffects, FatalError> {
+pub(super) fn derive_dispatch_mask(
+    world: &mut World,
+    tel: &impl crate::telemetry::Telemetry,
+    function: FunctionId,
+) -> Result<JobEffects, FatalError> {
     let dispatch_fact = FactKey::EntryDispatch(function);
     if !world.has_fact(&dispatch_fact) {
         // `EntryDispatch`'s sole producer arm is `Job::PlanEntryDispatch`
@@ -81,7 +89,7 @@ pub(super) fn derive_dispatch_mask(world: &mut World<'_>, function: FunctionId) 
 
     let plan = world.entry_dispatch(function);
     let mask = dispatch_input_mask(&plan);
-    world.tel().execute(
+    tel.execute(
         &["fz", "compiler2", "dispatch_mask", "derived"],
         &measurements! {
             function_id: function.as_u32(),
@@ -101,7 +109,8 @@ pub(super) fn derive_dispatch_mask(world: &mut World<'_>, function: FunctionId) 
 }
 
 fn collect_static_graph(
-    world: &mut World<'_>,
+    world: &mut World,
+    tel: &impl crate::telemetry::Telemetry,
     function: FunctionId,
     reads: &mut Vec<FactKey>,
     waits: &mut HashSet<FactKey>,
@@ -129,7 +138,7 @@ fn collect_static_graph(
             // module's code the first time this graph reaches it, instead of
             // leaving that submission to whenever `Job::DefineModule` happens to
             // run.
-            world.ensure_runtime_module(module);
+            super::super::drive::ExecutionContext::new(world, tel).ensure_runtime_module(module);
             waits.insert(FactKey::ModuleDefined(module));
             return;
         }
@@ -157,7 +166,7 @@ fn collect_static_graph(
             continue;
         }
         ready_edges.push(target);
-        collect_static_graph(world, target, reads, waits, graph, seen);
+        collect_static_graph(world, tel, target, reads, waits, graph, seen);
     }
     ready_edges.sort_by_key(|function| function.as_u32());
     ready_edges.dedup();

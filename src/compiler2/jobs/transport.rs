@@ -481,7 +481,7 @@ impl TransportFactsBuilder {
 
     fn record_callable_shape_surface_publications(
         &mut self,
-        world: &World<'_>,
+        world: &World,
         publication: TransportPosition,
         shapes: &[ShapeId],
         surface_shapes: &[Box<[ShapeId]>],
@@ -531,7 +531,7 @@ impl TransportFactsBuilder {
         }
     }
 
-    fn resolve_publication_source_boundaries(&mut self, world: &World<'_>) {
+    fn resolve_publication_source_boundaries(&mut self, world: &World) {
         let boundary_ids = self.boundaries.keys().copied().collect::<Vec<_>>();
         let mut derived = Vec::new();
         for boundary in boundary_ids {
@@ -661,7 +661,7 @@ impl TransportFactsBuilder {
 }
 
 pub(crate) fn produce_transport_shape_product(
-    world: &mut World<'_>,
+    world: &mut World,
     session: &mut PullSession,
     position: &TransportPosition,
 ) -> PullOutcome {
@@ -688,8 +688,8 @@ pub(crate) fn produce_transport_shape_product(
     )))
 }
 
-fn emit_transport_component_produced(world: &World<'_>, component: &TransportComponentInventory) {
-    world.tel().execute(
+fn emit_transport_component_produced(tel: &impl crate::telemetry::Telemetry, component: &TransportComponentInventory) {
+    tel.execute(
         &["fz", "compiler2", "pull", "transport_component", "produced"],
         &measurements! {
             component_size: component.positions.len() as u64,
@@ -709,11 +709,11 @@ fn emit_transport_component_produced(world: &World<'_>, component: &TransportCom
 /// (re)projected on this drive," observable without forcing any extra
 /// recomputation -- it rides the materialize path that already runs.
 fn emit_transport_component_materialized(
-    world: &World<'_>,
+    tel: &impl crate::telemetry::Telemetry,
     executable: &ExecutableKey,
     component: &TransportComponentInventory,
 ) {
-    world.tel().execute(
+    tel.execute(
         &["fz", "compiler2", "executable_transport", "projected"],
         &measurements! {
             component_size: component.positions.len() as u64,
@@ -724,8 +724,8 @@ fn emit_transport_component_materialized(
     );
 }
 
-fn emit_transport_closure_solved(world: &World<'_>, closure: &SolvedTransportClosure) {
-    world.tel().execute(
+fn emit_transport_closure_solved(tel: &impl crate::telemetry::Telemetry, closure: &SolvedTransportClosure) {
+    tel.execute(
         &["fz", "compiler2", "pull", "transport_component", "closure_solved"],
         &measurements! {
             executables: closure.executables.len(),
@@ -737,24 +737,25 @@ fn emit_transport_closure_solved(world: &World<'_>, closure: &SolvedTransportClo
 }
 
 pub(crate) fn produce_transport_component_product(
-    world: &mut World<'_>,
+    world: &mut World,
+    tel: &impl crate::telemetry::Telemetry,
     session: &mut PullSession,
     position: &TransportPosition,
 ) -> PullOutcome {
     let executable = executable_key_for_transport_position(session.root(), position, world.types_mut());
     displace_covering_solve_if_stale(world, session, &executable);
     if let Some(component) = session.transport_component(position).cloned() {
-        emit_transport_component_produced(world, &component);
+        emit_transport_component_produced(tel, &component);
         return PullOutcome::Produced(ProductValue::TransportComponent(component));
     }
     if !session.transport_closure_covers(&executable)
-        && let Err(waits) = solve_transport_closure(world, session, &executable)
+        && let Err(waits) = solve_transport_closure(world, tel, session, &executable)
     {
         return PullOutcome::Waiting(waits);
     }
     let component = materialize_transport_component(world, session, &executable, position);
-    emit_transport_component_produced(world, &component);
-    emit_transport_component_materialized(world, &executable, &component);
+    emit_transport_component_produced(tel, &component);
+    emit_transport_component_materialized(tel, &executable, &component);
     PullOutcome::Produced(ProductValue::TransportComponent(component))
 }
 
@@ -765,7 +766,7 @@ pub(crate) fn produce_transport_component_product(
 /// constrained is proven unconstrained by that same solve -- it gets a
 /// singleton component, never a re-solve.
 fn materialize_transport_component(
-    world: &mut World<'_>,
+    world: &mut World,
     session: &mut PullSession,
     executable: &ExecutableKey,
     position: &TransportPosition,
@@ -801,7 +802,7 @@ fn materialize_transport_component(
 /// covering solve (the full invalidation walk over the consult ledger). The
 /// same validated-at-read discipline `DemandFactsCache` applies to
 /// demand-cone facts.
-fn displace_covering_solve_if_stale(world: &World<'_>, session: &mut PullSession, executable: &ExecutableKey) {
+fn displace_covering_solve_if_stale(world: &World, session: &mut PullSession, executable: &ExecutableKey) {
     let stale = session
         .covering_solve_consumed_revisions(executable)
         .is_some_and(|snapshot| {
@@ -841,7 +842,7 @@ impl ClosureConsultLedger {
         self.executables.insert(executable.clone());
     }
 
-    fn consult_fact(&mut self, world: &World<'_>, fact: FactKey) {
+    fn consult_fact(&mut self, world: &World, fact: FactKey) {
         let revision = world.fact_revision(&fact).unwrap_or(0);
         self.fact_revisions.entry(fact).or_insert(revision);
     }
@@ -854,7 +855,8 @@ impl ClosureConsultLedger {
 /// materializes from this record; the solve never repeats until a transport
 /// invalidation (an epoch event) clears the recorded solves.
 fn solve_transport_closure(
-    world: &mut World<'_>,
+    world: &mut World,
+    tel: &impl crate::telemetry::Telemetry,
     session: &mut PullSession,
     executable: &ExecutableKey,
 ) -> Result<(), Vec<PullWait>> {
@@ -1028,7 +1030,7 @@ fn solve_transport_closure(
     let mut closure = solved_closure_from_union(executables, &union, &component_shapes, world.types());
     closure.consumed_fact_revisions = ledger.fact_revisions;
     closure.consulted = ledger.executables;
-    emit_transport_closure_solved(world, &closure);
+    emit_transport_closure_solved(tel, &closure);
     session.record_solved_transport_closure(closure);
     Ok(())
 }
@@ -1077,7 +1079,7 @@ fn solved_closure_from_union(
 }
 
 fn expand_transport_product_executables(
-    world: &World<'_>,
+    world: &World,
     session: &PullSession,
     executables: &HashSet<ExecutableKey>,
     runtime_demands: &HashMap<ExecutableKey, ExecutableRuntimeDemand>,
@@ -1142,7 +1144,7 @@ fn outgoing_input_edge_waits(session: &PullSession, executables: &HashSet<Execut
 }
 
 fn expand_transport_product_incoming_producers(
-    world: &World<'_>,
+    world: &World,
     session: &PullSession,
     executables: &HashSet<ExecutableKey>,
     ledger: &mut ClosureConsultLedger,
@@ -1183,7 +1185,7 @@ fn push_executable_unique(target: &mut Vec<ExecutableKey>, executable: Executabl
 }
 
 fn install_produced_incoming_inputs(
-    world: &World<'_>,
+    world: &World,
     session: &PullSession,
     contexts: &mut TransportContexts,
     ledger: &mut ClosureConsultLedger,
@@ -1241,7 +1243,7 @@ fn executable_key_for_transport_position(
 }
 
 fn collect_transport_contexts(
-    world: &mut World<'_>,
+    world: &mut World,
     executables: &HashSet<ExecutableKey>,
     runtime_demands: &HashMap<ExecutableKey, ExecutableRuntimeDemand>,
     materialized_executables: &HashMap<ExecutableKey, MaterializedExecutable>,
@@ -1390,7 +1392,7 @@ fn collect_transport_contexts(
 /// shared `memo` is a pure cache, so isolating it per call (as
 /// `derive_executable_transport` does) changes only work, never the result.
 fn project_one_executable(
-    world: &mut World<'_>,
+    world: &mut World,
     executable: &ExecutableKey,
     context: &ExecutableContext,
     contexts: &TransportContexts,
@@ -1619,7 +1621,7 @@ fn project_one_executable(
 /// shape. (The former second pass that re-derived capture shapes from the
 /// canonical interned descr was redundant with this and is gone.)
 fn seed_callable_capture_inputs(
-    world: &mut World<'_>,
+    world: &mut World,
     contexts: &TransportContexts,
     facts: &mut TransportFactsBuilder,
     shape_graph: &mut ShapeConstraintGraph,
@@ -1708,7 +1710,7 @@ fn seed_callable_capture_inputs(
 }
 
 fn effective_value_demands(
-    world: &World<'_>,
+    world: &World,
     executable: &ExecutableKey,
     context: &ExecutableContext,
     contexts: &TransportContexts,
@@ -1772,7 +1774,7 @@ fn effective_value_demands(
 }
 
 fn collect_executable_input_constraints(
-    world: &mut World<'_>,
+    world: &mut World,
     contexts: &TransportContexts,
     facts: &mut TransportFactsBuilder,
     executables: &[ExecutableKey],
@@ -1949,7 +1951,7 @@ fn collect_clause_parameter_equalities(
 /// return `ShapeId` instead of mutating that shape through the caller's local
 /// demand.
 fn callsite_callee_return_position(
-    world: &World<'_>,
+    world: &World,
     contexts: &TransportContexts,
     executable: &ExecutableKey,
     context: &ExecutableContext,
@@ -1979,7 +1981,7 @@ fn callsite_callee_return_position(
         })
 }
 
-fn lanes_for_codegen_seam_shape(world: &World<'_>, shape: ShapeId) -> Vec<(ShapeId, LaneId)> {
+fn lanes_for_codegen_seam_shape(world: &World, shape: ShapeId) -> Vec<(ShapeId, LaneId)> {
     match world.shape(shape) {
         ShapeDescr::Nothing => Vec::new(),
         ShapeDescr::Lane(lane) => vec![(shape, *lane)],
@@ -1998,7 +2000,7 @@ fn lanes_for_codegen_seam_shape(world: &World<'_>, shape: ShapeId) -> Vec<(Shape
     }
 }
 
-fn raw_codegen_repr_for_lane(world: &World<'_>, lane: LaneId) -> Option<CodegenLaneRepr> {
+fn raw_codegen_repr_for_lane(world: &World, lane: LaneId) -> Option<CodegenLaneRepr> {
     let ty = world.lane(lane).ty;
     if world.types().is_floating(&ty) {
         Some(CodegenLaneRepr::RawF64)
@@ -2011,7 +2013,7 @@ fn raw_codegen_repr_for_lane(world: &World<'_>, lane: LaneId) -> Option<CodegenL
     }
 }
 
-fn codegen_repr_for_lane(world: &World<'_>, lane: LaneId) -> CodegenLaneRepr {
+fn codegen_repr_for_lane(world: &World, lane: LaneId) -> CodegenLaneRepr {
     raw_codegen_repr_for_lane(world, lane).unwrap_or(CodegenLaneRepr::ValueRef)
 }
 
@@ -2020,7 +2022,7 @@ fn codegen_repr_for_lane(world: &World<'_>, lane: LaneId) -> CodegenLaneRepr {
 /// boxing seam, which is what lets a widened recursive activation's `any`
 /// return resolve to a concretely-returning producer. Tuple and raw-scalar
 /// returns are not boxed, so they keep an exact-match contract.
-fn boxed_value_return(world: &World<'_>, shape: ShapeId) -> bool {
+fn boxed_value_return(world: &World, shape: ShapeId) -> bool {
     matches!(world.shape(shape), ShapeDescr::Lane(lane) if codegen_repr_for_lane(world, *lane) == CodegenLaneRepr::ValueRef)
 }
 
@@ -2539,7 +2541,7 @@ fn clause_parameter_values(body: &LoweredBody) -> HashSet<ValueId> {
 }
 
 fn shape_for_local_value(
-    world: &mut World<'_>,
+    world: &mut World,
     contexts: &TransportContexts,
     facts: &mut TransportFactsBuilder,
     executable: &ExecutableKey,
@@ -2582,7 +2584,7 @@ fn shape_for_local_value(
 }
 
 fn shape_for_executable_input(
-    world: &mut World<'_>,
+    world: &mut World,
     ty: Ty,
     demand: &RuntimeDemand,
     facts: &mut TransportFactsBuilder,
@@ -2595,7 +2597,7 @@ fn shape_for_executable_input(
 }
 
 fn incoming_executable_input_positions(
-    world: &World<'_>,
+    world: &World,
     contexts: &TransportContexts,
     executable: &ExecutableKey,
     semantic_index: usize,
@@ -2612,7 +2614,7 @@ fn incoming_executable_input_positions(
 }
 
 fn shape_for_source(
-    world: &mut World<'_>,
+    world: &mut World,
     contexts: &TransportContexts,
     facts: &mut TransportFactsBuilder,
     executable: &ExecutableKey,
@@ -2648,7 +2650,7 @@ fn shape_for_source(
 }
 
 fn project_source(
-    world: &mut World<'_>,
+    world: &mut World,
     contexts: &TransportContexts,
     facts: &mut TransportFactsBuilder,
     executable: &ExecutableKey,
@@ -2828,7 +2830,7 @@ fn project_source(
 }
 
 fn project_sources(
-    world: &mut World<'_>,
+    world: &mut World,
     contexts: &TransportContexts,
     facts: &mut TransportFactsBuilder,
     executable: &ExecutableKey,
@@ -2892,7 +2894,7 @@ fn project_sources(
 }
 
 fn project_executable_input_source(
-    world: &mut World<'_>,
+    world: &mut World,
     contexts: &TransportContexts,
     facts: &mut TransportFactsBuilder,
     executable: &ExecutableKey,
@@ -3018,7 +3020,7 @@ fn project_executable_input_source(
 }
 
 fn select_callable_input_shape_for_demand(
-    world: &mut World<'_>,
+    world: &mut World,
     facts: &mut TransportFactsBuilder,
     shapes: &[ShapeId],
     demand: &CallableDemand,
@@ -3031,7 +3033,7 @@ fn select_callable_input_shape_for_demand(
 }
 
 fn callable_input_shapes_for_demand(
-    world: &mut World<'_>,
+    world: &mut World,
     facts: &mut TransportFactsBuilder,
     shapes: &[ShapeId],
     demand: &CallableDemand,
@@ -3050,7 +3052,7 @@ fn callable_input_shapes_for_demand(
 }
 
 fn callable_surface_shapes_for_demand(
-    world: &mut World<'_>,
+    world: &mut World,
     facts: &mut TransportFactsBuilder,
     demand: &CallableDemand,
 ) -> Vec<Box<[ShapeId]>> {
@@ -3062,7 +3064,7 @@ fn callable_surface_shapes_for_demand(
 }
 
 fn callable_input_shape_satisfies_demand(
-    world: &World<'_>,
+    world: &World,
     facts: &TransportFactsBuilder,
     shape: ShapeId,
     surface_shapes: &[Box<[ShapeId]>],
@@ -3082,7 +3084,7 @@ fn callable_input_shape_satisfies_demand(
 }
 
 fn project_tuple_value(
-    world: &mut World<'_>,
+    world: &mut World,
     contexts: &TransportContexts,
     facts: &mut TransportFactsBuilder,
     executable: &ExecutableKey,
@@ -3134,7 +3136,7 @@ fn project_tuple_value(
 }
 
 fn project_tuple_field(
-    world: &mut World<'_>,
+    world: &mut World,
     contexts: &TransportContexts,
     facts: &mut TransportFactsBuilder,
     executable: &ExecutableKey,
@@ -3178,7 +3180,7 @@ fn project_tuple_field(
 }
 
 fn project_callable_value(
-    world: &mut World<'_>,
+    world: &mut World,
     contexts: &TransportContexts,
     facts: &mut TransportFactsBuilder,
     executable: &ExecutableKey,
@@ -3215,7 +3217,7 @@ fn project_callable_value(
 }
 
 fn project_callsite_return(
-    world: &mut World<'_>,
+    world: &mut World,
     contexts: &TransportContexts,
     facts: &mut TransportFactsBuilder,
     executable: &ExecutableKey,
@@ -3289,7 +3291,7 @@ fn project_callsite_return(
 }
 
 fn callable_for_producer(
-    world: &mut World<'_>,
+    world: &mut World,
     contexts: &TransportContexts,
     facts: &mut TransportFactsBuilder,
     executable: &ExecutableKey,
@@ -3439,7 +3441,7 @@ fn capture_demands_for_resolutions(
 }
 
 fn surface_shapes(
-    world: &mut World<'_>,
+    world: &mut World,
     surfaces: &BTreeSet<CallableSurface>,
     facts: &mut TransportFactsBuilder,
 ) -> Vec<Box<[ShapeId]>> {
@@ -3463,7 +3465,7 @@ fn surface_shapes(
 }
 
 fn callable_direct_edges(
-    world: &mut World<'_>,
+    world: &mut World,
     edges: &[super::super::semantic::CallableFlowEdge],
     facts: &mut TransportFactsBuilder,
 ) -> Vec<CallableDirectEdge> {
@@ -3477,11 +3479,7 @@ fn callable_direct_edges(
         .collect()
 }
 
-fn surface_shape(
-    world: &mut World<'_>,
-    surface: &CallableSurface,
-    facts: &mut TransportFactsBuilder,
-) -> Box<[ShapeId]> {
+fn surface_shape(world: &mut World, surface: &CallableSurface, facts: &mut TransportFactsBuilder) -> Box<[ShapeId]> {
     surface
         .inputs
         .iter()
@@ -3495,7 +3493,7 @@ fn surface_shape(
 }
 
 fn generic_shape_from_demand(
-    world: &mut World<'_>,
+    world: &mut World,
     ty: Ty,
     demand: &RuntimeDemand,
     facts: &mut TransportFactsBuilder,
@@ -3522,7 +3520,7 @@ fn generic_shape_from_demand(
 }
 
 fn generic_callable_shape(
-    world: &mut World<'_>,
+    world: &mut World,
     ty: Ty,
     demand: &CallableDemand,
     facts: &mut TransportFactsBuilder,
@@ -3532,7 +3530,7 @@ fn generic_callable_shape(
 }
 
 fn generic_callable_shape_with_resolutions(
-    world: &mut World<'_>,
+    world: &mut World,
     ty: Ty,
     demand: &CallableDemand,
     facts: &mut TransportFactsBuilder,
@@ -3641,7 +3639,7 @@ fn generic_callable_shape_with_resolutions(
 /// generic (`function: None`) dispatch target still pools every concrete
 /// producer that flows through it, because that boundary's whole job is to
 /// dispatch the union.
-fn source_callable_admitted_by_target(world: &World<'_>, source: CallableId, target: CallableId) -> bool {
+fn source_callable_admitted_by_target(world: &World, source: CallableId, target: CallableId) -> bool {
     if source == target {
         return true;
     }
@@ -3654,7 +3652,7 @@ fn source_callable_admitted_by_target(world: &World<'_>, source: CallableId, tar
 }
 
 fn resolution_symbols_for_callable_source_surfaces(
-    world: &World<'_>,
+    world: &World,
     facts: &TransportFactsBuilder,
     source_shapes: &[ShapeId],
     surface_shapes: &[Box<[ShapeId]>],
@@ -3683,7 +3681,7 @@ fn resolution_symbols_for_callable_source_surfaces(
 }
 
 fn resolution_symbols_for_callable_source_surface(
-    world: &World<'_>,
+    world: &World,
     facts: &TransportFactsBuilder,
     source_shapes: &[ShapeId],
     arg_shapes: &[ShapeId],
@@ -3722,7 +3720,7 @@ fn resolution_symbols_for_callable_source_surface(
 }
 
 fn resolution_symbols_for_source_publication_surfaces(
-    world: &World<'_>,
+    world: &World,
     facts: &TransportFactsBuilder,
     source_positions: &[TransportPosition],
     surface_shapes: &[Box<[ShapeId]>],
@@ -3751,7 +3749,7 @@ fn resolution_symbols_for_source_publication_surfaces(
 }
 
 fn resolution_symbols_for_source_publications(
-    world: &World<'_>,
+    world: &World,
     facts: &TransportFactsBuilder,
     source_positions: &[TransportPosition],
     arg_shapes: &[ShapeId],
@@ -3789,7 +3787,7 @@ fn resolution_symbols_for_source_publications(
 }
 
 fn boundary_return_shapes_for_publication_sources(
-    world: &World<'_>,
+    world: &World,
     facts: &TransportFactsBuilder,
     publication: &TransportPosition,
     surface_shapes: &[Box<[ShapeId]>],
@@ -3815,7 +3813,7 @@ fn boundary_return_shapes_for_publication_sources(
         .collect()
 }
 
-fn select_compatible_boundary_return_shape(world: &World<'_>, return_shapes: &[ShapeId]) -> Option<ShapeId> {
+fn select_compatible_boundary_return_shape(world: &World, return_shapes: &[ShapeId]) -> Option<ShapeId> {
     let [first, rest @ ..] = return_shapes else {
         return None;
     };
@@ -3825,7 +3823,7 @@ fn select_compatible_boundary_return_shape(world: &World<'_>, return_shapes: &[S
         .then_some(*first)
 }
 
-fn shape_codegen_reprs(world: &World<'_>, shape: ShapeId) -> Vec<CodegenLaneRepr> {
+fn shape_codegen_reprs(world: &World, shape: ShapeId) -> Vec<CodegenLaneRepr> {
     lanes_for_codegen_seam_shape(world, shape)
         .into_iter()
         .map(|(_, lane)| codegen_repr_for_lane(world, lane))
@@ -3833,7 +3831,7 @@ fn shape_codegen_reprs(world: &World<'_>, shape: ShapeId) -> Vec<CodegenLaneRepr
 }
 
 fn boundary_return_shapes_for_callable_source_surface(
-    world: &World<'_>,
+    world: &World,
     facts: &TransportFactsBuilder,
     source_shapes: &[ShapeId],
     arg_shapes: &[ShapeId],
@@ -3859,7 +3857,7 @@ fn boundary_return_shapes_for_callable_source_surface(
 }
 
 fn boundary_return_shapes_for_source_publications(
-    world: &World<'_>,
+    world: &World,
     facts: &TransportFactsBuilder,
     source_positions: &[TransportPosition],
     arg_shapes: &[ShapeId],
@@ -3882,7 +3880,7 @@ fn boundary_return_shapes_for_source_publications(
 }
 
 fn resolution_symbols_for_published_surfaces(
-    world: &World<'_>,
+    world: &World,
     facts: &TransportFactsBuilder,
     publication: &TransportPosition,
     surface_shapes: &[Box<[ShapeId]>],
@@ -3910,7 +3908,7 @@ fn resolution_symbols_for_published_surfaces(
 }
 
 fn publish_boundaries_for_callable(
-    world: &mut World<'_>,
+    world: &mut World,
     facts: &mut TransportFactsBuilder,
     callable: CallableId,
     surfaces: &BTreeSet<CallableSurface>,
@@ -3987,7 +3985,7 @@ fn publish_boundaries_for_callable(
 }
 
 fn capture_lanes_for_callable_descriptor(
-    world: &mut World<'_>,
+    world: &mut World,
     shape: ShapeId,
     ty: Ty,
     demand: &RuntimeDemand,
@@ -4001,7 +3999,7 @@ fn capture_lanes_for_callable_descriptor(
         .collect()
 }
 
-fn boundary_return_shape_for_ty(world: &mut World<'_>, ret_ty: Ty, facts: &mut TransportFactsBuilder) -> ShapeId {
+fn boundary_return_shape_for_ty(world: &mut World, ret_ty: Ty, facts: &mut TransportFactsBuilder) -> ShapeId {
     if world.types().is_empty(&ret_ty) {
         return world.intern_shape(ShapeDescr::Nothing);
     }
@@ -4020,7 +4018,7 @@ fn boundary_return_shape_for_ty(world: &mut World<'_>, ret_ty: Ty, facts: &mut T
 }
 
 fn boundary_return_shapes_for_flow_surfaces(
-    world: &mut World<'_>,
+    world: &mut World,
     contexts: &TransportContexts,
     facts: &mut TransportFactsBuilder,
     resolution_symbols: &[Vec<ExecutableSymbol>],
@@ -4050,7 +4048,7 @@ struct BoundaryReturnContracts {
 }
 
 fn boundary_return_contracts_for_resolution_symbols(
-    world: &mut World<'_>,
+    world: &mut World,
     contexts: &TransportContexts,
     callable_ty: Ty,
     surfaces: &BTreeSet<CallableSurface>,
@@ -4106,7 +4104,7 @@ fn boundary_resolution_symbols_for_flow_surfaces(
 }
 
 fn boundary_return_shape_for_resolution(
-    world: &mut World<'_>,
+    world: &mut World,
     contexts: &TransportContexts,
     facts: &mut TransportFactsBuilder,
     resolution: &ExecutableSymbol,
@@ -4142,7 +4140,7 @@ fn boundary_return_shape_for_resolution(
 }
 
 fn boundary_return_tys_for_callable_surfaces(
-    world: &mut World<'_>,
+    world: &mut World,
     callable_ty: Ty,
     surfaces: &BTreeSet<CallableSurface>,
 ) -> Vec<Ty> {
@@ -4153,7 +4151,7 @@ fn boundary_return_tys_for_callable_surfaces(
 }
 
 fn boundary_return_shapes_for_tys(
-    world: &mut World<'_>,
+    world: &mut World,
     return_tys: &[Ty],
     facts: &mut TransportFactsBuilder,
 ) -> Vec<ShapeId> {
@@ -4164,7 +4162,7 @@ fn boundary_return_shapes_for_tys(
         .collect()
 }
 
-fn boundary_return_ty_for_surface(world: &mut World<'_>, callable_ty: Ty, surface: &CallableSurface) -> Ty {
+fn boundary_return_ty_for_surface(world: &mut World, callable_ty: Ty, surface: &CallableSurface) -> Ty {
     let Some(clauses) = world.types_mut().callable_value_clauses(&callable_ty) else {
         return world.types_mut().arrow_join_return(&callable_ty);
     };
@@ -4194,7 +4192,7 @@ fn boundary_return_ty_for_surface(world: &mut World<'_>, callable_ty: Ty, surfac
     matched.unwrap_or_else(|| world.types_mut().arrow_join_return(&callable_ty))
 }
 
-fn boundary_lanes_for_shape(world: &mut World<'_>, shape: ShapeId, ty: Ty) -> Vec<LaneId> {
+fn boundary_lanes_for_shape(world: &mut World, shape: ShapeId, ty: Ty) -> Vec<LaneId> {
     match world.shape(shape).clone() {
         ShapeDescr::Nothing => Vec::new(),
         ShapeDescr::Lane(lane) => vec![lane],
@@ -4213,7 +4211,7 @@ fn boundary_lanes_for_shape(world: &mut World<'_>, shape: ShapeId, ty: Ty) -> Ve
     }
 }
 
-fn exact_tuple_field_tys(world: &mut World<'_>, ty: Ty) -> Option<Vec<Ty>> {
+fn exact_tuple_field_tys(world: &mut World, ty: Ty) -> Option<Vec<Ty>> {
     let predicate = world.types().runtime_type_predicate(&ty);
     if predicate.tuple_arities.cofinite || predicate.tuple_arities.values.len() != 1 {
         return None;
@@ -4222,12 +4220,12 @@ fn exact_tuple_field_tys(world: &mut World<'_>, ty: Ty) -> Option<Vec<Ty>> {
     Some(tuple_field_tys(world, ty, arity))
 }
 
-fn value_lane_shape(world: &mut World<'_>, ty: Ty) -> ShapeId {
+fn value_lane_shape(world: &mut World, ty: Ty) -> ShapeId {
     let lane = value_lane(world, ty);
     world.intern_shape(ShapeDescr::Lane(lane))
 }
 
-fn value_lane(world: &mut World<'_>, ty: Ty) -> LaneId {
+fn value_lane(world: &mut World, ty: Ty) -> LaneId {
     let ty = world.types_mut().value_lane_repr(ty);
     world.intern_lane(super::super::transport::LaneDescr {
         ty,
@@ -4235,7 +4233,7 @@ fn value_lane(world: &mut World<'_>, ty: Ty) -> LaneId {
     })
 }
 
-fn tuple_field_tys(world: &mut World<'_>, ty: Ty, arity: usize) -> Vec<Ty> {
+fn tuple_field_tys(world: &mut World, ty: Ty, arity: usize) -> Vec<Ty> {
     let any = world.types_mut().any();
     let mut fields = world.types_mut().tuple_projections(&ty, arity);
     if fields.len() < arity {
@@ -4246,7 +4244,7 @@ fn tuple_field_tys(world: &mut World<'_>, ty: Ty, arity: usize) -> Vec<Ty> {
     fields
 }
 
-fn boundary_runtime_demand(world: &mut World<'_>, ty: Ty) -> RuntimeDemand {
+fn boundary_runtime_demand(world: &mut World, ty: Ty) -> RuntimeDemand {
     let Some(clauses) = world.types_mut().callable_clauses(&ty) else {
         if let Some(fields) = exact_tuple_field_tys(world, ty) {
             return RuntimeDemand::tuple_fields(
@@ -4278,7 +4276,7 @@ fn resume_demand(context: &ExecutableContext, resume: ResumeEntry) -> RuntimeDem
 }
 
 fn resume_shape(
-    world: &mut World<'_>,
+    world: &mut World,
     contexts: &TransportContexts,
     facts: &mut TransportFactsBuilder,
     executable: &ExecutableKey,
@@ -4316,12 +4314,12 @@ mod tests {
     use super::*;
     use crate::telemetry::ConfiguredTelemetry;
 
-    fn intern_test_shape(world: &mut World<'_>) -> ShapeId {
+    fn intern_test_shape(world: &mut World) -> ShapeId {
         let ty = world.types_mut().any();
         value_lane_shape(world, ty)
     }
 
-    fn test_positions(world: &mut World<'_>) -> (TransportPosition, TransportPosition) {
+    fn test_positions(world: &mut World, _tel: &ConfiguredTelemetry) -> (TransportPosition, TransportPosition) {
         world.submit_code(None, "fn main(x), do: x".to_string());
         let root = world.submit_root(None, "main".to_string(), 1, ExecutableNeed::Value);
         let ty = world.types_mut().any();
@@ -4345,7 +4343,7 @@ mod tests {
         )
     }
 
-    fn fake_executable(world: &mut World<'_>, root: u32, function: u32, inputs: &[Ty]) -> ExecutableKey {
+    fn fake_executable(world: &mut World, root: u32, function: u32, inputs: &[Ty]) -> ExecutableKey {
         let activation = ActivationKey::from_inputs(
             RootId::for_test(root),
             FunctionId::for_test(function),
@@ -4372,8 +4370,8 @@ mod tests {
         // it.
         use crate::compiler2::keying::DispatchDemand;
         use crate::types::TypeVarId;
-        let tel = ConfiguredTelemetry::new();
-        let mut world = World::new(&tel);
+        let _tel = ConfiguredTelemetry::new();
+        let mut world = World::new();
         let root = RootId::for_test(7);
         let function = FunctionId::for_test(185);
 
@@ -4425,8 +4423,8 @@ mod tests {
     #[test]
     fn shape_constraint_graph_solves_independent_of_insertion_order() {
         let tel = ConfiguredTelemetry::new();
-        let mut left_world = World::new(&tel);
-        let (left_a, left_b) = test_positions(&mut left_world);
+        let mut left_world = World::new();
+        let (left_a, left_b) = test_positions(&mut left_world, &tel);
         let left_shape = intern_test_shape(&mut left_world);
         let mut left = ShapeConstraintGraph::default();
         left.anchor(left_a.clone(), left_shape);
@@ -4434,8 +4432,8 @@ mod tests {
         let left_solved = left.solve();
 
         let tel = ConfiguredTelemetry::new();
-        let mut right_world = World::new(&tel);
-        let (right_a, right_b) = test_positions(&mut right_world);
+        let mut right_world = World::new();
+        let (right_a, right_b) = test_positions(&mut right_world, &tel);
         let right_shape = intern_test_shape(&mut right_world);
         let mut right = ShapeConstraintGraph::default();
         right.equal(right_b.clone(), right_a.clone());
@@ -4450,8 +4448,8 @@ mod tests {
 
     #[test]
     fn incoming_input_positions_are_derived_from_slot_sources() {
-        let tel = ConfiguredTelemetry::new();
-        let mut world = World::new(&tel);
+        let _tel = ConfiguredTelemetry::new();
+        let mut world = World::new();
         let int = world.types_mut().int();
         let producer = fake_executable(&mut world, 81, 82, &[]);
         let callee = fake_executable(&mut world, 81, 83, &[int]);
@@ -4478,8 +4476,8 @@ mod tests {
     #[should_panic(expected = "transport shape anchors disagree")]
     fn shape_constraint_graph_rejects_conflicting_anchors() {
         let tel = ConfiguredTelemetry::new();
-        let mut world = World::new(&tel);
-        let (a, b) = test_positions(&mut world);
+        let mut world = World::new();
+        let (a, b) = test_positions(&mut world, &tel);
         let left_shape = world.intern_shape(ShapeDescr::Nothing);
         let right_shape = intern_test_shape(&mut world);
         assert_ne!(left_shape, right_shape);
@@ -4496,7 +4494,7 @@ mod tests {
     /// via a matching `CallableFlowFact::direct_edges` entry -- exactly what
     /// `callable_input_shape_satisfies_demand` requires to admit the shape.
     fn direct_callable_producer_context(
-        world: &mut World<'_>,
+        world: &mut World,
         function: FunctionId,
         surface_ty: Ty,
     ) -> (ExecutableContext, ValueId) {
@@ -4564,8 +4562,8 @@ mod tests {
     /// an ambiguous/opaque closure position (`generic_callable_shape`).
     #[test]
     fn project_executable_input_source_reports_generic_callable_for_ambiguous_multi_producer() {
-        let tel = ConfiguredTelemetry::new();
-        let mut world = World::new(&tel);
+        let _tel = ConfiguredTelemetry::new();
+        let mut world = World::new();
         let surface_ty = world.types_mut().int();
 
         let producer_a_fn = FunctionId::for_test(201);

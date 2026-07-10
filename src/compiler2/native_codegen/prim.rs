@@ -22,7 +22,7 @@ use std::collections::HashMap;
 pub(crate) fn emit_map_get_value_ref_for_key<M: cranelift_module::Module, T: Types<Ty = Ty>>(
     body: &mut CodegenFn<'_, '_, '_, M>,
     t: &mut T,
-    env: &CodegenEnv<'_>,
+    env: &CodegenEnv<'_, impl Telemetry>,
     var_env: &HashMap<u32, CodegenValue>,
     map: Var,
     key: Var,
@@ -101,7 +101,7 @@ fn emit_map_destination_put<M: cranelift_module::Module>(
 
 pub(crate) fn emit_list_cons_bif<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, '_, M>,
-    env: &CodegenEnv<'_>,
+    env: &CodegenEnv<'_, impl Telemetry>,
     var_env: &HashMap<u32, CodegenValue>,
     head: Var,
     head_kind: Option<ValueKind>,
@@ -192,7 +192,7 @@ fn static_literal_field_for_var(
 
 fn try_static_struct_literal<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, '_, M>,
-    env: &CodegenEnv<'_>,
+    env: &CodegenEnv<'_, impl Telemetry>,
     var_env: &HashMap<u32, CodegenValue>,
     dest_var: Var,
     schema_id: u32,
@@ -212,7 +212,7 @@ fn try_static_struct_literal<M: cranelift_module::Module>(
 
 fn define_static_struct_literal<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, '_, M>,
-    env: &CodegenEnv<'_>,
+    env: &CodegenEnv<'_, impl Telemetry>,
     dest_var: Var,
     schema_id: u32,
     fields: &[StaticLiteralField],
@@ -297,7 +297,7 @@ fn alloc_struct_for_schema<M: cranelift_module::Module>(
 pub(crate) fn lower_collection_prim<M: cranelift_module::Module, T: Types<Ty = Ty>>(
     body: &mut CodegenFn<'_, '_, '_, M>,
     t: &mut T,
-    env: &CodegenEnv<'_>,
+    env: &CodegenEnv<'_, impl Telemetry>,
     var_env: &HashMap<u32, CodegenValue>,
     prim: &Prim,
     dest_var: Var,
@@ -752,7 +752,7 @@ fn emit_extern_symbol_name<M: cranelift_module::Module>(
 #[allow(clippy::too_many_arguments)]
 fn emit_variadic_extern_call<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, '_, M>,
-    env: &CodegenEnv<'_>,
+    env: &CodegenEnv<'_, impl Telemetry>,
     var_env: &HashMap<u32, CodegenValue>,
     eid: ExternId,
     args: &[ExternArg],
@@ -823,7 +823,7 @@ fn emit_variadic_extern_call<M: cranelift_module::Module>(
 pub(crate) fn lower_prim<M: cranelift_module::Module, T: Types<Ty = Ty> + ClosureTypes>(
     body: &mut CodegenFn<'_, '_, '_, M>,
     t: &mut T,
-    env: &CodegenEnv<'_>,
+    env: &CodegenEnv<'_, impl Telemetry>,
     var_env: &HashMap<u32, CodegenValue>,
     prim: &Prim,
     dest_var: Var,
@@ -1129,7 +1129,7 @@ pub(crate) fn lower_prim<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
 
 fn lower_runtime_type_predicate<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, '_, M>,
-    env: &CodegenEnv<'_>,
+    env: &CodegenEnv<'_, impl Telemetry>,
     var_env: &HashMap<u32, CodegenValue>,
     runtime: &RuntimeRefs,
     v: Var,
@@ -1272,7 +1272,7 @@ fn emit_runtime_type_predicate_heap_checks<M: cranelift_module::Module>(
 fn emit_runtime_type_predicate_struct_check<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, '_, M>,
     runtime: &RuntimeRefs,
-    env: &CodegenEnv<'_>,
+    env: &CodegenEnv<'_, impl Telemetry>,
     value: CodegenValue,
     predicate: &RuntimeTypePredicate,
 ) -> Result<ir::Value, CodegenError> {
@@ -2232,7 +2232,7 @@ fn lower_extern_generic<M: cranelift_module::Module>(
 }
 
 fn emit_callable_boundary_materialized(
-    env: &CodegenEnv<'_>,
+    env: &CodegenEnv<'_, impl Telemetry>,
     mk_ident: &CallsiteIdent,
     fn_id: FnId,
     capture_count: usize,
@@ -2271,7 +2271,7 @@ fn emit_callable_boundary_materialized(
 }
 
 fn settled_callable_boundary_id(
-    env: &CodegenEnv<'_>,
+    env: &CodegenEnv<'_, impl Telemetry>,
     dest_var: Var,
     mk_ident: &CallsiteIdent,
     fn_id: FnId,
@@ -2316,7 +2316,7 @@ fn settled_callable_boundary_id(
 /// routing through closure allocation.
 pub(crate) fn lower_make_fn_ref<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, '_, M>,
-    env: &CodegenEnv<'_>,
+    env: &CodegenEnv<'_, impl Telemetry>,
     dest_var: Var,
     mk_ident: &CallsiteIdent,
     fn_id: FnId,
@@ -2337,7 +2337,7 @@ pub(crate) fn lower_make_fn_ref<M: cranelift_module::Module>(
 /// the runtime's schema-backed accessor.
 pub(crate) fn lower_make_closure<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, '_, M>,
-    env: &CodegenEnv<'_>,
+    env: &CodegenEnv<'_, impl Telemetry>,
     var_env: &HashMap<u32, CodegenValue>,
     dest_var: Var,
     mk_ident: &CallsiteIdent,

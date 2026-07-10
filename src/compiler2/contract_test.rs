@@ -748,7 +748,7 @@ fn function_contract_ignores_protocol_markers_inside_nested_complements() {
 #[test]
 fn derive_function_contract_carries_protocol_domain_obligation_through_transitive_aliases() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     let root = compiler.submit_root(RootSubmission {
         module_name: Some("M".to_string()),
         name: "f".to_string(),

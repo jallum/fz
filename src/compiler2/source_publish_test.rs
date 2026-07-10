@@ -62,13 +62,15 @@ fn metadata_str<'a>(event: &'a crate::telemetry::capture::OwnedEvent, key: &str)
 }
 
 fn publish_compiler_fragment_scope(
-    world: &mut World<'_>,
+    world: &mut World,
+    tel: &ConfiguredTelemetry,
     code: super::CodeId,
     root: &QuotedSourceRoot,
 ) -> ScopePublication {
     let surface = read_compiler_fragment_surface(root).expect("compiler fragment surface");
     publish_scope(
         world,
+        tel,
         code,
         ScopeSnapshot::module(ModuleId::GLOBAL, Namespace::default()),
         &surface,
@@ -91,7 +93,7 @@ fn compiler_service_define_publishes_function_source_and_threads_namespace_forwa
     let capture = Capture::new();
     tel.attach(&["fz", "compiler2"], capture.handler());
 
-    let mut world = World::new(&tel);
+    let mut world = World::new();
     let code = world.submit_code(Some("compiler-service.fz".to_string()), String::new());
     let heap = Rc::new(QuotedSourceHeap::new());
     let builder = heap.builder();
@@ -101,7 +103,7 @@ fn compiler_service_define_publishes_function_source_and_threads_namespace_forwa
     let bar_body = builder.call("foo", &meta(), &[]).expect("bar calls foo");
     let bar = function_form(&builder, "bar", bar_body);
     let root = root_list(&builder, &[service, bar]);
-    let publication = publish_compiler_fragment_scope(&mut world, code, &root);
+    let publication = publish_compiler_fragment_scope(&mut world, &tel, code, &root);
     let ScopePublication::Complete { outputs, .. } = publication else {
         panic!("compiler-service scope should not block");
     };
@@ -154,15 +156,15 @@ fn compiler_service_define_and_direct_source_publish_identical_raw_function_fact
     let foo = function_form(&builder, "foo", builder.int(41));
     let env = builder.map(&[]).expect("__ENV__");
 
-    let mut direct_world = World::new(&tel);
+    let mut direct_world = World::new();
     let direct_code = direct_world.submit_code(Some("direct.fz".to_string()), String::new());
     let direct_root = root_list(&builder, std::slice::from_ref(&foo));
-    let direct_publication = publish_compiler_fragment_scope(&mut direct_world, direct_code, &direct_root);
+    let direct_publication = publish_compiler_fragment_scope(&mut direct_world, &tel, direct_code, &direct_root);
 
-    let mut service_world = World::new(&tel);
+    let mut service_world = World::new();
     let service_code = service_world.submit_code(Some("service.fz".to_string()), String::new());
     let service_root = root_list(&builder, &[compiler_define_form(&builder, foo, env)]);
-    let service_publication = publish_compiler_fragment_scope(&mut service_world, service_code, &service_root);
+    let service_publication = publish_compiler_fragment_scope(&mut service_world, &tel, service_code, &service_root);
 
     let ScopePublication::Complete {
         outputs: direct_outputs,
@@ -215,14 +217,14 @@ fn compiler_service_define_and_direct_source_publish_identical_raw_function_fact
     );
 }
 
-fn world_lookup(world: &World<'_>, namespace: Namespace, name: &str) -> Option<NamespaceSymbol> {
+fn world_lookup(world: &World, namespace: Namespace, name: &str) -> Option<NamespaceSymbol> {
     world.lookup_namespace(namespace, name)
 }
 
 #[test]
 fn compiler_service_define_groups_single_function_source_before_define_function() {
     let tel = ConfiguredTelemetry::new();
-    let mut world = World::new(&tel);
+    let mut world = World::new();
     let code = world.submit_code(Some("compiler-service-single.fz".to_string()), String::new());
     let heap = Rc::new(QuotedSourceHeap::new());
     let builder = heap.builder();
@@ -230,7 +232,7 @@ fn compiler_service_define_groups_single_function_source_before_define_function(
     let foo = function_form(&builder, "foo", builder.int(42));
     let service = compiler_define_form(&builder, foo, builder.map(&[]).expect("__ENV__"));
     let root = root_list(&builder, &[service]);
-    let publication = publish_compiler_fragment_scope(&mut world, code, &root);
+    let publication = publish_compiler_fragment_scope(&mut world, &tel, code, &root);
     assert!(matches!(publication, ScopePublication::Complete { .. }));
 
     let foo_id = world.reference_function(ModuleId::GLOBAL, "foo", 0);
@@ -239,7 +241,10 @@ fn compiler_service_define_groups_single_function_source_before_define_function(
         "explicit compiler service source should be definable after publication",
     );
     assert!(
-        matches!(world.drive(), DriveOutcome::Resolved),
+        matches!(
+            super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+            DriveOutcome::Resolved
+        ),
         "Fz.Compiler.define should group a single function form before DefineFunction decodes it",
     );
 }
@@ -258,10 +263,11 @@ fn subtract(left, [item | rest]), do: subtract(delete_first(left, item), rest)
 
     let tel = ConfiguredTelemetry::new();
 
-    let mut direct_world = World::new(&tel);
+    let mut direct_world = World::new();
     let direct_code = direct_world.submit_code(Some("direct-long-doc.fz".to_string()), source.to_string());
     let direct_publication = publish_compiler_fragment_scope(
         &mut direct_world,
+        &tel,
         direct_code,
         &grouped
             .interned_list_subroot(&grouped_item_roots)
@@ -271,11 +277,14 @@ fn subtract(left, [item | rest]), do: subtract(delete_first(left, item), rest)
     let direct_id = direct_world.reference_function(ModuleId::GLOBAL, "subtract", 2);
     assert!(direct_world.demand(Job::DefineFunction(direct_id)));
     assert!(
-        matches!(direct_world.drive(), DriveOutcome::Resolved),
+        matches!(
+            super::drive::ExecutionContext::new(&mut direct_world, &tel).drive(),
+            DriveOutcome::Resolved
+        ),
         "raw grouped compiler fragments should decode long procbin-backed @doc payloads"
     );
 
-    let mut service_world = World::new(&tel);
+    let mut service_world = World::new();
     let service_code = service_world.submit_code(Some("service-long-doc.fz".to_string()), source.to_string());
     let builder = grouped.builder();
     let env = service_world
@@ -292,12 +301,15 @@ fn subtract(left, [item | rest]), do: subtract(delete_first(left, item), rest)
                 .expect("service root list"),
         )
         .expect("service quoted root");
-    let service_publication = publish_compiler_fragment_scope(&mut service_world, service_code, &service_root);
+    let service_publication = publish_compiler_fragment_scope(&mut service_world, &tel, service_code, &service_root);
     assert!(matches!(service_publication, ScopePublication::Complete { .. }));
     let service_id = service_world.reference_function(ModuleId::GLOBAL, "subtract", 2);
     assert!(service_world.demand(Job::DefineFunction(service_id)));
     assert!(
-        matches!(service_world.drive(), DriveOutcome::Resolved),
+        matches!(
+            super::drive::ExecutionContext::new(&mut service_world, &tel).drive(),
+            DriveOutcome::Resolved
+        ),
         "Fz.Compiler.define should preserve long procbin-backed @doc payloads across the compiler-service boundary"
     );
 }
@@ -308,7 +320,7 @@ fn compiler_service_define_inside_a_function_body_has_no_source_publication_auth
     let capture = Capture::new();
     tel.attach(&["fz", "compiler2"], capture.handler());
 
-    let mut world = World::new(&tel);
+    let mut world = World::new();
     let code = world.submit_code(Some("compiler-service-body.fz".to_string()), String::new());
     let heap = Rc::new(QuotedSourceHeap::new());
     let builder = heap.builder();
@@ -317,7 +329,7 @@ fn compiler_service_define_inside_a_function_body_has_no_source_publication_auth
     let body_service = compiler_define_form(&builder, sneaky, builder.map(&[]).expect("__ENV__"));
     let main = function_form(&builder, "main", body_service);
     let root = root_list(&builder, &[main]);
-    let publication = publish_compiler_fragment_scope(&mut world, code, &root);
+    let publication = publish_compiler_fragment_scope(&mut world, &tel, code, &root);
     let ScopePublication::Complete { outputs, .. } = publication else {
         panic!("function-body compiler-service shape should not block source publication");
     };
@@ -352,7 +364,7 @@ fn source_publication_expands_item_macros_as_scope_fragments() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
     tel.attach(&[], capture.handler());
-    let mut world = World::new(&tel);
+    let mut world = World::new();
     let code = world.submit_code(
         Some("item-macro.fz".to_string()),
         r#"
@@ -376,7 +388,10 @@ fn main(), do: answer()
 
     assert!(world.demand(Job::ScopeCode(code)), "code scoping should be demandable");
     assert!(
-        matches!(world.drive(), DriveOutcome::Resolved),
+        matches!(
+            super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+            DriveOutcome::Resolved
+        ),
         "source publication should expand item macros and apply returned source forms",
     );
 
@@ -413,7 +428,7 @@ fn main(), do: answer()
 #[test]
 fn source_publication_accepts_raw_compiler_fragments_from_item_macros() {
     let tel = ConfiguredTelemetry::new();
-    let mut world = World::new(&tel);
+    let mut world = World::new();
     let code = world.submit_code(
         Some("item-macro-raw-fragment.fz".to_string()),
         r#"
@@ -430,7 +445,10 @@ fn main(), do: answer()
 
     assert!(world.demand(Job::ScopeCode(code)), "code scoping should be demandable");
     assert!(
-        matches!(world.drive(), DriveOutcome::Resolved),
+        matches!(
+            super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+            DriveOutcome::Resolved
+        ),
         "item macros returning raw compiler fragments should publish those definitions"
     );
 
@@ -453,7 +471,7 @@ fn source_publication_defers_local_macro_expansion_until_function_demand() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
     tel.attach(&["fz", "compiler2"], capture.handler());
-    let mut world = World::new(&tel);
+    let mut world = World::new();
     let code = world.submit_code(
         Some("macro_inc.fz".to_string()),
         include_str!("../../fixtures2/behavior/macro_inc.fz").to_string(),
@@ -461,7 +479,10 @@ fn source_publication_defers_local_macro_expansion_until_function_demand() {
 
     assert!(world.demand(Job::ScopeCode(code)), "code scoping should be demandable");
     assert!(
-        matches!(world.drive(), DriveOutcome::Resolved),
+        matches!(
+            super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+            DriveOutcome::Resolved
+        ),
         "source publication should complete without expanding ordinary function bodies",
     );
 
@@ -513,7 +534,10 @@ fn source_publication_defers_local_macro_expansion_until_function_demand() {
         "the function should be demandable"
     );
     assert!(
-        matches!(world.drive(), DriveOutcome::Resolved),
+        matches!(
+            super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+            DriveOutcome::Resolved
+        ),
         "demanding the function should stage its expanded source and define it",
     );
 
@@ -571,7 +595,7 @@ fn source_publication_defers_source_sugar_rewrite_until_function_demand() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
     tel.attach(&[], capture.handler());
-    let mut world = World::new(&tel);
+    let mut world = World::new();
     let code = world.submit_code(
         Some("source-sugar.fz".to_string()),
         r#"
@@ -598,7 +622,10 @@ end
         "source scoping should be demandable"
     );
     assert!(
-        matches!(world.drive(), DriveOutcome::Resolved),
+        matches!(
+            super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+            DriveOutcome::Resolved
+        ),
         "source publication should not rewrite source-only sugars inside ordinary functions",
     );
 
@@ -621,7 +648,10 @@ end
         "the function should be demandable"
     );
     assert!(
-        matches!(world.drive(), DriveOutcome::Resolved),
+        matches!(
+            super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+            DriveOutcome::Resolved
+        ),
         "demanding the function should rewrite sugars into staged expanded source",
     );
     let expanded = world

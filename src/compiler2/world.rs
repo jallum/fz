@@ -28,7 +28,7 @@ use super::code::{CodeMap, CodeState, QuotedCodeSource};
 use super::contract::{FunctionContract, FunctionContractMap};
 use super::deps::UnresolvedWait;
 use super::dispatch::{EntryDispatchMap, GuardDispatchMap};
-use super::drive::{FactKey, Job, JobEffects, WorkGraph};
+use super::drive::{ExecutionContext, FactKey, Job, JobEffects, WorkGraph};
 use super::identity::{
     ActivationKey, ExecutableKey, ExecutableNeed, ExpandedFunctionSourceMap, FunctionId, FunctionMap, FunctionRef,
     FunctionSource, ModuleId, ModuleMap, ModuleSourceKind, ModuleState, NotedTypeDecl, PendingFunctionSourceMap,
@@ -103,8 +103,7 @@ enum CallableMatchScore {
     Exact,
 }
 
-pub struct World<'a> {
-    tel: &'a dyn Telemetry,
+pub struct World {
     code: CodeMap,
     modules: ModuleMap,
     functions: FunctionMap,
@@ -161,7 +160,32 @@ pub struct World<'a> {
     pub(crate) work_graph: WorkGraph,
 }
 
-impl std::fmt::Debug for World<'_> {
+pub(crate) struct JobCompletion {
+    pub(crate) job: Job,
+    pub(crate) step: super::AppliedStep<Job, FactKey>,
+    pub(crate) activation_input_changed: HashSet<ActivationKey>,
+    pub(crate) rebased: bool,
+}
+
+impl std::ops::Deref for JobCompletion {
+    type Target = super::AppliedStep<Job, FactKey>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.step
+    }
+}
+
+struct ActivationReturnDecision {
+    outcome: super::semantic::ReturnDefine,
+    rebased: bool,
+}
+
+struct RuntimeModuleRegistration {
+    code_id: CodeId,
+    inserted: bool,
+}
+
+impl std::fmt::Debug for World {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("World")
             .field("code", &self.code)
@@ -179,10 +203,15 @@ impl std::fmt::Debug for World<'_> {
     }
 }
 
-impl<'a> World<'a> {
-    pub fn new(tel: &'a dyn Telemetry) -> Self {
+impl Default for World {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl World {
+    pub fn new() -> Self {
         let mut world = Self {
-            tel,
             code: CodeMap::new(),
             modules: ModuleMap::new(),
             functions: FunctionMap::new(),
@@ -231,10 +260,6 @@ impl<'a> World<'a> {
             runtime_library::prelude_source().to_string(),
         );
         world
-    }
-
-    pub fn tel(&self) -> &'a dyn Telemetry {
-        self.tel
     }
 
     pub fn root_function(&self, root: RootId) -> FunctionId {
@@ -356,36 +381,6 @@ impl<'a> World<'a> {
     /// choice — `submit_code` (the external front door) drives it as
     /// `Ignition`; internal runtime-module minting (`ensure_runtime_module`)
     /// leaves it to be pulled.
-    fn register_code(&mut self, name: Option<String>, text: String) -> CodeId {
-        let bytes = text.len();
-        let code_id = self.code.define(name, text);
-        self.tel.execute(
-            &["fz", "compiler2", "code", "submitted"],
-            &measurements! {
-                code_id: code_id.as_u32(),
-                bytes: bytes,
-            },
-            &metadata! {},
-        );
-        code_id
-    }
-
-    pub fn submit_code(&mut self, name: Option<String>, text: String) -> CodeId {
-        let code_id = self.register_code(name, text);
-        // External front door: the submitted code does not exist to be
-        // waited on before this call creates it, matching `submit_root`'s
-        // `SeedRoot` ignition below. This is the ONE place an `IndexCode`/
-        // `ScopeCode` work-start is a genuine external ignition; every internal
-        // (mid-job) runtime-module mint leaves the code to be pulled instead.
-        self.work_graph
-            .enqueue(Job::IndexCode(code_id), WorkStartReason::Ignition);
-        if !self.roots.is_empty() {
-            self.work_graph
-                .enqueue(Job::ScopeCode(code_id), WorkStartReason::Ignition);
-        }
-        code_id
-    }
-
     pub fn submit_module_interface(&mut self, module_name: String, interface: ModuleInterface) -> ModuleId {
         let module = self.reference_module(module_name);
         self.define_module_interface(module, interface);
@@ -395,55 +390,7 @@ impl<'a> World<'a> {
         module
     }
 
-    pub fn submit_root(
-        &mut self,
-        module_name: Option<String>,
-        name: String,
-        arity: usize,
-        need: ExecutableNeed,
-    ) -> RootId {
-        let module = match module_name.as_deref() {
-            Some(name) => self.reference_module(name.to_string()),
-            None => ModuleId::GLOBAL,
-        };
-        let function = self.reference_function(module, name, arity);
-        // The root is the program's public entry: its inputs arrive from
-        // outside the analyzed world, so `any` is earned here — the same
-        // boundary rule macro roots already follow. An arity-N root must
-        // carry N slots of evidence; absence would starve its clauses.
-        let any = self.types.any();
-        let root_id = self.roots.define(RootEntry {
-            function,
-            input: vec![any; arity],
-            need,
-            kind: RootKind::Runtime,
-        });
-        // The external ignition point: the root does not exist to be waited
-        // on before this call creates it. Everything downstream is pulled --
-        // the root's entry analysis via `demand_root_entry_analyses`, every
-        // other producer via the fact->producer map.
-        self.work_graph
-            .enqueue(Job::SeedRoot(root_id), WorkStartReason::Ignition);
-        let root = self.roots.get(root_id);
-        let function_ref = self.functions.reference_for(function);
-        self.tel.execute(
-            &["fz", "compiler2", "root", "submitted"],
-            &measurements! {
-                root_id: root_id.as_u32(),
-                module_id: module.as_u32(),
-                function_id: function.as_u32(),
-                arity: arity,
-                pending_codes: self.code.len(),
-            },
-            &metadata! {
-                root: opaque_debug(root),
-                function_ref: opaque_debug(function_ref),
-            },
-        );
-        root_id
-    }
-
-    pub(crate) fn complete_job(&mut self, job: Job, effects: JobEffects) -> super::AppliedStep<Job, FactKey> {
+    pub(crate) fn complete_job(&mut self, job: Job, effects: JobEffects) -> JobCompletion {
         let reads = effects.reads.into_iter().collect();
         let waits: HashSet<_> = effects.waits.into_iter().collect();
         // Waiting completions extend: a blocked job's prior contributions
@@ -480,30 +427,11 @@ impl<'a> World<'a> {
         } else {
             self.extend_activation_input_contributions(&job, effects.activation_input_contributions)
         };
-        for activation in &activation_input_changed {
-            if let Some(inputs) = self.activation_inputs.get(activation) {
-                self.tel.execute(
-                    &["fz", "compiler2", "activation_inputs", "defined"],
-                    &measurements! {
-                        root_id: activation.root.as_u32(),
-                        function_id: activation.function.as_u32(),
-                        input_arity: inputs.len(),
-                        rebased: rebased,
-                    },
-                    &metadata! {
-                        activation: opaque_debug(activation),
-                        inputs: opaque_debug(inputs),
-                        inputs_display: opaque_debug(&inputs.iter().map(|ty| self.types.display(ty)).collect::<Vec<_>>()),
-                        publisher: opaque_debug(&job),
-                    },
-                );
-            }
-        }
         let mut outputs = effects.outputs;
         outputs.extend(activation_input_outputs.into_iter().map(FactKey::ActivationInputs));
         let outputs = dedupe_job_facts(outputs);
         let mut changed = effects.changed;
-        changed.extend(activation_input_changed.into_iter().map(FactKey::ActivationInputs));
+        changed.extend(activation_input_changed.iter().cloned().map(FactKey::ActivationInputs));
         let changed = dedupe_job_facts(changed);
         // Captured before `outputs` moves into `complete`: the two record
         // sites that keep `activation_frontier` in lockstep with the fact
@@ -533,14 +461,12 @@ impl<'a> World<'a> {
         for key in activation_published {
             self.note_activation_frontier(key);
         }
-        self.tel.event(
-            &["fz", "compiler2", "work_graph", "applied"],
-            metadata! {
-                job: opaque_debug(&job),
-                step: opaque_debug(&step),
-            },
-        );
-        step
+        JobCompletion {
+            job,
+            step,
+            activation_input_changed,
+            rebased,
+        }
     }
 
     /// The SOLE insertion point into `activation_frontier`: a discovered
@@ -584,52 +510,6 @@ impl<'a> World<'a> {
         self.work_graph.work_start_tally()
     }
 
-    pub(crate) fn emit_unresolved_diagnostics(&mut self, waits: &[UnresolvedWait<Job, FactKey>]) {
-        let issues = self.unresolved_issues(waits);
-        let next = issues.iter().map(|issue| issue.key).collect::<HashSet<_>>();
-        let diagnostics = issues
-            .into_iter()
-            .filter(|issue| !self.reported_unresolved.contains(&issue.key))
-            .map(|issue| issue.diagnostic)
-            .collect::<Vec<_>>();
-        if !diagnostics.is_empty() {
-            emit_through(self.tel, &diagnostics);
-        }
-        self.reported_unresolved = next;
-    }
-
-    pub(crate) fn emit_warning_once(&mut self, diagnostic: Diagnostic) {
-        if diagnostic.severity != Severity::Warning {
-            emit_through(self.tel, std::slice::from_ref(&diagnostic));
-            return;
-        }
-        if self
-            .reported_warnings
-            .insert(WarningDiagnosticKey::from_diagnostic(&diagnostic))
-        {
-            self.warning_diagnostics.push(diagnostic);
-        }
-    }
-
-    pub(crate) fn flush_reported_warnings(&mut self) {
-        self.warning_diagnostics.sort_by(|left, right| {
-            let left_span = left.primary.span;
-            let right_span = right.primary.span;
-            left_span
-                .code_id
-                .0
-                .cmp(&right_span.code_id.0)
-                .then(left_span.start.cmp(&right_span.start))
-                .then(left_span.end.cmp(&right_span.end))
-                .then(left.code.0.cmp(right.code.0))
-                .then(left.message.cmp(&right.message))
-        });
-        if !self.warning_diagnostics.is_empty() {
-            emit_through(self.tel, &self.warning_diagnostics);
-        }
-        self.warning_diagnostics.clear();
-    }
-
     pub(crate) fn clear_unresolved_diagnostics(&mut self) {
         self.reported_unresolved.clear();
     }
@@ -639,12 +519,81 @@ impl<'a> World<'a> {
         self.warning_diagnostics.clear();
     }
 
+    pub(crate) fn note_warning_once(&mut self, diagnostic: Diagnostic) {
+        debug_assert_eq!(diagnostic.severity, Severity::Warning);
+        if self
+            .reported_warnings
+            .insert(WarningDiagnosticKey::from_diagnostic(&diagnostic))
+        {
+            self.warning_diagnostics.push(diagnostic);
+        }
+    }
+
     pub fn code_name(&self, id: CodeId) -> Option<&str> {
         self.code.name(id)
     }
 
     pub fn code_text(&self, id: CodeId) -> &str {
         self.code.text(id)
+    }
+
+    fn code_len(&self) -> usize {
+        self.code.len()
+    }
+
+    fn root_entry_ref(&self, id: RootId) -> &RootEntry {
+        self.roots.get(id)
+    }
+
+    fn module_state(&self, id: ModuleId) -> &ModuleState {
+        self.modules.get(id)
+    }
+
+    fn function_state(&self, id: FunctionId) -> &super::identity::FunctionState {
+        self.functions.get(id)
+    }
+
+    fn backend_program_ref(&self, root: RootId) -> &BackendProgram {
+        self.backend
+            .get(root)
+            .expect("backend program should be present after definition")
+    }
+
+    fn native_program_ref(&self, root: RootId) -> &NativeProgram {
+        self.native
+            .get(root)
+            .expect("native program should be present after definition")
+    }
+
+    fn expanded_function_source_ref(&self, function: FunctionId) -> &FunctionSource {
+        self.expanded_function_sources
+            .get(function)
+            .expect("expanded function source should be present after definition")
+    }
+
+    fn lowered_body_ref(&self, function: FunctionId) -> &LoweredBody {
+        match self.bodies.get(function) {
+            Some(super::body::BodyState::Lowered(body)) => body,
+            _ => unreachable!("lowered body should be present after definition"),
+        }
+    }
+
+    fn guard_dispatch_ref(&self, function: FunctionId) -> &PatternGuardDispatch<Ty> {
+        self.guard_dispatches
+            .get(function)
+            .expect("guard dispatch should be present after definition")
+    }
+
+    fn entry_dispatch_ref(&self, function: FunctionId) -> &PatternDispatchPlan<Ty> {
+        self.entry_dispatches
+            .get(function)
+            .expect("entry dispatch should be present after definition")
+    }
+
+    fn protocol_impl(&self, key: &ProtocolImplKey) -> &ProtocolImpl {
+        self.protocol_impls
+            .impl_for(key)
+            .expect("protocol impl should be present after definition")
     }
 
     pub fn root_entry(&self, id: RootId) -> RootEntry {
@@ -668,6 +617,11 @@ impl<'a> World<'a> {
         Some(self.activation_inputs.get(key)?.clone())
     }
 
+    pub(crate) fn activation_inputs_ref(&self, key: &ActivationKey) -> Option<&Vec<Ty>> {
+        self.fact_revision(&FactKey::ActivationInputs(key.clone()))?;
+        self.activation_inputs.get(key)
+    }
+
     pub fn activation_analysis(&self, key: &ActivationKey) -> Option<&ActivationAnalysis> {
         self.activations.get(key).and_then(|slot| slot.analysis())
     }
@@ -682,33 +636,8 @@ impl<'a> World<'a> {
         self.activations.get(key).and_then(|slot| slot.return_ty().cloned())
     }
 
-    pub fn define_activation_analysis(&mut self, key: &ActivationKey, analysis: ActivationAnalysis) -> bool {
-        // value_types are already in the activation's addressed frame: params bind
-        // to the addressed key inputs (`analyze_activation`), so a value at param i
-        // carries address a{i}. No re-canonicalization — the old per-type encounter
-        // pass (alpha_normalize_vars) re-numbered them into a frame that DIVERGED
-        // from the key (fz-hwn.27.8); addressing at the binder is the canonical form.
-        let changed = self.activations.define_analysis(key, analysis);
-        let analysis = self
-            .activations
-            .get(key)
-            .and_then(|slot| slot.analysis())
-            .expect("activation analysis should be readable right after it is defined");
-        self.tel.execute(
-            &["fz", "compiler2", "activation_analysis", "defined"],
-            &measurements! {
-                root_id: key.root.as_u32(),
-                function_id: key.function.as_u32(),
-                reachable_clauses: analysis.reachable_clauses.len(),
-                callsites: analysis.callsites.len(),
-                values: analysis.value_types.len(),
-            },
-            &metadata! {
-                activation: opaque_debug(key),
-                analysis: opaque_debug(analysis),
-            },
-        );
-        changed
+    fn activation_return_evidence(&self, key: &ActivationKey) -> Option<Ty> {
+        self.activations.get(key).and_then(|slot| slot.return_ty().copied())
     }
 
     fn conclude_activation_input_contributions(
@@ -788,81 +717,6 @@ impl<'a> World<'a> {
         next
     }
 
-    pub fn define_activation_return(&mut self, key: &ActivationKey, evidence: Option<Ty>) -> bool {
-        // Return evidence is produced in the activation's addressed frame (clause
-        // returns over addressed inputs), so it is already canonical — the old
-        // encounter-order pass diverged it from the key (fz-hwn.27.8).
-        // The publisher of a ReturnType claim is, by construction, the
-        // activation's own analysis job — its rebase state selects join
-        // (the within-epoch ascent) or replace (the narrowing path).
-        let rebased = self.work_graph.rebased(&Job::AnalyzeActivation(key.clone()));
-        let outcome = self.activations.define_return(&mut self.types, key, evidence, rebased);
-        let evidence = self.activations.get(key).and_then(|slot| slot.return_ty().copied());
-        self.tel.execute(
-            &["fz", "compiler2", "return_type", "defined"],
-            &measurements! {
-                root_id: key.root.as_u32(),
-                function_id: key.function.as_u32(),
-                ascents: outcome.ascents,
-                rebased: rebased,
-                changed: outcome.changed as u64,
-            },
-            &metadata! {
-                activation: opaque_debug(key),
-                return_ty: opaque_debug(&evidence),
-            },
-        );
-        if outcome.widened {
-            self.tel.execute(
-                &["fz", "compiler2", "return_type", "widened"],
-                &measurements! {
-                    root_id: key.root.as_u32(),
-                    function_id: key.function.as_u32(),
-                    ascents: outcome.ascents,
-                },
-                &metadata! {
-                    activation: opaque_debug(key),
-                },
-            );
-        }
-        outcome.changed
-    }
-
-    pub fn define_callsite_summary(&mut self, key: CallSiteKey, mut summary: CallSiteSummary) -> bool {
-        for target in &mut summary.targets {
-            // Whole-scope addressing, matching the key and surfaces (fz-hwn.27.6,
-            // A): one shared pass over the surface inputs, not per-position.
-            target.surface_inputs = self.types.address_inputs(&target.surface_inputs);
-            // The embedded activation key is already canonical: its sole producer
-            // (`prepare_function_call` → `canonical_activation_key` → `from_inputs`)
-            // mints through the single addressing pass, so re-addressing it here was
-            // a no-op left over from the conflation engine deleted in fz-hwn.27.6.
-            // return_ty is already in the activation's addressed frame, matching the
-            // surfaces addressed just above — no encounter re-normalization (fz-hwn.27.8).
-        }
-        let changed = self.callsites.define(&mut self.types, key.clone(), summary);
-        let summary = self
-            .callsites
-            .get(&key)
-            .expect("callsite summaries should be readable right after they are defined");
-        self.tel.execute(
-            &["fz", "compiler2", "callsite", "defined"],
-            &measurements! {
-                root_id: key.activation.root.as_u32(),
-                function_id: key.activation.function.as_u32(),
-                callsite_id: key.callsite.as_u32(),
-                input_arity: summary.arity(),
-                target_count: summary.targets.len(),
-                changed: changed as u64,
-            },
-            &metadata! {
-                callsite: opaque_debug(&key),
-                summary: opaque_debug(summary),
-            },
-        );
-        changed
-    }
-
     pub fn callsite_summary(&self, key: &CallSiteKey) -> Option<&CallSiteSummary> {
         self.callsites.get(key)
     }
@@ -873,29 +727,6 @@ impl<'a> World<'a> {
 
     pub fn callsite_targets(&self, key: &CallSiteKey) -> Option<&CallSiteTargets> {
         self.callsite_targets.get(key)
-    }
-
-    pub(crate) fn define_backend_program(&mut self, root: RootId, program: BackendProgram) -> bool {
-        let changed = self.backend.define(root, program);
-        let program = self
-            .backend
-            .get(root)
-            .expect("backend programs should be readable right after they are defined");
-        self.tel.execute(
-            &["fz", "compiler2", "backend_program", "defined"],
-            &measurements! {
-                root_id: root.as_u32(),
-                atom_count: program.atom_names.len(),
-                executable_count: program.executables.len(),
-                callable_entry_count: program.callable_entries.len(),
-                changed: changed as u64,
-            },
-            &metadata! {
-                program: opaque_debug(program),
-                root_id: opaque_debug(&root),
-            },
-        );
-        changed
     }
 
     pub(crate) fn backend_program(&self, root: RootId) -> BackendProgram {
@@ -922,108 +753,8 @@ impl<'a> World<'a> {
         root
     }
 
-    pub(crate) fn define_macro_executable(
-        &mut self,
-        function: FunctionId,
-        root: RootId,
-        backend_revision: u64,
-        program: BackendProgram,
-    ) -> bool {
-        let changed = self.macro_executables.define(
-            function,
-            MacroExecutable {
-                root,
-                backend_revision,
-                program,
-            },
-        );
-        let program = &self
-            .macro_executables
-            .get(function)
-            .expect("macro executables should be readable right after they are defined")
-            .program;
-        self.tel.execute(
-            &["fz", "compiler2", "macro_executable", "defined"],
-            &measurements! {
-                function_id: function.as_u32() as u64,
-                root_id: root.as_u32() as u64,
-                backend_revision: backend_revision,
-                executable_count: program.executables.len() as u64,
-                changed: changed as u64,
-            },
-            &metadata! {
-                program: opaque_debug(program),
-            },
-        );
-        changed
-    }
-
     pub(crate) fn macro_executable(&self, function: FunctionId) -> Option<&MacroExecutable> {
         self.macro_executables.get(function)
-    }
-
-    pub(crate) fn run_macro_on_source(
-        &mut self,
-        function: FunctionId,
-        source: &QuotedSourceRoot,
-        caller: AnyValueRef,
-        args: &[AnyValueRef],
-    ) -> Result<QuotedSourceRoot, String> {
-        let executable = self
-            .macro_executable(function)
-            .ok_or_else(|| format!("macro {} is not executable", function.as_u32()))?
-            .clone();
-        // Inputs by semantic role: __CALLER__ first, then the user args. The
-        // executable's lane layout — not a fixed ABI — decides what is actually
-        // passed, so a __CALLER__ the macro body never uses is elided like any
-        // other unused input, keeping the macro caller lane-consistent with the
-        // executable the same way a generated caller is.
-        let mut semantic_values = Vec::with_capacity(1 + args.len());
-        semantic_values.push(RuntimeValue::Ref(caller));
-        semantic_values.extend(args.iter().copied().map(RuntimeValue::Ref));
-        let runtime_args =
-            crate::ir_interp::encode_macro_entry_inputs(&executable.program, &self.transport, &semantic_values)?;
-        let value = source.lend_process(|process| {
-            crate::ir_interp::run_backend_entry_on_process(
-                &mut self.types,
-                &self.transport,
-                self.tel,
-                &executable.program,
-                process,
-                runtime_args,
-            )
-        })?;
-        match value {
-            RuntimeValue::Ref(root) => Ok(source.subroot(root)),
-            other => Err(format!(
-                "macro {} returned non-source value {}",
-                function.as_u32(),
-                other.render(std::ptr::null_mut())
-            )),
-        }
-    }
-
-    pub(crate) fn define_native_program(&mut self, root: RootId, program: NativeProgram) -> bool {
-        let changed = self.native.define(root, program);
-        let program = self
-            .native
-            .get(root)
-            .expect("native programs should be readable right after they are defined");
-        self.tel.execute(
-            &["fz", "compiler2", "native_program", "defined"],
-            &measurements! {
-                root_id: root.as_u32(),
-                body_count: program.bodies.len(),
-                callable_boundary_count: program.callable_boundaries.len(),
-                fn_count: program.module.fns.len(),
-                changed: changed as u64,
-            },
-            &metadata! {
-                program: opaque_debug(program),
-                root_id: opaque_debug(&root),
-            },
-        );
-        changed
     }
 
     pub(crate) fn native_program(&self, root: RootId) -> NativeProgram {
@@ -1042,24 +773,6 @@ impl<'a> World<'a> {
         self.modules.reference_named(name)
     }
 
-    pub fn define_module(&mut self, id: ModuleId, base: Namespace, interface: ModuleInterface) -> bool {
-        let code = self.module_definition_code(id);
-        let changed = self.modules.define(id, code, base, interface);
-        let module = self.modules.get(id);
-        self.tel.execute(
-            &["fz", "compiler2", "module", "defined"],
-            &measurements! {
-                code_id: code.as_u32(),
-                module_id: id.as_u32(),
-            },
-            &metadata! {
-                module: opaque_debug(module),
-                module_id: opaque_debug(&id),
-            },
-        );
-        changed
-    }
-
     pub fn define_module_interface(&mut self, id: ModuleId, interface: ModuleInterface) -> bool {
         self.modules.define_interface(id, interface)
     }
@@ -1073,49 +786,6 @@ impl<'a> World<'a> {
             interface.inherit_expectations_from(&prior);
         }
         interface
-    }
-
-    pub(crate) fn validate_module_interface_expectations(
-        &self,
-        id: ModuleId,
-        interface: &ModuleInterface,
-    ) -> Result<(), FatalError> {
-        for expectation in interface.expectations() {
-            if interface
-                .callables()
-                .iter()
-                .any(|callable| expectation.matches_callable(callable))
-            {
-                continue;
-            }
-            let module_name = self
-                .module_name(id)
-                .map(str::to_owned)
-                .unwrap_or_else(|| format!("<unnamed module {}>", id.as_u32()));
-            let message = match expectation.kind {
-                InterfaceCallableKind::Macro => format!(
-                    "module `{}` does not export macro `{}/{}`",
-                    module_name, expectation.name, expectation.arity
-                ),
-                InterfaceCallableKind::PublicFunction | InterfaceCallableKind::Callable => format!(
-                    "module `{}` does not export `{}/{}`",
-                    module_name, expectation.name, expectation.arity
-                ),
-            };
-            return Err(emit_job_diagnostic(
-                self,
-                Diagnostic::error(
-                    codes::RESOLVE_UNKNOWN_IMPORT,
-                    message,
-                    expectation
-                        .requester
-                        .as_ref()
-                        .map(|requester| requester.span)
-                        .unwrap_or(Span::DUMMY),
-                ),
-            ));
-        }
-        Ok(())
     }
 
     pub fn index_module_body(
@@ -1168,27 +838,6 @@ impl<'a> World<'a> {
     /// namespace captured at its scope — under its identity, for
     /// `DeriveTypeDef` to read. No resolution, no type-algebra. The event is
     /// the surface-tier signal that a type name became a referenceable identity.
-    pub fn note_type_decl(&mut self, name: TypeName, decl: NotedTypeDecl) {
-        if self.type_decls.note(name.clone(), decl) {
-            let decl = self
-                .type_decls
-                .get(&name)
-                .expect("type decls should be readable right after they are noted");
-            self.tel.execute(
-                &["fz", "compiler2", "type", "noted"],
-                &measurements! {
-                    module_id: name.module.as_u32(),
-                    arity: name.arity,
-                    namespace: decl.namespace.as_u32(),
-                },
-                &metadata! {
-                    name: &name.name,
-                    decl: opaque_debug(decl),
-                },
-            );
-        }
-    }
-
     pub fn type_decl(&self, name: &TypeName) -> Option<&NotedTypeDecl> {
         self.type_decls.get(name)
     }
@@ -1231,16 +880,6 @@ impl<'a> World<'a> {
 
     /// Records the type names a function's contract surface references — its
     /// later `TypeDefined` wait-set (fz-rh2.12.4).
-    pub(crate) fn record_function_type_refs(&mut self, function: FunctionId, mut refs: Vec<TypeName>) {
-        dedup_type_names(&mut refs);
-        if self.type_refs.record_function(function, refs) {
-            let consumer_name = &self.functions.reference_for(function).name;
-            for referenced in self.type_refs.function_refs(function) {
-                self.emit_type_referenced("fn", consumer_name, referenced);
-            }
-        }
-    }
-
     // Consumed by the contract re-seat (fz-rh2.12.4); recorded one inch ahead.
     pub(crate) fn function_type_refs(&self, function: FunctionId) -> &[TypeName] {
         self.type_refs.function_refs(function)
@@ -1248,15 +887,6 @@ impl<'a> World<'a> {
 
     /// Records the type names a `@type` body references — the wait-set
     /// `DeriveTypeDef` resolves against before minting the symbol (fz-rh2.12.2).
-    pub(crate) fn record_type_def_refs(&mut self, name: TypeName, mut refs: Vec<TypeName>) {
-        dedup_type_names(&mut refs);
-        if self.type_refs.record_type(name.clone(), refs) {
-            for referenced in self.type_refs.type_refs(&name) {
-                self.emit_type_referenced("type", &name.name, referenced);
-            }
-        }
-    }
-
     /// The type names a `@type` body references — `DeriveTypeDef`'s wait-set.
     pub(crate) fn type_def_refs(&self, name: &TypeName) -> &[TypeName] {
         self.type_refs.type_refs(name)
@@ -1295,29 +925,6 @@ impl<'a> World<'a> {
     /// callee-tier `type defined` signal. The definition and the interner ride
     /// the event as opaque refs, so handlers that want the resolved surface
     /// render it themselves at event time.
-    pub(crate) fn define_type_def(&mut self, name: TypeName, def: TypeDef) -> bool {
-        let changed = self.type_defs.define(name.clone(), def);
-        let def = self
-            .type_defs
-            .get(&name)
-            .expect("type defs should be readable right after they are defined");
-        self.tel.execute(
-            &["fz", "compiler2", "type", "defined"],
-            &measurements! {
-                module_id: name.module.as_u32(),
-                arity: name.arity,
-                params: def.params.len(),
-                changed: changed as u64,
-            },
-            &metadata! {
-                name: &name.name,
-                def: opaque_debug(def),
-                types: opaque(&self.types),
-            },
-        );
-        changed
-    }
-
     pub(crate) fn type_def(&self, name: &TypeName) -> Option<&TypeDef> {
         self.type_defs.get(name)
     }
@@ -1336,26 +943,6 @@ impl<'a> World<'a> {
     /// struct-literal/pattern lowering, protocol-impl-target classification,
     /// `struct_assertion_ty`, and the backend's whole-program schema
     /// inventory (`struct_def_schemas`) all read it.
-    pub(crate) fn define_struct_def(&mut self, module: ModuleId, def: StructDef) -> bool {
-        let changed = self.struct_defs.define(module, def);
-        let def = self
-            .struct_defs
-            .get(module)
-            .expect("struct defs should be readable right after they are defined");
-        self.tel.execute(
-            &["fz", "compiler2", "struct_def", "defined"],
-            &measurements! {
-                module_id: module.as_u32(),
-                field_count: def.fields.len(),
-                changed: changed as u64,
-            },
-            &metadata! {
-                def: opaque_debug(def),
-            },
-        );
-        changed
-    }
-
     /// The precise, durable reader over `defstruct`'s ordered fields:
     /// `resolve.rs`'s `TypeExpr::StructRecord` classification reads this once
     /// it needs the schema. This never has an opinion when the fact has not
@@ -1382,20 +969,6 @@ impl<'a> World<'a> {
     /// `validate_struct_field_expectations` when `A` finally publishes;
     /// settle-then-reference (`A` already published) is checked right here,
     /// immediately, since nothing else would ever re-check it otherwise.
-    pub(crate) fn note_struct_field_expectation(
-        &mut self,
-        module: ModuleId,
-        field: String,
-        requester: InterfaceRequester,
-    ) -> Result<(), FatalError> {
-        self.struct_expectations
-            .record_field(module, StructFieldExpectation { field, requester });
-        if self.struct_defs.get(module).is_some() {
-            self.validate_struct_field_expectations(module)?;
-        }
-        Ok(())
-    }
-
     /// Checks every outstanding field obligation on `module` against its
     /// published `defstruct` schema, mirroring
     /// `validate_module_interface_expectations`: a field named on a struct
@@ -1404,32 +977,6 @@ impl<'a> World<'a> {
     /// no-op until `module`'s `defstruct` has actually published. Every bad
     /// obligation is reported in one pass (two requesters each naming a bad
     /// field both surface), then the job is failed once.
-    pub(crate) fn validate_struct_field_expectations(&self, module: ModuleId) -> Result<(), FatalError> {
-        let Some(def) = self.struct_defs.get(module) else {
-            return Ok(());
-        };
-        let mut violated = false;
-        for expectation in self.struct_expectations.field_expectations(module) {
-            if def.fields.iter().any(|field| field == &expectation.field) {
-                continue;
-            }
-            let module_name = self
-                .module_name(module)
-                .map(str::to_owned)
-                .unwrap_or_else(|| format!("<unnamed module {}>", module.as_u32()));
-            emit_through(
-                self.tel,
-                std::slice::from_ref(&Diagnostic::error(
-                    codes::RESOLVE_UNKNOWN_STRUCT_FIELD,
-                    format!("struct `{}` has no field `{}`", module_name, expectation.field),
-                    expectation.requester.span,
-                )),
-            );
-            violated = true;
-        }
-        if violated { Err(FatalError) } else { Ok(()) }
-    }
-
     /// The struct module's declared value type, from its conventional `@type t`
     /// (arity 0). A struct's field types live in this declaration — `defstruct`
     /// carries only field names — so destructure/assertion must read it here
@@ -1444,40 +991,6 @@ impl<'a> World<'a> {
         };
         let def = self.type_defs.get(&name)?.clone();
         Some(def.instantiate(&mut self.types, &[]))
-    }
-
-    pub(crate) fn define_protocol_dispatch(&mut self, protocol: ModuleId, dispatch: ProtocolDispatch) -> bool {
-        let changed = self.protocol_dispatches.define(protocol, dispatch);
-        let dispatch = self
-            .protocol_dispatches
-            .get(protocol)
-            .expect("protocol dispatches should be readable right after they are defined");
-        self.tel.execute(
-            &["fz", "compiler2", "protocol_dispatch", "defined"],
-            &measurements! {
-                protocol_id: protocol.as_u32(),
-                arms: dispatch.arms.len(),
-                changed: changed as u64,
-            },
-            &metadata! {
-                dispatch: opaque_debug(dispatch),
-            },
-        );
-        changed
-    }
-
-    pub(crate) fn refresh_protocol_dispatch(&mut self, protocol: ModuleId) -> bool {
-        let dispatch = ProtocolDispatch {
-            arms: self
-                .protocol_impls_for(protocol)
-                .into_iter()
-                .map(|(key, protocol_impl)| ProtocolDispatchArm {
-                    target: key.target,
-                    callbacks: protocol_impl.callbacks,
-                })
-                .collect(),
-        };
-        self.define_protocol_dispatch(protocol, dispatch)
     }
 
     pub(crate) fn protocol_dispatch(&self, protocol: ModuleId) -> Option<&ProtocolDispatch> {
@@ -1534,62 +1047,6 @@ impl<'a> World<'a> {
         }
     }
 
-    fn emit_type_referenced(&self, consumer_kind: &'static str, consumer_name: &str, referenced: &TypeName) {
-        self.tel.execute(
-            &["fz", "compiler2", "type", "referenced"],
-            &measurements! {
-                ref_module_id: referenced.module.as_u32(),
-                ref_arity: referenced.arity,
-            },
-            &metadata! {
-                ref_name: &referenced.name,
-                consumer_kind: consumer_kind,
-                consumer: consumer_name,
-                referenced: opaque_debug(referenced),
-            },
-        );
-    }
-
-    pub(crate) fn define_function(
-        &mut self,
-        id: FunctionId,
-        source: FunctionSource,
-        expanded_source: FunctionSource,
-        surface: FunctionSurface,
-    ) -> bool {
-        let module = self.functions.reference_for(id).module;
-        let owner_module = source.owner_module;
-        let code = source.code;
-        let arity = surface.arity();
-        let clauses = surface.clauses.len();
-        let changed = self.functions.define(id, source, expanded_source, surface);
-        if changed {
-            let function = self.functions.get(id);
-            let function_ref = self.functions.reference_for(id);
-            self.tel.execute(
-                &["fz", "compiler2", "function", "defined"],
-                &measurements! {
-                    code_id: code.as_u32(),
-                    module_id: module.as_u32(),
-                    owner_module_id: owner_module.as_u32(),
-                    function_id: id.as_u32(),
-                    arity: arity,
-                    clauses: clauses,
-                    source_heap_id: function.state_source_heap_id().unwrap_or_default(),
-                    source_root_ref: function.state_source_root_word().unwrap_or_default(),
-                },
-                &metadata! {
-                    function: opaque_debug(function),
-                    function_ref: opaque_debug(function_ref),
-                    function_id: opaque_debug(&id),
-                    module_id: opaque_debug(&module),
-                    owner_module_id: opaque_debug(&owner_module),
-                },
-            );
-        }
-        changed
-    }
-
     /// Stashes the source form a scope walk built for `function` without minting
     /// the consumable `FunctionSource` fact (fz-f98.14.5). This is the eager
     /// interface-tier record: it carries everything a reference needs that lives
@@ -1605,38 +1062,6 @@ impl<'a> World<'a> {
     /// flow to `PublishFunctionSource` the same way every other re-derivation
     /// does, through a tracked fact's revision moving and waking the standing
     /// reader that named it — never a job enqueuing another job by name.
-    pub(crate) fn stash_function_source(&mut self, function: FunctionId, source: FunctionSource) -> bool {
-        let function_ref = self.functions.reference_for(function);
-        let source_owner_module = source.owner_module;
-        let source_module_id = function_ref.module;
-        // The eager interface-tier signal: this function's identity and interface
-        // are published at scope time even though the body stays cold until a
-        // consumer pulls it (fz-f98.14.5). It mirrors the `function.source.noted`
-        // shape so name-keyed observers see every scope-defined function, and it
-        // is the surface counterpart to `type.noted`.
-        self.tel.execute(
-            &["fz", "compiler2", "function", "source", "stashed"],
-            &measurements! {
-                code_id: source.code.as_u32(),
-                module_id: function_ref.module.as_u32(),
-                owner_module_id: source.owner_module.as_u32(),
-                function_id: function.as_u32(),
-                arity: function_ref.arity,
-                clauses: function_source_clause_count(&source),
-                source_heap_id: source.source.key().heap_id,
-                source_root_ref: source.source.root().raw_word(),
-            },
-            &metadata! {
-                function_ref: opaque_debug(function_ref),
-                source: opaque_debug(&source),
-                function_id: opaque_debug(&function),
-                module_id: opaque_debug(&source_module_id),
-                owner_module_id: opaque_debug(&source_owner_module),
-            },
-        );
-        self.pending_function_sources.stash(function, source)
-    }
-
     pub(crate) fn pending_function_source(&self, function: FunctionId) -> Option<&FunctionSource> {
         self.pending_function_sources.get(function)
     }
@@ -1644,47 +1069,6 @@ impl<'a> World<'a> {
     /// Promotes a stashed source into the consumable `FunctionSource` fact when a
     /// reached consumer demands the body. Returns `true` when the fact's content
     /// changed, so the caller publishes the change to the scheduler.
-    pub(crate) fn publish_pending_function_source(&mut self, function: FunctionId) -> Option<bool> {
-        let source = self.pending_function_sources.get(function).cloned()?;
-        Some(self.note_function_source(function, source))
-    }
-
-    pub(crate) fn note_function_source(&mut self, function: FunctionId, source: FunctionSource) -> bool {
-        let changed = self.functions.note(function, source);
-        let source = match self.functions.get(function) {
-            super::identity::FunctionState::Noted { source }
-            | super::identity::FunctionState::Defined { source, .. } => source.as_ref(),
-            super::identity::FunctionState::Placeholder => {
-                unreachable!("noting a function source always leaves the function noted or defined")
-            }
-        };
-        let function_ref = self.functions.reference_for(function);
-        let source_owner_module = source.owner_module;
-        let source_module_id = function_ref.module;
-        self.tel.execute(
-            &["fz", "compiler2", "function", "source", "noted"],
-            &measurements! {
-                code_id: source.code.as_u32(),
-                module_id: function_ref.module.as_u32(),
-                owner_module_id: source.owner_module.as_u32(),
-                function_id: function.as_u32(),
-                arity: function_ref.arity,
-                clauses: function_source_clause_count(source),
-                source_heap_id: source.source.key().heap_id,
-                source_root_ref: source.source.root().raw_word(),
-                changed: changed as u64,
-            },
-            &metadata! {
-                function_ref: opaque_debug(function_ref),
-                source: opaque_debug(source),
-                function_id: opaque_debug(&function),
-                module_id: opaque_debug(&source_module_id),
-                owner_module_id: opaque_debug(&source_owner_module),
-            },
-        );
-        changed
-    }
-
     pub(crate) fn function_source(&self, function: FunctionId) -> Option<FunctionSource> {
         match self.functions.get(function) {
             super::identity::FunctionState::Noted { source }
@@ -1693,59 +1077,8 @@ impl<'a> World<'a> {
         }
     }
 
-    pub(crate) fn note_expanded_function_source(&mut self, function: FunctionId, source: FunctionSource) -> bool {
-        let changed = self.expanded_function_sources.define(function, source);
-        let source = self
-            .expanded_function_sources
-            .get(function)
-            .expect("expanded function sources should be readable right after they are defined");
-        let function_ref = self.functions.reference_for(function);
-        self.tel.execute(
-            &["fz", "compiler2", "function", "source", "expanded"],
-            &measurements! {
-                code_id: source.code.as_u32(),
-                module_id: function_ref.module.as_u32(),
-                owner_module_id: source.owner_module.as_u32(),
-                function_id: function.as_u32(),
-                arity: function_ref.arity,
-                clauses: function_source_clause_count(source),
-                source_heap_id: source.source.key().heap_id,
-                source_root_ref: source.source.root().raw_word(),
-                changed: changed as u64,
-            },
-            &metadata! {
-                function_ref: opaque_debug(function_ref),
-                source: opaque_debug(source),
-                function_id: opaque_debug(&function),
-            },
-        );
-        changed
-    }
-
     pub(crate) fn expanded_function_source(&self, function: FunctionId) -> Option<FunctionSource> {
         self.expanded_function_sources.get(function).cloned()
-    }
-
-    pub(crate) fn define_function_contract(&mut self, function: FunctionId, contract: FunctionContract) -> bool {
-        let changed = self.function_contracts.define(function, contract);
-        let contract = self
-            .function_contracts
-            .get(function)
-            .expect("function contracts should be readable right after they are defined");
-        let function_ref = self.functions.reference_for(function);
-        self.tel.execute(
-            &["fz", "compiler2", "function_contract", "defined"],
-            &measurements! {
-                function_id: function.as_u32(),
-                arity: function_ref.arity,
-                changed: changed as u64,
-            },
-            &metadata! {
-                function_ref: opaque_debug(function_ref),
-                contract: opaque_debug(contract),
-            },
-        );
-        changed
     }
 
     pub(crate) fn function_contract(&self, function: FunctionId) -> Option<&FunctionContract> {
@@ -1765,52 +1098,8 @@ impl<'a> World<'a> {
         }
     }
 
-    pub(crate) fn define_protocol_callback(&mut self, function: FunctionId, protocol: ModuleId) {
-        let callback = ProtocolCallback { protocol };
-        self.protocol_callbacks.define(function, callback);
-        let function_ref = self.functions.reference_for(function);
-        self.tel.execute(
-            &["fz", "compiler2", "protocol_callback", "defined"],
-            &measurements! {
-                protocol_id: protocol.as_u32(),
-                function_id: function.as_u32(),
-                arity: function_ref.arity,
-            },
-            &metadata! {
-                callback: opaque_debug(&callback),
-                function_ref: opaque_debug(function_ref),
-            },
-        );
-    }
-
     pub(crate) fn protocol_callback(&self, function: FunctionId) -> Option<ProtocolCallback> {
         self.protocol_callbacks.get(function)
-    }
-
-    pub(crate) fn define_protocol_impl(
-        &mut self,
-        protocol: ModuleId,
-        target: ModuleId,
-        callbacks: HashMap<FunctionId, ProtocolCallbackImpl>,
-    ) {
-        let key = ProtocolImplKey { protocol, target };
-        self.protocol_impls.define(key, ProtocolImpl { callbacks });
-        let protocol_impl = self
-            .protocol_impls
-            .impl_for(&key)
-            .expect("protocol impls should be readable right after they are defined");
-        self.tel.execute(
-            &["fz", "compiler2", "protocol_impl", "defined"],
-            &measurements! {
-                protocol_id: protocol.as_u32(),
-                target_id: target.as_u32(),
-                callbacks: protocol_impl.callbacks.len(),
-            },
-            &metadata! {
-                key: opaque_debug(&key),
-                protocol_impl: opaque_debug(protocol_impl),
-            },
-        );
     }
 
     pub(crate) fn protocol_impls_for(&self, protocol: ModuleId) -> Vec<(ProtocolImplKey, ProtocolImpl)> {
@@ -1818,168 +1107,6 @@ impl<'a> World<'a> {
             .impls_for_protocol(protocol)
             .map(|(key, protocol_impl)| (*key, protocol_impl.clone()))
             .collect()
-    }
-
-    pub(crate) fn define_generated_function(
-        &mut self,
-        owner: FunctionId,
-        namespace: Namespace,
-        capture_params: Vec<String>,
-        surface: FunctionSurface,
-    ) -> (FunctionId, bool) {
-        let (owner_source, _) = self.function_definition(owner);
-        let owner_module = self.functions.reference_for(owner).module;
-        let owner_code = owner_source.code;
-        let id = self
-            .functions
-            .reference_generated(owner, owner_module, surface.span, surface.arity());
-        let fn_source = FunctionSource {
-            code: owner_code,
-            owner_module: owner_source.owner_module,
-            namespace,
-            capture_params,
-            required_remote_macros: owner_source.required_remote_macros.clone(),
-            variadic: surface.variadic,
-            source: owner_source.source.clone(),
-        };
-        let arity = surface.arity();
-        let clauses = surface.clauses.len();
-        let changed = self.functions.define(id, fn_source.clone(), fn_source, surface);
-        if changed {
-            let function = self.functions.get(id);
-            let function_ref = self.functions.reference_for(id);
-            self.tel.execute(
-                &["fz", "compiler2", "function", "defined"],
-                &measurements! {
-                    code_id: owner_code.as_u32(),
-                    module_id: owner_module.as_u32(),
-                    owner_module_id: owner_source.owner_module.as_u32(),
-                    function_id: id.as_u32(),
-                    arity: arity,
-                    clauses: clauses,
-                    owner_function_id: owner.as_u32(),
-                    source_heap_id: function.state_source_heap_id().unwrap_or_default(),
-                    source_root_ref: function.state_source_root_word().unwrap_or_default(),
-                },
-                &metadata! {
-                    function: opaque_debug(function),
-                    function_ref: opaque_debug(function_ref),
-                    function_id: opaque_debug(&id),
-                    module_id: opaque_debug(&owner_module),
-                    owner_module_id: opaque_debug(&owner_source.owner_module),
-                    owner_function_id: opaque_debug(&owner),
-                },
-            );
-        }
-        (id, changed)
-    }
-
-    pub(crate) fn define_lowered_body(&mut self, function: FunctionId, body: LoweredBody) -> bool {
-        let changed = self.bodies.define(function, body);
-        let body = match self.bodies.get(function) {
-            Some(super::body::BodyState::Lowered(body)) => body,
-            _ => unreachable!("defining a lowered body always leaves the body lowered"),
-        };
-        let function_ref = self.functions.reference_for(function);
-        let slot = self.functions.get(function);
-        let (fn_source, fn_surface) = match slot {
-            super::identity::FunctionState::Defined { source, surface, .. } => (source.as_ref(), surface),
-            super::identity::FunctionState::Placeholder | super::identity::FunctionState::Noted { .. } => {
-                panic!("lowered bodies should only be defined for known functions")
-            }
-        };
-        let (clauses, generated, arity) = match body {
-            LoweredBody::Extern { signature } => (0_usize, 0_usize, signature.params.len()),
-            LoweredBody::Clauses { clauses, generated, .. } => (clauses.len(), generated.len(), fn_surface.arity()),
-        };
-        self.tel.execute(
-            &["fz", "compiler2", "lowered_body", "defined"],
-            &measurements! {
-                code_id: fn_source.code.as_u32(),
-                module_id: function_ref.module.as_u32(),
-                function_id: function.as_u32(),
-                arity: arity,
-                clauses: clauses,
-                generated: generated,
-                source_root_ref: fn_source.source.root().raw_word(),
-            },
-            &metadata! {
-                function_ref: opaque_debug(function_ref),
-                body: opaque_debug(body),
-                function_id: opaque_debug(&function),
-            },
-        );
-        changed
-    }
-
-    pub(crate) fn define_guard_dispatch(&mut self, function: FunctionId, dispatch: PatternGuardDispatch<Ty>) -> bool {
-        let changed = self.guard_dispatches.define(function, dispatch);
-        let dispatch = self
-            .guard_dispatches
-            .get(function)
-            .expect("guard dispatches should be readable right after they are defined");
-        let function_ref = self.functions.reference_for(function);
-        let slot = self.functions.get(function);
-        let (fn_source, fn_surface) = match slot {
-            super::identity::FunctionState::Defined { source, surface, .. } => (source.as_ref(), surface),
-            super::identity::FunctionState::Placeholder | super::identity::FunctionState::Noted { .. } => {
-                panic!("guard dispatch should only be defined for known functions")
-            }
-        };
-        self.tel.execute(
-            &["fz", "compiler2", "guard_dispatch", "defined"],
-            &measurements! {
-                code_id: fn_source.code.as_u32(),
-                module_id: function_ref.module.as_u32(),
-                function_id: function.as_u32(),
-                arity: fn_surface.arity(),
-                bodies: dispatch.bodies.len(),
-                guards: dispatch.plan.guards.len(),
-                pinned: dispatch.plan.pinned.len(),
-                source_root_ref: fn_source.source.root().raw_word(),
-            },
-            &metadata! {
-                function_ref: opaque_debug(function_ref),
-                dispatch: opaque_debug(dispatch),
-                function_id: opaque_debug(&function),
-            },
-        );
-        changed
-    }
-
-    pub(crate) fn define_entry_dispatch(&mut self, function: FunctionId, plan: PatternDispatchPlan<Ty>) -> bool {
-        let changed = self.entry_dispatches.define(function, plan);
-        let plan = self
-            .entry_dispatches
-            .get(function)
-            .expect("entry dispatches should be readable right after they are defined");
-        let function_ref = self.functions.reference_for(function);
-        let slot = self.functions.get(function);
-        let (fn_source, fn_surface) = match slot {
-            super::identity::FunctionState::Defined { source, surface, .. } => (source.as_ref(), surface),
-            super::identity::FunctionState::Placeholder | super::identity::FunctionState::Noted { .. } => {
-                panic!("entry dispatch should only be defined for known functions")
-            }
-        };
-        self.tel.execute(
-            &["fz", "compiler2", "entry_dispatch", "defined"],
-            &measurements! {
-                code_id: fn_source.code.as_u32(),
-                module_id: function_ref.module.as_u32(),
-                function_id: function.as_u32(),
-                arity: fn_surface.arity(),
-                outcomes: plan.outcomes.len(),
-                guards: plan.guards.len(),
-                pinned: plan.pinned.len(),
-                source_root_ref: fn_source.source.root().raw_word(),
-            },
-            &metadata! {
-                function_ref: opaque_debug(function_ref),
-                plan: opaque_debug(plan),
-                function_id: opaque_debug(&function),
-            },
-        );
-        changed
     }
 
     pub(crate) fn define_recursive(&mut self, function: FunctionId, recursive: bool) -> bool {
@@ -2315,72 +1442,6 @@ impl<'a> World<'a> {
     /// opaque item-macro call in the program to expand before re-checking
     /// whether the wanted name already resolved, so candidates are staged
     /// one `CodeScoped` wait at a time instead.
-    pub(crate) fn demand_function_scope(&mut self, function: FunctionId) -> Result<Vec<FactKey>, FatalError> {
-        let module = self.function_module(function);
-        if module.is_global() {
-            let function_ref = self.function_ref(function).clone();
-            let mut certain_homes = Vec::new();
-            let mut opaque_candidates = Vec::new();
-            let mut pending = Vec::new();
-            for code_id in self.code.ids() {
-                match self.code.get(code_id) {
-                    CodeState::Pending => pending.push(FactKey::CodeIndexed(code_id)),
-                    CodeState::Indexed { source } => match code_surface_function_match(source, &function_ref) {
-                        FunctionSurfaceMatch::Certain => certain_homes.push(code_id),
-                        FunctionSurfaceMatch::Opaque => opaque_candidates.push(code_id),
-                        FunctionSurfaceMatch::None => {}
-                    },
-                    // A Scoped home is unreachable here: this walk runs only
-                    // when the pending source stash is empty, and scoping a
-                    // code eagerly stashes every function it defines
-                    // (source_publish), so once the home reaches Scoped the
-                    // caller never re-enters. This is also what keeps a later,
-                    // legitimate redefinition (a fresh `submit_code` replacing
-                    // an already-`Scoped` home's definition, fz-f98.14.5) from
-                    // ever reaching the duplicate check below: by the time a
-                    // second code can be indexed, the first one's home has
-                    // already left this scan for good.
-                    CodeState::Scoped { .. } => {}
-                }
-            }
-            // Two (or more) codes BOTH statically defining the same
-            // never-yet-scoped top-level name+arity is a genuine duplicate
-            // global definition, not a home to silently pick between
-            // (fz-go4.53's audit: `get_or_insert` used to keep only the
-            // first, submission-order code and never look for a second).
-            // Diagnosing here — before either candidate reaches `Scoped` —
-            // is exactly what does NOT fire on hot redefinition: a
-            // redefinition's superseded code is always already `Scoped` by
-            // the time the new one is indexed (see the `Scoped` arm above),
-            // so it never contributes a second `certain_homes` entry.
-            if certain_homes.len() > 1 {
-                return Err(self.duplicate_function_diagnostic(&function_ref, &certain_homes));
-            }
-            // A certain home resolves the function for sure once scoped, so
-            // every opaque candidate and pending code is irrelevant — naming
-            // them too would be over-demand.
-            if let Some(code_id) = certain_homes.into_iter().next() {
-                return Ok(vec![FactKey::CodeScoped(code_id)]);
-            }
-            // Opaque item-macro calls are only MAYBE the home (fz-go4.43):
-            // probe them one at a time, in submission order, instead of
-            // scoping every opaque candidate in the program up front. Once
-            // this single wait is satisfied, `publish_function_source_job`
-            // re-runs and re-enters this scan: the probed code is now
-            // `Scoped` (excluded above), so an unresolved name narrows to the
-            // NEXT candidate, and a name the probe just produced short-circuits
-            // here instead of forcing every other candidate to expand too.
-            if let Some(code_id) = opaque_candidates.into_iter().next() {
-                return Ok(vec![FactKey::CodeScoped(code_id)]);
-            }
-            return Ok(pending);
-        }
-        if self.module_has_source_state(module) || self.ensure_runtime_module(module).is_some() {
-            return Ok(vec![FactKey::ModuleDefined(module)]);
-        }
-        Ok(Vec::new())
-    }
-
     /// Diagnoses two (or more) separately submitted codes that both, for
     /// real, define the same top-level `name/arity` — Elixir raises
     /// `CompileError` ("... is already defined") on the same shape,
@@ -2390,31 +1451,6 @@ impl<'a> World<'a> {
     /// span rather than `Span::DUMMY`, falling back to the first home's span
     /// only for the (bootstrap-only) `CompilerService` match shape that
     /// carries no form span of its own.
-    fn duplicate_function_diagnostic(&mut self, function_ref: &FunctionRef, certain_homes: &[CodeId]) -> FatalError {
-        let span = certain_homes
-            .iter()
-            .skip(1)
-            .find_map(|code_id| match self.code.get(*code_id) {
-                CodeState::Indexed { source } => function_form_span(source, function_ref),
-                _ => None,
-            })
-            .or_else(|| {
-                certain_homes.iter().find_map(|code_id| match self.code.get(*code_id) {
-                    CodeState::Indexed { source } => function_form_span(source, function_ref),
-                    _ => None,
-                })
-            })
-            .unwrap_or(Span::DUMMY);
-        emit_job_diagnostic(
-            self,
-            Diagnostic::error(
-                codes::RESOLVE_DUPLICATE_FUNCTION,
-                format!("`{}/{}` is already defined", function_ref.name, function_ref.arity),
-                span,
-            ),
-        )
-    }
-
     /// `FunctionDefined`'s sole producer arm is `Job::DefineFunction`
     /// (`World::demand_fact_producer`); this bare wait lets the fact->producer
     /// map restart it instead of naming the job directly.
@@ -2431,11 +1467,6 @@ impl<'a> World<'a> {
     /// `Job::DefineModule`, and `define_module` re-registers the source and
     /// waits on `CodeIndexed(code_id)` (producer arm `Job::IndexCode`), so the
     /// whole chain reaches the minting job through `demand_fact_producer`.
-    pub(crate) fn wait_for_type_decl(&mut self, module: ModuleId) -> JobEffects {
-        self.ensure_runtime_module(module);
-        JobEffects::wait_on_current(FactKey::ModuleDefined(module))
-    }
-
     pub fn fact_revision(&self, key: &FactKey) -> Option<u64> {
         self.work_graph.facts().revision(key)
     }
@@ -2742,32 +1773,6 @@ impl<'a> World<'a> {
                 .expect("named parent module should have a reverse lookup");
             format!("{parent_name}.{local_name}")
         }
-    }
-
-    pub(crate) fn ensure_runtime_module(&mut self, module: ModuleId) -> Option<CodeId> {
-        let slot = self.runtime_modules.get(&module)?;
-        if let Some(code_id) = slot.code_id {
-            return Some(code_id);
-        }
-
-        let name = slot.name;
-        let source = slot.source;
-        let source_name = format!("runtime:{name}.fz");
-        // Register the runtime module's source WITHOUT enqueuing IndexCode/
-        // ScopeCode. This runs mid-job (a callee type implying an unloaded
-        // runtime module), so an eager enqueue here would be a job commanding
-        // work to start — a push mislabeled as the external front door. Every
-        // caller registers a `wait_on_current(CodeIndexed(code_id))` (or a
-        // `ModuleDefined` wait that chains to it through `define_module`), and
-        // `demand_fact_producer` maps `CodeIndexed -> IndexCode`, so the
-        // drain/stall pull mints the module as a `BlockedWaiterExpansion` —
-        // the eager enqueue bought nothing.
-        let code_id = self.register_code(Some(source_name), source.to_string());
-        self.runtime_modules
-            .get_mut(&module)
-            .expect("runtime module should still exist while recording its code id")
-            .code_id = Some(code_id);
-        Some(code_id)
     }
 
     /// The `Ty` a `defimpl P, for: Target` module contributes to protocol
@@ -3080,8 +2085,8 @@ impl<'a> World<'a> {
     }
 }
 
-fn emit_job_diagnostic(world: &World<'_>, diagnostic: Diagnostic) -> FatalError {
-    emit_through(world.tel(), std::slice::from_ref(&diagnostic));
+fn emit_job_diagnostic(tel: &impl Telemetry, diagnostic: Diagnostic) -> FatalError {
+    emit_through(tel, std::slice::from_ref(&diagnostic));
     FatalError
 }
 
@@ -3308,4 +2313,1242 @@ fn builtin_value_family_ty<T: crate::types::Types<Ty = Ty>>(t: &mut T, family: B
 fn nominal_impl_target_ty<T: crate::types::Types<Ty = Ty>>(t: &mut T, module_name: &str) -> Ty {
     let tag = module_name.rsplit('.').next().unwrap_or(module_name);
     t.opaque_of(&format!("impl-target::{}", tag))
+}
+
+impl World {
+    fn register_code(&mut self, name: Option<String>, text: String) -> CodeId {
+        self.code.define(name, text)
+    }
+
+    pub fn submit_code(&mut self, name: Option<String>, text: String) -> CodeId {
+        let code_id = self.register_code(name, text);
+        self.work_graph
+            .enqueue(Job::IndexCode(code_id), WorkStartReason::Ignition);
+        if !self.roots.is_empty() {
+            self.work_graph
+                .enqueue(Job::ScopeCode(code_id), WorkStartReason::Ignition);
+        }
+        code_id
+    }
+
+    pub fn submit_root(
+        &mut self,
+        module_name: Option<String>,
+        name: String,
+        arity: usize,
+        need: ExecutableNeed,
+    ) -> RootId {
+        let module = module_name
+            .as_deref()
+            .map(|name| self.reference_module(name.to_string()))
+            .unwrap_or(ModuleId::GLOBAL);
+        let function = self.reference_function(module, name, arity);
+        let any = self.types.any();
+        let root_id = self.roots.define(RootEntry {
+            function,
+            input: vec![any; arity],
+            need,
+            kind: RootKind::Runtime,
+        });
+        self.work_graph
+            .enqueue(Job::SeedRoot(root_id), WorkStartReason::Ignition);
+        root_id
+    }
+
+    fn take_unresolved_diagnostics(&mut self, waits: &[UnresolvedWait<Job, FactKey>]) -> Vec<Diagnostic> {
+        let issues = self.unresolved_issues(waits);
+        let next = issues.iter().map(|issue| issue.key).collect::<HashSet<_>>();
+        let diagnostics = issues
+            .into_iter()
+            .filter(|issue| !self.reported_unresolved.contains(&issue.key))
+            .map(|issue| issue.diagnostic)
+            .collect();
+        self.reported_unresolved = next;
+        diagnostics
+    }
+
+    fn take_reported_warnings(&mut self) -> Vec<Diagnostic> {
+        self.warning_diagnostics.sort_by(|left, right| {
+            let left_span = left.primary.span;
+            let right_span = right.primary.span;
+            left_span
+                .code_id
+                .0
+                .cmp(&right_span.code_id.0)
+                .then(left_span.start.cmp(&right_span.start))
+                .then(left_span.end.cmp(&right_span.end))
+                .then(left.code.0.cmp(right.code.0))
+                .then(left.message.cmp(&right.message))
+        });
+        std::mem::take(&mut self.warning_diagnostics)
+    }
+
+    pub fn define_activation_analysis(&mut self, key: &ActivationKey, analysis: ActivationAnalysis) -> bool {
+        self.activations.define_analysis(key, analysis)
+    }
+
+    pub fn define_activation_return(&mut self, key: &ActivationKey, evidence: Option<Ty>) -> bool {
+        self.define_activation_return_outcome(key, evidence).outcome.changed
+    }
+
+    fn define_activation_return_outcome(
+        &mut self,
+        key: &ActivationKey,
+        evidence: Option<Ty>,
+    ) -> ActivationReturnDecision {
+        let rebased = self.work_graph.rebased(&Job::AnalyzeActivation(key.clone()));
+        let outcome = self.activations.define_return(&mut self.types, key, evidence, rebased);
+        ActivationReturnDecision { outcome, rebased }
+    }
+
+    pub fn define_callsite_summary(&mut self, key: CallSiteKey, mut summary: CallSiteSummary) -> bool {
+        for target in &mut summary.targets {
+            target.surface_inputs = self.types.address_inputs(&target.surface_inputs);
+        }
+        self.callsites.define(&mut self.types, key, summary)
+    }
+
+    pub(crate) fn define_backend_program(&mut self, root: RootId, program: BackendProgram) -> bool {
+        self.backend.define(root, program)
+    }
+
+    pub(crate) fn define_macro_executable(
+        &mut self,
+        function: FunctionId,
+        root: RootId,
+        backend_revision: u64,
+        program: BackendProgram,
+    ) -> bool {
+        self.macro_executables.define(
+            function,
+            MacroExecutable {
+                root,
+                backend_revision,
+                program,
+            },
+        )
+    }
+
+    pub(crate) fn define_native_program(&mut self, root: RootId, program: NativeProgram) -> bool {
+        self.native.define(root, program)
+    }
+
+    pub(crate) fn run_macro_on_source_with(
+        &mut self,
+        function: FunctionId,
+        source: &QuotedSourceRoot,
+        caller: AnyValueRef,
+        args: &[AnyValueRef],
+        run: impl FnOnce(
+            &mut Types,
+            &TransportStore,
+            &BackendProgram,
+            fz_runtime::process::Process,
+            Vec<RuntimeValue>,
+        ) -> (fz_runtime::process::Process, Result<RuntimeValue, String>),
+    ) -> Result<QuotedSourceRoot, String> {
+        let executable = self
+            .macro_executable(function)
+            .ok_or_else(|| format!("macro {} is not executable", function.as_u32()))?
+            .clone();
+        let mut semantic_values = Vec::with_capacity(1 + args.len());
+        semantic_values.push(RuntimeValue::Ref(caller));
+        semantic_values.extend(args.iter().copied().map(RuntimeValue::Ref));
+        let runtime_args =
+            crate::ir_interp::encode_macro_entry_inputs(&executable.program, &self.transport, &semantic_values)?;
+        let value = source.lend_process(|process| {
+            run(
+                &mut self.types,
+                &self.transport,
+                &executable.program,
+                process,
+                runtime_args,
+            )
+        })?;
+        match value {
+            RuntimeValue::Ref(root) => Ok(source.subroot(root)),
+            other => Err(format!(
+                "macro {} returned non-source value {}",
+                function.as_u32(),
+                other.render(std::ptr::null_mut())
+            )),
+        }
+    }
+
+    pub fn define_module(&mut self, id: ModuleId, base: Namespace, interface: ModuleInterface) -> bool {
+        let code = self.module_definition_code(id);
+        self.modules.define(id, code, base, interface)
+    }
+
+    fn module_interface_diagnostic(&self, id: ModuleId, interface: &ModuleInterface) -> Option<Diagnostic> {
+        let expectation = interface.expectations().iter().find(|expectation| {
+            !interface
+                .callables()
+                .iter()
+                .any(|callable| expectation.matches_callable(callable))
+        })?;
+        let module_name = self
+            .module_name(id)
+            .map(str::to_owned)
+            .unwrap_or_else(|| format!("<unnamed module {}>", id.as_u32()));
+        let message = match expectation.kind {
+            InterfaceCallableKind::Macro => format!(
+                "module `{}` does not export macro `{}/{}`",
+                module_name, expectation.name, expectation.arity
+            ),
+            InterfaceCallableKind::PublicFunction | InterfaceCallableKind::Callable => format!(
+                "module `{}` does not export `{}/{}`",
+                module_name, expectation.name, expectation.arity
+            ),
+        };
+        Some(Diagnostic::error(
+            codes::RESOLVE_UNKNOWN_IMPORT,
+            message,
+            expectation
+                .requester
+                .as_ref()
+                .map(|requester| requester.span)
+                .unwrap_or(Span::DUMMY),
+        ))
+    }
+
+    pub fn note_type_decl(&mut self, name: TypeName, decl: NotedTypeDecl) -> bool {
+        self.type_decls.note(name, decl)
+    }
+
+    pub(crate) fn record_function_type_refs(&mut self, function: FunctionId, mut refs: Vec<TypeName>) -> bool {
+        dedup_type_names(&mut refs);
+        self.type_refs.record_function(function, refs)
+    }
+
+    pub(crate) fn record_type_def_refs(&mut self, name: TypeName, mut refs: Vec<TypeName>) -> bool {
+        dedup_type_names(&mut refs);
+        self.type_refs.record_type(name, refs)
+    }
+
+    pub(crate) fn define_type_def(&mut self, name: TypeName, def: TypeDef) -> bool {
+        self.type_defs.define(name, def)
+    }
+
+    pub(crate) fn define_struct_def(&mut self, module: ModuleId, def: StructDef) -> bool {
+        self.struct_defs.define(module, def)
+    }
+
+    pub(crate) fn note_struct_field_expectation(
+        &mut self,
+        module: ModuleId,
+        field: String,
+        requester: InterfaceRequester,
+    ) {
+        self.struct_expectations
+            .record_field(module, StructFieldExpectation { field, requester });
+    }
+
+    fn struct_field_diagnostics(&self, module: ModuleId) -> Vec<Diagnostic> {
+        let Some(def) = self.struct_defs.get(module) else {
+            return Vec::new();
+        };
+        self.struct_expectations
+            .field_expectations(module)
+            .iter()
+            .filter(|expectation| !def.fields.iter().any(|field| field == &expectation.field))
+            .map(|expectation| {
+                let module_name = self
+                    .module_name(module)
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| format!("<unnamed module {}>", module.as_u32()));
+                Diagnostic::error(
+                    codes::RESOLVE_UNKNOWN_STRUCT_FIELD,
+                    format!("struct `{}` has no field `{}`", module_name, expectation.field),
+                    expectation.requester.span,
+                )
+            })
+            .collect()
+    }
+
+    pub(crate) fn define_protocol_dispatch(&mut self, protocol: ModuleId, dispatch: ProtocolDispatch) -> bool {
+        self.protocol_dispatches.define(protocol, dispatch)
+    }
+
+    pub(crate) fn refresh_protocol_dispatch(&mut self, protocol: ModuleId) -> bool {
+        let dispatch = ProtocolDispatch {
+            arms: self
+                .protocol_impls_for(protocol)
+                .into_iter()
+                .map(|(key, protocol_impl)| ProtocolDispatchArm {
+                    target: key.target,
+                    callbacks: protocol_impl.callbacks,
+                })
+                .collect(),
+        };
+        self.define_protocol_dispatch(protocol, dispatch)
+    }
+}
+
+impl World {
+    pub(crate) fn define_function(
+        &mut self,
+        id: FunctionId,
+        source: FunctionSource,
+        expanded_source: FunctionSource,
+        surface: FunctionSurface,
+    ) -> bool {
+        self.functions.define(id, source, expanded_source, surface)
+    }
+
+    pub(crate) fn stash_function_source(&mut self, function: FunctionId, source: FunctionSource) -> bool {
+        self.pending_function_sources.stash(function, source)
+    }
+
+    pub(crate) fn publish_pending_function_source(&mut self, function: FunctionId) -> Option<bool> {
+        let source = self.pending_function_sources.get(function).cloned()?;
+        Some(self.note_function_source(function, source))
+    }
+
+    pub(crate) fn note_function_source(&mut self, function: FunctionId, source: FunctionSource) -> bool {
+        self.functions.note(function, source)
+    }
+
+    pub(crate) fn note_expanded_function_source(&mut self, function: FunctionId, source: FunctionSource) -> bool {
+        self.expanded_function_sources.define(function, source)
+    }
+
+    pub(crate) fn define_function_contract(&mut self, function: FunctionId, contract: FunctionContract) -> bool {
+        self.function_contracts.define(function, contract)
+    }
+
+    pub(crate) fn define_protocol_callback(&mut self, function: FunctionId, protocol: ModuleId) {
+        self.protocol_callbacks.define(function, ProtocolCallback { protocol });
+    }
+
+    pub(crate) fn define_protocol_impl(
+        &mut self,
+        protocol: ModuleId,
+        target: ModuleId,
+        callbacks: HashMap<FunctionId, ProtocolCallbackImpl>,
+    ) {
+        self.protocol_impls
+            .define(ProtocolImplKey { protocol, target }, ProtocolImpl { callbacks });
+    }
+
+    pub(crate) fn define_generated_function(
+        &mut self,
+        owner: FunctionId,
+        namespace: Namespace,
+        capture_params: Vec<String>,
+        surface: FunctionSurface,
+    ) -> (FunctionId, bool) {
+        let (owner_source, _) = self.function_definition(owner);
+        let owner_module = self.functions.reference_for(owner).module;
+        let id = self
+            .functions
+            .reference_generated(owner, owner_module, surface.span, surface.arity());
+        let fn_source = FunctionSource {
+            code: owner_source.code,
+            owner_module: owner_source.owner_module,
+            namespace,
+            capture_params,
+            required_remote_macros: owner_source.required_remote_macros.clone(),
+            variadic: surface.variadic,
+            source: owner_source.source,
+        };
+        let changed = self.functions.define(id, fn_source.clone(), fn_source, surface);
+        (id, changed)
+    }
+
+    pub(crate) fn define_lowered_body(&mut self, function: FunctionId, body: LoweredBody) -> bool {
+        self.bodies.define(function, body)
+    }
+
+    pub(crate) fn define_guard_dispatch(&mut self, function: FunctionId, dispatch: PatternGuardDispatch<Ty>) -> bool {
+        self.guard_dispatches.define(function, dispatch)
+    }
+
+    pub(crate) fn define_entry_dispatch(&mut self, function: FunctionId, plan: PatternDispatchPlan<Ty>) -> bool {
+        self.entry_dispatches.define(function, plan)
+    }
+
+    pub(crate) fn ensure_runtime_module(&mut self, module: ModuleId) -> Option<CodeId> {
+        self.ensure_runtime_module_registration(module)
+            .map(|registration| registration.code_id)
+    }
+
+    fn ensure_runtime_module_registration(&mut self, module: ModuleId) -> Option<RuntimeModuleRegistration> {
+        let slot = self.runtime_modules.get(&module)?;
+        if let Some(code_id) = slot.code_id {
+            return Some(RuntimeModuleRegistration {
+                code_id,
+                inserted: false,
+            });
+        }
+        let code_id = self.register_code(Some(format!("runtime:{}.fz", slot.name)), slot.source.to_string());
+        self.runtime_modules
+            .get_mut(&module)
+            .expect("runtime module should still exist while recording its code id")
+            .code_id = Some(code_id);
+        Some(RuntimeModuleRegistration {
+            code_id,
+            inserted: true,
+        })
+    }
+
+    fn wait_for_type_decl_registration(&mut self, module: ModuleId) -> (JobEffects, Option<RuntimeModuleRegistration>) {
+        let registration = self.ensure_runtime_module_registration(module);
+        (
+            JobEffects::wait_on_current(FactKey::ModuleDefined(module)),
+            registration,
+        )
+    }
+
+    pub(crate) fn demand_function_scope(&mut self, function: FunctionId) -> Result<Vec<FactKey>, Box<Diagnostic>> {
+        let module = self.function_module(function);
+        if module.is_global() {
+            let function_ref = self.function_ref(function).clone();
+            let mut certain_homes = Vec::new();
+            let mut opaque_candidates = Vec::new();
+            let mut pending = Vec::new();
+            for code_id in self.code.ids() {
+                match self.code.get(code_id) {
+                    CodeState::Pending => pending.push(FactKey::CodeIndexed(code_id)),
+                    CodeState::Indexed { source } => match code_surface_function_match(source, &function_ref) {
+                        FunctionSurfaceMatch::Certain => certain_homes.push(code_id),
+                        FunctionSurfaceMatch::Opaque => opaque_candidates.push(code_id),
+                        FunctionSurfaceMatch::None => {}
+                    },
+                    CodeState::Scoped { .. } => {}
+                }
+            }
+            if certain_homes.len() > 1 {
+                return Err(Box::new(
+                    self.duplicate_function_diagnostic(&function_ref, &certain_homes),
+                ));
+            }
+            if let Some(code_id) = certain_homes.into_iter().next() {
+                return Ok(vec![FactKey::CodeScoped(code_id)]);
+            }
+            if let Some(code_id) = opaque_candidates.into_iter().next() {
+                return Ok(vec![FactKey::CodeScoped(code_id)]);
+            }
+            return Ok(pending);
+        }
+        if self.module_has_source_state(module) || self.ensure_runtime_module(module).is_some() {
+            return Ok(vec![FactKey::ModuleDefined(module)]);
+        }
+        Ok(Vec::new())
+    }
+
+    fn duplicate_function_diagnostic(&self, function_ref: &FunctionRef, certain_homes: &[CodeId]) -> Diagnostic {
+        let span = certain_homes
+            .iter()
+            .skip(1)
+            .find_map(|code_id| match self.code.get(*code_id) {
+                CodeState::Indexed { source } => function_form_span(source, function_ref),
+                _ => None,
+            })
+            .or_else(|| {
+                certain_homes.iter().find_map(|code_id| match self.code.get(*code_id) {
+                    CodeState::Indexed { source } => function_form_span(source, function_ref),
+                    _ => None,
+                })
+            })
+            .unwrap_or(Span::DUMMY);
+        Diagnostic::error(
+            codes::RESOLVE_DUPLICATE_FUNCTION,
+            format!("`{}/{}` is already defined", function_ref.name, function_ref.arity),
+            span,
+        )
+    }
+}
+
+impl<T: Telemetry> ExecutionContext<'_, T> {
+    pub fn submit_code(&mut self, name: Option<String>, text: String) -> CodeId {
+        let bytes = text.len();
+        let code_id = self.world.submit_code(name, text);
+        self.telemetry.execute(
+            &["fz", "compiler2", "code", "submitted"],
+            &measurements! { code_id: code_id.as_u32(), bytes: bytes },
+            &metadata! {},
+        );
+        code_id
+    }
+
+    pub fn submit_root(
+        &mut self,
+        module_name: Option<String>,
+        name: String,
+        arity: usize,
+        need: ExecutableNeed,
+    ) -> RootId {
+        let root_id = self.world.submit_root(module_name, name, arity, need);
+        let root = self.world.root_entry_ref(root_id);
+        let module = self.world.function_ref(root.function).module;
+        let function = root.function;
+        let function_ref = self.world.function_ref(function);
+        self.telemetry.execute(
+            &["fz", "compiler2", "root", "submitted"],
+            &measurements! {
+                root_id: root_id.as_u32(),
+                module_id: module.as_u32(),
+                function_id: function.as_u32(),
+                arity: arity,
+                pending_codes: self.world.code_len(),
+            },
+            &metadata! {
+                root: opaque_debug(root),
+                function_ref: opaque_debug(function_ref),
+            },
+        );
+        root_id
+    }
+
+    pub(crate) fn emit_unresolved_diagnostics(&mut self, waits: &[UnresolvedWait<Job, FactKey>]) {
+        let diagnostics = self.world.take_unresolved_diagnostics(waits);
+        if !diagnostics.is_empty() {
+            emit_through(self.telemetry, &diagnostics);
+        }
+    }
+
+    pub(crate) fn emit_warning_once(&mut self, diagnostic: Diagnostic) {
+        if diagnostic.severity != Severity::Warning {
+            emit_through(self.telemetry, std::slice::from_ref(&diagnostic));
+            return;
+        }
+        self.world.note_warning_once(diagnostic);
+    }
+
+    pub(crate) fn flush_reported_warnings(&mut self) {
+        let diagnostics = self.world.take_reported_warnings();
+        if !diagnostics.is_empty() {
+            emit_through(self.telemetry, &diagnostics);
+        }
+    }
+
+    pub fn define_activation_analysis(&mut self, key: &ActivationKey, analysis: ActivationAnalysis) -> bool {
+        // value_types are already in the activation's addressed frame: params bind
+        // to the addressed key inputs (`analyze_activation`), so a value at param i
+        // carries address a{i}. No re-canonicalization — the old per-type encounter
+        // pass (alpha_normalize_vars) re-numbered them into a frame that DIVERGED
+        // from the key (fz-hwn.27.8); addressing at the binder is the canonical form.
+        let changed = self.world.define_activation_analysis(key, analysis);
+        let analysis = self
+            .world
+            .activation_analysis(key)
+            .expect("activation analysis should be readable right after it is defined");
+        self.telemetry.execute(
+            &["fz", "compiler2", "activation_analysis", "defined"],
+            &measurements! {
+                root_id: key.root.as_u32(),
+                function_id: key.function.as_u32(),
+                reachable_clauses: analysis.reachable_clauses.len(),
+                callsites: analysis.callsites.len(),
+                values: analysis.value_types.len(),
+            },
+            &metadata! {
+                activation: opaque_debug(key),
+                analysis: opaque_debug(analysis),
+            },
+        );
+        changed
+    }
+
+    pub fn define_activation_return(&mut self, key: &ActivationKey, evidence: Option<Ty>) -> bool {
+        // Return evidence is produced in the activation's addressed frame (clause
+        // returns over addressed inputs), so it is already canonical — the old
+        // encounter-order pass diverged it from the key (fz-hwn.27.8).
+        // The publisher of a ReturnType claim is, by construction, the
+        // activation's own analysis job — its rebase state selects join
+        // (the within-epoch ascent) or replace (the narrowing path).
+        let decision = self.world.define_activation_return_outcome(key, evidence);
+        let outcome = decision.outcome;
+        let rebased = decision.rebased;
+        let evidence = self.world.activation_return_evidence(key);
+        self.telemetry.execute(
+            &["fz", "compiler2", "return_type", "defined"],
+            &measurements! {
+                root_id: key.root.as_u32(),
+                function_id: key.function.as_u32(),
+                ascents: outcome.ascents,
+                rebased: rebased,
+                changed: outcome.changed as u64,
+            },
+            &metadata! {
+                activation: opaque_debug(key),
+                return_ty: opaque_debug(&evidence),
+            },
+        );
+        if outcome.widened {
+            self.telemetry.execute(
+                &["fz", "compiler2", "return_type", "widened"],
+                &measurements! {
+                    root_id: key.root.as_u32(),
+                    function_id: key.function.as_u32(),
+                    ascents: outcome.ascents,
+                },
+                &metadata! {
+                    activation: opaque_debug(key),
+                },
+            );
+        }
+        outcome.changed
+    }
+
+    pub fn define_callsite_summary(&mut self, key: CallSiteKey, summary: CallSiteSummary) -> bool {
+        let changed = self.world.define_callsite_summary(key.clone(), summary);
+        let summary = self
+            .world
+            .callsite_summary(&key)
+            .expect("callsite summaries should be readable right after they are defined");
+        self.telemetry.execute(
+            &["fz", "compiler2", "callsite", "defined"],
+            &measurements! {
+                root_id: key.activation.root.as_u32(),
+                function_id: key.activation.function.as_u32(),
+                callsite_id: key.callsite.as_u32(),
+                input_arity: summary.arity(),
+                target_count: summary.targets.len(),
+                changed: changed as u64,
+            },
+            &metadata! {
+                callsite: opaque_debug(&key),
+                summary: opaque_debug(summary),
+            },
+        );
+        changed
+    }
+
+    pub(crate) fn define_backend_program(&mut self, root: RootId, program: BackendProgram) -> bool {
+        let changed = self.world.define_backend_program(root, program);
+        let program = self.world.backend_program_ref(root);
+        self.telemetry.execute(
+            &["fz", "compiler2", "backend_program", "defined"],
+            &measurements! {
+                root_id: root.as_u32(),
+                atom_count: program.atom_names.len(),
+                executable_count: program.executables.len(),
+                callable_entry_count: program.callable_entries.len(),
+                changed: changed as u64,
+            },
+            &metadata! {
+                program: opaque_debug(program),
+                root_id: opaque_debug(&root),
+            },
+        );
+        changed
+    }
+
+    pub(crate) fn define_macro_executable(
+        &mut self,
+        function: FunctionId,
+        root: RootId,
+        backend_revision: u64,
+        program: BackendProgram,
+    ) -> bool {
+        let changed = self
+            .world
+            .define_macro_executable(function, root, backend_revision, program);
+        let program = &self
+            .world
+            .macro_executable(function)
+            .expect("macro executable should be present after definition")
+            .program;
+        self.telemetry.execute(
+            &["fz", "compiler2", "macro_executable", "defined"],
+            &measurements! {
+                function_id: function.as_u32() as u64,
+                root_id: root.as_u32() as u64,
+                backend_revision: backend_revision,
+                executable_count: program.executables.len() as u64,
+                changed: changed as u64,
+            },
+            &metadata! {
+                program: opaque_debug(program),
+            },
+        );
+        changed
+    }
+
+    pub(crate) fn run_macro_on_source(
+        &mut self,
+        function: FunctionId,
+        source: &QuotedSourceRoot,
+        caller: AnyValueRef,
+        args: &[AnyValueRef],
+    ) -> Result<QuotedSourceRoot, String> {
+        self.world.run_macro_on_source_with(
+            function,
+            source,
+            caller,
+            args,
+            |types, transport, program, process, args| {
+                crate::ir_interp::run_backend_entry_on_process(types, transport, self.telemetry, program, process, args)
+            },
+        )
+    }
+
+    pub(crate) fn define_native_program(&mut self, root: RootId, program: NativeProgram) -> bool {
+        let changed = self.world.define_native_program(root, program);
+        let program = self.world.native_program_ref(root);
+        self.telemetry.execute(
+            &["fz", "compiler2", "native_program", "defined"],
+            &measurements! {
+                root_id: root.as_u32(),
+                body_count: program.bodies.len(),
+                callable_boundary_count: program.callable_boundaries.len(),
+                fn_count: program.module.fns.len(),
+                changed: changed as u64,
+            },
+            &metadata! {
+                program: opaque_debug(program),
+                root_id: opaque_debug(&root),
+            },
+        );
+        changed
+    }
+
+    pub fn define_module(&mut self, id: ModuleId, base: Namespace, interface: ModuleInterface) -> bool {
+        let code = self.world.module_definition_code(id);
+        let changed = self.world.define_module(id, base, interface);
+        let module = self.world.module_state(id);
+        self.telemetry.execute(
+            &["fz", "compiler2", "module", "defined"],
+            &measurements! {
+                code_id: code.as_u32(),
+                module_id: id.as_u32(),
+            },
+            &metadata! {
+                module: opaque_debug(module),
+                module_id: opaque_debug(&id),
+            },
+        );
+        changed
+    }
+
+    pub(crate) fn validate_module_interface_expectations(
+        &self,
+        id: ModuleId,
+        interface: &ModuleInterface,
+    ) -> Result<(), FatalError> {
+        if let Some(diagnostic) = self.world.module_interface_diagnostic(id, interface) {
+            return Err(emit_job_diagnostic(self.telemetry, diagnostic));
+        }
+        Ok(())
+    }
+
+    pub fn note_type_decl(&mut self, name: TypeName, decl: NotedTypeDecl) {
+        if self.world.note_type_decl(name.clone(), decl) {
+            let decl = self
+                .world
+                .type_decl(&name)
+                .expect("type decls should be readable right after they are noted");
+            self.telemetry.execute(
+                &["fz", "compiler2", "type", "noted"],
+                &measurements! {
+                    module_id: name.module.as_u32(),
+                    arity: name.arity,
+                    namespace: decl.namespace.as_u32(),
+                },
+                &metadata! {
+                    name: &name.name,
+                    decl: opaque_debug(decl),
+                },
+            );
+        }
+    }
+
+    pub(crate) fn record_function_type_refs(&mut self, function: FunctionId, refs: Vec<TypeName>) {
+        if self.world.record_function_type_refs(function, refs) {
+            let consumer_name = &self.world.function_ref(function).name;
+            for referenced in self.world.function_type_refs(function) {
+                self.emit_type_referenced("fn", consumer_name, referenced);
+            }
+        }
+    }
+
+    pub(crate) fn record_type_def_refs(&mut self, name: TypeName, refs: Vec<TypeName>) {
+        if self.world.record_type_def_refs(name.clone(), refs) {
+            for referenced in self.world.type_def_refs(&name) {
+                self.emit_type_referenced("type", &name.name, referenced);
+            }
+        }
+    }
+
+    pub(crate) fn define_type_def(&mut self, name: TypeName, def: TypeDef) -> bool {
+        let changed = self.world.define_type_def(name.clone(), def);
+        let def = self
+            .world
+            .type_def(&name)
+            .expect("type def should be present after definition");
+        self.telemetry.execute(
+            &["fz", "compiler2", "type", "defined"],
+            &measurements! {
+                module_id: name.module.as_u32(),
+                arity: name.arity,
+                params: def.params.len(),
+                changed: changed as u64,
+            },
+            &metadata! {
+                name: &name.name,
+                def: opaque_debug(def),
+                types: opaque(self.world.types()),
+            },
+        );
+        changed
+    }
+
+    pub(crate) fn define_struct_def(&mut self, module: ModuleId, def: StructDef) -> bool {
+        let changed = self.world.define_struct_def(module, def);
+        let def = self
+            .world
+            .struct_def(module)
+            .expect("struct def should be present after definition");
+        self.telemetry.execute(
+            &["fz", "compiler2", "struct_def", "defined"],
+            &measurements! {
+                module_id: module.as_u32(),
+                field_count: def.fields.len(),
+                changed: changed as u64,
+            },
+            &metadata! {
+                def: opaque_debug(def),
+            },
+        );
+        changed
+    }
+
+    pub(crate) fn note_struct_field_expectation(
+        &mut self,
+        module: ModuleId,
+        field: String,
+        requester: InterfaceRequester,
+    ) -> Result<(), FatalError> {
+        self.world.note_struct_field_expectation(module, field, requester);
+        if self.world.struct_def(module).is_some() {
+            self.validate_struct_field_expectations(module)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn validate_struct_field_expectations(&self, module: ModuleId) -> Result<(), FatalError> {
+        let diagnostics = self.world.struct_field_diagnostics(module);
+        if diagnostics.is_empty() {
+            Ok(())
+        } else {
+            emit_through(self.telemetry, &diagnostics);
+            Err(FatalError)
+        }
+    }
+
+    pub(crate) fn refresh_protocol_dispatch(&mut self, protocol: ModuleId) -> bool {
+        let changed = self.world.refresh_protocol_dispatch(protocol);
+        let dispatch = self
+            .world
+            .protocol_dispatch(protocol)
+            .expect("protocol dispatch should be present after refresh");
+        self.telemetry.execute(
+            &["fz", "compiler2", "protocol_dispatch", "defined"],
+            &measurements! {
+                protocol_id: protocol.as_u32(),
+                arms: dispatch.arms.len(),
+                changed: changed as u64,
+            },
+            &metadata! { dispatch: opaque_debug(dispatch) },
+        );
+        changed
+    }
+
+    fn emit_type_referenced(&self, consumer_kind: &'static str, consumer_name: &str, referenced: &TypeName) {
+        self.telemetry.execute(
+            &["fz", "compiler2", "type", "referenced"],
+            &measurements! {
+                ref_module_id: referenced.module.as_u32(),
+                ref_arity: referenced.arity,
+            },
+            &metadata! {
+                ref_name: &referenced.name,
+                consumer_kind: consumer_kind,
+                consumer: consumer_name,
+                referenced: opaque_debug(referenced),
+            },
+        );
+    }
+
+    pub(crate) fn define_function(
+        &mut self,
+        id: FunctionId,
+        source: FunctionSource,
+        expanded_source: FunctionSource,
+        surface: FunctionSurface,
+    ) -> bool {
+        let module = self.world.function_ref(id).module;
+        let owner_module = source.owner_module;
+        let code = source.code;
+        let arity = surface.arity();
+        let clauses = surface.clauses.len();
+        let changed = self.world.define_function(id, source, expanded_source, surface);
+        if changed {
+            let function = self.world.function_state(id);
+            let function_ref = self.world.function_ref(id);
+            self.telemetry.execute(
+                &["fz", "compiler2", "function", "defined"],
+                &measurements! {
+                    code_id: code.as_u32(),
+                    module_id: module.as_u32(),
+                    owner_module_id: owner_module.as_u32(),
+                    function_id: id.as_u32(),
+                    arity: arity,
+                    clauses: clauses,
+                    source_heap_id: function.state_source_heap_id().unwrap_or_default(),
+                    source_root_ref: function.state_source_root_word().unwrap_or_default(),
+                },
+                &metadata! {
+                    function: opaque_debug(function),
+                    function_ref: opaque_debug(function_ref),
+                    function_id: opaque_debug(&id),
+                    module_id: opaque_debug(&module),
+                    owner_module_id: opaque_debug(&owner_module),
+                },
+            );
+        }
+        changed
+    }
+
+    pub(crate) fn stash_function_source(&mut self, function: FunctionId, source: FunctionSource) -> bool {
+        let changed = self.world.stash_function_source(function, source);
+        let source = self
+            .world
+            .pending_function_source(function)
+            .expect("function source should be readable immediately after it is stashed");
+        let function_ref = self.world.function_ref(function);
+        // The eager interface-tier signal: this function's identity and interface
+        // are published at scope time even though the body stays cold until a
+        // consumer pulls it (fz-f98.14.5). It mirrors the `function.source.noted`
+        // shape so name-keyed observers see every scope-defined function, and it
+        // is the surface counterpart to `type.noted`.
+        self.telemetry.execute(
+            &["fz", "compiler2", "function", "source", "stashed"],
+            &measurements! {
+                code_id: source.code.as_u32(),
+                module_id: function_ref.module.as_u32(),
+                owner_module_id: source.owner_module.as_u32(),
+                function_id: function.as_u32(),
+                arity: function_ref.arity,
+                clauses: function_source_clause_count(source),
+                source_heap_id: source.source.key().heap_id,
+                source_root_ref: source.source.root().raw_word(),
+            },
+            &metadata! {
+                function_ref: opaque_debug(function_ref),
+                source: opaque_debug(source),
+                function_id: opaque_debug(&function),
+                world: opaque(&*self.world),
+            },
+        );
+        changed
+    }
+
+    pub(crate) fn publish_pending_function_source(&mut self, function: FunctionId) -> Option<bool> {
+        self.world.pending_function_source(function)?;
+        let changed = self.world.publish_pending_function_source(function)?;
+        self.emit_function_source_noted(function, changed);
+        Some(changed)
+    }
+
+    fn emit_function_source_noted(&self, function: FunctionId, changed: bool) {
+        let source = match self.world.function_state(function) {
+            super::identity::FunctionState::Noted { source }
+            | super::identity::FunctionState::Defined { source, .. } => source.as_ref(),
+            super::identity::FunctionState::Placeholder => {
+                unreachable!("noting a function source always leaves the function noted or defined")
+            }
+        };
+        let function_ref = self.world.function_ref(function);
+        let source_owner_module = source.owner_module;
+        let source_module_id = function_ref.module;
+        self.telemetry.execute(
+            &["fz", "compiler2", "function", "source", "noted"],
+            &measurements! {
+                code_id: source.code.as_u32(),
+                module_id: function_ref.module.as_u32(),
+                owner_module_id: source.owner_module.as_u32(),
+                function_id: function.as_u32(),
+                arity: function_ref.arity,
+                clauses: function_source_clause_count(source),
+                source_heap_id: source.source.key().heap_id,
+                source_root_ref: source.source.root().raw_word(),
+                changed: changed as u64,
+            },
+            &metadata! {
+                function_ref: opaque_debug(function_ref),
+                source: opaque_debug(source),
+                function_id: opaque_debug(&function),
+                module_id: opaque_debug(&source_module_id),
+                owner_module_id: opaque_debug(&source_owner_module),
+            },
+        );
+    }
+
+    pub(crate) fn note_expanded_function_source(&mut self, function: FunctionId, source: FunctionSource) -> bool {
+        let changed = self.world.note_expanded_function_source(function, source);
+        let source = self.world.expanded_function_source_ref(function);
+        let function_ref = self.world.function_ref(function);
+        self.telemetry.execute(
+            &["fz", "compiler2", "function", "source", "expanded"],
+            &measurements! {
+                code_id: source.code.as_u32(),
+                module_id: function_ref.module.as_u32(),
+                owner_module_id: source.owner_module.as_u32(),
+                function_id: function.as_u32(),
+                arity: function_ref.arity,
+                clauses: function_source_clause_count(source),
+                source_heap_id: source.source.key().heap_id,
+                source_root_ref: source.source.root().raw_word(),
+                changed: changed as u64,
+            },
+            &metadata! {
+                function_ref: opaque_debug(function_ref),
+                source: opaque_debug(source),
+                function_id: opaque_debug(&function),
+            },
+        );
+        changed
+    }
+
+    pub(crate) fn define_function_contract(&mut self, function: FunctionId, contract: FunctionContract) -> bool {
+        let changed = self.world.define_function_contract(function, contract);
+        let contract = self
+            .world
+            .function_contract(function)
+            .expect("function contract should be present after definition");
+        let function_ref = self.world.function_ref(function);
+        self.telemetry.execute(
+            &["fz", "compiler2", "function_contract", "defined"],
+            &measurements! {
+                function_id: function.as_u32(),
+                arity: function_ref.arity,
+                changed: changed as u64,
+            },
+            &metadata! {
+                function_ref: opaque_debug(function_ref),
+                contract: opaque_debug(contract),
+            },
+        );
+        changed
+    }
+
+    pub(crate) fn define_protocol_callback(&mut self, function: FunctionId, protocol: ModuleId) {
+        let callback = ProtocolCallback { protocol };
+        self.world.define_protocol_callback(function, protocol);
+        let function_ref = self.world.function_ref(function);
+        self.telemetry.execute(
+            &["fz", "compiler2", "protocol_callback", "defined"],
+            &measurements! {
+                protocol_id: protocol.as_u32(),
+                function_id: function.as_u32(),
+                arity: function_ref.arity,
+            },
+            &metadata! {
+                callback: opaque_debug(&callback),
+                function_ref: opaque_debug(function_ref),
+            },
+        );
+    }
+
+    pub(crate) fn define_protocol_impl(
+        &mut self,
+        protocol: ModuleId,
+        target: ModuleId,
+        callbacks: HashMap<FunctionId, ProtocolCallbackImpl>,
+    ) {
+        let key = ProtocolImplKey { protocol, target };
+        self.world.define_protocol_impl(protocol, target, callbacks);
+        let protocol_impl = self.world.protocol_impl(&key);
+        self.telemetry.execute(
+            &["fz", "compiler2", "protocol_impl", "defined"],
+            &measurements! {
+                protocol_id: protocol.as_u32(),
+                target_id: target.as_u32(),
+                callbacks: protocol_impl.callbacks.len(),
+            },
+            &metadata! {
+                key: opaque_debug(&key),
+                protocol_impl: opaque_debug(protocol_impl),
+            },
+        );
+    }
+
+    pub(crate) fn define_generated_function(
+        &mut self,
+        owner: FunctionId,
+        namespace: Namespace,
+        capture_params: Vec<String>,
+        surface: FunctionSurface,
+    ) -> (FunctionId, bool) {
+        let (owner_source, _) = self.world.function_definition(owner);
+        let owner_module = self.world.function_ref(owner).module;
+        let owner_code = owner_source.code;
+        let arity = surface.arity();
+        let clauses = surface.clauses.len();
+        let (id, changed) = self
+            .world
+            .define_generated_function(owner, namespace, capture_params, surface);
+        if changed {
+            let function = self.world.function_state(id);
+            let function_ref = self.world.function_ref(id);
+            self.telemetry.execute(
+                &["fz", "compiler2", "function", "defined"],
+                &measurements! {
+                    code_id: owner_code.as_u32(),
+                    module_id: owner_module.as_u32(),
+                    owner_module_id: owner_source.owner_module.as_u32(),
+                    function_id: id.as_u32(),
+                    arity: arity,
+                    clauses: clauses,
+                    owner_function_id: owner.as_u32(),
+                    source_heap_id: function.state_source_heap_id().unwrap_or_default(),
+                    source_root_ref: function.state_source_root_word().unwrap_or_default(),
+                },
+                &metadata! {
+                    function: opaque_debug(function),
+                    function_ref: opaque_debug(function_ref),
+                    function_id: opaque_debug(&id),
+                    module_id: opaque_debug(&owner_module),
+                    owner_module_id: opaque_debug(&owner_source.owner_module),
+                    owner_function_id: opaque_debug(&owner),
+                },
+            );
+        }
+        (id, changed)
+    }
+
+    pub(crate) fn define_lowered_body(&mut self, function: FunctionId, body: LoweredBody) -> bool {
+        let changed = self.world.define_lowered_body(function, body);
+        let body = self.world.lowered_body_ref(function);
+        let function_ref = self.world.function_ref(function);
+        let slot = self.world.function_state(function);
+        let (fn_source, fn_surface) = match slot {
+            super::identity::FunctionState::Defined { source, surface, .. } => (source.as_ref(), surface),
+            super::identity::FunctionState::Placeholder | super::identity::FunctionState::Noted { .. } => {
+                panic!("lowered bodies should only be defined for known functions")
+            }
+        };
+        let (clauses, generated, arity) = match body {
+            LoweredBody::Extern { signature } => (0_usize, 0_usize, signature.params.len()),
+            LoweredBody::Clauses { clauses, generated, .. } => (clauses.len(), generated.len(), fn_surface.arity()),
+        };
+        self.telemetry.execute(
+            &["fz", "compiler2", "lowered_body", "defined"],
+            &measurements! {
+                code_id: fn_source.code.as_u32(),
+                module_id: function_ref.module.as_u32(),
+                function_id: function.as_u32(),
+                arity: arity,
+                clauses: clauses,
+                generated: generated,
+                source_root_ref: fn_source.source.root().raw_word(),
+            },
+            &metadata! {
+                function_ref: opaque_debug(function_ref),
+                body: opaque_debug(body),
+                function_id: opaque_debug(&function),
+            },
+        );
+        changed
+    }
+
+    pub(crate) fn define_guard_dispatch(&mut self, function: FunctionId, dispatch: PatternGuardDispatch<Ty>) -> bool {
+        let changed = self.world.define_guard_dispatch(function, dispatch);
+        let dispatch = self.world.guard_dispatch_ref(function);
+        let function_ref = self.world.function_ref(function);
+        let slot = self.world.function_state(function);
+        let (fn_source, fn_surface) = match slot {
+            super::identity::FunctionState::Defined { source, surface, .. } => (source.as_ref(), surface),
+            super::identity::FunctionState::Placeholder | super::identity::FunctionState::Noted { .. } => {
+                panic!("guard dispatch should only be defined for known functions")
+            }
+        };
+        self.telemetry.execute(
+            &["fz", "compiler2", "guard_dispatch", "defined"],
+            &measurements! {
+                code_id: fn_source.code.as_u32(),
+                module_id: function_ref.module.as_u32(),
+                function_id: function.as_u32(),
+                arity: fn_surface.arity(),
+                bodies: dispatch.bodies.len(),
+                guards: dispatch.plan.guards.len(),
+                pinned: dispatch.plan.pinned.len(),
+                source_root_ref: fn_source.source.root().raw_word(),
+            },
+            &metadata! {
+                function_ref: opaque_debug(function_ref),
+                dispatch: opaque_debug(dispatch),
+                function_id: opaque_debug(&function),
+            },
+        );
+        changed
+    }
+
+    pub(crate) fn define_entry_dispatch(&mut self, function: FunctionId, plan: PatternDispatchPlan<Ty>) -> bool {
+        let changed = self.world.define_entry_dispatch(function, plan);
+        let plan = self.world.entry_dispatch_ref(function);
+        let function_ref = self.world.function_ref(function);
+        let slot = self.world.function_state(function);
+        let (fn_source, fn_surface) = match slot {
+            super::identity::FunctionState::Defined { source, surface, .. } => (source.as_ref(), surface),
+            super::identity::FunctionState::Placeholder | super::identity::FunctionState::Noted { .. } => {
+                panic!("entry dispatch should only be defined for known functions")
+            }
+        };
+        self.telemetry.execute(
+            &["fz", "compiler2", "entry_dispatch", "defined"],
+            &measurements! {
+                code_id: fn_source.code.as_u32(),
+                module_id: function_ref.module.as_u32(),
+                function_id: function.as_u32(),
+                arity: fn_surface.arity(),
+                outcomes: plan.outcomes.len(),
+                guards: plan.guards.len(),
+                pinned: plan.pinned.len(),
+                source_root_ref: fn_source.source.root().raw_word(),
+            },
+            &metadata! {
+                function_ref: opaque_debug(function_ref),
+                plan: opaque_debug(plan),
+                function_id: opaque_debug(&function),
+            },
+        );
+        changed
+    }
+
+    pub(crate) fn demand_function_scope(&mut self, function: FunctionId) -> Result<Vec<FactKey>, FatalError> {
+        self.world
+            .demand_function_scope(function)
+            .map_err(|diagnostic| emit_job_diagnostic(self.telemetry, *diagnostic))
+    }
+
+    pub(crate) fn wait_for_type_decl(&mut self, module: ModuleId) -> JobEffects {
+        let (effects, registration) = self.world.wait_for_type_decl_registration(module);
+        if let Some(registration) = registration {
+            self.emit_runtime_module_registration(&registration);
+        }
+        effects
+    }
+
+    pub(crate) fn ensure_runtime_module(&mut self, module: ModuleId) -> Option<CodeId> {
+        let registration = self.world.ensure_runtime_module_registration(module)?;
+        self.emit_runtime_module_registration(&registration);
+        Some(registration.code_id)
+    }
+
+    fn emit_runtime_module_registration(&self, registration: &RuntimeModuleRegistration) {
+        if registration.inserted {
+            self.telemetry.execute(
+                &["fz", "compiler2", "code", "submitted"],
+                &measurements! {
+                    code_id: registration.code_id.as_u32(),
+                    bytes: self.world.code_text(registration.code_id).len(),
+                },
+                &metadata! {},
+            );
+        }
+    }
 }

@@ -15,7 +15,11 @@ use super::super::identity::TypeName;
 use super::super::scheduler::FatalError;
 use super::super::world::World;
 
-pub(super) fn derive_type_def(world: &mut World<'_>, name: &TypeName) -> Result<JobEffects, FatalError> {
+pub(super) fn derive_type_def(
+    world: &mut World,
+    tel: &impl crate::telemetry::Telemetry,
+    name: &TypeName,
+) -> Result<JobEffects, FatalError> {
     let Some(decl) = world.type_decl(name).cloned() else {
         // The owning scope has not noted this name yet. A module type is noted
         // when its module is defined, so demand that and wait. A global name
@@ -25,7 +29,7 @@ pub(super) fn derive_type_def(world: &mut World<'_>, name: &TypeName) -> Result<
         if name.module.is_global() {
             return Ok(JobEffects::default());
         }
-        return Ok(world.wait_for_type_decl(name.module));
+        return Ok(super::super::drive::ExecutionContext::new(world, tel).wait_for_type_decl(name.module));
     };
 
     // Wait on the `TypeDefined` of every type the body names before resolving.
@@ -54,7 +58,7 @@ pub(super) fn derive_type_def(world: &mut World<'_>, name: &TypeName) -> Result<
 
     let def = world.resolve_type_def(name, &decl).map_err(|error| {
         emit_job_diagnostic(
-            world,
+            tel,
             Diagnostic::error(
                 codes::RESOLVE_TYPE_ALIAS,
                 format!("compiler2 could not resolve type `{}`: {}", name.name, error.msg),
@@ -68,7 +72,7 @@ pub(super) fn derive_type_def(world: &mut World<'_>, name: &TypeName) -> Result<
         .map(|referenced| FactKey::TypeDefined(referenced.clone()))
         .collect();
     reads.extend(struct_refs.iter().map(|module| FactKey::StructDefined(*module)));
-    let changed = world.define_type_def(name.clone(), def);
+    let changed = super::super::drive::ExecutionContext::new(world, tel).define_type_def(name.clone(), def);
     Ok(JobEffects {
         reads: current_uses(reads),
         outputs: vec![FactKey::TypeDefined(name.clone())],
@@ -80,7 +84,7 @@ pub(super) fn derive_type_def(world: &mut World<'_>, name: &TypeName) -> Result<
     })
 }
 
-fn emit_job_diagnostic(world: &World<'_>, diagnostic: Diagnostic) -> FatalError {
-    emit_through(world.tel(), &[diagnostic]);
+fn emit_job_diagnostic(tel: &impl crate::telemetry::Telemetry, diagnostic: Diagnostic) -> FatalError {
+    emit_through(tel, &[diagnostic]);
     FatalError
 }
