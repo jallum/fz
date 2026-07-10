@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-1ah.5"
+  ],
   "blocks": [
     "fz-1ah.4"
   ],
@@ -13,5 +15,5 @@
   "status": "open",
   "title": "Remove Cargo rediscovery from ordinary AOT archive selection and span the link",
   "type": "bug",
-  "updated_at": "2026-07-10T15:57:20Z"
+  "updated_at": "2026-07-10T16:04:30Z"
 }
