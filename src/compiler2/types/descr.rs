@@ -320,6 +320,52 @@ impl Descr {
             && self.maps.is_empty()
     }
 
+    pub(super) fn projection_alternatives(&self) -> Option<Vec<Descr>> {
+        if !self.axis_free() {
+            return None;
+        }
+        let populated_axes = [
+            !self.tuples.is_empty(),
+            !self.lists.is_empty(),
+            !self.resources.is_empty(),
+            !self.funcs.is_empty(),
+            !self.maps.is_empty(),
+        ]
+        .into_iter()
+        .filter(|populated| *populated)
+        .count();
+        if populated_axes != 1 {
+            return None;
+        }
+        if self.tuples.len() > 1 {
+            return Some(
+                self.tuples
+                    .iter()
+                    .cloned()
+                    .map(|clause| {
+                        let mut alternative = Descr::none();
+                        alternative.tuples.push(clause);
+                        alternative
+                    })
+                    .collect(),
+            );
+        }
+        if self.lists.len() > 1 {
+            return Some(
+                self.lists
+                    .iter()
+                    .cloned()
+                    .map(|clause| {
+                        let mut alternative = Descr::none();
+                        alternative.lists.push(clause);
+                        alternative
+                    })
+                    .collect(),
+            );
+        }
+        None
+    }
+
     pub(super) fn pure_tuple(&self) -> Option<&TupleSig> {
         self.axis_free()
             .then_some(())

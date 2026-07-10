@@ -61,6 +61,13 @@ is not "put the message somewhere and revisit it later". A hit outcome is a
 projected outcome-closure payload for the winning clause body; a miss outcome is
 "append the full message to the mailbox and stay parked".
 
+Compiler2 semantic reachability is another consumer, not another dispatch
+model. `compiler2/dispatch_reachability.rs` interprets the graph's edge proofs
+against root input `Ty` rows and uses plan-owned `PatternSubjectRef` paths to
+derive every tested projection. It never stores types by `SubjectId` and never
+adds type/domain policy to this generic module. Exact tuple projections lift to
+their roots; ambiguous positional list projections keep both edges.
+
 ## Vocabulary Boundary
 
 DispatchMatrix has three layers that must stay separate:

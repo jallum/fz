@@ -10,10 +10,6 @@ use crate::ast::{BinOp, UnOp};
 use crate::diag::driver::emit_through;
 use crate::diag::{Diagnostic, codes};
 use crate::dispatch_matrix::pattern::PatternDispatchPlan;
-use crate::dispatch_matrix::{
-    ComparisonValue, DispatchNode, EdgeEvidence, GraphNodeId, ListRegion, Region, RegionPredicate, SubjectId,
-    SubjectSource,
-};
 use crate::ground_value::GroundValue;
 use crate::source::Span;
 
@@ -22,6 +18,7 @@ use super::super::body::{
     ValueId,
 };
 use super::super::contract::FunctionContract;
+use super::super::dispatch_reachability::calculate_dispatch_reachability;
 use super::super::drive::{FactKey, JobEffects, current_uses};
 use super::super::identity::{
     ActivationKey, ExecutableNeed, FunctionId, ModuleId, TypeName, function_id_of_closure_target,
@@ -1774,239 +1771,15 @@ fn call_target_summary(
 }
 
 fn reachable_clause_ids(world: &mut World<'_>, plan: &DispatchPlan, inputs: &[Ty]) -> Vec<u32> {
-    let mut subjects = HashMap::new();
-    for ordinal in 0..plan.input_count {
-        let input = inputs.get(ordinal).cloned().unwrap_or_else(|| any_ty(world));
-        let Some(subject_id) = plan.matrix.subjects.iter().find_map(|subject| match subject.source {
-            SubjectSource::Input { ordinal: input_ordinal } if input_ordinal as usize == ordinal => Some(subject.id),
-            _ => None,
-        }) else {
-            continue;
-        };
-        subjects.insert(subject_id, input);
-    }
-    let mut outcomes = HashSet::new();
-    collect_reachable_outcomes(world, plan, plan.graph.root, &subjects, &mut outcomes);
+    let reachability = calculate_dispatch_reachability(world.types_mut(), plan, inputs);
     let mut reachable = plan
         .outcomes
         .iter()
-        .filter(|outcome| outcomes.contains(&outcome.outcome))
+        .filter(|outcome| reachability.outcomes.binary_search(&outcome.outcome).is_ok())
         .map(|outcome| outcome.body_id)
         .collect::<Vec<_>>();
     reachable.sort_unstable();
     reachable
-}
-
-fn collect_reachable_outcomes(
-    world: &mut World<'_>,
-    plan: &DispatchPlan,
-    node_id: GraphNodeId,
-    subjects: &HashMap<SubjectId, Ty>,
-    outcomes: &mut HashSet<crate::dispatch_matrix::OutcomeId>,
-) {
-    let Some(node) = plan.graph.node(node_id) else {
-        return;
-    };
-    match node {
-        DispatchNode::Fail => {}
-        DispatchNode::Outcome { outcome, .. } => {
-            outcomes.insert(*outcome);
-        }
-        DispatchNode::Test {
-            predicate,
-            on_match,
-            on_miss,
-        } => {
-            let source = subjects
-                .get(&predicate.subject)
-                .cloned()
-                .unwrap_or_else(|| any_ty(world));
-            if branch_possible(world, predicate, &source, true) {
-                let mut next = subjects.clone();
-                apply_evidence(world, plan, &mut next, &source, predicate, &on_match.evidence, true);
-                collect_reachable_outcomes(world, plan, on_match.target, &next, outcomes);
-            }
-            if branch_possible(world, predicate, &source, false) {
-                let mut next = subjects.clone();
-                apply_evidence(world, plan, &mut next, &source, predicate, &on_miss.evidence, false);
-                collect_reachable_outcomes(world, plan, on_miss.target, &next, outcomes);
-            }
-        }
-    }
-}
-
-fn branch_possible(world: &mut World<'_>, predicate: &RegionPredicate<Ty>, source: &Ty, is_match: bool) -> bool {
-    match &predicate.region {
-        Region::Type(ty) => {
-            if is_match {
-                let overlap = world.types_mut().intersect(*source, *ty);
-                !world.types().is_empty(&overlap)
-            } else {
-                !world.types().is_subtype(source, ty)
-            }
-        }
-        Region::Equal(value) => {
-            let target = comparison_ty(world, value);
-            if is_match {
-                let overlap = world.types_mut().intersect(*source, target);
-                !world.types().is_empty(&overlap)
-            } else {
-                match value {
-                    // No type can witness "the scrutinee always equals this
-                    // constant" for numbers and strings: string literals
-                    // have no singleton types at all (the old subtype check
-                    // wrongly pruned live miss edges), and numeric literal
-                    // types are leaving the lattice. Equality is a VALUE
-                    // test the matcher performs at runtime; its miss edge
-                    // is always statically possible. Atoms, bools, nil and
-                    // the empty list keep their exact singleton proofs.
-                    ComparisonValue::Const(
-                        GroundValue::Int(_) | GroundValue::Float(_) | GroundValue::Utf8Binary(_),
-                    ) => true,
-                    _ => !world.types().is_subtype(source, &target),
-                }
-            }
-        }
-        Region::TupleArity(arity) => {
-            let any = world.types_mut().any();
-            let fields = world.types_mut().repeat(any, *arity as usize);
-            let tuple = world.types_mut().tuple(&fields);
-            if is_match {
-                let overlap = world.types_mut().intersect(*source, tuple);
-                !world.types().is_empty(&overlap)
-            } else {
-                !world.types().is_subtype(source, &tuple)
-            }
-        }
-        Region::List(ListRegion::Empty) => {
-            let empty = world.types_mut().empty_list();
-            if is_match {
-                let overlap = world.types_mut().intersect(*source, empty);
-                !world.types().is_empty(&overlap)
-            } else {
-                !world.types().is_subtype(source, &empty)
-            }
-        }
-        Region::List(ListRegion::Cons) => {
-            let any = world.types_mut().any();
-            let cons = world.types_mut().non_empty_list(any);
-            if is_match {
-                let overlap = world.types_mut().intersect(*source, cons);
-                !world.types().is_empty(&overlap)
-            } else {
-                !world.types().is_subtype(source, &cons)
-            }
-        }
-        Region::MapKind => {
-            let map = world.types_mut().map_top();
-            if is_match {
-                let overlap = world.types_mut().intersect(*source, map);
-                !world.types().is_empty(&overlap)
-            } else {
-                !world.types().is_subtype(source, &map)
-            }
-        }
-        Region::Guard(_) => true,
-        Region::MapKeyPresent { key } => {
-            // A map literal's sig is an open-record LOWER bound: "at least
-            // these keys, with these value types" (`types/sigs.rs`'s
-            // `MapSig` doc). So `source <: map({key: any})` is exactly the
-            // proof that every value of `source` carries `key` — the same
-            // shape-overlap/subtype pair `Region::Type` and `Region::TupleArity`
-            // already use above, just phrased over one required field instead
-            // of a whole type or arity. Reusing `intersect`/`is_subtype` here
-            // (rather than the previous unconditional `true`) lets a
-            // known-closed map (built from a literal `%{...}` at this
-            // callsite) prune the impossible "key is absent" miss edge,
-            // exactly as an atom literal already prunes its miss edge below.
-            //
-            // The prune only applies when the key resolves to a form the map
-            // lattice can carry as a required field: an atom singleton. The
-            // `nil` key resolves here — it is the atom `:nil`, so a `%{nil =>
-            // ...}` pattern prunes its miss edge exactly like any other atom
-            // key. `map_key` also accepts int/float/string map-pattern keys
-            // (`dispatch_matrix/pattern.rs`), but the lattice erases numeric
-            // literals to their kind (`Types::int_lit`/`as_int_singleton` is a
-            // permanent stub) and has no singleton for float/string keys, so
-            // `as_map_key` returns `None` for them. Absence of a resolvable
-            // key is absence of proof: we cannot show the key is present, so
-            // we must not prune either edge — falling back to the old
-            // unconditional `true` keeps those (valid, working) programs
-            // dispatching both ways.
-            let key_ty = dispatch_const_ty(world, key);
-            if let Some(map_key) = world.types().as_map_key(&key_ty) {
-                let any = world.types_mut().any();
-                let required = world.types_mut().map(&[(map_key, any)]);
-                if is_match {
-                    let overlap = world.types_mut().intersect(*source, required);
-                    !world.types().is_empty(&overlap)
-                } else {
-                    !world.types().is_subtype(source, &required)
-                }
-            } else {
-                true
-            }
-        }
-        Region::Bitstring(_) => true,
-    }
-}
-
-fn apply_evidence(
-    world: &mut World<'_>,
-    plan: &DispatchPlan,
-    subjects: &mut HashMap<SubjectId, Ty>,
-    source: &Ty,
-    predicate: &RegionPredicate<Ty>,
-    evidence: &EdgeEvidence<Ty>,
-    is_match: bool,
-) {
-    let refined = match &predicate.region {
-        Region::Type(ty) if is_match => world.types_mut().intersect(*source, *ty),
-        Region::Equal(value) if is_match => {
-            let target = comparison_ty(world, value);
-            world.types_mut().intersect(*source, target)
-        }
-        Region::TupleArity(arity) if is_match => {
-            let any = world.types_mut().any();
-            let fields = world.types_mut().repeat(any, *arity as usize);
-            let tuple = world.types_mut().tuple(&fields);
-            world.types_mut().intersect(*source, tuple)
-        }
-        Region::List(ListRegion::Empty) if is_match => {
-            let empty = world.types_mut().empty_list();
-            world.types_mut().intersect(*source, empty)
-        }
-        Region::List(ListRegion::Cons) if is_match => {
-            let any = world.types_mut().any();
-            let cons = world.types_mut().non_empty_list(any);
-            world.types_mut().intersect(*source, cons)
-        }
-        _ => *source,
-    };
-    subjects.insert(predicate.subject, refined);
-
-    for projection in &evidence.projections {
-        let base = subjects.get(&projection.source).cloned().unwrap_or(*source);
-        let projected = match &projection.kind {
-            crate::dispatch_matrix::ProjectionKind::TupleField(index) => {
-                world.types_mut().tuple_field_type(&base, *index as usize)
-            }
-            crate::dispatch_matrix::ProjectionKind::ListHead => world.types_mut().list_element_type(&base),
-            crate::dispatch_matrix::ProjectionKind::ListTail => {
-                let elem = world.types_mut().list_element_type(&base);
-                world.types_mut().list(elem)
-            }
-            crate::dispatch_matrix::ProjectionKind::MapValue { .. } => any_ty(world),
-            crate::dispatch_matrix::ProjectionKind::BitstringField(_) => any_ty(world),
-        };
-        subjects.insert(projection.result, projected);
-    }
-
-    for proof in &evidence.proofs {
-        if proof.predicate.subject != predicate.subject {
-            let _ = plan.subject_ref(proof.predicate.subject);
-        }
-    }
 }
 
 pub(super) fn executable_callsite_needs(
@@ -2189,34 +1962,6 @@ fn literal_ty(world: &mut World<'_>, literal: &GroundValue) -> Ty {
         BodyLiteral::Atom(name) => world.types_mut().atom_lit(name),
         BodyLiteral::Bool(value) => world.types_mut().bool_lit(value),
         BodyLiteral::Nil => world.types_mut().nil(),
-    }
-}
-
-fn comparison_ty(world: &mut World<'_>, value: &ComparisonValue) -> Ty {
-    match value {
-        ComparisonValue::Const(value) => dispatch_const_ty(world, value),
-        ComparisonValue::Pinned(_) => any_ty(world),
-    }
-}
-
-fn dispatch_const_ty(world: &mut World<'_>, value: &GroundValue) -> Ty {
-    use crate::ground_value::DispatchShape;
-    match value
-        .as_dispatch_shape()
-        .expect("dispatch_const_ty only ever sees a dispatch-matrix const")
-    {
-        DispatchShape::Int(value) => world.types_mut().int_lit(value),
-        DispatchShape::Float(value) => world.types_mut().float_lit(f64::from_bits(value)),
-        DispatchShape::Atom(name) => world.types_mut().atom_lit(name),
-        DispatchShape::Bool(value) => world.types_mut().bool_lit(value),
-        // The `nil` keyword is the atom `nil` in every position, expression
-        // or pattern (Elixir parity: `is_nil(nil)` holds, `nil == []` does
-        // not). `[]` is the empty list, but it never reaches this function:
-        // `[]` patterns lower to `Region::List(ListRegion::Empty)` instead
-        // (see `dispatch_matrix::pattern::append_list_pattern`), a
-        // structurally distinct region with no `GroundValue` counterpart.
-        DispatchShape::Nil => world.types_mut().nil(),
-        DispatchShape::Utf8Binary(_) => world.types_mut().str_t(),
     }
 }
 
@@ -2422,67 +2167,4 @@ fn any_ty(world: &mut World<'_>) -> Ty {
 
 fn none_ty(world: &mut World<'_>) -> Ty {
     world.types_mut().none()
-}
-
-#[cfg(test)]
-mod dispatch_const_ty_tests {
-    use super::*;
-    use crate::ground_value::MapKey;
-    use crate::telemetry::ConfiguredTelemetry;
-
-    /// The `nil` keyword types as the atom `nil` in both expression and
-    /// pattern position; `[]` types as the empty list; the two are
-    /// distinct. This pins the fix for the divergence where pattern
-    /// position used to type `nil` as `empty_list()` while expression
-    /// position (`literal_ty`, `BodyLiteral::Nil`) already typed it as the
-    /// atom -- same keyword, same `GroundValue::Nil` payload, one `Ty`.
-    #[test]
-    fn nil_keyword_types_as_the_atom_in_pattern_position_not_the_empty_list() {
-        let tel = ConfiguredTelemetry::new();
-        let mut world = World::new(&tel);
-
-        let nil_pattern_ty = dispatch_const_ty(&mut world, &GroundValue::Nil);
-        let nil_expr_ty = world.types_mut().nil();
-        let empty_list_ty = world.types_mut().empty_list();
-
-        assert_eq!(
-            world.types_mut().display(&nil_pattern_ty),
-            world.types_mut().display(&nil_expr_ty),
-            "the `nil` keyword should type the same way (the atom nil) in pattern position as it does in expression position",
-        );
-        assert_ne!(
-            world.types_mut().display(&nil_pattern_ty),
-            world.types_mut().display(&empty_list_ty),
-            "the `nil` keyword must not type as the empty list -- `nil` and `[]` are distinct values with distinct types",
-        );
-
-        // `[]` never reaches `dispatch_const_ty` at all: `GroundValue` has
-        // no empty-list variant, so `[]` patterns lower to
-        // `Region::List(ListRegion::Empty)` instead (see
-        // `dispatch_matrix::pattern::append_list_pattern`). The distinction
-        // pinned above holds by construction -- there is no `GroundValue`
-        // an empty-list pattern could ever be confused with `Nil` through.
-    }
-
-    /// Because `nil` now types as the atom `:nil`, a `nil` map-pattern key
-    /// resolves to a `MapKey::Atom` singleton -- so `%{nil => ...}` prunes
-    /// its present/absent miss edge in the `Region::MapKeyPresent` proof
-    /// exactly like any other atom key. Before the fix, `nil` typed as the
-    /// empty list, `as_map_key` returned `None`, and the proof fell back to
-    /// the unconditional "cannot prune". This pins the resolvable-key path
-    /// that the type change unlocked so it is not silently untested.
-    #[test]
-    fn nil_map_pattern_key_resolves_to_the_nil_atom_singleton() {
-        let tel = ConfiguredTelemetry::new();
-        let mut world = World::new(&tel);
-
-        let nil_key_ty = dispatch_const_ty(&mut world, &GroundValue::Nil);
-        let resolved = world.types().as_map_key(&nil_key_ty);
-
-        assert_eq!(
-            resolved,
-            Some(MapKey::Atom("nil".to_string())),
-            "a `nil` map-pattern key should resolve to the `:nil` atom singleton so `MapKeyPresent` can prune its miss edge",
-        );
-    }
 }

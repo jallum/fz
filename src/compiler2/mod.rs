@@ -8,6 +8,7 @@ mod compiler;
 mod contract;
 mod deps;
 mod dispatch;
+mod dispatch_reachability;
 mod drive;
 mod dump;
 mod facts;

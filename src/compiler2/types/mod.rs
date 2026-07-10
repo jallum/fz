@@ -832,6 +832,16 @@ impl Types {
         self.intern(d)
     }
 
+    pub(crate) fn projection_alternatives(&mut self, ty: Ty) -> Vec<Ty> {
+        let Some(alternatives) = self.descr(&ty).projection_alternatives() else {
+            return vec![ty];
+        };
+        alternatives
+            .into_iter()
+            .map(|alternative| self.intern(alternative))
+            .collect()
+    }
+
     pub fn is_empty(&self, a: &Ty) -> bool {
         self.cached_comparison(ComparisonKey::Empty(*a), |types| {
             let cx = types.ctx();

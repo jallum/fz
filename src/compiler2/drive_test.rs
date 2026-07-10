@@ -13053,6 +13053,191 @@ fn compiler2_string_constant_dispatch_keeps_the_miss_arm_reachable() {
 }
 
 #[test]
+fn compiler2_dispatch_reachability_preserves_correlated_tuple_inputs() {
+    let (direct, direct_return) = semantic_reachability_for_source(
+        "correlated_tuple_dispatch.fz",
+        r#"
+fn choose() do
+  if true, do: {:a, :x}, else: {:b, :y}
+end
+
+fn classify({:a, :x}), do: :left
+fn classify({:b, :y}), do: :right
+fn classify(_), do: :fallback
+
+fn main(), do: classify(choose())
+"#,
+        "classify",
+        1,
+    );
+    assert_eq!(
+        direct,
+        vec![0, 1],
+        "the exact tuple alternatives must not invent cross-wired or wildcard reachability",
+    );
+    assert!(
+        direct_return.contains(":left") && direct_return.contains(":right") && !direct_return.contains(":fallback"),
+        "the published classifier return must exclude the phantom fallback, got {direct_return}",
+    );
+
+    let projected = reachable_clauses_for_source(
+        "projected_tuple_dispatch.fz",
+        r#"
+fn choose() do
+  if true, do: {:a, [true]}, else: {:b, [false]}
+end
+
+fn classify({:a, [true | _tail]}), do: :left
+fn classify({:b, [false | _tail]}), do: :right
+fn classify(_), do: :fallback
+
+fn main(), do: classify(choose())
+"#,
+        "classify",
+        1,
+    );
+    assert_eq!(
+        projected,
+        vec![0, 1],
+        "tuple alternatives must stay correlated through list-head projections",
+    );
+
+    let nested = reachable_clauses_for_source(
+        "nested_tuple_dispatch.fz",
+        r#"
+fn choose() do
+  if true, do: {:outer, {:a, :x}}, else: {:outer, {:b, :y}}
+end
+
+fn classify({:outer, {:a, :x}}), do: :left
+fn classify({:outer, {:b, :y}}), do: :right
+fn classify(_), do: :fallback
+
+fn main(), do: classify(choose())
+"#,
+        "classify",
+        1,
+    );
+    assert_eq!(
+        nested,
+        vec![0, 1],
+        "nested tuple products must retain sibling correlation"
+    );
+
+    let list_of_tuples = reachable_clauses_for_source(
+        "list_of_tuples_dispatch.fz",
+        r#"
+fn choose() do
+  if true, do: [{:a, :x}], else: [{:b, :y}]
+end
+
+fn classify([{:a, :x} | _tail]), do: :left
+fn classify([{:b, :y} | _tail]), do: :right
+fn classify(_), do: :fallback
+
+fn main(), do: classify(choose())
+"#,
+        "classify",
+        1,
+    );
+    assert_eq!(
+        list_of_tuples,
+        vec![0, 1],
+        "correlated list alternatives must preserve the tuple product observed at their head",
+    );
+}
+
+#[test]
+fn compiler2_dispatch_reachability_keeps_list_positions_and_unknown_tests_conservative() {
+    let list_positions = reachable_clauses_for_source(
+        "list_position_dispatch.fz",
+        r#"
+fn classify([true, true | _tail]), do: :same
+fn classify(_), do: :fallback
+
+fn main(), do: classify([true, false])
+"#,
+        "classify",
+        1,
+    );
+    assert_eq!(
+        list_positions,
+        vec![0, 1],
+        "one observed head must not globally narrow later positions of a homogeneous list type",
+    );
+
+    let guarded = reachable_clauses_for_source(
+        "guarded_dispatch.fz",
+        r#"
+fn classify(value) when value == :a, do: :guarded
+fn classify(_), do: :fallback
+
+fn main(), do: classify(:a)
+"#,
+        "classify",
+        1,
+    );
+    assert_eq!(
+        guarded,
+        vec![0, 1],
+        "guard predicates remain conservative in semantic reachability"
+    );
+}
+
+fn reachable_clauses_for_source(source_name: &str, source: &str, function_name: &str, arity: u64) -> Vec<u32> {
+    semantic_reachability_for_source(source_name, source, function_name, arity).0
+}
+
+fn semantic_reachability_for_source(
+    source_name: &str,
+    source: &str,
+    function_name: &str,
+    arity: u64,
+) -> (Vec<u32>, String) {
+    let tel = ConfiguredTelemetry::new();
+    let functions = FunctionCapture::new();
+    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    let returns = ReturnTypeCapture::new();
+    tel.attach(&["fz", "compiler2", "return_type", "defined"], returns.handler());
+    type ReachableByFunction = Vec<(u64, Vec<u32>)>;
+    let analyses: Rc<RefCell<ReachableByFunction>> = Rc::new(RefCell::new(Vec::new()));
+    let sink = Rc::clone(&analyses);
+    tel.attach(
+        &["fz", "compiler2", "activation_analysis", "defined"],
+        Box::new(move |event: &Event<'_, '_, '_>| {
+            let Some(Value::U64(function)) = event.measurements.get("function_id") else {
+                return;
+            };
+            let Some(analysis) = event
+                .metadata
+                .get("analysis")
+                .and_then(|value| value.downcast_ref::<crate::compiler2::ActivationAnalysis>())
+            else {
+                return;
+            };
+            sink.borrow_mut().push((*function, analysis.reachable_clauses.clone()));
+        }),
+    );
+
+    let mut world = crate::compiler2::World::new(&tel);
+    world.submit_code(Some(source_name.to_string()), source.to_string());
+    let root = world.submit_root(None, "main".to_string(), 0, crate::compiler2::ExecutableNeed::Value);
+    assert_resolved(world.drive(), "dispatch reachability fixture should settle");
+
+    let function_id = function_id(&functions, function_name, arity);
+    let function_measurement = function_id.as_u32() as u64;
+    let reachable = analyses
+        .borrow()
+        .iter()
+        .rev()
+        .find(|(function, _)| *function == function_measurement)
+        .map(|(_, clauses)| clauses.clone())
+        .unwrap_or_else(|| panic!("{function_name}/{arity} should be analyzed"));
+    let return_ty = returns.last_for_function(root, function_id).return_ty;
+    (reachable, world.types().display(&return_ty))
+}
+
+#[test]
 fn compiler2_int_keyed_map_index_types_through_the_carried_literal() {
     // Map keys are VALUES: the lowering carries the written constant
     // alongside the runtime key (LoweredMapKey), so %{1 => 10}[1] keeps its
