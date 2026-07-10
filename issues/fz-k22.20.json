@@ -22,11 +22,15 @@
     {
       "text": "No-reselection spike moved to dedicated fz-k22 worktree. Concrete CallableFacts now package target-owned ABI entries and stamp construction sites, but with FunctionId/type-overlap fallback removed the fixture deterministically returns 2/2 rather than 10/2. This proves fz-k22.14 is an upstream blocker: CallTargetSummary has already collapsed the needed direct target before entry construction. Added fz-k22.14 -\u003e fz-k22.20 dependency; will resolve that representation first rather than reintroduce selection.",
       "timestamp": "2026-07-10T20:08:57Z"
+    },
+    {
+      "text": "Target fixture now prints 10/2 in interp/run/build with entry identity carried only for first-class published constructions. Native stores that resolved boundary on NativeBoundValue; direct-only callables retain direct artifact edges and no boundary inventory. Full lib suite is at 1313/1329 passing; remaining failures are legacy entry-inventory expectations and a few native publication paths being migrated to the entry-owned model.",
+      "timestamp": "2026-07-10T20:27:55Z"
     }
   ],
   "priority": 0,
   "status": "in_progress",
   "title": "[BUG] resolved callable entry must own target capture and return ABI",
   "type": "bug",
-  "updated_at": "2026-07-10T20:08:57Z"
+  "updated_at": "2026-07-10T20:27:55Z"
 }
